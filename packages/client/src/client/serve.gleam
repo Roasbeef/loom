@@ -5172,8 +5172,7 @@ fn assemble_in(
   // The selected extension is staged again only now. Its adoption audit
   // borrows the runtime through the Agency's holder, which is one of the
   // services started above; before them the borrow answered "runtime
-  // unavailable" and a session with a selection could not be opened again. A
-  // refusal stops the services, since nothing else owns them yet.
+  // unavailable" and a session with a selection could not be opened again.
   use Nil <- result.try(case evolution_wiring {
     None -> Ok(Nil)
     Some(wiring) ->
@@ -5181,7 +5180,7 @@ fn assemble_in(
       |> result.map_error(fn(error) {
         // Recovery already retains its failed native continuation before
         // replying. Rendering that refusal must not add another owner.
-        stop_services(started_services.pid)
+        release_unowned_services(owner, started_services.pid)
         evolution_store.describe(error)
       })
   })
@@ -5858,6 +5857,28 @@ pub const service_restart_period = 5
 /// killed. Its children are plain actors that die on the shutdown
 /// signal at once, so this is headroom, not an expected wait.
 pub const service_grace_ms = 5000
+
+/// Stops the service supervisor after an assembly refusal, but only when no
+/// custody owner holds it. With an owner, `with_service_custody` has already
+/// published the supervisor as `custody.Services`, and custody stops it when
+/// the failed build retires. Stopping it here as well would leave custody's own
+/// stop to find the supervisor gone, which it reports as an unconfirmed
+/// retirement, and the session would be held as recovery-blocked.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // release_unowned_services(None, services) stops a standalone boot's tree.
+/// ```
+fn release_unowned_services(
+  owner: Option(custody.Owner),
+  services: Pid,
+) -> Nil {
+  case owner {
+    Some(_) -> Nil
+    None -> stop_services(services)
+  }
+}
 
 // Stops the service supervisor the way OTP stops one: children
 // terminated in reverse start order with reason `shutdown`. A
