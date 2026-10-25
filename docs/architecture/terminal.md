@@ -105,7 +105,13 @@ that link. `Forward` runs `loomd ext …` as a pass-through child and exits
 with its status. `Update` runs the release installer. `Replay` plays a
 recording through a virtual backend and prints frames. `Sessions` lists or
 deletes catalogue rows over the control connection and prints one line per
-row. `Invalid` writes its reason to stderr and exits nonzero. Help (`--help`,
+row. `Run` is `loom run -p <prompt>`, the headless one-shot client (issue #492): it
+reaches the daemon as `Sessions` does, creates a session under a one-shot key,
+drives the same credited session lane the terminal drives (`tui/run`), sends one
+`prompt`, waits for the `main` strand's terminal `last_result`, prints one JSON
+line (session id, outcome, usage, a mandatory jail label) and exits `0`
+(completed), `1` (failed or aborted), `2` (bad arguments), `3` (no daemon) or
+`124` (timeout), stopping the session unless `--keep`. `Invalid` writes its reason to stderr and exits nonzero. Help (`--help`,
 `-h`, or a leading `help`) is answered before any of these, so asking for usage
 never contacts a daemon.
 
@@ -152,7 +158,7 @@ model.
 
 The whole of `tui.update` is
 `runtime.settle(step(runtime.message(event, model), runtime.receive(model)))`
-(`update` at `packages/tui/src/tui.gleam:3532`). Everything inside the
+(`update` at `packages/tui/src/tui.gleam:3562`). Everything inside the
 box below is pure; everything outside it is the host.
 
 ```mermaid
@@ -1149,6 +1155,7 @@ Paths are relative to the package's source root: `tui/...` is under
 | `tui.gleam` | `main` and launch parsing, `new_model`, the loop, replay, `loom ui` (`run_view`), and the `update`/`step`/`apply_input`/`settle_update` dispatch. |
 | `tui/effect` | The closed vocabulary of effects a step decides on, with the session reducers' effects wrapped as `Step`. |
 | `tui/terminal_lane` | The session lane with the terminal's socket and recorder filled in, and `perform`, the one place a lane's outputs touch the websocket or the recording. |
+| `tui/run` | `loom run -p`: the argument grammar, the receive loop over the session lane, the verdict from `last_result`, the helper self-test's jail label and the one JSON line. |
 | `tui/view_link` | Printing the `loom ui` link and handing it to the platform's opener. |
 | `tui/model` | `Model` and its two halves, `TerminalShared` (the terminal's binding of `Shared`) and `View` (the terminal's own state and its `Caches`), the frame cache, the `Reconnect` state, the effect outbox in `View` (`emit`, `record`, `hold_shared`, `run_shared`, and the terminal forms of `record_arrival`, `hold_channel`, `send_frame`, `send_via` and `apply_submission`), the composer's `clear_composer` and the other terminal types every reducer shares. |
 | `tui/runtime` | The terminal's host: `message`, which builds the step's input with the clocks and a pasted file read into it; `receive` and `arrivals`, which read job replies and each inbox's mailbox up to its room and have admission file them; `hold`, which hands one job message over after checking an attachment's socket; `take`, `perform`, `settle` and `flush`, which collect a step's effects, perform them and store the job table. |

@@ -404,6 +404,41 @@ drawn in half blocks, black on white with ANSI colours) and the lifetime
 record cache makes for durable lines, so the web view's parity test can
 compare against it.
 
+## Headless one-shot (`loom run -p`, issue #492)
+
+`loom run -p <prompt> [--workspace DIR] [--model NAME] [--config FILE]
+[--model-profile NAME] [--server PATH] [--state-dir DIR] [--timeout SECONDS]
+[--keep] [--json]` is `tui/run`, dispatched as `tui.Run(request)` (arguments
+it refuses are `RunRefused`, which exits `2`; `run` is a `hoisting_verbs`
+member, so daemon options may precede it). It is a client of the daemon
+protocol and installs no terminal state: `bootstrap.resolve_daemon`, then
+`selection.create_named` under a one-shot key, then `session_channel.start`
+over a plain `connection.connect` socket. `drive` is the receive loop; after
+the first cut it submits an optional `set_model` (`--model`) and then
+`protocol.prompt`, one request at a time, and ends on the first
+`strand.last_result` for `main` (`settle`: `RunCompleted` completes,
+`RunFailed` fails with the error code, `RunAborted` aborts), on a lane
+failure or refusal, or on the deadline. `conduct` returns `Ran(report)`,
+`NoSession` or `NoDaemon` as data; `execute` prints and returns the exit
+status (`0` completed, `1` failed/aborted/no session, `2` bad arguments, `3`
+no daemon, `124` timeout) and `tui.finish_run` halts with it. Standard output
+carries exactly one JSON object (`render`); everything else is stderr.
+
+The jail label is mandatory. Neither `hello` nor the snapshot carries the
+daemon's enforcement report, so `measure_posture` runs `<dir of the resolved
+server>/loom-exec --self-test` once through `sh` with its output redirected
+to a file (no new FFI; `run_forwarding` would put the report on stdout) and
+`posture_of` labels it `enforced`, `degraded` (probes skipped) or
+`unverified` (no helper, or a nonzero status). A running daemon from another
+install is not asked; the label describes the helper beside the server the
+launcher resolves. `session_db` is printed only when
+`<state_dir>/sessions/<id>.db` exists, because no control reply names the
+path. The session is stopped (`StopSession`, then `GetSession` until `Saved`
+under `weft/poll`) unless `--keep`. Tests: `run_test` (grammar, exit mapping,
+posture parsing, verdict reduction over synthetic cuts, the JSON line, a
+missing daemon) and, against the shipped daemon, `client/loom_run_test`
+(skipped when `LOOM_BOOTSTRAP_E2E_SERVER` is unset).
+
 ## Purpose
 
 The shipped native terminal client. It authenticates one daemon control
