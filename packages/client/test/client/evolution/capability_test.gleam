@@ -281,6 +281,25 @@ pub fn a_started_cell_hands_out_the_door_until_it_is_stopped_test() {
   let assert Ok(Nil) = address.stop(registry)
 }
 
+/// A cell over the refusing doors, which a session on an executor that cannot
+/// compile registers, answers a program's call with the executor's reason and
+/// not with a sentence about a plane that is not open.
+pub fn a_refusing_cell_answers_with_the_executors_reason_test() {
+  let assert Ok(registry) = address.start()
+  let name = address.new_address(registry)
+  let reason = "executor box cannot compile: no toolchain"
+  let assert Ok(cell) = capability.start(name, capability.refusing(reason))
+  capability.detach(cell)
+
+  let builder = capability.door_over(name)
+  let operations = builder(ctx())
+
+  assert operations.catalogue(0, json.Null) == Error("Unavailable: " <> reason)
+  assert operations.propose(1, json.Null) == Error("Unavailable: " <> reason)
+  capability.stop(name)
+  let assert Ok(Nil) = address.stop(registry)
+}
+
 pub fn the_cell_builder_runs_the_borrowed_door_under_the_callers_context_test() {
   let assert Ok(registry) = address.start()
   let name = address.new_address(registry)
