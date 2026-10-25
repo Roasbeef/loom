@@ -700,6 +700,88 @@ pub fn the_confirm_run_is_reserved_before_a_step_is_taken_test_() -> scripted.Eu
   })
 }
 
+pub fn a_resumed_reflection_is_held_to_the_whole_step_test_() -> scripted.EunitTest {
+  scripted.Timeout(300, fn() {
+    // The reservation rig again: a budget of the seed run, one step and the
+    // confirm run at worst-case prices. Cut the log right after step 1's
+    // reflection, as a crash before the child's row would leave it: the
+    // reflection already spent its worst case from the step's hold, so a
+    // second call would leave the confirm run unpayable, and the resumed
+    // search refuses it with a zero-dollar row rather than make it.
+    let base =
+      rig(
+        "rereflect",
+        scripted.baseline(),
+        Shape(..shape(), steps: 5),
+        scripted.scripted_reflector([scripted.sentinel], scripted.counter()),
+        executor(scripted.plant(0.9, 0.1, "rereflect"), scripted.Never),
+      )
+    // Rows are priced at the whole per-cell worst case, so every stage
+    // spends exactly what was held back for it.
+    let cells = fn(tasks: Int, k: Int) { int.to_float(tasks * k) }
+    let seed_run = cell_worst(base) *. cells(12, 3)
+    let step =
+      cell_worst(base)
+      *. { 2.0 *. cells(4, 2) +. cells(12, 3) }
+      +. base.ctx.reflection_worst
+    let config =
+      scripted.Plant(
+        ..scripted.plant(0.9, 0.1, "rereflect"),
+        price: cell_worst(base),
+      )
+    let seams = fn() {
+      optimize.Seams(
+        execute: executor(config, scripted.Never),
+        reflect: scripted.scripted_reflector(
+          [scripted.sentinel],
+          scripted.counter(),
+        ),
+      )
+    }
+    // The margin is a tenth of a cent, under what the scripted reflection
+    // charges, so the first reflection leaves the hold a hair short.
+    let r =
+      Rig(
+        ..with_dollars(base, seed_run +. step +. confirm_hold(base) +. 0.001),
+        ctx: optimize.Context(..base.ctx, seams: seams()),
+      )
+    let assert Ok(outcome) = optimize.search(r.ctx, r.plan, r.out)
+    assert outcome.state.search.step == 1
+
+    // The first four rows: the seed, its run, the parent's minibatch and
+    // the reflection that was charged.
+    let assert Ok(whole) = simplifile.read(outcome.directory <> "/search.jsonl")
+    let prefix =
+      whole
+      |> string.split("\n")
+      |> list.take(4)
+      |> string.join("\n")
+    let assert Ok(Nil) =
+      simplifile.write(outcome.directory <> "/search.jsonl", prefix <> "\n")
+
+    let resumed = optimize.Context(..r.ctx, seams: seams())
+    let assert Ok(again) = optimize.search(resumed, r.plan, r.out)
+    let events = log_of(outcome.directory)
+    let assert [
+      _seed,
+      _seed_run,
+      _parent_run,
+      search.Reflection(..),
+      search.Reflection(dollars: 0.0, ..),
+      search.Refusal(arm: "", reason:, ..),
+      search.Stop(search.Dollars),
+    ] = events
+    assert string.starts_with(reason, "budget:")
+    assert again.state.search.reflections == 2
+    assert search.stopped(again.state) == Some(search.Dollars)
+    assert again.state.search.incumbent == scripted.baseline().id
+    assert ledger_dollars(outcome.directory, events)
+      +. again.state.search.spent_reflecting
+      <=. r.plan.budgets.max_dollars
+    scripted.remove(r.root)
+  })
+}
+
 pub fn an_unaffordable_reflection_stops_cleanly_and_resumes_test_() -> scripted.EunitTest {
   scripted.Timeout(300, fn() {
     // An executor that ignores its cap stands in for a run whose worst case

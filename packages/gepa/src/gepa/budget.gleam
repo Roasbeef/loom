@@ -280,21 +280,30 @@ pub fn covers(remaining remaining: Float, need need: Float) -> Bool {
   remaining +. rounding *. float.max(1.0, need) >=. need
 }
 
-/// Whether a reflection's worst case is still covered. Checked right
-/// before the call, whatever the step's earlier stages cost, because the
-/// reflection is a live call the search cannot truncate once made.
+/// Whether a reflection may be made: what remains must cover it and
+/// every stage after it in the step, the confirm run included, which is
+/// the hold the parent's minibatch was given less that minibatch. Under
+/// the caps the first reflection of a step always passes, since the
+/// parent's minibatch could not spend into this hold; the check bites a
+/// host that overspent its cap, and a resumed step that lost its answer
+/// and reflects again, whose first reflection already spent from the
+/// hold. A reflection is a live call the search cannot truncate once
+/// made, so a second one that would leave the confirm run unpayable is
+/// refused instead.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert budget.reflection_affordable(remaining: 1.0, costs: budget.Costs(0.0, 1, 2.0)) == False
+/// // One reflection at 2.0 and nothing else to run: 1.9 does not cover it.
+/// assert !budget.reflection_affordable(remaining: 1.9, costs: Costs(0.0, 1, 2.0), design:)
 /// ```
 ///
 pub fn reflection_affordable(
   remaining remaining: Float,
   costs costs: Costs,
+  design design: Design,
 ) -> Bool {
-  covers(remaining:, need: costs.reflection)
+  covers(remaining:, need: held_back(costs, design, BeforeParentMinibatch))
 }
 
 /// Whether the confirm run is still covered when the search is ready to

@@ -13,6 +13,7 @@ import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import qcheck
 import support/world
 
@@ -224,21 +225,79 @@ pub fn the_log_replays_to_the_final_state_and_resumes_from_any_prefix_test() {
   |> list.each(fn(length) {
     let prefix = list.take(events, length)
 
-    // A cut right after a reflection is the one place resume is not a
-    // replay: the answer was lost, so the reflection is made again and
-    // charged again, and every later cap is smaller by that charge.
-    // `replay_test` pins that the fold counts it; here it is skipped.
-    case list.last(prefix) {
-      Ok(gepa.Reflected(..)) -> Nil
-      _ -> {
-        let assert Ok(resumed) = gepa.replay(prefix)
-        let #(again, replayed) = world.drive(resumed, prefix, config, scripted)
+    let assert Ok(resumed) = gepa.replay(prefix)
+    let #(again, replayed) = world.drive(resumed, prefix, config, scripted)
 
+    // A cut right after a reflection is the one place resume is not a
+    // replay: the answer was lost, so the reflection is made again (or
+    // refused, when a second one would eat the reservation) and every
+    // later cap is smaller by that charge. The budget still holds there.
+    case list.last(prefix) {
+      Ok(gepa.Reflected(..)) -> {
+        assert again.stopped != None
+        assert gepa.spent(again) <=. config.limits.budget +. 1.0e-6
+        assert gepa.replay(replayed) == Ok(again)
+        case again.incumbent == again.seed, again.confirmation {
+          True, None -> Nil
+          False, Some(gepa.Confirmation(acceptance: Some(_), ..)) -> Nil
+          _, _ -> panic as "a resumed best that is not the seed was confirmed"
+        }
+      }
+      _ -> {
         assert replayed == events
         assert again == state
       }
     }
   })
+}
+
+pub fn a_resumed_reflection_that_would_eat_the_reservation_is_refused_test() {
+  // A budget of exactly one step and the confirm, rows at their worst
+  // case: after the parent's minibatch what remains is exactly the hold,
+  // and the first reflection spends its worst case from it. A crash
+  // before the child is minted would reflect again; a second call would
+  // leave the confirm run unpayable, so the search refuses it instead.
+  let design =
+    budget.Design(
+      validate_tasks: 6,
+      minibatch_tasks: 2,
+      trials: 2,
+      tune_trials: 1,
+    )
+  let costs = Costs(trial: 1.0, attempts: 2, reflection: 5.0)
+  let tight =
+    gepa.Config(
+      ..config(),
+      costs:,
+      limits: Limits(
+        budget: budget.cell_worst_case(costs)
+          *. 12.0
+          +. budget.step_worst_case(costs, design)
+          +. budget.confirm_worst_case(costs, design),
+        max_steps: 1,
+        max_reflections: 5,
+        max_candidates: 5,
+      ),
+    )
+  let #(_, events) = world.search(tight, world.planted())
+  let cut =
+    list.take_while(events, fn(event) {
+      case event {
+        gepa.Reflected(..) -> False
+        _ -> True
+      }
+    })
+  let prefix = list.append(cut, [gepa.Reflected(1, 5.0, "", gepa.Complete)])
+  let assert Ok(resumed) = gepa.replay(prefix)
+
+  let assert Ok(gepa.Record(gepa.Refused(step: 1, candidate: None, reason:))) =
+    gepa.next(resumed, tight)
+  assert string.starts_with(reason, "budget:")
+
+  // The resumed search ends within its budget with the seed still best.
+  let #(again, _) = world.drive(resumed, prefix, tight, world.planted())
+  assert gepa.spent(again) <=. tight.limits.budget
+  assert again.incumbent == again.seed && again.stopped != None
 }
 
 pub fn draws_are_the_same_from_the_same_seed_test() {

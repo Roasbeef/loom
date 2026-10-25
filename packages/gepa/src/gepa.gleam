@@ -1423,9 +1423,14 @@ fn reflect_or_refuse(
   use parent <- result.try(member_of(state, progress.parent))
   let left = remaining(state, config)
 
-  // The call is made only when its worst case is still covered.
+  // The call is made only when it and every stage after it are still
+  // covered; a second reflection of a resumed step is held to the same.
   case
-    budget.reflection_affordable(remaining: left, costs: config.costs),
+    budget.reflection_affordable(
+      remaining: left,
+      costs: config.costs,
+      design: design_of(config),
+    ),
     progress.reached
   {
     True, _ ->

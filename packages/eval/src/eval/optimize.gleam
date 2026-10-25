@@ -1290,15 +1290,24 @@ fn reflect_child(
     )
   let prompt = reflect.render(request)
 
-  // The reflection's worst case is reserved before the call, whatever the
-  // parent's minibatch cost; a step that cannot cover it ends here and the
-  // next stop check sees the same arithmetic.
+  // The reflection is made only when what remains covers it and every
+  // stage after it, the confirm run included: the hold the parent's
+  // minibatch was given. Under the caps a first reflection always passes;
+  // a sub-run that ignored its cap, or a resumed step reflecting again
+  // after its answer was lost, can have spent into that hold, and a live
+  // call cannot be truncated once made. A skipped call is still a
+  // zero-dollar reflection row, so the step's rows keep the order the
+  // fold expects.
   use left <- result.try(remaining(ctx, frozen, directory, state))
+  use costs <- result.try(costs(ctx, parent))
+  let affordable =
+    budget.reflection_affordable(
+      remaining: left,
+      costs:,
+      design: design(frozen, list.length(drawn.tasks)),
+    )
 
-  // The call is made only when its worst case is still covered; a skipped
-  // call is still a zero-dollar reflection row, so the step's rows keep
-  // the order the fold expects.
-  let outcome = case left >=. ctx.reflection_worst {
+  let outcome = case affordable {
     True -> ctx.seams.reflect(prompt)
     False ->
       Error(reflect.Refused(
