@@ -538,8 +538,10 @@ pub fn futile_after(frozen: Plan, rows: List(Row)) -> Option(Int) {
 /// still move. Each sign belongs to a task, so with K trials per cell the
 /// remaining pairs overstate the moves: three tasks of three pairs each can
 /// change at most three signs, however many pairs are left. The bound is the
-/// smaller of the remaining pairs and the tasks that still have an unfinished
-/// pair, which is still an upper bound and so still only under-claims.
+/// smaller of the remaining pairs and twice the tasks that still have an
+/// unfinished pair (`futility_from_signs` counts one move per sign change, and
+/// flipping a task from the other side is a removal plus an addition). That is
+/// still an upper bound, so the check still only under-claims.
 fn hope(
   finished: List(stat.Trial),
   baseline: String,
@@ -555,7 +557,7 @@ fn hope(
       |> set.size
       < frozen.trials_per_cell
     })
-  let remaining = int.min(planned - set.size(done), open_tasks)
+  let remaining = int.min(planned - set.size(done), 2 * open_tasks)
 
   // Hopeless is read first: a plan that could never have decided is not stalled by what it has seen.
   case

@@ -317,7 +317,7 @@ fn warn(warning: Option(String)) -> Nil {
 /// can be compared with others; running it from some other tree would stamp
 /// a reproducibility claim that is false. A `full` plan therefore refuses to
 /// run unless `git rev-parse HEAD` equals the stamped commit and, when the
-/// plan says `Clean`, `git status --porcelain` is empty. A `quick` plan runs
+/// plan says `Clean`, `git status --porcelain --untracked-files=no` is empty (untracked files, such as a local `loom.toml` or an in-checkout `--out`, cannot change the code that runs). A `quick` plan runs
 /// regardless and the mismatch comes back as a warning to print. A tree that
 /// cannot be read at all counts as a mismatch, since nothing was verified.
 ///
@@ -353,7 +353,8 @@ fn harness_problems(
   runner: secrets.Runner,
 ) -> List(String) {
   let head = git_output(runner, ["git", "rev-parse", "HEAD"])
-  let status = git_output(runner, ["git", "status", "--porcelain"])
+  let status =
+    git_output(runner, ["git", "status", "--porcelain", "--untracked-files=no"])
 
   // The commit must be exactly the one the plan stamped.
   let commit = case head {
@@ -370,8 +371,9 @@ fn harness_problems(
   // Only a plan that claims a clean tree is contradicted by uncommitted changes.
   let posture = case claimed.posture, status {
     plan.Clean, Ok("") -> []
-    plan.Clean, Ok(_) -> [
-      "the plan claims a clean tree but the running tree has uncommitted changes",
+    plan.Clean, Ok(changes) -> [
+      "the plan claims a clean tree but the running tree has uncommitted changes: "
+      <> string.join(string.split(changes, "\n"), ", "),
     ]
     plan.Clean, Error(reason) -> [
       "cannot read the running tree's status: " <> reason,

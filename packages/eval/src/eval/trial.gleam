@@ -678,6 +678,8 @@ fn with_session(
   // A run that could not be observed has no figures, so nothing is charged for it.
   let spent = case driven {
     Ok(observed) -> usage_of(observed.metrics, card, seen)
+
+    // The run could not be observed, so there are no figures to charge: this path under-charges by design, since the store that holds the usage is the thing that failed.
     Error(_) -> no_usage()
   }
 

@@ -11,6 +11,7 @@ import eval/trial
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import provider/pricing
 import simplifile
@@ -629,7 +630,8 @@ fn tree_at(commit: String, status: String) -> secrets.Runner {
   fn(argv, _timeout) {
     case argv {
       ["git", "rev-parse", "HEAD"] -> Ok(secrets.Capture(0, commit <> "\n"))
-      ["git", "status", "--porcelain"] -> Ok(secrets.Capture(0, status))
+      ["git", "status", "--porcelain", "--untracked-files=no"] ->
+        Ok(secrets.Capture(0, status))
       _ -> Error("unexpected command")
     }
   }
@@ -656,6 +658,7 @@ pub fn a_full_plan_at_a_different_commit_is_refused_test() {
   let assert Error(dirty) =
     run_cli.check_harness(frozen, tree_at(claimed, " M src/x.gleam\n"))
   assert string.contains(dirty, "uncommitted")
+  assert string.contains(dirty, "M src/x.gleam")
 }
 
 pub fn a_quick_plan_at_a_different_commit_runs_with_a_warning_test() {
@@ -667,12 +670,56 @@ pub fn a_quick_plan_at_a_different_commit_runs_with_a_warning_test() {
   assert string.contains(warning, other)
 }
 
-pub fn unfinished_pairs_of_one_task_move_only_one_sign_test() {
+pub fn a_stall_with_several_trials_per_cell_is_still_recognised_test() {
   let arms = [scripted.baseline(), scripted.suffixed()]
-  let frozen = scripted.plan_of(tied_tasks(), arms, 2, 1, 10.0, 1000)
+  let frozen = scripted.plan_of(tied_tasks(), arms, 3, 1, 10.0, 1000)
 
-  // Seven tasks of two trials: four tasks are done, ties. Six pairs remain
-  // but only three tasks can still sign, and three signs reach at best
-  // p = 0.25, so the run is stalled; counting pairs would have said six.
-  assert run.futile_after(frozen, rows_for_tasks(frozen, 4)) == Some(8)
+  // Seven tasks of three trials: six tasks are done, all ties. One task is
+  // left, so at most two sign moves remain and p stays above the level.
+  assert run.futile_after(frozen, rows_for_tasks(frozen, 6)) == Some(18)
+}
+
+fn judged_row(frozen: Plan, key: plan.RowKey, passing: Bool) -> Row {
+  let #(outcome, reward) = case passing {
+    True -> #(ledger.Passed, 1.0)
+    False -> #(ledger.VerifierFailed, 0.0)
+  }
+
+  Row(
+    ..trial.infra_row(frozen.id, key, 1, ""),
+    state: ledger.Scored,
+    outcome: Some(outcome),
+    reward:,
+  )
+}
+
+pub fn a_flip_costs_two_sign_moves_so_the_run_is_not_stopped_test() {
+  let arms = [scripted.baseline(), scripted.suffixed()]
+  let assert [baseline, _] = arms
+  let tasks = list.take(tied_tasks(), 6)
+  let frozen = scripted.plan_of(tasks, arms, 3, 1, 10.0, 1000)
+
+  // Five tasks favour the candidate in all three pairs. The sixth favours the
+  // baseline in its one finished pair and has two pairs left: Signs(5, 1)
+  // with two pairs to come can still become 6 to 0 (p = 0.03125), which is
+  // one flip, two moves. A bound of one move per open task would stop here.
+  let rows =
+    plan.rows(frozen)
+    |> list.filter_map(fn(key) {
+      let favouring_candidate =
+        key.task != { list.last(frozen.task_ids) |> result.unwrap("") }
+      let finished = favouring_candidate || key.index == 0
+
+      case finished {
+        True ->
+          Ok(judged_row(
+            frozen,
+            key,
+            favouring_candidate != { key.arm == baseline.id },
+          ))
+        False -> Error(Nil)
+      }
+    })
+
+  assert run.futile_after(frozen, rows) == None
 }
