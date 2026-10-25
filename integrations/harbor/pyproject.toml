@@ -1,0 +1,27 @@
+[project]
+name = "loom-harbor"
+version = "0.1.0"
+description = "A Harbor installed-agent adapter that runs Loom on Terminal-Bench tasks."
+requires-python = ">=3.12"
+# The adapter subclasses `harbor.agents.installed.base.BaseInstalledAgent`, an
+# interface Harbor changes between releases: the 0.24.0 wheel on PyPI predates
+# the options and capabilities this adapter uses. It is verified against
+# Harbor's main at the commit in `harbor_ref` (see README.md), so install
+# Harbor from there; `make harbor-test` does.
+dependencies = ["harbor"]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["loom_harbor"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# Keep pytest scratch beside the project: the repository forbids scratch under /tmp.
+addopts = "--basetemp=.pytest-tmp"
