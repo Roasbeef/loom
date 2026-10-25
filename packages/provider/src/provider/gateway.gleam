@@ -257,7 +257,52 @@ pub opaque type Gateway {
       fn(ResolvedModel, String, ProviderRequest) ->
         Result(ProviderRequest, String),
     ),
+    /// Told once, after the terminal, how each attempt the request guard
+    /// admitted ended; see `AttemptSettled`.
+    attempt_settled: Option(fn(AttemptSettled) -> Nil),
   )
+}
+
+/// How one admitted attempt ended, reported to the settlement observer
+/// exactly once per attempt the request guard admitted, after the
+/// attempt's terminal is priced and before that terminal reaches the
+/// consumer.
+///
+/// The observer exists for a guard that debits a worst case before every
+/// attempt and wants to credit the difference back once the attempt's real
+/// usage is known. Two orderings carry that design. The report is sent
+/// only for an attempt that passed `request_guard`, so a refused attempt,
+/// which reserved nothing, is never settled; and it is sent from the same
+/// process that asked the guard, ahead of the terminal, so a guard keyed by
+/// the asking process sees the settlement before any request that follows
+/// the answer can ask for admission.
+pub type AttemptSettled {
+  AttemptSettled(
+    /// The exact identity the attempt was dispatched to.
+    target: ResolvedModel,
+    /// The adapter API dialect the attempt spoke.
+    api: String,
+    /// Position in the request's fallback walk, from one.
+    ordinal: Int,
+    /// The usage the adapter reported for this attempt, priced by the
+    /// gateway's card for the target, or the zero record when nothing was
+    /// reported. This is the figure the request's ledger row will carry.
+    usage: Usage,
+    /// Whether the adapter settled a response.
+    ending: AttemptEnding,
+  )
+}
+
+/// Whether an admitted attempt settled a response at all.
+pub type AttemptEnding {
+  /// The adapter settled a response with this stop reason. An `Errored`
+  /// stop is still a response, so a reader deciding completeness checks
+  /// the reason rather than the variant.
+  Responded(stop_reason: message.StopReason)
+
+  /// No response settled: a failure before or during the stream, a
+  /// cancellation, a lost drain proof or a consumer that went away.
+  Unanswered
 }
 
 /// Nonsecret provenance emitted before each resolved attempt begins.
@@ -528,6 +573,7 @@ pub fn new(
     attempt_timeout_ms: 300_000,
     profiles: None,
     request_guard: None,
+    attempt_settled: None,
   )
 }
 
@@ -585,6 +631,26 @@ pub fn with_request_guard(
     Result(ProviderRequest, String),
 ) -> Gateway {
   Gateway(..gateway, request_guard: Some(guard))
+}
+
+/// Installs the observer told how every attempt the request guard admitted
+/// ended. It is called once per admitted attempt, in the pump's process,
+/// after the attempt's terminal is priced and before the terminal is
+/// delivered; an attempt the guard refused is never reported. Its one
+/// production caller is the governed rollout's reservation guard, which
+/// credits back the difference between its worst-case reservation and the
+/// attempt's measured charge.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_attempt_settled(guarded, fn(settled) { process.send(guard, Settled(settled)) })
+/// ```
+pub fn with_attempt_settled(
+  gateway: Gateway,
+  observe: fn(AttemptSettled) -> Nil,
+) -> Gateway {
+  Gateway(..gateway, attempt_settled: Some(observe))
 }
 
 /// Registers a provider endpoint.
@@ -2027,7 +2093,6 @@ fn attempt_one(
   target: ResolvedModel,
 ) -> AttemptOutcome {
   let gateway = walk.gateway
-  let now = walk.now
   use config <- or_failure(find_provider(gateway, target.provider), fn() {
     AttemptTerminal(Failed(
       UnknownProvider(provider: target.provider),
@@ -2050,6 +2115,34 @@ fn attempt_one(
     Some(guard) -> guard(target, adapter_api(config), request)
   })
 
+  // Every admitted attempt leaves through one exit: the image budget, a
+  // missing secret and the transport all end inside `dispatch_admitted`,
+  // and the priced result passes the settlement observer exactly once
+  // before the walk can deliver or retry it. The observer runs ahead of the
+  // terminal so a guard that credits a reservation back sees the credit
+  // before the consumer can send the request that would spend it.
+  let api = adapter_api(config)
+  let outcome =
+    dispatch_admitted(walk, target, config, request)
+    |> priced(gateway, _, target)
+    |> annotate_attempt(ordinal, gateway.attempt_timeout_ms)
+  observe_settlement(gateway, target, api, ordinal, outcome)
+  outcome
+}
+
+// The image budget, the secret lookup and the transport all sit behind
+// admission, so each of their early returns is an admitted attempt that
+// reserved and must settle; `attempt_one` reports them all from one place.
+/// Runs one admitted attempt from the image budget through the transport.
+fn dispatch_admitted(
+  walk: Walk,
+  target: ResolvedModel,
+  config: ProviderConfig,
+  request: ProviderRequest,
+) -> AttemptOutcome {
+  let gateway = walk.gateway
+  let now = walk.now
+
   // Enforce image budget limits across request messages.
   let limit =
     list.key_find(gateway.image_limits, #(target.provider, target.model_id))
@@ -2071,7 +2164,7 @@ fn attempt_one(
     option.from_result(list.key_find(gateway.cyber_access, target.provider))
 
   // Dispatch to provider-specific attempt execution based on config.
-  let outcome = case config {
+  case config {
     AnthropicProvider(name:, base_url:, api_key_secret:) ->
       keyed_attempt(
         walk,
@@ -2131,15 +2224,59 @@ fn attempt_one(
     CodexSubscriptionProvider(name: _, profile:) ->
       subscription_attempt(walk, profile, target, request)
   }
+}
 
-  // Costing sits between the adapter and the walk's terminal, which is the
-  // one place every settlement passes through exactly once and the last
-  // place the target that produced it is still known. Doing it here rather
-  // than in the adapters keeps them ignorant of commercial arrangements,
-  // and doing it before `continue_or_deliver` means the ledger writes a
-  // priced record without a second costing pass anywhere above the seam.
-  priced(gateway, outcome, target)
-  |> annotate_attempt(ordinal, gateway.attempt_timeout_ms)
+// The settlement is the attempt's own report: the usage the ledger row
+// will carry, and whether a response settled. A terminal that is not a
+// settled response is `Unanswered` whatever usage it retained, because the
+// fold that reads the ledger treats such an attempt as incomplete and
+// charges its worst case beside that usage.
+/// Tells the settlement observer, when one is installed, how an admitted attempt ended.
+fn observe_settlement(
+  gateway: Gateway,
+  target: ResolvedModel,
+  api: String,
+  ordinal: Int,
+  outcome: AttemptOutcome,
+) -> Nil {
+  // Only a gateway with an observer installed pays for the report. The
+  // attempt's report holds one record today and its total is that record;
+  // the total is read rather than the last so a report that one day holds
+  // several still charges everything the attempt consumed, and an attempt
+  // that reported nothing settles at the zero record rather than an
+  // invented one.
+  case gateway.attempt_settled {
+    None -> Nil
+    Some(observe) -> {
+      let usage = accounting.total(outcome_accounting(outcome))
+      observe(AttemptSettled(
+        target:,
+        api:,
+        ordinal:,
+        usage:,
+        ending: attempt_ending(outcome),
+      ))
+    }
+  }
+}
+
+/// Reads whether an attempt outcome settled a response, and with what stop reason.
+fn attempt_ending(outcome: AttemptOutcome) -> AttemptEnding {
+  case outcome {
+    AttemptTerminal(Settled(message: settled, ..)) ->
+      case stream.message(settled) {
+        AssistantMessage(stop_reason:, ..) -> Responded(stop_reason:)
+        message.UserMessage(..)
+        | message.ToolResultMessage(..)
+        | message.CustomMessage(..) -> Unanswered
+      }
+    AttemptTerminal(Failed(..))
+    | AttemptTerminal(Delta(..))
+    | AttemptCancelled(..)
+    | AttemptCancellationUnconfirmed(..)
+    | AttemptDrainProofLost(..)
+    | ConsumerGone(..) -> Unanswered
+  }
 }
 
 // API-key dispatch remains the only branch that reads a secret. Scrubbing
