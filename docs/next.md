@@ -2,7 +2,9 @@
 
 This is the post-merge CI repair, based on main
 `d70c7d073c96a0afb8d28e676003e6bace147099` on
-`codex/postmerge-fixture-repairs`. The [previous handoff](next-2026-10-24-before-postmerge-repair.md)
+`codex/postmerge-fixture-repairs`. The published diagnostic head was
+`318bfbc816db7fe816a546e6c3160f75ef7ba8de`; the next change orders the
+shipped fixture's sibling completion before its deliberate daemon crash. The [previous handoff](next-2026-10-24-before-postmerge-repair.md)
 is preserved exactly; its local gates and performance measurements retain their
 original observation cuts. The [repair report](review/postmerge-ci-repair-2026-10-24.md)
 records reproduction, causal evidence and validation.
@@ -80,19 +82,45 @@ retention fixture failure, its second shard truly completed the whole check,
 and its macOS strict census was skipped. Neither original merge is a passing
 hosted-CI verdict.
 
+## Shipped fixture ordering repair
+
+Run 40153045412 attempt 1 at `318bfbc816` completed both macOS whole checks,
+including all 5,328 client tests and both earlier repaired assertions. Shard 2
+then failed artifact upload with `ENOTFOUND`; the strict macOS census did not
+execute. The publisher retried only failed infrastructure jobs on the same
+head. That attempt 2 failed a different test, despite normalized green badges:
+`daemon_shipped_remote_subagents_test` expired waiting for `beat4` to reach two
+lines after the box restart. Its callback-wrapper assertions hid that cause,
+but the crash report retained the underlying `await_lines_within` assertion.
+The macOS strict census was again skipped. PR #1112 remains unmerged.
+
+Five real shipped local runs passed without skips after building a test-only
+shipment. A controlled disposable BEAM variant then delayed the sibling shell
+three seconds after its marker write. The fixture crashed the box while that
+shell was still running; recovery correctly returned an interrupted tool result,
+which the success-only ordered model fixture refused permanently. The fourth
+child's request was refused too, reproducing the exact heartbeat timeout.
+
+The same delayed variant passes every original assertion when the test waits
+for the sibling's `operation.settled` event before crashing the box. The tracked
+fix uses the existing `await_log` helper with `third-directory-child`; there is
+no committed delay, deadline increase, assertion relaxation or production change.
+The event is emitted after the terminal operation transition is committed, unlike
+the marker, which proves only shell progress. This makes the fixture's existing
+claim that no child is running at restart true. The earlier remote-worktree
+failure remains unexplained; do not attribute it to this distinct ordering race.
+
 ## What remains
 
-1. Update draft repair PR #1112, inspect its exact-head checks and raw
-   macOS advisory artifacts, and merge only after actual validation is green.
-   Preserve assertions, deadlines and strict skip accounting. No direct main
-   push, silent retry, skipped test or speculative revert is authorized.
-2. Validate the added failure diagnostic and run one bounded fresh hosted
-   attempt after the positive local reproduction checks. If the remote worktree
-   scenario fails again, diagnose its full child error before further retries.
-   A completed success badge alone is insufficient.
-3. Record the completed full client gate and hosted verdict separately from
-   the reproduction and review evidence above. The quiet CI heartbeat remains
-   active until there are no unresolved failures.
+1. Complete the five real shipped repetitions and independent review of this
+   ordering fix, then publish the exact new head to draft repair PR #1112.
+2. Inspect all exact-head hosted checks, raw macOS whole-check artifacts and
+   executed strict skip censuses. Merge only after actual validation is green;
+   success badges and a skipped census do not satisfy the requirement.
+3. Preserve the failed-run evidence separately from later passes. Do not retry
+   a new failure without diagnosis or loosen an assertion or deadline.
 
-No installation, daemon restart, hotpatch, live state inspection or credential
-search was performed. The enrolled inspector/viewer is unchanged.
+No production installation, daemon restart, hotpatch, live state inspection or
+credential search was performed. Local test shipments and their disposable
+provisioned daemons were built and run for reproduction. The enrolled
+inspector/viewer is unchanged.

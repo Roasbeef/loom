@@ -113,3 +113,59 @@ No assertion, timeout or skip changes. One bounded fresh hosted attempt is
 warranted after diagnostic validation; another failure requires diagnosis of
 its complete child error before further retries. Original #1110/#1111 raw
 failures and skipped censuses remain part of the record.
+
+
+## Shipped subagent completion before restart
+
+At diagnostic head `318bfbc816`, run 40153045412 attempt 1 completed both full
+macOS checks: 2,432 and 2,896 client tests, both earlier repairs and all 194 LSP
+tests passed. Shard 2 then failed artifact upload with
+`Failed to CreateArtifact: Unable to make request: ENOTFOUND`. The macOS gate
+failed its upstream-success requirement, leaving downloads and strict census
+unexecuted. This was a distinct infrastructure failure after passing tests.
+
+The publisher retried only failed jobs on the same head. Attempt 2's raw shard 2,
+artifact 12585333107, had 2,895 client tests passed and one failed, command exit
+one. Its untruncated crash report identifies
+`daemon_shipped_remote_subagents_test.await_lines_within/3:894`, called from
+`session/5:737`: the fourth child's `beat4` file did not reach two lines within
+the existing 120,000 ms bound after the box restart. The nested HTTP fixture
+and remote-duo assertions propagated this failure rather than identifying an
+HTTP script mismatch. Both artifact downloads and strict macOS census were
+skipped despite the gate's success badge.
+
+A checkout-local test shipment was built successfully. Five real shipped
+subagent runs passed with enforcement and no skips, taking 92–93 seconds each.
+The fixture and its provider/remote-duo support are unchanged since pre-#1110
+base `3e258a2f3`. This local evidence did not identify the cause by itself.
+
+A controlled disposable compiled variant added a three-second sleep only after
+the sibling shell wrote the third marker. The unchanged fixture then crashed
+the box before that sibling operation settled. Recovery correctly delivered a
+failed `grant-sibling` tool result with an unknown external outcome, which the
+success-only ordered provider script permanently refused. Its refusal also
+blocked the fourth child's later request. This reproduced the exact `beat4`
+readiness assertion and command exit one in 174.65 seconds. A first probe had
+omitted the runner's existing EUnit timeout scale and was invalid; it supplied
+no failure evidence. The valid probe retained the original scale and deadlines.
+
+With the same three-second delay, inserting the existing settlement-log barrier
+before the deliberate crash passed every original heartbeat, transcript and
+release assertion, command exit zero in 96.51 seconds. The captured daemon
+log shows `operation.settled` for `third-directory-child` before restart. The
+runtime emits that event after the terminal operation transition is committed.
+
+The tracked fix adds that existing `await_log` call and its rationale after the
+sibling marker/no-question checks. The marker proves shell progress, not terminal
+completion; the barrier enforces the fixture's existing premise that no child is
+running when the box is killed. No delay is committed, and no production API,
+assertion, deadline or skip declaration changes. This reproduces and removes a
+reachable cause of the hosted heartbeat failure; it does not explain the earlier
+remote-worktree child-exit failure. Real shipped repeats, fresh independent
+review and new exact-head hosted validation remain separate gates.
+
+Evidence: /private/tmp/followup-shipped-subagents-{1..5}.log,
+/private/tmp/followup-shipped-delay-probe2.log,
+/private/tmp/followup-shipped-barrier-probe1.log and their `*-evidence/` directories.
+Full hosted attempt logs and manifests remain under
+/private/tmp/loom-pr1112-318bfbc81-ci40153045412-attempt{1,2}-*.
