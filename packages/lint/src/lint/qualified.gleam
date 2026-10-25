@@ -53,6 +53,7 @@ pub fn loom_roots() -> List(String) {
     "events",
     "executor",
     "ext",
+    "gepa",
     "harness",
     "host",
     "lint",

@@ -2266,8 +2266,8 @@ pub fn undocumented(x) { x }
 
   should.equal(policy.literate_packages(), [
     "broker", "cap", "client", "codemode", "conformance", "core", "events",
-    "executor", "ext", "harness", "host", "lint", "lsp", "machine", "mcp",
-    "prompt", "provider", "runtime", "session", "session_view", "statem",
+    "executor", "ext", "gepa", "harness", "host", "lint", "lsp", "machine",
+    "mcp", "prompt", "provider", "runtime", "session", "session_view", "statem",
     "statem_parallel", "storage", "telemetry", "tools", "tui", "web_client",
     "web_mermaid", "web_view",
   ])
@@ -2497,9 +2497,9 @@ fn wide(a, b, c, d, e, f, g, h) { #(a, b, c, d, e, f, g, h) }",
 
 /// The table is what the rule claims to cover; a test that did not enumerate
 /// it would pass just as well against an empty one.
-pub fn the_portable_table_names_the_six_test() {
+pub fn the_portable_table_names_the_seven_test() {
   should.equal(policy.portable_packages(), [
-    "core", "evalstat", "machine", "prompt", "session_view", "statem",
+    "core", "evalstat", "gepa", "machine", "prompt", "session_view", "statem",
   ])
 }
 
