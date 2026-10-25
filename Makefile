@@ -3,7 +3,7 @@
 # Every target is a thin wrapper over the scripts and package tooling, so
 # what CI runs and what you run locally are the same commands.
 
-PACKAGES := host core storage session machine prompt statem statem_parallel evalstat session_view web_view telemetry runtime provider \
+PACKAGES := host core storage session machine prompt statem statem_parallel evalstat gepa session_view web_view telemetry runtime provider \
 	broker executor mcp lsp tools cap ext codemode events harness client conformance eval tui lint
 # Packages that target JavaScript. They are formatted, built and documented
 # with the rest; their pure tests run on a JavaScript runtime.
