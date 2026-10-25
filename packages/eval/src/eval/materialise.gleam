@@ -190,7 +190,7 @@ fn build(
 
       // Steps run where the verifier's package lives, since a mined Loom
       // tree has no project at its root; the build is then warmed there too.
-      let cwd = prepare_directory(workspace, task)
+      let cwd = prove.prepare_directory(workspace, task, verifier_argv(task))
 
       use Nil <- result.try(
         list.try_each(prepare, fn(argv) { prepare_step(runner, cwd, argv) }),
@@ -252,34 +252,11 @@ fn archive(
   }
 }
 
-/// Where the warm-up steps run: the workspace itself when it is a Gleam
-/// project, else `packages/<pkg>` for the package a `scripts/test.sh`
-/// verifier names, when the tree has it, else the workspace. A mined Loom
-/// task records `gleam deps download` against a tree whose root has no
-/// `gleam.toml`, and running it there would fail every such task.
-fn prepare_directory(workspace: String, task: Task) -> String {
-  // Only a program verifier names a package; an exact-file task has none.
-  let argv = case task.verifier {
+/// The verifier's argv, when it has one; an exact-file task names no package.
+fn verifier_argv(task: Task) -> List(String) {
+  case task.verifier {
     Program(argv:, ..) -> argv
     task.ExpectedFiles(..) -> []
-  }
-
-  let at_root = simplifile.is_file(workspace <> "/gleam.toml") == Ok(True)
-  let package_dir =
-    prove.package_for(task, argv)
-    |> result.map(fn(package) { workspace <> "/packages/" <> package })
-    |> result.try(fn(dir) {
-      case simplifile.is_directory(dir) {
-        Ok(True) -> Ok(dir)
-        Ok(False) | Error(_) -> Error(Nil)
-      }
-    })
-
-  // The root wins when it is a project; otherwise the named package.
-  case at_root, package_dir {
-    True, _ -> workspace
-    False, Ok(dir) -> dir
-    False, Error(Nil) -> workspace
   }
 }
 

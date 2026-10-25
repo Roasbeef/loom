@@ -573,19 +573,20 @@ fn state_matches_outcome(
 
 /// A row's reward and its outcome must not contradict each other, because one
 /// consumer reads the outcome and another the reward. The reward lies in zero
-/// to one; the grader decides the outcome, so a `Passed` row needs some
-/// credit (above zero) and every other row, including one still running,
-/// must fall short of full credit (below one).
+/// to one, and the pass threshold is full credit (`rollout.pass_threshold`),
+/// so a `Passed` row needs a reward of one and every other row, including one
+/// still running, must fall short of it. Partial credit can never read as a
+/// pass, whatever wrote the row.
 fn reward_matches_outcome(
   reward: Float,
   outcome: Option(Outcome),
 ) -> Result(Nil, String) {
-  case outcome, reward >. 0.0, reward <. 1.0 {
-    _, _, _ if reward >. 1.0 -> Error("reward must be at most 1")
-    Some(Passed), False, _ -> Error("a passed row needs a reward above 0")
-    Some(Passed), True, _ -> Ok(Nil)
-    _, _, False -> Error("a row that did not pass needs a reward below 1")
-    _, _, True -> Ok(Nil)
+  case outcome, reward >=. 1.0 {
+    _, _ if reward >. 1.0 -> Error("reward must be at most 1")
+    Some(Passed), False -> Error("a passed row needs a reward of 1")
+    Some(Passed), True -> Ok(Nil)
+    _, True -> Error("a row that did not pass needs a reward below 1")
+    _, False -> Ok(Nil)
   }
 }
 

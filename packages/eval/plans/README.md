@@ -162,7 +162,13 @@ Two edits are expected before a real run:
 
 - **The commit.** `harness.git_commit` is the harness the plan claims, stamped
   when the plan was written. A `full` plan refuses a dirty tree. Set it to
-  `git rev-parse HEAD` of the tree you run from, after committing.
+  `git rev-parse HEAD` of the tree you run from, after committing. The runner
+  checks this before any trial: a `full` plan is refused unless `HEAD` equals
+  the stamped commit and, for `"posture": "clean"`, `git status --porcelain`
+  is empty (a `quick` plan prints the mismatch on standard error and runs).
+  So re-minting means commit, stamp that commit in a copy of the plan kept
+  outside the checkout (committing the stamp would move `HEAD` past it), and
+  run from that tree.
 - **The target of `no-tests`.** Its `TaskPrefix` is aimed at the catalogue
   entry `main` with `model_id` `main-model` on `anthropic-messages`. A profile
   matches only an exact model, so change `provider` to your entry's `name`,

@@ -55,6 +55,7 @@ import core/message.{
   AssistantToolCall, ToolResultImage, ToolResultMessage, ToolResultText,
   UserImage, UserMessage, UserText,
 }
+import eval/cassette
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
@@ -326,12 +327,7 @@ pub fn write(trajectory: Trajectory, path: String) -> Result(Nil, String) {
 /// ```
 ///
 pub fn scrub(text: String) -> String {
-  let keyed =
-    list.fold(key_prefixes, text, fn(so_far, prefix) {
-      redact_after(so_far, prefix, "")
-    })
-
-  redact_after(keyed, "Bearer ", "Bearer ")
+  cassette.redact_text(text, [])
 }
 
 // What the walk has gathered so far.
@@ -687,49 +683,4 @@ fn remove_copy(copy: String) -> Nil {
     let _ = simplifile.delete(path)
     Nil
   })
-}
-
-const redacted_marker = "<redacted>"
-
-const key_prefixes = [
-  "sk-", "xai-", "ghp_", "gho_", "ghs_", "ghu_", "github_pat_",
-]
-
-/// Redacts the token that begins at each standalone occurrence of `prefix`, writing `keep` before the marker. An occurrence inside a longer word, or followed by nothing, is prose and stays.
-fn redact_after(text: String, prefix: String, keep: String) -> String {
-  case string.split(text, prefix) {
-    [] -> text
-    [first, ..rest] ->
-      list.fold(rest, first, fn(kept, part) {
-        let #(token, remainder) = split_token(part, "")
-
-        // A prefix glued to the end of a longer word, or with no token after it, is prose and stays as written.
-        case token_character(string.slice(kept, -1, 1)) || token == "" {
-          True -> kept <> prefix <> part
-          False -> kept <> keep <> redacted_marker <> remainder
-        }
-      })
-  }
-}
-
-/// Splits the longest run of credential characters off the front of `text`.
-fn split_token(text: String, token: String) -> #(String, String) {
-  case string.pop_grapheme(text) {
-    Ok(#(char, rest)) ->
-      case token_character(char) {
-        True -> split_token(rest, token <> char)
-        False -> #(token, text)
-      }
-
-    Error(Nil) -> #(token, "")
-  }
-}
-
-/// Whether a grapheme can be part of a credential token: a letter, a digit, `-`, `_` or `.`.
-fn token_character(char: String) -> Bool {
-  char != ""
-  && {
-    string.lowercase(char) != string.uppercase(char)
-    || string.contains("0123456789-_.", char)
-  }
 }

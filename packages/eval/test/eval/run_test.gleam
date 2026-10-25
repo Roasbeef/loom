@@ -1,3 +1,4 @@
+import client/secrets
 import eval/arm.{type Arm, Arm, Knobs, PromptPack}
 import eval/budget
 import eval/ledger.{type Row, Row}
@@ -531,4 +532,147 @@ pub fn a_single_arm_plan_has_nothing_to_stop_test() {
     scripted.plan_of(tied_tasks(), [scripted.baseline()], 1, 1, 10.0, 1000)
 
   assert run.futile_after(frozen, rows_for_tasks(frozen, 5)) == None
+}
+
+// --- faults that are the instrument's, not the arm's ----------------------------
+
+pub fn an_unwritable_tape_directory_is_infrastructure_not_a_failure_test_() -> scripted.EunitTest {
+  scripted.Timeout(300, fn() {
+    scripted.when_available("an_unwritable_tape_directory", fn() {
+      let tasks = [scripted.task_named("only", "hello", "hello")]
+      let r =
+        rig("unwritable", tasks, [scripted.baseline()], 1, 1, 100.0, 60_000, 1)
+
+      // A regular file where the tape folder must go: creating it fails.
+      let blocker = r.out <> "-blocker"
+      let assert Ok(Nil) = simplifile.write(blocker, "not a directory")
+      let recording =
+        trial.Context(
+          ..r.ctx,
+          lane: trial.Recording(run_cli.record_open(
+            scripted.transport(1),
+            blocker <> "/tapes",
+          )),
+        )
+
+      let assert Ok(summary) = run.execute(recording, r.loaded, r.out)
+      let rows = finished(rows_of(summary.directory))
+
+      // The arm did nothing wrong: every attempt is an instrument fault.
+      assert list.length(rows) == 3
+      assert list.all(rows, fn(row) {
+        row.state == ledger.Infra
+        && row.outcome == Some(ledger.Infrastructure)
+        && string.contains(row.side_info, "the tape was not written")
+      })
+    })
+  })
+}
+
+pub fn a_fault_after_the_run_still_charges_what_it_spent_test_() -> scripted.EunitTest {
+  scripted.Timeout(300, fn() {
+    scripted.when_available("a_fault_after_the_run_still_charges", fn() {
+      let tasks = [scripted.task_named("only", "hello", "hello")]
+      let worst =
+        budget.worst_case_dollars(
+          4,
+          pricing.Pricing(1.0, 1.0, 1.0, 1.0),
+          context: 100_000,
+          output: 4096,
+        )
+      let r =
+        rig(
+          "late",
+          tasks,
+          [scripted.baseline()],
+          1,
+          1,
+          worst *. 1.05,
+          60_000,
+          40_000,
+        )
+      let normal = trial.default_seams(trial.refuse_program)
+      let stubborn =
+        trial.Seams(..normal, retire: fn(instance) {
+          let _ = normal.retire(instance)
+          Error("a helper outlived its session")
+        })
+
+      let assert Ok(summary) =
+        run.execute(with_seams(r, stubborn).ctx, r.loaded, r.out)
+      let rows = finished(rows_of(summary.directory))
+
+      // The first attempt spent real money before retirement failed; the cap
+      // sees it, so the retries are not admitted on a false zero balance.
+      assert summary.budget_note == Some("budget exhausted after 1 trials")
+      let assert [only] = rows
+      assert only.state == ledger.Infra
+      assert only.usage.dollars >. 0.0
+    })
+  })
+}
+
+pub fn three_tasks_of_three_trials_are_recognised_hopeless_test() {
+  let tasks = list.take(tied_tasks(), 3)
+  let arms = [scripted.baseline(), scripted.suffixed()]
+  let frozen = scripted.plan_of(tasks, arms, 3, 1, 10.0, 1000)
+
+  // Nine pairs, but only three tasks, so only three signs can ever move:
+  // p >= 0.25 whatever happens, and a plan that could never decide is not
+  // stopped for futility by what it has seen.
+  assert run.futile_after(frozen, rows_for_tasks(frozen, 2)) == None
+}
+
+// --- the tree a plan claims ------------------------------------------------------
+
+fn tree_at(commit: String, status: String) -> secrets.Runner {
+  fn(argv, _timeout) {
+    case argv {
+      ["git", "rev-parse", "HEAD"] -> Ok(secrets.Capture(0, commit <> "\n"))
+      ["git", "status", "--porcelain"] -> Ok(secrets.Capture(0, status))
+      _ -> Error("unexpected command")
+    }
+  }
+}
+
+fn claiming(profile: plan.Profile) -> Plan {
+  let base =
+    scripted.plan_of(tied_tasks(), [scripted.baseline()], 1, 1, 1.0, 1000)
+
+  plan.mint(plan.Plan(..base, profile:))
+}
+
+pub fn a_full_plan_at_a_different_commit_is_refused_test() {
+  let frozen = claiming(plan.Full)
+  let claimed = frozen.harness.git_commit
+  let other = "fedcba9876543210fedcba9876543210fedcba98"
+
+  assert run_cli.check_harness(frozen, tree_at(claimed, "")) == Ok(None)
+
+  let assert Error(reason) = run_cli.check_harness(frozen, tree_at(other, ""))
+  assert string.contains(reason, claimed)
+  assert string.contains(reason, other)
+
+  let assert Error(dirty) =
+    run_cli.check_harness(frozen, tree_at(claimed, " M src/x.gleam\n"))
+  assert string.contains(dirty, "uncommitted")
+}
+
+pub fn a_quick_plan_at_a_different_commit_runs_with_a_warning_test() {
+  let frozen = claiming(plan.Quick)
+  let other = "fedcba9876543210fedcba9876543210fedcba98"
+
+  let assert Ok(Some(warning)) =
+    run_cli.check_harness(frozen, tree_at(other, ""))
+  assert string.contains(warning, other)
+}
+
+pub fn unfinished_pairs_of_one_task_move_only_one_sign_test() {
+  let arms = [scripted.baseline(), scripted.suffixed()]
+  let frozen = scripted.plan_of(tied_tasks(), arms, 2, 1, 10.0, 1000)
+
+  // Seven tasks of two trials: four tasks are done, ties. Six pairs remain
+  // but only three tasks can still sign, and three signs reach at best
+  // p = 0.25, so the run is stalled; counting pairs would have said six.
+  assert run.futile_after(frozen, rows_for_tasks(frozen, 4)) == Some(8)
 }

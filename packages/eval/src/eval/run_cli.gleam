@@ -240,6 +240,9 @@ fn command_run(
     option(options, "tasks", "tasks"),
     option(options, "arms", "arms"),
   ))
+  use warning <- result.try(check_harness(loaded.plan, secrets.host_runner()))
+  warn(warning)
+
   use text <- result.try(
     simplifile.read(option(options, "config", "loom.toml"))
     |> result.map_error(fn(error) {
@@ -297,6 +300,107 @@ fn command_run(
   <> " trials; report at "
   <> summary.directory
   <> "/report.md"
+}
+
+/// Prints a harness warning on standard error, when there is one.
+fn warn(warning: Option(String)) -> Nil {
+  case warning {
+    Some(text) -> io.println_error("eval: warning: " <> text)
+    None -> Nil
+  }
+}
+
+/// Checks the tree this process runs from against the harness the plan
+/// claims, before any trial is paid for.
+///
+/// A plan stamps `harness.git_commit` and a `Clean` posture so that a result
+/// can be compared with others; running it from some other tree would stamp
+/// a reproducibility claim that is false. A `full` plan therefore refuses to
+/// run unless `git rev-parse HEAD` equals the stamped commit and, when the
+/// plan says `Clean`, `git status --porcelain` is empty. A `quick` plan runs
+/// regardless and the mismatch comes back as a warning to print. A tree that
+/// cannot be read at all counts as a mismatch, since nothing was verified.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // run_cli.check_harness(quick_plan, secrets.host_runner()) == Ok(None)
+/// // run_cli.check_harness(full_plan_at_other_commit, runner) == Error("...")
+/// ```
+///
+pub fn check_harness(
+  frozen: plan.Plan,
+  runner: secrets.Runner,
+) -> Result(Option(String), String) {
+  let problems = harness_problems(frozen.harness, runner)
+
+  // Only a profile that claims comparability turns a mismatch into a refusal.
+  case problems, frozen.profile {
+    [], _ -> Ok(None)
+    [_, ..], plan.Quick -> Ok(Some(string.join(problems, "; ")))
+    [_, ..], plan.Full ->
+      Error(
+        "a full plan refuses to run from a different harness: "
+        <> string.join(problems, "; ")
+        <> " (re-mint the plan at this commit, or use the quick profile)",
+      )
+  }
+}
+
+/// How the running tree differs from the harness a plan claims.
+fn harness_problems(
+  claimed: plan.Harness,
+  runner: secrets.Runner,
+) -> List(String) {
+  let head = git_output(runner, ["git", "rev-parse", "HEAD"])
+  let status = git_output(runner, ["git", "status", "--porcelain"])
+
+  // The commit must be exactly the one the plan stamped.
+  let commit = case head {
+    Ok(found) if found == claimed.git_commit -> []
+    Ok(found) -> [
+      "the plan claims commit "
+      <> claimed.git_commit
+      <> " but the running tree is at "
+      <> found,
+    ]
+    Error(reason) -> ["cannot read the running tree's commit: " <> reason]
+  }
+
+  // Only a plan that claims a clean tree is contradicted by uncommitted changes.
+  let posture = case claimed.posture, status {
+    plan.Clean, Ok("") -> []
+    plan.Clean, Ok(_) -> [
+      "the plan claims a clean tree but the running tree has uncommitted changes",
+    ]
+    plan.Clean, Error(reason) -> [
+      "cannot read the running tree's status: " <> reason,
+    ]
+    plan.Dirty, _ -> []
+  }
+
+  list.append(commit, posture)
+}
+
+/// One git command's trimmed standard output, or why it did not answer.
+fn git_output(
+  runner: secrets.Runner,
+  argv: List(String),
+) -> Result(String, String) {
+  use capture <- result.try(runner(argv, 30_000))
+
+  // Only a zero status leaves output worth trusting.
+  case capture.status {
+    0 -> Ok(string.trim(capture.output))
+    status ->
+      Error(
+        string.join(argv, " ")
+        <> " exited "
+        <> int.to_string(status)
+        <> ": "
+        <> string.trim(capture.output),
+      )
+  }
 }
 
 /// Opens the verifier's jail when some task needs one.
@@ -417,11 +521,12 @@ fn write_tape(
   key: plan.RowKey,
   sink: cassette.Sink,
 ) -> List(String) {
-  let tape = cassette.finish(sink)
+  let collected = cassette.finish(sink)
   cassette.close_sink(sink)
   let folder = directory <> "/" <> key.task
 
   let written = {
+    use tape <- result.try(collected)
     use Nil <- result.try(
       simplifile.create_directory_all(folder)
       |> result.map_error(simplifile.describe_error),

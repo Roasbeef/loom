@@ -263,11 +263,34 @@ pub fn infra_row(
   attempt: Int,
   reason: String,
 ) -> Row {
+  spent_infra_row(plan_id, key, attempt, reason, no_usage())
+}
+
+/// The row for an attempt that failed after the session had already spent
+/// money. The budget settles on `usage.dollars`, so an instrument fault that
+/// follows a paid run must carry what the run cost or the cap would never see
+/// it; a row that claimed nothing would let a persistent late fault drain the
+/// account unseen.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // trial.spent_infra_row("plan", key, 1, "freeze failed", usage).usage == usage
+/// ```
+///
+pub fn spent_infra_row(
+  plan_id: String,
+  key: RowKey,
+  attempt: Int,
+  reason: String,
+  usage: ledger.Usage,
+) -> Row {
   Row(
     ..blank_row(plan_id, key, attempt),
     state: ledger.Infra,
     outcome: Some(ledger.Infrastructure),
     side_info: tail(reason),
+    usage:,
   )
 }
 
@@ -294,7 +317,8 @@ pub fn run_one(
   // A fault inside the attempt becomes an `Infra` row here, so `run_one` never raises.
   case attempt_trial(ctx, task, arm, blank, root) {
     Ok(row) -> row
-    Error(reason) -> infra_row(ctx.plan_id, key, attempt, reason)
+    Error(Fault(reason:, spent:)) ->
+      spent_infra_row(ctx.plan_id, key, attempt, reason, spent)
   }
 }
 
@@ -528,6 +552,23 @@ type Driven {
   Driven(settling: Settling, agent_ms: Int, metrics: Metrics)
 }
 
+// An instrument fault and what the trial had spent when it struck. Faults
+// before the session ran spent nothing; faults after it carry the measured
+// usage so the budget is charged for money that really left.
+type Fault {
+  Fault(reason: String, spent: ledger.Usage)
+}
+
+// A fault from before any money was spent.
+fn unspent(reason: String) -> Fault {
+  Fault(reason:, spent: no_usage())
+}
+
+// Usage of a trial that never reached a model.
+fn no_usage() -> ledger.Usage {
+  ledger.Usage(0, 0, 0, 0, 0.0, ledger.Complete)
+}
+
 /// One attempt from materialisation to a row, with an error meaning the instrument, not the arm, failed.
 fn attempt_trial(
   ctx: Context,
@@ -535,14 +576,21 @@ fn attempt_trial(
   arm: Arm,
   blank: Row,
   root: String,
-) -> Result(Row, String) {
+) -> Result(Row, Fault) {
   use prepared <- result.try(
     materialise.run(ctx.seams.runner, ctx.repos, task, root)
-    |> result.map_error(fn(reason) { "materialise failed: " <> reason }),
+    |> result.map_error(fn(reason) { unspent("materialise failed: " <> reason) }),
   )
-  use settings <- result.try(arm_settings.to_settings(arm, ctx.base))
-  use profiles <- result.try(arm_settings.profiles(arm, ctx.base))
-  use guard <- result.try(start_guard(ctx.budgets.max_requests_per_trial))
+  use settings <- result.try(
+    arm_settings.to_settings(arm, ctx.base) |> result.map_error(unspent),
+  )
+  use profiles <- result.try(
+    arm_settings.profiles(arm, ctx.base) |> result.map_error(unspent),
+  )
+  use guard <- result.try(
+    start_guard(ctx.budgets.max_requests_per_trial)
+    |> result.map_error(unspent),
+  )
 
   let attempted =
     with_session(
@@ -572,19 +620,28 @@ fn with_session(
   settings: Settings,
   profiles: List(_),
   guard: Guard,
-) -> Result(Row, String) {
-  use target <- result.try(main_target(settings.gateway))
+) -> Result(Row, Fault) {
+  use target <- result.try(
+    main_target(settings.gateway) |> result.map_error(unspent),
+  )
   use api_name <- result.try(
     gateway.api_for(settings.gateway, target)
-    |> result.replace_error("no provider is registered for the main model"),
+    |> result.map_error(fn(_) {
+      unspent("no provider is registered for the main model")
+    }),
   )
-  use tape <- result.try(open_lane(
-    ctx.lane,
-    settings,
-    RowKey(blank.task, blank.arm, blank.index),
-    root,
-  ))
-  use guarded <- result.try(guarded_gateway(tape.gateway, profiles, guard))
+  use tape <- result.try(
+    open_lane(
+      ctx.lane,
+      settings,
+      RowKey(blank.task, blank.arm, blank.index),
+      root,
+    )
+    |> result.map_error(unspent),
+  )
+  use guarded <- result.try(
+    guarded_gateway(tape.gateway, profiles, guard) |> result.map_error(unspent),
+  )
 
   let isolated =
     serve.trial_settings(
@@ -599,7 +656,9 @@ fn with_session(
     )
   use instance <- result.try(
     ctx.seams.open(isolated)
-    |> result.map_error(fn(reason) { "the session did not open: " <> reason }),
+    |> result.map_error(fn(reason) {
+      unspent("the session did not open: " <> reason)
+    }),
   )
 
   let driven = drive(ctx, task, instance)
@@ -611,16 +670,29 @@ fn with_session(
   let retired = ctx.seams.retire(instance)
   let retire_ms = ffi_os.system_time_ms() - retire_started
 
-  use Nil <- result.try(
-    retired
-    |> result.map_error(fn(reason) { "retirement unconfirmed: " <> reason }),
-  )
-  use driven <- result.try(driven)
-  use frozen <- result.try(freeze(ctx.seams.runner, root))
-
-  let findings = tape.findings()
+  // From here on the session may have spent money, so every fault carries the
+  // usage the guard and the store measured; the budget settles on it.
   let seen = snapshot(guard)
   let card = gateway.card_for(settings.gateway, target.provider)
+
+  // A run that could not be observed has no figures, so nothing is charged for it.
+  let spent = case driven {
+    Ok(observed) -> usage_of(observed.metrics, card, seen)
+    Error(_) -> no_usage()
+  }
+
+  let late = fn(reason) { Fault(reason:, spent:) }
+
+  use Nil <- result.try(
+    retired
+    |> result.map_error(fn(reason) {
+      late("retirement unconfirmed: " <> reason)
+    }),
+  )
+  use driven <- result.try(driven |> result.map_error(late))
+  use frozen <- result.try(
+    freeze(ctx.seams.runner, root) |> result.map_error(late),
+  )
 
   finish(
     ctx,
@@ -635,9 +707,10 @@ fn with_session(
       driven:,
       seen:,
       card:,
-      findings:,
+      findings: tape.findings(),
     ),
   )
+  |> result.map_error(late)
 }
 
 // Everything `finish` needs to judge a closed, frozen trial.
@@ -681,6 +754,8 @@ fn judge(
   blank: Row,
   evidence: Evidence,
 ) -> Result(Row, String) {
+  use Nil <- result.try(recording_fault(ctx.lane, evidence.findings))
+
   let metrics = evidence.driven.metrics
   let base =
     Row(
@@ -692,7 +767,7 @@ fn judge(
         [] -> metrics.models
         observed -> observed
       },
-      usage: usage_of(metrics, evidence),
+      usage: usage_of(metrics, evidence.card, evidence.seen),
       turns: metrics.turns,
       tool_calls: metrics.tool_calls,
       tool_errors: metrics.tool_errors,
@@ -745,6 +820,19 @@ fn judge(
       Error("the provider failed: " <> error)
 
     [], Settled, None, _ -> grade(ctx, task, base, evidence)
+  }
+}
+
+/// A recording lane that could not keep its tape is an instrument fault: the
+/// arm did nothing wrong, and scoring the paid trial as a failure would count
+/// a full disk against it. Only a replay's own findings (divergence from the
+/// recording) are a verdict on the harness under test.
+fn recording_fault(lane: Lane, findings: List(String)) -> Result(Nil, String) {
+  case lane, findings {
+    Recording(..), [_, ..] ->
+      Error("recording failed: " <> string.join(findings, "; "))
+
+    Live, _ | Taped(..), _ | Recording(..), [] -> Ok(Nil)
   }
 }
 
@@ -862,9 +950,13 @@ fn grade(
 }
 
 /// The row's usage, priced at the model's card when it has one.
-fn usage_of(metrics: Metrics, evidence: Evidence) -> ledger.Usage {
+fn usage_of(
+  metrics: Metrics,
+  card: Result(pricing.Pricing, Nil),
+  seen: Seen,
+) -> ledger.Usage {
   // An unpriced model keeps the cost the session itself recorded.
-  let priced = case evidence.card {
+  let priced = case card {
     Ok(card) -> pricing.price(metrics.usage, card).cost.total
     Error(Nil) -> metrics.usage.cost.total
   }
@@ -872,7 +964,7 @@ fn usage_of(metrics: Metrics, evidence: Evidence) -> ledger.Usage {
   // Each request that settled with a positive token count accounts for one
   // guard admission; fewer means some request reported nothing, so the
   // figures are a floor.
-  let completeness = case metrics.answered >= evidence.seen.attempts {
+  let completeness = case metrics.answered >= seen.attempts {
     True -> ledger.Complete
     False -> ledger.LowerBound
   }

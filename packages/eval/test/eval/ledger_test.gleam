@@ -219,6 +219,7 @@ pub fn attempt_gap_refused_test() {
 
 pub fn contradictory_row_refused_test() {
   let passed_for_nothing = ledger.Row(..scored(0, 1), reward: 0.0)
+  let passed_for_half = ledger.Row(..scored(0, 1), reward: 0.5)
   let failed_for_full =
     ledger.Row(
       ..row(0, 1, ledger.Scored, Some(ledger.VerifierFailed)),
@@ -251,7 +252,9 @@ pub fn contradictory_row_refused_test() {
     )
 
   assert ledger.decode_line(ledger.encode_line(passed_for_nothing))
-    == Error("a passed row needs a reward above 0")
+    == Error("a passed row needs a reward of 1")
+  assert ledger.decode_line(ledger.encode_line(passed_for_half))
+    == Error("a passed row needs a reward of 1")
   assert ledger.decode_line(ledger.encode_line(failed_for_full))
     == Error("a row that did not pass needs a reward below 1")
   assert ledger.decode_line(ledger.encode_line(partial)) == Ok(partial)

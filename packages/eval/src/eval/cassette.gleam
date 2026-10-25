@@ -272,19 +272,18 @@ fn stop(pid: Pid, send_stop: fn() -> Nil) -> Nil {
 ///
 /// A request still in flight is closed off as `Cancelled`: it has no response
 /// yet, and an ordinal with no recording would leave a gap that no decoder
-/// accepts. Call this once the trial has drained.
+/// accepts. Call this once the trial has drained. A sink that is dead or
+/// wedged is an `Error`, never an empty tape.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let tape = cassette.finish(sink)
+/// let assert Ok(tape) = cassette.finish(sink)
 /// ```
 ///
-pub fn finish(sink: Sink) -> Tape {
-  case ask(sink.subject, sink.pid, Collect) {
-    Ok(tape) -> tape
-    Error(_) -> Tape([])
-  }
+pub fn finish(sink: Sink) -> Result(Tape, String) {
+  // A sink that cannot answer has lost the recording; an empty tape would pass for a real one.
+  ask(sink.subject, sink.pid, Collect)
 }
 
 /// Every divergence the replay has found, in request order.
@@ -1032,7 +1031,19 @@ const key_prefixes = [
 ]
 
 /// Replaces the request's own credentials and every vendor-prefixed token.
-fn redact_text(text: String, secrets: List(String)) -> String {
+///
+/// `secrets` are exact values to blank; the vendor prefixes (`sk-`, `xai-`,
+/// `ghp_`, `gho_`, `ghs_`, `ghu_`, `github_pat_`) and `Bearer ` tokens are
+/// redacted by shape. With no secrets this is the trajectory scrubber's rule,
+/// so the two redactions cannot drift apart.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert cassette.redact_text("key sk-abc123", []) == "key <redacted>"
+/// ```
+///
+pub fn redact_text(text: String, secrets: List(String)) -> String {
   let exact =
     list.fold(secrets, text, fn(so_far, secret) {
       string.replace(so_far, secret, redacted_marker)

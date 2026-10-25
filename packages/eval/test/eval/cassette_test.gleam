@@ -117,6 +117,11 @@ fn request(system: String) -> HttpRequest {
   request_saying(system, "list /work/trial")
 }
 
+// These waits assert that an event is delivered, not how fast; a loaded
+// machine may take seconds, so they are generous. The 100 ms checks elsewhere
+// assert that nothing arrives and stay short.
+const delivery_wait_ms = 15_000
+
 fn terminal(event: HttpEvent) -> Bool {
   case event {
     ResponseEnd | RequestFailed(..) | http.RequestRefused(..) -> True
@@ -128,7 +133,7 @@ fn receive_until_terminal(
   subject: Subject(HttpEvent),
   seen: List(HttpEvent),
 ) -> List(HttpEvent) {
-  let assert Ok(event) = process.receive(subject, within: 3000)
+  let assert Ok(event) = process.receive(subject, within: delivery_wait_ms)
     as "a transport must deliver a terminal event"
 
   case terminal(event) {
@@ -142,7 +147,7 @@ fn await_exit(prepared: PreparedRequest) -> Nil {
   let assert Ok(Nil) =
     process.new_selector()
     |> process.select_specific_monitor(watch, fn(_down) { Nil })
-    |> process.selector_receive(within: 3000)
+    |> process.selector_receive(within: delivery_wait_ms)
     as "the owner must exit"
   Nil
 }
@@ -166,7 +171,7 @@ fn run(pair: #(Subject(HttpEvent), PreparedRequest)) -> List(HttpEvent) {
   let assert Ok(Nil) =
     process.new_selector()
     |> process.select_specific_monitor(watch, fn(_down) { Nil })
-    |> process.selector_receive(within: 3000)
+    |> process.selector_receive(within: delivery_wait_ms)
     as "the owner must exit after the terminal event"
 
   events
@@ -196,7 +201,9 @@ fn record(system: String) -> Tape {
 
   assert collect(transport, request(system)) == exchange()
 
-  cassette.finish(sink)
+  let assert Ok(tape) = cassette.finish(sink)
+
+  tape
 }
 
 fn replayer(tape: Tape) -> #(Transport, cassette.Log) {
@@ -287,7 +294,7 @@ pub fn tape_is_scrubbed_test() {
       #("authorization", "Bearer abcdef0123456789"),
     ])
   let _ = collect(transport, keyed)
-  let tape = cassette.finish(sink)
+  let assert Ok(tape) = cassette.finish(sink)
   let jsonl = cassette.tape_to_jsonl(tape)
 
   assert !string.contains(jsonl, "PLAN")
@@ -360,7 +367,8 @@ pub fn disk_round_trip_replays_signatures_test() {
   let first = request_saying("s", "start")
   let second = request_saying("s", signature)
   let recorded_events = [collect(transport, first), collect(transport, second)]
-  let jsonl = cassette.tape_to_jsonl(cassette.finish(sink))
+  let assert Ok(finished) = cassette.finish(sink)
+  let jsonl = cassette.tape_to_jsonl(finished)
 
   let assert Ok(tape) = cassette.tape_from_jsonl(jsonl)
   let #(replay, log) = replayer(tape)
@@ -408,7 +416,8 @@ pub fn cancel_before_begin_never_starts_test() {
   assert process.receive(started, within: 100) == Error(Nil)
 
   // The cancelled request still holds its ordinal, as a cancellation.
-  let assert [cancelled] = cassette.finish(sink).recordings
+  let assert Ok(finished) = cassette.finish(sink)
+  let assert [cancelled] = finished.recordings
   assert cancelled.events == [cassette.Cancelled]
   assert cassette.divergences(log) == []
 }
@@ -424,7 +433,8 @@ pub fn cancelled_request_keeps_ordinals_contiguous_test() {
   // Request 1 streams its status and is cancelled before it ends.
   let #(subject, prepared) = prepare(transport, request("first"))
   prepared.begin()
-  let assert Ok(ResponseStatus(..)) = process.receive(subject, within: 3000)
+  let assert Ok(ResponseStatus(..)) =
+    process.receive(subject, within: delivery_wait_ms)
   http.cancel(prepared.running)
   await_exit(prepared)
 
@@ -432,7 +442,7 @@ pub fn cancelled_request_keeps_ordinals_contiguous_test() {
     cassette.recording(scripted(fixed(exchange()), Finish, started), root, sink)
   assert collect(finishing, request("second")) == exchange()
 
-  let tape = cassette.finish(sink)
+  let assert Ok(tape) = cassette.finish(sink)
   assert list.map(tape.recordings, fn(recorded) { recorded.ordinal }) == [1, 2]
   let assert [cancelled, _] = tape.recordings
   assert cancelled.events == [cassette.Cancelled]
@@ -477,7 +487,8 @@ pub fn concurrent_requests_replay_by_digest_test() {
   assert recorded_b == answer_b
 
   // And in the opposite order when replayed.
-  let #(replay, log) = replayer(cassette.finish(sink))
+  let assert Ok(finished) = cassette.finish(sink)
+  let #(replay, log) = replayer(finished)
   let later = prepare(replay, request("strand-b"))
   let earlier = prepare(replay, request("strand-a"))
 
@@ -587,4 +598,12 @@ pub fn tape_decoder_refuses_damage_test() {
       "\"length\":",
       "\"length\":-",
     ))
+}
+
+pub fn finishing_a_dead_sink_is_an_error_not_an_empty_tape_test() {
+  let assert Ok(sink) = cassette.start_sink()
+  cassette.close_sink(sink)
+
+  // An empty tape would be written as if it were the recording.
+  assert cassette.finish(sink) == Error("the tape actor exited")
 }

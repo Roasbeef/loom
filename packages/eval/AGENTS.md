@@ -37,7 +37,7 @@ keyed by path and decode sorted by path.
   by key so build order is not identity. `refuse_unapplied` refuses any
   `Target.role != Any`.
 - `split.Split` (`Tune Validate Holdout`), `assign(salt, family)`,
-  `family(task)` (the first `family:<value>` tag, else the task id),
+  `family(task)` (the first `family:<value>` tag, else the task name),
   `admissible` (refuses Holdout, message contains "holdout").
 - `plan.Plan`: id, task/arm ids, K, `Lane`, `Profile`, salt, `Budgets`,
   `Harness` (commit + `Clean|Dirty`). `check` refuses a Full plan with a
@@ -62,8 +62,8 @@ keyed by path and decode sorted by path.
   (sorted, deduped, repeats refused on decode).
 - `split.family` falls back to the task name, not its id; `assign` hashes the
   first four digest bytes.
-- A ledger row's reward must agree with its outcome (`Passed` above 0, all
-  others below 1) and its artifact paths must be safe relative paths or empty.
+- A ledger row's reward must agree with its outcome (`Passed` exactly 1, matching
+  `rollout.pass_threshold`; all others below 1) and its artifact paths must be safe relative paths or empty.
 - `ledger.Outcome` is a local mirror of evalstat's five variants; keep them
   aligned by hand. `report.to_stat` is the one place a ledger row becomes an
   `evalstat/trial.Trial`, and `eval/run` reuses it for the futility check.
@@ -453,8 +453,19 @@ directory of tasks into `<out>/prove.jsonl`.
 - `run -- --record DIR` on a live plan taps the wire with `cassette.recording`
   per cell and writes `<DIR>/<task id>/<index>.jsonl` when the trial's findings
   are asked for (after retirement); the lane is `trial.Recording`, metered like
-  `Live`. Both transports normalise `<root>` over the whole attempt root, since
+  `Live`. A tape that cannot be written (or a dead sink: `cassette.finish` is a
+  `Result`) is an instrument fault: `trial.judge` returns `Error` for a
+  `Recording` finding, so the attempt is `Infra` and retried; only a `Taped`
+  divergence is `VerifierFailed`. Both transports normalise `<root>` over the whole attempt root, since
   the system prompt names its home and state directories too.
+- An `Infra` row from a fault after the session ran carries the usage that
+  trial spent (`trial.spent_infra_row`; `Fault` pairs the reason with it), so
+  `budget.settle` charges it and the dollar cap trips on persistent late faults.
+- `run_cli.check_harness` runs before any trial: a `full` plan is refused unless
+  `git rev-parse HEAD` equals `harness.git_commit` and, for `clean`, `git status
+  --porcelain` is empty; a `quick` plan warns on standard error and runs.
+- Futility bounds task-sign moves by tasks with an unfinished pair
+  (`min(remaining pairs, open tasks)`), not by pairs, so K>1 plans are judged right.
 - `Context.selftest` is what each scored row's `jail.selftest` carries: the
   CLI says `verify.open_jail probe: ...` when it opened a jail (the probe ran
   `true` under the demanded enforcement) and `trial.unprobed` otherwise.

@@ -54,7 +54,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam/set
+import gleam/set.{type Set}
 import gleam/string
 import simplifile
 import weft
@@ -510,10 +510,9 @@ pub fn futile_after(frozen: Plan, rows: List(Row)) -> Option(Int) {
         |> dict.values
         |> list.filter(fn(row) { row.state != ledger.Running })
         |> list.map(report.to_stat)
-      let planned = list.length(frozen.task_ids) * frozen.trials_per_cell
       let hopes =
         list.map(candidates, fn(candidate) {
-          hope(finished, baseline, candidate, planned)
+          hope(finished, baseline, candidate, frozen)
         })
       let stalled =
         list.filter_map(hopes, fn(each) {
@@ -534,31 +533,47 @@ pub fn futile_after(frozen: Plan, rows: List(Row)) -> Option(Int) {
 }
 
 /// Where one candidate stands against the baseline after `finished` rows.
+///
+/// The futility bound counts how many task signs the rest of the plan could
+/// still move. Each sign belongs to a task, so with K trials per cell the
+/// remaining pairs overstate the moves: three tasks of three pairs each can
+/// change at most three signs, however many pairs are left. The bound is the
+/// smaller of the remaining pairs and the tasks that still have an unfinished
+/// pair, which is still an upper bound and so still only under-claims.
 fn hope(
   finished: List(stat.Trial),
   baseline: String,
   candidate: String,
-  planned: Int,
+  frozen: Plan,
 ) -> Hope {
   let done = completed_pairs(finished, baseline, candidate)
+  let tasks = list.length(frozen.task_ids)
+  let planned = tasks * frozen.trials_per_cell
+  let open_tasks =
+    list.count(frozen.task_ids, fn(task) {
+      set.filter(done, fn(pair) { pair.0 == task })
+      |> set.size
+      < frozen.trials_per_cell
+    })
+  let remaining = int.min(planned - set.size(done), open_tasks)
 
   // Hopeless is read first: a plan that could never have decided is not stalled by what it has seen.
   case
-    evalstat.futility([], baseline, candidate, planned),
-    evalstat.futility(finished, baseline, candidate, planned - done)
+    evalstat.futility([], baseline, candidate, int.min(planned, tasks)),
+    evalstat.futility(finished, baseline, candidate, remaining)
   {
     stat_verdict.StopUndecided, _ -> Hopeless
-    stat_verdict.Continue, stat_verdict.StopUndecided -> Stalled(done)
+    stat_verdict.Continue, stat_verdict.StopUndecided -> Stalled(set.size(done))
     stat_verdict.Continue, stat_verdict.Continue -> Open
   }
 }
 
-/// How many `(task, index)` pairs have a counted trial on both arms.
+/// The `(task, index)` pairs that have a counted trial on both arms.
 fn completed_pairs(
   finished: List(stat.Trial),
   baseline: String,
   candidate: String,
-) -> Int {
+) -> Set(#(String, Int)) {
   let counted_on = fn(arm: String) {
     finished
     |> list.filter(fn(row) {
@@ -573,7 +588,6 @@ fn completed_pairs(
   }
 
   set.intersection(counted_on(baseline), counted_on(candidate))
-  |> set.size
 }
 
 /// A `Running` row with nothing after it is a trial the previous call never

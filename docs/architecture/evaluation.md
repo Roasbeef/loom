@@ -82,7 +82,7 @@ module, so a change to a step has one place to land.
 | Report | `report.md` and `report.json`. The first line is the minimum detectable effect. | `eval/report` |
 
 The order inside a trial is the guarantee, and each step exists because
-skipping it has a failure it prevents. `trial.run_one` (`eval/trial.gleam:284`)
+skipping it has a failure it prevents. `trial.run_one` (`eval/trial.gleam:307`)
 is the single entry. It never raises: a fault in the instrument rather than the
 arm becomes an `Infra` row.
 

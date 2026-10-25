@@ -438,7 +438,18 @@ fn prepare(
 /// live under `packages/`, and the verifier's `scripts/test.sh <pkg>` says
 /// which one. Running the step at the root would fail every mined task for
 /// a reason that has nothing to do with the fix.
-fn prepare_directory(tree: String, task: Task, argv: List(String)) -> String {
+///
+/// ## Examples
+///
+/// ```gleam
+/// // prove.prepare_directory("/work/tree", task, argv) == "/work/tree/packages/machine"
+/// ```
+///
+pub fn prepare_directory(
+  tree: String,
+  task: Task,
+  argv: List(String),
+) -> String {
   let at_root = simplifile.is_file(tree <> "/gleam.toml") == Ok(True)
   let in_package =
     package_for(task, argv)

@@ -99,6 +99,10 @@ Not yet run anywhere:
   targets are always Inconclusive through the door (protocol-change/100).
 - Journaling the entry id in `evolution/attempt/*` facts, which would make
   the production join exact.
+- The governed door's default program deadline (`within_ms`, 300 s) is
+  shorter than its compare wall (480 s), so a program that keeps the default
+  can lose up to the dollar cap to trials whose evidence it never sees. Never
+  a false Passed. Clamp `wall_ms` to the execution's remaining deadline.
 - `loom run -p` and the Harbor agent adapter (#492). `eval/trial` is the
   headless runner it should wrap.
 
