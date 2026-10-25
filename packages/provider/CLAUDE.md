@@ -77,7 +77,15 @@ accumulate across attempts or alter a tool's name, input schema or execution
 policy. Native attempt observation fingerprints the resulting composition even
 when the attempt fails. A request guard runs before credentials and transport,
 so an independent rollout can enforce exact targeting and conservative
-aggregate budgets on every actual dispatch. See
+aggregate budgets on every actual dispatch. `gateway.with_attempt_settled`
+installs the observer that closes that loop: it is told once per attempt the
+request guard admitted, in the pump's process, after the attempt's terminal
+is priced and before the terminal is delivered, with the target, the API
+dialect, the walk ordinal, the priced usage the ledger row will carry and
+whether a response settled (`AttemptSettled`, `AttemptEnding`). An attempt
+the guard refused is never reported, which is what lets the governed
+rollout's guard credit a worst-case reservation back without ever crediting
+one it never debited. See
 [the evolution architecture](../../docs/architecture/evolution.md).
 
 ## Purpose

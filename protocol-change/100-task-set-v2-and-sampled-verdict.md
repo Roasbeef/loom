@@ -418,3 +418,239 @@ governed plane acts on is hashed). Verified by mutation: accepting a v2
 `program` verifier fails `v2_program_task_is_refused_for_governed_runs_test`
 alone; opening the seal fails `holdout_admit_is_refused_by_name_test`; dropping
 the split filter fails the payload and seal tests.
+
+## Addendum: the reservation refund (2026-10-25)
+
+**Status**: the follow-up named above under "When `Passed` is reachable at
+all" landed; this addendum records the arithmetic, what moved and what did
+not, and the blocking finding of its independent review with the correction
+it produced. No ceiling changes and no number in this proposal moves.
+**Affects**: `rollout_host`'s per-attempt guard, which is now the one source
+of a trial's charge; a `Trial(_)` session's side work, which is switched
+off; and the reachability of `Passed` for large-window and large-output
+targets. The observation's members, the verdict rule and the evaluator
+fingerprint are unchanged.
+
+### Problem
+
+The guard reserved `3 · context + output` tokens, their worst-case price and
+`4 · output` retained bytes before every attempt and credited nothing back,
+so a target of about 164k context or more could not fit two reservations in
+the million-token cap and one of 16,384 output tokens or more spent the whole
+output cap on its first attempt. Every comparison against such a target ended
+`Inconclusive("aggregate reservation budget refused request")` after the
+first attempt's money was spent. The reservation was right to be conservative
+before the attempt ran; it was wrong to stay conservative after the provider
+had said what the attempt cost.
+
+A refund has one hazard, named in the design (`docs/design-notes`, wave 4,
+F4): the guard's `remaining` and the fold's `State` were two ledgers of one
+allowance, and a refund that credits an attempt the fold still counts as
+unknown lets the guard admit what the fold then refuses *after* the money is
+spent. The fold charged measured usage from the session's usage ledger plus a
+worst case for every attempt without a complete assistant entry.
+
+### Decision
+
+**One rule.** `rollout.attempt_charge(target, api, settlement, card)` is the
+charge for one admitted attempt. A `Settlement` is the exact scope that served
+the attempt, the usage it reported (priced; zero when none) and whether a
+response settled and how it stopped. A complete settlement, the exact target
+answering with a stop reason other than `Errored` and a positive reported
+total, is `Measured`: its priced usage, and four retained bytes per output
+token. Every other settlement is `WorstCase`: the target's whole context
+window as input, written to and read from cache, plus its output ceiling,
+priced on the card, **beside** the usage it did report, because that report
+is real spend and the worst case is the answer to not knowing whether it was
+whole.
+
+**One ledger.** The guard's bookkeeping is the pure, opaque
+`rollout_host.Ledger`. `reserve` pins the attempt's output ceiling exactly
+as the committed code did, to the least of the target's own ceiling, the
+tokens left over three context windows and a quarter of the bytes left, so a
+target whose whole ceiling does not fit the door's caps (an output ceiling
+above 16,384 tokens against the 65,536-byte cap, or a context window near
+330k) still runs at the ceiling that does; it debits `rollout.reservation`
+at that pinned ceiling and records that figure against the pump that asked.
+Charging the clipped figure rather than the target's whole worst case is
+sound because the request guard pins the ceiling on the request, so the
+attempt cannot spend past it. `settle` adds the reported usage to the
+ledger's summed records whatever the stop reason, and an unmeasured attempt
+keeps its own reservation charged beside its report. `charged` is what the
+step hands the fold: the turn count, the composition digests, the summed
+records as the step's `usage`, and `Unreported` of the summed reservations
+of every unmeasured attempt, settled or still open when the step reads.
+`remaining` is the opened allowance less `charged`, reckoned as
+`accept_step` reckons a step (`max(total, buckets)` **of the sum**, then the
+reservations), so the fold's allowance after it accounts the step is the
+guard's remaining allowance by construction, not by agreement between two
+walks. `rollout_host.run` reads the transcript for nothing about spend;
+`unreported_debit` is gone. The session's own usage ledger (`storage.stats`)
+is read once more as a **tripwire** (`rollout_host.cross_check`): every
+request a trial makes crosses the guarded gateway, so the session's ledger
+can never carry more than the guard charged, and a step whose session ledger
+exceeds `charged.usage` in tokens or dollars fails with "the session's usage
+ledger exceeds the admission ledger: spend bypassed the guarded gateway",
+which ends the comparison `Inconclusive`. Spend the guard never admitted
+stops the comparison; it never joins the charge.
+
+**The observer.** `provider/gateway.with_attempt_settled` installs a
+function the gateway calls exactly once per attempt the request guard
+admitted, in the pump's process, after the attempt's terminal is priced by
+the gateway's own card and before that terminal is delivered to the
+consumer. It carries the target, the API dialect, the walk ordinal, the
+priced usage of the attempt's report (`accounting.total`) and
+`Responded(stop_reason)` or `Unanswered`. A refused attempt reserved nothing
+and is never reported; the image budget, a missing secret and the transport
+all sit behind admission and all report.
+
+**No side work in a trial.** `serve.side_work(role)` is `NoSideWork` for
+`Trial(_)` and `RunsSideWork` for `Source`, and the three start sites consult
+it: `glance_wiring` and `summary_route` answer `None`, `with_side_queries`
+adds no `btw` worker and `side_and_summary_tap` captures nothing for it. A
+trial has no terminal to draw a glance or a summary for, and side work is
+not the task under comparison, so its spend has no business in the verdict.
+
+**Why the pump's pid is the key.** The request guard's signature carries no
+attempt identity and is shared with the instrument's own guard, so it was
+not widened. The guard closure and the observer both run in the process that
+owns the attempt, attempts within one request are sequential, and the
+observer fires before the terminal that could provoke the next request, so
+the pid pairs each settlement with exactly the reservation it releases. A
+pump with a reservation still open is refused a second one, and a settlement
+for a pump with none, which includes one already settled, is refused and
+changes nothing.
+
+### Why every invariant above still holds
+
+- *No spend past the dollar or token cap.* Admission is still pre-dispatch
+  against `remaining`, every dispatched attempt had its whole worst case under
+  `remaining` when admitted, and every attempt's real spend is at most its
+  reservation because the output ceiling is pinned on the request and no
+  bucket exceeds the context window.
+- *Worst case retained for incomplete usage.* `Unanswered`, errored, foreign
+  and usage-less settlements, and attempts that never settle, are charged the
+  reservation they were admitted under, which is the worst case at the output
+  ceiling the request was pinned to; a settled one keeps its report beside it.
+- *The guard and the fold cannot disagree.* The fold is handed the guard's
+  own figures, so the two can only disagree if the fold reckons them
+  differently from `remaining`, which is what the parity property rules out.
+  The property
+  (`rollout_host_test.the_guard_and_the_fold_agree_after_any_attempt_sequence_test`,
+  qcheck seed `1_000_100`, 120 drawn sequences of one to eight attempts over
+  seven kinds: complete, errored with usage, usage-less, cancelled, a request
+  outside any turn, a response never committed, and an attempt still open when
+  the step reads; reported totals sometimes inconsistent with their buckets)
+  runs the pure ledger beside the real fold (`rollout.evaluate` over a
+  scripted trial whose first step is `charged`) and requires equal turns,
+  tokens and deadline, dollars within `1e-9` (the two sides sum in a different
+  order), and output bytes no looser on the guard.
+- *Evidence.* The observation's `dollars`, `tokens`, `unreported_tokens` and
+  `unreported_dollars` keep their meaning: measured records and the worst case
+  of what was not measured. `tokens` now also counts a request that settled
+  outside a turn or was never committed, which the ledger previously could not
+  see; only the `Inconclusive("aggregate reservation budget refused request")`
+  ending becomes rarer. The verdict rule and the evaluator fingerprint do not
+  move.
+
+### What it does not do
+
+Output bytes are charged at the reservation's own rate of four bytes per
+measured output token; the fold still charges retained text per step and
+its 64 KiB cap is unchanged and still checked at step end, so the two sides
+bound different quantities there and the property asserts only that the
+guard is the tighter one. No ceiling moves: a target whose three context windows
+alone exceed the million-token cap (above about 333k context) is still
+refused its first attempt, and the money ceilings are not raised for it. There is no
+refund across trials, and the instrument's per-trial guard, which only
+counts requests, is untouched. The side-work switch is a per-site decision;
+a new start site must consult `serve.side_work` itself.
+
+### Verification
+
+`client/evolution/rollout_host_test`: the parity property above;
+`two_side_requests_on_a_large_window_target_are_charged_once_test` (the
+reviewer's scenario, below, through the real fold);
+`a_large_window_target_runs_three_attempts_inside_the_door_caps_test` (200k
+context, 8k output: one worst case is 608,192 tokens, two did not fit, three
+attempts now settle inside the caps and the open third is charged its worst
+case); `an_unsettled_attempt_keeps_its_whole_reservation_test` (the
+pre-refund refusal still stands while nothing has settled);
+`an_open_reservation_is_charged_its_worst_case_when_the_step_reads_test`;
+`an_errored_attempt_is_charged_its_worst_case_beside_its_usage_test`;
+`a_foreign_or_empty_report_keeps_the_worst_case_test`;
+`measured_tokens_are_the_folds_reckoning_of_the_summed_records_test` (two
+inconsistent totals charge fifteen, not twenty);
+`a_target_whose_output_ceiling_exceeds_the_byte_cap_is_admitted_clipped_test`
+(100k context, 32k output: admitted at 16,384, charged the clipped
+reservation open and unmeasured);
+`a_target_at_the_token_margin_is_admitted_with_its_output_clipped_test`
+(330k context, 16k output: admitted at 10,000);
+`session_spend_the_guard_never_admitted_trips_the_step_test` (the tripwire);
+`an_attempt_settles_exactly_once_and_only_after_admission_test`;
+`a_pump_with_an_open_reservation_is_not_admitted_again_test`.
+`trial_policy_test.a_trial_runs_no_side_work_and_a_source_does_test` pins
+the decision. In `provider/gateway_settlement_test`: one report per settled
+attempt with the priced usage, an `Unanswered` report for a failed attempt
+and for one with no secret, one report per attempt of a fallback walk in
+order, and no report for a refused attempt.
+
+Mutations run against the landed design, each restored. Charging open and
+unmeasured attempts the target's whole worst case instead of their clipped
+reservation fails the two clipped-target tests; turning the tripwire's
+comparison around fails its test alone. Leaving open
+reservations out of `charged` fails the open-reservation, unsettled and
+three-attempt tests; dropping an unmeasured attempt's report from the summed
+records fails the errored and foreign tests; counting a measured attempt
+among the unknown fails the reviewer's scenario, the three-attempt,
+open-reservation, summed-records and once-only tests; making `side_work`
+answer `RunsSideWork` for a trial fails the trial-policy test alone. The
+parity property stays green under the first three, and that is the shape of
+the fix rather than a gap: the fold is handed `charged`, so the property
+proves that `accept_step` and `allowance` reckon the ledger's figures exactly
+as `remaining` does, and the unit tests with independent expectations prove
+what those figures are. Against the first version, before the review:
+crediting the whole reservation regardless of charge, charging an incomplete
+attempt without its report, clamping the credit, leaving a settled
+reservation open, and ignoring admission in the gateway each failed the
+tests named for them, and counting an `Errored` response as complete inside
+the shared rule failed the errored unit test alone.
+
+### Review and disposition
+
+Primary review (this slice's author, against ruling 3 of the wave-4 design)
+accepted the first version with the unclamped credit as its one departure
+from the design's wording.
+
+The independent adversarial critique then found, and a scratch test
+reproduced, a **blocking divergence**: a trial session's glance loop
+(`Summarize`, then `Subagent`, then `Main`, every twenty seconds), its block
+summarizer and its side-query machine all issue requests through the trial's
+guarded gateway outside any turn. The guard admitted and credited them
+`Measured`; they wrote no assistant entry, so the fold's entry walk charged
+each its worst case, and on the 200k/8k target two such requests put the
+fold 1.2M tokens past a cap the guard had admitted under. The same class,
+rarer: a response settled in the pump and never committed (aborted at the
+wall), and an attempt that never settles, which the guard kept at a clipped
+reservation while the fold charged the full worst case. The rulings taken:
+(1) a trial runs no side work, and (2) the guard's ledger is the single
+source of charge, with every open reservation charged the full worst case at
+the step's read and the fold's entry walk deciding nothing about spend. Both
+are implemented above; the parity property's generator gained the three
+missing kinds and the reviewer's scenario is a named falsifier. The nits
+applied: the observer reads `accounting.total`; the parity test removes the
+catalogues it opens; the missing-secret path is covered.
+
+The re-review confirmed parity on every path raised and no side-work site
+missed, and found one regression of the single-ledger fix: `reserve` had
+stopped clipping, so a target with an output ceiling above 16,384 tokens, or
+one near 330k context, was refused its first attempt and every comparison
+against it was `Inconclusive` before any spend, which made "`Inconclusive`
+becomes rarer" false for exactly the targets the refund was for. The rulings
+taken and implemented above: (R1) the clip is restored as the committed code
+had it, each reservation records its clipped worst case, and an unmeasured or
+still-open attempt is charged that figure; (R2) the session's own usage
+ledger is read back as a tripwire that stops the comparison when it exceeds
+the guard's charge; (R4) the parity test deletes its catalogue before any
+assertion. The reviewer's two scratch targets are named tests. Accepted with
+those corrections.

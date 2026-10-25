@@ -333,6 +333,12 @@ pub type Origin {
   /// A pack file named by `LOOM_PROMPT_PACK`.
   PackFile(path: String)
 
+  /// Pack source text handed to the session by its host (`Settings.pack`),
+  /// never read from the environment. `label` is a short phrase that
+  /// finishes the sentence "the prompt pack ..." for a person, such as
+  /// "provided by arm 3f2a".
+  Provided(label: String)
+
   /// `LOOM_SYSTEM_PROMPT`: no pack was consulted at all.
   Override
 
@@ -474,6 +480,7 @@ pub fn named(origin: Origin) -> String {
   case origin {
     Shipped -> "shipped with this build"
     PackFile(path:) -> path
+    Provided(label:) -> label
     Override -> override_variable
     Pinned -> system_key
   }

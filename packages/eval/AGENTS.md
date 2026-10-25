@@ -294,9 +294,11 @@ retire, grade) is how a test makes one fail or watches their order.
 - **Arms.** `arm_settings.to_settings` applies roles, thinking (and routes every
   role again from the resulting catalogue) and withheld tools;
   `arm_settings.profiles` builds one profile per exact target. A `PromptPack`
-  component is refused by name: the pack reaches a session only through the
-  process environment (`LOOM_PROMPT_PACK`), `Settings` has no field for it,
-  and trials share a VM. A `Settings` field in `client` is what lifts it.
+  component is applied through `Settings.pack` (the pack's source text, which
+  `serve.render_prompt` renders instead of reading `LOOM_PROMPT_PACK`).
+  `to_settings` decodes the pack with `pack.decode` first, so a corrupt pack
+  refuses the arm by name before any trial opens; an arm with no pack keeps
+  the base's.
 - **Exact-file grading** is `trial.grade_expected`, a copy of
   `client/evolution/fixture.score`'s comparison, because that function takes
   the governed task set. `Program` verifiers go through `Seams.grade`;
@@ -600,3 +602,205 @@ holdout measured. The decision for the payload is in
   yet; `production.join` is a library call.
 - Tests use `build/admit-test/` and `build/production-test/` under the package,
   never `/tmp`.
+
+## Search
+
+`eval/optimize` is the GEPA-shaped prompt search (design wave 4, ruling 1):
+a loop over the runner, a reflection call and a pure search state that
+proposes, screens and accepts candidate arms, and writes a front the
+operator takes to the governed plane by hand. It never calls `propose`,
+`approve` or `select`. Modules: `eval/search` (the log codec, the fold, the
+front, the parent draw, the screen, the dispositions, the ranking),
+`eval/reflect` (the reflection prompt, its bounds and the gateway call),
+`eval/optimize` (the search plan, the loop, the sub-plans, the front files)
+and `eval/optimize_cli` (`gleam run -m eval/optimize_cli -- search
+--objective TEXT [--arm FILE|none] [--tasks DIR] [--out DIR] [--config
+loom.toml] [--reflector NAME] [--steps N] [--max-dollars X]
+[--max-reflections N] [--max-candidates N] [--k N] [--k-tune N] [--minibatch
+N] [--salt S] [--mutate pack|tool:<name>|role:<role>]... [--profile
+quick|full] [--lane live|replay] [--tapes DIR] [--helper PATH] [--seed DIR]
+[--repo NAME=PATH]...`, or `-- report <search-dir>`).
+
+### Flow
+
+A search directory `<out>/<search id>/` holds `search.json` (the plan:
+seed arm, objective, tune and validate task ids, K, `K_tune`, the minibatch
+size, the mutable set as an arm with empty texts, the pinned reflector
+identity, the budgets and the per-trial ceilings; its id is the digest of
+all of it), copies of `tasks/` and `arms/` (every candidate's
+`arm.to_json`), the append-only `search.jsonl`, the sub-runs under
+`runs/<plan id>/` as ordinary run directories, and the output: `front.json`,
+`front.md`, `propose/<arm id>/<target>/prompt.json` for the top three and
+`PROPOSE.md`.
+
+One step, given a pool whose members all have a complete Validate ledger:
+`search.front` builds the per-task leading sets (within `1/K` of the best
+mean), prunes the union by `dominance.pareto` and `search.draw_parent` draws
+the parent in proportion to tasks led from `prng.from_string(search id <>
+"/" <> step)`; `search.slot_for` picks the slot round robin and
+`search.minibatch` draws `b` tune tasks from the same generator; the parent
+runs the minibatch alone (`run.execute` on a one-arm sub-plan at `K_tune`);
+`reflect.records` builds the reflective dataset from those rows and the
+reflector answers the slot's new text; the child is `arm.mint` of the parent
+with that slot replaced; the child runs the same minibatch alone and
+`search.screen` (mean per-task reward at least the parent's) decides whether
+to pay for Validate; the child runs the whole Validate split alone at `K`
+and `evalstat.paired_verdict` pairs its rows against the parent's earlier
+Validate rows and against the incumbent's; `search.dispose` turns the
+verdicts into the step's disposition. At a stop (`steps`, `dollars`,
+`reflections`, `candidates`) the search runs seed and best together in one
+sub-plan, the only simultaneous comparison, and that verdict is the
+headline; anything but `Improved` reads "Not confirmed".
+
+### Rulings
+
+- **The minibatch is a spend filter, not a decision rule.** With three or
+  four tasks the sign test cannot reach its level, so the screen only
+  decides whether to pay for the Validate run; the only acceptance is the
+  paired verdict on Validate. `Improved` over the parent joins the pool
+  (`incumbent` when also not worse than the incumbent and leading more
+  tasks, else `joined`); `Indistinguishable` and `Underpowered` join as
+  `pareto_only`, never ranked above the parent; `Harmed` and `Incomplete`
+  (`unsettled`) stay out. A screen failure is `screened_out`; an answer the
+  bounds refuse, a child the settings refuse, or a reflection that
+  reproduces an existing candidate is a `refused` row and costs nothing.
+  Futility never fires inside a sub-run (every sub-plan but the confirm run
+  has one arm), so there is no `stopped_futile` disposition.
+- **The log is the state.** `search.replay` folds `search.jsonl` and refuses
+  the first row that does not follow: a row out of order, an arm no
+  candidate row introduced, a settling verdict whose runs are missing
+  (`search row missing: ...`), a disposition that does not follow from its
+  verdict and split (`search.consistent`), an `incumbent` settlement with
+  no incumbent row when the parent is not the incumbent, a second
+  incumbent row in one step, a row after the stop. Resume is the same
+  command: an open step is re-entered at the stage its rows reached, each
+  sub-run is executed again (the runner resumes it; a run directory the
+  crash never wrote is rebuilt from the Run row's `cap` and must mint the
+  same id), the incumbent row already held is not written twice, and the
+  draws are recomputed and checked against the rows (`on resume the step
+  drew ...`). A reflection whose answer was lost before the candidate row
+  is made again and counted again; a reflection that fails is charged for
+  every attempt (`accounting.total`) and recorded with an empty output
+  digest before the step ends `refused`.
+- **Dollars are counted once, on every lane.** The search's spend is the
+  sum of every sub-run's ledger (`usage.dollars` over all attempts, what
+  `budget.settle` charged; counted only on a metered trial lane) plus the
+  priced reflections (counted on every lane: the reflector is a live call
+  even when the trials are taped), read from disk so a resumed search
+  counts what an earlier call spent. Each sub-plan is written with
+  `max_dollars` equal to what remained at its creation, recorded in its
+  Run row's `cap`; a resumed sub-run is handed `min(cap - its own ledger,
+  what the search has left)`, because `run.execute` opens a fresh account
+  on every call and the original cap would be spent twice. A cell's worst
+  case is `ledger.max_attempts * worst(trial)`, since a faulting cell is
+  retried and every attempt is charged. A step is taken only when
+  `remaining >= step + confirm`, with `step = 2 * b * K_tune * worst(cell) +
+  |V| * K * worst(cell) + worst(reflection)` and `confirm = 2 * |V| * K *
+  worst(cell)`, and the money is held back, not merely checked: each
+  sub-run's cap is `remaining - confirm - the worst case of the stages still
+  to come in its step` (`held_back`), the seed's `remaining - confirm`, so a
+  step whose cells retry is truncated rather than allowed into the
+  confirm's reservation. A reflection is made only when its worst case is
+  still covered; a skipped one is a zero-dollar reflection row and a
+  `refused` row naming the budget, so the fold still reads the step. A
+  confirm run the budget no longer covers is `Unaffordable` (an ADT, not a
+  matched string) and the headline reads "Not confirmed (budget)", distinct
+  from "Not confirmed" on evidence. `record` applies a row to the state
+  before appending it, so a row the fold would refuse never reaches disk.
+  The front reports money paid: on a replay plan the taped rows' prices are
+  shown apart as `trials_priced_not_paid`.
+  `--max-dollars` is required on every lane, and a reflector whose
+  provider has no rate card is refused.
+- **The reflector is an entry name, pinned once.** `reflect.resolve` turns
+  it into a `ForResolved` target with no fallback, thinking off; the call is
+  `auxiliary.capped_gateway_summarizer` with no tools and no system text;
+  its usage is priced at the provider's card. The prompt template is a
+  constant, not a `Component`; excerpts are scrubbed (`trace.scrub_excerpt`),
+  frame-safe (`[[record]]` tokens broken in bodies), bounded (4 KiB per
+  excerpt by bytes, 8 rows), hidden test ids become `<test N>` in every
+  form EUnit prints them (`mod.fn`, `mod: fn`, bare `fn`) and their module
+  names `<module M>` (the `module '…'` header), and the answer
+  is refused when empty, over 16 KiB, or carrying a frame token. The
+  reflector sees tune rows only.
+- **Holdout is never read.** `optimize_cli.splits` drops it before anything
+  else sees the tasks, `optimize.check` refuses any task the salt assigns
+  to the holdout and any task listed under a split the salt does not assign
+  it to (so a hand-minted `search.json` cannot smuggle or swap one), and a
+  search row cannot spell the split (`decode_split`).
+- **The front and the proposals.** `search.rank` orders the incumbent
+  first, then the improved tier (`incumbent`, `joined`) by dominance over
+  the seed and tasks led, then the Pareto tier by minting step, so a
+  `pareto_only` child never stands above its parent whatever its
+  point-estimate dominance says. `propose/` payloads are written only for
+  the top three members whose Validate rows read `Improved` against the
+  seed's; a search in which nothing did writes no payload and `PROPOSE.md`
+  says so, and each program line names the candidate's confirm status
+  (confirmed, NOT confirmed, or never run beside the seed).
+- **Role-aimed and pack slots join by flag.** `--mutate role:<role>` adds a
+  role-aimed suffix and prefix, `--mutate pack` the prompt pack; today
+  `arm_settings` refuses the first (per-role profiles are protocol-change
+  101) and the child is recorded `refused`. No loop change is needed when
+  they land.
+
+### Falsifiers (no keys)
+
+`support/scripted` gained a planted objective: `planted_transport` honours
+`WRITE` with probability `with` when the request carries `scripted.sentinel`
+and `without` otherwise, drawn from a generator seeded by the request body
+normalised under the test root (`normalise.text`, so a run is reproducible
+across scratch directories and minutes); `reflector_transport` answers a
+request carrying the record frame with the next scripted sentence;
+`bernoulli_executor(Plant, Fault, counter)` writes a sub-run's ledger with
+the same plant and no session, drawing per `(seed, plan id, task, arm,
+index)` so a confirm sub-plan draws fresh trials, at `Plant.price` a row,
+honouring the context's `max_dollars` the way the runner's fresh account
+would (the cap alone, never less the ledger), writing only the cells the
+ledger lacks, within `Plant.scope` (`Everywhere | SingleArmOnly`, the
+latter making the confirm run able to fail), retrying per `Plant.retrying`
+(`TuneCells(attempts)` writes charged infrastructure rows before the scored
+one), ignoring the cap under `Plant.cap: Ignored` (a run whose worst case
+was underestimated), and dying per `Fault` (`KilledAfter(call, rows)`,
+`rows: 0` before any write). `optimize_test`
+holds: the planted sentinel is found at step 2 and confirmed (fast, and
+through real jailed sessions with the reflection going through the
+gateway); fifty seeded A/A searches of four steps at p = 0.5 call at most
+six percent of their Validate verdicts `Improved`, never change the
+incumbent without one, and confirm at most three (the false positives
+`alpha` admits; "never" is not a property of a rule at 0.05); an executor
+killed after step 1's parent minibatch resumes to a byte-identical log with
+no sub-plan id repeated; one killed before the run directory exists
+resumes from the Run row's cap; a crash after $9 of a $10 search resumes to
+$9.90, never $10.80; reflections are metered on a taped lane (two fit, the
+third's worst case does not); a failed reflection is charged and the step
+refused; a `SingleArmOnly` plant is improved on Validate and NOT confirmed;
+rows priced at the per-trial worst case take exactly one step and still
+pay for the confirm; minibatch cells retrying at twice their reservation
+are truncated and the confirm still runs and reads `Improved`; a
+reflection the budget cannot cover writes a zero-dollar row and a budget
+refusal, stops cleanly, and the directory replays and resumes; a refused answer and an inapplicable child cost
+nothing and a search with nothing improved writes no `propose/`; the
+search stops for dollars before a step it cannot cover; a holdout-assigned
+or split-swapped task is refused by `check`. `search_test` holds the codec, the fold (a
+deleted run row refuses with `search row missing`; a contradicting or
+duplicate row is refused), the front, the draw, the dispositions and the
+Pareto-below-parent ranking. `reflect_test` holds the bounds and the EUnit
+verbose redaction. Every test deletes its scratch root when it finishes.
+
+### Hazards
+
+- A sub-run's rows are paired across plans by `(task, index)`; the
+  comparison with the parent is sequential, so drift between runs is the
+  threat the confirm run exists for.
+- `max_candidates`, `max_reflections` and `max_steps` are checked before a
+  step; the step that trips the dollar check is not taken, so the last
+  front may be one step older than the operator expected.
+- Sub-run directories are not pruned; a long search keeps every attempt
+  root. The planted real-session test runs about 200 trials in 25 to 45 s
+  here, and its session teardown can print a `client/agency` hook-reaper
+  crash report (a `ProcessDown` from `runtime/writer`), which is noise from
+  the client's own shutdown, not a failed test.
+- `step_worst_case` counts one attempt per cell; a cell can retry three
+  times under the sub-run's own cap, which is why the reflection's worst
+  case is checked again right before the call.
+- The headline's improvement is on the validate tasks the search selected
+  on; the holdout is never run by the search, and `front.md` says so.

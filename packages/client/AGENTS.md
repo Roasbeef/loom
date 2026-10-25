@@ -203,7 +203,25 @@ with wiring can still choose, while `Some([])` (wiring and nothing selected)
 is a durable choice of none. `tasks` retains independently admitted
 fixture and expected-file bytes. `rollout` and `rollout_host` run fresh ordinary
 coding runtimes with native aggregate guards and actual composition digests;
-unknown billing reservations remain debited across both comparison arms.
+unknown billing reservations remain debited across both comparison arms. The
+guard debits the target's worst case before every attempt and, once the
+gateway's settlement observer reports how the attempt ended, replaces it with
+`rollout.attempt_charge` of that settlement; its pure `rollout_host.Ledger`
+(`open_ledger`, `reserve`, `settle`, `remaining`, `charged`), keyed by the pump
+process that asked, is the **one source of a trial's charge**: the step hands
+the fold `charged` (the summed usage records and the clipped reservation of
+every unmeasured attempt, open reservations included) and never a second figure
+read from the transcript, so the fold's allowance after the step is the guard's
+remaining allowance by construction. `reserve` pins each attempt's output
+ceiling to what the allowance has left, so a target whose whole ceiling does
+not fit the door's caps still runs. A request outside a turn, a response the
+runtime never committed and an attempt that never settles are charged once,
+there; `cross_check` reads the session's own usage ledger back as a tripwire
+and fails the step when it exceeds the guard's charge. A `Trial(_)` session runs no side work at all (`serve.side_work`: no
+glance loop, no block summarizer, no side-query machine), because side work is
+not the task under comparison and its spend would move the verdict.
+`rollout_host_test` runs the parity property through the real fold
+(protocol-change/100, the refund addendum).
 `rollout.Limits.samples` runs K independent samples of every task per arm
 through the same budget, and `rollout.Trial.score` answers a `rollout.Grade`
 (reward, sub-scores, side information, the verifier) that `verdict` reads against
@@ -3182,7 +3200,9 @@ catalogue without opening runtimes. Explicit admission invokes
   render_pack, pack_source, guidance, pinned_in, pinned, pin}` — the I/O
   half of the pure `prompt` package. `Host` is every `pack.Environment`
   field gathered from a real source; `pack_source` picks the shipped pack
-  or the one `LOOM_PROMPT_PACK` names; `render_pack` renders it or
+  or the one `LOOM_PROMPT_PACK` names (a host that sets `Settings.pack` hands the
+  source text in directly, skipping the environment, and the origin is
+  `Provided(label)`); `render_pack` renders it or
   refuses; `assemble` chooses between the `LOOM_SYSTEM_PROMPT` override,
   the pinned cell and a fresh render; `pinned_in`/`pinned`/`pin` are the
   two ends of the reserved `prompt/` cell. Nothing here is called per

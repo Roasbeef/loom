@@ -107,7 +107,7 @@ is buying nothing and the modules go under `client/dev/`.
 instrument *produces* and the governed plane *consumes*; they share three
 things and nothing else:
 
-1. **One trial recipe.** `serve.evolution_trial` (`serve.gleam:7876-7968`)
+1. **One trial recipe.** `serve.evolution_trial` (`serve.gleam:8063-7968`)
    builds a `Settings` for a fresh jailed session. Extract its body into
    `@internal pub fn trial_settings(settings, target, api, profiles, root, tag,
    base_policy) -> Settings` so `eval/trial.gleam` and the governed opener
@@ -496,7 +496,7 @@ the rule cannot hold α on synthetic data it will not hold it on a model.
   clustering that prevents a leaked near-duplicate.
 - The seal: `evolution.compare` can name only a task set admitted into the
   *source session* by `admit_tasks` (`tasks.load`, `tasks.gleam:95-120`;
-  `serve.evolution_compare`, `serve.gleam:7800-7804`). The instrument's
+  `serve.evolution_compare`, `serve.gleam:7998-7804`). The instrument's
   `eval admit --split tune|validate` writes a v2 task set through the same
   operator door; `eval admit --split holdout` **does not exist** — the
   command refuses, and a lint-style test in `eval` asserts no holdout id
@@ -544,7 +544,7 @@ digest of the message list with these normalised: absolute paths under
 the trial root → `<root>`, ISO dates → `<date>`, tool-use ids kept (they
 come from the tape, so they recur). Determinism needs: `Settings` with a
 `clock.stepping` clock, a fixed trial tag (today minted from
-`token.production_entropy()` at `serve.gleam:7888`, so `trial_settings`
+`token.production_entropy()` at `serve.gleam:7801`, so `trial_settings`
 takes the tag as a parameter — part of the §2 extraction), and the agent's
 tools running against a workspace prepared identically (the tree id
 guarantees it). What the lane may claim: *the harness produced the same

@@ -187,3 +187,29 @@ pub fn trial_settings_is_the_tagged_narrowed_recipe_test() {
     && trial.helper_pool_size == 2
     as "a trial is a local session bound to the exact admitted model"
 }
+
+// A trial's every request crosses the governed guard and is charged to the
+// comparison, so a trial runs none of the model work that is not part of a
+// turn: no glance loop, no block summarizer and no side-query machine
+// (protocol-change/100, the refund addendum). The source session keeps all
+// three. `serve.side_work` is the one decision the three start sites consult.
+pub fn a_trial_runs_no_side_work_and_a_source_does_test() {
+  let settings = serve_test.settings_under("build/test_db/trial-side-work")
+  let target = model.ResolvedModel("p", "m", model.ThinkingOff, 1000, 100)
+  let root = serve.trial_root(settings, "ab12cd34ef56ab78")
+  let trial =
+    serve.trial_settings(
+      settings,
+      target,
+      "anthropic-messages",
+      [],
+      root,
+      "ab12cd34ef56ab78",
+      settings.gateway,
+      settings.base_policy,
+    )
+  assert serve.side_work(trial.evolution_role) == serve.NoSideWork
+    as "a trial sends no request outside a turn"
+  assert serve.side_work(settings.evolution_role) == serve.RunsSideWork
+    as "the operator's session keeps its glance, summaries and side queries"
+}

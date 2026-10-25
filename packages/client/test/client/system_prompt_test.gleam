@@ -287,6 +287,15 @@ pub fn a_corrupt_pack_refuses_with_the_file_and_the_fault_test() {
   assert string.contains(reason, "line 1")
 }
 
+pub fn a_provided_pack_names_its_label_in_refusals_test() {
+  assert system_prompt.named(system_prompt.Provided("arm 3f2a")) == "arm 3f2a"
+
+  let assert Error(reason) =
+    system_prompt.render_pack(system_prompt.Provided("arm 3f2a"), "{}", host())
+    as "a corrupt provided pack must refuse"
+  assert string.contains(reason, "the prompt pack arm 3f2a is corrupt")
+}
+
 pub fn a_pack_that_renders_nothing_refuses_test() {
   // Decodes cleanly — fragments are legal sections — but every section is
   // a fragment, so nothing is ever emitted. Serving that is exactly the

@@ -11,7 +11,7 @@
 //// The rule that matters here is that nothing is applied silently or not at
 //// all. Every component or knob this module cannot honour is an `Error` that
 //// names it: a role-aimed component (`arm.refuse_unapplied`), a prompt pack
-//// (see `refuse_pack`), a model name the catalogue does not hold, a profile
+//// that does not decode (see `pack_of`), a model name the catalogue does not hold, a profile
 //// aimed at a model the catalogue does not route or at the wrong wire API.
 //// An arm that quietly ran as the baseline would make every comparison read
 //// as "indistinguishable" for a reason nobody could find.
@@ -19,24 +19,19 @@
 import client/catalog.{type Catalog, type CatalogModel, Catalog}
 import client/mcp
 import client/serve.{type Settings, Settings}
+import core/corruption
 import eval/arm.{
   type Arm, type Target, PromptPack, SystemSuffix, TaskPrefix, ToolDescription,
 }
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/order
 import gleam/result
 import gleam/string
+import prompt/pack
 import provider/gateway
 import provider/model
 import provider/profile.{type Profile}
-
-/// The reason a prompt pack cannot be applied. The pack reaches a session only
-/// through the process environment variable `LOOM_PROMPT_PACK`, read when the
-/// session boots (`serve.render_prompt`). `Settings` has no field for it, and
-/// trials run concurrently in one VM, so setting a process-wide variable per
-/// arm would race. Applying it needs a `Settings` field in `client`.
-const pack_refusal =
-  "a PromptPack component cannot be applied: the pack reaches a session only through the process environment (LOOM_PROMPT_PACK) and Settings has no field for it"
 
 /// Applies the arm's model-selection knobs to `base`.
 ///
@@ -54,13 +49,14 @@ const pack_refusal =
 ///
 pub fn to_settings(arm: Arm, base: Settings) -> Result(Settings, String) {
   use arm <- result.try(arm.refuse_unapplied(arm))
-  use Nil <- result.try(refuse_pack(arm))
+  use pack <- result.try(pack_of(arm))
   use thinking <- result.try(apply_thinking(base.catalog, arm.knobs.thinking))
   use roles <- result.try(apply_roles(thinking, arm.knobs.roles))
 
   Ok(
     Settings(
       ..base,
+      pack: option.or(pack, base.pack),
       catalog: roles,
       gateway: route_all(base.gateway, roles),
       deactivated_tools: list.unique(list.append(
@@ -82,7 +78,6 @@ pub fn to_settings(arm: Arm, base: Settings) -> Result(Settings, String) {
 ///
 pub fn profiles(arm: Arm, base: Settings) -> Result(List(Profile), String) {
   use arm <- result.try(arm.refuse_unapplied(arm))
-  use Nil <- result.try(refuse_pack(arm))
 
   let targets =
     arm.components
@@ -119,11 +114,26 @@ fn target_of(component: arm.Component) -> Result(Target, Nil) {
   }
 }
 
-/// Refuses an arm that carries a prompt pack, which no session field can carry today.
-fn refuse_pack(arm: Arm) -> Result(Nil, String) {
-  case list.any(arm.components, fn(component) { component.0 == PromptPack }) {
-    True -> Error(pack_refusal)
-    False -> Ok(Nil)
+/// The prompt pack source the arm carries, if any, after proving it decodes.
+///
+/// The pack reaches the session as text in `Settings.pack`. Decoding it here,
+/// with the pack's own total decoder, refuses a corrupt pack by arm name
+/// before any trial opens; left to the session boot it would fail every trial
+/// as an infrastructure error and spend attempts finding that out.
+fn pack_of(arm: Arm) -> Result(Option(String), String) {
+  case list.find(arm.components, fn(component) { component.0 == PromptPack }) {
+    Error(Nil) -> Ok(None)
+    Ok(#(_, text)) ->
+      case pack.decode(text) {
+        Ok(_) -> Ok(Some(text))
+        Error(report) ->
+          Error(
+            "the PromptPack component of arm "
+            <> arm.id
+            <> " is corrupt: "
+            <> corruption.describe(report),
+          )
+      }
   }
 }
 
