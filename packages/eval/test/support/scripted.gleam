@@ -5,7 +5,8 @@
 //// no socket is opened and no model is involved. It follows the request
 //// body: a prompt carrying `WRITE[<path>=<content>]` is answered with one
 //// `fs_write` tool call, the request that carries the tool result is answered
-//// with a closing text, and a prompt carrying `STALL` is never answered. That
+//// with a closing text, a prompt carrying `REFUSE` is answered with a
+//// refusal stop, and a prompt carrying `STALL` is never answered. That
 //// is enough to drive a real jailed session through a real tool call and
 //// leave a file for the grader, which is everything the runner's lifecycle
 //// needs and nothing about a model.
@@ -150,6 +151,19 @@ pub fn task_named(name: String, written: String, expected: String) -> Task {
   ))
 }
 
+/// A task whose agent is answered with a refusal.
+pub fn refused_task() -> Task {
+  task.mint(Task(
+    id: "",
+    name: "refused",
+    prompt: "Make the file. REFUSE",
+    workspace: Inline([#("seed.txt", "seed\n")]),
+    verifier: ExpectedFiles([#("out.txt", "never")]),
+    tags: [],
+    provenance: HandWritten("test"),
+  ))
+}
+
 /// A task whose agent never gets an answer.
 pub fn stalled_task() -> Task {
   task.mint(Task(
@@ -251,8 +265,20 @@ fn respond(
 }
 
 fn script(body: String, input_tokens: Int) -> List(String) {
-  case string.contains(body, "\"tool_result\"") {
-    True ->
+  case
+    string.contains(body, "REFUSE"),
+    string.contains(body, "\"tool_result\"")
+  {
+    True, _ ->
+      transcript(
+        text_block(),
+        "text_delta",
+        "text",
+        json.String(""),
+        "refusal",
+        input_tokens,
+      )
+    False, True ->
       transcript(
         text_block(),
         "text_delta",
@@ -261,7 +287,7 @@ fn script(body: String, input_tokens: Int) -> List(String) {
         "end_turn",
         input_tokens,
       )
-    False -> {
+    False, False -> {
       let #(path, content) = written_in(body)
 
       transcript(

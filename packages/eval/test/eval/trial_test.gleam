@@ -19,6 +19,8 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import provider/adapter/anthropic
+import provider/adapter/gemini
 import provider/gateway
 import provider/model
 import provider/profile
@@ -409,4 +411,117 @@ pub fn an_agent_that_changes_nothing_fails_the_mined_verifier_test_() -> scripte
       assert list.key_find(row.scores, "f2p") == Ok(0.0)
     })
   })
+}
+
+// --- the trajectory and the refusal -------------------------------------------
+
+// Runs one scripted trial under a fresh root, through the real session and the
+// real jail, with the seams the caller adjusts. The root is returned so a test
+// can look at what the attempt left on disk.
+fn scripted_trial(
+  name: String,
+  found: task.Task,
+  adjust: fn(trial.Seams) -> trial.Seams,
+) -> #(ledger.Row, String) {
+  let root = scripted.scratch(name)
+  let base = scripted.base(root <> "/base", scripted.transport(1))
+  let ctx =
+    trial.Context(
+      base:,
+      lane: trial.Live,
+      budgets: Budgets(4, 100.0, 60_000, 1),
+      plan_id: name,
+      seams: adjust(trial.default_seams(trial.refuse_program)),
+      repos: repos.empty(),
+      selftest: trial.unprobed,
+    )
+  let key = RowKey(found.id, scripted.baseline().id, 0)
+  let attempt = root <> "/attempt"
+
+  #(trial.run_one(ctx, found, scripted.baseline(), key, 1, attempt), attempt)
+}
+
+pub fn trajectory_is_written_and_recorded_test_() -> scripted.EunitTest {
+  scripted.Timeout(120, fn() {
+    scripted.when_available("trajectory_is_written_and_recorded", fn() {
+      let #(row, attempt) =
+        scripted_trial(
+          "trajectory-written",
+          scripted.task_named("traj", "hello", "hello"),
+          fn(seams) { seams },
+        )
+
+      // The row names the file relative to the attempt root, and the file is
+      // an ATIF document of the session the agent had.
+      assert row.outcome == Some(ledger.Passed)
+      assert row.artifacts.trajectory == "trajectory.json"
+      let assert Ok(text) = simplifile.read(attempt <> "/trajectory.json")
+      assert string.contains(text, "\"schema_version\":\"ATIF-v1.7\"")
+      assert string.contains(text, "fs_write")
+      assert !string.contains(row.side_info, "trajectory export failed")
+    })
+  })
+}
+
+pub fn a_failed_trajectory_export_is_told_in_side_info_and_costs_no_row_test_() -> scripted.EunitTest {
+  scripted.Timeout(120, fn() {
+    scripted.when_available("failed_trajectory_export", fn() {
+      // A directory already standing where the file must go makes the write
+      // fail after the trial was judged, which is the only order it can fail in.
+      let blocked = fn(seams: trial.Seams) {
+        trial.Seams(..seams, grade: fn(found, frozen, out, pristine) {
+          let assert Ok(Nil) =
+            simplifile.create_directory_all(out <> "/../trajectory.json")
+            as "the blocking directory is creatable"
+          seams.grade(found, frozen, out, pristine)
+        })
+      }
+      let #(row, _attempt) =
+        scripted_trial(
+          "trajectory-blocked",
+          scripted.task_named("blocked", "hello", "hello"),
+          blocked,
+        )
+
+      assert row.state == ledger.Scored
+      assert row.outcome == Some(ledger.Passed)
+      assert row.artifacts.trajectory == ""
+      assert string.starts_with(row.side_info, "trajectory export failed")
+    })
+  })
+}
+
+pub fn refusal_stop_is_a_safety_refusal_test_() -> scripted.EunitTest {
+  scripted.Timeout(120, fn() {
+    scripted.when_available("refusal_stop_is_a_safety_refusal", fn() {
+      let #(row, _attempt) =
+        scripted_trial("refused", scripted.refused_task(), fn(seams) { seams })
+
+      // A refusal is the arm's failure: scored, counted, reward zero, never an
+      // infrastructure fault that would be retried until it vanished.
+      assert row.state == ledger.Scored
+      assert row.outcome == Some(ledger.SafetyRefusal)
+      assert row.reward == 0.0
+      assert string.contains(row.side_info, "model refusal")
+    })
+  })
+}
+
+pub fn refusal_messages_are_the_adapters_own_test() {
+  // The runner recognises a refusal by the text the adapters give it, so the
+  // adapters' own mappings are what this test holds the list to.
+  let assert Ok(#(_, Some(messages))) = anthropic.map_stop_reason("refusal")
+  let assert Ok(#(_, Some(safety))) = gemini.map_finish_reason("SAFETY")
+  let assert Ok(#(_, Some(prohibited))) =
+    gemini.map_finish_reason("PROHIBITED_CONTENT")
+  let assert Ok(#(_, Some(other))) = gemini.map_finish_reason("OTHER")
+
+  assert trial.is_refusal(messages)
+  assert trial.is_refusal(safety)
+  assert trial.is_refusal(prohibited)
+  assert trial.is_refusal("Responses provider refused the request")
+
+  // A fault that is not the model's decision stays a fault.
+  assert !trial.is_refusal(other)
+  assert !trial.is_refusal("connection reset by peer")
 }

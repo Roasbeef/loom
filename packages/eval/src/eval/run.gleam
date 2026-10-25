@@ -14,6 +14,12 @@
 //// rule, that attempt k+1 follows an `Infra` row at k and nothing follows a
 //// scored one, is then true of the file by construction.
 ////
+//// New cells are admitted in waves of whole tasks, and between waves the
+//// runner asks `evalstat.futility` whether any completion of the plan could
+//// still reach a verdict. When none could, it stops admitting cells and says
+//// so; the cells it never ran are missing, so the report reads `Incomplete`,
+//// which is the honest account of a run that chose to spend less.
+////
 //// Three disciplines keep the ledger honest.
 ////
 //// - Every row is appended by one writer process, as one line with its
@@ -39,12 +45,16 @@ import eval/plan.{type Plan, type RowKey, RowKey}
 import eval/report
 import eval/task.{type Task}
 import eval/trial
+import evalstat
+import evalstat/trial as stat
+import evalstat/verdict as stat_verdict
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set
 import gleam/string
 import simplifile
 import weft
@@ -71,6 +81,8 @@ pub type Summary {
     started: Int,
     /// The sentence about the budget stop, if the budget stopped the run.
     budget_note: Option(String),
+    /// The sentence about the futility stop, if futility stopped admission.
+    futility_note: Option(String),
   )
 }
 
@@ -156,15 +168,22 @@ pub fn execute(
   budget.stop(account)
   process.send(writer.subject, Close)
 
-  use started <- result.try(ran)
+  use progress <- result.try(ran)
   let note = budget.describe(status)
+  let futility = futility_note(progress.futile_after)
   use Nil <- result.try(write_notes(directory, note))
+  use Nil <- result.try(write_futility(directory, futility))
   use Nil <- result.try(report.write_run(
     directory,
-    report.Inputs(loaded.plan, loaded.tasks, loaded.arms, note),
+    report.Inputs(loaded.plan, loaded.tasks, loaded.arms, note, futility),
   ))
 
-  Ok(Summary(directory:, started:, budget_note: note))
+  Ok(Summary(
+    directory:,
+    started: progress.started,
+    budget_note: note,
+    futility_note: futility,
+  ))
 }
 
 /// Every arm must apply and every arm's worst case must be known before a
@@ -233,6 +252,25 @@ fn write_notes(directory: String, note: Option(String)) -> Result(Nil, String) {
   }
 }
 
+/// The futility stop is kept in a file of its own, so a report rebuilt from
+/// the run directory says the same thing the run said.
+fn write_futility(
+  directory: String,
+  note: Option(String),
+) -> Result(Nil, String) {
+  case note {
+    Some(text) -> write_file(directory <> "/futility.txt", text <> "\n")
+    None -> Ok(Nil)
+  }
+}
+
+/// The sentence the report and the notes carry for a futility stop.
+fn futility_note(futile_after: Option(Int)) -> Option(String) {
+  option.map(futile_after, fn(pairs) {
+    "stopped for futility after " <> int.to_string(pairs) <> " pairs"
+  })
+}
+
 // --- the ledger writer ----------------------------------------------------------
 
 type WriterMessage {
@@ -283,7 +321,14 @@ fn append(writer: Writer, row: Row) -> Result(Nil, String) {
 
 // --- rounds -----------------------------------------------------------------------
 
-/// Runs attempt rounds one to three, returning how many trials started.
+// What the rounds got through: the trials they started, and the pair count
+// at which futility stopped admission, if it did.
+type Progress {
+  Progress(started: Int, futile_after: Option(Int))
+}
+
+/// Runs attempt rounds one to three. Round one admits new cells, so it is the
+/// only round futility can stop; the retries are of cells already admitted.
 fn rounds(
   ctx: trial.Context,
   loaded: Loaded,
@@ -291,24 +336,244 @@ fn rounds(
   writer: Writer,
   account: budget.Account,
   worst: Dict(String, Float),
-) -> Result(Int, String) {
+) -> Result(Progress, String) {
   use Nil <- result.try(close_interrupted(ctx.plan_id, directory, writer))
 
-  list.try_fold([1, 2, ledger.max_attempts], 0, fn(started, attempt) {
-    use pending <- result.try(pending_cells(loaded.plan, directory, attempt))
-    use count <- result.map(round(
-      ctx,
-      loaded,
-      directory,
-      writer,
-      account,
-      worst,
-      pending,
-      attempt,
-    ))
+  list.try_fold(
+    [1, 2, ledger.max_attempts],
+    Progress(0, None),
+    fn(progress, attempt) {
+      use pending <- result.try(pending_cells(loaded.plan, directory, attempt))
 
-    started + count
-  })
+      // Only the first round admits cells nobody has tried, so only it is gated by futility.
+      use more <- result.map(case attempt {
+        1 ->
+          admit_in_waves(
+            ctx,
+            loaded,
+            directory,
+            writer,
+            account,
+            worst,
+            pending,
+          )
+
+        _ ->
+          round(
+            ctx,
+            loaded,
+            directory,
+            writer,
+            account,
+            worst,
+            pending,
+            attempt,
+          )
+          |> result.map(fn(count) { Progress(count, None) })
+      })
+
+      Progress(
+        started: progress.started + more.started,
+        futile_after: option.or(progress.futile_after, more.futile_after),
+      )
+    },
+  )
+}
+
+/// Runs round one a few whole tasks at a time, asking before each wave
+/// whether the plan can still reach a verdict.
+///
+/// A wave is whole tasks so that a pair is never half-measured when the check
+/// runs, and it holds enough tasks to keep `concurrency` cells busy. The
+/// check precedes every wave, the first included, because a resumed run
+/// starts with rows an earlier call wrote and may already be futile.
+fn admit_in_waves(
+  ctx: trial.Context,
+  loaded: Loaded,
+  directory: String,
+  writer: Writer,
+  account: budget.Account,
+  worst: Dict(String, Float),
+  pending: List(RowKey),
+) -> Result(Progress, String) {
+  let per_task =
+    int.max(1, list.length(loaded.arms)) * loaded.plan.trials_per_cell
+  let tasks_per_wave =
+    int.max(1, { ctx.budgets.concurrency + per_task - 1 } / per_task)
+  let waves =
+    pending
+    |> list.chunk(fn(key) { key.task })
+    |> list.sized_chunk(tasks_per_wave)
+    |> list.map(list.flatten)
+
+  admit_wave(
+    ctx,
+    loaded,
+    directory,
+    writer,
+    account,
+    worst,
+    waves,
+    Progress(0, None),
+  )
+}
+
+/// One wave, then the rest: stop at the first wave the futility check refuses.
+fn admit_wave(
+  ctx: trial.Context,
+  loaded: Loaded,
+  directory: String,
+  writer: Writer,
+  account: budget.Account,
+  worst: Dict(String, Float),
+  waves: List(List(RowKey)),
+  progress: Progress,
+) -> Result(Progress, String) {
+  // No waves left is a run that got through them all.
+  case waves {
+    [] -> Ok(progress)
+
+    [wave, ..later] -> {
+      use rows <- result.try(read_rows(directory))
+
+      // The check reads the ledger, so it sees exactly the pairs that finished; a stop leaves the later waves without rows, which is how the report knows.
+      case futile_after(loaded.plan, rows) {
+        Some(pairs) -> Ok(Progress(..progress, futile_after: Some(pairs)))
+
+        None -> {
+          use count <- result.try(round(
+            ctx,
+            loaded,
+            directory,
+            writer,
+            account,
+            worst,
+            wave,
+            1,
+          ))
+
+          admit_wave(
+            ctx,
+            loaded,
+            directory,
+            writer,
+            account,
+            worst,
+            later,
+            Progress(..progress, started: progress.started + count),
+          )
+        }
+      }
+    }
+  }
+}
+
+// How one candidate stands in the futility check.
+type Hope {
+  // A completion of the plan could still decide it.
+  Open
+
+  // It could have been decided when the run began, and no longer can be.
+  Stalled(pairs: Int)
+
+  // No completion could ever have decided it, so nothing seen since matters.
+  Hopeless
+}
+
+/// The number of completed pairs at which the run should stop admitting new
+/// cells, or `None` while it should go on.
+///
+/// Each candidate is judged by `evalstat.futility` against the baseline over
+/// the pairs both arms have finished, with every unfinished pair counted as
+/// still to come. Two refinements keep the check from overreaching. A
+/// candidate the plan could never decide, a few tasks at most, is `Hopeless`
+/// from the start: stopping it "for futility" would stop the run before it
+/// began, and its verdict, `Underpowered`, is already the finding. And the
+/// run stops only when no candidate is `Open`, so one comparison that can
+/// still be decided is never cut short by another that cannot.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // run.futile_after(plan, []) == None
+/// ```
+///
+pub fn futile_after(frozen: Plan, rows: List(Row)) -> Option(Int) {
+  // Futility compares candidates with a baseline, so a plan with one arm has nothing to stop.
+  case frozen.arm_ids {
+    [] | [_] -> None
+
+    [baseline, ..candidates] -> {
+      let finished =
+        rows
+        |> last_rows
+        |> dict.values
+        |> list.filter(fn(row) { row.state != ledger.Running })
+        |> list.map(report.to_stat)
+      let planned = list.length(frozen.task_ids) * frozen.trials_per_cell
+      let hopes =
+        list.map(candidates, fn(candidate) {
+          hope(finished, baseline, candidate, planned)
+        })
+      let stalled =
+        list.filter_map(hopes, fn(each) {
+          // Only a stalled candidate gives the run a reason to stop.
+          case each {
+            Stalled(pairs:) -> Ok(pairs)
+            Open | Hopeless -> Error(Nil)
+          }
+        })
+
+      // Stop when nothing is open and something stalled; otherwise carry on.
+      case list.contains(hopes, Open), stalled {
+        False, [pairs, ..] -> Some(pairs)
+        True, _ | False, [] -> None
+      }
+    }
+  }
+}
+
+/// Where one candidate stands against the baseline after `finished` rows.
+fn hope(
+  finished: List(stat.Trial),
+  baseline: String,
+  candidate: String,
+  planned: Int,
+) -> Hope {
+  let done = completed_pairs(finished, baseline, candidate)
+
+  // Hopeless is read first: a plan that could never have decided is not stalled by what it has seen.
+  case
+    evalstat.futility([], baseline, candidate, planned),
+    evalstat.futility(finished, baseline, candidate, planned - done)
+  {
+    stat_verdict.StopUndecided, _ -> Hopeless
+    stat_verdict.Continue, stat_verdict.StopUndecided -> Stalled(done)
+    stat_verdict.Continue, stat_verdict.Continue -> Open
+  }
+}
+
+/// How many `(task, index)` pairs have a counted trial on both arms.
+fn completed_pairs(
+  finished: List(stat.Trial),
+  baseline: String,
+  candidate: String,
+) -> Int {
+  let counted_on = fn(arm: String) {
+    finished
+    |> list.filter(fn(row) {
+      row.arm == arm
+      && case stat.standing(row.outcome) {
+        stat.Counted(..) -> True
+        stat.Excluded -> False
+      }
+    })
+    |> list.map(fn(row) { #(row.task, row.index) })
+    |> set.from_list
+  }
+
+  set.intersection(counted_on(baseline), counted_on(candidate))
+  |> set.size
 }
 
 /// A `Running` row with nothing after it is a trial the previous call never
@@ -512,7 +777,7 @@ fn find_arm(arms: List(Arm), id: String) -> Result(Arm, String) {
 /// ## Examples
 ///
 /// ```gleam
-/// // run.reload("runs/<plan id>") == Ok(report.Inputs(plan, tasks, arms, None))
+/// // run.reload("runs/<plan id>") == Ok(report.Inputs(plan, tasks, arms, None, None))
 /// ```
 ///
 pub fn reload(directory: String) -> Result(report.Inputs, String) {
@@ -528,5 +793,11 @@ pub fn reload(directory: String) -> Result(report.Inputs, String) {
     Error(_) -> None
   }
 
-  Ok(report.Inputs(loaded.plan, loaded.tasks, loaded.arms, note))
+  // Likewise a run that was never stopped for futility has no such file.
+  let futility = case simplifile.read(directory <> "/futility.txt") {
+    Ok(text) -> Some(string.trim(text))
+    Error(_) -> None
+  }
+
+  Ok(report.Inputs(loaded.plan, loaded.tasks, loaded.arms, note, futility))
 }

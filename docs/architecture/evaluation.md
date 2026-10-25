@@ -82,7 +82,7 @@ module, so a change to a step has one place to land.
 | Report | `report.md` and `report.json`. The first line is the minimum detectable effect. | `eval/report` |
 
 The order inside a trial is the guarantee, and each step exists because
-skipping it has a failure it prevents. `trial.run_one` (`eval/trial.gleam:279`)
+skipping it has a failure it prevents. `trial.run_one` (`eval/trial.gleam:284`)
 is the single entry. It never raises: a fault in the instrument rather than the
 arm becomes an `Infra` row.
 
@@ -116,7 +116,7 @@ one), and the report. Each attempt works in
 `/tmp`: the jail replaces `/tmp` with a scratch tmpfs.
 
 The runner works in rounds, one per attempt number, with cells as weft tasks
-`budgets.concurrency` at a time (`run.execute`, `eval/run.gleam:137`). Because
+`budgets.concurrency` at a time (`run.execute`, `eval/run.gleam:146`). Because
 a round's cells are independent, a retry can be a round, and the ledger's
 sequencing rule is then true of the file by construction.
 
@@ -387,8 +387,15 @@ the task signs so far and the pairs still to run: could any allocation of the
 remaining pairs bring the sign test below α in either direction? If not, the
 answer is `StopUndecided`. There is no early decision, because a verdict also
 needs the interval, which the remaining pairs can still move. A stop could then
-be contradicted by the full run. **The runner does not call it:** nothing in
-`packages/eval` uses `futility`, so a run always executes its whole plan.
+be contradicted by the full run. **The runner calls it between waves.** Round one
+admits new cells a few whole tasks at a time, and before each wave
+`run.futile_after` asks `futility` about every candidate over the pairs both arms
+have counted. A candidate the plan could never have decided (a handful of
+tasks) is not stalled by what it has seen, and the run stops only when no
+candidate is still open and at least one stalled. The stop is written to
+`futility.txt` and the report header as "stopped for futility after N pairs";
+the cells never run are missing, so the verdicts read `Incomplete`. Retries of
+cells already admitted are not gated.
 
 ### pass@k and pass^k
 
@@ -466,11 +473,12 @@ built:
   operator's `admit_tasks`, which accepts only task set version 1.
 - There is no `--holdout` run mode, and no test that scans session state for
   holdout ids.
-- There is no production join (`eval production`) and no validate-versus-holdout
-  gap panel.
+- There is no production join (`eval production`). The validate-versus-holdout
+  gap itself is in the report.
 
 What the report does today is print a panel for each split over whatever tasks
-the plan holds, each with its own verdict. The holdout panel is therefore only
+the plan holds, each with its own verdict, and the validate-minus-holdout gap
+between them. The holdout panel is therefore only
 as sealed as the operator's discipline in choosing the plan's tasks. Holdout
 spend is never to be reused for tuning. Two tenths of a small task pool is a
 handful of tasks, so a holdout panel's MDE is large; its verdict says
@@ -552,8 +560,10 @@ original database: it copies the database and its `-wal`, opens the copy with a
 clock far past any lease expiry, reads at most `max_entries` (8192) entries and
 deletes the copy. `atif.scrub` applies the replay lane's prefix rule, not the
 32-grapheme scrubber, which would mangle commit hashes and test names. Keep its
-prefix list aligned with `cassette.redact_text` by hand. **The runner does not
-call it:** a ledger row's `artifacts.trajectory` is empty today.
+prefix list aligned with `cassette.redact_text` by hand. **The runner calls it**
+once a trial is judged: `trajectory.json` lands in the attempt root and the
+row's `artifacts.trajectory` names it. A failed export is told at the head of the
+row's `side_info` and never changes the outcome or costs the row.
 
 **Harbor.** `harbor.export` (`eval/harbor.gleam:198`) writes a task directory
 Harbor reads. The one repository read is `git diff <parent> <fix>`, whose source
@@ -709,10 +719,13 @@ limits what was exercised, and it is worth being exact about it.
 
 **Not proved here, so an operator runs them:**
 
-- A live A/A plan (the same arm twice, about 30 tasks, K = 3) whose verdict must
-  not be `Improved` or `Harmed`; repeat it for a few plans.
-- A live planted-degradation plan (arm B appends an instruction to run no tests)
-  that must read `Harmed`.
+- A live A/A plan (`packages/eval/plans/aa-live.json`: the same arm twice, 21
+  tasks, K = 3) whose verdict must not be `Improved` or `Harmed`; repeat it for a
+  few runs.
+- A live planted-degradation plan (`plans/degrade-live.json`: arm B prefixes an
+  instruction to run no tests) that must read `Harmed` if the drop is large
+  enough to power. `plans/README.md` has the commands, the cost method and the
+  minimum detectable effect the committed set gives (about 0.25 at worst).
 - A Terminal-Bench subset ranked against the public board, which needs
   `loom run`, Docker and the Harbor adapter, none of which exist.
 - The holdout-to-production comparison on real sessions, which needs slice 3A.
@@ -728,7 +741,7 @@ limits what was exercised, and it is worth being exact about it.
 
 | Not built | Where it lands |
 | --- | --- |
-| Admission tool and the mechanical holdout seal; the production join; the validate-versus-holdout gap | Design note slice 3A, `eval/split` plus a new `eval/production` |
+| Admission tool and the mechanical holdout seal; the production join | Design note slice 3A, `eval/split` plus a new `eval/production` |
 | Per-role profile key (so `Target.role` can be applied) | protocol-change/101, reserved |
 | A `Settings` field for prompt packs (so `PromptPack` can be applied) | A `client` change to `serve.Settings`; refusal text in `eval/arm_settings` |
 | Task set v2 admission through `admit_tasks`; refusing a repeated (fixture, expected) pair | protocol-change/100, "Task set v2 is deferred" |
@@ -736,7 +749,7 @@ limits what was exercised, and it is worth being exact about it.
 | `Program` verifiers in governed comparisons | ADR-021, deferred |
 | `loom run -p` and the Harbor agent adapter | Issue #492, over `eval/trial.run_one` |
 | The GEPA search | A later `eval/optimize`, consuming `Arm.components` and `Grade.side_info` |
-| Wiring ATIF into the trial's artifacts; futility into the runner; bootstrap, dominance, pass@k and the variance decomposition into the report | `eval/trial`, `eval/run` and `eval/report`, calling `evalstat` as it stands |
+| The variance decomposition in the report | `eval/report`, calling `evalstat/paired.decompose` as it stands |
 | Mining of `client`, `tui` and `session_view` | After a measured per-module verifier cost |
 | Replace-mode tool descriptions, a SQLite ledger, LLM-judged tasks, byte-exact replay | Rejected (ADR-021 and the design note's cut list), not deferred |
 
@@ -760,22 +773,23 @@ where the code is the authority.
   `family:packages/<pkg>/<module>`.
 - **`prepare` is a list of argvs,** each on an allowlist of three, not the
   single argv in the note's sketch.
-- **Report scope.** The report prints the MDE first, a panel per split, per-arm
-  lines, per-tag pass rates and the served models. It uses the default clustered
-  policy. It does not print the bootstrap, Pareto dominance, pass@k, the variance
-  decomposition or the validate-minus-holdout gap, and the "memorised" flag is
-  not built.
-- **`SafetyRefusal` has no producer.** The ledger and `evalstat` accept it, and
-  `evalstat` counts it as a failure, but no code path in the runner sets it.
-- **Ledger artifacts.** A scored row records `session_db` and `workspace` paths;
-  `trajectory` and `verifier_stdout` are empty strings. The verifier's output is
-  in `verifier/` under the attempt root.
+- **Report scope.** The report prints the MDE first, then each comparison under
+  the clustered interval and again under the bootstrap (2000 resamples seeded by
+  the plan id), a panel per split, the validate-minus-holdout gap (flagged
+  "memorised" when positive beyond its own interval), pass@k and pass^k for
+  k = 1..K, a dominance ruling per candidate, per-arm lines, per-tag pass rates
+  and the served models. It does not print the variance decomposition.
+- **`SafetyRefusal` is recognised by text.** `core/message.StopReason` has no
+  refusal variant; the provider adapters report a refusal as `Errored` with a
+  fixed message, and `trial.is_refusal` matches those messages. A trial whose
+  last assistant message is one is a scored, counted failure, not an
+  infrastructure fault.
+- **Ledger artifacts.** A scored row records `session_db`, `workspace` and
+  `trajectory` paths, relative to the attempt root; `verifier_stdout` is an empty
+  string. The verifier's output is in `verifier/` under the attempt root.
 - **No budget defaults.** The note proposes 40 requests, a 20-minute wall and a
   concurrency of 2. The plan carries these as required fields; the decoder only
   checks that they are positive and that concurrency is at most 256.
-- **`packages/eval/CLAUDE.md` is partly stale.** It says the CLI wires
-  `trial.refuse_program` until `eval/verify` is joined. `run_cli` now opens the
-  jail when a plan has a `Program` task and passes `verify.grade` as the grader.
 
 ## Module ownership and reading order
 

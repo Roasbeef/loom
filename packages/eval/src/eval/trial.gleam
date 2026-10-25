@@ -42,6 +42,7 @@
 //// - `running_row`, `infra_row`: the rows written around an attempt
 //// - `run_one`: one attempt, from materialisation to a row
 //// - `grade_expected`: the in-process grader for exact files
+//// - `is_refusal`: the provider adapters' refusal messages, recognised
 
 import client/catalog
 import client/evolution/prompt
@@ -55,6 +56,7 @@ import core/entry
 import core/message
 import eval/arm.{type Arm}
 import eval/arm_settings
+import eval/atif
 import eval/budget
 import eval/ledger.{type Row, Row}
 import eval/materialise
@@ -510,6 +512,7 @@ type Metrics {
     compactions: Int,
     answered: Int,
     last_error: Option(String),
+    refusal: Option(String),
     models: List(ledger.Served),
   )
 }
@@ -652,11 +655,27 @@ type Evidence {
   )
 }
 
-/// What is left once the session is gone: pick the outcome, grade if the arm
-/// finished, and write the row. A timed-out agent is not graded, since the
-/// ledger's rule is that a timeout is a failure, not a partial credit; a replay
-/// that diverged is the lane's finding, not a grade of anything.
+/// What is left once the session is gone: judge the trial, then keep its
+/// trajectory. The export comes last because it can only add to a row that
+/// already stands; it must never be the reason a finished trial is lost.
 fn finish(
+  ctx: Context,
+  task: Task,
+  blank: Row,
+  evidence: Evidence,
+) -> Result(Row, String) {
+  use judged <- result.map(judge(ctx, task, blank, evidence))
+
+  attach_trajectory(judged, evidence.root)
+}
+
+/// Picks the outcome, grades if the arm finished, and writes the row. A
+/// timed-out agent is not graded, since the ledger's rule is that a timeout
+/// is a failure, not partial credit; a model that refused is not graded
+/// either, because its last word was a refusal and the tree is whatever it
+/// had written before; a replay that diverged is the lane's finding, not a
+/// grade of anything.
+fn judge(
   ctx: Context,
   task: Task,
   blank: Row,
@@ -693,9 +712,14 @@ fn finish(
       ),
     )
 
-  // A replay divergence outranks a timeout, which outranks a provider fault, which outranks grading: each earlier arm makes the later ones meaningless.
-  case evidence.findings, evidence.driven.settling, metrics.last_error {
-    [_, ..], _, _ ->
+  // A replay divergence outranks a timeout, which outranks a refusal, which outranks a provider fault, which outranks grading: each earlier arm makes the later ones meaningless. A refusal is the arm's failure, so it must be read before the provider fault that carries the same stop reason.
+  case
+    evidence.findings,
+    evidence.driven.settling,
+    metrics.refusal,
+    metrics.last_error
+  {
+    [_, ..], _, _, _ ->
       Ok(
         Row(
           ..base,
@@ -706,12 +730,100 @@ fn finish(
         ),
       )
 
-    [], TimedOut, _ -> Ok(Row(..base, outcome: Some(ledger.AgentTimeout)))
+    [], TimedOut, _, _ -> Ok(Row(..base, outcome: Some(ledger.AgentTimeout)))
 
-    [], Settled, Some(error) if evidence.seen.refused == 0 ->
+    [], Settled, Some(refusal), _ ->
+      Ok(
+        Row(
+          ..base,
+          outcome: Some(ledger.SafetyRefusal),
+          side_info: tail("model refusal: " <> refusal),
+        ),
+      )
+
+    [], Settled, None, Some(error) if evidence.seen.refused == 0 ->
       Error("the provider failed: " <> error)
 
-    [], Settled, _ -> grade(ctx, task, base, evidence)
+    [], Settled, None, _ -> grade(ctx, task, base, evidence)
+  }
+}
+
+/// The session database, exported as a trajectory beside it.
+const trajectory_file = "trajectory.json"
+
+/// Writes `trajectory.json` into the attempt root and records its relative
+/// path in the row. The trajectory is evidence about a trial that already
+/// has its verdict, so a failure to export is told in `side_info`, ahead of
+/// the verifier's diagnostic (a row keeps the end of its text), and the row
+/// is otherwise untouched: no outcome changes and the cell is not retried.
+fn attach_trajectory(row: Row, root: String) -> Row {
+  let exported = {
+    use found <- result.try(atif.from_session_db(
+      root <> "/" <> row.artifacts.session_db,
+    ))
+
+    atif.write(found, root <> "/" <> trajectory_file)
+  }
+
+  // A written file is recorded; a failed one is told in the row and the verdict stands.
+  case exported {
+    Ok(Nil) ->
+      Row(
+        ..row,
+        artifacts: ledger.Artifacts(
+          ..row.artifacts,
+          trajectory: trajectory_file,
+        ),
+      )
+
+    Error(reason) ->
+      Row(
+        ..row,
+        side_info: tail(
+          "trajectory export failed: " <> reason <> "\n" <> row.side_info,
+        ),
+      )
+  }
+}
+
+/// The provider adapters spell a refusal as an errored stop with a fixed
+/// message; no stop reason of its own exists in `core/message`. These are
+/// those messages, so the runner can tell a model that declined from a
+/// provider that failed.
+const refusal_messages = [
+  "the model refused to complete the request",
+  "Responses provider refused the request",
+  "provider finishReason: SAFETY",
+  "provider finishReason: BLOCKLIST",
+  "provider finishReason: PROHIBITED_CONTENT",
+  "provider finishReason: SPII",
+  "provider finishReason: IMAGE_SAFETY",
+  "provider finishReason: IMAGE_PROHIBITED_CONTENT",
+]
+
+/// Whether an errored assistant message's text is a provider-reported
+/// refusal rather than a fault. `core/message.StopReason` has no refusal
+/// variant: the Messages adapter maps `refusal` to `Errored` with a fixed
+/// message, the Responses adapter overrides a refused turn to `Errored`, and
+/// the Gemini adapter does the same for its safety finish reasons. Matching
+/// those messages is the only signal the stored answer carries.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert trial.is_refusal("the model refused to complete the request")
+/// assert !trial.is_refusal("connection reset")
+/// ```
+///
+pub fn is_refusal(error_message: String) -> Bool {
+  list.contains(refusal_messages, error_message)
+}
+
+/// The refusal text of an errored message, if it is one.
+fn refusal_of(error_message: String) -> Option(String) {
+  case is_refusal(error_message) {
+    True -> Some(error_message)
+    False -> None
   }
 }
 
@@ -840,7 +952,7 @@ fn observe(instance: Instance) -> Result(Metrics, String) {
 
 /// Folds the store's entries into counts.
 fn tally(usage: message.Usage, entries: List(entry.Entry)) -> Metrics {
-  let empty = Metrics(usage, 0, 0, 0, 0, 0, None, [])
+  let empty = Metrics(usage, 0, 0, 0, 0, 0, None, None, [])
 
   list.fold(entries, empty, fn(seen, each) {
     case each {
@@ -913,6 +1025,7 @@ fn count_assistant(seen: Metrics, assistant: message.AgentMessage) -> Metrics {
           ]),
         ),
         last_error: ended,
+        refusal: option.then(ended, refusal_of),
       )
     }
     message.UserMessage(..)

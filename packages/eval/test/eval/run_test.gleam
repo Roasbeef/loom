@@ -1,12 +1,13 @@
 import eval/arm.{type Arm, Arm, Knobs, PromptPack}
 import eval/budget
-import eval/ledger.{type Row}
+import eval/ledger.{type Row, Row}
 import eval/plan.{type Plan}
 import eval/repos
 import eval/run
 import eval/run_cli
 import eval/task.{type Task}
 import eval/trial
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -435,4 +436,99 @@ pub fn a_recorded_tape_replays_to_the_same_result_test_() -> scripted.EunitTest 
       assert replayed.budget_note == None
     })
   })
+}
+
+// --- futility -------------------------------------------------------------------
+
+// Seven tasks, one trial each, and two arms that behave alike under the
+// scripted provider: every task is a tie, so after a few tasks no completion
+// of the plan can bring the sign test below its level.
+fn tied_tasks() -> List(Task) {
+  list.index_map(list.repeat(Nil, 7), fn(_, position) {
+    scripted.task_named("tie-" <> int.to_string(position), "same", "same")
+  })
+}
+
+pub fn runner_stops_admission_on_futility_test_() -> scripted.EunitTest {
+  scripted.Timeout(300, fn() {
+    scripted.when_available("runner_stops_admission_on_futility", fn() {
+      let tasks = tied_tasks()
+      let arms = [scripted.baseline(), scripted.suffixed()]
+      let r = rig("futility", tasks, arms, 1, 1, 100.0, 60_000, 1)
+
+      let assert Ok(summary) = run.execute(r.ctx, r.loaded, r.out)
+      let rows = finished(rows_of(summary.directory))
+
+      // Seven pairs could still have reached p = 0.03 at the start, and five
+      // cannot, so admission stops after the second task: two pairs, four trials.
+      assert summary.started == 4
+      assert list.length(rows) == 4
+      assert summary.futility_note == Some("stopped for futility after 2 pairs")
+      assert summary.budget_note == None
+
+      // The cells never run are missing, so the verdict is Incomplete, and
+      // the report says why the run is short.
+      let assert Ok(markdown) =
+        simplifile.read(summary.directory <> "/report.md")
+      assert string.contains(
+        markdown,
+        "Futility: stopped for futility after 2 pairs",
+      )
+      assert string.contains(markdown, "INCOMPLETE: plan row missing")
+
+      // A report rebuilt from the directory says the same thing.
+      let assert Ok(inputs) = run.reload(summary.directory)
+      assert inputs.futility_note == Some("stopped for futility after 2 pairs")
+    })
+  })
+}
+
+fn tied_row(frozen: Plan, key: plan.RowKey) -> Row {
+  Row(
+    ..trial.infra_row(frozen.id, key, 1, ""),
+    state: ledger.Scored,
+    outcome: Some(ledger.Passed),
+    reward: 1.0,
+  )
+}
+
+fn rows_for_tasks(frozen: Plan, how_many: Int) -> List(Row) {
+  plan.rows(frozen)
+  |> list.filter(fn(key) {
+    list.take(frozen.task_ids, how_many) |> list.contains(key.task)
+  })
+  |> list.map(tied_row(frozen, _))
+}
+
+pub fn futility_waits_until_a_decision_is_out_of_reach_test() {
+  let arms = [scripted.baseline(), scripted.suffixed()]
+  let frozen = scripted.plan_of(tied_tasks(), arms, 1, 1, 10.0, 1000)
+
+  // Nothing run, then one task, then two: the fifth remaining pair is the one
+  // that takes a perfect sweep below the level out of reach.
+  assert run.futile_after(frozen, []) == None
+  assert run.futile_after(frozen, rows_for_tasks(frozen, 1)) == None
+  assert run.futile_after(frozen, rows_for_tasks(frozen, 2)) == Some(2)
+  assert run.futile_after(frozen, rows_for_tasks(frozen, 3)) == Some(3)
+}
+
+pub fn a_plan_that_could_never_decide_is_not_stopped_for_futility_test() {
+  // Two tasks cannot reach p < 0.05 whatever happens, so the plan is
+  // underpowered by design; stopping it "for futility" would stop it at once.
+  let tasks = [
+    scripted.task_named("one", "a", "a"),
+    scripted.task_named("two", "b", "b"),
+  ]
+  let arms = [scripted.baseline(), scripted.suffixed()]
+  let frozen = scripted.plan_of(tasks, arms, 1, 1, 10.0, 1000)
+
+  assert run.futile_after(frozen, rows_for_tasks(frozen, 1)) == None
+  assert run.futile_after(frozen, rows_for_tasks(frozen, 2)) == None
+}
+
+pub fn a_single_arm_plan_has_nothing_to_stop_test() {
+  let frozen =
+    scripted.plan_of(tied_tasks(), [scripted.baseline()], 1, 1, 10.0, 1000)
+
+  assert run.futile_after(frozen, rows_for_tasks(frozen, 5)) == None
 }

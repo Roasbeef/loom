@@ -65,7 +65,8 @@ keyed by path and decode sorted by path.
 - A ledger row's reward must agree with its outcome (`Passed` above 0, all
   others below 1) and its artifact paths must be safe relative paths or empty.
 - `ledger.Outcome` is a local mirror of evalstat's five variants; keep them
-  aligned by hand until the runner joins them.
+  aligned by hand. `report.to_stat` is the one place a ledger row becomes an
+  `evalstat/trial.Trial`, and `eval/run` reuses it for the futility check.
 - `eval validate <file>` (`src/eval.gleam`) runs these decoders and exits
   nonzero on refusal, using `client/internal/ffi_os.halt`.
 
@@ -211,7 +212,8 @@ runs or resumes a frozen plan and writes the report. Modules: `eval/budget`
 (the dollar account), `eval/materialise` (starting tree to files),
 `eval/arm_settings` (arm to session configuration), `eval/trial` (one
 attempt to one ledger row), `eval/run` (plan, rounds, ledger, resume) and
-`eval/report` (rows to `report.md` and `report.json`). It also adds
+`eval/report` (rows to `report.md` and `report.json`). Operator plans, and the
+arms they name, are committed under `plans/` (see Plans, below). It also adds
 `telemetry`, `machine` and `broker` to `gleam.toml`: `serve.open_instance`
 takes a logger, and the base `Settings` literal names types from the other two.
 
@@ -221,7 +223,10 @@ A run directory `<out>/<plan id>/` holds `plan.json`, copies of `tasks/` and
 `arms/`, the append-only `trials.jsonl`, `notes.txt` (the budget stop) and the
 report. `run.execute` refuses an arm it cannot apply before any trial starts,
 then works in rounds, one per attempt number, cells as weft tasks
-`budgets.concurrency` at a time. One writer actor appends each row as a whole
+`budgets.concurrency` at a time. Round one, the only round that admits cells
+nobody has tried, runs them in waves of whole tasks and asks
+`evalstat.futility` before each wave (see Rulings). One writer actor appends
+each row as a whole
 line, so a crash leaves a parseable prefix; a `Running` row is written before
 a trial starts. Resuming is the same call: a `Running` row with no successor is
 closed as an `Infra` row (that attempt is spent) and finished cells are skipped.
@@ -232,10 +237,12 @@ sees) and `verifier/`.
 `trial.run_one` order: materialise (timed as `prepare`), apply the arm, open a
 session through `serve.trial_settings`, prompt and wait under
 `wall_ms_per_trial`, read usage and counts from the store, retire and confirm
-retirement, copy the workspace to `frozen/`, grade. Timeout is `AgentTimeout`
-(a failure, never retried, never graded); a materialise, open, observation,
-retirement or grading fault is `Infra`. `Seams` (runner, open, retire, grade)
-is how a test makes one fail or watches their order.
+retirement, copy the workspace to `frozen/`, grade, then export the trajectory.
+Timeout is `AgentTimeout` (a failure, never retried, never graded); a final
+assistant message that is a provider-reported refusal is `SafetyRefusal` (a
+failure, counted, never retried, never graded); a materialise, open,
+observation, retirement or grading fault is `Infra`. `Seams` (runner, open,
+retire, grade) is how a test makes one fail or watches their order.
 
 ### Rulings
 
@@ -249,6 +256,38 @@ is how a test makes one fail or watches their order.
 - **The report trusts only a reconciled ledger.** Any `ledger.reconcile`
   failure makes every verdict `Incomplete` with its reason. Line one is the
   minimum detectable effect; each non-baseline arm is compared with the first.
+  Beside the clustered interval each whole-plan comparison prints the
+  bootstrap one (`verdict.Bootstrap(2000, seed: plan id)`, so a ledger renders
+  the same interval every time; the per-split panels skip it, it is not free).
+  The report also carries the validate-minus-holdout gap per candidate (the
+  difference of the two splits' mean per-task effects, the two clustered
+  variances added, "memorised" only when the gap is positive and its whole
+  interval is above zero, unavailable below two tasks in a split or with no
+  spread), pass@k and pass^k for k = 1..K per arm (a task with fewer than k
+  counted trials makes the cell say why instead of printing a number), and a
+  `dominance.compare` ruling per candidate over the outcome verdict and the
+  arm's mean scores plus `cost_inv`, `turns_inv` and `tool_errors_inv`
+  (`1 / (1 + mean)`; a row lacking a score counts as zero).
+- **Futility stops admission, never a verdict.** Before each wave of round one
+  `run.futile_after` judges every candidate against the baseline with
+  `evalstat.futility` over the pairs both arms have counted, every other pair
+  still to come. A candidate the plan could not have decided at the start (a
+  few tasks) is never stalled by what it has seen, and the run stops only when
+  no candidate is still open and at least one stalled. The stop is recorded as
+  "stopped for futility after N pairs" in `futility.txt` and the report header;
+  the cells not run are missing, so the verdicts are `Incomplete`. Retry
+  rounds two and three are not gated.
+- **A refusal is a failure of the arm.** `core/message.StopReason` has no
+  refusal variant: the adapters map one to `Errored` with a fixed
+  `error_message`, and `trial.is_refusal` recognises those messages (a test
+  holds the list to the Messages and Gemini adapters' own output, the
+  Responses text is copied). Matching text is the only signal the stored
+  answer carries; if an adapter changes its wording, change the list.
+- **The trajectory never fails a row.** After judging, `trial.attach_trajectory`
+  exports `atif.from_session_db` to `<attempt root>/trajectory.json` and records
+  `trajectory.json` in the row's `artifacts.trajectory`. A failure is told at the
+  head of `side_info` (a row keeps the end of its text, where the verifier's
+  verdict sits) and `artifacts.trajectory` stays empty.
 - **Tags.** The session tag is a digest of plan, task, arm, index and attempt,
   not production entropy: the roots are unique per attempt under the run
   directory, and a replay needs the same tag every time.
@@ -260,9 +299,11 @@ is how a test makes one fail or watches their order.
   and trials share a VM. A `Settings` field in `client` is what lifts it.
 - **Exact-file grading** is `trial.grade_expected`, a copy of
   `client/evolution/fixture.score`'s comparison, because that function takes
-  the governed task set. `Program` verifiers go through `Seams.grade`; the CLI
-  wires `trial.refuse_program` ("program verifier not built") until
-  `eval/verify` is joined.
+  the governed task set. `Program` verifiers go through `Seams.grade`;
+  `run_cli` opens a jail (`verify.open_jail`) when a plan holds a `Program`
+  task and passes `verify.grade` as the grader, and keeps
+  `trial.refuse_program` ("program verifier not built") only for a plan that
+  needs no jail.
 - **Served models** come from the profile observer when the arm has profiles
   and from the recorded answers otherwise (digest empty then).
 
@@ -275,6 +316,24 @@ is how a test makes one fail or watches their order.
   platform, not from a self-test of the helper.
 - Replay tapes are looked up as `<tapes>/<task id>/<index>.jsonl`, so one tape
   serves every arm; a divergence is a `VerifierFailed` row naming the request.
+
+## Plans
+
+`plans/` holds four frozen operator plans over `tasks/loom-history-v1/`, the
+arms they name under `plans/arms/<arm id>.json`, and `plans/README.md`, which
+carries the expected verdicts, the cost method and the exact `make eval-run`
+commands. `aa-live` is two arms that differ only by an inert withheld-tool
+name (the arm id never hashes the name, so two copies of one arm cannot share a
+plan); `degrade-live` is the baseline against a `TaskPrefix` that forbids
+running tests; `smoke-record-live` and `smoke-replay` are one plan in two
+lanes, so a tape recorded by the first is found by the second. At 21 tasks and
+K = 3 the minimum detectable effect is about 0.25 at worst, so an undecided
+comparison reads `Underpowered`. `committed_plans_validate_test` loads every
+plan through `run.load`, validates every arm file, and holds the README to the
+plans' names and commands. Editing a plan or an arm changes its id; the
+refusal from `gleam run -m eval -- validate <file>` names the new digest. The
+stamped `harness.git_commit` and the `no-tests` arm's catalogue target
+(`main`, `main-model`) are placeholders an operator re-stamps.
 
 ## Verifier
 
@@ -390,8 +449,7 @@ directory of tasks into `<out>/prove.jsonl`.
 - `materialise` runs a git task's `prepare` argvs in the package the verifier
   names (`prove.package_of`, so `packages/<pkg>`) when the tree root is not a
   Gleam project, then a warm `gleam build` there when any step used `gleam`;
-  both are inside the timed cold start. This supersedes the hazard under
-  Verifier that says materialise runs them at the root.
+  both are inside the timed cold start.
 - `run -- --record DIR` on a live plan taps the wire with `cassette.recording`
   per cell and writes `<DIR>/<task id>/<index>.jsonl` when the trial's findings
   are asked for (after retirement); the lane is `trial.Recording`, metered like
@@ -450,8 +508,8 @@ trial, builds an image or uploads anything.
   original, opens the copy with a clock far past any lease expiry (so a lease
   copied from a live writer reads as expired in the copy alone), scans,
   closes and deletes the copy. The original is neither opened nor written.
-  `atif.write(trajectory, path)` saves it. `trial.gleam` is not wired to
-  these yet; the orchestrator joins them.
+  `atif.write(trajectory, path)` saves it. `trial.gleam` calls both after a
+  trial is judged (see Runner, Rulings).
 - `atif.scrub` is the replay lane's prefix rule (`sk-`, `xai-`, `ghp_`,
   `gho_`, `ghs_`, `ghu_`, `github_pat_`, `Bearer `), copied from
   `cassette.redact_text` because that function is private. It deliberately
