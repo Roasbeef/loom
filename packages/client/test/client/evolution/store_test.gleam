@@ -13,6 +13,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
 import session/session
+import simplifile
 import storage/storage
 
 fn opened() -> store.Store {
@@ -707,4 +708,68 @@ pub fn complete_extension_descriptor_is_bounded_before_retention_test() {
     )
   store.propose(catalogue, escaped) |> should.be_error
   store.catalogue(catalogue) |> should.equal(Ok([]))
+}
+
+pub fn a_directory_with_no_catalogue_database_has_no_selections_test() {
+  let root =
+    "build/test_db/evolution-none-"
+    <> int.to_string(ffi_os.unique_positive_integer())
+
+  // Asking must not create the directory or the database it asked about.
+  store.session_selections(root, "session-a", clock.fixed(at: 1))
+  |> should.equal(Ok([]))
+  simplifile.is_directory(root) |> should.equal(Ok(False))
+}
+
+pub fn session_selections_lists_only_approved_selections_of_that_session_test() {
+  let catalogue = opened()
+  let mine = record_test.candidate()
+  let evidence = approved(catalogue, mine)
+  let assert Ok(selected) =
+    store.select(
+      catalogue,
+      mine.id,
+      evidence.id,
+      mine.scope,
+      mine.name,
+      None,
+      "operator",
+      "v1",
+    )
+    as "the session's extension is selected"
+
+  // A selection in a workspace scope serves every session there and nothing is
+  // held by this one, so it is not listed.
+  let shared =
+    record.identified(
+      record.Candidate(
+        ..mine,
+        name: "shared",
+        scope: record.Workspace("/workspace"),
+      ),
+    )
+  let shared_evidence = approved(catalogue, shared)
+  let assert Ok(_) =
+    store.select(
+      catalogue,
+      shared.id,
+      shared_evidence.id,
+      shared.scope,
+      shared.name,
+      None,
+      "operator",
+      "v1",
+    )
+    as "the workspace extension is selected"
+  let root = store.root(catalogue)
+  let at = clock.fixed(at: 1_700_000_000_002)
+  store.session_selections(root, "session-a", at)
+  |> should.equal(Ok([selected]))
+  store.session_selections(root, "session-b", at) |> should.equal(Ok([]))
+
+  // Revocation leaves the selection on file, but it serves nothing, so a move
+  // that asks to revoke it first is then allowed.
+  store.revoke(catalogue, mine.id, mine.scope, "operator", "revoked")
+  |> should.equal(Ok(Nil))
+  store.session_selections(root, "session-a", at) |> should.equal(Ok([]))
 }
