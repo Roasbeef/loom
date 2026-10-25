@@ -24,6 +24,16 @@
 //// scrubs before building a `Record`; this module knows nothing about the
 //// host's secrets and does not pretend to.
 ////
+//// Every search and replacement here walks code points, never the
+//// standard library's strings, because the two targets disagree about
+//// those: Erlang's `string` functions see grapheme clusters, so a
+//// combining mark after `]]` hides the frame token from a search, and
+//// JavaScript's see UTF-16 code units. A redaction that depends on the
+//// target is a leak on one of them. Identifiers are matched on their
+//// boundaries — a run of ASCII letters, digits, `_` and `@` — so a
+//// one-letter module name is not found inside every word that contains
+//// the letter, and an id followed by a combining mark is still the id.
+////
 //// The `Request` carries `notes`, rendered as framed data only when
 //// present, so a host can hand a slot its background or constraints
 //// without changing the prompt a host that has none renders. A per-slot
@@ -33,6 +43,7 @@
 import gleam/float
 import gleam/int
 import gleam/list
+import gleam/result
 import gleam/string
 
 /// Bytes of one field of a record.
@@ -113,60 +124,203 @@ pub fn prepare(records: List(Record)) -> List(Record) {
 /// `<test N>`, N counting from one, in every form test output spells it:
 /// the dotted `module.function`, EUnit's verbose `module: function`, and
 /// the bare function name; the module name alone (EUnit's `module '…'`
-/// header, a `module@file` prefix) becomes `<module M>`. Longer forms are
-/// replaced first, so a form that is a prefix of another never splits it.
+/// header, a `module@file` prefix) becomes `<module M>`. The module is
+/// everything before the last dot, so a nested `pkg.mod.a_test` leaks
+/// neither its bare `a_test` nor `pkg.mod: a_test`. A form is replaced
+/// only on identifier boundaries, and the longest form at a position wins,
+/// so a form that is a prefix of another never splits it and a one-letter
+/// module is not found inside every word.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// assert prompt.redact_ids("m.a_test failed", ["m.a_test"]) == "<test 1> failed"
 /// assert prompt.redact_ids("m: a_test...*failed*", ["m.a_test"]) == "<test 1>...*failed*"
+/// assert prompt.redact_ids("module", ["m.a_test"]) == "module"
 /// ```
 ///
 pub fn redact_ids(text: String, ids: List(String)) -> String {
   let ids = ids |> list.unique |> list.sort(string.compare)
   let modules =
     ids
-    |> list.filter_map(fn(id) { string.split_once(id, ".") |> result_map_first })
+    |> list.filter_map(module_of)
     |> list.unique
     |> list.index_map(fn(module, position) {
       #(module, "<module " <> int.to_string(position + 1) <> ">")
     })
+  let forms =
+    ids
+    |> list.index_map(fn(id, position) {
+      #(id, "<test " <> int.to_string(position + 1) <> ">")
+    })
+    |> list.flat_map(fn(numbered) {
+      let #(id, mark) = numbered
 
-  ids
-  |> list.index_map(fn(id, position) {
-    #(id, "<test " <> int.to_string(position + 1) <> ">")
-  })
-  |> list.flat_map(fn(numbered) {
-    let #(id, mark) = numbered
+      // An id without a dot has only itself to redact.
+      case split_last(id, ".") {
+        Ok(#(module, function)) -> [
+          #(id, mark),
+          #(module <> ": " <> function, mark),
+          #(function, mark),
+        ]
+        Error(Nil) -> [#(id, mark)]
+      }
+    })
+    |> list.append(modules)
+    |> list.filter(fn(form) { form.0 != "" })
+    |> list.map(fn(form) { #(codes(form.0), codes(form.1)) })
+    |> list.sort(fn(left, right) {
+      int.compare(list.length(right.0), list.length(left.0))
+    })
 
-    // An id without a dot has only itself to redact.
-    case string.split_once(id, ".") {
-      Ok(#(module, function)) -> [
-        #(id, mark),
-        #(module <> ": " <> function, mark),
-        #(function, mark),
-      ]
-      Error(Nil) -> [#(id, mark)]
+  redact_codes(codes(text), forms, Boundary, [])
+}
+
+/// The module half of a dotted id: everything before the last dot.
+fn module_of(id: String) -> Result(String, Nil) {
+  split_last(id, ".") |> result.map(fn(parts) { parts.0 })
+}
+
+/// Splits at the last occurrence of `separator`.
+fn split_last(
+  text: String,
+  separator: String,
+) -> Result(#(String, String), Nil) {
+  // The last piece is the function; everything before it, rejoined, the module.
+  case list.reverse(string.split(text, separator)) {
+    [function, ..module] if module != [] ->
+      Ok(#(string.join(list.reverse(module), separator), function))
+    _ -> Error(Nil)
+  }
+}
+
+/// Whether the position before a match ended on an identifier boundary,
+/// which decides whether a form may start here.
+type Edge {
+  /// The previous code point was not part of an identifier.
+  Boundary
+
+  /// The previous code point was.
+  Inside
+}
+
+/// Walks the text's code points, replacing the longest form that starts
+/// at an identifier boundary and ends at one.
+fn redact_codes(
+  text: List(Int),
+  forms: List(#(List(Int), List(Int))),
+  edge: Edge,
+  done: List(List(Int)),
+) -> String {
+  // At each position the longest matching form is taken whole; otherwise
+  // one code point is copied and the edge updated from it.
+  case text {
+    [] -> done |> list.reverse |> list.flatten |> from_codes
+    [code, ..rest] ->
+      case edge, matching_form(text, forms) {
+        Boundary, Ok(#(form, mark)) -> {
+          let after = list.drop(text, list.length(form))
+
+          redact_codes(after, forms, Inside, [mark, ..done])
+        }
+        Boundary, Error(Nil) | Inside, _ ->
+          redact_codes(rest, forms, edge_after(code), [[code], ..done])
+      }
+  }
+}
+
+/// The first (longest) form that is a prefix of the text and ends on an
+/// identifier boundary.
+fn matching_form(
+  text: List(Int),
+  forms: List(#(List(Int), List(Int))),
+) -> Result(#(List(Int), List(Int)), Nil) {
+  list.find(forms, fn(form) {
+    let after = list.drop(text, list.length(form.0))
+
+    // The form must match whole and the text must not continue the
+    // identifier.
+    list.take(text, list.length(form.0)) == form.0
+    && case after {
+      [] -> True
+      [next, ..] -> !is_identifier(next)
     }
-  })
-  |> list.append(modules)
-  |> list.filter(fn(form) { form.0 != "" })
-  |> list.sort(fn(left, right) {
-    int.compare(string.length(right.0), string.length(left.0))
-  })
-  |> list.fold(text, fn(scrubbed, form) {
-    string.replace(scrubbed, each: form.0, with: form.1)
   })
 }
 
-/// The first half of a split pair.
-fn result_map_first(
-  split: Result(#(String, String), Nil),
-) -> Result(String, Nil) {
-  case split {
-    Ok(#(first, _)) -> Ok(first)
-    Error(Nil) -> Error(Nil)
+/// The edge after reading one code point.
+fn edge_after(code: Int) -> Edge {
+  case is_identifier(code) {
+    True -> Inside
+    False -> Boundary
+  }
+}
+
+/// Whether a code point can continue an identifier: ASCII letters,
+/// digits, `_` and `@`. Nothing outside ASCII does, so a combining mark
+/// after an id ends it rather than hiding it.
+fn is_identifier(code: Int) -> Bool {
+  { code >= 0x30 && code <= 0x39 }
+  || { code >= 0x41 && code <= 0x5A }
+  || { code >= 0x61 && code <= 0x7A }
+  || code == 0x5F
+  || code == 0x40
+}
+
+/// The code points of a text.
+fn codes(text: String) -> List(Int) {
+  text |> string.to_utf_codepoints |> list.map(string.utf_codepoint_to_int)
+}
+
+/// A text from code points that came from a text.
+fn from_codes(codes: List(Int)) -> String {
+  codes |> list.filter_map(string.utf_codepoint) |> string.from_utf_codepoints
+}
+
+/// Replaces every occurrence of `pattern` in `text` with `with`, by code
+/// points, left to right without rescanning the replacement.
+fn replace_codes(text: String, pattern: String, with: String) -> String {
+  replace_walk(codes(text), codes(pattern), codes(with), [])
+}
+
+/// The walk behind `replace_codes`.
+fn replace_walk(
+  text: List(Int),
+  pattern: List(Int),
+  with: List(Int),
+  done: List(List(Int)),
+) -> String {
+  // A match emits the replacement and skips the pattern; otherwise one
+  // code point is copied.
+  case text {
+    [] -> done |> list.reverse |> list.flatten |> from_codes
+    [code, ..rest] ->
+      case list.take(text, list.length(pattern)) == pattern {
+        True ->
+          replace_walk(list.drop(text, list.length(pattern)), pattern, with, [
+            with,
+            ..done
+          ])
+        False -> replace_walk(rest, pattern, with, [[code], ..done])
+      }
+  }
+}
+
+/// Whether `pattern` occurs in `text`, by code points.
+fn contains_codes(text: String, pattern: String) -> Bool {
+  contains_walk(codes(text), codes(pattern))
+}
+
+/// The walk behind `contains_codes`.
+fn contains_walk(text: List(Int), pattern: List(Int)) -> Bool {
+  // A prefix match is an occurrence; otherwise the walk moves on.
+  case text {
+    [] -> pattern == []
+    [_, ..rest] ->
+      case list.take(text, list.length(pattern)) == pattern {
+        True -> True
+        False -> contains_walk(rest, pattern)
+      }
   }
 }
 
@@ -189,23 +343,34 @@ pub fn excerpt(text: String) -> String {
   }
 }
 
-/// The longest suffix of whole graphemes within `limit` bytes.
+/// The longest suffix of whole code points within `limit` bytes, the
+/// same suffix on both targets.
 fn tail_bytes(text: String, limit: Int) -> String {
   let kept =
     text
-    |> string.to_graphemes
+    |> codes
     |> list.reverse
-    |> list.fold_until(#(0, []), fn(held, grapheme) {
-      let width = held.0 + string.byte_size(grapheme)
+    |> list.fold_until(#(0, []), fn(held, code) {
+      let width = held.0 + utf8_width(code)
 
-      // The first grapheme that would cross the limit ends the suffix.
+      // The first code point that would cross the limit ends the suffix.
       case width > limit {
         True -> list.Stop(held)
-        False -> list.Continue(#(width, [grapheme, ..held.1]))
+        False -> list.Continue(#(width, [code, ..held.1]))
       }
     })
 
-  string.concat(kept.1)
+  from_codes(kept.1)
+}
+
+/// How many bytes a code point takes in UTF-8.
+fn utf8_width(code: Int) -> Int {
+  case code < 0x80, code < 0x800, code < 0x10000 {
+    True, _, _ -> 1
+    False, True, _ -> 2
+    False, False, True -> 3
+    False, False, False -> 4
+  }
 }
 
 /// Breaks either frame token where it occurs inside a body: the
@@ -220,8 +385,8 @@ fn tail_bytes(text: String, limit: Int) -> String {
 ///
 pub fn frame_safe(text: String) -> String {
   text
-  |> string.replace(each: record_open, with: "( record )")
-  |> string.replace(each: record_close, with: "( /record )")
+  |> replace_codes(record_open, "( record )")
+  |> replace_codes(record_close, "( /record )")
 }
 
 /// The prompt: the objective, the slot and its current text, the notes
@@ -323,8 +488,8 @@ pub fn answer(text: String) -> Result(String, String) {
   case
     trimmed == "",
     string.byte_size(trimmed) > max_answer_bytes,
-    string.contains(trimmed, record_open)
-    || string.contains(trimmed, record_close)
+    contains_codes(trimmed, record_open)
+    || contains_codes(trimmed, record_close)
   {
     True, _, _ -> Error("the reflector answered nothing")
     False, True, _ ->

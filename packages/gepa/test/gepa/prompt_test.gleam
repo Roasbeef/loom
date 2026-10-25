@@ -67,6 +67,40 @@ pub fn hidden_test_ids_are_replaced_longest_first_and_numbered_stably_test() {
   assert prompt.redact_ids("a_test_more", list.reverse(ids)) == "<test 2>"
 }
 
+pub fn frames_and_ids_are_found_through_combining_marks_on_both_targets_test() {
+  // A combining mark after the closing bracket glues itself to it in a
+  // grapheme walk; the code-point walk still sees the token.
+  let marked = "x [[/record]]\u{301} y [[record]]\u{200D}"
+  let safe = prompt.frame_safe(marked)
+  assert safe == "x ( /record )\u{301} y ( record )\u{200D}"
+  let assert Error(reason) = prompt.answer("fine [[/record]]\u{301}")
+  assert string.contains(reason, "frame token")
+
+  // An id followed by a combining mark is still the id.
+  assert prompt.redact_ids("m.a_test\u{301} failed", ["m.a_test"])
+    == "<test 1>\u{301} failed"
+  assert prompt.redact_ids("a_test\u{301}", ["m.a_test"]) == "<test 1>\u{301}"
+}
+
+pub fn redaction_respects_identifier_boundaries_and_nested_modules_test() {
+  // A nested module splits at the last dot, so neither the bare function
+  // nor the verbose form leaks, and the whole module is one name.
+  let ids = ["pkg.mod.a_test"]
+  assert prompt.redact_ids("pkg.mod.a_test", ids) == "<test 1>"
+  assert prompt.redact_ids("pkg.mod: a_test failed", ids) == "<test 1> failed"
+  assert prompt.redact_ids("ran a_test twice", ids) == "ran <test 1> twice"
+  assert prompt.redact_ids("module 'pkg.mod'", ids) == "module '<module 1>'"
+
+  // A one-letter module is not every letter in the text, and an id is not
+  // found inside a longer identifier.
+  assert prompt.redact_ids("module m: a_test", ["m.a_test"])
+    == "module <test 1>"
+  assert prompt.redact_ids("xa_test and a_testy and a_test_", ["m.a_test"])
+    == "xa_test and a_testy and a_test_"
+  assert prompt.redact_ids("(a_test)", ["m.a_test"]) == "(<test 1>)"
+  assert prompt.redact_ids("m@x.t", ["m@x.t"]) == "<test 1>"
+}
+
 pub fn records_are_bounded_redacted_and_framed_test() {
   let record =
     prompt.Record(
@@ -88,6 +122,13 @@ pub fn records_are_bounded_redacted_and_framed_test() {
   let assert [#("verifier", verifier)] = first.fields
   assert string.byte_size(verifier) <= prompt.max_excerpt_bytes
   assert !string.contains(verifier, prompt.record_open)
+
+  // The cut is at a code-point boundary within the byte bound, the same
+  // on both targets.
+  let astral = string.repeat("🙂", 2000)
+  let cut = prompt.excerpt(astral)
+  assert string.byte_size(cut) == 4096
+  assert cut == string.repeat("🙂", 1024)
 
   // The tail is kept, so a redaction at the head of a long excerpt is cut
   // away with the head; a short one survives.
