@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar, Literal, override
@@ -72,6 +73,7 @@ REMOTE_CLIENT_TARBALL = f"{REMOTE_DIR}/loom-client.tar.gz"
 JAIL_FLAGS = {"platform": "", "container": "--best-effort"}
 
 _TAG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_INSTALL_DIR = re.compile(r"^/[A-Za-z0-9._+@~/-]*$")
 _VERSION_WORD = re.compile(r"\d+\.\d+\.\d+[\w.+-]*")
 _COMMIT_LINE = re.compile(r"^commit\s+([0-9a-f]{7,40})\s*$", re.MULTILINE)
 
@@ -170,6 +172,13 @@ class LoomAgentOptions(InstalledAgentOptions):
             "`keep`: never touch it."
         ),
     )
+
+    @field_validator("install_dir")
+    @classmethod
+    def _safe_install_dir(cls, value: str) -> str:
+        if value == "/" or not _INSTALL_DIR.match(value) or ".." in value.split("/"):
+            raise ValueError("install_dir must be an absolute path of letters, digits and . _ + @ ~ -")
+        return value.rstrip("/")
 
     @field_validator("rw_mounts", mode="before")
     @classmethod
@@ -342,7 +351,7 @@ class LoomAgent(BaseInstalledAgent):
 
     @override
     def get_version_command(self) -> str | None:
-        return f"{self.options.install_dir}/client/bin/loom version"
+        return f"{shlex.quote(self.options.install_dir)}/client/bin/loom version"
 
     @override
     def parse_version(self, stdout: str) -> str:
@@ -402,7 +411,7 @@ class LoomAgent(BaseInstalledAgent):
         whose every tool call is refused. The self-test is the same one `loom
         run` uses to label the run, run as the same user.
         """
-        helper = f"{self.options.install_dir}/server/bin/loom-exec"
+        helper = shlex.quote(f"{self.options.install_dir}/server/bin/loom-exec")
         result = await environment.exec(command=f"{helper} --self-test 2>&1")
         output = f"{result.stdout or ''}{result.stderr or ''}"
         selftest = runreport.parse_self_test(result.return_code, output)

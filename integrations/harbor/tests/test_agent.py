@@ -629,3 +629,25 @@ def test_a_non_native_provider_without_an_endpoint_is_refused_at_render(make_age
     monkeypatch.setenv("TOGETHER_API_KEY", "together-key-value-4444")
     with pytest.raises(ValueError, match="base_url"):
         make_agent(model_name="together/llama").render_catalogue()
+
+
+# ------------------------------------------------------------------ quoting
+
+
+@pytest.mark.parametrize("bad", ["relative/dir", "/", "/opt/a b", "/opt/$(id)", "/opt/../etc", "/opt/a;b"])
+def test_an_unsafe_install_dir_is_refused(make_agent, bad):
+    with pytest.raises(ValueError, match="install_dir"):
+        make_agent(install_dir=bad)
+
+
+def test_install_dir_is_quoted_wherever_it_reaches_a_command(make_agent):
+    built = make_agent(install_dir="/opt/loom+harbor~x")
+    assert shlex.split(built.get_version_command())[0] == "/opt/loom+harbor~x/client/bin/loom"
+
+
+async def test_the_platform_preflight_quotes_the_helper_path(make_agent, environment):
+    built = make_agent(jail="platform", install_dir="/opt/loom+x")
+    environment.exec = Scripted(selftest=(0, "enforced (11):\nskipped (0)\nRESULT: OK\n"))
+    await run_agent(built, environment)
+    command = next(c["command"] for c in environment.exec.calls if "--self-test" in c["command"])
+    assert shlex.split(command)[0] == "/opt/loom+x/server/bin/loom-exec"
