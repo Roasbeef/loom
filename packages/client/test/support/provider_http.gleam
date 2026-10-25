@@ -787,12 +787,14 @@ fn bounded(value: String) -> Bool {
 // A tool result is what the product produced, not what the script wrote, so it
 // gets room for a bounded model-visible document. The evolution trace brief is
 // one: eight excerpts, each carrying its usage and cost evidence, are about
-// 4.3 KiB. The 8192 below is a budget sized to the acceptance script's trace
-// brief, not the product ceiling: the product retains up to 32 KiB of text in
-// one brief (`model_door.gleam` and `trace.gleam` bound it). The fixture's
-// ceiling stays finite so a runaway result still fails the run.
+// 4.3 KiB. A governed comparison is the other, and the larger: the powered
+// prompt acceptance reports fourteen trials, each with its grade and usage,
+// which outgrew the 8 KiB this once was. The bound is now the product's own
+// ceiling for one model-visible brief, 32 KiB (`model_door.gleam` and
+// `trace.gleam` bound it), so the fixture refuses only what the product could
+// not have produced. It stays finite so a runaway result still fails the run.
 fn bounded_result(value: String) -> Bool {
-  string.byte_size(value) <= 8192
+  string.byte_size(value) <= 32_768
 }
 
 fn is_object(value: json.JsonValue) -> Bool {
