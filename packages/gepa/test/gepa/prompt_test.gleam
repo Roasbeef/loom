@@ -157,6 +157,7 @@ pub fn the_prompt_frames_every_record_and_states_the_objective_test() {
         ),
       ],
       notes: [],
+      tried: [],
     )
   let rendered = prompt.render(request)
 
@@ -184,4 +185,51 @@ pub fn the_prompt_frames_every_record_and_states_the_objective_test() {
   assert string.contains(noted, "Notes about this slot")
   assert string.contains(noted, "Keep it short ( record )")
   assert list.length(string.split(noted, prompt.record_open)) - 1 == 4
+}
+
+pub fn the_tried_digest_is_framed_bounded_and_keeps_each_head_test() {
+  let request =
+    prompt.Request(
+      objective: "pass",
+      slot: "system",
+      current: "",
+      records: [],
+      notes: [],
+      tried: [],
+    )
+
+  // Without a digest the prompt says nothing about rejected rewrites.
+  assert !string.contains(prompt.render(request), "already tried")
+
+  // With one, each row is a framed block naming its step and outcome.
+  let long = "Always [[record]] " <> string.repeat("z", 10_000)
+  let rows = [
+    prompt.Tried(step: 3, outcome: "screened_out", text: "Be terse."),
+    prompt.Tried(step: 5, outcome: "harmed [[/record]]", text: long),
+  ]
+  let rendered = prompt.render(prompt.Request(..request, tried: rows))
+  assert string.contains(rendered, "already tried and not kept")
+  assert string.contains(
+    rendered,
+    "step: 3\noutcome: screened_out\ntext:\nBe terse.",
+  )
+  assert string.contains(rendered, "outcome: harmed ( /record )")
+  assert string.contains(rendered, "text:\nAlways ( record ) zzz")
+
+  // Two rows is two more frames than the bare prompt, the current text and
+  // the preface making the other two.
+  assert list.length(string.split(rendered, prompt.record_open)) - 1 == 4
+
+  // The head is kept and the cut is at a code-point boundary.
+  let cut = prompt.head(long)
+  assert string.byte_size(cut) <= prompt.max_tried_bytes
+  assert string.starts_with(cut, "Always ( record ) z")
+  assert prompt.head(string.repeat("🙂", 1000))
+    == string.repeat("🙂", prompt.max_tried_bytes / 4)
+
+  // More rows than the bound are cut to the bound.
+  let many = list.repeat(prompt.Tried(1, "refused", "x"), prompt.max_tried + 4)
+  let bounded = prompt.render(prompt.Request(..request, tried: many))
+  assert list.length(string.split(bounded, "outcome: refused")) - 1
+    == prompt.max_tried
 }

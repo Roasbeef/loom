@@ -8,6 +8,7 @@ import gepa
 import gepa/budget.{Costs, Limits}
 import gepa/judge
 import gepa/log
+import gepa/prompt
 import gepa/verdict
 import gleam/float
 import gleam/int
@@ -27,6 +28,8 @@ fn config() -> gepa.Config {
   gepa.Config(
     id: "search",
     objective: "be better",
+    background: [],
+    evidence: gepa.feedback_evidence,
     tune: tasks("u", 4),
     validate: tasks("v", 6),
     k: 2,
@@ -267,6 +270,8 @@ fn random_config() -> qcheck.Generator(gepa.Config) {
   gepa.Config(
     id: "search",
     objective: "be better",
+    background: [],
+    evidence: gepa.feedback_evidence,
     tune: tasks("u", tune),
     validate: tasks("v", validate),
     k:,
@@ -432,4 +437,92 @@ pub fn draws_are_the_same_from_the_same_seed_test() {
     })
   }
   assert minibatches(first) != minibatches(third)
+}
+
+/// The prefix of a search's log up to and including the first row `wanted`
+/// admits, replayed to a state.
+fn replayed_until(
+  events: List(gepa.Event),
+  wanted: fn(gepa.Event) -> Bool,
+) -> gepa.State {
+  let before = list.take_while(events, fn(event) { !wanted(event) })
+  let prefix = list.take(events, list.length(before) + 1)
+  let assert Ok(state) = gepa.replay(prefix)
+  state
+}
+
+pub fn the_reflector_is_shown_the_slot_s_background_through_the_host_s_view_test() {
+  // A slot's background is a note; the evidence view decides a record's
+  // fields, and is told which slot it is rendering for.
+  let shown =
+    gepa.Config(
+      ..config(),
+      slots: ["a"],
+      background: [#("a", "Keep it short [[record]]"), #("b", "unused")],
+      evidence: fn(slot: String, score: gepa.Score) {
+        [#("slot", slot), #("ran", score.feedback <> "!")]
+      },
+    )
+  let #(_, events) = world.search(shown, world.planted())
+  let opened =
+    replayed_until(events, fn(event) {
+      case event {
+        gepa.Evaluated(stage: gepa.ParentMinibatch, step: 1, ..) -> True
+        _ -> False
+      }
+    })
+
+  let assert Ok(gepa.Reflect(request:, ..)) = gepa.next(opened, shown)
+  assert request.notes == ["Keep it short [[record]]"]
+  let assert [first, ..] = request.records
+  assert first.fields == [#("slot", "a"), #("ran", "ran!")]
+  assert string.contains(prompt.render(request), "Keep it short ( record )")
+
+  // A slot with no background renders the prompt it always did.
+  let bare = gepa.Config(..shown, background: [#("b", "unused")])
+  let assert Ok(gepa.Reflect(request: plain, ..)) = gepa.next(opened, bare)
+  assert plain.notes == []
+}
+
+pub fn the_reflector_is_told_what_this_lineage_already_rejected_test() {
+  // Every step rewrites `a`. Step 1's child changes nothing the scorer sees
+  // and is screened out; step 2, extending the seed again, is told so.
+  let one_slot =
+    gepa.Config(
+      ..config(),
+      slots: ["a"],
+      limits: Limits(..config().limits, max_steps: 3),
+    )
+  let scripted = world.World(world.WorstCase, [#(1, "worse"), #(2, "better")])
+  let #(_, events) = world.search(one_slot, scripted)
+  let second =
+    replayed_until(events, fn(event) {
+      case event {
+        gepa.Evaluated(stage: gepa.ParentMinibatch, step: 2, ..) -> True
+        _ -> False
+      }
+    })
+
+  let assert Ok(gepa.Reflect(request:, ..)) = gepa.next(second, one_slot)
+  assert request.tried == [prompt.Tried(1, "screened_out", "worse")]
+  assert string.contains(prompt.render(request), "outcome: screened_out")
+
+  // Step 3 extends step 2's child, whose lineage is the seed's: the digest
+  // still names step 1's rejection, and not step 2's kept child.
+  let third =
+    replayed_until(events, fn(event) {
+      case event {
+        gepa.Evaluated(stage: gepa.ParentMinibatch, step: 3, ..) -> True
+        _ -> False
+      }
+    })
+  let assert Ok(gepa.Reflect(request: later, parent:, ..)) =
+    gepa.next(third, one_slot)
+  assert parent != "seed"
+  assert later.tried == [prompt.Tried(1, "screened_out", "worse")]
+
+  // A different slot's rejections are not this slot's.
+  let other = gepa.Config(..one_slot, slots: ["b"])
+  let assert Ok(gepa.Reflect(request: unrelated, ..)) = gepa.next(second, other)
+  assert unrelated.tried == []
 }

@@ -36,7 +36,9 @@
 ////    slot is `select.slot_for` and its minibatch `select.minibatch`;
 //// 2. the parent is evaluated on the minibatch (`Evaluate`,
 ////    `ParentMinibatch`) to collect feedback;
-//// 3. the reflector is shown that feedback (`Reflect`) and answers the
+//// 3. the reflector is shown that feedback (`Reflect`), with the slot's
+////    background (`Config.background`) and a digest of the rewrites of
+////    that slot the lineage already rejected (`tried`), and answers the
 ////    slot's new text; the child is the parent with that slot replaced
 ////    (`Minted`), or the step ends `Refused`;
 //// 4. the child is evaluated on the same minibatch (`ChildMinibatch`) and
@@ -100,6 +102,8 @@
 //// - `next`: the request the host should perform now
 //// - `between_steps`, `confirm_or_stop`, `within_step`, `draws`: how
 ////   `next` decides
+//// - `reflect_or_refuse`, `records`, `tried`, `lineage`: what the
+////   reflector is shown
 //// - `admit`, `child_components`, `content_id`: minting a child from an
 ////   answer
 //// - `validate_scores`, `minibatch_scores`, `spent`, `children`: reading
@@ -388,6 +392,14 @@ pub type State {
   )
 }
 
+/// The fields of one record the reflector is shown for one score, chosen
+/// by the host per slot: a tool's description wants the calls that tool
+/// took and their errors, a system prompt wants the verifier's tail. The
+/// host packs what it has into `Score.feedback` and unpacks it here;
+/// `feedback_evidence` is the view that shows the feedback whole.
+pub type Evidence =
+  fn(String, Score) -> List(#(String, String))
+
 /// Everything `next` needs that does not change over the search.
 pub type Config {
   Config(
@@ -395,6 +407,11 @@ pub type Config {
     id: String,
     /// What the search optimises for, in the operator's words.
     objective: String,
+    /// Background or constraints per slot, by slot name, shown to the
+    /// reflector as framed data; a slot with none gets none.
+    background: List(#(String, String)),
+    /// Which fields of a score each slot's reflection is shown.
+    evidence: Evidence,
     /// The tune tasks, which supply minibatches and feedback.
     tune: List(String),
     /// The validate tasks, which supply acceptance and the front.
@@ -512,6 +529,23 @@ pub fn start(seed: String, components: List(#(String, String))) -> State {
 /// Components sorted by name, the one order a candidate has.
 fn sorted(components: List(#(String, String))) -> List(#(String, String)) {
   list.sort(components, fn(left, right) { string.compare(left.0, right.0) })
+}
+
+/// The evidence view that shows every slot the score's feedback, whole,
+/// under one field: what a host with no per-slot views hands `Config`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert gepa.feedback_evidence("system", gepa.Score("t", 0.0, "failed"))
+///   == [#("feedback", "failed")]
+/// ```
+///
+pub fn feedback_evidence(
+  _slot: String,
+  score: Score,
+) -> List(#(String, String)) {
+  [#("feedback", score.feedback)]
 }
 
 /// Folds a log into the search's state, refusing the first row that does
@@ -1654,8 +1688,11 @@ fn reflect_or_refuse(
             list.key_find(parent.components, drawn.slot),
             "",
           ),
-          records: records(state, config, progress),
-          notes: [],
+          records: records(state, config, progress, drawn.slot),
+          notes: option.values([
+            option.from_result(list.key_find(config.background, drawn.slot)),
+          ]),
+          tried: tried(state, progress, drawn.slot),
         ),
         worst_case: config.costs.reflection,
       ))
@@ -1686,11 +1723,13 @@ fn reflect_or_refuse(
 }
 
 /// The reflective dataset: the parent's minibatch scores at this step,
-/// each with its feedback and the task's hidden identifiers.
+/// each shown through the host's evidence view for the slot, with the
+/// task's hidden identifiers.
 fn records(
   state: State,
   config: Config,
   progress: Progress,
+  slot: String,
 ) -> List(prompt.Record) {
   state.evaluations
   |> list.filter(fn(evaluation) {
@@ -1705,10 +1744,69 @@ fn records(
     prompt.Record(
       task: score.task,
       score: score.value,
-      fields: [#("feedback", score.feedback)],
+      fields: config.evidence(slot, score),
       hidden: result.unwrap(list.key_find(config.hidden, score.task), []),
     )
   })
+}
+
+/// The digest of rewrites of `slot` this lineage already tried and did
+/// not keep: the children of the parent and of its ancestors that were
+/// refused, screened out or shown harmed in that slot, oldest first, the
+/// last `prompt.max_tried` of them. A child whose answer was refused
+/// before minting left no text and is not in it; one shown inconclusive or
+/// left unsettled was not rejected and is not either. Deterministic over
+/// the log, so a resumed step renders the same digest.
+fn tried(state: State, progress: Progress, slot: String) -> List(prompt.Tried) {
+  let ancestors = lineage(state, progress.parent)
+
+  state.members
+  |> list.filter(fn(member) {
+    member.slot == Some(slot)
+    && option.map(member.parent, list.contains(ancestors, _)) == Some(True)
+  })
+  |> list.filter_map(fn(member) {
+    // Only a rejection counts: a refusal, a failed screen or a harm.
+    case member.disposition {
+      Some(verdict.Refused)
+      | Some(verdict.ScreenedOut)
+      | Some(verdict.Discarded) ->
+        Ok(prompt.Tried(
+          step: member.step,
+          outcome: verdict.disposition_name(option.unwrap(
+            member.disposition,
+            verdict.Refused,
+          )),
+          text: result.unwrap(list.key_find(member.components, slot), ""),
+        ))
+      Some(verdict.Incumbent)
+      | Some(verdict.Joined)
+      | Some(verdict.ParetoOnly)
+      | Some(verdict.Unsettled)
+      | Some(verdict.Confirmed)
+      | Some(verdict.Unconfirmed)
+      | None -> Error(Nil)
+    }
+  })
+  |> last(prompt.max_tried)
+}
+
+/// A candidate and its ancestors up to the seed, nearest first.
+fn lineage(state: State, candidate: String) -> List(String) {
+  // Each member names its parent; the walk ends at the seed, which has
+  // none, or at an id the log does not hold.
+  case member_of(state, candidate) {
+    Ok(Member(parent: Some(parent), ..)) -> [
+      candidate,
+      ..lineage(state, parent)
+    ]
+    Ok(Member(parent: None, ..)) | Error(_) -> [candidate]
+  }
+}
+
+/// The last `count` elements of a list, in order.
+fn last(items: List(a), count: Int) -> List(a) {
+  list.drop(items, int.max(list.length(items) - count, 0))
 }
 
 /// The settling judgement of a validated child: against the incumbent

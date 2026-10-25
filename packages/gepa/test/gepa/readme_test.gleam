@@ -130,6 +130,8 @@ pub fn the_readme_loop_runs_a_search_and_writes_a_replayable_log_test() {
     gepa.Config(
       id: "readme",
       objective: "be better",
+      background: [],
+      evidence: gepa.feedback_evidence,
       tune: ["u1", "u2", "u3"],
       validate: ["v1", "v2", "v3", "v4", "v5", "v6"],
       k: 1,

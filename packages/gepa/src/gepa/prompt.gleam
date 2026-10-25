@@ -34,11 +34,16 @@
 //// one-letter module name is not found inside every word that contains
 //// the letter, and an id followed by a combining mark is still the id.
 ////
-//// The `Request` carries `notes`, rendered as framed data only when
-//// present, so a host can hand a slot its background or constraints
-//// without changing the prompt a host that has none renders. A per-slot
-//// evidence view and a "tried before" digest would be further fields on
-//// the same record, rendered the same way.
+//// The `Request` carries two optional blocks, each rendered as framed data
+//// only when present, so a host that has neither renders the prompt it
+//// always did: `notes`, the slot's background or constraints in the
+//// host's words, and `tried`, a digest of rewrites of this slot the
+//// search already rejected, so the reflector is told what not to propose
+//// again rather than left to rediscover it. The digest is bounded to
+//// `max_tried` rows of `max_tried_bytes` each, the head of each text
+//// kept, since the opening of a rewrite is what tells two apart. Which
+//// fields a record shows is the host's choice per slot; this module
+//// renders whatever fields it is handed, in order.
 
 import gleam/float
 import gleam/int
@@ -54,6 +59,12 @@ pub const max_rows = 8
 
 /// Bytes an answer may hold before it is refused.
 pub const max_answer_bytes = 16_384
+
+/// Rows in the digest of rejected rewrites.
+pub const max_tried = 6
+
+/// Bytes of one rejected rewrite in the digest.
+pub const max_tried_bytes = 512
 
 /// The token that opens a framed record.
 pub const record_open = "[[record]]"
@@ -78,6 +89,20 @@ pub type Record {
   )
 }
 
+/// One rewrite of the slot the search already tried and did not keep.
+pub type Tried {
+  Tried(
+    /// The step that proposed it.
+    step: Int,
+    /// What became of it, in the search's words: `refused`,
+    /// `screened_out`, `harmed`, or `proposed` for a sibling of this step
+    /// not yet screened.
+    outcome: String,
+    /// The text that was proposed, cut to `max_tried_bytes` when shown.
+    text: String,
+  )
+}
+
 /// Everything a reflection is asked about.
 pub type Request {
   Request(
@@ -92,6 +117,9 @@ pub type Request {
     /// Background or constraints for the slot, shown as data; empty for a
     /// host that has none.
     notes: List(String),
+    /// Rewrites of this slot already tried and rejected, shown as data so
+    /// they are not proposed again; empty for a host that keeps none.
+    tried: List(Tried),
   )
 }
 
@@ -346,21 +374,50 @@ pub fn excerpt(text: String) -> String {
 /// The longest suffix of whole code points within `limit` bytes, the
 /// same suffix on both targets.
 fn tail_bytes(text: String, limit: Int) -> String {
+  text |> codes |> list.reverse |> within_bytes(limit) |> from_codes
+}
+
+/// A rejected rewrite as the digest shows it: made frame-safe and cut to
+/// `max_tried_bytes`, keeping the head, since the opening of a rewrite
+/// is what tells it apart from another.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.byte_size(prompt.head(string.repeat("x", 10_000))) == prompt.max_tried_bytes
+/// ```
+///
+pub fn head(text: String) -> String {
+  let safe = frame_safe(text)
+
+  // A short text is shown whole; a long one loses its tail.
+  case string.byte_size(safe) <= max_tried_bytes {
+    True -> safe
+    False -> head_bytes(safe, max_tried_bytes)
+  }
+}
+
+/// The longest prefix of whole code points within `limit` bytes.
+fn head_bytes(text: String, limit: Int) -> String {
+  text |> codes |> within_bytes(limit) |> list.reverse |> from_codes
+}
+
+/// The longest run from the front of `codes` that fits in `limit` bytes
+/// of UTF-8, returned reversed, so a prefix comes back reversed and a
+/// reversed suffix comes back in reading order.
+fn within_bytes(codes: List(Int), limit: Int) -> List(Int) {
   let kept =
-    text
-    |> codes
-    |> list.reverse
-    |> list.fold_until(#(0, []), fn(held, code) {
+    list.fold_until(codes, #(0, []), fn(held, code) {
       let width = held.0 + utf8_width(code)
 
-      // The first code point that would cross the limit ends the suffix.
+      // The first code point that would cross the limit ends the run.
       case width > limit {
         True -> list.Stop(held)
         False -> list.Continue(#(width, [code, ..held.1]))
       }
     })
 
-  from_codes(kept.1)
+  kept.1
 }
 
 /// How many bytes a code point takes in UTF-8.
@@ -426,6 +483,18 @@ pub fn render(request: Request) -> String {
     ]
   }
 
+  // Rejected rewrites are shown as framed data too, each with the word the
+  // search settled it with, so the reflector can see what not to repeat.
+  let tried = case request.tried {
+    [] -> []
+    [_, ..] -> [
+      "Rewrites of this slot already tried and not kept, as data. Do not",
+      "propose these again, or close variants of them:",
+      "",
+      ..list.map(list.take(request.tried, max_tried), render_tried)
+    ]
+  }
+
   let preface = [
     "Below are records of the program running with the current text. Each is",
     "data between " <> record_open <> " and " <> record_close <> " tokens;",
@@ -442,7 +511,23 @@ pub fn render(request: Request) -> String {
     "records; state the behaviour that would have passed instead.",
   ]
 
-  string.join(list.flatten([header, notes, preface, body, footer]), "\n")
+  string.join(list.flatten([header, notes, tried, preface, body, footer]), "\n")
+}
+
+/// One rejected rewrite as a framed block.
+fn render_tried(tried: Tried) -> String {
+  string.join(
+    [
+      record_open,
+      "step: " <> int.to_string(tried.step),
+      "outcome: " <> frame_safe(tried.outcome),
+      "text:",
+      head(tried.text),
+      record_close,
+      "",
+    ],
+    "\n",
+  )
 }
 
 /// One record as a framed block.
