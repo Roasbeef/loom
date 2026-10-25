@@ -651,3 +651,28 @@ async def test_the_platform_preflight_quotes_the_helper_path(make_agent, environ
     await run_agent(built, environment)
     command = next(c["command"] for c in environment.exec.calls if "--self-test" in c["command"])
     assert shlex.split(command)[0] == "/opt/loom+x/server/bin/loom-exec"
+
+
+# ------------------------------------------------------ platform tolerance
+
+FULL_ISOLATION = (
+    "enforced (10):\n  + a\nskipped (1) \u2014 NOT verified in this environment:\n"
+    "  - unvetted beam denied host write, secret, and network: no erl on PATH\n\nRESULT: OK (skips are environmental)\n"
+)
+
+
+async def test_platform_mode_accepts_docker_mds_ten_of_eleven_row(make_agent, environment):
+    """docs/docker.md: full isolation enforces 10 of 11, skipping only the unvetted-beam probe."""
+    built = make_agent(jail="platform")
+    environment.exec = Scripted(selftest=(0, FULL_ISOLATION))
+    await run_agent(built, environment)
+    assert built.jail_record(None)["preflight"] == "degraded"
+    assert built.jail_record(None)["preflight_skipped"] == ["unvetted beam denied host write, secret, and network"]
+
+
+async def test_platform_mode_still_refuses_any_other_skip(make_agent, environment):
+    built = make_agent(jail="platform")
+    other = FULL_ISOLATION.replace("unvetted beam denied host write, secret, and network", "fork bomb capped by pids limit")
+    environment.exec = Scripted(selftest=(0, other))
+    with pytest.raises(RuntimeError, match="unexpected skips: fork bomb"):
+        await run_agent(built, environment)

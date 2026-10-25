@@ -415,14 +415,17 @@ class LoomAgent(BaseInstalledAgent):
         result = await environment.exec(command=f"{helper} --self-test 2>&1")
         output = f"{result.stdout or ''}{result.stderr or ''}"
         selftest = runreport.parse_self_test(result.return_code, output)
-        if selftest.posture != "enforced":
+        if not selftest.platform_ready:
             tail = "\n".join(output.strip().splitlines()[-25:])
             raise RuntimeError(
                 f"jail=platform needs Loom's kernel jail, but its self-test in this "
                 f"container is {selftest.posture} (enforced {selftest.enforced}, "
-                f"skipped {selftest.skipped}, failed {selftest.failed}). Run the "
-                "container with the flags docs/docker.md calls full isolation, or use "
-                "jail=container to accept the container as the boundary.\n" + tail
+                f"skipped {selftest.skipped}, failed {selftest.failed}"
+                + (f"; unexpected skips: {', '.join(selftest.unexpected_skips)}" if selftest.unexpected_skips else "")
+                + "). Run the container with the flags docs/docker.md calls full "
+                "isolation, or use jail=container to accept the container as the "
+                "boundary. Only the skip of the 'unvetted beam' probe is tolerated, "
+                "as in docs/docker.md's 10-of-11 row.\n" + tail
             )
         return selftest
 
@@ -582,6 +585,8 @@ class LoomAgent(BaseInstalledAgent):
         preflight = getattr(self, "_selftest", None)
         if preflight is not None:
             record["preflight"] = preflight.posture
+            if preflight.skipped_probes:
+                record["preflight_skipped"] = list(preflight.skipped_probes)
         if getattr(self, "_bwrap", None) is not None:
             record["bubblewrap"] = self._bwrap
         return record
