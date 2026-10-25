@@ -88,7 +88,11 @@ pub fn current(host: codemode.Config) -> Result(record.Identity, String) {
   Ok(record.Identity(
     build:,
     seam:,
-    evaluator: mcp.sha256_hex(build <> ":author-tests-and-live-rollout-1"),
+    // The suffix names the verdict rule. `rollout-2` is the paired
+    // statistical verdict of protocol-change/100; evidence graded under the
+    // asymmetric `rollout-1` rule is `Changed` to every approval and
+    // selection, so an old `Passed` cannot be spent under the new meaning.
+    evaluator: mcp.sha256_hex(build <> ":author-tests-and-live-rollout-2"),
   ))
 }
 

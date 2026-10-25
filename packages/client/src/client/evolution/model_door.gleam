@@ -68,9 +68,32 @@ pub fn trace_door(
   }
 }
 
+/// The most provider turns one comparison may make across every trial. The
+/// evaluator's own bound (`rollout.validate`); a trial is at least two turns.
+pub const turns_ceiling = 100
+
+/// The longest wall one comparison may hold, in milliseconds. The compare
+/// runs synchronously inside the one code-mode capability call that asked
+/// for it, and that call's worker is killed at
+/// `client/codemode.default_call_timeout_ms` with the fold half-done: the
+/// in-flight trial's retirement and cleanup never run and no evidence is
+/// kept. The ceiling therefore sits `wall_margin_ms` below that timeout, so
+/// the fold's own wall fires first and close, score and cleanup still land
+/// inside the call (`model_door_test` pins the relation).
+pub const wall_ceiling_ms = 480_000
+
+/// What the fold may still need after its wall has fired: the open trial's
+/// retirement, scoring and cleanup, and the evidence write.
+pub const wall_margin_ms = 120_000
+
 /// Decodes only a task-set identity and ceilings for the paired native evaluator.
-/// Absent limits use twenty trials/turns, one million tokens, two dollars,
-/// 64 KiB of retained output and two minutes. Requests may only lower them.
+/// Absent limits use twenty trials, `turns_ceiling` turns, one million
+/// tokens, two dollars, 64 KiB of retained output and `wall_ceiling_ms`.
+/// Requests may only lower them. The turn and wall ceilings were raised from
+/// twenty and two minutes (protocol-change/100) because a paired verdict
+/// needs at least seven tasks of two or more provider turns each, and no
+/// comparison under the old ceilings could end `Passed`; the dollar and
+/// token ceilings, which bound the spend, are unchanged.
 /// The optional `samples` member asks for that many independent samples of
 /// every task per arm, one by default and at most three through this door.
 ///
@@ -87,7 +110,15 @@ pub fn evaluation_request(
   // Parse and validate optional limit overrides against system ceilings.
   use limits <- result.try(case field(args, "limits") {
     Error(Nil) | Ok(json.Null) ->
-      Ok(rollout.Limits(20, 20, 1_000_000, 2.0, 65_536, 120_000, 1))
+      Ok(rollout.Limits(
+        20,
+        turns_ceiling,
+        1_000_000,
+        2.0,
+        65_536,
+        wall_ceiling_ms,
+        1,
+      ))
     Ok(value) -> limits(value)
   })
 
@@ -185,7 +216,7 @@ fn limits(value: json.JsonValue) -> Result(rollout.Limits, String) {
     trials > 0
     && trials <= 20
     && turns > 0
-    && turns <= 20
+    && turns <= turns_ceiling
     && tokens > 0
     && tokens <= 1_000_000
     && dollars >. 0.0
@@ -193,7 +224,7 @@ fn limits(value: json.JsonValue) -> Result(rollout.Limits, String) {
     && output_bytes > 0
     && output_bytes <= 65_536
     && wall_ms > 0
-    && wall_ms <= 120_000
+    && wall_ms <= wall_ceiling_ms
   {
     True ->
       Ok(rollout.Limits(

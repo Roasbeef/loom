@@ -14,9 +14,23 @@
 //// the same aggregate budget, so a retained observation carries one report
 //// per (task, sample, arm) and the verdict sees every one of them.
 ////
+//// The verdict is `evalstat`'s paired decision rule and nothing else
+//// (protocol-change/100). The graded reports become one `Trial` row per
+//// (task, sample, arm), the plan the fold was asked to run — every admitted
+//// task times `Limits.samples` — is the denominator, and only a demonstrated
+//// improvement (`Improved`) is `Passed`. A demonstrated harm and a powered
+//// tie are both `Failed`, because neither earns a selection; a comparison
+//// too small to have seen the target effect, or one missing a planned row,
+//// is `Inconclusive` with the statistic's own reason. Twenty trials hold at
+//// most ten (task, sample) pairs per arm, so through the model door the
+//// minimum detectable effect never falls below 0.28 and a powered tie is
+//// unreachable: a comparison there ends `Passed` only when nearly every
+//// task moves the candidate's way, and otherwise `Inconclusive`, which is
+//// the rule working, not a defect.
+////
 //// ## Flow
 ////
-//// `evaluate` → `validate` → `run_trial` → `open_trial` → `drive` → `accept_step` → `score` → `admit_grade` → `retain_trial` → `verdict` → `observation`
+//// `evaluate` → `validate` → `run_trial` → `open_trial` → `drive` → `accept_step` → `score` → `admit_grade` → `retain_trial` → `verdict` → `decide` → `observation`
 ////
 //// 1. `evaluate` checks the request with `validate`, reads the candidate's
 ////    profile, and folds `run_trial` over every task, sample and arm.
@@ -27,7 +41,9 @@
 //// 4. After `retirement.perform`, `score` asks the verifier for a `Grade`
 ////    and `admit_grade` checks every member (`grade_defect`, `clip_bytes`).
 //// 5. `retain_trial` writes the trial's report (`grade_json`), and after the
-////    fold `verdict` and `observation` produce the durable evidence.
+////    fold `verdict` hands the graded rows to `decide`, which asks the
+////    statistics package over the plan, and `observation` produces the
+////    durable evidence.
 
 import client/evolution/prompt
 import client/evolution/record
@@ -38,7 +54,12 @@ import client/mcp
 import core/clock.{type Clock}
 import core/json
 import core/message
+import evalstat
+import evalstat/pairing
+import evalstat/trial
+import evalstat/verdict as decision
 import gleam/bit_array
+import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -241,14 +262,35 @@ pub type Callbacks {
   )
 }
 
-/// One retained trial report, with the two facts the verdict reads kept
-/// typed beside the JSON so the decision never parses its own evidence.
-type Retained {
-  Retained(
-    profile: Option(String),
+/// Which arm of the comparison a trial ran under.
+pub type Arm {
+  /// The unchanged base: no profile overlay.
+  Base
+
+  /// The proposed prompt: exactly the candidate's immutable overlay.
+  Candidate
+}
+
+/// One graded trial as `decide` reads it: the plan coordinates the fold ran
+/// it under and the grade the verifier answered, or `None` for a trial the
+/// fold stopped before scoring.
+pub type Row {
+  Row(
+    /// The admitted task's identifier.
+    task: String,
+    /// The sample index, from one through `Limits.samples`.
+    sample: Int,
+    /// Which arm ran.
+    arm: Arm,
+    /// The admitted grade, or `None` when the trial never reached scoring.
     grade: Option(Grade),
-    report: json.JsonValue,
   )
+}
+
+/// One retained trial report, with the facts the verdict reads kept typed
+/// beside the JSON so the decision never parses its own evidence.
+type Retained {
+  Retained(row: Row, report: json.JsonValue)
 }
 
 /// Aggregate counters and partial trial reports remain owned after a failure.
@@ -360,8 +402,7 @@ pub fn evaluate(
     })
 
   // Record retained evaluation evidence and clean up.
-  let expected = list.length(tasks) * 2 * limits.samples
-  let verdict = verdict(state, callbacks.mode, expected)
+  let verdict = verdict(state, callbacks.mode, tasks)
   let observation =
     observation(state, callbacks.mode, tasks, candidate_id, target, api)
   let retained =
@@ -846,8 +887,17 @@ fn retain_trial(state: State, request: TrialRequest, now: Int) -> State {
         Some(reason) -> json.String(reason)
       }),
     ])
-  let retained = Retained(profile:, grade: state.grade, report:)
-  State(..state, reports: [retained, ..state.reports])
+
+  // The arm is the overlay's presence: a base trial carries no profile and
+  // a candidate trial carries exactly the candidate's.
+  let arm = case profile {
+    None -> Base
+    Some(_) -> Candidate
+  }
+
+  let row =
+    Row(task: request.task.id, sample: state.sample, arm:, grade: state.grade)
+  State(..state, reports: [Retained(row:, report:), ..state.reports])
 }
 
 /// Projects a grade onto the operator-outcome vocabulary of `trace.Outcome`.
@@ -935,33 +985,129 @@ fn allowance(state: State) -> #(Result(Allowance, String), State) {
   #(result, state)
 }
 
-/// Evaluates candidate trial reports to determine overall rollout verdict.
-fn verdict(state: State, mode: Mode, expected: Int) -> record.Verdict {
-  case mode, state.stop, list.length(state.reports) == expected {
-    ScriptedLifecycle, _, _ ->
+/// Decides the comparison, or names why it cannot be decided. The fold's
+/// own stops come first: an unconfirmed teardown, a failed open, a verifier
+/// defect or an exhausted budget is `Inconclusive` with that reason before
+/// any statistic is consulted, because such a trial says nothing about its
+/// arm and must not be laundered into a row the rule would count or
+/// exclude. Scripted fixtures prove the lifecycle and never measure quality.
+fn verdict(state: State, mode: Mode, tasks: List(Task)) -> record.Verdict {
+  case mode, state.stop {
+    ScriptedLifecycle, _ ->
       record.Inconclusive(
         "scripted lifecycle evidence does not measure model quality",
       )
-    LiveProduction, Some(reason), _ -> record.Inconclusive(reason)
-    LiveProduction, None, False ->
-      record.Inconclusive("paired task set is incomplete")
-    LiveProduction, None, True ->
-      case list.any(state.reports, candidate_failed) {
-        True -> record.Failed
-        False -> record.Passed
-      }
+    LiveProduction, Some(reason) -> record.Inconclusive(reason)
+    LiveProduction, None ->
+      decide(
+        list.map(state.reports, fn(retained) { retained.row }),
+        list.map(tasks, fn(task) { task.id }),
+        state.limits.samples,
+      )
   }
 }
 
-// Only candidate-arm failures decide adoption; baseline failures remain evidence.
-// A candidate arm that was never graded cannot have passed.
-/// Checks if a retained report is a candidate arm whose grade did not pass.
-fn candidate_failed(retained: Retained) -> Bool {
-  case retained.profile, option.map(retained.grade, passed) {
-    None, _ -> False
-    Some(_), None -> True
-    Some(_), Some(reached) -> !reached
+/// The arm names the rows carry into `evalstat`; the rule reads them only
+/// to tell the two sides apart.
+const base_arm = "base"
+
+const candidate_arm = "candidate"
+
+/// The governed decision rule over graded rows: `evalstat`'s task-level
+/// paired verdict under its default policy (a ten-point target effect and
+/// the clustered interval), mapped onto the three words the catalogue
+/// stores. `Improved` is `Passed`; `Harmed` and `Indistinguishable` are both
+/// `Failed`, since neither is the demonstrated improvement a selection
+/// needs; `Underpowered` and `Incomplete` are `Inconclusive` carrying the
+/// statistic's reason, the minimum detectable effect and the task count
+/// that would have sufficed.
+///
+/// The plan is the denominator. `expected` is built from `tasks` and
+/// `samples`, never from the rows that happen to exist, so a planned trial
+/// with no row is `Incomplete` rather than a smaller comparison. A row with
+/// no grade is left out and so reported missing: the fold stops before
+/// `verdict` whenever that happens, and an ungraded trial is not evidence
+/// about either arm.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // Identical arms over three tasks: no spread, so the rule cannot see
+/// // any effect and says so.
+/// let assert record.Inconclusive(reason) =
+///   rollout.decide(rows, ["a", "b", "c"], 1)
+/// assert string.starts_with(reason, "underpowered")
+/// ```
+pub fn decide(
+  rows: List(Row),
+  tasks: List(String),
+  samples: Int,
+) -> record.Verdict {
+  let expected = pairing.plan(tasks, samples)
+  let trials = list.filter_map(rows, trial_of)
+  let ruling =
+    evalstat.paired_verdict(
+      trials,
+      base_arm,
+      candidate_arm,
+      expected,
+      decision.default_policy(),
+    )
+
+  // Only a demonstrated improvement spends a selection; a tie the design
+  // could have broken is as much a refusal as a demonstrated harm.
+  case ruling {
+    decision.Improved(..) -> record.Passed
+    decision.Harmed(..) -> record.Failed
+    decision.Indistinguishable(..) -> record.Failed
+    decision.Underpowered(mde:, needed_tasks:, reason:) ->
+      record.Inconclusive(
+        "underpowered: "
+        <> reason
+        <> "; minimum detectable effect "
+        <> float.to_string(float.to_precision(mde, 3))
+        <> " against a target of "
+        <> float.to_string(decision.default_policy().target_effect)
+        <> "; "
+        <> int.to_string(needed_tasks)
+        <> " tasks would have sufficed",
+      )
+    decision.Incomplete(reason:) ->
+      record.Inconclusive("paired task set is incomplete: " <> reason)
   }
+}
+
+/// One graded row as an `evalstat` trial, or nothing for an ungraded one.
+/// The index is the sample less one, because the plan counts from zero.
+/// The cost is zeroed: the rule reads the outcome alone, and the trial's
+/// spend is already in its retained report.
+fn trial_of(row: Row) -> Result(trial.Trial, Nil) {
+  use grade <- result.try(option.to_result(row.grade, Nil))
+
+  // The exact-byte verifier and a program verifier both answer a reward; a
+  // reward at the threshold is the pass and anything below is the
+  // verifier's rejection. The fold has no other outcome to report here: a
+  // trial that ran out of budget stopped the whole comparison above.
+  let outcome = case passed(grade) {
+    True -> trial.Passed
+    False -> trial.VerifierFailed
+  }
+
+  // The arm travels as the name the rule was given for each side.
+  let arm = case row.arm {
+    Base -> base_arm
+    Candidate -> candidate_arm
+  }
+
+  Ok(trial.Trial(
+    task: row.task,
+    arm:,
+    index: row.sample - 1,
+    reward: grade.reward,
+    scores: grade.scores,
+    outcome:,
+    cost: trial.Cost(0, 0.0, 0, 0, 0),
+  ))
 }
 
 /// Constructs detailed observation JSON report for the rollout evaluation.

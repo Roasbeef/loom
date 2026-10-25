@@ -697,7 +697,7 @@ for but not built** in waves 1–3.
 | Holdout predicts production `mark_outcome` | **Protocol only** (§6): `eval production` is written and tested against a fixture db with planted marks | Run after the first governed selection; report both rates and the unmarked column for 2 weeks of sessions |
 
 What the scripted/replay lane honestly proves now: the lifecycle (as
-`make e2e-evolution` already does, `evolution.md:443-460`), the verifier
+`make e2e-evolution` already does, `evolution.md:470-477`), the verifier
 isolation ordering, the ledger/plan invariants, the statistics, and
 request-level harness regressions. It proves nothing about any model and the
 report says so in its header, matching the repo's own position

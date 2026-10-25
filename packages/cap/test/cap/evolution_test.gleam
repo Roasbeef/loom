@@ -72,26 +72,45 @@ pub fn propose_sends_every_optional_field_that_is_set_test() {
     ])
 }
 
-pub fn compare_sends_all_six_limits_test() {
+pub fn compare_sends_every_limit_with_one_sample_by_default_test() {
   let sent = answering(report.null())
   let assert Ok(_) = evolution.compare("c1", "ts1", evolution.native_limits())
   let assert Ok(#("evolution.test", args)) = sent()
-  assert args
-    == wire.args([
-      #("candidate_id", wire.string("c1")),
-      #("taskset_id", wire.string("ts1")),
-      #(
-        "limits",
-        wire.args([
-          #("trials", wire.int(20)),
-          #("turns", wire.int(20)),
-          #("tokens", wire.int(1_000_000)),
-          #("dollars", report.float(2.0)),
-          #("output_bytes", wire.int(65_536)),
-          #("wall_ms", wire.int(120_000)),
-        ]),
-      ),
-    ])
+  assert args == compare_args(1)
+}
+
+// A program asks for two samples and the wire carries exactly that number;
+// the host's door, not this stub, enforces the cap of three
+// (`model_door.samples`), so the stub sends what it was given.
+pub fn cap_limits_carry_samples_test() {
+  let sent = answering(report.null())
+  let assert Ok(_) =
+    evolution.compare(
+      "c1",
+      "ts1",
+      evolution.Limits(..evolution.native_limits(), samples: 2),
+    )
+  let assert Ok(#("evolution.test", args)) = sent()
+  assert args == compare_args(2)
+}
+
+fn compare_args(samples: Int) -> MsgPackValue {
+  wire.args([
+    #("candidate_id", wire.string("c1")),
+    #("taskset_id", wire.string("ts1")),
+    #(
+      "limits",
+      wire.args([
+        #("trials", wire.int(20)),
+        #("turns", wire.int(100)),
+        #("tokens", wire.int(1_000_000)),
+        #("dollars", report.float(2.0)),
+        #("output_bytes", wire.int(65_536)),
+        #("wall_ms", wire.int(480_000)),
+        #("samples", wire.int(samples)),
+      ]),
+    ),
+  ])
 }
 
 pub fn inspect_names_the_target_and_the_offset_test() {

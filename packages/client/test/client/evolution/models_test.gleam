@@ -28,7 +28,7 @@ import gleam/string
 import gleeunit/should
 import provider/model
 import provider/pricing
-import provider/profile
+import provider/profile.{type Profile}
 import session/session
 import storage/storage
 
@@ -673,14 +673,19 @@ fn member(value: json.JsonValue, name: String) -> json.JsonValue {
   found
 }
 
-// `verdict` reads the grade, not the projected word: a candidate reward below
-// the threshold fails, one at the threshold passes, and one the verifier could
-// not have produced stops the comparison.
-pub fn verdict_consumes_the_grade_against_the_pass_threshold_test() {
-  let assert record.Failed = graded_verdict(0.0).verdict
-    as "a candidate reward below the threshold fails"
-  let assert record.Passed = graded_verdict(1.0).verdict
-    as "a candidate reward at the threshold passes"
+// One task cannot decide under the paired rule whichever way its grade
+// falls: the statistic needs at least two tasks to see any spread, so the
+// verdict says it is underpowered. A grade the verifier could not have
+// produced is a defect that stops the comparison before the rule is asked.
+pub fn a_single_task_is_underpowered_and_an_out_of_range_grade_is_a_defect_test() {
+  let assert record.Inconclusive(reason) = graded_verdict(0.0).verdict
+    as "one failing candidate task cannot decide"
+  assert string.starts_with(reason, "underpowered: fewer than two tasks")
+    as reason
+  let assert record.Inconclusive(reason) = graded_verdict(1.0).verdict
+    as "one passing candidate task cannot decide"
+  assert string.starts_with(reason, "underpowered: fewer than two tasks")
+    as reason
   let assert record.Inconclusive(reason) = graded_verdict(1.5).verdict
     as "an out-of-range reward is a verifier defect"
   assert string.contains(reason, "out of range")
@@ -754,8 +759,11 @@ pub fn grade_members_outside_their_bounds_stop_the_comparison_with_a_named_reaso
       "",
       rollout.ProgramRun(list.repeat(string.repeat("x", 64), 8), 0, 10),
     )
-  let assert record.Passed = graded_with(full).verdict
-    as "a grade at its bounds is admitted"
+  let evidence = graded_with(full)
+  let assert Ok(observation) = json.parse(evidence.observation)
+    as "observation parses"
+  assert member(observation, "partial_reason") == json.Null
+    as "a grade at its bounds is admitted and the fold runs to its end"
 }
 
 // Side information is kept in bytes, so a multibyte text cannot carry four
@@ -775,15 +783,259 @@ pub fn side_info_is_clipped_to_a_kibibyte_of_whole_graphemes_test() {
   assert kept == string.repeat("é", 512) as "cut between whole graphemes"
 }
 
-// Live mode with two samples: the verdict needs every (task, sample, arm)
-// report, so a fold that counted only tasks x 2 would call four reports an
-// incomplete pair set. All passing is Passed; a candidate that passes one
-// sample and fails the other is Failed, which is the current rule 2C replaces.
-pub fn live_samples_all_pass_and_a_mixed_candidate_fails_test() {
-  let assert record.Passed = live_sampled([1.0, 1.0]).verdict
-    as "two passing samples per arm pass"
-  let assert record.Failed = live_sampled([1.0, 0.0]).verdict
-    as "one failing candidate sample fails under the current rule"
+// Live mode with two samples: the plan is one task times two samples per
+// arm, every report pairs by its sample, and one task is still one cluster.
+// Neither two passing samples nor a candidate that fails one of them can
+// decide, and in particular the failed sample is no longer a `Failed` on its
+// own; a plan that paired incompletely would say so instead of underpowered.
+pub fn live_samples_pair_per_sample_and_one_task_never_decides_test() {
+  let assert record.Inconclusive(reason) = live_sampled([1.0, 1.0]).verdict
+    as "two passing samples of one task cannot decide"
+  assert string.starts_with(reason, "underpowered: fewer than two tasks")
+    as reason
+  let assert record.Inconclusive(reason) = live_sampled([1.0, 0.0]).verdict
+    as "one failing candidate sample no longer fails the comparison"
+  assert string.starts_with(reason, "underpowered: fewer than two tasks")
+    as reason
+}
+
+// Identical arms: every task passes on both sides, so there is no spread
+// between tasks and the rule cannot see any effect. The verdict is
+// Inconclusive as underpowered, never Passed and never Failed.
+pub fn aa_comparison_is_inconclusive_test() {
+  let evidence = live_over(tasks(3), fn(_, _) { 1.0 }, 1)
+  let assert record.Inconclusive(reason) = evidence.verdict
+    as "identical arms cannot demonstrate an improvement"
+  assert string.starts_with(reason, "underpowered: no spread between tasks")
+    as reason
+  let assert Ok(observation) = json.parse(evidence.observation)
+    as "observation parses"
+  assert member(observation, "partial_reason") == json.Null
+    as "the fold ran to its end; the rule, not a stop, was inconclusive"
+}
+
+// The base passes every task and the candidate fails all but one: nine
+// tasks move against it and one ties, which is the spread a clustered
+// interval needs. At ten tasks the governed path is powered to call that
+// a demonstrated harm, and a demonstrated harm is Failed.
+pub fn planted_harm_is_failed_test() {
+  let evidence =
+    live_over(tasks(10), fn(task, arm) { harm_reward(task, arm) }, 1)
+  assert evidence.verdict == record.Failed as "a demonstrated harm is refused"
+}
+
+// The mirror of the planted harm: the base fails nine tasks and ties one,
+// and the candidate passes them all. A demonstrated improvement is the one
+// verdict that reads Passed.
+pub fn baseline_fails_candidate_passes_is_passed_test() {
+  let evidence =
+    live_over(tasks(10), fn(task, arm) { improvement_reward(task, arm) }, 1)
+  assert evidence.verdict == record.Passed
+    as "a demonstrated improvement passes"
+}
+
+// The old rule failed a candidate for any one failed trial and ignored the
+// base. Four tasks where the base fails three and the candidate fails one
+// favour the candidate three tasks to one, which four tasks cannot make
+// significant: the single candidate failure decides nothing by itself.
+pub fn single_candidate_failure_no_longer_decides_test() {
+  let evidence =
+    live_over(
+      tasks(4),
+      fn(task, arm) {
+        case task, arm {
+          "task-4", Some(_) -> 0.0
+          "task-4", None -> 1.0
+          _, Some(_) -> 1.0
+          _, None -> 0.0
+        }
+      },
+      1,
+    )
+  let assert record.Inconclusive(reason) = evidence.verdict
+    as "one candidate failure against three base failures cannot decide"
+  assert string.starts_with(reason, "underpowered:") as reason
+  assert string.contains(reason, "tasks would have sufficed") as reason
+}
+
+// The plan, not the reports, is the denominator: rows for two of three
+// planned tasks are an incomplete comparison naming the missing row, never a
+// smaller comparison over the rows that exist.
+pub fn expected_rows_come_from_the_plan_test() {
+  let graded = fn(task, arm, reward) {
+    rollout.Row(task, 1, arm, Some(graded(reward)))
+  }
+  let rows = [
+    graded("a", rollout.Base, 0.0),
+    graded("a", rollout.Candidate, 1.0),
+    graded("b", rollout.Base, 0.0),
+    graded("b", rollout.Candidate, 1.0),
+  ]
+  assert rollout.decide(rows, ["a", "b", "c"], 1)
+    == record.Inconclusive(
+      "paired task set is incomplete: plan row (c, 0) has no trial on arm base",
+    )
+  assert rollout.decide(rows, ["a", "b"], 2)
+    == record.Inconclusive(
+      "paired task set is incomplete: plan row (a, 1) has no trial on arm base",
+    )
+
+  // A row the fold never graded is not evidence either way: it is reported
+  // missing rather than counted or excluded.
+  let ungraded = [rollout.Row("b", 1, rollout.Candidate, None), ..rows]
+  assert rollout.decide(list.take(ungraded, 4), ["a", "b"], 1)
+    == record.Inconclusive(
+      "paired task set is incomplete: plan row (b, 0) has no trial on arm candidate",
+    )
+}
+
+// A tie the design could have broken is Failed, not Passed: a hundred tasks
+// at three samples, the candidate dropping one sample on two of them, has a
+// minimum detectable effect under the ten-point target and no significant
+// direction. The governed door caps a comparison at ten tasks, so this
+// shape cannot reach `evaluate`; the rows are built directly for `decide`.
+pub fn powered_tie_is_failed_test() {
+  let names =
+    list.index_map(list.repeat(Nil, 100), fn(_, index) {
+      "task-" <> string.pad_start(int.to_string(index + 1), 3, "0")
+    })
+  let rows =
+    list.flat_map(names, fn(task) {
+      list.flat_map([1, 2, 3], fn(sample) {
+        let dropped =
+          { task == "task-001" || task == "task-002" } && sample == 1
+        [
+          rollout.Row(task, sample, rollout.Base, Some(graded(1.0))),
+          rollout.Row(
+            task,
+            sample,
+            rollout.Candidate,
+            Some(
+              graded(case dropped {
+                True -> 0.0
+                False -> 1.0
+              }),
+            ),
+          ),
+        ]
+      })
+    })
+  assert rollout.decide(rows, names, 3) == record.Failed
+    as "a powered tie earns no selection"
+}
+
+// The smallest plan the prompt acceptance fixture could run to a Passed:
+// seven tasks at one sample, the base failing six and tying one, the
+// candidate passing all. Six tasks in one direction is the smallest sign
+// test under alpha (p = 2 / 64), and the tie is the spread the interval
+// needs. The rows here are exactly the reports such a run retains, so the
+// fixture's arithmetic is proven without its jail.
+pub fn prompt_acceptance_plan_of_seven_tasks_is_a_demonstrated_improvement_test() {
+  assert rollout.decide(acceptance_rows(7, 1), acceptance_names(7), 1)
+    == record.Passed
+    as "six wins and one tie over seven tasks is Improved"
+}
+
+// Why the door's turn ceiling had to move (protocol-change/100): under its
+// old twenty turns a two-turn trial admitted at most five tasks, and no
+// five-task shape is powered. Five wins have no spread, and four wins with a
+// tie reach only p = 0.125, so a Passed was unreachable through the door.
+pub fn five_tasks_cannot_be_a_demonstrated_improvement_test() {
+  let assert record.Inconclusive(reason) =
+    rollout.decide(acceptance_rows(5, 0), acceptance_names(5), 1)
+    as "five wins with no tie have no spread"
+  assert string.starts_with(reason, "underpowered: no spread") as reason
+  let assert record.Inconclusive(reason) =
+    rollout.decide(acceptance_rows(5, 1), acceptance_names(5), 1)
+    as "four wins and a tie are not significant"
+  assert string.starts_with(reason, "underpowered: minimum detectable")
+    as reason
+}
+
+fn acceptance_names(count: Int) -> List(String) {
+  list.index_map(list.repeat(Nil, count), fn(_, index) {
+    "independent-file-" <> int.to_string(index + 1)
+  })
+}
+
+// The base fails every task but the last `ties`, which it passes as the
+// candidate does; the candidate passes every task.
+fn acceptance_rows(count: Int, ties: Int) -> List(rollout.Row) {
+  list.index_map(acceptance_names(count), fn(task, index) {
+    let base_reward = case index >= count - ties {
+      True -> 1.0
+      False -> 0.0
+    }
+    [
+      rollout.Row(task, 1, rollout.Base, Some(graded(base_reward))),
+      rollout.Row(task, 1, rollout.Candidate, Some(graded(1.0))),
+    ]
+  })
+  |> list.flatten
+}
+
+fn tasks(count: Int) -> List(rollout.Task) {
+  list.index_map(list.repeat(Nil, count), fn(_, index) {
+    rollout.Task(
+      ..task(),
+      id: "task-" <> int.to_string(index + 1),
+      fixture: "fixture-" <> int.to_string(index + 1),
+    )
+  })
+}
+
+// Nine tasks the candidate loses and one tie: the base passes everything.
+fn harm_reward(task: String, arm: Option(Profile)) -> Float {
+  case task, arm {
+    _, None -> 1.0
+    "task-10", Some(_) -> 1.0
+    _, Some(_) -> 0.0
+  }
+}
+
+// Nine tasks the candidate wins and one tie: the candidate passes everything.
+fn improvement_reward(task: String, arm: Option(Profile)) -> Float {
+  case task, arm {
+    _, Some(_) -> 1.0
+    "task-10", None -> 1.0
+    _, None -> 0.0
+  }
+}
+
+// Runs the governed fold in live mode over `tasks`, grading every
+// (task, arm) with `reward`, under a budget wide enough for twenty trials.
+fn live_over(
+  tasks: List(rollout.Task),
+  reward: fn(String, Option(Profile)) -> Float,
+  samples: Int,
+) -> record.Evidence {
+  let catalogue = opened()
+  let proposed = candidate("Compare over many tasks.")
+  let assert Ok(_) = store.propose(catalogue, proposed) as "candidate retained"
+  let openings = process.new_subject()
+  let closings = process.new_subject()
+  let base = scripted(openings, closings)
+  let native =
+    rollout.Callbacks(..base, mode: rollout.LiveProduction, open: fn(request) {
+      let assert Ok(trial) = base.open(request) as "scripted trial opens"
+      Ok(
+        rollout.Trial(..trial, score: fn(_) {
+          Ok(graded(reward(request.task.id, request.profile)))
+        }),
+      )
+    })
+  let assert Ok(evidence) =
+    rollout.evaluate(
+      catalogue,
+      proposed.id,
+      target(),
+      "anthropic-messages",
+      tasks,
+      rollout.Limits(..limits(), trials: 20, turns: 100, samples:),
+      native,
+    )
+    as "live evidence over many tasks is durable"
+  evidence
 }
 
 // A sample count the trial budget cannot pair is refused before any trial

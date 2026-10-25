@@ -311,6 +311,26 @@ information and the verifier that produced it. The exact-byte verifier
 retained trial report carries the grade and its sample index beside the
 projected `outcome` word.
 
+The verdict is `evalstat`'s task-level paired decision rule
+(protocol-change/100). After the fold, every graded report becomes one trial
+row per (task, sample, arm) and `rollout.decide`
+(`client/evolution/rollout.gleam:1041`) asks `evalstat.paired_verdict` over the
+plan the comparison was asked to run, every admitted task times
+`Limits.samples`, never over the rows that happen to exist. Only a demonstrated
+improvement is `Passed`; a demonstrated harm and a powered tie are both
+`Failed`; a comparison too small to have seen the ten-point target effect, or
+one missing a planned row, is `Inconclusive` with the statistic's reason, the
+minimum detectable effect and the task count that would have sufficed. The
+fold's own stops (an unconfirmed teardown, an exhausted budget, a verifier
+defect) are `Inconclusive` before the rule is consulted, and scripted-lifecycle
+evidence stays `Inconclusive` unconditionally. Twenty trials hold at most ten
+(task, sample) pairs per arm, so through the model door the minimum detectable
+effect never falls below 0.28 and a powered tie is unreachable; an
+`Inconclusive` there is the rule declining to claim what the plan cannot show,
+not a defect in the comparison. The rule treats every admitted task as an
+independent cluster, so a task set of near-duplicate tasks inflates its own
+power: the operator who admits the set owns that assumption.
+
 The native request guard reserves conservative context/cache/output tokens and
 priced cost before every dispatched request, including failed attempts. The
 comparison retains worst-case debits for attempts lacking complete native usage
@@ -437,7 +457,7 @@ The adjacent package contracts are described in the READMEs for
 | Operator board | 48 KiB reply; the newest 64 audit entries; observations left out. Oldest decisions, then oldest candidates, shed first and counted in `omitted`. |
 | Task admission | Ten tasks, 64 initial and 64 expected paths per task, 256 KiB captured JSON. |
 | Operator activation | One queued managed job; relative deadline at most 120 seconds; bounded deduplication receipts. |
-| Model-facing comparison | At most 20 trials, 20 turns, one million aggregate tokens, two dollars, 64 KiB retained output, 120 seconds and three samples per task per arm. Callers may lower ceilings. |
+| Model-facing comparison | At most 20 trials, 100 turns, one million aggregate tokens, two dollars, 64 KiB retained output, 480 seconds and three samples per task per arm (protocol-change/100 raised turns from 20 and wall from 120 seconds so a paired verdict can be powered, keeping the wall under the code-mode call that hosts the compare; the dollar and token ceilings that bound the spend did not move). Callers may lower ceilings. |
 | Trace door | At most 32 retained turns; 100 source descriptors, 256 usage rows, 16 KiB per source entry, 1 MiB source copies, 32 KiB retained excerpts. |
 
 The catalogue envelope ceiling is not a cap on its append-only lifecycle journal.

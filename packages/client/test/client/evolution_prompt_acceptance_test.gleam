@@ -73,7 +73,7 @@ type TraceMessage {
 ///
 /// `make e2e-evolution` enables the offline toolchain and real native helper.
 pub fn prompt_versions_real_trials_session_pins_and_rollback_test_() -> EunitTest {
-  Timeout(150, fn() {
+  Timeout(700, fn() {
     case native.getenv("LOOM_EVOLUTION_E2E") {
       Ok("1") -> exercise()
       Ok(_) | Error(Nil) ->
@@ -324,131 +324,179 @@ fn author_script(
         )
       },
     ),
-    trial(root, version, None),
-    trial_write(root, version, None),
-    peer.ComputedExchange(peer.AwaitToolResult("trial-baseline-" <> v), fn(_) {
-      peer.ReplyText("baseline work complete")
-    }),
-    trial(root, version, Some(version)),
-    trial_write(root, version, Some(version)),
-    peer.ComputedExchange(peer.AwaitToolResult("trial-candidate-" <> v), fn(_) {
-      peer.ReplyText("candidate work complete")
-    }),
-    peer.ComputedExchange(
-      peer.AwaitToolResult("prompt-author-" <> v),
-      fn(requests) {
-        let receipt = latest(requests)
-        process.send(
-          collector,
-          Published(Authored(
-            text(receipt, "candidate_id"),
-            text(receipt, "evidence_id"),
-            text(receipt, "evidence"),
-          )),
-        )
-        peer.ReplyToolUse(
-          "prompt-trace-" <> v,
-          programs.tool_name,
-          programs.arguments(
-            programs.trace(case version {
-              1 -> 12
-              _ -> 3
-            }),
-          ),
-        )
-      },
-    ),
-    peer.ComputedExchange(
-      peer.AwaitToolResult("prompt-trace-" <> v),
-      fn(requests) {
-        process.send(traces, TraceSeen(latest(requests)))
-        peer.ReplyText("prompt evidence and source trace retained")
-      },
-    ),
+    ..list.append(trials(root, version), [
+      peer.ComputedExchange(
+        peer.AwaitToolResult("prompt-author-" <> v),
+        fn(requests) {
+          let receipt = latest(requests)
+          process.send(
+            collector,
+            Published(Authored(
+              text(receipt, "candidate_id"),
+              text(receipt, "evidence_id"),
+              text(receipt, "evidence"),
+            )),
+          )
+          peer.ReplyToolUse(
+            "prompt-trace-" <> v,
+            programs.tool_name,
+            programs.arguments(
+              programs.trace(case version {
+                1 -> 12
+                _ -> 3
+              }),
+            ),
+          )
+        },
+      ),
+      peer.ComputedExchange(
+        peer.AwaitToolResult("prompt-trace-" <> v),
+        fn(requests) {
+          process.send(traces, TraceSeen(latest(requests)))
+          peer.ReplyText("prompt evidence and source trace retained")
+        },
+      ),
+    ])
   ]
 }
 
-fn trial(root: String, version: Int, applied: Option(Int)) -> peer.Exchange {
+/// The task count the comparison runs, and the smallest plan the paired
+/// verdict can call an improvement: the base fails six tasks and ties the
+/// seventh, the candidate passes all seven, so six tasks move one way (the
+/// smallest sign test under alpha) and the tie gives the interval its spread.
+/// `models_test` proves the arithmetic on these exact reports without a jail
+/// (`prompt_acceptance_plan_of_seven_tasks_is_a_demonstrated_improvement_test`).
+const task_count = 7
+
+/// The one task both arms solve. Its index is `task_count`.
+const tie_task = 7
+
+/// The provider turns one trial takes: the shell read, the file write and
+/// the closing answer. Fourteen trials is 42 turns, inside the door's 100.
+const turns_per_trial = 3
+
+// The evaluator folds the admitted tasks in order and runs the base arm then
+// the candidate arm for each, so the script is that order exactly.
+fn trials(root: String, version: Int) -> List(peer.Exchange) {
+  list.flat_map(task_indices(), fn(task) {
+    list.flat_map([None, Some(version)], fn(applied) {
+      let tag = trial_tag(applied)
+      let id =
+        tag <> "-" <> int.to_string(version) <> "-" <> int.to_string(task)
+      [
+        trial(root, version, applied, task),
+        trial_write(root, version, applied, task),
+        peer.ComputedExchange(peer.AwaitToolResult("trial-" <> id), fn(_) {
+          peer.ReplyText(tag <> " work complete")
+        }),
+      ]
+    })
+  })
+}
+
+fn task_indices() -> List(Int) {
+  list.index_map(list.repeat(Nil, task_count), fn(_, index) { index + 1 })
+}
+
+// The expected bytes differ per task, so the seven tasks are seven distinct
+// (fixture, expected) pairs and not one task's evidence counted seven times.
+fn expected_output(task: Int) -> String {
+  "checked output " <> int.to_string(task) <> "\n"
+}
+
+fn task_prompt(task: Int) -> String {
+  "Write the independently specified result file " <> int.to_string(task) <> "."
+}
+
+fn task_id(task: Int) -> String {
+  "independent-file-" <> int.to_string(task)
+}
+
+fn trial(
+  root: String,
+  version: Int,
+  applied: Option(Int),
+  task: Int,
+) -> peer.Exchange {
   let tag = trial_tag(applied)
-  peer.ComputedExchange(
-    peer.AwaitPrompt("Write the independently specified result file."),
-    fn(requests) {
-      assert_profile(requests, applied)
-      assert_no_evolution_doors(requests)
-      peer.ReplyToolUse(
-        "trial-read-" <> tag <> "-" <> int.to_string(version),
-        "bash",
-        json.Object([
-          #("mode", json.String("foreground")),
-          #("timeout_ms", json.Int(10_000)),
-          #(
-            "command",
-            json.String(
-              "/bin/cat public-control.txt; "
-              <> read_command("owner", root <> "/owner-secret.token")
-              <> "; "
-              <> read_command(
-                "catalogue",
-                root <> "/run/evolution/evolution.db",
-              ),
-            ),
+  peer.ComputedExchange(peer.AwaitPrompt(task_prompt(task)), fn(requests) {
+    assert_profile(requests, applied)
+    assert_no_evolution_doors(requests)
+    peer.ReplyToolUse(
+      "trial-read-"
+        <> tag
+        <> "-"
+        <> int.to_string(version)
+        <> "-"
+        <> int.to_string(task),
+      "bash",
+      json.Object([
+        #("mode", json.String("foreground")),
+        #("timeout_ms", json.Int(10_000)),
+        #(
+          "command",
+          json.String(
+            "/bin/cat public-control.txt; "
+            <> read_command("owner", root <> "/owner-secret.token")
+            <> "; "
+            <> read_command("catalogue", root <> "/run/evolution/evolution.db"),
           ),
-        ]),
-      )
-    },
-  )
+        ),
+      ]),
+    )
+  })
 }
 
 fn trial_write(
   root: String,
   version: Int,
   applied: Option(Int),
+  task: Int,
 ) -> peer.Exchange {
   let tag = trial_tag(applied)
-  peer.ComputedExchange(
-    peer.AwaitToolResult("trial-read-" <> tag <> "-" <> int.to_string(version)),
-    fn(requests) {
-      let assert Ok(request) = list.last(requests)
-        as "actual trial tool settles"
-      let assert peer.SuccessfulToolResult(_, output) = request.latest
-        as "ordinary foreground shell executes in the isolated trial"
-      assert string.contains(output, "trial public readable control")
-        as "the same native shell can read its admitted public fixture"
-      let #(owner_status, owner_bytes, owner_error) =
-        read_result(output, "owner")
-      let #(catalogue_status, catalogue_bytes, catalogue_error) =
-        read_result(output, "catalogue")
-      assert masked_read(
-          ProtectedFile,
-          root <> "/owner-secret.token",
-          owner_status,
-          owner_bytes,
-          owner_error,
-        )
-        && masked_read(
-          ProtectedDirectoryChild,
-          root <> "/run/evolution/evolution.db",
-          catalogue_status,
-          catalogue_bytes,
-          catalogue_error,
-        )
-        as "each existing nonempty target yields its exact native mask outcome and no bytes"
-      peer.ReplyToolUse(
-        "trial-" <> tag <> "-" <> int.to_string(version),
-        "fs_write",
-        json.Object([
-          #("path", json.String("result.txt")),
-          #(
-            "content",
-            json.String(case applied {
-              None -> "wrong baseline\n"
-              Some(_) -> "checked output\n"
-            }),
-          ),
-        ]),
+  let id = tag <> "-" <> int.to_string(version) <> "-" <> int.to_string(task)
+  peer.ComputedExchange(peer.AwaitToolResult("trial-read-" <> id), fn(requests) {
+    let assert Ok(request) = list.last(requests) as "actual trial tool settles"
+    let assert peer.SuccessfulToolResult(_, output) = request.latest
+      as "ordinary foreground shell executes in the isolated trial"
+    assert string.contains(output, "trial public readable control")
+      as "the same native shell can read its admitted public fixture"
+    let #(owner_status, owner_bytes, owner_error) = read_result(output, "owner")
+    let #(catalogue_status, catalogue_bytes, catalogue_error) =
+      read_result(output, "catalogue")
+    assert masked_read(
+        ProtectedFile,
+        root <> "/owner-secret.token",
+        owner_status,
+        owner_bytes,
+        owner_error,
       )
-    },
-  )
+      && masked_read(
+        ProtectedDirectoryChild,
+        root <> "/run/evolution/evolution.db",
+        catalogue_status,
+        catalogue_bytes,
+        catalogue_error,
+      )
+      as "each existing nonempty target yields its exact native mask outcome and no bytes"
+    // The candidate solves every task; the base solves only the tie task,
+    // so the paired verdict sees six wins and one tie.
+    peer.ReplyToolUse(
+      "trial-" <> id,
+      "fs_write",
+      json.Object([
+        #("path", json.String("result.txt")),
+        #(
+          "content",
+          json.String(case applied, task == tie_task {
+            None, False -> "wrong baseline\n"
+            None, True -> expected_output(task)
+            Some(_), _ -> expected_output(task)
+          }),
+        ),
+      ]),
+    )
+  })
 }
 
 // Probe output reports byte presence rather than discarding stdout. Otherwise
@@ -721,12 +769,13 @@ fn propose_and_compare(
       "  )",
       "  let limits =",
       "    evolution.Limits(",
-      "      trials: 2,",
-      "      turns: 6,",
+      "      trials: " <> int.to_string(2 * task_count) <> ",",
+      "      turns: " <> int.to_string(2 * task_count * turns_per_trial) <> ",",
       "      tokens: 1_000_000,",
       "      dollars: 2.0,",
       "      output_bytes: 65_536,",
-      "      wall_ms: 120_000,",
+      "      wall_ms: 480_000,",
+      "      samples: 1,",
       "    )",
       "  evolution.compare(id, " <> programs.literal(taskset_id) <> ", limits)",
       "  |> result.map_error(evolution.error_text)",
@@ -851,9 +900,11 @@ fn observation_shape(observation: json.JsonValue) {
     as "the canonical observation has its known members and no other"
   assert field(field(observation, "limits"), "samples") == json.Int(1)
     as "the governed comparison ran one sample per arm"
-  let assert json.Array([base, changed]) = field(observation, "trials")
-    as "one task yields one base and one candidate report"
-  list.each([base, changed], fn(report) {
+  let assert json.Array(reports) = field(observation, "trials")
+    as "reports are an array"
+  assert list.length(reports) == 2 * task_count
+    as "every task yields one base and one candidate report"
+  list.each(reports, fn(report) {
     let assert json.Object(members) = report as "report is an object"
     assert list.map(members, fn(member) { member.0 })
       == [
@@ -875,44 +926,63 @@ fn observation_shape(observation: json.JsonValue) {
         "unreported_tokens",
       ]
       as "a trial report adds only grade and sample to its known members"
-    assert field(report, "outcome") == json.String("succeeded")
-      && field(report, "sample") == json.Int(1)
-      && field(field(report, "grade"), "reward") == json.Float(1.0)
-      && field(field(report, "grade"), "side_info") == json.String("")
+    assert field(report, "sample") == json.Int(1)
       && field(field(field(report, "grade"), "verifier"), "kind")
       == json.String("expected-files")
-      as "the exact-byte verifier graded both arms as passing"
+      as "one sample, graded by the exact-byte verifier"
+
+    // The base fails every task but the tie task, naming the differing
+    // file; the candidate passes them all.
+    let base = field(report, "profile") == json.Null
+    let tie = field(report, "task") == json.String(task_id(tie_task))
+    case base && !tie {
+      True -> {
+        assert field(report, "outcome") == json.String("failed")
+          && field(field(report, "grade"), "reward") == json.Float(0.0)
+          && field(field(report, "grade"), "side_info")
+          == json.String("expected file differs: result.txt")
+          as "the base arm fails the task the candidate solves"
+      }
+      False -> {
+        assert field(report, "outcome") == json.String("succeeded")
+          && field(field(report, "grade"), "reward") == json.Float(1.0)
+          && field(field(report, "grade"), "side_info") == json.String("")
+          as "the candidate, and the base on the tie task, pass"
+      }
+    }
   })
 }
 
+// Seven tasks with distinct ids, prompts and expected bytes: the prompt is
+// how the scripted provider tells which trial it is answering, and the
+// expected bytes are what makes them seven tasks rather than one repeated.
 fn taskset() -> json.JsonValue {
   json.Object([
     #("version", json.Int(1)),
     #(
       "tasks",
-      json.Array([
-        json.Object([
-          #("id", json.String("independent-file-v1")),
-          #(
-            "prompt",
-            json.String("Write the independently specified result file."),
-          ),
-          #(
-            "files",
-            json.Object([
-              #("result.txt", json.String("initial\n")),
-              #(
-                "public-control.txt",
-                json.String("trial public readable control\n"),
-              ),
-            ]),
-          ),
-          #(
-            "expected",
-            json.Object([#("result.txt", json.String("checked output\n"))]),
-          ),
-        ]),
-      ]),
+      json.Array(
+        list.map(task_indices(), fn(task) {
+          json.Object([
+            #("id", json.String(task_id(task))),
+            #("prompt", json.String(task_prompt(task))),
+            #(
+              "files",
+              json.Object([
+                #("result.txt", json.String("initial\n")),
+                #(
+                  "public-control.txt",
+                  json.String("trial public readable control\n"),
+                ),
+              ]),
+            ),
+            #(
+              "expected",
+              json.Object([#("result.txt", json.String(expected_output(task)))]),
+            ),
+          ])
+        }),
+      ),
     ),
   ])
 }
