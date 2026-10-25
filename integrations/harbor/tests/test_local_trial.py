@@ -48,6 +48,8 @@ STUB_LOOMD_WITH_SESSION = STUB_LOOMD.replace(
     "printf 'SQLite stub' > \"$state/sessions/s-123.db\"\nprintf 'wal stub' > \"$state/sessions/s-123.db-wal\"",
     "cp \"$STUB_SESSION_DB\" \"$state/sessions/s-123.db\"\ncp \"$STUB_SESSION_DB-wal\" \"$state/sessions/s-123.db-wal\"",
 )
+# The real database must not be altered by the stub's shutdown.
+STUB_LOOMD_WITH_SESSION = STUB_LOOMD_WITH_SESSION.replace('printf " closed" >> "$state/sessions/s-123.db"; ', "")
 assert STUB_LOOMD_WITH_SESSION != STUB_LOOMD
 
 
@@ -79,6 +81,9 @@ class LocalEnvironment:
         destination = Path(self.mapped(str(target)))
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, destination)
+
+    async def download_file(self, source, target):
+        shutil.copyfile(self.mapped(str(source)), target)
 
 
 @pytest.fixture
@@ -140,16 +145,19 @@ async def test_setup_run_and_post_run_agree_end_to_end(trial):
     assert argv[argv.index("--workspace") + 1] == str(trial.root / "app")
     assert argv[argv.index("--timeout") + 1] == "120"
 
-    # The key reached the daemon's environment and no file or log the trial keeps.
+    # The key reached the daemon's environment only, and the file it came in is gone.
     assert "ANTHROPIC_API_KEY=sk-ant-test-0123456789abcdef" in (trial.root / "state/loomd.env").read_text()
-    for path in trial.root.rglob("*"):
-        if path.is_file() and path.suffix in (".json", ".txt", ".toml", ".log", ".exit", ".pid"):
+    key_file = trial.root / "installed-agent/loom-key"
+    assert not key_file.exists() or key_file.read_text() == ""
+    assert not any("sk-ant-test" in command for command in env.commands)
+    for path in trial.logs.rglob("*"):
+        if path.is_file():
             assert b"sk-ant-test" not in path.read_bytes(), path
 
-    # Harbor's log sync is a no-op here (the mapped directory is the host's logs dir).
+    # What Harbor would collect: scrubbed text and the trajectory; never the raw database.
     assert (trial.logs / "loom-run.json").read_text() == REPORT + "\n"
-    assert (trial.logs / "loom-session/s-123.db").is_file()
-    assert (trial.logs / "loom-session/s-123.db-wal").is_file()
+    assert (trial.logs / "daemon.log").is_file() and (trial.logs / "loomd.log").is_file()
+    assert not list(trial.logs.rglob("*.db")) and not list(trial.logs.rglob("*.db-wal"))
 
     agent.populate_context_post_run(context)
     assert (context.n_input_tokens, context.n_output_tokens, context.cost_usd) == (115, 20, 0.3)
@@ -170,7 +178,7 @@ async def test_setup_run_and_post_run_agree_end_to_end(trial):
 async def test_the_daemon_is_gone_when_run_returns(trial):
     await trial.agent.setup(trial.env)
     await trial.agent.run("x", trial.env, AgentContext())
-    pid = int((trial.logs / "loomd.pid").read_text())
+    pid = int((trial.root / "state/stub.pid").read_text())
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
 

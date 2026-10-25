@@ -181,29 +181,44 @@ echo "loom-harbor install: installed $source_label" >&2
 echo "$version" >&2
 """
 
-# Shared by the run and collect scripts: copy the session database out of the
-# daemon's state directory and stop the daemon. It tolerates every part being
-# absent, because it also runs after a timeout, when nothing can be assumed.
+# Shared by the run and collect scripts. Everything the daemon and `loom run`
+# write that the adapter later wants lives under $OUT, inside the private state
+# directory, and not under /logs/agent: the daemon's state is where a session
+# keeps its history, and /logs/agent is what Harbor uploads. The adapter fetches
+# files from here itself and scrubs the API key from them first.
+#
+# A process id is only a name for a process while the process is the same one.
+# The pidfile therefore carries the process's start time (field 22 of
+# /proc/<pid>/stat), and a stop signals nothing whose start time differs.
 _HELPERS = r"""
+start_time() { awk '{ sub(/^.*\) /, ""); print $20 }' "/proc/$1/stat" 2>/dev/null; }
+
 stop_daemon() {
   [ -f "$OUT/loomd.pid" ] || return 0
-  pid="$(cat "$OUT/loomd.pid" 2>/dev/null || true)"
-  [ -n "$pid" ] || return 0
-  kill -TERM "$pid" 2>/dev/null || return 0
-  for _ in $(seq 1 40); do
-    kill -0 "$pid" 2>/dev/null || return 0
-    sleep 0.5
-  done
-  kill -KILL "$pid" 2>/dev/null || true
+  read -r pid started < "$OUT/loomd.pid" || true
+  if [ -n "${pid:-}" ] && [ "$(start_time "$pid")" = "${started:-x}" ]; then
+    kill -TERM "$pid" 2>/dev/null || true
+    for _ in $(seq 1 40); do
+      [ "$(start_time "$pid")" = "$started" ] || break
+      sleep 0.5
+    done
+    if [ "$(start_time "$pid")" = "$started" ]; then
+      kill -KILL "$pid" 2>/dev/null || true
+      for _ in $(seq 1 20); do
+        [ "$(start_time "$pid")" = "$started" ] || break
+        sleep 0.25
+      done
+    fi
+  fi
+  rm -f "$OUT/loomd.pid"
 }
 
-collect_session() {
-  mkdir -p "$OUT/loom-session"
-  [ -f "$STATE/daemon.log" ] && cp "$STATE/daemon.log" "$OUT/daemon.log" 2>/dev/null
-  for f in "$STATE"/sessions/*.db "$STATE"/sessions/*.db-wal; do
-    [ -e "$f" ] || continue
-    cp "$f" "$OUT/loom-session/" 2>/dev/null || true
-  done
+wipe_key_file() {
+  [ -n "${LOOM_KEY_FILE:-}" ] || return 0
+  # The file belongs to the agent user but sits in a root-owned directory, so
+  # it can be emptied even where it cannot be unlinked.
+  : > "$LOOM_KEY_FILE" 2>/dev/null || true
+  rm -f "$LOOM_KEY_FILE" 2>/dev/null || true
 }
 """
 
@@ -215,12 +230,15 @@ fail() { echo "loom-harbor run: $1" >&2; exit "${2:-40}"; }
 
 PREFIX="${LOOM_PREFIX:?LOOM_PREFIX is required}"
 STATE="${LOOM_STATE_DIR:-${HOME:?HOME must be set for the agent user}/.loom-harbor}"
-OUT="${LOOM_OUT:?LOOM_OUT is required}"
+OUT="$STATE/harbor-out"
 CONFIG="${LOOM_CONFIG:?LOOM_CONFIG is required}"
 PROMPT_FILE="${LOOM_PROMPT_FILE:?LOOM_PROMPT_FILE is required}"
 TIMEOUT="${LOOM_RUN_TIMEOUT_SEC:?LOOM_RUN_TIMEOUT_SEC is required}"
 JAIL_FLAG="${LOOM_JAIL_FLAG:-}"
-
+KEY_NAME="${LOOM_KEY_NAME:?LOOM_KEY_NAME is required}"
+"""
+    + _HELPERS
+    + r"""
 : "${HOME:?HOME must be set for the agent user; the Loom launcher refuses to start without it}"
 LOOMD="$PREFIX/server/bin/loomd"
 LOOM="$PREFIX/client/bin/loom"
@@ -229,26 +247,44 @@ LOOM="$PREFIX/client/bin/loom"
 [ -r "$CONFIG" ] || fail "cannot read the catalogue $CONFIG" 40
 [ -r "$PROMPT_FILE" ] || fail "cannot read the instruction $PROMPT_FILE" 40
 
-mkdir -p "$OUT" "$STATE" || fail "cannot create $STATE or $OUT" 40
+# The API key arrives as a file, not in this script's environment or on any
+# command line (Harbor passes exec environment as `-e KEY=VALUE` arguments, which
+# any process on the host can read). It is held in a shell variable that is
+# never exported, handed to the daemon alone, and the file is emptied at once.
+KEYVAL=""
+if [ -n "${LOOM_KEY_FILE:-}" ] && [ -s "$LOOM_KEY_FILE" ]; then
+  KEYVAL="$(cat "$LOOM_KEY_FILE")"
+fi
+wipe_key_file
+[ -n "$KEYVAL" ] || fail "no API key was provided in $KEY_NAME" 40
+
+mkdir -p "$STATE" "$OUT" || fail "cannot create $STATE" 40
 chmod 700 "$STATE" 2>/dev/null || true
-"""
-    + _HELPERS
-    + r"""
+rm -f "$OUT/loomd.pid" "$OUT/loom-run.json" "$OUT/loom-run.stderr.txt" "$OUT/loom-run.exit"
 WORKSPACE="$(pwd -P)"
 
-# The daemon starts from its own state directory, never from the workspace, and
-# without the instruction in its environment: model-influenced tool calls run in
-# a jail that does not inherit it, but there is no reason to hand it over.
-# $JAIL_FLAG is deliberately unquoted so an empty value contributes no argument.
+# The daemon starts from its own state directory, never from the workspace, with
+# the key as the only credential it is given. It is not given the instruction
+# file's name or the key's file. $JAIL_FLAG is deliberately unquoted so an empty
+# value contributes no argument.
+#
+# A readiness check against a file left by an earlier daemon would pass at once,
+# and `loom run` would then start a daemon of its own without the posture flag.
+# So the marker is made first, a couple of seconds in the past against coarse
+# file timestamps, and only an endpoint record written after it counts.
+touch -d '2 seconds ago' "$OUT/launch.marker" 2>/dev/null || touch "$OUT/launch.marker"
 (
-  cd "$STATE" && exec env -u LOOM_PROMPT_FILE \
-    "$LOOMD" --state-dir "$STATE" --config "$CONFIG" $JAIL_FLAG
+  cd "$STATE" && export "$KEY_NAME=$KEYVAL" && exec env -u LOOM_PROMPT_FILE -u LOOM_KEY_FILE -u LOOM_KEY_NAME     "$LOOMD" --state-dir "$STATE" --config "$CONFIG" $JAIL_FLAG
 ) >"$OUT/loomd.log" 2>&1 </dev/null &
 DAEMON_PID=$!
-echo "$DAEMON_PID" > "$OUT/loomd.pid"
+KEYVAL=""
+echo "$DAEMON_PID $(start_time "$DAEMON_PID")" > "$OUT/loomd.pid"
 
+ready() {
+  [ "$STATE/daemon.endpoint" -nt "$OUT/launch.marker" ]     && grep -Eq '"status" *: *"ready"' "$STATE/daemon.endpoint" 2>/dev/null
+}
 waited=0
-until [ -s "$STATE/daemon.endpoint" ]; do
+until ready; do
   if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
     tail -n 40 "$OUT/loomd.log" >&2
     fail "loomd exited before it was ready (log: $OUT/loomd.log)" 41
@@ -263,15 +299,17 @@ until [ -s "$STATE/daemon.endpoint" ]; do
 done
 
 # `loom run` reuses the daemon that owns this state directory, so the posture
-# flag given to loomd above is the one the session runs under.
-"$LOOM" run --server "$LOOMD" --state-dir "$STATE" --config "$CONFIG" \
-  --workspace "$WORKSPACE" --timeout "$TIMEOUT" -p "$(cat "$PROMPT_FILE")" \
-  >"$OUT/loom-run.json" 2>"$OUT/loom-run.stderr.txt" </dev/null
+# flag given to loomd above is the one the session runs under. Loom enforces
+# --timeout itself; the outer `timeout -k` is the backstop that keeps a wedged
+# client from outliving the exec Harbor is waiting on.
+RUNNER=""
+if command -v timeout >/dev/null 2>&1; then RUNNER="timeout -k 30 $((TIMEOUT + 90))"; fi
+# shellcheck disable=SC2086
+$RUNNER "$LOOM" run --server "$LOOMD" --state-dir "$STATE" --config "$CONFIG"   --workspace "$WORKSPACE" --timeout "$TIMEOUT" -p "$(cat "$PROMPT_FILE")"   >"$OUT/loom-run.json" 2>"$OUT/loom-run.stderr.txt" </dev/null
 RC=$?
 printf '%s\n' "$RC" > "$OUT/loom-run.exit"
 
 stop_daemon
-collect_session
 
 case "$RC" in
   0|1|124)
@@ -292,21 +330,27 @@ esac
 """
 )
 
+# The second pass, run after the first whether it finished or Harbor cut it off.
+# Order matters: the daemon is stopped first, with a KILL fallback, because a
+# SQLite file copied while its writer lives can be torn. Only then does it list
+# what the adapter should fetch, one `LOOM_FILE <path>` line each on stdout.
 COLLECT_SCRIPT = (
     r"""
 set -uo pipefail
 STATE="${LOOM_STATE_DIR:-${HOME:-/root}/.loom-harbor}"
-OUT="${LOOM_OUT:?LOOM_OUT is required}"
-mkdir -p "$OUT" 2>/dev/null || true
+OUT="$STATE/harbor-out"
 """
     + _HELPERS
     + r"""
-collect_session
+wipe_key_file
 stop_daemon
+for f in "$OUT"/loom-run.json "$OUT"/loom-run.stderr.txt "$OUT"/loom-run.exit "$OUT"/loomd.log \
+         "$STATE"/daemon.log "$STATE"/sessions/*.db "$STATE"/sessions/*.db-wal; do
+  [ -f "$f" ] && printf 'LOOM_FILE %s\n' "$f"
+done
 exit 0
 """
 )
-
 
 # Whether bubblewrap, the namespace layer of Loom's jail, can work for this user
 # in this container. The helper decides "degraded" by whether `bwrap` is on its

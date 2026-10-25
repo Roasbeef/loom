@@ -14,18 +14,25 @@ archive and the self-contained `loom` client archive, verified against the
 release's `SHA256SUMS`, or two local archives for an offline run. It runs once
 per container, as root, and is idempotent.
 
-`run` writes a one-model `loom.toml` and the instruction into the container,
-starts `loomd` under the chosen isolation posture, drives it with
-`loom run -p`, stops it, and copies the session database into `/logs/agent`,
-where Harbor collects it. It deliberately does not touch the `AgentContext`:
-Harbor calls `populate_context_post_run` only when the context is still empty,
-and that hook is the one that runs after a timeout too, so it owns the
-context and the trajectory.
+`run` writes a one-model `loom.toml`, the instruction and the API key (as a
+private file, not as exec environment) into the container, starts `loomd` under
+the chosen isolation posture, and drives it with `loom run -p`. Then, whether
+that finished or Harbor cut it off, a second pass stops the daemon, fetches what
+it left (scrubbing the key's value from every text file, converting the session
+database into `trajectory.json` and discarding the raw database), and restores
+a bubblewrap it moved aside. Nothing is written to `/logs/agent` inside the
+container. `run` deliberately leaves the `AgentContext` alone: Harbor calls
+`populate_context_post_run` only while the context is still empty, and that hook
+is the one that still runs after a timeout.
 
-`populate_context_post_run` runs on the host after Harbor has synced the logs
-back. It reads `loom-run.json` for the verdict, usage and isolation label,
-fills the context, and converts the session database into `trajectory.json`
-(ATIF) with `loom_harbor.trajectory`.
+`populate_context_post_run` reads the fetched `loom-run.json` for the verdict,
+usage and isolation label and fills the context.
+
+The key is reachable by model-run code under `jail=container`: the daemon holds
+it in its environment, and that container has no PID namespace separating the
+daemon from the tool processes, so `/proc/<loomd>/environ` is readable by the
+same user. The container is the boundary; use a key scoped and budgeted for the
+run. See the README.
 
 Isolation is an explicit choice, never a silent default. See `LoomAgentOptions.jail`.
 """
@@ -35,13 +42,21 @@ from __future__ import annotations
 import json
 import re
 import shlex
-from pathlib import Path
+import tempfile
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import Any, ClassVar, Literal, override
 
 from harbor.agents.capabilities import AgentCapabilities
 from harbor.agents.installed.base import (
+    AgentAuthenticationError,
+    ApiConnectionClosedError,
+    ApiInternalServerError,
+    ApiOverloadedError,
+    ApiRateLimitError,
     BaseInstalledAgent,
+    ContextWindowExceededError,
+    ModelNotFoundError,
     NonZeroAgentExitCodeError,
     PackageSpec,
     with_prompt_template,
@@ -65,10 +80,30 @@ MAX_INSTRUCTION_BYTES = 128 * 1024 - 1072
 REMOTE_DIR = "/installed-agent"
 REMOTE_CONFIG = f"{REMOTE_DIR}/loom.toml"
 REMOTE_PROMPT = f"{REMOTE_DIR}/loom-prompt.txt"
+REMOTE_KEY = f"{REMOTE_DIR}/loom-key"
 
 # `loomd` flag per isolation posture. An empty flag is Loom's own default,
 # `PlatformEnforcement`, which refuses a helper that cannot confine a run.
 JAIL_FLAGS = {"platform": "", "container": "--best-effort"}
+
+# Provider failures as Loom words them. `provider/stream.describe_error` writes
+# "provider returned http <status> (<type>): <message>", "provider stream error
+# (<type>): ...", "transport failed: ..." and so on into the failed assistant
+# message's `errorMessage`; the run report itself carries only the machine code
+# (`provider_error`, `context_overflow`, ...). First match wins, so the specific
+# patterns come before the general ones.
+LOOM_ERROR_PATTERNS: tuple[tuple[re.Pattern[str], type[NonZeroAgentExitCodeError]], ...] = tuple(
+    (re.compile(pattern, re.IGNORECASE), error)
+    for pattern, error in (
+        (r"http 429\b|rate_limit|rate limit|too many requests|throttl", ApiRateLimitError),
+        (r"http 40[13]\b|authentication_error|permission_error|invalid.{0,12}api.?key|x-api-key", AgentAuthenticationError),
+        (r"http 404\b|not_found_error|model.{0,60}(not found|does not exist)", ModelNotFoundError),
+        (r"http 529\b|overloaded", ApiOverloadedError),
+        (r"http 5\d\d\b|api_error|server_error", ApiInternalServerError),
+        (r"transport failed|stream disconnected|drain proof", ApiConnectionClosedError),
+        (r"context_overflow|context window|prompt is too long", ContextWindowExceededError),
+    )
+)
 
 _TAG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _INSTALL_DIR = re.compile(r"^/[A-Za-z0-9._+@~/-]*$")
@@ -107,6 +142,21 @@ class LoomAgentOptions(InstalledAgentOptions):
         default=None,
         description="Host path of loom-<version>-<platform>.tar.gz, for an offline run.",
     )
+    sums_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{64}$",
+        description="Expected SHA-256 of the release's SHA256SUMS file, obtained out of band.",
+    )
+    server_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{64}$",
+        description="Expected SHA-256 of the local server archive (offline runs).",
+    )
+    client_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{64}$",
+        description="Expected SHA-256 of the local client archive (offline runs).",
+    )
     jail: Literal["platform", "container"] = Field(
         default="container",
         description=(
@@ -132,21 +182,6 @@ class LoomAgentOptions(InstalledAgentOptions):
             "--base-url is not available: it needs a model-connection spec this "
             "adapter does not declare."
         ),
-    )
-    sums_sha256: str | None = Field(
-        default=None,
-        pattern=r"^[0-9a-fA-F]{64}$",
-        description="Expected SHA-256 of the release's SHA256SUMS file, obtained out of band.",
-    )
-    server_sha256: str | None = Field(
-        default=None,
-        pattern=r"^[0-9a-fA-F]{64}$",
-        description="Expected SHA-256 of the local server archive (offline runs).",
-    )
-    client_sha256: str | None = Field(
-        default=None,
-        pattern=r"^[0-9a-fA-F]{64}$",
-        description="Expected SHA-256 of the local client archive (offline runs).",
     )
     dialect: str | None = Field(default=None, description="Override the Loom dialect.")
     api_key_env: str | None = Field(
@@ -363,16 +398,22 @@ class LoomAgent(BaseInstalledAgent):
                 env["LOOM_CLIENT_SHA256"] = options.client_sha256.lower()
         return env
 
-    def run_env(self, key_name: str, key_value: str) -> dict[str, str]:
-        """Variables for the run script; the API key travels here and nowhere else."""
+    def run_env(self, key_name: str) -> dict[str, str]:
+        """Variables for the run script.
+
+        The API key is not among them. Harbor passes exec environment to
+        `docker compose exec -e KEY=VALUE`, which puts it on the host's process
+        list; the key goes into the container as a 0600 file the script reads
+        and empties (`REMOTE_KEY`), and only its variable's name is here.
+        """
         env = {
             "LOOM_PREFIX": self.options.install_dir,
-            "LOOM_OUT": str(self.environment_logs_dir),
             "LOOM_CONFIG": REMOTE_CONFIG,
             "LOOM_PROMPT_FILE": REMOTE_PROMPT,
             "LOOM_RUN_TIMEOUT_SEC": str(self.options.timeout_sec),
             "LOOM_JAIL_FLAG": self.jail_flag(),
-            key_name: key_value,
+            "LOOM_KEY_NAME": key_name,
+            "LOOM_KEY_FILE": REMOTE_KEY,
         }
         if self.state_dir():
             env["LOOM_STATE_DIR"] = self.state_dir() or ""
@@ -513,28 +554,34 @@ class LoomAgent(BaseInstalledAgent):
         self._selftest: runreport.SelfTest | None = None
         self._bwrap: str | None = None
         self._bwrap_path: str | None = None
+        self._provider_error: str | None = None
+        self._stdout = ""
         if self.options.jail == "platform":
             self._selftest = await self._preflight_platform(environment)
         else:
             self._bwrap = await self._prepare_namespace_layer(environment)
 
-        # The catalogue is provenance and holds no secret, so keep a copy beside the logs.
-        self.logs_dir.mkdir(parents=True, exist_ok=True)
-        (self.logs_dir / "loom.toml").write_text(config_text)
-
-        await self._upload_config_text(
-            environment, content=config_text, remote_path=REMOTE_CONFIG, filename="loom.toml"
-        )
-        await self._upload_config_text(
-            environment, content=instruction, remote_path=REMOTE_PROMPT, filename="prompt.txt"
-        )
-
-        self._stdout = ""
         try:
+            # The catalogue is provenance and holds no secret, so keep a copy beside the logs.
+            self.logs_dir.mkdir(parents=True, exist_ok=True)
+            (self.logs_dir / "loom.toml").write_text(config_text)
+
+            await self._upload_config_text(
+                environment, content=config_text, remote_path=REMOTE_CONFIG, filename="loom.toml"
+            )
+            await self._upload_config_text(
+                environment, content=instruction, remote_path=REMOTE_PROMPT, filename="prompt.txt"
+            )
+            # The key goes in as a private file, never as exec environment (see run_env).
+            await self._upload_config_text(
+                environment, content=key_value, remote_path=REMOTE_KEY, filename="key"
+            )
+            await self.exec_as_root(environment, command=f"chmod 600 {shlex.quote(REMOTE_KEY)}")
+
             result = await self.exec_as_agent(
                 environment,
                 command=scripts.bash_command(scripts.RUN_SCRIPT),
-                env=self.run_env(key_name, key_value),
+                env=self.run_env(key_name),
                 timeout_sec=self.options.timeout_sec + 300,
             )
             self._stdout = result.stdout or ""
@@ -543,21 +590,25 @@ class LoomAgent(BaseInstalledAgent):
 
         self._raise_for_unusable_or_api_failure()
 
-    async def _salvage(self, environment: BaseEnvironment) -> None:
-        """Copy the session out and stop the daemon, even after a timeout.
-
-        The run script does this itself when it finishes. This second pass is
-        for when it did not: Harbor cancelled `run` at the task's agent
-        timeout, so the script was cut off with the daemon still running and
-        the database still in the state directory.
-        """
-        env: dict[str, str] = {"LOOM_OUT": str(self.environment_logs_dir)}
+    def _collect_env(self) -> dict[str, str]:
+        env = {"LOOM_KEY_FILE": REMOTE_KEY}
         if self.state_dir():
             env["LOOM_STATE_DIR"] = self.state_dir() or ""
+        return env
+
+    async def _salvage(self, environment: BaseEnvironment) -> None:
+        """Stop the daemon, fetch the evidence, and leave the container as found.
+
+        The run script does its own shutdown when it finishes. This pass is for
+        when it did not: Harbor cancelled `run` at the task's agent timeout, so
+        the script was cut off with the daemon still running. It runs in every
+        case, in this order: stop the daemon and list what it left (the
+        collect script), fetch and scrub those files, build the trajectory,
+        and restore a bubblewrap that was moved aside, so that the verifier
+        grades a container that is not missing a binary.
+        """
         try:
-            await environment.exec(
-                command=scripts.bash_command(scripts.COLLECT_SCRIPT), env=env, timeout_sec=90
-            )
+            await self._gather_evidence(environment)
         except Exception as exc:  # best effort; the evidence is a bonus, not the verdict
             self.logger.warning("could not collect the Loom session: %s", exc)
         if self._bwrap == "disabled" and self._bwrap_path:
@@ -570,36 +621,99 @@ class LoomAgent(BaseInstalledAgent):
             except Exception as exc:
                 self.logger.error("could not restore %s: %s", self._bwrap_path, exc)
 
+    async def _gather_evidence(self, environment: BaseEnvironment) -> None:
+        """Fetch what the daemon left in the container, scrubbing the key from it.
+
+        Nothing the daemon or `loom run` wrote is copied into `/logs/agent`
+        inside the container, because Harbor uploads that directory as is and
+        under `jail=container` model-run code can read the daemon's
+        environment, the key included. Text files are fetched here, have the
+        key's value replaced, and are written to the trial's log directory;
+        the session database is fetched to a scratch directory, read for the
+        provider's error text, converted into the trajectory (scrubbed the
+        same way), and discarded. The raw database is not kept.
+        """
+        result = await environment.exec(
+            command=scripts.bash_command(scripts.COLLECT_SCRIPT),
+            env=self._collect_env(),
+            timeout_sec=120,
+        )
+        remote = [
+            line.split(" ", 1)[1].strip()
+            for line in (result.stdout or "").splitlines()
+            if line.startswith("LOOM_FILE ")
+        ]
+        secrets = self._secrets()
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="loom-evidence-") as scratch:
+            sessions = Path(scratch) / "sessions"
+            sessions.mkdir()
+            for path in remote:
+                name = PurePosixPath(path).name
+                is_database = name.endswith((".db", ".db-wal"))
+                target = (sessions if is_database else Path(scratch)) / name
+                try:
+                    await environment.download_file(path, target)
+                except Exception as exc:
+                    self.logger.warning("could not fetch %s: %s", path, exc)
+                    continue
+                if not is_database:
+                    text = target.read_text(errors="replace")
+                    (self.logs_dir / name).write_text(trajectory.scrub(text, secrets))
+            report = self._read_report()
+            database = self._session_database(report, sessions)
+            if database is not None:
+                self._provider_error = trajectory.last_error_message(database)
+            self._write_trajectory(report, database)
+
+    def classify_provider_error(self, text: str) -> NonZeroAgentExitCodeError | None:
+        """Map Loom's provider error text to Harbor's retryable taxonomy, or `None`.
+
+        Loom's patterns first, since Harbor's own are written for other CLIs'
+        phrasing; Harbor's classifier then covers the rest (usage limits and so
+        on). A plain `NonZeroAgentExitCodeError` from it means "unrecognised",
+        which is a result for the verifier, not an error.
+        """
+        message = f"Loom run failed: {trajectory.scrub(text, self._secrets())}"
+        for pattern, error in LOOM_ERROR_PATTERNS:
+            if pattern.search(text):
+                return error(message)
+        classified = self._classify_exec_error(
+            "loom run", SimpleNamespace(return_code=1, stdout=text, stderr="")
+        )
+        return None if type(classified) is NonZeroAgentExitCodeError else classified
+
     def _raise_for_unusable_or_api_failure(self) -> None:
         """Turn the report into Harbor's error taxonomy where it applies.
 
         A model that failed the task is a result, not an error, so `failed`,
         `aborted` and `timeout` return normally and the verifier decides. Two
         things are errors: a report the adapter cannot read, and a `failed`
-        run whose reason Harbor's own classifier recognises as a provider
-        problem (rate limit, auth, overload), because those are what
-        `--retry-include` exists for.
+        run whose provider error Harbor's retry policy knows (rate limit, bad
+        key, overload), because those are what `--retry-include` exists for.
+        The text classified is the failed assistant message's `errorMessage`
+        from the session database, which is where Loom keeps the provider's
+        status and words; the report carries only the code (`provider_error`).
         """
         try:
             report = runreport.parse_run_output(self._stdout)
         except runreport.RunReportError as exc:
             raise NonZeroAgentExitCodeError(f"unusable loom run report: {exc}") from exc
-        if report.outcome != "failed" or not report.reason:
+        if report.outcome != "failed":
             return
-        classified = self._classify_exec_error(
-            "loom run", SimpleNamespace(return_code=1, stdout=report.reason, stderr="")
-        )
-        if type(classified) is not NonZeroAgentExitCodeError:
+        text = self._provider_error or report.reason or ""
+        classified = self.classify_provider_error(text) if text else None
+        if classified is not None:
             raise classified
 
     # ------------------------------------------------------------- after the run
 
     def _read_report(self) -> runreport.RunReport | None:
-        """The report from the synced log, or from the run's own stdout."""
+        """The report from the fetched log, or from the run's own stdout."""
         candidates = []
-        synced = self.logs_dir / "loom-run.json"
-        if synced.is_file():
-            candidates.append(synced.read_text())
+        fetched = self.logs_dir / "loom-run.json"
+        if fetched.is_file():
+            candidates.append(fetched.read_text())
         candidates.append(getattr(self, "_stdout", ""))
         for text in candidates:
             try:
@@ -608,8 +722,8 @@ class LoomAgent(BaseInstalledAgent):
                 continue
         return None
 
-    def _session_database(self, report: runreport.RunReport | None) -> Path | None:
-        directory = self.logs_dir / "loom-session"
+    @staticmethod
+    def _session_database(report: runreport.RunReport | None, directory: Path) -> Path | None:
         if report is not None:
             named = directory / f"{report.session_id}.db"
             if named.is_file():
@@ -649,49 +763,49 @@ class LoomAgent(BaseInstalledAgent):
         except ValueError:
             return ()
 
+    def _run_metadata(self, report: runreport.RunReport | None) -> dict[str, Any]:
+        secrets = self._secrets()
+        metadata: dict[str, Any] = {
+            "jail": self.jail_record(report),
+            "release": self.release_tag() or "latest",
+        }
+        if report is None:
+            metadata["outcome"] = "no-report"
+            return metadata
+        metadata.update(
+            session_id=report.session_id,
+            outcome=report.outcome,
+            turns=report.turns,
+            elapsed_ms=report.elapsed_ms,
+        )
+        if report.reason:
+            metadata["reason"] = trajectory.scrub(report.reason, secrets)
+        if report.model:
+            metadata["model"] = report.model
+        return metadata
+
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:
         report = self._read_report()
-        metadata: dict[str, Any] = {"jail": self.jail_record(report), "release": self.release_tag() or "latest"}
-
-        if report is not None:
-            metadata.update(
-                session_id=report.session_id,
-                outcome=report.outcome,
-                turns=report.turns,
-                elapsed_ms=report.elapsed_ms,
-            )
-            if report.reason:
-                metadata["reason"] = report.reason
-            if report.model:
-                metadata["model"] = report.model
+        metadata = self._run_metadata(report)
+        if report is not None and report.usage is not None:
             usage = report.usage
-            if usage is not None:
-                metadata["usage_evidence"] = {
-                    "tokens": usage.token_coverage,
-                    "cost": usage.cost_kind,
-                }
-                # Zeros from an unreported run are "unknown", not "none used".
-                if usage.tokens_reported:
-                    context.n_input_tokens = usage.prompt_tokens
-                    context.n_cache_tokens = usage.cache_read
-                    context.n_output_tokens = usage.output
-                if usage.cost_reported:
-                    context.cost_usd = usage.cost_total
-        else:
-            metadata["outcome"] = "no-report"
-
-        written = self._write_trajectory(report, metadata)
-        metadata["trajectory"] = "trajectory.json" if written else None
+            metadata["usage_evidence"] = {"tokens": usage.token_coverage, "cost": usage.cost_kind}
+            # Zeros from an unreported run are "unknown", not "none used".
+            if usage.tokens_reported:
+                context.n_input_tokens = usage.prompt_tokens
+                context.n_cache_tokens = usage.cache_read
+                context.n_output_tokens = usage.output
+            if usage.cost_reported:
+                context.cost_usd = usage.cost_total
+        metadata["trajectory"] = "trajectory.json" if (self.logs_dir / "trajectory.json").is_file() else None
         context.metadata = {"loom": metadata}
 
-    def _write_trajectory(
-        self, report: runreport.RunReport | None, metadata: dict[str, Any]
-    ) -> bool:
-        database = self._session_database(report)
+    def _write_trajectory(self, report: runreport.RunReport | None, database: Path | None) -> bool:
         if database is None:
-            self.logger.warning("no Loom session database was synced; no trajectory written")
+            self.logger.warning("no Loom session database was fetched; no trajectory written")
             return False
+        metadata = self._run_metadata(report)
         run_summary = {
             key: metadata[key]
             for key in ("outcome", "turns", "elapsed_ms", "reason")

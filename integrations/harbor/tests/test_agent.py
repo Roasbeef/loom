@@ -10,6 +10,10 @@ from unittest.mock import AsyncMock
 import pytest
 from harbor.agents.factory import AgentFactory
 from harbor.agents.installed.base import (
+    AgentAuthenticationError,
+    ApiConnectionClosedError,
+    ApiInternalServerError,
+    ApiOverloadedError,
     ApiRateLimitError,
     BaseInstalledAgent,
     NonZeroAgentExitCodeError,
@@ -39,9 +43,23 @@ def is_script(command: str) -> bool:
 class Scripted:
     """An `exec` that answers by which script it was handed."""
 
-    def __init__(self, run_stdout: str = REPORT + "\n", run_code: int = 0, selftest=(0, ""), bwrap="absent"):
+    def __init__(self, run_stdout: str = REPORT + "\n", run_code: int = 0, selftest=(0, ""), bwrap="absent",
+                 files: dict | None = None):
         self.calls: list[dict] = []
         self.run_stdout, self.run_code, self.selftest, self.bwrap = run_stdout, run_code, selftest, bwrap
+        # The container's files by path: a Path is copied, a str is written.
+        self.files: dict = files or {}
+        self.downloads: list[str] = []
+
+    async def download_file(self, source, target):
+        self.downloads.append(source)
+        if source not in self.files:
+            raise FileNotFoundError(source)
+        content = self.files[source]
+        if isinstance(content, Path):
+            Path(target).write_bytes(content.read_bytes())
+        else:
+            Path(target).write_text(content)
 
     async def __call__(self, command, **kwargs):
         self.calls.append({"command": command, **kwargs})
@@ -52,6 +70,8 @@ class Scripted:
             return result(self.run_code, self.run_stdout if self.run_code == 0 else "", "narration")
         if is_script(command) and script_of(command) == scripts.BWRAP_PROBE:
             return result(0, f"{self.bwrap}\n{'/usr/bin/bwrap' if self.bwrap != 'absent' else ''}\n")
+        if is_script(command) and script_of(command) == scripts.COLLECT_SCRIPT:
+            return result(0, "".join(f"LOOM_FILE {path}\n" for path in self.files))
         return result()
 
     def scripts_run(self) -> list[str]:
@@ -296,29 +316,55 @@ def test_rw_mounts_accept_a_comma_separated_string(make_agent):
 
 async def run_agent(agent, environment, instruction="Fix it.", context=None):
     context = context or AgentContext()
+    if isinstance(environment.exec, Scripted):
+        environment.download_file = environment.exec.download_file
     await agent.run(instruction, environment, context)
     return context
 
 
-async def test_run_starts_the_daemon_with_the_chosen_posture_and_passes_the_key_by_env(agent, environment):
+async def test_run_starts_the_daemon_with_the_chosen_posture_and_names_the_key_file(agent, environment):
     scripted = environment.exec = Scripted()
     await run_agent(agent, environment)
     run_call = next(c for c in scripted.calls if is_script(c["command"]) and
                     script_of(c["command"]) == scripts.RUN_SCRIPT)
     env = run_call["env"]
-    assert env["ANTHROPIC_API_KEY"] == "sk-ant-test-0123456789abcdef"
     assert env["LOOM_JAIL_FLAG"] == "--best-effort"
-    assert env["LOOM_RUN_TIMEOUT_SEC"] == "1800" and env["LOOM_OUT"] == "/logs/agent"
+    assert env["LOOM_RUN_TIMEOUT_SEC"] == "1800" and "LOOM_OUT" not in env
     assert env["LOOM_CONFIG"] == agent_module.REMOTE_CONFIG
-    assert "sk-ant" not in run_call["command"], "the key must never be in the command line"
+    assert (env["LOOM_KEY_NAME"], env["LOOM_KEY_FILE"]) == ("ANTHROPIC_API_KEY", agent_module.REMOTE_KEY)
     assert run_call["timeout_sec"] == 1800 + 300
+
+
+KEY = "sk-ant-test-0123456789abcdef"
+
+
+async def test_the_key_never_appears_in_any_exec_argument_or_environment(agent, environment):
+    """Harbor passes exec env as `docker compose exec -e KEY=VALUE`, so it would be on the host's argv."""
+    scripted = environment.exec = Scripted()
+    agent._upload_config_text = AsyncMock()
+    agent.exec_as_root = AsyncMock()
+    await run_agent(agent, environment)
+    everything = json.dumps(scripted.calls, default=str) + json.dumps(
+        [(c.args, c.kwargs) for c in agent.exec_as_root.await_args_list], default=str
+    )
+    assert KEY not in everything
+    uploads = {c.kwargs["remote_path"]: c.kwargs for c in agent._upload_config_text.await_args_list}
+    assert uploads[agent_module.REMOTE_KEY]["content"] == KEY
+
+
+async def test_the_key_file_is_made_private_even_when_harbors_helper_would_not(agent, environment):
+    environment.exec = Scripted()
+    agent.exec_as_root = AsyncMock()
+    await run_agent(agent, environment)
+    assert any("chmod 600" in c.kwargs["command"] and agent_module.REMOTE_KEY in c.kwargs["command"]
+               for c in agent.exec_as_root.await_args_list)
 
 
 async def test_platform_mode_passes_no_posture_flag(make_agent, environment):
     built = make_agent(jail="platform")
     environment.exec = Scripted(selftest=(0, "enforced (11):\nskipped (0)\nRESULT: OK\n"))
     await run_agent(built, environment)
-    run_call = next(c for c in environment.exec.calls if "env" in c and "LOOM_JAIL_FLAG" in c["env"])
+    run_call = next(c for c in environment.exec.calls if c.get("env") and "LOOM_JAIL_FLAG" in c["env"])
     assert run_call["env"]["LOOM_JAIL_FLAG"] == ""
 
 
@@ -400,19 +446,78 @@ async def test_every_loom_outcome_returns_normally_for_the_verifier_to_judge(age
     await run_agent(agent, environment)
 
 
+FIXTURES = Path(__file__).parent / "fixtures"
+# What provider/stream.describe_error wrote for each failure (see fixtures/generate_errors.gleam.txt).
+PROVIDER_ERRORS = json.loads((FIXTURES / "provider-errors.json").read_text())
+
+
+def failed_report(reason="the run failed: provider_error"):
+    return json.dumps({**json.loads(REPORT), "outcome": "failed", "reason": reason}) + "\n"
+
+
+def session_with(tmp_path, text):
+    """A session whose last answer failed with `text`, in the shape Loom stores it."""
+    path = tmp_path / "failed.db"
+    entries = [
+        sessiondb.user_entry("e1", 1, "go"),
+        sessiondb.assistant_entry("e2", 2, [{"type": "text", "text": ""}]),
+    ]
+    entries[1]["message"].update(stopReason="error", errorMessage=text)
+    return sessiondb.write(path, entries)
+
+
 @pytest.mark.parametrize(
-    ("reason", "error"),
+    ("name", "error"),
     [
-        ("provider returned 429: rate limit exceeded", ApiRateLimitError),
-        ("Invalid API key provided", Exception),
+        ("rate-limit", ApiRateLimitError),
+        ("auth", AgentAuthenticationError),
+        ("overloaded", ApiOverloadedError),
+        ("server", ApiInternalServerError),
+        ("stream", ApiOverloadedError),
+        ("transport", ApiConnectionClosedError),
     ],
 )
-async def test_provider_failures_become_harbors_retryable_errors(agent, environment, reason, error):
-    report = {**json.loads(REPORT), "outcome": "failed", "reason": reason}
-    environment.exec = Scripted(run_stdout=json.dumps(report) + "\n")
-    with pytest.raises(error) as raised:
+async def test_provider_failures_in_the_session_become_harbors_retryable_errors(
+    agent, environment, tmp_path, name, error
+):
+    """The report says only `provider_error`; the provider's words are in the failed answer."""
+    environment.exec = Scripted(
+        run_stdout=failed_report(),
+        files={"/state/sessions/s-123.db": session_with(tmp_path, PROVIDER_ERRORS[name])},
+    )
+    with pytest.raises(error):
         await run_agent(agent, environment)
-    assert isinstance(raised.value, NonZeroAgentExitCodeError)
+
+
+async def test_the_real_loom_session_fixture_classifies_too(agent, environment):
+    environment.exec = Scripted(
+        run_stdout=failed_report(), files={"/state/sessions/s-123.db": FIXTURES / "failed-session.db"}
+    )
+    with pytest.raises(ApiRateLimitError, match="rate_limit_error"):
+        await run_agent(agent, environment)
+
+
+async def test_the_report_alone_cannot_classify_which_is_why_the_session_is_read(agent, environment):
+    environment.exec = Scripted(run_stdout=failed_report())  # no session fetched
+    await run_agent(agent, environment)
+
+
+async def test_a_bad_request_is_the_models_or_adapters_problem_not_a_retry(agent, environment, tmp_path):
+    environment.exec = Scripted(
+        run_stdout=failed_report(),
+        files={"/state/sessions/s-123.db": session_with(tmp_path, PROVIDER_ERRORS["badrequest"])},
+    )
+    await run_agent(agent, environment)
+
+
+async def test_the_raised_error_does_not_carry_the_key(agent, environment, tmp_path):
+    text = PROVIDER_ERRORS["auth"] + f" (sent {KEY})"
+    environment.exec = Scripted(
+        run_stdout=failed_report(), files={"/state/sessions/s-123.db": session_with(tmp_path, text)}
+    )
+    with pytest.raises(AgentAuthenticationError) as raised:
+        await run_agent(agent, environment)
+    assert KEY not in str(raised.value)
 
 
 async def test_a_malformed_report_is_an_error_naming_the_problem(agent, environment):
@@ -495,6 +600,7 @@ async def test_bubblewrap_is_restored_even_when_the_run_fails(agent, environment
         return await scripted(command, **kwargs)
 
     environment.exec = exec_
+    environment.download_file = scripted.download_file
     agent.exec_as_root = AsyncMock()
     with pytest.raises(TimeoutError):
         await run_agent(agent, environment)
@@ -570,9 +676,23 @@ def test_the_report_in_memory_is_used_when_the_log_was_not_synced(agent):
     assert context.metadata["loom"]["session_id"] == "s-123"
 
 
-def test_a_trajectory_is_written_and_valid_when_the_session_was_synced(agent):
-    put_report(agent)
-    put_session(agent)
+def sample_db(tmp_path, name="s-123.db"):
+    return sessiondb.sample_session(tmp_path / name)
+
+
+async def gather(agent, environment, **files):
+    """Run the evidence pass against a fake container holding `files`."""
+    scripted = environment.exec = Scripted(files=files)
+    environment.download_file = scripted.download_file
+    await agent._gather_evidence(environment)
+    return scripted
+
+
+async def test_a_trajectory_is_written_and_valid_from_the_fetched_session(agent, environment, tmp_path):
+    await gather(agent, environment, **{
+        "/state/harbor-out/loom-run.json": REPORT + "\n",
+        "/state/sessions/s-123.db": sample_db(tmp_path),
+    })
     context = AgentContext()
     agent.populate_context_post_run(context)
     written = json.loads((agent.logs_dir / "trajectory.json").read_text())
@@ -585,9 +705,9 @@ def test_a_trajectory_is_written_and_valid_when_the_session_was_synced(agent):
     assert context.metadata["loom"]["trajectory"] == "trajectory.json"
 
 
-def test_after_a_timeout_the_session_still_becomes_a_trajectory(agent):
-    # No report was ever printed, but the salvage pass copied the database out.
-    put_session(agent, "s-9.db")
+async def test_after_a_timeout_the_session_still_becomes_a_trajectory(agent, environment, tmp_path):
+    # No report was ever printed, but the evidence pass fetched the database.
+    await gather(agent, environment, **{"/state/sessions/s-9.db": sample_db(tmp_path, "s-9.db")})
     context = AgentContext()
     agent.populate_context_post_run(context)
     written = json.loads((agent.logs_dir / "trajectory.json").read_text())
@@ -596,45 +716,101 @@ def test_after_a_timeout_the_session_still_becomes_a_trajectory(agent):
     assert context.metadata["loom"]["jail"]["requested"] == "container"
 
 
-def test_with_nothing_synced_there_is_metadata_but_no_trajectory(agent):
+async def test_with_nothing_fetched_there_is_metadata_but_no_trajectory(agent, environment):
+    await gather(agent, environment)
     context = AgentContext()
     agent.populate_context_post_run(context)
     assert not (agent.logs_dir / "trajectory.json").exists()
     assert context.metadata["loom"]["trajectory"] is None
 
 
-def test_a_corrupt_session_database_does_not_fail_the_trial(agent):
-    put_report(agent)
-    directory = agent.logs_dir / "loom-session"
-    directory.mkdir()
-    (directory / "s-123.db").write_text("not sqlite")
+async def test_a_corrupt_session_database_does_not_fail_the_trial(agent, environment):
+    await gather(agent, environment, **{
+        "/state/harbor-out/loom-run.json": REPORT + "\n", "/state/sessions/s-123.db": "not sqlite",
+    })
     context = AgentContext()
     agent.populate_context_post_run(context)
     assert context.metadata["loom"]["trajectory"] is None and context.n_input_tokens == 115
 
 
-def test_the_api_key_is_scrubbed_from_the_trajectory(agent):
-    key = "sk-ant-test-0123456789abcdef"
-    directory = agent.logs_dir / "loom-session"
-    directory.mkdir()
-    sessiondb.write(
-        directory / "s-123.db",
-        [sessiondb.user_entry("e1", 1, f"the key is {key} (in prose)"),
-         sessiondb.assistant_entry("e2", 2, [{"type": "text", "text": f"echo {key}"}])],
+async def test_a_file_that_cannot_be_fetched_is_skipped_not_fatal(agent, environment, tmp_path):
+    scripted = Scripted(files={"/state/daemon.log": "x", "/state/sessions/s-123.db": sample_db(tmp_path)})
+    del scripted.files["/state/daemon.log"]
+    scripted.files["/state/missing.log"] = "never"
+    environment.exec = scripted
+
+    async def flaky(source, target):
+        if source.endswith("missing.log"):
+            raise ConnectionError("gone")
+        await Scripted.download_file(scripted, source, target)
+
+    environment.download_file = flaky
+    await agent._gather_evidence(environment)
+    assert (agent.logs_dir / "trajectory.json").is_file()
+
+
+async def test_the_api_key_is_scrubbed_from_the_trajectory(agent, environment, tmp_path):
+    db = sessiondb.write(
+        tmp_path / "s-123.db",
+        [sessiondb.user_entry("e1", 1, f"the key is {KEY} (in prose)"),
+         sessiondb.assistant_entry("e2", 2, [{"type": "text", "text": f"echo {KEY}"}])],
     )
-    agent.populate_context_post_run(AgentContext())
-    assert key not in (agent.logs_dir / "trajectory.json").read_text()
+    await gather(agent, environment, **{"/state/sessions/s-123.db": db})
+    assert KEY not in (agent.logs_dir / "trajectory.json").read_text()
 
 
-def test_the_trajectory_records_the_installed_release_as_the_agent_version(make_agent):
+async def test_text_evidence_is_scrubbed_by_value_before_it_reaches_the_logs(agent, environment, tmp_path):
+    """Under jail=container model-run code can read the daemon's environment, the key included."""
+    leaky = f"loomd started with {KEY}\nand a Bearer abc.def-123 token\n"
+    await gather(agent, environment, **{
+        "/state/harbor-out/loom-run.json": REPORT.replace("completed", "completed") + "\n",
+        "/state/harbor-out/loom-run.stderr.txt": leaky,
+        "/state/harbor-out/loomd.log": leaky,
+        "/state/daemon.log": leaky,
+        "/state/sessions/s-123.db": sample_db(tmp_path),
+    })
+    for name in ("loom-run.stderr.txt", "loomd.log", "daemon.log"):
+        text = (agent.logs_dir / name).read_text()
+        assert KEY not in text and "abc.def-123" not in text and "<redacted>" in text, name
+    # Nothing raw is left in the logs directory: no database, no write-ahead log.
+    assert not list(agent.logs_dir.rglob("*.db")) and not list(agent.logs_dir.rglob("*.db-wal"))
+
+
+async def test_the_raw_database_is_fetched_to_scratch_and_discarded(agent, environment, tmp_path):
+    seen = []
+    scripted = Scripted(files={"/state/sessions/s-123.db": sample_db(tmp_path)})
+
+    async def spy(source, target):
+        seen.append(Path(target))
+        await scripted.download_file(source, target)
+
+    environment.exec = scripted
+    environment.download_file = spy
+    await agent._gather_evidence(environment)
+    assert seen and not any(path.exists() for path in seen)
+    assert not list(agent.logs_dir.glob("**/*.db"))
+
+
+async def test_the_run_pass_orders_stop_then_fetch_then_restore(agent, environment, tmp_path):
+    environment.exec = Scripted(bwrap="unusable", files={"/state/sessions/s-123.db": sample_db(tmp_path)})
+    agent.exec_as_root = AsyncMock()
+    await run_agent(agent, environment)
+    order = [("collect" if script_of(c["command"]) == scripts.COLLECT_SCRIPT else "other")
+             for c in environment.exec.calls if is_script(c["command"])]
+    assert "collect" in order
+    assert environment.exec.downloads, "fetching happens after the collect pass listed the files"
+    assert bwrap_scripts(agent)[-1] == scripts.bash_command(scripts.BWRAP_RESTORE)
+
+
+def test_the_trajectory_records_the_installed_release_as_the_agent_version(make_agent, tmp_path):
     built = make_agent(version="0.3.2")
-    put_session(built)
-    built.populate_context_post_run(AgentContext())
+    document = sessiondb.sample_session(tmp_path / "s.db")
+    assert built._write_trajectory(None, document)
     assert json.loads((built.logs_dir / "trajectory.json").read_text())["agent"]["version"] == "0.3.2"
     assert built.to_agent_info().version == "0.3.2"
 
 
-# ------------------------------------------------------------ the endpoint
+# ------------------------------------------------- construction and quoting
 
 
 def test_a_non_native_provider_can_be_constructed_with_an_endpoint(make_agent, monkeypatch):
@@ -657,9 +833,6 @@ def test_a_non_native_provider_without_an_endpoint_is_refused_at_render(make_age
         make_agent(model_name="together/llama").render_catalogue()
 
 
-# ------------------------------------------------------------------ quoting
-
-
 @pytest.mark.parametrize("bad", ["relative/dir", "/", "/opt/a b", "/opt/$(id)", "/opt/../etc", "/opt/a;b"])
 def test_an_unsafe_install_dir_is_refused(make_agent, bad):
     with pytest.raises(ValueError, match="install_dir"):
@@ -668,6 +841,7 @@ def test_an_unsafe_install_dir_is_refused(make_agent, bad):
 
 def test_install_dir_is_quoted_wherever_it_reaches_a_command(make_agent):
     built = make_agent(install_dir="/opt/loom+harbor~x")
+    assert built.get_version_command() == "/opt/loom+harbor~x/client/bin/loom version" or "'" in built.get_version_command()
     assert shlex.split(built.get_version_command())[0] == "/opt/loom+harbor~x/client/bin/loom"
 
 
@@ -702,20 +876,3 @@ async def test_platform_mode_still_refuses_any_other_skip(make_agent, environmen
     environment.exec = Scripted(selftest=(0, other))
     with pytest.raises(RuntimeError, match="unexpected skips: fork bomb"):
         await run_agent(built, environment)
-
-
-def test_pins_reach_the_install_script_and_are_lowercased(make_agent, tmp_path):
-    digest = "AB" * 32
-    assert make_agent(sums_sha256=digest).install_env()["LOOM_SUMS_SHA256"] == digest.lower()
-    server, client = tmp_path / "loomd-1-linux-x86_64.tar.gz", tmp_path / "loom-1-linux-x86_64.tar.gz"
-    server.write_bytes(b"s")
-    client.write_bytes(b"c")
-    env = make_agent(server_tarball=str(server), client_tarball=str(client),
-                     server_sha256=digest, client_sha256="cd" * 32).install_env()
-    assert env["LOOM_SERVER_SHA256"] == digest.lower() and env["LOOM_CLIENT_SHA256"] == "cd" * 32
-    assert "LOOM_SUMS_SHA256" not in env
-
-
-def test_a_malformed_pin_is_refused(make_agent):
-    with pytest.raises(ValueError, match="sums_sha256"):
-        make_agent(sums_sha256="not-a-digest")

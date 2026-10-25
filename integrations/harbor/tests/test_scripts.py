@@ -250,16 +250,23 @@ def test_offline_install_verifies_pinned_digests(tmp_path):
 STUB_LOOMD = textwrap.dedent(
     r"""
     #!/usr/bin/env bash
-    # Records its arguments, publishes an endpoint and a session file, then waits for TERM.
+    # Records its arguments and environment, publishes a ready endpoint and a session file, waits for TERM.
     state=""; for ((i=1;i<=$#;i++)); do [ "${!i}" = --state-dir ] && state="${@:i+1:1}"; done
     printf '%s\n' "$@" > "$state/loomd.argv"
     env | sort > "$state/loomd.env"
+    echo "$$" > "$state/stub.pid"
     [ -n "${STUB_LOOMD_DIE:-}" ] && { echo "boom: cannot bind" >&2; exit 9; }
+    [ -n "${STUB_LOOMD_DIE_LATE:-}" ] && { sleep 1; echo "late boom" >&2; exit 9; }
     mkdir -p "$state/sessions"
     printf 'SQLite stub' > "$state/sessions/s-123.db"
     printf 'wal stub' > "$state/sessions/s-123.db-wal"
-    [ -n "${STUB_LOOMD_NEVER_READY:-}" ] || echo '{"pid":1}' > "$state/daemon.endpoint"
-    trap 'exit 0' TERM
+    echo "daemon log line" > "$state/daemon.log"
+    if [ -n "${STUB_LOOMD_STARTING_FIRST:-}" ]; then
+      printf '{"pid":%s,"status":"starting"}' "$$" > "$state/daemon.endpoint"; sleep 1
+    fi
+    [ -n "${STUB_LOOMD_NEVER_READY:-}" ] || printf '{"pid":%s,"status":"ready"}' "$$" > "$state/daemon.endpoint"
+    # A real daemon flushes its database when it stops; the copy must come after.
+    trap 'printf " closed" >> "$state/sessions/s-123.db"; exit 0' TERM
     while true; do sleep 0.1; done
     """
 ).lstrip()
@@ -268,7 +275,9 @@ STUB_LOOM = textwrap.dedent(
     r"""
     #!/usr/bin/env bash
     printf '%s\n' "$@" > "$STUB_RECORD"
+    env | sort > "$STUB_RECORD.env"
     pwd -P > "$STUB_RECORD.cwd"
+    cat "$STUB_ENDPOINT" > "$STUB_RECORD.endpoint" 2>/dev/null
     [ -n "${STUB_REPORT_FILE:-}" ] && cat "$STUB_REPORT_FILE"
     echo "model said: rate limit exceeded (this is stderr prose)" >&2
     exit "${STUB_LOOM_EXIT:-0}"
@@ -287,19 +296,21 @@ def rig(tmp_path):
     (tmp_path / "loom.toml").write_text("[models.harbor]\n")
     (tmp_path / "prompt.txt").write_text("Fix the bug.\nIt's \"quoted\" and $HOME stays literal; `uname`\n")
     (tmp_path / "report.json").write_text(REPORT + "\n")
+    (tmp_path / "key").write_text(KEY)
     workdir = tmp_path / "app"
     workdir.mkdir()
     env = {
         "LOOM_PREFIX": str(prefix),
         "LOOM_STATE_DIR": str(tmp_path / "state"),
-        "LOOM_OUT": str(tmp_path / "out"),
+        "LOOM_KEY_NAME": "ANTHROPIC_API_KEY",
+        "LOOM_KEY_FILE": str(tmp_path / "key"),
         "LOOM_CONFIG": str(tmp_path / "loom.toml"),
         "LOOM_PROMPT_FILE": str(tmp_path / "prompt.txt"),
         "LOOM_RUN_TIMEOUT_SEC": "120",
         "LOOM_JAIL_FLAG": "--best-effort",
         "STUB_RECORD": str(tmp_path / "loom.argv"),
         "STUB_REPORT_FILE": str(tmp_path / "report.json"),
-        "ANTHROPIC_API_KEY": "sk-ant-secret-0123456789",
+        "STUB_ENDPOINT": str(tmp_path / "state" / "daemon.endpoint"),
     }
     return SimpleNamespaceRig(tmp_path, workdir, env)
 
@@ -313,7 +324,7 @@ class SimpleNamespaceRig:
 
     @property
     def out(self) -> Path:
-        return self.root / "out"
+        return self.root / "state" / "harbor-out"
 
     @property
     def state(self) -> Path:
@@ -333,19 +344,39 @@ def test_a_completed_run_prints_only_the_report_and_cleans_up(rig):
     assert run.returncode == 0, run.stderr
     assert run.stdout == REPORT + "\n"
     assert (rig.out / "loom-run.exit").read_text() == "0\n"
-    pid = int((rig.out / "loomd.pid").read_text())
     time.sleep(0.2)
-    assert not alive(pid), "the daemon must be stopped before the script returns"
+    assert not alive(int((rig.state / "stub.pid").read_text())), "the daemon must be stopped before the script returns"
+    # A stopped daemon leaves no pidfile behind for a later pass to signal.
+    assert not (rig.out / "loomd.pid").exists()
 
 
-def test_loomd_gets_the_posture_flag_the_config_and_a_clean_environment(rig):
+def test_loomd_gets_the_posture_flag_the_config_and_only_the_key(rig):
     assert rig.run().returncode == 0
     argv = (rig.state / "loomd.argv").read_text().split()
     assert argv[:4] == ["--state-dir", str(rig.state), "--config", str(rig.root / "loom.toml")]
     assert argv[4:] == ["--best-effort"]
     environment = (rig.state / "loomd.env").read_text()
-    assert "ANTHROPIC_API_KEY=sk-ant-secret-0123456789" in environment  # the daemon reads the key at dispatch
-    assert "LOOM_PROMPT_FILE" not in environment
+    assert f"ANTHROPIC_API_KEY={KEY}" in environment  # the daemon reads the key at dispatch
+    for name in ("LOOM_PROMPT_FILE", "LOOM_KEY_FILE", "LOOM_KEY_NAME"):
+        assert name + "=" not in environment
+
+
+def test_loom_run_does_not_inherit_the_key(rig):
+    assert rig.run().returncode == 0
+    assert KEY not in (rig.root / "loom.argv.env").read_text()
+
+
+def test_the_key_file_is_emptied_as_soon_as_it_is_read(rig):
+    assert rig.run().returncode == 0
+    key_file = rig.root / "key"
+    assert not key_file.exists() or key_file.read_text() == ""
+
+
+def test_a_missing_key_fails_before_a_daemon_starts(rig):
+    (rig.root / "key").write_text("")
+    run = rig.run()
+    assert run.returncode == scripts.EXIT_PREREQUISITE and "no API key" in run.stderr
+    assert not (rig.state / "loomd.argv").exists()
 
 
 def test_the_platform_posture_passes_no_flag_at_all(rig):
@@ -367,17 +398,27 @@ def test_loom_run_is_pointed_at_the_workspace_state_and_prompt_verbatim(rig):
     assert "-p" in lines and prompt in "\n".join(lines)
 
 
-def test_the_api_key_is_never_written_to_any_log_or_output_file(rig):
+def test_loom_run_is_wrapped_in_timeout_with_a_kill_backstop(rig):
+    shim = rig.root / "shim"
+    shim.mkdir()
+    (shim / "timeout").write_text('#!/bin/sh\necho "$@" > "$STUB_RECORD.timeout"\nshift 3\nexec "$@"\n')
+    (shim / "timeout").chmod(0o755)
+    run = rig.run(PATH=f"{shim}:{os.environ['PATH']}")
+    assert run.returncode == 0, run.stderr
+    assert (rig.root / "loom.argv.timeout").read_text().startswith("-k 30 210 ")  # --timeout 120 plus 90
+
+
+def test_the_key_is_never_written_to_the_output_directory(rig):
     assert rig.run().returncode == 0
     for path in rig.out.rglob("*"):
         if path.is_file():
-            assert b"sk-ant-secret" not in path.read_bytes(), path
+            assert KEY.encode() not in path.read_bytes(), path
 
 
-def test_the_session_database_and_its_wal_are_copied_into_the_logs(rig):
+def test_run_leaves_the_evidence_in_the_state_directory_not_in_a_logs_directory(rig):
     assert rig.run().returncode == 0
-    assert (rig.out / "loom-session/s-123.db").read_text() == "SQLite stub"
-    assert (rig.out / "loom-session/s-123.db-wal").read_text() == "wal stub"
+    assert (rig.out / "loom-run.json").is_file() and (rig.out / "loomd.log").is_file()
+    assert not (rig.root / "logs").exists()
 
 
 @pytest.mark.parametrize("code", [1, 124])
@@ -389,8 +430,7 @@ def test_a_failed_or_timed_out_run_is_a_result_not_a_script_failure(rig, code):
 
 @pytest.mark.parametrize("code", [2, 3])
 def test_bad_arguments_or_no_daemon_fail_the_script_with_the_same_status(rig, code):
-    run = rig.run(STUB_LOOM_EXIT=str(code))
-    assert run.returncode == code and run.stdout == REPORT + "\n"[:0] or run.returncode == code
+    assert rig.run(STUB_LOOM_EXIT=str(code)).returncode == code
 
 
 def test_exit_zero_with_no_report_is_its_own_failure(rig):
@@ -402,6 +442,24 @@ def test_a_daemon_that_dies_at_startup_is_reported_with_its_log(rig):
     run = rig.run(STUB_LOOMD_DIE="1")
     assert run.returncode == scripts.EXIT_DAEMON_NOT_READY
     assert "loomd exited before it was ready" in run.stderr and "boom: cannot bind" in run.stderr
+
+
+def test_a_stale_ready_endpoint_does_not_pass_for_a_daemon_that_has_not_started(rig):
+    # A record left by an earlier daemon is older than this launch and must not count:
+    # `loom run` would otherwise find no live daemon and start its own, without the posture flag.
+    rig.state.mkdir()
+    stale = rig.state / "daemon.endpoint"
+    stale.write_text('{"pid":1,"status":"ready"}')
+    os.utime(stale, (time.time() - 3600, time.time() - 3600))
+    run = rig.run(STUB_LOOMD_DIE_LATE="1")
+    assert run.returncode == scripts.EXIT_DAEMON_NOT_READY, run.stderr
+    assert not (rig.root / "loom.argv").exists(), "loom run must not have been started"
+
+
+def test_a_starting_record_is_not_readiness(rig):
+    run = rig.run(STUB_LOOMD_STARTING_FIRST="1")
+    assert run.returncode == 0, run.stderr
+    assert '"status":"ready"' in (rig.root / "loom.argv.endpoint").read_text()
 
 
 def test_a_missing_install_fails_before_starting_anything(rig):
@@ -420,30 +478,61 @@ def test_a_missing_home_is_a_clear_prerequisite_failure(rig):
     assert run.returncode != 0 and "HOME" in run.stderr
 
 
-def test_collect_after_a_cut_off_run_copies_the_session_and_stops_the_daemon(rig):
-    # Start the daemon the way the run script does, then never let the script finish.
-    stub = rig.root / "opt/server/bin/loomd"
-    rig.out.mkdir()
-    rig.state.mkdir()
-    daemon = subprocess.Popen([str(stub), "--state-dir", str(rig.state)])
+def start_daemon(rig):
+    """Start the stub the way the run script does and record its pidfile."""
+    rig.out.mkdir(parents=True)
+    daemon = subprocess.Popen([str(rig.root / "opt/server/bin/loomd"), "--state-dir", str(rig.state)])
     # In the container the script's own parent reaps a finished daemon; here the
     # test is the parent, and an unreaped zombie would still answer `kill -0`.
     reaper = threading.Thread(target=daemon.wait, daemon=True)
     reaper.start()
-    (rig.out / "loomd.pid").write_text(f"{daemon.pid}\n")
     for _ in range(50):
         if (rig.state / "daemon.endpoint").exists():
             break
         time.sleep(0.1)
+    started = subprocess.run(
+        ["awk", "{ sub(/^.*\\) /, \"\"); print $20 }", f"/proc/{daemon.pid}/stat"], capture_output=True, text=True
+    ).stdout.strip()
+    (rig.out / "loomd.pid").write_text(f"{daemon.pid} {started}\n")
+    return daemon, reaper
+
+
+def test_collect_stops_the_daemon_before_it_lists_the_session(rig):
+    daemon, reaper = start_daemon(rig)
     run = rig.run(scripts.COLLECT_SCRIPT)
     assert run.returncode == 0, run.stderr
-    assert (rig.out / "loom-session/s-123.db").is_file()
     reaper.join(timeout=10)
     assert daemon.returncode == 0
+    # The daemon appended to its database while shutting down; the listing came after that.
+    assert (rig.state / "sessions/s-123.db").read_text() == "SQLite stub closed"
+    listed = [line.split(" ", 1)[1] for line in run.stdout.splitlines() if line.startswith("LOOM_FILE ")]
+    assert str(rig.state / "sessions/s-123.db") in listed and str(rig.state / "sessions/s-123.db-wal") in listed
+    assert str(rig.state / "daemon.log") in listed
+    assert not (rig.out / "loomd.pid").exists()
+
+
+def test_collect_does_not_signal_a_process_that_merely_reuses_the_pid(rig):
+    bystander = subprocess.Popen(["sleep", "30"])
+    try:
+        rig.out.mkdir(parents=True)
+        (rig.out / "loomd.pid").write_text(f"{bystander.pid} 1\n")  # start time that is not this process's
+        assert rig.run(scripts.COLLECT_SCRIPT).returncode == 0
+        assert bystander.poll() is None, "an unrelated process was signalled"
+        assert not (rig.out / "loomd.pid").exists()
+    finally:
+        bystander.kill()
+        bystander.wait()
+
+
+def test_collect_empties_a_key_file_the_run_never_read(rig):
+    assert (rig.root / "key").read_text() == KEY
+    assert rig.run(scripts.COLLECT_SCRIPT).returncode == 0
+    assert not (rig.root / "key").exists() or (rig.root / "key").read_text() == ""
 
 
 def test_collect_with_nothing_to_collect_still_succeeds(rig):
-    assert rig.run(scripts.COLLECT_SCRIPT).returncode == 0
+    run = rig.run(scripts.COLLECT_SCRIPT)
+    assert run.returncode == 0 and "LOOM_FILE" not in run.stdout
 
 
 # ------------------------------------------------------------------ bubblewrap
