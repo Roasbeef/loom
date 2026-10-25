@@ -340,7 +340,7 @@ pub fn provider_http_fixture_rejects_error_wrong_text_and_extra_result_content_t
         [
           result_block(
             json.String("fixture-call"),
-            [text_block(string.repeat("x", 8193))],
+            [text_block(string.repeat("x", 32_769))],
             json.Bool(False),
           ),
         ],
