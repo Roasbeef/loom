@@ -14,6 +14,7 @@ import client/remote/owner_port
 import client/remote/protocol
 import client/remote/surface
 import core/clock
+import core/json
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
@@ -459,4 +460,57 @@ pub fn an_attach_that_never_sees_the_build_finish_reports_it_building_test() {
   assert surface.attach(impatient) == Error(protocol.PlaneBuilding)
   fixtures.release_build(rig.probe, "s1")
   stop(rig)
+}
+
+// --- asking -----------------------------------------------------------------------
+
+fn inventory(
+  remote: surface.Surface(String),
+) -> fn(process.Subject(Result(json.JsonValue, protocol.Refusal))) ->
+  protocol.HostMessage(String) {
+  fn(reply) {
+    protocol.EvolutionInventory(
+      session: "s1",
+      incarnation: surface.incarnation(remote),
+      handle: fixtures.evolution_handle(),
+      reply:,
+    )
+  }
+}
+
+pub fn the_fence_values_are_the_ones_the_attach_used_test() {
+  let rig = rig(fixtures.Open, fixtures.AsksNothing)
+  let remote = attached(rig, 7)
+
+  assert surface.incarnation(remote) == 0
+  assert surface.token(remote) == bit_array.from_string("token-7")
+  stop(rig)
+}
+
+pub fn ask_returns_the_reply_to_the_message_it_sent_test() {
+  let rig = rig(fixtures.Open, fixtures.AsksNothing)
+  let remote = attached(rig, 1)
+
+  // The fake plane has no evolution machine, so the host answers the fenced
+  // message with the refusal for that, which proves the message arrived and
+  // the reply came back to the asker.
+  assert surface.ask(remote, inventory(remote))
+    == Error(protocol.NoEvolution(
+      "the scope's workspace plane has no evolution machine",
+    ))
+  assert surface.ask_within(remote, 2000, inventory(remote))
+    == Ok(
+      Error(protocol.NoEvolution(
+        "the scope's workspace plane has no evolution machine",
+      )),
+    )
+  stop(rig)
+}
+
+pub fn ask_within_gives_up_once_the_executor_cannot_be_reached_test() {
+  let rig = rig(fixtures.Open, fixtures.AsksNothing)
+  let remote = attached(rig, 1)
+  stop(rig)
+
+  assert surface.ask_within(remote, 200, inventory(remote)) == Error(Nil)
 }
