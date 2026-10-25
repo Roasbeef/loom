@@ -96,6 +96,11 @@ for pkg in "${targets[@]}"; do
       export LOOM_TEST_SHARD="${LOOM_CLIENT_TEST_SHARD:-${LOOM_TEST_SHARD:-1/1}}"
     fi
     bash ../../scripts/test.sh "$pkg"
+    # The two portable packages promise their suites on both targets, and
+    # the gate holds them to it (scripts/portable_js_test.sh says why).
+    case "$pkg" in
+    gepa | evalstat) bash ../../scripts/portable_js_test.sh "$pkg" ;;
+    esac
   )
   # This fixture checks the work removed by leaf memoisation and the provider
   # worker's copy boundary in a disposable VM, separate from correctness tests.
