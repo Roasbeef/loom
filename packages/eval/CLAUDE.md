@@ -180,3 +180,29 @@ Hazards: replay is not byte-exact for redacted recordings, which refuse to
 replay. A request entered on the tape but never finished is a `Cancelled`
 recording, and a replayed request that takes it receives a failure naming the
 cancellation. Tape ordinals count from one in prepare order.
+
+## Transcripts
+
+`eval/transcripts` exports daemon sessions for the failure taxonomy
+(`docs/review/eval-failure-taxonomy-2026-10.md`, design note section 9), and
+`eval/transcripts_cli` is its command line (`export --state DIR [--db PATH ...]
+--since ISO --out DIR`, `sample --dir DIR --n N --seed S`).
+
+- `export` copies each `<state>/sessions/*.db` (plus `-wal` and `-shm`) under
+  `<out>/.copies/`, opens the copy, writes `<out>/<stem>.jsonl` mode 0600, and
+  deletes the copy on every path. An original is never opened. A copy that
+  still carries a live daemon's unexpired writer lease is refused by its open
+  and appears in `Census.failed`; stop the daemon first.
+- A file is a header line (scrubber version and limits, primary model,
+  session outcome), then `user`, `assistant`, `tool_call`, `tool_result`,
+  `compaction`, `branch_summary` records in sequence order, then `usage`
+  rows. Thinking and images are never read. An assistant record's `outcome`
+  comes from `trace.join`, the only public reader of the operator mark, and is
+  `unmarked` when absent.
+- `scrub_json` is a copy of `client/evolution/trace`'s private one that also
+  reads `-` as `_` in key names, since `secret_key` names `api_key` but
+  headers spell `x-api-key`. Free text in a tool result is scrubbed by shape
+  only: a short secret in prose or a JSON string inside result text survives.
+- `sample` reads only headers, groups by model id and outcome, shuffles each
+  group with `evalstat/prng.from_string(seed)` and deals round-robin.
+- Tests build synthetic databases under `$HOME/evalwt/transcripts-test/`.
