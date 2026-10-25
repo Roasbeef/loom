@@ -10,6 +10,7 @@ import eval/arm_settings
 import eval/git
 import eval/ledger
 import eval/plan.{Budgets, RowKey}
+import eval/repos
 import eval/task
 import eval/trial
 import eval/verify
@@ -227,7 +228,7 @@ pub fn components_become_one_profile_per_exact_target_test_() -> scripted.EunitT
 // --- the program path ------------------------------------------------------
 
 const mined_fixture =
-  "test/fixtures/f97168ff93a29daeb564c1d5b10f8148519e7ad04e55ef4cfe10975964b60b2b.json"
+  "test/fixtures/95b6559abe8c308f12cf612a5c8497a8beb06739721287952b055f096a14897f.json"
 
 fn skip(name: String, reason: String) -> Nil {
   io.println_error("SKIP " <> name <> ": " <> reason)
@@ -246,8 +247,9 @@ fn mined_task() -> Result(task.Task, String) {
   use decoded <- result.try(task.verify_id(decoded))
 
   case decoded.workspace, decoded.provenance {
-    task.GitTree(repository:, commit:, ..), task.MinedCommit(fix:, ..) -> {
+    task.GitTree(commit:, ..), task.MinedCommit(fix:, ..) -> {
       let runner = secrets.host_runner()
+      let repository = checkout()
 
       use _parent <- result.try(git.ask(
         runner,
@@ -268,9 +270,19 @@ fn mined_task() -> Result(task.Task, String) {
   }
 }
 
+// The clone this checkout is: the operator's side of the task's `loom`.
+fn checkout() -> String {
+  let known = repos.with_default(repos.empty(), secrets.host_runner())
+  let assert Ok(path) = repos.path(known, "loom")
+    as "the tests run in a checkout"
+
+  path
+}
+
 // The fix's source patch, as `eval/prove` computes it.
 fn gold_patch(found: task.Task, into: String) -> String {
-  let assert task.GitTree(repository:, commit:, ..) = found.workspace
+  let assert task.GitTree(commit:, ..) = found.workspace
+  let repository = checkout()
   let assert task.MinedCommit(fix:, ..) = found.provenance
   let assert Ok(diff) =
     git.ask(
@@ -350,6 +362,7 @@ fn program_trial(
                 budgets: Budgets(4, 100.0, 120_000, 1),
                 plan_id: "program",
                 seams: trial.default_seams(grader),
+                repos: repos.with_default(repos.empty(), secrets.host_runner()),
                 selftest: "test jail probe",
               )
             let key = RowKey(mined.id, scripted.baseline().id, 0)

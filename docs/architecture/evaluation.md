@@ -144,13 +144,16 @@ are three producers of one type; provenance is hashed and never trusted.
 | Choice | Variants | Meaning |
 | --- | --- | --- |
 | `Workspace` | `Inline(files)` | A small fixture carried in the task. |
-| | `GitTree(repository, commit, tree, prepare)` | A tree from a local repository. `tree` is `git rev-parse <commit>^{tree}`, already a digest of the whole tree. |
+| | `GitTree(repository, commit, tree, prepare)` | A tree from a repository named by a logical `repository` name (`loom`), never a path. `tree` is `git rev-parse <commit>^{tree}`, already a digest of the whole tree. |
 | `Verifier` | `ExpectedFiles(expected)` | Exact bytes, graded in process by `trial.grade_expected`. Reward is 1 or 0. |
 | | `Program(files, argv, fail_to_pass, pass_to_pass, timeout_ms, scoring)` | Hidden files staged into a copy after the agent is gone, then one argv run in a fresh jail. |
 
 A task file is untrusted input, because a Harbor import is someone else's file.
 The decoder is total and rejects unknown keys. For a `GitTree`, the repository
-must be an absolute local path with no option-like segment and no `::`, the
+must be a logical name matching `[a-z0-9][a-z0-9-]{0,63}` (so it can never read
+as a git option or remote helper, and identity never depends on where a clone
+lives; `eval/repos` maps the name to the operator's clone at run time, and
+refuses a clone whose `<commit>^{tree}` differs from the task's `tree`), the
 commit and tree must be 40-digit lowercase hex, and every `prepare` argv must be
 one of three allowlisted commands (`prepare_allowlist`, `eval/task.gleam:477`):
 `gleam deps download`, `gleam build`, `gleam build --warnings-as-errors`. A task
@@ -599,13 +602,13 @@ it. Usage errors exit 2 on the miner, prover, exporter and transcripts CLIs.
 
 | Command | Flags (required marked) | Notes |
 | --- | --- | --- |
-| `gleam run -m eval/mine_cli -- ...` | `--repo` (required), `--out` (required), `--package a,b`, `--limit N`, `--commit HASH`, `--work DIR` | `--limit` of 0 or absent means no limit. `--work` defaults to `$HOME/evalwt/mine`. Writes `<out>/<id>.json` per admitted task and one `census.jsonl` line per candidate. |
-| `gleam run -m eval/prove_cli -- ...` | `--tasks` (required), `--repo` (required), `--out`, `--helper`, `--seed`, `--best-effort` | `--out` defaults to `$HOME/evalwt/prove`; `--helper` to `../sandbox/loom-exec`; `--seed` to `../../build/codemode-seed`. `--best-effort` takes no value. Writes `prove.jsonl`. |
-| `gleam run -m eval/run_cli -- run <plan.json> ...` | `--out`, `--tasks`, `--arms`, `--config`, `--helper`, `--seed`, `--tapes`, `--record` | Defaults: `$HOME/.loom/eval/runs`, `tasks`, `arms`, `loom.toml`, `../sandbox/loom-exec`, `../../build/codemode-seed`. A live plan takes models from `--config` and keys from the environment. A replay plan needs `--tapes`. `--record` is for a live plan only. Re-running the same command resumes. |
+| `gleam run -m eval/mine_cli -- ...` | `--repo NAME=PATH` (repeatable; `loom` defaults to the current checkout), `--name` (default `loom`), `--out` (required), `--package a,b`, `--limit N`, `--commit HASH`, `--work DIR` | `--limit` of 0 or absent means no limit. `--work` defaults to `$HOME/evalwt/mine`. Writes `<out>/<id>.json` per admitted task and one `census.jsonl` line per candidate. |
+| `gleam run -m eval/prove_cli -- ...` | `--tasks` (required), `--repo NAME=PATH` (repeatable), `--out`, `--helper`, `--seed`, `--best-effort` | `--out` defaults to `$HOME/evalwt/prove`; `--helper` to `../sandbox/loom-exec`; `--seed` to `../../build/codemode-seed`. `--best-effort` takes no value. Writes `prove.jsonl`. |
+| `gleam run -m eval/run_cli -- run <plan.json> ...` | `--out`, `--tasks`, `--arms`, `--config`, `--helper`, `--seed`, `--tapes`, `--record`, `--repo NAME=PATH` (repeatable) | Defaults: `$HOME/.loom/eval/runs`, `tasks`, `arms`, `loom.toml`, `../sandbox/loom-exec`, `../../build/codemode-seed`. A live plan takes models from `--config` and keys from the environment. A replay plan needs `--tapes`. `--record` is for a live plan only. Re-running the same command resumes. |
 | `gleam run -m eval/run_cli -- report <run-dir>` | none | Rebuilds `report.md` and `report.json` from a finished or interrupted run without running anything. |
 | `make eval-run ARGS="run plan.json --tasks T --arms A"` | as above | `cd packages/eval && gleam run -m eval/run_cli -- $(ARGS)`. |
 | `gleam run -m eval/export_cli -- atif <session.db> <out.json>` | positional | One trajectory. |
-| `gleam run -m eval/export_cli -- harbor ...` | `--tasks`, `--out`, `--repo-url`, `--base-image` (all required) | A task that cannot be exported is reported on its own and the rest are written; the exit is nonzero if any failed. |
+| `gleam run -m eval/export_cli -- harbor ...` | `--tasks`, `--out`, `--repo-url`, `--base-image` (all required), `--repo NAME=PATH` (repeatable) | A task that cannot be exported is reported on its own and the rest are written; the exit is nonzero if any failed. |
 | `gleam run -m eval/transcripts_cli -- export ...` | `--state DIR` or `--db PATH` (repeatable; one is required), `--since` (required), `--out` (required) | `--since` is `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SSZ`, UTC only; an offset is refused rather than guessed at. |
 | `gleam run -m eval/transcripts_cli -- sample ...` | `--dir`, `--n`, `--seed` (all required) | Prints one path per line; the same inputs give the same batch. |
 | `gleam run -m eval -- validate <file>` | one path | Runs the same total decoders the runner uses on a task, arm, plan or ledger file, and exits nonzero on refusal. |
@@ -623,7 +626,8 @@ without them it prints `SKIP` on standard error and passes.
 | Inline files, expected files | 64 files; 256 KiB across paths and contents | `task.max_inline_files`, `task.max_file_bytes` |
 | Hidden verifier files | 256 files; 256 KiB total | `decode_program` |
 | Name, tags | name 256 bytes; 64 tags of at most 128 bytes | `eval/task.gleam` decoder |
-| Repository path, argv | 1024 bytes; 1 to 64 words, no NUL | `eval/task.gleam` decoder |
+| Repository name; argv | name 64 bytes of `[a-z0-9-]`; argv 1 to 64 words, no NUL | `eval/task.gleam` decoder |
+| Repository path (operator flag) | absolute, 1024 bytes, no NUL, `::` or `-` segment | `eval/repos.gleam` |
 | Verifier wall | 1 to 600,000 ms | `task.max_timeout_ms` |
 | Trials per cell | 1 to 1000 | `plan.check` |
 | Concurrency | 1 to 256 | `plan.check` |

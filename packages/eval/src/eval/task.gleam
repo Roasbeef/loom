@@ -22,6 +22,7 @@
 
 import client/mcp
 import core/json.{type JsonValue}
+import eval/repos
 import eval/wire
 import gleam/int
 import gleam/list
@@ -85,6 +86,9 @@ pub type Workspace {
   /// `gleam deps download` and a warm build), and its time is the trial's
   /// cold start.
   GitTree(
+    /// The repository's logical name, `[a-z0-9][a-z0-9-]{0,63}`. Never a
+    /// path: where a clone lives is the operator's, supplied at run time
+    /// through `eval/repos`, so identity does not depend on the host.
     repository: String,
     commit: String,
     tree: String,
@@ -455,8 +459,8 @@ fn decode_git_tree(value: JsonValue) -> Result(Workspace, String) {
     decode_argv("prepare"),
   ))
   use Nil <- result.try(check(
-    safe_repository(repository),
-    "repository must be an absolute local path of at most 1024 bytes, with no option-like segment",
+    repos.valid_name(repository),
+    "repository must be a logical name matching [a-z0-9][a-z0-9-]{0,63}",
   ))
   use Nil <- result.try(check(
     wire.is_hex(commit, 40) && wire.is_hex(tree, 40),
@@ -479,19 +483,6 @@ const prepare_allowlist = [
   ["gleam", "build"],
   ["gleam", "build", "--warnings-as-errors"],
 ]
-
-/// True for an absolute local path that git cannot read as an option or a
-/// transport: no leading `-` in any segment, no `::` (git's remote-helper
-/// syntax), no NUL, at most 1024 bytes. URLs are refused by the leading `/`.
-fn safe_repository(repository: String) -> Bool {
-  string.starts_with(repository, "/")
-  && wire.bytes(repository) <= 1024
-  && !string.contains(repository, "::")
-  && !string.contains(repository, "\u{0}")
-  && list.all(string.split(repository, "/"), fn(piece) {
-    !string.starts_with(piece, "-")
-  })
-}
 
 /// Decodes one argv: a nonempty array of strings without NUL bytes.
 fn decode_argv(name: String) -> fn(JsonValue) -> Result(List(String), String) {

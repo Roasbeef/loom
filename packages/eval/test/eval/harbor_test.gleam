@@ -5,6 +5,7 @@
 import client/secrets
 import core/json
 import eval/harbor
+import eval/repos
 import eval/task.{
   type Task, AllRewardsOne, ExpectedFiles, GitTree, HandWritten, Inline,
   MinedCommit, Program, Task,
@@ -54,12 +55,9 @@ fn mined() -> Task {
     id: "",
     name: "mined/machine/ECCD",
     prompt: "machine: keep the run alive",
-    workspace: GitTree(
-      repository: "/home/user/loom",
-      commit:,
-      tree: commit,
-      prepare: [["gleam", "deps", "download"]],
-    ),
+    workspace: GitTree(repository: "loom", commit:, tree: commit, prepare: [
+      ["gleam", "deps", "download"],
+    ]),
     verifier: Program(
       files: [#("packages/machine/test/machine/x_test.gleam", "HIDDEN-TEST")],
       argv: ["bash", "scripts/test.sh", "machine", "--match", "x_test:"],
@@ -92,8 +90,21 @@ fn inline_program(argv: List(String)) -> Task {
   ))
 }
 
-fn gives_diff() -> secrets.Runner {
-  fn(_argv, _timeout) { Ok(secrets.Capture(status: 0, output: diff)) }
+// The clone answers the tree check with the tree the task recorded and
+// every other question with the diff.
+fn answers() -> secrets.Runner {
+  fn(argv, _timeout) {
+    case string.contains(string.join(argv, " "), "rev-parse") {
+      True -> Ok(secrets.Capture(status: 0, output: commit <> "\n"))
+      False -> Ok(secrets.Capture(status: 0, output: diff))
+    }
+  }
+}
+
+fn known() -> repos.Repos {
+  let assert Ok(known) = repos.add(repos.empty(), "loom", "/srv/clone/loom")
+
+  known
 }
 
 fn read(path: String) -> String {
@@ -110,7 +121,7 @@ fn is_executable(path: String) -> Bool {
 
 pub fn harbor_layout_test() {
   let out = scratch("layout")
-  let assert Ok(Nil) = harbor.export(mined(), out, options, gives_diff())
+  let assert Ok(Nil) = harbor.export(mined(), out, options, known(), answers())
 
   let toml = read(out <> "/task.toml")
   let docker = read(out <> "/environment/Dockerfile")
@@ -161,7 +172,7 @@ pub fn harbor_test_sh_writes_reward_json_test() {
     "test -f hidden.txt && printf '  my_test: a_test...[0.001 s] ok\\n  my_test: b_test...ok\\n  my_test: c_test...*failed*\\n'",
   ]
   let assert Ok(Nil) =
-    harbor.export(inline_program(argv), out, options, gives_diff())
+    harbor.export(inline_program(argv), out, options, known(), answers())
 
   let run =
     "LOOM_WORKSPACE="
@@ -190,7 +201,7 @@ pub fn harbor_expected_files_compare_bytes_test() {
   let out = scratch("expected")
   let workspace = scratch("expected-workspace")
   let logs = scratch("expected-logs")
-  let assert Ok(Nil) = harbor.export(verified, out, options, gives_diff())
+  let assert Ok(Nil) = harbor.export(verified, out, options, known(), answers())
   let assert Ok(Nil) = simplifile.write(workspace <> "/a.txt", "done\n")
   let assert Ok(Nil) = simplifile.write(workspace <> "/b.txt", "other\n")
 

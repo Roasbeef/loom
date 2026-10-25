@@ -55,8 +55,9 @@ keyed by path and decode sorted by path.
   (`cell rerolled`), no duplicate or skipped attempts.
 - `arm.mint` returns `Result`: it canonicalises (sorted keyed lists, deduped
   `disabled_tools`, repeated slots refused) before hashing, as `decode` does.
-- Task files are untrusted: `GitTree.repository` must be an absolute local
-  path with no option-like segment or `::`; `prepare` must be one of three
+- Task files are untrusted: `GitTree.repository` is a logical name matching
+  `[a-z0-9][a-z0-9-]{0,63}`, never a path (identity covers what the task
+  means, not where a clone lives); `prepare` must be one of three
   allowlisted gleam argvs. `tags`, `fail_to_pass`, `pass_to_pass` are sets
   (sorted, deduped, repeats refused on decode).
 - `split.family` falls back to the task name, not its id; `assign` hashes the
@@ -70,8 +71,8 @@ keyed by path and decode sorted by path.
 
 ## Miner
 
-`eval/mine_cli` (`gleam run -m eval/mine_cli -- --repo <path> --out <dir>
-[--package machine,core] [--limit N] [--commit <hash>] [--work <dir>]`) turns
+`eval/mine_cli` (`gleam run -m eval/mine_cli -- [--repo <name>=<path>]...
+[--name loom] --out <dir> [--package machine,core] [--limit N] [--commit <hash>] [--work <dir>]`) turns
 Loom's own fix commits into regression tasks. It is host-side and trusted,
 like CI: no jail, runs through `client/secrets.host_runner()`. Modules:
 `eval/eunit_ids` (pure reader of test output, both the `scripts/test.sh`
@@ -126,6 +127,26 @@ tag; it never gates.
 - The host runner (`secrets.host_runner`) double-encodes non-ASCII argv under
   `scripts/test.sh`, whose emulator has a non-UTF-8 native file-name encoding.
   Repository and work paths must be ASCII.
+
+## Repositories: names, not paths
+
+`eval/repos.Repos` is the operator's map from a repository name to an
+absolute clone path, built from repeated `--repo <name>=<path>` flags
+(`repos.from_flags`) and completed by `repos.with_default` with
+`loom=<git rev-parse --show-toplevel>` when no flag names `loom`. A path
+enters the map only through `repos.check_path` (absolute, at most 1024
+bytes, no NUL, no `::`, no segment starting with `-`); a name is checked by
+`repos.valid_name`. `repos.resolve(repos, runner, name, commit, tree)` is
+the only way a task's repository becomes a path: the clone must hold the
+commit and `<commit>^{tree}` must equal the task's `tree`, so a wrong clone
+is refused rather than measured. `materialise.run`, `prove.prove`,
+`harbor.export` and `trial.Context.repos` all take the map; none records a
+path. `mine.Config` carries `name` (recorded in tasks) beside `repo` (the
+path mined, never recorded).
+
+The committed task set `tasks/loom-history-v1/` is mined and proved under
+this rule; `committed_task_set_is_portable_test` scans it for host paths and
+decodes every file.
 
 ## Replay lane
 
@@ -185,7 +206,7 @@ cancellation. Tape ordinals count from one in prepare order.
 
 `eval/run_cli` (`gleam run -m eval/run_cli -- run <plan.json> [--out DIR]
 [--tasks DIR] [--arms DIR] [--config loom.toml] [--helper PATH] [--seed DIR]
-[--tapes DIR]`, or `make eval-run ARGS="..."`; `... -- report <run-dir>`)
+[--tapes DIR] [--repo NAME=PATH]...`, or `make eval-run ARGS="..."`; `... -- report <run-dir>`)
 runs or resumes a frozen plan and writes the report. Modules: `eval/budget`
 (the dollar account), `eval/materialise` (starting tree to files),
 `eval/arm_settings` (arm to session configuration), `eval/trial` (one
@@ -259,8 +280,8 @@ is how a test makes one fail or watches their order.
 
 `eval/verify` grades a retired trial by running the task's `Program` in a
 fresh jail; `eval/prove` is mutation testing of a mined task's verifier; and
-`eval/prove_cli` (`gleam run -m eval/prove_cli -- --tasks <dir> --repo <path>
-[--out <dir>] [--helper <path>] [--seed <dir>] [--best-effort]`) proves a
+`eval/prove_cli` (`gleam run -m eval/prove_cli -- --tasks <dir>
+[--repo <name>=<path>]... [--out <dir>] [--helper <path>] [--seed <dir>] [--best-effort]`) proves a
 directory of tasks into `<out>/prove.jsonl`.
 
 - `verify.open_jail(settings, root)` starts a two-helper pool, executor and
@@ -309,7 +330,7 @@ directory of tasks into `<out>/prove.jsonl`.
   or an unadmitted task is `Error` (the runner's `Infra`). `scores` carries
   the reward map plus `f2p`/`p2p` fractions; `side_info` (<= 8 KiB) is the
   faults, the drop counts, then a `telemetry/field.scrub_text` tail.
-- `prove.prove(task, repo, root, jail, runner)`: `git archive` of the parent
+- `prove.prove(task, repos, root, jail, runner)`: `git archive` of the parent
   (no `.git`, tree id checked, `MinedCommit.parent` must equal
   `GitTree.commit`) under `<root>/<id12>/tree`, the task's `prepare` argvs
   plus a warm `gleam build` on the host, the source patch from `git diff
@@ -415,7 +436,7 @@ directory of tasks into `<out>/prove.jsonl`.
 `eval/atif` and `eval/harbor` write finished evidence in the formats other
 tools read; `eval/export_cli` is the command line (`gleam run -m
 eval/export_cli -- atif <session.db> <out.json>` and `-- harbor --tasks <dir>
---out <dir> --repo-url <url> --base-image <ref>`). Neither module runs a
+--out <dir> --repo-url <url> --base-image <ref> [--repo <name>=<path>]...`). Neither module runs a
 trial, builds an image or uploads anything.
 
 - `atif.from_entries(entries, usage, model)` is the pure walk to an
@@ -436,7 +457,7 @@ trial, builds an image or uploads anything.
   `cassette.redact_text` because that function is private. It deliberately
   is not the 32-grapheme scrubber, which would mangle commit hashes and
   test names. Keep the two prefix lists aligned by hand.
-- `harbor.render` is pure; `harbor.export(task, out_dir, options, runner)`
+- `harbor.render` is pure; `harbor.export(task, out_dir, options, repos, runner)`
   adds the one repository read, `git diff <parent> <fix>` split by
   `git.split_patch`, whose source half is `solution/gold.patch`. A git
   task's Dockerfile clones `--repo-url`, checks out the task's commit and

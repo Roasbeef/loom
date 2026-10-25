@@ -7,6 +7,7 @@ import client/secrets
 import core/json
 import eval/mine
 import eval/prove
+import eval/repos
 import eval/task
 import eval/verify_test
 import gleam/io
@@ -142,11 +143,11 @@ pub fn to_json_carries_the_verdict_and_census_test() {
 const probe_commit = "eccdddad0c6f92b4bd8812246d36753477eae4b1"
 
 const probe_task =
-  "f97168ff93a29daeb564c1d5b10f8148519e7ad04e55ef4cfe10975964b60b2b.json"
+  "95b6559abe8c308f12cf612a5c8497a8beb06739721287952b055f096a14897f.json"
 
 pub fn eccdddad0_proves_gold_one_null_zero_test() {
   let repo = absolute_repo("../..")
-  let file = verify_test.home() <> "/evalwt/mined/" <> probe_task
+  let file = "test/fixtures/" <> probe_task
   let present =
     secrets.host_runner()(
       ["git", "-C", repo, "cat-file", "-e", probe_commit <> "^{commit}"],
@@ -157,7 +158,8 @@ pub fn eccdddad0_proves_gold_one_null_zero_test() {
   // history; without either there is nothing to prove, and the jail's own
   // refusal is reported by the fixture that opens it.
   case present, task.load(file) {
-    Ok(secrets.Capture(status: 0, ..)), Ok(loaded) -> prove_it(repo, loaded)
+    Ok(secrets.Capture(status: 0, ..)), Ok(loaded) ->
+      prove_it(known(repo), loaded)
     Ok(secrets.Capture(status: 0, ..)), Error(reason) ->
       io.println_error(
         "SKIP eccdddad0_proves_gold_one_null_zero_test: task file "
@@ -174,10 +176,10 @@ pub fn eccdddad0_proves_gold_one_null_zero_test() {
   }
 }
 
-fn prove_it(repo: String, loaded: task.Task) -> Nil {
+fn prove_it(known: repos.Repos, loaded: task.Task) -> Nil {
   use jail, root <- verify_test.with_jail("eccdddad0")
   let assert Ok(proof) =
-    prove.prove(loaded, repo, root <> "/work", jail, secrets.host_runner())
+    prove.prove(loaded, known, root <> "/work", jail, secrets.host_runner())
   io.println_error("PROOF eccdddad0: " <> json.to_string(prove.to_json(proof)))
 
   // Gold recognises the fix, null refuses its absence, and the sabotage is
@@ -192,6 +194,14 @@ fn prove_it(repo: String, loaded: task.Task) -> Nil {
       root <> "/work/" <> string.slice(loaded.id, 0, 12) <> "/tree/.git",
     )
     == Ok(False)
+}
+
+// The operator's side of the task's `loom`: this checkout.
+fn known(repo: String) -> repos.Repos {
+  let assert Ok(known) = repos.from_flags(["loom=" <> repo])
+    as "the checkout path is absolute"
+
+  known
 }
 
 fn absolute_repo(relative: String) -> String {

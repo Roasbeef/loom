@@ -2,7 +2,7 @@
 ////
 ////     gleam run -m eval/run_cli -- run <plan.json> [--out DIR] [--tasks DIR]
 ////       [--arms DIR] [--config loom.toml] [--helper PATH] [--seed DIR]
-////       [--tapes DIR] [--record DIR] [--record DIR]
+////       [--tapes DIR] [--record DIR] [--repo NAME=PATH]...
 ////     gleam run -m eval/run_cli -- report <run-dir>
 ////
 //// `run` loads a plan and the tasks and arms it names, builds the session
@@ -29,12 +29,14 @@ import client/jobs
 import client/memory_config
 import client/retryconf
 import client/schedule
+import client/secrets
 import client/serve.{type Settings, Settings}
 import client/workspace_policy
 import core/clock
 import eval/cassette
 import eval/plan
 import eval/report
+import eval/repos
 import eval/run
 import eval/task
 import eval/trial
@@ -163,19 +165,41 @@ fn dispatch(arguments: List(String)) -> Result(String, String) {
   // The two verbs are the only requests; anything else is a usage error.
   case arguments {
     ["run", plan_path, ..flags] -> {
+      use #(specs, flags) <- result.try(take_repos(flags, [], []))
       use options <- result.try(parse_flags(flags))
-      command_run(plan_path, options)
+      use known <- result.try(repos.from_flags(specs))
+      command_run(
+        plan_path,
+        repos.with_default(known, secrets.host_runner()),
+        options,
+      )
     }
     ["report", directory] -> command_report(directory)
     _ ->
       Error(
-        "usage: run <plan.json> [--out DIR] [--tasks DIR] [--arms DIR] [--config FILE] [--helper PATH] [--seed DIR] [--tapes DIR] [--record DIR] | report <run-dir>",
+        "usage: run <plan.json> [--out DIR] [--tasks DIR] [--arms DIR] [--config FILE] [--helper PATH] [--seed DIR] [--tapes DIR] [--record DIR] [--repo NAME=PATH]... | report <run-dir>",
       )
   }
 }
 
 type Options =
   dict.Dict(String, String)
+
+/// Splits the repeatable `--repo <name>=<path>` flags from the rest. Every
+/// other flag is single-valued and lives in a dictionary, where a repeat
+/// would silently overwrite; a repository map needs every occurrence.
+fn take_repos(
+  flags: List(String),
+  specs: List(String),
+  others: List(String),
+) -> Result(#(List(String), List(String)), String) {
+  case flags {
+    [] -> Ok(#(list.reverse(specs), list.reverse(others)))
+    ["--repo", spec, ..rest] -> take_repos(rest, [spec, ..specs], others)
+    ["--repo"] -> Error("flag --repo needs a value")
+    [other, ..rest] -> take_repos(rest, specs, [other, ..others])
+  }
+}
 
 /// Reads `--name value` pairs into a dictionary.
 fn parse_flags(flags: List(String)) -> Result(Options, String) {
@@ -206,7 +230,11 @@ fn command_report(directory: String) -> Result(String, String) {
 }
 
 /// The `run` verb: load, build the base settings, pick the lane, execute.
-fn command_run(plan_path: String, options: Options) -> Result(String, String) {
+fn command_run(
+  plan_path: String,
+  known: repos.Repos,
+  options: Options,
+) -> Result(String, String) {
   use loaded <- result.try(run.load(
     plan_path,
     option(options, "tasks", "tasks"),
@@ -255,6 +283,7 @@ fn command_run(plan_path: String, options: Options) -> Result(String, String) {
       budgets: loaded.plan.budgets,
       plan_id: loaded.plan.id,
       seams: trial.default_seams(grader_for(jail)),
+      repos: known,
       selftest: selftest_of(jail, base),
     )
   let executed = run.execute(ctx, loaded, out)

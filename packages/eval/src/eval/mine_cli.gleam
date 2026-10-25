@@ -1,6 +1,11 @@
 //// The miner's command line:
-//// `gleam run -m eval/mine_cli -- --repo <path> --out <dir> [--package a,b]
-//// [--limit N] [--commit <hash>] [--work <dir>]`.
+//// `gleam run -m eval/mine_cli -- [--repo <name>=<path>]... [--name <name>]
+//// --out <dir> [--package a,b] [--limit N] [--commit <hash>] [--work <dir>]`.
+////
+//// The repository mined is the clone `--repo` maps `--name` to (default
+//// `loom`, mapped to the current checkout when no flag names it). The name
+//// is what every task records; the path is used here and never written down,
+//// so the task set can be proved on any machine that supplies a clone.
 ////
 //// It lists candidates from the repository's history, mines each in turn and
 //// writes what came out. Every admitted task is a file `<out>/<id>.json`
@@ -20,6 +25,7 @@ import client/secrets
 import core/json
 import eval/git
 import eval/mine
+import eval/repos
 import eval/task
 import gleam/int
 import gleam/io
@@ -31,7 +37,8 @@ import simplifile
 /// What the command line asked for.
 type Options {
   Options(
-    repo: String,
+    repos: List(String),
+    name: String,
     out: String,
     work: String,
     packages: List(String),
@@ -51,11 +58,16 @@ type Options {
 ///
 pub fn main() -> Nil {
   // A request that does not parse is a usage error, distinct from a run that failed.
-  case options(argv.load().arguments, Options("", "", "", [], 0, "")) {
+  case
+    options(
+      argv.load().arguments,
+      Options([], repos.default_name, "", "", [], 0, ""),
+    )
+  {
     Error(reason) -> {
       io.println_error("eval/mine_cli: " <> reason)
       io.println_error(
-        "usage: --repo <path> --out <dir> [--package a,b] [--limit N] [--commit <hash>] [--work <dir>]",
+        "usage: [--repo <name>=<path>]... [--name <name>] --out <dir> [--package a,b] [--limit N] [--commit <hash>] [--work <dir>]",
       )
       ffi_os.halt(2)
     }
@@ -80,12 +92,14 @@ fn options(
 ) -> Result(Options, String) {
   case arguments {
     [] ->
-      case so_far.repo == "" || so_far.out == "" {
-        True -> Error("--repo and --out are required")
-        False -> Ok(so_far)
+      case so_far.out {
+        "" -> Error("--out is required")
+        _ -> Ok(so_far)
       }
 
-    ["--repo", value, ..rest] -> options(rest, Options(..so_far, repo: value))
+    ["--repo", value, ..rest] ->
+      options(rest, Options(..so_far, repos: [value, ..so_far.repos]))
+    ["--name", value, ..rest] -> options(rest, Options(..so_far, name: value))
     ["--out", value, ..rest] -> options(rest, Options(..so_far, out: value))
     ["--work", value, ..rest] -> options(rest, Options(..so_far, work: value))
     ["--commit", value, ..rest] ->
@@ -107,8 +121,17 @@ fn options(
 fn run(options: Options) -> Result(String, String) {
   let runner = secrets.host_runner()
   use work <- result.try(work_dir(options, runner))
-  use repo <- result.try(absolute(options.repo, runner))
-  let config = mine.Config(repo:, work:, runner:, run_timeout_ms: 1_800_000)
+  use known <- result.try(repos.from_flags(list.reverse(options.repos)))
+  let known = repos.with_default(known, runner)
+  use repo <- result.try(repos.path(known, options.name))
+  let config =
+    mine.Config(
+      name: options.name,
+      repo:,
+      work:,
+      runner:,
+      run_timeout_ms: 1_800_000,
+    )
 
   use _ <- result.try(
     simplifile.create_directory_all(options.out)
@@ -138,18 +161,6 @@ fn take(items: List(a), limit: Int) -> List(a) {
   case limit > 0 {
     True -> list.take(items, limit)
     False -> items
-  }
-}
-
-/// The repository's real path. A task records its repository, and a relative
-/// path means nothing to the run that reads the task later.
-fn absolute(path: String, runner: secrets.Runner) -> Result(String, String) {
-  use capture <- result.try(runner(git.in_dir(path, ["pwd", "-P"]), 10_000))
-
-  // A zero status means the shell entered the directory and printed its real path.
-  case capture.status {
-    0 -> Ok(string.trim(capture.output))
-    _ -> Error("cannot enter " <> path <> ": " <> string.trim(capture.output))
   }
 }
 

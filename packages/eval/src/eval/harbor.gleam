@@ -53,6 +53,7 @@
 import client/secrets.{type Runner}
 import core/json
 import eval/git
+import eval/repos.{type Repos}
 import eval/task.{
   type Task, type Verifier, type Workspace, ExpectedFiles, GitTree, Inline,
   MinedCommit, Program,
@@ -68,7 +69,7 @@ import simplifile
 pub type Options {
   Options(
     /// Where the container clones the repository from. The task records only
-    /// a local path, which means nothing inside a container.
+    /// a logical name, which means nothing inside a container.
     repo_url: String,
     /// The pinned image the Dockerfile starts from, for example
     /// `ubuntu@sha256:...`.
@@ -185,36 +186,52 @@ pub fn render(
 /// Writes a task's Harbor directory into `out_dir`.
 ///
 /// A mined git task's reference solution is read from the task's own
-/// repository: `git diff <parent> <fix>` with tests and documentation split
+/// repository (resolved by name through `known`, which must confirm the task's
+/// tree): `git diff <parent> <fix>` with tests and documentation split
 /// off by `git.split_patch`. The runner is the host runner in the CLI and a
 /// scripted one in tests.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // harbor.export(task, "out/mined-machine-eccd", options, secrets.host_runner())
+/// // harbor.export(task, "out/mined-machine-eccd", options, repos, secrets.host_runner())
 /// ```
 ///
 pub fn export(
   task: Task,
   out_dir: String,
   options: Options,
+  known: Repos,
   runner: Runner,
 ) -> Result(Nil, String) {
-  use solution <- result.try(solution(task, runner))
+  use solution <- result.try(solution(task, known, runner))
   use files <- result.try(render(task, options, solution))
 
   list.try_each(files, write_file(out_dir, _))
 }
 
 /// The reference solution for a mined git task, read from its repository.
-fn solution(task: Task, runner: Runner) -> Result(Solution, String) {
+fn solution(
+  task: Task,
+  known: Repos,
+  runner: Runner,
+) -> Result(Solution, String) {
   // Only a mined git task has a fix commit to diff; an expected-files task carries its own solution and the rest have none.
   case task.workspace, task.verifier, task.provenance {
-    GitTree(repository:, ..), Program(..), MinedCommit(fix:, parent:, ..) -> {
-      use diff <- result.try(git.ask(
+    GitTree(repository:, commit:, tree:, ..),
+      Program(..),
+      MinedCommit(fix:, parent:, ..)
+    -> {
+      use clone <- result.try(repos.resolve(
+        known,
         runner,
         repository,
+        commit,
+        tree,
+      ))
+      use diff <- result.try(git.ask(
+        runner,
+        clone,
         [
           "diff", "--binary", "--no-renames", "--no-ext-diff", "--no-color",
           parent, fix,

@@ -36,6 +36,7 @@ import client/secrets.{type Runner}
 import core/json.{type JsonValue}
 import eval/git
 import eval/mine.{type Sabotage, Caught, NotApplicable, Survived}
+import eval/repos.{type Repos}
 import eval/task.{
   type Task, ExpectedFiles, GitTree, HandWritten, HarborImport, Inline,
   MinedCommit, Program,
@@ -93,8 +94,9 @@ pub type Proof {
   )
 }
 
-/// Proves one mined task. `repo` is the repository whose history holds the
-/// fix; `root` is a directory under the jail's root (never `/tmp`) where
+/// Proves one mined task. `known` maps the task's repository name to the
+/// clone whose history holds the fix, and the clone must confirm the task's
+/// tree before anything is extracted; `root` is a directory under the jail's root (never `/tmp`) where
 /// the parent tree, its patched copies and the verifier runs are laid out
 /// under `<root>/<first twelve of the task id>/`; `runner` runs host
 /// commands, `secrets.host_runner()` in production.
@@ -107,26 +109,27 @@ pub type Proof {
 /// ## Examples
 ///
 /// ```gleam
-/// // prove.prove(task, "/src/loom", home <> "/evalwt/prove/work", jail, secrets.host_runner())
+/// // prove.prove(task, repos, home <> "/evalwt/prove/work", jail, secrets.host_runner())
 /// // -> Ok(prove.Proof(verdict: prove.Admitted, ..))
 /// ```
 ///
 pub fn prove(
   task: Task,
-  repo: String,
+  known: Repos,
   root: String,
   jail: Jail,
   runner: Runner,
 ) -> Result(Proof, String) {
   use #(fix, parent) <- result.try(mined_commit(task))
-  use #(commit, tree_id) <- result.try(git_tree(task))
+  use #(name, commit, tree_id) <- result.try(git_tree(task))
   use Nil <- result.try(same_parent(parent, commit))
   use argv <- result.try(program_argv(task))
   let dir = root <> "/" <> string.slice(task.id, 0, 12)
   use Nil <- result.try(fresh(dir))
   let tree = dir <> "/tree"
   let started = now_ms()
-  use Nil <- result.try(materialise(runner, repo, commit, tree_id, tree))
+  use repo <- result.try(repos.resolve(known, runner, name, commit, tree_id))
+  use Nil <- result.try(materialise(runner, repo, commit, tree))
   use Nil <- result.try(prepare(runner, task, tree, argv))
   let prepare_ms = now_ms() - started
 
@@ -334,10 +337,11 @@ fn same_parent(parent: String, commit: String) -> Result(Nil, String) {
   }
 }
 
-/// The commit and tree id of a git-tree workspace.
-fn git_tree(task: Task) -> Result(#(String, String), String) {
+/// The repository name, commit and tree id of a git-tree workspace.
+fn git_tree(task: Task) -> Result(#(String, String, String), String) {
   case task.workspace {
-    GitTree(repository: _, commit:, tree:, prepare: _) -> Ok(#(commit, tree))
+    GitTree(repository:, commit:, tree:, prepare: _) ->
+      Ok(#(repository, commit, tree))
     Inline(files: _) -> Error("an inline workspace has no parent to archive")
   }
 }
@@ -354,23 +358,15 @@ fn program_argv(task: Task) -> Result(List(String), String) {
 
 // --- the host steps -------------------------------------------------------
 
-/// Extracts the parent commit as plain files, checks the tree id the task
-/// recorded, and checks that no `.git` came along: an archive carries none,
+/// Extracts the parent commit as plain files (the clone has already confirmed
+/// the tree id the task recorded) and checks that no `.git` came along: an archive carries none,
 /// and a tree that had one would show the agent the fix.
 fn materialise(
   runner: Runner,
   repo: String,
   commit: String,
-  tree_id: String,
   tree: String,
 ) -> Result(Nil, String) {
-  use actual <- result.try(git.ask(
-    runner,
-    repo,
-    ["rev-parse", commit <> "^{tree}"],
-    host_step_ms,
-  ))
-  use Nil <- result.try(same_tree(tree_id, string.trim(actual)))
   use Nil <- result.try(directory(tree))
   use capture <- result.try(runner(
     [
@@ -393,21 +389,6 @@ fn materialise(
   case simplifile.is_directory(tree <> "/.git") {
     Ok(True) -> Error("the archive carried a .git directory")
     Ok(False) | Error(_) -> Ok(Nil)
-  }
-}
-
-/// Refuses a tree id the repository does not confirm: the task would then
-/// describe a tree other than the one archived.
-fn same_tree(recorded: String, actual: String) -> Result(Nil, String) {
-  case recorded == actual {
-    True -> Ok(Nil)
-    False ->
-      Error(
-        "tree id mismatch: the task says "
-        <> recorded
-        <> " and the repository says "
-        <> actual,
-      )
   }
 }
 

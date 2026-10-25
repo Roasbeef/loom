@@ -7,8 +7,9 @@
 //// and `git log --all` inside the trial finds nothing, where a worktree would
 //// print the very fix the task is meant to hide.
 ////
-//// Before anything is extracted the commit's tree id is read back from the
-//// repository and compared with the one the task recorded. A task is
+//// A task names its repository, not its path; `eval/repos` maps the name to
+//// the operator's clone. Before anything is extracted the commit's tree id is
+//// read back from that clone and compared with the one the task recorded. A task is
 //// content-addressed, so a repository that no longer holds those bytes at
 //// that commit (a rewritten branch, a different clone) must refuse rather
 //// than quietly measure another tree.
@@ -26,6 +27,7 @@ import client/secrets.{type Runner}
 import client/serve
 import eval/git
 import eval/prove
+import eval/repos.{type Repos}
 import eval/task.{type Task, GitTree, Inline, Program}
 import gleam/int
 import gleam/list
@@ -66,12 +68,13 @@ const git_timeout_ms = 300_000
 /// ## Examples
 ///
 /// ```gleam
-/// // materialise.run(secrets.host_runner(), task, "/runs/p/t/a/0/attempt-1")
+/// // materialise.run(secrets.host_runner(), repos, task, "/runs/p/t/a/0/attempt-1")
 /// // == Ok(Prepared("/runs/p/t/a/0/attempt-1/work", 3))
 /// ```
 ///
 pub fn run(
   runner: Runner,
+  known: Repos,
   task: Task,
   root: String,
 ) -> Result(Prepared, String) {
@@ -84,7 +87,7 @@ pub fn run(
       "cannot create the workspace: " <> simplifile.describe_error(error)
     }),
   )
-  use Nil <- result.try(build(runner, task, workspace))
+  use Nil <- result.try(build(runner, known, task, workspace))
   use pristine <- result.try(keep_builds(runner, workspace, root))
 
   Ok(Prepared(
@@ -165,14 +168,25 @@ fn keep_build(
 }
 
 /// Builds the task's tree in `workspace` from its inline files or its git tree.
-fn build(runner: Runner, task: Task, workspace: String) -> Result(Nil, String) {
+fn build(
+  runner: Runner,
+  known: Repos,
+  task: Task,
+  workspace: String,
+) -> Result(Nil, String) {
   // The two workspace kinds differ only in where the bytes come from; both end as plain files.
   case task.workspace {
     Inline(files:) -> write_files(workspace, files)
 
     GitTree(repository:, commit:, tree:, prepare:) -> {
-      use Nil <- result.try(check_tree(runner, repository, commit, tree))
-      use Nil <- result.try(archive(runner, repository, commit, workspace))
+      use clone <- result.try(repos.resolve(
+        known,
+        runner,
+        repository,
+        commit,
+        tree,
+      ))
+      use Nil <- result.try(archive(runner, clone, commit, workspace))
 
       // Steps run where the verifier's package lives, since a mined Loom
       // tree has no project at its root; the build is then warmed there too.
@@ -204,37 +218,6 @@ fn write_files(
   |> result.map_error(fn(error) {
     "cannot write " <> path <> ": " <> simplifile.describe_error(error)
   })
-}
-
-/// The tree id is a digest of every file at the commit, so equality here is
-/// what lets the task claim the agent starts from the bytes it was minted from.
-fn check_tree(
-  runner: Runner,
-  repository: String,
-  commit: String,
-  expected: String,
-) -> Result(Nil, String) {
-  use answer <- result.try(git.ask(
-    runner,
-    repository,
-    ["rev-parse", commit <> "^{tree}"],
-    git_timeout_ms,
-  ))
-  let actual = string.trim(answer)
-
-  // Equal tree ids are what let the task claim the agent starts from the bytes it was minted from.
-  case actual == expected {
-    True -> Ok(Nil)
-    False ->
-      Error(
-        "tree mismatch: the task records "
-        <> expected
-        <> " but "
-        <> commit
-        <> " has "
-        <> actual,
-      )
-  }
 }
 
 /// `pipefail` makes a failed `git archive` fail the pipeline; without it `tar`

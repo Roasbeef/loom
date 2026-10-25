@@ -1,6 +1,7 @@
 import client/secrets
 import eval/git
 import eval/materialise
+import eval/repos.{type Repos}
 import eval/task.{type Task, ExpectedFiles, GitTree, HandWritten, Inline, Task}
 import gleam/option.{None, Some}
 import gleam/string
@@ -17,6 +18,14 @@ fn task_over(workspace: task.Workspace) -> Task {
     tags: [],
     provenance: HandWritten("test"),
   )
+}
+
+// The operator's side of the name: `fixture` is wherever the scratch clone is.
+fn known(repo: String) -> Repos {
+  let assert Ok(known) = repos.add(repos.empty(), "fixture", repo)
+    as "a scratch path is absolute"
+
+  known
 }
 
 fn sh(command: String) -> String {
@@ -56,7 +65,8 @@ pub fn an_inline_workspace_is_written_to_the_trial_workspace_test() {
   let root = scripted.scratch("inline")
   let inline = task_over(Inline([#("a.txt", "A\n"), #("deep/b.txt", "B\n")]))
 
-  let assert Ok(prepared) = materialise.run(secrets.host_runner(), inline, root)
+  let assert Ok(prepared) =
+    materialise.run(secrets.host_runner(), repos.empty(), inline, root)
 
   assert prepared.workspace == root <> "/work"
   assert simplifile.read(root <> "/work/a.txt") == Ok("A\n")
@@ -67,10 +77,10 @@ pub fn a_git_tree_is_archived_without_history_and_prepared_in_place_test() {
   let #(repo, commit, tree) = quoted_repository()
   let root = scripted.scratch("archive")
   let archived =
-    task_over(GitTree(repo, commit, tree, [["touch", "prepared.marker"]]))
+    task_over(GitTree("fixture", commit, tree, [["touch", "prepared.marker"]]))
 
   let assert Ok(prepared) =
-    materialise.run(secrets.host_runner(), archived, root)
+    materialise.run(secrets.host_runner(), known(repo), archived, root)
 
   assert simplifile.read(prepared.workspace <> "/sub/two.txt") == Ok("two\n")
   assert simplifile.is_file(prepared.workspace <> "/prepared.marker")
@@ -80,13 +90,13 @@ pub fn a_git_tree_is_archived_without_history_and_prepared_in_place_test() {
 }
 
 pub fn a_tree_that_differs_from_the_recorded_one_is_refused_test() {
-  let #(repo, commit, tree) = quoted_repository()
+  let #(repo, commit, _tree) = quoted_repository()
   let root = scripted.scratch("wrong-tree")
-  let wrong = string.replace(tree, string.slice(tree, 0, 1), "z")
-  let mismatched = task_over(GitTree(repo, commit, wrong, []))
+  let wrong = string.repeat("0", 40)
+  let mismatched = task_over(GitTree("fixture", commit, wrong, []))
 
   let assert Error(reason) =
-    materialise.run(secrets.host_runner(), mismatched, root)
+    materialise.run(secrets.host_runner(), known(repo), mismatched, root)
 
   assert string.contains(reason, "tree mismatch")
   assert simplifile.is_file(root <> "/work/one.txt") == Ok(False)
@@ -95,10 +105,10 @@ pub fn a_tree_that_differs_from_the_recorded_one_is_refused_test() {
 pub fn a_failing_prepare_step_is_an_error_naming_it_test() {
   let #(repo, commit, tree) = quoted_repository()
   let root = scripted.scratch("bad-prepare")
-  let failing = task_over(GitTree(repo, commit, tree, [["false"]]))
+  let failing = task_over(GitTree("fixture", commit, tree, [["false"]]))
 
   let assert Error(reason) =
-    materialise.run(secrets.host_runner(), failing, root)
+    materialise.run(secrets.host_runner(), known(repo), failing, root)
 
   assert string.contains(reason, "prepare `false` exited 1")
 }
@@ -130,7 +140,8 @@ pub fn git_workspace_has_no_history_test_() -> scripted.EunitTest {
     let assert Ok(prepared) =
       materialise.run(
         secrets.host_runner(),
-        task_over(GitTree(repo, commit, tree, [])),
+        known(repo),
+        task_over(GitTree("fixture", commit, tree, [])),
         root,
       )
 
@@ -144,7 +155,8 @@ pub fn git_workspace_has_no_history_test_() -> scripted.EunitTest {
     let assert Error(reason) =
       materialise.run(
         secrets.host_runner(),
-        task_over(GitTree(repo, commit, string.repeat("0", 40), [])),
+        known(repo),
+        task_over(GitTree("fixture", commit, string.repeat("0", 40), [])),
         other,
       )
     assert string.contains(reason, "tree mismatch")
@@ -181,7 +193,7 @@ pub fn prepare_runs_in_the_verifiers_package_and_warms_its_build_test() {
   let #(repo, commit, tree) = packaged_repository()
   let root = scripted.scratch("package-prepare")
   let mined =
-    task_over(GitTree(repo, commit, tree, [["gleam", "deps", "download"]]))
+    task_over(GitTree("fixture", commit, tree, [["gleam", "deps", "download"]]))
   let mined =
     Task(
       ..mined,
@@ -195,7 +207,8 @@ pub fn prepare_runs_in_the_verifiers_package_and_warms_its_build_test() {
       ),
     )
 
-  let assert Ok(prepared) = materialise.run(secrets.host_runner(), mined, root)
+  let assert Ok(prepared) =
+    materialise.run(secrets.host_runner(), known(repo), mined, root)
 
   // The step found a project to run in, and the warm build compiled it there.
   assert simplifile.is_directory(prepared.workspace <> "/packages/demo/build")
@@ -214,7 +227,7 @@ pub fn prepare_finds_the_package_from_the_pkg_tag_and_chained_argv_test() {
   let #(repo, commit, tree) = packaged_repository()
   let root = scripted.scratch("package-tag")
   let mined =
-    task_over(GitTree(repo, commit, tree, [["gleam", "deps", "download"]]))
+    task_over(GitTree("fixture", commit, tree, [["gleam", "deps", "download"]]))
   let mined =
     Task(
       ..mined,
@@ -232,7 +245,8 @@ pub fn prepare_finds_the_package_from_the_pkg_tag_and_chained_argv_test() {
       ),
     )
 
-  let assert Ok(prepared) = materialise.run(secrets.host_runner(), mined, root)
+  let assert Ok(prepared) =
+    materialise.run(secrets.host_runner(), known(repo), mined, root)
   assert simplifile.is_directory(prepared.workspace <> "/packages/demo/build")
     == Ok(True)
   assert prepared.pristine == Some(root <> "/pristine")
@@ -243,6 +257,7 @@ pub fn a_tree_with_no_build_has_no_pristine_copy_test() {
   let assert Ok(prepared) =
     materialise.run(
       secrets.host_runner(),
+      repos.empty(),
       task_over(Inline([#("a.txt", "a\n")])),
       root,
     )

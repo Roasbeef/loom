@@ -120,6 +120,7 @@ fn reproduce(repo: String) {
   let work = home_from(home) <> "/evalwt/mine-test"
   let config =
     mine.Config(
+      name: "loom",
       repo:,
       work:,
       runner: secrets.host_runner(),

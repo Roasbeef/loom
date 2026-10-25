@@ -59,6 +59,7 @@ import eval/budget
 import eval/ledger.{type Row, Row}
 import eval/materialise
 import eval/plan.{type Budgets, type RowKey, RowKey}
+import eval/repos.{type Repos}
 import eval/task.{type Task, ExpectedFiles, Program}
 import eval/wire
 import gleam/bit_array
@@ -146,6 +147,8 @@ pub type Context {
     plan_id: String,
     /// The effects.
     seams: Seams,
+    /// Where each repository a git task names is cloned on this machine.
+    repos: Repos,
     /// What the host sandbox probe reported, recorded in each scored row's
     /// jail. `unprobed` when no probe ran.
     selftest: String,
@@ -531,7 +534,7 @@ fn attempt_trial(
   root: String,
 ) -> Result(Row, String) {
   use prepared <- result.try(
-    materialise.run(ctx.seams.runner, task, root)
+    materialise.run(ctx.seams.runner, ctx.repos, task, root)
     |> result.map_error(fn(reason) { "materialise failed: " <> reason }),
   )
   use settings <- result.try(arm_settings.to_settings(arm, ctx.base))

@@ -23,12 +23,9 @@ fn mined() -> Task {
     id: "",
     name: "fix queue ordering",
     prompt: "Queue pops in the wrong order.",
-    workspace: task.GitTree(
-      repository: "/srv/git/loom.git",
-      commit:,
-      tree:,
-      prepare: [["gleam", "deps", "download"]],
-    ),
+    workspace: task.GitTree(repository: "loom", commit:, tree:, prepare: [
+      ["gleam", "deps", "download"],
+    ]),
     verifier: task.Program(
       files: [#("packages/machine/test/machine/queue_test.gleam", "test body")],
       argv: ["bash", "scripts/test.sh", "machine", "--match", "queue_test"],
@@ -484,16 +481,16 @@ pub fn untrusted_task_cannot_name_host_commands_test() {
     ))
   }
   let refused_repository =
-    "repository must be an absolute local path of at most 1024 bytes, with no option-like segment"
+    "repository must be a logical name matching [a-z0-9][a-z0-9-]{0,63}"
 
-  assert repository("/srv/git/loom.git") == "accepted"
+  assert repository("loom") == "accepted"
+  assert repository("/srv/git/loom.git") == refused_repository
   assert repository("https://example.invalid/loom.git") == refused_repository
   assert repository("--upload-pack=touch /x") == refused_repository
-  assert repository("/srv/-evil") == refused_repository
-  assert repository("/srv/ext::sh -c x") == refused_repository
-  assert repository("/srv/a\u{0}b") == refused_repository
-  assert repository("relative/path") == refused_repository
-  assert repository("/" <> string.repeat("a", 1024)) == refused_repository
+  assert repository("-loom") == refused_repository
+  assert repository("ext::sh -c x") == refused_repository
+  assert repository("") == refused_repository
+  assert repository(string.repeat("a", 65)) == refused_repository
 
   assert prepare(["gleam", "deps", "download"]) == "accepted"
   assert prepare(["gleam", "build"]) == "accepted"

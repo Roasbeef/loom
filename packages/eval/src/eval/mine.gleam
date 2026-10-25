@@ -50,7 +50,9 @@ import weft/poll
 /// Where and how the miner runs.
 pub type Config {
   Config(
-    /// The repository whose history is mined.
+    /// The logical name the mined tasks record as their repository.
+    name: String,
+    /// The clone whose history is mined: an operator path, never recorded.
     repo: String,
     /// The directory that holds worktrees and patch files. It must not be
     /// under `/tmp`.
@@ -729,7 +731,7 @@ fn assemble(job: Job, measured: Measured) -> Result(Task, String) {
       name: "mined/" <> candidate.package <> "/" <> short(candidate.commit),
       prompt: text,
       workspace: GitTree(
-        repository: job.config.repo,
+        repository: job.config.name,
         commit: prepared.parent,
         tree: prepared.tree,
         prepare: [["gleam", "deps", "download"]],

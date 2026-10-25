@@ -1,7 +1,7 @@
 //// The exporter's command line:
 //// `gleam run -m eval/export_cli -- atif <session.db> <out.json>` and
 //// `gleam run -m eval/export_cli -- harbor --tasks <dir> --out <dir>
-//// --repo-url <url> --base-image <ref>`.
+//// --repo-url <url> --base-image <ref> [--repo <name>=<path>]...`.
 ////
 //// Both modes read finished evidence and write files; neither runs a trial,
 //// builds an image or contacts a service. A task that cannot be exported
@@ -14,6 +14,7 @@ import client/internal/ffi_os
 import client/secrets
 import eval/atif
 import eval/harbor
+import eval/repos
 import eval/task
 import gleam/int
 import gleam/io
@@ -24,7 +25,12 @@ import simplifile
 
 /// What a harbor export was asked for.
 type Request {
-  Request(tasks: String, out: String, options: harbor.Options)
+  Request(
+    tasks: String,
+    out: String,
+    options: harbor.Options,
+    repos: List(String),
+  )
 }
 
 /// Runs the exporter. Usage errors exit 2, a failed export exits 1.
@@ -40,7 +46,7 @@ pub fn main() -> Nil {
     ["atif", database, out] -> finish(export_atif(database, out))
 
     ["harbor", ..flags] ->
-      case request(flags, Request("", "", harbor.Options("", ""))) {
+      case request(flags, Request("", "", harbor.Options("", ""), [])) {
         Ok(asked) -> finish(export_harbor(asked))
         Error(reason) -> usage(reason)
       }
@@ -65,7 +71,7 @@ fn finish(outcome: Result(String, String)) -> Nil {
 fn usage(reason: String) -> Nil {
   io.println_error("eval/export_cli: " <> reason)
   io.println_error(
-    "usage: atif <session.db> <out.json> | harbor --tasks <dir> --out <dir> --repo-url <url> --base-image <ref>",
+    "usage: atif <session.db> <out.json> | harbor --tasks <dir> --out <dir> --repo-url <url> --base-image <ref> [--repo <name>=<path>]...",
   )
   ffi_os.halt(2)
 }
@@ -102,6 +108,8 @@ fn request(flags: List(String), so_far: Request) -> Result(Request, String) {
           options: harbor.Options(..so_far.options, repo_url: value),
         ),
       )
+    ["--repo", value, ..rest] ->
+      request(rest, Request(..so_far, repos: [value, ..so_far.repos]))
     ["--base-image", value, ..rest] ->
       request(
         rest,
@@ -116,6 +124,8 @@ fn request(flags: List(String), so_far: Request) -> Result(Request, String) {
 
 /// Exports every task file in the directory, each to `<out>/<slug>`.
 fn export_harbor(asked: Request) -> Result(String, String) {
+  use known <- result.try(repos.from_flags(list.reverse(asked.repos)))
+  let known = repos.with_default(known, secrets.host_runner())
   use names <- result.try(
     simplifile.read_directory(asked.tasks)
     |> result.map_error(fn(error) {
@@ -128,7 +138,7 @@ fn export_harbor(asked: Request) -> Result(String, String) {
     |> list.sort(string.compare)
   let failures =
     list.filter_map(files, fn(name) {
-      case export_one(asked, asked.tasks <> "/" <> name) {
+      case export_one(asked, known, asked.tasks <> "/" <> name) {
         Ok(Nil) -> Error(Nil)
         Error(reason) -> Ok(name <> ": " <> reason)
       }
@@ -145,13 +155,18 @@ fn export_harbor(asked: Request) -> Result(String, String) {
 }
 
 /// Loads one task file and exports it under its slug.
-fn export_one(asked: Request, path: String) -> Result(Nil, String) {
+fn export_one(
+  asked: Request,
+  known: repos.Repos,
+  path: String,
+) -> Result(Nil, String) {
   use loaded <- result.try(task.load(path))
 
   harbor.export(
     loaded,
     asked.out <> "/" <> harbor.slug(loaded.name),
     asked.options,
+    known,
     secrets.host_runner(),
   )
 }

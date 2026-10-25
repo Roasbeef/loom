@@ -2,6 +2,7 @@ import eval/arm.{type Arm, Arm, Knobs, PromptPack}
 import eval/budget
 import eval/ledger.{type Row}
 import eval/plan.{type Plan}
+import eval/repos
 import eval/run
 import eval/run_cli
 import eval/task.{type Task}
@@ -41,6 +42,7 @@ fn rig(
       budgets: frozen.budgets,
       plan_id: frozen.id,
       seams: trial.default_seams(trial.refuse_program),
+      repos: repos.empty(),
       selftest: trial.unprobed,
     ),
     out: root <> "/runs",

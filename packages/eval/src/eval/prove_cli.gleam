@@ -1,5 +1,5 @@
 //// The verifier prover's command line:
-//// `gleam run -m eval/prove_cli -- --tasks <dir> --repo <path> [--out <dir>]
+//// `gleam run -m eval/prove_cli -- --tasks <dir> [--repo <name>=<path>]... [--out <dir>]
 //// [--helper <path>] [--seed <dir>] [--best-effort]`.
 ////
 //// It opens one jail under `<out>`, proves every task file in `<tasks>`
@@ -28,6 +28,7 @@ import client/serve.{Settings}
 import client/workspace_policy
 import core/json
 import eval/prove
+import eval/repos
 import eval/run_cli
 import eval/task
 import eval/verify
@@ -46,7 +47,7 @@ import simplifile
 type Options {
   Options(
     tasks: String,
-    repo: String,
+    repos: List(String),
     out: String,
     helper: String,
     seed: String,
@@ -61,7 +62,7 @@ type Options {
 /// ## Examples
 ///
 /// ```gleam
-/// // gleam run -m eval/prove_cli -- --tasks ~/evalwt/mined --repo ../..
+/// // gleam run -m eval/prove_cli -- --tasks ~/evalwt/mined --repo loom=$PWD/../..
 /// ```
 ///
 pub fn main() -> Nil {
@@ -71,7 +72,7 @@ pub fn main() -> Nil {
     Error(reason) -> {
       io.println_error("eval/prove_cli: " <> reason)
       io.println_error(
-        "usage: --tasks <dir> --repo <path> [--out <dir>] [--helper <path>] [--seed <dir>] [--best-effort]",
+        "usage: --tasks <dir> [--repo <name>=<path>]... [--out <dir>] [--helper <path>] [--seed <dir>] [--best-effort]",
       )
       ffi_os.halt(2)
     }
@@ -99,7 +100,7 @@ fn defaults() -> Options {
 
   Options(
     tasks: "",
-    repo: "",
+    repos: [],
     out: home <> "/evalwt/prove",
     helper: "../sandbox/loom-exec",
     seed: "../../build/codemode-seed",
@@ -115,13 +116,13 @@ fn options(
 ) -> Result(Options, String) {
   case arguments {
     [] ->
-      case so_far.tasks, so_far.repo {
-        "", _ -> Error("--tasks is required")
-        _, "" -> Error("--repo is required")
-        _, _ -> Ok(so_far)
+      case so_far.tasks {
+        "" -> Error("--tasks is required")
+        _ -> Ok(so_far)
       }
     ["--tasks", value, ..rest] -> options(rest, Options(..so_far, tasks: value))
-    ["--repo", value, ..rest] -> options(rest, Options(..so_far, repo: value))
+    ["--repo", value, ..rest] ->
+      options(rest, Options(..so_far, repos: [value, ..so_far.repos]))
     ["--out", value, ..rest] -> options(rest, Options(..so_far, out: value))
     ["--helper", value, ..rest] ->
       options(rest, Options(..so_far, helper: value))
@@ -135,7 +136,8 @@ fn options(
 /// Opens the jail, proves every task file, writes the lines and the summary.
 fn run(options: Options) -> Result(String, String) {
   use out <- result.try(absolute(options.out))
-  use repo <- result.try(absolute(options.repo))
+  use known <- result.try(repos.from_flags(list.reverse(options.repos)))
+  let known = repos.with_default(known, secrets.host_runner())
   use helper <- result.try(absolute(options.helper))
   use seed <- result.try(absolute(options.seed))
   use Nil <- result.try(
@@ -155,7 +157,7 @@ fn run(options: Options) -> Result(String, String) {
     Settings(..base, demand: options.demand),
     out,
   ))
-  let lines = list.map(files, fn(file) { prove_file(file, repo, out, jail) })
+  let lines = list.map(files, fn(file) { prove_file(file, known, out, jail) })
   let _closed = verify.close_jail(jail)
   use Nil <- result.try(append_lines(out <> "/prove.jsonl", lines))
 
@@ -166,14 +168,14 @@ fn run(options: Options) -> Result(String, String) {
 /// loaded or proved becomes a line carrying the reason.
 fn prove_file(
   file: String,
-  repo: String,
+  known: repos.Repos,
   out: String,
   jail: verify.Jail,
 ) -> Line {
   let proved = {
     use loaded <- result.try(task.load(file))
 
-    prove.prove(loaded, repo, out <> "/work", jail, secrets.host_runner())
+    prove.prove(loaded, known, out <> "/work", jail, secrets.host_runner())
     |> result.map_error(fn(reason) { loaded.id <> ": " <> reason })
   }
 
@@ -262,7 +264,7 @@ fn task_files(directory: String) -> Result(List(String), String) {
 }
 
 /// A path as given when absolute, else under the current directory. The
-/// jail root and the repository both reach the helper as absolute paths.
+/// jail root and the helper both reach the helper as absolute paths.
 fn absolute(path: String) -> Result(String, String) {
   case string.starts_with(path, "/") {
     True -> Ok(path)
