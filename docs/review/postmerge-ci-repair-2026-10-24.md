@@ -1,6 +1,6 @@
 # Post-merge CI fixture repairs
 
-Base: main `d70c7d073c96a0afb8d28e676003e6bace147099`. Scope: four test/support
+Base: main `d70c7d073c96a0afb8d28e676003e6bace147099`. Scope: test/support
 files, with no production source, dependency, deadline, skip declaration or
 wire/API change. The new helper is in the existing internal test-only memory
 FFI boundary; there is no new production FFI.
@@ -78,6 +78,38 @@ A fresh independent report-only review found no actionable issue in the four
 changed files, including oracle correctness, capture multiplicity and the
 publication/acknowledgement ordering. It inspected evidence but did not rerun
 the suites and is not hosted-CI signoff. Scoped client lint, LSP full gate,
-formatting and diff checks pass. Full local client validation is running at
-publication; repair-head hosted checks remain pending. These are distinct
-from original failures and from unrelated successful Linux or hard e2e lanes.
+formatting and diff checks pass. Full local client validation subsequently
+completed with exit zero, 5,328 tests passed in 632.12 seconds and 57 visible
+prerequisite skip diagnostics. These skips are not executed coverage.
+
+## Subsequent hosted run and diagnostic
+
+Repair head `8f8e54db2`, run 40147468081, passed hosted Linux checks, including
+both repaired tests, 5,328 client tests, 194 LSP tests, delegated jail and the
+strict Linux census. Hard macOS e2e passed 15 terminal, four bootstrap, 112 e2e
+and 441 code-mode tests; its terminal census was clean.
+
+MacOS advisory shard 1, artifact 12582901342, failed
+`client@remote@remote_nodes_test:two_sessions_get_a_tree_each_on_a_worktree_workspace_across_nodes_test`:
+2,431 client tests passed and one failed. Both earlier repaired tests passed.
+The scenario returned child exit two, a caught child exception. Both uploaded
+logs truncate the nested error, and no child dump exists in the artifacts;
+there is no established root cause. The module took 21 seconds, and the child
+watchdog uses a distinct exit status, so increasing that deadline is unsupported.
+Shard 2, artifact 12582912242, completed the whole check. The macOS strict census
+was skipped, and shard 1 did not reach its downstream conformance, TUI or lint
+checks. The run is an actual failure despite its normalized success badges.
+
+Thirty fresh direct scenarios pass, followed by all five scenarios in the
+original EUnit module order. The fixture, support, distribution fixture FFI and
+workspace package are byte-identical to pre-#1110 base `3e258a2f3`; relevant
+worktree lifecycle executable lines are unchanged. This is positive local
+non-reproduction evidence, not proof of the underlying cause.
+
+The test-only scenario boundary now prints its existing complete error
+string to stderr before returning that same error. This prevents EUnit's
+bounded term rendering from discarding the child exception on another failure.
+No assertion, timeout or skip changes. One bounded fresh hosted attempt is
+warranted after diagnostic validation; another failure requires diagnosis of
+its complete child error before further retries. Original #1110/#1111 raw
+failures and skipped censuses remain part of the record.
