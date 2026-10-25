@@ -45,7 +45,7 @@ The two planes share three things and nothing else:
 
 | Shared | Where it lives | Why shared |
 | --- | --- | --- |
-| One trial recipe | `trial_settings` at `client/serve.gleam:7977` | A trial is the same fresh jailed session on both paths. |
+| One trial recipe | `trial_settings` at `client/serve.gleam:8053` | A trial is the same fresh jailed session on both paths. |
 | One grade type | `rollout.Grade` (reward, named scores, bounded side information, the verifier run) | The exact-file scorer and the jailed program verifier both return it. |
 | One decision rule | `evalstat` (`paired_verdict`, `decide`) | `evolution/rollout.gleam:1041` (`decide`) maps its verdict to the three stored words. |
 
