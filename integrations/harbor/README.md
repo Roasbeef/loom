@@ -51,8 +51,14 @@ long as the container can run a Linux release; see "Isolation" for what the
 environment must allow.
 
 Harbor gives an agent its `-m provider/model`, its `--agent-env KEY=VALUE`
-variables (which take precedence over the host's) and its `--agent-kwarg
-key=value` options. It does **not** tell an agent the task's timeout, so set
+variables and its `--agent-kwarg key=value` options. **Export the model key in
+the host environment; do not pass it with `--agent-env`.** Harbor overlays an
+agent's `--agent-env` onto every command it runs in the container, and its
+Docker environment turns each into `docker compose exec -e KEY=VALUE`, so the
+key would be on the host's process list and in the environment of every
+process. The adapter refuses a key found in `--agent-env` (naming the variable,
+never its value) and still scrubs its value from everything it writes. Other
+`--agent-env` variables (`LOOM_RELEASE` and the like) are fine. It does **not** tell an agent the task's timeout, so set
 `timeout_sec` a minute or two below it. The default is 1800 seconds. (Harbor passes the task's timeout only to its own Oracle agent; a custom agent cannot see it. `loom run` is also wrapped in `timeout -k`, 90 seconds after `timeout_sec`, so a wedged client cannot outlive the exec Harbor is waiting on.)
 
 ### Options
@@ -70,7 +76,7 @@ Every `--agent-kwarg` is validated; an unknown one is refused, and
 | `sums_sha256` | none | Expected SHA-256 of the release's `SHA256SUMS`, obtained out of band. Makes a network install a provenance check. |
 | `server_sha256`, `client_sha256` | none | Expected SHA-256 of each local archive. Without them an offline install says so and verifies nothing but that the files are the files. |
 | `reasoning_effort` | none | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` map to Loom's `thinking` of `off`, `low`, `medium`, `high`. |
-| `endpoint_url` | provider default | The model endpoint root. Required for providers Loom has no built-in address for (`together/...`, `openrouter/...`). Harbor's own `--base-url` is **not** available: it needs a model-connection spec this adapter does not declare, and Harbor refuses it with "does not support inference connection overrides". |
+| `endpoint_url` | provider default | The model endpoint root, `https://`, or `http://` only to a loopback or private address (a local proxy), with no credentials in the URL and no fragment, because the API key is sent there. Required for providers Loom has no built-in address for (`together/...`, `openrouter/...`). Harbor's own `--base-url` is **not** available: it needs a model-connection spec this adapter does not declare, and Harbor refuses it with "does not support inference connection overrides". |
 | `api_key_env` | per provider | Name of the host variable holding the key. |
 | `dialect` | per provider | `anthropic`, `openai`, `openai-responses` or `gemini`. |
 | `openai_api` | `responses` | `chat` makes `openai/...` use the chat-completions dialect. |
@@ -81,7 +87,7 @@ Every `--agent-kwarg` is validated; an unknown one is refused, and
 | `bwrap` | `auto` | `container` jail only. See "Isolation". |
 | `state_dir`, `install_dir` | `~/.loom-harbor`, `/opt/loom-harbor` | Where the daemon keeps its state and where the release is unpacked. |
 
-Environment variables read from `--agent-env` or the host: `LOOM_RELEASE`,
+Non-secret settings read from `--agent-env` or the host: `LOOM_RELEASE`,
 `LOOM_RELEASE_BASE_URL`, `LOOM_SERVER_TARBALL`, `LOOM_CLIENT_TARBALL`. An
 option wins over its variable.
 
@@ -150,9 +156,14 @@ larger window.
 **Run.** The instruction is uploaded as a file (never put on a command line or
 in a log). The run script starts `loomd --state-dir S --config C [--best-effort]`
 from its own state directory and waits until the daemon's endpoint record says
-`"status": "ready"` and is newer than this launch (a record left by an earlier
-daemon, or one still `starting`, does not count; otherwise `loom run` could find
-no daemon, start its own and drop the posture flag). It then runs
+`"status": "ready"` and names this launch's process id (`"pid"`, as
+`host/endpoint` writes it). A record left by an earlier daemon, or one still
+`starting`, does not count; otherwise `loom run` could find no daemon, start its
+own and drop the posture flag. The script never echoes a log's contents to its
+own stderr, which Harbor copies unscrubbed into exception text; the logs arrive
+scrubbed through the fetch described below. Downloads use `curl --proto
+=https,file --proto-redir =https` (`wget --https-only`), and a process that is
+a zombie counts as stopped. It then runs
 `loom run --workspace "$PWD" --timeout T -p "<instruction>"` against it. `loom
 run` prints one JSON line with the session id, the outcome, usage, and the jail
 label, and its exit status is the verdict (`0` completed, `1` failed or aborted,
@@ -184,9 +195,16 @@ machine code (`the run failed: provider_error`). The provider's status and
 words are in the failed assistant message's `errorMessage` in the session
 database, written by `provider/stream.describe_error` ("provider returned http
 429 (rate_limit_error): ..."). The adapter reads that message from the fetched
-database and matches it, then falls back to Harbor's own classifier. A failure
-nothing matches (a 400, a context overflow the compactor could not fix) is a
-result for the verifier, not an error.
+database and matches it, then falls back to Harbor's own classifier. It does so
+only when the report's code is `provider_error` and the **final** assistant
+message is the one that failed: a 429 that was retried and recovered, followed
+by a local failure (`interrupted`), is history, not the cause. A report code of
+`context_overflow`, or a provider message in any wording `provider/retry.
+is_overflow_message` accepts, raises Harbor's `ContextWindowExceededError`;
+throttling text that mentions tokens is a rate limit, as in Loom. A lost drain
+proof ("provider ownership ended without proof of drain") is deliberately not
+a retry, since Loom could not confirm the request stopped. A failure nothing
+matches (a 400, say) is a result for the verifier, not an error.
 
 ## Isolation
 
