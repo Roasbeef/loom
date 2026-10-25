@@ -730,8 +730,14 @@ headline; anything but `Improved` reads "Not confirmed".
   per-trial worst case at `ledger.max_attempts` and the reflection's worst
   case; `design`: the task counts and the `K`s), comparing money with a
   relative tolerance of one part in a billion, since what remains is a sum
-  of ledger charges. A reflection is made only when its worst case is
-  still covered; a skipped one is a zero-dollar reflection row and a
+  of ledger charges, in the two reservation questions only; step
+  admission is strict. A reflection is made only when what remains covers
+  it and every stage after it, the confirm included
+  (`budget.reflection_affordable`, the parent minibatch's hold): under the
+  caps a first reflection always passes, and the check bites a sub-run
+  that ignored its cap and a resumed step whose first reflection was
+  charged before the crash, which would otherwise reflect again into the
+  confirm's reservation (`a_resumed_reflection_is_held_to_the_whole_step`); a skipped one is a zero-dollar reflection row and a
   `refused` row naming the budget, so the fold still reads the step. A
   confirm run the budget no longer covers is `Unaffordable` (an ADT, not a
   matched string) and the headline reads "Not confirmed (budget)", distinct
@@ -741,6 +747,28 @@ headline; anything but `Improved` reads "Not confirmed".
   shown apart as `trials_priced_not_paid`.
   `--max-dollars` is required on every lane, and a reflector whose
   provider has no rate card is refused.
+- **One arm prices a step.** `costs(ctx, arm)` is `trial.worst_case` at
+  `ledger.max_attempts`, and `trial.worst_case` reads the arm's gateway
+  target, never its text; a child is `arm.mint` of its parent with one
+  slot's text replaced, so every arm of a search prices as the seed, and
+  the confirm run priced at the seed's cell is the same hold the step's
+  stages priced at the parent's. A knob that varied per child would break
+  this, and `admit_child` is where it would be refused.
+- **The adapter needs `arms/`.** `search.replay(events, store)` reads an
+  arm's components through the store so the library can hold each
+  candidate as a component map; `optimize` hands it `arms/<id>.json`, and
+  a log replayed without its arm files cannot be folded. The Loom fold is
+  `gepa.replay`, not `gepa.replay_checked`: Loom's rows did not come from
+  `gepa.next` (the driver orders its own effects), so the request check
+  does not apply, and the adapter restores what the old fold enforced
+  beyond the library's rules — a run's split must match its role and a
+  candidate after the seed must be reflected into a slot.
+- **The prompt's wording is the library's.** `gepa/prompt.render` opens
+  with "one text slot of a program's configuration", labels a record's
+  reward `score:`, and names the frame tokens in its preface, so a
+  rendered prompt holds three frames before the first record; Loom's
+  records keep their `outcome`, `prompt` and `verifier` fields as the
+  record's named fields.
 - **The reflector is an entry name, pinned once.** `reflect.resolve` turns
   it into a `ForResolved` target with no fallback, thinking off; the call is
   `auxiliary.capped_gateway_summarizer` with no tools and no system text;

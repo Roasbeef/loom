@@ -42,8 +42,12 @@ Two packages and a change to the governed plane.
   acceptance rule inside it. `eval/search` is now the adapter (Loom's rows
   and JSON codec unchanged on disk), `eval/reflect` builds Loom's records
   over `gepa/prompt`, and `eval/optimize` keeps the effectful driver and
-  asks the library for every decision. Its README is written for an
-  embedder; the module doc of `gepa` names where N-proposal reflection,
+  asks the library for every decision. An embedder resumes with
+  `gepa.replay_checked`, which holds every row to the request `next` made
+  before it; the log is printable ASCII by code point so both targets
+  write and read the same line, and `scripts/check.sh` now runs gepa's and
+  evalstat's suites on JavaScript too. Its README's host loop is a compiled
+  test; the module doc of `gepa` names where N-proposal reflection,
   further dispositions, a richer reply and merge lineage would go.
 - The governed `evolution.compare` now decides with evalstat over the
   plan's rows, and takes K samples. The door's turn ceiling is 100 and its

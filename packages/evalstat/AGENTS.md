@@ -16,7 +16,9 @@ Portable by rule. No `@external`, no `gleam_erlang`/`gleam_otp`, no
 as `core`, `machine`, `prompt`, `session_view` and `statem`
 (`lint/policy.portable_packages`). Randomness comes from a seeded PRNG in
 pure Gleam, never from the runtime, and the test suite runs on both
-targets (`gleam test --target erlang`, `gleam test --target javascript`).
+targets (`gleam test --target erlang`, `gleam test --target javascript`),
+which `scripts/check.sh` holds it to through `scripts/portable_js_test.sh`
+after the Erlang suite.
 
 ## Modules, in reading order
 
