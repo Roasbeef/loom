@@ -11,7 +11,7 @@ packages = [
   { name = "aten", version = "0.6.0", build_tools = ["rebar3"], requirements = [], otp_app = "aten", source = "hex", outer_checksum = "5F39A164206AE3F211EF5880B1F7819415686436E3229D30B6A058564FBAA168" },
   { name = "bigi", version = "4.1.1", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "bigi", source = "hex", outer_checksum = "44FEDF1DF5C1F426A80B67C32B976D0828D66524E11BDC2DD22B78D37C883BA7" },
   { name = "broker", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "envoy", "gleam_erlang", "gleam_otp", "gleam_stdlib", "telemetry", "weft"], source = "local", path = "../broker" },
-  { name = "client", version = "0.3.2", build_tools = ["gleam"], requirements = ["argv", "broker", "codemode", "core", "events", "filepath", "gleam_crypto", "gleam_erlang", "gleam_http", "gleam_json", "gleam_mcp", "gleam_otp", "gleam_regexp", "gleam_stdlib", "gleam_time", "gose", "harness", "host", "khepri", "lsp", "lustre", "machine", "mcp", "mist", "prompt", "provider", "runtime", "session", "session_view", "simplifile", "storage", "telemetry", "tom", "tools", "web_view", "weft"], source = "local", path = "../client" },
+  { name = "client", version = "0.3.2", build_tools = ["gleam"], requirements = ["argv", "broker", "codemode", "core", "evalstat", "events", "filepath", "gleam_crypto", "gleam_erlang", "gleam_http", "gleam_json", "gleam_mcp", "gleam_otp", "gleam_regexp", "gleam_stdlib", "gleam_time", "gose", "harness", "host", "khepri", "lsp", "lustre", "machine", "mcp", "mist", "prompt", "provider", "runtime", "session", "session_view", "simplifile", "storage", "telemetry", "tom", "tools", "web_view", "weft"], source = "local", path = "../client" },
   { name = "codemode", version = "0.2.0", build_tools = ["gleam"], requirements = ["broker", "core", "filepath", "glance", "gleam_erlang", "gleam_otp", "gleam_stdlib", "glexer", "lsp", "simplifile", "tom", "tools", "weft"], source = "local", path = "../codemode" },
   { name = "core", version = "0.2.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], source = "local", path = "../core" },
   { name = "cowlib", version = "2.21.0", build_tools = ["make", "rebar3"], requirements = [], otp_app = "cowlib", source = "hex", outer_checksum = "0960248773762A5319B3C17285028BC76F54F58EF0F9451367401BDF67B46274" },
@@ -81,6 +81,7 @@ packages = [
 
 [requirements]
 argv = { version = ">= 1.1.0 and < 2.0.0" }
+broker = { path = "../broker" }
 client = { path = "../client" }
 core = { path = "../core" }
 evalstat = { path = "../evalstat" }
@@ -88,6 +89,8 @@ gleam_erlang = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_otp = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_stdlib = { version = ">= 1.0.0 and < 2.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
+host = { path = "../host" }
+machine = { path = "../machine" }
 prompt = { path = "../prompt" }
 provider = { path = "../provider" }
 qcheck = { version = ">= 1.0.5 and < 2.0.0" }
@@ -95,5 +98,6 @@ runtime = { path = "../runtime" }
 session = { path = "../session" }
 simplifile = { version = ">= 2.0.0 and < 3.0.0" }
 storage = { path = "../storage" }
+telemetry = { path = "../telemetry" }
 tools = { path = "../tools" }
 weft = { version = "== 0.4.6" }
