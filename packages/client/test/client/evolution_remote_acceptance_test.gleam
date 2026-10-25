@@ -149,7 +149,7 @@ fn fixed_executor(pair: Pair, seed: String) -> Nil {
   let requests =
     session(pair, seed, script, "e2e-evolution", fn(opened) {
       turn(opened, "author version 1", [first_answer])
-      operate(opened, authored(receipts), 0, "activate-v1")
+      operate(opened, authored(receipts), 0, "activate-v1", AfterStaging)
       turn(opened, "invoke version 1", [first_answer, invoked_answer])
       assert_staged_on_executor(pair, opened.session)
       remote_pair.stop_and_close(pair, opened, 1)
@@ -177,7 +177,7 @@ fn program_candidate(pair: Pair, seed: String) -> Nil {
   let requests =
     session(pair, seed, script, "e2e-program", fn(opened) {
       turn(opened, "author program", ["program evidence retained"])
-      operate(opened, authored(receipts), 0, "activate-program")
+      operate(opened, authored(receipts), 0, "activate-program", InTheReply)
       turn(opened, "invoke program", [
         "program evidence retained",
         "program invocation verified",
@@ -306,7 +306,7 @@ fn executor_restart(pair: Pair, seed: String) -> Nil {
   let requests =
     session(pair, seed, script, "e2e-evolution-restart", fn(opened) {
       turn(opened, "author version 1", [first_answer])
-      operate(opened, authored(receipts), 0, "activate-v1")
+      operate(opened, authored(receipts), 0, "activate-v1", AfterStaging)
       turn(opened, "invoke version 1", [first_answer, invoked_answer])
       remote_pair.stop_and_close(pair, opened, 1)
 
@@ -413,6 +413,17 @@ fn authored(
 
 // --- the owner's side ----------------------------------------------------------
 
+/// How the owner's selection commits.
+type Commit {
+  /// An extension is staged on the executor first, outside the command's
+  /// reply window, so the receipt is `queued` and the commit is polled for.
+  AfterStaging
+
+  /// A program is not staged: each run builds its own plane, so the selection
+  /// commits in the reply.
+  InTheReply
+}
+
 // Reads the evidence, approves it and selects the candidate at
 // `expected` generation, then waits for the commit.
 //
@@ -424,6 +435,7 @@ fn operate(
   authored: acceptance.Authored,
   expected: Int,
   request_id: String,
+  commit: Commit,
 ) -> Nil {
   let socket = verify_evidence(remote_pair.session_socket(opened), authored)
   let #(_approved, socket) =
@@ -448,10 +460,19 @@ fn operate(
         #("reason", json.String("remote acceptance fixture")),
       ]),
     )
-  assert acceptance.field(receipt, "state") == json.String("queued")
-  let _socket =
-    await_committed(socket, request_id, authored.candidate_id, expected + 1)
-  Nil
+  case commit {
+    AfterStaging -> {
+      assert acceptance.field(receipt, "state") == json.String("queued")
+      let _socket =
+        await_committed(socket, request_id, authored.candidate_id, expected + 1)
+      Nil
+    }
+    InTheReply -> {
+      assert acceptance.field(receipt, "candidate_id")
+        == json.String(authored.candidate_id)
+      assert acceptance.field(receipt, "generation") == json.Int(expected + 1)
+    }
+  }
 }
 
 // The stored evidence is the envelope the model's program returned, and it
