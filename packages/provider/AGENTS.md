@@ -164,7 +164,8 @@ not split the batch. These are transient wire projections.
   identity). `ForRole.thinking` is the caller's reasoning-budget
   overlay (`protocol-change/009`): `None` leaves each walked entry's own
   declared level in force, `Some(level)` applies that level to **every**
-  target the walk attempts.
+  target the walk attempts. Responses encodes xhigh and max verbatim; the
+  other adapters map both to their existing high setting.
 - `provider/stream.StreamHandle` — the consumption contract WP-E relies
   on: zero or more `Delta` events, then exactly one terminal `Settled` or
   `Failed`, and nothing after it. Its cancel capability signals the one

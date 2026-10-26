@@ -66,9 +66,9 @@
 ////   residual cost is stated and accepted in `protocol-change/009` — a
 ////   deferred handle settled by a *fallback* target fails ORCH-L4 and
 ////   drains as failure — and nothing settles `Deferred` today.
-//// - **Thinking levels.** The machine's seven-point scale collapses onto
-////   the provider's four-point scale: off→off, minimal/low→low,
-////   medium→medium, high/xhigh/max→high. The strand's per-turn level is
+//// - **Thinking levels.** Minimal and low map to provider low; the other
+////   levels retain their identity:
+////   medium→medium, high→high, xhigh→xhigh, max→max. The strand's per-turn level is
 ////   carried onto the dispatch target on every generation path, as an
 ////   overlay onto every target a role walk attempts, so neither a
 ////   route's static configuration nor a fallback entry's can override
@@ -1046,13 +1046,12 @@ pub fn resolved_target(
   routing.resolved_target(provider_routing(config), configuration)
 }
 
-/// Collapses the machine's seven-point thinking scale onto the
-/// provider's four-point scale.
+/// Maps machine thinking levels to provider levels, with minimal mapped to low.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert wiring.thinking_level(strand.ThinkingMax) == model.ThinkingHigh
+/// assert wiring.thinking_level(strand.ThinkingMax) == model.ThinkingMax
 /// ```
 ///
 pub fn thinking_level(level: strand.ThinkingLevel) -> model.ThinkingLevel {

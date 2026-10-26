@@ -1924,6 +1924,26 @@ fn field_of(
 
 // Switching model is not a request to un-raise a reasoning budget
 // somebody deliberately raised. A client that wants both sends both keys.
+pub fn set_config_extended_thinking_levels_test() {
+  let harness = start_harness_with(catalog: Some(test_catalog()))
+  subscribe(harness)
+  list.each([#(80, "xhigh"), #(81, "max")], fn(pair) {
+    send(
+      harness,
+      pair.0,
+      protocol.SetConfig(
+        strand: Some("main"),
+        config: json.Object([#("thinking_level", json.String(pair.1))]),
+      ),
+    )
+    let envelope = next(harness)
+    assert envelope.reply_to == Some(pair.0)
+    let assert protocol.SnapshotEvent(protocol.ConfigSnapshot(config:)) =
+      envelope.event
+    assert field_of(config, "thinking_level") == Ok(json.String(pair.1))
+  })
+}
+
 pub fn set_config_model_name_leaves_thinking_level_alone_test() {
   let harness = start_harness_with(catalog: Some(test_catalog()))
   subscribe(harness)

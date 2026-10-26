@@ -258,6 +258,10 @@ pub fn resolve(gw, role: Role) -> Result(ResolvedModel, MissingIdentity)
 // Role = Main | Subagent | Plan | Summarize | Vision | Custom(String)
 ```
 
+[Protocol 100](../protocol-change/100-extended-thinking-levels.md) extends
+the provider thinking vocabulary with `xhigh` and `max`. Responses preserves
+these levels; other adapters map them to their existing high setting.
+
 [Protocol 081](../protocol-change/081-request-usage-accounting.md) separates
 request accounting from final-response usage. Terminal reports retain every
 attempt's measured usage and uncertainty, priced under its actual target.

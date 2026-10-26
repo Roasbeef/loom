@@ -109,6 +109,8 @@ pub fn thinking_levels_and_request_overrides_test() {
       #(model.ThinkingLow, Some("low")),
       #(model.ThinkingMedium, Some("medium")),
       #(model.ThinkingHigh, Some("high")),
+      #(model.ThinkingXHigh, Some("xhigh")),
+      #(model.ThinkingMax, Some("max")),
     ],
     fn(pair) {
       let resolved = model.ResolvedModel(..target(), thinking: pair.0)

@@ -139,7 +139,7 @@ selected adapter's authentication boundary. See
 | `model_id` | string | required | non-empty | The identifier the provider expects in the request body, verbatim. |
 | `context_window` | integer | required | positive | Tokens of context the model accepts. Drives overflow detection, so use the provider's figure. |
 | `max_output_tokens` | integer | required | positive | The default per-turn output ceiling. |
-| `thinking` | string | `off` | `off`, `low`, `medium`, `high`, `unsupported` | The reasoning level requests ask for. `unsupported` is a synonym for `off` for models with no reasoning mode; neither sends a reasoning field. |
+| `thinking` | string | `off` | `off`, `low`, `medium`, `high`, `xhigh`, `max`, `unsupported` | The reasoning level requests ask for. `unsupported` is a synonym for `off` for models with no reasoning mode; neither sends a reasoning field. |
 | `vision` | boolean | the known model default | `true`, `false` | Whether the endpoint reads image blocks. The default is `false` for `GLM-5.3` (`zai-org/GLM-5.3`) and `true` for every other model id, including `GLM-5.3-Flash`. An image-bearing run on a text-only entry uses the `vision` role or is refused. |
 | `max_images` | integer | `8` | positive | The most image blocks in one provider request, history included. The oldest historical images become placeholders to fit; stored images are never deleted. Each fallback entry uses its own limit. |
 | `pricing` | table | unpriced | see below | Turns the usage ledger's cost columns from zeros into amounts. |

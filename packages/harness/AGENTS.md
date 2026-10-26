@@ -44,7 +44,8 @@ placement across machines and the holder process.
   usable chain, `ForResolved` otherwise; `resolved_target` is always the
   latter; `vision_route` is the vision chain's target; `resolution` asks the
   gateway about a role; `thinking_level` and `strand_thinking_level` are the
-  two directions of the thinking map.
+  two directions of the thinking map. Minimal maps to provider low; the
+  other strand levels, including xhigh and max, retain their identity.
 - `harness/model_facts` — `ImageReading`, `Known`, `Lookup`, `Fallback`,
   `ModelFacts`, and `of_identity`, `of_strand`, `strand_window`.
 - `harness/admission` — `admit` (the pre-request decision, including the
