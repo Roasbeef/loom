@@ -69,6 +69,32 @@ pub fn connect(
   |> result.map_error(admission_notice)
 }
 
+/// Opens a session socket whose events are filed into a shared inbox, each
+/// wrapped by `tag`.
+///
+/// A host that drives several sockets from one loop, `loom acp` with its
+/// several sessions and its standard input, needs one inbox to wait on and a
+/// way to tell which socket spoke. `tag` runs in the socket's reader and
+/// names the source, so the loop reads a single subject in arrival order and
+/// no selector is rebuilt as sessions come and go.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // connection.connect_tagged(address, token, inbox, Socket(session, _))
+/// ```
+pub fn connect_tagged(
+  address: String,
+  token: String,
+  inbox: Subject(event),
+  tag: fn(Message) -> event,
+) -> Result(Connection, String) {
+  websocket.connect_mapped(address, token, inbox, fn(raw) {
+    tag(terminal_event(raw))
+  })
+  |> result.map_error(admission_notice)
+}
+
 /// Translates websocket upgrade failures into user-facing connection diagnostics.
 fn admission_notice(reason: String) -> String {
   case reason {

@@ -607,7 +607,15 @@ pub fn conduct(request: Request) -> Conduct {
 /// The daemon is reached the way `loom sessions` reaches it: the shared
 /// discovery and launch ladder, then the owner credential from the state
 /// root. Any failure here means no usable daemon, so the caller exits `3`.
-fn reach_daemon(
+/// `loom acp` reaches the daemon through the same function, so both headless
+/// clients authenticate and launch identically.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(#(host, state_root)) = run.reach_daemon(options)
+/// ```
+pub fn reach_daemon(
   options: bootstrap.Options,
 ) -> Result(#(selection.Host, String), String) {
   use connected <- result.try(bootstrap.resolve_daemon(
@@ -1009,7 +1017,14 @@ fn retire(retention: Retention, host: selection.Host, session: String) -> Nil {
 ///
 /// One stop request, then reads of the registration until the daemon reports
 /// it saved: the daemon's own proof that ordered cleanup released the slot.
-fn stop(host: selection.Host, session: String) -> Result(Nil, String) {
+/// `loom acp` retires the sessions it created the same way.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(Nil) = run.stop(host, session_id)
+/// ```
+pub fn stop(host: selection.Host, session: String) -> Result(Nil, String) {
   use host <- selection.with_live_control(host)
   let request = fn(command, within) {
     daemon.request(selection.control(host), command, within)
