@@ -777,66 +777,61 @@ fn answers(
   use request <- result.try(next(state, config))
 
   // Each request admits the rows that answer it, and no other.
-  {
-    case request, event {
-      Record(wanted), got ->
-        require(
-          wanted == got,
-          "the search did not decide this row: it recorded "
-            <> describe(Record(wanted)),
-        )
+  let admitted = case request, event {
+    Record(wanted), got ->
+      require(
+        wanted == got,
+        "the search did not decide this row: it recorded "
+          <> describe(Record(wanted)),
+      )
 
-      Evaluate(stage:, step:, candidate:, tasks:, cap:, ..),
-        Evaluated(
-          stage: got_stage,
-          step: got_step,
-          candidate: got_candidate,
-          tasks: got_tasks,
-          cap: got_cap,
-          cost:,
-          ..,
-        )
-      -> {
-        use Nil <- result.try(require(
-          stage == got_stage
-            && step == got_step
-            && candidate == got_candidate
-            && tasks == got_tasks
-            && cap == got_cap,
-          "the evaluation is not the one asked for: " <> describe(request),
-        ))
+    Evaluate(stage:, step:, candidate:, tasks:, cap:, ..),
+      Evaluated(
+        stage: got_stage,
+        step: got_step,
+        candidate: got_candidate,
+        tasks: got_tasks,
+        cap: got_cap,
+        cost:,
+        ..,
+      )
+    -> {
+      use Nil <- result.try(require(
+        stage == got_stage
+          && step == got_step
+          && candidate == got_candidate
+          && tasks == got_tasks
+          && cap == got_cap,
+        "the evaluation is not the one asked for: " <> describe(request),
+      ))
 
-        require(cost <=. cap, "an evaluation spent past its cap")
-      }
-
-      Evaluate(stage: ChildMinibatch, step:, candidate:, ..),
-        Refused(step: got_step, candidate: Some(got_candidate), ..)
-      ->
-        require(
-          step == got_step && candidate == got_candidate,
-          "a refused child is the one whose minibatch was asked for",
-        )
-
-      Reflect(step:, proposal:, of:, worst_case:, ..),
-        Reflected(step: got_step, cost:, proposal: got_proposal, of: got_of, ..)
-      -> {
-        use Nil <- result.try(require(
-          step == got_step && proposal == got_proposal && of == got_of,
-          "the reflection is not the one asked for",
-        ))
-
-        require(
-          cost <=. worst_case,
-          "a reflection cost more than its worst case",
-        )
-      }
-
-      Done, _ -> Error("a row follows the stop row")
-      _, _ ->
-        Error("the row does not answer the request: " <> describe(request))
+      require(cost <=. cap, "an evaluation spent past its cap")
     }
+
+    Evaluate(stage: ChildMinibatch, step:, candidate:, ..),
+      Refused(step: got_step, candidate: Some(got_candidate), ..)
+    ->
+      require(
+        step == got_step && candidate == got_candidate,
+        "a refused child is the one whose minibatch was asked for",
+      )
+
+    Reflect(step:, proposal:, of:, worst_case:, ..),
+      Reflected(step: got_step, cost:, proposal: got_proposal, of: got_of, ..)
+    -> {
+      use Nil <- result.try(require(
+        step == got_step && proposal == got_proposal && of == got_of,
+        "the reflection is not the one asked for",
+      ))
+
+      require(cost <=. worst_case, "a reflection cost more than its worst case")
+    }
+
+    Done, _ -> Error("a row follows the stop row")
+    _, _ -> Error("the row does not answer the request: " <> describe(request))
   }
-  |> result.replace(request)
+
+  result.replace(admitted, request)
 }
 
 /// A request in a sentence, for a refusal.
