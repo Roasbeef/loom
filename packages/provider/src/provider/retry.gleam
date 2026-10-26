@@ -26,6 +26,9 @@ pub type RetryClass {
   /// Retry may succeed: transient load, rate limit, or transport fault.
   Retryable(backoff_hint_ms: Option(Int))
 
+  /// Retry is limited to this many total generation attempts.
+  RetryableWithin(backoff_hint_ms: Option(Int), max_attempts: Int)
+
   /// Retrying the identical request cannot help.
   Terminal
 }
@@ -111,6 +114,8 @@ pub fn classify(error: ProviderError) -> RetryClass {
         True -> Retryable(backoff_hint_ms: None)
         False -> Terminal
       }
+    stream.RecoverableStreamCorruption(_) ->
+      RetryableWithin(backoff_hint_ms: None, max_attempts: 3)
     MalformedStream(report: _) -> Terminal
     UnmappedStopReason(raw: _) -> Terminal
     NoIdentity(role: _) -> Terminal

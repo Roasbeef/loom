@@ -70,8 +70,11 @@ The entry fields:
 - `context_window` and `max_output_tokens` are positive token counts.
   Adapter-computed overflow compares against the window, so an invented
   figure here produces a wrong overflow verdict later.
-- `thinking` accepts `off`, `low`, `medium`, `high`, or `unsupported`.
-  `unsupported` means the model has no reasoning mode; it maps to `off`,
+- `thinking` accepts `off`, `low`, `medium`, `high`, `xhigh`, `max`, or
+  `unsupported`. Responses sends `xhigh` and `max` as requested; the other
+  adapters map them to their existing `high` setting. Model support remains
+  provider-specific. `unsupported` means the model has no reasoning mode;
+  it maps to `off`,
   which sends no reasoning field at all. A Gemini 3 model cannot stop
   reasoning, so for it `off` means the model reasons at its own default and
   shows none of the reasoning.

@@ -1472,6 +1472,50 @@ fn mixed_accounting_gateway(
   |> gateway.with_attempt_timeout(2000)
 }
 
+pub fn recoverable_corruption_does_not_walk_fallback_test() {
+  let requests = process.new_subject()
+  let body =
+    sse_event(
+      "response.created",
+      "{\"type\":\"response.created\",\"response\":{\"id\":\"r\",\"model\":\"model-a\",\"status\":\"in_progress\",\"output\":[]}}",
+    )
+    <> sse_event(
+      "response.output_item.added",
+      "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"i\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}",
+    )
+    <> sse_event(
+      "response.content_part.added",
+      "{\"type\":\"response.content_part.added\",\"item_id\":\"i\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]}}",
+    )
+    <> sse_event(
+      "response.output_item.done",
+      "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"i\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]}]}}",
+    )
+  let public =
+    fixture.routing_transport(fn(sent) {
+      process.send(requests, sent.url)
+      fixture.ok_response(body)
+    })
+  let bridge =
+    gateway.CodexTransport(prepare_streaming: fn(profile, sent, events) {
+      process.send(requests, profile <> sent.url)
+      let http.Transport(prepare_streaming:) =
+        fixture.transport(fixture.ok_response(measured_success_transcript()))
+      prepare_streaming(sent, events)
+    })
+  let handle =
+    gateway.request(mixed_accounting_gateway(public, bridge), main_request())
+  let assert Ok(#(_, stream.Failed(error, report))) =
+    stream.await_terminal(handle, within: 2000)
+    as "The bounded failure must be forwarded."
+  let assert stream.RecoverableStreamCorruption(_) =
+    stream.underlying_error(error)
+  assert accounting.attempts(report) == 1
+  assert process.receive(requests, within: 0)
+    == Ok("https://primary.test/v1/responses")
+  assert process.receive(requests, within: 0) == Error(Nil)
+}
+
 pub fn fallback_retains_each_actual_target_price_and_final_context_usage_test() {
   let requests = process.new_subject()
   let public =

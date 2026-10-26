@@ -45,7 +45,7 @@ const off_route = ModelIdentity(provider: "acme", model_id: "elsewhere")
 
 pub fn an_identity_heading_the_main_chain_dispatches_by_role_test() {
   assert routing.request_target(routes(), strand_on(on_route, ThinkingXHigh))
-    == model.ForRole(role: model.Main, thinking: Some(model.ThinkingHigh))
+    == model.ForRole(role: model.Main, thinking: Some(model.ThinkingXHigh))
 }
 
 pub fn an_identity_no_role_heads_dispatches_to_exactly_that_identity_test() {
@@ -118,15 +118,13 @@ pub fn resolution_reports_an_unrouted_role_in_band_test() {
   assert error.code == "model_unavailable"
 }
 
-pub fn the_seven_point_scale_collapses_and_lifts_consistently_test() {
-  assert routing.thinking_level(ThinkingMax) == model.ThinkingHigh
+pub fn provider_levels_round_trip_through_strand_test() {
+  assert routing.thinking_level(ThinkingMax) == model.ThinkingMax
   assert routing.thinking_level(strand.ThinkingMinimal) == model.ThinkingLow
   // Lifting a provider level and collapsing it again changes nothing.
   assert [
-      model.ThinkingOff,
-      model.ThinkingLow,
-      model.ThinkingMedium,
-      model.ThinkingHigh,
+      model.ThinkingOff, model.ThinkingLow, model.ThinkingMedium,
+      model.ThinkingHigh, model.ThinkingXHigh, model.ThinkingMax,
     ]
     |> list_all_round_trip
 }

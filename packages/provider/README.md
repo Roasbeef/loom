@@ -529,6 +529,12 @@ cover their modules directly.
   label every adapter projects onto a user turn), and
   [028](../../protocol-change/028-provider-failure-context.md)
   (`ProviderError.WithContext`).
+
+A Responses item closed with an unclosed streamed part yields
+`RecoverableStreamCorruption`, classified as `RetryableWithin` three total
+generation attempts. The gateway forwards it without fallback; all other
+malformed witnesses remain terminal. Its diagnostic contains only allowlisted
+structural labels, closure state and counts, never provider content or IDs.
 - "From WP-F" in [`docs/spec-gaps.md`](../../docs/spec-gaps.md) records
   where the implementation refined the spec, including the quantified
   "negligible output" and the deferred keychain backends.

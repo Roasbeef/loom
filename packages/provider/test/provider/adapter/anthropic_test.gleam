@@ -19,6 +19,28 @@ fn resolved() -> model.ResolvedModel {
   fixture.resolved(provider: "anthropic", model_id: "claude-sonnet-4-5")
 }
 
+pub fn extended_levels_use_high_request_test() {
+  let high = model.ResolvedModel(..resolved(), thinking: model.ThinkingHigh)
+  let request = fixture.request_for(high)
+  let expected =
+    anthropic.build_request(
+      base_url: "https://example.com",
+      api_key: "key",
+      resolved: high,
+      request: request,
+    )
+  list.each([model.ThinkingXHigh, model.ThinkingMax], fn(level) {
+    let target = model.ResolvedModel(..high, thinking: level)
+    assert anthropic.build_request(
+        base_url: "https://example.com",
+        api_key: "key",
+        resolved: target,
+        request: request,
+      )
+      == expected
+  })
+}
+
 fn machine() -> stream.ResponseMachine(anthropic.Accumulator) {
   anthropic.response_machine(resolved(), now: 1_700_000_000_000)
 }

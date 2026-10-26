@@ -63,7 +63,7 @@
 //// model_id = "provider-model-id"
 //// context_window = 200000
 //// max_output_tokens = 32000
-//// thinking = "off"                   # off|low|medium|high|unsupported
+//// thinking = "off"                   # off|low|medium|high|xhigh|max|unsupported
 //// vision = false                     # optional override; GLM-5.3 defaults to false
 //// max_images = 8                     # positive request-wide image limit
 ////
@@ -1268,10 +1268,12 @@ fn parse_thinking(
     "low" -> Ok(model.ThinkingLow)
     "medium" -> Ok(model.ThinkingMedium)
     "high" -> Ok(model.ThinkingHigh)
+    "xhigh" -> Ok(model.ThinkingXHigh)
+    "max" -> Ok(model.ThinkingMax)
     other ->
       Error(
         place
-        <> ".thinking must be off, low, medium, high, or unsupported, got \""
+        <> ".thinking must be off, low, medium, high, xhigh, max, or unsupported, got \""
         <> other
         <> "\"",
       )

@@ -3225,9 +3225,9 @@ catalogue without opening runtimes. Explicit admission invokes
   any) a captured identity is on and therefore whether the dispatch walks
   a chain, the `ForResolved`-only target every deferred poll and every
   off-route generation takes, and the two directions of the map between
-  the machine's seven-point thinking scale and the provider's four-point
-  one — `thinking_level` collapsing for a dispatch, `strand_thinking_level`
-  lifting an entry's declared level to seed a strand.
+  the machine's seven-point thinking scale and the provider's six-point
+  one — `thinking_level` maps minimal to low and preserves the other levels;
+  `strand_thinking_level` lifts an entry's declared level to seed a strand.
 - `client/wiring.{Config, build_effects}` — the production effect seam:
   a `runtime/effects.Effects` over the real provider gateway, broker,
   and tool registry (promoted from `conformance/wiring`; spec-gaps M2

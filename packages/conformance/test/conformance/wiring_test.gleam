@@ -220,12 +220,12 @@ pub fn request_target_walks_the_role_when_on_route_test() {
   // The captured identity heads `main`'s chain, so the dispatch is
   // `ForRole` and the gateway walks that chain within the attempt — a
   // rate-limited head costs a fallback, not the machine's retry ladder.
-  // The overlay is the strand's per-turn level (here ThinkingMax →
-  // ThinkingHigh), never the route's static configuration.
+  // The overlay is the strand's per-turn ThinkingMax, never the route's
+  // static configuration.
   let target =
     wiring.request_target(wide_config(), configuration_for("acme", "loom-1"))
   assert target
-    == model.ForRole(role: model.Main, thinking: Some(model.ThinkingHigh))
+    == model.ForRole(role: model.Main, thinking: Some(model.ThinkingMax))
 }
 
 pub fn request_target_carries_per_turn_thinking_level_test() {
@@ -271,7 +271,7 @@ pub fn request_target_off_route_keeps_captured_identity_test() {
     == model.ForResolved(resolved: model.ResolvedModel(
       provider: "acme",
       model_id: "loom-0",
-      thinking: model.ThinkingHigh,
+      thinking: model.ThinkingMax,
       context_window: off_route_context_window,
       max_output_tokens: off_route_max_output_tokens,
     ))
@@ -367,14 +367,14 @@ pub fn admission_reads_the_switched_strands_own_entry_test() {
   ) = admitted(configuration_for("ghost", "phantom"))
 }
 
-pub fn thinking_level_collapses_onto_provider_scale_test() {
+pub fn thinking_level_preserves_provider_scale_test() {
   assert wiring.thinking_level(strand.ThinkingOff) == model.ThinkingOff
   assert wiring.thinking_level(strand.ThinkingMinimal) == model.ThinkingLow
   assert wiring.thinking_level(strand.ThinkingLow) == model.ThinkingLow
   assert wiring.thinking_level(strand.ThinkingMedium) == model.ThinkingMedium
   assert wiring.thinking_level(strand.ThinkingHigh) == model.ThinkingHigh
-  assert wiring.thinking_level(strand.ThinkingXHigh) == model.ThinkingHigh
-  assert wiring.thinking_level(strand.ThinkingMax) == model.ThinkingHigh
+  assert wiring.thinking_level(strand.ThinkingXHigh) == model.ThinkingXHigh
+  assert wiring.thinking_level(strand.ThinkingMax) == model.ThinkingMax
 }
 
 pub fn provider_request_field_mapping_test() {
@@ -387,7 +387,7 @@ pub fn provider_request_field_mapping_test() {
   assert request.system == Some("unit-test system prompt")
   assert request.max_output_tokens == None
   assert request.target
-    == model.ForRole(role: model.Main, thinking: Some(model.ThinkingHigh))
+    == model.ForRole(role: model.Main, thinking: Some(model.ThinkingMax))
   // Active names are rendered from the registry; the unregistered
   // "ghost" is omitted.
   assert list.map(request.tools, fn(spec) { spec.name }) == ["bash", "fs_read"]

@@ -118,6 +118,13 @@ pub fn scrub_error(
         expected: scrub_message(report.expected, secret),
         context: scrub_message(report.context, secret),
       ))
+    stream.RecoverableStreamCorruption(report:) ->
+      stream.RecoverableStreamCorruption(report: corruption.report(
+        at: scrub_label(report.boundary, secret),
+        on: scrub_label(report.subject, secret),
+        expected: scrub_message(report.expected, secret),
+        context: scrub_message(report.context, secret),
+      ))
     UnmappedStopReason(raw:) ->
       UnmappedStopReason(raw: scrub_label(raw, secret))
     NoIdentity(role:) -> NoIdentity(role: scrub_label(role, secret))

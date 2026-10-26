@@ -1493,6 +1493,19 @@ fn settle_provider_error(
   let RunPass(in:, ..) = pass
   let AssistantAttempt(context:, number:, response_entry:, usage:, ..) = attempt
 
+  // Narrow the captured policy before testing it; later transport and orphan
+  // failures must inherit this ceiling through the existing durable context.
+  let diagnostics = case message {
+    AssistantMessage(diagnostics:, ..) -> diagnostics
+    _ -> None
+  }
+
+  let context =
+    GenerationContext(
+      ..context,
+      retry: narrow_retry(context.retry, diagnostics),
+    )
+
   // Check whether attempts remain under the retry policy.
   case retryable && operation.attempts_remain(context.retry, after: number) {
     True -> {
@@ -3401,6 +3414,10 @@ fn summary_failed(
 ) -> Action {
   let StructuralTask(in:, ..) = task
 
+  // Summary retries retain the same narrowed policy as assistant retries.
+  let context =
+    SummaryContext(..context, retry: narrow_retry(context.retry, error.details))
+
   // Check whether summary generation retry attempts remain.
   case retryable && operation.attempts_remain(context.retry, after: attempt) {
     True ->
@@ -4582,8 +4599,34 @@ fn settled_retryable(message: AgentMessage) -> Bool {
   }
 }
 
-// The runtime preserves Retry-After in the existing diagnostic field. Old
-// recordings without a hint retain their configured exponential delay.
+/// Narrows the captured budget only for a positive diagnostic ceiling.
+/// Invalid payloads leave it untouched; the durable Bounded codec carries it.
+fn narrow_retry(
+  retry: NormalizedRetryPolicy,
+  diagnostics: Option(JsonValue),
+) -> NormalizedRetryPolicy {
+  // Read the optional ceiling without coercing malformed diagnostic values.
+  let ceiling = case diagnostics {
+    Some(json.Object(fields)) -> list.key_find(fields, "retry_max_attempts")
+    _ -> Error(Nil)
+  }
+
+  // Only a positive integer establishes a ceiling; all other inputs are inert.
+  case ceiling {
+    Ok(json.Int(maximum)) if maximum > 0 -> {
+      // Existing configured ceilings remain stricter than provider recovery.
+      let attempts = case retry.attempts {
+        operation.Unbounded -> operation.Bounded(maximum)
+        operation.Bounded(existing) ->
+          operation.Bounded(int.min(existing, maximum))
+      }
+
+      operation.NormalizedRetryPolicy(..retry, attempts:)
+    }
+    _ -> retry
+  }
+}
+
 /// Computes backoff delay for a settled error message including provider hints.
 fn settled_backoff(
   retry: NormalizedRetryPolicy,

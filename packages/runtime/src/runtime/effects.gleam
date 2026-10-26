@@ -622,6 +622,16 @@ pub fn settle_failure(
       Some(delay) -> [#("retry_after_ms", json.Int(delay))]
       None -> []
     })
+    retry.RetryableWithin(backoff_hint_ms: hint, max_attempts:) -> #(
+      Some("retryable"),
+      [
+        #("retry_max_attempts", json.Int(max_attempts)),
+        ..case hint {
+          Some(delay) -> [#("retry_after_ms", json.Int(delay))]
+          None -> []
+        }
+      ],
+    )
     retry.Terminal -> #(Some("terminal"), [])
   }
 

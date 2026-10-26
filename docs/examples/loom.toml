@@ -35,7 +35,7 @@ model_id = "openai/gpt-oss-120b"
 # output ceiling.
 context_window = 128000
 max_output_tokens = 16000
-# off | low | medium | high | unsupported. "unsupported" is for models
+# off | low | medium | high | xhigh | max | unsupported. "unsupported" is for models
 # with no reasoning mode; like "off" it sends no reasoning field at
 # all. Omitting the key means "off".
 thinking = "unsupported"

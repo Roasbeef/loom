@@ -266,10 +266,16 @@ pub fn thinking_config(
     _, ThinkingOff -> None
     LevelWord, ThinkingLow -> Some(#("thinkingLevel", json.String("LOW")))
     LevelWord, ThinkingMedium -> Some(#("thinkingLevel", json.String("MEDIUM")))
-    LevelWord, ThinkingHigh -> Some(#("thinkingLevel", json.String("HIGH")))
+    LevelWord, ThinkingHigh
+    | LevelWord, model.ThinkingXHigh
+    | LevelWord, model.ThinkingMax
+    -> Some(#("thinkingLevel", json.String("HIGH")))
     TokenBudget, ThinkingLow -> Some(#("thinkingBudget", json.Int(2048)))
     TokenBudget, ThinkingMedium -> Some(#("thinkingBudget", json.Int(8192)))
-    TokenBudget, ThinkingHigh -> Some(#("thinkingBudget", json.Int(24_576)))
+    TokenBudget, ThinkingHigh
+    | TokenBudget, model.ThinkingXHigh
+    | TokenBudget, model.ThinkingMax
+    -> Some(#("thinkingBudget", json.Int(24_576)))
   }
 
   option.map(knob, fn(knob) {

@@ -258,6 +258,16 @@ pub fn resolve(gw, role: Role) -> Result(ResolvedModel, MissingIdentity)
 // Role = Main | Subagent | Plan | Summarize | Vision | Custom(String)
 ```
 
+[Protocol 102](../protocol-change/102-extended-thinking-levels.md) extends
+the provider thinking vocabulary with `xhigh` and `max`. Responses preserves
+these levels; other adapters map them to their existing high setting.
+
+[Protocol 103](../protocol-change/103-bounded-responses-recovery.md) adds
+a typed bounded-recovery classification for a Responses item whose streamed
+part lacks its closing witness. The runtime carries its three-attempt ceiling
+in existing diagnostic fields, and the machine persists the narrower retry
+policy before another attempt. Other malformed streams remain terminal.
+
 [Protocol 081](../protocol-change/081-request-usage-accounting.md) separates
 request accounting from final-response usage. Terminal reports retain every
 attempt's measured usage and uncertainty, priced under its actual target.

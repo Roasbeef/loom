@@ -142,7 +142,7 @@ pub fn build_request(
     ThinkingOff -> None
     ThinkingLow -> Some("low")
     ThinkingMedium -> Some("medium")
-    ThinkingHigh -> Some("high")
+    ThinkingHigh | model.ThinkingXHigh | model.ThinkingMax -> Some("high")
   }
 
   let body =

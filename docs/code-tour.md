@@ -600,7 +600,7 @@ compaction on its way out; ask about tool use before a genuine length
 stop and a truncated response executes calls cut in half.
 
 Then one transaction, in pi's normative order
-(`settle_writes`, `machine/planner.gleam:1537`):
+(`settle_writes`, `machine/planner.gleam:1546`):
 
 ```gleam
   [
@@ -1216,7 +1216,7 @@ Collecting the result is a store read, not a message.
 `await_strand_result` (`runtime/api.gleam:2053`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
-register (`build.set_last_result`, `machine/planner.gleam:3956`). Keying
+register (`build.set_last_result`, `machine/planner.gleam:3973`). Keying
 on the strand register alone had a hole: a child that starts a second
 run overwrites it, and a parent still waiting on the first run's result
 would read the second's.

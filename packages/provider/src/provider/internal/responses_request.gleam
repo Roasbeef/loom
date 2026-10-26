@@ -134,6 +134,8 @@ fn encode_body(
     model.ThinkingLow -> reasoning("low")
     model.ThinkingMedium -> reasoning("medium")
     model.ThinkingHigh -> reasoning("high")
+    model.ThinkingXHigh -> reasoning("xhigh")
+    model.ThinkingMax -> reasoning("max")
   }
 
   // Resolve token limits and output mode options.

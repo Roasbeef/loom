@@ -24,8 +24,8 @@
 ////   identity that minted it and ORCH-L4 validates a settlement against
 ////   exactly that value, so a poll that walked a chain would fetch a
 ////   continuation nobody issued.
-//// - **Thinking levels** collapse the machine's seven-point scale onto the
-////   provider's four-point one, and the strand's per-turn level travels as an
+//// - **Thinking levels** preserve all provider levels; minimal maps to low,
+////   and the strand's per-turn level travels as an
 ////   overlay onto every target a role walk attempts, so neither a route's
 ////   static configuration nor a fallback entry's can override what the turn
 ////   asked for.
@@ -209,13 +209,13 @@ fn candidate_roles(configured: Role) -> List(Role) {
   }
 }
 
-/// Collapses the machine's seven-point thinking scale onto the provider's
-/// four-point scale.
+/// Maps the machine's thinking scale onto the provider's scale. Minimal
+/// shares the low provider setting.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert routing.thinking_level(strand.ThinkingMax) == model.ThinkingHigh
+/// assert routing.thinking_level(strand.ThinkingMax) == model.ThinkingMax
 /// ```
 ///
 pub fn thinking_level(level: strand.ThinkingLevel) -> model.ThinkingLevel {
@@ -223,8 +223,9 @@ pub fn thinking_level(level: strand.ThinkingLevel) -> model.ThinkingLevel {
     strand.ThinkingOff -> model.ThinkingOff
     strand.ThinkingMinimal | strand.ThinkingLow -> model.ThinkingLow
     strand.ThinkingMedium -> model.ThinkingMedium
-    strand.ThinkingHigh | strand.ThinkingXHigh | strand.ThinkingMax ->
-      model.ThinkingHigh
+    strand.ThinkingHigh -> model.ThinkingHigh
+    strand.ThinkingXHigh -> model.ThinkingXHigh
+    strand.ThinkingMax -> model.ThinkingMax
   }
 }
 
@@ -250,5 +251,7 @@ pub fn strand_thinking_level(
     model.ThinkingLow -> strand.ThinkingLow
     model.ThinkingMedium -> strand.ThinkingMedium
     model.ThinkingHigh -> strand.ThinkingHigh
+    model.ThinkingXHigh -> strand.ThinkingXHigh
+    model.ThinkingMax -> strand.ThinkingMax
   }
 }

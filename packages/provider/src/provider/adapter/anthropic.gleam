@@ -206,7 +206,7 @@ pub fn build_request_with_prefix(
     ThinkingOff -> None
     ThinkingLow -> Some(2048)
     ThinkingMedium -> Some(8192)
-    ThinkingHigh -> Some(16_384)
+    ThinkingHigh | model.ThinkingXHigh | model.ThinkingMax -> Some(16_384)
   }
 
   let body =

@@ -584,6 +584,15 @@ pub fn thinking_off_sends_no_thinking_config_test() {
   assert !string.contains(built.body, "\"tools\"")
 }
 
+pub fn extended_levels_use_high_for_both_gemini_dials_test() {
+  list.each(["gemini-2.5-flash", "gemini-3.5-flash"], fn(id) {
+    list.each([model.ThinkingXHigh, model.ThinkingMax], fn(level) {
+      assert gemini.thinking_config(id, level)
+        == gemini.thinking_config(id, model.ThinkingHigh)
+    })
+  })
+}
+
 pub fn gemini_two_point_five_takes_a_token_budget_test() {
   // 2.5 rejects `thinkingLevel` ("Thinking level is not supported for
   // this model"); 3.x rejects the budget. The dial is read off the id.
