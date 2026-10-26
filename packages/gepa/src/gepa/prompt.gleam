@@ -39,8 +39,9 @@
 //// always did: `notes`, the slot's background or constraints in the
 //// host's words, and `tried`, a digest of rewrites of this slot the
 //// search already rejected, so the reflector is told what not to propose
-//// again rather than left to rediscover it. The digest is bounded to
-//// `max_tried` rows of `max_tried_bytes` each, the head of each text
+//// again rather than left to rediscover it. The digest is bounded to the
+//// last `max_tried` rows, the most recent rejections being the ones most
+//// worth not repeating, of `max_tried_bytes` each, the head of each text
 //// kept, since the opening of a rewrite is what tells two apart. Which
 //// fields a record shows is the host's choice per slot; this module
 //// renders whatever fields it is handed, in order.
@@ -491,7 +492,13 @@ pub fn render(request: Request) -> String {
       "Rewrites of this slot already tried and not kept, as data. Do not",
       "propose these again, or close variants of them:",
       "",
-      ..list.map(list.take(request.tried, max_tried), render_tried)
+      ..list.map(
+        list.drop(
+          request.tried,
+          int.max(list.length(request.tried) - max_tried, 0),
+        ),
+        render_tried,
+      )
     ]
   }
 

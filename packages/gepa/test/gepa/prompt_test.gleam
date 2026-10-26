@@ -227,9 +227,16 @@ pub fn the_tried_digest_is_framed_bounded_and_keeps_each_head_test() {
   assert prompt.head(string.repeat("🙂", 1000))
     == string.repeat("🙂", prompt.max_tried_bytes / 4)
 
-  // More rows than the bound are cut to the bound.
-  let many = list.repeat(prompt.Tried(1, "refused", "x"), prompt.max_tried + 4)
+  // More rows than the bound are cut to the bound, keeping the last: the
+  // most recent rejections are the ones most worth not repeating.
+  let many =
+    list.index_map(list.repeat(Nil, prompt.max_tried + 4), fn(_, i) {
+      prompt.Tried(i + 1, "refused", "x")
+    })
   let bounded = prompt.render(prompt.Request(..request, tried: many))
   assert list.length(string.split(bounded, "outcome: refused")) - 1
     == prompt.max_tried
+  assert !string.contains(bounded, "step: 4\n")
+  assert string.contains(bounded, "step: 5\n")
+    && string.contains(bounded, "step: 10\n")
 }
