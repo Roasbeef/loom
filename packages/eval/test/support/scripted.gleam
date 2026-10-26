@@ -579,6 +579,18 @@ pub fn reflector_transport(
   served: Counter,
   input_tokens: Int,
 ) -> Transport {
+  reflector_transport_stopping(answers, served, input_tokens, "end_turn")
+}
+
+/// `reflector_transport` with the wire stop reason every reflection
+/// answer ends on: `end_turn` for a finished answer, `max_tokens` for one
+/// the provider cut at its output limit.
+pub fn reflector_transport_stopping(
+  answers: List(String),
+  served: Counter,
+  input_tokens: Int,
+  stop: String,
+) -> Transport {
   http.Transport(prepare_streaming: fn(request, events) {
     parked(events, fn() {
       case string.contains(request.body, "[[record]]") {
@@ -589,7 +601,7 @@ pub fn reflector_transport(
             |> list.first
             |> result.unwrap("")
 
-          answer_text(events, answer, input_tokens)
+          answer_text(events, answer, input_tokens, stop)
         }
         False -> respond(request.body, events, input_tokens, True)
       }
@@ -597,11 +609,12 @@ pub fn reflector_transport(
   })
 }
 
-/// Streams one text answer with an end-turn stop.
+/// Streams one text answer ending on the wire stop reason given.
 fn answer_text(
   events: process.Subject(http.HttpEvent),
   text: String,
   input_tokens: Int,
+  stop: String,
 ) -> Nil {
   process.send(
     events,
@@ -613,7 +626,7 @@ fn answer_text(
       "text_delta",
       "text",
       json.String(text),
-      "end_turn",
+      stop,
       input_tokens,
     ),
     fn(piece) {

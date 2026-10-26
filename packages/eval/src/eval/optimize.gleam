@@ -1350,7 +1350,7 @@ fn reflect_child(
 ) -> Result(#(State, Option(Arm)), String) {
   use parent <- result.try(read_arm(directory, drawn.parent))
   use ledger_rows <- result.try(parent_ledger_rows(directory, state, drawn))
-  use tried <- result.try(tried_before(directory, state, drawn))
+  let tried = tried_before(directory, state, drawn)
   let request =
     reflect.Request(
       objective: frozen.objective,
@@ -1468,12 +1468,14 @@ fn reflect_child(
 /// its ancestors that were refused after minting, screened out or harmed
 /// in that slot, oldest first, the last `prompt.max_tried` of them, each
 /// read back from `arms/` for its text. An answer refused before minting
-/// left no arm and is not in it.
+/// left no arm and is not in it, and an arm file that cannot be read is
+/// left out too: the digest is advice to the reflector, and a search must
+/// not stop for want of it.
 fn tried_before(
   directory: String,
   state: State,
   drawn: Draws,
-) -> Result(List(prompt.Tried), String) {
+) -> List(prompt.Tried) {
   let slot = search.slot_name(drawn.slot)
   let members = search.members(state)
   let lineage = ancestors(members, drawn.parent, [])
@@ -1506,7 +1508,7 @@ fn tried_before(
   let kept =
     list.drop(rejected, int.max(list.length(rejected) - prompt.max_tried, 0))
 
-  list.try_map(kept, fn(found) {
+  list.filter_map(kept, fn(found) {
     use candidate <- result.map(read_arm(directory, { found.0 }.arm))
 
     prompt.Tried(

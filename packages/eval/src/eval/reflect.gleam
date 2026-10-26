@@ -39,7 +39,12 @@
 ////   gateway's `StopReason` through `finish_of`), and `judge` refuses an
 ////   answer the provider cut at its output limit before `prompt.answer`
 ////   reads it: a rewrite cut mid-sentence can pass every bound and still
-////   not be the rewrite the model meant.
+////   not be the rewrite the model meant. A response the provider ended in
+////   error or that was aborted is not an answer at all (`finish_of`
+////   refuses it, and `through_gateway` records the refusal with its
+////   usage): the text that comes with a safety or recitation stop, a
+////   content filter or a canned refusal reads like prose and must never
+////   be minted into a slot.
 ////
 //// What the reflector is told beyond the records is per slot. `background`
 //// is the slot kind's standing constraints — a tool description may not
@@ -236,11 +241,15 @@ pub fn through_gateway(routed: Gateway, resolved: ResolvedModel) -> Reflector {
     // final attempt alone, and a failed call's attempts were billed too.
     case ask(prompt) {
       Ok(auxiliary.Answer(text:, accounting:, stop_reason:, ..)) ->
-        Ok(Reply(
-          text:,
-          usage: accounting.total(accounting),
-          finish: finish_of(stop_reason),
-        ))
+        // A stop the library has no word for is a refusal, charged all the
+        // same.
+        finish_of(stop_reason)
+        |> result.map(fn(finish) {
+          Reply(text:, usage: accounting.total(accounting), finish:)
+        })
+        |> result.map_error(fn(reason) {
+          Refused(reason:, usage: accounting.total(accounting))
+        })
       Error(auxiliary.Failure(reason:, accounting:)) ->
         Error(Refused(
           reason: "the reflector did not answer: " <> reason,
@@ -250,28 +259,39 @@ pub fn through_gateway(routed: Gateway, resolved: ResolvedModel) -> Reflector {
   }
 }
 
-/// The library's word for a provider's stop reason: a normal end is
-/// `Complete`, a token limit is `Truncated`, and anything else the call
-/// could have settled with (a tool call from a request that offered no
-/// tools, an abort, a deferral) is `Unknown`, which `judge` lets through
-/// to the bounds rather than guessing.
+/// The library's word for a provider's stop reason, or why there is none.
+/// A normal end is `Complete` and a token limit is `Truncated`. A stop in
+/// error is refused rather than mapped: that is how every provider
+/// reports a safety or recitation stop, a content filter and a canned
+/// refusal, and the text alongside is not a rewrite however it reads; so
+/// is an abort, which ended the call before the model did. The library's
+/// `Unknown` means a host that did not say, and is kept for the stops a
+/// reflection cannot settle with (a tool call from a request that offered
+/// no tools, a deferral, a stream still pending), which the bounds then
+/// read as before; adding a refusing variant to the library's `Finish`
+/// would move a host's provider vocabulary into a portable contract.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert reflect.finish_of(message.Length) == gepa.Truncated
-/// assert reflect.finish_of(message.Stop) == gepa.Complete
+/// assert reflect.finish_of(message.Length) == Ok(gepa.Truncated)
+/// assert reflect.finish_of(message.Stop) == Ok(gepa.Complete)
+/// let assert Error(_) = reflect.finish_of(message.Errored)
 /// ```
 ///
-pub fn finish_of(stop_reason: message.StopReason) -> gepa.Finish {
+pub fn finish_of(
+  stop_reason: message.StopReason,
+) -> Result(gepa.Finish, String) {
   case stop_reason {
-    message.Stop -> gepa.Complete
-    message.Length -> gepa.Truncated
-    message.Pending
-    | message.ToolUse
-    | message.Errored
-    | message.Aborted
-    | message.Deferred -> gepa.Unknown
+    message.Stop -> Ok(gepa.Complete)
+    message.Length -> Ok(gepa.Truncated)
+    message.Errored ->
+      Error(
+        "the reflector's response ended in error: a refusal, a filtered or a "
+        <> "cut-off answer is not a rewrite",
+      )
+    message.Aborted -> Error("the reflection was aborted before it ended")
+    message.Pending | message.ToolUse | message.Deferred -> Ok(gepa.Unknown)
   }
 }
 

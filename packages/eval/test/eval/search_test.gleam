@@ -338,9 +338,13 @@ pub fn per_task_means_count_failures_and_exclude_infrastructure_test() {
     trial("t2", "a", 0, False),
   ]
 
-  // t1: one pass of two counted; t2: none; t3: no row at all scores zero.
+  // t1: one pass of two counted; t2: a measured zero; t3, with no counted
+  // row at all, is left out rather than scored, so the screen's tie rule
+  // cannot read it as a failure the child fixed (the front still reads a
+  // missing task as zero).
   assert search.per_task_means(rows, ["t1", "t2", "t3"])
-    == [#("t1", 0.5), #("t2", 0.0), #("t3", 0.0)]
+    == [#("t1", 0.5), #("t2", 0.0)]
+  assert search.per_task_means([], ["t1"]) == []
 }
 
 pub fn an_arm_is_a_component_map_keyed_by_slot_name_test() {

@@ -101,10 +101,17 @@ pub fn the_prompt_frames_every_record_and_states_the_objective_test() {
 }
 
 pub fn a_stop_reason_becomes_a_finish_and_a_length_stop_is_refused_test() {
-  assert reflect.finish_of(message.Stop) == gepa.Complete
-  assert reflect.finish_of(message.Length) == gepa.Truncated
-  assert reflect.finish_of(message.ToolUse) == gepa.Unknown
-  assert reflect.finish_of(message.Errored) == gepa.Unknown
+  assert reflect.finish_of(message.Stop) == Ok(gepa.Complete)
+  assert reflect.finish_of(message.Length) == Ok(gepa.Truncated)
+  assert reflect.finish_of(message.ToolUse) == Ok(gepa.Unknown)
+
+  // A response ended in error carries a provider's refusal, filter or
+  // safety stop as text; an aborted one ended before the model did.
+  // Neither is an answer, so neither reaches the bounds.
+  let assert Error(errored) = reflect.finish_of(message.Errored)
+  assert string.contains(errored, "ended in error")
+  let assert Error(aborted) = reflect.finish_of(message.Aborted)
+  assert string.contains(aborted, "aborted")
 
   // A truncated reply is refused however well its text reads; a complete
   // or unreported one is read by the bounds as before.

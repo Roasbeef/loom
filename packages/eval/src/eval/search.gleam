@@ -1192,10 +1192,14 @@ pub fn component_map(candidate: Arm) -> List(#(String, String)) {
   })
 }
 
-/// The mean reward per task of one arm's counted Validate rows, in the
-/// order of `tasks`. A task with no counted row scores zero: the design
-/// owes every task a measurement, and an arm that failed to produce one
-/// must not lead that task by omission.
+/// The mean pass indicator per task of one arm's counted rows, in the
+/// order of `tasks`, over the tasks that have a counted row. A task with
+/// none (every attempt infrastructure, or a run cut off before it) is left
+/// out rather than scored zero: the front reads a missing task as zero,
+/// so an arm that failed to produce a measurement still cannot lead that
+/// task by omission, while the screen's tie rule reads only a measured
+/// zero as a failure the child can have fixed, and a task nothing is
+/// known of is not one.
 ///
 /// ## Examples
 ///
@@ -1207,7 +1211,7 @@ pub fn per_task_means(
   rows: List(stat.Trial),
   tasks: List(String),
 ) -> List(#(String, Float)) {
-  list.map(tasks, fn(task) {
+  list.filter_map(tasks, fn(task) {
     let counted =
       list.filter_map(rows, fn(row) {
         case row.task == task, stat.standing(row.outcome) {
@@ -1216,17 +1220,17 @@ pub fn per_task_means(
         }
       })
 
-    #(task, mean_of(counted))
+    // A task with nothing counted has no mean to report.
+    case counted {
+      [] -> Error(Nil)
+      [_, ..] ->
+        Ok(#(
+          task,
+          list.fold(counted, 0.0, float.add)
+            /. int.to_float(list.length(counted)),
+        ))
+    }
   })
-}
-
-/// The arithmetic mean, zero of nothing.
-fn mean_of(values: List(Float)) -> Float {
-  case values {
-    [] -> 0.0
-    [_, ..] ->
-      list.fold(values, 0.0, float.add) /. int.to_float(list.length(values))
-  }
 }
 
 /// Loom's dominance ruling as the library's standing, for the front's

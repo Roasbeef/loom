@@ -416,8 +416,9 @@ pub fn a_reflection_cut_at_the_output_limit_is_refused_test_() -> scripted.Eunit
 
 /// The search-level A/A: fifty seeded searches of four steps over an agent
 /// whose pass probability is one half whichever arm runs, with a reflector
-/// that only re-spaces an inert sentence. About half the children pass the
-/// screen and reach Validate; the paired rule may call at most six percent
+/// that only re-spaces an inert sentence. A child reaches Validate only
+/// when it beats its parent on the minibatch, so fewer than half do, and
+/// the search finds its verdicts there; the paired rule may call at most six percent
 /// of those verdicts `Improved` (the evalstat A/A bound, `alpha` both ways),
 /// the incumbent can change only on an `Improved` verdict, never on a
 /// screen alone, and the confirm run, which draws fresh trials, may read
@@ -1117,6 +1118,96 @@ fn gateway_over(transport: Transport) -> gateway.Gateway {
     secrets: secret.from_list([#("FIXTURE_KEY", "fixture-key")]),
     clock: clock.from_function(bootstrap.system_time_ms),
   )
+}
+
+pub fn the_gateway_s_stop_reason_reaches_the_reply_s_finish_test_() -> scripted.EunitTest {
+  scripted.Timeout(60, fn() {
+    // The same answer over the wire: ended by the model it is complete,
+    // ended by the output limit it is truncated, and the search refuses it.
+    let root = scripted.scratch("finish")
+    let base = scripted.base_unchecked(root <> "/base", scripted.transport(1))
+    let through = fn(stop: String) {
+      let wire =
+        gateway_over(scripted.reflector_transport_stopping(
+          ["Be careful."],
+          scripted.counter(),
+          1,
+          stop,
+        ))
+      let assert Ok(#(_, resolved)) =
+        reflect.resolve(base.catalog, wire, "fixture")
+
+      reflect.through_gateway(wire, resolved)("[[record]] prompt")
+    }
+
+    let assert Ok(complete) = through("end_turn")
+    assert complete.text == "Be careful." && complete.finish == gepa.Complete
+    assert reflect.judge(complete) == Ok("Be careful.")
+    let assert Ok(cut) = through("max_tokens")
+    assert cut.text == "Be careful." && cut.finish == gepa.Truncated
+    assert reflect.judge(cut) == Error(gepa.truncated_reason)
+    scripted.remove(root)
+  })
+}
+
+pub fn the_reflector_is_told_what_the_lineage_already_rejected_test_() -> scripted.EunitTest {
+  scripted.Timeout(300, fn() {
+    // Every step rewrites the one slot and no cell ever passes, so step
+    // one's child ties its parent and is screened out; step two's prompt,
+    // captured on its way to the reflector, carries that rewrite as a
+    // rejected one.
+    let root = scripted.scratch("tried")
+    let prompts = root <> "/prompts.txt"
+    let scripted_reflector =
+      scripted.scripted_reflector(
+        ["Always re-read the task.", "Check the file exists."],
+        scripted.counter(),
+      )
+    let capturing = fn(prompt: String) {
+      let _ = simplifile.append(prompts, prompt <> "\n=====\n")
+
+      scripted_reflector(prompt)
+    }
+    let r =
+      rig(
+        "tried",
+        scripted.baseline(),
+        Shape(
+          ..shape(),
+          tune: 4,
+          validate: 6,
+          k: 2,
+          k_tune: 1,
+          minibatch: 2,
+          steps: 2,
+        ),
+        capturing,
+        executor(scripted.plant(0.0, 0.0, "tried"), scripted.Never),
+      )
+    let frozen =
+      optimize.mint(
+        optimize.Plan(..r.plan, slots: [SystemSuffix(scripted.fixture_target())]),
+      )
+
+    let assert Ok(outcome) = optimize.search(r.ctx, frozen, r.out)
+    let assert [first, ..] =
+      list.filter(search.members(outcome.state), fn(member) { member.step == 1 })
+    assert first.disposition == Some(search.ScreenedOut)
+    let assert Ok(captured) = simplifile.read(prompts)
+    let assert [step_one, step_two, ..] = string.split(captured, "\n=====\n")
+    assert !string.contains(step_one, "already tried and not kept")
+    assert string.contains(step_two, "already tried and not kept")
+    assert string.contains(
+      step_two,
+      "outcome: screened_out\ntext:\nAlways re-read the task.",
+    )
+
+    // The background rides along as the slot's notes.
+    assert string.contains(step_two, "Notes about this slot")
+    assert string.contains(step_two, "appended to the agent's system prompt")
+    scripted.remove(r.root)
+    scripted.remove(root)
+  })
 }
 
 pub fn a_planted_sentinel_is_found_through_real_sessions_test_() -> scripted.EunitTest {
