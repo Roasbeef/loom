@@ -926,6 +926,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          # make check here includes eval, whose mined tasks are Loom commits
+          # read with git archive; one commit of history would skip them.
+          fetch-depth: 0
 
       # The live TUI test drives the built client through a real terminal,
       # and it lives in the `client` package's own suite — the only macOS
