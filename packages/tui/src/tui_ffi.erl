@@ -6,6 +6,7 @@
 %% here forwards to it.
 -export([silence_logger/0, run_forwarding/2, halt/1, read_console_reply/1,
     read_standard_line/1,
+    read_protocol_line/0,
     herdr_exchange/3, require_terminal/0]).
 
 silence_logger() ->
@@ -81,6 +82,29 @@ read_standard_line(PromptBinary) ->
         eof -> {error, <<"no line on standard input">>};
         {error, Reason} -> {error, describe(Reason)};
         Line -> {ok, unicode:characters_to_binary(Line)}
+    end.
+
+%% Reads one protocol line from standard input as UTF-8, whatever the VM's
+%% locale guessed. `loom acp` receives JSON text from another program, and
+%% the standard input device's encoding defaults from the environment: in a
+%% container with no locale it is latin1, which would turn every multi-byte
+%% character of a prompt into mojibake. Setting the encoding explicitly
+%% makes the read independent of the environment. The same option governs
+%% the device's output, and a unicode device writes the UTF-8 the protocol
+%% needs. A line the device cannot decode is returned as the single byte
+%% `{`, which is not JSON, so the protocol layer answers it with a parse
+%% error instead of the connection ending on one bad frame.
+read_protocol_line() ->
+    _ = io:setopts(standard_io, [{encoding, unicode}]),
+    case io:get_line("") of
+        eof -> {error, <<"end of input">>};
+        {error, terminated} -> {error, <<"standard input closed">>};
+        {error, _} -> {ok, <<"{">>};
+        Line ->
+            case unicode:characters_to_binary(Line) of
+                Binary when is_binary(Binary) -> {ok, Binary};
+                _ -> {ok, <<"{">>}
+            end
     end.
 
 %% Reject pipelines before any interactive launch effects. OTP's documented
