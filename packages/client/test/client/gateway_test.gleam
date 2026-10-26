@@ -2972,7 +2972,19 @@ pub fn gateway_approve_wakes_strand_when_escalation_detached_async_test() {
   let assert protocol.EscalationEvent(record:) = reply.event
   assert record.status == "approved"
   assert stored(harness, "esc-async").status == durable.Approved
-  assert notice.activity(harness.runtime, "main") == Ok(notice.Busy)
+
+  // The wake is delivered before the reply is sent, but the run it opens is
+  // not a lasting state to read back: this harness's settling provider answers
+  // at once, so the strand is Busy only for an instant and Idle again by the
+  // time a loaded scheduler lets the test look. The durable witness is the
+  // notice's mark, which the runtime spends in the same transaction that
+  // admits the run, so it is present exactly when the wake happened and stays.
+  let assert Ok(Some(_)) =
+    api.fact(
+      harness.runtime,
+      notice.key(notice.Escalation(id: "esc-async", seq: displayed.seq)),
+    )
+    as "the approval must have woken the idle strand and spent its notice mark"
 }
 
 pub fn delayed_deny_cannot_answer_reopened_same_action_test() {
