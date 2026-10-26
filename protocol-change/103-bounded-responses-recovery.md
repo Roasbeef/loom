@@ -1,4 +1,4 @@
-# Protocol 101: Bounded Responses stream recovery
+# Protocol 103: Bounded Responses stream recovery
 
 **Status**: ACCEPTED after independent design review. **Affects**: Part 1.3 retry settlement and Part 1.5 provider errors.
 
@@ -10,7 +10,7 @@ Ordinary transient failures can use an unbounded retry policy. Classifying all m
 
 ## Decision
 
-Add `provider/stream.RecoverableStreamCorruption(report)` for this precise missing-part-closure guard. Every other malformed-stream check retains its existing terminal classification. Add `provider/retry.RetryableWithin(backoff_hint_ms, max_attempts)`; this corruption selects a ceiling of three total machine generation attempts.
+**Accepted.** Add `provider/stream.RecoverableStreamCorruption(report)` for this precise missing-part-closure guard. Every other malformed-stream check retains its existing terminal classification. Add `provider/retry.RetryableWithin(backoff_hint_ms, max_attempts)`; this corruption selects a ceiling of three total machine generation attempts.
 
 The gateway forwards this class immediately rather than walking its fallback chain. The runtime retains its original error and accounting, marks the failure retryable through the existing convention, and adds the structured integer `retry_max_attempts = 3` to assistant diagnostics. Summary failures carry the same field in `OperationError.details`. Policy never parses the diagnostic reason string.
 

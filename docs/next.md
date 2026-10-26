@@ -1,5 +1,19 @@
 # Current handoff
 
+## Responses recovery integration
+
+[PR #1130](https://github.com/Roasbeef/loom/pull/1130) adds extended Responses reasoning and bounded recovery for missing streamed-part closures. It is rebased onto main `f4a7991c9` for the owner's requested immediate merge. All implementation commits applied cleanly; this handoff was the only Git conflict. The evaluation handoff below is preserved.
+
+Main introduced protocol 100 and reserved 101 while this PR was open. This PR's proposals are now [102, extended thinking levels](../protocol-change/102-extended-thinking-levels.md) and [103, bounded Responses recovery](../protocol-change/103-bounded-responses-recovery.md). Only their identifiers and references changed.
+
+Full hosted checks, raw macOS whole-check logs, executed strict skip censuses, independent review and Linux signoff passed on pre-rebase head `2259f628b`. The [final verification record](https://github.com/Roasbeef/loom/pull/1130#issuecomment-6427364166) preserves both the initial throughput failure and the unchanged passing retest. Those results are not a new full signoff of this rebased head. See the [source validation report](review/responses-stream-recovery-2026-10-26.md) for the implementation proof and limitations.
+
+The recovery ceiling is three total generation attempts, with stricter existing bounds preserved. Stream validation remains strict; no partial response or tool call is accepted. Diagnostics retain only structural metadata, not content. `xhigh` and `max` reach both Responses builders; other adapters retain their prior high-equivalent wire mapping.
+
+No production installation or daemon restart is authorized or performed. After a separately authorized update, apply the desired personal profile settings and verify a live request. If the stream error recurs, obtain the structural diagnostic and a redacted minimal event reproducer before changing validation; bounded recovery does not establish the upstream cause.
+
+## Evaluation instrument handoff
+
 This is the evaluation instrument for #236, on the `eval/*` stack of pull
 requests over main `9b8621641`. The [previous
 handoff](next-2026-10-25-before-eval-instrument.md) is preserved exactly. Its

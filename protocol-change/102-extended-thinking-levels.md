@@ -1,4 +1,4 @@
-# protocol-change/100: Extended provider thinking levels
+# protocol-change/102: Extended provider thinking levels
 
 **Status**: ACCEPTED after independent review. **Affects**: Part 1.5 provider routing vocabulary.
 
