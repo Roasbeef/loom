@@ -670,8 +670,9 @@ stopped at its output limit is refused by `reflect.judge`
 (`Reply.finish`, from the gateway's stop reason, is written on the
 `reflection` row as `finish`); the child is `arm.mint` of the parent
 with that slot replaced; the child runs the same minibatch alone and
-`select.screen` (mean per-task reward strictly above the parent's, or a tie
-that solves a task the parent failed outright) decides whether
+`select.screen` (mean per-task pass indicator strictly above the parent's,
+within a part in a billion, or a tie that solves a task the parent measured
+and failed outright) decides whether
 to pay for Validate; the child runs the whole Validate split alone at `K`
 and `evalstat.paired_verdict` pairs its rows against the parent's earlier
 Validate rows and against the incumbent's; the verdicts become the
