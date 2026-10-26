@@ -113,7 +113,13 @@ literate register", gives the complete conventions and examples.
   and the daemon's web view both drive, and R6 is what keeps either host
   out of it (`lint/portable`). `statem`, the stateful model-based testing
   layer over qcheck, is held to it because the portable packages' tests are
-  written with it and must keep running on both targets.
+  written with it and must keep running on both targets. `evalstat`, the
+  evaluation instrument's statistics, is held to it because the governed
+  verdict and a future web report both call it and its one mathematical
+  piece must stay property-testable without processes on either target.
+  `gepa`, the reflective prompt search as a library, is held to it because
+  it is meant to be embedded in projects that are not Loom and its state
+  machine is property-tested on both targets.
 - **No naked `Bool`** in a function parameter or a record field. `Bool`
   carries no domain meaning, so `render(document, True)` names nothing at
   the call site and a field typed `Bool` makes every reader carry the
@@ -179,8 +185,8 @@ replaces `/tmp` with the scratch tmpfs. `docs/execution.md` §4 has the rest.
 runs at the end of `make check`. Twenty-three rules: R0 unparseable source, R1
 eager fallbacks, R2 `case` nesting depth, R3 catch-all patterns, R4
 `panic` and `let assert` in `src`, R5 O(n) answers to bounded questions,
-R6 the portable subset `core`, `machine`, `prompt`, `statem` and
-`session_view` are held to, R7 a `let assert` carrying no `as "message"`, R8 a one-caller function wide
+R6 the portable subset `core`, `machine`, `prompt`, `statem`,
+`session_view`, `evalstat` and `gepa` are held to, R7 a `let assert` carrying no `as "message"`, R8 a one-caller function wide
 enough to be a moved pyramid, R9 a naked `Bool` in a parameter or field,
 R10 a comment with no blank line above it, R11 a body written as one
 undivided block, R12 a closure that captures a whole outer value only to
@@ -297,7 +303,10 @@ one.
   Programs and extensions: `code-mode`, `extensions`, `mcp`,
   `async-collaboration`. Strands and automation: `messaging`,
   `advisor`, `goals`, `automation`, `hooks-compat`. Observation and
-  testing: `events`, `telemetry`, `simulation`.
+  testing: `events`, `telemetry`, `simulation`, and `evaluation`, the
+  instrument that measures prompt, tool and model changes.
+- **Harbor** — `integrations/harbor/README.md`: Loom as a Harbor (Terminal-Bench)
+  agent, a Python adapter outside `packages/`, tested by `make harbor-test`.
 - **Embedding** — `packages/harness/CLAUDE.md`: running a session in your own
   process without `client`, with the embedding test as the contract, and
   `docs/design-notes/harness-extraction.md` for what moved out of the daemon.

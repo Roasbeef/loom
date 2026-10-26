@@ -152,6 +152,7 @@ import tui/projection
 import tui/queue_editor
 import tui/recording
 import tui/render
+import tui/run
 import tui/runtime
 import tui/session_control
 import tui/session_table
@@ -242,6 +243,16 @@ type Launch {
   // no terminal state, one control connection as the owner, and one printed
   // answer or one failure with an exit status.
   Directory(options: bootstrap.Options, output: Output)
+
+  // `loom run -p …` is the headless one-shot client (issue #492): it creates a
+  // session, sends one prompt, waits for the run to end, prints one JSON line
+  // and exits with the verdict. It installs no terminal state.
+  Run(request: run.Request)
+
+  // Arguments `loom run` refused. They exit 2 rather than the 1 every other
+  // rejected launch uses, because a harness tells bad arguments from a failed
+  // run by the status alone.
+  RunRefused(reason: String)
 }
 
 // The two catalogue verbs the launcher owns. `rm` carries its consent so the
@@ -398,6 +409,7 @@ pub fn main() {
         | ["sessions", ..]
         | ["deployment", ..]
         | ["directory", ..]
+        | ["run", ..]
         | ["claim", ..]
         | ["enroll", ..]
         | ["access", ..]
@@ -423,6 +435,8 @@ pub fn main() {
         Sessions(options:, command:) -> run_sessions(options, command)
         Deployment(options:, command:) -> run_deployment(options, command)
         Directory(options:, output:) -> run_directory(options, output)
+        Run(request:) -> finish_run(request)
+        RunRefused(reason:) -> refuse_run(reason)
         ClaimAccess(arguments:) -> claim.claim_main(arguments)
         Enroll(arguments:) -> claim.enroll_main(arguments)
         Access(arguments:) -> access_command.main(arguments)
@@ -511,6 +525,7 @@ fn help_topic(arguments: List(String)) -> Option(String) {
     Ok("sessions") -> Some(sessions_usage())
     Ok("deployment") -> Some(deployment_usage())
     Ok("directory") -> Some(directory_usage())
+    Ok("run") -> Some(run_usage())
     Ok("claim") | Ok("enroll") -> Some(claim.usage)
     Ok("ext") -> Some(extension_usage())
     Ok("evolution") -> Some(evolution_usage())
@@ -530,6 +545,7 @@ fn is_topic(word: String) -> Bool {
     | "sessions"
     | "deployment"
     | "directory"
+    | "run"
     | "ext"
     | "evolution"
     | "distribution"
@@ -892,6 +908,8 @@ fn interactive(launch: Launch, record: String) -> Nil {
     | Sessions(..)
     | Deployment(..)
     | Directory(..)
+    | Run(..)
+    | RunRefused(..)
     | ClaimAccess(..)
     | Enroll(..)
     | Access(..)
@@ -985,6 +1003,8 @@ fn interactive(launch: Launch, record: String) -> Nil {
     | Sessions(..)
     | Deployment(..)
     | Directory(..)
+    | Run(..)
+    | RunRefused(..)
     | ClaimAccess(..)
     | Enroll(..)
     | Access(..)
@@ -1127,7 +1147,7 @@ fn parse_launch(arguments: List(String)) -> Launch {
 // like the next flag, ends the leading run, so the subcommand parser then
 // reports it the way it does for the trailing spelling.
 // The subcommands whose usage lists the daemon options.
-const hoisting_verbs = ["sessions", "deployment", "directory", "ui"]
+const hoisting_verbs = ["sessions", "deployment", "directory", "ui", "run"]
 
 /// Establishes and coordinates hoist daemon options operations for the TUI runtime.
 fn hoist_daemon_options(arguments: List(String)) -> List(String) {
@@ -1184,6 +1204,11 @@ fn parse_words(arguments: List(String)) -> Launch {
     ["sessions", ..rest] -> parse_sessions(rest)
     ["deployment", ..rest] -> parse_deployment(rest)
     ["directory", ..rest] -> parse_directory(rest)
+    ["run", ..rest] ->
+      case run.parse(rest) {
+        Ok(request) -> Run(request:)
+        Error(reason) -> RunRefused(reason <> "\n" <> run_usage())
+      }
     ["claim", ..rest] -> ClaimAccess(arguments: rest)
     ["enroll", ..rest] -> Enroll(arguments: rest)
     ["access", ..rest] -> Access(arguments: rest)
@@ -1690,6 +1715,8 @@ pub fn launch_deployment(
     | Enroll(..)
     | Access(..)
     | Directory(..)
+    | Run(..)
+    | RunRefused(..)
     | Sessions(..) -> Error("not a deployment launch")
   }
 }
@@ -1721,6 +1748,8 @@ pub fn launch_directory(arguments: List(String)) -> Result(Output, String) {
     | Enroll(..)
     | Access(..)
     | Deployment(..)
+    | Run(..)
+    | RunRefused(..)
     | Sessions(..) -> Error("not a directory launch")
   }
 }
@@ -2805,6 +2834,7 @@ fn launch_usage() -> String {
   <> "  deployment status|executors\n"
   <> "                      Show which configured machines the daemon reaches.\n"
   <> "  directory status    Show the session directory's cluster.\n"
+  <> "  run -p <prompt>     Run one prompt headless and print one JSON line.\n"
   <> "  ui [--session <id>] [--operate | --observe] [--open]\n"
   <> "                      Print a link to your home page (sessions by\n"
   <> "                      workspace), or with --session to one session,\n"
@@ -3726,4 +3756,52 @@ fn snap_viewport_for(model: Model, event: msg.Event) -> Model {
         view: view_set.revealed_rows(model.view, model.view.rendered_row_count),
       )
   }
+}
+
+/// The text `loom run --help` prints and a refused `run` appends.
+fn run_usage() -> String {
+  "usage: loom run -p <prompt> [--workspace <dir>] [--model <name>]\n"
+  <> "                [--config <loom.toml>] [--model-profile <name>]\n"
+  <> "                [--server <path>] [--state-dir <path>]\n"
+  <> "                [--timeout <seconds>] [--keep] [--json]\n\n"
+  <> "Creates a session, sends the prompt once, waits for the run to end and\n"
+  <> "prints one JSON object on standard output: session_id, session_db (when\n"
+  <> "the file is found), state_dir, outcome (completed, failed, aborted or\n"
+  <> "timeout), turns, usage, elapsed_ms, jail (posture enforced, degraded or\n"
+  <> "unverified, from the sandbox helper's self-test) and model. The session\n"
+  <> "is stopped at exit unless --keep. --timeout defaults to 3600 seconds;\n"
+  <> "--json is accepted and changes nothing, the output is always JSON.\n\n"
+  <> "exit status: 0 completed, 1 the run failed or was aborted, 2 bad\n"
+  <> "arguments, 3 no daemon could be reached or started, 124 timeout.\n"
+}
+
+/// Classifies the words after `loom run` the way the launcher does, answering
+/// the parsed request or the refusal. It is the test seam for the routing
+/// (`run` in first position, and daemon options written before it).
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(request) = tui.launch_run(["run", "-p", "hi"])
+/// assert request.prompt == "hi"
+/// ```
+@internal
+pub fn launch_run(arguments: List(String)) -> Result(run.Request, String) {
+  case parse_launch(arguments) {
+    Run(request:) -> Ok(request)
+    RunRefused(reason:) -> Error(reason)
+    _other -> Error("not a run launch")
+  }
+}
+
+// Runs the command and leaves with its verdict as the exit status.
+fn finish_run(request: run.Request) -> Nil {
+  ffi_terminal.halt(run.execute(request))
+  Nil
+}
+
+fn refuse_run(reason: String) -> Nil {
+  io.println_error("loom: " <> reason)
+  ffi_terminal.halt(run.exit_bad_arguments)
+  Nil
 }

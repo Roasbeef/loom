@@ -79,6 +79,7 @@ pub fn settings() -> serve.Settings {
     )
   serve.Settings(
     evolution_role: serve.Source,
+    pack: None,
     peer_directory: None,
     peer_defaults: None,
     remote_reach: None,

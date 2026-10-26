@@ -18,6 +18,7 @@ harness = { path = "../harness" }
 broker = { path = "../broker" }
 provider = { path = "../provider" }
 tools = { path = "../tools" }
+evalstat = { path = "../evalstat" }
 codemode = { path = "../codemode" }
 mcp = { path = "../mcp" }
 gleam_mcp = { git = "https://github.com/Roasbeef/gleam-mcp.git", ref = "628f06381abc40626403dbe61d686c2920db5363" }
@@ -41,6 +42,7 @@ tom = ">= 2.1.0 and < 3.0.0"
 gleam_regexp = ">= 1.1.1 and < 2.0.0"
 
 [dev_dependencies]
+cap = { path = "../cap" }
 gleamy_bench = ">= 0.6.0 and < 1.0.0"
 sqlight_loom = "== 1.2.1"
 tui = { path = "../tui" }

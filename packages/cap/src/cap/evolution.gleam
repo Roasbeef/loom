@@ -23,7 +23,17 @@
 //// A snapshot is bounded to 20 seconds and author tests and program runs to
 //// 60. A call that waits more than 120 seconds for the generation owner is
 //// refused `Busy`. A paired comparison may only lower the native ceilings in
-//// `native_limits`. `catalogue` and
+//// `native_limits`, except `samples`, which it may raise from one to three:
+//// each sample is a fresh paid trial of every task on each arm, and the
+//// trial budget must hold tasks × 2 × samples or the comparison is refused
+//// before any trial opens. The verdict is a paired statistical decision over
+//// tasks; a small comparison is honestly `inconclusive` as underpowered, so
+//// more tasks, not more samples, is what makes one decidable, and the turn
+//// budget must hold every trial's provider turns (at least two each: a tool
+//// call and the closing answer). The comparison runs inside the `compare`
+//// call itself, so the program's `within_ms` (the `code_mode` call's wall,
+//// 300 seconds unless raised, at most 900) must be longer than `wall_ms` or
+//// the program ends before the answer arrives. `catalogue` and
 //// `inspect` are paged: pass back `next_offset`, `next_candidate_offset` or
 //// `next_offset_bytes` unchanged to continue. A candidate program cannot
 //// import this module, so a selected program can never propose, test or
@@ -111,13 +121,14 @@ pub fn proposal(directory: String, name: String, kind: Kind) -> Proposal {
   )
 }
 
-/// Budget ceilings for a paired prompt comparison. Every field is required
-/// and may only lower the matching native ceiling.
+/// Budget ceilings for a paired prompt comparison. Every field is required;
+/// the budgets may only lower the matching native ceiling, and `samples`
+/// may rise from the one-sample default to three.
 pub type Limits {
   Limits(
-    /// Paired trial arms, 1 to 20.
+    /// Fresh runtime trials, 1 to 20; must hold tasks × 2 × `samples`.
     trials: Int,
-    /// Aggregate turns, 1 to 20.
+    /// Aggregate provider turns across every trial, 1 to 100.
     turns: Int,
     /// Aggregate tokens, 1 to 1,000,000.
     tokens: Int,
@@ -125,20 +136,26 @@ pub type Limits {
     dollars: Float,
     /// Retained output bytes, 1 to 65,536.
     output_bytes: Int,
-    /// Comparison wall milliseconds, 1 to 120,000.
+    /// Comparison wall milliseconds, 1 to 480,000. The comparison runs inside
+    /// this `compare` call, so the program's own `within_ms` must exceed it.
     wall_ms: Int,
+    /// Independent samples of every task per arm, 1 to 3. Each is a fresh
+    /// trial debited from the same budget.
+    samples: Int,
   )
 }
 
-/// The native ceilings, which a comparison uses when it names no limits.
+/// The native ceilings and one sample, which a comparison uses when it
+/// names no limits.
 pub fn native_limits() -> Limits {
   Limits(
     trials: 20,
-    turns: 20,
+    turns: 100,
     tokens: 1_000_000,
     dollars: 2.0,
     output_bytes: 65_536,
-    wall_ms: 120_000,
+    wall_ms: 480_000,
+    samples: 1,
   )
 }
 
@@ -199,13 +216,24 @@ pub fn test_candidate(candidate_id: String) -> Result(Value, EvolutionError) {
 }
 
 /// Runs a paired coding comparison for a `Prompt` candidate against an
-/// independently admitted task set, under `limits`.
+/// independently admitted task set, under `limits`. The retained verdict is
+/// `passed` only for a demonstrated improvement over the base; a comparison
+/// too small to decide is `inconclusive` and names the task count that
+/// would have sufficed.
 /// Capability: evolution.test.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// evolution.compare("candidate-id", "taskset-id", evolution.native_limits())
+/// ```
+///
+/// ```gleam
+/// evolution.compare(
+///   "candidate-id",
+///   "taskset-id",
+///   evolution.Limits(..evolution.native_limits(), samples: 2),
+/// )
 /// ```
 pub fn compare(
   candidate_id: String,
@@ -224,6 +252,7 @@ pub fn compare(
         #("dollars", report.float(limits.dollars)),
         #("output_bytes", wire.int(limits.output_bytes)),
         #("wall_ms", wire.int(limits.wall_ms)),
+        #("samples", wire.int(limits.samples)),
       ]),
     ),
   ])

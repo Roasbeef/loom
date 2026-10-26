@@ -365,7 +365,10 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   against `[]`, `string.drop_start(text, k)` against `""` — because the
   advice for a string is not the advice for a list.
 - **R6 `portable-purity`** — an `@external`, a BEAM-only import, or a
-  BEAM-only dependency in `core`, `machine` or `prompt`. Those three hold
+  BEAM-only dependency in `core`, `machine` or `prompt` (the founding
+  three; the table is `policy.portable_packages`, seven today with
+  `session_view`, `statem`, `evalstat` and `gepa`, each argued in
+  `lint/portable`'s module doc). Those packages hold
   none of the three today, by rule rather than by coincidence, and two
   properties rest on that: the operation state space stays
   property-testable without spawning processes (the reason `machine`'s

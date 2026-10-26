@@ -60,3 +60,6 @@ document ever cited them under the old ones.
   session's read policy, and protected paths are refused on reads.
 - [020](020-khepri-for-session-ownership.md): Khepri holds session ownership,
   and its members are the orchestrators and the executors (issue #697).
+- [021](021-evaluation-instrument-beside-governed-evolution.md): the
+  evaluation instrument sits beside governed evolution and never promotes
+  (issues #236, #807, #492).

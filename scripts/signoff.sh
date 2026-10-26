@@ -183,13 +183,13 @@ lane_mid() { $retry bash scripts/check.sh runtime storage session events; }
 # The default budget is sixty seconds and can be overridden for a longer
 # signoff soak.
 lane_conformance() {
-	$retry bash scripts/check.sh conformance &&
+	$retry bash scripts/check.sh conformance eval &&
 		$retry make soak SOAK_SEEDS="${SIGNOFF_SOAK_SEEDS:-200}" &&
 		$retry make soak-daemon-sim \
 			SOAK_DAEMON_BUDGET_SECONDS="${SIGNOFF_DAEMON_SOAK_SECONDS:-60}"
 }
 lane_fast() {
-	$retry bash scripts/check.sh host core machine prompt statem statem_parallel session_view web_view web_client web_mermaid \
+	$retry bash scripts/check.sh host core machine prompt statem statem_parallel evalstat gepa session_view web_view web_client web_mermaid \
 		telemetry provider broker executor mcp lsp tools cap ext codemode harness lint sandbox
 }
 lane_static() {

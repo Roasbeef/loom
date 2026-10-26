@@ -1,0 +1,1 @@
+{"components":[{"slot":{"kind":"task_prefix","target":{"api":"anthropic-messages","model_id":"main-model","provider":"main","role":"any"}},"text":"Do not run any tests; answer from reading the code alone."}],"id":"6017bad0afce7e0464512024faf99948711a51fb1f482491f6e2f550890fc179","knobs":{"disabled_tools":[],"roles":[],"thinking":[]},"name":"no-tests","v":2}

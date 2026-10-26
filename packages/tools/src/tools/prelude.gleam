@@ -25,7 +25,7 @@
 //// names the file that moved:
 ////
 ////   5816fc74c9ad456210316687f1f3169919cbee4c8e8b0e484caf1716b6b8db48  packages/cap/src/cap/actor.gleam
-////   b3960621d9f9f0ba5c91dc8fc35d00c98c99f8183aa281bfad6d63ef443ad816  packages/cap/src/cap/evolution.gleam
+////   73e82f83d61ecead880a5b8d63b5bbbd1bc8564cf814196fa197189d51edd598  packages/cap/src/cap/evolution.gleam
 ////   215a3ee1f03e0eff219cb883816afc22a914b25983feebdd681a8c4b6aaf996e  packages/cap/src/cap/execution.gleam
 ////   1023007f1155f92e80a7aa5b2af956929d4d123d491696a379bad82e205aee68  packages/cap/src/cap/fs.gleam
 ////   a7aeb71d04cfaaa60dcffa39e2a63a6aa9833d2e2d3633da885710b21cb37003  packages/cap/src/cap/git.gleam
@@ -49,7 +49,7 @@
 ////   ea950e639b983ec34145565e194a51f32db158354b4399e9df0b1888d20c0205  packages/tools/dev/gen_prelude/interface.gleam
 ////   eefe3ffc20ce42f1645ccb4058927df05445301f4fb31aee2831c679c0385d37  packages/tools/dev/gen_prelude/wrap.gleam
 ////
-//// Body digest (every line after the marker): d5eccd390a6c5119b1392dcafc04bfbb2300ad0f6e6b5c6d6cf744081c483295
+//// Body digest (every line after the marker): 15f313ba05aa2ab2e4ed10c150bdf833162cc6d7b469f6f5ffcd588c75082cde
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -165,9 +165,10 @@ pub type Kind {
   Prompt
 }
 /// Budget ceilings for a paired prompt comparison. Every field is
-/// required and may only lower the matching native ceiling.
+/// required; the budgets may only lower the matching native ceiling, and
+/// `samples` may rise from the one-sample default to three.
 pub type Limits {
-  Limits(trials: Int, turns: Int, tokens: Int, dollars: Float, output_bytes: Int, wall_ms: Int)
+  Limits(trials: Int, turns: Int, tokens: Int, dollars: Float, output_bytes: Int, wall_ms: Int, samples: Int)
 }
 /// The source a candidate is captured from.
 pub type Proposal {
@@ -194,13 +195,23 @@ pub type Target {
 ///
 pub fn catalogue(Int, Int, Int) -> Result(report.Value, EvolutionError)
 /// Runs a paired coding comparison for a `Prompt` candidate against an
-/// independently admitted task set, under `limits`. Capability:
-/// evolution.test.
+/// independently admitted task set, under `limits`. The retained verdict
+/// is `passed` only for a demonstrated improvement over the base; a
+/// comparison too small to decide is `inconclusive` and names the task
+/// count that would have sufficed. Capability: evolution.test.
 ///
 ///  ## Examples
 ///
 ///  ```gleam
 ///  evolution.compare(\"candidate-id\", \"taskset-id\", evolution.native_limits())
+///  ```
+///
+///  ```gleam
+///  evolution.compare(
+///    \"candidate-id\",
+///    \"taskset-id\",
+///    evolution.Limits(..evolution.native_limits(), samples: 2),
+///  )
 ///  ```
 ///
 pub fn compare(String, String, Limits) -> Result(report.Value, EvolutionError)
@@ -237,7 +248,8 @@ pub fn inspect(Target, Int) -> Result(report.Value, EvolutionError)
 ///  ```
 ///
 pub fn invoke(String, Int, String, report.Value) -> Result(report.Value, EvolutionError)
-/// The native ceilings, which a comparison uses when it names no limits.
+/// The native ceilings and one sample, which a comparison uses when it
+/// names no limits.
 pub fn native_limits() -> Limits
 /// A proposal with only the required fields set; extend it with record
 /// update syntax.
@@ -4045,9 +4057,10 @@ pub type Kind {
   Prompt
 }
 /// Budget ceilings for a paired prompt comparison. Every field is
-/// required and may only lower the matching native ceiling.
+/// required; the budgets may only lower the matching native ceiling, and
+/// `samples` may rise from the one-sample default to three.
 pub type Limits {
-  Limits(trials: Int, turns: Int, tokens: Int, dollars: Float, output_bytes: Int, wall_ms: Int)
+  Limits(trials: Int, turns: Int, tokens: Int, dollars: Float, output_bytes: Int, wall_ms: Int, samples: Int)
 }
 /// The source a candidate is captured from.
 pub type Proposal {

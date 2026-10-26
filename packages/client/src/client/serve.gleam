@@ -429,6 +429,35 @@ pub type EvolutionRole {
   Trial(profiles: List(evolution_profile.Profile))
 }
 
+/// Whether a session runs the model work that is not part of a turn: the
+/// glance loop, the block summarizer and the side-query machine.
+pub type SideWork {
+  /// The operator's session runs all three.
+  RunsSideWork
+
+  /// A trial runs none. Its requests all cross the governed guard, which
+  /// charges every admitted attempt to the comparison, and side work is not
+  /// the task under comparison: its spend would move the verdict, and a
+  /// request that settles outside a turn is spend the transcript never
+  /// shows. A trial also has no terminal to draw a glance or a summary for,
+  /// so nothing is lost.
+  NoSideWork
+}
+
+/// Decides whether a session of this role runs side work.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.side_work(serve.Trial([])) == serve.NoSideWork
+/// ```
+pub fn side_work(role: EvolutionRole) -> SideWork {
+  case role {
+    Source -> RunsSideWork
+    Trial(_) -> NoSideWork
+  }
+}
+
 /// Everything a boot needs, resolved: flags parsed, defaults filled,
 /// the provider gateway built. `main` assembles this from the command
 /// line and the environment; the smoke test assembles it directly with
@@ -553,6 +582,15 @@ pub type Settings {
     /// prompt pack entirely. `None` — the ordinary case — leaves `boot`
     /// to use the session's pinned prompt or render the pack.
     system: Option(String),
+    /// The prompt pack's *source text*, handed to the session directly.
+    /// `None` — the ordinary case — keeps the boot's own lookup: the file
+    /// `LOOM_PROMPT_PACK` names, else the pack shipped with the build.
+    /// `Some(text)` skips that environment read and renders `text`, so
+    /// concurrent sessions in one VM can each run a different pack without
+    /// racing on a process-wide variable. It is text rather than a path
+    /// because a path is an environment read in disguise and a trial's jail
+    /// could not see it anyway. A `system` override still bypasses the pack.
+    pack: Option(String),
     /// The operator's home directory, where the global `AGENTS.md`
     /// default is looked for when the workspace has none of its own.
     /// `resolve` fills it from `HOME`, and `None` records that `HOME`
@@ -1569,6 +1607,7 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       demand: option.unwrap(flags.demand, exec.PlatformEnforcement),
       gateway:,
       evolution_role: Source,
+      pack: None,
       catalog: catalogue,
       secrets: secret_store,
       secret_failures:,
@@ -4629,6 +4668,7 @@ fn assemble_in(
         hub.tap_preview_provider(built.provider, to: name),
         to: name,
         also: side_and_summary_tap(
+          side_work(settings.evolution_role),
           btw_name,
           opened,
           wiring.request_builder(wiring_config),
@@ -5009,9 +5049,7 @@ fn assemble_in(
     // either durable or offered again: titles live in their cells, and the
     // next step on each strand books it afresh.
     |> with_glance_loop(glance_wiring)
-    |> sup.add(
-      supervision.worker(fn() { btw.start(btw_name, btw_gateway, opened) }),
-    )
+    |> with_side_queries(settings.evolution_role, btw_name, btw_gateway, opened)
     // The block summarizer is in this tier because what it would lose is
     // either stored or not worth keeping: a settled label is in its cell,
     // and a live one is replaced by the next or by the settled label.
@@ -6239,13 +6277,10 @@ fn render_prompt(
       ]),
       list.flatten([standing_notes, facts.guidance_notes, approved_notes]),
     )
-  use #(origin, source) <- result.try(
-    system_prompt.pack_source(
-      option.from_result(workspace_policy.env_text(
-        system_prompt.pack_path_variable,
-      )),
-    ),
-  )
+
+  // The pack's source and origin: the host's own text if it gave one, else
+  // the environment's file, else the shipped pack.
+  use #(origin, source) <- result.try(chosen_pack(settings))
   use rendered <- result.try(system_prompt.render_pack(
     origin,
     source,
@@ -6270,6 +6305,26 @@ fn render_prompt(
       warnings: list.append(notes, rendered.warnings),
     ),
   )
+}
+
+/// Chooses the pack source this boot renders. A pack handed in through
+/// `Settings` wins over the environment: the field exists so a host can pick
+/// a pack per session, and an ambient variable that silently outranked it
+/// would make that choice unobservable.
+fn chosen_pack(
+  settings: Settings,
+) -> Result(#(system_prompt.Origin, String), String) {
+  case settings.pack {
+    Some(text) ->
+      Ok(#(system_prompt.Provided(label: "provided by the host"), text))
+
+    None ->
+      system_prompt.pack_source(
+        option.from_result(workspace_policy.env_text(
+          system_prompt.pack_path_variable,
+        )),
+      )
+  }
 }
 
 // How this session runs the operator's goal check.
@@ -6488,8 +6543,11 @@ fn glance_wiring(
   logger: Logger,
   name: address.Address(glance.Message),
 ) -> Option(glance.Wiring) {
-  case glance.summarizer(settings.gateway) {
-    Error(reason) -> {
+  // A trial runs no side work (`side_work`), so it gets no glance hook and
+  // no glance loop; the summarizer is not even resolved for it.
+  case side_work(settings.evolution_role), glance.summarizer(settings.gateway) {
+    NoSideWork, _ -> None
+    RunsSideWork, Error(reason) -> {
       log.warn(logger, "glance.unavailable", [
         field.text(key: "reason", value: reason),
       ])
@@ -6499,7 +6557,7 @@ fn glance_wiring(
     // Borrowed through the Agency's holder rather than held, for the
     // reason the advisor's wiring borrows: the runtime contains the hook
     // this loop is composed into.
-    Ok(summarizer) ->
+    RunsSideWork, Ok(summarizer) ->
       Some(glance.Wiring(
         session: opened,
         runtime: fn() { agency.borrow_runtime(agency_config) },
@@ -6522,10 +6580,15 @@ fn summary_route(
   settings: Settings,
   logger: Logger,
 ) -> Option(blocksummary.Route) {
-  // Decide how to handle blocksummary.route(settings.gateway) {.
-  case blocksummary.route(settings.gateway) {
-    Ok(route) -> Some(route)
-    Error(reason) -> {
+  // A trial runs no side work (`side_work`), so no summarizer tap and no
+  // machine exist for it whatever the catalogue routes.
+  case
+    side_work(settings.evolution_role),
+    blocksummary.route(settings.gateway)
+  {
+    NoSideWork, _ -> None
+    RunsSideWork, Ok(route) -> Some(route)
+    RunsSideWork, Error(reason) -> {
       log.debug(logger, "block_summary.unavailable", [
         field.text(key: "reason", value: reason),
       ])
@@ -6537,8 +6600,13 @@ fn summary_route(
 // Both observers share the effective dispatch and terminal event ordering.
 
 /// Establishes side and summary tap for the caller, keeping its validation and result policy at this boundary.
-fn side_and_summary_tap(name, opened, build, summaries) {
-  let side = btw.observer(name, opened, build)
+fn side_and_summary_tap(side_work: SideWork, name, opened, build, summaries) {
+  // A trial starts no side-query machine, so its tap captures nothing for one.
+  let side = case side_work {
+    RunsSideWork -> btw.observer(name, opened, build)
+    NoSideWork -> fn(_spec, _generation) { fn(_event) { Nil } }
+  }
+
   fn(spec, generation) {
     let observe_side = side(spec, generation)
     let observe_summary = summaries(spec, generation)
@@ -6794,6 +6862,25 @@ fn with_metering(
   case metering {
     None -> hooks
     Some(metering) -> agency.metering_hooks(hooks, config, metering)
+  }
+}
+
+/// Adds the side-query machine to the service tier for a session that runs
+/// side work; a trial gets none, so no request can leave it outside a turn.
+fn with_side_queries(
+  builder: sup.Builder,
+  role: EvolutionRole,
+  name: address.Address(btw.Message),
+  gateway: provider_gateway.Gateway,
+  opened: session.Session,
+) -> sup.Builder {
+  case side_work(role) {
+    NoSideWork -> builder
+    RunsSideWork ->
+      sup.add(
+        builder,
+        supervision.worker(fn() { btw.start(name, gateway, opened) }),
+      )
   }
 }
 
@@ -8049,11 +8136,8 @@ fn evolution_rollouts(
   )
 }
 
-// A trial has neither the source conversation nor another trial's filesystem.
-// The guarded provider still dispatches through the actual production runtime,
-// whose filesystem, bash and code-mode tools use the ordinary jail and broker.
-
-/// Establishes evolution trial for the caller, keeping its validation and result policy at this boundary.
+/// Opens one governed trial: a fresh fixture under a freshly minted tag, then
+/// the production runtime `trial_settings` describes for it.
 fn evolution_trial(
   settings: Settings,
   admitted: evolution_tasks.TaskSet,
@@ -8069,19 +8153,15 @@ fn evolution_trial(
     model.ForRole(..) -> Error("a trial requires its exact admitted model")
   })
 
-  // Prepare private fixture trial directory and workspace structure.
+  // The governed path mints the tag from production entropy, so no two trials
+  // ever share a root or a session id. `trial_settings` takes the tag as a
+  // parameter rather than minting it because a replaying instrument needs the
+  // same tag on every run; that caller owns its own uniqueness.
   let tag = bit_array.base16_encode(token.production_entropy()(8))
-  let private_trials = evolution_trials(settings)
-  let root = private_trials <> "/" <> tag
-  let workspace = root <> "/work"
+  let root = trial_root(settings, tag)
+  let workspace = trial_workspace(root)
   use Nil <- result.try(bootstrap.ensure_private_directory(root))
   use Nil <- result.try(evolution_fixture.install(fixture, workspace))
-
-  // Configure isolated settings and profiles for trial session.
-  let sockets = case settings.codemode_sockets {
-    None -> filepath.directory_name(settings.session_path) <> "/run"
-    Some(root) -> root
-  }
 
   // Decide how to handle let profiles =  request.profile {.
   let profiles = case request.profile {
@@ -8090,60 +8170,15 @@ fn evolution_trial(
   }
 
   let isolated =
-    Settings(
-      ..settings,
-      session_path: root <> "/state/session.db",
-      token_path: root <> "/state/token",
-      workspace:,
-      domain_paths: None,
-      // A trial is a fresh local session that belongs to no daemon: it is
-      // reachable by no peer, places nothing on another machine, answers no
-      // spawner and cannot restart itself through a profile or config edit.
-      peer_directory: None,
-      peer_defaults: None,
-      remote_reach: None,
-      deadline_tick_ms: None,
-      depth_cap: None,
-      metering: None,
-      spawner: None,
-      laptop: None,
-      first_prompt: None,
-      profile_desk: None,
-      // The trial binds under the source's own socket root, not a directory
-      // below it. The inherited protected list masks that root, and
-      // `codemode.reaching_socket` lifts only a mask lying inside the socket
-      // root, so a nested root would leave the daemon's mask over every
-      // satellite directory and refuse each code-mode launch in the trial.
-      // Per-execution directories are keyed by operation, step, source and a
-      // length-prefixed work root, which is unique to the trial, so trials
-      // cannot collide with each other or with the source session.
-      codemode_sockets: Some(sockets),
-      base_policy: evolution_trial_policy(base, private_trials, workspace),
-      tools: catalog.ToolsConfig(..settings.tools, network: case base.network {
-        policy.NetworkFull -> catalog.ToolNetworkFull
-        policy.NetworkOff | policy.NetworkProxy(_, _) -> catalog.ToolNetworkOff
-      }),
-      helper_pool_size: 2,
-      session_id: "trial-" <> tag,
-      gateway: guarded,
-      evolution_role: Trial(profiles),
-      system: None,
-      home: Some(root <> "/home"),
-      model: machine_strand.ModelIdentity(target.provider, target.model_id),
-      context_window: target.context_window,
-      max_output_tokens: target.max_output_tokens,
-      api: request.api,
-      rules: [],
-      schedules: [],
-      schedule_policy: schedule.ModelSchedulesOff,
-      memory: memory_config.Options(
-        inject: memory_config.InjectsNothing,
-        retired: [],
-      ),
-      advisor: None,
-      // The source workspace's Go caches are writable roots of its own jail;
-      // a trial builds in its fresh fixture and must not share them.
-      go_caches: None,
+    trial_settings(
+      settings,
+      target,
+      request.api,
+      profiles,
+      root,
+      tag,
+      guarded,
+      base,
     )
   use instance <- result.try(open_instance(isolated, log.discard()))
   Ok(
@@ -8156,6 +8191,130 @@ fn evolution_trial(
         |> result.map_error(simplifile.describe_error)
       },
     ),
+  )
+}
+
+/// The private root of the trial named by `tag`: the one directory under this
+/// session's trial parent that `trial_settings` expects as its `root`.
+///
+/// ## Examples
+///
+/// `trial_root(settings, "ab12")` is `"<state>/evolution-trials/ab12"`.
+@internal
+pub fn trial_root(settings: Settings, tag: String) -> String {
+  evolution_trials(settings) <> "/" <> tag
+}
+
+/// The fixture workspace inside a trial's private root.
+///
+/// ## Examples
+///
+/// `trial_workspace("/state/evolution-trials/ab12")` is
+/// `"/state/evolution-trials/ab12/work"`.
+@internal
+pub fn trial_workspace(root: String) -> String {
+  root <> "/work"
+}
+
+// A trial has neither the source conversation nor another trial's filesystem.
+// The guarded provider still dispatches through the actual production runtime,
+// whose filesystem, bash and code-mode tools use the ordinary jail and broker.
+
+/// The one trial recipe: the `Settings` of a fresh jailed coding session for
+/// one arm of a comparison, shared by the governed opener and the evaluation
+/// instrument so neither can drift from the other.
+///
+/// `root` is the trial's private directory, holding the workspace
+/// (`trial_workspace`), the session state and a home; `tag` names the session
+/// (`trial-<tag>`), and the caller owns its uniqueness. The two must pair:
+/// `root` is `trial_root(settings, tag)`, the directory under this session's
+/// trial parent whose mask `evolution_trial_policy` lifts, and a root
+/// elsewhere stays masked and fails closed at the first tool call. The
+/// governed opener derives it that way; so must every other caller.
+/// `profiles` is the arm's exact profile map, empty for a base arm. `gateway`
+/// is the request-guarded gateway every provider call goes through, and
+/// `base` is the source session's sandbox policy, which the trial narrows to
+/// its own workspace.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.trial_settings(settings, target, api, [profile], root, tag, guarded, base)
+/// ```
+@internal
+pub fn trial_settings(
+  settings: Settings,
+  target: model.ResolvedModel,
+  api: String,
+  profiles: List(evolution_profile.Profile),
+  root: String,
+  tag: String,
+  gateway: provider_gateway.Gateway,
+  base: policy.SandboxPolicy,
+) -> Settings {
+  let private_trials = evolution_trials(settings)
+  let workspace = trial_workspace(root)
+
+  // Configure isolated settings and profiles for trial session.
+  let sockets = case settings.codemode_sockets {
+    None -> filepath.directory_name(settings.session_path) <> "/run"
+    Some(socket_root) -> socket_root
+  }
+
+  Settings(
+    ..settings,
+    session_path: root <> "/state/session.db",
+    token_path: root <> "/state/token",
+    workspace:,
+    domain_paths: None,
+    // A trial is a fresh local session that belongs to no daemon: it is
+    // reachable by no peer, places nothing on another machine, answers no
+    // spawner and cannot restart itself through a profile or config edit.
+    peer_directory: None,
+    peer_defaults: None,
+    remote_reach: None,
+    deadline_tick_ms: None,
+    depth_cap: None,
+    metering: None,
+    spawner: None,
+    laptop: None,
+    first_prompt: None,
+    profile_desk: None,
+    // The trial binds under the source's own socket root, not a directory
+    // below it. The inherited protected list masks that root, and
+    // `codemode.reaching_socket` lifts only a mask lying inside the socket
+    // root, so a nested root would leave the daemon's mask over every
+    // satellite directory and refuse each code-mode launch in the trial.
+    // Per-execution directories are keyed by operation, step, source and a
+    // length-prefixed work root, which is unique to the trial, so trials
+    // cannot collide with each other or with the source session.
+    codemode_sockets: Some(sockets),
+    base_policy: evolution_trial_policy(base, private_trials, workspace),
+    tools: catalog.ToolsConfig(..settings.tools, network: case base.network {
+      policy.NetworkFull -> catalog.ToolNetworkFull
+      policy.NetworkOff | policy.NetworkProxy(_, _) -> catalog.ToolNetworkOff
+    }),
+    helper_pool_size: 2,
+    session_id: "trial-" <> tag,
+    gateway:,
+    evolution_role: Trial(profiles),
+    system: None,
+    home: Some(root <> "/home"),
+    model: machine_strand.ModelIdentity(target.provider, target.model_id),
+    context_window: target.context_window,
+    max_output_tokens: target.max_output_tokens,
+    api:,
+    rules: [],
+    schedules: [],
+    schedule_policy: schedule.ModelSchedulesOff,
+    memory: memory_config.Options(
+      inject: memory_config.InjectsNothing,
+      retired: [],
+    ),
+    advisor: None,
+    // The source workspace's Go caches are writable roots of its own jail;
+    // a trial builds in its fresh fixture and must not share them.
+    go_caches: None,
   )
 }
 

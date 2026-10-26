@@ -406,6 +406,14 @@ jobs:
           # mixed bucket.
           - bucket: conformance
             packages: conformance
+          # `eval`, the evaluation instrument, needs what the conformance
+          # bucket deliberately lacks: a jail, because its hidden verifier
+          # refuses to grade outside one, and the repository's history,
+          # because its mined tasks name Loom's own commits. A bucket of its
+          # own gets both without changing what every conformance fixture
+          # exercises.
+          - bucket: eval
+            packages: eval
           # Everything else: seconds per package in the measured run, so
           # bucketing them together costs nothing. This also carries the
           # two packages the "fast" name in the work order didn't spell
@@ -417,13 +425,16 @@ jobs:
           # and both are cheap.
           - bucket: fast
             packages: >-
-              host core machine prompt statem statem_parallel session_view web_view web_client web_mermaid telemetry provider broker executor
+              host core machine prompt statem statem_parallel evalstat gepa session_view web_view web_client web_mermaid telemetry provider broker executor
               mcp lsp tools cap ext codemode harness tui lint sandbox
     steps:
       # actions/checkout v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          # The eval bucket's mined tasks are Loom commits, materialised with
+          # `git archive`; one commit of history would skip every one of them.
+          fetch-depth: ${{ matrix.bucket == 'eval' && '0' || '1' }}
 
       - uses: ./.github/actions/setup-toolchain
         with:
@@ -478,7 +489,7 @@ jobs:
       # The developer fixture checks both host and restricted read views.
       # Restricted reads need bwrap's mount namespace, as in the jail job.
       - name: Install developer fixture tools and jail
-        if: startsWith(matrix.bucket, 'client')
+        if: startsWith(matrix.bucket, 'client') || matrix.bucket == 'eval'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ripgrep bubblewrap
@@ -490,8 +501,10 @@ jobs:
       # the client bucket, and rustup's `rust-analyzer` link exists on the
       # runner without the component, so without this the fixture skips
       # and the gate's census refuses it. Same script as the jail lane's.
+      # The eval bucket's verifier demands platform enforcement, pids
+      # limit included, so it takes the same delegation.
       - name: Delegate enforcement for the client lifecycle tests
-        if: startsWith(matrix.bucket, 'client')
+        if: startsWith(matrix.bucket, 'client') || matrix.bucket == 'eval'
         run: .github/scripts/delegate_cgroup.sh
 
       - name: Install rust-analyzer for the language-server fixture
@@ -814,6 +827,7 @@ jobs:
             check-client-2.log \
             check-runtime-storage-session-events.log \
             check-conformance.log \
+            check-eval.log \
             check-fast.log
   # --------------------------------------------------------- the second OS
   #
@@ -912,6 +926,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          # make check here includes eval, whose mined tasks are Loom commits
+          # read with git archive; one commit of history would skip them.
+          fetch-depth: 0
 
       # The live TUI test drives the built client through a real terminal,
       # and it lives in the `client` package's own suite — the only macOS

@@ -1128,6 +1128,7 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
     as "the test process must know where it is"
   serve.Settings(
     evolution_role: serve.Source,
+    pack: None,
     peer_directory: None,
     peer_defaults: None,
     remote_reach: None,

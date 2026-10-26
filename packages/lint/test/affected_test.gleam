@@ -186,7 +186,9 @@ pub fn session_view_reaches_both_hosts_test() {
       ["packages/session_view/src/session_view/inbox.gleam"],
       real_graph(),
     )
-    == names(["session_view", "tui", "web_view", "client", "conformance"])
+    == names([
+      "session_view", "tui", "web_view", "client", "conformance", "eval",
+    ])
 }
 
 pub fn a_leaf_change_selects_only_itself_test() {
@@ -239,7 +241,7 @@ pub fn a_client_change_keeps_the_signoff_test() {
   let selection =
     affected.select(["packages/client/src/client.gleam"], real_graph())
   assert set.from_list(dict.keys(selection.packages))
-    == names(["client", "conformance"])
+    == names(["client", "conformance", "eval"])
   assert selection.signoff
     == ["touches the daemon (packages/client, which loomd is built from)"]
 }
@@ -253,7 +255,7 @@ pub fn the_daemon_is_what_loomd_is_built_from_test() {
     == names([
       "client", "host", "core", "storage", "session", "machine", "prompt",
       "events", "runtime", "broker", "provider", "tools", "codemode", "mcp",
-      "lsp", "telemetry", "harness",
+      "lsp", "telemetry", "harness", "evalstat",
     ])
   list.each(
     [

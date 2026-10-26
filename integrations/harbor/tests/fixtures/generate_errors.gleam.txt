@@ -1,0 +1,55 @@
+//// How provider-errors.json and failed-session.db(-wal) were made: save as
+//// packages/eval/test/eval/xcheck_err_test.gleam, point `dir` outside /tmp, run
+//// bash scripts/test.sh eval --match 'xcheck_err_test:'. The texts are provider/stream.describe_error's
+//// own output; the databases hold them as the assistant message errorMessage. Do not commit the module.
+
+import core/clock
+import core/entry.{MessageEntry}
+import core/ids
+import core/message.{AssistantMessage, AssistantText, Errored, UserMessage, UserText}
+import core/tx.{InsertEntry, Tx}
+import core/usage_evidence
+import gleam/option.{None, Some}
+import provider/stream
+import simplifile
+import storage/sqlite
+import storage/storage
+
+fn usage() -> message.Usage {
+  message.Usage(0, 0, 0, 0, None, None, 0, message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0), usage_evidence.none())
+}
+
+fn write(name: String, error: stream.ProviderError) {
+  let dir = "/path/outside/tmp/xcheck-err"
+  let assert Ok(Nil) = simplifile.create_directory_all(dir)
+  let path = dir <> "/" <> name <> ".db"
+  let _ = simplifile.delete(path)
+  let gen = ids.generator(clock.stepping(from: 1000, by: 1), seed: 9)
+  let #(a, gen) = ids.mint_entry(gen)
+  let #(b, _) = ids.mint_entry(gen)
+  let assert Ok(store) = sqlite.open(sqlite.config(path:, owner: "w"), clock.fixed(at: 10_000))
+  let text = stream.describe_error(error)
+  let assert Ok(_) =
+    storage.commit(store, Tx(writes: [
+      InsertEntry(MessageEntry(id: a, parent: None, seq: 0, ts: 1_760_000_001_000,
+        message: UserMessage(content: [UserText("go", None)], timestamp: 1_760_000_001_000, origin: None), terminate: False)),
+      InsertEntry(MessageEntry(id: b, parent: Some(a), seq: 0, ts: 1_760_000_002_000,
+        message: AssistantMessage(content: [AssistantText("", None)], api: "anthropic-messages", provider: "harbor",
+          model: "claude-test", response_model: None, response_id: None, diagnostics: None, usage: usage(),
+          stop_reason: Errored, deferred: None, error_message: Some(text), raw_stop_reason: None, end_turn: None,
+          timestamp: 1_760_000_002_000), terminate: False)),
+    ], expected: []))
+  let assert Ok(Nil) = storage.close(store)
+  let assert Ok(Nil) = simplifile.write(dir <> "/" <> name <> ".txt", text)
+  Nil
+}
+
+pub fn xcheck_err_test() {
+  write("rate-limit", stream.HttpError(429, "rate_limit_error", "This request would exceed your organization's rate limit of 50 requests per minute", None))
+  write("auth", stream.HttpError(401, "authentication_error", "invalid x-api-key", None))
+  write("overloaded", stream.HttpError(529, "overloaded_error", "Overloaded", None))
+  write("server", stream.HttpError(500, "api_error", "Internal server error", None))
+  write("transport", stream.TransportFailed("closed"))
+  write("stream", stream.StreamError("overloaded_error", "Overloaded"))
+  write("badrequest", stream.HttpError(400, "invalid_request_error", "messages: text content blocks must be non-empty", None))
+}
