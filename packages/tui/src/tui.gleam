@@ -112,6 +112,7 @@ import session_view/transcript_line.{
 }
 import session_view/worktree_view
 import tui/access as access_command
+import tui/acp/server as acp_server
 import tui/admission
 import tui/agent_strip
 import tui/appearance
@@ -253,6 +254,15 @@ type Launch {
   // rejected launch uses, because a harness tells bad arguments from a failed
   // run by the status alone.
   RunRefused(reason: String)
+
+  // `loom acp` speaks the Agent Client Protocol on standard input and output
+  // (issue #1026). Like `run` it installs no terminal state; the frames it
+  // writes are the whole of standard output.
+  Acp(config: acp_server.Config)
+
+  // Arguments `loom acp` refused. They exit 2, as `run` does, so a launching
+  // orchestrator can tell bad arguments from a protocol failure by status.
+  AcpRefused(reason: String)
 }
 
 // The two catalogue verbs the launcher owns. `rm` carries its consent so the
@@ -410,6 +420,7 @@ pub fn main() {
         | ["deployment", ..]
         | ["directory", ..]
         | ["run", ..]
+        | ["acp", ..]
         | ["claim", ..]
         | ["enroll", ..]
         | ["access", ..]
@@ -437,6 +448,8 @@ pub fn main() {
         Directory(options:, output:) -> run_directory(options, output)
         Run(request:) -> finish_run(request)
         RunRefused(reason:) -> refuse_run(reason)
+        Acp(config:) -> finish_acp(config)
+        AcpRefused(reason:) -> refuse_acp(reason)
         ClaimAccess(arguments:) -> claim.claim_main(arguments)
         Enroll(arguments:) -> claim.enroll_main(arguments)
         Access(arguments:) -> access_command.main(arguments)
@@ -526,6 +539,7 @@ fn help_topic(arguments: List(String)) -> Option(String) {
     Ok("deployment") -> Some(deployment_usage())
     Ok("directory") -> Some(directory_usage())
     Ok("run") -> Some(run_usage())
+    Ok("acp") -> Some(acp_server.usage())
     Ok("claim") | Ok("enroll") -> Some(claim.usage)
     Ok("ext") -> Some(extension_usage())
     Ok("evolution") -> Some(evolution_usage())
@@ -546,6 +560,7 @@ fn is_topic(word: String) -> Bool {
     | "deployment"
     | "directory"
     | "run"
+    | "acp"
     | "ext"
     | "evolution"
     | "distribution"
@@ -910,6 +925,8 @@ fn interactive(launch: Launch, record: String) -> Nil {
     | Directory(..)
     | Run(..)
     | RunRefused(..)
+    | Acp(..)
+    | AcpRefused(..)
     | ClaimAccess(..)
     | Enroll(..)
     | Access(..)
@@ -1005,6 +1022,8 @@ fn interactive(launch: Launch, record: String) -> Nil {
     | Directory(..)
     | Run(..)
     | RunRefused(..)
+    | Acp(..)
+    | AcpRefused(..)
     | ClaimAccess(..)
     | Enroll(..)
     | Access(..)
@@ -1147,7 +1166,9 @@ fn parse_launch(arguments: List(String)) -> Launch {
 // like the next flag, ends the leading run, so the subcommand parser then
 // reports it the way it does for the trailing spelling.
 // The subcommands whose usage lists the daemon options.
-const hoisting_verbs = ["sessions", "deployment", "directory", "ui", "run"]
+const hoisting_verbs = [
+  "sessions", "deployment", "directory", "ui", "run", "acp",
+]
 
 /// Establishes and coordinates hoist daemon options operations for the TUI runtime.
 fn hoist_daemon_options(arguments: List(String)) -> List(String) {
@@ -1208,6 +1229,11 @@ fn parse_words(arguments: List(String)) -> Launch {
       case run.parse(rest) {
         Ok(request) -> Run(request:)
         Error(reason) -> RunRefused(reason <> "\n" <> run_usage())
+      }
+    ["acp", ..rest] ->
+      case acp_server.parse(rest, build_identity.current().version) {
+        Ok(config) -> Acp(config:)
+        Error(reason) -> AcpRefused(reason <> "\n" <> acp_server.usage())
       }
     ["claim", ..rest] -> ClaimAccess(arguments: rest)
     ["enroll", ..rest] -> Enroll(arguments: rest)
@@ -1717,6 +1743,8 @@ pub fn launch_deployment(
     | Directory(..)
     | Run(..)
     | RunRefused(..)
+    | Acp(..)
+    | AcpRefused(..)
     | Sessions(..) -> Error("not a deployment launch")
   }
 }
@@ -1750,6 +1778,8 @@ pub fn launch_directory(arguments: List(String)) -> Result(Output, String) {
     | Deployment(..)
     | Run(..)
     | RunRefused(..)
+    | Acp(..)
+    | AcpRefused(..)
     | Sessions(..) -> Error("not a directory launch")
   }
 }
@@ -2835,6 +2865,7 @@ fn launch_usage() -> String {
   <> "                      Show which configured machines the daemon reaches.\n"
   <> "  directory status    Show the session directory's cluster.\n"
   <> "  run -p <prompt>     Run one prompt headless and print one JSON line.\n"
+  <> "  acp                 Speak the Agent Client Protocol on stdin/stdout.\n"
   <> "  ui [--session <id>] [--operate | --observe] [--open]\n"
   <> "                      Print a link to your home page (sessions by\n"
   <> "                      workspace), or with --session to one session,\n"
@@ -3794,9 +3825,42 @@ pub fn launch_run(arguments: List(String)) -> Result(run.Request, String) {
   }
 }
 
+/// Classifies the words after `loom acp` the way the launcher does, answering
+/// the parsed config or the refusal. It is the test seam for the routing
+/// (`acp` in first position, and daemon options written before it).
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(config) = tui.launch_acp(["acp", "--workspace-root", "/w"])
+/// assert config.roots == ["/w"]
+/// ```
+@internal
+pub fn launch_acp(
+  arguments: List(String),
+) -> Result(acp_server.Config, String) {
+  case parse_launch(arguments) {
+    Acp(config:) -> Ok(config)
+    AcpRefused(reason:) -> Error(reason)
+    _other -> Error("not an acp launch")
+  }
+}
+
 // Runs the command and leaves with its verdict as the exit status.
 fn finish_run(request: run.Request) -> Nil {
   ffi_terminal.halt(run.execute(request))
+  Nil
+}
+
+// Serves the Agent Client Protocol until the client closes standard input.
+fn finish_acp(config: acp_server.Config) -> Nil {
+  ffi_terminal.halt(acp_server.serve(config, acp_server.stdio()))
+  Nil
+}
+
+fn refuse_acp(reason: String) -> Nil {
+  io.println_error("loom: " <> reason)
+  ffi_terminal.halt(acp_server.exit_bad_arguments)
   Nil
 }
 
