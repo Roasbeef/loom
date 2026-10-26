@@ -14,6 +14,7 @@ import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import qcheck
 import support/world
@@ -738,4 +739,179 @@ pub fn the_log_fixes_a_step_s_width_and_the_checked_fold_holds_rows_to_it_test()
   let assert Error(reason) =
     gepa.replay(list.append(before, [gepa.Reflected(..second, of: 3)]))
   assert string.contains(reason, "at the step's width")
+}
+
+pub fn a_child_minted_after_a_truncated_or_unpaid_reflection_is_refused_test() {
+  // The checked fold holds the child to the live reflection before it: an
+  // answer reported truncated owes a refusal, not a child, and so does the
+  // plain fold, whatever `admit` was or was not asked.
+  let #(_, events) = world.search(config(), world.planted())
+  let before =
+    list.take_while(events, fn(event) {
+      case event {
+        gepa.Reflected(..) -> False
+        _ -> True
+      }
+    })
+  let assert [gepa.Reflected(..) as reflected, gepa.Minted(..) as minted, ..] =
+    list.drop(events, list.length(before))
+  let truncated =
+    list.append(before, [
+      gepa.Reflected(..reflected, finish: gepa.Truncated),
+      minted,
+    ])
+  let assert Error(checked) = gepa.replay_checked(truncated, config())
+  assert string.contains(checked, "reported truncated")
+  let assert Error(plain) = gepa.replay(truncated)
+  assert string.contains(plain, "answer was truncated")
+
+  // A zero-cost reflection the search recorded for want of budget owes
+  // nothing: the next row must be the refusal `next` decides, never a
+  // child, which a check keyed on "a child after a reflection" rather
+  // than on the request let through. Under the caps such a row only
+  // follows an overspending host, so the state is folded unchecked and
+  // the question put to `expected` with no request pending.
+  let dear =
+    gepa.Config(
+      ..config(),
+      costs: Costs(trial: 0.1, attempts: 1, reflection: 30.0),
+      limits: Limits(..config().limits, budget: 71.0),
+    )
+  let #(_, unpaid) = world.search(dear, world.World(world.Unbounded, []))
+  let upto =
+    list.take_while(unpaid, fn(event) {
+      case event {
+        gepa.Refused(..) -> False
+        _ -> True
+      }
+    })
+  let assert Ok(gepa.Reflected(cost: 0.0, ..)) = list.last(upto)
+  let assert Ok(at) = gepa.replay(upto)
+  let assert Ok(gepa.Minted(..) as smuggled) =
+    gepa.admit(at, "a", Ok("better"), gepa.content_id)
+  let assert Error(reason) = gepa.expected(at, dear, None, smuggled)
+  assert string.contains(reason, "did not decide this row")
+
+  // The lost-answer resume still replays: a second live reflection in the
+  // child's place answers what `next` asks of the state now.
+  let again = list.append(before, [reflected, reflected, minted])
+  assert gepa.replay_checked(list.take(again, list.length(again)), config())
+    |> result.is_ok
+}
+
+pub fn an_open_step_is_priced_at_the_log_s_width_and_a_wild_width_is_refused_test() {
+  // A two-proposal step resumed under a one-proposal configuration still
+  // holds back the second child's minibatch before the first's: the hold
+  // is the log's width, not the configuration's.
+  let scripted = world.World(world.WorstCase, [#(1, "better|even better")])
+  let #(_, events) = world.search(two_proposals(), scripted)
+  let assert Ok(after_second) = gepa.replay(list.take(events, 7))
+  let assert Some(gepa.Progress(settled: 2, width: 2, ..)) = after_second.open
+  let narrowed = gepa.Config(..two_proposals(), proposals: 1)
+  let assert Ok(gepa.Evaluate(stage: gepa.ChildMinibatch, cap:, ..)) =
+    gepa.next(after_second, narrowed)
+  let wide =
+    budget.Design(
+      validate_tasks: 6,
+      minibatch_tasks: 2,
+      trials: 2,
+      tune_trials: 1,
+      proposals: 2,
+    )
+  let left = narrowed.limits.budget -. gepa.spent(after_second)
+  assert cap
+    == budget.cap(
+      remaining: left,
+      hold: budget.held_back(
+        narrowed.costs,
+        wide,
+        budget.BeforeChildMinibatch(later: 1),
+      ),
+    )
+
+  // The second proposal's reflection is held to the log's width too. With
+  // a budget of exactly the seed's run, one two-proposal step and the
+  // confirm, the first reflection leaves exactly the second's hold; a
+  // first reflection charged one unit more leaves the second unaffordable
+  // at width two, though a width-one hold would still be covered.
+  let tight =
+    gepa.Config(..narrowed, limits: Limits(..narrowed.limits, budget: 110.0))
+  let assert [seeded, validated, parent_mb, gepa.Reflected(..) as first, c1, ..] =
+    events
+  let assert Ok(dear) =
+    gepa.replay([
+      seeded,
+      validated,
+      parent_mb,
+      gepa.Reflected(..first, cost: first.cost +. 1.0),
+      c1,
+    ])
+  assert gepa.next(dear, tight)
+    == Ok(
+      gepa.Record(gepa.Reflected(
+        step: 1,
+        cost: 0.0,
+        ref: "",
+        finish: gepa.Unknown,
+        proposal: 2,
+        of: 2,
+      )),
+    )
+  let assert Ok(exact) = gepa.replay([seeded, validated, parent_mb, first, c1])
+  let assert Ok(gepa.Reflect(proposal: 2, of: 2, ..)) = gepa.next(exact, tight)
+
+  // A row claiming a thousand proposals is refused by the fold, so a
+  // hand-edited log cannot make a resumed search reflect past its ceilings.
+  let before =
+    list.take_while(events, fn(event) {
+      case event {
+        gepa.Reflected(..) -> False
+        _ -> True
+      }
+    })
+  let assert Error(reason) =
+    gepa.replay(
+      list.append(before, [gepa.Reflected(1, 1.0, "", gepa.Complete, 1, 1000)]),
+    )
+  assert string.contains(reason, "n <= " <> int.to_string(gepa.max_proposals))
+
+  // A configuration past the bound is read at the bound.
+  let assert Ok(gepa.Reflect(of: of, ..)) =
+    gepa.next(
+      replayed_until(events, fn(event) {
+        case event {
+          gepa.Evaluated(stage: gepa.ParentMinibatch, ..) -> True
+          _ -> False
+        }
+      }),
+      gepa.Config(..two_proposals(), proposals: 1000),
+    )
+  assert of == gepa.max_proposals
+}
+
+pub fn hidden_ids_are_redacted_from_the_notes_and_the_digest_test() {
+  // The records hide a test's name per task; the background and a rejected
+  // rewrite are not about one task, so every hidden id is redacted there.
+  let hidden =
+    gepa.Config(
+      ..config(),
+      slots: ["a"],
+      hidden: [#("u0", ["core.secret_test"]), #("v1", ["core.other_test"])],
+      background: [#("a", "Never mention core.secret_test or other_test.")],
+    )
+  let scripted =
+    world.World(world.WorstCase, [#(1, "worse: see core.secret_test")])
+  let #(_, events) = world.search(hidden, scripted)
+  let second =
+    replayed_until(events, fn(event) {
+      case event {
+        gepa.Evaluated(stage: gepa.ParentMinibatch, step: 2, ..) -> True
+        _ -> False
+      }
+    })
+
+  let assert Ok(gepa.Reflect(request:, ..)) = gepa.next(second, hidden)
+  assert request.notes == ["Never mention <test 2> or <test 1>."]
+  assert request.tried
+    == [prompt.Tried(1, "screened_out", "worse: see <test 2>")]
 }

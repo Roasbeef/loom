@@ -523,6 +523,11 @@ pub type Request {
   Done
 }
 
+/// The most proposals a step may ask for, whatever the configuration or a
+/// log's `of` says: a bound on what a hand-edited row can make a resumed
+/// search reflect on, and on what one step may hold back.
+pub const max_proposals = 16
+
 /// The reason of the `Refused` row a step ends in when its parent scored
 /// one on every minibatch task: there is nothing for a reflection to
 /// improve on, so none is paid for.
@@ -640,7 +645,10 @@ pub fn replay(events: List(Event)) -> Result(State, String) {
 /// Folds a log that a host driving `next` wrote, refusing the first row
 /// that is not the answer to the request `next` made before it, and then
 /// everything `replay` refuses. This is the fold for an embedder; `replay`
-/// alone is for a host whose rows did not come from `next`.
+/// alone is for a host whose rows did not come from `next`. The fold
+/// carries the one request two rows answer, a live `Reflect`, so the
+/// child or refusal after a `Reflected` row is held to that request and
+/// never to the question `next` would ask of the state in between.
 ///
 /// ## Examples
 ///
@@ -662,127 +670,173 @@ pub fn replay_checked(
     [Seeded(candidate:, components:), ..rest] ->
       list.index_fold(
         rest,
-        Ok(start(candidate, components)),
+        Ok(#(start(candidate, components), None)),
         fn(folded, event, position) {
-          use state <- result.try(folded)
+          use #(state, pending) <- result.try(folded)
 
           {
-            use Nil <- result.try(expected(state, config, event))
-            apply(state, event)
+            use answered <- result.try(expected(state, config, pending, event))
+            use state <- result.map(apply(state, event))
+
+            #(state, still_pending(answered, event))
           }
           |> result.map_error(fn(reason) {
             "search row " <> int.to_string(position + 2) <> ": " <> reason
           })
         },
       )
+      |> result.map(fn(folded) { folded.0 })
 
     [] -> Error("search row missing: the seed")
     [_, ..] -> Error("search row 1: the log must begin with the seed")
   }
 }
 
-/// Whether a row answers the request `next` makes of the state before
-/// it. A `Record` must be applied as decided; an evaluation must be of
-/// the stage, step, candidate, tasks and cap asked for and cost no more
-/// than its cap; a reflection must be of the step asked for and cost no
-/// more than its worst case; a child must be minted from the parent and
-/// slot asked for, or refused with no child; a child the host could not
-/// build is refused where its minibatch was asked for.
+/// The request the next row must answer when the row just folded did not
+/// finish answering it: a `Reflect` answered by a live `Reflected` row is
+/// still owed its child or refusal. A zero-cost `Reflected` the search
+/// recorded itself owes nothing; `next` then decides the refusal.
+fn still_pending(answered: Request, event: Event) -> Option(Request) {
+  case answered, event {
+    Reflect(..), Reflected(..) -> Some(answered)
+    _, _ -> None
+  }
+}
+
+/// Whether a row answers the request before it: `pending` when a live
+/// reflection is still owed its child or refusal, else the request `next`
+/// makes of the state. A `Record` must be applied as decided; an
+/// evaluation must be of the stage, step, candidate, tasks and cap asked
+/// for and cost no more than its cap; a reflection must be of the step and
+/// proposal asked for and cost no more than its worst case; a child must
+/// be minted from the parent and slot asked for and never after an answer
+/// reported `Truncated`, or refused with no child; a child the host could
+/// not build is refused where its minibatch was asked for. The request the
+/// row answered comes back, so the fold can tell whether it is still owed.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // gepa.expected(state, config, Stopped(budget.Steps))
+/// // gepa.expected(state, config, None, Stopped(budget.Steps))
 /// //   == Error("the search did not decide this row: ...")
 /// ```
 ///
 pub fn expected(
   state: State,
   config: Config,
+  pending: Option(Request),
   event: Event,
-) -> Result(Nil, String) {
-  // A child, or the refusal of an answer, that follows a reflection answers
-  // the `Reflect` request before it, not the question `next` asks now:
-  // after the reflection was charged `next` asks whether another one is
-  // still affordable, which is the resume case, not this one.
-  case state.open, event {
-    Some(Progress(reached: ReflectedOnce, step:, parent:, ..)),
+) -> Result(Request, String) {
+  // A child, or the refusal of an answer, that follows a live reflection
+  // answers the `Reflect` request before it, not the question `next` asks
+  // now: after the reflection was charged `next` asks whether another one
+  // is still affordable, which is the resume case, not this one.
+  case pending, state.open, event {
+    Some(Reflect(step:, parent:, slot:, ..) as request),
+      Some(progress),
       Minted(parent: got_parent, step: got_step, slot: got_slot, ..)
     -> {
-      use drawn <- result.try(draws(state, config, step))
+      use Nil <- result.try(require(
+        step == got_step && parent == got_parent && slot == got_slot,
+        "the child is not minted from the parent and slot asked for",
+      ))
 
       require(
-        step == got_step && parent == got_parent && drawn.slot == got_slot,
-        "the child is not minted from the parent and slot asked for",
+        progress.finish != Some(Truncated),
+        "a child was minted from an answer reported truncated",
       )
+      |> result.replace(request)
     }
 
-    Some(Progress(reached: ReflectedOnce, step:, ..)),
+    Some(Reflect(step:, ..) as request),
+      _,
       Refused(step: got_step, candidate: None, ..)
-    -> require(step == got_step, "the refusal is not of the step asked for")
+    ->
+      require(step == got_step, "the refusal is not of the step asked for")
+      |> result.replace(request)
 
-    _, _ -> answers(state, config, event)
+    // A second reflection in place of the child is a resumed search that
+    // lost the answer: it answers whatever `next` asks of the state now, a
+    // reflection again or a refusal for budget.
+    Some(Reflect(..)), _, Reflected(..) -> answers(state, config, event)
+
+    Some(request), _, _ ->
+      Error("the row does not answer the request: " <> describe(request))
+
+    None, _, _ -> answers(state, config, event)
   }
 }
 
-/// Whether a row answers the request `next` makes of the state before it.
-fn answers(state: State, config: Config, event: Event) -> Result(Nil, String) {
+/// Whether a row answers the request `next` makes of the state before it,
+/// and that request.
+fn answers(
+  state: State,
+  config: Config,
+  event: Event,
+) -> Result(Request, String) {
   use request <- result.try(next(state, config))
 
   // Each request admits the rows that answer it, and no other.
-  case request, event {
-    Record(wanted), got ->
-      require(
-        wanted == got,
-        "the search did not decide this row: it recorded "
-          <> describe(Record(wanted)),
-      )
+  {
+    case request, event {
+      Record(wanted), got ->
+        require(
+          wanted == got,
+          "the search did not decide this row: it recorded "
+            <> describe(Record(wanted)),
+        )
 
-    Evaluate(stage:, step:, candidate:, tasks:, cap:, ..),
-      Evaluated(
-        stage: got_stage,
-        step: got_step,
-        candidate: got_candidate,
-        tasks: got_tasks,
-        cap: got_cap,
-        cost:,
-        ..,
-      )
-    -> {
-      use Nil <- result.try(require(
-        stage == got_stage
-          && step == got_step
-          && candidate == got_candidate
-          && tasks == got_tasks
-          && cap == got_cap,
-        "the evaluation is not the one asked for: " <> describe(request),
-      ))
+      Evaluate(stage:, step:, candidate:, tasks:, cap:, ..),
+        Evaluated(
+          stage: got_stage,
+          step: got_step,
+          candidate: got_candidate,
+          tasks: got_tasks,
+          cap: got_cap,
+          cost:,
+          ..,
+        )
+      -> {
+        use Nil <- result.try(require(
+          stage == got_stage
+            && step == got_step
+            && candidate == got_candidate
+            && tasks == got_tasks
+            && cap == got_cap,
+          "the evaluation is not the one asked for: " <> describe(request),
+        ))
 
-      require(cost <=. cap, "an evaluation spent past its cap")
+        require(cost <=. cap, "an evaluation spent past its cap")
+      }
+
+      Evaluate(stage: ChildMinibatch, step:, candidate:, ..),
+        Refused(step: got_step, candidate: Some(got_candidate), ..)
+      ->
+        require(
+          step == got_step && candidate == got_candidate,
+          "a refused child is the one whose minibatch was asked for",
+        )
+
+      Reflect(step:, proposal:, of:, worst_case:, ..),
+        Reflected(step: got_step, cost:, proposal: got_proposal, of: got_of, ..)
+      -> {
+        use Nil <- result.try(require(
+          step == got_step && proposal == got_proposal && of == got_of,
+          "the reflection is not the one asked for",
+        ))
+
+        require(
+          cost <=. worst_case,
+          "a reflection cost more than its worst case",
+        )
+      }
+
+      Done, _ -> Error("a row follows the stop row")
+      _, _ ->
+        Error("the row does not answer the request: " <> describe(request))
     }
-
-    Evaluate(stage: ChildMinibatch, step:, candidate:, ..),
-      Refused(step: got_step, candidate: Some(got_candidate), ..)
-    ->
-      require(
-        step == got_step && candidate == got_candidate,
-        "a refused child is the one whose minibatch was asked for",
-      )
-
-    Reflect(step:, proposal:, of:, worst_case:, ..),
-      Reflected(step: got_step, cost:, proposal: got_proposal, of: got_of, ..)
-    -> {
-      use Nil <- result.try(require(
-        step == got_step && proposal == got_proposal && of == got_of,
-        "the reflection is not the one asked for",
-      ))
-
-      require(cost <=. worst_case, "a reflection cost more than its worst case")
-    }
-
-    Done, _ -> Error("a row follows the stop row")
-    _, _ -> Error("the row does not answer the request: " <> describe(request))
   }
+  |> result.replace(request)
 }
 
 /// A request in a sentence, for a refusal.
@@ -1214,8 +1268,9 @@ fn apply_reflected(
         "a reflection needs an open step whose children have not run",
       ))
       use Nil <- result.try(require(
-        proposal >= 1 && of >= proposal,
-        "a reflection is proposal i of n, with 1 <= i <= n",
+        proposal >= 1 && of >= proposal && of <= max_proposals,
+        "a reflection is proposal i of n, with 1 <= i <= n <= "
+          <> int.to_string(max_proposals),
       ))
 
       // The first reflection sets the width; the rest are held to it.
@@ -1266,6 +1321,10 @@ fn apply_minted(state: State, event: Event) -> Result(State, String) {
           && parent == progress.parent
           && progress.reached == ReflectedOnce,
         "a candidate row needs an open step that has reflected and has no child",
+      ))
+      use Nil <- result.try(require(
+        progress.finish != Some(Truncated),
+        "a candidate row follows a reflection whose answer was truncated",
       ))
       use Nil <- result.try(require(
         !list.any(state.members, fn(member) { member.candidate == candidate }),
@@ -1820,7 +1879,7 @@ fn within_step(
 /// resumed step finishes at the width it began at.
 fn width_of(progress: Progress, config: Config) -> Int {
   case progress.reached {
-    ParentMeasured -> int.max(config.proposals, 1)
+    ParentMeasured -> int.clamp(config.proposals, 1, max_proposals)
     ReflectedOnce | ChildMinted | ChildMeasured | ChildValidated ->
       progress.width
   }
@@ -1839,7 +1898,7 @@ fn screen_or_validate(
   drawn: Draws,
 ) -> Result(Request, String) {
   let left = remaining(state, config)
-  let design = design_of(config)
+  let design = design_at(config, width_of(progress, config))
   let live = live_children(state, progress)
   let unmeasured =
     list.filter(live, fn(child) { !measured_at(state, child, progress.step) })
@@ -1932,7 +1991,7 @@ fn reflect_or_refuse(
     budget.reflection_affordable(
       remaining: left,
       costs: config.costs,
-      design: design_of(config),
+      design: design_at(config, width),
       proposal:,
     ),
     progress.reached
@@ -1954,8 +2013,15 @@ fn reflect_or_refuse(
           records: records(state, config, progress, drawn.slot),
           notes: option.values([
             option.from_result(list.key_find(config.background, drawn.slot)),
-          ]),
-          tried: tried(state, progress, drawn.slot),
+          ])
+            |> list.map(prompt.redact_ids(_, hidden_everywhere(config))),
+          tried: tried(state, progress, drawn.slot)
+            |> list.map(fn(row) {
+              prompt.Tried(
+                ..row,
+                text: prompt.redact_ids(row.text, hidden_everywhere(config)),
+              )
+            }),
         ),
         worst_case: config.costs.reflection,
       ))
@@ -2011,9 +2077,18 @@ fn records(
   })
 }
 
+/// Every identifier hidden for any task, for the notes and the digest,
+/// which are not about one task: a background a host wrote with a test's
+/// name in it, or a rejected rewrite that smuggled one, must not show the
+/// reflector what the records hide.
+fn hidden_everywhere(config: Config) -> List(String) {
+  list.flat_map(config.hidden, fn(hidden) { hidden.1 })
+}
+
 /// The digest of rewrites of `slot` this lineage already tried and did
 /// not keep: the children of the parent and of its ancestors that were
-/// refused, screened out or shown harmed in that slot, and the siblings
+/// refused after minting, screened out or settled `Discarded` (shown
+/// harmed against their parent on validate) in that slot, and the siblings
 /// this step has already minted, oldest first, the last `prompt.max_tried`
 /// of them. A child whose answer was refused before minting left no text
 /// and is not in it; one shown inconclusive or left unsettled was not
@@ -2187,14 +2262,22 @@ fn draws(state: State, config: Config, step: Int) -> Result(Draws, String) {
 }
 
 /// The design the configuration describes, the minibatch clamped to the
-/// tune split.
+/// tune split and the width clamped to `max_proposals`: what a step not
+/// yet begun is priced at.
 fn design_of(config: Config) -> Design {
+  design_at(config, int.clamp(config.proposals, 1, max_proposals))
+}
+
+/// The design at a given width: an open step is priced at the width its
+/// log recorded, not at the configuration's, so a resumed step's holds
+/// match the rows it will write.
+fn design_at(config: Config, width: Int) -> Design {
   budget.Design(
     validate_tasks: list.length(config.validate),
     minibatch_tasks: int.min(config.minibatch, list.length(config.tune)),
     trials: config.k,
     tune_trials: config.k_tune,
-    proposals: int.max(config.proposals, 1),
+    proposals: width,
   )
 }
 
