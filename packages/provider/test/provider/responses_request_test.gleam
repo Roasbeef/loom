@@ -128,6 +128,11 @@ pub fn thinking_levels_and_request_overrides_test() {
           request,
         )
       let assert Ok(body) = json.parse(built.body) as "each level produces JSON"
+      let subscription = responses.build_subscription_request(resolved, request)
+      let assert Ok(subscription_body) = json.parse(subscription.body)
+        as "The subscription request produces JSON."
+      assert wire.field(subscription_body, "reasoning")
+        == wire.field(body, "reasoning")
       assert wire.field(body, "instructions") == Error(Nil)
       assert wire.field(body, "max_output_tokens") == Ok(json.Int(123))
       case pair.1 {

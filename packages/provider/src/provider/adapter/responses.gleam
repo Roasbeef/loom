@@ -215,6 +215,13 @@ type Part {
   )
 }
 
+// A missing part closure is the only item validation failure eligible for
+// bounded recovery; all other witness failures remain terminal.
+type ItemValidationError {
+  UnclosedParts
+  InvalidItem(reason: String)
+}
+
 // Function calls own argument bytes directly. Messages and reasoning items own
 // typed parts; the distinction prevents a text event from editing a call.
 type ItemKind {
@@ -1403,7 +1410,12 @@ fn close_item(
     acc,
     "item_done_lookup",
   )
-  use Nil <- or_invalid(verify_item(item, canonical), acc)
+  use Nil <- or_item_validation(
+    verify_item(item, canonical),
+    acc,
+    item,
+    canonical,
+  )
 
   // Allocate empty thinking block if item is an empty thought.
   let #(empty_block, next_block) = case item.kind, item.parts {
@@ -1423,18 +1435,26 @@ fn close_item(
 // Part arrays are indexed arrays, not sparse maps. Summary and content arrays
 // each prove their own contiguous positions before matching the item witness.
 /// Verifies completed item consistency and part continuity against canonical value.
-fn verify_item(item: Item, canonical: JsonValue) -> Result(Nil, String) {
-  // A supplied initial phase is a witness, not a default. An omitted phase
-  // may be learned at completion, but an observed one cannot be rewritten.
+fn verify_item(
+  item: Item,
+  canonical: JsonValue,
+) -> Result(Nil, ItemValidationError) {
+  // An omitted phase can be learned at completion; an observed phase cannot
+  // be rewritten by the final witness.
   use <- bool.guard(
     item.phase != None
       && item.phase != option.from_result(wire.string_field(canonical, "phase")),
-    Error("item_phase_mismatch"),
+    Error(InvalidItem("item_phase_mismatch")),
   )
   use <- bool.guard(
     list.any(item.parts, fn(part) { part.closure != Closed }),
-    Error("item_parts_unclosed"),
+    Error(UnclosedParts),
   )
+  verify_item_rest(item, canonical) |> result.map_error(InvalidItem)
+}
+
+/// Checks the remaining item witnesses after part closure is established.
+fn verify_item_rest(item: Item, canonical: JsonValue) -> Result(Nil, String) {
   use <- bool.guard(
     wire.string_field(canonical, "status") == Ok("in_progress"),
     Error("item_status_in_progress"),
@@ -1482,6 +1502,89 @@ fn verify_item(item: Item, canonical: JsonValue) -> Result(Nil, String) {
       )
       Ok(Nil)
     }
+  }
+}
+
+/// Preserves the validation variant without inspecting a diagnostic string.
+fn or_item_validation(
+  value: Result(Nil, ItemValidationError),
+  acc: Accumulator,
+  item: Item,
+  canonical: JsonValue,
+  then: fn(Nil) -> #(Accumulator, List(StreamEvent)),
+) -> #(Accumulator, List(StreamEvent)) {
+  // Only the missing part witness selects the bounded recovery class.
+  case value {
+    Ok(Nil) -> then(Nil)
+    Error(InvalidItem(reason)) -> malformed(acc, reason)
+    Error(UnclosedParts) -> {
+      let open = list.filter(item.parts, fn(part) { part.closure != Closed })
+
+      // Report the first unclosed part without its contents or identifier.
+      let first = case open {
+        [part, ..] ->
+          part_kind_name(part.kind) <> "/" <> closure_name(part.closure)
+        [] -> "unknown"
+      }
+
+      // Item kinds are a local, closed vocabulary.
+      let kind = case item.kind {
+        Message -> "message"
+        Thought -> "reasoning"
+        Function(..) -> "function_call"
+      }
+
+      // Never copy an unknown remote status into the diagnostic.
+      let status = case wire.string_field(canonical, "status") {
+        Ok("completed") -> "completed"
+        Ok("in_progress") -> "in_progress"
+        Ok("incomplete") -> "incomplete"
+        Ok(_) | Error(_) -> "unknown"
+      }
+
+      fail(
+        acc,
+        stream.RecoverableStreamCorruption(corruption.report(
+          at: "provider/adapter/responses",
+          on: "provider stream; " <> acc.event,
+          expected: "consistent Responses item and terminal witnesses",
+          context: "reason=item_parts_unclosed; kind="
+            <> kind
+            <> "; status="
+            <> status
+            <> "; open="
+            <> first
+            <> "; parts="
+            <> int.to_string(list.length(item.parts))
+            <> "; unclosed="
+            <> int.to_string(list.length(open))
+            <> acc.positions
+            <> "; last_seq="
+            <> diagnostic_number(acc.sequence)
+            <> "; bytes="
+            <> diagnostic_number(Some(acc.bytes)),
+        )),
+      )
+    }
+  }
+}
+
+/// Maps a part kind to a locally defined diagnostic label.
+fn part_kind_name(kind: PartKind) -> String {
+  case kind {
+    OutputText -> "output_text"
+    Refusal -> "refusal"
+    Summary -> "summary"
+    Reasoning -> "reasoning"
+  }
+}
+
+/// Maps a closure state to a locally defined diagnostic label.
+fn closure_name(closure: Closure) -> String {
+  case closure {
+    Open -> "open"
+    TextDone -> "text_done"
+    Closed -> "closed"
   }
 }
 

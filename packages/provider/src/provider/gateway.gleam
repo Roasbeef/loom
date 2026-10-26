@@ -81,7 +81,7 @@ import provider/model.{
 }
 import provider/pricing.{type Pricing}
 import provider/profile.{type Profile}
-import provider/retry.{Retryable, Terminal}
+import provider/retry.{Retryable, RetryableWithin, Terminal}
 import provider/secret.{type SecretStore}
 import provider/stream.{
   type AttemptOutcome, type Control, type StreamEvent, type StreamHandle,
@@ -2078,7 +2078,8 @@ fn continue_terminal(
       case retry.classify(error) {
         Retryable(backoff_hint_ms: _) ->
           attempt(walk, ordinal + 1, rest, report)
-        Terminal -> process.send(walk.events, with_accounting(terminal, report))
+        RetryableWithin(..) | Terminal ->
+          process.send(walk.events, with_accounting(terminal, report))
       }
     _, _ -> process.send(walk.events, with_accounting(terminal, report))
   }

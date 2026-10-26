@@ -203,6 +203,9 @@ pub type ProviderError {
   /// The stream carried data the adapter could not decode.
   MalformedStream(report: CorruptionReport)
 
+  /// A Responses item closed before one of its parts had closed.
+  RecoverableStreamCorruption(report: CorruptionReport)
+
   /// The provider used a stop reason the adapter does not know.
   UnmappedStopReason(raw: String)
 
@@ -498,7 +501,8 @@ pub fn describe_error(error: ProviderError) -> String {
     StreamError(api_error_type:, message:) ->
       "provider stream error (" <> api_error_type <> "): " <> message
     StreamDisconnected(context:) -> "provider stream disconnected: " <> context
-    MalformedStream(report:) -> corruption.describe(report)
+    MalformedStream(report:) | RecoverableStreamCorruption(report:) ->
+      corruption.describe(report)
     UnmappedStopReason(raw:) -> "provider used an unmapped stop reason: " <> raw
     NoIdentity(role:) -> "no model identity configured for role " <> role
     UnknownProvider(provider:) -> "no provider registered under " <> provider

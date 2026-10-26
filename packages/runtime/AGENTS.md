@@ -1071,3 +1071,20 @@ and lease custody. The shorter quiet period lets a parked writer release
 transient commit/read heap before the next heartbeat wakes its mailbox.
 `writer_renewal_test` observes actual hibernation, request wake-up, repeated
 renewal and abnormal retirement after lease loss.
+
+
+## Bounded Responses recovery
+
+Recoverable Responses corruption carries a positive `retry_max_attempts` ceiling
+through assistant diagnostics. The planner narrows the captured retry policy
+before checking the existing attempt number, persists the resulting `Bounded`
+policy, and never widens it on later transport failures or orphan recovery.
+Configured one- and two-attempt budgets remain stricter. Failed summaries use
+the same rule through `OperationError.details`: a host hook producing
+`SummaryFailed` must preserve the failed response diagnostics there. The default
+runtime summary hook produces successful summaries only; no production failed
+summary adapter exists to translate those diagnostics automatically.
+
+No durable schema field or configuration option is added. Original assistant
+failures and usage commit on both retry and exhaustion; summary request usage
+settles before summary progress. See protocol-change/101.

@@ -115,6 +115,10 @@ not split the batch. These are transient wire projections.
   response-budget refusal retain their bounded cancellation paths.
 
 - `ProviderError.WithContext` carries the protocol 028 diagnostic envelope.
+- Responses unclosed-part corruption uses `RecoverableStreamCorruption` and
+  `RetryableWithin` with three total attempts; the gateway forwards it without
+  fallback. Other malformed witnesses remain terminal. Structural diagnostics
+  retain only allowlisted labels and counts, not response content or IDs.
   `FailureObservation` names one of four local boundaries, the initiating
   event, known request/attempt identity, and configured time bounds. The
   envelope normalizes to at most one observation per boundary; oversized

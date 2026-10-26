@@ -2,10 +2,12 @@
 
 import core/accounting
 import core/codec
+import core/corruption
 import core/json
 import core/message
 import core/usage_evidence
 import gleam/bit_array
+import gleam/list as gleam_list
 import gleam/option.{None, Some}
 import gleam/string
 import provider/adapter/responses
@@ -122,4 +124,44 @@ pub fn responses_validation_reason_survives_durable_failure_test() {
   assert string.contains(json.to_string(encoded), "local/request")
   assert !string.contains(description, "canary-provider-secret")
   assert !string.contains(json.to_string(encoded), "canary-provider-secret")
+}
+
+pub fn bounded_corruption_preserves_context_usage_and_cap_test() {
+  let usage = accounting.unknown_usage(usage_evidence.Other)
+  let failure =
+    stream.RecoverableStreamCorruption(corruption.report(
+      "responses",
+      "response",
+      "closed item",
+      "reason=terminal_output_item_incomplete",
+    ))
+    |> stream.with_context(stream.FailureObservation(
+      stream.RuntimeSource,
+      stream.TerminalResponse,
+      Some(1),
+      Some(1000),
+      Some(20),
+      Some("local/request"),
+    ))
+  let settled =
+    effects.settle_failure(
+      failure,
+      harness.configuration(),
+      50,
+      accounting.from_usage(usage),
+    )
+  assert codec.decode_message(codec.encode_message(settled)) == Ok(settled)
+  let assert message.AssistantMessage(
+    diagnostics: Some(json.Object(fields)),
+    raw_stop_reason:,
+    usage: retained,
+    error_message: Some(description),
+    ..,
+  ) = settled
+    as "Bounded corruption settles durably."
+  assert raw_stop_reason == Some("retryable")
+  assert retained == usage
+  assert gleam_list.key_find(fields, "retry_max_attempts") == Ok(json.Int(3))
+  assert string.contains(json.to_string(json.Object(fields)), "local/request")
+  assert string.contains(description, "terminal_output_item_incomplete")
 }
