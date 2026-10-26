@@ -119,7 +119,10 @@ pub fn score_for(scores: List(#(String, Float)), task: String) -> Float {
   result.unwrap(list.key_find(scores, task), 0.0)
 }
 
-/// The arithmetic mean of a list, zero of nothing.
+/// The arithmetic mean of a list, zero of nothing, summed in ascending
+/// order so that the same scores in any order give the same float: a
+/// left fold over `[1/3, 2/3, 1.0]` and over `[1.0, 2/3, 1/3]` differ by
+/// an ulp, and a screen decided on an ulp is decided by the task order.
 ///
 /// ## Examples
 ///
@@ -132,7 +135,25 @@ pub fn mean(values: List(Float)) -> Float {
   case values {
     [] -> 0.0
     [_, ..] ->
-      list.fold(values, 0.0, float.add) /. int.to_float(list.length(values))
+      list.sort(values, float.compare)
+      |> list.fold(0.0, float.add)
+      |> float.divide(int.to_float(list.length(values)))
+      |> result.unwrap(0.0)
+  }
+}
+
+/// One part in a billion: two means closer than this are the same mean.
+/// Per-task scores are pass counts over `k` trials, so two means that
+/// differ at all differ by at least `1 / (k * tasks)`, far above the
+/// rounding of a sum, and anything closer is rounding.
+const same_mean = 1.0e-9
+
+/// How a child's mean stands against its parent's, rounding allowed.
+fn compare_means(child: Float, parent: Float) -> order.Order {
+  case child >. parent +. same_mean, parent >. child +. same_mean {
+    True, _ -> order.Gt
+    False, True -> order.Lt
+    False, False -> order.Eq
   }
 }
 
@@ -337,9 +358,11 @@ pub fn slot_for(step: Int, slots: List(String)) -> Result(String, Nil) {
 
 /// The spend filter: the child goes on to validate when the mean over
 /// `tasks` of its per-task score is strictly above the parent's, or equal
-/// to it while the child scores above zero on a task the parent scored
-/// zero on. Both vectors are read by task, so the comparison is over the
-/// same tasks whatever order the scores arrived in.
+/// to it while the child scores above zero on a task the parent measured
+/// and scored zero on. Both vectors are read by task, so the comparison
+/// is over the same tasks whatever order the scores arrived in, the means
+/// are summed in one order, and two means within a part in a billion are
+/// equal, so the task order can never decide a screen.
 ///
 /// The tie rule is the one exception to strictness, and it is narrow by
 /// design. A parent's zero on a task is a task every trial failed; a child
@@ -348,7 +371,11 @@ pub fn slot_for(step: Int, slots: List(String)) -> Result(String, Nil) {
 /// that, leadership on a task, which only validate can weigh. A tie
 /// without such a fix, the identical vector or a shuffle among partly
 /// solved tasks, has shown nothing the parent had not, and nought out of
-/// three against nought out of three must not buy a validate run.
+/// three against nought out of three must not buy a validate run. A task
+/// the parent's vector does not carry at all is read as zero for the mean,
+/// as the front reads it, but is not a failure the child can be said to
+/// have fixed: nothing is known of it, and a host whose run excluded or
+/// cut off the task must not have that read as the parent failing it.
 ///
 /// ## Examples
 ///
@@ -368,14 +395,14 @@ pub fn screen(
   let child_mean = list.map(tasks, score_for(child, _)) |> mean
   let fixes_a_failure =
     list.any(tasks, fn(task) {
-      score_for(parent, task) == 0.0 && score_for(child, task) >. 0.0
+      list.key_find(parent, task) == Ok(0.0) && score_for(child, task) >. 0.0
     })
 
   // Strictly better pays; a tie pays only when it bought a task the
   // parent could not do at all.
-  case child_mean >. parent_mean, child_mean == parent_mean && fixes_a_failure {
-    True, _ | False, True -> Passed
-    False, False -> Failed
+  case compare_means(child_mean, parent_mean), fixes_a_failure {
+    order.Gt, _ | order.Eq, True -> Passed
+    order.Eq, False | order.Lt, _ -> Failed
   }
 }
 
@@ -420,10 +447,15 @@ pub fn winner(
   |> list.fold(Error(Nil), fn(best, child) {
     let child_mean = list.map(tasks, score_for(child.1, _)) |> mean
 
-    // Only a strictly higher mean displaces the earlier passer.
+    // Only a strictly higher mean, beyond rounding, displaces the earlier
+    // passer.
     case best {
-      Ok(#(_, best_mean)) if best_mean >=. child_mean -> best
-      Ok(_) | Error(Nil) -> Ok(#(child.0, child_mean))
+      Ok(#(_, best_mean)) ->
+        case compare_means(child_mean, best_mean) {
+          order.Gt -> Ok(#(child.0, child_mean))
+          order.Eq | order.Lt -> best
+        }
+      Error(Nil) -> Ok(#(child.0, child_mean))
     }
   })
   |> result.map(fn(found) { found.0 })

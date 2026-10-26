@@ -4,9 +4,11 @@
 import gepa/prng
 import gepa/select
 import gepa/verdict
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import qcheck
 
 pub fn the_front_keeps_leaders_within_one_sample_and_prunes_dominated_test() {
   // K = 3, so a member within a third of the best on a task leads it.
@@ -213,4 +215,80 @@ pub fn a_pareto_only_child_ranks_below_its_parent_test() {
     == ["a-seed", "b-joined", "c-pareto"]
   assert list.map(select.rank(lines, "b-joined"), fn(each) { each.candidate })
     == ["b-joined", "a-seed", "c-pareto"]
+}
+
+/// A per-task score as a host reports it: a pass count over at most four
+/// trials, so the means carry the thirds and quarters that a left fold
+/// sums differently in a different order.
+fn fraction() -> qcheck.Generator(Float) {
+  use k <- qcheck.bind(qcheck.bounded_int(1, 4))
+  use j <- qcheck.map(qcheck.bounded_int(0, k))
+  int.to_float(j) /. int.to_float(k)
+}
+
+fn vector(tasks: List(String)) -> qcheck.Generator(List(#(String, Float))) {
+  qcheck.map(
+    qcheck.fixed_length_list_from(fraction(), list.length(tasks)),
+    fn(scores) { list.zip(tasks, scores) },
+  )
+}
+
+pub fn the_screen_and_the_winner_do_not_depend_on_the_task_order_test() {
+  let tasks = ["a", "b", "c", "d", "e"]
+  use #(parent, child, other, shuffle) <- qcheck.given(qcheck.tuple4(
+    vector(tasks),
+    vector(tasks),
+    vector(tasks),
+    qcheck.bounded_int(0, 1000),
+  ))
+  let permuted = fn(scores: List(#(String, Float))) {
+    let #(front, back) = list.split(scores, shuffle % 5)
+    list.append(back, list.reverse(front))
+  }
+  let tasks_too = list.map(permuted(parent), fn(entry) { entry.0 })
+
+  // The same scores in any order screen the same way and crown the same
+  // child.
+  assert select.screen(permuted(parent), permuted(child), tasks_too)
+    == select.screen(parent, child, tasks)
+  assert select.winner(
+      permuted(parent),
+      [#("c1", permuted(child)), #("c2", permuted(other))],
+      tasks_too,
+    )
+    == select.winner(parent, [#("c1", child), #("c2", other)], tasks)
+}
+
+pub fn an_ulp_of_summation_order_does_not_decide_a_screen_test() {
+  // The two vectors hold the same thirds; a left fold sums them to floats
+  // an ulp apart, and the screen must still call them a tie.
+  let tasks = ["a", "b", "c"]
+  let parent = [#("a", 1.0 /. 3.0), #("b", 2.0 /. 3.0), #("c", 1.0)]
+  let child = [#("a", 1.0), #("b", 2.0 /. 3.0), #("c", 1.0 /. 3.0)]
+  assert select.screen(parent, child, tasks) == select.Failed
+  assert select.screen(child, parent, tasks) == select.Failed
+  let tenths = [#("a", 0.1), #("b", 0.2), #("c", 0.3)]
+  let reversed = [#("a", 0.3), #("b", 0.2), #("c", 0.1)]
+  assert select.screen(tenths, reversed, tasks) == select.Failed
+  assert select.screen(reversed, tenths, tasks) == select.Failed
+  assert select.winner(tenths, [#("c1", reversed), #("c2", tenths)], tasks)
+    == Error(Nil)
+  assert select.winner(reversed, [#("c1", tenths), #("c2", reversed)], tasks)
+    == Error(Nil)
+  assert select.winner(
+      [#("a", 0.0), #("b", 0.0), #("c", 0.0)],
+      [#("c1", tenths), #("c2", reversed)],
+      tasks,
+    )
+    == Ok("c1")
+
+  // A task the parent never carried is a zero for the mean, but not a
+  // failure the child fixed: nothing is known of it.
+  assert select.screen([#("a", 1.0)], [#("a", 0.0), #("b", 1.0)], ["a", "b"])
+    == select.Failed
+  assert select.screen([#("a", 1.0), #("b", 0.0)], [#("a", 0.0), #("b", 1.0)], [
+      "a",
+      "b",
+    ])
+    == select.Passed
 }
