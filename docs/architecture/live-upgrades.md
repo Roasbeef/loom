@@ -7,9 +7,9 @@ more increments, must still hold ten after a downgrade. Restoring its old
 snapshot would lose acknowledged work.
 
 [Protocol 069](../../protocol-change/069-state-preserving-component-upgrades.md)
-defines this contract. The implementation on the runtime evolution branch
-provides both upgrade paths below. Its acceptance tests and final verification
-record determine which release claims are established. It builds on
+defines this contract. The implementation provides both upgrade paths below.
+Its acceptance tests and final verification record determine which release
+claims are established. It builds on
 [governed runtime evolution](evolution.md), which already retains source,
 records author-test evidence and requires native approval before selection.
 
@@ -142,6 +142,14 @@ budgets are separate from the component pause. `core_downgrade` uses the
 same fields and current-state migration rule. The shipped implementation is
 selected with both `target_release` and `manifest_digest` set to `builtin`.
 `loomd evolution` exposes the same actions.
+
+The core path is a command-line path only. The web view's Evolution tab and the
+terminal's `/evolution` overlay draw a core card that shows `core_status` and
+tells the reader to run `loom evolution core_upgrade`. Neither sends
+`core_upgrade` or `core_downgrade`, and the daemon refuses both from a page even
+when the page belongs to the owner, because the gateway withholds owner authority
+from those two actions
+([evolution](evolution.md#agent-and-operator-workflow)).
 
 ## Acceptance evidence
 

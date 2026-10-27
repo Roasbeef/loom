@@ -87,6 +87,39 @@ or `terminal`, in its audit entry. The gateway reads `web` from the page's sign-
 and nothing else; a terminal says `terminal` in an optional `via` argument, which
 is audit text and decides no authority.
 
+An operator reaches these controls from three surfaces, which draw one board and
+send the same actions, so the daemon's answer is the same on each:
+
+- The CLI, below, for the native owner, and the only surface that can start a
+  core upgrade or downgrade.
+- The web view's Evolution tab, the strand panel's seventh child
+  ([web view](web-view.md)). Each change is two presses: the first opens a
+  question naming the candidate, evidence and generation as drawn, and the second
+  sends exactly those.
+- The terminal's `/evolution` overlay ([terminal](terminal.md)), where `a`, `s`,
+  `r` and `b` ask and only `y` sends.
+
+A selection returns a queued receipt, so both UIs draw `staging` on the row and
+poll `status` with a request identity the UI mints itself, and the daemon holds
+one active transition at a time. Who may act where is decided by the daemon, and a
+UI only chooses what to offer:
+
+| Principal | Decide (approve, revoke) | Select, roll back | Core upgrade, downgrade |
+| --- | --- | --- | --- |
+| Owner | Any row on the board, including another session's | This session's rows, plus workspace-program and exact-model rows | CLI only |
+| Member operator | This session's rows only | This session's rows only | Refused |
+| Observer | Reads the board and `core_status` only | Refused | Refused |
+
+An owner's page does not offer selection on another session's rows because a
+session-scoped selection runs through that session's own queue and live owner.
+The core card on both UIs shows `core_status` and tells the reader to use
+`loom evolution core_upgrade`; [live upgrades](live-upgrades.md) describes that
+path. The `via` recorded for an act is `cli` for the owner credential, `web` when
+the gateway's page door or browser sign-in carried it, and `terminal` when the
+terminal claims it. Only the first two are derived by the daemon from the
+connection. A terminal's claim is audit text, since the terminal's binding is
+already the owner's and `via` grants nothing.
+
 Both `loom evolution` and `loomd evolution` expose those controls:
 
 ```sh

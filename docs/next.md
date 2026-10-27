@@ -32,6 +32,9 @@ requests over main `9b8621641`. The [previous
 handoff](next-2026-10-25-before-eval-instrument.md) is preserved exactly. Its
 two bodies of work, remote evolution slice 3 (closed) and the post-merge CI
 repair (still open on draft PR #1112), are unchanged by anything here.
+The evolution operator UI handoff from October 24 is preserved
+as [its own file](next-2026-10-24-evolution-ui.md); the architecture pages it
+describes are current.
 
 Start with [ADR-021](adr/021-evaluation-instrument-beside-governed-evolution.md)
 for the decisions, [the architecture page](architecture/evaluation.md) for
