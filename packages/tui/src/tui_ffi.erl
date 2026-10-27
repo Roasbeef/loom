@@ -6,6 +6,7 @@
 %% here forwards to it.
 -export([silence_logger/0, run_forwarding/2, halt/1, read_console_reply/1,
     read_standard_line/1,
+    read_protocol_line/0,
     herdr_exchange/3, require_terminal/0]).
 
 silence_logger() ->
@@ -80,6 +81,32 @@ read_standard_line(PromptBinary) ->
     case io:get_line(Prompt) of
         eof -> {error, <<"no line on standard input">>};
         {error, Reason} -> {error, describe(Reason)};
+        Line -> {ok, unicode:characters_to_binary(Line)}
+    end.
+
+%% Reads one protocol line from standard input as UTF-8, whatever the VM's
+%% locale guessed. `loom acp` receives JSON text from another program, and
+%% the standard input device's encoding defaults from the environment: in a
+%% container with no locale it is latin1, which would turn every multi-byte
+%% character of a prompt into mojibake. The device is set to binary Unicode
+%% before every read, so each read returns the line as a binary and never
+%% builds it as a character list first. It is set per read rather than once
+%% because a chunk holding an undecodable byte makes the console driver fall
+%% back to Latin-1, and only setting the option again restores Unicode for
+%% the lines that follow in a later chunk. The same option governs the device's output, and
+%% a unicode device writes the UTF-8 the protocol needs. A byte sequence the
+%% device cannot decode comes through as Latin-1 characters, which is not
+%% JSON, so the protocol layer answers it with a parse error and the
+%% connection survives one bad frame. An unexpected read error is treated as
+%% the end of input rather than retried, so a broken device cannot spin.
+%% Erlang's console reader cannot bound a line before it returns; the frame
+%% bound is enforced when the line is decoded.
+read_protocol_line() ->
+    _ = io:setopts(standard_io, [binary, {encoding, unicode}]),
+    case io:get_line("") of
+        eof -> {error, <<"end of input">>};
+        {error, Reason} -> {error, describe(Reason)};
+        Line when is_binary(Line) -> {ok, Line};
         Line -> {ok, unicode:characters_to_binary(Line)}
     end.
 

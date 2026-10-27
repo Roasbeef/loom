@@ -439,6 +439,77 @@ posture parsing, verdict reduction over synthetic cuts, the JSON line, a
 missing daemon) and, against the shipped daemon, `client/loom_run_test`
 (skipped when `LOOM_BOOTSTRAP_E2E_SERVER` is unset).
 
+## Agent Client Protocol server (`loom acp`, issue #1026)
+
+`loom acp [--workspace-root DIR]... [--workspace-name NAME]... [--workspace DIR] [--config FILE]
+[--model-profile NAME] [--server PATH] [--state-dir DIR]` is `tui/acp/server`,
+dispatched as `tui.Acp(config)` (refused arguments are `AcpRefused`, exit `2`;
+`acp` is a `hoisting_verbs` member and `tui.launch_acp` is the routing test
+seam). It speaks ACP, JSON-RPC 2.0 one frame per line, on standard input and
+output, and is a client of the daemon like `tui/run`: `run.reach_daemon`,
+`selection.create_named` / `selection.open`, one `session_channel` lane per ACP
+session. It opens no listener and changes nothing in the effect plane.
+[`docs/architecture/acp.md`](../../docs/architecture/acp.md) has the method
+mapping, the `_meta.loom` keys, the refused extensions and the Harbor
+compatibility table; this section is the module map and the invariants.
+
+| Module | Owns |
+|---|---|
+| `tui/acp/rpc` | The JSON-RPC boundary: `decode` (4 MiB bound before parsing; `Call`/`Notification`/`Reply` or a `Refusal` with its error object), the `encode_*` writers, the error-code constants. |
+| `tui/acp/schema` | ACP's vocabulary: `request`/`notification` decoders by method, `permission_choice`, the result and `session/update` builders, `Meta` (`_meta.loom`). |
+| `tui/acp/translate` | Pure: `entry_updates` (with the `Streamed` reconciliation), `fragment`, `permission`/`decision`, `outcome`, `turn_usage`. |
+| `tui/acp/session` | One session over one lane as a pure reducer returning `Action`s (`Notify`, `Respond`, `Ask`, `Write`, `Ended`); the command queue, the `Phase`/`Turn`/`Stage` machine, cancellation. |
+| `tui/acp/workspace` | `choose`: `cwd` against operator roots, or a registered name; `within`. |
+| `tui/acp/server` | The loop, the stdin reader process, `Transport` (a value, so the end-to-end test drives it without a subprocess), daemon access, session custody, retirement. |
+
+Invariants that break things when violated:
+
+- **One loop owns standard output.** Nothing else writes to it; diagnostics go
+  to standard error. `silence_logger` has already run when `main` dispatches.
+- **One inbox.** Session sockets are opened with `connection.connect_tagged`,
+  tagging each event with its session, so the loop reads one `Subject`.
+- **A turn ends on a run result with a different operation id** than the one
+  present when the prompt was sent (`session.last_result` baseline), never on
+  the first cut after the acknowledgement. A compaction or navigation result
+  ends no turn.
+- **Commands leave one at a time.** `session.pump` sends the queue's head only
+  when `mutation_available` (or `ready_for_read`), so an abort never overtakes
+  its prompt; `in_flight` is cleared by `Acknowledged`, `RequestRefused` or
+  `UnknownOutcome`.
+- **Streamed text is reconciled by content**, not counted (`translate.reconcile`).
+  Changing `entry_updates` to count blocks reintroduces duplicates when a
+  stream is cut short or the next request starts before the entry is fetched.
+- **An unreadable or unrecognised permission answer is a denial.**
+  `translate.decision` reads the answer against the options offered for that
+  request, and `translate.decision_frame` sends a denial when an approval
+  cannot be encoded, so a parked run is never left waiting.
+- **A turn is ended only once acknowledged, and a cancelled turn is always
+  `cancelled`** (`session.settle` ignores `Sending`; `translate.after_cancel`).
+- **`session/load` checks the registration before it opens the session**
+  (roots, `cwd`, duplicate), because an open wakes a parked session and a
+  woken session nothing tracks is never stopped. Every error after an open
+  records the id in `State.abandoned`.
+- **Retirement is concurrent and bounded** (`stop_together`, weft, one control
+  connection per stop, 15 s).
+- **A registered workspace name is admitted only if listed with
+  `--workspace-name`.**
+- **`cwd` never becomes a workspace unless it resolves inside a root.**
+  `workspace.choose` compares canonical paths by whole segments.
+- **Unsupported isolation options are refused, not ignored**:
+  `mcpServers` and `_meta.loom.project_instructions=false` are `invalid_params`
+  until the daemon can honour them per session.
+- **Only sessions this connection started are stopped** at end of input
+  (`Origin`: `Made`, including a session `session/load` woke from disk, versus
+  `Opened`).
+- `tui_ffi:read_protocol_line` sets standard input to binary Unicode before
+  every read (once is not enough after a bad byte);
+  do not replace it with `read_standard_line`, which trusts the locale.
+
+Tests: `acp_rpc_test`, `acp_schema_test`, `acp_translate_test`,
+`acp_workspace_test`, `acp_command_test`, `acp_stdin_test`, and against the shipped daemon
+`client/loom_acp_test` (daemon-backed cases skip when
+`LOOM_BOOTSTRAP_E2E_SERVER` is unset).
+
 ## Purpose
 
 The shipped native terminal client. It authenticates one daemon control
@@ -1349,7 +1420,9 @@ boundaries and the split's measurements under Invariants.
   forwarding module over them was one more place for three copies of the same
   doc comment to drift. `tui/internal/ffi_terminal` is what is left: the three
   actions only a program that owns a terminal wants — `silence_logger`,
-  `run_forwarding` and `halt` — and `tui_ffi.erl` holds exactly those three.
+  `run_forwarding` and `halt` — plus the console reads (`read_console_reply`,
+  `read_standard_line`, and `read_protocol_line` for `loom acp`), which no
+  Gleam package offers; `tui_ffi.erl` holds exactly those.
   `tui/internal/ffi_file` adds a weft deadline to `host/bootstrap`'s own
   bounded reads rather than declaring externals of its own.
   The shared Erlang implementation must not acquire bootstrap policy. Every

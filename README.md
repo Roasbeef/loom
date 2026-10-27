@@ -202,6 +202,7 @@ loom ui                                 # Open your home page (starts the daemon
 loom ui --session SESSION_ID --operate  # Open a specific session as an operator
 loom access list                        # List who holds access to your sessions
 loom run -p "fix the failing test"      # One headless prompt: prints one JSON line, exits with the verdict
+loom acp                                # Speak the Agent Client Protocol on stdin/stdout (Zed, Harbor, orchestrators)
 ```
 
 From the home page, the owner can also create new sessions, stop a running session
