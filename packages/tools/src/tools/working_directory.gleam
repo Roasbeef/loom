@@ -58,7 +58,9 @@ pub fn select(
   }
 }
 
+/// Validates and resolves `path` to an absolute, existing directory on disk.
 fn select_path(door: Door, ctx: Ctx, path: String) -> Result(String, String) {
+  // Normalize relative paths against the current persistent working directory.
   use chosen <- result.try(case path {
     "" -> Error("cwd must not be empty")
     path ->
@@ -67,6 +69,7 @@ fn select_path(door: Door, ctx: Ctx, path: String) -> Result(String, String) {
         False -> result.map(door.read(ctx), fn(base) { base <> "/" <> path })
       }
   })
+
   use canonical <- result.try(
     fs.resolve_for_read(ctx, chosen)
     |> result.map_error(fn(error) { "invalid cwd: " <> string.inspect(error) }),
@@ -75,6 +78,8 @@ fn select_path(door: Door, ctx: Ctx, path: String) -> Result(String, String) {
     simplifile.is_directory(canonical)
     |> result.map_error(fn(_) { "cwd could not be inspected: " <> canonical }),
   )
+
+  // Refuse paths that do not name an existing directory.
   case exists {
     True -> Ok(canonical)
     False -> Error("cwd is not an existing directory: " <> canonical)
@@ -114,16 +119,20 @@ pub fn tool(door: Door) -> tool.Tool {
   )
 }
 
+/// Executes the working_directory tool to inspect or update the persistent directory.
 fn run(door: Door, ctx: Ctx, args: json.JsonValue) -> tool.ToolOutcome {
   use path <- tool.with_arg(tool.optional_string(args, "path"))
   use ctx <- tool.or_outcome(permissions.authorize(ctx, args), fn(outcome) {
     outcome
   })
   use cwd <- tool.with_arg(select(door, ctx, path))
+
+  // Persist the directory change only when path was provided.
   use Nil <- tool.with_arg(case path {
     None -> Ok(Nil)
     Some(_) -> door.write(ctx, cwd)
   })
+
   let tmp = list.key_find(ctx.env, "TMPDIR") |> result.unwrap("")
   tool.success(
     "shell cwd: "

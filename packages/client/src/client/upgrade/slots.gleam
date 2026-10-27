@@ -51,6 +51,8 @@ type Message {
 pub fn owner() -> Result(Slots, String) {
   let name = native.fixed_name()
   let subject = process.named_subject(name)
+
+  // Decide how to handle process.subject_owner(subject) {.
   case process.subject_owner(subject) {
     Ok(_) -> Ok(Slots(subject))
     Error(Nil) -> {
@@ -71,6 +73,8 @@ pub fn owner() -> Result(Slots, String) {
         |> actor.named(name)
         |> actor.unlinked
         |> actor.start
+
+      // Decide how to handle started {.
       case started {
         Ok(started) -> Ok(Slots(started.data))
         Error(_) ->
@@ -109,6 +113,7 @@ pub fn confirm(
   ask(slots, Confirm(pid, token, observed, _)) |> result.flatten
 }
 
+/// Establishes ask for the caller, keeping its validation and result policy at this boundary.
 fn ask(
   slots: Slots,
   request: fn(Subject(answer)) -> Message,
@@ -131,7 +136,9 @@ fn ask(
   result.unwrap(answer, Error("reviewed slot owner did not answer"))
 }
 
+/// Establishes handle for the caller, keeping its validation and result policy at this boundary.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  // Decide how to handle message {.
   case message {
     Acquire(pid, token, expected, artifact, reply) -> {
       let admitted = reserve(state, pid, token, expected, artifact)
@@ -147,6 +154,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
+/// Establishes reserve for the caller, keeping its validation and result policy at this boundary.
 fn reserve(
   state: State,
   pid: Pid,
@@ -176,6 +184,8 @@ fn reserve(
     list.any(users, fn(identity) { identity != target }),
     Error("reviewed implementation slot is occupied by another live component"),
   )
+
+  // Decide how to handle use _ <- result.try( target.slot, users {.
   use _ <- result.try(case target.slot, users {
     abi.Builtin, _ -> Ok(Nil)
     abi.SlotA, [] | abi.SlotB, [] -> load_checked(target, artifact)
@@ -187,6 +197,7 @@ fn reserve(
     Ok(_) -> state.watches
     Error(Nil) -> dict.insert(state.watches, pid, process.monitor(pid))
   }
+
   use <- bool.guard(
     !native.deliver_signals(pid),
     Error("scratch target exited before slot admission"),
@@ -202,6 +213,7 @@ fn reserve(
   ))
 }
 
+/// Establishes settle for the caller, keeping its validation and result policy at this boundary.
 fn settle(
   state: State,
   pid: Pid,
@@ -233,6 +245,7 @@ fn settle(
   }
 }
 
+/// Establishes departed for the caller, keeping its validation and result policy at this boundary.
 fn departed(state: State, down: process.Down) -> actor.Next(State, Message) {
   case
     list.find(dict.to_list(state.watches), fn(entry) { entry.1 == down.monitor })
@@ -247,6 +260,7 @@ fn departed(state: State, down: process.Down) -> actor.Next(State, Message) {
   }
 }
 
+/// Establishes load checked for the caller, keeping its validation and result policy at this boundary.
 fn load_checked(
   target: abi.Identity,
   artifact: source.Artifact,

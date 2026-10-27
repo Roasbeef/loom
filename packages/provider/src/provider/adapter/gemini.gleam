@@ -261,20 +261,29 @@ pub fn thinking_config(
   model_id: String,
   level: ThinkingLevel,
 ) -> Option(JsonValue) {
+  // Map model thinking configuration into Gemini thinkingLevel or thinkingBudget.
   let knob = case thinking_dial(model_id), level {
     _, ThinkingOff -> None
     LevelWord, ThinkingLow -> Some(#("thinkingLevel", json.String("LOW")))
     LevelWord, ThinkingMedium -> Some(#("thinkingLevel", json.String("MEDIUM")))
-    LevelWord, ThinkingHigh -> Some(#("thinkingLevel", json.String("HIGH")))
+    LevelWord, ThinkingHigh
+    | LevelWord, model.ThinkingXHigh
+    | LevelWord, model.ThinkingMax
+    -> Some(#("thinkingLevel", json.String("HIGH")))
     TokenBudget, ThinkingLow -> Some(#("thinkingBudget", json.Int(2048)))
     TokenBudget, ThinkingMedium -> Some(#("thinkingBudget", json.Int(8192)))
-    TokenBudget, ThinkingHigh -> Some(#("thinkingBudget", json.Int(24_576)))
+    TokenBudget, ThinkingHigh
+    | TokenBudget, model.ThinkingXHigh
+    | TokenBudget, model.ThinkingMax
+    -> Some(#("thinkingBudget", json.Int(24_576)))
   }
+
   option.map(knob, fn(knob) {
     json.Object([#("includeThoughts", json.Bool(True)), knob])
   })
 }
 
+/// Encodes a tool specification into a Gemini function declaration object.
 fn encode_tool(tool: ToolSpec) -> JsonValue {
   json.Object([
     #("name", json.String(tool.name)),
@@ -311,6 +320,7 @@ type TurnKind {
   Ordinary
 }
 
+/// Encodes agent conversation messages into Gemini contents turn objects.
 fn encode_contents(messages: List(AgentMessage)) -> List(JsonValue) {
   messages
   |> list.fold([], fn(turns, message) { push_message(turns, message) })
@@ -325,7 +335,9 @@ fn encode_contents(messages: List(AgentMessage)) -> List(JsonValue) {
 }
 
 // Turns are accumulated head-first, so the turn in progress is the head.
+/// Appends an agent message to the ongoing list of Gemini conversation turns.
 fn push_message(turns: List(Turn), message: AgentMessage) -> List(Turn) {
+  // Dispatch on message variant to construct the appropriate Gemini turn.
   case message {
     UserMessage(content:, origin:, ..) ->
       push_turn(
@@ -349,6 +361,7 @@ fn push_message(turns: List(Turn), message: AgentMessage) -> List(Turn) {
         True -> ToolFailed
         False -> ToolSucceeded
       }
+
       push_tool_result(turns, tool_call_id, tool_name, content, outcome)
     }
     CustomMessage(schema: _, payload: _) -> turns
@@ -359,6 +372,7 @@ fn push_message(turns: List(Turn), message: AgentMessage) -> List(Turn) {
 // array, and an assistant turn that was all unsigned thinking has
 // nothing the model needs back. Any turn closes the function-response
 // batch in progress, so its images are flushed first.
+/// Adds a new conversation turn with flushed preceding images if parts are non-empty.
 fn push_turn(
   turns: List(Turn),
   role: String,
@@ -374,6 +388,7 @@ fn push_turn(
 // Closes a function-response batch: the images its results carried go
 // out as one user turn after it, as pi sends them. Anything else at the
 // head is left alone.
+/// Flushes pending tool result images into an extra user message turn.
 fn flush_images(turns: List(Turn)) -> List(Turn) {
   case turns {
     [
@@ -409,6 +424,7 @@ type ToolOutcome {
 // A tool result joins the function-response turn in progress when there
 // is one, so parallel results stay in one turn, and its images join that
 // turn's pending list to be flushed when the batch closes.
+/// Appends a tool execution result to the active function response turn.
 fn push_tool_result(
   turns: List(Turn),
   call_id: String,
@@ -421,10 +437,13 @@ fn push_tool_result(
     |> list.filter_map(tool_result_text_block)
     |> string.join("\n")
   let images = list.filter_map(content, tool_result_image_part)
+
+  // Choose response field key based on whether the tool execution succeeded.
   let response_key = case outcome {
     ToolFailed -> "error"
     ToolSucceeded -> "output"
   }
+
   let response =
     json.Object([
       #(
@@ -437,6 +456,7 @@ fn push_tool_result(
       ),
     ])
 
+  // Append to current function response turn or start a new function response turn.
   case turns {
     [
       Turn(role: "user", parts:, kind: FunctionResponses(pending_images:)),
@@ -463,6 +483,7 @@ fn push_tool_result(
   }
 }
 
+/// Extracts text content from a tool result block.
 fn tool_result_text_block(
   block: message.ToolResultBlock,
 ) -> Result(String, Nil) {
@@ -472,6 +493,7 @@ fn tool_result_text_block(
   }
 }
 
+/// Converts an image tool result block into an inline data part.
 fn tool_result_image_part(
   block: message.ToolResultBlock,
 ) -> Result(JsonValue, Nil) {
@@ -481,6 +503,7 @@ fn tool_result_image_part(
   }
 }
 
+/// Encodes base64 image data and MIME type into an inlineData object.
 fn inline_data(data: String, mime_type: String) -> JsonValue {
   json.Object([
     #(
@@ -493,6 +516,7 @@ fn inline_data(data: String, mime_type: String) -> JsonValue {
   ])
 }
 
+/// Encodes a user block into a Gemini text or image content part.
 fn encode_user_block(block: message.UserBlock) -> JsonValue {
   case block {
     UserText(text:, text_signature: _) ->
@@ -501,6 +525,7 @@ fn encode_user_block(block: message.UserBlock) -> JsonValue {
   }
 }
 
+/// Encodes an assistant message block into a Gemini content part with optional signature.
 fn encode_assistant_block(
   block: message.AssistantBlock,
 ) -> Result(JsonValue, Nil) {
@@ -544,6 +569,7 @@ fn encode_assistant_block(
   }
 }
 
+/// Attaches an optional thought signature to a part's JSON object representation.
 fn with_signature(
   fields: List(#(String, JsonValue)),
   signature: Option(String),
@@ -711,11 +737,14 @@ pub fn response_machine(
   )
 }
 
+/// Feeds incoming body chunks into the SSE parser and processes emitted events.
 fn on_chunk(
   acc: Accumulator,
   chunk: BitArray,
 ) -> #(Accumulator, List(StreamEvent)) {
   use <- bool.guard(when: acc.done, return: #(acc, []))
+
+  // Process 200 streaming events or buffer error body chunks.
   case acc.status {
     200 -> {
       let #(sse, sse_events) = stream.feed(acc.sse, chunk)
@@ -751,8 +780,11 @@ fn on_chunk(
 // This dialect has no end-of-stream sentinel: the body simply closes
 // after the chunk that carried `finishReason`. A body that closes without
 // one is a disconnect.
+/// Handles stream completion when the response body ends.
 fn on_end(acc: Accumulator) -> List(StreamEvent) {
   use <- bool.guard(when: acc.done, return: [])
+
+  // Settle accumulator if successful status or fail with HTTP error.
   case acc.status {
     200 -> settle(acc).1
     status -> fail(acc, http_error(status, acc)).1
@@ -763,12 +795,15 @@ fn on_end(acc: Accumulator) -> List(StreamEvent) {
 // — into a redacted HttpError. `status` is the gRPC-style word
 // (`RESOURCE_EXHAUSTED`, `INVALID_ARGUMENT`) and is the closest thing the
 // dialect has to a machine-readable error type.
+/// Formats HTTP error response using structured error fields or body excerpt.
 fn http_error(status: Int, acc: Accumulator) -> stream.ProviderError {
   let body_text = result.unwrap(bit_array.to_string(acc.error_body), "")
   let error_field =
     json.parse(body_text)
     |> result.replace_error(Nil)
     |> result.try(wire.field(_, "error"))
+
+  // Decode error object or fallback to excerpt error.
   case error_field {
     Ok(error) ->
       HttpError(
@@ -796,11 +831,14 @@ fn excerpt(text: String) -> String {
 
 // One TCP chunk may carry several documents; once one of them has failed
 // the stream, the rest must not emit deltas after the terminal.
+/// Handles parsed SSE event messages or malformed framing errors.
 fn handle_sse(
   acc: Accumulator,
   event: SseEvent,
 ) -> #(Accumulator, List(StreamEvent)) {
   use <- bool.guard(when: acc.done, return: #(acc, []))
+
+  // Report framing errors or parse SSE data into documents.
   case event {
     SseMalformed(reason:) ->
       fail(acc, MalformedStream(corruption_report("a utf-8 sse line", reason)))
@@ -813,6 +851,7 @@ fn handle_sse(
 
 // A document carrying a top-level `error` is how the API reports a
 // failure after the stream has opened.
+/// Inspects top-level document for stream errors or candidate responses.
 fn handle_document(
   acc: Accumulator,
   document: JsonValue,
@@ -830,6 +869,7 @@ fn handle_document(
   }
 }
 
+/// Constructs a structured corruption report for malformed stream data.
 fn corruption_report(expected: String, context: String) -> CorruptionReport {
   corruption.report(
     at: "provider/adapter/gemini",
@@ -839,6 +879,7 @@ fn corruption_report(expected: String, context: String) -> CorruptionReport {
   )
 }
 
+/// Processes a candidate response document, updating usage and candidates.
 fn handle_response_document(
   acc: Accumulator,
   document: JsonValue,
@@ -855,10 +896,14 @@ fn handle_response_document(
         acc.response_model,
       ),
     )
+
+  // Extract usage metadata if present.
   let acc = case wire.field(document, "usageMetadata") {
     Ok(usage) -> extract_usage(acc, usage)
     Error(Nil) -> acc
   }
+
+  // Process response candidates or handle blocked prompt feedback.
   let #(acc, events) = case
     wire.array_field(document, "candidates"),
     blocked_prompt(document)
@@ -895,6 +940,7 @@ fn blocked_prompt(document: JsonValue) -> Result(String, Nil) {
 
 // Required input/cache witnesses may come from earlier snapshots, but the
 // final generated count must be reported after output has finished.
+/// Validates final usage evidence once generation completes.
 fn final_usage_evidence(
   acc: Accumulator,
   document: JsonValue,
@@ -918,6 +964,7 @@ fn final_usage_evidence(
 // so a later chunk carrying a partial usage object cannot erase counts an
 // earlier chunk already reported. Every chunk repeats the running usage,
 // and the last one is the whole response.
+/// Merges usageMetadata fields into accumulator token counters.
 fn extract_usage(acc: Accumulator, usage: JsonValue) -> Accumulator {
   let witness = usage_witness.observe(acc.witness, usage, required_usage_fields)
   Accumulator(
@@ -950,6 +997,7 @@ fn extract_usage(acc: Accumulator, usage: JsonValue) -> Accumulator {
   )
 }
 
+/// Processes candidate content parts and evaluates finishReason.
 fn handle_candidate(
   acc: Accumulator,
   candidate: JsonValue,
@@ -964,17 +1012,21 @@ fn handle_candidate(
       let #(acc, new_events) = handle_part(acc, part)
       #(acc, list.append(events, new_events))
     })
+
+  // Check for finishReason to terminate or continue candidate processing.
   case wire.string_field(candidate, "finishReason") {
     Error(Nil) -> #(acc, events)
     Ok(raw) -> apply_finish_reason(acc, raw, events)
   }
 }
 
+/// Maps candidate finishReason and updates accumulator stop state.
 fn apply_finish_reason(
   acc: Accumulator,
   raw: String,
   events: List(StreamEvent),
 ) -> #(Accumulator, List(StreamEvent)) {
+  // Translate raw finishReason string to canonical stop reason.
   case map_finish_reason(raw) {
     Ok(#(stop, error_message)) -> #(
       Accumulator(
@@ -1002,12 +1054,15 @@ type PartKind {
 // not render (inline media in a response, executable code). A text part
 // that is empty and carries a signature is the API's way of signing the
 // block already in progress.
+/// Parses a single response part, routing to text, thought, or tool handlers.
 fn handle_part(
   acc: Accumulator,
   part: JsonValue,
 ) -> #(Accumulator, List(StreamEvent)) {
   let signature =
     option.from_result(wire.string_field(part, "thoughtSignature"))
+
+  // Route to functionCall, thought signature, text, or ignore unhandled parts.
   case wire.field(part, "functionCall"), wire.string_field(part, "text") {
     Ok(call), _ -> append_tool(acc, call, signature)
     Error(Nil), Ok("") -> #(sign_head(acc, signature), [])
@@ -1026,12 +1081,14 @@ fn part_kind(part: JsonValue) -> PartKind {
 // A text or thought part extends the block in progress when it is of the
 // same kind, and opens a new block otherwise. The index is the block's
 // arrival position, so consumers see one delta stream per block.
+/// Appends text or thinking fragment to the current or new content block.
 fn append_text(
   acc: Accumulator,
   kind: PartKind,
   text: String,
   signature: Option(String),
 ) -> #(Accumulator, List(StreamEvent)) {
+  // Match part kind and existing blocks to append delta or start new block.
   case kind, acc.blocks {
     Answer, [GmText(index:, text: so_far, signature: existing), ..rest] -> #(
       Accumulator(..acc, blocks: [
@@ -1078,6 +1135,7 @@ fn append_text(
 
 // Attaches a trailing signature to the block in progress. With no block
 // to sign, or no signature, nothing changes.
+/// Attaches a thought signature to the head block accumulator.
 fn sign_head(acc: Accumulator, signature: Option(String)) -> Accumulator {
   case signature, acc.blocks {
     Some(_), [GmText(index:, text:, signature: _), ..rest] ->
@@ -1101,6 +1159,7 @@ fn sign_head(acc: Accumulator, signature: Option(String)) -> Accumulator {
 // and nothing on older ones; a call without one is named by its function
 // and arrival position, which is unique within the message and is what
 // the matching tool result will echo.
+/// Appends a parsed function call block and emits ToolCallDelta.
 fn append_tool(
   acc: Accumulator,
   call: JsonValue,
@@ -1130,8 +1189,11 @@ fn append_tool(
 
 // --- settlement ---------------------------------------------------------
 
+/// Settle the stream on normal completion or fail if stop reason was omitted.
 fn settle(acc: Accumulator) -> #(Accumulator, List(StreamEvent)) {
   use <- bool.guard(when: acc.done, return: #(acc, []))
+
+  // Verify stop reason is present before settling.
   case acc.stop {
     None ->
       fail(
@@ -1142,6 +1204,7 @@ fn settle(acc: Accumulator) -> #(Accumulator, List(StreamEvent)) {
   }
 }
 
+/// Finalizes stream state with verified stop reason into a Settled event.
 fn settle_with_stop(
   acc: Accumulator,
   stop: StopReason,
@@ -1153,6 +1216,8 @@ fn settle_with_stop(
   // function call is what makes it a tool-use turn, and by the same token
   // a turn that asked for tools has not ended, whatever the raw word says.
   let called_tools = list.any(content, is_tool_call)
+
+  // Promote Stop to ToolUse when tools were called.
   let stop = case stop, called_tools {
     Stop, True -> ToolUse
     _, _ -> stop
@@ -1164,6 +1229,8 @@ fn settle_with_stop(
   let overflowed =
     input_tokens > acc.resolved.context_window
     && usage.output <= negligible_output_tokens
+
+  // Check whether request overflowed model context limit.
   let #(stop, error_message) = case overflowed {
     True -> #(
       Errored,
@@ -1174,6 +1241,7 @@ fn settle_with_stop(
     )
     False -> #(stop, acc.error_message)
   }
+
   let assistant =
     AssistantMessage(
       content:,
@@ -1207,6 +1275,7 @@ fn settle_with_stop(
   ])
 }
 
+/// Checks whether an assistant block is a tool call.
 fn is_tool_call(block: message.AssistantBlock) -> Bool {
   case block {
     AssistantToolCall(call: _) -> True
@@ -1217,6 +1286,7 @@ fn is_tool_call(block: message.AssistantBlock) -> Bool {
 
 // The settlement combinator: run `then` on success, or fail the stream
 // with `to_error(err)` — see the OpenAI adapter's `or_fail`.
+/// Settlement combinator failing stream if result is an Error.
 fn or_fail(
   result: Result(a, e),
   acc: Accumulator,
@@ -1231,6 +1301,7 @@ fn or_fail(
 
 // Arguments arrived as parsed JSON, so unlike the other two dialects
 // there is no argument text to fail on here.
+/// Maps intermediate Gemini blocks to canonical assistant message blocks.
 fn build_blocks(blocks: List(GmBlock)) -> List(message.AssistantBlock) {
   list.map(blocks, fn(block) {
     case block {
@@ -1254,6 +1325,7 @@ fn build_blocks(blocks: List(GmBlock)) -> List(message.AssistantBlock) {
   })
 }
 
+/// Constructs final Usage statistics record from accumulator state.
 fn build_usage(acc: Accumulator) -> Usage {
   // `promptTokenCount` is the whole prompt, cached reads included; split
   // the read back out so the ledger's `input` means what it means for the
@@ -1285,6 +1357,7 @@ fn build_usage(acc: Accumulator) -> Usage {
   )
 }
 
+/// Marks accumulator done and generates Failed terminal stream event.
 fn fail(
   acc: Accumulator,
   error: stream.ProviderError,

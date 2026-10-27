@@ -86,6 +86,7 @@ pub fn call_within(
   args: MsgPackValue,
   deadline_ms: Int,
 ) -> Result(MsgPackValue, CallError) {
+  // Resolve installed capability channel actor.
   case ffi_registry.get_channel() {
     Error(Nil) -> Error(Unreachable("capability channel not installed"))
     Ok(channel) -> {

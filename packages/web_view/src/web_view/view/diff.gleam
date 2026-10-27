@@ -54,11 +54,11 @@ pub fn of_text(text: String) -> Element(message) {
   view(lines, cut)
 }
 
-// One line, or nothing for a file header. A hunk header and the no-newline
-// note are their text alone; the others carry the two numbers and the sign before it, in one
-// gutter cell. The gutter is the part of a row that stays at the box's left
-// edge while a long line scrolls (`position:sticky`), so it is one element
-// and not three that would each need an offset to stack against.
+/// One line, or nothing for a file header. A hunk header and the no-newline
+/// note are their text alone; the others carry the two numbers and the sign before it, in one
+/// gutter cell. The gutter is the part of a row that stays at the box's left
+/// edge while a long line scrolls (`position:sticky`), so it is one element
+/// and not three that would each need an offset to stack against.
 fn row(line: Line) -> Result(Element(message), Nil) {
   case line.kind {
     diff_view.FileHeader -> Error(Nil)
@@ -90,6 +90,7 @@ fn number(value: Option(Int)) -> Element(message) {
   ])
 }
 
+/// Sign helper.
 fn sign(kind: Kind) -> String {
   case kind {
     diff_view.Added -> "+"
@@ -98,7 +99,7 @@ fn sign(kind: Kind) -> String {
   }
 }
 
-// The class of a line's kind, a literal from a closed set.
+/// The class of a line's kind, a literal from a closed set.
 fn kind_class(kind: Kind) -> attribute.Attribute(message) {
   case kind {
     diff_view.Hunk -> attribute.class("diff-hunk")
@@ -110,7 +111,7 @@ fn kind_class(kind: Kind) -> attribute.Attribute(message) {
   }
 }
 
-// The line that says lines were left out, or nothing.
+/// The line that says lines were left out, or nothing.
 fn note(cut: Int) -> List(Element(message)) {
   case cut {
     0 -> []

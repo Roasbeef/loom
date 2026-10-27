@@ -91,9 +91,7 @@ fn view(phase: Phase) -> Element(Msg) {
   }
 }
 
-// The ended document's shape: the daemon's `ended_document` in page.gleam
-// draws the same classes and the same copy box, so one rule of the stylesheet
-// styles both.
+/// Renders the ended document disconnected page view.
 fn document() -> Element(Msg) {
   html.main([attribute.class("ended-page")], [
     html.section([attribute.class("ended-document"), attribute.role("alert")], [

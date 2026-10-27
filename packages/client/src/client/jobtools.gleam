@@ -190,6 +190,8 @@ pub fn capability_door_with_policy(
 // Every mapping below is total on both sides by construction: each arm
 // names one constructor, so a variant added to either vocabulary fails to
 // compile here rather than silently becoming something else.
+
+/// Maps a jobs outcome across the boundary, translating the refusal reason.
 fn translate(
   answer: Result(a, jobs.Refusal),
   with render: fn(a) -> b,
@@ -303,6 +305,8 @@ fn streamed(from: tail.Since) -> job.Streamed {
 // carried across unchanged rather than restated: it is `broker/exec`'s,
 // and both packages depend on `broker`, so a third statement of an exit
 // report would be a third thing to keep in step for nothing.
+
+/// Translates a job state from the internal storage representation to the tool interface.
 fn state(from: jobstate.JobState) -> job.JobState {
   case from {
     jobstate.Starting -> job.Starting
@@ -314,6 +318,7 @@ fn state(from: jobstate.JobState) -> job.JobState {
   }
 }
 
+/// Maps the kill cause from jobstate into the external StopCause variant.
 fn cause(from: jobstate.KillCause) -> job.StopCause {
   case from {
     jobstate.ByOwner -> job.ByOwner
@@ -323,6 +328,7 @@ fn cause(from: jobstate.KillCause) -> job.StopCause {
   }
 }
 
+/// Maps internal job loss reason into external LostReason variant.
 fn loss(from: jobstate.LossReason) -> job.LostReason {
   case from {
     jobstate.VmRestart -> job.VmRestart

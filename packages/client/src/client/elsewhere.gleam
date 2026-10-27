@@ -163,6 +163,8 @@ pub fn for_page(groups: List(Group)) -> page.Read {
   )
 }
 
+/// Translates a low-level listed session row into an orchestrator page row, mapping
+/// session lifecycle states onto remote page visibility categories.
 fn page_row(row: listed_sessions.Row) -> page.Row {
   page.Row(
     session_id: row.session_id,
@@ -244,6 +246,8 @@ pub fn ask_all(
   })
 }
 
+/// Converts an asynchronous query outcome from a remote orchestrator into a Heard
+/// status, retaining the page on completion and treating any failure or crash as silence.
 fn hearing(outcome: weft.Outcome(Page, Nil)) -> Heard {
   case outcome {
     weft.Completed(value:, ..) -> Answered(bounded(value))
@@ -279,14 +283,16 @@ fn bounded(page: Page) -> Page {
 pub fn fit(groups: List(Group), budget: Int) -> List(Group) {
   let size = json.to_string(to_json(groups)) |> string.byte_size
   use <- bool.guard(when: size <= budget, return: groups)
+
+  // Find the group holding the most rows to shrink it incrementally until within budget.
   case fullest(groups) {
     Error(Nil) -> groups
     Ok(index) -> fit(shorten(groups, index), budget)
   }
 }
 
-// The index of the answered group with the most rows, the later one on a tie,
-// or `Error(Nil)` when no group has a row.
+/// Finds the index of the answered orchestrator group carrying the largest row count,
+/// breaking ties in favor of the later group.
 fn fullest(groups: List(Group)) -> Result(Int, Nil) {
   list.index_map(groups, fn(group, index) { #(index, rows_in(group)) })
   |> list.filter(fn(entry) { entry.1 > 0 })
@@ -306,6 +312,8 @@ fn rows_in(group: Group) -> Int {
   }
 }
 
+/// Drops the last session row from the target group at `index` and marks the group
+/// as having further rows available.
 fn shorten(groups: List(Group), index: Int) -> List(Group) {
   list.index_map(groups, fn(group, at) {
     case at == index, group.heard {
@@ -336,16 +344,23 @@ pub fn to_json(groups: List(Group)) -> JsonValue {
   json.Object([#("orchestrators", json.Array(list.map(groups, group_json)))])
 }
 
+/// Encodes an orchestrator response group as a JSON object, reporting configuration,
+/// connectivity state, and session entries.
 fn group_json(group: Group) -> JsonValue {
   let each = group.orchestrator
+
+  // Include the network address field when explicitly configured for the peer.
   let address = case each.address {
     Some(text) -> [#("address", json.String(text))]
     None -> []
   }
+
+  // Distinguish answered peers from unreachable or timed-out orchestrators.
   let #(state, page) = case group.heard {
     Answered(page:) -> #("answered", page)
     Silent -> #("silent", Page(rows: [], more: Last))
   }
+
   json.Object(
     list.flatten([
       [

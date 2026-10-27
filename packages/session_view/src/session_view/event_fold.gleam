@@ -117,12 +117,15 @@ pub fn apply_event(
   shared: Shared(socket, recorder, source, replay_source),
   event: protocol.Event,
 ) -> Shared(socket, recorder, source, replay_source) {
+  // Dispatch on the pushed event to update shared session state.
   let updated = case event {
     protocol.FullSnapshot(session:, strands:, entries:, usage:, remote_usage:) -> {
+      // Target existing active strand if session matches, or default to main.
       let target = case shared.session == session {
         True -> shared.active_strand
         False -> "main"
       }
+
       let shared = select_workspace(shared, session, target)
 
       // The snapshot replaces every row the transcript drew, so the
@@ -163,10 +166,13 @@ pub fn apply_event(
     protocol.StrandsSnapshot(strands:) ->
       observe_generation_phases(shared, strands) |> shared_set.strands(strands)
     protocol.SkillsSnapshot(page:) -> {
+      // Retrieve previous skills or empty list at initial offset.
       let previous = case page.offset {
         0 -> []
         _ -> shared.skills
       }
+
+      // Verify skill catalogue page arrives in sequential order.
       case page.offset == list.length(previous) {
         False ->
           session_model.append_error(
@@ -176,6 +182,8 @@ pub fn apply_event(
         True -> {
           let loaded =
             shared_set.skills(shared, list.append(previous, page.commands))
+
+          // Request next skill catalogue page if offset remains.
           case page.next {
             None -> loaded
             Some(offset) ->
@@ -226,6 +234,7 @@ pub fn apply_event(
       |> shared_set.memory(Some(board))
       |> shared_set.memory_notice("")
     protocol.ConfigSnapshot(model_name:, directories:) -> {
+      // Select model from config snapshot if present.
       let shared = case model_name {
         Some(name) -> {
           let selected = select_model(shared, name)
@@ -233,6 +242,8 @@ pub fn apply_event(
         }
         None -> shared
       }
+
+      // Notice directory access update if config snapshot provides it.
       case directories {
         None -> shared
         Some(value) ->
@@ -364,6 +375,7 @@ pub fn apply_event(
         )
       let updated = surfaces.retire_delivered_nudges(updated, record)
 
+      // Invalidate transcript only when the active strand commits a record.
       case strand == shared.active_strand {
         True -> session_model.invalidate_transcript(updated)
         False -> updated
@@ -398,16 +410,20 @@ pub fn apply_event(
           "end" -> "request finished"
           _ -> "streaming " <> kind
         })
+
+      // Refresh transcript if active strand received the stream delta.
       case strand == shared.active_strand {
         True -> session_model.invalidate_transcript(updated)
         False -> updated
       }
     }
     protocol.OperationChanged(strand:, phase:) -> {
+      // Clear submitting state if target strand matches the operation change.
       let submitting = case shared.submitting {
         Some(target) if target == strand -> None
         other -> other
       }
+
       let strands = set_strand_phase(shared.strands, strand, phase)
 
       // Phase boundaries are request boundaries for the named strand, never
@@ -436,6 +452,8 @@ pub fn apply_event(
         })
         |> shared_set.notice(strand <> ": " <> phase)
       let settled = settle_interrupt(updated, strand, phase)
+
+      // Refresh transcript when active strand reaches done phase.
       case phase == "done" && strand == shared.active_strand {
         True -> session_model.invalidate_transcript(settled)
         False -> settled
@@ -472,6 +490,8 @@ pub fn apply_event(
             ),
           ),
         )
+
+      // Invalidate transcript if tool output belongs to active strand.
       case strand == shared.active_strand {
         True -> session_model.invalidate_transcript(updated)
         False -> updated
@@ -550,6 +570,8 @@ pub fn apply_event(
     protocol.HeldInputReturned(strand:, kind:, text:, attachment_count:, ..) ->
       restore_returned_draft(shared, strand, kind, text, attachment_count)
   }
+
+  // Invalidate UI frame and record activity for events that refresh view.
   case event {
     protocol.Committed(..)
     | protocol.MetadataChanged
@@ -596,16 +618,18 @@ pub fn apply_event(
   }
 }
 
-// A live-jobs board, taken into the session state when it answers this
-// attachment's read, which `surfaces.receive_jobs` shows by clearing
-// `jobs_awaiting`. The summary's job cursor is the terminal's, and it follows
-// the job it pointed at in the board being replaced, so a taken board is
-// recorded with the board it replaces for the terminal to move the cursor.
+/// A live-jobs board, taken into the session state when it answers this
+/// attachment's read, which `surfaces.receive_jobs` shows by clearing
+/// `jobs_awaiting`. The summary's job cursor is the terminal's, and it follows
+/// the job it pointed at in the board being replaced, so a taken board is
+/// recorded with the board it replaces for the terminal to move the cursor.
 fn receive_jobs(
   shared: Shared(socket, recorder, source, replay_source),
   board: live_jobs.Board,
 ) -> Shared(socket, recorder, source, replay_source) {
   let received = surfaces.receive_jobs(shared, board)
+
+  // Check whether jobs board was taken to record replacement.
   case received.jobs_awaiting == shared.jobs_awaiting {
     True -> received
     False ->
@@ -616,22 +640,25 @@ fn receive_jobs(
   }
 }
 
-// A pushed summarizer label (protocol 050). A settled label rewrites a row
-// the record cache holds, and so does a live one whose response has already
-// committed, because the committed block borrows it until its own label
-// arrives. Any other live label belongs to a row in the transient tail,
-// which every projection rebuilds, and leaves the record cache standing.
+/// A pushed summarizer label (protocol 050). A settled label rewrites a row
+/// the record cache holds, and so does a live one whose response has already
+/// committed, because the committed block borrows it until its own label
+/// arrives. Any other live label belongs to a row in the transient tail,
+/// which every projection rebuilds, and leaves the record cache standing.
 fn receive_block_summary(
   shared: Shared(socket, recorder, source, replay_source),
   subject: block_summary.Subject,
   text: String,
 ) -> Shared(socket, recorder, source, replay_source) {
   let summaries = block_summary.receive(shared.summaries, subject, text)
+
+  // Check whether summarized block is settled or live stream.
   let recorded = case subject {
     block_summary.SettledBlock(..) -> True
     block_summary.LiveStream(generation:, ..) ->
       transcript_lines.response_recorded(shared.records, generation)
   }
+
   let valid = shared.record_cache_valid && !recorded
   shared
   |> shared_set.summaries(summaries)
@@ -639,16 +666,16 @@ fn receive_block_summary(
   |> session_model.invalidate_transcript
 }
 
-// Restores a custody-returned prompt as a local draft (protocol-change/038).
-//
-// The daemon held the prompt only in memory, so the returned text must be
-// retained before the socket closes. The return is session state first: it
-// joins `Shared.returned_drafts`, addressed to the session and strand that
-// submitted it, and the notice names the strand and the images the text
-// cannot carry, so nothing about the return is invisible. The terminal moves
-// it into the editor it owns, in `inbound.restore_returned_drafts`, when it
-// applies this event, so the composer holds the text before the next frame
-// arrives.
+/// Restores a custody-returned prompt as a local draft (protocol-change/038).
+///
+/// The daemon held the prompt only in memory, so the returned text must be
+/// retained before the socket closes. The return is session state first: it
+/// joins `Shared.returned_drafts`, addressed to the session and strand that
+/// submitted it, and the notice names the strand and the images the text
+/// cannot carry, so nothing about the return is invisible. The terminal moves
+/// it into the editor it owns, in `inbound.restore_returned_drafts`, when it
+/// applies this event, so the composer holds the text before the next frame
+/// arrives.
 fn restore_returned_draft(
   shared: Shared(socket, recorder, source, replay_source),
   strand: String,
@@ -662,6 +689,8 @@ fn restore_returned_draft(
       ..shared,
       returned_drafts: list.append(shared.returned_drafts, [returned]),
     )
+
+  // Format notice suffix if attachments were dropped by daemon.
   let images = case attachment_count {
     0 -> ""
     n ->
@@ -669,6 +698,7 @@ fn restore_returned_draft(
       <> int.to_string(n)
       <> " attachment(s) stayed on the dead daemon — re-attach them"
   }
+
   session_model.append_notice(
     shared,
     "daemon returned the "
@@ -680,14 +710,15 @@ fn restore_returned_draft(
   )
 }
 
-// One line per schedule, in the listing's own order — the operator's
-// standing tables first, then what the session grew. `owner` is printed
-// rather than derived: "operator" and a strand that happens to be called
-// something similar are told apart by the server and never here.
+/// One line per schedule, in the listing's own order — the operator's
+/// standing tables first, then what the session grew. `owner` is printed
+/// rather than derived: "operator" and a strand that happens to be called
+/// something similar are told apart by the server and never here.
 fn append_schedules(
   shared: Shared(socket, recorder, source, replay_source),
   rows: List(protocol.ScheduleRow),
 ) -> Shared(socket, recorder, source, replay_source) {
+  // Display empty notice or format schedule listing.
   case rows {
     [] -> session_model.append_system(shared, "no schedules")
     rows -> {
@@ -703,12 +734,12 @@ fn append_schedules(
   }
 }
 
-// The reply to `/profile`, in the words an operator reads back. A read lists
-// the profile the session routes by and the names it may switch to; the reply
-// to a switch says what was saved and that the connection is about to close,
-// because the daemon restarts the session to build the new profile's gateway
-// (protocol-change/082). `default` is listed with the names although the
-// daemon does not send it: it is the word that returns to the default roles.
+/// The reply to `/profile`, in the words an operator reads back. A read lists
+/// the profile the session routes by and the names it may switch to; the reply
+/// to a switch says what was saved and that the connection is about to close,
+/// because the daemon restarts the session to build the new profile's gateway
+/// (protocol-change/082). `default` is listed with the names although the
+/// daemon does not send it: it is the word that returns to the default roles.
 fn append_profile(
   shared: Shared(socket, recorder, source, replay_source),
   current: Option(String),
@@ -716,6 +747,8 @@ fn append_profile(
   switched: Option(Int),
 ) -> Shared(socket, recorder, source, replay_source) {
   let name = option.unwrap(current, "default roles")
+
+  // Format profile switch response or available profiles list.
   case switched {
     Some(moved) -> {
       let summary =
@@ -740,6 +773,7 @@ fn append_profile(
   }
 }
 
+/// Formats a schedule row into columns for display.
 fn schedule_line(row: protocol.ScheduleRow) -> String {
   string.join(
     [
@@ -757,6 +791,7 @@ fn schedule_line(row: protocol.ScheduleRow) -> String {
   )
 }
 
+/// Updates live phase state for the target strand in the strand roster.
 fn set_strand_phase(
   strands: List(protocol.Strand),
   target: String,
@@ -764,6 +799,8 @@ fn set_strand_phase(
 ) -> List(protocol.Strand) {
   list.map(strands, fn(strand) {
     let Strand(id:, ..) = strand
+
+    // Update live phase if strand matches target or preserve unchanged.
     case id == target, phase {
       True, "done" -> Strand(..strand, live_phase: None)
       True, _ -> Strand(..strand, live_phase: Some(phase))
@@ -772,9 +809,9 @@ fn set_strand_phase(
   })
 }
 
-// A client attaching near completion may have only a sampled preview, with
-// no later delta before end. Transfer that exact sample into the bounded live
-// region before adding the end marker; an older request's sample cannot qualify.
+/// A client attaching near completion may have only a sampled preview, with
+/// no later delta before end. Transfer that exact sample into the bounded live
+/// region before adding the end marker; an older request's sample cannot qualify.
 fn streams_before_end(
   shared: Shared(socket, recorder, source, replay_source),
   strand: String,
@@ -790,6 +827,8 @@ fn streams_before_end(
   )
   let preview =
     option.then(shared.captured, fn(captured) { captured.1.preview })
+
+  // Prepend preview sample if matching active request before end delta.
   case preview {
     Some(sample)
       if sample.operation == operation && sample.generation == generation
@@ -805,9 +844,9 @@ fn streams_before_end(
   }
 }
 
-// A provider request owns all its fragment kinds. A new request replaces
-// them together; an old terminal can retire only its own request. Completion
-// comes from the same observer as deltas, independent of snapshot timing.
+/// A provider request owns all its fragment kinds. A new request replaces
+/// them together; an old terminal can retire only its own request. Completion
+/// comes from the same observer as deltas, independent of snapshot timing.
 fn receive_stream(
   streams: List(Stream),
   strand: String,
@@ -828,6 +867,8 @@ fn receive_stream(
     }),
     streams,
   )
+
+  // Handle stream end marker or append delta fragment.
   case kind {
     "end" -> {
       let newer =
@@ -837,6 +878,8 @@ fn receive_stream(
             stream.operation != operation || stream.generation != generation
           }
         })
+
+      // Drop stream end marker if newer request is active.
       case newer {
         True -> streams
         False -> {
@@ -869,6 +912,7 @@ fn receive_stream(
   }
 }
 
+/// Appends a new fragment to the matching stream or starts a new stream.
 fn append_stream(
   streams: List(Stream),
   strand: String,
@@ -879,6 +923,8 @@ fn append_stream(
 ) -> List(Stream) {
   let fragment = owned(fragment)
   let width = string.byte_size(fragment)
+
+  // Locate matching stream to append fragment or prepend new stream entry.
   case streams {
     [] -> [
       Stream(
@@ -906,12 +952,14 @@ fn append_stream(
         // rather than continuing it. Tool-call fragments never accumulate at
         // all: only the latest name is renderable until the entry commits.
         True -> {
+          // Collapse tool_call or reset fragment list on new operation.
           let #(fragments, bytes) = case
             kind == "tool_call" || current_op != operation
           {
             True -> #([fragment], width)
             False -> bounded([fragment, ..current], held + width)
           }
+
           [
             Stream(strand:, operation:, generation:, kind:, fragments:, bytes:),
             ..rest
@@ -942,23 +990,24 @@ fn owned(text: String) -> String {
   text |> string.to_utf_codepoints |> string.from_utf_codepoints
 }
 
-// Past the budget the fragments are collapsed into one holding the newest
-// bytes. Dropping the oldest one at a time would be the length of the answer
-// per token; collapsing pays that once per budget's worth of tokens and
-// leaves a single fragment for the next batch to accumulate against. What the
-// reader loses is the head of an answer that has not committed yet, and the
-// durable record replaces the whole region the moment it does.
-//
-// The trigger is twice what the collapse keeps, and the headroom is the whole
-// point: collapsing back to exactly the limit would put the next token over
-// it again, and the amortised cost would be the copy paid per token rather
-// than once per budget. So the region is bounded by twice `live_stream_limit`
-// rather than by it, and that is the number the invariant states.
-//
-// The newest bytes are a slice of the joined answer, so keeping the slice
-// would keep all of it: twice the limit held to show the limit. They are
-// copied out, as `owned` does for a delta, once per collapse.
+/// Past the budget the fragments are collapsed into one holding the newest
+/// bytes. Dropping the oldest one at a time would be the length of the answer
+/// per token; collapsing pays that once per budget's worth of tokens and
+/// leaves a single fragment for the next batch to accumulate against. What the
+/// reader loses is the head of an answer that has not committed yet, and the
+/// durable record replaces the whole region the moment it does.
+///
+/// The trigger is twice what the collapse keeps, and the headroom is the whole
+/// point: collapsing back to exactly the limit would put the next token over
+/// it again, and the amortised cost would be the copy paid per token rather
+/// than once per budget. So the region is bounded by twice `live_stream_limit`
+/// rather than by it, and that is the number the invariant states.
+///
+/// The newest bytes are a slice of the joined answer, so keeping the slice
+/// would keep all of it: twice the limit held to show the limit. They are
+/// copied out, as `owned` does for a delta, once per collapse.
 fn bounded(fragments: List(String), bytes: Int) -> #(List(String), Int) {
+  // Collapse accumulated fragments if size exceeds double stream limit.
   case bytes <= transcript_lines.live_stream_limit * 2 {
     True -> #(fragments, bytes)
     False -> {
@@ -982,13 +1031,17 @@ fn newest_bytes(text: String, limit: Int) -> String {
   newest_suffix(bytes, int.max(0, size - limit), 4)
 }
 
+/// Recursively extracts a valid UTF-8 suffix from the byte array.
 fn newest_suffix(bytes: BitArray, from: Int, attempts: Int) -> String {
+  // Check remaining attempts before slicing bit array.
   case attempts {
     0 -> ""
     _ -> {
       let taken =
         bit_array.slice(bytes, from, bit_array.byte_size(bytes) - from)
         |> result.try(bit_array.to_string)
+
+      // Validate UTF-8 slice or retreat by one byte.
       case taken {
         Ok(text) -> text
         Error(_) -> newest_suffix(bytes, from + 1, attempts - 1)
@@ -997,11 +1050,11 @@ fn newest_suffix(bytes: BitArray, from: Int, attempts: Int) -> String {
   }
 }
 
-// The tails this strand's calls are printing, newest frame winning per
-// `{strand, operation, step, source_index, call_id, stream}`. Order is kept stable — a
-// replaced tail keeps its place and a new key goes to the end — so two
-// streams of one command do not swap positions on screen every time one
-// of them speaks.
+/// The tails this strand's calls are printing, newest frame winning per
+/// `{strand, operation, step, source_index, call_id, stream}`. Order is kept stable — a
+/// replaced tail keeps its place and a new key goes to the end — so two
+/// streams of one command do not swap positions on screen every time one
+/// of them speaks.
 fn receive_tail(tails: List(ToolTail), incoming: ToolTail) -> List(ToolTail) {
   let same_key = fn(tail: ToolTail) {
     tail.strand == incoming.strand
@@ -1011,6 +1064,8 @@ fn receive_tail(tails: List(ToolTail), incoming: ToolTail) -> List(ToolTail) {
     && tail.call_id == incoming.call_id
     && tail.stream == incoming.stream
   }
+
+  // Update existing tool tail or append new tail entry.
   case list.any(tails, same_key) {
     True ->
       list.map(tails, fn(tail) {
@@ -1031,11 +1086,14 @@ fn clear_tails(tails: List(ToolTail), strand: String) -> List(ToolTail) {
   list.filter(tails, fn(tail) { tail.strand != strand })
 }
 
+/// Removes tool tails retired by a committed tool result message.
 fn retire_recorded_tail(
   tails: List(ToolTail),
   record: protocol.EntryRecord,
 ) -> List(ToolTail) {
   let protocol.EntryRecord(strand:, entry:) = record
+
+  // Match tool result messages to retire corresponding tool tail entries.
   case entry {
     entry.MessageEntry(
       message: message.ToolResultMessage(tool_call_id:, ..),
@@ -1048,13 +1106,13 @@ fn retire_recorded_tail(
   }
 }
 
-// Everything one usage row changes about the model.
-//
-// The row arrives once per settled generation, so this is both the moment
-// the output rate is known and the moment the prompt cache can be judged.
-// An unknown zero snapshot carries accounting uncertainty but no new reading.
-// Both readings are per event rather than cumulative, which is why they sit
-// here rather than in the status-line arithmetic over `model.usage`.
+/// Everything one usage row changes about the model.
+///
+/// The row arrives once per settled generation, so this is both the moment
+/// the output rate is known and the moment the prompt cache can be judged.
+/// An unknown zero snapshot carries accounting uncertainty but no new reading.
+/// Both readings are per event rather than cumulative, which is why they sit
+/// here rather than in the status-line arithmetic over `model.usage`.
 fn receive_usage(
   shared: Shared(socket, recorder, source, replay_source),
   strand: String,
@@ -1062,14 +1120,16 @@ fn receive_usage(
   last_usage: Option(message.Usage),
 ) -> Shared(socket, recorder, source, replay_source) {
   let usage = accounting.add_usage(shared.usage, settled)
+
+  // Fold usage into session totals or process final attempt usage.
   case option.then(last_usage, accounting.observed_usage) {
     None -> Shared(..shared, usage:)
     Some(last) -> receive_final_usage(shared, strand, last, usage)
   }
 }
 
-// A fallback total updates the ledger, while output rate and cache readings
-// belong only to the final attempt retained beside it.
+/// A fallback total updates the ledger, while output rate and cache readings
+/// belong only to the final attempt retained beside it.
 fn receive_final_usage(
   shared: Shared(socket, recorder, source, replay_source),
   strand: String,
@@ -1086,14 +1146,14 @@ fn receive_final_usage(
   watch_cache(shared_set.usage(updated, usage), strand, settled)
 }
 
-// A network push is an observation of one durable row, not a second owner of
-// session totals. A capture may already include its sequence, or a delayed
-// push may arrive after that capture; only the capture sets cumulative usage.
-// Sequence identity prevents duplicate pushes from resetting the cache clock.
-// The cache comparison waits for a cut that covers this sequence, since a
-// remote model change can reach the socket before its configuration capture.
-// Which rows the ledger admits, holds and compares is `cache_watch`'s rule,
-// shared with the web view.
+/// A network push is an observation of one durable row, not a second owner of
+/// session totals. A capture may already include its sequence, or a delayed
+/// push may arrive after that capture; only the capture sets cumulative usage.
+/// Sequence identity prevents duplicate pushes from resetting the cache clock.
+/// The cache comparison waits for a cut that covers this sequence, since a
+/// remote model change can reach the socket before its configuration capture.
+/// Which rows the ledger admits, holds and compares is `cache_watch`'s rule,
+/// shared with the web view.
 fn receive_usage_observation(
   shared: Shared(socket, recorder, source, replay_source),
   strand: String,
@@ -1108,6 +1168,7 @@ fn receive_usage_observation(
   }
 }
 
+/// Records final usage observation and settles covered cache entries.
 fn receive_final_observation(
   shared: Shared(socket, recorder, source, replay_source),
   strand: String,
@@ -1116,6 +1177,8 @@ fn receive_final_observation(
   settled: message.Usage,
 ) -> Shared(socket, recorder, source, replay_source) {
   let covered = option.map(shared.captured, fn(shown) { { shown.0 }.next_seq })
+
+  // Admit usage into cache watch if permitted by sequence window.
   case
     cache_watch.admit(
       shared.cache,
@@ -1146,6 +1209,8 @@ fn receive_final_observation(
           settled,
           transcript_lines.tokens(settled.total_tokens) <> " tokens this turn",
         )
+
+      // Settle pending cache if sequence watermark is established.
       case covered {
         Some(next_seq) -> settle_pending_cache(observed, next_seq)
         None -> observed
@@ -1178,15 +1243,16 @@ pub fn settle_pending_cache(
   })
 }
 
-// The output rate and generation clock are per-row readings in both legacy
-// replay and live observations. Their common settlement does not touch the
-// cumulative usage figure, whose owner depends on the delivery path.
+/// The output rate and generation clock are per-row readings in both legacy
+/// replay and live observations. Their common settlement does not touch the
+/// cumulative usage figure, whose owner depends on the delivery path.
 fn settle_usage(
   shared: Shared(socket, recorder, source, replay_source),
   strand: String,
   settled: message.Usage,
   notice: String,
 ) -> Shared(socket, recorder, source, replay_source) {
+  // Settle generation rates for attached peer or untime on replay.
   let rates = case shared.peer {
     Attached | Preview ->
       generation_rate.settle(
@@ -1198,19 +1264,20 @@ fn settle_usage(
     Replaying | Disconnected ->
       generation_rate.untimed(shared.generation_rates, strand)
   }
+
   shared
   |> hold_generation_rates(rates)
   |> shared_set.notice(notice)
 }
 
-// Folds one row into its strand's cache watch and raises any notice it
-// reveals.
-//
-// The clock is the terminal's own, the same one the frame pacing and the
-// throughput reading use, because the gap being measured is wall time the
-// operator spent away and no server field reports it. A replay plays its
-// file far faster than the session originally ran, so the gaps it would
-// measure are not the gaps that happened; it observes nothing.
+/// Folds one row into its strand's cache watch and raises any notice it
+/// reveals.
+///
+/// The clock is the terminal's own, the same one the frame pacing and the
+/// throughput reading use, because the gap being measured is wall time the
+/// operator spent away and no server field reports it. A replay plays its
+/// file far faster than the session originally ran, so the gaps it would
+/// measure are not the gaps that happened; it observes nothing.
 fn watch_cache(
   shared: Shared(socket, recorder, source, replay_source),
   strand: String,
@@ -1225,16 +1292,18 @@ fn watch_cache(
       cache_timing(shared),
     )
   let watched = shared_set.cache(shared, cache)
+
+  // Append cache miss notice if observation detected a gap.
   case missed {
     None -> watched
     Some(found) -> note_cache_miss(watched, found.strand, found.miss)
   }
 }
 
-// A watch describes one provider's prefix. A model change cannot inherit its
-// horizon or compare the new provider's first row with the old provider's
-// last row. Clear only the affected strand, leaving its historical notices
-// and other strands' watches in place.
+/// A watch describes one provider's prefix. A model change cannot inherit its
+/// horizon or compare the new provider's first row with the old provider's
+/// last row. Clear only the affected strand, leaving its historical notices
+/// and other strands' watches in place.
 fn forget_cache(
   shared: Shared(socket, recorder, source, replay_source),
   strand: String,
@@ -1264,15 +1333,17 @@ pub fn select_model(
   shared: Shared(socket, recorder, source, replay_source),
   name: String,
 ) -> Shared(socket, recorder, source, replay_source) {
+  // Forget cache watch on model switch or preserve state.
   let shared = case name == shared.current_model {
     True -> shared
     False -> forget_cache(shared, shared.active_strand)
   }
+
   shared_set.current_model(shared, name)
 }
 
-// Whether the instants this terminal hands the ledger are wall time: a
-// replay's are not, and it observes nothing.
+/// Whether the instants this terminal hands the ledger are wall time: a
+/// replay's are not, and it observes nothing.
 fn cache_timing(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> cache_watch.Timing {
@@ -1290,13 +1361,13 @@ fn replaying(shared: Shared(socket, recorder, source, replay_source)) -> Bool {
   }
 }
 
-// Files one cache-miss row against the strand's transcript.
-//
-// The row is anchored to the records the strand already holds rather than
-// appended to the local notice block, so it stays under the turn it
-// explains as later entries arrive. A new row changes the projection, so
-// the record cache is dropped whether or not the strand is the visible one:
-// switching to it later must find the row in place.
+/// Files one cache-miss row against the strand's transcript.
+///
+/// The row is anchored to the records the strand already holds rather than
+/// appended to the local notice block, so it stays under the turn it
+/// explains as later entries arrive. A new row changes the projection, so
+/// the record cache is dropped whether or not the strand is the visible one:
+/// switching to it later must find the row in place.
 fn note_cache_miss(
   shared: Shared(socket, recorder, source, replay_source),
   strand: String,
@@ -1386,6 +1457,8 @@ pub fn send_prompt_to(
     |> shared_set.submitting(Some(strand))
     |> shared_set.notice("prompt sent to " <> strand)
   }
+
+  // Submit prompt via lane when attached or record preview.
   case shared.peer {
     Attached ->
       outbound.send_via(sent, fn(lane, now) {
@@ -1527,13 +1600,13 @@ pub fn abandon_interjections(
 // interjection joins the run that is already open and commits during it,
 // while every held prompt waits for that run to settle — so a steer typed
 // after a prompt was queued still commits first. Keeping the list in commit
-// order is what lets `drained_echoes` stay a drop of the head, and it is the
-// list's whole invariant: interjections first, in the order they were made,
-// then the held prompts in the order the daemon drains them.
+/// Interjections first, in the order they were made, then the held prompts in
+/// the order the daemon drains them.
 fn in_commit_order(
   queued: List(Submission),
   submission: Submission,
 ) -> List(Submission) {
+  // Append held prompts or partition interjections in commit order.
   case submission {
     HeldPrompt(..) -> list.append(queued, [submission])
     Interjection -> {
@@ -1549,25 +1622,27 @@ fn in_commit_order(
   }
 }
 
-// Retires the oldest outstanding submission when a user turn commits on the
-// strand it was made on.
-//
-// `in_commit_order` holds the list in the order the daemon commits these, so
-// the head is what the entry belongs to, and an interjection at the head
-// absorbs the entry without touching the echo behind it — which is the whole
-// reason steers and follow-ups are recorded here at all. Matching on the text
-// instead would have to reproduce the server's authorship prefix and its
-// block layout, and would still pick the wrong entry for two identical
-// prompts.
-//
-// A second operator's prompt or steer on the same strand still retires the
-// head early. That costs a queued marker one turn of visibility, and the
-// entry it stood for still arrives in its place.
+/// Retires the oldest outstanding submission when a user turn commits on the
+/// strand it was made on.
+///
+/// `in_commit_order` holds the list in the order the daemon commits these, so
+/// the head is what the entry belongs to, and an interjection at the head
+/// absorbs the entry without touching the echo behind it — which is the whole
+/// reason steers and follow-ups are recorded here at all. Matching on the text
+/// instead would have to reproduce the server's authorship prefix and its
+/// block layout, and would still pick the wrong entry for two identical
+/// prompts.
+///
+/// A second operator's prompt or steer on the same strand still retires the
+/// head early. That costs a queued marker one turn of visibility, and the
+/// entry it stood for still arrives in its place.
 fn drained_echoes(
   queued: List(Submission),
   record: protocol.EntryRecord,
 ) -> List(Submission) {
   let protocol.EntryRecord(entry: value, ..) = record
+
+  // Drop oldest submission on user message entry commit.
   case value {
     entry.MessageEntry(message: message.UserMessage(..), ..) ->
       list.drop(queued, 1)
@@ -1578,6 +1653,7 @@ fn drained_echoes(
   }
 }
 
+/// Settles pending interrupt if active strand completed work.
 fn settle_interrupt(
   shared: Shared(socket, recorder, source, replay_source),
   strand: String,
@@ -1654,6 +1730,8 @@ pub fn select_workspace(
   )
 
   let same_session = shared.session == session
+
+  // Leave previous session when switching to a different session.
   let shared = case same_session {
     True -> shared
     False -> leave_session(shared)
@@ -1662,10 +1740,12 @@ pub fn select_workspace(
   // Before the first attachment there is no previous session to park in.
   // Bind that unassigned editor to the explicitly chosen session once;
   // later switches keep their existing session identities and own drafts.
+  // Resolve draft session identity for editor parking.
   let draft_session = case shared.session {
     "" -> session
     previous -> previous
   }
+
   let departing = #(draft_session, shared.active_strand)
   let arriving = #(session, strand)
 

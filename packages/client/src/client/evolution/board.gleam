@@ -107,9 +107,8 @@ fn add(total: Int, row: Sized(a)) -> Int {
   total + row.bytes + 1
 }
 
-// A selection is shown exactly when its candidate is, so its bytes belong to
-// that candidate's row. Shedding the row then sheds the selection with it, and
-// the fixed part of the board carries no selections at all.
+/// Incorporates the serialized byte size of associated selections into a candidate row's
+/// charged byte size to ensure joint truncation.
 fn charged(
   row: Sized(store.Row),
   selections: List(Sized(record.Selection)),
@@ -121,10 +120,8 @@ fn charged(
   Sized(..row, bytes: row.bytes + owed)
 }
 
-// The bytes of everything that is neither a candidate, a selection nor an audit
-// entry. The omitted counters are sized at their largest, which is every row
-// dropped, because their digits are part of the reply and over-estimating by a
-// few bytes keeps the bound safe.
+/// Computes the fixed baseline JSON byte size of the board structure excluding dynamically
+/// pruned candidate rows and history entries.
 fn fixed_bytes(
   input: Input,
   candidates: List(Sized(store.Row)),
@@ -142,12 +139,12 @@ fn fixed_bytes(
   |> string.byte_size
 }
 
-// Drops rows from the oldest end until `excess` bytes are gone. Rows arrive
-// newest first, so the walk goes from the back and the survivors come out in
-// their original order.
+/// Prunes rows starting from the oldest until the total byte excess has been reclaimed.
 fn shed(rows: List(Sized(a)), excess: Int) -> #(List(Sized(a)), Int, Int) {
   list.fold(list.reverse(rows), #([], 0, excess), fn(state, row) {
     let #(kept, dropped, owed) = state
+
+    // Drop the row if excess bytes are still owed.
     case owed > 0 {
       True -> #(kept, dropped + 1, owed - row.bytes - 1)
       False -> #([row, ..kept], dropped, owed)
@@ -155,6 +152,8 @@ fn shed(rows: List(Sized(a)), excess: Int) -> #(List(Sized(a)), Int, Int) {
   })
 }
 
+/// Renders the complete evolution board JSON document from retained candidates, active
+/// selections, history events, and omission counters.
 fn render(
   input: Input,
   candidates: List(Sized(store.Row)),
@@ -192,6 +191,7 @@ fn sized(item: a, value: json.JsonValue) -> Sized(a) {
   Sized(item:, value:, bytes: string.byte_size(json.to_string(value)))
 }
 
+/// Serializes and measures a candidate table row including approval status and test evidence.
 fn candidate_row(
   identity: record.Identity,
   row: store.Row,
@@ -237,6 +237,7 @@ fn candidate_row(
   )
 }
 
+/// Returns the string representation of an evolution candidate kind variant.
 fn kind_word(kind: record.Kind) -> String {
   case kind {
     record.Extension -> "extension"
@@ -245,6 +246,7 @@ fn kind_word(kind: record.Kind) -> String {
   }
 }
 
+/// Encodes an evolution candidate scope definition into a JSON object.
 fn scope_value(scope: record.Scope) -> json.JsonValue {
   case scope {
     record.Session(id) ->
@@ -267,6 +269,7 @@ fn scope_value(scope: record.Scope) -> json.JsonValue {
   }
 }
 
+/// Formats operator approval details including timestamp and grantor identity into JSON.
 fn approval_value(approval: Option(store.Approval)) -> json.JsonValue {
   case approval {
     None -> json.Null
@@ -282,15 +285,18 @@ fn approval_value(approval: Option(store.Approval)) -> json.JsonValue {
   }
 }
 
+/// Formats candidate evaluation evidence and indicates whether it matches the current build identity.
 fn evidence_value(
   identity: record.Identity,
   evidence: record.Evidence,
 ) -> json.JsonValue {
+  // Map evaluation verdict variants to string labels and reason text.
   let #(verdict, reason) = case evidence.verdict {
     record.Passed -> #("passed", "")
     record.Failed -> #("failed", "")
     record.Inconclusive(reason) -> #("inconclusive", reason)
   }
+
   json.Object([
     #("evidence_id", json.String(record.evidence_string(evidence.id))),
     #("purpose", json.String(purpose_word(evidence.purpose))),
@@ -308,14 +314,17 @@ fn purpose_word(purpose: record.Purpose) -> String {
   }
 }
 
+/// Formats a selection entry and checks if it corresponds to the currently published live version.
 fn selection_row(
   selection: record.Selection,
   input: Input,
 ) -> Sized(record.Selection) {
+  // Determine if this selection is the currently active published selection.
   let running = case input.published {
     Some(published) -> published.selection == selection
     None -> False
   }
+
   sized(
     selection,
     json.Object([
@@ -332,7 +341,9 @@ fn selection_row(
   )
 }
 
+/// Encodes the currently published evolution candidate selection and its exposed tool inventory.
 fn published_value(published: Option(Published)) -> json.JsonValue {
+  // Encode active published candidate metadata or emit null if none is published.
   case published {
     None -> json.Null
     Some(published) -> {
@@ -347,6 +358,7 @@ fn published_value(published: Option(Published)) -> json.JsonValue {
   }
 }
 
+/// Serializes an in-flight evolution queue item into JSON format.
 fn waiting_value(waiting: queue.Waiting) -> json.JsonValue {
   json.Object([
     #("request_id", json.String(waiting.request_id)),
@@ -362,6 +374,7 @@ fn waiting_value(waiting: queue.Waiting) -> json.JsonValue {
   ])
 }
 
+/// Formats and measures an audit event row in the evolution board log.
 fn event_row(event: store.Event) -> Sized(store.Event) {
   sized(
     event,

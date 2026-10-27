@@ -212,7 +212,7 @@ the result into the session store so that every later boot of the same
 session sends exactly the bytes the first one did.
 
 A boot chooses its prompt from three sources, in this order
-(`assemble`, `client/system_prompt.gleam:512`):
+(`assemble`, `client/system_prompt.gleam:524`):
 
 1. `LOOM_SYSTEM_PROMPT`, a literal prompt that bypasses the pack entirely.
    A value that is empty or whitespace counts as unset.

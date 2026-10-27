@@ -329,6 +329,7 @@ fn five_fields(
     |> string.split(" ")
     |> list.filter(fn(field) { field != "" })
 
+  // Ensure exactly five fields are present in expression.
   case fields {
     [minute, hour, day_of_month, month, day_of_week] ->
       Ok(#(minute, hour, day_of_month, month, day_of_week))
@@ -356,6 +357,7 @@ fn five_fields(
 fn parse_values(text: String, bounds: Bounds) -> Result(List(Int), String) {
   use restriction <- result.try(parse_restriction(text, bounds))
 
+  // Expand unrestricted wildcard to full bounds range or use specified values.
   case restriction {
     Unrestricted -> Ok(stepped_values(bounds.low, bounds.high, 1, []))
     Restricted(values:) -> Ok(values)
@@ -373,6 +375,7 @@ fn parse_values(text: String, bounds: Bounds) -> Result(List(Int), String) {
 fn parse_week_restriction(text: String) -> Result(Restriction, String) {
   use restriction <- result.try(parse_restriction(text, bounds_of_day_of_week))
 
+  // Handle week restriction with Sunday mapped to 0.
   case restriction {
     Unrestricted -> Ok(Unrestricted)
 
@@ -397,6 +400,7 @@ fn parse_restriction(
   text: String,
   bounds: Bounds,
 ) -> Result(Restriction, String) {
+  // Check whether field is unrestricted wildcard or comma-separated items.
   case text == "*" {
     True -> Ok(Unrestricted)
 
@@ -414,6 +418,7 @@ fn parse_items(
   bounds: Bounds,
   collected: List(Int),
 ) -> Result(List(Int), String) {
+  // Parse each item in comma-separated list.
   case items {
     [] -> Ok(collected)
 
@@ -433,6 +438,7 @@ fn parse_items(
 fn parse_item(item: String, bounds: Bounds) -> Result(List(Int), String) {
   use Nil <- result.try(non_empty_item(item, bounds))
 
+  // Split item by step delimiter if present.
   case string.split(item, "/") {
     [base] -> {
       use #(from, to) <- result.try(parse_span(base, bounds, item))
@@ -487,6 +493,7 @@ fn parse_stepped_item(
   Ok(stepped_values(from, to, step, []))
 }
 
+/// Validates that stepped base expression is a wildcard or range.
 fn steppable_base(
   base: String,
   bounds: Bounds,
@@ -514,6 +521,7 @@ fn parse_step(
 ) -> Result(Int, String) {
   use step <- result.try(parse_whole(text, bounds, item))
 
+  // Step must be positive integer.
   case step >= 1 {
     True -> Ok(step)
 
@@ -540,6 +548,7 @@ fn parse_span(
   }
 }
 
+/// Parses a single value or numeric range span.
 fn parse_numeric_span(
   base: String,
   bounds: Bounds,
@@ -595,6 +604,7 @@ fn ascending(
   }
 }
 
+/// Parses an integer and verifies it lies within the field bounds.
 fn parse_bounded(
   text: String,
   bounds: Bounds,
@@ -602,6 +612,7 @@ fn parse_bounded(
 ) -> Result(Int, String) {
   use value <- result.try(parse_whole(text, bounds, item))
 
+  // Verify value falls within configured field bounds.
   case value < bounds.low || value > bounds.high {
     False -> Ok(value)
 
@@ -664,6 +675,7 @@ fn grammar_reminder() -> String {
   <> "`?` and `#`"
 }
 
+/// Formats an error message for an unsupported item in a cron field.
 fn unsupported(bounds: Bounds, item: String, reason: String) -> String {
   "the cron "
   <> bounds.field
@@ -1001,6 +1013,7 @@ fn last_minute_at_or_before(
   option.or(candidate, latest)
 }
 
+/// Finds the first integer in an ascending list that is at or above a threshold.
 fn first_at_or_after(values: List(Int), from: Int) -> Option(Int) {
   case values {
     [] -> None
@@ -1018,6 +1031,7 @@ fn first_at_or_after(values: List(Int), from: Int) -> Option(Int) {
 fn last_at_or_before(values: List(Int), upto: Int) -> Option(Int) {
   use best, value <- list.fold(values, None)
 
+  // Keep largest value at or below target.
   case value <= upto {
     True -> Some(value)
     False -> best
@@ -1041,6 +1055,7 @@ fn last_at_or_before(values: List(Int), upto: Int) -> Option(Int) {
 fn floor_div(numerator: Int, denominator: Int) -> Int {
   let quotient = numerator / denominator
 
+  // Adjust quotient if remainder is negative.
   case numerator % denominator < 0 {
     True -> quotient - 1
     False -> quotient
@@ -1141,6 +1156,7 @@ fn is_leap_year(year: Int) -> Bool {
   year % 4 == 0 && { year % 100 != 0 || year % 400 == 0 }
 }
 
+/// Returns the number of days in the specified month of a year.
 fn days_in_month(year: Int, month: Int) -> Int {
   case month == 2 {
     True ->
@@ -1183,7 +1199,9 @@ fn previous_date(date: Civil) -> Civil {
   }
 }
 
+/// Returns the date representing the last day of the previous calendar month.
 fn last_of_previous_month(date: Civil) -> Civil {
+  // Wrap to December of prior year or previous month in current year.
   case date.month == 1 {
     True -> Civil(year: date.year - 1, month: 12, day: 31)
 

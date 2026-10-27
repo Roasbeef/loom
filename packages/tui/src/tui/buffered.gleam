@@ -120,8 +120,10 @@ pub fn waiting(subject: Subject(a), room: Int) -> List(a) {
   receive_waiting(subject, room, []) |> list.reverse
 }
 
-// The budget is checked before each receive, because a message received
-// past it could not be put back behind the ones still in the mailbox.
+/// Drain up to remaining messages from the subject without waiting.
+///
+/// The budget is checked before each receive, because a message received
+/// past it could not be put back behind the ones still in the mailbox.
 fn receive_waiting(subject: Subject(a), remaining: Int, newest_first: List(a)) {
   case remaining <= 0 {
     True -> newest_first

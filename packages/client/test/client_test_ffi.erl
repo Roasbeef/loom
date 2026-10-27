@@ -12,12 +12,28 @@
          log_capture_stop/0, log/2, utf_codepoint_calls/1,
          function_values/1, wire_round_trip/1, remote_pid/0,
          ra_names_on_disk/1, rsa_key_pem/0, lsp_start_waiters/1, ui_sessions_pid/1,
-         page_component_model/1]).
+         page_component_model/1, captured_occurrences/2]).
 
 -include_lib("public_key/include/public_key.hrl").
 -include_lib("client/include/client@lsp@manager_Manager.hrl").
 -include_lib("client/include/client@daemon@ui_sessions_Sessions.hrl").
 -include_lib("lustre/include/lustre@runtime@server@runtime_State.hrl").
+
+%% Count exact marker terms through closure environments with sharing unfolded.
+%% Gleam cannot inspect closure captures. Unlike total flattened size, this
+%% isolates the retained fixture payload from unrelated random UUID integers,
+%% whose small-integer or bignum representation varies between assemblies.
+captured_occurrences(Term, Marker) when Term =:= Marker -> 1;
+captured_occurrences(Term, Marker) when is_function(Term) ->
+    {env, Environment} = erlang:fun_info(Term, env),
+    captured_occurrences(Environment, Marker);
+captured_occurrences(Term, Marker) when is_tuple(Term) ->
+    captured_occurrences(tuple_to_list(Term), Marker);
+captured_occurrences([Head | Tail], Marker) ->
+    captured_occurrences(Head, Marker) + captured_occurrences(Tail, Marker);
+captured_occurrences(Term, Marker) when is_map(Term) ->
+    captured_occurrences(maps:to_list(Term), Marker);
+captured_occurrences(_Term, _Marker) -> 0.
 
 %% The real socket links its Lustre component. No Gleam API exposes its model;
 %% identify only this fixture's child through Lustre's pinned state record.

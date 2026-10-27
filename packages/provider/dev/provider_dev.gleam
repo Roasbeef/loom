@@ -184,7 +184,8 @@ fn failure_category(error: stream.ProviderError) -> String {
     stream.HttpError(status:, ..) -> "HTTP " <> int.to_string(status)
     stream.StreamError(..) -> "provider stream error"
     stream.StreamDisconnected(_) -> "stream disconnected"
-    stream.MalformedStream(_) -> "malformed stream"
+    stream.MalformedStream(_) | stream.RecoverableStreamCorruption(_) ->
+      "malformed stream"
     stream.UnmappedStopReason(_) -> "unmapped stop reason"
     stream.NoIdentity(_) -> "no identity"
     stream.UnknownProvider(_) -> "unknown provider"

@@ -169,6 +169,7 @@ pub fn tick(
   Shared(socket, recorder, source, replay_source),
   List(session_channel.Update),
 ) {
+  // Advance channel clock and collect pending timer updates.
   case shared.channel {
     None -> #(shared, [])
     Some(channel) -> {
@@ -218,6 +219,7 @@ pub fn cancel_unsent(
   Shared(socket, recorder, source, replay_source),
   List(session_channel.Update),
 ) {
+  // Cancel unsent frames on the channel or clear pending marker.
   case shared.channel {
     None -> #(shared_set.pending_submission(shared, None), [])
     Some(channel) -> {
@@ -268,10 +270,10 @@ pub fn apply_channel_update(
   }
 }
 
-// The reads the host issues on its own account: the automatic reads, the
-// pending-decisions lookup a capture triggers, the decided-approvals read a
-// page makes when it opens, and the history read a host's own paging control
-// asks for. A refusal of one is no command's outcome.
+/// The reads the host issues on its own account: the automatic reads, the
+/// pending-decisions lookup a capture triggers, the decided-approvals read a
+/// page makes when it opens, and the history read a host's own paging control
+/// asks for. A refusal of one is no command's outcome.
 fn host_read(command: String) -> Bool {
   case command {
     "history" | "history_lineage" | "escalations_get" | "escalations_decided" ->
@@ -280,6 +282,7 @@ fn host_read(command: String) -> Bool {
   }
 }
 
+/// Dispatches a single channel update across session fold reducers.
 fn fold_update(
   shared: Shared(socket, recorder, source, replay_source),
   update: session_channel.Update,
@@ -300,6 +303,7 @@ fn fold_update(
       // consent until that dialog closes. Otherwise the record the operator
       // asked for opens once it arrives, and the host does that when it
       // applies the fact; the close below judges the record it will show.
+      // Locate the actively reviewed approval record or wanted ID.
       let reviewing = case around.reviewing, around.wanted {
         Some(shown), _ -> Some(shown)
         None, Some(id) ->
@@ -307,6 +311,7 @@ fn fold_update(
           |> option.from_result
         None, None -> None
       }
+
       let updated =
         Shared(
           ..session_model.record_surface(
@@ -325,6 +330,8 @@ fn fold_update(
           |> close_settled_approval(reviewing)
         None -> updated
       }
+
+      // Report any requested decisions that were missing from the server.
       case missing {
         [] -> updated
         _ ->
@@ -513,6 +520,7 @@ fn fold_update(
   }
 }
 
+/// Reconciles an incoming captured cut with the active session state.
 fn reconcile_cut(
   shared: Shared(socket, recorder, source, replay_source),
   cut: snapshot.Captured,
@@ -535,10 +543,13 @@ fn reconcile_cut(
       let updated =
         apply_cut(Shared(..shared, last_capture: trigger), cut, view, around)
         |> event_fold.observe_generation_phases(view.strands)
+
+      // Refresh worktree observation if next_seq advanced.
       let updated = case shared.captured {
         Some(#(previous, _)) if previous.next_seq == cut.next_seq -> updated
         Some(_) | None -> request_visible_worktree(updated, around.worktree)
       }
+
       let disappeared =
         shared.approvals
         |> list.filter(fn(old) {
@@ -546,10 +557,14 @@ fn reconcile_cut(
           && !list.any(updated.approvals, fn(new) { new.id == old.id })
         })
         |> list.map(fn(record) { record.id })
+
+      // Request resolutions for disappeared approval records.
       let updated = case list.take(disappeared, 8) {
         [] -> updated
         ids -> request_decisions(updated, ids)
       }
+
+      // Warn if additional resolutions remain unrequested.
       case list.drop(disappeared, 8) {
         [] -> updated
         _ ->
@@ -617,10 +632,12 @@ pub fn apply_cut(
   view: snapshot_view.View,
   around: Surroundings,
 ) -> Shared(socket, recorder, source, replay_source) {
+  // Project approval records from snapshot cells or default to empty list.
   let reviews = case approval.records(view.cells) {
     Ok(current) -> approval.project(shared.approvals, current)
     Error(_) -> []
   }
+
   render_cut(shared, cut, view, reviews)
   |> close_settled_approval(around.reviewing)
 }
@@ -636,14 +653,15 @@ pub fn apply_cut(
 // deliberate inspection through /approvals, and it stays open whatever the
 // cut says.
 //
-// The line is written here, at the point it always was, and the host closes
-// the dialog when it applies `ApprovalSettled`. Presentation of the next
-// unseen question follows either way, as `ApprovalsPresented`, so the host
-// closes before it presents and the next question opens in the same update.
+/// The line is written here, at the point it always was, and the host closes
+/// the dialog when it applies `ApprovalSettled`. Presentation of the next
+/// unseen question follows either way, as `ApprovalsPresented`, so the host
+/// closes before it presents and the next question opens in the same update.
 fn close_settled_approval(
   shared: Shared(socket, recorder, source, replay_source),
   reviewing: Option(approval.Review),
 ) -> Shared(socket, recorder, source, replay_source) {
+  // Close dialog if reviewed approval was resolved elsewhere.
   let settled = case reviewing {
     None -> shared
     Some(asked) -> {
@@ -651,6 +669,8 @@ fn close_settled_approval(
       // match is the only one.
       let current =
         list.find(shared.approvals, fn(record) { record.id == asked.id })
+
+      // Check if open question was settled by an outside client.
       case asked.status, current {
         approval.Pending, Ok(approval.Review(status: approval.Pending, ..))
         | approval.Approved, _
@@ -673,9 +693,11 @@ fn close_settled_approval(
       }
     }
   }
+
   session_model.record_surface(settled, ApprovalsPresented)
 }
 
+/// Appends a system line notifying that an approval dialog was closed.
 fn settle_elsewhere(
   shared: Shared(socket, recorder, source, replay_source),
   asked: approval.Review,
@@ -693,6 +715,7 @@ fn settle_elsewhere(
   )
 }
 
+/// Paints a captured cut across UI transcript and view components.
 fn render_cut(
   shared: Shared(socket, recorder, source, replay_source),
   cut: snapshot.Captured,
@@ -716,6 +739,8 @@ fn render_cut(
           |> list.filter(fn(row) { row.strand == active }),
       ),
     )
+
+  // Check whether active operation identity remained the same across captures.
   let same_operation = case shared.captured {
     Some(#(_, previous)) ->
       shared.active_strand == active
@@ -723,13 +748,17 @@ fn render_cut(
       == dict.get(view.operations, active)
     None -> False
   }
+
   let history =
     history_view.capture(shared.scrollback, cut.window, view, active)
   let branch = history_view.branch(history, view)
+
+  // Look up model configured for the active strand.
   let current_model = case dict.get(view.configurations, active) {
     Ok(config) -> config.configuration.model.model_id
     Error(Nil) -> "unconfigured"
   }
+
   let cache =
     cache_watch.capture(
       shared.cache,
@@ -743,6 +772,8 @@ fn render_cut(
     Ok(_) -> []
     Error(Nil) -> [OutlookCleared]
   }
+
+  // Map connection role to human-readable label.
   let role = case cut.attachment.role {
     snapshot.Owner -> "owner"
     snapshot.Operator -> "operator"
@@ -868,6 +899,7 @@ fn render_cut(
         transcript_lines.summary_keys(branch.records, active),
       )
   }
+
   let summaries =
     block_summary.retain_live(summaries, fn(generation) {
       list.any(shared.streams, fn(stream) { stream.generation == generation })
@@ -894,12 +926,15 @@ fn render_cut(
   // in its notes, the usual case after reattaching to a long session, so
   // its first capture asks for one notes read to seed the panel.
   let boards = todo_board.remember(shared.todo_boards, branch.records)
+
+  // Seed todo panel from notes if active strand has unread board.
   let #(todo_seed, todo_asked) = case
     todo_board.needs_seed(boards, shared.todo_asked, active)
   {
     True -> #(Some(active), set.insert(shared.todo_asked, active))
     False -> #(shared.todo_seed, shared.todo_asked)
   }
+
   let facts =
     list.append(outlook, [
       HistoryReleased(session: shared.session, strands: view.strands),
@@ -959,11 +994,11 @@ fn render_cut(
   |> session_model.mark_activity
 }
 
-// A delivery frame inside the cut retires a held nudges board. The walk is
-// over the cut's own main branch rather than the active strand's records:
-// while the operator reads history on main, the displayed branch is a window
-// frozen at the scroll, and a delivery committed since would never be seen
-// there. The walk costs something only while a board is held.
+/// A delivery frame inside the cut retires a held nudges board. The walk is
+/// over the cut's own main branch rather than the active strand's records:
+/// while the operator reads history on main, the displayed branch is a window
+/// frozen at the scroll, and a delivery committed since would never be seen
+/// there. The walk costs something only while a board is held.
 fn retire_nudges_delivered_in_cut(
   shared: Shared(socket, recorder, source, replay_source),
   cut: snapshot.Captured,
@@ -988,8 +1023,8 @@ fn run_settings(view: snapshot_view.View) -> String {
   <> changed_by(view.settings.origin)
 }
 
-// Who last changed the strand's model or effort, when a person did. The
-// identity line shows the values; this says whose they are.
+/// Who last changed the strand's model or effort, when a person did. The
+/// identity line shows the values; this says whose they are.
 fn configuration_author(view: snapshot_view.View, active: String) -> String {
   case dict.get(view.configurations, active) {
     Ok(config) ->
@@ -1002,7 +1037,7 @@ fn configuration_author(view: snapshot_view.View, active: String) -> String {
   }
 }
 
-// An extension the host refused to load is a fact of its own, one row each.
+/// An extension the host refused to load is a fact of its own, one row each.
 fn extension_refusals(view: snapshot_view.View) -> List(transcript_line.Line) {
   case view.tools {
     None -> []
@@ -1011,17 +1046,21 @@ fn extension_refusals(view: snapshot_view.View) -> List(transcript_line.Line) {
   }
 }
 
-// Availability comes from the live registry; enabling comes from this strand's
-// captured configuration. A missing tool must never be described as ready.
+/// Availability comes from the live registry; enabling comes from this strand's
+/// captured configuration. A missing tool must never be described as ready.
 fn code_mode_status(view: snapshot_view.View, active: String) -> String {
+  // Check host tools registration before inspecting strand enablement.
   case view.tools {
     None -> "code mode · host availability not reported"
     Some(tools) -> {
+      // Check whether code_mode is active in the strand configuration.
       let enabled = case dict.get(view.configurations, active) {
         Ok(config) ->
           list.contains(config.configuration.active_tool_names, "code_mode")
         Error(Nil) -> False
       }
+
+      // Combine host registration and strand enablement into status text.
       case list.contains(tools.registered, "code_mode"), enabled {
         True, True ->
           "code mode enabled · batches of reads, searches, and checks"
@@ -1060,6 +1099,7 @@ pub fn thinking_name(level: machine_strand.ThinkingLevel) -> String {
   }
 }
 
+/// Formats system lines for unconfirmed submissions across reconnects.
 fn unconfirmed_lines(unconfirmed: Option(UnconfirmedSubmission)) {
   case unconfirmed {
     None -> []
@@ -1086,16 +1126,20 @@ pub fn approval_lines(reviews: List(approval.Review)) {
     reviews
     |> list.take(8)
     |> list.map(fn(record) {
+      // Format approval status keyword.
       let state = case record.status {
         approval.Pending -> "pending"
         approval.Approved -> "approved"
         approval.Rejected -> "rejected"
         approval.Consumed -> "consumed"
       }
+
+      // Format decision author when present.
       let author = case record.origin {
         Some(author) -> " · " <> origin.display_label(author)
         None -> ""
       }
+
       Line(
         System,
         "Approval "
@@ -1107,6 +1151,8 @@ pub fn approval_lines(reviews: List(approval.Review)) {
           <> string.slice(record.preview, 0, 256),
       )
     })
+
+  // Add notification if additional decisions are truncated.
   case list.drop(reviews, 8) {
     [] -> lines
     _ ->
@@ -1136,6 +1182,8 @@ pub fn receive_unlaned(
   incoming: connection_event.Message,
 ) -> Shared(socket, recorder, source, replay_source) {
   let shared = session_model.record_arrival(shared, incoming)
+
+  // Handle unlaned transport connection events and raw payloads.
   case incoming {
     connection_event.Connected ->
       shared_set.notice(shared, "connected")
@@ -1186,6 +1234,7 @@ pub fn service_history(
     shared.channel
   {
     Some(#(after, before)), _, Some(channel) -> {
+      // Dispatch range query over channel when bounds are active.
       case
         session_channel.history(
           channel,
@@ -1205,6 +1254,7 @@ pub fn service_history(
       }
     }
     None, Some(from), Some(channel) -> {
+      // Dispatch lineage query for missing ancestor entry ID.
       case
         session_channel.lineage(channel, from, now: shared.stamp.transport_ms)
       {
@@ -1222,16 +1272,17 @@ pub fn service_history(
   }
 }
 
-// A lineage page belongs to the scan that asked for it, and only the scan's
-// host takes what it read, so the shared record changes only in its scrollback.
-// The projection is built again, as it is for any page, because what the scan
-// holds is what the host was waiting to draw from.
+/// A lineage page belongs to the scan that asked for it, and only the scan's
+/// host takes what it read, so the shared record changes only in its scrollback.
+/// The projection is built again, as it is for any page, because what the scan
+/// holds is what the host was waiting to draw from.
 fn receive_lineage(
   shared: Shared(socket, recorder, source, replay_source),
   window: snapshot.Window,
   from: String,
   around: Surroundings,
 ) -> Shared(socket, recorder, source, replay_source) {
+  // Incorporate lineage page only when active cut is held.
   case shared.captured {
     None -> shared
     Some(#(cut, view)) -> {
@@ -1243,6 +1294,7 @@ fn receive_lineage(
   }
 }
 
+/// Folds an incoming history page into scrollback and re-renders active cut.
 fn receive_history(
   shared: Shared(socket, recorder, source, replay_source),
   window: snapshot.Window,
@@ -1250,6 +1302,7 @@ fn receive_history(
   after: Int,
   around: Surroundings,
 ) -> Shared(socket, recorder, source, replay_source) {
+  // Incorporate history page only when active cut is held.
   case shared.captured {
     None -> shared
     Some(#(cut, view)) -> {
@@ -1262,8 +1315,7 @@ fn receive_history(
   }
 }
 
-// A coherent cut may skip the idle interval between two queued turns. Match
-// the operation, not just the strand's busy flag, when retiring the stop UI.
+/// Reconciles interrupt state against currently running operations.
 fn reconcile_interrupt(
   interrupt: Option(Interrupt),
   operations: Dict(String, String),
@@ -1279,8 +1331,7 @@ fn reconcile_interrupt(
   }
 }
 
-// Live transport loss retains the transcript without becoming a design demo.
-// A replay remains a replay and cannot fabricate responses after recorded loss.
+/// Transitions peer state when transport connection closes.
 fn after_close(peer: Peer) -> Peer {
   case peer {
     Attached | Disconnected -> Disconnected
@@ -1289,9 +1340,7 @@ fn after_close(peer: Peer) -> Peer {
   }
 }
 
-// The shared half of the same pruning: a parked history window is emptied on
-// the same condition that resets its workspace's reading position, so the two
-// halves of a parked strand are released together.
+/// Evicts parked scrollback windows for retired strands.
 fn prune_parked_scrollback(
   parked: Dict(#(String, String), history_view.State),
   session: String,
@@ -1372,6 +1421,7 @@ pub fn refresh_worktree(
   }
 }
 
+/// Observes task completion summary across captured cells and entries.
 fn observe_completion(
   shared: Shared(socket, recorder, source, replay_source),
   cut: snapshot.Captured,
@@ -1380,6 +1430,8 @@ fn observe_completion(
 ) -> Shared(socket, recorder, source, replay_source) {
   let owner =
     session_model.queue_owner(shared_set.captured(shared, Some(#(cut, view))))
+
+  // Retain previous completion summary if owner is unchanged.
   let previous = case shared.completion_owner == owner {
     True -> shared.completion
     False -> completion_summary.new()
@@ -1426,6 +1478,7 @@ fn observe_completion(
   )
 }
 
+/// Folds channel command refusals into surface state and server error notices.
 fn apply_request_refused(
   shared: Shared(socket, recorder, source, replay_source),
   command: String,
@@ -1517,6 +1570,8 @@ fn apply_request_refused(
           shared,
           proposals.refusal_words(code, message),
         )
+
+      // Request fresh proposals list on decision refusal.
       case command {
         "proposal_decide" ->
           shared_set.proposals_refresh(noted, worktree_view.Requested)
@@ -1547,6 +1602,8 @@ fn apply_request_refused(
     fn() { shared },
   )
   let reason = code <> ": " <> message
+
+  // Handle command-specific state cleanup upon refusal.
   let updated = case command {
     "queued_input" | "edit_queued_input" | "remove_queued_input" ->
       case shared.queue_request.request_id == Some(request_id) {
@@ -1599,6 +1656,7 @@ fn apply_request_refused(
       )
     _ -> shared
   }
+
   event_fold.apply_event(updated, protocol.ServerError(code, message))
 }
 
@@ -1625,6 +1683,8 @@ pub fn take_replayed(
 ) {
   let #(replay_inbox, next) = inbox.take(shared.replay_inbox)
   let shared = shared_set.replay_inbox(shared, replay_inbox)
+
+  // Process next recorded event when in replaying mode.
   case shared.peer, next {
     Replaying, Ok(event) ->
       case attempt_replay.apply(shared.replay_state, event) {
@@ -1669,6 +1729,7 @@ pub fn apply_replay_change(
   change: attempt_replay.Change,
   around: Surroundings,
 ) -> Shared(socket, recorder, source, replay_source) {
+  // Apply replayed mutation to scrollback, errors, or adopted session.
   case change {
     attempt_replay.RequestedHistory(before) ->
       shared_set.scrollback(

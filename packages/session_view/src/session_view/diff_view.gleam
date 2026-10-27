@@ -136,7 +136,9 @@ type Place {
   Inside(old: Option(Int), new: Option(Int))
 }
 
+/// Reads and decodes data from source inputs.
 fn read(line: String, place: Place) -> #(Line, Place) {
+  // Handle the `read` branch dispatch.
   case line, place {
     "@@" <> _, _ -> {
       let #(old, new) = counters(line)
@@ -187,6 +189,7 @@ fn strip_return(line: String) -> String {
 
 // The first old and new line numbers a hunk header gives, `@@ -9,6 +9,12 @@`,
 // or nothing for either that is missing or not a number.
+/// Helper `counters` for counters.
 fn counters(header: String) -> #(Option(Int), Option(Int)) {
   let words = string.split(header, " ")
   #(
@@ -195,14 +198,19 @@ fn counters(header: String) -> #(Option(Int), Option(Int)) {
   )
 }
 
+/// Helper `number_after` for number after.
 fn number_after(word: String, sign: String) -> Result(Int, Nil) {
+  // Handle the `number_after` branch dispatch.
   case string.starts_with(word, sign), string.length(word) > 1 {
     True, True -> {
       let digits = string.drop_start(word, 1)
+
+      // Handle the `number_after` branch dispatch.
       let first = case string.split_once(digits, ",") {
         Ok(#(before, _)) -> before
         Error(Nil) -> digits
       }
+
       int.parse(first)
     }
     _, _ -> Error(Nil)

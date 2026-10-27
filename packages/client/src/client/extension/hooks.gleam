@@ -536,6 +536,7 @@ pub fn start(
 // One manager's worth of description: the extensions in load order, one
 // handler each. Called twice, once per manager, because a `Handler` is a
 // closure and the two managers must not share one.
+/// Builds the hook description visible to the registered extension.
 fn described(
   extensions: List(Extension),
   logger: Logger,
@@ -560,10 +561,12 @@ fn described(
 /// ```
 ///
 pub fn subscribers(bus: Bus, on delivery: Delivery) -> Int {
+  // The listener state determines whether the subscribing hook is retained.
   let manager = case delivery {
     Answering -> bus.answers
     Notifying -> bus.notices
   }
+
   event_manager.count_handlers(manager, waiting: deadline_ms)
 }
 
@@ -713,11 +716,14 @@ pub fn usage(bus: Bus, operation: OpId, row: UsageRow) -> Nil {
 // shares one allowance. A gather has no predecessor to charge the
 // growth against, and notes nobody chained cannot each claim the price
 // of a transform.
+/// Checks retained note bytes against the per-hook storage ceiling.
 fn within_note_cap(notes: List(String), bus: Bus) -> List(String) {
   let #(kept, _spent) =
     list.fold(notes, #([], 0), fn(carried, block) {
       let #(kept, spent) = carried
       let cost = spent + note_tokens(block)
+
+      // The current note size determines whether the hook may retain another note.
       case cost <= context_growth_tokens {
         True -> #([block, ..kept], cost)
 
@@ -743,6 +749,7 @@ fn within_note_cap(notes: List(String), bus: Bus) -> List(String) {
 // The block is wrapped in the message it would have been so that
 // `runtime/hooks.estimate_message` is the one that answers, rather than
 // a second characters-over-four written here to drift away from it.
+/// Counts the bounded token representation used for retained hook notes.
 fn note_tokens(block: String) -> Int {
   runtime_hooks.estimate_message(message.UserMessage(
     content: [message.UserText(text: block, text_signature: None)],
@@ -821,6 +828,7 @@ pub fn fold_tool_result(bus: Bus, reply: AgentMessage) -> AgentMessage {
 // the same one: a fold cannot remove a handler from the manager's list
 // (that list lives in another process), so the extension keeps its place
 // here and loses it at the next bus event it mishandles.
+/// Retains a hook note only while its encoded size fits the configured cap.
 fn keep(
   bus: Bus,
   extension: Extension,
@@ -862,12 +870,15 @@ fn keep(
 // The estimate is `runtime/hooks.estimate_message`, the same one the
 // compaction threshold reads, so a hook cannot buy itself room the
 // threshold does not know it spent.
+/// Checks whether this operation remains within the hook’s declared budget.
 fn within_cap(
   before: List(AgentMessage),
   after: List(AgentMessage),
 ) -> Result(List(AgentMessage), HookFailure) {
   let allowance = tokens(before) + context_growth_tokens
   let spent = tokens(after)
+
+  // The current usage and cap determine whether this hook action is admitted.
   case spent <= allowance {
     True -> Ok(after)
     False ->
@@ -898,6 +909,7 @@ fn tokens(messages: List(AgentMessage)) -> Int {
 // model reads must not be able to write the session's accounting, and a
 // rebuild says that once instead of a check saying it per field and
 // missing the next one.
+/// Converts a hook message to its bounded textual representation.
 fn retexted(
   before: AgentMessage,
   after: AgentMessage,
@@ -927,6 +939,7 @@ fn handler_for(extension: Extension, logger: Logger) -> Handler(Event) {
   handle(state, event, logger)
 }
 
+/// Dispatches hook protocol messages while preserving ownership of active work.
 fn handle(
   state: Extension,
   event: Event,
@@ -976,6 +989,7 @@ fn handle(
 
 // A notification: the round trip still happens, because the extension is
 // entitled to know, but nothing is read back from it.
+/// Publishes the final hook result after child activity settles.
 fn settle(
   state: Extension,
   event: String,
@@ -988,6 +1002,7 @@ fn settle(
 // The shape both kinds of delivery share. An event the extension never
 // declared is skipped *before* the call, which is the property that
 // keeps a hook bus from waking every satellite on every event.
+/// Sends the appropriate response to a waiting hook request.
 fn answer(
   state: Extension,
   event: String,
@@ -1033,6 +1048,7 @@ fn broken(state: Extension, event: String, reason: String) -> String {
   state.name <> " " <> event <> ": " <> reason
 }
 
+/// Forwards an injection to the owning extension under its declared scope.
 fn forward_injection(
   name: String,
   value: JsonValue,
@@ -1067,12 +1083,14 @@ fn forward_injection(
 // "nothing to add" rather than as a broken extension — the same
 // judgement `forward_injection` makes about an injection, and for the
 // same reason: there is nothing to attribute and nothing to append.
+/// Forwards a decoded note to its registered hook destination.
 fn forward_note(
   name: String,
   value: JsonValue,
   reply: Subject(Note),
   logger: Logger,
 ) -> Result(Nil, String) {
+  // The decoded note is forwarded only when it matches the registered message shape.
   case note_of(value) {
     Ok(Some(text)) -> {
       process.send(reply, Note(extension: name, text:))
@@ -1103,11 +1121,13 @@ fn forward_note(
 // is to stop asking it and log why. The call in hand is still allowed:
 // removing a handler is not a reason to refuse work the built-in
 // clearance cleared.
+/// Applies the hook verdict to the pending tool decision.
 fn forward_verdict(
   name: String,
   value: JsonValue,
   reply: Subject(Verdict),
 ) -> Result(Nil, String) {
+  // The hook verdict determines whether the tool call can proceed.
   case verdict_of(name, value) {
     Ok(verdict) -> {
       process.send(reply, verdict)
@@ -1127,15 +1147,18 @@ fn forward_verdict(
 // here, above the invoker, so that `Unhandled` means "we did not ask"
 // everywhere in this module rather than sometimes meaning "the satellite
 // did not recognise it".
+/// Requests a hook decision and reports the bounded response outcome.
 fn ask(
   extension: Extension,
   event: String,
   args: JsonValue,
 ) -> Result(JsonValue, HookFailure) {
+  // The request and registered hook determine which bounded response is sent.
   use Nil <- result.try(case list.contains(extension.events, event) {
     True -> Ok(Nil)
     False -> Error(Unhandled)
   })
+
   let sent = msgpack.StringValue(json.to_string(args))
   use returned <- result.try(extension.invoke(
     extension.name,
@@ -1150,6 +1173,7 @@ fn ask(
 // is a string that is not JSON, is the satellite runtime disagreeing
 // with this module about the wire — which is a broken extension, not a
 // refusal, so it costs the handler its place.
+/// Reads the requested hook state from its owner.
 fn read(value: MsgPackValue) -> Result(JsonValue, HookFailure) {
   case value {
     msgpack.StringValue(value: text) ->
@@ -1191,6 +1215,7 @@ fn run_start_args(operation: OpId, strand: String) -> JsonValue {
   ])
 }
 
+/// Encodes the tool call fields supplied to the hook protocol.
 fn tool_call_args(
   operation: OpId,
   tool: String,
@@ -1209,6 +1234,7 @@ fn settled_args(operation: OpId) -> JsonValue {
   json.Object([#("op_id", json.String(ids.op_id_to_string(operation)))])
 }
 
+/// Encodes compaction metadata for hook evaluation.
 fn compaction_args(operation: OpId, cue: CompactionCue) -> JsonValue {
   json.Object([
     #("op_id", json.String(ids.op_id_to_string(operation))),
@@ -1219,6 +1245,7 @@ fn compaction_args(operation: OpId, cue: CompactionCue) -> JsonValue {
   ])
 }
 
+/// Renders the domain cause of a hook request.
 fn cause_word(cause: effects.CompactionCause) -> String {
   case cause {
     effects.ThresholdCompaction -> "threshold"
@@ -1232,6 +1259,7 @@ fn cause_word(cause: effects.CompactionCause) -> String {
 // has a `details` field holding opaque application JSON and it is not
 // here, because "opaque application data" is exactly the field somebody
 // would later put a prompt in.
+/// Encodes usage facts for hook reporting.
 fn usage_args(operation: OpId, row: UsageRow) -> JsonValue {
   json.Object([
     #("op_id", json.String(ids.op_id_to_string(operation))),
@@ -1273,6 +1301,7 @@ fn tool_result_args(reply: AgentMessage) -> JsonValue {
 
 // --- reading an answer ----------------------------------------------------
 
+/// Decodes an injection message from a hook response.
 fn injection_of(value: JsonValue) -> Result(Option(String), String) {
   case field(value, "inject") {
     Ok(json.String(value: text)) if text != "" -> Ok(Some(text))
@@ -1281,6 +1310,7 @@ fn injection_of(value: JsonValue) -> Result(Option(String), String) {
   }
 }
 
+/// Decodes a retained note message from a hook response.
 fn note_of(value: JsonValue) -> Result(Option(String), String) {
   case field(value, "note") {
     Ok(json.String(value: text)) if text != "" -> Ok(Some(text))
@@ -1289,6 +1319,7 @@ fn note_of(value: JsonValue) -> Result(Option(String), String) {
   }
 }
 
+/// Decodes an allow-or-block verdict from a hook response.
 fn verdict_of(name: String, value: JsonValue) -> Result(Verdict, String) {
   case field(value, "verdict") {
     Ok(json.String(value: "allow")) -> Ok(Allow)
@@ -1301,6 +1332,7 @@ fn verdict_of(name: String, value: JsonValue) -> Result(Verdict, String) {
 // undecodable would fail the gate *open*, which turns an author's empty
 // string into a silently disabled hook; the model gets a sentence saying
 // the extension said nothing more, which at least names who to ask.
+/// Builds the tool failure for an extension that denied execution.
 fn blocked(name: String, value: JsonValue) -> Result(Verdict, String) {
   case field(value, "reason") {
     Ok(json.String(value: reason)) if reason != "" ->
@@ -1310,8 +1342,11 @@ fn blocked(name: String, value: JsonValue) -> Result(Verdict, String) {
   }
 }
 
+/// Decodes validated hook protocol messages from the response.
 fn decode_messages(value: JsonValue) -> Result(List(AgentMessage), String) {
   use messages <- result.try(field(value, "messages"))
+
+  // The wire payload determines whether the hook messages can be decoded.
   case messages {
     json.Array(items:) ->
       list.try_map(items, fn(item) {
@@ -1328,6 +1363,7 @@ fn decode_message(value: JsonValue) -> Result(AgentMessage, String) {
   |> result.replace_error("the transformed reply did not decode")
 }
 
+/// Reads a named JSON field with the hook decoder’s refusal semantics.
 fn field(value: JsonValue, name: String) -> Result(JsonValue, String) {
   case value {
     json.Object(fields:) ->
@@ -1409,6 +1445,7 @@ pub fn note_block(name: String, text: String) -> String {
   <> "\n</extension>"
 }
 
+/// Builds the injection result accepted by the hook dispatcher.
 fn injected(one: Injection, now: Int) -> AgentMessage {
   message.UserMessage(
     content: [
@@ -1457,6 +1494,7 @@ fn first_block(verdicts: List(Verdict)) -> Verdict {
 // Answering with nothing is the right direction for both callers: no
 // injection, and no block on a call the built-in clearance already
 // cleared.
+/// Runs the hook request across the registered listeners and collects their outcomes.
 fn fan_out(
   bus: Bus,
   event: String,
@@ -1483,11 +1521,13 @@ fn fan_out(
 // engine should cost a fan-out and not the driver behind it. Only a
 // managed task can lose a drain proof, and this run carries none, so
 // those two arms are exhaustiveness rather than cases.
+/// Combines listener outcomes into the final hook response.
 fn gathered(
   bus: Bus,
   event: String,
   outcomes: List(weft.Outcome(List(answer), String)),
 ) -> List(answer) {
+  // The collected child results determine the final hook execution outcome.
   case outcomes {
     [weft.Completed(value:, ..)] -> value
 
@@ -1620,11 +1660,13 @@ pub fn wire(
 // the built-in clearance refused never reaches an extension: asking
 // about a call that is not going to run wakes a satellite for nothing
 // and invites a second, contradictory reason.
+/// Confirms cleanup before discarding hook state.
 fn cleared(
   bus: Bus,
   clearance: effects.Clearance,
   query: effects.ClearanceQuery,
 ) -> effects.Clearance {
+  // The cleanup result determines whether hook state can be removed.
   case clearance {
     effects.ClearanceRefused(..) -> clearance
 
@@ -1646,6 +1688,7 @@ fn cleared(
 // `ClearanceRefused` into the in-band error result the model reads, so
 // this sentence is written for the model: which extension, which tool,
 // and why.
+/// Maps a refused hook operation to its stable caller-facing error.
 fn refusal(
   clearance: effects.Clearance,
   tool: String,
@@ -1666,12 +1709,14 @@ fn refusal(
 // `op.meta` cell — `client/notes` established the pattern and owns the
 // read. An operation whose metadata will not read injects nothing: a run
 // is never held up because an extension could not be attributed.
+/// Records the startup result and resources owned by the hook host.
 fn started(
   bus: Bus,
   session: Session,
   clock: Clock,
   operation: OpId,
 ) -> List(AgentMessage) {
+  // The startup result determines which hook resources are owned.
   case notes.strand_of(session, operation) {
     Error(Nil) -> []
     Ok(strand) -> {
@@ -1681,6 +1726,7 @@ fn started(
   }
 }
 
+/// Records the completed hook execution result.
 fn ran(bus: Bus, outcome: effects.ToolOutcome) -> effects.ToolOutcome {
   case outcome {
     effects.ToolCompleted(result:, terminate:) ->
@@ -1712,6 +1758,8 @@ pub fn notice_sync(bus: Bus, event: Event) -> Result(Nil, String) {
     ])
     |> weft.deadline(fan_out_ms(bus) + deadline_ms)
     |> weft.start
+
+  // The notice result determines whether synchronous delivery is complete.
   case outcomes {
     [weft.Completed(..)] -> Ok(Nil)
     _unconfirmed -> Error("the promoted notice did not drain")
@@ -1732,6 +1780,7 @@ pub fn notice_sync(bus: Bus, event: Event) -> Result(Nil, String) {
 ///
 pub fn close(bus: Bus) -> Nil {
   list.each([bus.answers, bus.notices], fn(subject) {
+    // The shutdown result determines whether hook resources are fully released.
     case process.subject_owner(subject) {
       Error(Nil) -> Nil
       Ok(pid) -> {

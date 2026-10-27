@@ -83,6 +83,8 @@ pub fn main(arguments: List(String)) -> Nil {
     use request <- result.try(parse(arguments))
     execute(request, io.println)
   }
+
+  // Handle command execution outcome and report errors.
   case outcome {
     Ok(Nil) -> Nil
     Error(reason) -> {
@@ -110,6 +112,7 @@ pub fn parse(arguments: List(String)) -> Result(Request, String) {
   }
 }
 
+/// Parses remaining command line arguments and options into a Request.
 fn parse_rest(
   command: Command,
   flags: List(String),
@@ -145,11 +148,13 @@ fn parse_rest(
   }
 }
 
+/// Executes a parsed MCP request against the OAuth background transport.
 fn execute(request: Request, emit: fn(String) -> Nil) -> Result(Nil, String) {
   use directory <- result.try(credentials.directory())
   let events = process.new_subject()
   use prepared <- result.try(
     transport.prepare_with(events, fn(ledger) {
+      // Execute command inside transport scope and report any faults.
       case
         run_in_scope(
           directory,
@@ -181,10 +186,13 @@ fn execute(request: Request, emit: fn(String) -> Nil) -> Result(Nil, String) {
   // Start the prepared runner and await command completion.
   prepared.begin()
   let answer = await_event(selector, request.command, emit)
+
+  // Clean up running transport in event of an error.
   case answer {
     Error(_) -> http.cancel(running)
     Ok(Nil) -> Nil
   }
+
   process.demonitor_process(monitor)
   answer
 }
@@ -204,6 +212,7 @@ pub fn run_in_scope(
   events: process.Subject(Event),
   ledger: weft.Ledger,
 ) -> Result(Nil, String) {
+  // Dispatch command execution to appropriate OAuth service action.
   case request.command {
     Logout -> {
       use Nil <- result.try(oauth.logout_at(directory, request.server))
@@ -238,16 +247,20 @@ pub fn run_in_scope(
         url,
         client_id,
       ))
+
+      // Check whether an active credential grant exists.
       let state = case grant {
         Some(_) -> SignedIn
         None -> SignedOut
       }
+
       process.send(events, StatusReport(request.server, state))
       Ok(Nil)
     }
   }
 }
 
+/// Resolves the HTTP URL and optional client ID for an MCP OAuth target from config.
 fn resolve_oauth_target(
   server: String,
   config_path: Option(String),
@@ -264,6 +277,8 @@ fn resolve_oauth_target(
       "no [mcp." <> server <> "] table is configured in " <> path
     }),
   )
+
+  // Ensure server target is configured for HTTP with OAuth authentication.
   case found.target {
     catalog.McpHttp(url:, auth: catalog.McpOAuth(client_id:)) ->
       Ok(#(url, client_id))
@@ -282,6 +297,7 @@ fn resolve_oauth_target(
   }
 }
 
+/// Locates configuration file path from explicit flag or default home location.
 fn resolve_config_path(explicit: Option(String)) -> Result(String, String) {
   case explicit {
     Some(path) -> Ok(path)
@@ -303,15 +319,19 @@ const control_wait_ms = 30_000
 
 const drain_wait_ms = 30_000
 
+/// Awaits and presents events emitted by the running MCP operation.
 fn await_event(
   selector: process.Selector(Observation),
   command: Command,
   emit: fn(String) -> Nil,
 ) -> Result(Nil, String) {
+  // Determine appropriate timeout budget for command kind.
   let within = case command {
     Login -> login_wait_ms
     Status | Logout -> control_wait_ms
   }
+
+  // Receive next event within timeout window.
   case process.selector_receive(selector, within) {
     Error(Nil) -> Error("mcp command timed out")
     Ok(OwnerGone(_)) -> Error("mcp operation stopped before completion")
@@ -327,11 +347,13 @@ fn await_event(
   }
 }
 
+/// Awaits process owner termination to verify clean shutdown.
 fn await_owner(
   selector: process.Selector(Observation),
   terminal: Presentation,
   emit: fn(String) -> Nil,
 ) -> Result(Nil, String) {
+  // Wait for owner process down notification during drain.
   case process.selector_receive(selector, drain_wait_ms) {
     Error(Nil) -> Error("mcp command timed out")
     Ok(OwnerGone(reason)) -> {

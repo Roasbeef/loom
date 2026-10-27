@@ -154,6 +154,7 @@ pub fn open(path: String, verifier: Verifier) -> Result(Opened, OpenError) {
 // A file with no complete line has no genesis. The check comes before the
 // replay so the error is the plain one, and not a refusal of a line 0 that
 // does not exist.
+/// Requires a stored ledger to begin with its genesis entry.
 fn guard_genesis(
   complete: List(String),
   next: fn() -> Result(Opened, OpenError),
@@ -174,6 +175,7 @@ fn split_lines(text: String) -> #(List(String), String) {
   }
 }
 
+/// Replays complete newline-terminated ledger records in order.
 fn from_lines(path: String, complete: List(String)) -> Store {
   Store(
     path:,
@@ -192,6 +194,7 @@ fn terminated(lines: List(String)) -> String {
 
 // A torn tail is cut from the file before the node writes anything after it,
 // or the next append would join its line to the fragment.
+/// Repairs only the permitted incomplete trailing record at the file boundary.
 fn repair(store: Store, torn: String) -> Result(Tail, OpenError) {
   case torn {
     "" -> Ok(Clean)
@@ -248,6 +251,7 @@ pub fn lines_after(
   take(store, after + 1, limit, max_bytes, [])
 }
 
+/// Reads one bounded line while retaining whether more bytes remain.
 fn take(
   store: Store,
   seq: Int,
@@ -256,6 +260,8 @@ fn take(
   taken: List(BitArray),
 ) -> List(BitArray) {
   use <- bool.lazy_guard(when: left <= 0, return: fn() { list.reverse(taken) })
+
+  // Missing lines end the contiguous page; byte limits do likewise.
   case dict.get(store.lines, seq) {
     Error(Nil) -> list.reverse(taken)
     Ok(line) -> {

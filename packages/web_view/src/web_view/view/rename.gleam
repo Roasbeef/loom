@@ -121,8 +121,8 @@ pub fn view(
   }
 }
 
-// The lead's words. The name is a text node: a catalogue field, drawn as text
-// and never as an attribute.
+/// The lead's words. The name is a text node: a catalogue field, drawn as text
+/// and never as an attribute.
 fn lead(current: Option(String)) -> Element(message) {
   html.p([attribute.class("control-goal-text")], case current {
     Some(name) -> [
@@ -133,14 +133,16 @@ fn lead(current: Option(String)) -> Element(message) {
   })
 }
 
-// The disclosure and its form. While a request is with the daemon the button is
-// disabled, though the form keeps its handler: a submit meanwhile is ignored by
-// the component, which is the layer that holds.
+/// The disclosure and its form. While a request is with the daemon the button is
+/// disabled, though the form keeps its handler: a submit meanwhile is ignored by
+/// the component, which is the layer that holds.
 fn form(control: Control, submit: Attribute(message)) -> Element(message) {
+  // Dispatch on form state.
   let asking = case control {
     renames.Asking -> [attribute.disabled(True)]
     renames.Withheld | renames.Ready | renames.Done | renames.Refused(..) -> []
   }
+
   html.details([attribute.class("control-form")], [
     html.summary([], [html.text("Rename")]),
     html.form(
@@ -157,8 +159,8 @@ fn form(control: Control, submit: Attribute(message)) -> Element(message) {
   ])
 }
 
-// The status line: empty except after an answer, so the region's children keep
-// their places. A refusal is in the reason's fixed words.
+/// The status line: empty except after an answer, so the region's children keep
+/// their places. A refusal is in the reason's fixed words.
 fn status(control: Control) -> Element(message) {
   case control {
     renames.Refused(reason:) ->

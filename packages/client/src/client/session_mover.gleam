@@ -328,6 +328,7 @@ pub fn give_up(
   environment: Environment(instance),
   move: catalogue.Pending,
 ) -> Outcome {
+  // Decide how to handle let outcome =  environment.authority {.
   let outcome = case environment.authority {
     Rows ->
       Stalled(
@@ -350,10 +351,12 @@ pub fn give_up(
           )
       }
   }
+
   note(environment, move, outcome)
   outcome
 }
 
+/// Establishes ended for the caller, keeping its validation and result policy at this boundary.
 fn ended(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -385,6 +388,8 @@ fn ended(
 // missing record never grants serving: the move ends as a retirement does,
 // with the `moved` row and the file set aside under its tombstone name, which
 // an operator can recover and nothing deletes.
+
+/// Establishes gone for the caller, keeping its validation and result policy at this boundary.
 fn gone(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -398,6 +403,8 @@ fn gone(
         <> "this copy is set aside",
     ),
   ])
+
+  // Decide how to handle the branch input.
   case
     {
       use registration <- result.try(registered(environment, move))
@@ -411,6 +418,7 @@ fn gone(
   }
 }
 
+/// Establishes run for the caller, keeping its validation and result policy at this boundary.
 fn run(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -436,6 +444,8 @@ fn run(
 // On a member, nothing that reads the store runs before this daemon has seeded
 // it from its catalogue: until then a missing record means "not copied yet",
 // not "never existed".
+
+/// Establishes migrated for the caller, keeping its validation and result policy at this boundary.
 fn migrated(environment: Environment(instance)) -> Result(Nil, Halt) {
   case environment.authority {
     Rows -> Ok(Nil)
@@ -455,14 +465,19 @@ fn migrated(environment: Environment(instance)) -> Result(Nil, Halt) {
 // receiver is asked again and answers from what it holds. No record at all, now
 // that the seed has run (`run` checks it first), means the session was deleted
 // elsewhere, and the move ends with the copy set aside (`gone`).
+
+/// Establishes intended for the caller, keeping its validation and result policy at this boundary.
 fn intended(
   environment: Environment(instance),
   move: catalogue.Pending,
 ) -> Result(Nil, Halt) {
+  // Decide how to handle environment.authority {.
   case environment.authority {
     Rows -> Ok(Nil)
     Recorded(ownership:) -> {
       use receiver <- result.try(destination(environment, move))
+
+      // Decide how to handle ownership.begin_move(move.session, move.op, receiver.node) {.
       case ownership.begin_move(move.session, move.op, receiver.node) {
         Ok(Nil) -> Ok(Nil)
         Error(store.Mismatch(found: None)) -> Error(Gone)
@@ -480,6 +495,8 @@ fn intended(
 }
 
 // Steps one to five, then the last.
+
+/// Establishes carried for the caller, keeping its validation and result policy at this boundary.
 fn carried(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -493,6 +510,8 @@ fn carried(
   environment.after(session_move.Cut)
   use stage <- result.try(send(environment, move, copy))
   environment.after(session_move.Send)
+
+  // Decide how to handle stage {.
   case stage {
     // The question the send asked was answered by a receiver that has already
     // taken the session in. Asking it to activate again would only ask what it
@@ -514,6 +533,7 @@ fn carried(
 
 // --- the row and the registration --------------------------------------------
 
+/// Establishes registered for the caller, keeping its validation and result policy at this boundary.
 fn registered(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -528,6 +548,8 @@ fn registered(
 // The row is the authority for whether this mover has anything to do. It is
 // read every run, because a mover is started from a list taken at boot and an
 // owner command can change the row afterwards.
+
+/// Establishes still moving for the caller, keeping its validation and result policy at this boundary.
 fn still_moving(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -551,6 +573,7 @@ fn still_moving(
   }
 }
 
+/// Establishes destination for the caller, keeping its validation and result policy at this boundary.
 fn destination(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -561,6 +584,7 @@ fn destination(
   })
 }
 
+/// Establishes receiver stage for the caller, keeping its validation and result policy at this boundary.
 fn receiver_stage(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -577,6 +601,8 @@ fn receiver_stage(
 // Waits for the slot to be gone. The registry stopped it in the turn that wrote
 // the row, so on a restart there is nothing to wait for; the stop is asked for
 // again whenever the slot is still up, which is idempotent.
+
+/// Establishes stopped for the caller, keeping its validation and result policy at this boundary.
 fn stopped(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -585,6 +611,7 @@ fn stopped(
   bounded(budget.drain_ms, "the session's stop", fn() {
     let outcome =
       poll.until(within: budget.drain_ms - 1000, every: 50, attempt: fn() {
+        // Decide how to handle manager.get(environment.registry, move.session) {.
         case manager.get(environment.registry, move.session) {
           Ok(manager.View(status: manager.Saved, ..)) -> poll.Done(Nil)
           Ok(manager.View(status: manager.Reserved, ..))
@@ -605,6 +632,8 @@ fn stopped(
             ))
         }
       })
+
+    // Decide how to handle outcome {.
     case outcome {
       poll.Answered(Nil) -> Ok(Nil)
       poll.Failed(halt) -> Error(halt)
@@ -625,6 +654,8 @@ fn stopped(
 // which is the first moment nothing else can hold it; a file that cannot be
 // read stalls the move, because moving a session whose children are unknown is
 // the one thing this step exists to prevent.
+
+/// Establishes settled children for the caller, keeping its validation and result policy at this boundary.
 fn settled_children(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -648,6 +679,8 @@ fn settled_children(
     }),
   )
   let #(now, _clock) = clock.read(environment.clock)
+
+  // Decide how to handle remote_child.live_on(kept, now) {.
   case remote_child.live_on(kept, now) {
     None -> Ok(Nil)
     Some(orchestrator) ->
@@ -665,6 +698,8 @@ fn settled_children(
 // or the end of the move. The file is opened here, so the lease an earlier run
 // left under this move's own owner is released first; nothing else can have
 // opened a session whose row says it is moving.
+
+/// Establishes closed for the caller, keeping its validation and result policy at this boundary.
 fn closed(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -683,6 +718,8 @@ fn closed(
       |> result.map_error(fn(reason) { Stall(reason) })
     }),
   )
+
+  // Decide how to handle found {.
   case found {
     None ->
       Error(Abandon(
@@ -708,6 +745,8 @@ fn closed(
 // file learns. What it answers is written into the file first, whichever way it
 // ended, so a session whose move is then abandoned reopens at the right
 // incarnation and is not refused as out of step.
+
+/// Establishes asked to close for the caller, keeping its validation and result policy at this boundary.
 fn asked_to_close(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -750,6 +789,8 @@ fn asked_to_close(
       |> result.map_error(fn(reason) { Stall(reason) })
     }),
   )
+
+  // Decide how to handle outcome {.
   case outcome {
     protocol.AllRetired -> Ok(settled)
     protocol.UnknownCleanup(count:) ->
@@ -768,6 +809,7 @@ type Copy {
   Copy(path: String, digest: String, bytes: BitArray)
 }
 
+/// Establishes cut for the caller, keeping its validation and result policy at this boundary.
 fn cut(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -792,6 +834,8 @@ fn cut(
         )
       }),
     )
+
+    // Decide how to handle bit_array.byte_size(bytes) > session_move.size_limit {.
     case bit_array.byte_size(bytes) > session_move.size_limit {
       True ->
         Error(Abandon(
@@ -804,6 +848,7 @@ fn cut(
   })
 }
 
+/// Establishes cut halt for the caller, keeping its validation and result policy at this boundary.
 fn cut_halt(error: sqlite.RewriteError) -> Halt {
   case error {
     sqlite.RewriteLeaseHeld(owner:, ..) ->
@@ -823,12 +868,16 @@ fn cut_halt(error: sqlite.RewriteError) -> Halt {
 // asked is a stall, since sending to it would find out the same thing slower.
 // What it answers is returned: `Activated` means there is nothing left to send
 // or to ask, and the caller goes straight to the retirement.
+
+/// Establishes send for the caller, keeping its validation and result policy at this boundary.
 fn send(
   environment: Environment(instance),
   move: catalogue.Pending,
   copy: Copy,
 ) -> Result(session_move.Stage, Halt) {
   use receiver <- result.try(destination(environment, move))
+
+  // Decide how to handle environment.courier.stage(receiver, move.session, move.op) {.
   case environment.courier.stage(receiver, move.session, move.op) {
     Error(Nil) ->
       Error(Stall("the orchestrator " <> move.to <> " did not answer"))
@@ -841,6 +890,7 @@ fn send(
   }
 }
 
+/// Establishes send all for the caller, keeping its validation and result policy at this boundary.
 fn send_all(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -855,6 +905,8 @@ fn send_all(
 // One piece after another, each acknowledged. A receiver that lost its place
 // says where it stands; the answer is to start the file again, once, because a
 // second loss in one send is not a race.
+
+/// Establishes pieces for the caller, keeping its validation and result policy at this boundary.
 fn pieces(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -865,6 +917,8 @@ fn pieces(
 ) -> Result(Nil, Halt) {
   let total = bit_array.byte_size(copy.bytes)
   let length = int.min(session_move.chunk_bytes, total - offset)
+
+  // Decide how to handle bit_array.slice(copy.bytes, offset, length) {.
   case bit_array.slice(copy.bytes, offset, length) {
     Error(Nil) -> Error(Stall("the copy could not be cut into pieces"))
     Ok(bytes) -> {
@@ -876,6 +930,8 @@ fn pieces(
           total:,
           bytes:,
         )
+
+      // Decide how to handle environment.courier.send(receiver, piece) {.
       case environment.courier.send(receiver, piece) {
         Ok(session_move.Accepted) ->
           case offset + length >= total {
@@ -921,6 +977,8 @@ fn pieces(
 // copy it no longer has, means what it holds is not what was cut, and the cure is
 // the whole file again; that is tried once. Every other refusal is the receiver's
 // decision and ends the move.
+
+/// Establishes activate for the caller, keeping its validation and result policy at this boundary.
 fn activate(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -941,6 +999,7 @@ fn activate(
   asked_to_activate(environment, move, receiver, copy, request, FirstAsk)
 }
 
+/// Establishes asked to activate for the caller, keeping its validation and result policy at this boundary.
 fn asked_to_activate(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -957,6 +1016,8 @@ fn asked_to_activate(
           Error(Stall("the orchestrator " <> move.to <> " did not answer"))
       }
     })
+
+  // Decide how to handle answer {.
   case answer {
     Error(halt) -> Error(halt)
     Ok(session_move.Accepted) -> Ok(Nil)
@@ -1006,6 +1067,8 @@ fn asked_to_activate(
 // The receiver owns the session, so the source's row says so: this is the
 // compare-and-set that cannot be undone. The file work follows it, and a crash
 // between them is finished by the next run, which finds the row `moved`.
+
+/// Establishes retire for the caller, keeping its validation and result policy at this boundary.
 fn retire(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -1023,12 +1086,16 @@ fn retire(
 // row becomes `moved` and the file is set aside. This daemon still serving it
 // means its own abandon committed before a crash, and the row is reverted
 // without touching the file.
+
+/// Establishes retire recorded for the caller, keeping its validation and result policy at this boundary.
 fn retire_recorded(
   environment: Environment(instance),
   ownership: Ownership,
   move: catalogue.Pending,
 ) -> Result(Nil, Halt) {
   use registration <- result.try(registered(environment, move))
+
+  // Decide how to handle ownership.read_consistent(move.session) {.
   case ownership.read_consistent(move.session) {
     Error(store.Unavailable(reason:)) -> Error(Defer(reason))
     Ok(Some(found)) if found.owner == ownership.node ->
@@ -1051,6 +1118,7 @@ fn retire_recorded(
   }
 }
 
+/// Establishes retire by rows for the caller, keeping its validation and result policy at this boundary.
 fn retire_by_rows(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -1079,6 +1147,8 @@ fn retire_by_rows(
 // original is renamed, its sidecars and the copy are removed. Nothing here can
 // fail the move, because the row already says it finished; a rename that does not
 // happen leaves a file that no admission can open.
+
+/// Establishes set aside for the caller, keeping its validation and result policy at this boundary.
 fn set_aside(
   move: catalogue.Pending,
   registration: catalogue.Registration,
@@ -1086,13 +1156,17 @@ fn set_aside(
   let path = registration.path
   let _released =
     sqlite.release_export(path:, owner: session_move.lease_owner(move.op))
+
+  // Decide how to handle let _renamed =  simplifile.is_file(path) {.
   let _renamed = case simplifile.is_file(path) {
     Ok(True) -> simplifile.rename(at: path, to: session_move.moved_path(path))
     Ok(False) | Error(_) -> Ok(Nil)
   }
+
   remove_copy(move, registration)
 }
 
+/// Establishes remove copy for the caller, keeping its validation and result policy at this boundary.
 fn remove_copy(
   move: catalogue.Pending,
   registration: catalogue.Registration,
@@ -1121,6 +1195,8 @@ fn remove_copy(
 // opened the moment the row says it may, and then the row goes back to
 // resident. If the receiver may hold a copy it does not matter, since it
 // refused or never saw an activation.
+
+/// Establishes abandon for the caller, keeping its validation and result policy at this boundary.
 fn abandon(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -1140,6 +1216,8 @@ fn abandon(
 // record, so exactly one of the two commits; one that finds the receiver
 // already owning the session retires instead, but only on an answer: see
 // `taken_elsewhere`.
+
+/// Establishes abandon recorded for the caller, keeping its validation and result policy at this boundary.
 fn abandon_recorded(
   environment: Environment(instance),
   ownership: Ownership,
@@ -1189,6 +1267,8 @@ fn abandon_recorded(
 // record naming a daemon that never registered the session. The run asks the
 // receiver again instead, and retires on its answer; the wait is not counted
 // toward the give-up, which could not take the session back anyway.
+
+/// Establishes taken elsewhere for the caller, keeping its validation and result policy at this boundary.
 fn taken_elsewhere(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -1208,11 +1288,14 @@ fn taken_elsewhere(
 
 // Reverts the row and drops the cut copy: the move is over and the session is
 // this daemon's again.
+
+/// Establishes revert for the caller, keeping its validation and result policy at this boundary.
 fn revert(
   environment: Environment(instance),
   move: catalogue.Pending,
   reason: String,
 ) -> Outcome {
+  // Decide how to handle manager.get(environment.registry, move.session) {.
   case manager.get(environment.registry, move.session) {
     Error(error) ->
       Stalled(
@@ -1226,6 +1309,8 @@ fn revert(
           path: registration.path,
           owner: session_move.lease_owner(move.op),
         )
+
+      // Decide how to handle manager.abort_move(environment.registry, move.session, op: move.op) {.
       case manager.abort_move(environment.registry, move.session, op: move.op) {
         Ok(_) | Error(manager.Catalogue(catalogue.Conflict)) -> {
           remove_copy(move, registration)
@@ -1248,6 +1333,8 @@ fn revert(
 // anything else that ends the run, the deadline included, is a stall: the step
 // told the mover nothing, and treating that as a verdict would let a fault
 // abandon a move.
+
+/// Establishes bounded for the caller, keeping its validation and result policy at this boundary.
 fn bounded(
   budget_ms: Int,
   step: String,
@@ -1257,6 +1344,8 @@ fn bounded(
     weft.new([work])
     |> weft.deadline(budget_ms)
     |> weft.start
+
+  // Decide how to handle outcomes {.
   case outcomes {
     [weft.Completed(value:, ..)] -> Ok(value)
     [weft.Failed(error:, ..)] -> Error(error)
@@ -1277,6 +1366,8 @@ fn bounded(
 // stall reason, which a report carries to another machine, and an inspected
 // error holds database messages that can name a path, and start failures that
 // can hold a process identifier.
+
+/// Establishes show for the caller, keeping its validation and result policy at this boundary.
 fn show(error: manager.Error) -> String {
   case error {
     manager.Catalogue(..) -> "catalogue error"
@@ -1293,6 +1384,7 @@ fn show(error: manager.Error) -> String {
   }
 }
 
+/// Establishes note for the caller, keeping its validation and result policy at this boundary.
 fn note(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -1303,6 +1395,8 @@ fn note(
     field.ident("op", move.op),
     field.text("to", move.to),
   ]
+
+  // Decide how to handle outcome {.
   case outcome {
     Finished -> log.info(environment.logger, "daemon.move_finished", fields)
     Aborted(reason:) ->

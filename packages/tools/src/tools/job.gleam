@@ -444,6 +444,7 @@ pub fn tools(jobs: Jobs) -> List(Tool) {
 
 // --- job_poll ---------------------------------------------------------------
 
+/// Constructs the `job_poll` tool definition.
 fn poll_tool(
   poll: fn(Ctx, String, Int, Cursors) -> Result(Polled, Refusal),
   list_jobs: fn(Ctx) -> Result(List(Listed), Refusal),
@@ -526,6 +527,7 @@ fn poll_tool(
   )
 }
 
+/// Dispatches poll tool execution to either listing jobs or polling a specific job.
 fn run_poll(
   poll: fn(Ctx, String, Int, Cursors) -> Result(Polled, Refusal),
   list_jobs: fn(Ctx) -> Result(List(Listed), Refusal),
@@ -557,6 +559,7 @@ fn run_poll(
   }
 }
 
+/// Polls a single background job by ID with an optional wait duration and cursor.
 fn run_poll_one(
   poll: fn(Ctx, String, Int, Cursors) -> Result(Polled, Refusal),
   max_wait_ms: Int,
@@ -574,6 +577,7 @@ fn run_poll_one(
   polled_outcome(polled)
 }
 
+/// Lists jobs owned by the current strand filtered by state and clamped by limit.
 fn run_list(
   list_jobs: fn(Ctx) -> Result(List(Listed), Refusal),
   ctx: Ctx,
@@ -659,6 +663,7 @@ pub fn render_listed(
 // The half of the empty-filter sentence that names which side of
 // is_pending was asked for. `ListingState` has three constructors and
 // both of these name one, so the filter is total by construction.
+/// Returns an explanatory adjective phrase for the listing filter state.
 fn side_word(state: ListingState) -> String {
   case state {
     PendingJobs -> "still worth polling"
@@ -689,6 +694,7 @@ pub fn render_whole_list(rows: List(Listed)) -> String {
 // The count that keeps a bounded listing honest. It names how many
 // matched jobs the limit cut, so a model that asked for five of twenty
 // knows the other fifteen exist without re-asking with no limit.
+/// Formats a note indicating how many additional matching jobs were omitted by limit.
 fn hidden_line(hidden: Int) -> String {
   case hidden {
     0 -> ""
@@ -703,6 +709,7 @@ fn describe_listed(row: Listed) -> String {
   row.id <> " — " <> state_text(row.state) <> ", " <> age_text(row.age_ms)
 }
 
+/// Encodes a Listed job summary row into structured JSON.
 fn listed_json(row: Listed) -> JsonValue {
   json.Object([
     #("job_id", json.String(row.id)),
@@ -756,7 +763,9 @@ fn next_cursors(polled: Polled) -> Cursors {
   Cursors(stdout: polled.stdout.cursor, stderr: polled.stderr.cursor)
 }
 
+/// Formats stream output and dropped-bytes notifications for tool results.
 fn stream_lines(name: String, streamed: Streamed) -> List(String) {
+  // Format warning header if earlier bytes were dropped from the stream.
   let dropped = case streamed.dropped {
     0 -> []
 
@@ -770,6 +779,7 @@ fn stream_lines(name: String, streamed: Streamed) -> List(String) {
     ]
   }
 
+  // Return formatted stream text or empty list if no bytes were captured.
   case output_text(streamed.bytes) {
     "" -> dropped
     text -> [dropped, ["--- " <> name <> " ---", text]] |> list.flatten
@@ -788,6 +798,7 @@ fn ref_line(name: String, spilled: Option(String)) -> List(String) {
   }
 }
 
+/// Encodes full Polled job state and cursors into structured JSON.
 fn polled_json(polled: Polled) -> JsonValue {
   let base = [
     #("job_id", json.String(polled.id)),
@@ -814,6 +825,7 @@ fn ref_json(spilled: Option(String)) -> JsonValue {
 // The structured half of a terminal state. Nothing is emitted for a live
 // job, so a client reading `details` can tell "no exit yet" from "exited
 // zero" without consulting `state` — the two are the same JSON otherwise.
+/// Generates terminal exit and termination JSON attributes if job has settled.
 fn terminal_json(state: JobState) -> List(#(String, JsonValue)) {
   case state {
     Starting | Running -> []
@@ -831,6 +843,7 @@ fn terminal_json(state: JobState) -> List(#(String, JsonValue)) {
   }
 }
 
+/// Encodes execution result exit codes, signals, and byte counts into JSON fields.
 fn result_json(result: ExecResult) -> List(#(String, JsonValue)) {
   [
     #("exit_code", json.Int(result.code)),
@@ -852,6 +865,7 @@ fn result_json(result: ExecResult) -> List(#(String, JsonValue)) {
 
 // --- job_kill ---------------------------------------------------------------
 
+/// Constructs the `job_kill` tool definition.
 fn kill_tool(
   kill: fn(Ctx, String) -> Result(Nil, Refusal),
   poll: fn(Ctx, String, Int, Cursors) -> Result(Polled, Refusal),
@@ -889,6 +903,7 @@ fn kill_tool(
 // that claimed a terminal state would be claiming something the harness
 // has not observed. A poll that fails after a kill that succeeded is
 // still a successful stop, so the refusal is not propagated.
+/// Initiates termination of a background job and reports its post-kill state.
 fn run_kill(
   kill: fn(Ctx, String) -> Result(Nil, Refusal),
   poll: fn(Ctx, String, Int, Cursors) -> Result(Polled, Refusal),
@@ -915,6 +930,7 @@ fn run_kill(
 
 // --- job_send ---------------------------------------------------------------
 
+/// Constructs the `job_send` tool definition.
 fn send_tool(
   send: fn(Ctx, String, BitArray, StdinEnd) -> Result(Nil, Refusal),
 ) -> Tool {
@@ -961,6 +977,7 @@ fn send_tool(
   )
 }
 
+/// Writes payload data to a background job's stdin stream.
 fn run_send(
   send: fn(Ctx, String, BitArray, StdinEnd) -> Result(Nil, Refusal),
   ctx: Ctx,
@@ -972,10 +989,12 @@ fn run_send(
   let bytes = bit_array.from_string(data)
   use Nil <- tool.or_outcome(send(ctx, id, bytes, end), refusal_outcome)
 
+  // Describe whether stdin was closed after this write.
   let closed = case end {
     CloseStdin -> " Its stdin is now closed."
     KeepStdinOpen -> ""
   }
+
   tool.success(
     "wrote "
     <> int.to_string(bit_array.byte_size(bytes))
@@ -997,6 +1016,7 @@ fn run_send(
 // `eof: "close"` names what it does at the call site the model writes.
 // Absent reads as the milder state, which is what a write that never
 // considered the question means.
+/// Decodes the `eof` parameter indicating whether to close stdin after write.
 fn requested_end(args: JsonValue) -> Result(StdinEnd, String) {
   case tool.optional_string(args, "eof") {
     Error(reason) -> Error(reason)
@@ -1020,6 +1040,7 @@ fn end_name(end: StdinEnd) -> String {
 // The default of `state` is the milder answer — everything — and the
 // default of `limit` is the door's own ceiling below, so an unqualified
 // listing call reads exactly what it read before either argument existed.
+/// Decodes the optional state filter argument for listing background jobs.
 fn requested_listing_state(
   named: Option(String),
 ) -> Result(ListingState, String) {
@@ -1046,6 +1067,7 @@ fn requested_listing_state(
 // asking how many jobs matched, and `total` in the details answers it.
 const listing_ceiling = 100
 
+/// Clamps the listing limit between zero and the maximum ceiling.
 fn requested_limit(limit: Option(Int)) -> Result(Int, String) {
   case limit {
     None -> Ok(listing_ceiling)
@@ -1057,6 +1079,7 @@ fn requested_limit(limit: Option(Int)) -> Result(Int, String) {
 // One filter question, answered through `is_pending` so the split stays
 // the one the poll loop already reads: a state added to `JobState` fails
 // to compile here until someone decides which side of the question it is.
+/// Evaluates whether a job in `job` state satisfies the `state` listing filter.
 fn shows(state: ListingState, job: JobState) -> Bool {
   case state {
     AllJobs -> True
@@ -1106,6 +1129,7 @@ pub fn parse_cursor(since: Option(String)) -> Result(Cursors, String) {
   }
 }
 
+/// Parses colon-separated cursor values from a cursor token string.
 fn parse_cursor_text(text: String) -> Result(Cursors, String) {
   case string.split(text, on: ":") {
     [stdout, stderr] -> cursor_pair(text, stdout, stderr)
@@ -1114,6 +1138,7 @@ fn parse_cursor_text(text: String) -> Result(Cursors, String) {
   }
 }
 
+/// Validates non-negative integer offsets for stdout and stderr cursors.
 fn cursor_pair(
   text: String,
   stdout: String,
@@ -1136,6 +1161,7 @@ fn cursor_pair(
   Ok(Cursors(stdout:, stderr:))
 }
 
+/// Formats a refusal error describing an invalid cursor string.
 fn malformed_cursor(text: String) -> String {
   "`since` must be a cursor a previous "
   <> poll_tool_name
@@ -1191,6 +1217,7 @@ pub fn state_name(state: JobState) -> String {
 // cancel. `timed_out` and `cancelled` are both reported because they
 // answer different questions — the deadline fired, and the ladder was
 // climbed — and a job killed by its deadline is both.
+/// Formats a human-readable description of a job's lifecycle state.
 fn state_text(state: JobState) -> String {
   case state {
     Starting -> "starting (the helper has not accepted it yet)"
@@ -1203,20 +1230,25 @@ fn state_text(state: JobState) -> String {
   }
 }
 
+/// Formats process exit code, signal termination, and timeout annotations.
 fn result_text(result: ExecResult) -> String {
+  // Describe exit code or terminating signal.
   let how = case result.code, result.signal {
     0, 0 -> "exit code 0"
     code, 0 -> "exit code " <> int.to_string(code)
     _code, signal -> "killed by signal " <> int.to_string(signal)
   }
 
+  // Annotate if process was killed due to deadline expiry.
   let deadline = case result.timed_out {
     True -> " (its wall deadline expired)"
     False -> ""
   }
+
   how <> deadline
 }
 
+/// Maps a StopCause to its stable machine identifier.
 fn cause_name(cause: StopCause) -> String {
   case cause {
     ByOwner -> "owner"
@@ -1226,6 +1258,7 @@ fn cause_name(cause: StopCause) -> String {
   }
 }
 
+/// Formats an explanatory sentence describing why a job was stopped.
 fn cause_text(cause: StopCause) -> String {
   case cause {
     ByOwner -> "you asked"
@@ -1235,6 +1268,7 @@ fn cause_text(cause: StopCause) -> String {
   }
 }
 
+/// Maps a LostReason to its stable machine identifier.
 fn loss_name(reason: LostReason) -> String {
   case reason {
     VmRestart -> "vm_restart"
@@ -1243,6 +1277,7 @@ fn loss_name(reason: LostReason) -> String {
   }
 }
 
+/// Formats an explanatory sentence describing why a job was lost.
 fn loss_text(reason: LostReason) -> String {
   case reason {
     VmRestart -> "the harness restarted, so nothing observed how it ended"
@@ -1258,6 +1293,7 @@ fn age_text(age_ms: Int) -> String {
 // Jailed output is expected to be UTF-8; anything else is summarised
 // rather than corrupted into the transcript, exactly as `tools/bash`
 // summarises a foreground command's.
+/// Converts raw stream bytes into a UTF-8 string or non-UTF-8 summary.
 fn output_text(bytes: BitArray) -> String {
   case bit_array.to_string(bytes) {
     Ok(text) -> text
@@ -1368,6 +1404,7 @@ pub fn scheme(jobs: Jobs) -> fs.Scheme {
   )
 }
 
+/// Handles virtual `job://` URI reads for background job listings or details.
 fn read_job(
   jobs: Jobs,
   ctx: Ctx,
@@ -1389,6 +1426,7 @@ fn read_job(
   }
 }
 
+/// Maps a job operation refusal to a virtual filesystem scheme refusal.
 fn scheme_refusal(refusal: Refusal) -> fs.SchemeRefusal {
   case refusal {
     NotFound(id:) -> fs.NotFound(what: "background job `" <> id <> "`")

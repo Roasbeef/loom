@@ -152,7 +152,7 @@ pub fn is_orchestrator_name(text: String) -> Bool {
   is_executor_name(text)
 }
 
-// An executor or pool name has the grammar of a profile name.
+/// An executor or pool name has the grammar of a profile name.
 fn is_executor_name(text: String) -> Bool {
   case string.to_graphemes(text) {
     [first, ..rest] ->

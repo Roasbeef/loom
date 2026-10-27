@@ -56,11 +56,14 @@ pub fn decode(value: json.JsonValue) -> Result(Document, String) {
   use strand <- result.try(text(fields, "strand"))
   use revision <- result.try(number(fields, "revision"))
   use name <- result.try(text(fields, "kind"))
+
+  // Map the serialized kind name to the internal priority variant.
   use kind <- result.try(case name {
     "queue" -> Ok(Queue)
     "steer" -> Ok(Steer)
     _ -> Error("unknown queued input priority")
   })
+
   use content <- result.try(text(fields, "text"))
   use attachment_count <- result.try(number(fields, "attachment_count"))
   use <- bool.guard(

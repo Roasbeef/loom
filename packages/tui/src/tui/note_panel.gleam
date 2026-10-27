@@ -77,6 +77,7 @@ pub fn move(
   wanted: Option(String),
   amount: Int,
 ) -> Option(String) {
+  // Find current row and compute next selection after moving.
   case selected(rows, wanted) {
     None -> None
     Some(current) -> {
@@ -157,6 +158,7 @@ pub fn render(
   context: List(String),
   area: Rect,
 ) -> span.Text {
+  // Select and render note panel lines based on geometry.
   let lines = case selected(rows, wanted) {
     None -> list.map(context, styled(_, area.size.width, theme.overlay_quiet()))
     Some(current) ->
@@ -165,9 +167,11 @@ pub fn render(
         False -> compact(current, scroll, context, area)
       }
   }
+
   span.text_new(lines)
 }
 
+/// Renders compact note panel layout for small viewports.
 fn compact(
   current: Row,
   scroll: Int,
@@ -175,6 +179,8 @@ fn compact(
   area: Rect,
 ) -> List(span.Line) {
   let body_rows = page_step(area)
+
+  // Choose layout based on available viewport height.
   case area.size.height <= 2 {
     True ->
       body_slice(current.body, scroll, body_rows)
@@ -189,6 +195,8 @@ fn compact(
       let body =
         body_slice(current.body, scroll, body_rows)
         |> shade(area.size.width)
+
+      // Prepend context header if height allows.
       case area.size.height >= 3, list.last(context) {
         True, Ok(value) -> [
           styled(value, area.size.width, theme.overlay_quiet()),
@@ -201,6 +209,7 @@ fn compact(
   }
 }
 
+/// Renders split note panel layout with note list and body view.
 fn wide(
   rows: List(Row),
   current: Row,
@@ -233,6 +242,7 @@ fn wide(
   combine(list_rows, body_rows, left_width, right_width)
 }
 
+/// Slices a window of body lines according to scroll offset.
 fn body_slice(
   body: List(span.Line),
   scroll: Int,
@@ -242,6 +252,7 @@ fn body_slice(
   body |> list.drop(offset) |> list.take(count)
 }
 
+/// Renders left-hand note list rows with selection styling.
 fn note_rows(
   rows: List(Row),
   current: Row,
@@ -263,14 +274,19 @@ fn note_rows(
       |> list.take(visible)
       |> list.flat_map(fn(row) {
         let focus = row.key == current.key
+
+        // Pick row background based on selection state.
         let background = case focus {
           True -> theme.raised
           False -> theme.graphite
         }
+
+        // Pick marker based on selection state.
         let marker = case focus {
           True -> "▸ "
           False -> "  "
         }
+
         let primary = style.new(theme.paper, background, style.none())
         let quiet = style.new(theme.quiet, background, style.none())
         [
@@ -286,6 +302,7 @@ fn note_rows(
   )
 }
 
+/// Applies overlay background tinting to note body spans.
 fn shade(lines: List(span.Line), width: Int) -> List(span.Line) {
   list.map(lines, fn(line) {
     let spans =
@@ -316,6 +333,7 @@ fn shade(lines: List(span.Line), width: Int) -> List(span.Line) {
   })
 }
 
+/// Combines left and right column lines side by side.
 fn combine(
   left: List(span.Line),
   right: List(span.Line),
@@ -339,6 +357,7 @@ fn combine(
   |> list.reverse
 }
 
+/// Formats a single truncated and padded line with given styling.
 fn styled(value: String, width: Int, appearance: style.Style) -> span.Line {
   span.line_new([
     span.span_styled(

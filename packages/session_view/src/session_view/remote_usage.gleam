@@ -90,8 +90,10 @@ pub fn encode(usage: RemoteUsage) -> JsonValue {
 /// assert remote_usage.decode(remote_usage.encode(usage)) == Ok(usage)
 /// ```
 pub fn decode(value: JsonValue) -> Result(RemoteUsage, String) {
+  // Match the JSON object shape of the remote usage payload.
   case value {
     json.Object(fields) -> {
+      // Decode the non-empty orchestrator identity string.
       use orchestrator <- result.try(
         case list.key_find(fields, "orchestrator") {
           Ok(json.String(name)) if name != "" -> Ok(name)
@@ -99,16 +101,20 @@ pub fn decode(value: JsonValue) -> Result(RemoteUsage, String) {
             Error("remote_usage.orchestrator must be a nonempty string")
         },
       )
+
       use input <- result.try(count(fields, "input"))
       use output <- result.try(count(fields, "output"))
       use cache_read <- result.try(count(fields, "cache_read"))
       use cache_write <- result.try(count(fields, "cache_write"))
+
+      // Decode non-negative float or integer cost value.
       use cost <- result.map(case list.key_find(fields, "cost") {
         Ok(json.Float(cost)) if cost >=. 0.0 -> Ok(cost)
         Ok(json.Int(cost)) if cost >= 0 -> Ok(int.to_float(cost))
         Ok(_) | Error(Nil) ->
           Error("remote_usage.cost must be a nonnegative number")
       })
+
       RemoteUsage(
         orchestrator:,
         input:,
@@ -141,7 +147,7 @@ pub fn decode_all(
   }
 }
 
-// A nonnegative integer field.
+/// Decodes a non-negative integer field from remote usage fields.
 fn count(
   fields: List(#(String, JsonValue)),
   name: String,

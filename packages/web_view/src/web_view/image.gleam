@@ -108,6 +108,7 @@ pub fn plausible_ref(ref: String) -> Bool {
   length >= 1 && length <= max_ref_length && list.all(marks, is_mark)
 }
 
+/// Returns whether a grapheme is an allowed character in an image reference.
 fn is_mark(grapheme: String) -> Bool {
   case grapheme {
     "." | "~" | "-" -> True
@@ -128,6 +129,8 @@ pub fn serve(image: Image) -> Result(Served, Refusal) {
   // The base64 text of the largest admissible image is a third longer than
   // its bytes, so a longer text is refused before it is decoded.
   let encoded_limit = max_served_bytes / 3 * 4 + 4
+
+  // Reject non-drawable images or payloads exceeding size limit before decoding.
   case drawn(image), string.byte_size(image.data) > encoded_limit {
     False, _ -> Error(NotAnImage)
     True, True -> Error(TooLarge)
@@ -135,10 +138,13 @@ pub fn serve(image: Image) -> Result(Served, Refusal) {
   }
 }
 
+/// Validates decoded image bytes against byte size limits and declared mime type.
 fn checked(image: Image) -> Result(Served, Refusal) {
   use bytes <- result.try(
     bit_array.base64_decode(image.data) |> result.replace_error(NotAnImage),
   )
+
+  // Verify decoded payload does not exceed the maximum allowed serving bytes.
   case bit_array.byte_size(bytes) > max_served_bytes {
     True -> Error(TooLarge)
     False ->
@@ -203,6 +209,7 @@ pub fn limits_attribute() -> String {
 pub fn admit(
   encoded: List(String),
 ) -> Result(List(pasted_image.Image), String) {
+  // Enforce attachment count cap before parsing image payloads.
   case list.drop(encoded, max_attached) {
     [_, ..] ->
       Error(
@@ -219,6 +226,8 @@ pub fn admit(
       use images <- result.try(list.try_map(encoded, decoded))
       let total =
         list.fold(images, 0, fn(total, image) { total + image.byte_size })
+
+      // Reject if total decoded image bytes exceed the aggregate attachment ceiling.
       case total > max_attached_bytes {
         True -> Error(too_large())
         False -> Ok(images)
@@ -233,6 +242,7 @@ fn too_large() -> String {
   <> " MiB. Nothing was sent."
 }
 
+/// Decodes base64 image data and validates that it represents a supported image format.
 fn decoded(text: String) -> Result(pasted_image.Image, String) {
   use bytes <- result.try(
     bit_array.base64_decode(text)
@@ -240,6 +250,8 @@ fn decoded(text: String) -> Result(pasted_image.Image, String) {
       "An attached image is not valid base64. Nothing was sent.",
     ),
   )
+
+  // Verify the decoded bytes map to an accepted image media type.
   case pasted_image.media_type(bytes) {
     None ->
       Error(

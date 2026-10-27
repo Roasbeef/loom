@@ -144,16 +144,23 @@ pub fn new(context: Context(instance)) -> orchestrator_port.Importer {
 /// // session_importer.take(context, session_move.Chunk(session:, op:, offset: 0, total: 3, bytes: <<1, 2, 3>>))
 /// ```
 pub fn take(context: Context(instance), piece: Chunk) -> Verdict {
+  // Resolve the current branch using the protocol state and preserve its failure boundary.
+
+  // Validate this branch before continuing, preserving the owning operation’s failure boundary.
   case taken(context, piece) {
     Ok(Nil) -> Accepted
     Error(verdict) -> verdict
   }
 }
 
+/// Establishes taken for the caller, keeping its validation and result policy at this boundary.
 fn taken(context: Context(instance), piece: Chunk) -> Result(Nil, Verdict) {
   use Nil <- result.try(well_formed(piece.session, piece.op))
   let size = bit_array.byte_size(piece.bytes)
+
+  // Validate the received chunk against its declared size and executor scope before accepting it.
   use Nil <- result.try(
+    // Decide how to handle the branch input.
     case
       piece.total >= 1
       && piece.total <= session_move.size_limit
@@ -174,12 +181,16 @@ fn taken(context: Context(instance), piece: Chunk) -> Result(Nil, Verdict) {
     |> result.map_error(fn(reason) { Failed(reason) }),
   )
   let part = session_move.part_path(context.state_root, piece.session, piece.op)
+
+  // Decide how to handle use Nil <- result.try( piece.offset {.
   use Nil <- result.try(case piece.offset {
     0 ->
       simplifile.write_bits(part, piece.bytes)
       |> result.map_error(file_failure(part))
     offset -> {
       let held = size_of(part)
+
+      // Decide how to handle held == offset {.
       case held == offset {
         True ->
           simplifile.append_bits(part, piece.bytes)
@@ -188,6 +199,8 @@ fn taken(context: Context(instance), piece: Chunk) -> Result(Nil, Verdict) {
       }
     }
   })
+
+  // Decide how to handle piece.offset + size == piece.total {.
   case piece.offset + size == piece.total {
     False -> Ok(Nil)
     True -> {
@@ -208,6 +221,7 @@ fn size_of(path: String) -> Int {
   }
 }
 
+/// Establishes file failure for the caller, keeping its validation and result policy at this boundary.
 fn file_failure(path: String) -> fn(simplifile.FileError) -> Verdict {
   fn(error) {
     Failed(
@@ -248,6 +262,8 @@ pub fn stage(
   use waiting <- result.try(
     simplifile.is_file(whole) |> result.replace_error(Nil),
   )
+
+  // Decide how to handle manager.custody(context.registry, session) {.
   case manager.custody(context.registry, session) {
     Ok(catalogue.Imported(op: held, ..)) if held == op ->
       case waiting {
@@ -278,10 +294,13 @@ pub fn stage(
 /// ```
 pub fn activate(context: Context(instance), activation: Activation) -> Verdict {
   let outcome = activated(context, activation)
+
+  // Decide how to handle let verdict =  outcome {.
   let verdict = case outcome {
     Ok(Nil) -> Accepted
     Error(verdict) -> verdict
   }
+
   discard_refused(context, activation, verdict)
   record(context, activation, verdict)
   verdict
@@ -291,11 +310,14 @@ pub fn activate(context: Context(instance), activation: Activation) -> Verdict {
 // removed, because the move it belongs to is over and nothing else will. A
 // digest that does not match and a copy that is missing are cured by a new send,
 // which replaces the file, so those leave it where it is.
+
+/// Establishes discard refused for the caller, keeping its validation and result policy at this boundary.
 fn discard_refused(
   context: Context(instance),
   activation: Activation,
   verdict: Verdict,
 ) -> Nil {
+  // Decide how to handle verdict {.
   case verdict {
     Refused(refusal: session_move.DigestMismatch)
     | Refused(refusal: session_move.NothingReceived)
@@ -316,12 +338,16 @@ fn discard_refused(
   }
 }
 
+/// Establishes activated for the caller, keeping its validation and result policy at this boundary.
 fn activated(
   context: Context(instance),
   activation: Activation,
 ) -> Result(Nil, Verdict) {
   use Nil <- result.try(well_formed(activation.session, activation.op))
+
+  // Resolve activation against the catalogue state before deciding whether this move may proceed.
   use found <- result.try(
+    // Decide how to handle manager.custody(context.registry, activation.session) {.
     case manager.custody(context.registry, activation.session) {
       Ok(custody) -> Ok(Some(custody))
 
@@ -331,6 +357,8 @@ fn activated(
       Error(other) -> Error(Failed(string.inspect(other)))
     },
   )
+
+  // Decide how to handle found {.
   case found {
     // The first activation of this move committed and the sender did not hear.
     // It checked the copy and the sender then; asking again finishes what it
@@ -357,6 +385,8 @@ fn activated(
 }
 
 // The orchestrator this daemon lists for the activation's node.
+
+/// Establishes listed for the caller, keeping its validation and result policy at this boundary.
 fn listed(
   context: Context(instance),
   activation: Activation,
@@ -373,6 +403,8 @@ fn listed(
 // The refusal for a session this daemon holds under another state or move. It
 // is for a listed sender only, so a node this daemon does not know learns
 // nothing about which sessions it holds.
+
+/// Establishes conflict for the caller, keeping its validation and result policy at this boundary.
 fn conflict(
   context: Context(instance),
   activation: Activation,
@@ -382,6 +414,8 @@ fn conflict(
 }
 
 // The checks on the copy, and then the arrival.
+
+/// Establishes verified for the caller, keeping its validation and result policy at this boundary.
 fn verified(
   context: Context(instance),
   activation: Activation,
@@ -393,13 +427,18 @@ fn verified(
       activation.session,
       activation.op,
     )
+
+  // Decide how to handle use Nil <- result.try( simplifile.is_file(whole) {.
   use Nil <- result.try(case simplifile.is_file(whole) {
     Ok(True) -> Ok(Nil)
     Ok(False) | Error(_) -> Error(Refused(session_move.NothingReceived))
   })
+
   use bytes <- result.try(
     simplifile.read_bits(whole) |> result.map_error(file_failure(whole)),
   )
+
+  // Decide how to handle use Nil <- result.try( digest_of(bytes) == activation.digest {.
   use Nil <- result.try(case digest_of(bytes) == activation.digest {
     True -> Ok(Nil)
     False -> Error(Refused(session_move.DigestMismatch))
@@ -407,11 +446,18 @@ fn verified(
 
   // Verify recorded closed cell metadata and executor identity.
   use cell <- result.try(closed_cell(context, activation, whole))
+
+  // Decide how to handle let named =  cell.executor {.
+
+  // Validate this branch before continuing, preserving the owning operation’s failure boundary.
   let named = case cell.executor {
     Some(name) -> name
     None -> activation.manifest.executor
   }
+
+  // Validate the received chunk against its declared size and executor scope before accepting it.
   use Nil <- result.try(
+    // Decide how to handle the branch input.
     case
       named == activation.manifest.executor,
       executors.find(roster.rows(context.executors), named)
@@ -429,6 +475,7 @@ fn verified(
       True, Ok(_) -> Ok(Nil)
     },
   )
+
   recorded(context, activation, source.name)
 }
 
@@ -440,6 +487,8 @@ fn verified(
 // import is finished if it can be, and the answer is yes. This daemon never
 // removes a session it owns. Any other owner, or no record, means the move
 // ended without this receiver, and only the incoming copy goes.
+
+/// Establishes recorded for the caller, keeping its validation and result policy at this boundary.
 fn recorded(
   context: Context(instance),
   activation: Activation,
@@ -480,6 +529,8 @@ fn recorded(
 // leaving the record naming a daemon that holds nothing; `Failed` keeps the
 // copy and the source keeps asking until the cause is cured. A `Conflict` is
 // left as it is: the caller reads it as the session having moved on from here.
+
+/// Establishes owned import for the caller, keeping its validation and result policy at this boundary.
 fn owned_import(
   context: Context(instance),
   activation: Activation,
@@ -499,6 +550,8 @@ fn owned_import(
 // changed since: the answer is `Failed`, as for `owned_import`. The record is
 // read after catching up with the leader, and a store that cannot say is
 // `Failed` too, because a refusal it could not rule out would be final.
+
+/// Establishes kept if owned for the caller, keeping its validation and result policy at this boundary.
 fn kept_if_owned(
   context: Context(instance),
   activation: Activation,
@@ -519,6 +572,7 @@ fn kept_if_owned(
   }
 }
 
+/// Establishes cannot finish for the caller, keeping its validation and result policy at this boundary.
 fn cannot_finish(refusal: session_move.Refusal) -> Verdict {
   Failed(
     "this orchestrator owns the session by its directory record and cannot "
@@ -531,6 +585,8 @@ fn cannot_finish(refusal: session_move.Refusal) -> Verdict {
 // incarnation. It is read from a scratch copy: opening a session file switches
 // its journal mode and writes and releases a lease, and the file whose digest
 // was just checked must stay exactly what the sender cut.
+
+/// Establishes closed cell for the caller, keeping its validation and result policy at this boundary.
 fn closed_cell(
   context: Context(instance),
   activation: Activation,
@@ -559,6 +615,8 @@ fn closed_cell(
       Nil
     },
   )
+
+  // Decide how to handle read {.
   case read {
     Error(reason) -> Error(Refused(session_move.NotClosed(reason)))
     Ok(None) ->
@@ -600,6 +658,8 @@ fn closed_cell(
 // arrival. The copy waits where the pieces left it, or is already gone from
 // there in a repeat, in which case the registry checks that the file is in
 // place.
+
+/// Establishes import it for the caller, keeping its validation and result policy at this boundary.
 fn import_it(
   context: Context(instance),
   activation: Activation,
@@ -634,6 +694,8 @@ fn import_it(
       context.domain_configuration,
       context.state_root,
     )
+
+  // Decide how to handle the branch input.
   case
     manager.import_session(
       context.registry,
@@ -660,6 +722,8 @@ fn import_it(
 
 // A session identity and an operation in their grammars. They name files, so a
 // separator or a dot-dot in either must be refused before it reaches a path.
+
+/// Establishes well formed for the caller, keeping its validation and result policy at this boundary.
 fn well_formed(session: String, op: String) -> Result(Nil, Verdict) {
   case ids.parse_session_id(session), catalogue.is_move_op(op) {
     Ok(_), True -> Ok(Nil)
@@ -674,6 +738,7 @@ fn digest_of(bytes: BitArray) -> String {
   bootstrap.sha256(bytes) |> bit_array.base16_encode |> string.lowercase
 }
 
+/// Establishes record for the caller, keeping its validation and result policy at this boundary.
 fn record(
   context: Context(instance),
   activation: Activation,
@@ -683,6 +748,8 @@ fn record(
     field.ident("session", activation.session),
     field.ident("op", activation.op),
   ]
+
+  // Decide how to handle verdict {.
   case verdict {
     Accepted -> log.info(context.logger, "daemon.move_activated", fields)
     Refused(refusal:) ->

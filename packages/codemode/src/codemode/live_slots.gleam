@@ -75,10 +75,14 @@ pub fn rewrite(source: String, authored: List(String), slot: Slot) -> String {
     |> glexer.discard_comments
     |> glexer.lex
     |> import_offsets(authored, [])
+
+  // Rewrite matching import token positions with the slot prefix.
   glexer.new(source)
   |> glexer.lex
   |> list.map(fn(item) {
     let #(value, position) = item
+
+    // Prefix authored module names with the chosen live slot identifier.
     case list.contains(imports, position.byte_offset) {
       True -> prefix(slot) <> "/" <> token.to_source(value)
       False -> token.to_source(value)
@@ -87,19 +91,24 @@ pub fn rewrite(source: String, authored: List(String), slot: Slot) -> String {
   |> string.join("")
 }
 
+/// Scans token stream for authored import module paths and records their byte offsets.
 fn import_offsets(
   tokens: List(#(token.Token, glexer.Position)),
   authored: List(String),
   offsets: List(Int),
 ) -> List(Int) {
+  // Inspect token sequences to locate authored import statements.
   case tokens {
     [#(token.Import, _), #(token.Name(first), at), ..rest] -> {
       let #(segments, tail) = path(rest, [first])
       let name = string.join(list.reverse(segments), "/")
+
+      // Record the byte offset if the imported module matches authored code.
       let offsets = case list.contains(authored, name) {
         True -> [at.byte_offset, ..offsets]
         False -> offsets
       }
+
       import_offsets(tail, authored, offsets)
     }
     [_, ..rest] -> import_offsets(rest, authored, offsets)
@@ -107,6 +116,7 @@ fn import_offsets(
   }
 }
 
+/// Collects slash-separated module path segments from the token stream.
 fn path(
   tokens: List(#(token.Token, glexer.Position)),
   segments: List(String),

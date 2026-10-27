@@ -311,12 +311,15 @@ pub fn authorize_policy(
   requested: SandboxPolicy,
 ) -> Result(Ctx, ToolOutcome) {
   let #(_, missing) = policy.compose(base, requested, ctx.grants)
+
+  // Check whether any requested permissions exceed the authorized policy.
   case missing {
     [] -> Ok(ctx)
     _ -> ask_permission(ctx, base, requested, missing)
   }
 }
 
+/// Raises an escalation request for missing sandbox grants and returns the updated context.
 fn ask_permission(
   ctx: Ctx,
   base: SandboxPolicy,
@@ -330,11 +333,15 @@ fn ask_permission(
       wanted: policy.wanted_grants(missing),
     )
   let #(now, _) = clock.read(ctx.clock)
+
+  // Request an interactive escalation or return a policy refusal.
   case ctx.raise_refusal(RaisedRefusal(denial, now + 600_000)) {
     Settle -> Error(refused(denial))
     Resume(grants) -> {
       let ctx = Ctx(..ctx, grants: list.append(ctx.grants, grants))
       let #(_, remaining) = policy.compose(base, requested, ctx.grants)
+
+      // Verify that all missing grants have been satisfied upon resumption.
       case remaining {
         [] -> Ok(ctx)
         _ ->
@@ -864,6 +871,41 @@ pub fn to_result_message(
   )
 }
 
+/// Reads an outcome back out of the result message `to_result_message` built.
+///
+/// A tool that ran on another machine comes back as the effect plane's
+/// `ToolCompleted(result, terminate)`, which holds the finished message and the
+/// run's termination flag. A caller that needs the `ToolOutcome` again (the
+/// promoted tool of a remote generation returns one to its door) reads it here.
+/// Content, details and the error flag are the message's own; `terminate` is
+/// supplied by the caller because a result message does not carry it.
+///
+/// Only a `ToolResultMessage` is an outcome. Any other message is `Error(Nil)`,
+/// so a peer that answered with another shape cannot pass for a tool result.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let outcome = tool.success("done")
+/// let message =
+///   tool.to_result_message(outcome, tool_call_id: "c", tool_name: "t", timestamp: 0)
+/// assert tool.from_result_message(message, outcome.terminate) == Ok(outcome)
+/// ```
+///
+pub fn from_result_message(
+  result: message.AgentMessage,
+  terminate: Terminate,
+) -> Result(ToolOutcome, Nil) {
+  case result {
+    message.ToolResultMessage(content:, details:, is_error:, ..) ->
+      Ok(ToolOutcome(content:, details:, is_error:, terminate:))
+
+    message.UserMessage(..)
+    | message.AssistantMessage(..)
+    | message.CustomMessage(..) -> Error(Nil)
+  }
+}
+
 // --- argument decoding ---------------------------------------------------
 
 /// Chains argument decoding with `use`: an `Error` becomes the standard
@@ -1041,6 +1083,7 @@ pub fn optional_value(
 
 // First occurrence of a field in an args object; non-objects have no
 // fields.
+/// Looks up a property field by key in a JSON object.
 fn field(args: JsonValue, key: String) -> Result(JsonValue, Nil) {
   case args {
     json.Object(fields:) ->
@@ -1282,6 +1325,7 @@ type Gathering {
   )
 }
 
+/// Receives output events until the process settles or times out.
 fn collect_loop(
   events: Subject(CallEvent),
   timeout: Int,
@@ -1313,6 +1357,7 @@ fn collect_loop(
 // One chunk into its stream's chunk list and rolling window. The
 // truncation flag is sticky: the helper reports it on the chunk that hit
 // the cap, and the collected result must still say so at settlement.
+/// Appends a new data chunk to the gathering stream accumulator and rolling tail.
 fn absorb(
   gathering: Gathering,
   stream: framing.OutputStream,
@@ -1320,6 +1365,8 @@ fn absorb(
   truncated: Bool,
 ) -> Gathering {
   let tails = gathering.tails
+
+  // Fold incoming chunk into the targeted output stream.
   case stream {
     framing.Stdout ->
       Gathering(
@@ -1345,11 +1392,14 @@ fn absorb(
 // the last complete character, so a UTF-8 stream always converts. A
 // window that does not convert holds bytes that are not text, and the
 // honest display is no text with a byte count that keeps moving.
+/// Creates a snapshot observation of the current window for `stream`.
 fn observed(tails: Tails, stream: framing.OutputStream) -> OutputTail {
+  // Select the appropriate rolling tail window.
   let window = case stream {
     framing.Stdout -> tails.stdout
     framing.Stderr -> tails.stderr
   }
+
   OutputTail(
     stream:,
     tail: tail.since(window, 0).bytes
@@ -1452,12 +1502,15 @@ pub fn exec_failure_text(failure_value: exec.ExecFailure) -> String {
 // the command may have run, because the model's next move depends on it: a
 // retry of a command that already ran is its decision to make with that
 // fact in hand, never something this layer does for it.
+/// Formats an explanatory sentence for an execution loss event.
 fn execution_lost_text(cause: exec.LossCause) -> String {
+  // Describe the specific failure that caused execution loss.
   let reason = case cause {
     exec.HelperActorDown -> "the sandbox helper process manager died"
     exec.RelayDown -> "the output relay for the execution died"
     exec.ExecutorClosing -> "the session's executor was closing"
   }
+
   "the execution may have run, and its outcome is unknown: " <> reason
 }
 
@@ -1522,6 +1575,7 @@ pub fn grant_to_json(grant: Grant) -> JsonValue {
   }
 }
 
+/// Encodes a NetworkPolicy value into structured JSON.
 fn network_to_json(network: policy.NetworkPolicy) -> JsonValue {
   case network {
     policy.NetworkOff -> json.Object([#("mode", json.String("off"))])
@@ -1535,6 +1589,7 @@ fn network_to_json(network: policy.NetworkPolicy) -> JsonValue {
   }
 }
 
+/// Formats a limit field identifier as text.
 fn limit_field_text(limit_field: policy.LimitField) -> String {
   case limit_field {
     policy.CpuSeconds -> "cpu_s"
@@ -1553,6 +1608,7 @@ fn scratch_text(scratch: policy.Scratch) -> String {
   }
 }
 
+/// Formats a human-readable description of a policy validation error.
 fn policy_error_text(error: policy.PolicyError) -> String {
   case error {
     policy.RelativePath(path:) -> "relative path " <> path
@@ -1586,6 +1642,7 @@ fn policy_error_text(error: policy.PolicyError) -> String {
   }
 }
 
+/// Formats a human-readable description of an execution budget refusal.
 fn budget_text(refusal: budget.Refusal) -> String {
   case refusal {
     budget.OutstandingCapReached(cap:) ->
@@ -1595,6 +1652,7 @@ fn budget_text(refusal: budget.Refusal) -> String {
   }
 }
 
+/// Formats a diagnostic message for a helper pool checkout error.
 fn checkout_text(error: exec.CheckoutError) -> String {
   case error {
     exec.AllBusy(size: 0) ->

@@ -126,6 +126,7 @@ pub fn push(deframer: Deframer, bytes: BitArray) -> Pushed {
   push_loop(bit_array.append(deframer.buffer, bytes), [])
 }
 
+/// Loops through the buffer attempting to deframe complete inbound messages.
 fn push_loop(buffer: BitArray, seen: List(Inbound)) -> Pushed {
   case buffer {
     <<size:size(32), rest:bits>> -> push_sized(buffer, size, rest, seen)
@@ -135,8 +136,7 @@ fn push_loop(buffer: BitArray, seen: List(Inbound)) -> Pushed {
   }
 }
 
-// A length prefix was read; either it is already too large to accept,
-// or there is a frame's worth of bytes to look for.
+/// Handles a length-prefixed slice, checking bounds and delegating to frame parsing.
 fn push_sized(
   buffer: BitArray,
   size: Int,
@@ -149,8 +149,7 @@ fn push_sized(
   }
 }
 
-// The length prefix is acceptable; take exactly `size` bytes if they
-// have arrived yet, then decode them as one frame.
+/// Takes exactly size bytes for a frame if available and decodes it.
 fn push_frame(
   buffer: BitArray,
   rest: BitArray,
@@ -172,8 +171,7 @@ fn push_frame(
   }
 }
 
-// One `push` result: `buffer` becomes the carried deframer state,
-// `seen` (accumulated in reverse) becomes the frames in arrival order.
+/// Packs the unconsumed buffer and decoded frames into a Pushed result.
 fn carry(
   buffer: BitArray,
   seen: List(Inbound),
@@ -182,11 +180,14 @@ fn carry(
   Pushed(deframer: Deframer(buffer:), inbound: list.reverse(seen), fault:)
 }
 
+/// Slices the requested number of bytes from the buffer if enough bytes are present.
 fn take_frame(
   bytes: BitArray,
   size: Int,
 ) -> Result(#(BitArray, BitArray), Nil) {
   let available = bit_array.byte_size(bytes)
+
+  // Check if enough bytes are available to slice the complete frame.
   case available >= size {
     False -> Error(Nil)
     True -> {
@@ -203,6 +204,7 @@ fn take_frame(
 
 // --- frame decoding -----------------------------------------------------
 
+/// Decodes raw frame bytes from msgpack format into an envelope.
 fn decode_frame(payload: BitArray) -> Result(Inbound, Fault) {
   case msgpack.decode(payload) {
     Error(report) -> Error(Malformed(report:))
@@ -210,6 +212,7 @@ fn decode_frame(payload: BitArray) -> Result(Inbound, Fault) {
   }
 }
 
+/// Validates the protocol version and extracts top-level envelope fields.
 fn decode_envelope(envelope: msgpack.MsgPackValue) -> Result(Inbound, Fault) {
   case wire.int_field(envelope, "v") {
     Error(reason) -> Error(malformed("frame.v", reason))
@@ -226,6 +229,7 @@ fn decode_envelope(envelope: msgpack.MsgPackValue) -> Result(Inbound, Fault) {
   }
 }
 
+/// Dispatches frame body decoding based on the message kind.
 fn decode_kind(
   id: Int,
   kind: String,
@@ -238,9 +242,7 @@ fn decode_kind(
   }
 }
 
-// The `cap_result` body shape is frozen (Part 1.4): `{ok: true, value}`
-// or `{ok: false, error: {code, msg}}`, plus an optional `usage` the
-// satellite ignores. Any deviation is a fault, mapped in-band.
+/// Decodes a capability result message into success or error outcomes.
 fn decode_cap_result(
   id: Int,
   body: msgpack.MsgPackValue,
@@ -252,6 +254,7 @@ fn decode_cap_result(
   }
 }
 
+/// Extracts the success payload value from a capability result.
 fn decode_result_value(
   id: Int,
   body: msgpack.MsgPackValue,
@@ -262,6 +265,7 @@ fn decode_result_value(
   }
 }
 
+/// Extracts error code and message fields from a capability result.
 fn decode_result_error(
   id: Int,
   body: msgpack.MsgPackValue,
@@ -280,9 +284,7 @@ fn decode_result_error(
   }
 }
 
-// Every field is required, so a `hook_call` missing one is a fault
-// rather than an invocation served with a guessed name or an absent
-// token. Both ends of this wire ship from one tree.
+/// Decodes an inbound hook call with required parameters.
 fn decode_hook_call(
   id: Int,
   body: msgpack.MsgPackValue,
@@ -301,6 +303,7 @@ fn decode_hook_call(
   }
 }
 
+/// Builds a malformed frame fault report.
 fn malformed(subject: String, expected: String) -> Fault {
   Malformed(report: corruption.report(
     at: "cap/internal/inbound.decode_frame",

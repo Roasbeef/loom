@@ -73,6 +73,7 @@ pub fn capture(view: View, plan: snapshot.Plan) -> Result(snapshot.Cut, Error) {
   snapshot.Cut(view.next_seq, view.stats, cells, metadata_bytes, recent)
 }
 
+/// Collects matching register headers for a given namespace and prefix.
 fn headers(
   view: View,
   namespace: RegisterNs,
@@ -85,6 +86,8 @@ fn headers(
   let selected =
     dict.fold(cells, Ok([]), fn(acc, key, value) {
       use acc <- result.try(acc)
+
+      // Filter keys matching the namespace prefix before evaluating budget and predicate.
       case string.starts_with(key, prefix) {
         False -> Ok(acc)
         True -> {
@@ -100,6 +103,8 @@ fn headers(
             predicate,
             value.value.payload,
           ))
+
+          // Accumulate the header if the register value satisfied the predicate.
           case matches {
             False -> Ok(acc)
             True -> {
@@ -117,6 +122,7 @@ fn headers(
 // The ephemeral backend already owns every decoded cell, but the page walk
 // retains only bounded keys. It serializes values only after their keys survive
 // the window, so oversized neighbors cannot poison a small metadata page.
+/// Walks register headers for a bounded window without loading values.
 fn page_headers(
   view: View,
   namespace: RegisterNs,
@@ -140,6 +146,7 @@ fn page_headers(
   list.try_map(keys, fn(key) { header(view, namespace, key) })
 }
 
+/// Constructs a snapshot header from a register key and cell value.
 fn make_header(
   namespace: RegisterNs,
   key: String,
@@ -153,6 +160,7 @@ fn make_header(
   )
 }
 
+/// Reads a single register cell and constructs its snapshot header.
 fn header(
   view: View,
   namespace: RegisterNs,
@@ -167,6 +175,7 @@ fn cell(view: View, header: snapshot.Header) -> Result(snapshot.Cell, Error) {
   snapshot.Cell(header.namespace, header.key, value)
 }
 
+/// Finds a register cell in the view by namespace and key.
 fn find(
   view: View,
   namespace: RegisterNs,
@@ -199,6 +208,7 @@ pub fn page(
 
 // The dictionary walk never converts the whole inventory to a list. It keeps
 // only the requested window, and serializes only its surviving entries.
+/// Collects entries within sequence bounds and limits for a specific scan order.
 fn bounded_entries(
   view: View,
   after: Int,
@@ -236,6 +246,7 @@ pub fn lineage(
   limit: Int,
 ) -> Result(List(snapshot.Descriptor), Error) {
   snapshot.lineage(from, before, limit, fn(id, below) {
+    // Resolve the lineage parent link from the entry map if within bounds.
     case dict.get(view.entries, ids.entry_id_to_string(id)) {
       Ok(found) if found.seq < below -> {
         use described <- result.map(descriptor(found))
@@ -246,6 +257,7 @@ pub fn lineage(
   })
 }
 
+/// Builds and validates a snapshot descriptor for a history entry.
 fn descriptor(entry: Entry) -> Result(snapshot.Descriptor, Error) {
   snapshot.validate_descriptor(snapshot.Descriptor(
     entry.id,
@@ -276,6 +288,8 @@ pub fn fragment(
     |> result.replace_error(snapshot.MissingRecord),
   )
   let bytes = encoded(entry)
+
+  // Verify sequence and byte length consistency before slicing the payload.
   case
     entry.seq == descriptor.seq
     && bit_array.byte_size(bytes) == descriptor.byte_length

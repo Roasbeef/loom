@@ -298,6 +298,7 @@ pub fn printable(text: String, limit: Int) -> String {
   take_bytes(string.to_graphemes(cleaned), limit, "")
 }
 
+/// Establishes take bytes for the caller, keeping its validation and result policy at this boundary.
 fn take_bytes(graphemes: List(String), left: Int, kept: String) -> String {
   case graphemes {
     [first, ..rest] ->
@@ -344,6 +345,8 @@ pub fn failure_words(failure: exec.ExecFailure) -> String {
 
 // The layers the sandbox's report says it skipped, as a parenthesis for the
 // sentence, or nothing when the report names none.
+
+/// Establishes skipped words for the caller, keeping its validation and result policy at this boundary.
 fn skipped_words(enforcement: List(String)) -> String {
   let skipped =
     list.filter_map(enforcement, fn(entry) {
@@ -352,6 +355,8 @@ fn skipped_words(enforcement: List(String)) -> String {
         False -> Error(Nil)
       }
     })
+
+  // Decide how to handle skipped {.
   case skipped {
     [] -> ""
     layers -> " (skipped: " <> string.join(layers, ", ") <> ")"
@@ -360,6 +365,8 @@ fn skipped_words(enforcement: List(String)) -> String {
 
 // A cleared call's account. A cancellation or timeout is not an exit, so it is
 // an error; everything else carries the exit code the caller will judge.
+
+/// Establishes settled for the caller, keeping its validation and result policy at this boundary.
 fn settled(collected: tool.Collected) -> Result(Output, String) {
   case collected.outcome {
     broker.CallFailed(failure) -> Error(failure_words(failure))
@@ -388,6 +395,8 @@ fn text_of(bits: BitArray) -> String {
 // the CPU, memory and file size to the wall deadline, since a checkout's cost
 // grows with the repository and a limit that fits a small one stops a large
 // one half way.
+
+/// Establishes policy of for the caller, keeping its validation and result policy at this boundary.
 fn policy_of(
   git: Git,
   call: Run,
@@ -416,6 +425,8 @@ fn policy_of(
 // Nothing here comes from a peer. Git reads no user or system configuration:
 // the repository's own is the only one in play, and a global file that names
 // a credential helper or an include has no business in a worktree command.
+
+/// Establishes environment for the caller, keeping its validation and result policy at this boundary.
 fn environment() -> List(#(String, String)) {
   [
     #("PATH", "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"),

@@ -615,6 +615,7 @@ pub fn rename(
 // Every symbol query puts the same three keys on the wire, always present
 // and `nil` when unset: the harness decodes them as required fields, so a
 // key missing here is a disagreement it refuses rather than a default.
+/// Encodes symbol query fields into a msgpack arguments value.
 fn query_args(
   query: Query,
   extra: List(#(String, MsgPackValue)),
@@ -643,6 +644,7 @@ fn optional_int(value: Option(Int)) -> MsgPackValue {
   }
 }
 
+/// Returns the wire string for a call hierarchy direction.
 fn direction_name(direction: CallDirection) -> String {
   case direction {
     Incoming -> "incoming"
@@ -651,6 +653,7 @@ fn direction_name(direction: CallDirection) -> String {
   }
 }
 
+/// Returns the wire string for a rename operation mode.
 fn mode_name(mode: RenameMode) -> String {
   case mode {
     Preview -> "preview"
@@ -664,6 +667,7 @@ fn mode_name(mode: RenameMode) -> String {
 // single symbol; anything the decoder cannot read is `LspUnavailable`,
 // naming the capability, because a program must never mistake a wire
 // disagreement for an empty answer.
+/// Dispatches an LSP capability call and handles common failure shapes.
 fn ask(
   cap: String,
   args: MsgPackValue,
@@ -681,6 +685,7 @@ fn ask(
 
 // The outer `Result` is "could the answer be read"; the inner one is
 // "did it answer the question".
+/// Decodes the capability reply or unmarshals an unresolved symbol error.
 fn decode_reply(
   value: MsgPackValue,
   decoder: fn(MsgPackValue) -> Result(a, String),
@@ -695,8 +700,11 @@ fn decode_reply(
 // An unrecognised tag is a decode failure rather than `NotFound`: a tag
 // this module does not know means the two ends disagree about the wire,
 // and "not found" would be a claim about the code nobody made.
+/// Decodes an unresolved symbol response into its specific LspError variant.
 fn decode_unresolved(value: MsgPackValue) -> Result(LspError, String) {
   use tag <- result.try(wire.string_field(value, "unresolved"))
+
+  // Map the unresolved tag string to the corresponding LspError variant.
   case tag {
     "not_found" -> {
       use symbol <- result.try(wire.string_field(value, "symbol"))
@@ -725,6 +733,7 @@ fn decode_unresolved(value: MsgPackValue) -> Result(LspError, String) {
 
 // Both capabilities that return a `Found` read the same two keys: the
 // capped list under `key` and the uncapped `total` beside it.
+/// Decodes a capped list response paired with its total count.
 fn decode_found(
   value: MsgPackValue,
   key: String,
@@ -737,6 +746,7 @@ fn decode_found(
 
 // The five keys of a `Site`, all required. The anchor is computed by the
 // harness, which can see `tools/hashline`; this side only carries it.
+/// Decodes a source site location from its msgpack representation.
 fn decode_site(value: MsgPackValue) -> Result(Site, String) {
   use path <- result.try(wire.string_field(value, "path"))
   use line <- result.try(wire.int_field(value, "line"))
@@ -760,6 +770,7 @@ fn decode_reference(value: MsgPackValue) -> Result(Reference, String) {
 
 // A present field that is not text is a fault, not `None`: `nil` is how
 // the harness says "absent", and anything else is a disagreement.
+/// Decodes an optional string field from msgpack.
 fn optional_text(
   value: MsgPackValue,
   key: String,
@@ -775,6 +786,7 @@ fn optional_text(
 
 // Recursive: `children` holds symbols decoded by this same function, so
 // the outline's nesting survives the wire at any depth.
+/// Recursively decodes a document symbol and its nested children.
 fn decode_symbol(value: MsgPackValue) -> Result(Symbol, String) {
   use name <- result.try(wire.string_field(value, "name"))
   use kind <- result.try(wire.string_field(value, "kind"))
@@ -794,6 +806,7 @@ fn decode_call(value: MsgPackValue) -> Result(Call, String) {
 // `state` is a string rather than a boolean for the reason `Diagnostics`
 // is two variants: a flag's polarity is one more thing both ends must
 // agree on, and a name is not.
+/// Decodes diagnostics report with settled or unsettled status.
 fn decode_diagnostics(value: MsgPackValue) -> Result(Diagnostics, String) {
   use state <- result.try(wire.string_field(value, "state"))
   use diagnostics <- result.try(wire.array_of(
@@ -801,6 +814,8 @@ fn decode_diagnostics(value: MsgPackValue) -> Result(Diagnostics, String) {
     "diagnostics",
     of: decode_diagnostic,
   ))
+
+  // Map the state string to the Settled or Unsettled Diagnostics variant.
   case state {
     "settled" -> Ok(Settled(diagnostics:))
 
@@ -810,6 +825,7 @@ fn decode_diagnostics(value: MsgPackValue) -> Result(Diagnostics, String) {
   }
 }
 
+/// Decodes a single diagnostic record.
 fn decode_diagnostic(value: MsgPackValue) -> Result(Diagnostic, String) {
   use site <- result.try(site_field(value, "site"))
   use severity <- result.try(wire.string_field(value, "severity"))
@@ -821,6 +837,7 @@ fn decode_diagnostic(value: MsgPackValue) -> Result(Diagnostic, String) {
 // An unknown severity is a decode failure, not a guess at the nearest
 // level: rounding it down would under-report, and rounding it up would
 // invent an error.
+/// Converts a severity string to its typed Severity variant.
 fn severity_from_name(name: String) -> Result(Severity, String) {
   case name {
     "error" -> Ok(SeverityError)
@@ -838,8 +855,11 @@ fn severity_from_name(name: String) -> Result(Severity, String) {
 // The answer names its own mode rather than this module trusting the one
 // it asked for, so a harness that previewed when asked to apply is a
 // visible decode of `Previewed`, never a silent claim that files landed.
+/// Decodes previewed or applied rename report from response.
 fn decode_rename(value: MsgPackValue) -> Result(RenameReport, String) {
   use mode <- result.try(wire.string_field(value, "mode"))
+
+  // Decode previewed files or applied landings depending on rename mode.
   case mode {
     "preview" -> {
       use files <- result.try(wire.array_of(value, "files", of: decode_planned))
@@ -860,6 +880,7 @@ fn decode_rename(value: MsgPackValue) -> Result(RenameReport, String) {
 // The two `decode_*` helpers below read a preview's per-file lines; the
 // landing decoder after them reads an apply's per-file outcomes. Which set
 // is read was already chosen by `decode_rename` from the answer's `mode`.
+/// Decodes a planned file modification entry.
 fn decode_planned(value: MsgPackValue) -> Result(PlannedFile, String) {
   use path <- result.try(wire.string_field(value, "path"))
   use edits <- result.try(wire.int_field(value, "edits"))
@@ -878,9 +899,12 @@ fn decode_line_change(value: MsgPackValue) -> Result(LineChange, String) {
   Ok(LineChange(line:, before:, after:))
 }
 
+/// Decodes a file landing report entry from an applied rename.
 fn decode_landing(value: MsgPackValue) -> Result(Landing, String) {
   use outcome <- result.try(wire.string_field(value, "outcome"))
   use path <- result.try(wire.string_field(value, "path"))
+
+  // Map the outcome string to Landed, Rejected, or NotAttempted.
   case outcome {
     "landed" -> {
       use edits <- result.try(wire.int_field(value, "edits"))
@@ -901,6 +925,7 @@ fn decode_landing(value: MsgPackValue) -> Result(Landing, String) {
 // The refusal half of the mapping `LspError`'s docs state. A code this
 // module does not name keeps its code in `LspDenied`, so a program can
 // still branch on it.
+/// Maps capability channel errors to typed LSP domain errors.
 fn map_error(error: CallError) -> LspError {
   case error {
     Unreachable(reason:) -> LspUnavailable(reason:)
@@ -948,6 +973,7 @@ pub fn error_text(error: LspError) -> String {
 
 // A bare name is the commonest reason a search comes back empty, so the text
 // says which qualified form the server is likely to want.
+/// Returns an advisory hint when a symbol query name is unqualified.
 fn unqualified_hint(symbol: String) -> String {
   case string.contains(symbol, ".") {
     True -> ""

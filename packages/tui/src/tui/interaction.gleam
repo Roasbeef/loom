@@ -149,12 +149,15 @@ pub fn handle_paste(
   }
 }
 
+/// Routes pasted content to queue editor, summary surface, or composer.
 fn handle_underlay_paste(
   model: Model,
   text: String,
   image: Result(Option(pasted_image.Image), String),
 ) -> Model {
   use <- bool.guard(model.shared.context.surface != context_view.Hidden, model)
+
+  // Check whether queue editor is active to receive paste text.
   case model.view.queue_editor.surface {
     queue_editor.Editor ->
       edit_queue_text(model, fn(input) { insert_queue_paste(input, text) })
@@ -167,6 +170,7 @@ fn handle_underlay_paste(
   }
 }
 
+/// Delivers paste to the composer if unlocked, or emits waiting notice.
 fn handle_composer_paste(
   model: Model,
   text: String,
@@ -178,8 +182,10 @@ fn handle_composer_paste(
   }
 }
 
-// The host read the file this paste names before the step
-// (`runtime.message`), and the message carried what it found here.
+/// Handles pasted text or image attachment when the composer is unlocked.
+///
+/// The host read the file this paste names before the step
+/// (`runtime.message`), and the message carried what it found here.
 fn paste_unlocked(
   model: Model,
   text: String,
@@ -218,7 +224,9 @@ fn paste_unlocked(
   }
 }
 
+/// Adds a new attachment to composer state if within limits.
 fn add_attachment(model: Model, attachment: composer.Attachment) -> Model {
+  // Validate attachment admission limits.
   case composer.admit_attachment(model.shared.attachments, attachment) {
     Error(reason) -> tui_model.append_error(model, reason)
     Ok(attachments) -> {
@@ -295,6 +303,8 @@ pub fn advance_candidate(
 @internal
 pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
   let model = Model(..model, view: view_set.candidate(model.view, candidate))
+
+  // Handle outcome from candidate connection attempt.
   case outcome {
     None -> model
     Some(attachment.Failed(reason)) -> {
@@ -326,6 +336,7 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       // to reach the operator, so it is re-issued after the cut. Reading the
       // draft here rather than afterwards is what makes that possible: by
       // then the pending slot is already cleared.
+      // Check if a pending draft was cancelled by target switch.
       let cancelled = case model.shared.pending_submission {
         Some(_) ->
           Some(
@@ -335,6 +346,7 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
           )
         None -> None
       }
+
       let model =
         inbound.cancel_pending(
           model,
@@ -346,12 +358,15 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       // and a sent request keeps that identity rather than acquiring the new
       // session's.
       let model = retire_previous(model)
+
+      // Select target strand from previous or switch to main.
       let target_strand = case
         model.shared.session == cut.attachment.expected.session
       {
         True -> model.shared.active_strand
         False -> "main"
       }
+
       let model =
         inbound.select_workspace(
           model,
@@ -466,11 +481,13 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       // the same reducer, and a marker ahead of its cut would move the
       // visible session before the frames that justify it. It is noted on
       // the lane as the cut left it, so nothing the cut decided is undone.
+      // Mark adopted session channel as adopted.
       let adopted = case adopted.shared.channel {
         Some(held) ->
           tui_model.hold_channel(adopted, session_channel.adopted(held))
         None -> adopted
       }
+
       let adopted =
         adopted
         |> tui_model.send_frame(protocol.models(1))
@@ -491,14 +508,18 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       // An adoption proves the daemon answers, so a relaunch still in flight
       // is no longer needed. Cancelling it stops a second daemon start that
       // the cleared slot would otherwise leave running until it gave up.
+      // Cancel pending reconnection attempt upon successful adoption.
       let adopted = case adopted.view.reconnect {
         ReconnectIdle | ReconnectSpent -> adopted
         ReconnectAttempting(job: awaiting) ->
           tui_model.release_reconnect(adopted, awaiting)
           |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
       }
+
       let adopted =
         Model(..adopted, view: view_set.reconnect(adopted.view, ReconnectIdle))
+
+      // Append cancellation notice to transcript if draft was retained.
       let adopted = case cancelled {
         Some(notice) -> tui_model.append_system(adopted, notice)
         None -> adopted
@@ -520,9 +541,9 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
 
 // Consume the old channel's outcome while its session identity is still the
 // visible one. Closing an already-sent request cannot imply it was rejected.
-// With no channel there is no socket to close: an attached peer always has
-// its lane, and the other peers never had a socket.
+/// Retires active session channel when replacing attachment.
 fn retire_previous(model: Model) -> Model {
+  // Close and retire channel if active.
   case model.shared.channel {
     Some(previous) -> {
       let #(closed, updates) =
@@ -537,22 +558,27 @@ fn retire_previous(model: Model) -> Model {
   }
 }
 
+/// Routes keyboard events to overlay, context surface, or composer.
 fn update_key(key: keys.Key, model: Model) -> Model {
   // The strip owns the keyboard only while nothing else is in front of it.
   // An overlay, including an approval the daemon opened on its own, takes
   // the cursor out of the strip, so closing it leaves the composer, not a
   // cursor waiting to turn the next Enter into a strand switch.
+  // Drop strip focus when covered by modal overlays.
   let model = case strip_covered(model) {
     True ->
       tui_model.store_strip(model, agent_strip.leave(tui_model.strip(model)))
     False -> model
   }
+
+  // Check whether context surface owns keyboard input.
   case model.shared.context.surface {
     context_view.Overview | context_view.All -> update_context_key(key, model)
     context_view.Hidden -> update_key_without_context(key, model)
   }
 }
 
+/// Dispatches keys when context surface is closed, checking queue and summary.
 fn update_key_without_context(key: keys.Key, model: Model) -> Model {
   case model.view.queue_editor.surface {
     queue_editor.Inspector | queue_editor.Editor -> update_queue_key(key, model)
@@ -565,6 +591,7 @@ fn update_key_without_context(key: keys.Key, model: Model) -> Model {
   }
 }
 
+/// Dispatches keys to active modal overlays or fallback conversation view.
 fn update_normal_key(key: keys.Key, model: Model) -> Model {
   case key == keys.Ctrl("c") {
     True -> submit.quit(model)
@@ -600,8 +627,7 @@ fn update_normal_key(key: keys.Key, model: Model) -> Model {
 
 // A key in the memory overview. The board is the shared record's and there is
 // nothing to decide, so a key scrolls or closes. The shared step's
-// once-a-minute read follows the overlay (`tick.watch_memory`), so closing
-// it is all that stops the read.
+/// Handles navigation and paging keys inside the memory overview modal.
 fn update_memory_overview(
   key: keys.Key,
   model: Model,
@@ -632,9 +658,7 @@ fn update_memory_overview(
   }
 }
 
-// A key in the proposals review. The board is the shared record's, so a
-// decision sends its command and leaves the reader on the proposal, which the
-// daemon's reply then redraws with its new state.
+/// Handles decision keys within the standing proposal review panel.
 fn update_proposal_review(
   key: keys.Key,
   model: Model,
@@ -676,11 +700,7 @@ fn update_proposal_review(
   }
 }
 
-// A key in the evolution review. The board is the shared record's. A request
-// the reader confirmed is sent through the lane (`surfaces.evolve`), which
-// refuses a change the attachment may not make and tracks a selection until
-// the daemon finishes it; the overlay leaves the reader on the candidate, which
-// the reply and the staging redraw.
+/// Handles governance decision and navigation keys in evolution panel.
 fn update_evolution_review(
   key: keys.Key,
   model: Model,
@@ -721,9 +741,7 @@ fn update_evolution_review(
   }
 }
 
-// A core status read again clears the page from the last read, so the card
-// says it is reading and does not draw the old status while the new one is in
-// flight.
+/// Clears cached core upgrade status facts.
 fn forget_core_page(shared, request: evolution.Request) {
   case request {
     evolution.CoreStatus -> shared_set.evolution_open(shared, None)
@@ -736,6 +754,7 @@ fn forget_core_page(shared, request: evolution.Request) {
   }
 }
 
+/// Handles interaction keys within the session goal inspector modal.
 fn update_goal_inspector(
   key: keys.Key,
   model: Model,
@@ -772,6 +791,7 @@ fn update_goal_inspector(
   }
 }
 
+/// Handles daemon selection and switching shortcuts.
 fn update_daemon_selector(
   key: keys.Key,
   model: Model,
@@ -828,6 +848,7 @@ fn update_daemon_selector(
   }
 }
 
+/// Handles model selection and navigation keys.
 fn update_model_selector(
   key: keys.Key,
   model: Model,
@@ -860,6 +881,7 @@ fn update_model_selector(
   }
 }
 
+/// Handles key navigation and detail tab switching in agent inspector.
 fn update_agent_inspector(
   key: keys.Key,
   model: Model,
@@ -869,6 +891,8 @@ fn update_agent_inspector(
     update_workspace_composer(key, model, inspector)
   })
   let rows = layout.displayed_agents(model)
+
+  // Handle agent inspector hotkeys and navigation.
   let changed = case key {
     // Tab narrows the list, as it does in the session picker; Escape is the
     // way back to the composer. `w` writes to the unchanged recipient from
@@ -1066,6 +1090,8 @@ fn update_agent_inspector(
       }
     _ -> model
   }
+
+  // Refresh notes when selecting a different agent with Notes tab open.
   case changed.view.overlay {
     AgentInspector(next)
       if next.detail == agents.Notes && next.selected != inspector.selected
@@ -1101,11 +1127,14 @@ fn note_page_step(model: Model) -> Int {
   }
 }
 
+/// Toggles active notes display mode between readable and raw view.
 fn toggle_note_mode(model: Model) -> Model {
+  // Toggle mode.
   let mode = case model.view.note_mode {
     note_panel.Readable -> note_panel.Raw
     note_panel.Raw -> note_panel.Readable
   }
+
   Model(
     ..model,
     view: model.view
@@ -1115,11 +1144,13 @@ fn toggle_note_mode(model: Model) -> Model {
   |> tui_model.invalidate_transcript
 }
 
+/// Updates selected tab detail in agent inspector.
 fn select_agent_detail(
   model: Model,
   inspector: agents.Inspector,
   detail: agents.Detail,
 ) -> Model {
+  // Resolve selected message for detail tab.
   let message = case detail {
     agents.Messages ->
       agent_messages.for_strand(model.shared.agent_messages, inspector.selected)
@@ -1127,10 +1158,13 @@ fn select_agent_detail(
       |> option.map(agent_message_panel.identity)
     agents.Overview | agents.Notes | agents.Collaboration -> inspector.message
   }
+
+  // Check whether note board strand changed.
   let owner_changed = case model.shared.note_board {
     Some(board) -> board.strand != inspector.selected
     None -> True
   }
+
   let selected =
     Model(
       ..model,
@@ -1149,12 +1183,15 @@ fn select_agent_detail(
         ),
       ),
     )
+
+  // Refresh notes when switching into notes tab.
   case detail {
     agents.Notes -> side_surfaces.refresh_notes(selected)
     agents.Overview | agents.Messages | agents.Collaboration -> selected
   }
 }
 
+/// Selects specific agent message and preserves inspection focus.
 fn select_agent_message(
   model: Model,
   inspector: agents.Inspector,
@@ -1177,14 +1214,15 @@ fn select_agent_message(
   )
 }
 
-// Opening a sender is an explicit workspace switch. Merely inspecting a send
-// never moves the composer recipient or the transcript reading position.
+/// Switches active strand to the sender of the selected message.
 fn open_agent_message_sender(
   model: Model,
   inspector: agents.Inspector,
 ) -> Model {
   let messages =
     agent_messages.for_strand(model.shared.agent_messages, inspector.selected)
+
+  // Look up sender of selected message.
   case agent_message_panel.selected(messages, inspector.message) {
     None ->
       Model(
@@ -1209,13 +1247,13 @@ fn open_agent_message_sender(
   }
 }
 
-// The editor uses the ordinary submission path and its existing owner. A
-// command may open another surface; only an ordinary edit returns to inspection.
+/// Routes keys while editing within workspace composer.
 fn update_workspace_composer(
   key: keys.Key,
   model: Model,
   inspector: agents.Inspector,
 ) -> Model {
+  // Handle exit or pass to editor.
   case key {
     keys.Escape | keys.F(2) | keys.Ctrl("o") ->
       Model(
@@ -1243,6 +1281,8 @@ fn update_workspace_composer(
         && next.shared.context.surface == context_view.Hidden
         && next.view.queue_editor.surface == queue_editor.Closed
         && next.view.summary_surface == queue_editor.Closed
+
+      // Restore agent inspector overlay if remaining in workspace edit mode.
       case next.view.overlay, editing {
         NoOverlay, True ->
           Model(
@@ -1255,8 +1295,7 @@ fn update_workspace_composer(
   }
 }
 
-// Inspection opens the existing exact-request panel. It never chooses or sends
-// a decision, and a disappeared request cannot be replaced by a different one.
+/// Opens approval inspector modal for the selected approval identity.
 fn inspect_agent_approval(model: Model, strand: String) -> Model {
   let found =
     layout.displayed_agents(model)
@@ -1267,6 +1306,8 @@ fn inspect_agent_approval(model: Model, strand: String) -> Model {
         review.id == id && review.status == approval.Pending
       })
     })
+
+  // Open approval inspector if review was found.
   case found {
     Ok(review) ->
       Model(
@@ -1287,6 +1328,7 @@ fn inspect_agent_approval(model: Model, strand: String) -> Model {
   }
 }
 
+/// Routes keyboard actions between rail tab and composer.
 fn update_main_key(key: keys.Key, model: Model) -> Model {
   case focused_tab(model), tab_of_key(key) {
     // A digit while the keyboard is on the rail chooses a tab, on Changes as
@@ -1321,12 +1363,9 @@ fn update_main_key(key: keys.Key, model: Model) -> Model {
   }
 }
 
-// The keyboard is the composer's again. When the rail had it and the tab left
-// the screen (the rail was hidden or the terminal narrowed), the focus is
-// reset with this key. Escape is consumed by that reset: forwarded, it would
-// interrupt the strand, which a key pressed at a tab that had gone away
-// cannot have meant.
+/// Handles keyboard input claimed by composer or rail focus reset.
 fn composer_takes(key: keys.Key, model: Model) -> Model {
+  // Check whether rail focus needs returning to composer.
   case model.view.rail_focus {
     tui_model.FocusComposer -> update_main_key_strip(key, model)
     tui_model.FocusTab -> {
@@ -1335,6 +1374,8 @@ fn composer_takes(key: keys.Key, model: Model) -> Model {
           ..model,
           view: view_set.rail_focus(model.view, tui_model.FocusComposer),
         )
+
+      // Consume escape on focus return or forward key.
       case key {
         keys.Escape -> returned
         _ -> update_main_key_strip(key, returned)
@@ -1361,10 +1402,7 @@ fn focused_tab(model: Model) -> Option(rail.Tab) {
   }
 }
 
-// The Trace and Session tabs have no cursor, so while one has the keyboard
-// the digits choose a tab, the arrows and pages scroll it, and Escape hands
-// the keyboard back. Any other key is the composer's, and takes the keyboard
-// with it, as a key the strip does not want does.
+/// Handles scrolling and tab switching keys while rail holds keyboard.
 fn update_tab_key(key: keys.Key, model: Model) -> Model {
   case tab_of_key(key), key {
     Ok(tab), _ ->
@@ -1394,7 +1432,7 @@ fn update_tab_key(key: keys.Key, model: Model) -> Model {
   }
 }
 
-// The tab a digit key names.
+/// Resolves the rail tab corresponding to a digit key.
 fn tab_of_key(key: keys.Key) -> Result(rail.Tab, Nil) {
   case key {
     keys.Char(digit) ->
@@ -1424,10 +1462,7 @@ fn tab_of_key(key: keys.Key) -> Result(rail.Tab, Nil) {
   }
 }
 
-// After a digit chose a tab with the keyboard on the tab, the keyboard stays
-// on the tab when the new one is another with no cursor of its own, so the
-// digits keep working; Strands has the list's cursor to be entered with
-// Down, and Changes has its own focus.
+/// Preserves rail tab keyboard focus if appropriate for new tab.
 fn keep_tab_keyboard(model: Model, tab: rail.Tab) -> Model {
   case tab {
     rail.Trace | rail.Session | rail.Changes ->
@@ -1439,6 +1474,7 @@ fn keep_tab_keyboard(model: Model, tab: rail.Tab) -> Model {
   }
 }
 
+/// Adjusts vertical scroll position of the active rail tab.
 fn scrolled_tab(model: Model, by: Int) -> Model {
   Model(
     ..model,
@@ -1454,7 +1490,9 @@ fn scrolled_tab(model: Model, by: Int) -> Model {
   |> tui_model.invalidate_frame
 }
 
+/// Routes keys when agent strip or composer has focus.
 fn update_main_key_strip(key: keys.Key, model: Model) -> Model {
+  // Check if agent strip owns focus and is visible.
   case model.view.strip_focus, layout.strands_listed(model) {
     agent_strip.Browsing(_), True -> update_strip_key(key, model)
 
@@ -1468,6 +1506,8 @@ fn update_main_key_strip(key: keys.Key, model: Model) -> Model {
     agent_strip.Browsing(_), False -> {
       let left =
         tui_model.store_strip(model, agent_strip.leave(tui_model.strip(model)))
+
+      // Handle escape on focus return or forward key.
       case key {
         keys.Escape -> left
         _ -> update_main_key_composing(key, left)
@@ -1477,10 +1517,7 @@ fn update_main_key_strip(key: keys.Key, model: Model) -> Model {
   }
 }
 
-// The strip owns the keyboard only between a Down from the idle composer and
-// the key that hands it back. Opening goes through the same switch the
-// workspace's Enter uses, so the draft is parked with its strand and the
-// transcript, the composer's recipient and its badge change together.
+/// Dispatches navigation keys when agent strip holds cursor.
 fn update_strip_key(key: keys.Key, model: Model) -> Model {
   case layout.rail_present(model), tab_of_key(key) {
     True, Ok(tab) ->
@@ -1490,7 +1527,9 @@ fn update_strip_key(key: keys.Key, model: Model) -> Model {
   }
 }
 
+/// Handles navigation keys within the agent strip list.
 fn update_strip_key_in_list(key: keys.Key, model: Model) -> Model {
+  // Map key press to agent strip action.
   let pressed = case key {
     keys.Up -> agent_strip.Up
     keys.Down -> agent_strip.Down
@@ -1499,7 +1538,10 @@ fn update_strip_key_in_list(key: keys.Key, model: Model) -> Model {
     keys.Escape -> agent_strip.Back
     _ -> agent_strip.Other
   }
+
   let strip = tui_model.strip(model)
+
+  // Dispatch key action to agent strip.
   case agent_strip.key(strip, pressed, layout.strip_lines(model)) {
     agent_strip.Moved(strip) -> tui_model.store_strip(model, strip)
 
@@ -1516,6 +1558,7 @@ fn update_strip_key_in_list(key: keys.Key, model: Model) -> Model {
     // A child on another orchestrator has no strand here to switch to, so
     // choosing it opens a peek at its transcript (protocol-change/090).
     agent_strip.Open(strip, strand) ->
+      // Check if selecting remote or local strand.
       case
         strand == model.shared.active_strand,
         agent_roster.remote_named(model.shared.roster, strand)
@@ -1548,6 +1591,7 @@ fn close_sheet_after_open(model: Model) -> Model {
   }
 }
 
+/// Handles keyboard actions in composer mode, checking overlays and palette.
 fn update_main_key_composing(key: keys.Key, model: Model) -> Model {
   case layout.diff_shown(model), model.shared.worktree.focus, key {
     _, _, keys.Alt("q") -> submit.open_queue(model)
@@ -1584,12 +1628,15 @@ fn update_main_key_composing(key: keys.Key, model: Model) -> Model {
   }
 }
 
+/// Handles command palette suggestion navigation and completion.
 fn update_palette_key(key: keys.Key, model: Model) -> Model {
   let suggestions =
     command.suggestions_with_skills(
       text_area.value(model.view.input),
       model.shared.skills,
     )
+
+  // Route palette selection and dismissal.
   case suggestions, command_palette_escape(key), key {
     [_, ..], True, _ ->
       Model(
@@ -1639,6 +1686,7 @@ fn update_palette_key(key: keys.Key, model: Model) -> Model {
     // submitted at once, so `/effort` plus a highlighted level is one
     // keystroke, not Tab then Enter.
     [_, ..], False, keys.Enter ->
+      // Complete selected suggestion into input buffer.
       case command.selected(suggestions, model.view.command_selected) {
         Some(value) -> {
           let completed =
@@ -1648,11 +1696,14 @@ fn update_palette_key(key: keys.Key, model: Model) -> Model {
                 |> view_set.input(text_area.state_from_string(value))
                 |> view_set.command_selected(0),
             )
+
+          // Submit complete command or keep in input for arguments.
           case string.ends_with(value, " ") {
             True -> completed
             False -> submit.submit(completed)
           }
         }
+
         None -> submit.submit(model)
       }
     _, _, _ -> update_main_key_without_palette(key, model)
@@ -1666,11 +1717,11 @@ fn strip_covered(model: Model) -> Bool {
   || model.view.summary_surface != queue_editor.Closed
 }
 
-// Down walks forward through prompt history while the operator is browsing
-// it. At the newest entry there is nothing further forward, so the same key
-// steps down into the agent strip, the next thing below the composer.
+/// Steps down into agent strip or navigates forward through prompt history.
 fn down_from_composer(model: Model) -> Model {
   let lines = layout.strip_lines(model)
+
+  // Check history index to step down into strip or history.
   case
     model.view.history_index,
     layout.strands_listed(model),
@@ -1700,6 +1751,7 @@ pub fn command_palette_escape(key: keys.Key) -> Bool {
   key == keys.Escape
 }
 
+/// Dispatches keys when command palette is not absorbing input.
 fn update_main_key_without_palette(key: keys.Key, model: Model) -> Model {
   case model.shared.btw.visibility, key {
     btw.Visible, keys.Escape ->
@@ -1713,6 +1765,7 @@ fn update_main_key_without_palette(key: keys.Key, model: Model) -> Model {
   }
 }
 
+/// Scrolls BTW drawer content.
 fn scroll_btw(model: Model, by: Int) -> Model {
   let rows =
     btw.lines(model.shared.btw)
@@ -1733,6 +1786,7 @@ fn scroll_btw(model: Model, by: Int) -> Model {
   })
 }
 
+/// Dispatches keys when BTW drawer is not visible.
 fn update_main_key_without_btw(key: keys.Key, model: Model) -> Model {
   case key, layout.sheet_shown(model), model.view.diff_view {
     // The sheet is the surface on top, so Escape closes it, and the changes
@@ -1755,6 +1809,7 @@ fn update_main_key_without_btw(key: keys.Key, model: Model) -> Model {
   }
 }
 
+/// Handles conversation scrolling, help and notes toggles, and composer editing.
 fn update_conversation_key(key: keys.Key, model: Model) -> Model {
   // While the reader is above the tail with nothing typed, `o` opens the
   // strand's newest image outside the terminal; with text in the prompt it
@@ -1764,6 +1819,7 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
     && model.view.overlay == tui_model.NoOverlay
     && text_area.value(model.view.input) == ""
 
+  // Route conversation navigation and shortcut keys.
   case key, model.view.help_open, model.view.notes_open {
     keys.Char("o"), False, False if opens_image -> image_drain.open_newest(model)
     keys.Char("r"), False, True -> side_surfaces.refresh_notes(model)
@@ -1928,10 +1984,9 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
 // Transcript movement has one definition for keyboard and wheel input. The
 // offset is measured backward from the newest wrapped row, so moving toward
 // the present clamps at zero and resumes tail following.
-// A key while a selection is on screen: Escape only dismisses it, the way it
-// closes any other surface before it reaches the interrupt. Detail expansion
-// retains the chosen cells; editing and navigation dismiss the selection.
+/// Clears mouse selection on key press unless preserved by key action.
 fn update_key_over_selection(key: keys.Key, model: Model) -> Model {
+  // Evaluate selection dismissal on key press.
   case model.view.selection, key {
     Some(_), keys.Escape -> {
       let cleared = clear_selection(model)
@@ -1949,12 +2004,15 @@ fn update_key_over_selection(key: keys.Key, model: Model) -> Model {
 /// Other input first observes bounded ready traffic, then the current lock.
 @internal
 pub fn update_ready_key(key: keys.Key, model: Model) -> Model {
+  // Handle cancellation on pending submission or drain socket.
   case model.shared.pending_submission, key {
     Some(_), keys.Escape -> inbound.cancel_pending(model, "cancelled by Escape")
     Some(_), keys.Ctrl("c") ->
       submit.quit(inbound.cancel_pending(model, "terminal closed"))
     _, _ -> {
       let model = inbound.drain_connection(model, tui_model.connection_batch)
+
+      // Route key after socket drain.
       case model.shared.pending_submission, key {
         None, _ -> update_key_over_selection(key, model)
         Some(_), keys.PageUp -> scroll_transcript(model, True, 10)
@@ -1998,6 +2056,8 @@ pub fn begin_selection(model: Model, at: geometry.Position) -> Model {
       )
     },
   )
+
+  // Check if mouse press hit a queue row.
   case queue_row_hit(model, queue, at) {
     Some(selected) -> {
       let cleared = clear_selection(model)
@@ -2076,10 +2136,13 @@ pub fn extend_selection(model: Model, at: geometry.Position) -> Model {
 /// next key or wheel notch.
 @internal
 pub fn finish_selection(model: Model, at: geometry.Position) -> Model {
+  // Finish active mouse selection on release.
   case model.view.selection {
     None -> model
     Some(selected) -> {
       let selected = selection.extend(selected, at)
+
+      // Check if mouse event was a single click or drag selection.
       case selection.is_click(selected) {
         True ->
           Model(
@@ -2096,6 +2159,8 @@ pub fn finish_selection(model: Model, at: geometry.Position) -> Model {
             option.lazy_unwrap(model.view.caches.selection_frame, fn() {
               selection_display(model).0
             })
+
+          // Extract text considering speaker gutters if on transcript.
           let text = case selection_covers_transcript(model, selected) {
             True ->
               transcript_selection_text(
@@ -2105,6 +2170,7 @@ pub fn finish_selection(model: Model, at: geometry.Position) -> Model {
               )
             False -> selection.text(shown, selected)
           }
+
           {
             let copied = write_clipboard(model, text)
             Model(
@@ -2121,8 +2187,7 @@ pub fn finish_selection(model: Model, at: geometry.Position) -> Model {
   }
 }
 
-// Only the transcript has speaker gutters. Other selectable panels carry
-// ordinary whitespace whose meaning this projection cannot reinterpret.
+/// Checks whether mouse selection intersects the transcript viewport.
 fn selection_covers_transcript(
   model: Model,
   selected: selection.Selection,
@@ -2192,11 +2257,15 @@ pub fn selection_gutters_on_display(model: Model) -> List(#(Int, Int)) {
   |> list.index_map(fn(gutter, index) { #(area.position.y + index, gutter) })
 }
 
-// The frame and its copy layout come from one completed cache entry. A paced
-// scroll may leave that entry deliberately stale; taking either half from the
-// current model would pair old cells with new row metadata.
+/// Resolves current buffer frame and selection gutters for mouse copy.
+///
+/// The frame and its copy layout come from one completed cache entry. A paced
+/// scroll may leave that entry deliberately stale; taking either half from the
+/// current model would pair old cells with new row metadata.
 fn selection_display(model: Model) -> #(buffer.Buffer, List(#(Int, Int))) {
   let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
+
+  // Look up completed frame cache or render frame.
   case model.view.caches.frame_cache {
     Some(FrameCache(rendered: #(shown, _), selection_gutters:, ..)) -> #(
       shown,
@@ -2209,10 +2278,7 @@ fn selection_display(model: Model) -> #(buffer.Buffer, List(#(Int, Int))) {
   }
 }
 
-// The copy is queued as an OSC 52 sequence rather than printed here, so a
-// step that copies decides the write without making it; the runtime prints
-// it in line with etui's own frames. A terminal with no clipboard gets
-// nothing, not an escape sequence it would draw as text.
+/// Emits command to copy text into the system clipboard via OSC 52.
 fn write_clipboard(model: Model, text: String) -> Model {
   case model.view.clipboard {
     TerminalClipboard ->
@@ -2224,13 +2290,7 @@ fn write_clipboard(model: Model, text: String) -> Model {
   }
 }
 
-// The gesture starts from the row the reader is looking at, which is the
-// stored offset plus whatever the paced walk is still holding back: the
-// viewport is drawn from that sum, and measuring a scroll against the
-// stored offset alone would answer a request for older text by jumping the
-// backlog forward to the tail. Folding it in also leaves the paths that
-// ask for the latest row landing at zero, since they scroll by the whole
-// row count and the bound clamps there.
+/// Adjusts transcript vertical scroll offset and requests older history if needed.
 fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
   let offset =
     scroll_offset(
@@ -2242,22 +2302,22 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
       model.view.rendered_row_count,
       layout.transcript_viewport_height(model),
     )
+
   let model =
     Model(
-      // The reading row at the transcript's foot says how far below the
-      // tail the reader is, so leaving the tail writes no notice of its own.
-      // The notice standing is left as it was rather than cleared, so the
-      // status band keeps its height and the viewport does not move under
-      // the reader as they enter scrollback.
+      // Format tail following notice if returning to live end.
       shared: shared_set.notice(model.shared, case offset == 0 && !older {
         True -> "following output"
         False -> model.shared.notice
       }),
       view: view_set.scroll_offset(model.view, offset),
     )
+
+  // Check whether history read should be serviced.
   case model.view.help_open || model.view.notes_open, model.shared.captured {
     True, _ | _, None -> model
     False, Some(#(cut, view)) -> {
+      // Resume live following or freeze history window.
       case offset == 0 && !older {
         True -> {
           let history = history_view.resume(model.shared.scrollback)
@@ -2269,6 +2329,8 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
         }
         False -> {
           let history = history_view.freeze(model.shared.scrollback)
+
+          // Fetch older history batch when approaching prefetch limit.
           let history = case
             older
             && offset + layout.transcript_viewport_height(model)
@@ -2281,6 +2343,7 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
               )
             False -> history
           }
+
           inbound.service_history(
             Model(..model, shared: shared_set.scrollback(model.shared, history)),
           )
@@ -2317,6 +2380,8 @@ pub fn request_history_for_view(model: Model) -> Model {
       < model.view.rendered_row_count - history_prefetch_rows(model),
     model,
   )
+
+  // Request older history from active branch.
   case model.shared.captured {
     None -> model
     Some(#(_, view)) ->
@@ -2333,8 +2398,7 @@ pub fn request_history_for_view(model: Model) -> Model {
   }
 }
 
-// Page keys follow the reading surface's focus. The default side pane never
-// takes scrollback keys from a person typing in the conversation composer.
+/// Routes page up and page down scroll gestures to the focused reading panel.
 fn scroll_reading_panel(
   model: Model,
   direction: ScrollDirection,
@@ -2372,6 +2436,8 @@ pub fn scroll_at(
       })
     },
   )
+
+  // Route wheel scroll to diff, tab sheet, or transcript.
   case
     layout.diff_covers_transcript(model)
     || {
@@ -2390,8 +2456,7 @@ pub fn scroll_at(
   }
 }
 
-// Whether the sheet is showing Trace or Session, which are text with a scroll
-// of their own, over a transcript the wheel must not move.
+/// Checks whether the open sheet is displaying scrollable text content.
 fn sheet_text_tab(model: Model) -> Bool {
   layout.sheet_shown(model)
   && case layout.rail_tab(model) {
@@ -2400,6 +2465,7 @@ fn sheet_text_tab(model: Model) -> Bool {
   }
 }
 
+/// Adjusts scroll offset within the diff review panel.
 fn scroll_diff(model: Model, direction: ScrollDirection, rows: Int) -> Model {
   let current =
     projection.bounded_scroll_offset(
@@ -2491,10 +2557,7 @@ pub fn demo_strands() -> List(protocol.Strand) {
   ]
 }
 
-// Mouse selection reuses the rectangle already reserved for rendering. The
-// passive card maps one visible message per row; the wide inspector maps its
-// left-hand list after the heading. Compact inspection shows only the selected
-// preview, so a click there leaves identity unchanged.
+/// Resolves clicked queue row index from mouse position.
 fn queue_row_hit(
   model: Model,
   area: Rect,
@@ -2503,6 +2566,8 @@ fn queue_row_hit(
   use <- bool.guard(!geometry.contains(layout.panel_inner(area), at), None)
   let rows = layout.queue_rows(model)
   let inner = layout.panel_inner(area)
+
+  // Calculate index offset from clicked row position.
   let index = case model.view.queue_editor.surface {
     queue_editor.Closed -> at.y - inner.position.y
     queue_editor.Inspector -> {
@@ -2516,6 +2581,8 @@ fn queue_row_hit(
           list_width,
           int.min(visible, list.length(rows)),
         )
+
+      // Verify list area bounds for inspector hit.
       case
         content.size.width >= 70
         && content.size.height >= 6
@@ -2534,19 +2601,26 @@ fn queue_row_hit(
     }
     queue_editor.Editor -> -1
   }
+
+  // Calculate visible rows according to surface state.
   let visible = case model.view.queue_editor.surface {
     queue_editor.Closed -> int.min(3, list.length(rows))
     queue_editor.Inspector -> list.length(rows)
     queue_editor.Editor -> 0
   }
+
+  // Return row index if within visible range.
   case index >= 0 && index < visible {
     True -> Some(index)
     False -> None
   }
 }
 
+/// Handles navigation and editing keys within the queue manager modal.
 fn update_queue_key(key: keys.Key, model: Model) -> Model {
   let state = model.view.queue_editor
+
+  // Handle queue navigation, draft editing, and dismissal.
   case key, state.surface {
     keys.Ctrl("c"), _ -> submit.quit(model)
     keys.Escape, queue_editor.Editor ->
@@ -2654,6 +2728,7 @@ fn update_queue_key(key: keys.Key, model: Model) -> Model {
   }
 }
 
+/// Restores a queued prompt draft back into the composer.
 fn resume_queue_draft(model: Model) -> Model {
   case model.view.queue_editor.draft {
     Some(_) ->
@@ -2682,8 +2757,11 @@ fn resume_queue_draft(model: Model) -> Model {
   }
 }
 
+/// Selects highlighted queue input row for editing or inspection.
 fn select_queue_input(model: Model) -> Model {
   let state = model.view.queue_editor
+
+  // Resolve selected row entry from queue rows.
   case list.first(list.drop(layout.queue_rows(model), state.selected)) {
     Ok(row) ->
       case
@@ -2750,11 +2828,13 @@ fn select_queue_input(model: Model) -> Model {
   }
 }
 
+/// Preserves draft text if deleting an entry other than the active draft.
 fn retained_other_draft(
   draft: Option(queue_editor.Draft),
   row: snapshot_view.PendingInput,
   namespace: String,
 ) -> Bool {
+  // Check if active draft ID matches deleted ID.
   case draft {
     Some(draft) -> {
       let dirty =
@@ -2771,8 +2851,11 @@ fn retained_other_draft(
   }
 }
 
+/// Verifies queue draft consistency against available pending inputs.
 fn reconcile_queue_draft(model: Model) -> Model {
   let state = model.view.queue_editor
+
+  // Check if draft is editable.
   case state.draft {
     Some(draft) if draft.delivery != queue_editor.Saving -> {
       use <- bool.lazy_guard(
@@ -2821,13 +2904,17 @@ fn reconcile_queue_draft(model: Model) -> Model {
   }
 }
 
+/// Commits edited queue draft text back to the server.
 fn save_queue_draft(model: Model) -> Model {
+  // Ensure draft is editable and channel is attached.
   case model.view.queue_editor.draft, model.shared.channel {
     Some(draft), Some(channel) if draft.delivery == queue_editor.Editable -> {
       let available =
         session_channel.mutation_available(channel)
         && session_model.queue_owner(model.shared) == draft.owner
         && session_model.queue_namespace(model.shared) == draft.namespace
+
+      // Send edit frame if mutation is allowed.
       case available {
         True ->
           tui_model.send_frame(
@@ -2870,6 +2957,7 @@ fn save_queue_draft(model: Model) -> Model {
   }
 }
 
+/// Applies a text edit transformation to the queue editor textarea.
 fn edit_queue_text(
   model: Model,
   edit: fn(text_area.TextAreaState) -> text_area.TextAreaState,
@@ -2890,6 +2978,7 @@ fn edit_queue_text(
   }
 }
 
+/// Routes text area editing key to queue editor input.
 fn queue_text_key(
   key: keys.Key,
   input: text_area.TextAreaState,
@@ -2913,6 +3002,7 @@ fn queue_text_key(
   }
 }
 
+/// Inserts pasted string graphemes into queue textarea.
 fn insert_queue_paste(
   input: text_area.TextAreaState,
   text: String,
@@ -2925,6 +3015,7 @@ fn insert_queue_paste(
   })
 }
 
+/// Handles scrolling and file selection within the diff reviewer.
 fn update_diff_key(key: keys.Key, model: Model) -> Model {
   case key {
     keys.Ctrl("c") -> submit.quit(model)
@@ -2959,6 +3050,7 @@ fn update_diff_key(key: keys.Key, model: Model) -> Model {
   }
 }
 
+/// Updates selected diff file index.
 fn select_diff_file(model: Model, delta: Int) -> Model {
   let selected =
     int.clamp(
@@ -2976,6 +3068,7 @@ fn select_diff_file(model: Model, delta: Int) -> Model {
   |> tui_model.invalidate_transcript
 }
 
+/// Handles navigation and job inspection keys in the summary overview.
 fn update_summary_key(key: keys.Key, model: Model) -> Model {
   let screen = layout.model_screen(model)
   let body = layout.summary_body_area(screen)
@@ -2986,6 +3079,8 @@ fn update_summary_key(key: keys.Key, model: Model) -> Model {
       list.length(render.summary_lines(model, body.size.width)) - viewport,
     )
   let current = int.min(model.view.summary_scroll, maximum)
+
+  // Handle summary tab navigation and scroll.
   case key {
     keys.Ctrl("c") -> submit.quit(model)
     keys.Escape ->
@@ -3054,6 +3149,7 @@ fn update_summary_key(key: keys.Key, model: Model) -> Model {
   }
 }
 
+/// Moves cursor across jobs in summary list.
 fn select_summary_job(model: Model, delta: Int) -> Model {
   case model.view.summary_tab, model.shared.jobs {
     summary_panel.Jobs, Some(board)
@@ -3077,9 +3173,12 @@ fn select_summary_job(model: Model, delta: Int) -> Model {
   }
 }
 
+/// Handles scrolling and dismissal of context inspector.
 fn update_context_key(key: keys.Key, model: Model) -> Model {
   let state = model.shared.context
   let viewport = layout.panel_inner(layout.model_screen(model)).size.height
+
+  // Handle context modal navigation.
   case key {
     keys.Ctrl("c") -> submit.quit(model)
     keys.Escape ->
@@ -3120,6 +3219,7 @@ fn update_context_key(key: keys.Key, model: Model) -> Model {
   }
 }
 
+/// Adjusts scroll position in context view modal.
 fn scroll_context(model: Model, delta: Int) -> Model {
   let inner = layout.panel_inner(layout.model_screen(model))
   let maximum =

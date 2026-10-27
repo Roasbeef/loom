@@ -116,10 +116,12 @@ pub fn orchestrators_of(
   local: String,
   written: List(OrchestratorRow),
 ) -> List(OrchestratorRow) {
+  // Determine if the local node is active in the directory.
   let in_directory = case membership_ledger.member_at(ledger, local) {
     Ok(own) -> own.directory != NotInDirectory
     Error(Nil) -> False
   }
+
   peers_of(ledger, local)
   |> list.filter(fn(peer) {
     peer.role == Orchestrator
@@ -178,6 +180,8 @@ pub fn orchestrator_roster(
 // The members a node is linked to, when it is an active orchestrator. An
 // executor does not place sessions or ask about them, and a node the ledger does
 // not list as a member is not trusted by anyone, so neither derives a row.
+
+/// Derives peer connections for a local orchestrator from the membership ledger.
 fn peers_of(ledger: Ledger, local: String) -> List(Peer) {
   case membership_ledger.member_at(ledger, local) {
     Ok(own) if own.role == Orchestrator ->
@@ -189,6 +193,8 @@ fn peers_of(ledger: Ledger, local: String) -> List(Peer) {
 // The written rows, then the derived rows that no written row claims, sorted by
 // name. `claim` gives a row's name and node, the two things a written row can
 // claim.
+
+/// Merges written rows with unclaimed derived rows and sorts the combined result by name.
 fn combine(
   written: List(row),
   derived: List(row),

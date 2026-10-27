@@ -133,6 +133,7 @@ pub fn run() -> Result(Narrative, String) {
   outcome
 }
 
+/// Resolves the run in protocol step for the scripted demo.
 fn run_in(namespace: address.Registry) -> Result(Narrative, String) {
   // --- a real session, a real runtime, scripted effects ------------------
   use session <- result.try(
@@ -214,6 +215,7 @@ fn run_in(namespace: address.Registry) -> Result(Narrative, String) {
 pub type Served =
   server.Server
 
+/// Resolves the drive protocol step for the scripted demo.
 fn drive(
   hub: gateway.Gateway,
   runtime: api.Runtime,
@@ -252,6 +254,7 @@ type Client {
   )
 }
 
+/// The protocol response determines whether the accepted command can advance this scripted flow.
 fn acceptance_flow(
   client: Client,
   runtime: api.Runtime,
@@ -311,6 +314,8 @@ fn acceptance_flow(
 
   // 4. durable messaging: research reports to main; main acknowledges.
   let report_floor = observed_seq(client.observed_seq)
+
+  // The protocol response determines whether the accepted command can advance this scripted flow.
   use Nil <- result.try(
     case
       api.send_to_strand(
@@ -327,6 +332,7 @@ fn acceptance_flow(
       Error(_) -> Error("the cross-strand send was refused")
     },
   )
+
   use report_event <- result.try(await(
     client,
     report_entry_on_main,
@@ -389,10 +395,13 @@ fn acceptance_flow(
       |> result.map_error(fn(_) { "the consumed grants did not decode" })
     }),
   )
+
+  // The protocol response determines whether the accepted command can advance this scripted flow.
   use Nil <- result.try(case typed == [wanted] {
     True -> Ok(Nil)
     False -> Error("the consumed grants did not round-trip to policy grants")
   })
+
   let lines = [
     "escalation approved over the wire; grants consumed as typed policy grants",
     ..lines
@@ -498,6 +507,7 @@ fn acceptance_flow(
 
 // --- protocol-side helpers -------------------------------------------------
 
+/// Resolves the send command protocol step for the scripted demo.
 fn send_command(client: Client, id: Int, command: protocol.Command) -> Nil {
   gateway.handle_text(
     client.hub,
@@ -521,6 +531,7 @@ pub fn next_buffered_event(
   observed_seq: Subject(Int),
   step: String,
 ) -> Result(protocol.EventEnvelope, String) {
+  // The queued event order determines whether buffered protocol traffic can be consumed.
   case process.receive(deferred, within: 0) {
     Ok(envelope) -> {
       observe_seq(observed_seq, envelope)
@@ -534,6 +545,7 @@ pub fn next_buffered_event(
   }
 }
 
+/// Resolves the next incoming event protocol step for the scripted demo.
 fn next_incoming_event(
   inbox: Subject(String),
   step: String,
@@ -546,10 +558,12 @@ fn next_incoming_event(
   }
 }
 
+/// The event sequence determines whether this observation is new or already seen.
 fn observe_seq(
   observed_seq: Subject(Int),
   envelope: protocol.EventEnvelope,
 ) -> Nil {
+  // The event sequence determines whether this observation is new or already seen.
   case envelope.seq {
     None -> Nil
     Some(seq) -> {
@@ -582,6 +596,7 @@ pub fn next_recovery_id(ids: Subject(Int)) -> Int {
 
 // Sends a command and drains events until its reply arrives; the reply
 // must satisfy `expected` and not be an error.
+/// Resolves the command replied protocol step for the scripted demo.
 fn command_replied(
   client: Client,
   id: Int,
@@ -616,6 +631,8 @@ pub fn await_correlated_reply(
     Error(step <> ": no reply arrived")
   })
   use envelope <- result.try(next_incoming_event(inbox, step))
+
+  // The reply correlation decides whether the incoming message answers this request.
   case envelope.reply_to == Some(id) {
     False -> {
       process.send(deferred, envelope)
@@ -636,6 +653,7 @@ pub fn await_correlated_reply(
   }
 }
 
+/// Resolves the reply outcome protocol step for the scripted demo.
 fn reply_outcome(
   envelope: protocol.EventEnvelope,
   expected: fn(protocol.EventEnvelope) -> Bool,
@@ -653,6 +671,7 @@ fn reply_outcome(
 }
 
 // Drains events until one satisfies the predicate.
+/// The event outcome determines whether to return, continue waiting, or report failure.
 fn await(
   client: Client,
   wanted: fn(protocol.EventEnvelope) -> Bool,
@@ -662,6 +681,8 @@ fn await(
   let current = fn(envelope) {
     event_after(envelope, after_seq) && wanted(envelope)
   }
+
+  // The event outcome determines whether to return, continue waiting, or report failure.
   case await_loop(client, current, step, 400) {
     Ok(envelope) -> Ok(envelope)
     Error(reason) ->
@@ -718,6 +739,7 @@ pub fn find_replayed_event(
   }
 }
 
+/// Resolves the await loop protocol step for the scripted demo.
 fn await_loop(
   client: Client,
   wanted: fn(protocol.EventEnvelope) -> Bool,
@@ -744,6 +766,7 @@ pub fn await_buffered_event(
   step: String,
   budget: Int,
 ) -> Result(protocol.EventEnvelope, String) {
+  // The buffered event decides whether the current protocol wait can complete.
   case budget <= 0 {
     True -> Error(step <> ": the awaited event never arrived")
     False -> {
@@ -753,6 +776,8 @@ pub fn await_buffered_event(
         observed_seq,
         step,
       ))
+
+      // The buffered event decides whether the current protocol wait can complete.
       case wanted(envelope) {
         True -> Ok(envelope)
         False ->
@@ -769,6 +794,7 @@ pub fn await_buffered_event(
   }
 }
 
+/// The subscription result determines whether a complete session snapshot was received.
 fn subscribe_full(client: Client) -> Result(protocol.Snapshot, String) {
   send_command(
     client,
@@ -776,6 +802,8 @@ fn subscribe_full(client: Client) -> Result(protocol.Snapshot, String) {
     protocol.Subscribe(session: session_id, from_seq: None),
   )
   use envelope <- result.try(next_event(client, "subscribe"))
+
+  // The subscription result determines whether a complete session snapshot was received.
   case envelope.reply_to, envelope.event {
     Some(1), protocol.SnapshotEvent(snapshot) ->
       case snapshot {
@@ -794,6 +822,7 @@ fn done_for(envelope: protocol.EventEnvelope, strand: String) -> Bool {
   }
 }
 
+/// Resolves the strands reply protocol step for the scripted demo.
 fn strands_reply(envelope: protocol.EventEnvelope, expected: String) -> Bool {
   case envelope.event {
     protocol.SnapshotEvent(protocol.StrandsSnapshot(strands:)) ->
@@ -802,6 +831,7 @@ fn strands_reply(envelope: protocol.EventEnvelope, expected: String) -> Bool {
   }
 }
 
+/// Resolves the escalation reply protocol step for the scripted demo.
 fn escalation_reply(
   envelope: protocol.EventEnvelope,
   id: String,
@@ -814,6 +844,7 @@ fn escalation_reply(
   }
 }
 
+/// Resolves the escalation status protocol step for the scripted demo.
 fn escalation_status(
   envelope: protocol.EventEnvelope,
   id: String,
@@ -822,6 +853,7 @@ fn escalation_status(
   escalation_reply(envelope, id, status)
 }
 
+/// Resolves the report entry on main protocol step for the scripted demo.
 fn report_entry_on_main(envelope: protocol.EventEnvelope) -> Bool {
   case envelope.event {
     protocol.EntryEvent(record: protocol.EntryRecord(
@@ -849,6 +881,7 @@ fn report_entry_on_main(envelope: protocol.EventEnvelope) -> Bool {
 // prepared and published by production code, and its text is the
 // checkpoint `client/checkpoint` built — hook-supplied, and opening with
 // the window-boundary header.
+/// Resolves the compaction entry protocol step for the scripted demo.
 fn compaction_entry(envelope: protocol.EventEnvelope, strand: String) -> Bool {
   case envelope.event {
     protocol.EntryEvent(record: protocol.EntryRecord(
@@ -861,6 +894,7 @@ fn compaction_entry(envelope: protocol.EventEnvelope, strand: String) -> Bool {
 
 // The oldest entry on main's branch — the navigation target for the
 // forked strand (fork shares the tree, so main's history is its own).
+/// Resolves the oldest entry id protocol step for the scripted demo.
 fn oldest_entry_id(runtime: api.Runtime) -> Result(String, String) {
   case session.strand_leaf(runtime.session, "main") {
     Ok(Some(session.Cell(value: Some(leaf), ..))) ->
@@ -879,6 +913,7 @@ fn oldest_entry_id(runtime: api.Runtime) -> Result(String, String) {
   }
 }
 
+/// Resolves the entry id of protocol step for the scripted demo.
 fn entry_id_of(row: entry.Entry) -> ids.EntryId {
   case row {
     entry.MessageEntry(id:, ..) -> id
@@ -892,6 +927,7 @@ fn entry_id_of(row: entry.Entry) -> ids.EntryId {
 
 // Replays durable envelopes from the requested sequence (the resume snapshot
 // reply excluded).
+/// Resolves the catch up all protocol step for the scripted demo.
 fn catch_up_all(
   client: Client,
   id: Int,
@@ -902,6 +938,7 @@ fn catch_up_all(
   collect_replay(client, next_seq, [])
 }
 
+/// Resolves the resume reply protocol step for the scripted demo.
 fn resume_reply(client: Client, id: Int, budget: Int) -> Result(Int, String) {
   await_resume_reply(
     client.inbox,
@@ -921,10 +958,13 @@ pub fn await_resume_reply(
   id: Int,
   budget: Int,
 ) -> Result(Int, String) {
+  // The resume response determines whether replay can continue from this cursor.
   case budget <= 0 {
     True -> Error("catch_up: no resume snapshot arrived")
     False -> {
       use envelope <- result.try(next_incoming_event(inbox, "catch_up"))
+
+      // The resume response determines whether replay can continue from this cursor.
       case envelope.reply_to, envelope.event {
         Some(reply), protocol.SnapshotEvent(protocol.ResumeSnapshot(next_seq:))
         ->
@@ -957,6 +997,7 @@ pub fn await_resume_reply(
 
 // Collects replayed events until the synchronous replay reaches a live-event
 // boundary or goes quiet.
+/// Resolves the collect replay protocol step for the scripted demo.
 fn collect_replay(
   client: Client,
   next_seq: Int,
@@ -994,6 +1035,7 @@ pub fn collect_or_defer(
   deferred: Subject(protocol.EventEnvelope),
   collected: List(protocol.EventEnvelope),
 ) -> ReplayCollection {
+  // The event is collected now only when it belongs to the current operation.
   case envelope.seq {
     Some(seq) if seq < next_seq -> KeepReplaying([envelope, ..collected])
     _ -> {
@@ -1003,6 +1045,7 @@ pub fn collect_or_defer(
   }
 }
 
+/// The replayed entries determine whether the resumed transcript matches expectations.
 fn check_replay(replayed: List(protocol.EventEnvelope)) -> Result(Nil, String) {
   let seqs =
     list.filter_map(replayed, fn(envelope) {
@@ -1022,6 +1065,8 @@ fn check_replay(replayed: List(protocol.EventEnvelope)) -> Result(Nil, String) {
         _ -> False
       }
     })
+
+  // The replayed entries determine whether the resumed transcript matches expectations.
   case ordered, has_entries {
     True, True -> Ok(Nil)
     False, _ -> Error("replay seqs were not strictly increasing")
@@ -1029,6 +1074,7 @@ fn check_replay(replayed: List(protocol.EventEnvelope)) -> Result(Nil, String) {
   }
 }
 
+/// Resolves the final snapshot protocol step for the scripted demo.
 fn final_snapshot(client: Client) -> Result(protocol.Snapshot, String) {
   let inbox = process.new_subject()
   let deferred = process.new_subject()
@@ -1052,7 +1098,9 @@ fn final_snapshot(client: Client) -> Result(protocol.Snapshot, String) {
   subscribe_full(second)
 }
 
+/// The final snapshot and transcript determine whether the scripted run succeeded.
 fn check_final(snapshot: protocol.Snapshot) -> Result(Nil, String) {
+  // The final snapshot and transcript determine whether the scripted run succeeded.
   case snapshot {
     protocol.FullSnapshot(strands:, entries:, ..) -> {
       let names = list.map(strands, fn(strand: protocol.Strand) { strand.id })
@@ -1063,6 +1111,8 @@ fn check_final(snapshot: protocol.Snapshot) -> Result(Nil, String) {
             _ -> False
           }
         })
+
+      // The final snapshot and transcript determine whether the scripted run succeeded.
       case
         list.contains(names, "main")
         && list.contains(names, "research")
@@ -1081,6 +1131,7 @@ fn check_final(snapshot: protocol.Snapshot) -> Result(Nil, String) {
 
 // A process-backed counter: the entropy source (seeds must never repeat
 // within the session).
+/// The provider response determines whether entropy generation completed.
 fn start_entropy() -> Result(fn() -> Int, String) {
   let started =
     actor.new(1)
@@ -1089,6 +1140,8 @@ fn start_entropy() -> Result(fn() -> Int, String) {
       actor.continue(next + 1)
     })
     |> actor.start
+
+  // The provider response determines whether entropy generation completed.
   case started {
     Error(_) -> Error("the entropy counter did not start")
     Ok(counter) ->
@@ -1103,9 +1156,12 @@ fn start_entropy() -> Result(fn() -> Int, String) {
 // Generation requests answered by the projected context: the newest
 // user text picks the scripted turn, the assistant count breaks the
 // tie between "open with a tool call" and "answer".
+/// The scripted response sequence determines the next deterministic provider result.
 fn scripted_provider() -> effects.ProviderSurface {
   effects.ProviderSurface(timeout_ms: 4000, request: fn(spec) {
     let events = process.new_subject()
+
+    // The scripted response sequence determines the next deterministic provider result.
     case spec {
       effects.PollRequest(..) -> settle(events, answer("polled", 1), [])
 
@@ -1118,6 +1174,7 @@ fn scripted_provider() -> effects.ProviderSurface {
       effects.GenerationRequest(context:, ..) ->
         generation_response(events, context)
     }
+
     stream.immediate(events:, cancel: fn() { Nil })
   })
 }
@@ -1125,11 +1182,14 @@ fn scripted_provider() -> effects.ProviderSurface {
 // The scripted generation turn: the newest user text picks a canned
 // reply, and (for the retry scenario) the assistant count breaks the tie
 // between "open with a tool call" and "answer".
+/// The generation result determines which model response the demo receives.
 fn generation_response(
   events: Subject(stream.StreamEvent),
   context: List(AgentMessage),
 ) -> Nil {
   let newest = newest_user_text(context)
+
+  // The generation result determines which model response the demo receives.
   case newest == report_text, newest == "verify the fetch layer" {
     True, _ -> settle(events, answer("acknowledged: verified", 2), [])
     _, True -> settle(events, answer("verified the fetch layer", 2), [])
@@ -1137,6 +1197,7 @@ fn generation_response(
   }
 }
 
+/// Resolves the retry turn response protocol step for the scripted demo.
 fn retry_turn_response(
   events: Subject(stream.StreamEvent),
   context: List(AgentMessage),
@@ -1159,12 +1220,15 @@ fn retry_turn_response(
   }
 }
 
+/// The pending response determines whether the scripted operation is complete.
 fn settle(
   events: Subject(stream.StreamEvent),
   message: AgentMessage,
   deltas: List(stream.Delta),
 ) -> Nil {
   list.each(deltas, fn(delta) { process.send(events, stream.Delta(delta:)) })
+
+  // The pending response determines whether the scripted operation is complete.
   case stream.settle(message) {
     Ok(settled) ->
       process.send(
@@ -1194,6 +1258,7 @@ fn usage_of(message: AgentMessage) -> message.Usage {
   }
 }
 
+/// Resolves the newest user text protocol step for the scripted demo.
 fn newest_user_text(context: List(AgentMessage)) -> String {
   list.fold(context, "", fn(found, item) {
     case item {
@@ -1211,6 +1276,7 @@ fn newest_user_text(context: List(AgentMessage)) -> String {
   })
 }
 
+/// Resolves the assistant turns protocol step for the scripted demo.
 fn assistant_turns(context: List(AgentMessage)) -> Int {
   list.fold(context, 0, fn(count, item) {
     case item {
@@ -1220,6 +1286,7 @@ fn assistant_turns(context: List(AgentMessage)) -> Int {
   })
 }
 
+/// Resolves the answer protocol step for the scripted demo.
 fn answer(text: String, tokens: Int) -> AgentMessage {
   assistant(
     [message.AssistantText(text:, text_signature: None)],
@@ -1228,6 +1295,7 @@ fn answer(text: String, tokens: Int) -> AgentMessage {
   )
 }
 
+/// Resolves the tool call response protocol step for the scripted demo.
 fn tool_call_response() -> AgentMessage {
   assistant(
     [
@@ -1250,6 +1318,7 @@ fn tool_call_response() -> AgentMessage {
   )
 }
 
+/// Resolves the assistant protocol step for the scripted demo.
 fn assistant(
   content: List(message.AssistantBlock),
   stop: message.StopReason,
@@ -1276,6 +1345,7 @@ fn assistant(
   )
 }
 
+/// Resolves the demo usage protocol step for the scripted demo.
 fn demo_usage(tokens: Int) -> message.Usage {
   message.Usage(
     input: 0,
@@ -1296,6 +1366,7 @@ fn demo_usage(tokens: Int) -> message.Usage {
   )
 }
 
+/// Resolves the scripted tools protocol step for the scripted demo.
 fn scripted_tools() -> effects.ToolSurface {
   effects.ToolSurface(
     clear: fn(query: effects.ClearanceQuery) {
@@ -1336,6 +1407,7 @@ fn scripted_tools() -> effects.ToolSurface {
 // never reached: the effects record's provider surface is the scripted
 // one above, so every request the demo makes is answered by the script
 // and every *decision* about compaction is made by production code.
+/// Resolves the compaction wiring protocol step for the scripted demo.
 fn compaction_wiring(
   session: session.Session,
 ) -> Result(wiring.Config, String) {
@@ -1402,6 +1474,7 @@ const demo_context_window = 1_000_000
 // routing is what the hooks read — admission's window, the summary
 // role's resolution — and the demo's provider surface is scripted, so
 // the transport is never reached.
+/// Resolves the demo gateway protocol step for the scripted demo.
 fn demo_gateway() -> provider_gateway.Gateway {
   let identity =
     model.ResolvedModel(

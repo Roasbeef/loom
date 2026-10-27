@@ -127,10 +127,11 @@ pub fn init_model() -> Model {
   Model(copy_rule.Command, None, copy_rule.Idle)
 }
 
-// The write, in the press's own turn. A held text the rule refuses is a
-// failed copy and writes nothing.
+/// Writes the shown text to clipboard or reports failure.
 fn copy(model: Model) -> Effect(Msg) {
   use dispatch <- effect.from
+
+  // Dispatch clipboard write when text is present.
   case shown(model) {
     Some(text) ->
       ffi_dom.write_clipboard(text, fn(outcome) { dispatch(Written(outcome)) })
@@ -147,6 +148,7 @@ fn shown(model: Model) -> Option(String) {
   }
 }
 
+/// Renders the copyable text fragment and action button.
 fn view(model: Model) -> Element(Msg) {
   case shown(model) {
     None -> element.none()

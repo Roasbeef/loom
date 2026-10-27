@@ -231,6 +231,7 @@ pub fn diff_kind(line: String) -> CodeKind {
   }
 }
 
+/// Helper `scanned_parts` for scanned parts.
 fn scanned_parts(
   characters: List(String),
   rules: Rules,
@@ -256,16 +257,20 @@ fn scanned_parts(
 // One run that begins with `character`, followed by the scan of what is left.
 // The rules decide which characters open a string; every other class is the
 // same in both languages.
+/// Helper `scanned_character` for scanned character.
 fn scanned_character(
   character: String,
   rest: List(String),
   rules: Rules,
   accumulated: List(CodePart),
 ) -> List(CodePart) {
+  // Handle the `scanned_character` branch dispatch.
   let class = case list.contains(rules.quotes, character) {
     True -> QuoteCharacter
     False -> code_character(character)
   }
+
+  // Handle the `scanned_character` branch dispatch.
   case class {
     QuoteCharacter -> {
       let #(text, remaining) = quoted_text(rest, character, [character], False)
@@ -306,6 +311,7 @@ fn scanned_character(
 // A grapheme that is one ASCII codepoint is classified by range. Any other
 // grapheme, a letter with a combining mark included, is punctuation, which is
 // what a membership test over the ASCII alphabets said of it.
+/// Helper `code_character` for code character.
 fn code_character(character: String) -> CodeCharacter {
   case character {
     " " | "\t" -> SpaceCharacter
@@ -318,6 +324,7 @@ fn code_character(character: String) -> CodeCharacter {
   }
 }
 
+/// Helper `ascii_character` for ascii character.
 fn ascii_character(code: Int) -> CodeCharacter {
   case code {
     // `A`-`Z`, `a`-`z`, `_` and `@`.
@@ -329,6 +336,7 @@ fn ascii_character(code: Int) -> CodeCharacter {
   }
 }
 
+/// Helper `take_code_characters` for take code characters.
 fn take_code_characters(
   characters: List(String),
   wanted: CodeCharacter,
@@ -344,6 +352,7 @@ fn take_code_characters(
   }
 }
 
+/// Helper `take_identifier_characters` for take identifier characters.
 fn take_identifier_characters(
   characters: List(String),
   accumulated: List(String),
@@ -362,6 +371,7 @@ fn take_identifier_characters(
   }
 }
 
+/// Helper `take_number_characters` for take number characters.
 fn take_number_characters(
   characters: List(String),
   accumulated: List(String),
@@ -385,6 +395,7 @@ fn take_number_characters(
 // The body of a string after its opening quote. A backslash keeps the next
 // character from closing the string, and the end of the line closes it, so
 // an unterminated string still returns a run and the scanner never fails.
+/// Helper `quoted_text` for quoted text.
 fn quoted_text(
   characters: List(String),
   quote: String,
@@ -408,6 +419,7 @@ fn quoted_text(
 
 // A reserved word is a keyword, a word that opens with a capital is a type
 // or a constructor, and any other word is plain.
+/// Helper `word_kind` for word kind.
 fn word_kind(word: String, rules: Rules) -> CodeKind {
   case list.contains(rules.keywords, word) {
     True -> CodeKeyword

@@ -88,10 +88,50 @@ catalogue; each call that needs one is handed it. Its answers are plain data:
 `evaluate` returns an `evaluate.Report` that `serve` writes with
 `evaluate.record`, and `run_program` returns the `tool.ToolOutcome`
 (`program.outcome`). `machine/local` is the former
-`native` module and builds the record for a workspace in this VM; `serve` builds
-one per session. Generations keep their own `tools`, `hooks`, `inventory`,
-`mode` and `retire`, so the seam has no invoke or retire function. Prompt trials
-and the core upgrade (`control.Seam`) stay outside it.
+`native` module and builds the record for a workspace in this VM. `machine/remote`
+builds it for a workspace on an executor: `remote.Link` (session, executor name,
+the attached `surface`, the census identity, a `fn() -> Result(wiring.Authority,
+String)` and a logger) and `remote.new(link)` send the eight version 5 messages.
+`serve` builds one machine per session and chooses it by placement:
+`local_evolution_machine` for a local code-mode host, with the session's run
+scratch; `remote.new(Half.evolution_link)` for a workspace on an executor whose
+census says `Compiles`, with no scratch; none otherwise. The catalogue and the
+live owner are this VM's in both cases. `open_evolution` takes an
+`EvolutionScope`: `LocalScope` keeps naming the workspace by the context's path,
+`ExecutorScope("executor:<executor>/<name>")` names it for the catalogue's scopes
+and the operator's commands. Generations keep their own `tools`, `hooks`,
+`inventory`, `mode` and `retire`, so the seam has no invoke or retire function.
+Prompt trials and the core upgrade (`control.Seam`) stay outside it.
+
+`machine/remote` sends `EvolutionSnapshot`, `EvolutionEvaluate`, `EvolutionStage`,
+`EvolutionRun` (a promoted tool or a program), `EvolutionHook`,
+`EvolutionTransition`, `EvolutionRetire` and `EvolutionInventory` through
+`surface.ask` (waits for the reply, sent again after a repair) or
+`surface.ask_within` (hooks, inventory and retire). `stage` retires every
+`superseded` handle at once with `weft.map`, and a retire that did not confirm
+becomes a `retirement.repeat` folded into the new generation's `retire`. A retire
+the executor does not answer is `Ok` (the scope's close settles it); only
+`UnknownCleanup` fails. A promoted tool's `run` reads the stored authority and
+sends one `EvolutionRun`. An in-place successor gets a bus of its own (hooks reach
+the serving generation by handle); `publish` closes the predecessor's bus, `abort`
+the successor's, and a successor's `retire` also retires its predecessor's handle
+and bus, because the live owner drops the predecessor once the successor is
+published. A `Publish` answered `UnknownHandle` is the "migration lost" refusal.
+`evaluate` refuses a candidate of another identity (`Changed`) before sending, and
+reads the report with `executor_evolution.decode_report`; a lost or unreadable
+answer is an `Inconclusive` report. `tool.from_result_message` is the inverse of
+`to_result_message` that turns the `RunAnswer` back into a `ToolOutcome`. Tests:
+`machine/remote_test` over `support/remote_orchestrator` and the scripted
+`support/remote_evolution` plane, and the registered-session cases of
+`remote_assembly_test`.
+
+Evolution callbacks project their secret store, helper path, source session and
+model gateway before closure construction. Trace callbacks still borrow the
+native runtime and read its current model; prompt trials retain their required
+source settings. `evolution_retention_test` assembles the real seeded plane and
+checks that consumed startup diagnostics add no trace terms and at most one
+copy to the complete capability door. The single-package client gate prepares
+that seed rather than omitting the plane.
 
 `live` leases the active generation to each complete promoted hook/tool fold,
 which runs on the caller's own process, and holds activation and close until
@@ -163,8 +203,33 @@ with wiring can still choose, while `Some([])` (wiring and nothing selected)
 is a durable choice of none. `tasks` retains independently admitted
 fixture and expected-file bytes. `rollout` and `rollout_host` run fresh ordinary
 coding runtimes with native aggregate guards and actual composition digests;
-unknown billing reservations remain debited across both comparison arms.
-`fixture` scores files only after witnessed retirement. `trace` retains bounded,
+unknown billing reservations remain debited across both comparison arms. The
+guard debits the target's worst case before every attempt and, once the
+gateway's settlement observer reports how the attempt ended, replaces it with
+`rollout.attempt_charge` of that settlement; its pure `rollout_host.Ledger`
+(`open_ledger`, `reserve`, `settle`, `remaining`, `charged`), keyed by the pump
+process that asked, is the **one source of a trial's charge**: the step hands
+the fold `charged` (the summed usage records and the clipped reservation of
+every unmeasured attempt, open reservations included) and never a second figure
+read from the transcript, so the fold's allowance after the step is the guard's
+remaining allowance by construction. `reserve` pins each attempt's output
+ceiling to what the allowance has left, so a target whose whole ceiling does
+not fit the door's caps still runs. A request outside a turn, a response the
+runtime never committed and an attempt that never settles are charged once,
+there; `cross_check` reads the session's own usage ledger back as a tripwire
+and fails the step when it exceeds the guard's charge. A `Trial(_)` session runs no side work at all (`serve.side_work`: no
+glance loop, no block summarizer, no side-query machine), because side work is
+not the task under comparison and its spend would move the verdict.
+`rollout_host_test` runs the parity property through the real fold
+(protocol-change/100, the refund addendum).
+`rollout.Limits.samples` runs K independent samples of every task per arm
+through the same budget, and `rollout.Trial.score` answers a `rollout.Grade`
+(reward, sub-scores, side information, the verifier) that `verdict` reads against
+`rollout.pass_threshold`; `fixture` grades files only after witnessed retirement
+and names the first differing path. `serve.trial_settings` is the one trial
+recipe, `@internal` so an evaluation instrument opens the same fresh jailed
+session the governed opener does; it takes the trial tag as a parameter and the
+governed opener mints that tag from production entropy. `trace` retains bounded,
 scrubbed native branch observations and operator outcomes. Read
 [the evolution architecture](../../docs/architecture/evolution.md) and
 [protocol-change 068](../../protocol-change/068-runtime-evolution.md).
@@ -287,9 +352,16 @@ executors in this slot. Public startup options still accept the same registry
 used by the runtime effect surface; execution remains owned by that surface.
 
 The async-run and hub child-start callbacks project their heartbeat, session,
-workspace, catalogue and code-mode refusal inputs before constructing the
-restart specification. Those callbacks retain the runtime inputs they require,
+workspace, catalogue, remote reach and code-mode refusal inputs before
+constructing the restart specification. Those callbacks retain the runtime inputs they require,
 but no longer add a path through the complete startup `Settings` record.
+`owned_assembly_test` verifies this on actual service supervisor state while
+preserving custody retirement and lease release. These memory regressions count
+flattened reachable terms, not physical retained heap or resident memory.
+The model-facts callback projects only model entries before closure construction,
+so unused catalogue profiles and server configuration do not enter provider and
+compaction-hook copies. owned_assembly_test varies valid unused profiles while
+checking the real runtime Effects graph, model admission and missing-model fallback.
 
 ## Transfer captures and a slow storage actor
 
@@ -1333,6 +1405,13 @@ catalogue without opening runtimes. Explicit admission invokes
   registered-name projection behind `active_tools` (derived from the same
   registry the effect wiring dispatches through; without one, active-set
   changes are refused in band).
+  Durable pulls skip per-strand leaf reads when the new entry cut is empty:
+  no head can be attributed, so no branch can change the attribution cache.
+  A nonempty cut retains the original per-strand leaf reads and claim order;
+  ownership, result and operation phase reads remain unchanged.
+  `gateway_read_test` counts the store calls at 1/8/64/128 strands and checks
+  once-only fast terminal results. `gateway_read_fixture` supplies the same
+  real gateway pull to the isolated SQLite benchmark.
 - `client/gateway.{attach, detach, handle_text}` — the transport seam: a
   connection is a `fn(String) -> Nil` sink, inbound frames arrive as
   text, and nothing in the module knows about sockets. `attach` returns
@@ -3121,7 +3200,9 @@ catalogue without opening runtimes. Explicit admission invokes
   render_pack, pack_source, guidance, pinned_in, pinned, pin}` — the I/O
   half of the pure `prompt` package. `Host` is every `pack.Environment`
   field gathered from a real source; `pack_source` picks the shipped pack
-  or the one `LOOM_PROMPT_PACK` names; `render_pack` renders it or
+  or the one `LOOM_PROMPT_PACK` names (a host that sets `Settings.pack` hands the
+  source text in directly, skipping the environment, and the origin is
+  `Provided(label)`); `render_pack` renders it or
   refuses; `assemble` chooses between the `LOOM_SYSTEM_PROMPT` override,
   the pinned cell and a fresh render; `pinned_in`/`pinned`/`pin` are the
   two ends of the reserved `prompt/` cell. Nothing here is called per
@@ -3144,9 +3225,9 @@ catalogue without opening runtimes. Explicit admission invokes
   any) a captured identity is on and therefore whether the dispatch walks
   a chain, the `ForResolved`-only target every deferred poll and every
   off-route generation takes, and the two directions of the map between
-  the machine's seven-point thinking scale and the provider's four-point
-  one — `thinking_level` collapsing for a dispatch, `strand_thinking_level`
-  lifting an entry's declared level to seed a strand.
+  the machine's seven-point thinking scale and the provider's six-point
+  one — `thinking_level` maps minimal to low and preserves the other levels;
+  `strand_thinking_level` lifts an entry's declared level to seed a strand.
 - `client/wiring.{Config, build_effects}` — the production effect seam:
   a `runtime/effects.Effects` over the real provider gateway, broker,
   and tool registry (promoted from `conformance/wiring`; spec-gaps M2
@@ -6854,6 +6935,34 @@ first request is matched by `AwaitPromptPrefix(strand_framing.brief_head("main")
   executor, and no daemon can be made to hold a reply back without a hook in
   production code.
 
+`test/client/evolution_remote_acceptance_test.gleam` runs governed evolution
+for a session registered on an executor, on the same `remote_pair` fixture
+(`make e2e-evolution-remote`). The model is scripted: it writes a candidate into
+the executor's checkout with `fs_write`, proposes and tests it in a `code_mode`
+program importing `cap/evolution` (`support/evolution_programs`), and the owner
+approves and selects it through the session socket's `evolution` commands. The
+socket is opened after the turn that produced the candidate, because a
+subscribed socket is pushed every event and the command protocol reads only a
+bounded run of them before its reply. The executor is given the build seed with
+`--codemode-seed`. It skips under `SKIP remote evolution acceptance` when the
+seed, `gleam`, the shipment or an enforcing helper is missing.
+
+- `fixed_executor_test_`: an extension is proposed, tested, approved, selected
+  and invoked, and the answer carries the implementation's own marker. The
+  build exists in the executor's evolution scratch and nowhere under the
+  orchestrator's state, and the source is in the checkout only.
+- `program_candidate_test_`: a program candidate's selection commits in the
+  reply, since a program is not staged. Its invocation writes a file with
+  `cap/fs`, which exists in the executor's checkout and not on the
+  orchestrator.
+- `executor_restart_test_`: the session is stopped, the executor process is
+  retired and started again, and the session is reopened. The selection is
+  still in the orchestrator's catalogue, the new executor stages it afresh, and
+  the same extension answers.
+
+A pool of executors, a link cut during staging and an orchestrator restart are
+not covered.
+
 ### Provisioning a deployment (issue #697)
 
 `loom distribution` (also `loomd distribution`, and `dist` for either) takes an
@@ -7080,8 +7189,8 @@ below.
   in a weft run cancelled when its requester exits (`cancel_when_exits`), and a
   `Tail` is served inline. It reconciles acknowledgements on `bind` and on a
   weft periodic timer, acknowledging only keys the injected `settled` accepts.
-- `remote/surface` is `attach`, `run`, `recover`, `ack`, `places` and
-  `functions`. A lost connection is repaired with `weft/poll.fold_until` on a
+- `remote/surface` is `attach`, `run`, `recover`, `ack`, `places`, `functions`,
+  and for the evolution messages `ask`, `ask_within`, `incarnation` and `token`. A lost connection is repaired with `weft/poll.fold_until` on a
   doubling interval and the same `Run` is sent again. `recover` sends
   `QueryOrFence` for a call whose `run.replay` is `ReplayNever` and plain
   `Query` for a `ReplaySafe` one.
@@ -7202,6 +7311,29 @@ local fixtures).
 - **Prompt.** `render_prompt` is unchanged: the user's guidance is read here, the
   workspace's arrives in `census.prompt`, and the platform, shell and policy
   facts come from `census.census`.
+- **Evolution.** `Hands.evolution` is `Reachable(Link)` when the census says
+  `Compiles(identity)` and `Withheld(reason)` otherwise, with `evolution.unavailable`
+  logged once naming the executor (`Registered.logger`). `Half.evolution` carries
+  it to `assemble_in`, which opens the catalogue under the census identity and
+  builds the live owner over `machine/remote`, or for `Withheld` registers the
+  usual cell over `evolution/capability.refusing(reason)` so a program reads the
+  executor's reason. A model reaches it through `cap/evolution`: on the executor
+  `executor_plane.offering_evolution` computes the compile identity from the
+  configuration with its evolution door withdrawn (`evolution/identity` hashes
+  the seam allowlists, so the identity must come from that host, and the
+  evolution actor's `local.Config` is built from it too), and only an `Ok`
+  identity calls `owner_codemode.offering_evolution`, which admits the import,
+  advertises the six names and their ceilings, and installs a stub builder that
+  never runs because `over_owner` sends the owner-bound names first. On the owner
+  `codemode.OwnerSide.evolution` is `capability.door_for_call(name, clock)`: the
+  doors are built for each call from its coordinates alone (an empty workspace,
+  policy and filesystem), keyed `(code_mode call key, slot, ordinal)` by
+  `capability.call_index`, with recovery the `code_mode` call's `replay: Never`.
+  The executor's `StaleGeneration` refusal is `store.Stale`; other refusals are
+  `Unavailable`. Tests: `owner_codemode_test` (door reached, ordinals keyed
+  apart, refusing reason, listing). The link reads the session's standing
+  authority (`wiring.read_standing`) for each check, because the executor needs it
+  and only this side holds it.
 - **Scope record.** `remote/scope` keeps `{incarnation, closed, executor}` in the
   reserved cell `client/remote/scope`. No cell attaches at 1, a close that ended,
   clean or with unknown cleanup, at the stored incarnation plus one, anything
@@ -7406,8 +7538,35 @@ A `loomd` whose `--config` file has `[distribution]` and at least one
   `owner_codemode.advertising_peers` as the `code_mode` tool. The census it
   returns is
   `RemoteCensus` (plain data plus the broker's subject; the prompt facts are read
-  once, at attach; `evolution` is `Uncompiled` until the executor's evolution
-  plane is built). `workspace_plane` itself is unchanged apart from `WorkspaceSpec.blob_root`.
+  once, at attach; `evolution` is `Compiles(identity)` or `Uncompiled(reason)`,
+  below). `workspace_plane` itself is unchanged apart from `WorkspaceSpec.blob_root`
+  and `Started.view`.
+- **The evolution plane** (protocol-change/098). When a scope has a code-mode
+  configuration, `executor_plane.evolution_of` computes the compile identity
+  once (`executor_evolution.identity`) and starts one `executor_evolution` actor
+  for the scope, over a `local.Config` built from this machine's own inputs:
+  `Built.code_mode` without its evolution door, the plane's base policy and
+  environment, `serve.hook_coordinates_at` for the hook coordinates, memory
+  through `extension_memory.over_facts(spec.owner.facts)` (written back to the
+  owner under the reserved `ext/` prefix), secrets from the executor's own
+  `[secrets]` table and environment (`secret.lookup(machine.secrets, ..)`, the
+  store MCP and the workspace plane read, never the orchestrator's), and
+  `<state>/evolution/run/<session>` as the candidate scratch. The `view` is
+  `Started.view`, the `WorkspaceView` `plane_over` already builds, kept out of
+  `WorkspacePlane` because that record is copied into every process holding the
+  instance. The actor is filed as `#(custody.Evolution, retire_all)`, which
+  ranks before the broker and the helpers, and `host.Plane.evolution` is its
+  `plane`. A scope with no code mode, or whose identity cannot be observed,
+  starts no actor, files nothing and reports `Uncompiled` with the toolchain's
+  reason. `<state>/evolution` is created before the base policy is built and
+  masked from the session's own jails (`workspace_policy.protecting_evolution`,
+  a conditional mask like the memory files); a candidate's build jail lifts
+  the mask for its own directory and narrows its readable roots to it, which is
+  what separates one scope's build from another's. The per-session scratch is
+  removed on `AllRetired` with the scope directory. A generation's retire runs
+  inside its owner task (`Perform`), because `local.stop_host` unlinks the
+  extension host from the process that runs it before it kills it and the host
+  is linked to the owner.
 - **A remote session's blobs.** They live in `<state>/blobs/<session>`, passed as
   `WorkspaceSpec.blob_root`. Not in `<state>/scopes/<session>`, which is removed
   when a scope retires cleanly while a reopened session must still read the
@@ -7466,7 +7625,10 @@ workspace, the census walk for function values and its `term_to_binary` round
 trip, an 8 MiB read, the `code_mode` description listing the owner-bound
 capabilities where a seed exists, a real program whose `strand.roster` and
 `notes.put` reach the owner's Agency through the owner port where the host
-has a jail, and `retire` with injected cleanups). `daemon_executor_test`
+has a jail, and `retire` with injected cleanups; with a seed and a jail, the
+evolution plane's stage, promoted run, undeclared hook, retire, close without a
+retire, evaluate with a duplicate key, and the `Compiles` census).
+`daemon_executor_test`
 covers the boot decision. `remote_nodes_test`'s `remote_workspace` scenario
 serves a real workspace to a second node. Making `retire` ignore the helper
 witness fails `a_scope_with_no_helper_cleanup_has_no_witness_test`; building the
@@ -7734,6 +7896,17 @@ the protocol-change/078 addendum on moving a session have the protocol.
   instead of putting it over the placed file. It reads whether the import already
   committed before it checks for an open slot, and `AdminBusy` refuses a first
   import only.
+- `sessions.move` also refuses a session that still serves a selected extension
+  or program: the selection lives in this daemon's evolution catalogue and the
+  manifest does not carry it. `server.selections_stay_behind` reads
+  `evolution/store.session_selections(<state>/evolution, id, clock)`, which lists
+  the `Session`-scoped selections whose approval still holds (a revoked
+  selection serves nothing and is not listed; `evolution revoke` is the remedy
+  the refusal names) and answers `[]` without creating anything when there is no
+  `evolution.db`. It runs in `move_session` and not in `movable`, outside the
+  registry's turn, because the catalogue open waits up to one second on the
+  store's lease. A `Workspace`-scoped selection does not block a move.
+  A catalogue that cannot be read refuses the move too.
 - `remote/orchestrator_port` gains `Import`, `ImportStatus` and `Activate` beside
   `Owns`, and `Ownership` gains `Moved(to)`. The daemon supplies an `Importer` of
   three functions, so the port knows neither the catalogue nor the filesystem. A
@@ -7785,7 +7958,7 @@ the protocol-change/078 addendum on moving a session have the protocol.
   is how a restarted mover learns a lost reply had landed.
 - `daemon/server` has `sessions.move` (owner, epoch, destination in
   `Config.movers.orchestrators`, then `inbound_settled` for an imported session,
-  then `manager.begin_move`, then
+  then `selections_stay_behind`, then `manager.begin_move`, then
   `Config.movers.begin`), the `moving` and `moved` members of `sessions.get`
   (`with_custody`) and of every `sessions.list` record (`listed_json`, which reads
   one `manager.custodies` for the page and encodes with the same

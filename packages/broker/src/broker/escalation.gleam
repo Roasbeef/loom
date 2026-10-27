@@ -193,6 +193,7 @@ pub fn status(escalation: Escalation) -> Status {
   phase_status(escalation.phase)
 }
 
+/// Maps the internal lifecycle phase to its external status.
 fn phase_status(phase: Phase) -> Status {
   case phase {
     Pending -> StatusPending

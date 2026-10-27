@@ -215,6 +215,8 @@ pub fn begin(line: BitArray, verifier: Verifier) -> Result(Ledger, Refusal) {
 /// ```
 pub fn start(signed: SignedEntry) -> Result(Ledger, Refusal) {
   let entry = signed.entry
+
+  // Only genesis at the zero head establishes initial state.
   case entry.kind {
     Genesis(deployment:, authority:) -> {
       let at_origin =
@@ -265,6 +267,7 @@ pub fn replay(
   lines: List(BitArray),
   verifier: Verifier,
 ) -> Result(Ledger, ReplayError) {
+  // An empty file has no genesis; otherwise replay starts at line zero.
   case lines {
     [] -> Error(ReplayError(index: 0, refusal: Invalid(FirstEntryNotGenesis)))
     [first, ..rest] -> {
@@ -277,6 +280,7 @@ pub fn replay(
   }
 }
 
+/// Applies remaining lines, stopping at the first invalid file position.
 fn replay_loop(
   ledger: Ledger,
   lines: List(BitArray),
@@ -332,6 +336,8 @@ pub fn accept(
 /// ```
 pub fn apply(ledger: Ledger, signed: SignedEntry) -> Result(Outcome, Refusal) {
   let entry = signed.entry
+
+  // Sequence position decides duplicate/fork, gap, or next-entry handling.
   case int.compare(entry.seq, ledger.head.seq + 1) {
     order.Lt -> already_held(ledger, signed)
     order.Gt -> Ok(Gap(head: ledger.head))
@@ -345,11 +351,14 @@ pub fn apply(ledger: Ledger, signed: SignedEntry) -> Result(Outcome, Refusal) {
 // An entry at or below the head: the same entry again is a duplicate, and a
 // different one at the same sequence number is a fork. The applied identities
 // are kept for exactly this comparison.
+/// Distinguishes a repeated identity from a fork at an occupied sequence.
 fn already_held(
   ledger: Ledger,
   signed: SignedEntry,
 ) -> Result(Outcome, Refusal) {
   let seq = signed.entry.seq
+
+  // The retained identity distinguishes duplicate delivery from a fork.
   case dict.get(ledger.applied, seq) {
     Ok(ours) if ours == signed.id -> Ok(Duplicate)
     Ok(ours) -> Error(Fork(seq:, ours:, theirs: signed.id))
@@ -357,6 +366,7 @@ fn already_held(
   }
 }
 
+/// Checks the previous-entry identity before applying the next entry.
 fn extend(
   ledger: Ledger,
   entry: Entry,
@@ -391,6 +401,7 @@ pub fn check(ledger: Ledger, entry: Entry) -> Result(Ledger, Refusal) {
 
 // The entry is next in sequence and follows the head. The cap is checked
 // first so a full ledger refuses every kind alike.
+/// Enforces the ledger cap and applies a validated kind to a new prefix.
 fn fold(ledger: Ledger, entry: Entry, id: EntryId) -> Result(Ledger, Refusal) {
   use <- bool.guard(
     when: entry.seq >= max_entries,
@@ -415,6 +426,7 @@ fn fold(ledger: Ledger, entry: Entry, id: EntryId) -> Result(Ledger, Refusal) {
 // revoked or re-enrolled under another node. A configuration that names such a
 // node was once right about the deployment, which is the difference
 // `ever_named` reports between a stale row and a mistyped one.
+/// Retains every node name ever introduced by a member entry.
 fn named_nodes(nodes: Set(String), kind: membership_entry.Kind) -> Set(String) {
   case kind {
     Upsert(member:) -> set.insert(nodes, member.node)
@@ -422,6 +434,7 @@ fn named_nodes(nodes: Set(String), kind: membership_entry.Kind) -> Set(String) {
   }
 }
 
+/// Dispatches a kind to its transition and rejects later genesis entries.
 fn apply_kind(
   ledger: Ledger,
   kind: membership_entry.Kind,
@@ -435,6 +448,7 @@ fn apply_kind(
 
 // A member entry is an upsert keyed by name. Re-enrolling a revoked name is an
 // ordinary upsert, since a revoked name is simply not active.
+/// Replaces or enrolls a member after uniqueness, link, and capacity checks.
 fn upsert(
   ledger: Ledger,
   member: Member,
@@ -475,6 +489,7 @@ fn upsert(
 // A revoke removes the member and, with it, every edge that named it. The
 // edges are dropped here because a name that is enrolled again later is a new
 // member, and a link made to its previous holder must not return with it.
+/// Removes an active member and all remaining edges that name it.
 fn revoke_member(
   ledger: Ledger,
   name: String,
@@ -671,6 +686,7 @@ pub opaque type PinTable {
 /// membership_ledger.lookup_pin(table, hub_pin) // -> Ok(Peer(name: "hub", ..))
 /// ```
 pub fn pin_table(ledger: Ledger, name: String) -> PinTable {
+  // An unknown or inactive node accepts no peers.
   case dict.get(ledger.members, name) {
     Error(Nil) -> PinTable(by_pin: dict.new(), pin_of: dict.new())
     Ok(own) -> {
@@ -689,6 +705,7 @@ pub fn pin_table(ledger: Ledger, name: String) -> PinTable {
   }
 }
 
+/// Projects a member into the peer data exposed by the pin table.
 fn peer_of(member: Member) -> Peer {
   Peer(
     name: member.name,
@@ -701,6 +718,7 @@ fn peer_of(member: Member) -> Peer {
 // Two members are linked when either lists the other, or when both belong to
 // the session directory, because Ra needs every member able to reach every
 // other.
+/// Reports whether either side links the other or both are directory members.
 fn linked(a: Member, b: Member) -> Bool {
   list.contains(a.links, b.name)
   || list.contains(b.links, a.name)

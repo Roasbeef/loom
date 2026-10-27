@@ -568,16 +568,21 @@ pub fn entry_paths(entries: List(Entry)) -> List(String) {
 
 // --- total decoders ------------------------------------------------------
 
+/// Decodes a listing result into entries and completeness status.
 fn decode_listing(value: MsgPackValue) -> Result(Listing, String) {
   use entries <- result.try(wire.array_of(value, "entries", of: decode_entry))
   use truncated <- result.try(wire.bool_field(value, "truncated"))
+
+  // Map the truncated boolean flag to the Completeness domain type.
   let completeness = case truncated {
     True -> Truncated
     False -> Complete
   }
+
   Ok(Listing(entries:, completeness:))
 }
 
+/// Decodes a single directory or file entry record.
 fn decode_entry(value: MsgPackValue) -> Result(Entry, String) {
   use path <- result.try(wire.string_field(value, "path"))
   use kind <- result.try(decode_kind(value))
@@ -586,12 +591,11 @@ fn decode_entry(value: MsgPackValue) -> Result(Entry, String) {
   Ok(Entry(path:, kind:, size:, mtime_seconds:))
 }
 
-// An unrecognised `kind` string is a decode failure and not `Other`.
-// `Other` means the harness looked and found a socket or a device node;
-// a string this module does not know means the two ends disagree about
-// the wire, which a caller must not read as a successful stat.
+/// Decodes the entry kind string into a Kind variant.
 fn decode_kind(value: MsgPackValue) -> Result(Kind, String) {
   use kind <- result.try(wire.string_field(value, "kind"))
+
+  // Map the kind string to the corresponding Kind variant.
   case kind {
     "file" -> Ok(File)
 
@@ -608,6 +612,7 @@ fn decode_kind(value: MsgPackValue) -> Result(Kind, String) {
   }
 }
 
+/// Decodes a grep search result and scan statistics.
 fn decode_found(value: MsgPackValue) -> Result(Found, String) {
   use matches <- result.try(wire.array_of(value, "matches", of: decode_match))
   use files_scanned <- result.try(wire.int_field(value, "files_scanned"))
@@ -616,6 +621,7 @@ fn decode_found(value: MsgPackValue) -> Result(Found, String) {
   Ok(Found(matches:, files_scanned:, files_skipped:, coverage:))
 }
 
+/// Decodes an individual match with context lines from the payload.
 fn decode_match(value: MsgPackValue) -> Result(Match, String) {
   use path <- result.try(wire.string_field(value, "path"))
   use line <- result.try(wire.int_field(value, "line"))
@@ -626,10 +632,11 @@ fn decode_match(value: MsgPackValue) -> Result(Match, String) {
   Ok(Match(path:, line:, column:, text:, before:, after:))
 }
 
-// As with `kind`, an unrecognised coverage string is a disagreement about
-// the wire rather than a coverage this module can safely round down.
+/// Decodes the scan coverage string into a Coverage variant.
 fn decode_coverage(value: MsgPackValue) -> Result(Coverage, String) {
   use coverage <- result.try(wire.string_field(value, "coverage"))
+
+  // Map the coverage string to the corresponding Coverage variant.
   case coverage {
     "exhaustive" -> Ok(Exhaustive)
 
@@ -641,6 +648,7 @@ fn decode_coverage(value: MsgPackValue) -> Result(Coverage, String) {
   }
 }
 
+/// Decodes a span of lines read from a file.
 fn decode_lines(value: MsgPackValue) -> Result(Lines, String) {
   use text <- result.try(wire.string_field(value, "text"))
   use first <- result.try(wire.int_field(value, "first"))
@@ -649,8 +657,7 @@ fn decode_lines(value: MsgPackValue) -> Result(Lines, String) {
   Ok(Lines(text:, first:, last:, total:))
 }
 
-// `wire` extracts strings from a map's fields; a bare string inside an
-// array has no field name, so the element decoder is here.
+/// Decodes a raw msgpack value into a string.
 fn as_string(value: MsgPackValue) -> Result(String, String) {
   case value {
     msgpack.StringValue(text) -> Ok(text)
@@ -659,6 +666,7 @@ fn as_string(value: MsgPackValue) -> Result(String, String) {
   }
 }
 
+/// Maps low-level channel errors to typed search errors.
 fn map_error(error: CallError, path: String) -> SearchError {
   case error {
     Unreachable(reason:) -> SearchUnavailable(reason:)

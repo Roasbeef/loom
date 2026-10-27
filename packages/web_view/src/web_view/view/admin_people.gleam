@@ -120,9 +120,9 @@ pub fn principals(
   )
 }
 
-// The heading: "People", how many the page lists, and, when any claim is open,
-// how many of them are invited, all as the home's workspace heading counts its
-// sessions.
+/// The heading: "People", how many the page lists, and, when any claim is open,
+/// how many of them are invited, all as the home's workspace heading counts its
+/// sessions.
 fn heading(rows: List(Principal)) -> Element(message) {
   let invited =
     list.count(rows, fn(row) {
@@ -146,8 +146,8 @@ fn heading(rows: List(Principal)) -> Element(message) {
   ])
 }
 
-// One principal: its name and identity, what it can authenticate with, and, for
-// a member, the changes that are made to a person, by what it holds.
+/// One principal: its name and identity, what it can authenticate with, and, for
+/// a member, the changes that are made to a person, by what it holds.
 fn person(
   row: Principal,
   logins: Option(Logins),
@@ -187,24 +187,27 @@ fn person(
   ])
 }
 
-// The row's rename form, when it is the one that is open, and the empty node that
-// keeps its place otherwise. The person's name is a text node in the lead and
-// `<loom-rename>` copies it into the field in the browser; the field is
-// uncontrolled and the one submit sends its text under the name `text`. While a
-// request is out the buttons are disabled, though the handler stays, because the
-// component is the layer that ignores a second one.
+/// The row's rename form, when it is the one that is open, and the empty node that
+/// keeps its place otherwise. The person's name is a text node in the lead and
+/// `<loom-rename>` copies it into the field in the browser; the field is
+/// uncontrolled and the one submit sends its text under the name `text`. While a
+/// request is out the buttons are disabled, though the handler stays, because the
+/// component is the layer that ignores a second one.
 fn rename_form(
   row: Principal,
   editing: Option(String),
   presses: Presses(message),
   busy: Busy,
 ) -> Element(message) {
+  // Render rename form only if row matches actively edited principal.
   case editing {
     Some(open) if open == row.id -> {
+      // Disable submit buttons while an admin action is in-flight.
       let locked = case busy {
         admin_buttons.Free | admin_buttons.Spent(_) -> []
         admin_buttons.Occupied -> [attribute.disabled(True)]
       }
+
       html.form(
         [
           attribute.class("admin-rename"),
@@ -260,9 +263,9 @@ pub fn identity(id: String) -> Element(message) {
   ])
 }
 
-// The buttons of a member's row, by what the member holds: a person with a
-// credential can be rotated or revoked, a person with an open claim can only
-// have it voided, and a person with neither can be given a new claim.
+/// The buttons of a member's row, by what the member holds: a person with a
+/// credential can be rotated or revoked, a person with an open claim can only
+/// have it voided, and a person with neither can be given a new claim.
 fn actions(
   row: Principal,
   armed: Option(grants.Action),
@@ -276,6 +279,8 @@ fn actions(
       presses.ask(grants.Rotate(row.id)),
       busy,
     )
+
+  // Present credentials rotation or revocation depending on active status.
   case row.credential {
     grants.Active(..) -> [
       rotate,
@@ -308,9 +313,9 @@ fn logins_of(logins: List(Logins), principal: String) -> Option(Logins) {
   |> option.from_result
 }
 
-// A principal's browser logins, in a list of their own across the row: each
-// with its history and the button that ends it, two steps like every revocation.
-// "This browser" marks the one the page was opened from.
+/// A principal's browser logins, in a list of their own across the row: each
+/// with its history and the button that ends it, two steps like every revocation.
+/// "This browser" marks the one the page was opened from.
 fn sign_ins(
   row: Principal,
   held: Logins,
@@ -345,6 +350,7 @@ fn sign_ins(
   ])
 }
 
+/// Renders an individual sign-in session row for a principal.
 fn sign_in(
   row: Principal,
   signin: Signin,
@@ -383,10 +389,10 @@ fn sign_in(
   ])
 }
 
-// The button that revokes a member's credentials and voids its open claim,
-// armed by a first press. A person with a credential reads it as revoking
-// access and a person with an open claim as voiding the invitation, which is
-// the same change.
+/// The button that revokes a member's credentials and voids its open claim,
+/// armed by a first press. A person with a credential reads it as revoking
+/// access and a person with an open claim as voiding the invitation, which is
+/// the same change.
 fn revocation(
   row: Principal,
   label: String,
@@ -413,7 +419,7 @@ fn kind_words(kind: grants.Kind) -> String {
   }
 }
 
-// What the principal can authenticate with, in words.
+/// What the principal can authenticate with, in words.
 fn credential_words(credential: Credential, now: Int) -> String {
   case credential {
     grants.Active(fingerprint:, claimed_at_ms: Some(claimed)) ->
@@ -436,7 +442,7 @@ fn minutes(milliseconds: Int) -> String {
   int.to_string({ int.max(milliseconds, 0) + 59_999 } / 60_000) <> " min"
 }
 
-// The line that says the page lists the first rows only, or nothing.
+/// The line that says the page lists the first rows only, or nothing.
 fn truncation(more: grants.More) -> Element(message) {
   case more {
     grants.Whole -> element.none()

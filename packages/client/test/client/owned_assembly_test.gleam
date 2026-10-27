@@ -14,20 +14,27 @@ import client/jobs
 import client/memory_config
 import client/retryconf
 import client/schedule
+import client/secrets
 import client/serve
 import client/workspace_policy
 import core/clock
 import core/ids
+import core/json
 import gleam/erlang/process
 import gleam/int
+import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/otp/system
+import gleam/string
 import machine/operation
+import machine/planner
 import machine/strand
 import provider/adapter/anthropic
 import provider/model
 import provider/secret
 import runtime/api
+import runtime/effects
 import session/session
 import simplifile
 import storage/sqlite
@@ -72,6 +79,7 @@ pub fn settings() -> serve.Settings {
     )
   serve.Settings(
     evolution_role: serve.Source,
+    pack: None,
     peer_directory: None,
     peer_defaults: None,
     remote_reach: None,
@@ -442,4 +450,121 @@ fn interrupted_assembly(cleanup_result: Result(Nil, String)) {
     }
   }
   process.demonitor_process(watch)
+}
+
+/// Startup-only diagnostics do not survive inside service restart specifications.
+/// The observation reads only these disposed fixture supervisors, never a daemon.
+pub fn startup_diagnostics_do_not_grow_service_restart_terms_test() {
+  let small = startup_settings_words(0)
+  let large = startup_settings_words(4096)
+  let marker = startup_failures(4096) |> ffi_memory.flat_words
+  io.println(
+    "startup supervisor retained words: small="
+    <> int.to_string(small)
+    <> " large="
+    <> int.to_string(large)
+    <> " marker="
+    <> int.to_string(marker),
+  )
+  assert large == small
+    as "consumed startup diagnostics must not grow retained restart specifications"
+}
+
+fn startup_failures(count: Int) -> List(secrets.Failure) {
+  list.repeat(secrets.Failure("fixture", "startup-only"), count)
+}
+
+fn startup_settings_words(count: Int) -> Int {
+  let settings =
+    serve.Settings(..settings(), secret_failures: startup_failures(count))
+  let #(prepared, instance, watch) = opened(settings, identity(71))
+  let words = instance.services |> system.get_state |> ffi_memory.flat_words
+  assert host.close(prepared, within_ms: 5000) == custody.Closed
+    as "the measured assembly closes through its original custody"
+  lease_is_released(settings)
+  process.demonitor_process(watch)
+  words
+}
+
+/// Model facts retain their model table, not unrelated named profile routing.
+/// All observations use real owned assemblies and release the original lease.
+pub fn unused_catalogue_profiles_do_not_grow_runtime_effects_test() {
+  let ordinary = effects_words_with_profiles(0)
+  let small = effects_words_with_profiles(64)
+  let large = effects_words_with_profiles(256)
+  let roles = settings().catalog.roles
+  io.println(
+    "runtime Effects retained words: ordinary="
+    <> int.to_string(ordinary)
+    <> " profiles64="
+    <> int.to_string(small)
+    <> " profiles256="
+    <> int.to_string(large)
+    <> " marker64="
+    <> int.to_string(ffi_memory.flat_words(unused_profiles(64, roles)))
+    <> " marker256="
+    <> int.to_string(ffi_memory.flat_words(unused_profiles(256, roles))),
+  )
+  assert small == ordinary
+    as "unused profile tables must not enter the runtime Effects graph"
+  assert large == ordinary
+    as "a larger unused profile table must not multiply Effects retention"
+}
+
+fn unused_profiles(
+  count: Int,
+  roles: List(#(model.Role, List(String))),
+) -> List(catalog.Profile) {
+  list.repeat(Nil, count)
+  |> list.index_map(fn(_, index) {
+    catalog.Profile("unused-" <> int.to_string(index), roles)
+  })
+  |> list.sort(fn(a, b) { string.compare(a.name, b.name) })
+}
+
+fn effects_words_with_profiles(count: Int) -> Int {
+  let original = settings()
+  let configured =
+    serve.Settings(
+      ..original,
+      // A different fallback distinguishes a known model's table from a miss.
+      context_window: 99_999,
+      catalog: catalog.Catalog(
+        ..original.catalog,
+        profiles: unused_profiles(count, original.catalog.roles),
+      ),
+    )
+  let #(prepared, instance, watch) = opened(configured, identity(72))
+  let words = ffi_memory.flat_words(instance.runtime.effects)
+  assert_model_facts(instance.runtime, "test", 100_000)
+  assert_model_facts(instance.runtime, "missing", 99_999)
+  assert host.close(prepared, within_ms: 5000) == custody.Closed
+    as "the measured assembly closes through original custody"
+  lease_is_released(configured)
+  process.demonitor_process(watch)
+  words
+}
+
+fn assert_model_facts(
+  runtime: api.Runtime,
+  provider: String,
+  expected_window: Int,
+) {
+  let op = ids.mint_op(ids.generator(clock.fixed(1), 73)).0
+  let assert planner.Admitted(context_window:, api:, ..) =
+    runtime.effects.hooks.admission(effects.AdmissionQuery(
+      operation: op,
+      step_id: "facts-fixture",
+      attempt: 1,
+      configuration: strand.StrandConfiguration(
+        model: strand.ModelIdentity(provider, "test"),
+        thinking_level: strand.ThinkingOff,
+        active_tool_names: [],
+      ),
+      stream_options: json.Object([]),
+    ))
+    as "the real composed admission hook answers model facts"
+  assert context_window == expected_window
+    as "known models use their entry and a missing identity uses fallback"
+  assert api == anthropic.api_name as "the model facts preserve the adapter API"
 }

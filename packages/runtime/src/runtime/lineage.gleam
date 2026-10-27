@@ -153,6 +153,7 @@ fn orchestrator_field(cell: Lineage) -> List(#(String, JsonValue)) {
   }
 }
 
+/// Assembles the common base fields shared by all serialized lineage records.
 fn base_fields(cell: Lineage) -> List(#(String, JsonValue)) {
   [
     #("strand", json.String(cell.strand)),
@@ -197,6 +198,8 @@ fn base_fields(cell: Lineage) -> List(#(String, JsonValue)) {
 ///
 pub fn decode(payload: JsonValue) -> Result(Lineage, CorruptionReport) {
   let where = "runtime/lineage.decode"
+
+  // Decodes the lineage JSON object payload into structured fields.
   case payload {
     json.Object(fields) -> {
       use strand <- result.try(require_string(fields, "strand", where))
@@ -239,6 +242,7 @@ pub fn decode(payload: JsonValue) -> Result(Lineage, CorruptionReport) {
 // strand of this session. A present field must be a string: guessing "local" for
 // a malformed one would make a remote child's cell read as a strand that can be
 // asked about its state.
+/// Decodes the optional orchestrator name string from lineage fields.
 fn decode_orchestrator(
   fields: List(#(String, JsonValue)),
   where: String,
@@ -258,6 +262,7 @@ fn decode_orchestrator(
 
 // Older lineage cells predate continuation budgets. Missing means the shipped
 // ten-minute default; explicit null preserves a host's unbounded policy.
+/// Decodes the optional default budget in milliseconds from lineage fields.
 fn decode_default_budget(
   fields: List(#(String, JsonValue)),
   where: String,
@@ -279,10 +284,12 @@ fn decode_default_budget(
 // A stored call site decodes in full or not at all: a half-readable one
 // would change which replayed spawn recognizes which child, and guessing
 // there mints a second strand.
+/// Decodes the required mintedBy call site object from lineage fields.
 fn decode_call_site(
   fields: List(#(String, JsonValue)),
   where: String,
 ) -> Result(CallSite, CorruptionReport) {
+  // Decodes the mintedBy call site object and validates its fields.
   case list.key_find(fields, "mintedBy") {
     Ok(json.Object(site)) -> {
       use operation_text <- result.try(require_string(site, "operation", where))
@@ -311,6 +318,7 @@ fn decode_call_site(
 // An absent or null deadline is "no budget"; anything else must be an
 // integer instant. A deadline that failed to read as "no budget" would
 // silently un-bound a child, so a malformed one is corruption.
+/// Decodes the optional deadline timestamp from lineage fields.
 fn decode_deadline(
   fields: List(#(String, JsonValue)),
   where: String,
@@ -328,6 +336,7 @@ fn decode_deadline(
   }
 }
 
+/// Looks up a required key from a JSON fields list or returns a corruption report.
 fn require(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -345,12 +354,15 @@ fn require(
   }
 }
 
+/// Looks up a required string field from a JSON fields list.
 fn require_string(
   fields: List(#(String, JsonValue)),
   key: String,
   where: String,
 ) -> Result(String, CorruptionReport) {
   use value <- result.try(require(fields, key, where))
+
+  // Validates that the required field is a string.
   case value {
     json.String(text) -> Ok(text)
     other ->
@@ -363,12 +375,15 @@ fn require_string(
   }
 }
 
+/// Looks up a required integer field from a JSON fields list.
 fn require_int(
   fields: List(#(String, JsonValue)),
   key: String,
   where: String,
 ) -> Result(Int, CorruptionReport) {
   use value <- result.try(require(fields, key, where))
+
+  // Validates that the required field is an integer.
   case value {
     json.Int(number) -> Ok(number)
     other ->
@@ -381,12 +396,15 @@ fn require_int(
   }
 }
 
+/// Looks up a required boolean field from a JSON fields list.
 fn require_bool(
   fields: List(#(String, JsonValue)),
   key: String,
   where: String,
 ) -> Result(Bool, CorruptionReport) {
   use value <- result.try(require(fields, key, where))
+
+  // Validates that the required field is a boolean.
   case value {
     json.Bool(flag) -> Ok(flag)
     other ->
@@ -399,12 +417,15 @@ fn require_bool(
   }
 }
 
+/// Looks up a required string array field from a JSON fields list.
 fn require_string_list(
   fields: List(#(String, JsonValue)),
   key: String,
   where: String,
 ) -> Result(List(String), CorruptionReport) {
   use value <- result.try(require(fields, key, where))
+
+  // Validates that the required field is an array of strings.
   case value {
     json.Array(items) ->
       list.try_map(items, fn(item) {
@@ -453,6 +474,8 @@ pub fn is_descendant(
   limit limit: Int,
 ) -> Bool {
   use <- bool.guard(when: limit <= 0 || candidate == ancestor, return: False)
+
+  // Resolves the candidate lineage cell to walk up the ancestor chain.
   case cells(candidate) {
     None -> False
     Some(cell) ->

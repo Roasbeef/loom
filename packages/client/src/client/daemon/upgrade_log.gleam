@@ -67,6 +67,8 @@ pub fn timed(route: Route, step: String, run: fn() -> answer) -> answer {
   let started = bootstrap.monotonic_time_ms()
   let answer = run()
   let elapsed = bootstrap.monotonic_time_ms() - started
+
+  // Emit a slow upgrade warning only when elapsed execution exceeds the latency budget.
   case elapsed >= slow_ms {
     True ->
       log.warn(logger(), "daemon.upgrade_slow", [
@@ -76,6 +78,7 @@ pub fn timed(route: Route, step: String, run: fn() -> answer) -> answer {
       ])
     False -> Nil
   }
+
   answer
 }
 
@@ -160,7 +163,9 @@ pub fn page_ended(
   ])
 }
 
+/// Maps internal route identifiers to their stable human-readable audit names.
 fn route_name(route: Route) -> String {
+  // This branch resolves route before the operation continues.
   case route {
     Control -> "control"
     Session -> "session"

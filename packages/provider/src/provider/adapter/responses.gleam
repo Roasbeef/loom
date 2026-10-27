@@ -215,6 +215,13 @@ type Part {
   )
 }
 
+// A missing part closure is the only item validation failure eligible for
+// bounded recovery; all other witness failures remain terminal.
+type ItemValidationError {
+  UnclosedParts
+  InvalidItem(reason: String)
+}
+
 // Function calls own argument bytes directly. Messages and reasoning items own
 // typed parts; the distinction prevents a text event from editing a call.
 type ItemKind {
@@ -321,6 +328,7 @@ pub fn subscription_response_machine(
   machine_for(resolved, now, subscription_api_name)
 }
 
+/// Builds an Accumulator and ResponseMachine configured for the resolved model.
 fn machine_for(
   resolved: ResolvedModel,
   now: Int,
@@ -390,6 +398,7 @@ fn machine_for(
 // Disconnect diagnostics describe the last complete event even when the final
 // chunk is only a partial SSE frame. A known HTTP status is not proof that a
 // Responses terminal arrived, and none of these facts establish capacity.
+/// Formats diagnostic disconnect context string from accumulator state.
 fn disconnect_context(acc: Accumulator) -> String {
   "status="
   <> diagnostic_number(Some(acc.status))
@@ -407,6 +416,7 @@ fn disconnect_context(acc: Accumulator) -> String {
 
 // Correlation IDs are the only remote strings retained here. Accept only the
 // fixed OpenAI request-ID shape; a proxy's arbitrary header is not log text.
+/// Extracts and validates x-request-id header matching req_ prefix with 32 hex characters.
 fn request_id(headers: List(#(String, String))) -> String {
   case list.key_find(headers, "x-request-id") {
     Error(Nil) -> "absent"
@@ -423,6 +433,7 @@ fn request_id(headers: List(#(String, String))) -> String {
 }
 
 // The validated suffix is exactly 32 bytes, so this walk is constant-bounded.
+/// Verifies that all bytes in bit array are valid hexadecimal characters.
 fn hex_bytes(bytes: BitArray) -> Bool {
   case bytes {
     <<>> -> True
@@ -434,7 +445,9 @@ fn hex_bytes(bytes: BitArray) -> Bool {
 
 // A media category distinguishes an SSE stream from a 200 proxy error page.
 // Parameters and unfamiliar values are discarded, including oversized headers.
+/// Extracts media type category from content-type header.
 fn media_type(headers: List(#(String, String))) -> String {
+  // Extract content-type header if present.
   case list.key_find(headers, "content-type") {
     Error(Nil) -> "absent"
     Ok(value) -> {
@@ -442,6 +455,8 @@ fn media_type(headers: List(#(String, String))) -> String {
         bit_array.byte_size(bit_array.from_string(value)) > 128,
         "other",
       )
+
+      // Map parsed media type string to known category.
       case
         value
         |> string.split(";")
@@ -460,6 +475,7 @@ fn media_type(headers: List(#(String, String))) -> String {
 
 // Framing and attempt limits are independent of semantic assembly. Reverse
 // accumulation avoids copying every earlier delta for each event in a chunk.
+/// Folds incoming SSE body chunks into accumulator and parses events.
 fn on_chunk(
   acc: Accumulator,
   chunk: BitArray,
@@ -469,6 +485,8 @@ fn on_chunk(
   use <- bool.lazy_guard(acc.bytes > 16_777_216, fn() {
     malformed(acc, "stream_bytes")
   })
+
+  // Process 200 streaming events or collect error response body.
   case acc.status {
     200 -> {
       let #(sse, events) = stream.feed(acc.sse, chunk)
@@ -493,6 +511,7 @@ fn on_chunk(
 
 // The failure describes the violated boundary, never the remote data. A JSON
 // parser excerpt could otherwise copy provider-reflected credentials here.
+/// Emits a MalformedStream terminal event for a protocol boundary failure.
 fn malformed(
   acc: Accumulator,
   reason: String,
@@ -514,6 +533,7 @@ fn malformed(
   )
 }
 
+/// Transitions accumulator to Terminal state and returns a Failed stream event.
 fn fail(
   acc: Accumulator,
   error: stream.ProviderError,
@@ -528,6 +548,7 @@ fn fail(
 
 // The adapter's short-circuit combinator keeps decoder failures on the same
 // once-only terminal path as failures discovered by the transition guards.
+/// Unwraps Result or fails accumulator with MalformedStream.
 fn or_malformed(
   value: Result(a, Nil),
   acc: Accumulator,
@@ -539,6 +560,7 @@ fn or_malformed(
 
 // Internal semantic validators carry a fixed reason through their composed
 // checks. No remote string is ever used as this error value.
+/// Unwraps Result or fails accumulator with InvalidStream.
 fn or_invalid(
   value: Result(a, String),
   acc: Accumulator,
@@ -552,12 +574,15 @@ fn or_invalid(
 
 // SSE event names, when present, must agree with the JSON discriminator.
 // Parsing remains total, and an already terminal attempt ignores even junk.
+/// Parses SSE messages, validates sequence ordering, and dispatches events.
 fn handle_sse(
   acc: Accumulator,
   event: stream.SseEvent,
 ) -> #(Accumulator, List(StreamEvent)) {
   use <- bool.guard(acc.life == Terminal, #(acc, []))
   let acc = Accumulator(..acc, event: "event=unparsed", positions: "")
+
+  // Process SSE framing error or parse message payload.
   case event {
     stream.SseMalformed(..) -> malformed(acc, "sse_framing")
     stream.SseMessage(event: name, data:) -> {
@@ -588,8 +613,11 @@ fn handle_sse(
 
 // Only protocol literals and bounded numbers cross into a failure report. An
 // unknown event name may contain reflected secrets, so it is never echoed.
+/// Extracts safe diagnostic event name and position markers from message payload.
 fn event_witness(value: JsonValue) -> #(String, String) {
   let kind = wire.string_field_or(value, "type", "")
+
+  // Normalize event type to known literal or sanitize unrecognized name.
   let kind = case kind {
     "keepalive"
     | "response.created"
@@ -619,6 +647,7 @@ fn event_witness(value: JsonValue) -> #(String, String) {
     | "error" -> kind
     _ -> "unknown"
   }
+
   #(
     "event=" <> kind <> "; seq=" <> diagnostic_field(value, "sequence_number"),
     "; output="
@@ -634,6 +663,7 @@ fn event_witness(value: JsonValue) -> #(String, String) {
 
 // Missing and malformed numbers remain distinguishable without serializing the
 // provider value. Large arbitrary-precision integers receive a fixed marker.
+/// Formats an optional field name into diagnostic string representation.
 fn diagnostic_field(value: JsonValue, name: String) -> String {
   case wire.field(value, name) {
     Error(Nil) -> "absent"
@@ -642,6 +672,7 @@ fn diagnostic_field(value: JsonValue, name: String) -> String {
   }
 }
 
+/// Formats an optional integer value into diagnostic string representation.
 fn diagnostic_number(value: Option(Int)) -> String {
   case value {
     None -> "absent"
@@ -652,6 +683,7 @@ fn diagnostic_number(value: Option(Int)) -> String {
 
 // Compatible endpoints may omit sequence numbers. A later present value must
 // still advance beyond the last observed one, including across omissions.
+/// Validates monotonic increment of stream sequence numbers.
 fn sequence(
   previous: Option(Int),
   value: JsonValue,
@@ -670,6 +702,7 @@ fn sequence(
 
 // Every supported semantic event has an explicit transition. Unknown content
 // fails instead of silently changing the meaning of a tool or assistant turn.
+/// Dispatches parsed event document to appropriate state machine transition.
 fn dispatch(
   acc: Accumulator,
   kind: String,
@@ -689,6 +722,8 @@ fn dispatch(
         acc,
         "metadata_response_id",
       )
+
+      // Verify metadata response ID matches initial response identity.
       case acc.identity {
         Some(#(id, _)) if id == response_id -> #(acc, [])
         _ -> malformed(acc, "metadata_identity")
@@ -756,12 +791,15 @@ fn dispatch(
   }
 }
 
+/// Extracts and validates response ID and model from response object.
 fn identity(
   acc: Accumulator,
   response: JsonValue,
 ) -> Result(#(String, String), Nil) {
   use id <- result.try(items.nonempty(response, "id"))
   use model <- result.try(items.nonempty(response, "model"))
+
+  // Verify identity consistency against previous established identity.
   case acc.identity {
     None -> Ok(#(id, model))
     Some(existing) if existing == #(id, model) -> Ok(existing)
@@ -771,9 +809,12 @@ fn identity(
 
 // Known error codes retain retry and overflow semantics without copying the
 // remote message, which may contain request headers or credentials.
+/// Maps raw error object to sanitized error code and safe description.
 fn error_fields(value: JsonValue) -> #(String, String) {
   let code =
     wire.string_field_or(value, "code", wire.string_field_or(value, "type", ""))
+
+  // Classify error code into standard provider error category.
   case code {
     "overloaded_error"
     | "rate_limit_error"
@@ -796,6 +837,7 @@ fn error_fields(value: JsonValue) -> #(String, String) {
   }
 }
 
+/// Constructs a ProviderError from collected error response body.
 fn http_error(acc: Accumulator, status: Int) -> stream.ProviderError {
   let value =
     acc.error_body
@@ -809,6 +851,7 @@ fn http_error(acc: Accumulator, status: Int) -> stream.ProviderError {
 
 // Item publication reserves both identities before any deltas are accepted.
 // A call's synthetic block is allocated here because it has no part-added event.
+/// Handles response.output_item.added event to initialize message or call item.
 fn add_item(
   acc: Accumulator,
   value: JsonValue,
@@ -821,6 +864,8 @@ fn add_item(
   use value <- or_malformed(wire.field(value, "item"), acc, "item_field")
   use id <- or_malformed(items.nonempty(value, "id"), acc, "item_id")
   use kind <- or_malformed(wire.string_field(value, "type"), acc, "item_type")
+
+  // Extract optional message phase if item is a message.
   use phase <- or_malformed(
     case kind {
       "message" -> items.message_phase(value)
@@ -829,6 +874,7 @@ fn add_item(
     acc,
     "item_phase",
   )
+
   use start_status <- or_malformed(
     items.optional_string(value, "status"),
     acc,
@@ -849,6 +895,8 @@ fn add_item(
       || list.any(acc.items, fn(item) { item.index == index || item.id == id }),
     fn() { malformed(acc, "item_start_identity") },
   )
+
+  // Validate item type and structure before creating item record.
   use kind <- or_malformed(
     case kind {
       "message" -> {
@@ -904,10 +952,13 @@ fn add_item(
     acc,
     "item_start",
   )
+
+  // Increment block index if item is a function call.
   let next_block = case kind {
     Function(..) -> acc.next_block + 1
     _ -> acc.next_block
   }
+
   #(
     Accumulator(
       ..acc,
@@ -931,6 +982,7 @@ fn add_item(
 
 // Both provider keys must name the same live item. A late fragment cannot
 // reopen an item whose closing witness has already been accepted.
+/// Locates matching unclosed item by output index and item ID.
 fn find_item(acc: Accumulator, value: JsonValue) -> Result(Item, Nil) {
   use index <- result.try(wire.int_field(value, "output_index"))
   use id <- result.try(items.nonempty(value, "item_id"))
@@ -939,6 +991,7 @@ fn find_item(acc: Accumulator, value: JsonValue) -> Result(Item, Nil) {
   })
 }
 
+/// Updates matching item in accumulator items list.
 fn replace(acc: Accumulator, item: Item) -> Accumulator {
   Accumulator(
     ..acc,
@@ -951,6 +1004,7 @@ fn replace(acc: Accumulator, item: Item) -> Accumulator {
   )
 }
 
+/// Extracts part index from event payload based on event family.
 fn part_index(kind: String, value: JsonValue) -> Result(Int, Nil) {
   case kind {
     "response.reasoning_summary_part.added"
@@ -964,6 +1018,7 @@ fn part_index(kind: String, value: JsonValue) -> Result(Int, Nil) {
 
 // A part starts empty and receives its permanent delta index exactly once.
 // The event family and part kind must agree on the index namespace.
+/// Adds a new content part to an active item.
 fn add_part(
   acc: Accumulator,
   event: String,
@@ -973,6 +1028,8 @@ fn add_part(
   use index <- or_malformed(part_index(event, value), acc, "part_index")
   use raw <- or_malformed(wire.field(value, "part"), acc, "part_field")
   use raw <- or_malformed(items.part(raw), acc, "part_decode")
+
+  // Determine part kind based on wire type and parent item kind.
   use kind <- or_malformed(
     case wire.string_field(raw, "type"), item.kind {
       Ok("output_text"), Message -> Ok(OutputText)
@@ -984,6 +1041,7 @@ fn add_part(
     acc,
     "part_kind",
   )
+
   use <- bool.lazy_guard(
     index < 0
       || list.any(item.parts, fn(part) {
@@ -1013,6 +1071,7 @@ fn add_part(
   )
 }
 
+/// Maps event type string to corresponding PartKind.
 fn event_part_kind(kind: String) -> PartKind {
   case kind {
     "response.refusal.delta" | "response.refusal.done" -> Refusal
@@ -1028,6 +1087,7 @@ fn same_namespace(left: PartKind, right: PartKind) -> Bool {
   { left == Summary } == { right == Summary }
 }
 
+/// Extracts text string from a content part JSON value based on part kind.
 fn part_text(value: JsonValue, kind: PartKind) -> String {
   wire.string_field_or(
     value,
@@ -1041,6 +1101,7 @@ fn part_text(value: JsonValue, kind: PartKind) -> String {
 
 // A text-done event compares exact bytes and emits nothing. Only an open part
 // accepts deltas, so duplicate completion cannot append content twice.
+/// Updates content part text or marks part as text-done.
 fn change_part(
   acc: Accumulator,
   event: String,
@@ -1088,6 +1149,7 @@ fn change_part(
     True -> Part(..part, closure: TextDone)
     False -> Part(..part, text: part.text <> text)
   }
+
   let item =
     Item(
       ..item,
@@ -1098,6 +1160,8 @@ fn change_part(
         }
       }),
     )
+
+  // Emit text or thinking delta if not done.
   let events = case done, kind {
     True, _ -> []
     False, OutputText | False, Refusal -> [
@@ -1107,9 +1171,11 @@ fn change_part(
       stream.Delta(stream.ThinkingDelta(part.block, text)),
     ]
   }
+
   #(replace(acc, item), events)
 }
 
+/// Encodes a Part record into its wire JSON representation.
 fn part_value(part: Part) -> JsonValue {
   case part.kind {
     OutputText ->
@@ -1138,6 +1204,7 @@ fn part_value(part: Part) -> JsonValue {
 
 // The part witness additionally covers annotations and the content kind;
 // equal text alone is not enough to close a different semantic part.
+/// Closes an open content part after verifying completion.
 fn close_part(
   acc: Accumulator,
   event: String,
@@ -1178,6 +1245,7 @@ fn close_part(
 
 // An annotation is a bounded replay field, not a new text delta. Its index
 // must append to the exact part's citation sequence before that part closes.
+/// Adds a citation annotation to an active content part.
 fn add_annotation(
   acc: Accumulator,
   value: JsonValue,
@@ -1235,12 +1303,15 @@ fn add_annotation(
 
 // Argument text is provider protocol until all witnesses agree. Whether that
 // agreed text is valid model-authored JSON is decided later by wire.tool_arguments.
+/// Handles streaming function call arguments delta and done events.
 fn arguments(
   acc: Accumulator,
   event: String,
   value: JsonValue,
 ) -> #(Accumulator, List(StreamEvent)) {
   use item <- or_malformed(find_item(acc, value), acc, "arguments_item")
+
+  // Extract function call fields from active unclosed function item.
   use fields <- or_malformed(
     case item.kind {
       Function(call_id:, name:, namespace:, block:, arguments:, closure: Open) ->
@@ -1250,6 +1321,7 @@ fn arguments(
     acc,
     "arguments_open",
   )
+
   let #(call_id, name, namespace, block, previous) = fields
   use named <- or_malformed(
     items.optional_string(value, "name"),
@@ -1287,12 +1359,15 @@ fn arguments(
   use <- bool.lazy_guard(done && text != previous, fn() {
     malformed(acc, "arguments_done_witness")
   })
+
+  // Update argument text and emit ToolCallDelta if not done.
   let #(arguments, closure, events) = case done {
     True -> #(previous, TextDone, [])
     False -> #(previous <> text, Open, [
       stream.Delta(stream.ToolCallDelta(block, call_id, name, text)),
     ])
   }
+
   #(
     replace(
       acc,
@@ -1314,6 +1389,7 @@ fn arguments(
 
 // Canonicalization removes unknown metadata before comparison, but it cannot
 // replace any streamed content. Every part must already have its own closure.
+/// Finalizes an output item and verifies consistency against canonical item payload.
 fn close_item(
   acc: Accumulator,
   value: JsonValue,
@@ -1334,11 +1410,19 @@ fn close_item(
     acc,
     "item_done_lookup",
   )
-  use Nil <- or_invalid(verify_item(item, canonical), acc)
+  use Nil <- or_item_validation(
+    verify_item(item, canonical),
+    acc,
+    item,
+    canonical,
+  )
+
+  // Allocate empty thinking block if item is an empty thought.
   let #(empty_block, next_block) = case item.kind, item.parts {
     Thought, [] -> #(Some(acc.next_block), acc.next_block + 1)
     _, _ -> #(None, acc.next_block)
   }
+
   #(
     Accumulator(
       ..replace(acc, Item(..item, done: Some(canonical), empty_block:)),
@@ -1350,18 +1434,27 @@ fn close_item(
 
 // Part arrays are indexed arrays, not sparse maps. Summary and content arrays
 // each prove their own contiguous positions before matching the item witness.
-fn verify_item(item: Item, canonical: JsonValue) -> Result(Nil, String) {
-  // A supplied initial phase is a witness, not a default. An omitted phase
-  // may be learned at completion, but an observed one cannot be rewritten.
+/// Verifies completed item consistency and part continuity against canonical value.
+fn verify_item(
+  item: Item,
+  canonical: JsonValue,
+) -> Result(Nil, ItemValidationError) {
+  // An omitted phase can be learned at completion; an observed phase cannot
+  // be rewritten by the final witness.
   use <- bool.guard(
     item.phase != None
       && item.phase != option.from_result(wire.string_field(canonical, "phase")),
-    Error("item_phase_mismatch"),
+    Error(InvalidItem("item_phase_mismatch")),
   )
   use <- bool.guard(
     list.any(item.parts, fn(part) { part.closure != Closed }),
-    Error("item_parts_unclosed"),
+    Error(UnclosedParts),
   )
+  verify_item_rest(item, canonical) |> result.map_error(InvalidItem)
+}
+
+/// Checks the remaining item witnesses after part closure is established.
+fn verify_item_rest(item: Item, canonical: JsonValue) -> Result(Nil, String) {
   use <- bool.guard(
     wire.string_field(canonical, "status") == Ok("in_progress"),
     Error("item_status_in_progress"),
@@ -1372,6 +1465,8 @@ fn verify_item(item: Item, canonical: JsonValue) -> Result(Nil, String) {
       || !contiguous(list.filter(parts, fn(part) { part.kind != Summary })),
     Error("item_parts_noncontiguous"),
   )
+
+  // Match item kind and verify fields match canonical item object.
   case item.kind {
     Function(call_id:, name:, namespace:, arguments:, closure: TextDone, ..) -> {
       use <- bool.guard(
@@ -1410,6 +1505,89 @@ fn verify_item(item: Item, canonical: JsonValue) -> Result(Nil, String) {
   }
 }
 
+/// Preserves the validation variant without inspecting a diagnostic string.
+fn or_item_validation(
+  value: Result(Nil, ItemValidationError),
+  acc: Accumulator,
+  item: Item,
+  canonical: JsonValue,
+  then: fn(Nil) -> #(Accumulator, List(StreamEvent)),
+) -> #(Accumulator, List(StreamEvent)) {
+  // Only the missing part witness selects the bounded recovery class.
+  case value {
+    Ok(Nil) -> then(Nil)
+    Error(InvalidItem(reason)) -> malformed(acc, reason)
+    Error(UnclosedParts) -> {
+      let open = list.filter(item.parts, fn(part) { part.closure != Closed })
+
+      // Report the first unclosed part without its contents or identifier.
+      let first = case open {
+        [part, ..] ->
+          part_kind_name(part.kind) <> "/" <> closure_name(part.closure)
+        [] -> "unknown"
+      }
+
+      // Item kinds are a local, closed vocabulary.
+      let kind = case item.kind {
+        Message -> "message"
+        Thought -> "reasoning"
+        Function(..) -> "function_call"
+      }
+
+      // Never copy an unknown remote status into the diagnostic.
+      let status = case wire.string_field(canonical, "status") {
+        Ok("completed") -> "completed"
+        Ok("in_progress") -> "in_progress"
+        Ok("incomplete") -> "incomplete"
+        Ok(_) | Error(_) -> "unknown"
+      }
+
+      fail(
+        acc,
+        stream.RecoverableStreamCorruption(corruption.report(
+          at: "provider/adapter/responses",
+          on: "provider stream; " <> acc.event,
+          expected: "consistent Responses item and terminal witnesses",
+          context: "reason=item_parts_unclosed; kind="
+            <> kind
+            <> "; status="
+            <> status
+            <> "; open="
+            <> first
+            <> "; parts="
+            <> int.to_string(list.length(item.parts))
+            <> "; unclosed="
+            <> int.to_string(list.length(open))
+            <> acc.positions
+            <> "; last_seq="
+            <> diagnostic_number(acc.sequence)
+            <> "; bytes="
+            <> diagnostic_number(Some(acc.bytes)),
+        )),
+      )
+    }
+  }
+}
+
+/// Maps a part kind to a locally defined diagnostic label.
+fn part_kind_name(kind: PartKind) -> String {
+  case kind {
+    OutputText -> "output_text"
+    Refusal -> "refusal"
+    Summary -> "summary"
+    Reasoning -> "reasoning"
+  }
+}
+
+/// Maps a closure state to a locally defined diagnostic label.
+fn closure_name(closure: Closure) -> String {
+  case closure {
+    Open -> "open"
+    TextDone -> "text_done"
+    Closed -> "closed"
+  }
+}
+
 fn contiguous(parts: List(Part)) -> Bool {
   list.all(
     list.index_map(parts, fn(part, index) { part.index == index }),
@@ -1421,6 +1599,7 @@ fn contiguous(parts: List(Part)) -> Bool {
 // terminals may carry an empty output array after streaming the item witnesses;
 // every item must still have closed. A populated array must match those items.
 // EOF is never this proof.
+/// Processes terminal response event, validating all items and establishing outcome.
 fn terminal(
   acc: Accumulator,
   event: String,
@@ -1481,6 +1660,7 @@ fn terminal(
     "codex-subscription", [] -> expected
     _, _ -> output
   }
+
   use <- bool.lazy_guard(output != expected, fn() {
     malformed(acc, "terminal_output_mismatch")
   })
@@ -1519,6 +1699,8 @@ fn terminal(
     list.any(ordered, fn(item) {
       list.any(item.parts, fn(part) { part.kind == Refusal })
     })
+
+  // Determine stop reason from terminal event and status.
   let stop = case event, status {
     "response.completed", "completed" ->
       Ok(#(
@@ -1534,6 +1716,8 @@ fn terminal(
     "response.incomplete", "incomplete" -> incomplete(response)
     _, _ -> Error("invalid_status")
   }
+
+  // Check for error status or refusal to settle terminal event.
   case stop {
     Error("invalid_status") -> malformed(acc, "terminal_status_mismatch")
     Error(_reason) ->
@@ -1542,6 +1726,7 @@ fn terminal(
         stream.UnmappedStopReason("Responses incomplete reason is unsupported"),
       )
     Ok(#(stop, raw, error)) -> {
+      // Override stop reason to Errored if refusal was recorded.
       let #(stop, raw, error) = case refusal {
         True -> #(
           message.Errored,
@@ -1550,6 +1735,7 @@ fn terminal(
         )
         False -> #(stop, raw, error)
       }
+
       settle(acc, identity, output, response, stop, raw, error)
     }
   }
@@ -1557,6 +1743,7 @@ fn terminal(
 
 // Only the two known incomplete reasons carry defined partial-result semantics.
 // Unknown provider labels are not copied into errors or interpreted as success.
+/// Maps incomplete details reason string to stop reason and error text.
 fn incomplete(
   response: JsonValue,
 ) -> Result(#(message.StopReason, String, Option(String)), String) {
@@ -1565,6 +1752,8 @@ fn incomplete(
     |> wire.field("incomplete_details")
     |> result.try(wire.string_field(_, "reason"))
     |> result.unwrap("")
+
+  // Map incomplete reason code to stop reason.
   case reason {
     "max_output_tokens" -> Ok(#(message.Length, reason, None))
     "content_filter" ->
@@ -1576,6 +1765,7 @@ fn incomplete(
 // Accounting uses the shared clamped vocabulary and overflow rule. Content is
 // then ordered by the delta indices already exposed to callers, while replay
 // retains the provider order through compact, independently validated metadata.
+/// Finalizes stream settlement creating settled message and terminal event.
 fn settle(
   acc: Accumulator,
   identity: #(String, String),
@@ -1587,6 +1777,8 @@ fn settle(
 ) -> #(Accumulator, List(StreamEvent)) {
   let usage = acc.usage
   let prompt = usage.input + usage.cache_read + usage.cache_write
+
+  // Check whether prompt tokens exceeded context window limit.
   let #(stop, error) = case
     prompt > acc.resolved.context_window && usage.output <= 64
   {
@@ -1596,6 +1788,7 @@ fn settle(
     )
     False -> #(stop, error)
   }
+
   let ordered = list.sort(acc.items, fn(a, b) { int.compare(a.index, b.index) })
   let order = list.flat_map(ordered, block_order)
   let content =
@@ -1646,8 +1839,11 @@ fn settle(
 // Wire output order and delta arrival order can differ under interleaving.
 // This permutation keeps durable block indices equal to the emitted indices,
 // while the compact replay template restores the provider's own item order.
+/// Returns the emitted block indices for a completed item.
 fn block_order(item: Item) -> List(Int) {
   let parts = list.sort(item.parts, fn(a, b) { int.compare(a.index, b.index) })
+
+  // Map item parts to their allocated stream block indices.
   case item.kind {
     Function(block:, ..) -> [block]
     Message -> list.map(parts, fn(part) { part.block })
@@ -1675,11 +1871,13 @@ fn billing(api: String) -> usage_evidence.Billing {
 
 // A terminal replaces the previous snapshot. Missing final usage retains any
 // measured prefix as partial; absence never establishes a remote zero cost.
+/// Validates and records usage metadata in accumulator.
 fn record_usage(
   acc: Accumulator,
   response: JsonValue,
   coverage: usage_evidence.Coverage,
 ) -> Result(Accumulator, Nil) {
+  // Extract and record usage metadata if present in response.
   case wire.field(response, "usage") {
     Error(Nil) -> Ok(acc)
     Ok(value) -> {
@@ -1699,6 +1897,7 @@ fn record_usage(
 
 // Final output must be present in the terminal itself; an initial zero output
 // cannot establish that the provider did no work after its created event.
+/// Builds evidence record for response usage metadata based on coverage.
 fn response_usage_evidence(
   witness: usage_witness.Witness,
   value: JsonValue,
@@ -1719,7 +1918,9 @@ fn response_usage_evidence(
 
 // Present malformed counts cannot masquerade as omitted counts. Compatible
 // endpoints may omit fields; integer bounds retain the shared clamping policy.
+/// Validates usage metadata structure and numeric field types.
 fn validate_usage(value: JsonValue) -> Result(Nil, Nil) {
+  // Ensure usage value is a JSON object.
   use fields <- result.try(case value {
     json.Object(fields:) -> Ok(fields)
     json.Null
@@ -1729,6 +1930,7 @@ fn validate_usage(value: JsonValue) -> Result(Nil, Nil) {
     | json.String(_)
     | json.Array(_) -> Error(Nil)
   })
+
   use Nil <- result.try(
     validate_counts(fields, ["input_tokens", "output_tokens", "total_tokens"]),
   )
@@ -1741,6 +1943,7 @@ fn validate_usage(value: JsonValue) -> Result(Nil, Nil) {
   validate_details(fields, "output_tokens_details", ["reasoning_tokens"])
 }
 
+/// Validates nested details object contains valid counts.
 fn validate_details(
   fields: List(#(String, JsonValue)),
   name: String,
@@ -1757,6 +1960,7 @@ fn validate_details(
   }
 }
 
+/// Validates that specified count keys have integer or null values.
 fn validate_counts(
   fields: List(#(String, JsonValue)),
   names: List(String),
@@ -1778,6 +1982,7 @@ fn validate_counts(
 
 // Reported input includes cache reads and writes. Clamp before subtracting so
 // the split conserves the whole prompt even when a proxy reports impossible counts.
+/// Computes canonical usage token counters from wire usage object.
 fn usage(
   value: JsonValue,
   evidence: usage_evidence.Evidence,

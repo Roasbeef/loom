@@ -206,11 +206,13 @@ pub fn precheck(
   }
 }
 
-// A refusal as the in-band denial a program reads. A missing tool gets the
-// message that names the capability and the tool; every other refusal is
-// the Agency's own sentence under the code `orchestration.refusal_code`
-// gives it, so a transient fault reads as one and the vocabulary has one
-// owner.
+/// Formats an Agency refusal as an in-band capability denial.
+///
+/// A missing tool gets the
+/// message that names the capability and the tool; every other refusal is
+/// the Agency's own sentence under the code `orchestration.refusal_code`
+/// gives it, so a transient fault reads as one and the vocabulary has one
+/// owner.
 fn denial(cap: String, refusal: Refusal) -> CapDenial {
   case refusal {
     agent.ToolNotHeld(tool:) ->
@@ -226,6 +228,8 @@ fn denial(cap: String, refusal: Refusal) -> CapDenial {
   }
 }
 
+/// Builds the caller identity record for an authorized capability request.
+/// Builds the caller identity record for an authorized capability request.
 fn caller_of(request: CapRequest, strand: String, source_index: Int) -> Caller {
   agent.Caller(
     strand:,

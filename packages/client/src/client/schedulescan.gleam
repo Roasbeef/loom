@@ -451,6 +451,8 @@ pub fn supervised(
 // than through `process.send_after` on the wall clock. Two clocks in a
 // session built to have one is a run that is not deterministic, and this
 // machine's whole liveness is its timer.
+
+/// Establishes builder for the caller, keeping its validation and result policy at this boundary.
 fn builder(
   options: Options,
   runtime: Runtime,
@@ -477,6 +479,8 @@ fn builder(
 // exists because nothing has scanned yet: the delay a scan would compute
 // is unknown until one has read the store. `first_tick_delay_ms` says
 // why it is zero.
+
+/// Establishes entered for the caller, keeping its validation and result policy at this boundary.
 fn entered(
   _from: Phase,
   _to: Phase,
@@ -494,6 +498,8 @@ fn entered(
 // what supersedes whichever arming produced this one. A wake for an
 // arming already superseded never arrives here: the timer book drops it
 // on its generation stamp.
+
+/// Establishes handle for the caller, keeping its validation and result policy at this boundary.
 fn handle(
   state: Phase,
   data: State,
@@ -506,6 +512,8 @@ fn handle(
 
 // One pass over every due schedule, ending in exactly one armed wake or
 // in the timer cancelled.
+
+/// Establishes scan for the caller, keeping its validation and result policy at this boundary.
 fn scan(data: State) -> sm.Next(Phase, State, Message) {
   let #(now_ms, _clock) = clock.read(data.runtime.effects.clock)
   let now_s = now_ms / 1000
@@ -554,6 +562,8 @@ fn due_schedules(state: State) -> List(Schedule) {
 // and every tick reads the whole of it (issue #164). A cell that does
 // not decode is dropped rather than failing the tick: a schedule stored
 // by a build with looser bounds is not a schedule that runs today.
+
+/// Establishes model schedules for the caller, keeping its validation and result policy at this boundary.
 fn model_schedules(state: State) -> List(Schedule) {
   case read_prefix(state, schedule.config_key_prefix) {
     Error(Nil) -> []
@@ -565,6 +575,7 @@ fn model_schedules(state: State) -> List(Schedule) {
   }
 }
 
+/// Establishes process schedule for the caller, keeping its validation and result policy at this boundary.
 fn process_schedule(
   state: State,
   sched: Schedule,
@@ -576,6 +587,8 @@ fn process_schedule(
   // computing: nothing will read the injection and no later tick will
   // find the strand alive again.
   use <- bool.guard(when: finished(state, sched.target), return: Expired)
+
+  // Decide how to handle sched.timing {.
   case sched.timing {
     schedule.Interval(seconds:, expiry:) ->
       process_interval(state, sched, seconds, expiry, now_ms, now_s)
@@ -622,8 +635,12 @@ fn process_schedule(
 // schedule fired onto one may open a run. The Agency writes a lineage
 // cell before the brief is accepted, so a `sub:` name with no cell is
 // not a strand this session started.
+
+/// Establishes finished for the caller, keeping its validation and result policy at this boundary.
 fn finished(state: State, target: String) -> Bool {
   use <- bool.guard(when: !agency.is_subagent(target), return: False)
+
+  // Decide how to handle read_fact(state, lineage.register_key(target)) {.
   case read_fact(state, lineage.register_key(target)) {
     None -> True
     Some(payload) ->
@@ -638,6 +655,8 @@ fn finished(state: State, target: String) -> Bool {
 // Read second, and only when the reap mark says nothing, because it is
 // the more expensive of the two facts and the cheaper one is decisive
 // when it answers.
+
+/// Establishes settled for the caller, keeping its validation and result policy at this boundary.
 fn settled(state: State, cell: lineage.Lineage) -> Bool {
   api.await_strand_result(
     state.runtime,
@@ -671,6 +690,8 @@ fn settled(state: State, cell: lineage.Lineage) -> Bool {
 // missing. The floor costs one timer per `schedule.min_interval_s` and
 // bounds the worst case to noticing a new schedule one interval late
 // instead of never.
+
+/// Establishes rearm for the caller, keeping its validation and result policy at this boundary.
 fn rearm(
   data: State,
   statuses: List(ScheduleStatus),
@@ -682,6 +703,8 @@ fn rearm(
         Active(next_delay_ms:) -> Ok(next_delay_ms)
       }
     })
+
+  // Decide how to handle delays, data.options.model_door {.
   case delays, data.options.model_door {
     [], DoorShut -> sm.keep(data) |> sm.cancel_timeout(name: scan_timer)
     [], DoorOpen -> arm(data, idle_rescan_ms())
@@ -701,6 +724,8 @@ fn rearm(
 // interval from above, and a one-shot `at` far enough out overflows on
 // its own. Waking early costs one wasted scan, which re-derives the same
 // answer and re-arms; waking never costs every schedule in the session.
+
+/// Establishes arm for the caller, keeping its validation and result policy at this boundary.
 fn arm(data: State, delay_ms: Int) -> sm.Next(Phase, State, Message) {
   sm.keep(data)
   |> sm.with_named_timeout(
@@ -754,6 +779,7 @@ pub fn poke(name: address.Address(Message)) -> Nil {
 
 // --- interval schedules ------------------------------------------------
 
+/// Establishes process interval for the caller, keeping its validation and result policy at this boundary.
 fn process_interval(
   state: State,
   sched: Schedule,
@@ -763,6 +789,8 @@ fn process_interval(
   now_s: Int,
 ) -> ScheduleStatus {
   let prefix = schedule.fired_key_prefix(strand: sched.target, name: sched.name)
+
+  // Decide how to handle read_prefix(state, prefix) {.
   case read_prefix(state, prefix) {
     // A store read that fails is not worth stopping for: retry on the
     // schedule's own cadence, which is already bounded well above a
@@ -773,6 +801,7 @@ fn process_interval(
   }
 }
 
+/// Establishes interval with marks for the caller, keeping its validation and result policy at this boundary.
 fn interval_with_marks(
   state: State,
   sched: Schedule,
@@ -792,6 +821,7 @@ fn interval_with_marks(
   // cell behind: one row, and no further ticks to write another.
   let since_s = observed_since(state, sched, now_s)
 
+  // Decide how to handle schedule.recurring_expired(occurrences:, expiry:, now_s:, since_s:) {.
   case schedule.recurring_expired(occurrences:, expiry:, now_s:, since_s:) {
     True -> Expired
     False -> {
@@ -817,8 +847,12 @@ fn interval_with_marks(
 // writes the cell a second time, which is why an operator's schedule and
 // a model's need no separate treatment: whichever store the schedule
 // came from, its clock started when this scanner first saw it.
+
+/// Establishes observed since for the caller, keeping its validation and result policy at this boundary.
 fn observed_since(state: State, sched: Schedule, now_s: Int) -> Int {
   let key = schedule.seen_key(strand: sched.target, name: sched.name)
+
+  // Decide how to handle read_fact(state, key) {.
   case read_fact(state, key) {
     Some(recorded) -> recorded_since(state, key, recorded, now_s)
     None -> claim_since(state, key, now_s)
@@ -831,6 +865,8 @@ fn observed_since(state: State, sched: Schedule, now_s: Int) -> Int {
 // this tick failed to establish rather than overwritten with `now_s`: a
 // schedule's life must not be re-based because one tick met a corrupt
 // cell.
+
+/// Establishes recorded since for the caller, keeping its validation and result policy at this boundary.
 fn recorded_since(
   state: State,
   key: String,
@@ -847,6 +883,8 @@ fn recorded_since(
 // The first observation, claimed with an expect-absent compare-and-set
 // rather than a blind write, so two incarnations ticking across the same
 // gap cannot each record their own idea of when this schedule began.
+
+/// Establishes claim since for the caller, keeping its validation and result policy at this boundary.
 fn claim_since(state: State, key: String, now_s: Int) -> Int {
   case
     api.put_reserved_fact_expecting(
@@ -862,6 +900,8 @@ fn claim_since(state: State, key: String, now_s: Int) -> Int {
 }
 
 // Why a claim did not land, and what each answer means for this tick.
+
+/// Establishes unclaimed since for the caller, keeping its validation and result policy at this boundary.
 fn unclaimed_since(
   state: State,
   key: String,
@@ -908,6 +948,8 @@ fn reclaimed_since(state: State, key: String, now_s: Int) -> Int {
 // shorten a schedule's life, and it must not silently lengthen one
 // either — hence a warning rather than silence, because a cell that
 // never lands is an age bound that never arrives.
+
+/// Establishes unrecorded for the caller, keeping its validation and result policy at this boundary.
 fn unrecorded(state: State, key: String, reason: String, now_s: Int) -> Int {
   log.warn(state.options.logger, "schedule.seen_unrecorded", [
     field.text(key: "key", value: key),
@@ -926,6 +968,8 @@ fn unrecorded(state: State, key: String, reason: String, now_s: Int) -> Int {
 // the same "never iterate backward over skipped slots" property that
 // makes a missed window cost at most one late fire rather than one
 // attempt is a debt carried forward.
+
+/// Establishes maybe fire interval for the caller, keeping its validation and result policy at this boundary.
 fn maybe_fire_interval(
   state: State,
   sched: Schedule,
@@ -971,6 +1015,7 @@ type CronClock {
   CronClock(expression: cron.Expression, offset_s: Int)
 }
 
+/// Establishes process cron for the caller, keeping its validation and result policy at this boundary.
 fn process_cron(
   state: State,
   sched: Schedule,
@@ -980,6 +1025,8 @@ fn process_cron(
   now_s: Int,
 ) -> ScheduleStatus {
   let prefix = schedule.fired_key_prefix(strand: sched.target, name: sched.name)
+
+  // Decide how to handle read_prefix(state, prefix) {.
   case read_prefix(state, prefix) {
     // A store read that fails is retried on the rescan floor rather than
     // on the schedule's own cadence: unlike an interval there is no
@@ -993,6 +1040,7 @@ fn process_cron(
   }
 }
 
+/// Establishes cron with marks for the caller, keeping its validation and result policy at this boundary.
 fn cron_with_marks(
   state: State,
   sched: Schedule,
@@ -1011,6 +1059,7 @@ fn cron_with_marks(
   // is decided against the value that claim settled on.
   let since_s = observed_since(state, sched, now_s)
 
+  // Decide how to handle schedule.recurring_expired(occurrences:, expiry:, now_s:, since_s:) {.
   case schedule.recurring_expired(occurrences:, expiry:, now_s:, since_s:) {
     True -> Expired
 
@@ -1030,6 +1079,8 @@ fn cron_with_marks(
 // slept through. `None` — nothing owed, because the last match predates
 // the schedule's own observation instant — is the ordinary state of a
 // freshly created schedule and not an error.
+
+/// Establishes maybe fire cron for the caller, keeping its validation and result policy at this boundary.
 fn maybe_fire_cron(
   state: State,
   sched: Schedule,
@@ -1039,6 +1090,8 @@ fn maybe_fire_cron(
   now_s: Int,
 ) -> Nil {
   let CronClock(expression:, offset_s:) = cron_clock
+
+  // Decide how to handle schedule.cron_occurrence(expression:, offset_s:, now_s:, since_s:) {.
   case schedule.cron_occurrence(expression:, offset_s:, now_s:, since_s:) {
     None -> Nil
 
@@ -1054,6 +1107,7 @@ fn maybe_fire_cron(
   }
 }
 
+/// Establishes fire cron occurrence for the caller, keeping its validation and result policy at this boundary.
 fn fire_cron_occurrence(
   state: State,
   sched: Schedule,
@@ -1091,6 +1145,8 @@ fn fire_cron_occurrence(
 // honest answer and the only one that does not leave the machine waking up
 // forever over an expression that will never match. It is logged because
 // an operator who wrote that expression meant something else.
+
+/// Establishes cron rearm for the caller, keeping its validation and result policy at this boundary.
 fn cron_rearm(
   state: State,
   sched: Schedule,
@@ -1099,6 +1155,8 @@ fn cron_rearm(
   now_s: Int,
 ) -> ScheduleStatus {
   let CronClock(expression:, offset_s:) = cron_clock
+
+  // Decide how to handle schedule.cron_next_delay_ms(expression:, offset_s:, now_s:, now_ms:) {.
   case schedule.cron_next_delay_ms(expression:, offset_s:, now_s:, now_ms:) {
     Some(next_delay_ms) -> Active(next_delay_ms:)
 
@@ -1120,6 +1178,8 @@ fn cron_rearm(
 // of it — how many fires have been spent, and whether one particular
 // occurrence is among them — and a second copy of the key-suffix parse
 // would be a second place for the prefix length to be got wrong.
+
+/// Establishes marked occurrences for the caller, keeping its validation and result policy at this boundary.
 fn marked_occurrences(
   sched: Schedule,
   marks: List(#(String, JsonValue)),
@@ -1133,6 +1193,7 @@ fn marked_occurrences(
 
 // --- one-shot schedules --------------------------------------------------
 
+/// Establishes process one shot for the caller, keeping its validation and result policy at this boundary.
 fn process_one_shot(
   state: State,
   sched: Schedule,
@@ -1142,6 +1203,8 @@ fn process_one_shot(
 ) -> ScheduleStatus {
   let key =
     schedule.fired_key(strand: sched.target, name: sched.name, occurrence: at)
+
+  // Decide how to handle read_fact(state, key) {.
   case read_fact(state, key) {
     // Fired forever: a one-shot's occurrence count is 1 by construction,
     // and its mark existing is the whole of that fact.
@@ -1181,6 +1244,8 @@ fn one_shot_lateness(at at: Int, now_s now_s: Int) -> schedule.Lateness {
 // is spent. A held or failed attempt (no open run yet, say) retries no
 // sooner than `held_or_failed_retry_ms`, never at the tight cadence a
 // genuinely not-yet-due wait uses.
+
+/// Establishes due one shot for the caller, keeping its validation and result policy at this boundary.
 fn due_one_shot(
   state: State,
   sched: Schedule,
@@ -1220,6 +1285,7 @@ type Fire {
   Failed(reason: String)
 }
 
+/// Establishes fire for the caller, keeping its validation and result policy at this boundary.
 fn fire(
   state: State,
   sched: Schedule,
@@ -1228,6 +1294,8 @@ fn fire(
 ) -> Fire {
   let mark = api.Mark(key:, value: schedule.fired_value(sched))
   let text = injected_message(state, sched, late)
+
+  // Decide how to handle let verdict =  sched.wake {.
   let verdict = case sched.wake {
     schedule.SteersOnly -> {
       let target = api.on_strand(state.runtime, sched.target)
@@ -1242,6 +1310,7 @@ fn fire(
         mark:,
       ))
   }
+
   report(state, sched, verdict)
   verdict
 }
@@ -1250,6 +1319,8 @@ fn fire(
 // a provider API has for context the harness supplies; the text itself
 // says whose it is and why, which is `client/schedule.injection`'s whole
 // job.
+
+/// Establishes injected message for the caller, keeping its validation and result policy at this boundary.
 fn injected_message(
   state: State,
   sched: Schedule,
@@ -1282,6 +1353,7 @@ fn classify_send(admitted: Result(api.Delivery, api.ApiError)) -> Fire {
   }
 }
 
+/// Establishes classify error for the caller, keeping its validation and result policy at this boundary.
 fn classify_error(error: api.ApiError) -> Fire {
   case error {
     // The mark moved between the read and the commit: somebody already
@@ -1302,11 +1374,14 @@ fn classify_error(error: api.ApiError) -> Fire {
   }
 }
 
+/// Establishes report for the caller, keeping its validation and result policy at this boundary.
 fn report(state: State, sched: Schedule, verdict: Fire) -> Nil {
   let where = [
     field.text(key: "schedule", value: sched.name),
     field.text(key: "strand", value: sched.target),
   ]
+
+  // Decide how to handle verdict {.
   case verdict {
     Fired -> log.info(state.options.logger, "schedule.fired", where)
 
@@ -1353,6 +1428,8 @@ fn read_fact(state: State, key: String) -> Option(JsonValue) {
 // `read_fact` is. `Error(Nil)` on a store fault — the caller retries next
 // tick, on its own bounded cadence, rather than treating a transient read
 // failure as "nothing has ever fired here."
+
+/// Establishes read prefix for the caller, keeping its validation and result policy at this boundary.
 fn read_prefix(
   state: State,
   prefix: String,

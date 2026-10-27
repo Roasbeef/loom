@@ -226,16 +226,15 @@ pub fn run_script(
       loop.should_quit,
       loop.poll_timeout,
     )
+
+  // Convert loop result into terminal run record.
   case outcome {
     app.Success(final) -> Ok(Run(final:, frames: drain(frames, [])))
     app.Error(reason) -> Error("the virtual terminal loop failed: " <> reason)
   }
 }
 
-// Every scripted event goes through here, including the ones etui invents.
-// The zero-timeout case is first because it is a question about the loop's
-// batching rather than about the script: answering it from the script would
-// drain the whole script into one burst and collapse the run to one frame.
+/// Polls for the next virtual input event or yields tick when zero-timeout.
 fn poll(
   state: VirtualState,
   timeout_ms: Int,
@@ -246,6 +245,7 @@ fn poll(
   }
 }
 
+/// Advances through the next scripted event in the virtual state.
 fn next_scripted(
   state: VirtualState,
 ) -> Result(#(backend.InputEvent, VirtualState), backend.Error) {
@@ -296,9 +296,7 @@ fn next_scripted(
   }
 }
 
-// The script is spent. A few ticks let the application flush a deferred
-// frame and drain anything the last step delivered; then the poll fails,
-// which is how etui's loop ends when no quit key was scripted.
+/// Yields settling ticks after script is exhausted before stopping the loop.
 fn settle(
   state: VirtualState,
 ) -> Result(#(backend.InputEvent, VirtualState), backend.Error) {

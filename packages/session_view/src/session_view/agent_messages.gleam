@@ -146,6 +146,8 @@ pub fn capture(
         list.any(records, fn(record) {
           ids.entry_id_to_string(record.entry.id) == item.entry_id
         })
+
+      // Refresh retained receipt outcome only when invocation is present.
       case invocation_present {
         False -> item
         True ->
@@ -174,6 +176,7 @@ pub fn for_strand(items: List(Item), selected: String) -> List(Item) {
   |> list.sort(fn(a, b) { int.compare(b.seq, a.seq) })
 }
 
+/// Collects and deduplicates recent message send items across strands.
 fn project(view: snapshot_view.View, window: snapshot.Window) -> List(Item) {
   view.strands
   |> list.flat_map(fn(strand) { current(view, window, strand.id) })
@@ -183,6 +186,7 @@ fn project(view: snapshot_view.View, window: snapshot.Window) -> List(Item) {
   |> list.map(to_item)
 }
 
+/// Extracts message candidates from the active operation on a strand.
 fn current(
   view: snapshot_view.View,
   window: snapshot.Window,
@@ -191,6 +195,7 @@ fn current(
   result.unwrap(current_result(view, window, strand), [])
 }
 
+/// Decodes the active operation on a strand and extracts its send calls.
 fn current_result(
   view: snapshot_view.View,
   window: snapshot.Window,
@@ -205,10 +210,14 @@ fn current_result(
   use meta <- result.try(
     codec.decode_operation(meta_cell.value) |> result.replace_error(Nil),
   )
+
+  // Extract initial run prompt entry IDs from the operation intent.
   let prompts = case meta.intent {
     operation.RunIntent(prompts) -> prompts
     _ -> []
   }
+
+  // Scan entries only when prompt entries are present.
   case prompts {
     [] -> Ok([])
     _ -> {
@@ -236,6 +245,7 @@ fn current_result(
   }
 }
 
+/// Locates the sequence number of the earliest prompt entry.
 fn earliest_prompt(
   entries: List(protocol.EntryRecord),
   prompts: List(EntryId),
@@ -251,6 +261,7 @@ fn earliest_prompt(
   |> list.first
 }
 
+/// Scans an assistant message entry for agent_send tool call invocations.
 fn invocation(record: protocol.EntryRecord, source: String) -> List(Candidate) {
   case record.entry {
     entry.MessageEntry(
@@ -277,12 +288,14 @@ fn invocation(record: protocol.EntryRecord, source: String) -> List(Candidate) {
   }
 }
 
+/// Parses an agent_send tool call into a candidate message structure.
 fn parse_call(
   call: message.ToolCall,
   source: String,
   seq: Int,
   ts: Int,
 ) -> Result(Candidate, Nil) {
+  // Decode agent_send arguments into a message Candidate.
   case call.name, call.arguments {
     "agent_send", json.Object(fields) -> {
       use target <- result.try(string_field(fields, "to"))
@@ -304,6 +317,7 @@ fn parse_call(
   }
 }
 
+/// Resolves the delivery or failure state of a send tool call.
 fn outcome_state(
   records: List(protocol.EntryRecord),
   source: String,
@@ -335,6 +349,8 @@ fn outcome_state(
     list.filter(records, fn(record) {
       record.entry.seq > after && { next == 0 || record.entry.seq < next }
     })
+
+  // Check bounded records for tool result matching the call ID.
   case
     list.find_map(records, fn(record) {
       case record.strand == source, record.entry {
@@ -364,6 +380,7 @@ fn outcome_state(
   }
 }
 
+/// Maps tool result JSON details to Accepted or Started delivery state.
 fn result_state(details: Option(json.JsonValue)) -> State {
   case details {
     Some(json.Object(fields)) ->
@@ -375,6 +392,7 @@ fn result_state(details: Option(json.JsonValue)) -> State {
   }
 }
 
+/// Finds and returns a non-empty string field value from an object list.
 fn string_field(
   fields: List(#(String, json.JsonValue)),
   name: String,
@@ -385,14 +403,18 @@ fn string_field(
   }
 }
 
+/// Deduplicates message candidates by entry ID and tool call ID.
 fn deduplicate_candidates(
   candidates: List(Candidate),
   seen: List(String),
 ) -> List(Candidate) {
+  // Deduplicate candidates maintaining original arrival order.
   case candidates {
     [] -> []
     [first, ..rest] -> {
       let key = first.entry_id <> "\u{0}" <> first.call_id
+
+      // Skip candidate if entry ID and call ID pair was already seen.
       case list.contains(seen, key) {
         True -> deduplicate_candidates(rest, seen)
         False -> [first, ..deduplicate_candidates(rest, [key, ..seen])]
@@ -401,6 +423,7 @@ fn deduplicate_candidates(
   }
 }
 
+/// Converts a Candidate record to a projected display Item.
 fn to_item(candidate: Candidate) -> Item {
   Item(
     entry_id: candidate.entry_id,

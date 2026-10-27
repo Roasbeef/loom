@@ -85,6 +85,9 @@ pub fn over_store(node: String) -> Ownership {
     },
     begin_move: fn(session, op, to) {
       let moving = Record(owner: node, state: Moving(op:, to:))
+
+      // Transition the directory record from serving to moving, treating an
+      // already-matching record as idempotent success.
       case store.swap(session, serving, moving, store.write_ms) {
         Error(Mismatch(Some(found))) if found == moving -> Ok(Nil)
         outcome -> outcome
@@ -118,6 +121,9 @@ pub fn over_store(node: String) -> Ownership {
     mark_migrated: fn() { store.mark_migrated(node) },
     seed_moving: fn(session, op, to) {
       let moving = Record(owner: node, state: Moving(op:, to:))
+
+      // Create an initial moving record for the session, accepting an identical
+      // record as already seeded.
       case store.create(session, moving) {
         Error(Mismatch(Some(found))) if found == moving -> Ok(Nil)
         outcome -> outcome

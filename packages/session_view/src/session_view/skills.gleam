@@ -35,10 +35,14 @@ pub fn decode(value: json.JsonValue) -> Result(Page, String) {
   use offset <- result.try(required(fields, "offset"))
   use rows <- result.try(required(fields, "skills"))
   use next <- result.try(required(fields, "next"))
+
+  // Validate and decode integer offset within bounds.
   use offset <- result.try(case offset {
     json.Int(value) if value >= 0 && value <= 1024 -> Ok(value)
     _ -> Error("invalid skills offset")
   })
+
+  // Decode array of skills rows.
   use commands <- result.try(case rows {
     json.Array(rows) -> {
       use <- bool.guard(
@@ -49,16 +53,21 @@ pub fn decode(value: json.JsonValue) -> Result(Page, String) {
     }
     _ -> Error("invalid skills rows")
   })
+
   let end = offset + list.length(commands)
   use <- bool.guard(end > 1024, Error("skills catalogue exceeds its bound"))
+
+  // Validate optional next page cursor offset.
   use next <- result.try(case next {
     json.Null -> Ok(None)
     json.Int(value) if value == end && value > offset -> Ok(Some(value))
     _ -> Error("invalid skills next cursor")
   })
+
   Ok(Page(offset:, commands:, next:))
 }
 
+/// Decodes a JSON value as an object field list for skills parsing.
 fn fields(
   value: json.JsonValue,
 ) -> Result(List(#(String, json.JsonValue)), String) {
@@ -68,6 +77,7 @@ fn fields(
   }
 }
 
+/// Looks up a required key in skills object fields.
 fn required(
   fields: List(#(String, json.JsonValue)),
   key: String,
@@ -76,26 +86,33 @@ fn required(
   |> result.map_error(fn(_) { "missing skill metadata: " <> key })
 }
 
+/// Decodes a required string field by key from skills object fields.
 fn text(
   fields: List(#(String, json.JsonValue)),
   key: String,
 ) -> Result(String, String) {
   use value <- result.try(required(fields, key))
+
+  // Ensure field value is a string.
   case value {
     json.String(value) -> Ok(value)
     _ -> Error("skill metadata must be text: " <> key)
   }
 }
 
+/// Decodes a single skill row into a slash-command suggestion record.
 fn row(value: json.JsonValue) -> Result(command.Suggestion, String) {
   use fields <- result.try(fields(value))
   use name <- result.try(text(fields, "name"))
   use description <- result.try(text(fields, "description"))
   use hint <- result.try(text(fields, "argument_hint"))
+
+  // Format argument hint with description if present.
   let description = case hint {
     "" -> description
     _ -> hint <> " — " <> description
   }
+
   Ok(command.Suggestion(
     "/" <> name,
     text_hygiene.single_line(description),

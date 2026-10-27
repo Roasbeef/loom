@@ -59,7 +59,7 @@ all from a toolchain the model can edit. Rule Zero (no model-influenced
 code in the harness VM) therefore applies to the server as it does to
 `bash`. The broker's ordinary jailed exec holds it, under the session's
 own enforcement demand, and a probe proves the jail is enforced before the
-server starts. `policy_for` (`client/lsp/jail.gleam:922`) builds the
+server starts. `policy_for` (`client/lsp/jail.gleam:946`) builds the
 policy. Its read view includes the session-authorized portion of the
 workspace for sibling dependencies; writes remain at the selected package.
 Only the operator's table adds roots outside that workspace. Answer paths
@@ -111,7 +111,7 @@ an answer, and the harness reads outside every jail. So every path out of
 an answer (a definition, a reference, a call edge, a published diagnostic,
 a rename's edit) becomes `Admitted` or `Withheld` through one function,
 `admit` (`client/lsp/resolve.gleam:420`), called from one place in the
-manager (`gate`, `client/lsp/manager.gleam:2427`). Without it, a hostile
+manager (`gate`, `client/lsp/manager.gleam:2471`). Without it, a hostile
 project's server could name `~/.loom/owner.token` and have the harness
 print its first line.
 
@@ -124,7 +124,7 @@ hides. A refused path costs no request.
 The two servers ADR-015 measured disagree on everything a client could
 wait on, and `rust-analyzer` answers `[]` while it is still loading. So a
 freshly started server is asked whether its work-done progress has gone
-quiet (`ready`, `lsp/client.gleam:1167`), and a write's diagnostics are
+quiet (`ready`, `lsp/client.gleam:1173`), and a write's diagnostics are
 collected under two rules that both must hold (`settle`,
 `lsp/client.gleam:1126`). The answer is a type that says `Settled` or
 `Unsettled`, so a server that had not finished is never reported as clean

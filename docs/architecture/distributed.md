@@ -404,11 +404,21 @@ has the variant, `role_from_word` (plans and bundles) refuses the word and
 `loom distribution attach-file` (`daemon/ledger_cli.attach_file`) enrolls one and
 writes `ca.pem`, `tool.pem`, `tool.key`, `.erlang.cookie`, `node` (the tool's node
 name and a newline) and `ssl_dist.conf` into a private directory, the shape
-`pickglass attach --attach-dir` reads. `client/distribution_attach` renders the options file
+`pickglass attach --attach-dir` reads. `--for pickglass` defaults that directory to
+`NAME` under the attach root (`$PICKGLASS_ATTACH_HOME`, else
+`$HOME/.pickglass/attach`) and prints `pickglass attach --node D --attach NAME`;
+Loom agrees with pickglass on the layout and has no dependency on it. The authority
+lookup (`client/authority_home`) names the installed ledger's deployment id in a
+no-key error, and falls back to the `authority-home` file `provision` writes and
+`install` copies beside the ledger, used only if that home holds the sealed key.
+`client/distribution_attach` renders the options file
 and the recipe. The file names only stock `ssl` options (the three credential
 files, `verify_peer`, the TLS versions) in a `client` section alone: a tool must never listen, since a listener would trust the authority and not the ledger, so the recipes add `-hidden -dist_listen false`, because the tool's VM does not have
 Loom's verify function and does not need it: the daemon is the side that pins.
-A `renew` of a tool is refused, since no bundle holds its key.
+A `renew` of a tool is refused, since no bundle holds its key. The operator and
+tool-user roles and the `attach-file` errors are in [Attaching Pickglass or
+another tool to a TLS
+deployment](../distribution.md#attaching-pickglass-or-another-tool-to-a-tls-deployment).
 
 The profile launcher (`scripts/profile-launcher.sh`) no longer conflicts with a
 `[distribution]` table. For the daemon role with `LOOM_DISTRIBUTION_OPTFILE`
@@ -450,8 +460,9 @@ shared by later Erlang nodes on the machine, as any `epmd` is.
 Version 5 added the vocabulary a session's evolution work travels in
 (protocol-change/098): eight `HostMessage` constructors, the plain-data types
 they carry, and `RemoteCensus.evolution`, which says whether the executor can
-compile candidates and under which identity. In this version the host only
-refuses them. Each arm judges the scope's fence by the ledger's own check
+compile candidates and under which identity. A plane built with an
+`Evolution` serves them, and one built without refuses them. Each arm judges the
+scope's fence by the ledger's own check
 (`exec_ledger.current`, or `current_incarnation` for the token-less inventory)
 before it asks the plane, so a dead runtime hears `StaleToken`,
 `StaleIncarnation` or `ScopeNotOpen` first, and a plane with no `Evolution`
@@ -459,6 +470,22 @@ answers `NoEvolution` to a current one. `EvolutionEvaluate` and `EvolutionRun`
 are keyed calls, admitted like a background execution and a `Run` under the
 ledger names `evolution:test` and `evolution:<tool>`; the other six change no
 row.
+
+**The evolution path.** A model reaches evolution only through `code_mode`: a
+program imports `cap/evolution`. For a session on an executor whose census says
+`Compiles`, the program runs on the executor and each `evolution.*` call reaches
+the owner as a `Capability(OwnerCapCall)`. The owner's door calls the remote
+machine (`evolution/machine/remote`), which sends the version 5 messages to the
+scope's `executor_evolution` actor over the session's surface. A check or an
+invocation is keyed by the `code_mode` call's key, the capability and the call's
+ordinal, so a repaired link resends it and finds its row. The catalogue, the
+evidence and the operator's approvals stay on the orchestrator; the executor
+snapshots, builds, serves and runs. `executor_evolution` is filed in custody as
+`custody.Evolution`, which ranks before the broker and the helpers, so closing
+a scope or opening a new incarnation retires every generation. A restarted
+executor starts with none, and the orchestrator stages a session's selection
+again when the session is opened. An executor that cannot compile gives its
+sessions doors that refuse with its reason.
 
 The messages between nodes are values of closed custom types: `HostMessage` to
 the executor host, `OwnerMessage` to the owner port, and `orchestrator_port`'s
@@ -651,7 +678,7 @@ holds that call pending, that is, the operation's state is gone or its batch no
 longer lists the call as planned or running. A lost `Ack` is therefore found
 again on the next pass, and no row leaks.
 
-`exec_ledger.ack` (`storage/exec_ledger.gleam:848`) deletes a `terminal` or
+`exec_ledger.ack` (`storage/exec_ledger.gleam:857`) deletes a `terminal` or
 `unknown` row, releases its bytes, and writes a tombstone in `call_ack`. A key
 with a tombstone is never admitted again in that incarnation. The tombstone
 closes a race the P model found. When a runtime restarts inside one open, the

@@ -709,6 +709,11 @@ fn session(
   let _wrote_a_third = await_lines(marker, 3)
   await_no_question(terminal)
 
+  // The marker proves shell progress, not durable terminal completion. Wait
+  // until the sibling settles before crashing the box, so recovery cannot feed
+  // an interrupted tool result to the success-only provider script.
+  await_log(duo.bravo, ["operation.settled", "third-directory-child"])
+
   // The box's owner now lets the laptop read its children's transcripts. The
   // setting is read when the daemon starts, so the box is killed and started
   // again with it. No child is running there. The dead daemon's writer lease

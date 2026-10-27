@@ -107,8 +107,8 @@ pub fn view(card: ProgramCard, since: Option(Int)) -> Element(message) {
   )
 }
 
-// The class that tints the card by how the program stands, a literal chosen
-// from the closed state.
+/// The class that tints the card by how the program stands, a literal chosen
+/// from the closed state.
 fn state_class(state: State) -> Attribute(message) {
   case state {
     Running -> attribute.class("pc-run")
@@ -129,9 +129,9 @@ fn disclosed(disclosure: Disclosure) -> List(Attribute(message)) {
 
 // --- the card's line ------------------------------------------------------
 
-// The line a closed card is: the glyph, the name, the sentence, the chips,
-// then the count and the time on the right. The status word is for a reader
-// that cannot see the glyph.
+/// The line a closed card is: the glyph, the name, the sentence, the chips,
+/// then the count and the time on the right. The status word is for a reader
+/// that cannot see the glyph.
 fn head(card: ProgramCard, since: Option(Int)) -> List(Element(message)) {
   list.flatten([
     [
@@ -154,6 +154,7 @@ fn head(card: ProgramCard, since: Option(Int)) -> List(Element(message)) {
   ])
 }
 
+/// Glyph helper.
 fn glyph(state: State) -> String {
   case state {
     Running -> "◐"
@@ -162,8 +163,8 @@ fn glyph(state: State) -> String {
   }
 }
 
-// A chip, its colour from the closed kind: signal for a side effect, danger
-// for a failure.
+/// A chip, its colour from the closed kind: signal for a side effect, danger
+/// for a failure.
 fn chip(chip: Chip) -> Element(message) {
   html.span(
     [
@@ -179,9 +180,9 @@ fn chip(chip: Chip) -> Element(message) {
   )
 }
 
-// How long the program ran: the record's time once it settled, and for one
-// still running the time the browser counts from when the call was recorded.
-// The element holds one number and no session text.
+/// How long the program ran: the record's time once it settled, and for one
+/// still running the time the browser counts from when the call was recorded.
+/// The element holds one number and no session text.
 fn time(card: ProgramCard, since: Option(Int)) -> List(Element(message)) {
   case card.state, since, card.elapsed_ms {
     Running, Some(start), _ -> [
@@ -216,14 +217,16 @@ fn time(card: ProgramCard, since: Option(Int)) -> List(Element(message)) {
 
 // --- the program --------------------------------------------------------
 
-// The program's section: how many lines it has and how many show, its opening
-// lines numbered as the program numbers them, and, when the host kept the
-// whole text, a control that shows every line.
+/// The program's section: how many lines it has and how many show, its opening
+/// lines numbered as the program numbers them, and, when the host kept the
+/// whole text, a control that shows every line.
 fn program_section(
   program: Program,
   disclosure: Disclosure,
 ) -> Element(message) {
   let shown = list.length(program.opening)
+
+  // Dispatch on program_section state.
   let note = case program.lines > shown {
     True ->
       lines_words(program.lines) <> ", " <> int.to_string(shown) <> " shown"
@@ -280,8 +283,8 @@ fn numbered(text: String) -> List(SourceLine) {
   |> list.index_map(fn(line, index) { SourceLine(index + 1, line) })
 }
 
-// Source lines under their numbers, each scanned for its syntax by the shared
-// highlighter. A line a compiler named is marked, so the eye finds it.
+/// Source lines under their numbers, each scanned for its syntax by the shared
+/// highlighter. A line a compiler named is marked, so the eye finds it.
 fn source_lines(
   lines: List(SourceLine),
   failing: Option(Int),
@@ -311,9 +314,9 @@ fn marked(number: Int, failing: Option(Int)) -> List(Attribute(message)) {
 
 // --- the calls ----------------------------------------------------------
 
-// The calls section, when the result carried a record: a timeline with a row
-// per run of consecutive calls, and a line for the calls the host counted and
-// did not list. A program with no record has no section.
+/// The calls section, when the result carried a record: a timeline with a row
+/// per run of consecutive calls, and a line for the calls the host counted and
+/// did not list. A program with no record has no section.
 fn calls_section(
   card: ProgramCard,
   disclosure: Disclosure,
@@ -345,6 +348,7 @@ fn axis(table: CallTable) -> Element(message) {
   ])
 }
 
+/// Unlisted helper.
 fn unlisted(table: CallTable) -> List(Element(message)) {
   case table.unlisted {
     0 -> []
@@ -356,9 +360,9 @@ fn unlisted(table: CallTable) -> List(Element(message)) {
   }
 }
 
-// One run of calls: its glyph, capability, count, key argument, bar and
-// ending on a line, and every call of the run behind it. The row's class says
-// how the run ended, and a failed run is tinted.
+/// One run of calls: its glyph, capability, count, key argument, bar and
+/// ending on a line, and every call of the run behind it. The row's class says
+/// how the run ended, and a failed run is tinted.
 fn call_row(row: CallRow) -> Element(message) {
   html.details([attribute.class("pc-call"), ..row_class(row.status)], [
     html.summary([attribute.class("pc-call-line")], [
@@ -382,6 +386,7 @@ fn call_row(row: CallRow) -> Element(message) {
   ])
 }
 
+/// Row class helper.
 fn row_class(status: call_tree.Status) -> List(Attribute(message)) {
   case status {
     call_tree.Settled -> [attribute.class("pc-call-ok")]
@@ -391,6 +396,7 @@ fn row_class(status: call_tree.Status) -> List(Attribute(message)) {
   }
 }
 
+/// Call glyph helper.
 fn call_glyph(status: call_tree.Status) -> String {
   case status {
     call_tree.Settled -> "✓"
@@ -400,10 +406,12 @@ fn call_glyph(status: call_tree.Status) -> String {
   }
 }
 
-// How a run ended, in words: its time, or `failed` with the error code, or
-// that it never settled.
+/// How a run ended, in words: its time, or `failed` with the error code, or
+/// that it never settled.
 fn ending(row: CallRow) -> String {
   let took = transcript_lines.seconds_text(row.duration_ms)
+
+  // Dispatch on ending state.
   case row.status {
     call_tree.Settled -> took
     call_tree.Failed ->
@@ -419,9 +427,9 @@ fn ending(row: CallRow) -> String {
   }
 }
 
-// The run's bar on the track. Its position and width are whole percentages the
-// projection bounds, the only numbers the card writes into an attribute; a
-// call still in flight when the program ended is hatched.
+/// The run's bar on the track. Its position and width are whole percentages the
+/// projection bounds, the only numbers the card writes into an attribute; a
+/// call still in flight when the program ended is hatched.
 fn bar(row: CallRow) -> Element(message) {
   html.span([attribute.class("pc-bar"), attribute.aria_hidden(True)], [
     html.i(
@@ -443,9 +451,9 @@ fn bar(row: CallRow) -> Element(message) {
   ])
 }
 
-// What a run opens to: each of its calls with the summary, the start and the
-// time the record holds, the error code of a failed run, and a line saying
-// what the record does not hold.
+/// What a run opens to: each of its calls with the summary, the start and the
+/// time the record holds, the error code of a failed run, and a line saying
+/// what the record does not hold.
 fn call_detail(row: CallRow) -> List(Element(message)) {
   list.flatten([
     list.index_map(row.members, fn(member, index) {
@@ -484,8 +492,8 @@ fn call_detail(row: CallRow) -> List(Element(message)) {
 
 // --- the result and the error -------------------------------------------
 
-// What the program came to: its value, its error, or, for a program still
-// running, a line saying the result is not there yet.
+/// What the program came to: its value, its error, or, for a program still
+/// running, a line saying the result is not there yet.
 fn outcome_section(
   card: ProgramCard,
   disclosure: Disclosure,
@@ -503,8 +511,8 @@ fn outcome_section(
   }
 }
 
-// The value's kind and a hint per key, with the whole value behind a control
-// when the host kept it.
+/// The value's kind and a hint per key, with the whole value behind a control
+/// when the host kept it.
 fn result_section(value: Value, disclosure: Disclosure) -> Element(message) {
   section(
     attribute.class("pc-result"),
@@ -530,9 +538,10 @@ fn result_section(value: Value, disclosure: Disclosure) -> Element(message) {
   )
 }
 
-// The error, always open: a compiler's diagnostic laid out by its parts, or
-// the text as it came, its first lines shown and the rest behind a control.
+/// The error, always open: a compiler's diagnostic laid out by its parts, or
+/// the text as it came, its first lines shown and the rest behind a control.
 fn error_section(card: ProgramCard, failure: Failure) -> Element(message) {
+  // Dispatch on error_section state.
   let note = case card.program.failing_line {
     Some(line) -> "line " <> int.to_string(line)
     None -> ""
@@ -550,8 +559,8 @@ fn error_section(card: ProgramCard, failure: Failure) -> Element(message) {
   )
 }
 
-// A compiler's report: its heading, where it points, the quoted source with
-// the failing line marked and the carets under it, and any note.
+/// A compiler's report: its heading, where it points, the quoted source with
+/// the failing line marked and the carets under it, and any note.
 fn diagnostic(found: Diagnostic, failure: Failure) -> List(Element(message)) {
   [
     html.p([attribute.class("pc-errh")], [html.text(found.heading)]),
@@ -579,6 +588,7 @@ fn diagnostic(found: Diagnostic, failure: Failure) -> List(Element(message)) {
   ]
 }
 
+/// Report row helper.
 fn report_row(
   row: program_card.DiagRow,
   failing: Option(Int),
@@ -604,8 +614,8 @@ fn report_row(
   }
 }
 
-// An error with no layout to give it: its first lines, and the rest behind a
-// control when there are more.
+/// An error with no layout to give it: its first lines, and the rest behind a
+/// control when there are more.
 fn raw_text(failure: Failure) -> Element(message) {
   case string.split(failure.text, "\n") {
     [a, b, c, d, ..more] ->
@@ -633,8 +643,8 @@ fn raw_text(failure: Failure) -> Element(message) {
 
 // --- the foot ------------------------------------------------------------
 
-// The card's last line: how long the program ran, why a failed one stopped,
-// and the budget the call asked for.
+/// The card's last line: how long the program ran, why a failed one stopped,
+/// and the budget the call asked for.
 fn foot(card: ProgramCard) -> List(Element(message)) {
   let facts =
     list.flatten([
@@ -651,6 +661,8 @@ fn foot(card: ProgramCard) -> List(Element(message)) {
         Some(_), Some(_) | None, _ -> []
       },
     ])
+
+  // Dispatch on foot state.
   case facts {
     [] -> []
     [_, ..] -> [
@@ -664,8 +676,8 @@ fn foot(card: ProgramCard) -> List(Element(message)) {
 
 // --- sections --------------------------------------------------------------
 
-// One of the card's sections: a `<details>` whose line is the title and a
-// quiet note, open or shut as the projection says.
+/// One of the card's sections: a `<details>` whose line is the title and a
+/// quiet note, open or shut as the projection says.
 fn section(
   kind: Attribute(message),
   title: String,

@@ -14,9 +14,12 @@
 //// the answer does not depend on the backend.
 
 import client/extension/memory
+import client/owner_services
 import core/clock
 import core/json
-import gleam/erlang/process
+import gleam/dict.{type Dict}
+import gleam/erlang/process.{type Subject}
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/result
@@ -171,6 +174,117 @@ pub fn a_remembered_cell_is_not_on_the_models_blackboard_test() {
     api.put_fact(rig.runtime, memory.key(memory.Cell("a", "secret")), json.Null)
     as "the model's write door refuses the namespace"
   stop(rig)
+}
+
+// --- the door over the owner's fact access ------------------------------------
+
+// What a fake owner store is asked: one blind write, or one read.
+type Cells {
+  Write(key: String, value: json.JsonValue, reply: Subject(Nil))
+  Read(key: String, reply: Subject(option.Option(json.JsonValue)))
+}
+
+// A fake owner store, held by a process so that a closure in the fact access
+// can reach it. It keeps the written value under the exact key it was handed,
+// which is what lets a test read the composed key back.
+fn start_cells() -> Subject(Cells) {
+  let assert Ok(started) =
+    actor.new(dict.new())
+    |> actor.on_message(fn(held: Dict(String, json.JsonValue), message) {
+      case message {
+        Write(key:, value:, reply:) -> {
+          process.send(reply, Nil)
+          actor.continue(dict.insert(held, key, value))
+        }
+
+        Read(key:, reply:) -> {
+          process.send(reply, option.from_result(dict.get(held, key)))
+          actor.continue(held)
+        }
+      }
+    })
+    |> actor.start
+    as "the fake owner store starts"
+  started.data
+}
+
+// The owner's fact access over that store, behind a fence of the real kind: a
+// key outside `served_prefixes` is refused, so a door that composed a key
+// outside `ext/` would meet `NotServed`.
+fn facts_over(cells: Subject(Cells)) -> owner_services.FactAccess {
+  owner_services.FactAccess(
+    cell: fn(key) {
+      use <- served(key)
+      let found = process.call(cells, 1000, Read(key, _))
+      Ok(option.map(found, fn(value) { api.FactCell(value:, seq: 1) }))
+    },
+    put: fn(_key, _value, _expected) { Ok(1) },
+    put_blind: fn(key, value) {
+      use <- served(key)
+      Ok(process.call(cells, 1000, Write(key, value, _)))
+    },
+    delete: fn(_key) { Ok(Nil) },
+    list: fn(_prefix) { Ok([]) },
+  )
+}
+
+fn served(
+  key: String,
+  then: fn() -> Result(a, owner_services.FactFault),
+) -> Result(a, owner_services.FactFault) {
+  case list.any(owner_services.served_prefixes(), string.starts_with(key, _)) {
+    True -> then()
+    False -> Error(owner_services.NotServed(key:))
+  }
+}
+
+pub fn a_door_over_facts_writes_under_the_extensions_subtree_test() {
+  let cells = start_cells()
+  let door = memory.over_facts(facts_over(cells))
+  let cell = memory.Cell(extension: "web-search", key: "last")
+  let assert Ok(Nil) = door.remember(cell, "{\"q\":\"loom\"}")
+    as "the write must land"
+
+  // The key is the one `door` composes, so a cell an executor wrote is the cell
+  // an orchestrator-side extension reads.
+  assert process.call(cells, 1000, Read("ext/web-search/last", _))
+    == Some(json.Object([#("q", json.String("loom"))]))
+  assert door.recall(cell) == Ok(Some("{\"q\":\"loom\"}"))
+
+  // Another extension sees nothing there, and an unwritten key is not a
+  // refusal.
+  assert door.recall(memory.Cell(extension: "other", key: "last")) == Ok(None)
+}
+
+pub fn a_door_over_facts_overwrites_and_refuses_what_is_not_json_test() {
+  let door = memory.over_facts(facts_over(start_cells()))
+  let cell = memory.Cell(extension: "a", key: "count")
+  let assert Ok(Nil) = door.remember(cell, "1") as "the first write lands"
+  let assert Ok(Nil) = door.remember(cell, "2") as "the second write lands"
+  assert door.recall(cell) == Ok(Some("2"))
+
+  let assert Error(memory.NotJson(reason:)) = door.remember(cell, "{oops")
+    as "a value that is not a JSON document is refused"
+  assert string.contains(reason, "JSON")
+  assert door.recall(cell) == Ok(Some("2"))
+}
+
+pub fn a_door_over_facts_answers_an_unreachable_store_in_band_test() {
+  let door =
+    memory.over_facts(
+      owner_services.FactAccess(
+        cell: fn(_key) { Error(owner_services.StoreAbsent) },
+        put: fn(_key, _value, _expected) { Error(owner_services.StoreAbsent) },
+        put_blind: fn(_key, _value) { Error(owner_services.StoreAbsent) },
+        delete: fn(_key) { Error(owner_services.StoreAbsent) },
+        list: fn(_prefix) { Error(owner_services.StoreAbsent) },
+      ),
+    )
+  let cell = memory.Cell(extension: "a", key: "last")
+  let assert Error(memory.Unavailable(..)) = door.remember(cell, "{}")
+    as "an absent store refuses the write in band"
+  let assert Error(memory.Unavailable(..)) = door.recall(cell)
+    as "an absent store refuses the read in band"
 }
 
 // --- durability -------------------------------------------------------------

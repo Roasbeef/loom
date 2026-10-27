@@ -29,6 +29,7 @@
 //// 3. `instructions` prints the commands a person runs next.
 
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/string
 
 /// The cookie file name Erlang reads from `$HOME`.
@@ -104,6 +105,8 @@ pub fn files_in(directory: String) -> Files {
 /// // -> Ok("%% coding: utf-8\n[{server, [{cacertfile, \"/a/ca.pem\"}, ..."
 /// ```
 pub fn options(files: Files) -> Result(String, String) {
+  // Verify that all configured certificate paths are safe to embed in an Erlang
+  // terms configuration file.
   case list.find(paths(files), fn(path) { !is_plain_path(path) }) {
     Ok(path) ->
       Error(
@@ -130,8 +133,8 @@ fn paths(files: Files) -> List(String) {
   [files.directory, files.ca, files.certificate, files.key, files.options]
 }
 
-// A path is plain when every grapheme is neither a quote, a backslash nor a
-// control character. A newline is one, so a path cannot start a second term.
+/// Verifies that every codepoint in `path` is printable ASCII without quotes,
+/// backslashes, or control characters, preventing term injection in Erlang config files.
 fn is_plain_path(path: String) -> Bool {
   string.to_utf_codepoints(path)
   |> list.all(fn(point) {
@@ -161,10 +164,13 @@ pub fn instructions(
     <> " -name "
     <> tool_node
     <> " -hidden -dist_listen false"
+
+  // Pick the target node if unambiguous, or leave a descriptive placeholder.
   let daemon = case daemons {
     [only] -> only
     _ -> "<daemon node>"
   }
+
   let directory = shell_quote(files.directory)
   string.join(
     [
@@ -208,4 +214,61 @@ pub fn instructions(
 // the path is closed, escaped and reopened.
 fn shell_quote(text: String) -> String {
   "'" <> string.replace(text, "'", "'\\''") <> "'"
+}
+
+/// The attach root pickglass reads: `$PICKGLASS_ATTACH_HOME` when it is set and
+/// not empty, else `<home>/.pickglass/attach`. Loom only agrees with pickglass
+/// on the directory layout; it does not depend on it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert distribution_attach.attach_root(None, "/home/me")
+///   == "/home/me/.pickglass/attach"
+/// ```
+pub fn attach_root(override: Option(String), home: String) -> String {
+  case override {
+    Some("") | None -> home <> "/.pickglass/attach"
+    Some(root) -> root
+  }
+}
+
+/// Whether `name` can be one directory below the attach root: not empty, not a
+/// dot name and holding no path separator.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert distribution_attach.is_directory_name("inspector")
+/// assert !distribution_attach.is_directory_name("../x")
+/// ```
+pub fn is_directory_name(name: String) -> Bool {
+  name != ""
+  && !string.starts_with(name, ".")
+  && !string.contains(name, "/")
+  && !string.contains(name, "\\")
+}
+
+/// The lines `--for pickglass` adds to the recipe. `--attach NAME` is
+/// pickglass's explicit short form of `--attach-dir ROOT/NAME`. Without either
+/// flag pickglass picks nothing by itself, so both forms are shown.
+///
+/// ## Examples
+///
+/// ```gleam
+/// distribution_attach.pickglass_lines("/r", "tool", "loom@hub.example")
+/// ```
+pub fn pickglass_lines(root: String, name: String, daemon: String) -> String {
+  string.join(
+    [
+      "Pickglass attach root " <> root <> ":",
+      "  pickglass attach --node " <> daemon <> " --attach " <> name,
+      "  (the same as: pickglass attach --node "
+        <> daemon
+        <> " --attach-dir "
+        <> shell_quote(root <> "/" <> name)
+        <> ")",
+    ],
+    "\n",
+  )
 }

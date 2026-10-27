@@ -64,6 +64,7 @@ fn init(_: Nil) -> #(Model, Effect(Msg)) {
   #(Model(None, 0.0, None), effect.none())
 }
 
+/// Applies DOM listener registrations and mode switches to notes model.
 fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   case message {
     Connected -> #(model, effect.batch([stop(model.listeners), listen()]))
@@ -81,6 +82,7 @@ fn region(host: ffi_dom.Element) -> Result(ffi_dom.Element, Nil) {
   ffi_dom.closest(host, ".strand-notes")
 }
 
+/// Attaches capture event listeners for note item click and keyboard navigation.
 fn listen() -> Effect(Msg) {
   use dispatch, root <- effect.after_paint
   let host = ffi_dom.host(ffi_dom.as_element(root))
@@ -109,8 +111,7 @@ fn listen() -> Effect(Msg) {
   Nil
 }
 
-// A notes key never observes or acts on an approval or the composer: its
-// listener belongs to this section alone. An editor keeps Escape as well.
+/// Handles Escape keypress in notes panel by triggering back navigation.
 fn escaped(notes: ffi_dom.Element, event: Dynamic) -> Nil {
   let key = decode.run(event, decode.at(["key"], decode.string))
   let editor =
@@ -121,6 +122,8 @@ fn escaped(notes: ffi_dom.Element, event: Dynamic) -> Nil {
         _ -> result.unwrap(ffi_dom.is_content_editable(node), False)
       }
     })
+
+  // Propagate Escape to back button when event did not originate in an editor.
   case key, editor, ffi_dom.query_selector(notes, ".notes-back") {
     Ok("Escape"), False, Ok(back) -> {
       ffi_dom.stop_propagation(event)
@@ -131,11 +134,14 @@ fn escaped(notes: ffi_dom.Element, event: Dynamic) -> Nil {
   }
 }
 
+/// Restores scroll position and focuses active note item after mode switch.
 fn restore(model: Model, mode: String) -> Effect(Msg) {
   use _, root <- effect.after_paint
   let host = ffi_dom.host(ffi_dom.as_element(root))
   let _ = {
     use notes <- result.try(region(host))
+
+    // Focus back button in detail mode or restore row button focus in index mode.
     case mode, model.row {
       "detail", _ ->
         result.map(ffi_dom.query_selector(notes, ".notes-back"), ffi_dom.focus)
@@ -154,7 +160,9 @@ fn restore(model: Model, mode: String) -> Effect(Msg) {
   Nil
 }
 
+/// Removes capture event listeners from notes panel DOM elements.
 fn stop(listeners: Option(#(Listener, Listener))) -> Effect(Msg) {
+  // Remove registered capture listeners when present.
   case listeners {
     None -> effect.none()
     Some(#(click, key)) -> {

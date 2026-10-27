@@ -110,6 +110,8 @@ pub fn clip(text: String, max_bytes: Int) -> String {
     |> list.filter(fn(word) { word != "" })
     |> string.join(" ")
   let graphemes = string.to_graphemes(line)
+
+  // Check if the formatted line fits directly or requires ellipsis clipping.
   case string.byte_size(line) <= max_bytes, max_bytes >= 3 {
     True, _ -> line
 
@@ -120,13 +122,16 @@ pub fn clip(text: String, max_bytes: Int) -> String {
   }
 }
 
-// Graphemes are taken while they fit, so the cut can never split a
-// multi-byte character and leave invalid UTF-8 in a stored cell.
+/// Graphemes are taken while they fit, so the cut can never split a
+/// multi-byte character and leave invalid UTF-8 in a stored cell.
 fn fit(graphemes: List(String), budget: Int, taken: String) -> String {
+  // Consume graphemes until the byte budget is exhausted.
   case graphemes {
     [] -> taken
     [next, ..rest] -> {
       let longer = taken <> next
+
+      // Decide whether appending the next grapheme stays within budget.
       case string.byte_size(longer) <= budget {
         True -> fit(rest, budget, longer)
         False -> string.trim_end(taken)
@@ -172,6 +177,7 @@ pub fn decode(value: JsonValue) -> Result(Glance, CorruptionReport) {
   Glance(operation:, title:, summary:, at:, tokens:)
 }
 
+/// Extracts a required string field from a JSON object.
 fn string_field(
   value: JsonValue,
   key: String,
@@ -183,6 +189,7 @@ fn string_field(
   }
 }
 
+/// Extracts a required integer field from a JSON object.
 fn int_field(value: JsonValue, key: String) -> Result(Int, CorruptionReport) {
   case field(value, key) {
     Ok(json.Int(number)) -> Ok(number)
@@ -191,6 +198,7 @@ fn int_field(value: JsonValue, key: String) -> Result(Int, CorruptionReport) {
   }
 }
 
+/// Builds a corruption report when an expected field is missing or ill-typed.
 fn corrupt(expected: String, seen: JsonValue) -> CorruptionReport {
   corruption.report(
     at: "core/glance",
@@ -200,8 +208,10 @@ fn corrupt(expected: String, seen: JsonValue) -> CorruptionReport {
   )
 }
 
-// The first occurrence wins, matching `core/json`'s documented tiebreak
-// for hand-built objects with a repeated key.
+/// Looks up a field in a JSON object by key.
+///
+/// The first occurrence wins, matching `core/json`'s documented tiebreak
+/// for hand-built objects with a repeated key.
 fn field(value: JsonValue, key: String) -> Result(JsonValue, Nil) {
   case value {
     json.Object(fields) -> list.key_find(fields, key)

@@ -18,6 +18,28 @@ fn resolved() -> model.ResolvedModel {
   fixture.resolved(provider: "openrouter", model_id: "openai/gpt-5")
 }
 
+pub fn extended_levels_use_high_request_test() {
+  let high = model.ResolvedModel(..resolved(), thinking: model.ThinkingHigh)
+  let request = fixture.request_for(high)
+  let expected =
+    openai.build_request(
+      base_url: "https://example.com",
+      api_key: "key",
+      resolved: high,
+      request: request,
+    )
+  list.each([model.ThinkingXHigh, model.ThinkingMax], fn(level) {
+    let target = model.ResolvedModel(..high, thinking: level)
+    assert openai.build_request(
+        base_url: "https://example.com",
+        api_key: "key",
+        resolved: target,
+        request: request,
+      )
+      == expected
+  })
+}
+
 fn machine() -> stream.ResponseMachine(openai.Accumulator) {
   openai.response_machine(resolved(), now: 1_700_000_000_000)
 }

@@ -165,6 +165,8 @@ pub fn connect(
     |> result.replace_error(HandshakeFailed),
   )
   let response = process.receive(hello_reply, remaining(deadline) + 100)
+
+  // Inspect the hello response to establish the verified connection.
   case response {
     Ok(Ok(hello)) -> Ok(Connection(started.data, started.pid, hello))
     Ok(Error(failure)) -> Error(failure)
@@ -218,6 +220,8 @@ pub fn request(
     })
   let answer = process.selector_receive(selector, within_ms + 100)
   process.demonitor_process(watch)
+
+  // Map the received answer or handle request timeout.
   case answer {
     Ok(reply) -> reply
     Error(Nil) -> Error(lost(command, TimedOut))
@@ -247,6 +251,7 @@ pub fn owner(control: Connection) -> process.Pid {
   control.pid
 }
 
+/// Main event handler driving the daemon connection state machine transitions.
 fn handle(
   phase: Phase,
   data: Data,
@@ -275,18 +280,25 @@ fn handle(
   }
 }
 
+/// Prepares, encodes, and transmits an outgoing command over the control socket.
 fn begin(data: Data, command: protocol.Command, deadline: Int, reply) {
   let prepared = {
+    // Extract authenticated hello credentials required for command encoding.
     use hello <- result.try(case data.hello {
       Some(hello) -> Ok(hello)
       None -> Error("missing hello")
     })
+
     use text <- result.try(protocol.encode(data.next_id, command, hello.epoch))
+
+    // Verify that the encoded payload conforms to advertised limits.
     case string.byte_size(text) <= hello.control_bytes {
       True -> Ok(text)
       False -> Error("request exceeds advertised control limit")
     }
   }
+
+  // Transmit command if budget remains, or immediately report preparation error.
   case prepared, remaining(deadline) {
     Error(reason), _ -> {
       process.send(reply, Error(Invalid(reason)))
@@ -311,6 +323,7 @@ fn begin(data: Data, command: protocol.Command, deadline: Int, reply) {
   }
 }
 
+/// Processes incoming wire frames decoded from the websocket connection.
 fn receive(phase: Phase, data: Data, text: String) {
   case protocol.decode(text) {
     Error(_) -> finish(phase, data, Disconnected)
@@ -331,9 +344,11 @@ fn receive(phase: Phase, data: Data, text: String) {
   }
 }
 
+/// Matches a received event with the active pending request and notifies the caller.
 fn answer(data: Data, event: protocol.Event) {
   case data.pending, event {
     Some(pending), protocol.Answer(id, name, reply) if id == pending.id -> {
+      // Confirm reply command name matches and preserves epoch invariants.
       case name == protocol.name(pending.command) && same_epoch(data, reply) {
         True -> {
           process.send(pending.reply, Ok(reply))
@@ -363,16 +378,20 @@ fn answer(data: Data, event: protocol.Event) {
   }
 }
 
+/// Closes the socket and transitions the state machine to a terminal stopped state.
 fn finish(phase: Phase, data: Data, failure: Failure) {
+  // Notify any pending request or hello listener of the termination cause.
   case phase {
     AwaitHello -> process.send(data.hello_reply, Error(HandshakeFailed))
     Waiting -> reply_lost(data, failure)
     Idle -> Nil
   }
+
   connection.close(data.socket)
   sm.stop()
 }
 
+/// Propagates terminal socket failures to an in-flight caller's reply subject.
 fn reply_lost(data: Data, failure: Failure) {
   case data.pending {
     Some(pending) ->
@@ -381,8 +400,10 @@ fn reply_lost(data: Data, failure: Failure) {
   }
 }
 
-// A status reply cannot silently replace the authenticated hello's lifetime.
-// Reconnecting constructs a new control owner and exposes a new Hello instead.
+/// Verifies that status replies originate from the same authenticated daemon epoch.
+///
+/// A status reply cannot silently replace the authenticated hello's lifetime.
+/// Reconnecting constructs a new control owner and exposes a new Hello instead.
 fn same_epoch(data: Data, reply: protocol.Reply) {
   case reply, data.hello {
     protocol.StatusReply(summary), Some(hello) -> summary.epoch == hello.epoch

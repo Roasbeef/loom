@@ -29,3 +29,16 @@ pub fn flat_words(value: a) -> Int
 /// ```
 @external(erlang, "client_test_ffi", "page_component_model")
 pub fn page_component_model(socket: Pid) -> Result(Dynamic, Nil)
+
+/// Counts exact marker terms in a value and its closure environments.
+/// Sharing is unfolded as on a process copy. This measures capture multiplicity
+/// without unrelated integer or binary representation differences between boots.
+/// Gleam and weft cannot inspect closure environments, so this stays test-only.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ffi_memory.captured_occurrences(#("marker", "marker"), "marker") == 2
+/// ```
+@external(erlang, "client_test_ffi", "captured_occurrences")
+pub fn captured_occurrences(value: a, marker: b) -> Int

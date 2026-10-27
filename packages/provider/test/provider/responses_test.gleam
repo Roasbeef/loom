@@ -340,7 +340,7 @@ pub fn responses_changed_done_item_and_final_witnesses_fail_test() {
 
 pub fn responses_missing_each_closure_fails_test() {
   let events = text_events("original", "output_text")
-  list.each([1, 2, 4, 5, 6], fn(index) {
+  list.each([1, 2, 4, 6], fn(index) {
     malformed(run(
       events
       |> list.index_map(fn(event, position) { #(position, event) })
@@ -348,6 +348,53 @@ pub fn responses_missing_each_closure_fails_test() {
       |> list.map(fn(pair) { pair.1 }),
     ))
   })
+}
+
+pub fn responses_unclosed_part_is_bounded_and_private_test() {
+  let events = text_events("secret-canary", "output_text")
+  let events = list.take(events, 5) |> list.append(list.drop(events, 6))
+  let assert Ok(stream.Failed(stream.RecoverableStreamCorruption(report), _)) =
+    list.last(run(events))
+    as "Only the missing part closure is recoverable."
+  let error =
+    diagnostic.scrub_error(
+      stream.RecoverableStreamCorruption(report),
+      secret: "secret-canary",
+    )
+  assert retry.classify(error)
+    == retry.RetryableWithin(backoff_hint_ms: None, max_attempts: 3)
+  let rendered = stream.describe_error(error)
+  assert string.contains(
+    rendered,
+    "kind=message; status=completed; open=output_text/text_done; parts=1; unclosed=1",
+  )
+  assert string.contains(rendered, "reason=item_parts_unclosed")
+  assert string.contains(rendered, "event=response.output_item.done")
+  assert string.contains(rendered, "output=0;")
+  assert string.contains(rendered, "last_seq=absent;")
+  assert string.contains(rendered, "bytes=")
+  assert !string.contains(rendered, "secret-canary")
+  assert string.length(rendered) <= 400
+}
+
+pub fn responses_unclosed_unknown_status_is_not_disclosed_test() {
+  let events = text_events("content-canary", "output_text")
+  let events =
+    list.index_map(events, fn(event, index) {
+      case index == 6 {
+        True -> string.replace(event, "completed", "status-canary")
+        False -> event
+      }
+    })
+  let events = list.take(events, 5) |> list.append(list.drop(events, 6))
+  let report = failure_report(run(events))
+  let error =
+    diagnostic.scrub_error(stream.MalformedStream(report), secret: "credential")
+  let rendered = stream.describe_error(error)
+  assert retry.classify(error) == retry.Terminal
+  assert string.contains(rendered, "item_done_decode")
+  assert !string.contains(rendered, "status-canary")
+  assert !string.contains(rendered, "content-canary")
 }
 
 pub fn responses_sequence_and_unknown_semantics_fail_test() {

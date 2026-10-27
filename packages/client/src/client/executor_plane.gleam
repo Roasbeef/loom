@@ -73,9 +73,28 @@
 //// closed. A scope without that result is `UnknownCleanup`, whatever else went
 //// well.
 ////
+//// ## The evolution plane
+////
+//// A scope with code mode also starts an evolution actor (`client/executor_evolution`),
+//// which stages, runs and retires the generations of a promoted extension for
+//// the orchestrator's session. The actor is built from this machine's own
+//// inputs and none of the orchestrator's: the helper pool and policy are the
+//// scope's, extension memory goes back through the owner's fact access under
+//// the reserved `ext/` prefix, and extension secrets come from this machine's
+//// `[secrets]` table and environment, the same store MCP and the workspace
+//// plane read. The candidates' scratch is `<state root>/evolution/run/<session>`,
+//// and `<state root>/evolution` is masked from every jail, so a build cannot see
+//// another scope's scratch.
+////
+//// The actor is filed under `custody.Evolution`, so a close retires it before
+//// the broker and the helpers it runs on. The census carries the compile
+//// identity, computed once at attach. A scope with no code mode, or whose
+//// identity cannot be observed, starts no actor, files nothing and reports
+//// `Uncompiled` with the reason.
+////
 //// ## Flow
 ////
-//// `machine` → `worktrees_of` → `factory` → `build` → `plane_over` → `retire`
+//// `machine` → `worktrees_of` → `factory` → `build` → `evolution_of` → `plane_over` → `retire`
 ////
 //// 1. `machine` reads this executor's own settings once, at daemon start.
 //// 2. `worktrees_of` starts the sandboxed Git and the gates of the worktree
@@ -85,17 +104,25 @@
 //// 4. `build` resolves the workspace name, opens the session's tree when the
 ////    workspace has one, makes the scope directory, and starts the workspace
 ////    half.
-//// 5. `plane_over` reads the prompt facts once and wraps the started plane as the
+//// 5. `evolution_of` starts the scope's evolution actor when code mode is
+////    available, and says in the census whether this machine compiles
+////    (`uncompiled` is the answer for a scope that cannot).
+//// 6. `plane_over` reads the prompt facts once and wraps the started plane as the
 ////    host's plane, with the census as plain data.
-//// 6. `retire` closes a scope: language servers, children, broker, then helpers,
-////    and reports a clean close only on the helper witness. A clean close then
-////    settles the session's tree.
+//// 7. `retire` closes a scope: language servers, children, evolution, broker,
+////    then helpers, and reports a clean close only on the helper witness. A
+////    clean close then settles the session's tree.
 
 import broker/broker
 import broker/exec.{type EnforcementDemand}
 import broker/policy
 import client/catalog
 import client/codemode as codemode_wiring
+import client/evolution/identity as evolution_identity
+import client/evolution/machine/local
+import client/evolution/record
+import client/executor_evolution
+import client/extension/memory as extension_memory
 import client/gocache
 import client/install
 import client/internal/ffi_os
@@ -329,6 +356,7 @@ pub fn factory(
   fn(spec: host.AttachSpec) { build(machine, configured, trees, spec) }
 }
 
+/// Builds a workspace execution plane from configured parameters and attach spec.
 fn build(
   machine: Machine,
   configured: List(Workspace),
@@ -354,6 +382,8 @@ fn build(
       )
     }),
   )
+
+  // Determine build strategy based on workspace shared or worktree mode.
   case workspace.mode {
     workspaces.Shared -> build_in(machine, root, None, spec)
     workspaces.Worktree(..) -> {
@@ -386,6 +416,7 @@ type Custody {
 // The part of a build that is the same for both modes: the blob store, the
 // scope directory and the workspace half, over `directory`, which is `root` for
 // a shared workspace and the session's tree for a worktree one.
+/// Sets up directories and starts common workspace plane components.
 fn build_in(
   machine: Machine,
   directory: String,
@@ -395,12 +426,24 @@ fn build_in(
   let built = {
     use blob_root <- result.try(blob_directory(machine.state_root, spec.session))
     use scope <- result.try(scope_directory(machine.state_root, spec.session))
-    case start(machine, directory, scope, blob_root, custody, spec) {
-      Ok(plane) -> Ok(plane)
+
+    // The evolution directories exist before the base policy that masks them
+    // is built, so the mask is applied and not filtered out as a missing path.
+    case evolution_scratch(machine.state_root, spec.session) {
       Error(reason) -> {
         remove_scope(machine.logger, scope)
         Error(reason)
       }
+      Ok(scratch) ->
+        // Attempt to start workspace plane with prepared scopes.
+        case start(machine, directory, scope, blob_root, custody, spec) {
+          Ok(plane) -> Ok(plane)
+          Error(reason) -> {
+            remove_scope(machine.logger, scope)
+            remove_evolution_scratch(machine.logger, scratch)
+            Error(reason)
+          }
+        }
     }
   }
   result.map_error(built, host.NoPlaneBuilt)
@@ -410,6 +453,7 @@ fn build_in(
 // the scope it is adopted when it exists: a reopened session reads what its
 // transcript names, so nothing here is cleared at attach or removed at
 // close.
+/// Ensures the per-session private blob storage directory exists.
 fn blob_directory(
   state_root: String,
   session: String,
@@ -427,6 +471,7 @@ const blob_directory_name = "blobs"
 
 // The scope's directory, created fresh and private. A directory left by an
 // earlier VM held another build's scratch, so it is replaced and not adopted.
+/// Creates a clean private scratch directory for session scope isolation.
 fn scope_directory(
   state_root: String,
   session: String,
@@ -438,6 +483,35 @@ fn scope_directory(
   use Nil <- result.try(bootstrap.ensure_private_directory(scopes))
   use Nil <- result.try(bootstrap.ensure_private_directory(scope))
   Ok(scope)
+}
+
+// The evolution plane's directory under the state root. Every scope's candidate
+// scratch lives beneath it, and the session's own jails mask it
+// (`workspace_policy.protecting_evolution`).
+fn evolution_root(state_root: String) -> String {
+  state_root <> "/evolution"
+}
+
+// One scope's candidate scratch. The session name has been judged by
+// `usable_session` wherever this path is made for a use that writes.
+fn evolution_run(state_root: String, session: String) -> String {
+  evolution_root(state_root) <> "/run/" <> session
+}
+
+// The scope's candidate scratch, created private and fresh. A directory left by
+// an earlier VM held another build's artifacts, so it is replaced and not
+// adopted. It is made for every scope, whether or not code mode starts, so that
+// the evolution root the policy masks always exists when the policy is built.
+/// Creates the scope's evolution scratch directory and returns its path.
+fn evolution_scratch(
+  state_root: String,
+  session: String,
+) -> Result(String, String) {
+  use Nil <- result.try(usable_session(session))
+  let scratch = evolution_run(state_root, session)
+  let _removed = simplifile.delete(scratch)
+  use Nil <- result.try(bootstrap.ensure_private_directory(scratch))
+  Ok(scratch)
 }
 
 // A session name arrives from a peer, so it is judged before it names a path.
@@ -462,6 +536,7 @@ fn safe_component(name: String) -> Bool {
 // would name a directory that its close deletes. Trees are therefore not masked
 // from one another, which is why protocol-change/095 describes worktree mode as
 // protection against accidents and not against a hostile model.
+/// Protects sibling worktree scratch scopes from mutual visibility.
 fn protecting_siblings(
   base: policy.SandboxPolicy,
   state_root: String,
@@ -473,6 +548,7 @@ fn protecting_siblings(
   }
 }
 
+/// Adds state root scopes directory to policy protected paths.
 fn masking_scopes(
   base: policy.SandboxPolicy,
   state_root: String,
@@ -485,6 +561,7 @@ fn masking_scopes(
 
 // Prepares and starts the workspace half, filing every cleanup the start hands
 // out. A start that fails after resources exist stops them before returning.
+/// Initializes base policies, registry namespace, and workspace plane instance.
 fn start(
   machine: Machine,
   root: String,
@@ -502,6 +579,7 @@ fn start(
     |> workspace_policy.protecting_state_root(machine.state_root)
     |> workspace_policy.protecting_blobs(blob_root)
     |> protecting_siblings(machine.state_root, custody)
+    |> workspace_policy.protecting_evolution(evolution_root(machine.state_root))
   use prepared <- result.try(
     workspace_plane.prepare(
       workspace_spec(machine, root, scope, blob_root, base),
@@ -517,27 +595,52 @@ fn start(
   let mcp = start_mcp(machine, spec.mcp, namespace, filed)
   let configs = process.new_subject()
   let attach = attach_of(machine, spec, namespace, filed, mcp.layer, configs)
+
+  // Start workspace execution plane with prepared attach specs.
   case workspace_plane.start(prepared, attach) {
     Ok(started) -> {
       let cleanups = [
         #(custody.Namespace, fn() { registry.stop(namespace) }),
         ..drain(filed, [])
       ]
-      let code_mode = process.receive(configs, 0) |> option.from_result
-      plane_over(
-        Built(
-          machine:,
-          root:,
-          scope:,
-          custody:,
-          session: spec.session,
-          started:,
-          code_mode:,
-          mcp: mcp.statuses,
-        ),
-        cleanups,
-      )
+      let configured = process.receive(configs, 0) |> option.from_result
+      let code_mode = option.map(configured, fn(each) { each.host })
+
+      // The evolution plane starts last, after everything it runs on exists, so
+      // a failure to start it stops the cleanups filed so far and nothing else.
+      case
+        evolution_of(
+          machine,
+          spec,
+          root,
+          started,
+          configured,
+          prepared.census.toolchain,
+          namespace,
+        )
+      {
+        Error(reason) -> {
+          let _outcome = retire_all(cleanups)
+          Error(reason)
+        }
+        Ok(evolving) ->
+          plane_over(
+            Built(
+              machine:,
+              root:,
+              scope:,
+              custody:,
+              session: spec.session,
+              started:,
+              code_mode:,
+              mcp: mcp.statuses,
+              evolving:,
+            ),
+            list.append(cleanups, evolving.cleanups),
+          )
+      }
     }
+
     Error(reason) -> {
       let _outcome = retire_all(drain(filed, []))
       let _stopped = registry.stop(namespace)
@@ -546,6 +649,130 @@ fn start(
   }
 }
 
+// The finished code-mode configuration of a scope and the compile identity
+// observed from it. The tool callback computes the identity first, because
+// whether the configuration offers `cap/evolution` depends on it, and the
+// evolution plane reads the same value instead of observing it again.
+@internal
+pub type Configured {
+  Configured(
+    host: codemode_wiring.Config,
+    identity: Result(record.Identity, String),
+  )
+}
+
+// What a scope's evolution plane adds to its plane: the door the host serves
+// evolution messages through, the census line the orchestrator reads, and the
+// cleanup that retires it.
+type Evolving {
+  Evolving(
+    door: Option(host.Evolution),
+    census: remote_census.EvolutionCensus,
+    cleanups: List(Cleanup),
+  )
+}
+
+// Starts the scope's evolution actor when this machine can compile candidates.
+//
+// The identity is computed once, here, and is the census line: a rebound attach
+// reuses the plane and so the line. A machine that cannot compile, because
+// code mode found no toolchain or the identity could not be observed, starts no
+// actor and files nothing, and the census says why, so an orchestrator opens no
+// catalogue against it. Only a failure to start the actor itself is an error,
+// and the caller then stops everything the build had started.
+//
+// The actor is filed under `custody.Evolution`, which ranks before the broker
+// and the helpers: it retires its generations while the machinery they run on
+// is still up. The memory door and the secrets lookup are this executor's own.
+// Memory writes go back through the owner's fact access under the reserved
+// `ext/` prefix, and secrets come from this machine's `[secrets]` table and
+// environment, the store MCP and the workspace plane read, never from the
+// orchestrator's. An extension that needs a secret this machine does not hold
+// meets the same missing-secret refusal it would meet anywhere else.
+/// Starts the evolution plane for a scope when code mode is available.
+fn evolution_of(
+  machine: Machine,
+  spec: host.AttachSpec,
+  root: String,
+  started: workspace_plane.Started,
+  configured: Option(Configured),
+  toolchain: Result(codemode_wiring.Toolchain, String),
+  namespace: registry.Registry,
+) -> Result(Evolving, String) {
+  // Without a code-mode configuration there is no compiler to stage a
+  // candidate with, so the scope compiles nothing and says why.
+  case configured {
+    None -> Ok(uncompiled(toolchain_reason(toolchain)))
+    Some(Configured(host: host_config, identity: observed)) -> {
+      let census = started.plane.census
+      let clock = host_config.clock
+      let scratch = evolution_run(machine.state_root, spec.session)
+      let secrets = machine.secrets
+      let config =
+        local.Config(
+          host: codemode_wiring.without_evolution(host_config),
+          base: census.base_policy,
+          at: serve.hook_coordinates_at(
+            root,
+            census.base_policy,
+            machine.demand,
+            census.env,
+            workspace_plane.mixed_entropy()(),
+            clock,
+          ),
+          memory: extension_memory.over_facts(spec.owner.facts),
+          secrets: fn(name) { secret.lookup(secrets, name) },
+          namespace:,
+          scratch:,
+          logger: machine.logger,
+          open: local.open_plane(machine.helper_path, _, scratch, clock),
+        )
+
+      // Without an identity there is nothing a candidate could be stamped with.
+      // It was observed when the `code_mode` tool was built, from this same
+      // configuration with its evolution door withdrawn, so it is not read twice.
+      case observed {
+        Error(reason) -> Ok(uncompiled(reason))
+        Ok(identity) -> {
+          use actor <- result.map(
+            executor_evolution.start(executor_evolution.Config(
+              local: config,
+              view: started.view,
+              refused: spec.owner.escalate,
+              logger: machine.logger,
+            )),
+          )
+          Evolving(
+            door: Some(executor_evolution.plane(actor)),
+            census: remote_census.Compiles(identity),
+            cleanups: [
+              #(custody.Evolution, fn() { executor_evolution.retire_all(actor) }),
+            ],
+          )
+        }
+      }
+    }
+  }
+}
+
+// An evolving line for a scope that cannot compile: no door, no cleanup.
+fn uncompiled(reason: String) -> Evolving {
+  Evolving(door: None, census: remote_census.Uncompiled(reason), cleanups: [])
+}
+
+// A toolchain that was found but whose configuration never reached the build is
+// reported as that, since the discovery has no reason to give.
+/// Why code mode is absent, in the words the toolchain discovery used.
+fn toolchain_reason(
+  toolchain: Result(codemode_wiring.Toolchain, String),
+) -> String {
+  case toolchain {
+    Error(reason) -> reason
+    Ok(_) -> "code mode did not start on this executor"
+  }
+}
+
+/// Constructs workspace specification record for plane preparation.
 fn workspace_spec(
   machine: Machine,
   root: String,
@@ -598,6 +825,7 @@ const mcp_close_ms = 5000
 // exit in time is a process leak the operator is told about, not a reason to
 // refuse the scope a clean close, because an MCP server is neither jailed nor
 // a helper child.
+/// Starts prepared MCP servers and registers cleanup callbacks.
 fn start_mcp(
   machine: Machine,
   plan: protocol.McpPlan,
@@ -620,6 +848,9 @@ fn start_mcp(
   process.send(
     filed,
     #(custody.Mcp, fn() {
+      // Close prepared MCP servers within timeout bound.
+
+      // The start outcome determines whether the MCP host can be reported as ready.
       case mcp_wiring.close_prepared(prepared, within: mcp_close_ms) {
         Ok(Nil) -> Nil
         Error(reason) ->
@@ -627,6 +858,7 @@ fn start_mcp(
             field.text(key: "reason", value: reason),
           ])
       }
+
       Ok(Nil)
     }),
   )
@@ -651,6 +883,7 @@ fn start_mcp(
 }
 
 // How one expected server fared, worded for the orchestrator's log line.
+/// Computes reported census status for an individual MCP server.
 fn status_of(
   name: String,
   declared: List(catalog.McpServer),
@@ -662,6 +895,8 @@ fn status_of(
     list.find(refusals, fn(refusal) { refusal.server == name })
     |> result.map(fn(refusal) { refusal.reason })
   let present = list.any(declared, fn(server) { server.name == name })
+
+  // Classify server status based on listings, refusals, and declarations.
   case listed, refused, present {
     Ok(tools), _, _ -> remote_census.McpReady(server: name, tools:)
     Error(Nil), Ok(reason), _ -> remote_census.McpRefused(server: name, reason:)
@@ -680,13 +915,14 @@ fn status_of(
 // are sent back through them, and a retain function that files each cleanup in
 // the build process. The finished code-mode configuration is sent to
 // `configs`, because a background program the host starts later runs under it.
+/// Assembles workspace plane attach structure with owner services and code mode.
 fn attach_of(
   machine: Machine,
   spec: host.AttachSpec,
   namespace: registry.Registry,
   filed: Subject(Cleanup),
   layer: mcp_wiring.Layer,
-  configs: Subject(codemode_wiring.Config),
+  configs: Subject(Configured),
 ) -> workspace_plane.Attach {
   let owner = spec.owner
   let session = spec.session
@@ -711,8 +947,9 @@ fn attach_of(
         |> owner_codemode.over_owner_serving(owner, answered_here:)
       },
       tool: fn(config) {
-        process.send(configs, config)
-        codemode_wiring.seam(config)
+        let offered = offering_evolution(config)
+        process.send(configs, offered)
+        codemode_wiring.seam(offered.host)
         |> backgrounded(owner)
         |> owner_codemode.advertising_peers
       },
@@ -720,10 +957,37 @@ fn attach_of(
   )
 }
 
+// Offers `cap/evolution` when this machine can compile candidates. The identity
+// is observed from the configuration with its evolution door withdrawn, which is
+// also the host the evolution plane compiles under, so offering the module
+// cannot change it: `evolution/identity` hashes the seam allowlists, and the
+// allowlist of a withdrawn host never contains the module. A machine whose
+// identity cannot be observed offers nothing and says so in its census.
+/// The configuration to build the `code_mode` tool from, with its identity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // executor_plane.offering_evolution(config).identity
+/// ```
+@internal
+pub fn offering_evolution(config: codemode_wiring.Config) -> Configured {
+  let identity =
+    evolution_identity.current(codemode_wiring.without_evolution(config))
+
+  // Only an observable identity makes the module worth offering.
+  case identity {
+    Ok(_) ->
+      Configured(host: owner_codemode.offering_evolution(config), identity:)
+    Error(_) -> Configured(host: config, identity:)
+  }
+}
+
 // The `code_mode` tool's background modes on an executor. The record of an
 // execution is the owner's, so a launch is a claim sent to the owner and an
 // interaction a question to it; the owner then asks this executor's host to
 // run the program (`execute`).
+/// Wraps code mode with background execution capability delegates.
 fn backgrounded(
   mode: codemode_tool.CodeMode,
   owner: owner_services.OwnerServices,
@@ -741,6 +1005,7 @@ fn backgrounded(
 // What a launch captured, as the owner is sent it. The parts that name this
 // machine (the workspace, the base policy, the demand and the environment) are
 // rebuilt here when the program starts, so they never cross the wire.
+/// Extracts serializable execution terms for remote background execution launch.
 fn terms_of(request: codemode_tool.Request) -> owner_services.ExecutionTerms {
   owner_services.ExecutionTerms(
     strand: request.strand,
@@ -775,12 +1040,14 @@ type Built {
     started: workspace_plane.Started,
     code_mode: Option(codemode_wiring.Config),
     mcp: List(remote_census.McpStatus),
+    evolving: Evolving,
   )
 }
 
 // The host's view of a started plane. The prompt facts are read once, here,
 // beside the helpers: a local plane reads them when a prompt is rendered, but
 // that read borrows a helper, and a remote attach pays for it once.
+/// Wraps started workspace plane into remote host plane interface.
 fn plane_over(
   built: Built,
   cleanups: List(Cleanup),
@@ -788,6 +1055,8 @@ fn plane_over(
   let plane = built.started.plane
   let machine = built.machine
   let scope = built.scope
+
+  // Verify prompt facts can be queried from started plane.
   case plane.prompt_facts() {
     Error(reason) -> {
       let _outcome = retire_all(cleanups)
@@ -797,9 +1066,12 @@ fn plane_over(
       let children = built.started.children
       let broker_actor = plane.broker
       let close_plane = plane.close
+
+      // What the close settles after the cleanups have run.
       let logger = machine.logger
       let custody = built.custody
       let session = built.session
+      let state_root = machine.state_root
       Ok(
         host.Plane(
           run: plane.run,
@@ -817,11 +1089,9 @@ fn plane_over(
             broker: broker.subject(broker_actor),
             mcp: built.mcp,
             branch: option.map(built.custody, fn(held) { held.branch }),
-            evolution: remote_census.Uncompiled(
-              "the executor's evolution plane is not built yet",
-            ),
+            evolution: built.evolving.census,
           ),
-          evolution: None,
+          evolution: built.evolving.door,
           children: fn(builder) {
             builder
             |> children.scratch
@@ -831,6 +1101,7 @@ fn plane_over(
           close: fn(retire_children) {
             let outcome = retire(close_plane, retire_children, cleanups)
             settle_scope(logger, scope, outcome)
+            settle_evolution(logger, state_root, session, outcome)
             settle_tree(custody, session, outcome)
             outcome
           },
@@ -845,6 +1116,7 @@ fn plane_over(
 // its own machine, and the deadline is the time the orchestrator says is left,
 // laid on this machine's clock. A plane with no code-mode toolchain answers an
 // errored value, which the record then holds.
+/// Reconstructs execution environment and invokes code mode for background request.
 fn executing(built: Built) -> fn(host.ExecutionStart) -> json.JsonValue {
   let census = built.started.plane.census
   let base_policy = census.base_policy
@@ -853,6 +1125,7 @@ fn executing(built: Built) -> fn(host.ExecutionStart) -> json.JsonValue {
   let demand = built.machine.demand
   let code_mode = built.code_mode
   fn(start: host.ExecutionStart) {
+    // Verify that code mode is available to execute request.
     case code_mode {
       None ->
         json.Object([
@@ -906,6 +1179,7 @@ fn seam_of(name: String) -> codemode_tool.Seam {
 // A scope that proved its cleanup has no further use for its directory. One
 // that did not keeps it, because a child that may still be running could be
 // writing there, and the log says which scope to look at.
+/// Removes session scratch directory if clean shutdown was witnessed.
 fn settle_scope(
   logger: Logger,
   scope: String,
@@ -920,15 +1194,45 @@ fn settle_scope(
   }
 }
 
+// The candidate scratch follows the scope directory's rule: a scope that proved
+// its cleanup has no candidate process left writing there, and one that did not
+// keeps the directory for the operator.
+/// Removes the scope's evolution scratch when the close was witnessed clean.
+fn settle_evolution(
+  logger: Logger,
+  state_root: String,
+  session: String,
+  outcome: protocol.CloseOutcome,
+) -> Nil {
+  case outcome {
+    protocol.AllRetired ->
+      remove_evolution_scratch(logger, evolution_run(state_root, session))
+    protocol.UnknownCleanup(..) -> Nil
+  }
+}
+
+/// Deletes the evolution scratch directory, logging a warning if that fails.
+fn remove_evolution_scratch(logger: Logger, scratch: String) -> Nil {
+  case simplifile.delete(scratch) {
+    Ok(Nil) -> Nil
+    Error(error) ->
+      log.warn(logger, "executor.evolution_scratch_kept", [
+        field.text(key: "reason", value: simplifile.describe_error(error)),
+      ])
+  }
+}
+
 // A scope that proved its cleanup has no process left in its tree, so the tree
 // can be settled: removed when clean, left when it holds changes. A scope that
 // did not prove it leaves the tree and its record alone, as it leaves the scope
 // directory, for the operator's release to handle.
+/// Settles worktree branch and directory after clean retirement.
 fn settle_tree(
   custody: Option(Custody),
   session: String,
   outcome: protocol.CloseOutcome,
 ) -> Nil {
+  // Only close worktree when all children cleanly retired.
   case custody, outcome {
     Some(held), protocol.AllRetired -> {
       let _closed = worktrees.close(held.trees, held.workspace, session)
@@ -938,6 +1242,7 @@ fn settle_tree(
   }
 }
 
+/// Deletes scope directory logging warning if removal fails.
 fn remove_scope(logger: Logger, scope: String) -> Nil {
   case simplifile.delete(scope) {
     Ok(Nil) -> Nil
@@ -985,6 +1290,8 @@ pub fn retire(
     }
   let witnessed =
     list.any(ran, fn(each) { each.0 == custody.Helpers && each.1 == Ok(Nil) })
+
+  // Determine overall retirement outcome based on failures and witnesses.
   case failed, witnessed {
     0, True -> protocol.AllRetired
     _, _ -> protocol.UnknownCleanup(count: int.max(1, failed))
@@ -998,6 +1305,7 @@ fn retire_all(cleanups: List(Cleanup)) -> protocol.CloseOutcome {
 
 // Shutdown order, as `instance_owner.Part` documents it. Only some of the parts
 // are ever filed by a workspace plane.
+/// Returns integer ordering rank for plane cleanup parts.
 fn rank(part: custody.Part) -> Int {
   case part {
     custody.Runtime -> 0
@@ -1015,6 +1323,7 @@ fn rank(part: custody.Part) -> Int {
 
 // --- the machine's own settings ------------------------------------------------
 
+/// Parses command line argument tokens into executor plane flags.
 fn read_flags(arguments: List(String), flags: Flags) -> Flags {
   case arguments {
     [] -> flags
@@ -1052,6 +1361,7 @@ fn read_flags(arguments: List(String), flags: Flags) -> Flags {
   }
 }
 
+/// Reads configuration file content from filesystem path.
 fn read_configuration(path: String) -> Result(String, String) {
   case path {
     "" -> Ok("")
@@ -1070,6 +1380,7 @@ fn read_configuration(path: String) -> Result(String, String) {
 // server, `PATH`, then `./bin`. A helper that does not exist is a start
 // failure, because the pool spawns lazily and the first tool call would
 // otherwise be where the operator learns of it.
+/// Resolves path to sandbox helper executable across search ladder.
 fn find_helper(flag: Option(String)) -> Result(String, String) {
   let found =
     serve.helper_ladder(
@@ -1078,6 +1389,8 @@ fn find_helper(flag: Option(String)) -> Result(String, String) {
       on_path: fn() { ffi_os.find_executable(install.helper_name) },
       in_bin: fn() { install.existing_file("./bin/" <> install.helper_name) },
     )
+
+  // Verify helper executable exists and is accessible.
   case found {
     Error(Nil) ->
       Error(
@@ -1122,6 +1435,8 @@ pub fn scope_limits() -> exec_ledger.Limits {
 /// ```
 pub fn scope_limits_from(setting: Result(String, Nil)) -> exec_ledger.Limits {
   let defaults = exec_ledger.default_limits()
+
+  // Parse positive integer override for maximum unclean scopes.
   case result.try(setting, int.parse) {
     Ok(limit) if limit >= 1 ->
       exec_ledger.Limits(..defaults, max_unclean_scopes: limit)
@@ -1144,6 +1459,7 @@ fn named_tools(value: String) -> List(String) {
   |> list.filter(fn(name) { name != "" })
 }
 
+/// Locates Go module cache and build cache directories for workspace.
 fn gocache_of(machine: Machine, root: String) -> Option(gocache.GoCaches) {
   gocache.locate(
     workspace_policy.lsp_places().cache,
@@ -1156,6 +1472,7 @@ fn gocache_of(machine: Machine, root: String) -> Option(gocache.GoCaches) {
 // The code-mode seed: an explicit flag, else the checkout's own when it
 // verifies (the same rung a local daemon takes), else the one bundled with
 // this release.
+/// Resolves code mode seed archive directory path across ladder.
 fn seed_of(machine: Machine, root: String) -> String {
   let in_workspace = root <> "/" <> serve.default_seed_directory
   serve.seed_ladder(

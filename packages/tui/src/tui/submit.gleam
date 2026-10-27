@@ -86,6 +86,8 @@ pub fn open_agents(model: Model) -> Model {
 @internal
 pub fn submit(model: Model) -> Model {
   let draft = text_area.value(model.view.input)
+
+  // Parse command draft or treat as regular prompt submission.
   case command.parse_with_skills(draft, model.shared.skills) {
     command.Session(session) ->
       inbound.run_settled(model, commands.act(
@@ -114,9 +116,7 @@ fn delivery(mode: tui_model.SubmissionMode) -> operator.Delivery {
   }
 }
 
-// A surface command with images attached is carried out only when it opens
-// a panel that leaves the draft alone; any other would consume the draft
-// and lose the images with it, so it is refused and the draft kept.
+/// Validates surface command submission against attachment constraints.
 fn submit_surface(model: Model, surface: command.Surface) -> Model {
   case composer.has_images(model.shared.attachments), surface {
     False, _
@@ -168,13 +168,15 @@ pub fn open_session_selector(model: Model) -> Model {
   }
 }
 
-// One surface command. The draft is consumed first, text into the input
-// history, unless a submission still locked behind the lane owns it.
+/// Dispatches a surface UI command and updates model state.
 fn surface_command(model: Model, surface: command.Surface) -> Model {
+  // Clear draft text unless a locked submission preserves it.
   let cleared = case model.shared.pending_submission {
     Some(ComposerSubmission) -> model
     Some(OverlaySubmission) | None -> tui_model.clear_composer_text(model)
   }
+
+  // Dispatch surface action by command variant.
   case surface {
     command.Quit -> quit(cleared)
     command.Help ->
@@ -302,14 +304,19 @@ pub fn history_selection(
   current: String,
   older: Bool,
 ) -> #(Int, String, String) {
+  // Preserve current draft when navigating away from latest input.
   let saved_draft = case index == 0, older {
     True, True -> current
     _, _ -> draft
   }
+
+  // Calculate next target history index.
   let target = case older {
     True -> int.min(list.length(history), index + 1)
     False -> int.max(0, index - 1)
   }
+
+  // Fetch history entry or restore saved draft.
   case target {
     0 -> #(0, saved_draft, saved_draft)
     _ ->
@@ -320,6 +327,7 @@ pub fn history_selection(
   }
 }
 
+/// Fetches an item from the history list at the given zero-based index.
 fn history_item(history: List(String), index: Int) -> Option(String) {
   case history, index {
     [item, ..], 0 -> Some(item)
@@ -448,10 +456,13 @@ pub fn toggle_agent_rail(model: Model) -> Model {
           }
         True -> {
           let docked = layout.rail_columns(model) > 0
+
+          // Toggle docked rail visibility.
           let choice = case docked {
             True -> layout_memory.RailHidden
             False -> layout_memory.RailShown
           }
+
           Model(
             shared: shared_set.notice(model.shared, case docked {
               True -> "rail hidden"
@@ -529,18 +540,24 @@ pub fn quit(model: Model) -> Model {
       |> tui_model.release_reconnect(awaiting)
       |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
   }
+
+  // Cancel active activity polling job.
   let model = case model.view.activity_poll {
     ActivityDue | ActivityResting(..) -> model
     ActivityAsking(job: awaiting, ..) ->
       Model(..model, view: view_set.activity_poll(model.view, ActivityDue))
       |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
   }
+
+  // Cancel active configuration job.
   let model = case model.view.configuring {
     None -> model
     Some(awaiting) ->
       Model(..model, view: view_set.configuring(model.view, None))
       |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
   }
+
+  // Close daemon control socket.
   let model = case model.view.daemon_host {
     None -> model
     Some(host) -> tui_model.emit(model, effect.CloseControl(host.control))
@@ -618,7 +635,9 @@ pub fn select_rail_tab(model: Model, tab: rail.Tab) -> Model {
   }
 }
 
+/// Switches the active rail tab and triggers background refreshes.
 fn choose_rail_tab(model: Model, tab: rail.Tab) -> Model {
+  // Handle Changes tab diff view toggle or switch rail tabs.
   case tab {
     rail.Changes ->
       case layout.diff_shown(model) {
@@ -626,10 +645,12 @@ fn choose_rail_tab(model: Model, tab: rail.Tab) -> Model {
         False -> open_diff(model)
       }
     rail.Strands | rail.Trace | rail.Session -> {
+      // Close diff view if it is currently displayed.
       let closed = case layout.diff_shown(model) {
         True -> open_diff(model)
         False -> model
       }
+
       let chosen =
         Model(
           ..closed,
@@ -649,6 +670,8 @@ fn choose_rail_tab(model: Model, tab: rail.Tab) -> Model {
           chosen,
           agent_strip.leave(tui_model.strip(chosen)),
         )
+
+      // Trigger jobs refresh if session tab was chosen.
       let read = case tab {
         rail.Session ->
           Model(
@@ -661,6 +684,7 @@ fn choose_rail_tab(model: Model, tab: rail.Tab) -> Model {
           |> tui_model.run_shared(surfaces.service_jobs_read)
         rail.Strands | rail.Changes | rail.Trace -> left
       }
+
       read
       |> tui_model.invalidate_transcript
       |> tui_model.invalidate_frame
@@ -725,9 +749,7 @@ pub fn close_sheet(model: Model) -> Model {
   |> tui_model.invalidate_frame
 }
 
-// The keyboard goes to the sheet. On Strands, with agents to choose among,
-// that is the list's cursor; otherwise, and on every other tab but Changes,
-// which has its own focus, it is the tab itself.
+/// Directs focus to the rail sheet components.
 fn focus_sheet(model: Model) -> Model {
   case layout.rail_tab(model) {
     rail.Changes -> model

@@ -631,6 +631,7 @@ fn within_hops(attempt: Hop, limit: Int, next: String) -> Result(Nil, Refusal) {
 fn advance(attempt: Hop, status: Int, next: String) -> Hop {
   let moved = Hop(..attempt, url: next, count: attempt.count + 1)
 
+  // Convert 303 See Other redirects to GET with an empty body.
   case status == see_other {
     True -> Hop(..moved, method: Get, body: <<>>)
     False -> moved
@@ -665,6 +666,7 @@ fn resolve_location(base: String, location: String) -> Result(String, Nil) {
   use here <- result.try(uri.parse(base))
   use there <- result.try(uri.parse(location))
 
+  // Merge with the base origin unless an explicit authority was provided.
   case there.host {
     Some(_authority) ->
       Ok(uri.to_string(
@@ -693,6 +695,7 @@ fn check_scheme(parsed: uri.Uri, url: String) -> Result(Nil, Refusal) {
     |> option.map(string.lowercase)
     |> option.unwrap("")
 
+  // Verify that the URL uses the https scheme.
   case scheme == "https" {
     True -> Ok(Nil)
     False -> Error(SchemeNotHttps(url))
@@ -754,6 +757,7 @@ fn explicit_port(port: Option(Int)) -> Option(Int) {
 fn check_host(policy: Policy, origin: Origin) -> Result(Nil, Refusal) {
   let allowed = list.filter_map(policy.hosts, origin_from_entry)
 
+  // Ensure the origin is present in the policy allowlist.
   case list.contains(allowed, origin) {
     True -> Ok(Nil)
     False -> Error(HostNotAllowed(render_origin(origin), policy.hosts))
@@ -788,6 +792,7 @@ fn check_headers(
 
     use _ <- result.try(check_header_shape(name, value))
 
+    // Refuse caller headers reserved for client-owned or secret bindings.
     case list.contains(reserved, string.lowercase(name)) {
       True -> Error(HeaderReserved(name))
       False -> Ok(Nil)
@@ -879,6 +884,7 @@ fn injected(
   list.filter_map(bound, fn(pair) {
     let #(secret, value) = pair
 
+    // Keep credential headers matching this origin.
     case origin_from_entry(secret.host) == Ok(origin) {
       True -> Ok(#(secret.header, value))
       False -> Error(Nil)
@@ -890,6 +896,7 @@ fn injected(
 fn remaining_ms(policy: Policy, deadline: Int) -> Result(Int, Refusal) {
   let left = deadline - ffi_egress.monotonic_ms()
 
+  // Check whether the monotonic deadline has already expired.
   case int.compare(left, 0) {
     order.Gt -> Ok(left)
     order.Eq | order.Lt -> Error(Timeout(policy.timeout_ms))

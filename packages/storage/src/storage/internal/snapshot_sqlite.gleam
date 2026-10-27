@@ -47,6 +47,8 @@ pub fn capture(
     )
     cut
   }
+
+  // Roll back the deferred transaction on error or return the captured cut.
   case captured {
     Ok(cut) -> Ok(cut)
     Error(error) -> {
@@ -56,6 +58,7 @@ pub fn capture(
   }
 }
 
+/// Captures a consistent snapshot cut including session stats, registers, and recent entries.
 fn capture_cut(
   conn: sqlight.Connection,
   plan: snapshot.Plan,
@@ -107,12 +110,14 @@ fn capture_cut(
   )
 }
 
+/// Reads register headers matching a namespace, prefix, and filter predicate.
 fn headers(
   conn: sqlight.Connection,
   namespace: register.RegisterNs,
   prefix: String,
   predicate: snapshot.Predicate,
 ) -> Result(List(snapshot.Header), Error) {
+  // Extract the filter field and expected string value from the predicate.
   let #(field, expected) = case predicate {
     snapshot.All -> #("", "")
     snapshot.StringFieldEquals(field, expected) -> #(field, expected)
@@ -160,6 +165,7 @@ fn headers(
 // A page's budget counts only its indexed key window. Both queries remain in
 // the capture's transaction, so admitted lengths and the copied headers refer
 // to the same cells; neither neighboring receipts nor their payloads are read.
+/// Reads a bounded page of register headers after a cursor key within a prefix range.
 fn page_headers(
   conn: sqlight.Connection,
   namespace: register.RegisterNs,
@@ -208,6 +214,7 @@ fn page_headers(
 // that would drop keys. Working in code points keeps the literal-prefix
 // property of `Selection` intact: no character in the prefix is a pattern, so
 // none needs escaping.
+/// Computes the prefix successor string for lexicographic range bounding.
 fn prefix_successor(prefix: String) -> Result(Option(String), Error) {
   let trimmed =
     string.to_utf_codepoints(prefix)
@@ -215,6 +222,8 @@ fn prefix_successor(prefix: String) -> Result(Option(String), Error) {
     |> list.drop_while(fn(point) {
       string.utf_codepoint_to_int(point) == maximum_code_point
     })
+
+  // Return None if prefix has no successor, or advance the last non-maximum code point.
   case trimmed {
     [] -> Ok(None)
     [last, ..earlier] -> {
@@ -232,6 +241,7 @@ const maximum_code_point = 0x10FFFF
 // only value whose increment is not a code point at all is the one just below
 // the UTF-16 surrogate block. An unrepresentable answer would silently widen
 // the scan past the prefix, so it fails the read instead.
+/// Advances a Unicode scalar value to the next representable code point.
 fn next_code_point(code: Int) -> Result(UtfCodepoint, Error) {
   case code {
     0xD7FF -> string.utf_codepoint(0xE000)
@@ -240,6 +250,7 @@ fn next_code_point(code: Int) -> Result(UtfCodepoint, Error) {
   |> result.replace_error(snapshot.InvalidRequest)
 }
 
+/// Reads a single register header from SQLite by namespace and key.
 fn header(
   conn: sqlight.Connection,
   namespace: register.RegisterNs,
@@ -253,6 +264,7 @@ fn header(
   snapshot.Header(namespace, key, row.seq, byte_length)
 }
 
+/// Reads a single register cell value from SQLite for a given header.
 fn cell(
   conn: sqlight.Connection,
   header: snapshot.Header,
@@ -345,10 +357,14 @@ pub fn lineage(
       conn,
       sql.snapshot_entry_head(ids.entry_id_to_string(id), Some(below)),
     ))
+
+    // Inspect the single candidate row for this entry identifier.
     case rows {
       [] -> Ok(None)
       [row] -> {
         use found <- result.try(descriptor(row.id, row.seq, row.payload_bytes))
+
+        // Decode the optional parent entry identifier.
         use parent <- result.map(case row.parent_id {
           None -> Ok(None)
           Some(text) ->
@@ -356,6 +372,7 @@ pub fn lineage(
             |> result.map(Some)
             |> result.map_error(corrupt)
         })
+
         Some(snapshot.Link(found, parent))
       }
       [_, _, ..] -> Error(invalid_row("exactly one stored row"))
@@ -363,6 +380,7 @@ pub fn lineage(
   })
 }
 
+/// Validates and constructs an entry descriptor from nullable database columns.
 fn descriptor(
   id: String,
   seq: Option(Int),
@@ -403,6 +421,7 @@ pub fn fragment(
   row.fragment
 }
 
+/// Decodes a raw payload bit array into parsed JSON.
 fn payload(bytes: BitArray) -> Result(json.JsonValue, Error) {
   use text <- result.try(
     bit_array.to_string(bytes)
@@ -418,6 +437,7 @@ fn required(value: Option(a)) -> Result(a, Error) {
   }
 }
 
+/// Constructs a corrupt row error for unexpected database column shapes.
 fn invalid_row(expected: String) -> Error {
   corrupt(corruption.report(
     at: "storage/snapshot",
@@ -427,6 +447,7 @@ fn invalid_row(expected: String) -> Error {
   ))
 }
 
+/// Executes a generated SQL query with parameters against the database connection.
 fn query(
   conn: sqlight.Connection,
   generated: #(String, List(dev.Param), decode.Decoder(a)),
@@ -437,11 +458,14 @@ fn query(
   |> result.map_error(database_error)
 }
 
+/// Executes a query expecting exactly one row, returning MissingRecord on empty result.
 fn one(
   conn: sqlight.Connection,
   generated: #(String, List(dev.Param), decode.Decoder(a)),
 ) -> Result(a, Error) {
   use rows <- result.try(query(conn, generated))
+
+  // Ensure that exactly one row is returned from the query.
   case rows {
     [row] -> Ok(row)
     [] -> Error(snapshot.MissingRecord)
@@ -449,6 +473,7 @@ fn one(
   }
 }
 
+/// Converts a generated query parameter into an sqlight value.
 fn parameter(param: dev.Param) -> Result(sqlight.Value, Error) {
   case param {
     dev.ParamInt(value) -> Ok(sqlight.int(value))

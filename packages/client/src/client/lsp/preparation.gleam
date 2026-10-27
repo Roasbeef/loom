@@ -78,10 +78,12 @@ pub fn call_spec(
   demand: exec.EnforcementDemand,
   now_ms now: Int,
 ) -> Result(broker.CallSpec, String) {
+  // Extract the approved Gleam executable from the command argv.
   use executable <- result.try(case built.argv {
     [executable, "lsp"] -> Ok(executable)
     _ -> Error("dependency preparation requires the approved Gleam lsp command")
   })
+
   let base = policy.SandboxPolicy(..built.base, network: policy.NetworkFull)
   let requirements =
     policy.SandboxPolicy(
@@ -112,6 +114,8 @@ pub fn call_spec(
 // A nonzero exit preserves the command's explanation. The receive buffers
 // and rendered tail are bounded separately, so a registry error stays
 // useful without turning a failed query into a build log.
+
+/// Verifies that dependency download completed successfully with zero exit status.
 fn settled(collected: tool.Collected) -> Result(Nil, String) {
   case collected.outcome {
     broker.CallExited(result:) if result.code == 0 -> Ok(Nil)
@@ -127,6 +131,7 @@ fn settled(collected: tool.Collected) -> Result(Nil, String) {
   }
 }
 
+/// Formats and trims bounded process output from dependency download.
 fn output(collected: tool.Collected) -> String {
   let stderr = result.unwrap(bit_array.to_string(collected.stderr), "")
   let stdout = result.unwrap(bit_array.to_string(collected.stdout), "")

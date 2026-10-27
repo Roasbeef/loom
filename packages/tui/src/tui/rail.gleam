@@ -172,6 +172,8 @@ pub fn columns(
   tab: Tab,
 ) -> Int {
   let room = terminal >= narrowest
+
+  // Determine column count from the active tab and user visibility preference.
   case tab, choice, room {
     _, _, False -> 0
     Changes, _, True -> cells(terminal) + 1

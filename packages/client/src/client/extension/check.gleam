@@ -191,6 +191,7 @@ pub fn run(root: Root, name: String, setup: Setup) -> Result(Report, String) {
 // operator approved; `installed.verified` has already refused a manifest
 // whose profiles differ from them. The tree comes back with them, and it
 // is the only source a fixture is written from.
+/// Verifies extension tier and non-empty checks list from installed record.
 fn checkable(
   root: Root,
   name: String,
@@ -235,6 +236,7 @@ fn approved(written: Record, name: String) -> Result(LspServer, String) {
 // The checks grouped by the server and fixture they run against, in the
 // order the manifest first names each pair. One group is one server start
 // over one copy of one fixture, so checks that share both share a start.
+/// Groups checks sharing identical server name and fixture directory.
 fn groups(checks: List(Check)) -> List(#(#(String, String), List(Check))) {
   let keys =
     list.map(checks, fn(check) { #(check.server, check.fixture) })
@@ -252,6 +254,7 @@ fn groups(checks: List(Check)) -> List(#(#(String, String), List(Check))) {
 // The scratch directory is removed on every path out, the setup failures
 // included, because a check that failed must not leave a copy of a
 // fixture and a helper's temporary files under the operator's root.
+/// Executes a test group across a clean scratch workspace and isolated check plane.
 fn run_group(
   root: Root,
   tree: archive.Tree,
@@ -309,6 +312,7 @@ fn run_group(
 // to `/private/tmp`, lands the workspace in the tmpfs the jail replaces,
 // and the server would find an empty project. The one real-path reader the
 // tree has is `host/bootstrap.canonical_directory`.
+/// Creates scratch temporary workspace and unpacks target fixture into work root.
 fn prepared(
   tree: archive.Tree,
   fixture: String,
@@ -337,10 +341,13 @@ fn prepared(
 // Judged by component, so `/tmpfoo` is not under `/tmp`. Both spellings
 // are listed because macOS's `/tmp` is a link to `/private/tmp` and the
 // real path is the one a link resolves to.
+/// Verifies resolved canonical path does not reside under tmpfs mounts.
 fn outside_tmp(real: String) -> Result(Nil, String) {
   let under = fn(directory) {
     real == directory || string.starts_with(real, directory <> "/")
   }
+
+  // Ensure workspace directory is outside /tmp mount points.
   case under("/tmp") || under("/private/tmp") {
     False -> Ok(Nil)
     True ->
@@ -358,6 +365,7 @@ fn outside_tmp(real: String) -> Result(Nil, String) {
 // passed `archive`'s component rules (no `..`, no empty or `.` component),
 // so each lands under `workspace` and nowhere else, and the workspace is
 // a directory this check just made, so nothing in it is a link to follow.
+/// Writes tree fixture files into destination workspace directory.
 fn written_fixture(
   tree: archive.Tree,
   fixture: String,
@@ -378,7 +386,9 @@ fn written_fixture(
     simplifile.create_directory_all(workspace)
     |> result.map_error(failed(workspace, _)),
   )
+
   list.try_each(tree.files, fn(file) {
+    // Write fixture file if path matches selected fixture prefix.
     case string.starts_with(file.path, prefix) {
       False -> Ok(Nil)
       True -> {
@@ -402,6 +412,7 @@ fn written_fixture(
 // this one server and ask every check through its door. The manager is
 // stopped and its lease waited back before the plane is, so the server
 // exits on its own `shutdown` rather than under a torn-down helper.
+/// Starts language server manager in isolated check plane and evaluates assertions.
 fn on_plane(
   plane: serve.CheckPlane,
   workspace: String,
@@ -454,6 +465,7 @@ fn on_plane(
     Ok(settled) -> enforcement.of_call(settled)
     Error(reason) -> enforcement.Unreported(reason)
   }
+
   let outcome =
     manager.start(manager.Config(
       workspace:,
@@ -461,6 +473,8 @@ fn on_plane(
       backend: manager.jailed(jailed),
       timing:,
     ))
+
+  // Evaluate check outcomes on running language server instance.
   let ran = case outcome {
     Error(reason) ->
       Error("the language-server manager would not start: " <> reason)
@@ -471,6 +485,7 @@ fn on_plane(
       Ok(Run(server: server.name, fixture:, enforcement: enforced, outcomes:))
     }
   }
+
   broker.abort(broker_actor, op_id)
   leases.stop(counter)
   ran
@@ -479,6 +494,7 @@ fn on_plane(
 // The keeper stops the server after `manager.stop` returns, and the lease
 // coming back is the witness that it has. A server that outlives the wait
 // is aborted with the rest of the operation by the caller.
+/// Polls helper lease counter until active leases drop to zero.
 fn released(counter: leases.Leases) -> Nil {
   let _settled =
     poll.until(within: release_wait_ms, every: 50, attempt: fn() {
@@ -574,6 +590,7 @@ pub fn lines(report: Report) -> List(String) {
 /// ```
 ///
 pub fn enforcement_line(report: enforcement.Report) -> String {
+  // Format human-readable enforcement report summary.
   case report {
     enforcement.Unreported(reason:) ->
       "the language server's probe made NO enforcement report: " <> reason

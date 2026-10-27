@@ -177,16 +177,19 @@ pub fn start(
 // session renews nothing — so the option is the switch and no interval
 // has to stand for "off".
 //
+// Configures periodic lease renewal on the actor builder if the session carries a lease interval.
 // The cadence is weft's fixed delay: the next tick is armed once this
 // one's handler has returned, so a renewal that blocks on a slow file
 // slows the ticks down rather than queueing a backlog of them behind
 // itself. That is the right reading for a lease, whose TTL is three
 // intervals: falling behind should cost promptness, never a burst of
 // renewals racing each other through the same store.
+/// Configures periodic lease renewal on the actor builder if the session carries a lease interval.
 fn renewing(
   builder: actor.Builder(State, Message, Subject(Message)),
   session: Session,
 ) -> actor.Builder(State, Message, Subject(Message)) {
+  // Checks if the session specifies a periodic lease interval for auto-renewal.
   case session.lease_interval_ms {
     Some(interval) -> {
       // A renewal wakes the mailbox even when the writer has no work. Sleep
@@ -241,7 +244,9 @@ pub fn supervised(
 // Erlang's `!` to a pid that has already exited is a silent no-op, so
 // nothing past the name lookup can crash the caller and no aliveness
 // check is needed on either path.
+/// Publishes an event to a single subscriber, resolving names safely without crashing the writer.
 fn publish(subscriber: Subscriber, event: Event) -> Nil {
+  // Delivers the event directly or via an addressed router destination.
   case subscriber {
     Direct(subject) -> publish_direct(subject, event)
     Routed(destination) -> {
@@ -251,6 +256,7 @@ fn publish(subscriber: Subscriber, event: Event) -> Nil {
   }
 }
 
+/// Publishes an event directly to a subject, resolving named processes safely.
 fn publish_direct(subscriber: Subject(Event), event: Event) -> Nil {
   case process.subject_name(subscriber) {
     Error(Nil) -> process.send(subscriber, event)
@@ -262,6 +268,7 @@ fn publish_direct(subscriber: Subject(Event), event: Event) -> Nil {
   }
 }
 
+/// Handles incoming actor messages for transaction commits, queries, and lease renewal.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     Commit(tx:, reply:) ->
@@ -331,6 +338,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
+/// Formats a storage error into a human-readable diagnostic description string.
 fn describe_storage_error(error: StorageError) -> String {
   case error {
     storage.CorruptRow(report:) -> "corrupt row: " <> report.boundary

@@ -85,6 +85,7 @@ import client/directories
 import client/effect_abort
 import client/escalate
 import client/evolution
+import client/evolution/candidate as evolution_candidate
 import client/evolution/capability as evolution_capability
 import client/evolution/control as evolution_control
 import client/evolution/evaluate as evolution_evaluate
@@ -93,6 +94,7 @@ import client/evolution/hook as evolution_hook
 import client/evolution/live as evolution_live
 import client/evolution/machine as evolution_machine
 import client/evolution/machine/local as evolution_machine_local
+import client/evolution/machine/remote as evolution_machine_remote
 import client/evolution/model_door as evolution_model_door
 import client/evolution/prompt as evolution_prompt
 import client/evolution/queue as evolution_queue
@@ -251,6 +253,8 @@ import weft/registry as address
 // of them is trusted is decided here from the bytes, against the owner's
 // trust record, whichever machine the files were on. The hooks run through
 // the plane's broker under the census's policy and environment.
+
+/// Establishes with imported hooks for the caller, keeping its validation and result policy at this boundary.
 fn with_imported_hooks(
   built: effects.Effects,
   opened: session.Session,
@@ -321,6 +325,8 @@ fn with_imported_hooks(
       field.text(key: "what", value: note.what),
     ])
   })
+
+  // Decide how to handle serving.wiring.config.entries {.
   case serving.wiring.config.entries {
     [] -> built
     _ -> {
@@ -329,6 +335,8 @@ fn with_imported_hooks(
       let stops = fn(operation) {
         notes.strand_of(opened, operation) == Ok(advisor.primary)
       }
+
+      // Decide how to handle hookserve.wire(built, serving, clock, stops) {.
       case hookserve.wire(built, serving, clock, stops) {
         Ok(composed) -> composed
         Error(reason) -> {
@@ -381,6 +389,7 @@ pub fn hook_environment(
   home: Option(String),
   workspace: String,
 ) -> List(#(String, String)) {
+  // Decide how to handle let based =  home {.
   let based = case home {
     Some(operator) ->
       environment
@@ -388,6 +397,7 @@ pub fn hook_environment(
       |> list.key_set("HOME", operator)
     None -> environment
   }
+
   list.key_set(based, "CLAUDE_PROJECT_DIR", workspace)
 }
 
@@ -417,6 +427,35 @@ pub type EvolutionRole {
   /// evolution authority: no catalogue, no evolution tools and no upgrade
   /// controller.
   Trial(profiles: List(evolution_profile.Profile))
+}
+
+/// Whether a session runs the model work that is not part of a turn: the
+/// glance loop, the block summarizer and the side-query machine.
+pub type SideWork {
+  /// The operator's session runs all three.
+  RunsSideWork
+
+  /// A trial runs none. Its requests all cross the governed guard, which
+  /// charges every admitted attempt to the comparison, and side work is not
+  /// the task under comparison: its spend would move the verdict, and a
+  /// request that settles outside a turn is spend the transcript never
+  /// shows. A trial also has no terminal to draw a glance or a summary for,
+  /// so nothing is lost.
+  NoSideWork
+}
+
+/// Decides whether a session of this role runs side work.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.side_work(serve.Trial([])) == serve.NoSideWork
+/// ```
+pub fn side_work(role: EvolutionRole) -> SideWork {
+  case role {
+    Source -> RunsSideWork
+    Trial(_) -> NoSideWork
+  }
 }
 
 /// Everything a boot needs, resolved: flags parsed, defaults filled,
@@ -543,6 +582,15 @@ pub type Settings {
     /// prompt pack entirely. `None` — the ordinary case — leaves `boot`
     /// to use the session's pinned prompt or render the pack.
     system: Option(String),
+    /// The prompt pack's *source text*, handed to the session directly.
+    /// `None` — the ordinary case — keeps the boot's own lookup: the file
+    /// `LOOM_PROMPT_PACK` names, else the pack shipped with the build.
+    /// `Some(text)` skips that environment read and renders `text`, so
+    /// concurrent sessions in one VM can each run a different pack without
+    /// racing on a process-wide variable. It is text rather than a path
+    /// because a path is an environment read in disguise and a trial's jail
+    /// could not see it anyway. A `system` override still bypasses the pack.
+    pack: Option(String),
     /// The operator's home directory, where the global `AGENTS.md`
     /// default is looked for when the workspace has none of its own.
     /// `resolve` fills it from `HOME`, and `None` records that `HOME`
@@ -833,12 +881,16 @@ pub fn start_effect_plane(
 // message until a late exit proves the last helper retired, then stops itself.
 // Without it a pool whose proof arrives after the window would outlive the
 // plane, which for a plane inside the daemon is a process nobody owns.
+
+/// Establishes stop one shot for the caller, keeping its validation and result policy at this boundary.
 fn stop_one_shot(
   broker_actor: Broker,
   service: executor.Executor,
   pool: Pool,
 ) -> Nil {
   broker.stop(broker_actor)
+
+  // Decide how to handle the branch input.
   case
     executor.close(
       service,
@@ -1091,6 +1143,7 @@ type Flags {
   )
 }
 
+/// Establishes parse for the caller, keeping its validation and result policy at this boundary.
 fn parse(arguments: List(String)) -> Result(Flags, String) {
   parse_loop(
     arguments,
@@ -1135,11 +1188,15 @@ pub fn resolve_managed(
     "" -> LocalWorkspace
     _ -> RegisteredWorkspace
   }
+
   use flags <- result.try(parse(defaults))
+
+  // Decide how to handle let configuration =  registration.configuration {.
   let configuration = case registration.configuration {
     "" -> flags.config
     path -> Some(path)
   }
+
   use settings <- result.try(resolve(
     Flags(
       ..flags,
@@ -1203,6 +1260,8 @@ pub fn codemode_socket_root(
   state_root: String,
 ) -> Option(String) {
   let root = state_root <> "/" <> codemode_wiring.runtime_directory
+
+  // Decide how to handle the branch input.
   case
     list.any(base.writable_roots, fn(writable) {
       policy.covers(root: writable, path: root)
@@ -1232,10 +1291,12 @@ pub fn build_domain(
   sources: fn() -> Result(List(shared_history.Source), String),
   owner: custody.Owner,
 ) -> Result(domain_service.Services, String) {
+  // Decide how to handle let configuration =  selected.configuration {.
   let configuration = case selected.configuration {
     "" -> None
     path -> Some(path)
   }
+
   use _loaded <- result.try(load_config(configuration, None, None))
   use Nil <- result.try(
     bootstrap.ensure_private_directory(filepath.directory_name(
@@ -1278,6 +1339,8 @@ pub fn with_memory_source(
 ) -> fn() -> Result(List(shared_history.Source), String) {
   fn() {
     use found <- result.map(sources())
+
+    // Decide how to handle memory_source(memory_path) {.
     case memory_source(memory_path) {
       Ok(source) -> list.append(found, [source])
       Error(Nil) -> found
@@ -1287,6 +1350,8 @@ pub fn with_memory_source(
 
 // The memory store's identity is read without its writer lease, so a
 // `remember` call holding it never delays a search.
+
+/// Establishes memory source for the caller, keeping its validation and result policy at this boundary.
 fn memory_source(path: String) -> Result(shared_history.Source, Nil) {
   use #(identity, _parent) <- result.try(
     sqlite.identity(path:) |> result.replace_error(Nil),
@@ -1323,7 +1388,9 @@ pub fn workspace_data_root(
   }
 }
 
+/// Establishes parse loop for the caller, keeping its validation and result policy at this boundary.
 fn parse_loop(arguments: List(String), flags: Flags) -> Result(Flags, String) {
+  // Decide how to handle arguments {.
   case arguments {
     [] -> Ok(flags)
     ["--session", value, ..rest] ->
@@ -1372,6 +1439,7 @@ const usage =
   [--full-enforcement]     require every requested resource and lifecycle layer
   [--best-effort]          accept any degraded sandbox helper"
 
+/// Establishes set demand for the caller, keeping its validation and result policy at this boundary.
 fn set_demand(
   rest: List(String),
   flags: Flags,
@@ -1404,14 +1472,20 @@ type Placement {
 // Settings. The new-strand identity and the wiring's fallback model
 // facts all come from the main route's head entry, so one catalogue is
 // the single source for everything model-shaped.
+
+/// Establishes resolve for the caller, keeping its validation and result policy at this boundary.
 fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
+  // Decide how to handle use session_path <- result.try( flags.session {.
   use session_path <- result.try(case flags.session {
     Some(path) -> Ok(path)
     None -> Error("--session is required\n" <> usage)
   })
+
   use #(bind_host, bind_port) <- result.try(
     split_bind(option.unwrap(flags.bind, "127.0.0.1:0")),
   )
+
+  // Decide how to handle use workspace <- result.try( flags.workspace {.
   use workspace <- result.try(case flags.workspace {
     Some(dir) -> Ok(dir)
     None ->
@@ -1420,6 +1494,8 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
         "the working directory is unreadable: " <> string.inspect(error)
       })
   })
+
+  // Decide how to handle use helper_path <- result.try( placement {.
   use helper_path <- result.try(case placement {
     LocalWorkspace -> find_helper(flags.helper)
     RegisteredWorkspace -> Ok("")
@@ -1531,6 +1607,7 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       demand: option.unwrap(flags.demand, exec.PlatformEnforcement),
       gateway:,
       evolution_role: Source,
+      pack: None,
       catalog: catalogue,
       secrets: secret_store,
       secret_failures:,
@@ -1584,6 +1661,8 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
 // case worth a word — a catalogue that routes the role to models this
 // gateway cannot serve — is a question about the catalogue rather than
 // about the error. `advisor_unresolved` asks it where there is a logger.
+
+/// Establishes advisor settings for the caller, keeping its validation and result policy at this boundary.
 fn advisor_settings(
   gateway: provider_gateway.Gateway,
   config: catalog.AdvisorConfig,
@@ -1684,6 +1763,8 @@ pub const default_keep_recent_tokens = 20_000
 // threshold on every checkpoint and preparing nothing; spec §3.2 wants
 // these validated at set time, and this is the only set point there is
 // today.
+
+/// Establishes compaction settings for the caller, keeping its validation and result policy at this boundary.
 fn compaction_settings(context_window: Int) -> operation.CompactionSettings {
   let reserve = env_int_or("LOOM_COMPACTION_RESERVE", default_reserve_tokens)
   let keep_recent =
@@ -1708,12 +1789,20 @@ fn compaction_settings(context_window: Int) -> operation.CompactionSettings {
 // identity naming no entry — a session written against a catalogue this
 // boot no longer has — falls through to the wiring's fallback counts
 // rather than refusing, which is what keeps such a session running.
+
+/// Establishes catalogue facts for the caller, keeping its validation and result policy at this boundary.
 fn catalogue_facts(
   catalogue: catalog.Catalog,
 ) -> fn(machine_strand.ModelIdentity) ->
   Result(#(model.ResolvedModel, String, catalog.ImageReading), Nil) {
+  // Facts travel through several provider and hook closures in every runtime.
+  // Only model entries belong there; profile routes and server configuration
+  // remain with the catalogue's owners rather than multiplying on each copy.
+  let models = catalogue.models
   fn(identity: machine_strand.ModelIdentity) {
-    use entry <- result.map(catalog.find(catalogue, identity.provider))
+    use entry <- result.map(
+      list.find(models, fn(entry) { entry.name == identity.provider }),
+    )
     #(catalog.resolved(entry), adapter_api(entry.dialect), entry.vision)
   }
 }
@@ -1741,6 +1830,8 @@ fn seed_thinking(settings: Settings) -> machine_strand.ThinkingLevel {
 // Which adapter a catalogue dialect dispatches through. The api name is
 // captured durably into every generation intent, so it must be the
 // adapter's own constant rather than a word chosen here.
+
+/// Establishes adapter api for the caller, keeping its validation and result policy at this boundary.
 fn adapter_api(dialect: catalog.Dialect) -> String {
   case dialect {
     catalog.Anthropic -> anthropic.api_name
@@ -1779,11 +1870,14 @@ type Loaded =
 // Standalone text parsers retain their own worded TOML errors. No document or
 // resolved secret survives into another load: domain validation and every
 // session open still read the file independently.
+
+/// Establishes load config for the caller, keeping its validation and result policy at this boundary.
 fn load_config(
   flag: Option(String),
   profile: Option(String),
   model: Option(String),
 ) -> Result(Loaded, String) {
+  // Decide how to handle flag {.
   case flag {
     None -> {
       // The environment surface defines no profiles and no model keys, so a
@@ -1808,6 +1902,7 @@ fn load_config(
             <> "] table, and this host has none",
           )
       })
+
       Ok(#(
         catalogue,
         [],
@@ -1861,6 +1956,7 @@ pub fn check_config(
   parse_config(path, text, profile, model) |> result.replace(Nil)
 }
 
+/// Establishes parse config for the caller, keeping its validation and result policy at this boundary.
 fn parse_config(
   path: String,
   text: String,
@@ -1928,15 +2024,20 @@ fn parse_config(
 // named profile's roles, with `main` then pinned to the named model. The profile
 // goes first because the model is laid over whatever role set results
 // (protocol-change/080).
+
+/// Establishes with choice for the caller, keeping its validation and result policy at this boundary.
 fn with_choice(
   catalogue: catalog.Catalog,
   profile: Option(String),
   model: Option(String),
 ) -> Result(catalog.Catalog, String) {
+  // Decide how to handle use profiled <- result.try( profile {.
   use profiled <- result.try(case profile {
     None -> Ok(catalogue)
     Some(name) -> catalog.select_profile(catalogue, name)
   })
+
+  // Decide how to handle model {.
   case model {
     None -> Ok(profiled)
     Some(key) -> catalog.select_model(profiled, key)
@@ -1945,6 +2046,8 @@ fn with_choice(
 
 // Splits `host:port` on the *last* colon, because IPv6 hosts carry
 // colons of their own.
+
+/// Establishes split bind for the caller, keeping its validation and result policy at this boundary.
 fn split_bind(bind: String) -> Result(#(String, Int), String) {
   case list.reverse(string.split(bind, ":")) {
     [port_text, first, ..rest] ->
@@ -2011,6 +2114,8 @@ pub fn helper_ladder(
 // eagerly: the pool spawns helpers lazily, so a missing binary would
 // otherwise first surface at a tool call, as a confusing in-band
 // failure, long after the person who mistyped the path had walked away.
+
+/// Establishes find helper for the caller, keeping its validation and result policy at this boundary.
 fn find_helper(flag: Option(String)) -> Result(String, String) {
   let found =
     helper_ladder(
@@ -2019,6 +2124,8 @@ fn find_helper(flag: Option(String)) -> Result(String, String) {
       on_path: fn() { ffi_os.find_executable(install.helper_name) },
       in_bin: fn() { install.existing_file(repo_helper) },
     )
+
+  // Decide how to handle found {.
   case found {
     Error(Nil) -> Error(no_helper_anywhere())
     Ok(path) ->
@@ -2038,6 +2145,8 @@ const repo_helper = "./bin/loom-exec"
 // Named, and lazy at its one call site, because it interpolates the
 // installation root: a message built on every successful boot to be
 // thrown away is the eager-argument hazard in miniature.
+
+/// Establishes no helper anywhere for the caller, keeping its validation and result policy at this boundary.
 fn no_helper_anywhere() -> String {
   "no "
   <> install.helper_name
@@ -2052,11 +2161,16 @@ fn no_helper_anywhere() -> String {
 
 // The subscribe name for a session file: its base name without the
 // extension (`/data/review.db` serves session `review`).
+
+/// Establishes session id of for the caller, keeping its validation and result policy at this boundary.
 fn session_id_of(path: String) -> String {
+  // Decide how to handle let base =  list.last(string.split(path, "/")) {.
   let base = case list.last(string.split(path, "/")) {
     Ok(name) -> name
     Error(Nil) -> path
   }
+
+  // Decide how to handle string.split(base, ".") {.
   case string.split(base, ".") {
     [name, ..] if name != "" -> name
     _ -> base
@@ -2072,6 +2186,8 @@ pub const default_model = "claude-opus-5"
 // and why. The reason is built from an exit status or the deadline and
 // never from the command's output, so nothing a credential helper
 // printed can reach a log through here.
+
+/// Establishes log secret failures for the caller, keeping its validation and result policy at this boundary.
 fn log_secret_failures(failures: List(secrets.Failure), logger: Logger) -> Nil {
   list.each(failures, fn(failure) {
     log.warn(logger, "secrets.unresolved", [
@@ -2096,6 +2212,8 @@ fn env_int_or(name: String, fallback: Int) -> Int {
 // resolving) shaped by the LOOM_* variables, routed as main. The API
 // key is *named* here and read only at dispatch, so a keyless
 // environment boots fine and fails in-band per request.
+
+/// Establishes env catalog for the caller, keeping its validation and result policy at this boundary.
 fn env_catalog() -> catalog.Catalog {
   catalog.Catalog(
     models: [
@@ -2483,12 +2601,15 @@ pub fn workspace_spec(
 // no capability. One line says so, because an operator who configured a
 // server and sees nothing would otherwise have only the absent
 // `code_mode` line to reason from.
+
+/// Establishes code mode mcp for the caller, keeping its validation and result policy at this boundary.
 fn code_mode_mcp(
   settings: Settings,
   discovered: Result(codemode_wiring.Toolchain, String),
   logger: Logger,
   owner: Option(custody.Owner),
 ) -> Result(mcp_wiring.Layer, String) {
+  // Decide how to handle discovered {.
   case discovered {
     Error(reason) -> {
       log.warn(logger, "codemode.unavailable", [
@@ -2555,6 +2676,8 @@ pub fn evolution_offer(
 // The owner's arms of the code-mode configuration: the doors only the
 // session's owner can serve. The workspace applies them after its own, so
 // the peer router wraps the working-directory router as it always has.
+
+/// Establishes code mode arms for the caller, keeping its validation and result policy at this boundary.
 fn code_mode_arms(
   settings: Settings,
   agency_seam: Agency,
@@ -2593,6 +2716,8 @@ fn code_mode_arms(
 // The `code_mode` tool over a finished configuration: background execution
 // is the session's, so the owner supplies the seam, and the peer
 // capabilities join the serviced list of every offer.
+
+/// Establishes code mode tool for the caller, keeping its validation and result policy at this boundary.
 fn code_mode_tool(
   config: codemode_wiring.Config,
   async_name: address.Address(async_runs.Message),
@@ -2617,6 +2742,7 @@ type Registration {
   )
 }
 
+/// Establishes extension registrations for the caller, keeping its validation and result policy at this boundary.
 fn extension_registrations(
   settings: Settings,
   discovered: List(installed.Discovered),
@@ -2664,6 +2790,8 @@ fn extension_registrations(
             Error(reason) -> Ok(reason)
           }
         })
+
+      // Decide how to handle let notices =  list.drop(refused, 32) {.
       let notices = case list.drop(refused, 32) {
         [] -> refused
         _ ->
@@ -2671,11 +2799,13 @@ fn extension_registrations(
             "More extensions were refused; run `loom ext list` for the complete list.",
           ])
       }
+
       #(registered, notices)
     }
   }
 }
 
+/// Establishes extension contribution for the caller, keeping its validation and result policy at this boundary.
 fn extension_contribution(
   root: extension_record.Root,
   found: installed.Discovered,
@@ -2686,6 +2816,7 @@ fn extension_contribution(
   host: Option(codemode_wiring.Config),
   memory: extension_memory.Door,
 ) -> Result(Option(Registration), String) {
+  // Decide how to handle found {.
   case found {
     installed.Refused(name:, reason:) -> {
       log.warn(logger, "extension.refused", [
@@ -2721,6 +2852,7 @@ fn extension_contribution(
   }
 }
 
+/// Establishes extension registered for the caller, keeping its validation and result policy at this boundary.
 fn extension_registered(
   root: extension_record.Root,
   written: extension_record.Record,
@@ -2733,6 +2865,7 @@ fn extension_registered(
   host: Option(codemode_wiring.Config),
   memory: extension_memory.Door,
 ) -> Result(Registration, String) {
+  // Decide how to handle host {.
   case host {
     None -> {
       log.warn(logger, "extension.unavailable", [
@@ -2773,6 +2906,8 @@ fn extension_registered(
           trust: egress.SystemRoots,
           launch: extension_dispatch.jailed_node,
         )
+
+      // Decide how to handle the branch input.
       case
         extension_dispatch.tools(
           dispatch_config,
@@ -2822,6 +2957,8 @@ fn extension_registered(
 
 // The command keeps the existing remove-then-install policy. A refused record
 // may not contain a readable source, so guidance never invents one from it.
+
+/// Establishes extension refusal for the caller, keeping its validation and result policy at this boundary.
 fn extension_refusal(name: String, reason: String) -> String {
   "Extension "
   <> name
@@ -2847,11 +2984,14 @@ fn extension_refusal(name: String, reason: String) -> String {
 // but the record is the operator's approval, and authority over the
 // harness's own timeline should be read from the yes rather than from
 // the file the yes was about.
+
+/// Establishes extension subscription for the caller, keeping its validation and result policy at this boundary.
 fn extension_subscription(
   written: extension_record.Record,
   logger: Logger,
   hooking: extension_hooks.Invoker,
 ) -> Option(extension_hooks.Extension) {
+  // Decide how to handle list.map(written.hooks, fn(hook) { hook.0 }) {.
   case list.map(written.hooks, fn(hook) { hook.0 }) {
     [] -> None
     events -> {
@@ -2876,6 +3016,8 @@ fn extension_subscription(
 // the only one: nothing signals "the run and every follow-up it queued
 // are done", so an extension subscribing to it would wait forever
 // without being told. Said once, at boot, where an operator reads it.
+
+/// Establishes inert hooks for the caller, keeping its validation and result policy at this boundary.
 fn inert_hooks(name: String, events: List(String), logger: Logger) -> Nil {
   case list.contains(events, extension_manifest.agent_settled_event) {
     False -> Nil
@@ -2897,6 +3039,8 @@ fn inert_hooks(name: String, events: List(String), logger: Logger) -> Nil {
 // skipped: extensions are an addition to a session, never a
 // precondition for one, so a boot that cannot fan hooks out still
 // serves.
+
+/// Establishes with extension hooks for the caller, keeping its validation and result policy at this boundary.
 fn with_extension_hooks(
   built: effects.Effects,
   registrations: List(Registration),
@@ -2941,6 +3085,8 @@ fn subscription_of(
 // skipped server has no module, so a program importing it is refused by
 // vetting with no word about the absence, and this line is the only
 // thing an operator will ever see about it.
+
+/// Establishes skipped mcp for the caller, keeping its validation and result policy at this boundary.
 fn skipped_mcp(
   servers: List(catalog.McpServer),
   logger: Logger,
@@ -2973,6 +3119,8 @@ fn skipped_mcp(
 // anybody will ever see about it: a refused server has no module, so a
 // program importing it is refused by vetting with no word about why the
 // module is absent.
+
+/// Establishes started mcp for the caller, keeping its validation and result policy at this boundary.
 fn started_mcp(
   servers: List(catalog.McpServer),
   store: secret.SecretStore,
@@ -2986,6 +3134,7 @@ fn started_mcp(
   let options =
     mcp_wiring.Options(..mcp_wiring.default_options(), secrets: store)
 
+  // Decide how to handle let prepared =  owner {.
   let prepared = case owner {
     None -> mcp_wiring.prepare(servers, options)
     Some(owner) ->
@@ -2995,6 +3144,7 @@ fn started_mcp(
         custodian: custody.owner(owner),
       )
   }
+
   use Nil <- result.try(
     retain(
       owner,
@@ -3010,6 +3160,8 @@ fn started_mcp(
       field.text(key: "reason", value: refusal.reason),
     ])
   })
+
+  // Decide how to handle mcp_wiring.listings(layer) {.
   case mcp_wiring.listings(layer) {
     [] -> Nil
     listings ->
@@ -3025,9 +3177,11 @@ fn started_mcp(
         ),
       ])
   }
+
   Ok(layer)
 }
 
+/// Establishes assemble for the caller, keeping its validation and result policy at this boundary.
 fn assemble(
   settings: Settings,
   logger: Logger,
@@ -3054,6 +3208,8 @@ fn assemble(
 // Token setup follows session validation, so an invalid policy leaves no
 // directories. It is still outside session-only assembly, and any failure
 // returns to the completed instance's cleanup path above.
+
+/// Establishes start listener for the caller, keeping its validation and result policy at this boundary.
 fn start_listener(
   settings: Settings,
   gateway: hub.Gateway,
@@ -3075,6 +3231,7 @@ fn start_listener(
   })
 }
 
+/// Establishes assemble instance for the caller, keeping its validation and result policy at this boundary.
 fn assemble_instance(
   settings: Settings,
   logger: Logger,
@@ -3162,6 +3319,7 @@ pub fn assemble_registered(
   )
 }
 
+/// Establishes assemble owned with for the caller, keeping its validation and result policy at this boundary.
 fn assemble_owned_with(
   settings,
   reserved,
@@ -3193,6 +3351,8 @@ fn assemble_owned_with(
 // Opens the session file under this incarnation's lease. A holder that is
 // still alive renews its lease, so a refusal is final and the caller says who
 // holds it.
+
+/// Establishes open session file for the caller, keeping its validation and result policy at this boundary.
 fn open_session_file(
   path: String,
   owner: String,
@@ -3274,6 +3434,10 @@ type Half {
     /// whose program runs on an executor; `None` for a local workspace, whose
     /// programs run in this VM.
     executions: Option(RemoteExecutions),
+    /// The way to the executor's evolution plane, when the executor's census
+    /// says it compiles candidates; `None` for a local workspace and for an
+    /// executor that cannot compile.
+    evolution: Option(remote_workspace.EvolutionAccess),
   )
 }
 
@@ -3288,6 +3452,8 @@ type RemoteExecutions {
 }
 
 // A workspace started in this VM.
+
+/// Establishes here for the caller, keeping its validation and result policy at this boundary.
 fn here(
   prepared: workspace_plane.Prepared,
   clock: Clock,
@@ -3306,11 +3472,14 @@ fn here(
     call_clock: clock,
     recover: None,
     executions: None,
+    evolution: None,
   )
 }
 
 // A workspace attached on an executor. Its scope is closed and its owner port
 // ended by one custody part, published before anything can call it.
+
+/// Establishes there for the caller, keeping its validation and result policy at this boundary.
 fn there(
   registered: remote_workspace.Registered,
   owner: Option(custody.Owner),
@@ -3347,6 +3516,7 @@ fn there(
       stop: hands.stop_execution,
       lookup: hands.execution_lookup,
     )),
+    evolution: Some(hands.evolution),
   )
 }
 
@@ -3354,6 +3524,8 @@ fn there(
 // lines an operator already reads for a local server: `mcp.ready` for those
 // that started and `mcp.unavailable` for each that did not, both marked with
 // the placement so the two machines' lines are not confused.
+
+/// Establishes log remote mcp for the caller, keeping its validation and result policy at this boundary.
 fn log_remote_mcp(
   statuses: List(remote_census.McpStatus),
   logger: Logger,
@@ -3377,6 +3549,8 @@ fn log_remote_mcp(
 }
 
 // The configured servers a remote session starts on this daemon.
+
+/// Establishes orchestrator placed for the caller, keeping its validation and result policy at this boundary.
 fn orchestrator_placed(
   servers: List(catalog.McpServer),
 ) -> List(catalog.McpServer) {
@@ -3387,6 +3561,8 @@ fn orchestrator_placed(
 
 // The names of the configured servers a remote session expects its executor to
 // run.
+
+/// Establishes executor placed for the caller, keeping its validation and result policy at this boundary.
 fn executor_placed(servers: List(catalog.McpServer)) -> List(String) {
   list.filter_map(servers, fn(server) {
     case server.runs_on {
@@ -3429,6 +3605,8 @@ pub fn remote_extension_refusals(
 
 // One namespace spans the composition services' restarts, but never a second
 // session. Boot failure retires routing; full partial-boot custody is separate.
+
+/// Establishes assemble in for the caller, keeping its validation and result policy at this boundary.
 fn assemble_in(
   settings: Settings,
   logger: Logger,
@@ -3531,6 +3709,7 @@ fn assemble_in(
       Ok(Here(prepared))
     }
   })
+
   use Nil <- result.try(
     workspace_policy.create_directories(
       option.values([workspace_policy.parent_directory(settings.session_path)]),
@@ -3565,6 +3744,8 @@ fn assemble_in(
   use storage_owner <- result.try(
     transfer() |> result.map_error(string.inspect),
   )
+
+  // Decide how to handle use Nil <- result.try( ownership {.
   use Nil <- result.try(case ownership {
     None -> {
       process.link(storage_owner)
@@ -3585,6 +3766,8 @@ fn assemble_in(
   // that will not open registers no tool at all.
   let history_name = address.new_address(namespace)
   let history_pulls = address.new_address(namespace)
+
+  // Decide how to handle use history_seam <- result.try( services, ownership {.
   use history_seam <- result.try(case services, ownership {
     None, _ -> Ok(history_seam(index_path, history_name, logger))
     Some(shared), Some(#(_, identity)) ->
@@ -3847,6 +4030,7 @@ fn assemble_in(
         owner,
       )
   })
+
   let mcp_plan =
     protocol.McpPlan(
       served: list.map(mcp_wiring.facades(mcp_layer), fn(facade) {
@@ -3894,6 +4078,14 @@ fn assemble_in(
                 schedules: schedule_door,
               ),
               mcp: mcp_layer,
+              // The same six operations a local program has, answered over
+              // the doors that `open_evolution` registers under the cell's
+              // name. Whether the plane behind them works is decided there.
+              evolution: case evolution_offer(settings, evolution_name) {
+                Some(_) ->
+                  Some(evolution_capability.door_for_call(evolution_name, clock))
+                None -> None
+              },
             )
           }
           owner_codemode.answering_executions(
@@ -3959,11 +4151,13 @@ fn assemble_in(
             session: settings.session_id,
           ),
           mcp: mcp_plan,
+          logger:,
         ),
         owner,
         logger,
       )
   })
+
   let plane = half.plane
   let broker_actor = plane.broker
   let blob_root = half.blob_root
@@ -3974,6 +4168,8 @@ fn assemble_in(
   // timebase for one that is not.
   let call_clock = half.call_clock
   let code_mode_host = half.code_mode_host
+
+  // Decide how to handle let discovered =  home {.
   let discovered = case home {
     Here(_) -> plane.census.extensions
     There(_) -> []
@@ -4171,26 +4367,57 @@ fn assemble_in(
   // Only the source session governs evolution. A trial inherits the source's
   // code-mode host and socket root, so `open_evolution` would resolve the
   // source's own catalogue and hand the trial's model the doors over it.
+  //
+  // The machine is the placement's. A workspace with a local code-mode host
+  // compiles and runs candidates in this VM, under the session's own scratch.
+  // A workspace on an executor whose census says it compiles sends them there,
+  // and has no scratch here because nothing is built on this machine. Anything
+  // else has no evolution plane, as before.
   use evolution_wiring <- result.try(
-    case settings.evolution_role, code_mode_host {
-      Trial(_), _ -> Ok(None)
-      Source, None -> Ok(None)
-      Source, Some(host) ->
+    // Decide how to handle settings.evolution_role, code_mode_host {.
+    case settings.evolution_role, code_mode_host, half.evolution {
+      Trial(_), _, _ -> Ok(None)
+      Source, None, None -> Ok(None)
+      Source, Some(host), _ ->
         open_evolution(
           settings,
-          host,
-          base_policy,
+          local_evolution_machine(
+            settings,
+            host,
+            base_policy,
+            agency_config,
+            namespace,
+            environment,
+            clock,
+            logger,
+          ),
+          LocalScope,
+          Some(evolution_scratch(settings)),
           agency_config,
-          namespace,
-          environment,
           clock,
-          logger,
+          owner,
+          evolution_name,
+        )
+        |> result.map(Some)
+      Source, None, Some(remote_workspace.Withheld(reason:)) ->
+        withhold_evolution(owner, evolution_name, reason)
+      Source, None, Some(remote_workspace.Reachable(link:)) ->
+        open_evolution(
+          settings,
+          evolution_machine_remote.new(link),
+          ExecutorScope(
+            label: "executor:" <> link.executor <> "/" <> settings.workspace,
+          ),
+          None,
+          agency_config,
+          clock,
           owner,
           evolution_name,
         )
         |> result.map(Some)
     },
   )
+
   use tool_registry <- result.try(
     list.append(
       [
@@ -4346,6 +4573,7 @@ fn assemble_in(
         fn(attempt) { evolution_attempt(agency_config, attempt) },
       )
   })
+
   let wiring_config =
     wiring.Config(
       observe_output: owner_api.output,
@@ -4440,6 +4668,7 @@ fn assemble_in(
         hub.tap_preview_provider(built.provider, to: name),
         to: name,
         also: side_and_summary_tap(
+          side_work(settings.evolution_role),
           btw_name,
           opened,
           wiring.request_builder(wiring_config),
@@ -4532,10 +4761,13 @@ fn assemble_in(
       logger,
       entropy,
     )
+
+  // Decide how to handle let effects_record =  evolution_wiring {.
   let effects_record = case evolution_wiring {
     None -> effects_record
     Some(wiring) -> evolution_hook.wire(effects_record, wiring.live)
   }
+
   let options = api.default_options(configuration)
   use runtime <- result.try(
     api.open_published(
@@ -4630,16 +4862,6 @@ fn assemble_in(
     Some(profiles) -> system_prompt.pin_profiles(runtime, profiles)
     None -> Ok(Nil)
   })
-  use Nil <- result.try(case evolution_wiring {
-    None -> Ok(Nil)
-    Some(wiring) ->
-      evolution_live.recover(wiring.live, 120_000)
-      |> result.map_error(fn(error) {
-        // Recovery already retains its failed native continuation before
-        // replying. Rendering that refusal must not add another owner.
-        evolution_store.describe(error)
-      })
-  })
 
   // The advisor strand is seeded here, once the writer that claims its
   // three registers exists. A failure is one warned line rather than a
@@ -4673,6 +4895,7 @@ fn assemble_in(
   let hub_session_id = settings.session_id
   let btw_gateway = gateway
   let hub_catalog = settings.catalog
+  let child_history_reach = settings.remote_reach
   let first_prompt = settings.first_prompt
 
   // Project profile, spawner, remote reach, and memory settings for the hub.
@@ -4692,6 +4915,8 @@ fn assemble_in(
   // still receives Runtime for execution, but its admin supplier does not add
   // another executable-effects graph to the initialized gateway State.
   let directory_facts = api.fact_handle(runtime)
+
+  // Decide how to handle let code_mode_issue =  toolchain {.
   let code_mode_issue = case toolchain {
     Error(reason) -> Some(reason)
     Ok(_) ->
@@ -4824,9 +5049,7 @@ fn assemble_in(
     // either durable or offered again: titles live in their cells, and the
     // next step on each strand books it afresh.
     |> with_glance_loop(glance_wiring)
-    |> sup.add(
-      supervision.worker(fn() { btw.start(btw_name, btw_gateway, opened) }),
-    )
+    |> with_side_queries(settings.evolution_role, btw_name, btw_gateway, opened)
     // The block summarizer is in this tier because what it would lose is
     // either stored or not worth keeping: a settled label is in its cell,
     // and a live one is replaced by the next or by the settled label.
@@ -4893,7 +5116,7 @@ fn assemble_in(
             |> hub.with_context(context_reader)
             |> hub.with_btw(btw_name)
             |> hub.with_live_jobs(live_jobs)
-            |> with_child_history(settings.remote_reach, runtime)
+            |> with_child_history(child_history_reach, runtime)
             |> hub.with_catalog(hub_catalog)
             |> with_first_prompt(first_prompt)
             |> with_profile_desk(profile_desk)
@@ -4984,6 +5207,22 @@ fn assemble_in(
   // *handles* rather than a signal that fells the host mid-teardown.
   process.unlink(started_services.pid)
 
+  // The selected extension is staged again only now. Its adoption audit
+  // borrows the runtime through the Agency's holder, which is one of the
+  // services started above; before them the borrow answered "runtime
+  // unavailable" and a session with a selection could not be opened again.
+  use Nil <- result.try(case evolution_wiring {
+    None -> Ok(Nil)
+    Some(wiring) ->
+      evolution_live.recover(wiring.live, 120_000)
+      |> result.map_error(fn(error) {
+        // Recovery already retains its failed native continuation before
+        // replying. Rendering that refusal must not add another owner.
+        release_unowned_services(owner, started_services.pid)
+        evolution_store.describe(error)
+      })
+  })
+
   // Build the initialized session instance record.
   Ok(Instance(
     peer: peer_endpoint,
@@ -5073,6 +5312,8 @@ fn assemble_in(
 // configuration and the workspace's run. A failure to start the second
 // retires the first, which is linked to the builder and would otherwise
 // outlive an assembly that never published it.
+
+/// Establishes start holders for the caller, keeping its validation and result policy at this boundary.
 fn start_holders(
   config: wiring.Config,
   workspace_run: wiring.WorkspaceRun,
@@ -5081,6 +5322,8 @@ fn start_holders(
   String,
 ) {
   use holder <- result.try(tool_holder.start(config))
+
+  // Decide how to handle tool_holder.start(workspace_run) {.
   case tool_holder.start(workspace_run) {
     Ok(run_holder) -> Ok(#(holder, run_holder))
     Error(reason) -> {
@@ -5092,6 +5335,8 @@ fn start_holders(
 
 // Retires both holders, the workspace's run first. Success is the proof
 // custody needs that neither process remains.
+
+/// Establishes stop holders for the caller, keeping its validation and result policy at this boundary.
 fn stop_holders(
   holder: tool_holder.Holder(wiring.Config),
   run_holder: tool_holder.Holder(wiring.WorkspaceRun),
@@ -5102,12 +5347,15 @@ fn stop_holders(
 
 // Acknowledgement transfers startup custody before any resource can begin work.
 // Legacy assembly keeps its original links until the listener path is migrated.
+
+/// Establishes retain for the caller, keeping its validation and result policy at this boundary.
 fn retain(
   owner: Option(custody.Owner),
   part: custody.Part,
   cleanup: fn() -> Result(Nil, String),
   transfer: fn() -> Nil,
 ) -> Result(Nil, String) {
+  // Decide how to handle owner {.
   case owner {
     None -> Ok(Nil)
     Some(owner) -> {
@@ -5119,11 +5367,14 @@ fn retain(
 
 // A temporary first child publishes the services root exactly once. Wrapping
 // the permanent forwarder would repeat publication every time it restarted.
+
+/// Establishes with service custody for the caller, keeping its validation and result policy at this boundary.
 fn with_service_custody(
   tree: sup.Builder,
   owner: Option(custody.Owner),
   builder: Pid,
 ) -> sup.Builder {
+  // Decide how to handle owner {.
   case owner {
     None -> tree
     Some(owner) -> {
@@ -5152,12 +5403,15 @@ fn with_service_custody(
   }
 }
 
+/// Establishes stop services owned for the caller, keeping its validation and result policy at this boundary.
 fn stop_services_owned(pid: Pid) -> Result(Nil, String) {
   // A late monitor cannot recover a transitive root's original exit verdict.
   // Missing or killed services therefore retain custody, even if descendants
   // later disappear; this seam does not promise recovery after that proof loss.
   let watch = process.monitor(pid)
   let requested = ffi_os.terminate_supervisor(pid, service_grace_ms)
+
+  // Decide how to handle requested {.
   case requested {
     Ok(Nil) -> owned_retirement(watch, service_grace_ms)
     Error(Nil) -> {
@@ -5167,6 +5421,7 @@ fn stop_services_owned(pid: Pid) -> Result(Nil, String) {
   }
 }
 
+/// Establishes owned retirement for the caller, keeping its validation and result policy at this boundary.
 fn owned_retirement(
   watch: process.Monitor,
   within: Int,
@@ -5174,6 +5429,7 @@ fn owned_retirement(
   let outcome =
     process.new_selector()
     |> process.select_specific_monitor(watch, fn(down) {
+      // Decide how to handle down.reason {.
       case down.reason {
         process.Normal -> Ok(Nil)
         process.Abnormal(reason) -> {
@@ -5181,6 +5437,8 @@ fn owned_retirement(
             decode.run(reason, atom.decoder())
             |> result.replace_error("resource retirement was abnormal"),
           )
+
+          // Decide how to handle atom.to_string(reason) == "shutdown" {.
           case atom.to_string(reason) == "shutdown" {
             True -> Ok(Nil)
             False -> Error("resource retirement was abnormal")
@@ -5250,6 +5508,7 @@ fn tear_down(booted: Booted) -> Nil {
 /// ```
 @internal
 pub fn close_instance(instance: Instance) -> Nil {
+  // Decide how to handle instance.legacy_host {.
   case instance.legacy_host {
     Some(owner) -> host.retire(owner)
     None -> {
@@ -5268,6 +5527,8 @@ pub fn close_instance(instance: Instance) -> Nil {
 // and an operator who *did* configure rules and sees no effect deserves
 // a line naming how many were loaded rather than silence to reason
 // from.
+
+/// Establishes with rule scanner for the caller, keeping its validation and result policy at this boundary.
 fn with_rule_scanner(
   builder: sup.Builder,
   settings: Settings,
@@ -5275,6 +5536,7 @@ fn with_rule_scanner(
   name: address.Address(writer.Event),
   logger: Logger,
 ) -> sup.Builder {
+  // Decide how to handle settings.rules {.
   case settings.rules {
     [] -> {
       log.info(logger, "rules.none", [])
@@ -5306,6 +5568,8 @@ fn with_rule_scanner(
 // The peer outbox drainer. Unlike the scanners it is always started: whether a
 // session will ever owe a peer message is not known at boot, and an idle
 // drainer holds no timer.
+
+/// Establishes with peer outbox drain for the caller, keeping its validation and result policy at this boundary.
 fn with_peer_outbox_drain(
   builder: sup.Builder,
   wiring: peers.Wiring,
@@ -5330,6 +5594,8 @@ fn with_peer_outbox_drain(
 // started: whether a session will ever start a child elsewhere is not known at
 // boot, and an idle drainer holds no timer. Its first pass at session open is
 // what resends a spawn that was owed when the daemon last stopped.
+
+/// Establishes with remote drain for the caller, keeping its validation and result policy at this boundary.
 fn with_remote_drain(
   builder: sup.Builder,
   agency_config: agency.Config,
@@ -5358,6 +5624,8 @@ fn with_remote_drain(
 // (protocol-change/084, phase 2). Only a delegate session has a spawner link, so
 // every other session starts none. Its first pass at session open is what sends
 // a message that was owed when the daemon last stopped.
+
+/// Establishes with upward drain for the caller, keeping its validation and result policy at this boundary.
 fn with_upward_drain(
   builder: sup.Builder,
   settings: Settings,
@@ -5398,6 +5666,8 @@ fn with_upward_drain(
 // named one. It is in this tier because all it holds is the fingerprint of the
 // text the session has: a replacement starts again from the baseline read
 // before the open, and at worst reopens the session once more than it needed.
+
+/// Establishes with config watch for the caller, keeping its validation and result policy at this boundary.
 fn with_config_watch(
   builder: sup.Builder,
   desk: Option(profile_switch.Desk),
@@ -5424,6 +5694,8 @@ fn with_config_watch(
 // the same `codemode.unavailable` posture `with_rule_scanner` takes, for
 // the same reason: a plane nobody configured should cost a host a
 // process of exactly nothing.
+
+/// Establishes with schedule scanner for the caller, keeping its validation and result policy at this boundary.
 fn with_schedule_scanner(
   builder: sup.Builder,
   settings: Settings,
@@ -5432,6 +5704,8 @@ fn with_schedule_scanner(
   logger: Logger,
 ) -> sup.Builder {
   let door_open = schedule.policy_opens_the_door(settings.schedule_policy)
+
+  // Decide how to handle settings.schedules, door_open {.
   case settings.schedules, door_open {
     // Nothing configured and no door: the plane costs a host exactly
     // nothing, which is the posture `with_rule_scanner` takes.
@@ -5476,6 +5750,8 @@ fn with_schedule_scanner(
 // question rather than a second one. Asking the policy here rather than
 // threading the answer down as a flag keeps that decision and the
 // decision to start the scanner at all reading off one source.
+
+/// Establishes with model door for the caller, keeping its validation and result policy at this boundary.
 fn with_model_door(
   options: schedulescan.Options,
   policy: schedule.Policy,
@@ -5486,6 +5762,7 @@ fn with_model_door(
   }
 }
 
+/// Establishes policy label for the caller, keeping its validation and result policy at this boundary.
 fn policy_label(policy: schedule.Policy) -> String {
   case policy {
     schedule.ModelSchedulesOff -> "off"
@@ -5512,6 +5789,8 @@ fn policy_label(policy: schedule.Policy) -> String {
 // requires. A hook handed the settings' policy would meet an empty
 // mount list against three required mounts and every hook-fired launch
 // would be refused.
+
+/// Returns hook coordinates according to the client contract.
 @internal
 pub fn hook_coordinates(
   settings: Settings,
@@ -5617,19 +5896,46 @@ pub const service_restart_period = 5
 /// signal at once, so this is headroom, not an expected wait.
 pub const service_grace_ms = 5000
 
+/// Stops the service supervisor after an assembly refusal, but only when no
+/// custody owner holds it. With an owner, `with_service_custody` has already
+/// published the supervisor as `custody.Services`, and custody stops it when
+/// the failed build retires. Stopping it here as well would leave custody's own
+/// stop to find the supervisor gone, which it reports as an unconfirmed
+/// retirement, and the session would be held as recovery-blocked.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // release_unowned_services(None, services) stops a standalone boot's tree.
+/// ```
+fn release_unowned_services(
+  owner: Option(custody.Owner),
+  services: Pid,
+) -> Nil {
+  case owner {
+    Some(_) -> Nil
+    None -> stop_services(services)
+  }
+}
+
 // Stops the service supervisor the way OTP stops one: children
 // terminated in reverse start order with reason `shutdown`. A
 // supervisor that will not answer, or outruns its grace, is killed —
 // the next act is releasing the writer lease, and nothing may hold that
 // up.
+
+/// Establishes stop services for the caller, keeping its validation and result policy at this boundary.
 fn stop_services(services: Pid) -> Nil {
+  // Decide how to handle process.is_alive(services) {.
   case process.is_alive(services) {
     False -> Nil
     True -> {
+      // Decide how to handle ffi_os.terminate_supervisor(services, service_grace_ms) {.
       case ffi_os.terminate_supervisor(services, service_grace_ms) {
         Ok(Nil) -> Nil
         Error(Nil) -> process.kill(services)
       }
+
       await_death(services, service_grace_ms)
     }
   }
@@ -5638,6 +5944,8 @@ fn stop_services(services: Pid) -> Nil {
 // A foreground poll on liveness, bounded by the grace: nothing may hold up
 // releasing the writer lease, so a supervisor still alive when the grace
 // runs out is killed rather than waited for any longer.
+
+/// Establishes await death for the caller, keeping its validation and result policy at this boundary.
 fn await_death(pid: Pid, remaining_ms: Int) -> Nil {
   let outcome: poll.Outcome(Nil, Nil) =
     poll.until(within: remaining_ms, every: 5, attempt: fn() {
@@ -5646,6 +5954,8 @@ fn await_death(pid: Pid, remaining_ms: Int) -> Nil {
         True -> poll.Retry
       }
     })
+
+  // Decide how to handle outcome {.
   case outcome {
     poll.Answered(Nil) -> Nil
     poll.Expired -> process.kill(pid)
@@ -5671,6 +5981,8 @@ fn index_path(settings: Settings) -> Result(String, String) {
 // `index_path` gives: every one of these joins `base_policy.protected`,
 // and a relative protected entry is refused by the jail and covers
 // nothing in the harness's own path checks.
+
+/// Establishes beside session for the caller, keeping its validation and result policy at this boundary.
 fn beside_session(settings: Settings, file: String) -> Result(String, String) {
   case settings.domain_paths, file {
     Some(paths), file if file == memory.memory_file -> Ok(paths.memory)
@@ -5681,15 +5993,20 @@ fn beside_session(settings: Settings, file: String) -> Result(String, String) {
   }
 }
 
+/// Establishes beside session file for the caller, keeping its validation and result policy at this boundary.
 fn beside_session_file(
   settings: Settings,
   file: String,
 ) -> Result(String, String) {
   let directory = workspace_policy.parent_directory(settings.session_path)
+
+  // Decide how to handle let path =  directory {.
   let path = case directory {
     Some(directory) -> directory <> "/" <> file
     None -> file
   }
+
+  // Decide how to handle string.starts_with(path, "/") {.
   case string.starts_with(path, "/") {
     True -> Ok(path)
     False ->
@@ -5778,11 +6095,14 @@ pub fn protecting_standalone_blobs(
 // mechanism rather than decoration — the same posture
 // `codemode.unavailable` takes — because an absent tool is otherwise
 // indistinguishable from a host that never had one.
+
+/// Establishes history seam for the caller, keeping its validation and result policy at this boundary.
 fn history_seam(
   index_path: String,
   name: address.Address(history.Message),
   logger: Logger,
 ) -> Option(history_tool.History) {
+  // Decide how to handle history.probe(index_path) {.
   case history.probe(index_path) {
     Ok(Nil) -> {
       log.info(logger, "history.ready", [
@@ -5822,6 +6142,8 @@ fn history_seam(
 // A reachable store also has its notes index brought up to date here, so the
 // first run of a session already carries notes written before the index
 // existed.
+
+/// Establishes memory seam for the caller, keeping its validation and result policy at this boundary.
 fn memory_seam(
   store_path: String,
   notes_path: String,
@@ -5830,6 +6152,7 @@ fn memory_seam(
   entropy: fn() -> Int,
   logger: Logger,
 ) -> Option(remember.Memory) {
+  // Decide how to handle memory.probe(store_path) {.
   case memory.probe(store_path) {
     Ok(Nil) -> {
       log.info(logger, "memory.ready", [
@@ -5863,6 +6186,8 @@ fn memory_seam(
 
 // The writer subscribers the index needs, which is one when there is an
 // index and none when there is not.
+
+/// Establishes history subscribers for the caller, keeping its validation and result policy at this boundary.
 fn history_subscribers(
   seam: Option(history_tool.History),
   pulls: address.Address(writer.Event),
@@ -5875,6 +6200,8 @@ fn history_subscribers(
 
 // The holder and its commit subscriber, added to the service tree only
 // when this host has an index for them to serve.
+
+/// Establishes with instance history for the caller, keeping its validation and result policy at this boundary.
 fn with_instance_history(tree, services, seam, config: history.Config, pulls) {
   case services {
     None -> with_history(tree, seam, config, pulls)
@@ -5894,6 +6221,7 @@ fn with_instance_history(tree, services, seam, config: history.Config, pulls) {
   }
 }
 
+/// Establishes with history for the caller, keeping its validation and result policy at this boundary.
 fn with_history(
   tree: sup.Builder,
   seam: Option(history_tool.History),
@@ -5923,6 +6251,8 @@ fn with_history(
 // that never reads the machine's real home. The workspace's own files are the
 // workspace's to read: they arrive from the plane as text, with the helper's
 // health, the platform and the shell it learned on its own machine.
+
+/// Establishes render prompt for the caller, keeping its validation and result policy at this boundary.
 fn render_prompt(
   settings: Settings,
   plane: workspace_plane.WorkspacePlane,
@@ -5947,13 +6277,10 @@ fn render_prompt(
       ]),
       list.flatten([standing_notes, facts.guidance_notes, approved_notes]),
     )
-  use #(origin, source) <- result.try(
-    system_prompt.pack_source(
-      option.from_result(workspace_policy.env_text(
-        system_prompt.pack_path_variable,
-      )),
-    ),
-  )
+
+  // The pack's source and origin: the host's own text if it gave one, else
+  // the environment's file, else the shipped pack.
+  use #(origin, source) <- result.try(chosen_pack(settings))
   use rendered <- result.try(system_prompt.render_pack(
     origin,
     source,
@@ -5980,6 +6307,26 @@ fn render_prompt(
   )
 }
 
+/// Chooses the pack source this boot renders. A pack handed in through
+/// `Settings` wins over the environment: the field exists so a host can pick
+/// a pack per session, and an ambient variable that silently outranked it
+/// would make that choice unobservable.
+fn chosen_pack(
+  settings: Settings,
+) -> Result(#(system_prompt.Origin, String), String) {
+  case settings.pack {
+    Some(text) ->
+      Ok(#(system_prompt.Provided(label: "provided by the host"), text))
+
+    None ->
+      system_prompt.pack_source(
+        option.from_result(workspace_policy.env_text(
+          system_prompt.pack_path_variable,
+        )),
+      )
+  }
+}
+
 // How this session runs the operator's goal check.
 //
 // The seven fields are the jobs wiring's, for the same reason: the broker
@@ -6000,6 +6347,8 @@ fn render_prompt(
 // one `call_clock` names: it builds the absolute deadline a check puts in a
 // `CallSpec`, which the broker compares with its own clock, and for a
 // workspace on an executor that is the executor's.
+
+/// Establishes goal check wiring for the caller, keeping its validation and result policy at this boundary.
 fn goal_check_wiring(
   settings: Settings,
   plane: workspace_plane.WorkspacePlane,
@@ -6036,6 +6385,8 @@ fn goal_check_wiring(
 // is the same argument `memory_seam` and `history_seam` are gated by,
 // and an unrouted capability is a clearer answer to a program than one
 // that exists and says no.
+
+/// Establishes schedule wiring for the caller, keeping its validation and result policy at this boundary.
 fn schedule_wiring(
   settings: Settings,
   agency_config: agency.Config,
@@ -6058,6 +6409,8 @@ fn schedule_wiring(
 // `Option(Options)` the pipeline above would have to unwrap, which is the
 // shape this small function exists to keep out of it — the same reason
 // `schedule_reaping` below is a function rather than a `case` inline.
+
+/// Establishes with schedule admin for the caller, keeping its validation and result policy at this boundary.
 fn with_schedule_admin(
   options: hub.Options,
   admin: Option(scheduleadmin.Admin),
@@ -6077,6 +6430,8 @@ fn with_schedule_admin(
 // session open rebuilds it while holding the same writer lease through its
 // publication. A held lease or failure leaves the previous sidecar in place
 // and costs a warning, never the open.
+
+/// Establishes refresh notes index for the caller, keeping its validation and result policy at this boundary.
 fn refresh_notes_index(
   inject: memory_config.Injection,
   store_path: String,
@@ -6111,6 +6466,7 @@ fn refresh_notes_index(
   }
 }
 
+/// Establishes with memory context for the caller, keeping its validation and result policy at this boundary.
 fn with_memory_context(
   hooks: effects.Hooks,
   inject: memory_config.Injection,
@@ -6128,6 +6484,8 @@ fn with_memory_context(
 // the reason `schedule_reaping` below is one: `option.map` would answer
 // an `Option(Hooks)` that the composition pipeline would then have to
 // unwrap back to the hooks it started with.
+
+/// Establishes with advisor for the caller, keeping its validation and result policy at this boundary.
 fn with_advisor(
   hooks: effects.Hooks,
   wiring: Option(advisor.Wiring),
@@ -6142,6 +6500,8 @@ fn with_advisor(
 // an advisor — the same posture `with_advisor` takes, because a host
 // with no advisor has no goal loop to notify and the seam's `None` is
 // what makes the gateway skip the cast entirely.
+
+/// Establishes with goal abort for the caller, keeping its validation and result policy at this boundary.
 fn with_goal_abort(
   options: hub.Options,
   wiring: Option(advisor.Wiring),
@@ -6157,6 +6517,8 @@ fn with_goal_abort(
 // exists only where an advisor is routed, and the seam's `None` is what
 // makes the gateway refuse the commands in words rather than send them
 // to an address nobody holds.
+
+/// Establishes with goal control for the caller, keeping its validation and result policy at this boundary.
 fn with_goal_control(
   options: hub.Options,
   wiring: Option(advisor.Wiring),
@@ -6171,6 +6533,8 @@ fn with_goal_control(
 // the summarizer could fall back to. That case is logged once here rather
 // than failing the boot: a session with no glance runs exactly as it did
 // before glances existed.
+
+/// Establishes glance wiring for the caller, keeping its validation and result policy at this boundary.
 fn glance_wiring(
   settings: Settings,
   opened: session.Session,
@@ -6179,8 +6543,11 @@ fn glance_wiring(
   logger: Logger,
   name: address.Address(glance.Message),
 ) -> Option(glance.Wiring) {
-  case glance.summarizer(settings.gateway) {
-    Error(reason) -> {
+  // A trial runs no side work (`side_work`), so it gets no glance hook and
+  // no glance loop; the summarizer is not even resolved for it.
+  case side_work(settings.evolution_role), glance.summarizer(settings.gateway) {
+    NoSideWork, _ -> None
+    RunsSideWork, Error(reason) -> {
       log.warn(logger, "glance.unavailable", [
         field.text(key: "reason", value: reason),
       ])
@@ -6190,7 +6557,7 @@ fn glance_wiring(
     // Borrowed through the Agency's holder rather than held, for the
     // reason the advisor's wiring borrows: the runtime contains the hook
     // this loop is composed into.
-    Ok(summarizer) ->
+    RunsSideWork, Ok(summarizer) ->
       Some(glance.Wiring(
         session: opened,
         runtime: fn() { agency.borrow_runtime(agency_config) },
@@ -6207,13 +6574,21 @@ fn glance_wiring(
 // `summarize` model. That case is logged at debug level rather than warned:
 // routing a summarizer is how an operator opts into the spend, and a
 // session without one is working as configured.
+
+/// Establishes summary route for the caller, keeping its validation and result policy at this boundary.
 fn summary_route(
   settings: Settings,
   logger: Logger,
 ) -> Option(blocksummary.Route) {
-  case blocksummary.route(settings.gateway) {
-    Ok(route) -> Some(route)
-    Error(reason) -> {
+  // A trial runs no side work (`side_work`), so no summarizer tap and no
+  // machine exist for it whatever the catalogue routes.
+  case
+    side_work(settings.evolution_role),
+    blocksummary.route(settings.gateway)
+  {
+    NoSideWork, _ -> None
+    RunsSideWork, Ok(route) -> Some(route)
+    RunsSideWork, Error(reason) -> {
       log.debug(logger, "block_summary.unavailable", [
         field.text(key: "reason", value: reason),
       ])
@@ -6223,8 +6598,15 @@ fn summary_route(
 }
 
 // Both observers share the effective dispatch and terminal event ordering.
-fn side_and_summary_tap(name, opened, build, summaries) {
-  let side = btw.observer(name, opened, build)
+
+/// Establishes side and summary tap for the caller, keeping its validation and result policy at this boundary.
+fn side_and_summary_tap(side_work: SideWork, name, opened, build, summaries) {
+  // A trial starts no side-query machine, so its tap captures nothing for one.
+  let side = case side_work {
+    RunsSideWork -> btw.observer(name, opened, build)
+    NoSideWork -> fn(_spec, _generation) { fn(_event) { Nil } }
+  }
+
   fn(spec, generation) {
     let observe_side = side(spec, generation)
     let observe_summary = summaries(spec, generation)
@@ -6240,6 +6622,8 @@ fn side_and_summary_tap(name, opened, build, summaries) {
 // the catalogue's chains: only an identity every one of whose possible
 // answering targets shares the summarize entry's endpoint, which is the
 // confidentiality check for text still streaming.
+
+/// Establishes summary tap for the caller, keeping its validation and result policy at this boundary.
 fn summary_tap(
   route: Option(blocksummary.Route),
   catalogue: catalog.Catalog,
@@ -6250,6 +6634,8 @@ fn summary_tap(
   // owner. Its classification capability owns only the session, rather than
   // the executable registry held by the provider and tool dispatch configuration.
   let image_bearing = wiring.request_image_classifier(config)
+
+  // Decide how to handle route {.
   case route {
     Some(route) ->
       blocksummary.observer(
@@ -6271,6 +6657,8 @@ fn summary_tap(
 // The reader of remote children's transcript pages, when the session can reach
 // other orchestrators at all (protocol-change/090). A session with no reach has
 // no remote child, and its gateway answers `child_history` as unavailable.
+
+/// Establishes with child history for the caller, keeping its validation and result policy at this boundary.
 fn with_child_history(
   options: hub.Options,
   reach: Option(remote_reach.Reach),
@@ -6287,6 +6675,8 @@ fn with_child_history(
 }
 
 // The report of the session's first prompt, when the host listens for one.
+
+/// Establishes with first prompt for the caller, keeping its validation and result policy at this boundary.
 fn with_first_prompt(
   options: hub.Options,
   report: Option(fn(String) -> Nil),
@@ -6303,18 +6693,24 @@ fn with_first_prompt(
 // A failure is logged and leaves the grants where they are for the next open to
 // try again: the ceiling is a bound on an honest spawner, and one open's delay
 // does not change that.
+
+/// Establishes withdraw outside the ceiling for the caller, keeping its validation and result policy at this boundary.
 fn withdraw_outside_the_ceiling(
   settings: Settings,
   runtime: api.Runtime,
   logger: Logger,
 ) -> Nil {
+  // Decide how to handle settings.spawner {.
   case settings.spawner {
     None -> Nil
     Some(link) -> {
+      // Decide how to handle let admits =  link.ceiling {.
       let admits = case link.ceiling {
         Some(ceiling) -> approval_ceiling.admits(ceiling, _)
         None -> fn(_grant) { False }
       }
+
+      // Decide how to handle permissions.withdraw_spawner_grants(runtime, link.spawner, admits) {.
       case permissions.withdraw_spawner_grants(runtime, link.spawner, admits) {
         Ok([]) -> Nil
         Ok(withdrawn) ->
@@ -6335,6 +6731,8 @@ fn withdraw_outside_the_ceiling(
 // delegate drainer. It runs on the parked call's own process, and a failure
 // costs the spawner's operator the question and nothing else: the record stands,
 // and the box's owner can still answer it.
+
+/// Establishes announce to spawner for the caller, keeping its validation and result policy at this boundary.
 fn announce_to_spawner(
   spawner: Option(delegate_outbox.SpawnerLink),
   runtime: api.Runtime,
@@ -6358,6 +6756,8 @@ fn announce_to_spawner(
 
 // A delegate session's hub takes a spawner's operator's decisions when it knows
 // the spawner's link.
+
+/// Establishes with spawner link for the caller, keeping its validation and result policy at this boundary.
 fn with_spawner_link(
   options: hub.Options,
   link: Option(delegate_outbox.SpawnerLink),
@@ -6369,6 +6769,8 @@ fn with_spawner_link(
 }
 
 // The daemon's door for the session's model profile, when it supplied one.
+
+/// Establishes with profile desk for the caller, keeping its validation and result policy at this boundary.
 fn with_profile_desk(
   options: hub.Options,
   desk: Option(profile_switch.Desk),
@@ -6381,6 +6783,8 @@ fn with_profile_desk(
 
 // A terminal's read of a block with no stored summary asks the summarizer
 // for one, when the session has a summarizer at all.
+
+/// Establishes with summary demand for the caller, keeping its validation and result policy at this boundary.
 fn with_summary_demand(
   options: hub.Options,
   route: Option(blocksummary.Route),
@@ -6393,6 +6797,7 @@ fn with_summary_demand(
   }
 }
 
+/// Establishes with block summarizer for the caller, keeping its validation and result policy at this boundary.
 fn with_block_summarizer(
   builder: sup.Builder,
   route: Option(blocksummary.Route),
@@ -6404,6 +6809,7 @@ fn with_block_summarizer(
   name: address.Address(blocksummary.Message),
   commits: address.Address(writer.Event),
 ) -> sup.Builder {
+  // Decide how to handle route {.
   case route {
     None -> builder
     Some(route) -> {
@@ -6436,6 +6842,7 @@ fn with_block_summarizer(
   }
 }
 
+/// Establishes with glance for the caller, keeping its validation and result policy at this boundary.
 fn with_glance(
   hooks: effects.Hooks,
   wiring: Option(glance.Wiring),
@@ -6446,6 +6853,7 @@ fn with_glance(
   }
 }
 
+/// Establishes with metering for the caller, keeping its validation and result policy at this boundary.
 fn with_metering(
   hooks: effects.Hooks,
   config: agency.Config,
@@ -6457,6 +6865,26 @@ fn with_metering(
   }
 }
 
+/// Adds the side-query machine to the service tier for a session that runs
+/// side work; a trial gets none, so no request can leave it outside a turn.
+fn with_side_queries(
+  builder: sup.Builder,
+  role: EvolutionRole,
+  name: address.Address(btw.Message),
+  gateway: provider_gateway.Gateway,
+  opened: session.Session,
+) -> sup.Builder {
+  case side_work(role) {
+    NoSideWork -> builder
+    RunsSideWork ->
+      sup.add(
+        builder,
+        supervision.worker(fn() { btw.start(name, gateway, opened) }),
+      )
+  }
+}
+
+/// Establishes with glance loop for the caller, keeping its validation and result policy at this boundary.
 fn with_glance_loop(
   builder: sup.Builder,
   wiring: Option(glance.Wiring),
@@ -6470,6 +6898,8 @@ fn with_glance_loop(
 // The advisor actor, added to the service tier only when this session
 // routes an advisor, on the posture `with_rule_scanner` takes: a plane
 // nobody configured should cost a host a process of exactly nothing.
+
+/// Establishes with advisor actor for the caller, keeping its validation and result policy at this boundary.
 fn with_advisor_actor(
   builder: sup.Builder,
   wiring: Option(advisor.Wiring),
@@ -6482,6 +6912,8 @@ fn with_advisor_actor(
 
 // Seeds the advisor strand and says, in one line, either which model is
 // reviewing with which tools or why nothing is.
+
+/// Establishes seed advisor for the caller, keeping its validation and result policy at this boundary.
 fn seed_advisor(
   runtime: api.Runtime,
   wiring: Option(advisor.Wiring),
@@ -6494,6 +6926,7 @@ fn seed_advisor(
   }
 }
 
+/// Establishes announce advisor for the caller, keeping its validation and result policy at this boundary.
 fn announce_advisor(
   runtime: api.Runtime,
   wiring: advisor.Wiring,
@@ -6502,6 +6935,7 @@ fn announce_advisor(
 ) -> Nil {
   let names = tool.names(registry)
 
+  // Decide how to handle advisor.ensure_strand(runtime, wiring.settings, names) {.
   case advisor.ensure_strand(runtime, wiring.settings, names) {
     Error(reason) ->
       log.warn(logger, "advisor.unavailable", [
@@ -6524,6 +6958,8 @@ fn announce_advisor(
 // and every caller would then have to unwrap it back to the hooks it
 // started with, which is the shape this small function exists to keep out
 // of the composition pipeline above.
+
+/// Establishes schedule reaping for the caller, keeping its validation and result policy at this boundary.
 fn schedule_reaping(
   hooks: effects.Hooks,
   wiring: Option(scheduleseam.Wiring),
@@ -6580,6 +7016,8 @@ pub fn seed_ladder(
 }
 
 // The ladder run against this host.
+
+/// Establishes seed root for the caller, keeping its validation and result policy at this boundary.
 fn seed_root(flag: Option(String), workspace: String) -> String {
   let in_workspace = workspace <> "/" <> default_seed_directory
   seed_ladder(
@@ -6624,19 +7062,27 @@ pub fn usable_seed(root: String) -> Result(String, Nil) {
 // which effect plane a native check runs on, how a trial session is built
 // from its source session's settings, and in what order the plane retires.
 //
-// The plane is local-only, like an extension, because its catalogue and
-// scratch live beside the session's own state. A session without code mode
-// has no wiring, and with no wiring there is no door, no hook and no control
-// seam.
+// The catalogue and the live owner are always this VM's, beside the session's
+// own state, and are the same whichever machine compiles and runs candidates.
+// A workspace with a local code-mode host uses the machine in this VM
+// (`local_evolution_machine`). A workspace on an executor whose census says it
+// compiles uses a machine that sends the work there
+// (`evolution/machine/remote`), with no scratch directory here. A workspace
+// with neither has no wiring, and with no wiring there is no door, no hook and
+// no control seam.
 // ---------------------------------------------------------------------------
 
 // Evolution lives under one maskable directory, so future SQLite sidecars and
 // immutable envelopes cannot appear after the session policy was captured.
+
+/// Establishes evolution root for the caller, keeping its validation and result policy at this boundary.
 fn evolution_root(settings: Settings) -> String {
+  // Decide how to handle let state =  settings.codemode_sockets {.
   let state = case settings.codemode_sockets {
     Some(root) -> filepath.directory_name(root)
     None -> filepath.directory_name(settings.session_path)
   }
+
   state <> "/evolution"
 }
 
@@ -6660,15 +7106,18 @@ fn evolution_trials(settings: Settings) -> String {
 // and refuse the trial's boot. And the trial's base policy still carries the
 // source's protected `<state>/evolution` mask through `ctx.base_policy`, so the
 // catalogue stays hidden from the trial even if a later step widens its reads.
+
+/// Returns evolution masks according to the client contract.
 @internal
 pub fn evolution_masks(settings: Settings) -> List(String) {
   case settings.evolution_role {
     Trial(_) -> []
+
     Source -> evolution_directories(settings)
   }
 }
 
-// The three directories in the order they are made and masked.
+/// The three directories in the order they are made and masked.
 fn evolution_directories(settings: Settings) -> List(String) {
   [
     evolution_root(settings),
@@ -6696,11 +7145,46 @@ type EvolutionWiring {
   )
 }
 
-// Opens the plane for a session that has code mode. The catalogue is opened as
-// owner once, here. Every model-facing call re-opens it as a caller scoped to
-// that call's session and workspace, so a tool never acts with the owner's
-// authority.
-fn open_evolution(
+// Which string names the workspace in the catalogue's scopes and in the
+// operator's commands. A workspace in this VM keeps naming itself by the path
+// every context carries, as it always has. A workspace on an executor is named
+// `executor:<executor>/<name>`, because its registered name is only unique on
+// the executor and two executors may register the same name for different
+// checkouts; the same label scopes its program candidates.
+type EvolutionScope {
+  LocalScope
+  ExecutorScope(label: String)
+}
+
+// The workspace a door call's candidates are scoped to.
+/// Establishes the scope string a context's candidates are filed under.
+fn scope_of_context(scope: EvolutionScope, ctx: tool.Ctx) -> String {
+  case scope {
+    LocalScope -> ctx.workspace
+    ExecutorScope(label:) -> label
+  }
+}
+
+// The workspace the operator's commands are scoped to.
+/// Establishes the scope string the operator's commands act under.
+fn scope_of_settings(scope: EvolutionScope, settings: Settings) -> String {
+  case scope {
+    LocalScope -> settings.workspace
+    ExecutorScope(label:) -> label
+  }
+}
+
+// The machine for a workspace in this VM: everything staging and evaluation
+// need that does not change per call. Its `open` starts a fresh effect plane
+// for each check, under the policy that check was granted. It holds no
+// catalogue, so it exists before the catalogue is opened with the identity it
+// reports, and every call that needs the catalogue is handed it.
+//
+// Candidates are vetted and run under the host with the evolution door
+// withdrawn, so no selected program can import `cap/evolution`.
+
+/// Establishes the evolution machine for a workspace started in this VM.
+fn local_evolution_machine(
   settings: Settings,
   host: codemode_wiring.Config,
   base: policy.SandboxPolicy,
@@ -6709,47 +7193,111 @@ fn open_evolution(
   environment: List(#(String, String)),
   clock: Clock,
   logger: Logger,
+) -> evolution_machine.Machine {
+  let scratch = evolution_scratch(settings)
+
+  // These callbacks outlive assembly and are copied with the machine. Keep
+  // only their own coordinates, rather than the full startup settings.
+  let secrets = settings.secrets
+  let helper = settings.helper_path
+  let over = evolution_root(settings)
+  let machine =
+    evolution_machine_local.new(
+      evolution_machine_local.Config(
+        host: codemode_wiring.without_evolution(host),
+        base:,
+        at: hook_coordinates(
+          settings,
+          base,
+          workspace_plane.mixed_entropy()(),
+          clock,
+          environment,
+        ),
+        memory: extension_memory.for_session(agency_config),
+        secrets: fn(name) { secret.lookup(secrets, name) },
+        namespace:,
+        scratch:,
+        logger:,
+        open: fn(policy) {
+          evolution_machine_local.open_plane(helper, policy, scratch, clock)
+        },
+      ),
+    )
+
+  // The source is resolved here, in this VM's own terms, and may not overlap
+  // the catalogue. A machine on an executor resolves under its own workspace.
+  evolution_machine.Machine(..machine, snapshot: fn(ctx, directory) {
+    use path <- result.try(
+      evolution_candidate.source_path(ctx, directory, [
+        over,
+      ]),
+    )
+    machine.snapshot(ctx, path)
+  })
+}
+
+// A session on an executor that cannot compile candidates has no plane, but its
+// owner still answers the six `evolution.*` names a program may send, and a
+// program should read why there is no plane rather than a sentence about a
+// plane that is not open. The cell is registered under the usual name over doors
+// that refuse every operation with `reason`, and custody stops it. Nothing else
+// of the evolution wiring exists for such a session.
+
+/// Establishes the refusing evolution cell for a session whose executor cannot compile.
+fn withhold_evolution(
+  owner: Option(custody.Owner),
+  name: address.Address(evolution_capability.Message),
+  reason: String,
+) -> Result(Option(EvolutionWiring), String) {
+  use cell <- result.try(evolution_capability.start(
+    name,
+    evolution_capability.refusing(reason),
+  ))
+  use Nil <- result.map(
+    retain(
+      owner,
+      custody.Evolution,
+      fn() {
+        evolution_capability.stop(name)
+        Ok(Nil)
+      },
+      fn() { evolution_capability.detach(cell) },
+    ),
+  )
+  None
+}
+
+// Opens the plane for a session that has an evolution machine. The catalogue
+// is opened as owner once, here. Every model-facing call re-opens it as a
+// caller scoped to that call's session and workspace, so a tool never acts
+// with the owner's authority.
+//
+// The machine says where candidates are compiled and run, and `scope` says how
+// the workspace is named. `scratch` is the directory this VM keeps for the
+// machine's check and build output, or `None` for a machine that builds on
+// another one.
+
+/// Establishes open evolution for the caller, keeping its validation and result policy at this boundary.
+fn open_evolution(
+  settings: Settings,
+  machine: evolution_machine.Machine,
+  scope: EvolutionScope,
+  scratch: Option(String),
+  agency_config: agency.Config,
+  clock: Clock,
   owner: Option(custody.Owner),
   name: address.Address(evolution_capability.Message),
 ) -> Result(EvolutionWiring, String) {
   let root = evolution_root(settings)
-  let scratch = evolution_scratch(settings)
 
-  // The machine is everything staging and evaluation need that does not change
-  // per call. Its `open` starts a fresh effect plane for each check, under the
-  // policy that check was granted. It holds no catalogue, so it exists before
-  // the catalogue is opened with the identity it reports, and every call that
-  // needs the catalogue is handed it.
-  // Candidates are vetted and run under the host with the evolution door
-  // withdrawn, so no selected program can import `cap/evolution`.
-  let config =
-    evolution_machine_local.Config(
-      host: codemode_wiring.without_evolution(host),
-      base:,
-      at: hook_coordinates(
-        settings,
-        base,
-        workspace_plane.mixed_entropy()(),
-        clock,
-        environment,
-      ),
-      memory: extension_memory.for_session(agency_config),
-      secrets: fn(name) { secret.lookup(settings.secrets, name) },
-      namespace:,
-      scratch:,
-      logger:,
-      open: fn(policy) {
-        evolution_machine_local.open_plane(
-          settings.helper_path,
-          policy,
-          scratch,
-          clock,
-        )
-      },
-    )
-  let machine = evolution_machine_local.new(config)
+  // These callbacks outlive assembly and are copied with the door.
+  // Keep only their own coordinates, rather than the full startup settings.
+  let source_session = settings.session_id
+  let gateway = settings.gateway
+  let workspace = scope_of_settings(scope, settings)
 
-  // Establish store authority and verify candidate scratch directory.
+  // Establish store authority, and make the scratch directory if the machine
+  // keeps one on this VM.
   use identity <- result.try(machine.identity())
   let opener = fn(authority) {
     evolution_store.open(root, authority, identity, clock)
@@ -6757,7 +7305,12 @@ fn open_evolution(
   use catalogue <- result.try(
     opener(evolution_store.Owner) |> result.map_error(evolution_store.describe),
   )
-  use Nil <- result.try(bootstrap.ensure_private_directory(scratch))
+
+  // A machine that builds on another one keeps nothing here to prepare.
+  use Nil <- result.try(case scratch {
+    Some(directory) -> bootstrap.ensure_private_directory(directory)
+    None -> Ok(Nil)
+  })
 
   // Start live evolution runtime and initialize transition queue.
   let adopt = fn(selection) { evolution_adopt(agency_config, selection) }
@@ -6768,7 +7321,7 @@ fn open_evolution(
         stage: fn(selection) { machine.stage(catalogue, selection) },
         adopt:,
         recover: fn() {
-          evolution_recover(machine, catalogue, settings.session_id, adopt)
+          evolution_recover(machine, catalogue, source_session, adopt)
         },
       ),
     )
@@ -6803,7 +7356,7 @@ fn open_evolution(
   // A failed door call hands its refusal to `live` first, which retains any
   // cleanup authority the refusal carries, and only then words the error.
   let lookup = fn(ctx: tool.Ctx) {
-    opener(evolution_store.Caller(settings.session_id, ctx.workspace))
+    opener(evolution_store.Caller(source_session, scope_of_context(scope, ctx)))
   }
   let failed = fn(error) {
     evolution_live.retain(live, error)
@@ -6815,7 +7368,7 @@ fn open_evolution(
     |> result.replace_error("the native session is unavailable")
   }
   let actual = fn(ctx: tool.Ctx) {
-    evolution_actual_model(settings, agency_config, ctx)
+    evolution_actual_model(gateway, agency_config, ctx)
   }
 
   // Build the initial evolution door with candidate evaluation hooks.
@@ -6824,9 +7377,9 @@ fn open_evolution(
       lookup,
       fn(ctx: tool.Ctx) {
         evolution_record.Origin(
-          settings.session_id,
+          source_session,
           ctx.strand,
-          ctx.workspace,
+          scope_of_context(scope, ctx),
           None,
         )
       },
@@ -6841,6 +7394,8 @@ fn open_evolution(
             catalogue,
             id,
           ))
+
+          // Decide how to handle candidate.kind {.
           case candidate.kind {
             evolution_record.Extension | evolution_record.Program ->
               machine.evaluate(catalogue, ctx, id)
@@ -6916,8 +7471,8 @@ fn open_evolution(
       evolution_operator_controls(
         agency_config,
         evolution_control.new(
-          settings.session_id,
-          settings.workspace,
+          source_session,
+          workspace,
           opener,
           live,
           transitions,
@@ -6933,6 +7488,8 @@ fn open_evolution(
 // fact keyed by name and generation. Repeating the same adoption (a recovery
 // after a restart) is a no-op; a fact holding a different payload means the
 // selection changed underneath the audit, which is `Changed`.
+
+/// Establishes evolution adopt for the caller, keeping its validation and result policy at this boundary.
 fn evolution_adopt(
   agency_config: agency.Config,
   selection: evolution_record.Selection,
@@ -6966,6 +7523,8 @@ fn evolution_adopt(
       evolution_store.Unavailable(string.inspect(error))
     }),
   )
+
+  // Decide how to handle cell {.
   case cell {
     Some(cell) ->
       case cell.value == payload {
@@ -6985,6 +7544,8 @@ fn evolution_adopt(
 // hold at most one active promoted extension, so two distinct selections are a
 // bounds refusal and not a choice. If the adoption audit fails after staging,
 // the staged generation retires before the refusal is returned.
+
+/// Establishes evolution recover for the caller, keeping its validation and result policy at this boundary.
 fn evolution_recover(
   machine: evolution_machine.Machine,
   catalogue: evolution_store.Store,
@@ -7008,10 +7569,14 @@ fn evolution_recover(
         option.to_result(selection, Nil)
       }),
     )
+
+  // Decide how to handle selections {.
   case selections {
     [] -> Ok(None)
     [selection] -> {
       use active <- result.try(machine.stage(catalogue, selection))
+
+      // Decide how to handle adopt(selection) {.
       case adopt(selection) {
         Ok(Nil) -> Ok(Some(active))
         Error(error) -> {
@@ -7035,6 +7600,8 @@ fn evolution_recover(
 // the tool, and the generation must match what is selected now: an extension
 // is checked by `live` against its active generation, a program against the
 // catalogue's current selection, and a prompt profile is never executable.
+
+/// Establishes evolution invoked for the caller, keeping its validation and result policy at this boundary.
 fn evolution_invoked(
   live: evolution_live.Live,
   catalogue: evolution_store.Store,
@@ -7078,6 +7645,8 @@ fn evolution_invoked(
     ))
     Ok(#(id, generation, name, arguments, candidate))
   }
+
+  // Decide how to handle parsed() {.
   case parsed() {
     Error(error) -> failed(error)
     Ok(#(id, generation, name, arguments, candidate)) ->
@@ -7120,6 +7689,8 @@ fn evolution_invoked(
 // schemas of the active extension generation and of each selected program.
 // A refusal from the live owner may already hold cleanup authority, so it is
 // worded through `evolution_owned_refusal`; the others carry none.
+
+/// Establishes evolution catalogue for the caller, keeping its validation and result policy at this boundary.
 fn evolution_catalogue(
   live: evolution_live.Live,
   catalogue: evolution_store.Store,
@@ -7141,12 +7712,15 @@ fn evolution_catalogue(
       args,
     )
   }
+
+  // Decide how to handle paged {.
   case paged {
     Ok(value) -> tool.success(json.to_string(value))
     Error(error) -> failed(error)
   }
 }
 
+/// Establishes evolution extension entries for the caller, keeping its validation and result policy at this boundary.
 fn evolution_extension_entries(
   active: Option(evolution_live.Generation),
 ) -> List(json.JsonValue) {
@@ -7170,6 +7744,7 @@ fn evolution_extension_entries(
   }
 }
 
+/// Establishes with evolution control for the caller, keeping its validation and result policy at this boundary.
 fn with_evolution_control(
   options: hub.Options,
   wiring: Option(EvolutionWiring),
@@ -7205,15 +7780,20 @@ fn with_evolution_control(
 // pins nothing and a later boot that has wiring chooses then. `Some([])` is a
 // choice of no profiles: the session has wiring and nothing was selected when
 // it started, and it keeps running without one after a later selection.
+
+/// Establishes evolution profiles for the caller, keeping its validation and result policy at this boundary.
 fn evolution_profiles(
   settings: Settings,
   opened: session.Session,
   wiring: Option(EvolutionWiring),
 ) -> Result(Option(List(evolution_profile.Profile)), String) {
+  // Decide how to handle settings.evolution_role {.
   case settings.evolution_role {
     Trial(profiles) -> Ok(Some(profiles))
     Source -> {
       use pinned <- result.try(system_prompt.pinned_profiles_in(opened))
+
+      // Decide how to handle pinned, wiring {.
       case pinned, wiring {
         Some(profiles), _ -> Ok(Some(profiles))
         None, None -> Ok(None)
@@ -7229,12 +7809,14 @@ fn evolution_profiles(
   }
 }
 
+/// Establishes evolution selected profiles for the caller, keeping its validation and result policy at this boundary.
 fn evolution_selected_profiles(
   wiring: EvolutionWiring,
 ) -> Result(List(evolution_profile.Profile), evolution_store.Refusal) {
   use candidates <- result.try(evolution_store.catalogue(wiring.catalogue))
   use profiles <- result.try(
     list.try_fold(candidates, [], fn(profiles, candidate) {
+      // Decide how to handle candidate.kind {.
       case candidate.kind {
         evolution_record.Extension | evolution_record.Program -> Ok(profiles)
         evolution_record.Prompt -> {
@@ -7243,6 +7825,8 @@ fn evolution_selected_profiles(
             candidate.scope,
             candidate.name,
           ))
+
+          // Decide how to handle selected {.
           case selected {
             None -> Ok(profiles)
             Some(selection) -> {
@@ -7265,6 +7849,7 @@ fn evolution_selected_profiles(
   |> result.map_error(evolution_store.Corrupt)
 }
 
+/// Establishes evolution attempt for the caller, keeping its validation and result policy at this boundary.
 fn evolution_attempt(
   config: agency.Config,
   attempt: provider_gateway.ProfileAttempt,
@@ -7301,6 +7886,7 @@ fn evolution_attempt(
   |> result.map_error(string.inspect)
 }
 
+/// Establishes close evolution for the caller, keeping its validation and result policy at this boundary.
 fn close_evolution(
   wiring: Option(EvolutionWiring),
 ) -> evolution_retirement.Task {
@@ -7359,6 +7945,8 @@ pub fn instance_retirement(instance: Instance) -> evolution_retirement.Task {
 // instance is going away, so every one is returned to its submitter before
 // the runtime and the effect plane behind it stop. Tools run until the runtime
 // has drained, so the holder they fetch from retires only after that.
+
+/// Establishes instance retirement body for the caller, keeping its validation and result policy at this boundary.
 fn instance_retirement_body(instance: Instance) -> evolution_retirement.Task {
   let drained =
     evolution_retirement.repeat(fn() {
@@ -7419,12 +8007,14 @@ fn retire_instance_body(instance: Instance) -> Result(Nil, String) {
   |> result.map_error(fn(failed) { failed.reason })
 }
 
+/// Establishes evolution program catalogue for the caller, keeping its validation and result policy at this boundary.
 fn evolution_program_catalogue(
   catalogue: evolution_store.Store,
 ) -> Result(List(json.JsonValue), evolution_store.Refusal) {
   use candidates <- result.try(evolution_store.catalogue(catalogue))
   use entries <- result.try(
     list.try_map(candidates, fn(candidate) {
+      // Decide how to handle candidate.kind {.
       case candidate.kind {
         evolution_record.Extension | evolution_record.Prompt -> Ok([])
         evolution_record.Program -> {
@@ -7433,6 +8023,8 @@ fn evolution_program_catalogue(
             candidate.scope,
             candidate.name,
           ))
+
+          // Decide how to handle selected {.
           case selected {
             Some(selection) if selection.candidate_id == candidate.id -> {
               use authorized <- result.try(evolution_store.authorized(
@@ -7471,6 +8063,8 @@ fn evolution_program_catalogue(
 
 // The model chooses an immutable task-set ID. Native admission owns its fixture,
 // target and scoring bytes, and every arm opens the ordinary session assembly.
+
+/// Establishes evolution compare for the caller, keeping its validation and result policy at this boundary.
 fn evolution_compare(
   settings: Settings,
   agency_config: agency.Config,
@@ -7494,7 +8088,7 @@ fn evolution_compare(
     |> result.map_error(evolution_store.Authority),
   )
   use actual <- result.try(
-    evolution_actual_model(settings, agency_config, ctx)
+    evolution_actual_model(settings.gateway, agency_config, ctx)
     |> result.map_error(evolution_store.Authority),
   )
   use target <- result.try(
@@ -7504,6 +8098,8 @@ fn evolution_compare(
       "actual model catalogue entry is absent",
     )),
   )
+
+  // Decide how to handle use Nil <- result.try( target.model_id == actual.model {.
   use Nil <- result.try(case target.model_id == actual.model {
     True -> Ok(Nil)
     False ->
@@ -7511,6 +8107,7 @@ fn evolution_compare(
         "actual model differs from its native catalogue",
       ))
   })
+
   evolution_rollout.evaluate(
     catalogue,
     candidate_id,
@@ -7522,6 +8119,7 @@ fn evolution_compare(
   )
 }
 
+/// Establishes evolution rollouts for the caller, keeping its validation and result policy at this boundary.
 fn evolution_rollouts(
   settings: Settings,
   admitted: evolution_tasks.TaskSet,
@@ -7538,9 +8136,8 @@ fn evolution_rollouts(
   )
 }
 
-// A trial has neither the source conversation nor another trial's filesystem.
-// The guarded provider still dispatches through the actual production runtime,
-// whose filesystem, bash and code-mode tools use the ordinary jail and broker.
+/// Opens one governed trial: a fresh fixture under a freshly minted tag, then
+/// the production runtime `trial_settings` describes for it.
 fn evolution_trial(
   settings: Settings,
   admitted: evolution_tasks.TaskSet,
@@ -7549,83 +8146,39 @@ fn evolution_trial(
   base: policy.SandboxPolicy,
 ) -> Result(evolution_rollout_host.Running, String) {
   use fixture <- result.try(evolution_fixture.find(admitted, request.task))
+
+  // Decide how to handle use target <- result.try( request.target {.
   use target <- result.try(case request.target {
     model.ForResolved(target) -> Ok(target)
     model.ForRole(..) -> Error("a trial requires its exact admitted model")
   })
 
-  // Prepare private fixture trial directory and workspace structure.
+  // The governed path mints the tag from production entropy, so no two trials
+  // ever share a root or a session id. `trial_settings` takes the tag as a
+  // parameter rather than minting it because a replaying instrument needs the
+  // same tag on every run; that caller owns its own uniqueness.
   let tag = bit_array.base16_encode(token.production_entropy()(8))
-  let private_trials = evolution_trials(settings)
-  let root = private_trials <> "/" <> tag
-  let workspace = root <> "/work"
+  let root = trial_root(settings, tag)
+  let workspace = trial_workspace(root)
   use Nil <- result.try(bootstrap.ensure_private_directory(root))
   use Nil <- result.try(evolution_fixture.install(fixture, workspace))
 
-  // Configure isolated settings and profiles for trial session.
-  let sockets = case settings.codemode_sockets {
-    None -> filepath.directory_name(settings.session_path) <> "/run"
-    Some(root) -> root
-  }
+  // Decide how to handle let profiles =  request.profile {.
   let profiles = case request.profile {
     None -> []
     Some(profile) -> [profile]
   }
+
   let isolated =
-    Settings(
-      ..settings,
-      session_path: root <> "/state/session.db",
-      token_path: root <> "/state/token",
-      workspace:,
-      domain_paths: None,
-      // A trial is a fresh local session that belongs to no daemon: it is
-      // reachable by no peer, places nothing on another machine, answers no
-      // spawner and cannot restart itself through a profile or config edit.
-      peer_directory: None,
-      peer_defaults: None,
-      remote_reach: None,
-      deadline_tick_ms: None,
-      depth_cap: None,
-      metering: None,
-      spawner: None,
-      laptop: None,
-      first_prompt: None,
-      profile_desk: None,
-      // The trial binds under the source's own socket root, not a directory
-      // below it. The inherited protected list masks that root, and
-      // `codemode.reaching_socket` lifts only a mask lying inside the socket
-      // root, so a nested root would leave the daemon's mask over every
-      // satellite directory and refuse each code-mode launch in the trial.
-      // Per-execution directories are keyed by operation, step, source and a
-      // length-prefixed work root, which is unique to the trial, so trials
-      // cannot collide with each other or with the source session.
-      codemode_sockets: Some(sockets),
-      base_policy: evolution_trial_policy(base, private_trials, workspace),
-      tools: catalog.ToolsConfig(..settings.tools, network: case base.network {
-        policy.NetworkFull -> catalog.ToolNetworkFull
-        policy.NetworkOff | policy.NetworkProxy(_, _) -> catalog.ToolNetworkOff
-      }),
-      helper_pool_size: 2,
-      session_id: "trial-" <> tag,
-      gateway: guarded,
-      evolution_role: Trial(profiles),
-      system: None,
-      home: Some(root <> "/home"),
-      model: machine_strand.ModelIdentity(target.provider, target.model_id),
-      context_window: target.context_window,
-      max_output_tokens: target.max_output_tokens,
-      api: request.api,
-      rules: [],
-      schedules: [],
-      schedule_policy: schedule.ModelSchedulesOff,
-      memory: memory_config.Options(
-        inject: memory_config.InjectsNothing,
-        retired: [],
-      ),
-      advisor: None,
-      // The source workspace's Go caches are writable roots of its own jail;
-      // a trial builds in its fresh fixture and must not share them.
-      go_caches: None,
+    trial_settings(
+      settings,
+      target,
+      request.api,
+      profiles,
+      root,
+      tag,
+      guarded,
+      base,
     )
   use instance <- result.try(open_instance(isolated, log.discard()))
   Ok(
@@ -7638,6 +8191,130 @@ fn evolution_trial(
         |> result.map_error(simplifile.describe_error)
       },
     ),
+  )
+}
+
+/// The private root of the trial named by `tag`: the one directory under this
+/// session's trial parent that `trial_settings` expects as its `root`.
+///
+/// ## Examples
+///
+/// `trial_root(settings, "ab12")` is `"<state>/evolution-trials/ab12"`.
+@internal
+pub fn trial_root(settings: Settings, tag: String) -> String {
+  evolution_trials(settings) <> "/" <> tag
+}
+
+/// The fixture workspace inside a trial's private root.
+///
+/// ## Examples
+///
+/// `trial_workspace("/state/evolution-trials/ab12")` is
+/// `"/state/evolution-trials/ab12/work"`.
+@internal
+pub fn trial_workspace(root: String) -> String {
+  root <> "/work"
+}
+
+// A trial has neither the source conversation nor another trial's filesystem.
+// The guarded provider still dispatches through the actual production runtime,
+// whose filesystem, bash and code-mode tools use the ordinary jail and broker.
+
+/// The one trial recipe: the `Settings` of a fresh jailed coding session for
+/// one arm of a comparison, shared by the governed opener and the evaluation
+/// instrument so neither can drift from the other.
+///
+/// `root` is the trial's private directory, holding the workspace
+/// (`trial_workspace`), the session state and a home; `tag` names the session
+/// (`trial-<tag>`), and the caller owns its uniqueness. The two must pair:
+/// `root` is `trial_root(settings, tag)`, the directory under this session's
+/// trial parent whose mask `evolution_trial_policy` lifts, and a root
+/// elsewhere stays masked and fails closed at the first tool call. The
+/// governed opener derives it that way; so must every other caller.
+/// `profiles` is the arm's exact profile map, empty for a base arm. `gateway`
+/// is the request-guarded gateway every provider call goes through, and
+/// `base` is the source session's sandbox policy, which the trial narrows to
+/// its own workspace.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.trial_settings(settings, target, api, [profile], root, tag, guarded, base)
+/// ```
+@internal
+pub fn trial_settings(
+  settings: Settings,
+  target: model.ResolvedModel,
+  api: String,
+  profiles: List(evolution_profile.Profile),
+  root: String,
+  tag: String,
+  gateway: provider_gateway.Gateway,
+  base: policy.SandboxPolicy,
+) -> Settings {
+  let private_trials = evolution_trials(settings)
+  let workspace = trial_workspace(root)
+
+  // Configure isolated settings and profiles for trial session.
+  let sockets = case settings.codemode_sockets {
+    None -> filepath.directory_name(settings.session_path) <> "/run"
+    Some(socket_root) -> socket_root
+  }
+
+  Settings(
+    ..settings,
+    session_path: root <> "/state/session.db",
+    token_path: root <> "/state/token",
+    workspace:,
+    domain_paths: None,
+    // A trial is a fresh local session that belongs to no daemon: it is
+    // reachable by no peer, places nothing on another machine, answers no
+    // spawner and cannot restart itself through a profile or config edit.
+    peer_directory: None,
+    peer_defaults: None,
+    remote_reach: None,
+    deadline_tick_ms: None,
+    depth_cap: None,
+    metering: None,
+    spawner: None,
+    laptop: None,
+    first_prompt: None,
+    profile_desk: None,
+    // The trial binds under the source's own socket root, not a directory
+    // below it. The inherited protected list masks that root, and
+    // `codemode.reaching_socket` lifts only a mask lying inside the socket
+    // root, so a nested root would leave the daemon's mask over every
+    // satellite directory and refuse each code-mode launch in the trial.
+    // Per-execution directories are keyed by operation, step, source and a
+    // length-prefixed work root, which is unique to the trial, so trials
+    // cannot collide with each other or with the source session.
+    codemode_sockets: Some(sockets),
+    base_policy: evolution_trial_policy(base, private_trials, workspace),
+    tools: catalog.ToolsConfig(..settings.tools, network: case base.network {
+      policy.NetworkFull -> catalog.ToolNetworkFull
+      policy.NetworkOff | policy.NetworkProxy(_, _) -> catalog.ToolNetworkOff
+    }),
+    helper_pool_size: 2,
+    session_id: "trial-" <> tag,
+    gateway:,
+    evolution_role: Trial(profiles),
+    system: None,
+    home: Some(root <> "/home"),
+    model: machine_strand.ModelIdentity(target.provider, target.model_id),
+    context_window: target.context_window,
+    max_output_tokens: target.max_output_tokens,
+    api:,
+    rules: [],
+    schedules: [],
+    schedule_policy: schedule.ModelSchedulesOff,
+    memory: memory_config.Options(
+      inject: memory_config.InjectsNothing,
+      retired: [],
+    ),
+    advisor: None,
+    // The source workspace's Go caches are writable roots of its own jail;
+    // a trial builds in its fresh fixture and must not share them.
+    go_caches: None,
   )
 }
 
@@ -7672,8 +8349,9 @@ pub fn evolution_trial_policy(
   )
 }
 
+/// Establishes evolution actual model for the caller, keeping its validation and result policy at this boundary.
 fn evolution_actual_model(
-  settings: Settings,
+  gateway: provider_gateway.Gateway,
   agency_config: agency.Config,
   ctx: tool.Ctx,
 ) -> Result(evolution_record.ModelScope, String) {
@@ -7682,11 +8360,11 @@ fn evolution_actual_model(
     |> result.replace_error("the native session is unavailable"),
   )
   use resolved <- result.try(
-    provider_gateway.resolve(settings.gateway, model.Main)
+    provider_gateway.resolve(gateway, model.Main)
     |> result.replace_error("the native model is unavailable"),
   )
   use api <- result.try(
-    provider_gateway.api_for(settings.gateway, resolved)
+    provider_gateway.api_for(gateway, resolved)
     |> result.replace_error("the native provider API is unavailable"),
   )
   evolution_trace.actual_model(
@@ -7698,23 +8376,30 @@ fn evolution_actual_model(
 
 // Only the authenticated operator door can admit independent criteria or marks.
 // The source runtime is borrowed natively; JSON never chooses a private session.
+
+/// Establishes evolution operator controls for the caller, keeping its validation and result policy at this boundary.
 fn evolution_operator_controls(
   config: agency.Config,
   lifecycle: evolution_control.Seam,
 ) -> evolution_control.Seam {
   evolution_control.Seam(
     command: fn(authority, principal, via, action, arguments) {
+      // Decide how to handle action {.
       case action {
         "admit_tasks" | "mark_outcome" -> {
+          // Decide how to handle use Nil <- result.try( authority {.
           use Nil <- result.try(case authority {
             access.Owner | access.Participant(access.Operator) -> Ok(Nil)
             access.Participant(access.Observer) ->
               Error("Denied: an operator is required")
           })
+
           use runtime <- result.try(
             agency.borrow_runtime(config)
             |> result.replace_error("the native source runtime is unavailable"),
           )
+
+          // Decide how to handle action {.
           case action {
             "admit_tasks" -> {
               use admitted <- result.try(evolution_tasks.admit(
@@ -7739,6 +8424,7 @@ fn evolution_operator_controls(
   )
 }
 
+/// Establishes evolution mark for the caller, keeping its validation and result policy at this boundary.
 fn evolution_mark(
   runtime: api.Runtime,
   principal: String,
@@ -7757,17 +8443,23 @@ fn evolution_mark(
     dict.get(found, id)
     |> result.replace_error("source entry is absent from this session"),
   )
+
+  // Decide how to handle use Nil <- result.try( entry {.
   use Nil <- result.try(case entry {
     evolution_entry.MessageEntry(message: message.AssistantMessage(..), ..) ->
       Ok(Nil)
     _ -> Error("only a settled assistant source may receive a task outcome")
   })
+
   use verdict <- result.try(tool.required_string(arguments, "outcome"))
+
+  // Decide how to handle use verdict <- result.try( verdict {.
   use verdict <- result.try(case verdict {
     "succeeded" -> Ok(evolution_trace.Succeeded)
     "failed" -> Ok(evolution_trace.Failed)
     _ -> Error("outcome must be succeeded or failed")
   })
+
   use Nil <- result.try(evolution_trace.mark(runtime, id, verdict, principal))
   Ok(
     json.Object([
@@ -7786,6 +8478,8 @@ fn evolution_mark(
 
 // Live has already retained cleanup authority before answering. Model rendering
 // may keep its named refusal, but must not retain the same retry twice.
+
+/// Establishes evolution owned refusal for the caller, keeping its validation and result policy at this boundary.
 fn evolution_owned_refusal(
   reason: evolution_store.Refusal,
 ) -> evolution_store.Refusal {

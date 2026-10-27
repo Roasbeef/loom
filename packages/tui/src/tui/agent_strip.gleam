@@ -240,6 +240,8 @@ pub fn enter(state: State, lines: List(Line), active: String) -> State {
     |> list.drop_while(fn(id) { id != active })
     |> list.drop(1)
     |> list.first
+
+  // Choose the next strand after active, or wrap to the first strand.
   case after, ids {
     Ok(id), _ | Error(Nil), [id, ..] -> State(..state, focus: Browsing(id))
     Error(Nil), [] -> state
@@ -295,6 +297,7 @@ pub type StripKey {
   Other
 }
 
+/// Handles key navigation while browsing strands in the agent strip.
 fn browse(
   state: State,
   pressed: StripKey,
@@ -311,6 +314,8 @@ fn browse(
     False, [first, ..] -> Ok(first)
     False, [] -> Error(Nil)
   }
+
+  // Dispatch key actions on the validated cursor strand.
   case cursor, pressed {
     Error(Nil), _ -> Left(composing)
     Ok(_), Back -> Left(composing)
@@ -326,6 +331,7 @@ fn browse(
   }
 }
 
+/// Advances or retreats the strand cursor along the list of strand IDs.
 fn step(ids: List(String), from: String, by: Int) -> String {
   let indexed = list.index_map(ids, fn(id, index) { #(index, id) })
   let at =
@@ -372,10 +378,13 @@ pub fn render(
 ) -> buffer.Buffer {
   let capacity = area.size.height
   let overflow = list.length(lines) - capacity
+
+  // Window the visible lines when total lines exceed available capacity.
   let shown = case overflow > 0 {
     True -> window(lines, focus, capacity - 1)
     False -> lines
   }
+
   let rows =
     agent_row.rows(
       shown,
@@ -398,10 +407,13 @@ pub fn render(
     False -> rows
     True -> {
       let hidden = int.to_string(list.length(lines) - list.length(shown))
+
+      // Tailor the overflow hint based on whether the strip has keyboard focus.
       let reach = case focus {
         Composing -> " more · Down enters the strip · F2 opens the list"
         Browsing(_) -> " more · F2 opens the list"
       }
+
       list.append(rows, [
         span.line_new([
           span.span_styled(
@@ -412,13 +424,20 @@ pub fn render(
       ])
     }
   }
+
   paragraph.render_styled(buf, area, rows)
 }
 
-// When the rows outnumber the space, the window follows the cursor so the
-// selected agent is always drawn; otherwise it shows the top of the roster.
+/// Windows the roster lines to keep the focused strand visible in the strip.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert agent_strip.window([], agent_strip.Composing, 5) == []
+/// ```
 @internal
 pub fn window(lines: List(Line), focus: Focus, size: Int) -> List(Line) {
+  // Find the cursor index to center the window around.
   let at = case focus {
     Composing -> 0
     Browsing(cursor) ->
@@ -427,6 +446,7 @@ pub fn window(lines: List(Line), focus: Focus, size: Int) -> List(Line) {
       |> result.map(fn(pair) { pair.0 })
       |> result.unwrap(0)
   }
+
   let start = int.clamp(at - size + 1, min: 0, max: list.length(lines))
   lines |> list.drop(start) |> list.take(size)
 }

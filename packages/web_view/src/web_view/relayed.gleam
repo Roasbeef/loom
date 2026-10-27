@@ -226,6 +226,8 @@ pub fn activity_words(activity: Activity) -> String {
 /// ```
 pub fn age_words(age_ms: Int) -> String {
   let seconds = age_ms / 1000
+
+  // Select the appropriate coarse time unit representation for the elapsed age.
   case seconds {
     seconds if seconds < 1 -> "just now"
     seconds if seconds < 60 -> int.to_string(seconds) <> "s ago"

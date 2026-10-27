@@ -35,6 +35,7 @@ import weft/poll
 /// // profile.directory()
 /// ```
 pub fn directory() -> Result(String, String) {
+  // Check XDG_CONFIG_HOME or fallback to HOME/.config.
   let root = case bootstrap.getenv("XDG_CONFIG_HOME") {
     Ok(value) if value != "" -> Ok(value)
     Ok(_) | Error(Nil) ->
@@ -42,6 +43,7 @@ pub fn directory() -> Result(String, String) {
       |> result.map(fn(home) { home <> "/.config" })
       |> result.replace_error("credential_unavailable")
   }
+
   result.map(root, fn(path) { path <> "/loom/chatgpt-subscription" })
 }
 
@@ -76,6 +78,7 @@ pub fn auth_at(
   })
 }
 
+/// Obtains a valid access token, refreshing or checking plan permissions.
 fn authorize(
   path: String,
   binding: Binding,
@@ -87,6 +90,8 @@ fn authorize(
   // the token endpoint. A grant with no plan permission cannot become usable
   // by renewing it.
   use grant <- result.try(require_plan(grant))
+
+  // Check if token needs renewal before expiration buffer.
   use grant <- result.try(case services.now() < grant.expires - 60_000 {
     True -> Ok(grant)
     False -> renew(path, binding, services)
@@ -105,14 +110,17 @@ fn require_plan(grant: Grant) -> Result(Grant, String) {
   }
 }
 
-// A rotated grant replaces the stored one before it is used. A terminal
-// refusal clears the stored grant but keeps the registration and subject, and
-// any other failure leaves the record untouched for a later attempt.
+/// Renews an expired grant and persists refreshed state to disk.
+///
+/// A rotated grant replaces the stored one before it is used. A terminal
+/// refusal clears the stored grant but keeps the registration and subject, and
+/// any other failure leaves the record untouched for a later attempt.
 fn renew(
   path: String,
   binding: Binding,
   services: oauth.Services,
 ) -> Result(Grant, String) {
+  // Refresh token via OAuth service.
   case oauth.refresh(binding, services) {
     Ok(refreshed) -> {
       use Nil <- result.try(credentials.save(path, refreshed))
@@ -170,14 +178,18 @@ pub fn execute_at(
   ledger: weft.Ledger,
 ) -> Result(Nil, String) {
   with_lock(directory, profile, fn(path) {
+    // Handle execution of specific control command.
     case command {
       control.Status -> {
         use stored <- result.try(credentials.load(path))
+
+        // Determine sign in status based on stored grant.
         let sign_in = case stored {
           Some(Binding(grant: Some(grant), ..)) ->
             control.SignedIn(permission(grant))
           Some(Binding(grant: None, ..)) | None -> control.SignedOut
         }
+
         process.send(events, control.LoginStatus(sign_in))
         Ok(Nil)
       }
@@ -235,12 +247,14 @@ fn permission(grant: Grant) -> control.Permission {
   }
 }
 
+/// Performs profile logout and revocation.
 fn logout(
   path: String,
   stored,
   events: Subject(control.ControlEvent),
   services: oauth.Services,
 ) -> Result(Nil, String) {
+  // Check if a stored binding exists to revoke.
   case stored {
     None -> {
       process.send(events, control.LogoutComplete)
@@ -252,10 +266,13 @@ fn logout(
         path,
         Binding(..binding, grant: None),
       ))
+
+      // Translate revocation result to logout event.
       let event = case revoked {
         Ok(Nil) -> control.LogoutComplete
         Error(_) -> control.LogoutRevocationUnconfirmed
       }
+
       process.send(events, event)
       Ok(Nil)
     }
@@ -267,11 +284,14 @@ fn current(path: String) -> Result(Binding, String) {
   option.to_result(binding, "not_logged_in")
 }
 
+/// Loads existing binding or initializes a new one.
 fn load_or_create(
   path: String,
   services: oauth.Services,
 ) -> Result(Binding, String) {
   use stored <- result.try(credentials.load(path))
+
+  // Check if binding already exists.
   case stored {
     Some(binding) -> Ok(binding)
     None -> {
@@ -282,6 +302,7 @@ fn load_or_create(
   }
 }
 
+/// Executes an operation while holding a profile file lock.
 fn with_lock(
   directory: String,
   profile: String,
@@ -299,6 +320,7 @@ fn with_lock(
   answer
 }
 
+/// Polls to acquire the profile launch lock.
 fn acquire(path: String) -> Result(bootstrap.LaunchLock, String) {
   case
     poll.until(within: 5000, every: 50, attempt: fn() {
@@ -360,6 +382,7 @@ pub fn model_catalogue(document: String) -> Result(String, String) {
   )
 }
 
+/// Validates model identifier against permitted characters.
 fn valid_model(id: String) -> Bool {
   let permitted =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-.:/"

@@ -242,6 +242,8 @@ pub fn view(
     element.ref(resume.pending(resume)),
     element.ref(archiving.stage(archiving)),
   ])
+
+  // Dispatch on view state.
   case groups {
     [] -> element.none()
     [_, ..] ->
@@ -311,8 +313,8 @@ pub fn home(
   )
 }
 
-// The parts of a page's values that decide what is drawn, which is everything
-// but its functions: the memo compares these and never a closure.
+/// The parts of a page's values that decide what is drawn, which is everything
+/// but its functions: the memo compares these and never a closure.
 fn memoed(
   page: Page(message),
 ) -> #(
@@ -335,10 +337,10 @@ fn memoed(
   )
 }
 
-// The column itself: its title, the top (the daemon's name and "New session"),
-// the pills, one section for each group that has a running session, the folded
-// saved sessions and the foot. The sections sit in a scrolling region of their
-// own so the top and the foot stay in view.
+/// The column itself: its title, the top (the daemon's name and "New session"),
+/// the pills, one section for each group that has a running session, the folded
+/// saved sessions and the foot. The sections sit in a scrolling region of their
+/// own so the top and the foot stay in view.
 fn column(
   groups: List(Group),
   current: String,
@@ -376,9 +378,9 @@ fn column(
   )
 }
 
-// The orchestrators' sections as one child of the scrolling region, so the
-// region's other children keep their places whether or not there is anything to
-// draw here. A session page has none.
+/// The orchestrators' sections as one child of the scrolling region, so the
+/// region's other children keep their places whether or not there is anything to
+/// draw here. A session page has none.
 fn relayed_sections(relayed: Option(Relayed(message))) -> Element(message) {
   case relayed {
     Some(Relayed(sections: [_, ..] as sections, open:)) ->
@@ -390,17 +392,20 @@ fn relayed_sections(relayed: Option(Relayed(message))) -> Element(message) {
   }
 }
 
-// One orchestrator's section: its heading with the count, the line saying it is
-// not answering when it is not, and its rows. A section that is not current says
-// so in `relayed-side-quiet`, which the stylesheet draws quieter.
+/// One orchestrator's section: its heading with the count, the line saying it is
+/// not answering when it is not, and its rows. A section that is not current says
+/// so in `relayed-side-quiet`, which the stylesheet draws quieter.
 fn relayed_section(
   section: Section,
   open: fn(String, String) -> message,
 ) -> Element(message) {
+  // Dispatch on relayed_section state.
   let stale = case section.note {
     "" -> []
     _ -> [attribute.class("relayed-side-quiet")]
   }
+
+  // Dispatch on relayed_section state.
   let note = case section.note {
     "" -> []
     words -> [
@@ -441,19 +446,21 @@ fn relayed_section(
   )
 }
 
-// One of an orchestrator's sessions: a button, since the relayed page can be
-// opened, holding the same dot and two lines a local row has. The tag's agent is
-// the orchestrator, and its code is where the session's tools run there, the
-// whole folder path a `title`. Every string is a text node.
+/// One of an orchestrator's sessions: a button, since the relayed page can be
+/// opened, holding the same dot and two lines a local row has. The tag's agent is
+/// the orchestrator, and its code is where the session's tools run there, the
+/// whole folder path a `title`. Every string is a text node.
 fn relayed_row(
   orchestrator: String,
   row: Listed,
   open: fn(String, String) -> message,
 ) -> Element(message) {
+  // Dispatch on relayed_row state.
   let code = case row.code {
     listing.Folder(path:) -> [attribute.title(path)]
     listing.Registered(..) | listing.Pooled(..) -> []
   }
+
   let words = relayed_words.activity_words(row.activity)
 
   html.li([attribute.class("session"), attribute.class("relayed-side-row")], [
@@ -486,7 +493,7 @@ fn relayed_row(
   ])
 }
 
-// The class that colours a relayed row's dot: the same three as a local row's.
+/// The class that colours a relayed row's dot: the same three as a local row's.
 fn relayed_class(activity: relayed_words.Activity) -> String {
   case activity {
     relayed_words.NeedsYou -> "needs-you"
@@ -503,10 +510,11 @@ fn activity_of(suffix: Suffix) -> Dict(String, Activity) {
   }
 }
 
-// The column's head: the product's name beside the serving daemon's, so a
-// person with two pages open can tell them apart, and the "New session" button
-// where the page offers one.
+/// The column's head: the product's name beside the serving daemon's, so a
+/// person with two pages open can tell them apart, and the "New session" button
+/// where the page offers one.
 fn top(page: Page(message)) -> Element(message) {
+  // Dispatch on top state.
   let new = case page.starting {
     Some(press) -> [
       html.button(
@@ -545,8 +553,8 @@ fn top(page: Page(message)) -> Element(message) {
   ])
 }
 
-// The machine pills, in a group named for what they do. With no pill to offer
-// there is nothing to draw, and a row of one choice would only be noise.
+/// The machine pills, in a group named for what they do. With no pill to offer
+/// there is nothing to draw, and a row of one choice would only be noise.
 fn pills(all: List(Entry), page: Page(message)) -> Element(message) {
   case listing.pills(all, page.machine) {
     [] -> element.none()
@@ -593,8 +601,8 @@ fn mark(filter: Filter, pill: Filter) -> Mark {
   }
 }
 
-// One pill: a real button that says whether it is the chosen one, with the
-// count of sessions it shows after its label.
+/// One pill: a real button that says whether it is the chosen one, with the
+/// count of sessions it shows after its label.
 fn pill(
   label: String,
   count: Int,
@@ -615,9 +623,9 @@ fn pill(
   )
 }
 
-// One group of running rows: a heading with the count, then the rows. A group
-// with no row is nothing, so a person who has nothing waiting sees no empty
-// "Needs you".
+/// One group of running rows: a heading with the count, then the rows. A group
+/// with no row is nothing, so a person who has nothing waiting sees no empty
+/// "Needs you".
 fn state(
   title: String,
   class: String,
@@ -634,9 +642,9 @@ fn state(
   }
 }
 
-// The quiet running sessions: the newest few, and the rest behind a native
-// disclosure. The rows past the first few stay in the document either way, so
-// the switcher still lists them.
+/// The quiet running sessions: the newest few, and the rest behind a native
+/// disclosure. The rows past the first few stay in the document either way, so
+/// the switcher still lists them.
 fn idle(rows: Rows, draw: fn(Row) -> Element(message)) -> Element(message) {
   case list.split(rows.idle, listing.idle_shown) {
     #([], _) -> element.none()
@@ -665,7 +673,7 @@ fn idle(rows: Rows, draw: fn(Row) -> Element(message)) -> Element(message) {
   }
 }
 
-// A group's heading: its words and the number of rows it holds.
+/// A group's heading: its words and the number of rows it holds.
 fn heading(title: String, rows: List(Row)) -> Element(message) {
   html.h3([attribute.class("state-heading")], [
     html.text(title),
@@ -675,13 +683,13 @@ fn heading(title: String, rows: List(Row)) -> Element(message) {
   ])
 }
 
-// The saved sessions: a quiet line that says how many there are, and under it
-// their rows. Both are always in the document, and the stylesheet hides the rows
-// until `<loom-saved>` reports that the person opened them, so the switcher,
-// which reads the sidebar's buttons, still finds a saved session while it is
-// hidden. The toggle carries the fixed `data-saved` mark and its `aria-expanded`,
-// which the element writes after this draws it closed. The count is a number,
-// the only text here.
+/// The saved sessions: a quiet line that says how many there are, and under it
+/// their rows. Both are always in the document, and the stylesheet hides the rows
+/// until `<loom-saved>` reports that the person opened them, so the switcher,
+/// which reads the sidebar's buttons, still finds a saved session while it is
+/// hidden. The toggle carries the fixed `data-saved` mark and its `aria-expanded`,
+/// which the element writes after this draws it closed. The count is a number,
+/// the only text here.
 fn saved_region(
   rows: List(Row),
   draw: fn(Row) -> Element(message),
@@ -709,9 +717,9 @@ fn saved_region(
   }
 }
 
-// The words on the toggle. A blocked row is one nothing runs and a page cannot
-// open, and its own row says "needs attention", so the count names it that way
-// and "saved" counts only the sessions that can be resumed.
+/// The words on the toggle. A blocked row is one nothing runs and a page cannot
+/// open, and its own row says "needs attention", so the count names it that way
+/// and "saved" counts only the sessions that can be resumed.
 fn toggle_words(rows: List(Row)) -> String {
   let blocked =
     list.count(rows, fn(row) {
@@ -722,6 +730,7 @@ fn toggle_words(rows: List(Row)) -> String {
     })
   let saved = list.length(rows) - blocked
 
+  // Dispatch on toggle_words state.
   case saved, blocked {
     _, 0 -> int.to_string(saved) <> " saved"
     0, _ -> int.to_string(blocked) <> " needs attention"
@@ -733,9 +742,10 @@ fn toggle_words(rows: List(Row)) -> String {
   }
 }
 
-// The column's foot: the admin page where the page may open it, and who the
-// page is for. Both are the page's own values, drawn as text.
+/// The column's foot: the admin page where the page may open it, and who the
+/// page is for. Both are the page's own values, drawn as text.
 fn foot(page: Page(message)) -> Element(message) {
+  // Dispatch on foot state.
   let admin = case page.administering {
     Some(press) -> [
       html.button(
@@ -749,27 +759,30 @@ fn foot(page: Page(message)) -> Element(message) {
     ]
     None -> []
   }
+
+  // Dispatch on foot state.
   let who = case page.who {
     "" -> []
     name -> [html.span([attribute.class("foot-who")], [html.text(name)])]
   }
 
+  // Dispatch on foot state.
   case list.append(admin, who) {
     [] -> element.none()
     parts -> html.div([attribute.class("side-foot")], parts)
   }
 }
 
-// One row. The session on screen is marked and is text. Another session that a
-// process runs is a button, since a page for it can be opened. A saved session
-// is what `view/resume` says: a button on a page that may ask the daemon to
-// resume it, the words "opening" while its resume is out, and text otherwise,
-// including for a session the daemon will not resume from a page. The second
-// line is the tag: the machine the agent runs on, an arrow, and where the code
-// lives, with the code's whole path as a `title`. A page that offers archiving
-// adds a small menu after the row's own button, and a row that is asking whether
-// to archive is that question and nothing else; the session on screen has no
-// menu, so it gives its reason as a `title`.
+/// One row. The session on screen is marked and is text. Another session that a
+/// process runs is a button, since a page for it can be opened. A saved session
+/// is what `view/resume` says: a button on a page that may ask the daemon to
+/// resume it, the words "opening" while its resume is out, and text otherwise,
+/// including for a session the daemon will not resume from a page. The second
+/// line is the tag: the machine the agent runs on, an arrow, and where the code
+/// lives, with the code's whole path as a `title`. A page that offers archiving
+/// adds a small menu after the row's own button, and a row that is asking whether
+/// to archive is that question and nothing else; the session on screen has no
+/// menu, so it gives its reason as a `title`.
 fn entry(
   row: Row,
   current: String,
@@ -786,6 +799,7 @@ fn entry(
   let residency = residency(words)
   let parts = [residency, lead]
 
+  // Render question, active row, or session button according to residency.
   case
     archiving.question(archiving, entry, turn(entry, suffix)),
     entry.id == current,
@@ -857,11 +871,13 @@ fn entry(
   }
 }
 
-// The row's two lines: the name, and the tag under it. The name is the
-// catalogue's label as a text node, and the tag is the place's two halves as
-// text nodes, the code's whole path a `title`.
+/// The row's two lines: the name, and the tag under it. The name is the
+/// catalogue's label as a text node, and the tag is the place's two halves as
+/// text nodes, the code's whole path a `title`.
 fn lead(row: Row) -> Element(message) {
   let entry = row.entry
+
+  // Dispatch on lead state.
   let code = case row.place.code {
     listing.Folder(path:) -> [attribute.title(path)]
     listing.Registered(..) | listing.Pooled(..) -> []
@@ -884,9 +900,9 @@ fn lead(row: Row) -> Element(message) {
   ])
 }
 
-// The first line of the session's first prompt, as a third quiet line when the
-// catalogue has one (protocol-change/067). It is a person's own words, so it is
-// a text node and nothing else: never an attribute, a class, a key or a title.
+/// The first line of the session's first prompt, as a third quiet line when the
+/// catalogue has one (protocol-change/067). It is a person's own words, so it is
+/// a text node and nothing else: never an attribute, a class, a key or a title.
 fn subtitle(entry: Entry) -> List(Element(message)) {
   case entry.subtitle {
     Some(words) -> [
@@ -896,14 +912,15 @@ fn subtitle(entry: Entry) -> List(Element(message)) {
   }
 }
 
-// The row's small menu: what the page offers for the row, behind a native
-// disclosure so it needs no handler. A row with nothing to offer has none, so
-// an observer's list carries no dots.
+/// The row's small menu: what the page offers for the row, behind a native
+/// disclosure so it needs no handler. A row with nothing to offer has none, so
+/// an observer's list carries no dots.
 fn menu(
   archiving: Archiving(message),
   entry: Entry,
   page: Page(message),
 ) -> Element(message) {
+  // Dispatch on menu state.
   let manage = case page.managing {
     Some(press) -> [
       html.button(
@@ -918,6 +935,7 @@ fn menu(
     None -> []
   }
 
+  // Dispatch on menu state.
   case list.append(archiving.button(archiving, entry), manage) {
     [] -> element.none()
     items ->
@@ -934,8 +952,8 @@ fn menu(
   }
 }
 
-// The dot and the word of a row: the classes that colour it, the glyph, and the
-// words an assistive technology reads in place of the colour.
+/// The dot and the word of a row: the classes that colour it, the glyph, and the
+/// words an assistive technology reads in place of the colour.
 fn residency(words: #(List(String), String, String)) -> Element(message) {
   html.span(
     [attribute.class("residency"), ..list.map(words.0, attribute.class)],
@@ -948,8 +966,8 @@ fn residency(words: #(List(String), String, String)) -> Element(message) {
   )
 }
 
-// What a row's dot says: a running session by what it is doing, a saved one by
-// why it cannot be opened, and a resume that is out as "opening".
+/// What a row's dot says: a running session by what it is doing, a saved one by
+/// why it cannot be opened, and a resume that is out as "opening".
 fn row_words(
   entry: Entry,
   kind: resume.Kind(message),
@@ -971,20 +989,21 @@ fn row_words(
   }
 }
 
-// Whether the row's session is inside a turn, by the activity read: working and
-// needing its operator are, and idle or unnamed is not. It only picks the
-// sentence of the archive question, and the stop itself is the server's.
+/// Whether the row's session is inside a turn, by the activity read: working and
+/// needing its operator are, and idle or unnamed is not. It only picks the
+/// sentence of the archive question, and the stop itself is the server's.
 fn turn(entry: Entry, suffix: Suffix) -> archiving.Turn {
   let known = dict.get(activity_of(suffix), entry.id)
 
+  // Dispatch on turn state.
   case entry.residency, known {
     Live, Ok(Working) | Live, Ok(NeedsYou) -> archiving.MidTurn
     _, _ -> archiving.AtRest
   }
 }
 
-// A running session's classes, glyph and word. On the home the word is the
-// activity read's answer, and a session the read has not named has none.
+/// A running session's classes, glyph and word. On the home the word is the
+/// activity read's answer, and a session the read has not named has none.
 fn running(entry: Entry, suffix: Suffix) -> #(List(String), String, String) {
   case suffix {
     Doing(activity) ->
@@ -1008,6 +1027,7 @@ fn doing_row(doing: Activity) -> #(List(String), String, String) {
   #(["live", activity_class(doing)], "●", sessions.activity_words(doing))
 }
 
+/// Activity class helper.
 fn activity_class(doing: Activity) -> String {
   case doing {
     NeedsYou -> "needs-you"
@@ -1017,12 +1037,12 @@ fn activity_class(doing: Activity) -> String {
   }
 }
 
-// A group's rows, keyed by the session's identity. Each row carries handlers, and a
-// handler is named by its path, which is its key when it has one and its index
-// when it has not. The groups regroup as sessions change what they are doing, so an
-// unkeyed list would send a press that was in flight to whichever row had moved into
-// its place; keyed, it reaches the same session or nothing (`docs/lustre.md`).
-// An identity is the catalogue's canonical one and holds no separator.
+/// A group's rows, keyed by the session's identity. Each row carries handlers, and a
+/// handler is named by its path, which is its key when it has one and its index
+/// when it has not. The groups regroup as sessions change what they are doing, so an
+/// unkeyed list would send a press that was in flight to whichever row had moved into
+/// its place; keyed, it reaches the same session or nothing (`docs/lustre.md`).
+/// An identity is the catalogue's canonical one and holds no separator.
 fn keyed_rows(
   rows: List(Row),
   draw: fn(Row) -> Element(message),

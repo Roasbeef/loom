@@ -188,6 +188,7 @@ pub fn import_session(
   from from: String,
 ) -> Result(catalogue.Custody, Error) {
   catalogue.atomic(store, fn() {
+    // Ensure the session is registered and bound before importing.
     use Nil <- result.try(case catalogue.get(store, record.id) {
       Ok(_kept) -> Ok(Nil)
       Error(Missing) -> {
@@ -198,6 +199,7 @@ pub fn import_session(
       }
       Error(error) -> Error(error)
     })
+
     catalogue.import_in_transaction(store, record.id, op:, from:)
   })
 }
@@ -226,12 +228,15 @@ pub fn bind(
 // catalogue transaction so the mapping and the revision bump commit with the
 // registration. An exact repeat of an existing mapping is the idempotent retry;
 // a different one is a conflict rather than a silent replacement.
+/// Binds the initial domain to a session within an active transaction.
 fn bind_initial(
   store: Catalogue,
   record: catalogue.Registration,
   domain: Domain,
 ) -> Result(Domain, Error) {
   use Nil <- result.try(matches(record, domain))
+
+  // Check whether a domain binding already exists for this session.
   case for_session(store, record.id) {
     Ok(existing) ->
       case existing == domain {
@@ -272,16 +277,21 @@ pub fn isolate(
 ) -> Result(Domain, Error) {
   catalogue.atomic(store, fn() {
     use existing <- result.try(for_session(store, session_id))
+
+    // Ensure that workspace private domains are converted to session-only isolation.
     case existing.scope {
       SessionOnly -> Ok(existing)
       WorkspacePrivate -> {
         use record <- result.try(catalogue.get(store, session_id))
         use Nil <- result.try(matches(record, fresh))
+
+        // Verify that the fresh domain has session-only scope.
         use Nil <- result.try(case fresh.scope {
           SessionOnly -> Ok(Nil)
           WorkspacePrivate ->
             Error(Invalid("isolation requires session-only scope"))
         })
+
         use fresh <- result.try(insert_domain(store, fresh))
         use Nil <- result.try(catalogue.statement(
           store,
@@ -350,8 +360,11 @@ pub fn page(
 // Inserts a domain, or accepts an identical one that is already stored. Both
 // callers run inside a transaction, so a conflict discovered here rolls back
 // the binding that asked for it.
+/// Inserts a domain record or accepts an identical existing record.
 fn insert_domain(store: Catalogue, domain: Domain) -> Result(Domain, Error) {
   use Nil <- result.try(validate(domain))
+
+  // Inspect whether the domain record already exists by identifier.
   case get(store, domain.id) {
     Ok(existing) ->
       case existing == domain {
@@ -367,6 +380,7 @@ fn insert_domain(store: Catalogue, domain: Domain) -> Result(Domain, Error) {
 // and the directory guard (`digest_beside`) are compared against every
 // destination column already stored, so two domains can never share a file, nor
 // a directory holding the memory sidecars.
+/// Inserts a new domain record after verifying path distinctness and conflicts.
 fn insert_absent(store: Catalogue, domain: Domain) -> Result(Domain, Error) {
   use conflicts <- result.try(catalogue.query(
     store,
@@ -376,10 +390,13 @@ fn insert_absent(store: Catalogue, domain: Domain) -> Result(Domain, Error) {
       digest_beside(domain.memory_path),
     ),
   ))
+
+  // Verify that no conflicting paths exist in other registered domains.
   use Nil <- result.try(case conflicts {
     [] -> Ok(Nil)
     [_, ..] -> Error(Conflict)
   })
+
   let #(scope, scope_key) = scope_fields(domain)
   use Nil <- result.try(catalogue.statement(
     store,
@@ -400,11 +417,14 @@ fn insert_absent(store: Catalogue, domain: Domain) -> Result(Domain, Error) {
 // A domain may only be bound to a registration whose workspace and identity
 // derive it. This is what keeps a session from being bound to another
 // session's domain, and it runs before any bind, not after.
+/// Validates that a domain matches the workspace and identity of a session registration.
 fn matches(
   record: catalogue.Registration,
   domain: Domain,
 ) -> Result(Nil, Error) {
   use Nil <- result.try(validate(domain))
+
+  // Verify that registration workspace and derived domain identity match.
   case
     record.workspace == domain.workspace
     && domain.id == key(domain.scope, record.workspace, record.id)
@@ -417,7 +437,9 @@ fn matches(
 // Everything a stored domain must satisfy on the way in and on the way out:
 // canonical absolute destinations, three distinct files once the directory
 // guard is derived, and an identity that matches its own scope.
+/// Validates canonical paths, distinct destinations, and scope identity for a domain.
 fn validate(domain: Domain) -> Result(Nil, Error) {
+  // Validate that workspace path or name is valid for the domain scope.
   use Nil <- result.try(case domain.scope {
     WorkspacePrivate -> absolute(domain.workspace)
 
@@ -431,8 +453,11 @@ fn validate(domain: Domain) -> Result(Nil, Error) {
         False -> absolute(domain.workspace)
       }
   })
+
   use Nil <- result.try(absolute(domain.memory_path))
   use Nil <- result.try(absolute(domain.index_path))
+
+  // Validate optional configuration path if non-empty.
   use Nil <- result.try(case domain.configuration {
     "" -> Ok(Nil)
     path -> absolute(path)
@@ -441,6 +466,8 @@ fn validate(domain: Domain) -> Result(Nil, Error) {
   // Ensure memory, index, and sidecar digest paths are distinct.
   let digest = digest_beside(domain.memory_path)
   use Nil <- result.try(absolute(digest))
+
+  // Ensure that memory, index, and digest paths are all mutually distinct.
   use Nil <- result.try(
     case
       domain.memory_path == domain.index_path
@@ -451,6 +478,8 @@ fn validate(domain: Domain) -> Result(Nil, Error) {
       False -> Ok(Nil)
     },
   )
+
+  // Validate domain identifier format against scope.
   case domain.scope {
     WorkspacePrivate ->
       case domain.id == key(WorkspacePrivate, domain.workspace, "") {
@@ -470,6 +499,7 @@ fn validate(domain: Domain) -> Result(Nil, Error) {
 
 // Paths are host-canonicalized before they reach this module; the bound and the
 // NUL check are what keep a wire-supplied string from becoming a destination.
+/// Verifies that a path is bounded, non-null, and absolute.
 fn absolute(path: String) -> Result(Nil, Error) {
   case
     string.starts_with(path, "/")
@@ -539,6 +569,7 @@ type Row {
 // strings are decoded totally, and the derived directory guard and scope key are
 // re-checked against the identity so a hand-edited catalogue cannot widen what
 // this record points at.
+/// Decodes and validates a persisted domain row into a typed domain record.
 fn decode(row: Row) -> Result(Domain, Error) {
   let Row(
     id:,
@@ -550,14 +581,19 @@ fn decode(row: Row) -> Result(Domain, Error) {
     index_path:,
     digest_path:,
   ) = row
+
+  // Parse the persisted scope string into a typed DomainScope.
   use scope <- result.try(case scope {
     "workspace_private" -> Ok(WorkspacePrivate)
     "session_only" -> Ok(SessionOnly)
     _other -> Error(Invalid("unknown persisted domain scope"))
   })
+
   let domain =
     Domain(id, scope, workspace, configuration, memory_path, index_path)
   use Nil <- result.try(validate(domain))
+
+  // Verify that the persisted scope key and digest path match re-derived values.
   case
     scope_fields(domain).1 == scope_key
     && digest_path == digest_beside(memory_path)
@@ -570,6 +606,7 @@ fn decode(row: Row) -> Result(Domain, Error) {
 // Domain lookups are keyed by a unique column, so more than one row means the
 // catalogue disagrees with its own schema and is refused rather than picked
 // from. Missing stays a distinct answer: callers branch on it to insert.
+/// Returns exactly one row from a query result, distinguishing Missing from Invalid.
 fn one(rows: List(a)) -> Result(a, Error) {
   case rows {
     [row] -> Ok(row)

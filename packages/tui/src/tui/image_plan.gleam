@@ -72,9 +72,11 @@ pub fn settle(model: Model) -> Model {
   }
 }
 
-// The terminal can draw, so the frame about to be shown is read for boxes.
-// The closures take only the fields they read, so they do not hold the
-// whole model while the shown state runs.
+/// Reconciles transcript image boxes against visible terminal area.
+///
+/// The terminal can draw, so the frame about to be shown is read for boxes.
+/// The closures take only the fields they read, so they do not hold the
+/// whole model while the shown state runs.
 fn reconciled(model: Model, support: image_support.Support) -> Model {
   let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let area = render.transcript_area(model, screen)
@@ -94,9 +96,10 @@ fn reconciled(model: Model, support: image_support.Support) -> Model {
   queue(model, image_shown.reconcile(model.view.images, facts))
 }
 
-// The boxes in the window that suit this terminal, at screen positions. A
-// kitty terminal draws placeholder boxes and an iTerm2 terminal blank ones,
-// so a box of the other kind is not its business.
+/// Collects desired image boxes positioned on the screen for the current terminal.
+///
+/// A kitty terminal draws placeholder boxes and an iTerm2 terminal blank ones,
+/// so a box of the other kind is not its business.
 fn wants(
   support: image_support.Support,
   model: Model,
@@ -126,7 +129,7 @@ fn wants(
   })
 }
 
-// An image's header facts, found again from the transcript.
+/// Resolves an image's header dimensions and metadata from the transcript.
 fn picture(
   records: List(protocol.EntryRecord),
   strand: String,
@@ -137,7 +140,7 @@ fn picture(
   |> option.to_result(image_shown.Missing)
 }
 
-// An image's decoded bytes, found again from the transcript.
+/// Resolves an image's decoded binary payload from the transcript.
 fn bytes(
   records: List(protocol.EntryRecord),
   strand: String,
@@ -147,7 +150,7 @@ fn bytes(
   image_shown.decode(image.data)
 }
 
-// The active strand's image whose fingerprint hashes to `id`.
+/// Finds the transcript image whose fingerprint matches the requested ID.
 fn find(
   records: List(protocol.EntryRecord),
   strand: String,
@@ -165,13 +168,13 @@ fn find(
   |> result.replace_error(image_shown.Missing)
 }
 
-// Whether every cell of a box on the cached frame is still one of the
-// box's blank cells. A surface drawn over the transcript replaces them.
+/// Reports whether an image's cells on the cached frame remain intact or are overlaid.
 fn showing(
   cache: option.Option(FrameCache),
   at: Position,
   box: Box,
 ) -> image_shown.Showing {
+  // Check if frame cache exists to verify cell visibility.
   case cache {
     None -> image_shown.Overlaid
     Some(FrameCache(rendered: #(frame, _), ..)) -> {
@@ -186,6 +189,8 @@ fn showing(
             },
           )
         })
+
+      // Verify every cell in the bounding box still contains the placeholder blank.
       case list.all(cells, blank_at(frame, _)) {
         True -> image_shown.Intact
         False -> image_shown.Overlaid
@@ -201,19 +206,26 @@ fn blank_at(frame: buffer.Buffer, position: Position) -> Bool {
   }
 }
 
-// Stores what the terminal now holds and queues what it must be told. The
-// commands go first, the wake after them, so the loop is woken only once the
-// commands are written.
+/// Updates the model view with reconciled image state and emits required effects.
+///
+/// The commands go first, the wake after them, so the loop is woken only once the
+/// commands are written.
 fn queue(model: Model, outcome: image_shown.Outcome) -> Model {
   let model = Model(..model, view: View(..model.view, images: outcome.shown))
+
+  // Emit draw commands when new graphics instructions are generated.
   let model = case outcome.commands {
     [] -> model
     commands -> tui_model.emit(model, effect.DrawImages(commands))
   }
+
+  // Request an immediate loop wake if subsequent frame draws are needed.
   let model = case outcome.wake {
     image_shown.WakeSoon -> tui_model.emit(model, effect.WakeLoop)
     image_shown.NoWake -> model
   }
+
+  // Report any image rendering failures to the user notice bar.
   case outcome.failures {
     [] -> model
     [#(_, failure), ..] ->
@@ -228,6 +240,7 @@ fn queue(model: Model, outcome: image_shown.Outcome) -> Model {
   }
 }
 
+/// Converts an image rendering failure into a human-readable explanation.
 fn explanation(failure: image_shown.Failure) -> String {
   case failure {
     image_shown.Missing -> "it is no longer in this transcript"

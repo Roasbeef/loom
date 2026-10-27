@@ -272,11 +272,14 @@ pub fn poll(
   status: Status,
   now now: Int,
 ) -> #(Status, Option(Outcome), List(Out)) {
+  // Advance attachment stage or no-op if idle.
   case status {
     Idle -> #(Idle, None, [])
     Opening(run, stage) -> {
       let stage = prepare(stage, run.trace, now)
       let #(stage, started) = release(stage)
+
+      // Step candidate progress and settle any resulting outcomes.
       let advanced = case progress(stage, now) {
         Error(broken) -> discard(Opening(run, stage), broken)
         Ok(advanced) -> {
@@ -286,6 +289,7 @@ pub fn poll(
           |> preceded_by(progressed)
         }
       }
+
       preceded_by(advanced, started)
     }
   }
@@ -422,6 +426,8 @@ pub fn accept(
   case status {
     Opening(run, Connecting(Candidate(captured: None, ..) as candidate, frames)) -> {
       let frames = buffered.push(frames, message)
+
+      // Drain buffered frames into candidate channel.
       case drain(candidate, frames, buffered.held(frames), now) {
         Ok(#(advanced, frames)) -> {
           let before = Connecting(candidate, frames)
@@ -462,18 +468,15 @@ pub fn accept(
   }
 }
 
-// The worker waits for exactly one reply: that the terminal holds its
-// initial cut. It is owed at the advance where the cut is first captured, so
-// it is read off that transition rather than off the `Captured` update, and
-// it goes ahead of whatever the same advance then settled. An advance that
-// captured and failed at once owes nothing, since its cleanup cancels the
-// worker that was waiting.
+/// Injects worker acknowledgement output when the stage captures its initial cut.
 fn acknowledging(
   settled: #(Status, Option(Outcome), List(Out)),
   before: Stage,
   after: Stage,
 ) -> #(Status, Option(Outcome), List(Out)) {
   let #(status, outcome, outputs) = settled
+
+  // Prepend acknowledgement if the cut transition occurred in this advance.
   case before, after {
     Connecting(Candidate(captured: None, ..), _),
       Connecting(Candidate(captured: Some(_), acknowledgement:, ..), _)
@@ -489,8 +492,7 @@ fn acknowledging(
   }
 }
 
-// Starts the candidate lane on a published socket. The lane is recorded
-// under the attempt's trace from its first note.
+/// Starts candidate channel processing when a published socket is ready.
 fn prepare(stage: Stage, trace: Option(recording.Trace), now: Int) -> Stage {
   case stage {
     Resolving | Connecting(..) -> stage
@@ -514,7 +516,9 @@ fn prepare(stage: Stage, trace: Option(recording.Trace), now: Int) -> Stage {
   }
 }
 
+/// Drains queued frames and ticks channel timeouts for active candidates.
 fn progress(stage: Stage, now: Int) -> Result(Stage, Broken) {
+  // Advance connecting candidates while resolving or captured stages remain as-is.
   case stage {
     Resolving
     | Published(..)
@@ -533,9 +537,7 @@ fn progress(stage: Stage, now: Int) -> Result(Stage, Broken) {
   }
 }
 
-// Takes held frames until the cut is captured, and no further: a frame
-// after the capture belongs to the adopted lane and stays in the inbox,
-// which the adoption hands over whole.
+/// Drains held frames into candidate until initial cut is captured or batch ends.
 fn drain(
   candidate: Candidate,
   frames: Inbox(connection_event.Message),
@@ -555,6 +557,7 @@ fn drain(
   }
 }
 
+/// Feeds one connection message into candidate channel and applies updates.
 fn receive_frame(
   candidate: Candidate,
   message: connection_event.Message,
@@ -564,6 +567,7 @@ fn receive_frame(
   apply_updates(Candidate(..candidate, channel: next), updates)
 }
 
+/// Applies channel updates to candidate, failing on unexpected commands.
 fn apply_updates(candidate: Candidate, updates) {
   case updates {
     [] -> Ok(candidate)
@@ -596,7 +600,7 @@ fn apply_updates(candidate: Candidate, updates) {
   }
 }
 
-// Settles the oldest outcome the runtime admitted, if there is one.
+/// Settles the oldest outcome admitted by the runtime job runner.
 fn settle(status: Status) -> #(Status, Option(Outcome), List(Out)) {
   case status {
     Idle -> #(Idle, None, [])
@@ -609,6 +613,7 @@ fn settle(status: Status) -> #(Status, Option(Outcome), List(Out)) {
   }
 }
 
+/// Routes a job settlement outcome to either adoption or relay handling.
 fn apply_outcome(
   status: Status,
   settlement: Settlement,
@@ -619,6 +624,7 @@ fn apply_outcome(
   }
 }
 
+/// Translates a pulled relay task outcome into an attachment outcome or failure.
 fn apply_relayed(
   status: Status,
   outcome: weft.Pulled(Nil, String),
@@ -650,11 +656,7 @@ fn apply_relayed(
   }
 }
 
-// The worker has completed, which it does only after the acknowledgement,
-// and the host has read whether the socket's actor is still alive
-// (`runtime.hold`, phase 3 of issue #530). An attempt that captured its cut
-// adopts on a live socket and fails on a gone one; the check is the host's
-// so that the step reads no process.
+/// Adopts the candidate lane if socket liveness was confirmed after acknowledgement.
 fn adopt(
   status: Status,
   liveness: job.SocketLiveness,
@@ -683,19 +685,16 @@ fn adopt(
   }
 }
 
-// The failure note is queued ahead of the cleanup, behind every note the
-// attempt queued before it. It is a note in the attempt's lane recording,
-// so it travels as the lane's own notes do, even when the attempt failed
-// before it had a lane. The cleanup is only decided: the status it cancels
-// travels in the output, and `cancel` closes what it holds when the
-// runtime performs it, after the job itself is cancelled by its key.
+/// Records an attachment failure note and outputs an Abandon effect.
 fn failed(status, reason) -> #(Status, Option(Outcome), List(Out)) {
+  // Produce a failure note if the attempt had an active recording trace.
   let noted = case status {
     Opening(Run(trace: Some(attempt.Trace(recorder:, id:)), ..), _) -> [
       FromChannel(channel.Note(recorder, attempt.Failed(id, reason))),
     ]
     Idle | Opening(Run(trace: None, ..), _) -> []
   }
+
   #(Idle, Some(Failed(reason)), list.append(noted, [Abandon(status)]))
 }
 
@@ -705,12 +704,7 @@ type Broken {
   Broken(candidate: Candidate, reason: String)
 }
 
-// Fails the attempt in `status`, which is as it stood before the advance
-// that broke. That advance is discarded: its channel state and the writes
-// it decided go with it, and `cancel` closes the attempt's socket from the
-// status, once. Its notes are kept and queued ahead of the failure, because
-// they record frames the terminal did receive, in the order it received
-// them, and the recording has always held them.
+/// Discards broken advance state and marks the attachment attempt as failed.
 fn discard(
   status: Status,
   broken: Broken,
@@ -726,11 +720,9 @@ fn discard(
   failed(status, broken.reason) |> preceded_by(notes)
 }
 
-// Moves what the candidate's channel queued into the attempt's outputs, so
-// nothing an advance decided is left inside the status. An adopted channel
-// therefore arrives with an empty queue, and an abandoned one holds only
-// what `cancel` decides when it closes it.
+/// Drains queued outputs from the candidate channel and converts them to Out items.
 fn release(stage: Stage) -> #(Stage, List(Out)) {
+  // Extract queued outputs if connecting; resolving or published stages produce none.
   case stage {
     Resolving | Published(..) -> #(stage, [])
     Connecting(candidate, frames) -> {
@@ -743,8 +735,7 @@ fn release(stage: Stage) -> #(Stage, List(Out)) {
   }
 }
 
-// Puts outputs decided earlier in the advance ahead of the ones `settled`
-// carries.
+/// Prepends earlier outputs onto the settled outputs list.
 fn preceded_by(
   settled: #(Status, Option(Outcome), List(Out)),
   earlier: List(Out),
@@ -807,6 +798,7 @@ pub fn perform(output: Out) -> Nil {
 /// attachment.cancel(pending)
 /// ```
 pub fn cancel(status: Status) -> Nil {
+  // Close sockets and discard frame mailboxes held by the status.
   case status {
     Idle | Opening(_, Resolving) -> Nil
     Opening(_, Published(prepared, frames)) -> {

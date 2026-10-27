@@ -76,6 +76,8 @@ pub fn observe(
 
     // Determine current progress summary from active tool calls.
     let calls = tool_activity.running(view.cells, entries, current)
+
+    // Format tool names or fallback phase as progress text.
     let progress = case calls {
       [] -> option.unwrap(strand.live_phase, "running")
       calls ->
@@ -90,6 +92,8 @@ pub fn observe(
       None -> "pending input unknown"
       Some(inputs) -> {
         let count = list.count(inputs, fn(input) { input.strand == strand.id })
+
+        // Render pending message counts or no pending status.
         case count {
           0 -> no_pending_input
           _ -> int.to_string(count) <> " received, awaiting delivery"
@@ -127,12 +131,16 @@ pub fn task_excerpt(
     use meta <- result.try(
       codec.decode_operation(cell.value) |> result.replace_error(Nil),
     )
+
+    // Match run intent to obtain the initial prompt entry IDs.
     case meta.intent {
       operation.RunIntent(prompts) -> Ok(prompts)
       operation.CompactionIntent(..) | operation.NavigationIntent(..) ->
         Error(Nil)
     }
   }
+
+  // Extract text from the prompt message entries if present.
   case prompt {
     Error(Nil) -> ""
     Ok(prompts) ->
@@ -164,6 +172,7 @@ pub fn task_excerpt(
   }
 }
 
+/// Strips framing tags from a brief message to extract the core text.
 fn brief_body(text) {
   case
     string.starts_with(text, "[task brief from "),
@@ -223,6 +232,8 @@ pub fn lines(rows: List(Row), active: String) -> List(String) {
         "  Task: " <> described(row, active),
       ]
     })
+
+  // Append an overflow notice if not all reviewers could be shown.
   case list.length(others) - list.length(visible) {
     0 -> lines
     count ->
@@ -232,12 +243,11 @@ pub fn lines(rows: List(Row), active: String) -> List(String) {
   }
 }
 
-// Who the row is about: its kind, then the name its parent chose. A
-// sub-agent is a `Sub-agent` under the slug of its minted identity, without
-// the parent or the suffix; the advisor keeps `Reviewer`, which is what it
-// does; any other strand is a `Strand` under its own name.
+/// Formats the reviewer or strand title label for status display.
 fn who(strand: String) -> String {
   let name = text_hygiene.single_line(strand_name.short(strand))
+
+  // Classify strand kind based on prefix and known reviewer roles.
   case strand, name {
     "advisor", _ -> "Reviewer advisor"
     "sub:" <> _, "sub:" <> bare -> "Sub-agent " <> bare
@@ -256,9 +266,7 @@ fn described(row: Row, active: String) -> String {
   }
 }
 
-// The text up to the first sentence end, at most 100 characters, with an
-// ellipsis when anything was cut at the bound. A brief with no sentence end
-// is cut at the bound alone.
+/// Extracts the first sentence of text, truncated to 100 characters.
 fn first_sentence(text: String) -> String {
   let cut =
     list.fold([". ", "! ", "? "], text, fn(kept, end) {
@@ -268,6 +276,7 @@ fn first_sentence(text: String) -> String {
       }
     })
 
+  // Clip to 100 characters with an ellipsis if length exceeds the limit.
   case string.length(cut) > 100 {
     True -> string.slice(cut, 0, 99) <> "…"
     False -> cut

@@ -61,16 +61,22 @@ pub fn placement(
   use ids <- result.try(queued_ids(store, strand))
   list.try_fold(ids, Nil, fn(_acc, id) {
     let key = ids.entry_id_to_string(id)
+
+    // Look up whether the pending entry register exists.
     let registered = case
       storage.get_register(store, register.PendingEntry, key)
     {
       Ok(Some(_)) -> True
       _ -> False
     }
+
+    // Check whether the entry has been placed in storage.
     let placed = case storage.get_entries(store, [id]) {
       Ok(entries) -> dict.has_key(entries, id)
       Error(_) -> False
     }
+
+    // A queued ID must not simultaneously be registered and placed.
     case registered && placed {
       True ->
         Error(Violation(
@@ -84,6 +90,7 @@ pub fn placement(
   })
 }
 
+/// Returns the list of entry IDs queued for the strand.
 fn queued_ids(
   store: Storage(handle),
   strand: String,
@@ -99,19 +106,21 @@ fn queued_ids(
   }
 }
 
+/// Reads queued entry IDs from decoded strand state register cell.
 fn queued_ids_from_strand_state(
   store: Storage(handle),
   cell: Register,
 ) -> Result(List(EntryId), Violation) {
   use state <- result.try(decoded_strand_state(cell, "placement/queued-id"))
+
+  // Check if an operation is currently open on the strand.
   case state.current_operation {
     None -> Ok(state.pending_next_run)
     Some(op) -> queued_ids_with_open_op(store, state, op)
   }
 }
 
-// Decoded under the caller's own check name, so a corrupt strand state is
-// reported as whichever boundary check was reading it.
+/// Decodes strand state payload under the caller's check name.
 fn decoded_strand_state(
   cell: Register,
   check: String,
@@ -126,6 +135,7 @@ fn decoded_strand_state(
   }
 }
 
+/// Collects queued IDs when an operation is currently open on the strand.
 fn queued_ids_with_open_op(
   store: Storage(handle),
   state: StrandState,
@@ -149,6 +159,7 @@ fn queued_ids_with_open_op(
   }
 }
 
+/// Extracts queued entry IDs from the operation state's inboxes.
 fn inbox_ids(state: OperationState) -> List(EntryId) {
   case state {
     RunState(inbox:, control:, ..) ->
@@ -163,6 +174,7 @@ fn inbox_ids(state: OperationState) -> List(EntryId) {
   }
 }
 
+/// Returns drained entry IDs held in cancel control.
 fn drained(control: Control) -> List(EntryId) {
   case control {
     Running -> []
@@ -210,6 +222,8 @@ pub fn terminal_registers(
       }
     }),
   )
+
+  // Check that strand state is idle following the terminal transaction.
   case storage.get_register(store, register.StrandState, strand) {
     Ok(Some(cell)) -> check_strand_idle(cell)
     _ ->
@@ -220,8 +234,11 @@ pub fn terminal_registers(
   }
 }
 
+/// Confirms that strand state has no active current operation.
 fn check_strand_idle(cell: Register) -> Result(Nil, Violation) {
   use state <- result.try(decoded_strand_state(cell, "terminal/registers"))
+
+  // Verify no operation is active on the idle strand.
   case state.current_operation {
     None -> Ok(Nil)
     Some(_) ->
@@ -252,6 +269,7 @@ fn check_strand_idle(cell: Register) -> Result(Nil, Violation) {
 /// ```
 ///
 pub fn calls_answered(store: Storage(handle)) -> Result(Nil, Violation) {
+  // Scan all entries from storage to check tool call answers.
   case storage.scan_entries(store, storage.entry_scan()) {
     Error(error) ->
       Error(Violation(
@@ -280,6 +298,7 @@ pub fn calls_answered(store: Storage(handle)) -> Result(Nil, Violation) {
   }
 }
 
+/// Collects answered tool call IDs from messages in the entry scan.
 fn answered_call_ids(
   messages: List(core_message.AgentMessage),
 ) -> List(String) {
@@ -291,9 +310,7 @@ fn answered_call_ids(
   })
 }
 
-// Aborted and errored responses never plan a batch (doc comment above),
-// so their tool-call blocks are excluded from the demand side; every
-// other assistant response's calls are executable.
+/// Collects executable tool call IDs from non-aborted assistant messages.
 fn executable_call_ids(
   messages: List(core_message.AgentMessage),
 ) -> List(String) {
@@ -323,6 +340,7 @@ fn message_of(row: Entry) -> Result(core_message.AgentMessage, Nil) {
   }
 }
 
+/// Formats a register namespace into its display name.
 fn ns_name(ns: register.RegisterNs) -> String {
   case ns {
     register.OpMeta -> "op.meta"
@@ -334,6 +352,7 @@ fn ns_name(ns: register.RegisterNs) -> String {
   }
 }
 
+/// Formats storage errors into human-readable strings.
 fn describe_error(error: storage.StorageError) -> String {
   case error {
     storage.CorruptRow(report:) -> "corrupt row at " <> report.boundary

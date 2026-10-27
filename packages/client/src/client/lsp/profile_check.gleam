@@ -158,6 +158,8 @@ pub fn passed(outcome: CheckOutcome) -> Bool {
 ///
 pub fn describe(check: Check, outcome: CheckOutcome) -> String {
   let asked = query_text(check)
+
+  // Format check outcome with pass or failure explanation.
   case outcome {
     Passed -> "ok    " <> asked
     Mismatch(expected:, got:) ->
@@ -174,12 +176,16 @@ pub fn describe(check: Check, outcome: CheckOutcome) -> String {
 // The comparison itself. Both sides become sets before they meet, so
 // order and repetition, which neither the server nor the author controls
 // the same way, cannot fail a check whose lines are right.
+
+/// Compares observed query output against expected results as sets.
 fn judged(
   expected expected: List(String),
   got got: List(String),
 ) -> CheckOutcome {
   let wanted = set.from_list(expected)
   let found = set.from_list(got)
+
+  // Compare expected and actual sets regardless of order.
   case wanted == found {
     True -> Passed
     False -> Mismatch(expected: sorted(wanted), got: sorted(found))
@@ -203,22 +209,30 @@ fn set_text(sites: List(String)) -> String {
 
 // The question as the operator wrote it in `[[check]]`: the verb and the
 // symbol, then where it was asked from when the check says so.
+
+/// Formats a check query specification into concise operator-facing text.
 fn query_text(check: Check) -> String {
+  // Translate query kind into operator command verb.
   let verb = case check.query {
     manifest.Definition -> "definition"
     manifest.References -> "references"
   }
+
+  // Format the site anchor where the query originates.
   let from = case check.path, check.line {
     option.Some(path), option.Some(line) -> " at " <> site_text(path, line)
     option.Some(path), option.None -> " in " <> path
     option.None, _ -> ""
   }
+
   verb <> " " <> check.symbol <> from
 }
 
 // Operators need one line per check rather than model-facing capability
 // repair advice. Ambiguous candidates stay on that same line so the
 // standalone checker preserves its one-line result format.
+
+/// Summarizes query errors into a single compact line for operator output.
 fn describe_error(error: QueryError) -> String {
   case error {
     query.NoServer(reason:) -> "no server: " <> reason

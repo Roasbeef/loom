@@ -51,10 +51,14 @@ pub fn claim(
   use cell <- result.try(
     api.fact_cell(runtime, key) |> result.map_error(string.inspect),
   )
+
+  // Decode the existing outbox cell if present or treat as fresh submission.
   use existing <- result.try(case cell {
     Some(cell) -> peer_outbox.decode(cell.value) |> result.map(Some)
     None -> Ok(None)
   })
+
+  // Determine claim outcome based on prior message identity state.
   case peer_outbox.claim(existing, wanted, source_session) {
     peer_outbox.Conflict -> Error(id_reused)
     peer_outbox.Resume -> Ok(state_reply("pending"))
@@ -80,17 +84,22 @@ pub fn claim(
   }
 }
 
-// A row that replaces a refused one takes no new slot, so only a first row for
-// the message is held to the bound.
+/// Ensures outbox capacity constraints are respected before inserting new records.
+///
+/// A row that replaces a refused one takes no new slot, so only a first row for
+/// the message is held to the bound.
 fn make_room(
   runtime: api.Runtime,
   existing: Option(Row),
   strand: String,
 ) -> Result(Nil, String) {
+  // Existing messages reuse their assigned capacity slot without re-allocating.
   case existing {
     Some(_) -> Ok(Nil)
     None -> {
       use stored <- result.try(rows(runtime))
+
+      // Enforce outbox bounds by checking vacancy, rejection, or necessary eviction.
       case peer_outbox.room(stored, strand) {
         peer_outbox.Free -> Ok(Nil)
         peer_outbox.Full -> Error(outbox_full)
@@ -154,6 +163,8 @@ pub fn due(
         )
       }),
     )
+
+    // Omit expired rows from active dispatch while keeping valid pending candidates.
     case expired {
       Some(_) -> Ok(due)
       None -> Ok([pair.1, ..due])
@@ -180,10 +191,14 @@ pub fn receipt(
     api.fact_cell(runtime, peer_outbox.key(strand, session, message_id))
     |> result.map_error(string.inspect),
   )
+
+  // Look up outbox record cell to inspect message delivery status.
   case cell {
     None -> Ok(json.Null)
     Some(cell) -> {
       use row <- result.try(peer_outbox.decode(cell.value))
+
+      // Return receipt JSON when message was admitted or null while pending.
       case row.state {
         peer_outbox.Admitted(receipt:) -> Ok(receipt)
         peer_outbox.Pending(..) | peer_outbox.Refused(..) -> Ok(json.Null)
@@ -223,7 +238,9 @@ pub fn forget_pending(
 
 // Reads one row, applies `change`, and writes the result against the sequence
 // that was read. `None` from `change` writes nothing. The answer is the row
-// that was written, if any.
+/// Applies an optimistic atomic mutation to an outbox row cell by key.
+///
+/// Returns the updated row that was written, if any.
 fn settle_key(
   runtime: api.Runtime,
   key: String,
@@ -232,10 +249,14 @@ fn settle_key(
   use cell <- result.try(
     api.fact_cell(runtime, key) |> result.map_error(string.inspect),
   )
+
+  // Abort update if cell does not exist or proceed to decode row.
   case cell {
     None -> Ok(None)
     Some(cell) -> {
       use row <- result.try(peer_outbox.decode(cell.value))
+
+      // Persist mutated row under optimistic sequence check or return None.
       case change(row) {
         None -> Ok(None)
         Some(next) ->
@@ -252,9 +273,11 @@ fn settle_key(
   }
 }
 
-// Every readable row. A value that does not decode is left out rather than
-// failing the listing: the store is durable and may hold a row a later version
-// wrote, and one such row must not stop every send from the session.
+/// Loads and decodes all accessible peer outbox rows from the storage engine.
+///
+/// Every readable row. A value that does not decode is left out rather than
+/// failing the listing: the store is durable and may hold a row a later version
+/// wrote, and one such row must not stop every send from the session.
 fn rows(runtime: api.Runtime) -> Result(List(#(String, Row)), String) {
   use stored <- result.try(
     api.reserved_facts(runtime, peer_outbox.key_prefix)

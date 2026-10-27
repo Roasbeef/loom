@@ -39,6 +39,8 @@ pub fn open_newest(model: Model) -> Model {
     |> list.find_map(fn(record) {
       transcript_image.of_entry(record.entry) |> list.first
     })
+
+  // Open the image if one was found and no viewer job is currently active.
   case newest, model.view.opening_image {
     _, Some(_) -> model
     Error(Nil), None -> notice(model, "no image on this strand to open")
@@ -79,6 +81,8 @@ pub fn drain(model: Model) -> Model {
             )
           let freed =
             Model(..model, view: view_set.opening_image(model.view, None))
+
+          // Inspect the viewer job's outcome and notify the user.
           case reply {
             weft.NotYet -> held
             weft.PulledOutcome(weft.Completed(..)) ->

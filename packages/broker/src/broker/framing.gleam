@@ -293,6 +293,8 @@ pub type FrameError {
 pub fn encode(frame: Frame) -> Result(BitArray, msgpack.EncodeError) {
   use payload <- result.try(encode_payload(frame))
   let size = bit_array.byte_size(payload)
+
+  // Refuse payloads that exceed maximum frame byte limit.
   case size > max_frame_bytes {
     True -> Error(msgpack.UnencodableLength(length: size))
     False -> Ok(<<size:size(32), payload:bits>>)
@@ -319,6 +321,7 @@ pub fn encode_payload(frame: Frame) -> Result(BitArray, msgpack.EncodeError) {
   }
 }
 
+/// Returns the wire protocol kind string for a frame body.
 fn kind_name(body: Body) -> String {
   case body {
     Hello(..) -> "hello"
@@ -337,7 +340,9 @@ fn kind_name(body: Body) -> String {
   }
 }
 
+/// Serializes a frame body structure to its MsgPack representation.
 fn body_to_msgpack(body: Body) -> MsgPackValue {
+  // Dispatch serialization by body kind.
   case body {
     Hello(proto:, peer:, features:, max_concurrency:) -> {
       let base = [
@@ -345,6 +350,8 @@ fn body_to_msgpack(body: Body) -> MsgPackValue {
         #(msgpack.StringValue("peer"), msgpack.StringValue(peer)),
         #(msgpack.StringValue("features"), string_array(features)),
       ]
+
+      // Include max_concurrency in hello map if present.
       case max_concurrency {
         None -> msgpack.MapValue(base)
         Some(capacity) ->
@@ -372,6 +379,8 @@ fn body_to_msgpack(body: Body) -> MsgPackValue {
         #(msgpack.StringValue("cwd"), msgpack.StringValue(cwd)),
         #(msgpack.StringValue("token"), msgpack.BinaryValue(token)),
       ]
+
+      // Include sandbox policy if specified.
       let with_policy = case exec_policy {
         None -> base
         Some(value) ->
@@ -379,6 +388,8 @@ fn body_to_msgpack(body: Body) -> MsgPackValue {
             #(msgpack.StringValue("policy"), policy.to_msgpack(value)),
           ])
       }
+
+      // Include limits if specified.
       case limits {
         None -> msgpack.MapValue(with_policy)
         Some(value) ->
@@ -446,6 +457,8 @@ fn body_to_msgpack(body: Body) -> MsgPackValue {
       ])
     CapResult(outcome:, usage:) -> {
       let base = outcome_entries(outcome)
+
+      // Include usage if reported in cap result.
       case usage {
         None -> msgpack.MapValue(base)
         Some(value) ->
@@ -478,9 +491,7 @@ fn body_to_msgpack(body: Body) -> MsgPackValue {
   }
 }
 
-// The `{ok, value}` / `{ok, error}` pair both result kinds carry. Shared
-// so `cap_result` and `hook_result` cannot drift into two spellings of
-// one shape — 012 specifies the second as mirroring the first.
+/// Serializes capability outcome to MsgPack map entries.
 fn outcome_entries(outcome: CapOutcome) -> List(#(MsgPackValue, MsgPackValue)) {
   case outcome {
     CapOk(value:) -> [
@@ -504,6 +515,7 @@ fn outcome_to_msgpack(outcome: CapOutcome) -> MsgPackValue {
   msgpack.MapValue(outcome_entries(outcome))
 }
 
+/// Encodes limits structure into MsgPack map value.
 fn limits_to_msgpack(limits: Limits) -> MsgPackValue {
   msgpack.MapValue([
     #(msgpack.StringValue("cpu_s"), msgpack.IntValue(limits.cpu_s)),
@@ -551,27 +563,36 @@ pub fn decode_payload(payload: BitArray) -> Result(Frame, FrameError) {
   use entries <- result.try(envelope_map(value))
   use Nil <- result.try(check_keys(entries, ["v", "id", "kind", "body"]))
   use v <- result.try(envelope_int(entries, "v"))
+
+  // Verify envelope version matches expected version.
   use Nil <- result.try(case v == envelope_version {
     True -> Ok(Nil)
     False -> Error(UnsupportedVersion(version: v))
   })
+
   use id <- result.try(envelope_int(entries, "id"))
+
+  // Verify frame id is non-negative.
   use Nil <- result.try(case id >= 0 {
     True -> Ok(Nil)
     False -> Error(malformed("id", "a u64", int.to_string(id)))
   })
+
   use kind <- result.try(envelope_string(entries, "kind"))
   use body_value <- result.try(envelope_field(entries, "body"))
   use body <- result.try(decode_body(id, kind, body_value))
   Ok(Frame(id:, body:))
 }
 
+/// Decodes frame body according to its envelope kind.
 fn decode_body(
   id: Int,
   kind: String,
   value: MsgPackValue,
 ) -> Result(Body, FrameError) {
   use entries <- result.try(body_map(kind, value))
+
+  // Dispatch decoding by kind string.
   case kind {
     "hello" -> decode_hello(entries)
     "exec_start" -> decode_exec_start(entries)
@@ -593,6 +614,7 @@ fn decode_body(
   }
 }
 
+/// Decodes a hello frame body.
 fn decode_hello(entries: Entries) -> Result(Body, FrameError) {
   use Nil <- result.try(
     check_keys(entries, ["proto", "peer", "features", "max_concurrency"]),
@@ -600,6 +622,8 @@ fn decode_hello(entries: Entries) -> Result(Body, FrameError) {
   use proto <- result.try(body_int(entries, "hello", "proto"))
   use peer <- result.try(body_string(entries, "hello", "peer"))
   use features <- result.try(body_strings(entries, "hello", "features"))
+
+  // Decode max_concurrency capacity value if present.
   use max_concurrency <- result.try(case find(entries, "max_concurrency") {
     Error(Nil) if peer != "exec-helper" || proto != exec_protocol_version ->
       Ok(None)
@@ -614,9 +638,11 @@ fn decode_hello(entries: Entries) -> Result(Body, FrameError) {
     Ok(_) ->
       Error(malformed("hello.max_concurrency", "an integer from 1 to 4", ""))
   })
+
   Ok(Hello(proto:, peer:, features:, max_concurrency:))
 }
 
+/// Decodes an exec_start frame body.
 fn decode_exec_start(entries: Entries) -> Result(Body, FrameError) {
   use Nil <- result.try(
     check_keys(entries, ["argv", "env", "cwd", "token", "policy", "limits"]),
@@ -626,6 +652,8 @@ fn decode_exec_start(entries: Entries) -> Result(Body, FrameError) {
   use env <- result.try(decode_env(env_value))
   use cwd <- result.try(body_string(entries, "exec_start", "cwd"))
   use token <- result.try(body_binary(entries, "exec_start", "token"))
+
+  // Decode optional policy if present.
   use exec_policy <- result.try(case find(entries, "policy") {
     Error(Nil) -> Ok(None)
     Ok(msgpack.NilValue) -> Ok(None)
@@ -634,14 +662,18 @@ fn decode_exec_start(entries: Entries) -> Result(Body, FrameError) {
       |> result.map(Some)
       |> result.map_error(Malformed)
   })
+
+  // Decode optional limits if present.
   use limits <- result.try(case find(entries, "limits") {
     Error(Nil) -> Ok(None)
     Ok(msgpack.NilValue) -> Ok(None)
     Ok(value) -> decode_limits(value) |> result.map(Some)
   })
+
   Ok(ExecStart(argv:, env:, cwd:, policy: exec_policy, token:, limits:))
 }
 
+/// Decodes environment variable map pairs into a list of name-value tuples.
 fn decode_env(
   value: MsgPackValue,
 ) -> Result(List(#(String, String)), FrameError) {
@@ -652,6 +684,7 @@ fn decode_env(
   }
 }
 
+/// Decodes a single environment variable key-value pair from MsgPack entries.
 fn decode_env_pair(
   entry: #(MsgPackValue, MsgPackValue),
 ) -> Result(#(String, String), FrameError) {
@@ -661,7 +694,9 @@ fn decode_env_pair(
   }
 }
 
+/// Decodes limits structure from a MsgPack map value.
 fn decode_limits(value: MsgPackValue) -> Result(Limits, FrameError) {
+  // Decode limits map entries.
   case value {
     msgpack.MapValue(entries:) -> {
       use Nil <- result.try(
@@ -688,6 +723,7 @@ fn decode_limits(value: MsgPackValue) -> Result(Limits, FrameError) {
   }
 }
 
+/// Decodes an exec_stdin frame body.
 fn decode_exec_stdin(entries: Entries) -> Result(Body, FrameError) {
   use Nil <- result.try(check_keys(entries, ["exec_id", "data", "eof"]))
   use exec_id <- result.try(execution_target(entries, "exec_stdin"))
@@ -696,8 +732,11 @@ fn decode_exec_stdin(entries: Entries) -> Result(Body, FrameError) {
   Ok(ExecStdin(exec_id:, data:, eof:))
 }
 
+/// Decodes a cancel frame body.
 fn decode_cancel(entries: Entries) -> Result(Body, FrameError) {
   use Nil <- result.try(check_keys(entries, ["exec_id"]))
+
+  // Distinguish whole-service cancel from target-specific execution cancel.
   case entries {
     [] -> Ok(Cancel)
     _ -> {
@@ -707,8 +746,11 @@ fn decode_cancel(entries: Entries) -> Result(Body, FrameError) {
   }
 }
 
+/// Validates that an exec_id integer is a positive unsigned 64-bit integer.
 fn execution_target(entries: Entries, kind: String) -> Result(Int, FrameError) {
   use exec_id <- result.try(body_int(entries, kind, "exec_id"))
+
+  // Validate exec_id range.
   case exec_id > 0 && exec_id < 18_446_744_073_709_551_616 {
     True -> Ok(exec_id)
     False ->
@@ -720,22 +762,27 @@ fn execution_target(entries: Entries, kind: String) -> Result(Int, FrameError) {
   }
 }
 
+/// Decodes an exec_out frame body.
 fn decode_exec_out(entries: Entries) -> Result(Body, FrameError) {
   use Nil <- result.try(
     check_keys(entries, ["stream", "data", "bytes", "truncated"]),
   )
   use stream_text <- result.try(body_string(entries, "exec_out", "stream"))
+
+  // Parse stream type stdout or stderr.
   use stream <- result.try(case stream_text {
     "stdout" -> Ok(Stdout)
     "stderr" -> Ok(Stderr)
     other -> Error(malformed("exec_out.stream", "stdout or stderr", other))
   })
+
   use data <- result.try(body_binary(entries, "exec_out", "data"))
   use bytes <- result.try(body_int(entries, "exec_out", "bytes"))
   use truncated <- result.try(body_bool(entries, "exec_out", "truncated"))
   Ok(ExecOut(stream:, data:, bytes:, truncated:))
 }
 
+/// Decodes an exec_exit frame body.
 fn decode_exec_exit(entries: Entries) -> Result(Body, FrameError) {
   use Nil <- result.try(
     check_keys(entries, [
@@ -786,6 +833,7 @@ fn decode_exec_exit(entries: Entries) -> Result(Body, FrameError) {
   ))
 }
 
+/// Decodes a cap_call frame body.
 fn decode_cap_call(entries: Entries) -> Result(Body, FrameError) {
   use Nil <- result.try(
     check_keys(entries, ["token", "cap", "args", "deadline_ms"]),
@@ -797,11 +845,7 @@ fn decode_cap_call(entries: Entries) -> Result(Body, FrameError) {
   Ok(CapCall(token:, cap:, args:, deadline_ms:))
 }
 
-// Every field is required and there are no defaults, for the reason 006
-// gave: both ends of this wire ship from one tree, so an omitted field is
-// a bug to name rather than a shape to guess at. `kind` stays a string
-// here and becomes a two-variant type at each edge, because the frozen
-// wire vocabulary is what this module encodes.
+/// Decodes a hook_call frame body.
 fn decode_hook_call(entries: Entries) -> Result(Body, FrameError) {
   use Nil <- result.try(
     check_keys(entries, ["token", "kind", "name", "args", "deadline_ms"]),
@@ -814,12 +858,12 @@ fn decode_hook_call(entries: Entries) -> Result(Body, FrameError) {
   Ok(HookCall(token:, kind:, name:, args:, deadline_ms:))
 }
 
-// The mirror of `cap_result` minus `usage`: a hook answer reserves no
-// budget of its own, because everything an invocation spent it spent
-// through the `cap_call`s it made under the invocation's token.
+/// Decodes a hook_result frame body.
 fn decode_hook_result(entries: Entries) -> Result(Body, FrameError) {
   use Nil <- result.try(check_keys(entries, ["ok", "value", "error"]))
   use ok <- result.try(body_bool(entries, "hook_result", "ok"))
+
+  // Decode success or failure result body.
   case ok {
     True -> {
       use value <- result.try(body_field(entries, "hook_result", "value"))
@@ -836,20 +880,26 @@ fn decode_hook_result(entries: Entries) -> Result(Body, FrameError) {
   }
 }
 
+/// Decodes a cap_result frame body.
 fn decode_cap_result(entries: Entries) -> Result(Body, FrameError) {
   use Nil <- result.try(check_keys(entries, ["ok", "value", "error", "usage"]))
   use ok <- result.try(body_bool(entries, "cap_result", "ok"))
+
+  // Extract optional usage field.
   let usage = case find(entries, "usage") {
     Error(Nil) -> None
     Ok(msgpack.NilValue) -> None
     Ok(value) -> Some(value)
   }
+
+  // Decode successful or error cap result.
   case ok {
     True -> decode_cap_ok(entries, usage)
     False -> decode_cap_err(entries, usage)
   }
 }
 
+/// Decodes a successful cap_result value.
 fn decode_cap_ok(
   entries: Entries,
   usage: Option(MsgPackValue),
@@ -858,6 +908,7 @@ fn decode_cap_ok(
   Ok(CapResult(outcome: CapOk(value:), usage:))
 }
 
+/// Decodes an error cap_result value.
 fn decode_cap_err(
   entries: Entries,
   usage: Option(MsgPackValue),
@@ -870,13 +921,12 @@ fn decode_cap_err(
   Ok(CapResult(outcome:, usage:))
 }
 
-// The `{code, msg}` map both result kinds carry their failure in. Shared
-// with the encoder's `outcome_entries` so the two result kinds cannot
-// disagree about what a failure looks like.
+/// Decodes error code and message map from MsgPack value.
 fn decode_outcome_error(
   value: MsgPackValue,
   place: String,
 ) -> Result(CapOutcome, FrameError) {
+  // Decode outcome error map structure.
   case value {
     msgpack.MapValue(error_entries) -> {
       use Nil <- result.try(check_keys(error_entries, ["code", "msg"]))
@@ -895,6 +945,7 @@ fn decode_outcome_error(
   }
 }
 
+/// Decodes an error frame body.
 fn decode_error_body(entries: Entries) -> Result(Body, FrameError) {
   use Nil <- result.try(check_keys(entries, ["code", "msg"]))
   use code <- result.try(body_string(entries, "error", "code"))
@@ -972,6 +1023,7 @@ pub fn deframer() -> Deframer {
 /// ```
 ///
 pub fn push(deframer: Deframer, bytes: BitArray) -> Pushed {
+  // Dispatch push on whether deframer has previously faulted.
   case deframer.fault {
     Some(fault) -> Pushed(deframer:, inbound: [], fault: Some(fault))
     None -> {
@@ -981,6 +1033,7 @@ pub fn push(deframer: Deframer, bytes: BitArray) -> Pushed {
   }
 }
 
+/// Recursively deframes frames from the buffer until insufficient bytes remain.
 fn push_loop(buffer: BitArray, seen: List(Inbound)) -> Pushed {
   case buffer {
     <<size:size(32), rest:bits>> ->
@@ -1000,15 +1053,7 @@ fn push_loop(buffer: BitArray, seen: List(Inbound)) -> Pushed {
   }
 }
 
-// Applies one decoded payload to the scan. Well-formed but unrecognized
-// is not a poisoning fault: the deframer keeps scanning `remainder`
-// normally so later, understood frames still arrive — only a genuinely
-// broken envelope poisons it via `faulted`, so every subsequent `push`
-// reports the same fault instead of resuming the scan, matching the
-// close-the-channel contract (spec §3.3 invariant 6). `buffer` (not
-// `remainder`) is what a fault carries: once poisoned, `push` never
-// looks at the deframer's buffer again, but the field still records the
-// scan's position honestly.
+/// Applies one decoded payload to the scan, continuing loop or recording fault.
 fn push_decoded(
   buffer: BitArray,
   remainder: BitArray,
@@ -1025,8 +1070,7 @@ fn push_decoded(
   }
 }
 
-// The carry-on-incomplete-data outcome: buffer kept as-is, no fault, the
-// frames seen so far in arrival order.
+/// Constructs a carry result holding partial unparsed buffer bytes.
 fn carry(buffer: BitArray, seen: List(Inbound)) -> Pushed {
   Pushed(
     deframer: Deframer(buffer:, fault: None),
@@ -1035,6 +1079,7 @@ fn carry(buffer: BitArray, seen: List(Inbound)) -> Pushed {
   )
 }
 
+/// Constructs a faulted deframer result after encountering a fatal framing error.
 fn faulted(buffer: BitArray, seen: List(Inbound), fault: Fault) -> Pushed {
   Pushed(
     deframer: Deframer(buffer:, fault: Some(fault)),
@@ -1043,11 +1088,14 @@ fn faulted(buffer: BitArray, seen: List(Inbound), fault: Fault) -> Pushed {
   )
 }
 
+/// Slices one complete frame payload from buffer bytes if available.
 fn take_frame(
   bytes: BitArray,
   size: Int,
 ) -> Result(#(BitArray, BitArray), Nil) {
   let available = bit_array.byte_size(bytes)
+
+  // Check whether buffer holds enough bytes for declared frame length.
   case available >= size {
     False -> Error(Nil)
     True -> {
@@ -1067,6 +1115,7 @@ fn take_frame(
 type Entries =
   List(#(MsgPackValue, MsgPackValue))
 
+/// Constructs a Malformed frame error with corruption report.
 fn malformed(subject: String, expected: String, context: String) -> FrameError {
   Malformed(report: corruption.report(
     at: "broker/framing.decode_payload",
@@ -1090,9 +1139,7 @@ fn body_map(kind: String, value: MsgPackValue) -> Result(Entries, FrameError) {
   }
 }
 
-// Rejects any key outside `known`. Required keys are enforced by the
-// per-field accessors; optional keys (exec_start.policy/limits,
-// cap_result.value/error/usage) are simply absent from lookups.
+/// Rejects unknown keys in an entries list.
 fn check_keys(
   entries: Entries,
   known: List(String),
@@ -1109,6 +1156,7 @@ fn check_keys(
   })
 }
 
+/// Finds a key value in MsgPack map entries.
 fn find(entries: Entries, key: String) -> Result(MsgPackValue, Nil) {
   list.find_map(entries, fn(entry) {
     case entry.0 == msgpack.StringValue(key) {
@@ -1118,6 +1166,7 @@ fn find(entries: Entries, key: String) -> Result(MsgPackValue, Nil) {
   })
 }
 
+/// Extracts a required envelope field value.
 fn envelope_field(
   entries: Entries,
   key: String,
@@ -1131,25 +1180,32 @@ fn envelope_field(
   })
 }
 
+/// Extracts a required integer envelope field value.
 fn envelope_int(entries: Entries, key: String) -> Result(Int, FrameError) {
   use value <- result.try(envelope_field(entries, key))
+
+  // Verify value is an integer.
   case value {
     msgpack.IntValue(number) -> Ok(number)
     _ -> Error(malformed("frame." <> key, "an integer", ""))
   }
 }
 
+/// Extracts a required string envelope field value.
 fn envelope_string(
   entries: Entries,
   key: String,
 ) -> Result(String, FrameError) {
   use value <- result.try(envelope_field(entries, key))
+
+  // Verify value is a string.
   case value {
     msgpack.StringValue(text) -> Ok(text)
     _ -> Error(malformed("frame." <> key, "a string", ""))
   }
 }
 
+/// Extracts a required body field value.
 fn body_field(
   entries: Entries,
   kind: String,
@@ -1162,50 +1218,60 @@ fn body_field(
   })
 }
 
+/// Extracts a required integer body field value.
 fn body_int(
   entries: Entries,
   kind: String,
   key: String,
 ) -> Result(Int, FrameError) {
   use value <- result.try(body_field(entries, kind, key))
+
+  // Verify body field is an integer.
   case value {
     msgpack.IntValue(number) -> Ok(number)
     _ -> Error(malformed(kind <> "." <> key, "an integer", ""))
   }
 }
 
+/// Extracts a required boolean body field value.
 fn body_bool(
   entries: Entries,
   kind: String,
   key: String,
 ) -> Result(Bool, FrameError) {
   use value <- result.try(body_field(entries, kind, key))
+
+  // Verify body field is a boolean.
   case value {
     msgpack.BoolValue(flag) -> Ok(flag)
     _ -> Error(malformed(kind <> "." <> key, "a bool", ""))
   }
 }
 
+/// Extracts a required string body field value.
 fn body_string(
   entries: Entries,
   kind: String,
   key: String,
 ) -> Result(String, FrameError) {
   use value <- result.try(body_field(entries, kind, key))
+
+  // Verify body field is a string.
   case value {
     msgpack.StringValue(text) -> Ok(text)
     _ -> Error(malformed(kind <> "." <> key, "a string", ""))
   }
 }
 
-// bin on the wire; nil accepted as empty because the Go encoder writes
-// nil slices as msgpack nil.
+/// Extracts a required binary body field value, accepting nil as empty.
 fn body_binary(
   entries: Entries,
   kind: String,
   key: String,
 ) -> Result(BitArray, FrameError) {
   use value <- result.try(body_field(entries, kind, key))
+
+  // Verify body field is binary or nil.
   case value {
     msgpack.BinaryValue(bytes:) -> Ok(bytes)
     msgpack.NilValue -> Ok(<<>>)
@@ -1213,13 +1279,15 @@ fn body_binary(
   }
 }
 
-// str array on the wire; nil accepted as empty (Go nil slices).
+/// Extracts a required array of strings from body fields, accepting nil as empty.
 fn body_strings(
   entries: Entries,
   kind: String,
   key: String,
 ) -> Result(List(String), FrameError) {
   use value <- result.try(body_field(entries, kind, key))
+
+  // Verify body field is a string array.
   case value {
     msgpack.ArrayValue(items:) ->
       list.try_map(items, fn(item) {

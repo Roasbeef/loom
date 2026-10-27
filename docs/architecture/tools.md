@@ -22,7 +22,7 @@ that owns its internals.
 
 ## What a tool is
 
-A tool is a record, `Tool` (`tools/tool.gleam:460`), with eight fields:
+A tool is a record, `Tool` (`tools/tool.gleam:470`), with eight fields:
 
 | Field | What it holds |
 |---|---|
@@ -136,18 +136,18 @@ The rule is enforced in four places, from the tool outward:
    `exec_failure_outcome`). A policy refusal carries the exact wanted
    grants in `details`, ready for the escalation flow.
 2. **The registry's dispatch is total.** For an unknown name,
-   `dispatch` (`tools/tool.gleam:747`) answers with text saying that
+   `dispatch` (`tools/tool.gleam:757`) answers with text saying that
    tool is unavailable, `is_error` set, and no `details`. The
    registry does not invent a value for a tool's details contract.
 3. **The wiring always answers `ToolCompleted`.** The function
-   `run_tool` (`client/wiring.gleam:1121`) wraps whatever dispatch
+   `run_tool` (`client/wiring.gleam:1111`) wraps whatever dispatch
    returned as a result message. A failure to read the session's
    directory access or standing permissions also becomes an in-band
    failure outcome.
 4. **The runtime turns a dead worker into a result.** Each call runs in
    its own effect process. If that process exits without reporting, the
    strand driver settles the call as `ToolFailed`, and
-   `tool_observation` (`runtime/strand_runtime.gleam:1102`) converts that
+   `tool_observation` (`runtime/strand_runtime.gleam:1066`) converts that
    into a synthetic error result for the same call. Only
    provider effects halt the driver on an unreported exit; a tool never
    does.
@@ -245,7 +245,7 @@ never reaches the registry's dispatch.
 
 ### Collisions and deactivation
 
-`registry` (`client/contributions.gleam:424`) refuses a name that two
+`registry` (`client/contributions.gleam:440`) refuses a name that two
 contributions both claim. The refusal is a `Collision` naming both
 origins, and `client/serve` turns it into a boot failure. It is never a
 warning and never "last registration wins". If an extension could
@@ -301,7 +301,7 @@ unregistered name and stores the list sorted and deduplicated.
 Two surfaces reach the model:
 
 - **The tool array.** For each generation request,
-  `tool_specs` (`client/wiring.gleam:1061`) sorts and deduplicates
+  `tool_specs` (`client/wiring.gleam:1092`) sorts and deduplicates
   the captured `active_tool_names`, looks each name up in the
   projected definition table, and returns its
   `ToolSpec(name, description, input_schema)`.
@@ -344,14 +344,14 @@ shows where the tool layer enters it.
    up front.
 2. **Clearance.** The strand driver consumes any approvals attributed to
    exactly this call, then asks the tool surface to clear it.
-   `clear` (`client/wiring.gleam:1085`) refuses a name that is not in
+   `clear` (`client/wiring.gleam:1116`) refuses a name that is not in
    the strand's `active_tool_names` or not registered; the driver stages the
    refusal as an in-band error result. A cleared call carries the
    model's arguments unchanged and the registration's replay policy,
    which the intent commit persists. Clearance is not an execution
    grant: sandbox policy is composed later, inside the tool.
 3. **Scheduling.** The driver's check
-   `tool_may_start` (`runtime/strand_runtime.gleam:3146`) starts a
+   `tool_may_start` (`runtime/strand_runtime.gleam:3322`) starts a
    call only if no `Exclusive` tool is running, and starts an
    `Exclusive` tool only when nothing else is running. The default
    `tool_execution` setting is `parallel`, so calls to `Concurrent`

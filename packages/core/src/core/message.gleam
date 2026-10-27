@@ -284,12 +284,12 @@ pub fn malformed_arguments_of(
   }
 }
 
-// Truncates an oversized raw excerpt, marking the cut with an ellipsis.
-//
-// Asked with `drop_start`, which walks at most the bound and stops, rather
-// than with `string.length`, which would walk the whole excerpt to answer a
-// question settled long before its end — the R5 shape, and here the walk
-// would be proportional to whatever the model chose to emit.
+/// Truncates an oversized raw excerpt, marking the cut with an ellipsis.
+///
+/// Asked with `drop_start`, which walks at most the bound and stops, rather
+/// than with `string.length`, which would walk the whole excerpt to answer a
+/// question settled long before its end — the R5 shape, and here the walk
+/// would be proportional to whatever the model chose to emit.
 fn bound_raw(raw: String) -> String {
   case string.drop_start(raw, max_malformed_arguments_length) {
     "" -> raw

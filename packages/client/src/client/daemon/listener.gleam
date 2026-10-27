@@ -135,10 +135,13 @@ pub fn ready(listener: Listener, within within: Int) -> Result(Bound, String) {
     |> result.replace_error("daemon listener readiness timed out")
     |> result.flatten
   process.demonitor_process(watch)
+
+  // Clean up listener state if readiness failed before returning.
   case answer {
     Error(_) -> close(listener)
     Ok(_) -> Nil
   }
+
   answer
 }
 
@@ -154,7 +157,9 @@ pub fn close(listener: Listener) -> Nil {
   process.send(listener.commands, Close)
 }
 
+/// State machine transition handler dispatching listener events and signals.
 fn handle(phase: Phase, data: Data, event: Message) {
+  // Dispatch based on the incoming listener event.
   case event {
     Begin ->
       case phase {
@@ -190,16 +195,20 @@ fn handle(phase: Phase, data: Data, event: Message) {
         Some(bound) -> process.kill(bound.supervisor)
         None -> Nil
       }
+
       sm.stop_abnormal("daemon listener shutdown timed out")
     }
   }
 }
 
+/// Starts the Mist HTTP listener and establishes monitor tracking on its process.
 fn start(data: Data) {
   let builder =
     mist.after_start(data.builder, fn(port, _, _) {
       process.send(data.ports, port)
     })
+
+  // Attempt to start Mist on the configured socket builder.
   case mist.start(builder) {
     Error(error) -> sm.transition(Failed(string.inspect(error)), data)
     Ok(started) -> {
@@ -219,6 +228,8 @@ fn start(data: Data) {
           selector:,
           bound: Some(Bound(result.unwrap(port, 0), started.pid)),
         )
+
+      // Enter Serving if port acquisition succeeded, or initiate shutdown on timeout.
       case port {
         Ok(_) -> sm.transition(Serving, data) |> sm.with_selector(selector)
         Error(Nil) -> shutdown(Serving, data) |> sm.with_selector(selector)
@@ -227,7 +238,9 @@ fn start(data: Data) {
   }
 }
 
+/// Shuts down the active Mist supervisor and tracks its orderly termination.
 fn shutdown(phase: Phase, data: Data) {
+  // Check whether a supervisor is bound and initiate asynchronous termination.
   case phase, data.bound {
     Closing, _ -> sm.keep(data)
     _, None -> sm.stop()
@@ -241,6 +254,7 @@ fn shutdown(phase: Phase, data: Data) {
   }
 }
 
+/// Determines whether an exit reason represents normal or expected shutdown.
 fn clean_exit(reason: process.ExitReason) -> Bool {
   case reason {
     process.Normal -> True

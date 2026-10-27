@@ -235,7 +235,9 @@ pub fn boot(
 // prior execution's channel actor is still alive (see
 // `dispatch.install_exclusive`). On refusal the channel just started is
 // stopped again, so a refused boot leaves nothing behind.
+/// Claims the VM-global channel slot for this execution, stopping on conflict.
 fn install_channel(handle: Handle) -> Result(Pid, BootError) {
+  // Check whether the channel actor has a registered owner process.
   case process.subject_owner(channel.subject(handle)) {
     Error(Nil) -> {
       channel.stop(handle)
@@ -301,6 +303,7 @@ pub fn production_transport() -> Result(Transport, BootError) {
   Ok(socket_transport(socket))
 }
 
+/// Wraps a connected UNIX socket into a Transport interface.
 fn socket_transport(socket: Socket) -> Transport {
   let write = fn(bytes) {
     let _ = ffi_transport.socket_send(socket, bytes)
@@ -348,6 +351,7 @@ fn dropped() -> Reception {
 // Spawn the reader on its own unlinked process: it blocks in `recv`, so it
 // cannot share the boot process, and its death (via `boot`'s kill) must not
 // take the boot process with it.
+/// Spawns the background transport reader loop process.
 fn start_reader(
   handle: Handle,
   recv: fn() -> Result(BitArray, Nil),
@@ -358,6 +362,7 @@ fn start_reader(
   })
 }
 
+/// Continuous loop receiving bytes and deframing inbound messages.
 fn reader_loop(
   handle: Handle,
   recv: fn() -> Result(BitArray, Nil),
@@ -376,6 +381,8 @@ fn reader_loop(
       let inbound.Pushed(deframer:, inbound: frames, fault:) =
         inbound.push(deframer, bytes)
       list.each(frames, fn(frame) { apply_inbound(handle, frame, reception) })
+
+      // Close channel if a deframer fault occurred, otherwise continue reading.
       case fault {
         // A channel-fatal frame: close the channel and stop reading.
         Some(fault) -> {
@@ -388,6 +395,7 @@ fn reader_loop(
   }
 }
 
+/// Routes an inbound deframed message to channel delivery or reception handler.
 fn apply_inbound(
   handle: Handle,
   frame: inbound.Inbound,
@@ -418,6 +426,7 @@ fn apply_inbound(
 // process — the satellite must always emit an outcome. The child is the
 // caller of every `cap_call` it makes, so if it dies mid-call the channel's
 // monitor emits the cancel frame (`cap/internal/channel`).
+/// Executes the user program inside a monitored worker to catch panics.
 fn run_program(program: fn() -> Outcome) -> Outcome {
   let done = process.new_subject()
   let worker = process.spawn_unlinked(fn() { process.send(done, program()) })
@@ -438,6 +447,7 @@ fn run_program(program: fn() -> Outcome) -> Outcome {
   }
 }
 
+/// Formats process down information into an error description.
 fn down_reason(down: Down) -> String {
   case down {
     process.ProcessDown(reason:, ..) ->
@@ -446,6 +456,7 @@ fn down_reason(down: Down) -> String {
   }
 }
 
+/// Formats process exit reason into human-readable text.
 fn exit_reason_text(reason: process.ExitReason) -> String {
   case reason {
     process.Normal -> "normal"
@@ -460,6 +471,7 @@ fn exit_reason_text(reason: process.ExitReason) -> String {
 // an unencodable value (an integer out of msgpack range, an over-large
 // payload); rather than fail the whole boot, fall back to a plain-text
 // `Errored`, which is tiny and always encodes.
+/// Encodes the terminal outcome to bytes, falling back to a plain error on failure.
 fn frame_outcome(outcome: Outcome) -> BitArray {
   case encode_outcome(outcome) {
     Ok(bytes) -> bytes
@@ -474,6 +486,7 @@ fn frame_outcome(outcome: Outcome) -> BitArray {
   }
 }
 
+/// Encodes the terminal outcome into a protocol frame envelope.
 fn encode_outcome(outcome: Outcome) -> Result(BitArray, msgpack.EncodeError) {
   let envelope =
     msgpack.MapValue([
@@ -484,12 +497,15 @@ fn encode_outcome(outcome: Outcome) -> Result(BitArray, msgpack.EncodeError) {
     ])
   use payload <- result.try(msgpack.encode(envelope))
   let size = bit_array.byte_size(payload)
+
+  // Check that the serialized frame size fits within maximum bounds.
   case size > inbound.max_frame_bytes {
     True -> Error(msgpack.UnencodableLength(length: size))
     False -> Ok(<<size:size(32), payload:bits>>)
   }
 }
 
+/// Formats an actor start error into descriptive text.
 fn describe_start_error(error: actor.StartError) -> String {
   case error {
     actor.InitTimeout -> "channel init timed out"
@@ -638,6 +654,7 @@ type Signal {
   Ended(reason: String)
 }
 
+/// Serving loop for persistent satellites answering incoming hook invocations.
 fn serving(
   handle: Handle,
   transport: Transport,
@@ -649,6 +666,8 @@ fn serving(
     process.new_selector()
     |> process.select(signals)
     |> process.select_monitors(WorkerDown)
+
+  // Handle signals and worker status events based on current serving phase.
   case process.selector_receive_forever(selector), phase {
     // A fresh invocation with nothing open: install its token, then start
     // the worker. The order is the whole authority rule — a worker that
@@ -732,6 +751,7 @@ fn serving(
 // dead satellite; and the loop has to stay in its selector so a second
 // `hook_call` is answered `busy` instead of sitting in the mailbox behind
 // an invocation that may run for its whole deadline.
+/// Spawns a monitored worker to execute a single invocation asynchronously.
 fn start_worker(
   signals: Subject(Signal),
   answer: fn(Asked) -> Answer,
@@ -739,6 +759,7 @@ fn start_worker(
 ) -> #(Pid, Monitor) {
   let worker =
     process.spawn_unlinked(fn() {
+      // Resolve invocation kind and execute the corresponding answering logic.
       let produced = case invocation_of(ask.kind, ask.name) {
         Ok(invocation) ->
           answer(Asked(
@@ -748,6 +769,7 @@ fn start_worker(
           ))
         Error(refusal) -> refusal
       }
+
       process.send(signals, Settled(id: ask.id, answer: produced))
     })
   #(worker, process.monitor(worker))
@@ -757,6 +779,7 @@ fn start_worker(
 // what arrived. A harness and a satellite from one tree never disagree
 // here, so this is the forward-compatibility arm rather than a case the
 // current pair reaches.
+/// Parses invocation kind and name into a typed Invocation variant.
 fn invocation_of(kind: String, name: String) -> Result(Invocation, Answer) {
   case kind {
     "tool" -> Ok(Tool(name:))
@@ -776,7 +799,9 @@ fn invocation_of(kind: String, name: String) -> Result(Invocation, Answer) {
 // refusal that always will, for the reason `frame_outcome` does the same:
 // the harness is waiting on this frame and a silence costs the satellite
 // its node at the deadline.
+/// Transmits an invocation answer frame through the transport.
 fn emit_answer(transport: Transport, id: Int, answer: Answer) -> Nil {
+  // Encode answer payload, falling back to unencodable refusal on error.
   let bytes = case encode_answer(id, answer) {
     Ok(bytes) -> Ok(bytes)
     Error(_) ->
@@ -788,6 +813,8 @@ fn emit_answer(transport: Transport, id: Int, answer: Answer) -> Nil {
         ),
       )
   }
+
+  // Send encoded bytes over transport if successfully encoded.
   case bytes {
     Ok(bytes) -> transport.send(bytes)
 
@@ -796,6 +823,7 @@ fn emit_answer(transport: Transport, id: Int, answer: Answer) -> Nil {
   }
 }
 
+/// Encodes an Answer value into framed bytes.
 fn encode_answer(
   id: Int,
   answer: Answer,

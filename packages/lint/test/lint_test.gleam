@@ -2186,10 +2186,10 @@ pub fn r6_names_what_it_protects_test() {
 // asks for the count of *errors* rather than for the rule firing: the rule
 // fired before the promotion too, into a report nothing reads.
 
-/// The staging decision, pinned: R0, R2, R4, R6, R10, R13, R14, R15, R16, R19
-/// and R20 gate; R1, R3, R5, R7, R8, R9, R11, R12, R17 and R18 warn. R3, R8, R17 and
-/// R18 can never join them, and R1, R5 and R9 have a census to clear first,
-/// so a change here is a change of policy and not of implementation.
+/// The staging decision, pinned: R0, R2, R4, R6, R10, R11, R13, R14, R15, R16,
+/// R19, R20, R21 and R22 gate; R1, R3, R5, R7, R8, R9, R12, R17 and R18 warn.
+/// R3, R8, R17 and R18 can never join them, and R1, R5 and R9 have a census to
+/// clear first, so a change here is a change of policy and not of implementation.
 pub fn the_gating_rules_are_pinned_test() {
   should.equal(finding.error_by_default(), [
     finding.Unparseable,
@@ -2206,12 +2206,15 @@ pub fn the_gating_rules_are_pinned_test() {
     finding.QualifiedDomainCall,
     finding.StdoutSkip,
     finding.TestImportWall,
+    finding.CaseStanza,
+    finding.FunctionDoc,
   ])
 }
 
-/// R11 gates globally now that its census across all 29 packages is zero, and
-/// R21/R22 gate in every package listed by `policy.literate_packages()`.
-pub fn r11_gates_globally_and_literate_packages_ratchet_r21_r22_test() {
+/// R11 gates globally, and R21/R22 now gate even outside the literacy ratchet.
+/// The executor fixture and package-table assertion pin the existing ratchet;
+/// unknown-package fixtures prove the global policy needs no ratchet admission.
+pub fn r11_r21_r22_gate_globally_and_ratchet_test() {
   gate_of(
     "packages/core/src/core/dense.gleam",
     "fn f(x) {
@@ -2237,6 +2240,37 @@ pub fn undocumented(x) { x }
 ",
   )
   |> should.equal(#(1, 0))
+
+  gate_of(
+    "packages/future/src/future/case.gleam",
+    "fn f(x) {
+  let before = x
+  let result = case before {
+    1 -> 2
+    _ -> 3
+  }
+  result
+}
+",
+  )
+  |> should.equal(#(1, 0))
+
+  gate_of(
+    "packages/future/src/future/docs.gleam",
+    "//// Module description.
+
+pub fn undocumented(x) { x }
+",
+  )
+  |> should.equal(#(1, 0))
+
+  should.equal(policy.literate_packages(), [
+    "broker", "cap", "client", "codemode", "conformance", "core", "events",
+    "executor", "ext", "gepa", "harness", "host", "lint", "lsp", "machine",
+    "mcp", "prompt", "provider", "runtime", "session", "session_view", "statem",
+    "statem_parallel", "storage", "telemetry", "tools", "tui", "web_client",
+    "web_mermaid", "web_view",
+  ])
 }
 
 /// R13 gates, and the gate is what keeps a spine honest: a spine naming a
@@ -2248,6 +2282,7 @@ pub fn r13_gates_a_stale_spine_test() {
 ////
 //// `start` → `step` → `" <> name <> "` → `finish`
 
+/// Begins the flow at its first step.
 pub fn start() { step() }
 
 fn step() { settle() }
@@ -2462,9 +2497,9 @@ fn wide(a, b, c, d, e, f, g, h) { #(a, b, c, d, e, f, g, h) }",
 
 /// The table is what the rule claims to cover; a test that did not enumerate
 /// it would pass just as well against an empty one.
-pub fn the_portable_table_names_the_five_test() {
+pub fn the_portable_table_names_the_seven_test() {
   should.equal(policy.portable_packages(), [
-    "core", "machine", "prompt", "session_view", "statem",
+    "core", "evalstat", "gepa", "machine", "prompt", "session_view", "statem",
   ])
 }
 

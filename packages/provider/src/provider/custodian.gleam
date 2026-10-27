@@ -260,6 +260,7 @@ type ChildKind {
   Transitive
 }
 
+/// Adopts a child process into the scope's custody ledger.
 fn adopt_as(
   custodian: Custodian,
   owner: Pid,
@@ -272,10 +273,14 @@ fn adopt_as(
     None -> False
     Some(ledger) -> {
       let parent = custodian.worker
+
+      // Dispatch to leaf or transitive adoption based on the child's kind.
       let adoption = case kind {
         Transitive -> weft.adopt_under(ledger, parent:, owner:, cancel:)
         Leaf -> weft.adopt_leaf_under(ledger, parent:, owner:, cancel:)
       }
+
+      // Translate the weft adoption result into a boolean outcome.
       case adoption {
         weft.Adopted -> True
         weft.Refused -> False

@@ -150,6 +150,7 @@ pub fn control(
 /// let running = job_runner.close_control(running, daemon.control)
 /// ```
 pub fn close_control(running: Running, key: ControlKey) -> Running {
+  // Find and close the control connection associated with key.
   case dict.get(running.controls, key) {
     Error(Nil) -> running
     Ok(host) -> {
@@ -172,6 +173,7 @@ pub fn file(
   running: Running,
   arrival: Arrival(daemon_selection.Host),
 ) -> #(Running, Arrival(job.Daemon)) {
+  // Dispatch arrival processing based on arrived event variant.
   case arrival {
     job.ReconnectArrived(key:, reply:) -> {
       let #(running, reply) = file_relaunch(running, reply)
@@ -197,13 +199,14 @@ pub fn file(
   }
 }
 
-// The relaunch's outcome is the one reply that carries a connection. Every
-// other variant is rebuilt as it was, because its type names the connection
-// it does not carry.
+/// The relaunch's outcome is the one reply that carries a connection. Every
+/// other variant is rebuilt as it was, because its type names the connection
+/// it does not carry.
 fn file_relaunch(
   running: Running,
   reply: job.ReconnectReply(daemon_selection.Host),
 ) -> #(Running, job.ReconnectReply(job.Daemon)) {
+  // Map reconnect worker reply into running state and daemon handle.
   case reply {
     weft.PulledOutcome(weft.Completed(index:, value: host)) -> {
       let #(running, daemon) = adopt_control(running, host)
@@ -403,9 +406,9 @@ fn insert(running: Running, key: Key, handle: Handle) -> Running {
   Running(..running, handles: dict.insert(running.handles, key, handle))
 }
 
-// The work a job does through the control connection `key` names. A key the
-// table no longer holds names a connection the step already closed, and the
-// job fails with that reason rather than reaching for another connection.
+/// The work a job does through the control connection `key` names. A key the
+/// table no longer holds names a connection the step already closed, and the
+/// job fails with that reason rather than reaching for another connection.
 fn with_control(
   running: Running,
   key: ControlKey,
@@ -438,6 +441,7 @@ fn with_control(
 /// let running = job_runner.cancel(running, key)
 /// ```
 pub fn cancel(running: Running, key: Key) -> Running {
+  // Locate running job handle to cancel its execution.
   case dict.get(running.handles, key) {
     Error(Nil) -> running
     Ok(Handle(frames: None, ..) as handle) -> {
@@ -470,6 +474,7 @@ pub fn cancel(running: Running, key: Key) -> Running {
 /// job_runner.dropped(job.AttachArrived(key, job.Published(prepared)))
 /// ```
 pub fn dropped(arrival: Arrival(daemon_selection.Host)) -> Nil {
+  // Release resources held by dropped arrival variants.
   case arrival {
     job.AttachArrived(reply: job.Published(prepared), ..) -> {
       connection.close(prepared.socket)
@@ -527,9 +532,7 @@ pub fn receive(running: Running) -> List(Arrival(daemon_selection.Host)) {
   }
 }
 
-// Everything the selected jobs have sent so far. A one-task relay sends at
-// most two messages and an attachment's worker one more, so this ends after
-// at most three messages per job.
+/// Drains arrival messages until mailbox is empty.
 fn drain(
   arrivals: Selector(Arrival(daemon_selection.Host)),
   received: List(Arrival(daemon_selection.Host)),
@@ -591,10 +594,10 @@ pub fn size(running: Running) -> Int {
 // ---------------------------------------------------------------------------
 // The workers
 
-// The attachment worker. The acknowledgement subject is the worker's own,
-// created here, because the worker is the process that waits on it. A wait
-// that runs out closes the socket the worker opened, since no terminal will
-// take it.
+/// The attachment worker. The acknowledgement subject is the worker's own,
+/// created here, because the worker is the process that waits on it. A wait
+/// that runs out closes the socket the worker opened, since no terminal will
+/// take it.
 fn attach(
   resolve: fn() -> Result(daemon_selection.Target, String),
   within_ms: Int,
@@ -624,6 +627,8 @@ fn attach(
       frames:,
     ),
   )
+
+  // Await acknowledgement of attachment from receiver.
   case process.receive(acknowledged, within_ms) {
     Ok(Nil) -> Ok(Nil)
     Error(Nil) -> {
@@ -633,8 +638,7 @@ fn attach(
   }
 }
 
-// An attachment resolves through the terminal's control route, borrowed
-// while it lives or replaced for this one request.
+/// Resolves attach route into target connection details using daemon control.
 fn resolve(
   running: Running,
   route: job.AttachRoute,
@@ -675,6 +679,7 @@ fn resolve(
   }
 }
 
+/// Returns the maximum allowed timeout milliseconds for a control request job.
 fn control_deadline(request: job.ControlJob) -> Int {
   case request {
     job.Remove(..) -> 85_000
@@ -689,15 +694,15 @@ fn control_deadline(request: job.ControlJob) -> Int {
   }
 }
 
-// Each control request runs over the terminal's control route: the
-// borrowed connection while it lives, or a replacement the worker owns
-// for this one request (`daemon_selection.with_live_control`).
+/// Runs requested control operation over host control connection.
 fn control_work(
   host: daemon_selection.Host,
   request: job.ControlJob,
 ) -> fn() -> Result(job.ControlOutcome, String) {
   fn() {
     use host <- daemon_selection.with_live_control(host)
+
+    // Dispatch control work according to requested operation variant.
     case request {
       job.LoadPage(command:, collection:, session:, workspace:) ->
         load_page(host, command, collection, session, workspace)
@@ -716,6 +721,7 @@ fn control_work(
   }
 }
 
+/// Dispatches a control command request to the daemon with a 5-second timeout.
 fn request(
   host: daemon_selection.Host,
   command: control_protocol.Command,
@@ -724,8 +730,11 @@ fn request(
   |> result.map_error(daemon_selection.failure)
 }
 
+/// Fetches a sessions page and resolves the initial selection row.
 fn load_page(host, command, collection, session, workspace) {
   use reply <- result.try(request(host, command))
+
+  // Extract sessions page from successful reply.
   use page <- result.try(case reply {
     control_protocol.SessionsReply(page) -> Ok(page)
     control_protocol.StatusReply(_)
@@ -746,10 +755,13 @@ fn load_page(host, command, collection, session, workspace) {
     | control_protocol.ShutdownReply ->
       Error("catalogue returned an unexpected control reply")
   })
+
+  // Determine selection default if session string was empty.
   let selected = case session {
     "" -> default_selection(host, workspace)
     id -> id
   }
+
   Ok(job.PageLoaded(page, selected, collection))
 }
 
@@ -762,13 +774,14 @@ fn default_selection(host: daemon_selection.Host, workspace: String) -> String {
   }
 }
 
-// The reply owns the displayed name. A timeout leaves the outcome unknown
-// and never causes the metadata mutation to be sent a second time.
+/// Renames a session via the control protocol.
 fn rename(host, session, name) {
   use reply <- result.try(request(
     host,
     control_protocol.RenameSession(session, name),
   ))
+
+  // Validate rename confirmation reply.
   case reply {
     control_protocol.SessionReply(row) if row.session_id == session ->
       Ok(job.SessionRenamed(row))
@@ -776,6 +789,7 @@ fn rename(host, session, name) {
   }
 }
 
+/// Dispatches archive, restore, or delete operations for a session.
 fn remove(host, session, removal) {
   case removal {
     job.Archive ->
@@ -787,31 +801,41 @@ fn remove(host, session, removal) {
   }
 }
 
+/// Loads both the session listing page and peer inspection document for a workspace.
 fn load_peer_workspace(host, source_session, source_strand) {
   use sessions_reply <- result.try(request(
     host,
     control_protocol.ListSessions("", None),
   ))
+
+  // Extract session listing page.
   use page <- result.try(case sessions_reply {
     control_protocol.SessionsReply(page) -> Ok(page)
     _ -> Error("peer catalogue returned an unexpected reply")
   })
+
   use inspection_reply <- result.try(request(
     host,
     control_protocol.InspectPeers(source_session, source_strand, None),
   ))
+
+  // Extract peer inspection document.
   use document <- result.try(case inspection_reply {
     control_protocol.PeersInspectionReply(document) -> Ok(document)
     _ -> Error("peer inspection returned an unexpected reply")
   })
+
   Ok(job.PeerWorkspaceLoaded(page, document))
 }
 
+/// Inspects peers for a given session and strand cursor.
 fn inspect_peers(host, session, strand, after) {
   use reply <- result.try(request(
     host,
     control_protocol.InspectPeers(session, strand, after),
   ))
+
+  // Extract peer inspection document from reply.
   case reply {
     control_protocol.PeersInspectionReply(document) ->
       Ok(job.PeerInspectionLoaded(document, after))
@@ -819,20 +843,25 @@ fn inspect_peers(host, session, strand, after) {
   }
 }
 
-// The chooser reads only metadata under the first page's catalogue revision.
+/// Loads peer session metadata under a specific revision.
 fn load_peer_sessions(host, after, revision) {
   use reply <- result.try(request(
     host,
     control_protocol.ListSessions(after, Some(revision)),
   ))
+
+  // Extract session listing page from reply.
   case reply {
     control_protocol.SessionsReply(page) -> Ok(job.PeerSessionsLoaded(page))
     _ -> Error("peer catalogue returned an unexpected reply")
   }
 }
 
+/// Sends a peer mutation command to the daemon.
 fn mutate_peers(host, command) {
   use reply <- result.try(request(host, command))
+
+  // Extract peer mutation document from reply.
   case reply {
     control_protocol.PeersMutationReply(document) ->
       Ok(job.PeerOperationCompleted(document))
@@ -840,11 +869,11 @@ fn mutate_peers(host, command) {
   }
 }
 
-// The owner's access reads. The reply is handed on unread: `host/access`
-// checks it where the overlay draws it, so the terminal accepts exactly the
-// rows `loom access` would print.
+/// Dispatches principal listing or membership queries.
 fn read_access(host, command) {
   use reply <- result.try(request(host, command))
+
+  // Validate access listing response against command type.
   case reply, command {
     control_protocol.AccessListingReply(document),
       control_protocol.ListPrincipals(after)
@@ -856,10 +885,11 @@ fn read_access(host, command) {
   }
 }
 
-// One access change. A reply lost after the request was sent surfaces as an
-// unknown outcome and is never resent.
+/// Dispatches an access control mutation command to the daemon.
 fn change_access(host, command) {
   use reply <- result.try(request(host, command))
+
+  // Extract access change result document from reply.
   case reply {
     control_protocol.AccessChangeReply(document) ->
       Ok(job.AccessChanged(document))
@@ -867,10 +897,7 @@ fn change_access(host, command) {
   }
 }
 
-// The activity poll runs on a control connection of its own, which it
-// closes before returning: the terminal's borrowed control has one
-// outstanding slot, and an operator's page turn must never find a poll
-// holding it.
+/// Polls daemon activity for session IDs on an independent connection.
 fn activity(
   host: daemon_selection.Host,
   ids: List(String),
@@ -881,6 +908,8 @@ fn activity(
     daemon.request(control, control_protocol.SessionActivity(ids), 5000)
   daemon.close(control)
   use reply <- result.try(result.map_error(reply, daemon_selection.failure))
+
+  // Extract activity records list from daemon reply.
   case reply {
     control_protocol.ActivityReply(rows) -> Ok(rows)
     control_protocol.StatusReply(_)

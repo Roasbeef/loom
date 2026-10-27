@@ -198,8 +198,8 @@ pub fn with(
   )
 }
 
-// The quiet pill beside the name, or nothing for no words. The words are fixed
-// by the page; the title says what they mean.
+/// The quiet pill beside the name, or nothing for no words. The words are fixed
+/// by the page; the title says what they mean.
 fn badge(words: String, title: String) -> Element(message) {
   case words {
     "" -> element.none()

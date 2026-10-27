@@ -9,6 +9,7 @@
 //// reaches it, and the section sits at `component.peers_path`.
 
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -409,4 +410,134 @@ pub fn stale_boards_are_read_again_only_when_idle_test() {
   assert !peer_links.stale(read, "main")
   assert peer_links.stale(read, "reviewer")
   assert !peer_links.stale(peer_links.start(capable: False), "main")
+}
+
+/// A real operator page with a catalogue and the requested peer-link control
+/// state. The normal SessionsListed path applies the page's 100-entry bound,
+/// so a count of 128 submits 128 entries and retains only 100.
+///
+/// ## Examples
+///
+/// ```gleam
+/// peer_links_test.catalogue_fixture(3, "resting")
+/// ```
+pub fn catalogue_fixture(
+  count: Int,
+  phase: String,
+) -> component.Model(page_fixture.Wire) {
+  catalogue(count, phase, process.new_subject())
+}
+
+fn catalogue(
+  count: Int,
+  phase: String,
+  asked: Subject(peer_links.Request),
+) -> component.Model(page_fixture.Wire) {
+  let model = page(phase != "withheld", asked)
+  let entries =
+    list.index_map(list.repeat(Nil, count), fn(_, offset) {
+      let index = offset + 1
+      let id = case index {
+        1 -> "A"
+        _ -> "peer-" <> int.to_string(index)
+      }
+      Entry(
+        id,
+        "peer <b>" <> int.to_string(index) <> "</b>",
+        "/src/loom",
+        index,
+        Live,
+        None,
+        None,
+        None,
+        None,
+      )
+    })
+  let model =
+    deliver(model, operator_page.Observed(component.SessionsListed(entries)))
+  let model =
+    deliver(
+      model,
+      operator_page.Observed(
+        component.PeersAnswered(
+          peer_links.Listed(Board(
+            "main",
+            [out("peer-2", "main")],
+            peer_links.AllShown,
+          )),
+        ),
+      ),
+    )
+
+  // Enter each state through the same messages that the page's controls send.
+  case phase {
+    "choosing" -> deliver(model, operator_page.Peering(peer_links.OpenLink))
+    "configuring" -> {
+      let model = deliver(model, operator_page.Peering(peer_links.OpenLink))
+      deliver(
+        model,
+        operator_page.Peering(peer_links.PickSession("peer-3", "peer <b>3</b>")),
+      )
+    }
+    "removing" ->
+      deliver(
+        model,
+        operator_page.Peering(peer_links.AskUnlink(out("peer-2", "main"))),
+      )
+    _ -> model
+  }
+}
+
+// The performance fixture uses real control transitions and the real catalogue
+// bound, so its labels describe the page that the operator would see.
+pub fn catalogue_fixture_enters_control_states_and_respects_the_limit_test() {
+  let resting = section(catalogue_fixture(3, "resting"))
+  assert string.contains(resting, "Link a session")
+  assert !string.contains(resting, "Link to which session?")
+
+  let choosing = section(catalogue_fixture(3, "choosing"))
+  assert string.contains(choosing, "Link to which session?")
+  assert string.contains(choosing, "peer &lt;b&gt;3&lt;/b&gt;</button>")
+  assert !string.contains(choosing, "peer &lt;b&gt;2&lt;/b&gt;</button>")
+
+  let configuring = section(catalogue_fixture(3, "configuring"))
+  assert string.contains(configuring, "Link main to peer &lt;b&gt;3&lt;/b&gt;")
+  assert string.contains(configuring, "Strand in the other session")
+  let removing = section(catalogue_fixture(3, "removing"))
+  assert string.contains(removing, "Remove main")
+  assert string.contains(removing, "Keep it")
+  assert section(catalogue_fixture(3, "withheld")) == ""
+
+  let bounded = drawn(catalogue_fixture(128, "resting"))
+  assert string.contains(bounded, "peer &lt;b&gt;100&lt;/b&gt;")
+  assert !string.contains(bounded, "peer &lt;b&gt;101&lt;/b&gt;")
+}
+
+// A second valid picker event can arrive while the first has already opened
+// the form. It replaces the selection using the catalogue's name and resets
+// the permissions, rather than retaining the first session or browser text.
+pub fn a_second_valid_selection_replaces_the_first_before_submission_test() {
+  let asked = process.new_subject()
+  let model = catalogue(4, "choosing", asked)
+  let model =
+    deliver(
+      model,
+      operator_page.Peering(peer_links.PickSession("peer-3", "forged first")),
+    )
+  let model =
+    deliver(model, operator_page.Peering(peer_links.ChooseWake(MayWake)))
+  let model =
+    deliver(model, operator_page.Peering(peer_links.ChooseReverse(BothWays)))
+  let model =
+    deliver(
+      model,
+      operator_page.Peering(peer_links.PickSession("peer-4", "forged second")),
+    )
+  let html = section(model)
+  assert string.contains(html, "Link main to peer &lt;b&gt;4&lt;/b&gt;")
+  assert !string.contains(html, "forged")
+  let _model = deliver(model, operator_page.Linking("main"))
+  let assert Ok(peer_links.Link("main", "peer-4", "main", BusyOnly, OneWay)) =
+    change(asked)
+    as "The latest catalogue selection receives the narrow default link."
 }

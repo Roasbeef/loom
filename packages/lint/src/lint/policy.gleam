@@ -260,30 +260,49 @@ fn is_harness(package: Option(String)) -> Bool {
 /// than trusting that it covers anything. `lint/portable` argues what the
 /// membership protects, and why `session_view` is on the list.
 pub fn portable_packages() -> List(String) {
-  ["core", "machine", "prompt", "session_view", "statem"]
+  ["core", "evalstat", "gepa", "machine", "prompt", "session_view", "statem"]
 }
 
 /// The packages whose R21 (`case-stanza`) and R22 (`function-doc`) censuses
-/// have been driven to zero and therefore gate at error level.
+/// are tracked as part of the R21/R22 literacy sweep.
 ///
 /// Data rather than a `case` for the same reason `portable_packages` is:
 /// each wave adds the packages it swept, and a regression in a swept package
-/// fails `make lint` immediately without waiting for the remaining packages.
+/// fails `make lint` immediately. Global promotion now gates these rules
+/// everywhere; this public list records the sweep and remains useful for census
+/// and policy tests.
 pub fn literate_packages() -> List(String) {
   [
+    "broker",
+    "cap",
+    "client",
+    "codemode",
+    "conformance",
+    "core",
     "events",
     "executor",
     "ext",
+    "gepa",
     "harness",
     "host",
     "lint",
+    "lsp",
+    "machine",
     "mcp",
     "prompt",
+    "provider",
+    "runtime",
     "session",
+    "session_view",
     "statem",
     "statem_parallel",
+    "storage",
     "telemetry",
+    "tools",
+    "tui",
+    "web_client",
     "web_mermaid",
+    "web_view",
   ]
 }
 

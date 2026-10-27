@@ -186,6 +186,8 @@ pub fn unlink(
     source.call(peer_mail.Unlink(from, recipient.session, to))
     |> peer_mail.plain,
   )
+
+  // The unlink result determines whether the peer link is removed or retained.
   case
     recipient.call(
       peer_mail.Revoke(peer_mail.Grant(
@@ -301,6 +303,8 @@ pub fn send(
   text: String,
 ) -> Result(JsonValue, String) {
   use links <- result.try(links(wiring, strand))
+
+  // The recipient route determines whether the message is sent now or queued.
   use Nil <- result.try(
     case
       list.any(links, fn(link) {
@@ -320,6 +324,8 @@ pub fn send(
     wiring,
     peer_mail.OutboxClaim(wiring.own.session, strand, session, target, id, text),
   ))
+
+  // The recipient route determines whether the message is sent now or queued.
   case field(claimed, "state") {
     Ok(json.String("admitted")) -> field(claimed, "receipt")
     _ ->
@@ -382,6 +388,7 @@ pub fn queued_unopened(session: String, id: String) -> JsonValue {
   queued_with(session, id, queued_unopened_note)
 }
 
+/// Creates a queued delivery result with its durable receipt.
 fn queued_with(session: String, id: String, note: String) -> JsonValue {
   json.Object([
     #("state", json.String("queued")),
@@ -405,6 +412,7 @@ pub fn is_queued(answer: JsonValue) -> Bool {
 // One delivery attempt and its record. A failed record is not an error of the
 // send: the row stays pending, the drainer attempts it again, and the
 // recipient answers the repeat with the receipt it already stored.
+/// Persists the outcome of one peer delivery attempt.
 fn record_attempt(
   wiring: Wiring,
   strand: String,
@@ -423,6 +431,7 @@ fn record_attempt(
 // `peer_mail.NotOpen` means its owner answered that the session is saved; the
 // row waits in both cases. A `Refused` is the recipient's own refusal, or a
 // refusal made here, and retrying it unchanged cannot succeed.
+/// Runs one peer delivery attempt and records its receipt.
 fn attempt(
   wiring: Wiring,
   strand: String,
@@ -439,6 +448,7 @@ fn attempt(
   }
 }
 
+/// Delivers a message through the resolved peer route and records failure details.
 fn deliver(
   wiring: Wiring,
   strand: String,
@@ -450,10 +460,13 @@ fn deliver(
   use destination <- result.try(
     resolve(wiring, session) |> result.map_error(recipient_failure),
   )
+
+  // The route and receipt state determine whether durable delivery can proceed.
   use Nil <- result.try(case destination.session == session {
     True -> Ok(Nil)
     False -> Error(peer_mail.Refused("peer directory identity mismatch"))
   })
+
   use catalogue <- result.try(
     describe(wiring, wiring.own.session) |> peer_mail.refused,
   )
@@ -472,6 +485,7 @@ fn deliver(
 // whose owner holds the session saved says `NotOpen`; the message waits for
 // either. Any other failure to find the session means that nothing holds it,
 // and the model is told it is not running.
+/// Maps a recipient refusal to the stable peer delivery failure.
 fn recipient_failure(failure: peer_mail.Failure) -> peer_mail.Failure {
   case failure {
     peer_mail.Unreachable -> peer_mail.Unreachable
@@ -498,6 +512,8 @@ pub fn roster(wiring: Wiring, strand: String) -> Result(JsonValue, String) {
     list.try_map(links, fn(link) {
       use session <- result.try(text(link, "session"))
       use target <- result.try(text(link, "strand"))
+
+      // The requested scope determines which peer and activity records are exposed.
       let metadata = case describe(wiring, session) {
         Ok(value) -> value
         Error(reason) -> json.Object([#("unavailable", json.String(reason))])
@@ -507,6 +523,8 @@ pub fn roster(wiring: Wiring, strand: String) -> Result(JsonValue, String) {
       // orchestrator, resolving asks that orchestrator's port. Such a session
       // resolves whether or not it is resident there, so the owner's answer
       // to the roster command is what says that it is saved.
+
+      // The requested scope determines which peer and activity records are exposed.
       let #(running, strands) = case resolve(wiring, session) {
         Error(_) -> #(False, json.Null)
         Ok(endpoint) ->
@@ -521,6 +539,7 @@ pub fn roster(wiring: Wiring, strand: String) -> Result(JsonValue, String) {
             )
           }
       }
+
       Ok(
         json.Object([
           #("session", json.String(session)),
@@ -557,10 +576,14 @@ pub fn inspect(
     list.try_map(outgoing, fn(link) {
       use session <- result.try(text(link, "session"))
       use target <- result.try(text(link, "strand"))
+
+      // The requested input page determines which pending or materialized entries are returned.
       let metadata = case describe(wiring, session) {
         Ok(value) -> value
         Error(reason) -> json.Object([#("unavailable", json.String(reason))])
       }
+
+      // The requested input page determines which pending or materialized entries are returned.
       let wake = case resolve(wiring, session) {
         Error(_) -> json.Null
         Ok(endpoint) ->
@@ -582,10 +605,13 @@ pub fn inspect(
       // A link the owner's `[peers]` default supplies is marked, so the
       // owner can tell it from a grant (protocol-change/077). A recorded
       // link carries no mark.
+
+      // The requested input page determines which pending or materialized entries are returned.
       let basis = case field(link, "default") {
         Ok(json.Bool(True)) -> [#("default", json.Bool(True))]
         _ -> []
       }
+
       Ok(InspectRow(
         inspect_key("o", session, target),
         OutgoingRow,
@@ -601,15 +627,21 @@ pub fn inspect(
       ))
     }),
   )
+
+  // The requested input page determines which pending or materialized entries are returned.
   use incoming <- result.try(case incoming {
     json.Array(rows) ->
       list.try_map(rows, fn(row) {
         use source <- result.try(text(row, "source_session"))
         use source_strand <- result.try(text(row, "source_strand"))
+
+        // The requested input page determines which pending or materialized entries are returned.
         let metadata = case describe(wiring, source) {
           Ok(value) -> value
           Error(reason) -> json.Object([#("unavailable", json.String(reason))])
         }
+
+        // The requested input page determines which pending or materialized entries are returned.
         case row {
           json.Object(fields) ->
             Ok(InspectRow(
@@ -622,15 +654,19 @@ pub fn inspect(
       })
     _ -> Error("invalid incoming peer grants")
   })
+
   let rows =
     list.sort(list.append(outgoing, incoming), fn(a, b) {
       string.compare(a.key, b.key)
     })
+
+  // The requested input page determines which pending or materialized entries are returned.
   let rows = case after {
     None -> rows
     Some(cursor) ->
       list.filter(rows, fn(row) { string.compare(row.key, cursor) == order.Gt })
   }
+
   page_inspection(wiring, strand, rows, [], [], None, body_budget)
 }
 
@@ -649,6 +685,7 @@ fn inspect_key(direction: String, session: String, strand: String) -> String {
   <> json.to_string(json.Array([json.String(session), json.String(strand)]))
 }
 
+/// Decodes the requested caller-owned peer input body.
 fn inspection_body(
   wiring: Wiring,
   strand: String,
@@ -669,6 +706,7 @@ fn inspection_body(
   ])
 }
 
+/// Reads one bounded page of pending and materialized peer inputs.
 fn page_inspection(
   wiring: Wiring,
   strand: String,
@@ -678,19 +716,24 @@ fn page_inspection(
   last: Option(String),
   budget: Int,
 ) -> Result(JsonValue, String) {
+  // The input cursor and page bounds determine the next inspection result.
   case rows {
     [] -> {
       let body = inspection_body(wiring, strand, outgoing, incoming, None)
+
+      // The input cursor and page bounds determine the next inspection result.
       case string.byte_size(json.to_string(body)) <= budget {
         True -> Ok(body)
         False -> Error("metadata_too_large")
       }
     }
     [row, ..rest] -> {
+      // The input cursor and page bounds determine the next inspection result.
       let #(outgoing_next, incoming_next) = case row.kind {
         OutgoingRow -> #([row.value, ..outgoing], incoming)
         IncomingRow -> #(outgoing, [row.value, ..incoming])
       }
+
       let candidate =
         inspection_body(
           wiring,
@@ -699,6 +742,8 @@ fn page_inspection(
           incoming_next,
           Some(row.key),
         )
+
+      // The input cursor and page bounds determine the next inspection result.
       case string.byte_size(json.to_string(candidate)) <= budget {
         True ->
           page_inspection(
@@ -721,8 +766,11 @@ fn page_inspection(
   }
 }
 
+/// Resolves the authorized outgoing links for the current peer session.
 fn links(wiring: Wiring, strand: String) -> Result(List(JsonValue), String) {
   use value <- result.try(own_call(wiring, peer_mail.Links(strand)))
+
+  // The link catalogue result determines the outgoing links visible to this caller.
   case value {
     json.Array(links) ->
       case list.length(links) <= peer_mail.outgoing_link_limit {
@@ -733,6 +781,7 @@ fn links(wiring: Wiring, strand: String) -> Result(List(JsonValue), String) {
   }
 }
 
+/// Resolves the target peer and route from the caller-visible catalogue.
 fn resolve(
   wiring: Wiring,
   session: String,
@@ -756,6 +805,7 @@ fn own_call(
   wiring.own.call(command) |> peer_mail.plain
 }
 
+/// Renders the peer catalogue state for the caller.
 fn describe(wiring: Wiring, session: String) -> Result(JsonValue, String) {
   case wiring.directory {
     Some(directory) -> directory.describe(session)
@@ -843,6 +893,7 @@ pub fn tools(wiring: Wiring) -> List(tool.Tool) {
   ]
 }
 
+/// Decodes the requested result-field requirements for peer work.
 fn requirements(workspace: String) -> policy.SandboxPolicy {
   let base = policy.workspace_default(workspace)
   policy.SandboxPolicy(
@@ -860,6 +911,7 @@ fn outcome(answer: Result(JsonValue, String)) -> tool.ToolOutcome {
   }
 }
 
+/// Reads a required field from a peer result value.
 fn field(value: JsonValue, key: String) -> Result(JsonValue, String) {
   case value {
     json.Object(fields) ->
@@ -868,8 +920,11 @@ fn field(value: JsonValue, key: String) -> Result(JsonValue, String) {
   }
 }
 
+/// Extracts text from a structured peer value.
 fn text(value: JsonValue, key: String) -> Result(String, String) {
   use value <- result.try(field(value, key))
+
+  // The value shape determines whether it can be represented as text.
   case value {
     json.String(value) -> Ok(value)
     _ -> Error("expected peer text")
@@ -903,6 +958,8 @@ pub fn router(
         "peer capability admission ceiling reached",
       )),
     )
+
+    // The recipient exports determine which authorized route handles this request.
     case request.cap {
       "peer.inbox" -> {
         use after <- result.try(args.string(request.args, "after"))
@@ -990,6 +1047,7 @@ pub fn router(
 // program can tell apart from a refusal by its code. The note is the answer's
 // own, because an unreachable owner and a saved recipient are told different
 // things.
+/// Builds the caller-visible result for a peer send operation.
 fn send_answer(answer: Result(JsonValue, String)) {
   case answer {
     Ok(value) ->
@@ -1020,6 +1078,7 @@ fn wire_answer(answer: Result(JsonValue, String)) {
 // after `peer_send` returned `queued`, and it answers while the recipient's
 // owner is unreachable. Any other state falls through to the recipient, which
 // remains the authority: it may hold a receipt whose reply was lost.
+/// Reads the durable admission receipt for a sent peer request.
 fn sent_receipt(
   wiring: Wiring,
   strand: String,
@@ -1027,6 +1086,8 @@ fn sent_receipt(
   id: String,
 ) -> Result(JsonValue, String) {
   use links <- result.try(links(wiring, strand))
+
+  // The receipt state determines whether the admitted outgoing operation can be reported.
   use Nil <- result.try(
     case
       list.any(links, fn(link) {
@@ -1037,13 +1098,18 @@ fn sent_receipt(
       False -> Error("no operator-authorized outgoing link")
     },
   )
+
+  // The receipt state determines whether the admitted outgoing operation can be reported.
   case own_call(wiring, peer_mail.OutboxReceipt(strand, session, id)) {
     Ok(json.Null) | Error(_) -> {
       use destination <- result.try(resolve(wiring, session) |> peer_mail.plain)
+
+      // The receipt state determines whether the admitted outgoing operation can be reported.
       use Nil <- result.try(case destination.session == session {
         True -> Ok(Nil)
         False -> Error("peer directory identity mismatch")
       })
+
       destination.call(peer_mail.SentReceipt(wiring.own.session, strand, id))
       |> peer_mail.plain
     }

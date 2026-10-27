@@ -69,7 +69,7 @@ the grids are exact. Running the generator also writes a viewer page,
 
 Reached with `←` from an empty composer (`packages/tui/src/tui/interaction.gleam:1376`).
 A draft or a pending attachment keeps `←` as a cursor key, as today. The view
-is `session_selector.render` (`packages/tui/src/tui/session_selector.gleam:815`)
+is `session_selector.render` (`packages/tui/src/tui/session_selector.gleam:836`)
 (`render`), and this note redraws it without changing its keys.
 
 ![Picker, 120x40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-picker-120-dark.png)
@@ -200,7 +200,7 @@ like [A's narrow sheet](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284
 Before slice 13 `layout.layout` (`packages/tui/src/tui/layout.gleam:105`)
 (`layout`) stacked header, body, composer and footer, and `body_layout` gave the
 body one side pane, the 34-cell agent rail or the 72-cell changes pane. The
-footer is built in `footer_rows` (`packages/tui/src/tui/layout.gleam:568`)
+footer is built in `footer_rows` (`packages/tui/src/tui/layout.gleam:587`)
 (`footer_rows`). The new layout replaces the header and footer with the
 identity line and the input frame, and replaces the two side panes with one
 rail.
@@ -504,7 +504,7 @@ Grid: [txt](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f
 |---|---|
 | About fifteen identical `✓ agent_wait · 2 subagents` rows | One counted row, `×15`, updated in place. A new rule in `tool_activity.project` (`packages/session_view/src/session_view/tool_activity.gleam:55`) (`project`). No wire change. |
 | Twenty identical `http 429` errors | One counted row: `! provider returned http 429 ×20`. A fold over the local lines in `session_view`. |
-| A `[loom] background job ... was lost` notice drawn as a `› User` turn | A dim `◇ loom` line with a second line saying it is a notice from Loom, not a message from you. **Data check first:** the line builders already route some harness-authored user messages (`harness_message_lines`, `packages/session_view/src/session_view/transcript_lines.gleam:2798`) (`harness_message_lines`), and `composer.harness_injection_summary` (`packages/session_view/src/session_view/composer.gleam:474`) (`harness_injection_summary`) recognises the `[loom] ` prefix to bound a turn. If the daemon sends this notice as a user entry with no marker, recognising the prefix is the same text-to-attribution step that 059 exists to avoid, and the notice needs a marker through its own protocol-change. |
+| A `[loom] background job ... was lost` notice drawn as a `› User` turn | A dim `◇ loom` line with a second line saying it is a notice from Loom, not a message from you. **Data check first:** the line builders already route some harness-authored user messages (`harness_message_lines`, `packages/session_view/src/session_view/transcript_lines.gleam:2907`) (`harness_message_lines`), and `composer.harness_injection_summary` (`packages/session_view/src/session_view/composer.gleam:494`) (`harness_injection_summary`) recognises the `[loom] ` prefix to bound a turn. If the daemon sends this notice as a user entry with no marker, recognising the prefix is the same text-to-attribution step that 059 exists to avoid, and the notice needs a marker through its own protocol-change. |
 | Approvals as a small dialog | A full-width block with numbered choices (below). |
 
 The fixes frame draws more on the folded rows than a fold has: `· 7m 30s ·
@@ -558,7 +558,7 @@ main ▸ sub:tests`) and the identity line names it. Focus from the timeline wit
 |---|---|---|
 | `←`, empty composer, no attachment | Open the session picker | Unchanged (`packages/tui/src/tui/interaction.gleam:1376`) (`open_session_selector`) |
 | `↓`, idle composer | Enter the agent strip. While the rail shows Strands, focus the rail's list | Unchanged (`packages/tui/src/tui/interaction.gleam:1236`) (`down_from_composer`) |
-| `Shift+Tab` | Dock or hide the rail; open or close the sheet below 120 columns | Replaces "toggle the rail" (`packages/tui/src/tui/interaction.gleam:1625`) (`toggle_agent_rail`) |
+| `Shift+Tab` | Dock or hide the rail; open or close the sheet below 120 columns | Replaces "toggle the rail" (`packages/tui/src/tui/interaction.gleam:1672`) (`toggle_agent_rail`) |
 | Escape | Interrupt; closes the surface on top first | Unchanged (`packages/tui/src/tui/interaction.gleam:1337`) (`interrupt_active`) |
 | `Ctrl+O`, `F2`, `/agents` | Open the agent workspace | Unchanged |
 | `/diff`, `/trace` | Open the rail on Changes, Trace | `/diff` exists; `/trace` is new; `/summary` stays the full-screen summary and Session is the digit `4` |
@@ -588,13 +588,13 @@ New `F` keys wait on a check of what Herdr and common terminals pass through
 | Workspace and strip rows | `Row`, `Line` (section 2) | None |
 | Strand cards, status line | `strand_card.status_line` (`packages/session_view/src/session_view/strand_card.gleam:45`) (`status_line`) | None |
 | Gutter hue | `turns.hue` (`packages/session_view/src/session_view/turns.gleam:308`) (`hue`) | None |
-| Worked divider with a failure count | `turns.divider` (`packages/session_view/src/session_view/turns.gleam:1502`) (`divider`), plus a count from the steps' results | None |
+| Worked divider with a failure count | `turns.divider` (`packages/session_view/src/session_view/turns.gleam:1537`) (`divider`), plus a count from the steps' results | None |
 | Sent messages | `agent_messages.observe` | None |
 | Received strand messages | A strand origin on the admitted message | **protocol-change 059** |
 | Peer messages | `PeerOrigin` | None |
 | Code-mode program and result | `code_mode_program`, `code_mode_result_lines` | None |
 | Code-mode call list | A call record in the result | **protocol-change 060** |
-| Images | The tool result block at `packages/tools/src/tools/fs.gleam:1488` (`ToolResultImage`), read through `of_entry` | None; etui work |
+| Images | The tool result block at `packages/tools/src/tools/fs.gleam:1576` (`ToolResultImage`), read through `of_entry` | None; etui work |
 | Repeats, repeated errors | New folds in `session_view` | None |
 | Harness notices | See section 9 | Possibly a marker |
 | Layout memory | A file in the state root | None |

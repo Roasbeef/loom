@@ -356,18 +356,21 @@ type Phase {
 /// assert !ui_socket.observer_accepts("{\"kind\":1,\"name\":\"submit\"}")
 /// ```
 pub fn observer_accepts(frame: String) -> Bool {
+  // This branch resolves json parse frame observer_click before the operation continues.
   case json.parse(frame, observer_click()) {
     Ok(accepted) -> accepted
     Error(_) -> False
   }
 }
 
+/// Decodes click events permitted for observer-class access.
 fn observer_click() -> decode.Decoder(Bool) {
   use kind <- decode.field("kind", decode.int)
   use name <- decode.field("name", decode.string)
   use path <- decode.field("path", decode.string)
   decode.success(
     kind == 1
+    // This branch resolves name before the operation continues.
     && case name {
       "click" -> observer_path(path)
       "input" -> path == component.notes_search_path
@@ -376,12 +379,12 @@ fn observer_click() -> decode.Decoder(Bool) {
   )
 }
 
-// The six places an observer's click may fire: the older button, the Home
-// button, the context breakdown's Refresh button, a chip beneath the strip's
-// list, the divider of a settled turn's work, and the button after a shortened
-// message. The list's own path is not a chip, so the prefix includes the
-// separator; a divider and a message's button are admitted only at the exact
-// paths `fold_click` and `message_click` name.
+/// The six places an observer's click may fire: the older button, the Home
+/// button, the context breakdown's Refresh button, a chip beneath the strip's
+/// list, the divider of a settled turn's work, and the button after a shortened
+/// message. The list's own path is not a chip, so the prefix includes the
+/// separator; a divider and a message's button are admitted only at the exact
+/// paths `fold_click` and `message_click` name.
 fn observer_path(path: String) -> Bool {
   path == component.older_path
   || path == component.latest_path
@@ -441,18 +444,22 @@ type Reach {
   ExceptOwner
 }
 
+/// Accepts keeps this client decision explicit for its callers.
 fn accepts(frame: String, reach: Reach) -> Bool {
+  // This branch resolves json parse frame accepted reach before the operation continues.
   case json.parse(frame, accepted(reach)) {
     Ok(accepted) -> accepted
     Error(_) -> False
   }
 }
 
-// An event names its path when the browser sent one. A frame with none
-// cannot name a handler and is judged as a click at no path, which the
-// runtime drops if nothing is drawn there.
+/// An event names its path when the browser sent one. A frame with none
+/// cannot name a handler and is judged as a click at no path, which the
+/// runtime drops if nothing is drawn there.
 fn accepted(reach: Reach) -> decode.Decoder(Bool) {
   use kind <- decode.field("kind", decode.int)
+
+  // This branch resolves kind before the operation continues.
   case kind {
     1 -> {
       use name <- decode.field("name", decode.string)
@@ -477,11 +484,12 @@ fn accepted(reach: Reach) -> decode.Decoder(Bool) {
   }
 }
 
-// Whether a socket of this reach admits an event at `path`. Each owner
-// control's own path is excluded for a member, and so is anything beneath it,
-// with the separator so that a path that merely begins with the same digits is
-// not.
+/// Whether a socket of this reach admits an event at `path`. Each owner
+/// control's own path is excluded for a member, and so is anything beneath it,
+/// with the separator so that a path that merely begins with the same digits is
+/// not.
 fn reaches(reach: Reach, path: String) -> Bool {
+  // This branch resolves reach before the operation continues.
   case reach {
     Everywhere -> True
     ExceptOwner ->
@@ -517,10 +525,13 @@ pub fn upgrade(
 ) -> Response(mist.ResponseData) {
   let role = role_of(attachment)
   let ceiling = seen.grant.ceiling
+
+  // This branch resolves role before the operation continues.
   let limit = case role {
     Observing -> root.message_limit(root.Observer)
     Operating | Owning -> operator_frame_limit
   }
+
   let attach =
     ui_relay.Attach(
       hub:,
@@ -674,14 +685,14 @@ pub fn upgrade(
   })
 }
 
-// The WebSocket both kinds of page run on: a page of a session
-// (`upgrade`) and the home (`upgrade_home`). `admit` is what the socket does
-// in its first handler turn, which differs: it takes the permit's custody and
-// starts the component the page calls for. Everything after that is the same
-// for both: the browser's frames go to the component's `forward`, the
-// component's frames go to the browser, and an ending closes the socket.
-// The HTTP process waits on `settled` for the custody transfer to have been
-// attempted, so its release of the permit cannot overtake the transfer.
+/// The WebSocket both kinds of page run on: a page of a session
+/// (`upgrade`) and the home (`upgrade_home`). `admit` is what the socket does
+/// in its first handler turn, which differs: it takes the permit's custody and
+/// starts the component the page calls for. Everything after that is the same
+/// for both: the browser's frames go to the component's `forward`, the
+/// component's frames go to the browser, and an ending closes the socket.
+/// The HTTP process waits on `settled` for the custody transfer to have been
+/// attempted, so its release of the permit cannot overtake the transfer.
 fn websocket(
   request: Request(mist.Connection),
   limit: Int,
@@ -704,6 +715,7 @@ fn websocket(
         )
       },
       handler: fn(phase, event, socket) {
+        // This branch resolves phase event before the operation continues.
         case phase, event {
           Pending(signals, begin), mist.Custom(Admit) -> begin(signals)
 
@@ -726,6 +738,7 @@ fn websocket(
           }
 
           Serving(..) as serving, mist.Custom(Client(frame)) ->
+            // This branch resolves mist send_text_frame socket json to_string frame before the operation continues.
             case mist.send_text_frame(socket, json.to_string(frame)) {
               Ok(Nil) -> mist.continue(serving)
               Error(_) -> mist.stop()
@@ -757,12 +770,15 @@ fn websocket(
         }
       },
       on_close: fn(phase) {
+        // This branch resolves phase before the operation continues.
         case phase {
           Serving(shutdown:, ..) -> shutdown()
           Pending(..) -> Nil
         }
       },
     )
+
+  // This branch resolves response body before the operation continues.
   case response.body {
     mist.Websocket -> {
       let _ = process.receive(settled, within: 5000)
@@ -770,9 +786,11 @@ fn websocket(
     }
     mist.Bytes(_) | mist.Chunked | mist.File(..) | mist.ServerSentEvents -> Nil
   }
+
   response
 }
 
+/// Stops image reader processes associated with the terminated session.
 fn stop_reader_for(
   registry: manager.Manager(instance),
   session_id: String,
@@ -903,8 +921,10 @@ pub fn upgrade_home(
     Some(_) -> attachment.pools
     None -> []
   }
+
   let read_placements = attachment.placements
   let placing = fn(deliver) {
+    // This branch resolves creating before the operation continues.
     case creating {
       Some(_) -> read_task(deliver, read_placements)
       None -> Nil
@@ -923,6 +943,7 @@ pub fn upgrade_home(
       home.Folders(
         recent: fn(deliver) {
           read_task(deliver, fn() {
+            // This branch resolves new_folder home before the operation continues.
             case new_folder.home() {
               Ok(directory) -> recent_for(standing, open, directory)
               Error(_) -> []
@@ -931,6 +952,7 @@ pub fn upgrade_home(
         },
         forget: fn(id, deliver) {
           read_task(deliver, fn() {
+            // This branch resolves new_folder home before the operation continues.
             case new_folder.home() {
               Ok(directory) -> forget_for(standing, open, directory, id)
               Error(_) -> []
@@ -1007,6 +1029,8 @@ pub fn upgrade_home(
       seen.grant.origin,
       fn(deliver) { admin_ticket_task(standing, tickets, open, deliver) },
     )
+
+  // This branch resolves rename creating administering before the operation continues.
   let admits = case rename, creating, administering {
     _, _, Some(_) -> home_admin_accepts
     Some(_), _, None | None, Some(_), None -> home_owner_accepts
@@ -1118,6 +1142,7 @@ pub fn home_orchestrators_capability(
   names: List(String),
   make: fn() -> home.Orchestrators,
 ) -> Option(home.Orchestrators) {
+  // This branch resolves principal kind ceiling names before the operation continues.
   case principal.kind, ceiling, names {
     access.OwnerPrincipal, access.Operator, [_, ..] -> Some(make())
     access.OwnerPrincipal, access.Operator, []
@@ -1157,6 +1182,7 @@ pub fn orchestrating_for(
     refresh_ms: home.relay_refresh_ms,
     offers: fn(orchestrator, deliver) {
       read_task(deliver, fn() {
+        // This branch resolves open before the operation continues.
         case open() {
           Ok(_) -> ui_top.offers(relay, orchestrator)
           Error(Nil) -> relayed_roster.Withheld(why: "this page has ended")
@@ -1165,6 +1191,7 @@ pub fn orchestrating_for(
     },
     sessions: fn(orchestrator, deliver) {
       read_task(deliver, fn() {
+        // This branch resolves open before the operation continues.
         case open() {
           Ok(_) -> ui_top.listing(relay, orchestrator)
           Error(Nil) -> relayed_roster.Missed(why: "this page has ended")
@@ -1184,6 +1211,7 @@ pub fn orchestrating_for(
           })
         }
 
+        // This branch resolves allowed before the operation continues.
         case allowed {
           Error(why) -> relayed_roster.Refused(why:)
           Ok(_) ->
@@ -1202,11 +1230,11 @@ pub fn orchestrating_for(
   )
 }
 
-// The functions the relayed session page asks the other orchestrator with. Each
-// runs in a task of its own, so the page's runtime never waits on the link. A
-// press is checked again as the owner's operating page before anything is sent,
-// and a reply is given a fresh message identity, which the relay resends with
-// if the answer is lost.
+/// The functions the relayed session page asks the other orchestrator with. Each
+/// runs in a task of its own, so the page's runtime never waits on the link. A
+/// press is checked again as the owner's operating page before anything is sent,
+/// and a reply is given a fresh message identity, which the relay resends with
+/// if the answer is lost.
 fn visiting_for(
   standing: Standing(instance),
   open: fn() -> Result(Int, Nil),
@@ -1218,6 +1246,7 @@ fn visiting_for(
   let session = target.session
   let decider = remote_escalation.Decider(principal: standing.principal, name:)
   let acting = fn(act: fn() -> relayed.Outcome) {
+    // This branch resolves owner_operating standing open before the operation continues.
     case owner_operating(standing, open) {
       Ok(_) -> act()
       Error(Nil) -> relayed.Refusal(why: "this page can no longer act for you")
@@ -1230,6 +1259,7 @@ fn visiting_for(
     refresh_ms: home.relay_refresh_ms,
     read: fn(deliver) {
       read_task(deliver, fn() {
+        // This branch resolves open before the operation continues.
         case open() {
           Ok(_) -> ui_top.read(relay, orchestrator, session)
           Error(Nil) -> relayed.Unreached(why: "this page has ended")
@@ -1305,6 +1335,7 @@ pub fn home_rename_capability(
   ceiling: access.Role,
   ask: fn(String, String, fn(renames.Answer) -> Nil) -> Nil,
 ) -> Option(fn(String, String, fn(renames.Answer) -> Nil) -> Nil) {
+  // This branch resolves principal kind ceiling before the operation continues.
   case principal.kind, ceiling {
     access.OwnerPrincipal, access.Operator -> Some(ask)
     access.OwnerPrincipal, access.Observer
@@ -1337,6 +1368,7 @@ pub fn home_manage_capability(
   origin: ui_sessions.Origin,
   ask: fn(actions.Action, String, fn(actions.Answer) -> Nil) -> Nil,
 ) -> Option(fn(actions.Action, String, fn(actions.Answer) -> Nil) -> Nil) {
+  // This branch resolves principal kind ceiling fresh_home reach origin before the operation continues.
   case principal.kind, ceiling, fresh_home(reach, origin) {
     access.OwnerPrincipal, access.Operator, Ok(Nil) -> Some(ask)
     access.OwnerPrincipal, access.Operator, Error(Nil)
@@ -1380,6 +1412,7 @@ pub fn home_create_capability(
     fn(creations.Answer) -> Nil,
   ) -> Nil,
 ) {
+  // This branch resolves principal kind ceiling before the operation continues.
   case principal.kind, ceiling {
     access.OwnerPrincipal, access.Operator -> Some(ask)
     access.OwnerPrincipal, access.Observer
@@ -1407,6 +1440,7 @@ pub fn home_folders_capability(
   ceiling: access.Role,
   folders: home.Folders,
 ) -> Option(home.Folders) {
+  // This branch resolves principal kind ceiling before the operation continues.
   case principal.kind, ceiling {
     access.OwnerPrincipal, access.Operator -> Some(folders)
     access.OwnerPrincipal, access.Observer
@@ -1434,6 +1468,7 @@ pub fn home_elsewhere_capability(
   ceiling: access.Role,
   reads: home.Elsewhere,
 ) -> Option(home.Elsewhere) {
+  // This branch resolves principal kind ceiling before the operation continues.
   case principal.kind, ceiling {
     access.OwnerPrincipal, access.Operator -> Some(reads)
     access.OwnerPrincipal, access.Observer
@@ -1467,6 +1502,7 @@ pub fn home_elsewhere_capability(
 /// assert !ui_socket.home_accepts("{\"kind\":1,\"name\":\"submit\"}")
 /// ```
 pub fn home_accepts(frame: String) -> Bool {
+  // This branch resolves json parse frame home_event Browsing before the operation continues.
   case json.parse(frame, home_event(Browsing)) {
     Ok(accepted) -> accepted
     Error(_) -> False
@@ -1494,6 +1530,7 @@ pub fn home_accepts(frame: String) -> Bool {
 /// assert !ui_socket.home_owner_accepts("{\"kind\":1,\"name\":\"submit\",\"path\":\"0\\t1\\t0\"}")
 /// ```
 pub fn home_owner_accepts(frame: String) -> Bool {
+  // This branch resolves json parse frame home_event Submitting before the operation continues.
   case json.parse(frame, home_event(Submitting)) {
     Ok(accepted) -> accepted
     Error(_) -> False
@@ -1515,6 +1552,7 @@ pub fn home_owner_accepts(frame: String) -> Bool {
 /// assert !ui_socket.home_accepts("{\"kind\":1,\"name\":\"click\",\"path\":\"0\\t0\\t5\"}")
 /// ```
 pub fn home_admin_accepts(frame: String) -> Bool {
+  // This branch resolves json parse frame home_event Administering before the operation continues.
   case json.parse(frame, home_event(Administering)) {
     Ok(accepted) -> accepted
     Error(_) -> False
@@ -1529,12 +1567,17 @@ type HomeRights {
   Administering
 }
 
+/// Decodes home page user interaction events based on granted rights.
 fn home_event(rights: HomeRights) -> decode.Decoder(Bool) {
   use kind <- decode.field("kind", decode.int)
+
+  // This branch resolves kind before the operation continues.
   case kind {
     1 -> {
       use name <- decode.field("name", decode.string)
       use path <- decode.field("path", decode.string)
+
+      // This branch resolves name rights before the operation continues.
       decode.success(case name, rights {
         "click", Administering -> home_row_path(path) || path == home.admin_path
         "click", Browsing | "click", Submitting -> home_row_path(path)
@@ -1577,10 +1620,10 @@ fn home_row_path(path: String) -> Bool {
   || string.starts_with(path, home.signins_path <> "\t")
 }
 
-// Takes the permit in the socket's first handler turn, as `admit` does, and
-// then starts the home component with the read of the principal's sessions
-// and the request to open one as they are: closures over the attachment, run
-// in the component's process.
+/// Takes the permit in the socket's first handler turn, as `admit` does, and
+/// then starts the home component with the read of the principal's sessions
+/// and the request to open one as they are: closures over the attachment, run
+/// in the component's process.
 fn admit_home(
   daemon: root.Root(instance),
   attachment: server.HomeAttachment(instance),
@@ -1617,6 +1660,8 @@ fn admit_home(
 ) -> mist.Next(Phase, Signal) {
   let transferred = root.transfer(daemon, attachment.permit, within: 1000)
   process.send(settled, Nil)
+
+  // This branch resolves the input state before the operation continues.
   let start =
     home.Start(
       name: attachment.principal.display_name,
@@ -1664,6 +1709,8 @@ fn admit_home(
       visiting:,
       orchestrators: orchestrating,
     )
+
+  // This branch resolves transferred before the operation continues.
   let started = case transferred {
     Error(reason) -> {
       upgrade_log.closed_early(upgrade_log.Page, "transfer", reason)
@@ -1679,6 +1726,8 @@ fn admit_home(
         )
       })
   }
+
+  // This branch resolves started before the operation continues.
   case started {
     // The permit transfer was slow or the component's start ran over its
     // budget: the close is one the client runtime retries.
@@ -1688,7 +1737,9 @@ fn admit_home(
 }
 
 // The ceiling a home page was minted with, as the home words it.
+/// Home ceiling keeps this client decision explicit for its callers.
 fn home_ceiling(ceiling: access.Role) -> home.Ceiling {
+  // This branch resolves ceiling before the operation continues.
   case ceiling {
     access.Operator -> home.OperatorCeiling
     access.Observer -> home.ObserverCeiling
@@ -1727,6 +1778,7 @@ pub fn home_listing(
   open: fn() -> Result(Int, Nil),
   ended: fn(ending.Ending) -> Nil,
 ) -> home.Listing {
+  // This branch resolves home_read attachment open before the operation continues.
   case home_read(attachment, open) {
     Ok(entries) -> home.Listed(entries)
     Error(Unreadable) -> home.Unread
@@ -1737,9 +1789,9 @@ pub fn home_listing(
   }
 }
 
-// The two steps of a home's read, each made afresh: the page is live, and the
-// catalogue's authorized page is read with the credential, which authenticates
-// it first.
+/// The two steps of a home's read, each made afresh: the page is live, and the
+/// catalogue's authorized page is read with the credential, which authenticates
+/// it first.
 fn home_read(
   attachment: server.HomeAttachment(instance),
   open: fn() -> Result(Int, Nil),
@@ -1759,9 +1811,10 @@ fn home_read(
   }
 }
 
-// The catalogue holding no such credential is a revoked one. Every other
-// refusal is the registry failing to answer, which is not the person's doing.
+/// The catalogue holding no such credential is a revoked one. Every other
+/// refusal is the registry failing to answer, which is not the person's doing.
 fn authentication_failure(error: manager.Error) -> Failure {
+  // This branch resolves error before the operation continues.
   case error {
     manager.Catalogue(catalogue.Missing) -> Gone(ending.AccessRevoked)
     manager.Catalogue(_)
@@ -1794,10 +1847,10 @@ pub type Role {
   Owning
 }
 
-// The lower-case SHA-256 of a workspace path in hex, which the page carries
-// as its storage identity (`component.Start`). A digest is not the path: the
-// page's attribute and the browser's storage key never hold a path, and the
-// browser cannot recover one from it.
+/// The lower-case SHA-256 of a workspace path in hex, which the page carries
+/// as its storage identity (`component.Start`). A digest is not the path: the
+/// page's attribute and the browser's storage key never hold a path, and the
+/// browser cannot recover one from it.
 fn digest(workspace: String) -> String {
   workspace
   |> bit_array.from_string
@@ -1820,6 +1873,7 @@ fn digest(workspace: String) -> String {
 /// ```
 @internal
 pub fn role_of(attachment: server.Attachment(instance)) -> Role {
+  // This branch resolves attachment authority attachment principal kind before the operation continues.
   case attachment.authority, attachment.principal.kind {
     access.Participant(access.Observer), _ -> Observing
     access.Owner, _
@@ -1829,12 +1883,12 @@ pub fn role_of(attachment: server.Attachment(instance)) -> Role {
   }
 }
 
-// Takes the permit in the socket's first handler turn, then starts the
-// component the page's role calls for, with a transport whose `connect`
-// starts the relay and returns at once. `connect` runs in the component's
-// process, so the relay monitors the component and the subjects it answers
-// on belong to the component; the gateway's attach runs in the relay, after
-// the component's start has returned.
+/// Takes the permit in the socket's first handler turn, then starts the
+/// component the page's role calls for, with a transport whose `connect`
+/// starts the relay and returns at once. `connect` runs in the component's
+/// process, so the relay monitors the component and the subjects it answers
+/// on belong to the component; the gateway's attach runs in the relay, after
+/// the component's start has returned.
 fn admit(
   daemon: root.Root(instance),
   attachment: server.Attachment(instance),
@@ -1855,7 +1909,6 @@ fn admit(
   signals: process.Subject(Signal),
   settled: process.Subject(Nil),
 ) -> mist.Next(Phase, Signal) {
-
   // Resolve connection roles and transfer the root admission permit.
   let role = role_of(attachment)
   let standing = page_standing(attachment, seen)
@@ -1931,7 +1984,6 @@ fn admit(
   let models_fn = attachment.models
   let profiles_fn = attachment.profiles
   let start = fn(standing) {
-
     // Build initial component configuration payload.
     component.Start(
       session_id:,
@@ -1947,6 +1999,7 @@ fn admit(
           Owning -> registration.executor
           Observing | Operating -> ""
         },
+        // This branch resolves role before the operation continues.
         pool: case role {
           Owning -> registration.pool
           Observing | Operating -> ""
@@ -1956,10 +2009,12 @@ fn admit(
       workspace_digest: digest(registration.workspace),
       expected:,
       standing:,
+      // This branch resolves role before the operation continues.
       completion_models: case role {
         Observing -> []
         Operating | Owning -> models_fn()
       },
+      // This branch resolves role before the operation continues.
       completion_profiles: case role {
         Observing -> []
         Operating | Owning -> profiles_fn()
@@ -1984,6 +2039,8 @@ fn admit(
         )
       })
   }
+
+  // This branch resolves started before the operation continues.
   case started {
     // Neither failure is the person's to resolve: the daemon's permit
     // transfer was slow, or the component's start ran over its budget. The
@@ -2000,24 +2057,29 @@ fn admit(
   }
 }
 
-// What the page is told about its principal and session beyond the capture:
-// whether the principal is the daemon's owner, and, for a page that may invite,
-// whether the session was created to be shared. The scope is the catalogue's
-// domain record, read through the owner-only members read the admin page makes
-// (`chosen_members`), so a page for a private session can say so before the
-// owner presses a button and no new frame exists. A page that cannot invite
-// reads nothing, and a read that fails leaves the scope unknown, which draws
-// the buttons as before: the daemon refuses an invitation to a private session
-// whether or not the page knew.
+/// What the page is told about its principal and session beyond the capture:
+/// whether the principal is the daemon's owner, and, for a page that may invite,
+/// whether the session was created to be shared. The scope is the catalogue's
+/// domain record, read through the owner-only members read the admin page makes
+/// (`chosen_members`), so a page for a private session can say so before the
+/// owner presses a button and no new frame exists. A page that cannot invite
+/// reads nothing, and a read that fails leaves the scope unknown, which draws
+/// the buttons as before: the daemon refuses an invitation to a private session
+/// whether or not the page knew.
 fn standing_of(
   role: Role,
   origin: ui_sessions.Origin,
   attachment: server.Attachment(instance),
 ) -> component.Standing {
+  // This branch resolves attachment principal kind before the operation continues.
   let reader = case attachment.principal.kind {
     access.OwnerPrincipal -> component.DaemonOwner
     access.MemberPrincipal -> component.Participant
   }
+
+  // This branch resolves the input state before the operation continues.
+
+  // This branch resolves the input state before the operation continues.
   let sharing = case role {
     Owning ->
       case
@@ -2029,12 +2091,15 @@ fn standing_of(
         )
       {
         Ok(members) ->
+          // This branch resolves members scope before the operation continues.
           Some(case members.scope {
             domain.SessionOnly -> creations.Shareable
             domain.WorkspacePrivate -> creations.Private
           })
+
         Error(_) -> None
       }
+
     Observing | Operating -> None
   }
 
@@ -2044,6 +2109,7 @@ fn standing_of(
     Owning, Error(Nil) -> component.FromBookmark
     Owning, Ok(Nil) | Observing, _ | Operating, _ -> component.FromLink
   }
+
   component.Standing(reader:, sharing:, opening:, machine: attachment.machine)
 }
 
@@ -2060,15 +2126,16 @@ fn standing_of(
 /// ```
 @internal
 pub fn mints_access(origin: ui_sessions.Origin) -> Result(Nil, Nil) {
+  // This branch resolves origin before the operation continues.
   case origin {
     ui_sessions.Fresh -> Ok(Nil)
     ui_sessions.Resumed -> Error(Nil)
   }
 }
 
-// A started page as the socket serves it: its browser frames go to the
-// component, and what the component sends, like a signal of the socket's own,
-// arrives in this process's mailbox.
+/// A started page as the socket serves it: its browser frames go to the
+/// component, and what the component sends, like a signal of the socket's own,
+/// arrives in this process's mailbox.
 fn serving(page: Page, signals: process.Subject(Signal)) {
   mist.continue(Serving(page.forward, page.shutdown, signals))
   |> mist.with_selector(
@@ -2084,7 +2151,9 @@ fn serving(page: Page, signals: process.Subject(Signal)) {
 // returns `stop_abnormal` (the user-message path of mist's websocket
 // module). The abnormal stop also exits this process abnormally, which takes
 // the linked component down with it; the relay follows on its monitor.
+/// Closing keeps this client decision explicit for its callers.
 fn closing(close: ending.Close) -> mist.Next(Phase, Signal) {
+  // This branch resolves close before the operation continues.
   case close {
     ending.Final -> mist.stop()
     ending.Retry -> mist.stop_abnormal("the page may retry")
@@ -2117,6 +2186,7 @@ pub fn listed_task(
   read: fn() -> List(sessions.Entry),
   deliver: fn(List(sessions.Entry)) -> Nil,
 ) -> Nil {
+  // This branch resolves role before the operation continues.
   case role {
     Observing -> deliver(listed_for(role, read))
     Operating | Owning -> {
@@ -2133,22 +2203,23 @@ pub fn listed_task(
   }
 }
 
-// The sessions the page's principal may see, for the sidebar
-// (protocol-change/051, the addendum on the session sidebar): the same
-// authorized read a terminal's session picker makes. It is made with the
-// digest of the credential the page was admitted under, which the registry
-// authenticates again on every call, so a member is listed only the sessions
-// they hold a membership in, an owner every active session, and a revoked
-// credential none. It carries the catalogue's own fields, and never a
-// database path or a configuration, which the entry has no place for. A
-// failed read is an empty list, which the sidebar draws as nothing. It blocks
-// the calling process on the registry for up to the call's five seconds, and
-// on a few stats for each entry's project, so `listed_task` runs it off the
-// page's runtime.
+/// The sessions the page's principal may see, for the sidebar
+/// (protocol-change/051, the addendum on the session sidebar): the same
+/// authorized read a terminal's session picker makes. It is made with the
+/// digest of the credential the page was admitted under, which the registry
+/// authenticates again on every call, so a member is listed only the sessions
+/// they hold a membership in, an owner every active session, and a revoked
+/// credential none. It carries the catalogue's own fields, and never a
+/// database path or a configuration, which the entry has no place for. A
+/// failed read is an empty list, which the sidebar draws as nothing. It blocks
+/// the calling process on the registry for up to the call's five seconds, and
+/// on a few stats for each entry's project, so `listed_task` runs it off the
+/// page's runtime.
 fn listed(
   registry: manager.Manager(instance),
   credential: access.Digest,
 ) -> List(sessions.Entry) {
+  // This branch resolves manager authorized_page registry credential after before the operation continues.
   case manager.authorized_page(registry, credential, after: "") {
     Ok(#(_, views)) -> held_entries(registry, views) |> with_projects
     Error(_) -> []
@@ -2178,6 +2249,7 @@ pub fn listed_for(
   role: Role,
   read: fn() -> List(sessions.Entry),
 ) -> List(sessions.Entry) {
+  // This branch resolves role before the operation continues.
   case role {
     Observing -> []
     Operating | Owning -> read()
@@ -2201,6 +2273,7 @@ pub fn activity_for(
   ids: List(String),
   deliver: fn(List(#(String, sessions.Activity))) -> Nil,
 ) -> Nil {
+  // This branch resolves role before the operation continues.
   case role {
     Observing -> Nil
     Operating | Owning -> activity_task(ask, ids, deliver)
@@ -2226,6 +2299,7 @@ pub fn activity_for(
 /// ```
 @internal
 pub fn opened_for(role: Role, ask: fn() -> sessions.Answer) -> sessions.Answer {
+  // This branch resolves role before the operation continues.
   case role {
     Observing -> sessions.Declined(sessions.NotHeld)
     Operating | Owning -> ask()
@@ -2253,6 +2327,7 @@ pub fn resumed_for(
   deliver: fn(sessions.Answer) -> Nil,
   start: fn() -> Nil,
 ) -> Nil {
+  // This branch resolves role before the operation continues.
   case role {
     Observing -> deliver(sessions.Declined(sessions.NotHeld))
     Operating | Owning -> start()
@@ -2355,6 +2430,9 @@ pub fn signins_read(
   standing: Standing(instance),
   open: fn() -> Result(Int, Nil),
 ) -> signins.Listing {
+  // This branch resolves the input state before the operation continues.
+
+  // This branch resolves the input state before the operation continues.
   case open() {
     Error(Nil) -> signins.Unread
     Ok(_) ->
@@ -2373,7 +2451,7 @@ pub fn signins_read(
   }
 }
 
-// A login as the catalogue holds it, as the page draws it.
+/// A login as the catalogue holds it, as the page draws it.
 fn listed_signin(row: access.Signin) -> signins.Signin {
   signins.Signin(
     fingerprint: row.fingerprint,
@@ -2404,6 +2482,9 @@ pub fn sign_out_for(
   open: fn() -> Result(Int, Nil),
   fingerprint: String,
 ) -> signins.Answer {
+  // This branch resolves the input state before the operation continues.
+
+  // This branch resolves the input state before the operation continues.
   case open() {
     Error(Nil) -> signins.Declined(signins.Unavailable)
     Ok(_) ->
@@ -2439,6 +2520,9 @@ pub fn sign_out_all_for(
   epoch: String,
   open: fn() -> Result(Int, Nil),
 ) -> signins.Answer {
+  // This branch resolves the input state before the operation continues.
+
+  // This branch resolves the input state before the operation continues.
   case open() {
     Error(Nil) -> signins.Declined(signins.Unavailable)
     Ok(_) ->
@@ -2454,9 +2538,10 @@ pub fn sign_out_all_for(
   }
 }
 
-// A refused sign-out in the page's words. A fingerprint the principal does not
-// hold is the one the person can act on; every other refusal is the daemon's.
+/// A refused sign-out in the page's words. A fingerprint the principal does not
+/// hold is the one the person can act on; every other refusal is the daemon's.
 fn sign_out_reason(error: manager.AdminError) -> signins.Reason {
+  // This branch resolves error before the operation continues.
   case error {
     manager.AdminMetadata(catalogue.Missing)
     | manager.AdminMetadata(catalogue.Invalid(_)) -> signins.NotFound
@@ -2489,6 +2574,7 @@ pub fn device_capability(
   origin: ui_sessions.Origin,
   ask: fn() -> signins.Answer,
 ) -> Option(fn() -> signins.Answer) {
+  // This branch resolves origin before the operation continues.
   case origin {
     ui_sessions.Fresh -> Some(ask)
     ui_sessions.Resumed -> None
@@ -2538,23 +2624,34 @@ pub fn device_link_for(
 ) -> signins.Answer {
   let checked = {
     use until <- result.try(open() |> result.replace_error(signins.Unavailable))
+
+    // This branch resolves standing origin before the operation continues.
     use Nil <- result.try(case standing.origin {
       ui_sessions.Fresh -> Ok(Nil)
       ui_sessions.Resumed -> Error(signins.NotFresh)
     })
+
     use principal <- result.try(
       manager.authenticate(standing.registry, standing.digest)
       |> result.replace_error(signins.Unavailable),
     )
+
+    // This branch resolves principal id standing principal before the operation continues.
     use Nil <- result.map(case principal.id == standing.principal {
       True -> Ok(Nil)
       False -> Error(signins.Unavailable)
     })
+
     until
   }
+
+  // This branch resolves checked before the operation continues.
   case checked {
     Error(reason) -> signins.Declined(reason)
     Ok(until) ->
+      // This branch resolves the input state before the operation continues.
+
+      // This branch resolves the input state before the operation continues.
       case ui_sessions.reserve_invite(tickets, standing.digest) {
         Error(_) -> signins.Declined(signins.TooMany)
         Ok(Nil) ->
@@ -2599,6 +2696,7 @@ pub fn home_capability(
   reach: ui_sessions.Reach,
   ask: fn() -> sessions.Answer,
 ) -> Option(fn() -> sessions.Answer) {
+  // This branch resolves reach before the operation continues.
   case reach {
     ui_sessions.Workspace -> Some(ask)
     ui_sessions.OneSession -> None
@@ -2643,10 +2741,13 @@ pub fn home_ticket_for(
       manager.authenticate(standing.registry, standing.digest)
       |> result.replace_error(sessions.NoHome),
     )
+
+    // This branch resolves principal id standing principal before the operation continues.
     use _ <- result.try(case principal.id == standing.principal {
       True -> Ok(Nil)
       False -> Error(sessions.NoHome)
     })
+
     ui_sessions.mint_in(
       tickets,
       ui_sessions.Grant(
@@ -2663,6 +2764,8 @@ pub fn home_ticket_for(
     )
     |> result.replace_error(sessions.NoHome)
   }
+
+  // This branch resolves outcome before the operation continues.
   case outcome {
     Ok(issued) -> sessions.Ticketed(page.home_exchange_path(issued.ticket))
     Error(reason) -> sessions.Declined(reason)
@@ -2744,6 +2847,8 @@ pub fn ticket_for(
     )
     |> result.replace_error(sessions.Unavailable)
   }
+
+  // This branch resolves outcome before the operation continues.
   case outcome {
     Ok(issued) -> sessions.Ticketed(page.exchange_path(target, issued.ticket))
     Error(reason) -> sessions.Declined(reason)
@@ -2813,17 +2918,19 @@ pub fn resume_for(
     )
     operating_authority(authority)
   }
+
+  // This branch resolves checked before the operation continues.
   case checked {
     Error(reason) -> sessions.Declined(reason)
     Ok(Nil) -> opened_ticket(standing, tickets, open, target, within)
   }
 }
 
-// Asks the registry to open `target`, waits for it to be resident and mints the
-// page's ticket, which is the part of a resume and of a creation that comes after
-// the page's standing has been checked. A ticket that `ticket_for` would refuse
-// as `NotRunning` is `NotOpened` here: the session was resident a moment ago and
-// is not now.
+/// Asks the registry to open `target`, waits for it to be resident and mints the
+/// page's ticket, which is the part of a resume and of a creation that comes after
+/// the page's standing has been checked. A ticket that `ticket_for` would refuse
+/// as `NotRunning` is `NotOpened` here: the session was resident a moment ago and
+/// is not now.
 fn opened_ticket(
   standing: Standing(instance),
   tickets: ui_sessions.Sessions,
@@ -2838,9 +2945,12 @@ fn opened_ticket(
     )
     resident_within(standing.registry, target, within)
   }
+
+  // This branch resolves outcome before the operation continues.
   case outcome {
     Error(reason) -> sessions.Declined(reason)
     Ok(Nil) ->
+      // This branch resolves ticket_for standing tickets open target before the operation continues.
       case ticket_for(standing, tickets, open, target) {
         sessions.Declined(sessions.NotRunning) ->
           sessions.Declined(sessions.NotOpened)
@@ -2852,26 +2962,29 @@ fn opened_ticket(
 // Only a page minted to operate may ask the daemon to run a session. The
 // refusal is the one for a session the principal does not hold, as an
 // observer's switch is refused.
+/// Operating ceiling keeps this client decision explicit for its callers.
 fn operating_ceiling(ceiling: access.Role) -> Result(Nil, sessions.Reason) {
+  // This branch resolves ceiling before the operation continues.
   case ceiling {
     access.Operator -> Ok(Nil)
     access.Observer -> Error(sessions.NotHeld)
   }
 }
 
-// The control command's own role check for an open: Owner or Operator.
+/// The control command's own role check for an open: Owner or Operator.
 fn operating_authority(
   authority: access.Authority,
 ) -> Result(Nil, sessions.Reason) {
+  // This branch resolves authority before the operation continues.
   case authority {
     access.Owner | access.Participant(access.Operator) -> Ok(Nil)
     access.Participant(access.Observer) -> Error(sessions.NotOperator)
   }
 }
 
-// Reads the registry until `target` is resident or the wait ends, by
-// `weft/poll`. A status that cannot become resident without a new request ends
-// the wait at once rather than burning the budget on it.
+/// Reads the registry until `target` is resident or the wait ends, by
+/// `weft/poll`. A status that cannot become resident without a new request ends
+/// the wait at once rather than burning the budget on it.
 fn resident_within(
   registry: manager.Manager(instance),
   target: String,
@@ -2879,9 +2992,11 @@ fn resident_within(
 ) -> Result(Nil, sessions.Reason) {
   let outcome =
     poll.until(within:, every: 50, attempt: fn() {
+      // This branch resolves manager get registry target before the operation continues.
       case manager.get(registry, target) {
         Error(_) -> poll.Fail(sessions.NotOpened)
         Ok(view) ->
+          // This branch resolves view status before the operation continues.
           case view.status {
             manager.Resident(_) -> poll.Done(Nil)
             manager.Opening(_) -> poll.Retry
@@ -2893,6 +3008,8 @@ fn resident_within(
           }
       }
     })
+
+  // This branch resolves outcome before the operation continues.
   case outcome {
     poll.Answered(Nil) -> Ok(Nil)
     poll.Failed(reason) -> Error(reason)
@@ -3097,6 +3214,8 @@ pub fn create_with(
     |> result.map(fn(view) { #(principal, view) })
     |> result.map_error(creation_refusal)
   }
+
+  // This branch resolves outcome before the operation continues.
   case outcome {
     Error(reason) -> creations.Declined(reason)
     Ok(#(principal, view)) -> {
@@ -3111,6 +3230,8 @@ pub fn create_with(
         field.ident("session", session),
         field.ident("via", "page"),
       ])
+
+      // This branch resolves opened_ticket standing tickets open session within before the operation continues.
       case opened_ticket(standing, tickets, open, session, within) {
         sessions.Ticketed(path:) ->
           first_message_sent(path, session, prompt, send)
@@ -3120,19 +3241,21 @@ pub fn create_with(
   }
 }
 
-// The answer for a session that was created and opened: its ticket, once the first
-// message, if there is one, has been sent. A session that did not take the message
-// is kept and the answer says so, with the same ticket, and the reason goes to the
-// daemon's log. An empty message sends nothing.
+/// The answer for a session that was created and opened: its ticket, once the first
+/// message, if there is one, has been sent. A session that did not take the message
+/// is kept and the answer says so, with the same ticket, and the reason goes to the
+/// daemon's log. An empty message sends nothing.
 fn first_message_sent(
   path: String,
   session: String,
   prompt: String,
   send: fn(String, String) -> Result(Nil, String),
 ) -> creations.Answer {
+  // This branch resolves prompt before the operation continues.
   case prompt {
     "" -> creations.Ticketed(path)
     text ->
+      // This branch resolves send session text before the operation continues.
       case send(session, text) {
         Ok(Nil) -> creations.Ticketed(path)
         Error(reason) -> {
@@ -3147,19 +3270,19 @@ fn first_message_sent(
   }
 }
 
-// Answers for a creation the registry accepted and could not open. The reason
-// comes from the registry's memo of the exact operation this creation began,
-// read before anything else can supersede it. The owner's own terminal reads
-// the same text through `operations.get` (protocol-change/055), so this adds
-// no path or detail the owner is not shown elsewhere, and only an owner's page
-// reaches here because `authorized_owner` ran first.
-//
-// Once the failed slot has drained, a row still `Reserved` has no database and
-// nothing holds it, and this page never keeps its request key, so no retry
-// could complete it: it is released instead of left as a row the page cannot
-// open. A row that was initialized is a saved session and stays. A release the
-// registry refuses leaves the row for the owner's Delete, which is how the
-// home already treats a reserved row.
+/// Answers for a creation the registry accepted and could not open. The reason
+/// comes from the registry's memo of the exact operation this creation began,
+/// read before anything else can supersede it. The owner's own terminal reads
+/// the same text through `operations.get` (protocol-change/055), so this adds
+/// no path or detail the owner is not shown elsewhere, and only an owner's page
+/// reaches here because `authorized_owner` ran first.
+///
+/// Once the failed slot has drained, a row still `Reserved` has no database and
+/// nothing holds it, and this page never keeps its request key, so no retry
+/// could complete it: it is released instead of left as a row the page cannot
+/// open. A row that was initialized is a saved session and stays. A release the
+/// registry refuses leaves the row for the owner's Delete, which is how the
+/// home already treats a reserved row.
 fn unstarted(
   registry: manager.Manager(instance),
   release: fn(String) -> Result(Nil, manager.AdminError),
@@ -3168,34 +3291,43 @@ fn unstarted(
   let session = view.registration.id
   let why = startup_reason(registry, session, view.status)
   let _ = drained(registry, session)
+
+  // This branch resolves manager get registry session before the operation continues.
   let remains = case manager.get(registry, session) {
     Ok(manager.View(status: manager.Reserved, ..))
     | Ok(manager.View(status: manager.FailedStart(..), ..)) ->
+      // This branch resolves release session before the operation continues.
       case release(session) {
         Ok(Nil) -> creations.Dropped
         Error(_) -> creations.InList
       }
+
     Ok(_) | Error(_) -> creations.InList
   }
+
   creations.Unstarted(why:, remains:)
 }
 
-// The line of text the registry kept for a failed opening, drawn safe for one
-// line. An operation that is not the creation's own opening, or one the
-// registry kept nothing for, has no reason.
+/// The line of text the registry kept for a failed opening, drawn safe for one
+/// line. An operation that is not the creation's own opening, or one the
+/// registry kept nothing for, has no reason.
 fn startup_reason(
   registry: manager.Manager(instance),
   session: String,
   status: manager.Status,
 ) -> Option(String) {
+  // This branch resolves status before the operation continues.
   case status {
     manager.Opening(operation:) ->
+      // This branch resolves manager operation registry session operation before the operation continues.
       case manager.operation(registry, session, operation) {
         Error(manager.StartFailed(reason:)) ->
+          // This branch resolves text_hygiene single_line reason before the operation continues.
           case text_hygiene.single_line(reason) {
             "" -> None
             line -> Some(line)
           }
+
         Ok(_)
         | Error(manager.Catalogue(_))
         | Error(manager.NotInitialized)
@@ -3208,6 +3340,7 @@ fn startup_reason(
         | Error(manager.SessionMoved(..))
         | Error(manager.SessionDeleting) -> None
       }
+
     manager.Reserved
     | manager.FailedStart(..)
     | manager.Saved
@@ -3217,12 +3350,12 @@ fn startup_reason(
   }
 }
 
-// The first two steps of every owner-only request a home page makes: the page is
-// still open, its ceiling is an operator's, and the credential still
-// authenticates as the principal the page was admitted for, who is the daemon's
-// owner. Each refusal is `NotOwner`, so a page learns nothing else about its
-// standing. The request's own steps run after it, so no later check runs for a
-// page that may not ask.
+/// The first two steps of every owner-only request a home page makes: the page is
+/// still open, its ceiling is an operator's, and the credential still
+/// authenticates as the principal the page was admitted for, who is the daemon's
+/// owner. Each refusal is `NotOwner`, so a page learns nothing else about its
+/// standing. The request's own steps run after it, so no later check runs for a
+/// page that may not ask.
 fn authorized_owner(
   standing: Standing(instance),
   open: fn() -> Result(Int, Nil),
@@ -3236,24 +3369,28 @@ fn authorized_owner(
     manager.authenticate(standing.registry, standing.digest)
     |> result.replace_error(creations.NotOwner),
   )
+
+  // This branch resolves principal id standing principal before the operation continues.
   use _ <- result.map(case principal.id == standing.principal {
     True -> owner_of(principal)
     False -> Error(creations.NotOwner)
   })
+
   principal
 }
 
-// The canonical workspace a place stands for. A typed path is only what
-// `folder` says it is. A workspace the page drew is one the owner holds a
-// session in now, which needs no further judgement, or one of the owner's recent
-// folders, which is judged again by `folder`: the directory may have been
-// removed, moved or replaced since it was remembered, and the home page that
-// drew it may be hours old.
+/// The canonical workspace a place stands for. A typed path is only what
+/// `folder` says it is. A workspace the page drew is one the owner holds a
+/// session in now, which needs no further judgement, or one of the owner's recent
+/// folders, which is judged again by `folder`: the directory may have been
+/// removed, moved or replaced since it was remembered, and the home page that
+/// drew it may be hours old.
 fn placed(
   standing: Standing(instance),
   folder: fn(String) -> Result(String, creations.Reason),
   place: creations.Place,
 ) -> Result(String, creations.Reason) {
+  // This branch resolves place before the operation continues.
   case place {
     creations.Typed(path:) -> folder(path)
 
@@ -3265,6 +3402,7 @@ fn placed(
       creations.registered_name(workspace)
       |> result.replace_error(creations.InvalidWorkspaceName)
     creations.Drawn(workspace:) ->
+      // This branch resolves known_workspace standing workspace before the operation continues.
       case known_workspace(standing, workspace) {
         Ok(Nil) -> Ok(workspace)
         Error(creations.NotKnown) ->
@@ -3274,16 +3412,18 @@ fn placed(
   }
 }
 
-// A workspace the owner has no session in is still creatable when it is one of
-// the owner's recent folders, and it is then judged as a typed path is.
+/// A workspace the owner has no session in is still creatable when it is one of
+/// the owner's recent folders, and it is then judged as a typed path is.
 fn remembered_workspace(
   standing: Standing(instance),
   folder: fn(String) -> Result(String, creations.Reason),
   workspace: String,
 ) -> Result(String, creations.Reason) {
+  // This branch resolves manager recent_folders standing registry before the operation continues.
   case manager.recent_folders(standing.registry) {
     Error(_) -> Error(creations.Unavailable)
     Ok(recent) ->
+      // This branch resolves list any recent fn entry entry workspace workspace before the operation continues.
       case list.any(recent, fn(entry) { entry.workspace == workspace }) {
         True -> folder(workspace)
         False -> Error(creations.NotKnown)
@@ -3293,20 +3433,25 @@ fn remembered_workspace(
 
 // Only the daemon's owner creates a session. A member's page is refused here
 // even if a message reached it.
+/// Owner of keeps this client decision explicit for its callers.
 fn owner_of(principal: access.Principal) -> Result(Nil, creations.Reason) {
+  // This branch resolves principal kind before the operation continues.
   case principal.kind {
     access.OwnerPrincipal -> Ok(Nil)
     access.MemberPrincipal -> Error(creations.NotOwner)
   }
 }
 
-// A workspace is known when the owner holds a session in it now. The read is the
-// home's own list, made with the page's credential, so the creation is possible
-// in exactly the workspaces the page could have drawn a button for.
+/// A workspace is known when the owner holds a session in it now. The read is the
+/// home's own list, made with the page's credential, so the creation is possible
+/// in exactly the workspaces the page could have drawn a button for.
 fn known_workspace(
   standing: Standing(instance),
   workspace: String,
 ) -> Result(Nil, creations.Reason) {
+  // This branch resolves the input state before the operation continues.
+
+  // This branch resolves the input state before the operation continues.
   case manager.authorized_page(standing.registry, standing.digest, after: "") {
     Error(_) -> Error(creations.Unavailable)
     Ok(#(_, views)) ->
@@ -3322,13 +3467,14 @@ fn known_workspace(
   }
 }
 
-// The domain scope a creation asks for. A session on an executor is always
-// session-only, whatever the form said: its workspace aggregate would be keyed
-// by a path on this host, which a registered name is not (protocol-change/078).
+/// The domain scope a creation asks for. A session on an executor is always
+/// session-only, whatever the form said: its workspace aggregate would be keyed
+/// by a path on this host, which a registered name is not (protocol-change/078).
 fn scope_of(
   place: creations.Place,
   sharing: creations.Sharing,
 ) -> domain.Scope {
+  // This branch resolves place sharing before the operation continues.
   case place, sharing {
     creations.Registered(..), _
     | creations.Pooled(..), _
@@ -3342,7 +3488,9 @@ fn scope_of(
 
 // The executor a creation names, or the empty string for a place on this host or
 // in a pool.
+/// Executor of keeps this client decision explicit for its callers.
 fn executor_of(place: creations.Place) -> String {
+  // This branch resolves place before the operation continues.
   case place {
     creations.Registered(executor:, ..) -> executor
     creations.Pooled(..) | creations.Drawn(_) | creations.Typed(_) -> ""
@@ -3352,18 +3500,21 @@ fn executor_of(place: creations.Place) -> String {
 // The pool a creation names, or the empty string for any other place. A creation
 // names an executor or a pool, never both: the daemon picks a pool's executor
 // when the session first opens.
+/// Pool of keeps this client decision explicit for its callers.
 fn pool_of(place: creations.Place) -> String {
+  // This branch resolves place before the operation continues.
   case place {
     creations.Pooled(pool:, ..) -> pool
     creations.Registered(..) | creations.Drawn(_) | creations.Typed(_) -> ""
   }
 }
 
-// The control command's code for a refused creation, in the page's fixed words.
-// A workspace that cannot be canonicalized now is not one the owner can use, a
-// full registry is its own words, and the rest read alike: the daemon's detail
-// stays in the daemon.
+/// The control command's code for a refused creation, in the page's fixed words.
+/// A workspace that cannot be canonicalized now is not one the owner can use, a
+/// full registry is its own words, and the rest read alike: the daemon's detail
+/// stays in the daemon.
 fn creation_refusal(code: String) -> creations.Reason {
+  // This branch resolves code before the operation continues.
   case code {
     "forbidden" -> creations.NotOwner
     "invalid_workspace" -> creations.NotAFolder
@@ -3464,6 +3615,7 @@ pub fn recent_for(
   open: fn() -> Result(Int, Nil),
   home: String,
 ) -> List(creations.Recent) {
+  // This branch resolves authorized_owner standing open before the operation continues.
   case authorized_owner(standing, open) {
     Ok(_) -> listed_recent(standing, home)
     Error(_) -> []
@@ -3490,18 +3642,20 @@ pub fn elsewhere_for(
   orchestrator: Option(String),
   after: Option(String),
 ) -> page_elsewhere.Read {
+  // This branch resolves authorized_owner standing open before the operation continues.
   case authorized_owner(standing, open) {
     Ok(_) -> read(orchestrator, after)
     Error(_) -> page_elsewhere.Unread
   }
 }
 
-// The list `recent_for` answers once the owner check has passed, so a caller that
-// has made its own check does not make it twice.
+/// The list `recent_for` answers once the owner check has passed, so a caller that
+/// has made its own check does not make it twice.
 fn listed_recent(
   standing: Standing(instance),
   home: String,
 ) -> List(creations.Recent) {
+  // This branch resolves manager recent_folders standing registry before the operation continues.
   case manager.recent_folders(standing.registry) {
     Ok(recent) ->
       list.filter_map(recent, fn(entry) {
@@ -3529,6 +3683,7 @@ pub fn forget_for(
   home: String,
   id: Int,
 ) -> List(creations.Recent) {
+  // This branch resolves authorized_owner standing open before the operation continues.
   case authorized_owner(standing, open) {
     Error(_) -> []
     Ok(_) -> {
@@ -3610,6 +3765,7 @@ pub fn worktree_capability(
   role: Role,
   start: fn(fn(worktrees.Read) -> Nil) -> Nil,
 ) -> Option(fn(fn(worktrees.Read) -> Nil) -> Nil) {
+  // This branch resolves role before the operation continues.
   case role {
     Observing -> None
     Operating | Owning -> Some(start)
@@ -3635,6 +3791,7 @@ pub fn logins_capability(
 ) -> Option(
   fn(List(remembered.Login), fn(List(remembered.Login)) -> Nil) -> Nil,
 ) {
+  // This branch resolves role before the operation continues.
   case role {
     Observing | Operating -> None
     Owning -> Some(ask)
@@ -3666,16 +3823,20 @@ pub fn ended_logins(
   signins: fn(Option(String)) -> Result(access.SigninPage, Nil),
   logins: List(remembered.Login),
 ) -> List(remembered.Login) {
+  // This branch resolves open before the operation continues.
   case open() {
     Error(Nil) -> []
     Ok(_) -> {
       let principals =
         list.map(logins, fn(login) { login.principal }) |> list.unique
       list.flat_map(principals, fn(principal) {
+        // This branch resolves principal own before the operation continues.
         let target = case principal == own {
           True -> None
           False -> Some(principal)
         }
+
+        // This branch resolves signins target before the operation continues.
         case signins(target) {
           Ok(access.SigninPage(entries:, remainder: access.Exhausted)) -> {
             let active = list.map(entries, fn(entry) { entry.fingerprint })
@@ -3754,24 +3915,31 @@ pub fn worktree_answer(
   reserve: fn() -> Result(Nil, Nil),
   observe: fn() -> Result(wire.JsonValue, String),
 ) -> worktrees.Read {
+  // This branch resolves check before the operation continues.
   case check() {
     Error(_) -> worktrees.Declined
     Ok(#(_, authority)) ->
+      // This branch resolves ui_relay capped authority ceiling before the operation continues.
       case ui_relay.capped(authority, ceiling) {
         access.Owner | access.Participant(access.Operator) ->
+          // This branch resolves reserve before the operation continues.
           case reserve() {
             Ok(Nil) -> worktree_read(observe())
             Error(Nil) -> worktrees.Throttled
           }
+
         access.Participant(access.Observer) -> worktrees.Declined
       }
   }
 }
 
-// The observation as the page holds it: the gateway's own envelope around the
-// board, so `worktree_view.decode` validates it as it validates the terminal's,
-// and anything it refuses is `Unreadable`.
+/// The observation as the page holds it: the gateway's own envelope around the
+/// board, so `worktree_view.decode` validates it as it validates the terminal's,
+/// and anything it refuses is `Unreadable`.
 fn worktree_read(observed: Result(wire.JsonValue, String)) -> worktrees.Read {
+  // This branch resolves the input state before the operation continues.
+
+  // This branch resolves the input state before the operation continues.
   case observed {
     Ok(wire.Object(fields)) ->
       case
@@ -3788,6 +3956,7 @@ fn worktree_read(observed: Result(wire.JsonValue, String)) -> worktrees.Read {
         | Ok(worktree_view.Failed(..))
         | Error(_) -> worktrees.Unreadable
       }
+
     Ok(_) | Error(_) -> worktrees.Unreadable
   }
 }
@@ -3844,12 +4013,16 @@ pub fn invite_for(
     )
     may_invite(open, attachment.principal, address)
   }
+
+  // This branch resolves standing before the operation continues.
   case standing {
     Error(reason) -> invites.Declined(reason)
     Ok(address) ->
+      // This branch resolves ui_sessions reserve_invite tickets attachment digest before the operation continues.
       case ui_sessions.reserve_invite(tickets, attachment.digest) {
         Error(_) -> invites.Declined(invites.TooMany)
         Ok(Nil) ->
+          // This branch resolves invited attachment address chosen before the operation continues.
           case invited(attachment, address, chosen) {
             Ok(invitation) -> invites.Minted(invitation)
             Error(refusal) -> {
@@ -3876,6 +4049,7 @@ pub fn invite_capability(
   origin: ui_sessions.Origin,
   ask: fn(invites.Role) -> invites.Answer,
 ) -> Option(fn(invites.Role) -> invites.Answer) {
+  // This branch resolves role mints_access origin before the operation continues.
   case role, mints_access(origin) {
     Owning, Ok(Nil) -> Some(ask)
     Owning, Error(Nil) | Observing, _ | Operating, _ -> None
@@ -3904,7 +4078,9 @@ pub fn may_invite(
 
 // Only the daemon's owner invites. A member operator's page is refused here
 // even if a message reached it.
+/// Owner principal keeps this client decision explicit for its callers.
 fn owner_principal(principal: access.Principal) -> Result(Nil, invites.Reason) {
+  // This branch resolves principal kind before the operation continues.
   case principal.kind {
     access.OwnerPrincipal -> Ok(Nil)
     access.MemberPrincipal -> Error(invites.NotOwner)
@@ -3918,8 +4094,8 @@ type Refusal {
   Undrawn
 }
 
-// The session page's invitation: the page's own session, the daemon's default
-// name.
+/// The session page's invitation: the page's own session, the daemon's default
+/// name.
 fn invited(
   attachment: server.Attachment(instance),
   address: String,
@@ -3936,11 +4112,11 @@ fn invited(
   )
 }
 
-// The dispatch both invitations share, the session page's and the admin page's,
-// so a claim and its principal are made one way whichever asked. The claim is
-// drawn here and handed to the registry as a digest, and the token comes back
-// only in the invitation the caller shows. `named` is the inviter's suggested
-// name, which the caller has already judged, or none for the daemon's own.
+/// The dispatch both invitations share, the session page's and the admin page's,
+/// so a claim and its principal are made one way whichever asked. The claim is
+/// drawn here and handed to the registry as a digest, and the token comes back
+/// only in the invitation the caller shows. `named` is the inviter's suggested
+/// name, which the caller has already judged, or none for the daemon's own.
 fn invitation(
   registry: manager.Manager(instance),
   digest: access.Digest,
@@ -3961,10 +4137,13 @@ fn invitation(
       |> bit_array.base16_encode
       |> string.lowercase
     }
+
+  // This branch resolves chosen before the operation continues.
   let member = case chosen {
     invites.Observer -> access.Observer
     invites.Operator -> access.Operator
   }
+
   let name =
     option.lazy_unwrap(named, fn() { "Guest " <> string.drop_start(id, 6) })
   use principal <- result.map(
@@ -3986,14 +4165,15 @@ fn invitation(
   )
 }
 
-// A refusal that made nothing gives the invitation back. The registry not
-// answering leaves an unknown outcome, in which a principal may exist, so that
-// one stays counted.
+/// A refusal that made nothing gives the invitation back. The registry not
+/// answering leaves an unknown outcome, in which a principal may exist, so that
+/// one stays counted.
 fn give_back(
   tickets: ui_sessions.Sessions,
   credential: access.Digest,
   refusal: Refusal,
 ) -> Nil {
+  // This branch resolves refusal before the operation continues.
   case refusal {
     Managed(manager.AdminUnavailable) -> Nil
     Managed(manager.IsolationRequired)
@@ -4010,9 +4190,10 @@ fn give_back(
   }
 }
 
-// The fixed reason a page words for a refusal. A stale epoch, a busy session
-// and a metadata refusal are the daemon's to sort out and read alike.
+/// The fixed reason a page words for a refusal. A stale epoch, a busy session
+/// and a metadata refusal are the daemon's to sort out and read alike.
 fn reason_of(refusal: Refusal) -> invites.Reason {
+  // This branch resolves refusal before the operation continues.
   case refusal {
     Managed(manager.IsolationRequired) -> invites.NotIsolated
     Managed(manager.AdminForbidden) -> invites.NotOwner
@@ -4048,6 +4229,7 @@ pub fn shareable_capability(
   origin: ui_sessions.Origin,
   ask: fn(fn(grants.Answer) -> Nil) -> Nil,
 ) -> Option(fn(fn(grants.Answer) -> Nil) -> Nil) {
+  // This branch resolves role mints_access origin before the operation continues.
   case role, mints_access(origin) {
     Owning, Ok(Nil) -> Some(ask)
     Owning, Error(Nil) | Observing, _ | Operating, _ -> None
@@ -4088,10 +4270,13 @@ pub fn shareable_for(
       mints_access(origin) |> result.replace_error(grants.NotOwner),
     )
     use _ <- result.try(open() |> result.replace_error(grants.NotOwner))
+
+    // This branch resolves role_of attachment before the operation continues.
     use _ <- result.try(case role_of(attachment) {
       Owning -> Ok(Nil)
       Observing | Operating -> Error(grants.NotOwner)
     })
+
     shareable.make(
       attachment.registry,
       attachment.digest,
@@ -4102,6 +4287,8 @@ pub fn shareable_for(
     |> result.replace(grants.Changed)
     |> result.map_error(shareable_reason)
   }
+
+  // This branch resolves outcome before the operation continues.
   case outcome {
     Ok(answer) -> answer
     Error(reason) -> grants.Declined(reason)
@@ -4149,6 +4336,7 @@ pub fn peer_links_capability(
   role: Role,
   ask: fn(peer_links.Request, fn(peer_links.Answer) -> Nil) -> Nil,
 ) -> Option(fn(peer_links.Request, fn(peer_links.Answer) -> Nil) -> Nil) {
+  // This branch resolves role before the operation continues.
   case role {
     Owning -> Some(ask)
     Observing | Operating -> None
@@ -4197,11 +4385,15 @@ pub fn peer_links_for(
       manager.authenticate(standing.registry, standing.digest)
       |> result.replace_error(Nil),
     )
+
+    // This branch resolves principal id standing principal principal kind before the operation continues.
     case principal.id == standing.principal, principal.kind {
       True, access.OwnerPrincipal -> Ok(Nil)
       True, access.MemberPrincipal | False, _ -> Error(Nil)
     }
   }
+
+  // This branch resolves owner before the operation continues.
   case owner {
     Error(Nil) -> peer_links.Declined(peer_links.NotOwner)
     Ok(Nil) -> ui_peers.run(directory, session_id, request)
@@ -4253,6 +4445,7 @@ pub fn rename_capability(
   role: Role,
   ask: fn(String, fn(renames.Answer) -> Nil) -> Nil,
 ) -> Option(fn(String, fn(renames.Answer) -> Nil) -> Nil) {
+  // This branch resolves role before the operation continues.
   case role {
     Owning -> Some(ask)
     Observing | Operating -> None
@@ -4313,12 +4506,16 @@ pub fn rename_for(
       manager.authenticate(standing.registry, standing.digest)
       |> result.replace_error(renames.NotOwner),
     )
+
+    // The owner check rejects unauthorized rename attempts before mutation.
     use _ <- result.try(
+      // This branch resolves principal id standing principal principal kind before the operation continues.
       case principal.id == standing.principal, principal.kind {
         True, access.OwnerPrincipal -> Ok(Nil)
         True, access.MemberPrincipal | False, _ -> Error(renames.NotOwner)
       },
     )
+
     use _ <- result.try(
       ids.parse_session_id(target) |> result.replace_error(renames.NotOwner),
     )
@@ -4326,23 +4523,30 @@ pub fn rename_for(
     use _ <- result.try(
       catalogue.display_name(name) |> result.replace_error(renames.InvalidName),
     )
+
+    // Confirm request ownership before any rename mutation is permitted.
     use view <- result.map(
       manager.rename(standing.registry, standing.digest, epoch, target, name)
       |> result.map_error(rename_refusal),
     )
     view.registration.name
   }
+
+  // This branch resolves outcome before the operation continues.
+
+  // Confirm request ownership before any rename mutation is permitted.
   case outcome {
     Ok(stored) -> renames.Renamed(stored)
     Error(reason) -> renames.Declined(reason)
   }
 }
 
-// The fixed reason for a refusal of the registry's rename. A principal that is
-// not the owner, a stale epoch and a session the catalogue does not hold read
-// alike, so a page learns nothing about which; a name the catalogue itself
-// refused is a bad name, and anything else is the daemon's to sort out.
+/// The fixed reason for a refusal of the registry's rename. A principal that is
+/// not the owner, a stale epoch and a session the catalogue does not hold read
+/// alike, so a page learns nothing about which; a name the catalogue itself
+/// refused is a bad name, and anything else is the daemon's to sort out.
 fn rename_refusal(error: manager.AdminError) -> renames.Reason {
+  // This branch resolves error before the operation continues.
   case error {
     manager.AdminForbidden
     | manager.AdminStaleEpoch
@@ -4462,6 +4666,8 @@ pub fn manage_for(
     use _ <- result.try(
       ids.parse_session_id(target) |> result.replace_error(actions.NotOwner),
     )
+
+    // This branch resolves action before the operation continues.
     case action {
       // Move reads before it asks. Which orchestrators could take the session
       // is a read of the deployment and changes nothing; the move itself is the
@@ -4507,17 +4713,20 @@ pub fn manage_for(
         |> result.map_error(action_refusal)
     }
   }
+
+  // This branch resolves outcome before the operation continues.
   case outcome {
     Ok(answer) -> answer
     Error(reason) -> actions.Declined(reason)
   }
 }
 
-// The fixed reason for a refused move. An owner check the registry repeated is
-// the page's `NotOwner`; a registry that did not answer is `Unavailable`; every
-// other refusal says the session cannot move now, since the page's one
-// sentence for it is all the owner can act on.
+/// The fixed reason for a refused move. An owner check the registry repeated is
+/// the page's `NotOwner`; a registry that did not answer is `Unavailable`; every
+/// other refusal says the session cannot move now, since the page's one
+/// sentence for it is all the owner can act on.
 fn move_refusal(refusal: server.MoveRefusal) -> actions.Reason {
+  // This branch resolves refusal before the operation continues.
   case refusal {
     server.Declined(manager.AdminForbidden)
     | server.Declined(manager.AdminStaleEpoch)
@@ -4540,9 +4749,9 @@ fn move_refusal(refusal: server.MoveRefusal) -> actions.Reason {
   }
 }
 
-// Hides the session from the lists, keeping everything it holds. The registry
-// authenticates the credential and the epoch in its own turn, needs the owner,
-// and refuses a session a process still holds.
+/// Hides the session from the lists, keeping everything it holds. The registry
+/// authenticates the credential and the epoch in its own turn, needs the owner,
+/// and refuses a session a process still holds.
 fn archive_for(
   standing: Standing(instance),
   epoch: String,
@@ -4559,9 +4768,9 @@ fn archive_for(
   |> result.map_error(action_refusal)
 }
 
-// Begins the stop and waits, within `stop_wait_ms`, for the registry to report
-// the session saved. A drain that outlasts the wait is still a stop that was
-// made. A session the registry holds as recovering is not one a stop can end.
+/// Begins the stop and waits, within `stop_wait_ms`, for the registry to report
+/// the session saved. A drain that outlasts the wait is still a stop that was
+/// made. A session the registry holds as recovering is not one a stop can end.
 fn stop_for(
   registry: manager.Manager(instance),
   target: String,
@@ -4569,6 +4778,7 @@ fn stop_for(
   use status <- result.try(
     manager.stop_session(registry, target)
     |> result.map_error(fn(error) {
+      // This branch resolves error before the operation continues.
       case error {
         manager.Catalogue(catalogue.Missing) -> actions.NotOwner
         manager.Catalogue(_)
@@ -4585,34 +4795,40 @@ fn stop_for(
       }
     }),
   )
+
+  // This branch resolves status before the operation continues.
   case status {
     manager.Saved | manager.Reserved | manager.FailedStart(..) -> Ok(Nil)
     manager.Stopping(_) ->
+      // This branch resolves drained registry target before the operation continues.
       case drained(registry, target) {
         poll.Failed(reason) -> Error(reason)
         poll.Answered(Nil) | poll.Expired -> Ok(Nil)
       }
+
     manager.Resident(_) | manager.Opening(_) | manager.RecoveryBlocked(_) ->
       Error(actions.Unavailable)
   }
 }
 
-// Looks at the session until the registry holds nothing for it.
-//
-// `stop_session` marks the slot closing in the turn that answers it, and a
-// closing slot never reopens, so a session seen opening or resident here is a
-// new incarnation somebody resumed after the drain. The stop that was asked
-// for has completed and is reported done; waiting on would only run out the
-// clock. The resumed session is another person's change, and an archive or
-// delete of it meets the registry's own busy check.
+/// Looks at the session until the registry holds nothing for it.
+///
+/// `stop_session` marks the slot closing in the turn that answers it, and a
+/// closing slot never reopens, so a session seen opening or resident here is a
+/// new incarnation somebody resumed after the drain. The stop that was asked
+/// for has completed and is reported done; waiting on would only run out the
+/// clock. The resumed session is another person's change, and an archive or
+/// delete of it meets the registry's own busy check.
 fn drained(
   registry: manager.Manager(instance),
   target: String,
 ) -> poll.Outcome(Nil, actions.Reason) {
   poll.until(within: stop_wait_ms, every: 100, attempt: fn() {
+    // This branch resolves manager get registry target before the operation continues.
     case manager.get(registry, target) {
       Error(_) -> poll.Fail(actions.Unavailable)
       Ok(view) ->
+        // This branch resolves view status before the operation continues.
         case view.status {
           manager.Saved | manager.Reserved | manager.FailedStart(..) ->
             poll.Done(Nil)
@@ -4624,11 +4840,12 @@ fn drained(
   })
 }
 
-// The fixed reason for a refusal of the registry's archive or delete. A
-// principal that is not the owner, a stale epoch and a session the catalogue
-// does not hold read alike, so a page learns nothing about which; a session a
-// process holds is the one reason a person can act on.
+/// The fixed reason for a refusal of the registry's archive or delete. A
+/// principal that is not the owner, a stale epoch and a session the catalogue
+/// does not hold read alike, so a page learns nothing about which; a session a
+/// process holds is the one reason a person can act on.
 fn action_refusal(error: manager.AdminError) -> actions.Reason {
+  // This branch resolves error before the operation continues.
   case error {
     manager.AdminForbidden
     | manager.AdminStaleEpoch
@@ -4711,6 +4928,7 @@ pub fn home_rename_self_capability(
   ceiling: access.Role,
   ask: fn(String, fn(names.Answer) -> Nil) -> Nil,
 ) -> Option(fn(String, fn(names.Answer) -> Nil) -> Nil) {
+  // This branch resolves ceiling before the operation continues.
   case ceiling {
     access.Operator -> Some(ask)
     access.Observer -> None
@@ -4734,9 +4952,11 @@ pub fn name_read(
   standing: Standing(instance),
   open: fn() -> Result(Int, Nil),
 ) -> Option(String) {
+  // This branch resolves open before the operation continues.
   case open() {
     Error(Nil) -> None
     Ok(_) ->
+      // This branch resolves manager authenticate standing registry standing digest before the operation continues.
       case manager.authenticate(standing.registry, standing.digest) {
         Ok(principal) if principal.id == standing.principal ->
           Some(principal.display_name)
@@ -4792,10 +5012,13 @@ pub fn rename_self_for(
       manager.authenticate(standing.registry, standing.digest)
       |> result.replace_error(names.NotAllowed),
     )
+
+    // This branch resolves principal id standing principal before the operation continues.
     use _ <- result.try(case principal.id == standing.principal {
       True -> Ok(Nil)
       False -> Error(names.NotAllowed)
     })
+
     use renamed <- result.map(
       manager.rename_principal(
         standing.registry,
@@ -4808,18 +5031,21 @@ pub fn rename_self_for(
     )
     renamed.display_name
   }
+
+  // This branch resolves outcome before the operation continues.
   case outcome {
     Ok(stored) -> names.Renamed(stored)
     Error(reason) -> names.Declined(reason)
   }
 }
 
-// The fixed reason for a refusal of the registry's rename of a principal. A
-// credential that no longer authenticates, a stale epoch, a principal the
-// catalogue does not hold and a member naming another read alike, so a page
-// learns nothing about which; a name the catalogue itself refused is a bad name,
-// and anything else is the daemon's to sort out.
+/// The fixed reason for a refusal of the registry's rename of a principal. A
+/// credential that no longer authenticates, a stale epoch, a principal the
+/// catalogue does not hold and a member naming another read alike, so a page
+/// learns nothing about which; a name the catalogue itself refused is a bad name,
+/// and anything else is the daemon's to sort out.
 fn name_refusal(error: manager.AdminError) -> names.Reason {
+  // This branch resolves error before the operation continues.
   case error {
     manager.AdminForbidden
     | manager.AdminStaleEpoch
@@ -4896,6 +5122,7 @@ pub fn home_admin_capability(
   origin: ui_sessions.Origin,
   ask: fn(fn(sessions.Answer) -> Nil) -> Nil,
 ) -> Option(fn(fn(sessions.Answer) -> Nil) -> Nil) {
+  // This branch resolves principal kind ceiling fresh_home reach origin before the operation continues.
   case principal.kind, ceiling, fresh_home(reach, origin) {
     access.OwnerPrincipal, access.Operator, Ok(Nil) -> Some(ask)
     access.OwnerPrincipal, access.Operator, Error(Nil)
@@ -4930,6 +5157,7 @@ pub fn fresh_home(
   reach: ui_sessions.Reach,
   origin: ui_sessions.Origin,
 ) -> Result(Nil, Nil) {
+  // This branch resolves reach origin before the operation continues.
   case reach, origin {
     ui_sessions.Workspace, ui_sessions.Fresh -> Ok(Nil)
     ui_sessions.Workspace, ui_sessions.Resumed | ui_sessions.OneSession, _ ->
@@ -4993,16 +5221,18 @@ pub fn admin_ticket_for(
     )
     |> result.replace_error(sessions.NoAdmin)
   }
+
+  // This branch resolves outcome before the operation continues.
   case outcome {
     Ok(issued) -> sessions.Ticketed(page.admin_exchange_path(issued.ticket))
     Error(reason) -> sessions.Declined(reason)
   }
 }
 
-// The steps an admin ticket and every admin change begin with: the asking page
-// is open (its deadline is the answer), was minted to operate, and its credential
-// still authenticates as the principal it was admitted for, who is the daemon's
-// owner. A member's page is refused here even if a message reached it.
+/// The steps an admin ticket and every admin change begin with: the asking page
+/// is open (its deadline is the answer), was minted to operate, and its credential
+/// still authenticates as the principal it was admitted for, who is the daemon's
+/// owner. A member's page is refused here even if a message reached it.
 fn owner_operating(
   standing: Standing(instance),
   open: fn() -> Result(Int, Nil),
@@ -5015,6 +5245,8 @@ fn owner_operating(
     manager.authenticate(standing.registry, standing.digest)
     |> result.replace_error(Nil),
   )
+
+  // This branch resolves principal id standing principal principal kind before the operation continues.
   case principal.id == standing.principal, principal.kind {
     True, access.OwnerPrincipal -> Ok(until)
     True, access.MemberPrincipal | False, _ -> Error(Nil)
@@ -5117,14 +5349,18 @@ pub fn upgrade_admin(
 /// assert !ui_socket.admin_accepts("{\"kind\":1,\"name\":\"click\",\"path\":\"0\\t0\\t5\"}")
 /// ```
 pub fn admin_accepts(frame: String) -> Bool {
+  // This branch resolves json parse frame admin_event before the operation continues.
   case json.parse(frame, admin_event()) {
     Ok(accepted) -> accepted
     Error(_) -> False
   }
 }
 
+/// Decodes admin management events submitted through the administrative socket.
 fn admin_event() -> decode.Decoder(Bool) {
   use kind <- decode.field("kind", decode.int)
+
+  // This branch resolves kind before the operation continues.
   case kind {
     1 -> {
       use name <- decode.field("name", decode.string)
@@ -5147,17 +5383,17 @@ fn admin_event() -> decode.Decoder(Bool) {
   }
 }
 
-// What an admin page asks the daemon with: the registry, the credential it was
-// admitted under, its principal and the ceiling it was minted with. Its reach is
-// `Workspace` and its origin `Fresh`, which only the tickets a page mints read,
-// and the admin page mints none; the login it was opened from is the one its
-// sign-in rows mark as this browser.
-//
-// `Fresh` is written here and not read from the page, and that is sound only
-// because `admin_ticket_for` mints an admin ticket from nothing but a `Fresh`
-// home (`fresh_home`), and the admin socket mints no tickets of any scope. If an
-// admin page ever minted one, its origin would have to travel on the grant as
-// the home's does.
+/// What an admin page asks the daemon with: the registry, the credential it was
+/// admitted under, its principal and the ceiling it was minted with. Its reach is
+/// `Workspace` and its origin `Fresh`, which only the tickets a page mints read,
+/// and the admin page mints none; the login it was opened from is the one its
+/// sign-in rows mark as this browser.
+///
+/// `Fresh` is written here and not read from the page, and that is sound only
+/// because `admin_ticket_for` mints an admin ticket from nothing but a `Fresh`
+/// home (`fresh_home`), and the admin socket mints no tickets of any scope. If an
+/// admin page ever minted one, its origin would have to travel on the grant as
+/// the home's does.
 fn admin_standing(
   attachment: server.AdminAttachment(instance),
   ceiling: access.Role,
@@ -5173,9 +5409,9 @@ fn admin_standing(
   )
 }
 
-// Takes the permit in the socket's first handler turn, as `admit_home` does, and
-// then starts the admin component with its two requests as closures over the
-// attachment: each starts the daemon's task and returns at once.
+/// Takes the permit in the socket's first handler turn, as `admit_home` does, and
+/// then starts the admin component with its two requests as closures over the
+/// attachment: each starts the daemon's task and returns at once.
 fn admit_admin(
   daemon: root.Root(instance),
   attachment: server.AdminAttachment(instance),
@@ -5209,10 +5445,13 @@ fn admit_admin(
   // `ui_sessions.frees_at`'s. A page that is not open at this instant has no deadline to show,
   // and its first read ends it.
   let wall = bootstrap.system_time_ms()
+
+  // This branch resolves open before the operation continues.
   let ends_at = case open() {
     Ok(until) -> wall + { until - bootstrap.monotonic_time_ms() }
     Error(Nil) -> wall
   }
+
   let start =
     admin.Start(
       name: attachment.principal.display_name,
@@ -5243,6 +5482,8 @@ fn admit_admin(
         admin_elsewhere_task(standing, open, read_elsewhere, deliver)
       },
     )
+
+  // This branch resolves transferred before the operation continues.
   let started = case transferred {
     Error(reason) -> {
       upgrade_log.closed_early(upgrade_log.Page, "transfer", reason)
@@ -5258,6 +5499,8 @@ fn admit_admin(
         )
       })
   }
+
+  // This branch resolves started before the operation continues.
   case started {
     // The permit transfer was slow or the component's start ran over its
     // budget: the close is one the client runtime retries.
@@ -5291,6 +5534,7 @@ pub fn admin_reading(
   chosen: Option(String),
   ended: fn(ending.Ending) -> Nil,
 ) -> grants.Reading {
+  // This branch resolves admin_snapshot attachment open chosen before the operation continues.
   case admin_snapshot(attachment, open, chosen) {
     Ok(snapshot) -> grants.Read(snapshot)
     Error(Unreadable) -> grants.Unread
@@ -5301,10 +5545,10 @@ pub fn admin_reading(
   }
 }
 
-// The three reads of a snapshot, each made afresh: the page is live, the
-// principals with their credential state, the owner's sessions, and the chosen
-// session's members. A credential that no longer authenticates as the owner is
-// the registry's own refusal on the first read.
+/// The three reads of a snapshot, each made afresh: the page is live, the
+/// principals with their credential state, the owner's sessions, and the chosen
+/// session's members. A credential that no longer authenticates as the owner is
+/// the registry's own refusal on the first read.
 fn admin_snapshot(
   attachment: server.AdminAttachment(instance),
   open: fn() -> Result(Int, Nil),
@@ -5328,6 +5572,8 @@ fn admin_snapshot(
   use logins <- result.try(admin_logins(attachment, people.entries))
   let listed = list.take(views, sessions.listed_limit)
   let #(entries, shown) = admin_rows(attachment.registry, listed)
+
+  // This branch resolves the input state before the operation continues.
   use summaries <- result.map(admin_summaries(attachment, shown))
   grants.Snapshot(
     principals: owner_first(list.map(people.entries, listed_principal)),
@@ -5343,12 +5589,12 @@ fn admin_snapshot(
 // still shows its count, and the terminal's `loom access signins` lists any.
 const admin_logins_principals = 20
 
-// The sign-ins of each principal that holds any, the first few of at most
-// `admin_logins_principals` of them, each read as the page's owner with the
-// registry's own `signins` (which authenticates the credential and names the
-// principal again). A principal whose read fails fails the snapshot: the
-// registry's refusal ends the page or leaves the last snapshot, as `admin_failure`
-// words it, and no principal is shown without its rows.
+/// The sign-ins of each principal that holds any, the first few of at most
+/// `admin_logins_principals` of them, each read as the page's owner with the
+/// registry's own `signins` (which authenticates the credential and names the
+/// principal again). A principal whose read fails fails the snapshot: the
+/// registry's refusal ends the page or leaves the last snapshot, as `admin_failure`
+/// words it, and no principal is shown without its rows.
 fn admin_logins(
   attachment: server.AdminAttachment(instance),
   rows: List(access.Listing),
@@ -5379,20 +5625,25 @@ fn admin_logins(
   })
 }
 
-// One summary for each listed session: how many people hold it and whether it
-// may be shared, read with the same registry call that reads the chosen
-// session's members, as the page's owner (protocol-change/065, the addendum on
-// the admin page's session rows). A session the catalogue no longer holds when
-// the read reaches it is left out, so its row has no line; any other failure
-// of the registry is the registry failing to answer, as it is for the chosen
-// session. The count is the owner and the members one page lists, with the page
-// saying whether that is all of them.
+/// One summary for each listed session: how many people hold it and whether it
+/// may be shared, read with the same registry call that reads the chosen
+/// session's members, as the page's owner (protocol-change/065, the addendum on
+/// the admin page's session rows). A session the catalogue no longer holds when
+/// the read reaches it is left out, so its row has no line; any other failure
+/// of the registry is the registry failing to answer, as it is for the chosen
+/// session. The count is the owner and the members one page lists, with the page
+/// saying whether that is all of them.
 fn admin_summaries(
   attachment: server.AdminAttachment(instance),
   views: List(manager.View),
 ) -> Result(List(grants.Summary), Failure) {
   list.try_fold(views, [], fn(kept, view) {
+    // This branch resolves the input state before the operation continues.
+
+    // A member-page lookup decides whether this session contributes summaries.
     let session = view.registration.id
+
+    // A member-page lookup decides whether this session contributes summaries.
     case
       manager.session_member_page(
         attachment.registry,
@@ -5419,16 +5670,20 @@ fn admin_summaries(
   })
 }
 
-// The chosen session's members, or none when no session is chosen or the
-// catalogue holds none by that identity. A chosen identity that is not a session
-// identity is none too: a page only ever chooses one it drew.
+/// The chosen session's members, or none when no session is chosen or the
+/// catalogue holds none by that identity. A chosen identity that is not a session
+/// identity is none too: a page only ever chooses one it drew.
 fn chosen_members(
   attachment: server.AdminAttachment(instance),
   chosen: Option(String),
 ) -> Result(Option(grants.Selection), Failure) {
+  // This branch resolves chosen before the operation continues.
   case chosen {
     None -> Ok(None)
     Some(session) ->
+      // This branch resolves the input state before the operation continues.
+
+      // This branch resolves the input state before the operation continues.
       case ids.parse_session_id(session) {
         Error(_) -> Ok(None)
         Ok(_) ->
@@ -5448,15 +5703,16 @@ fn chosen_members(
   }
 }
 
-// One session's members as the page's selection: who holds it, whether there are
-// more, and whether it may be shared. The registry holds `SessionOnly` for a
-// session created to be shared, and the page words the two scopes by what they
-// allow.
+/// One session's members as the page's selection: who holds it, whether there are
+/// more, and whether it may be shared. The registry holds `SessionOnly` for a
+/// session created to be shared, and the page words the two scopes by what they
+/// allow.
 fn selection_of(session: String, members: manager.Members) -> grants.Selection {
   grants.Selection(
     session:,
     holders: list.map(members.page.entries, listed_holder),
     more: more_of(members.page.remainder),
+    // This branch resolves members scope before the operation continues.
     scope: case members.scope {
       domain.SessionOnly -> creations.Shareable
       domain.WorkspacePrivate -> creations.Private
@@ -5464,10 +5720,11 @@ fn selection_of(session: String, members: manager.Members) -> grants.Selection {
   )
 }
 
-// The registry's refusal of an administration read as the page's failure: a
-// credential that is not the owner's or no longer exists ends the page, and
-// anything else is the registry failing to answer.
+/// The registry's refusal of an administration read as the page's failure: a
+/// credential that is not the owner's or no longer exists ends the page, and
+/// anything else is the registry failing to answer.
 fn admin_failure(error: manager.AdminError) -> Failure {
+  // This branch resolves error before the operation continues.
   case error {
     manager.AdminForbidden -> Gone(ending.AccessRevoked)
     manager.AdminMetadata(catalogue.Missing) -> Gone(ending.AccessRevoked)
@@ -5487,12 +5744,13 @@ fn admin_failure(error: manager.AdminError) -> Failure {
   }
 }
 
-// The owner leads the list and the invited follow in the catalogue's identity
-// order, so the owner is where the eye starts and an invitation's `guest-` name
-// does not sort above them.
+/// The owner leads the list and the invited follow in the catalogue's identity
+/// order, so the owner is where the eye starts and an invitation's `guest-` name
+/// does not sort above them.
 fn owner_first(rows: List(grants.Principal)) -> List(grants.Principal) {
   let #(owners, members) =
     list.partition(rows, fn(row) {
+      // This branch resolves row kind before the operation continues.
       case row.kind {
         grants.OwnerKind -> True
         grants.MemberKind -> False
@@ -5501,24 +5759,28 @@ fn owner_first(rows: List(grants.Principal)) -> List(grants.Principal) {
   list.append(owners, members)
 }
 
+/// More of keeps this client decision explicit for its callers.
 fn more_of(remainder: access.Remainder) -> grants.More {
+  // This branch resolves remainder before the operation continues.
   case remainder {
     access.Exhausted -> grants.Whole
     access.Remaining -> grants.Truncated
   }
 }
 
-// One principal as the page draws it: the catalogue's own fields and the
-// credential's state, with a fingerprint and a lifetime and nothing to sign in
-// with.
+/// One principal as the page draws it: the catalogue's own fields and the
+/// credential's state, with a fingerprint and a lifetime and nothing to sign in
+/// with.
 fn listed_principal(row: access.Listing) -> grants.Principal {
   grants.Principal(
     id: row.principal.id,
     name: row.principal.display_name,
+    // This branch resolves row principal kind before the operation continues.
     kind: case row.principal.kind {
       access.OwnerPrincipal -> grants.OwnerKind
       access.MemberPrincipal -> grants.MemberKind
     },
+    // This branch resolves row credential before the operation continues.
     credential: case row.credential {
       access.CredentialActive(fingerprint:, claimed_at_ms:) ->
         grants.Active(fingerprint:, claimed_at_ms:)
@@ -5530,6 +5792,7 @@ fn listed_principal(row: access.Listing) -> grants.Principal {
   )
 }
 
+/// Encodes session holder metadata for the administrative directory listing.
 fn listed_holder(row: access.SessionMember) -> grants.Holder {
   grants.Holder(
     principal: row.principal_id,
@@ -5538,7 +5801,9 @@ fn listed_holder(row: access.SessionMember) -> grants.Holder {
   )
 }
 
+/// Page role keeps this client decision explicit for its callers.
 fn page_role(role: access.Role) -> invites.Role {
+  // This branch resolves role before the operation continues.
   case role {
     access.Observer -> invites.Observer
     access.Operator -> invites.Operator
@@ -5603,6 +5868,7 @@ pub fn admin_deployment_for(
   read: fn(Option(String)) -> machines.Reading,
   node: Option(String),
 ) -> machines.Reading {
+  // This branch resolves authorized_owner standing open before the operation continues.
   case authorized_owner(standing, open) {
     Ok(_) -> read(node)
     Error(_) -> machines.Unread
@@ -5649,6 +5915,7 @@ pub fn admin_elsewhere_for(
   open: fn() -> Result(Int, Nil),
   read: fn() -> page_elsewhere.Read,
 ) -> page_elsewhere.Read {
+  // This branch resolves authorized_owner standing open before the operation continues.
   case authorized_owner(standing, open) {
     Ok(_) -> read()
     Error(_) -> page_elsewhere.Unread
@@ -5732,6 +5999,8 @@ pub fn admin_for(
 ) -> grants.Answer {
   let outcome = {
     use _ <- result.try(administering(standing, open))
+
+    // This branch resolves action before the operation continues.
     case action {
       grants.AbandonMove(session:) -> abandon_for_admin(abandon, session)
       grants.Invite(session:, role:, name:) ->
@@ -5763,14 +6032,16 @@ pub fn admin_for(
         shareable_for_admin(standing, epoch, state_root, session)
     }
   }
+
+  // This branch resolves outcome before the operation continues.
   case outcome {
     Ok(answer) -> answer
     Error(reason) -> grants.Declined(reason)
   }
 }
 
-// The steps every change begins with: the page is open, was minted to operate,
-// and its credential still authenticates as the owner it was admitted for.
+/// The steps every change begins with: the page is open, was minted to operate,
+/// and its credential still authenticates as the owner it was admitted for.
 fn administering(
   standing: Standing(instance),
   open: fn() -> Result(Int, Nil),
@@ -5780,12 +6051,12 @@ fn administering(
   |> result.replace_error(grants.NotOwner)
 }
 
-// A move given up, which is `server.abandon_move`, the control command's own
-// function. It is refused unless this daemon is a directory member, and it only
-// begins the abandon: the movers carry it out, and the receiver having taken the
-// session first makes the move finish instead. The session is the page's pick
-// from a machine's moves and must still be a canonical identity. It grants no
-// one anything, so it costs no allowance.
+/// A move given up, which is `server.abandon_move`, the control command's own
+/// function. It is refused unless this daemon is a directory member, and it only
+/// begins the abandon: the movers carry it out, and the receiver having taken the
+/// session first makes the move finish instead. The session is the page's pick
+/// from a machine's moves and must still be a canonical identity. It grants no
+/// one anything, so it costs no allowance.
 fn abandon_for_admin(
   abandon: fn(String) -> Result(String, server.MoveRefusal),
   session: String,
@@ -5796,6 +6067,7 @@ fn abandon_for_admin(
   abandon(session)
   |> result.replace(grants.Changed)
   |> result.map_error(fn(refusal) {
+    // This branch resolves refusal before the operation continues.
     case refusal {
       server.NotAMember -> grants.NotMember
       server.NotMoving -> grants.NotMoving
@@ -5808,11 +6080,11 @@ fn abandon_for_admin(
   })
 }
 
-// A private session made shareable: stopped, isolated and resumed by
-// `shareable.make`, which authenticates the owner again before it stops anything
-// and whose isolation the registry authenticates a third time. The session is
-// the page's own pick, drawn from the catalogue, and must still be a canonical
-// identity. It costs no allowance, since it gives no one a seat.
+/// A private session made shareable: stopped, isolated and resumed by
+/// `shareable.make`, which authenticates the owner again before it stops anything
+/// and whose isolation the registry authenticates a third time. The session is
+/// the page's own pick, drawn from the catalogue, and must still be a canonical
+/// identity. It costs no allowance, since it gives no one a seat.
 fn shareable_for_admin(
   standing: Standing(instance),
   epoch: String,
@@ -5827,9 +6099,10 @@ fn shareable_for_admin(
   |> result.map_error(shareable_reason)
 }
 
-// The fixed reason a page words for a refusal of the task. Each is the module's
-// own, and the page's words for it say what state the session is left in.
+/// The fixed reason a page words for a refusal of the task. Each is the module's
+/// own, and the page's words for it say what state the session is left in.
 fn shareable_reason(refusal: shareable.Refusal) -> grants.Reason {
+  // This branch resolves refusal before the operation continues.
   case refusal {
     shareable.NotOwner -> grants.NotOwner
     shareable.NotFound -> grants.NotFound
@@ -5841,17 +6114,20 @@ fn shareable_reason(refusal: shareable.Refusal) -> grants.Reason {
   }
 }
 
-// One sign-in of the named principal ended, which only reduces access and costs
-// no allowance. The registry authenticates the owner's credential and the epoch
-// in the same turn as the write and drops its frame memo before it answers, so
-// every page the login minted ends at its next frame. The log says which login,
-// by fingerprint, as the control command's does.
+/// One sign-in of the named principal ended, which only reduces access and costs
+/// no allowance. The registry authenticates the owner's credential and the epoch
+/// in the same turn as the write and drops its frame memo before it answers, so
+/// every page the login minted ends at its next frame. The log says which login,
+/// by fingerprint, as the control command's does.
 fn revoke_signin_for_admin(
   standing: Standing(instance),
   epoch: String,
   principal: String,
   fingerprint: String,
 ) -> Result(grants.Answer, grants.Reason) {
+  // This branch resolves the input state before the operation continues.
+
+  // This branch resolves the input state before the operation continues.
   case
     manager.revoke_login(
       standing.registry,
@@ -5869,10 +6145,10 @@ fn revoke_signin_for_admin(
   }
 }
 
-// One principal's display name changed, which grants nothing and costs no
-// allowance. The registry authenticates the owner's credential and the epoch in
-// the same turn as the write and judges the name there, by the rule a claim's
-// chosen name is held to, so a refused name writes nothing.
+/// One principal's display name changed, which grants nothing and costs no
+/// allowance. The registry authenticates the owner's credential and the epoch in
+/// the same turn as the write and judges the name there, by the rule a claim's
+/// chosen name is held to, so a refused name writes nothing.
 fn rename_for_admin(
   standing: Standing(instance),
   epoch: String,
@@ -5895,8 +6171,8 @@ fn rename_for_admin(
   }
 }
 
-// A change that grants access: one allowance first, then the registry turn, and
-// the allowance back when the turn made nothing.
+/// A change that grants access: one allowance first, then the registry turn, and
+/// the allowance back when the turn made nothing.
 fn granted(
   standing: Standing(instance),
   tickets: ui_sessions.Sessions,
@@ -5907,6 +6183,8 @@ fn granted(
     ui_sessions.reserve_invite(tickets, standing.digest)
     |> result.map_error(too_many),
   )
+
+  // This branch resolves manager administer standing registry standing digest epoch action before the operation continues.
   case manager.administer(standing.registry, standing.digest, epoch, action) {
     Ok(_) -> Ok(grants.Changed)
     Error(error) -> {
@@ -5916,21 +6194,22 @@ fn granted(
   }
 }
 
-// A change that only reduces access, which costs no allowance.
+/// A change that only reduces access, which costs no allowance.
 fn reduced(
   standing: Standing(instance),
   epoch: String,
   action: manager.Administration,
 ) -> Result(grants.Answer, grants.Reason) {
+  // This branch resolves manager administer standing registry standing digest epoch action before the operation continues.
   case manager.administer(standing.registry, standing.digest, epoch, action) {
     Ok(_) -> Ok(grants.Changed)
     Error(error) -> Error(admin_reason(error))
   }
 }
 
-// An invitation into a session the page chose, with the suggested name when it
-// is one, and one allowance. The name and the session are judged before the
-// allowance is taken, so a refused name costs nothing.
+/// An invitation into a session the page chose, with the suggested name when it
+/// is one, and one allowance. The name and the session are judged before the
+/// allowance is taken, so a refused name costs nothing.
 fn invite_for_admin(
   standing: Standing(instance),
   tickets: ui_sessions.Sessions,
@@ -5945,10 +6224,16 @@ fn invite_for_admin(
     ids.parse_session_id(session) |> result.replace_error(grants.NotFound),
   )
   use address <- result.try(address |> result.replace_error(grants.Unavailable))
+
+  // This branch resolves the input state before the operation continues.
+
+  // The invitation lookup distinguishes an existing invite from a new claim.
   use _ <- result.try(
     ui_sessions.reserve_invite(tickets, standing.digest)
     |> result.map_error(too_many),
   )
+
+  // The invitation lookup distinguishes an existing invite from a new claim.
   case
     invitation(
       standing.registry,
@@ -5985,9 +6270,10 @@ fn too_many(free_at_ms: Int) -> grants.Reason {
   grants.TooMany(used: ui_sessions.invite_limit, free_at_ms:)
 }
 
-// The suggested name: none when blank, the trimmed text when it passes the
-// catalogue's display-name rule, and a refusal when it does not.
+/// The suggested name: none when blank, the trimmed text when it passes the
+/// catalogue's display-name rule, and a refusal when it does not.
 fn suggested_name(name: String) -> Result(Option(String), grants.Reason) {
+  // This branch resolves string trim name before the operation continues.
   case string.trim(name) {
     "" -> Ok(None)
     text ->
@@ -5997,8 +6283,8 @@ fn suggested_name(name: String) -> Result(Option(String), grants.Reason) {
   }
 }
 
-// A rotation of one principal's credentials, which makes a new claim and costs
-// one allowance.
+/// A rotation of one principal's credentials, which makes a new claim and costs
+/// one allowance.
 fn rotate_for_admin(
   standing: Standing(instance),
   tickets: ui_sessions.Sessions,
@@ -6011,6 +6297,8 @@ fn rotate_for_admin(
     ui_sessions.reserve_invite(tickets, standing.digest)
     |> result.map_error(too_many),
   )
+
+  // This branch resolves rotation standing epoch address principal before the operation continues.
   case rotation(standing, epoch, address, principal) {
     Ok(claim) -> Ok(grants.Claimed(claim))
     Error(refusal) -> {
@@ -6020,8 +6308,8 @@ fn rotate_for_admin(
   }
 }
 
-// The dispatch: a claim is drawn and handed to the registry as a digest, and the
-// token comes back only in the claim the page shows.
+/// The dispatch: a claim is drawn and handed to the registry as a digest, and the
+/// token comes back only in the claim the page shows.
 fn rotation(
   standing: Standing(instance),
   epoch: String,
@@ -6051,10 +6339,11 @@ fn rotation(
   )
 }
 
-// The fixed reason for a refused administration. A principal or session the
-// catalogue does not hold is `NotFound`, which is what a row that was removed
-// since it was drawn reads as; the rest are the daemon's to sort out.
+/// The fixed reason for a refused administration. A principal or session the
+/// catalogue does not hold is `NotFound`, which is what a row that was removed
+/// since it was drawn reads as; the rest are the daemon's to sort out.
 fn admin_reason(error: manager.AdminError) -> grants.Reason {
+  // This branch resolves error before the operation continues.
   case error {
     manager.IsolationRequired -> grants.NotIsolated
     manager.AdminForbidden -> grants.NotOwner
@@ -6074,7 +6363,9 @@ fn admin_reason(error: manager.AdminError) -> grants.Reason {
   }
 }
 
+/// Refusal reason keeps this client decision explicit for its callers.
 fn refusal_reason(refusal: Refusal) -> grants.Reason {
+  // This branch resolves refusal before the operation continues.
   case refusal {
     Managed(error) -> admin_reason(error)
     Undrawn -> grants.Unavailable
@@ -6125,6 +6416,8 @@ pub fn admin_task(
       action,
     )
   }
+
+  // This branch resolves action before the operation continues.
   case action {
     grants.MakeShareable(..) -> detached(answer, deliver)
     grants.AbandonMove(..)
@@ -6148,17 +6441,17 @@ pub fn admin_task(
   }
 }
 
-// Runs `ask` in a process that no page owns, and delivers its answer. A stopped
-// session ends every page open on it, so a run that a page's runtime owns ends
-// with the page, between the stop and the isolation, and leaves the session
-// stopped and private. No weft shape fits: every weft start links its scope to
-// the process that calls it, and a run the caller does not outlive is cancelled,
-// while this one must outlive the page the stop ends. The process is therefore a
-// plain `spawn_unlinked`, which ends when `ask` returns. `ask` is bounded by the
-// registry's call timeouts and by the 15 s stop wait and 30 s resume wait
-// (`shareable`), so the worst case is about 90 s, and a deadline would only
-// kill a task that was about to answer. `deliver` goes to a runtime that may be
-// gone, which a send to a dead process ignores.
+/// Runs `ask` in a process that no page owns, and delivers its answer. A stopped
+/// session ends every page open on it, so a run that a page's runtime owns ends
+/// with the page, between the stop and the isolation, and leaves the session
+/// stopped and private. No weft shape fits: every weft start links its scope to
+/// the process that calls it, and a run the caller does not outlive is cancelled,
+/// while this one must outlive the page the stop ends. The process is therefore a
+/// plain `spawn_unlinked`, which ends when `ask` returns. `ask` is bounded by the
+/// registry's call timeouts and by the 15 s stop wait and 30 s resume wait
+/// (`shareable`), so the worst case is about 90 s, and a deadline would only
+/// kill a task that was about to answer. `deliver` goes to a runtime that may be
+/// gone, which a send to a dead process ignores.
 fn detached(
   ask: fn() -> grants.Answer,
   deliver: fn(grants.Answer) -> Nil,
@@ -6208,19 +6501,25 @@ pub fn browser_claim_address(address: String) -> String {
 @internal
 pub fn claim_address(request: Request(body)) -> Result(String, Nil) {
   use host <- result.try(ui_http.loopback_host(request))
+
+  // This branch resolves host before the operation continues.
   let literal = case host {
     "[" <> _ -> host
     _ -> {
+      // This branch resolves string split_once host before the operation continues.
       let #(name, port) = case string.split_once(host, ":") {
         Ok(#(name, port)) -> #(name, ":" <> port)
         Error(Nil) -> #(host, "")
       }
+
+      // This branch resolves string lowercase name before the operation continues.
       case string.lowercase(name) {
         "127.0.0.1" -> host
         _ -> "127.0.0.1" <> port
       }
     }
   }
+
   let address = "ws://" <> literal <> "/v2/control"
   claim.remote_address(address)
   |> result.replace(address)
@@ -6229,15 +6528,18 @@ pub fn claim_address(request: Request(body)) -> Result(String, Nil) {
 
 // A refused membership check: the catalogue holds no such membership, or the
 // registry could not answer.
+/// Not held keeps this client decision explicit for its callers.
 fn not_held(error: manager.Error) -> sessions.Reason {
+  // This branch resolves error before the operation continues.
   case error {
     manager.Catalogue(catalogue.Missing) -> sessions.NotHeld
     _ -> sessions.Unavailable
   }
 }
 
-// Only a resident session has a page to show.
+/// Only a resident session has a page to show.
 fn running(status: manager.Status) -> Result(Nil, sessions.Reason) {
+  // This branch resolves status before the operation continues.
   case status {
     manager.Resident(_) -> Ok(Nil)
     manager.Reserved
@@ -6268,6 +6570,7 @@ pub fn listed_entry(view: manager.View) -> sessions.Entry {
     name: record.name,
     workspace: record.workspace,
     created_at: record.created_at,
+    // This branch resolves view status before the operation continues.
     residency: case view.status {
       manager.Opening(..) | manager.Resident(..) | manager.Stopping(..) ->
         sessions.Live
@@ -6278,6 +6581,7 @@ pub fn listed_entry(view: manager.View) -> sessions.Entry {
     subtitle: record.subtitle,
     role: None,
     project: None,
+    // This branch resolves record executor before the operation continues.
     executor: case record.executor {
       "" -> None
       executor -> Some(executor)
@@ -6302,6 +6606,8 @@ pub fn held_entries(
   views: List(manager.View),
 ) -> List(sessions.Entry) {
   let entries = list.map(views, listed_entry)
+
+  // This branch resolves manager custodies registry list map entries fn entry entry id before the operation continues.
   case manager.custodies(registry, list.map(entries, fn(entry) { entry.id })) {
     Ok(custodies) -> with_moves(entries, custodies)
     Error(_) -> entries
@@ -6326,6 +6632,7 @@ pub fn with_moves(
   custodies: List(#(String, catalogue.Custody)),
 ) -> List(sessions.Entry) {
   list.filter_map(entries, fn(entry) {
+    // This branch resolves list key_find custodies entry id before the operation continues.
     case list.key_find(custodies, entry.id) {
       Ok(catalogue.Moving(to:, ..)) ->
         Ok(sessions.Entry(..entry, residency: sessions.Moving(to:)))
@@ -6376,6 +6683,7 @@ pub fn admin_rows(
 @internal
 pub fn with_projects(entries: List(sessions.Entry)) -> List(sessions.Entry) {
   list.map(entries, fn(entry) {
+    // This branch resolves entry executor before the operation continues.
     case entry.executor {
       // A registered workspace is a name, not a directory on this host, so
       // there is nothing here to stat and it is its own project.
@@ -6405,6 +6713,7 @@ pub fn with_roles(
   roles: List(#(String, access.Role)),
 ) -> List(sessions.Entry) {
   list.map(entries, fn(entry) {
+    // This branch resolves list key_find roles entry id before the operation continues.
     case list.key_find(roles, entry.id) {
       Ok(access.Operator) ->
         sessions.Entry(..entry, role: Some(sessions.Operates))
@@ -6433,8 +6742,8 @@ pub type Page {
   )
 }
 
-// The message that asks an operator's page for an image, in its own message
-// type.
+/// The message that asks an operator's page for an image, in its own message
+/// type.
 fn operator_image(
   ref: String,
   at: Int,
@@ -6459,6 +6768,7 @@ pub fn start_page(
   role: Role,
   start: component.Start(ui_relay.Relay),
 ) -> Result(Page, Nil) {
+  // This branch resolves role before the operation continues.
   case role {
     Observing ->
       serve(component.app(), start, observer_accepts, component.ImageRequested)
@@ -6468,9 +6778,9 @@ pub fn start_page(
   }
 }
 
-// Starts a session's component and returns what the socket needs of it,
-// including the reader of its images: the message that asks the component for
-// one, `ask`, is built in the application's own message type.
+/// Starts a session's component and returns what the socket needs of it,
+/// including the reader of its images: the message that asks the component for
+/// one, `ask`, is built in the application's own message type.
 fn serve(
   app: lustre.App(component.Start(ui_relay.Relay), model, message),
   start: component.Start(ui_relay.Relay),
@@ -6491,6 +6801,7 @@ fn serve(
   // component's own answer on a subject of the asking process.
   let socket = process.self()
   let images = fn(ref, position) {
+    // This branch resolves process is_alive socket before the operation continues.
     case process.is_alive(socket) {
       False -> Error(Nil)
       True -> {
@@ -6503,11 +6814,11 @@ fn serve(
   Page(..page, images:)
 }
 
-// Starts one component and returns its runtime and what the socket needs of
-// it: how a browser frame reaches it, how to shut it down, and a selector over
-// the subject its client messages arrive on, encoding each as it is received.
-// `admits` says which browser frames reach it. The page has no image reader
-// until `serve` makes one, and the home never does.
+/// Starts one component and returns its runtime and what the socket needs of
+/// it: how a browser frame reaches it, how to shut it down, and a selector over
+/// the subject its client messages arrive on, encoding each as it is received.
+/// `admits` says which browser frames reach it. The page has no image reader
+/// until `serve` makes one, and the home never does.
 fn launch(
   app: lustre.App(arguments, model, message),
   start: arguments,
@@ -6532,6 +6843,7 @@ fn launch(
         lustre.ElementNotFound(_) -> "the component mount is missing"
         lustre.NotABrowser -> "the component requires a browser"
       }
+
       upgrade_log.closed_early(upgrade_log.Page, "component_start", reason)
     }),
   )
@@ -6544,9 +6856,11 @@ fn launch(
     process.new_selector()
     |> process.select_map(client, server_component.client_message_to_json)
   let forward = fn(text) {
+    // This branch resolves admits text before the operation continues.
     case admits(text) {
       False -> Nil
       True ->
+        // This branch resolves json parse text server_component runtime_message_decoder before the operation continues.
         case json.parse(text, server_component.runtime_message_decoder()) {
           Ok(message) -> lustre.send(runtime, message)
           Error(_) -> Nil
@@ -6579,6 +6893,7 @@ fn session_activity_for(role, activity) {
   fn(ids, deliver) { activity_for(role, activity, ids, deliver) }
 }
 
+/// Resolves the admin management action corresponding to a client event.
 fn admin_act_for(standing, tickets, open, epoch, state_root, address, abandon) {
   fn(action, deliver) {
     admin_task(
@@ -6595,9 +6910,9 @@ fn admin_act_for(standing, tickets, open, epoch, state_root, address, abandon) {
   }
 }
 
-// Authorization outlives routing in both the relay and the gateway. Project
-// its immutable identities before retaining the callback, so neither owner
-// copies the resolved runtime and its unrelated effects.
+/// Authorization outlives routing in both the relay and the gateway. Project
+/// its immutable identities before retaining the callback, so neither owner
+/// copies the resolved runtime and its unrelated effects.
 fn authorize_for(
   registry: manager.Manager(instance),
   epoch: String,
@@ -6617,12 +6932,12 @@ fn authorize_for(
   }
 }
 
-// What the home sends a new session as its first message: the daemon's own path
-// for the owner's page, made from the page's attachment. It resolves the session
-// as the page's principal (the membership and its role, the same read a page's
-// ticket makes), finds the resident incarnation and its gateway, and sends the text
-// as a prompt to the main strand under a binding with the page's authority capped
-// at Operator, as every page's is.
+/// What the home sends a new session as its first message: the daemon's own path
+/// for the owner's page, made from the page's attachment. It resolves the session
+/// as the page's principal (the membership and its role, the same read a page's
+/// ticket makes), finds the resident incarnation and its gateway, and sends the text
+/// as a prompt to the main strand under a binding with the page's authority capped
+/// at Operator, as every page's is.
 fn first_message_for(
   attachment: server.HomeAttachment(instance),
   gateway_of: fn(instance) -> Result(gateway.Gateway, Nil),
@@ -6636,10 +6951,13 @@ fn first_message_for(
       manager.get(attachment.registry, session)
       |> result.replace_error("the session is not available"),
     )
+
+    // This branch resolves view status before the operation continues.
     use incarnation <- result.try(case view.status {
       manager.Resident(incarnation) -> Ok(incarnation)
       _ -> Error("the session is not running")
     })
+
     use instance <- result.try(
       manager.resolve_incarnation(attachment.registry, session, incarnation)
       |> result.replace_error("the session is not available"),
@@ -6738,15 +7056,19 @@ pub fn first_prompt(
   gateway.connection_detach(connection)
 
   use frame <- result.try(reply)
+
+  // This branch resolves session_protocol decode_event frame before the operation continues.
   case session_protocol.decode_event(frame) {
     Ok(session_protocol.EventEnvelope(
       event: session_protocol.MutationOutcome(wire.Object(fields)),
       ..,
     )) ->
+      // This branch resolves list key_find fields status before the operation continues.
       case list.key_find(fields, "status") {
         Ok(wire.String("admitted")) | Ok(wire.String("queued")) -> Ok(Nil)
         _ -> Error("the session did not accept the message")
       }
+
     _ -> Error("the session did not accept the message")
   }
 }

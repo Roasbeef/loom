@@ -143,6 +143,7 @@ pub type Rejection {
 /// ```
 ///
 pub fn vet(source: String, policy: VetPolicy) -> VetResult {
+  // Parse source module into AST to perform static security checks.
   case glance.module(source) {
     Error(error) -> Rejected([parse_rejection(source, error)])
     Ok(module) -> {
@@ -153,6 +154,8 @@ pub fn vet(source: String, policy: VetPolicy) -> VetResult {
           import_rejections(module, policy),
           unseen_import_backstop(source, module),
         ])
+
+      // Pass vetted code only if no security rules were violated.
       case rejections {
         [] -> Passed(Vetted(source:, module:))
         _ -> Rejected(rejections)
@@ -298,6 +301,7 @@ fn token_attribute_names(source: String) -> List(String) {
   |> scan_attribute_names([])
 }
 
+/// Collects attribute names encountered in the token stream.
 fn scan_attribute_names(
   tokens: List(#(token.Token, glexer.Position)),
   names: List(String),
@@ -337,6 +341,7 @@ fn subtract_first_occurrences(
   list.fold(remove, from, remove_first)
 }
 
+/// Removes the first matching name from a list of strings.
 fn remove_first(names: List(String), name: String) -> List(String) {
   case names {
     [] -> []
@@ -408,10 +413,12 @@ pub fn token_imports(source: String) -> List(String) {
   |> scan_imports([])
 }
 
+/// Collects import statement target module paths from the token stream.
 fn scan_imports(
   tokens: List(#(token.Token, glexer.Position)),
   found: List(String),
 ) -> List(String) {
+  // Traverse token stream looking for import declarations.
   case tokens {
     [#(token.Import, _), ..rest] -> {
       let #(segments, rest) = scan_path(rest, [])
@@ -422,9 +429,11 @@ fn scan_imports(
   }
 }
 
-// A module path is lowercase name segments joined by `/`; the first token that
-// is neither ends it (`.` before an unqualified list, `as` before an alias, or
-// the next statement).
+/// Scans consecutive slash-separated path segments from the token stream.
+///
+/// A module path is lowercase name segments joined by `/`; the first token that
+/// is neither ends it (`.` before an unqualified list, `as` before an alias, or
+/// the next statement).
 fn scan_path(
   tokens: List(#(token.Token, glexer.Position)),
   segments: List(String),
@@ -477,6 +486,8 @@ fn dangling_attribute_rejection(name: String) -> Rejection {
 fn import_rejections(module: Module, policy: VetPolicy) -> List(Rejection) {
   list.filter_map(module.imports, fn(definition) {
     let name = definition.definition.module
+
+    // Verify whether import path conforms to ASCII syntax and allowlist rules.
     case allowlist.is_legal_module_name(name) {
       False ->
         Ok(Rejection(

@@ -457,8 +457,10 @@ pub fn jobs(
   }
 }
 
-// The index is the block's position in the content list, which is the
-// coordinate a terminal counts in when it asks for the label back.
+/// Builds a list of reasoning summary jobs from assistant blocks exceeding size floor.
+///
+/// The index is the block's position in the content list, which is the
+/// coordinate a terminal counts in when it asks for the label back.
 fn reasoning_jobs(
   id: EntryId,
   content: List(message.AssistantBlock),
@@ -502,6 +504,7 @@ fn reasoning_jobs(
 /// ```
 ///
 pub fn request(source: Source, text: String) -> String {
+  // Format description of input source for summary request.
   let what = case source {
     Reasoning -> "a block of reasoning a coding agent wrote while it worked"
     AdvisorMessage ->
@@ -554,6 +557,7 @@ pub fn parse(answer: String) -> Result(String, Nil) {
     |> without_quotes
     |> bounded
 
+  // Return label or error if parsed summary is empty.
   case text {
     "" -> Error(Nil)
     label -> Ok(label)
@@ -567,6 +571,7 @@ fn without_label(text: String) -> String {
   }
 }
 
+/// Strips leading and trailing double quotes from a summary string.
 fn without_quotes(text: String) -> String {
   case string.starts_with(text, "\""), string.ends_with(text, "\"") {
     True, True ->
@@ -575,9 +580,12 @@ fn without_quotes(text: String) -> String {
   }
 }
 
-// Words are kept while they fit, so a cut never lands inside a word or a
-// character; the ellipsis says the label was cut.
+/// Truncates summary text at a word boundary within max byte limit.
+///
+/// Words are kept while they fit, so a cut never lands inside a word or a
+/// character; the ellipsis says the label was cut.
 fn bounded(text: String) -> String {
+  // Check if text already fits within summary byte limits.
   case string.byte_size(text) <= max_summary_bytes {
     True -> text
     False -> {
@@ -588,11 +596,15 @@ fn bounded(text: String) -> String {
         |> list.fold_until(#([], 0), fn(acc, word) {
           let #(kept, used) = acc
           let cost = string.byte_size(word) + 1
+
+          // Stop accumulating words when budget exceeded.
           case used + cost <= budget {
             True -> list.Continue(#([word, ..kept], used + cost))
             False -> list.Stop(acc)
           }
         })
+
+      // Format truncated text with ellipsis.
       case kept {
         [] -> string.slice(text, 0, budget / 4) <> "…"
         _words -> string.join(list.reverse(kept), " ") <> "…"
@@ -732,8 +744,10 @@ pub fn settled_admission(
   fn(name: String) { set.contains(admitted, name) }
 }
 
-// Whether the entry `name` is served by the same endpoint as the entry
-// `provider`. An entry the catalogue does not hold matches nothing.
+/// Checks whether two provider names resolve to the same catalogue endpoint.
+///
+/// Whether the entry `name` is served by the same endpoint as the entry
+/// `provider`. An entry the catalogue does not hold matches nothing.
 fn same_endpoint(
   catalogue: catalog.Catalog,
   provider: String,
@@ -798,6 +812,8 @@ pub fn admits_live(
   let headed =
     list.all(catalogue.roles, fn(route) {
       let #(_role, names) = route
+
+      // Check if chain head provider matches identity.
       case chain_head(catalogue, names) {
         Ok(head)
           if head.name == identity.provider && head.model_id == identity.model_id
@@ -805,6 +821,8 @@ pub fn admits_live(
         Ok(_other) | Error(Nil) -> True
       }
     })
+
+  // Check if turn type and model vision capabilities allow admission.
   let seen = case turn, catalog.find(catalogue, identity.provider) {
     ImageTurn, Ok(catalog.CatalogModel(vision: catalog.TextOnly, ..)) ->
       case list.key_find(catalogue.roles, model.Vision) {
@@ -853,10 +871,12 @@ pub fn live_admission(
   let image = admitted_on(ImageTurn)
 
   fn(identity: ModelIdentity, turn: Turn) {
+    // Select admitted models based on turn type.
     let admitted = case turn {
       TextTurn -> text
       ImageTurn -> image
     }
+
     set.contains(admitted, #(identity.provider, identity.model_id))
   }
 }
@@ -911,7 +931,6 @@ pub fn observer(
     // A poll carries no context and is treated as an image turn. A poll
     // reaches only its own identity (`wiring.resolved_target`), never the
     // `vision` chain, so `TextTurn` could also be sound; `ImageTurn` is the
-    // stricter of the two answers, and the one that holds if a poll ever
     // gains a route.
     let observed = case spec {
       effects.GenerationRequest(operation:, configuration:, context:, ..) ->
@@ -920,6 +939,8 @@ pub fn observer(
         Ok(#(operation, configuration.model, ImageTurn))
       effects.SummaryRequest(..) -> Error(Nil)
     }
+
+    // Return stream event observer callback if request is admitted.
     case observed {
       Ok(#(operation, identity, turn)) ->
         case admits(identity, turn) {
@@ -931,12 +952,14 @@ pub fn observer(
   }
 }
 
+/// Sends streaming thinking fragments or stream completion to machine.
 fn observe(
   name: address.Address(Message),
   operation: OpId,
   generation: String,
   event: stream.StreamEvent,
 ) -> Nil {
+  // Relay thinking delta or stream ended signal.
   case event {
     stream.Delta(delta: stream.ThinkingDelta(thinking:, ..)) -> {
       let _sent =
@@ -982,6 +1005,7 @@ pub fn supervised(wiring: Wiring) -> ChildSpecification(Subject(Message)) {
   sm.supervised(builder(wiring))
 }
 
+/// Builds the state machine builder for block summarizer.
 fn builder(
   wiring: Wiring,
 ) -> sm.Builder(Phase, Data, Message, Subject(Message)) {
@@ -1015,6 +1039,7 @@ fn builder(
   |> sm.on_event(handle)
 }
 
+/// Dispatches incoming state machine events.
 fn handle(
   state: Phase,
   data: Data,
@@ -1038,18 +1063,23 @@ fn handle(
   }
 }
 
-// A commit hint: scan the message entries above the high-water up to the
-// hint's newest seq and admit their long blocks. The first hint sets the
-// high-water just below its own oldest seq, which is what keeps a restart
-// from summarizing history. A scan that hits `scan_limit` advances only to
-// the last entry it read, so the next hint picks up the rest.
+/// Processes commit hints to scan message entries for long blocks.
+///
+/// A commit hint: scan the message entries above the high-water up to the
+/// hint's newest seq and admit their long blocks. The first hint sets the
+/// high-water just below its own oldest seq, which is what keeps a restart
+/// from summarizing history. A scan that hits `scan_limit` advances only to
+/// the last entry it read, so the next hint picks up the rest.
 fn committed(data: Data, seqs: List(Seq)) -> sm.Next(Phase, Data, Message) {
   let top = list.fold(seqs, 0, int.max)
+
+  // Determine starting sequence number from high-water mark or oldest in hint.
   let from = case data.high_water, seqs {
     Some(seen), _ -> seen + 1
     None, [first, ..rest] -> list.fold(rest, first, int.min)
     None, [] -> top + 1
   }
+
   use <- bool.lazy_guard(when: top < from, return: fn() { settle(data, []) })
 
   let scan =
@@ -1057,17 +1087,21 @@ fn committed(data: Data, seqs: List(Seq)) -> sm.Next(Phase, Data, Message) {
     |> storage.entry_kind(storage.Message)
     |> storage.entry_seq_range(Some(from), Some(top))
     |> storage.entry_limit(scan_limit)
+
+  // Scan entries from storage store.
   case storage.scan_entries(data.wiring.session.store, scan) {
     // Hints are lossy by contract and so is this read: the high-water
     // stays, and the next hint scans the same range again.
     Error(_unreadable) -> settle(data, [])
 
     Ok(entries) -> {
+      // Determine highest sequence reached in scan.
       let reached = case list.drop(entries, scan_limit - 1) != [] {
         True ->
           list.fold(entries, from - 1, fn(seen, row) { int.max(seen, row.seq) })
         False -> top
       }
+
       let admitted =
         list.flat_map(entries, jobs(
           _,
@@ -1082,20 +1116,28 @@ fn committed(data: Data, seqs: List(Seq)) -> sm.Next(Phase, Data, Message) {
   }
 }
 
-// Only the primary strand's blocks are summarized as they commit. The
-// advisor and sub-agents produce as much reasoning as the primary and are
-// read far less, so theirs are summarized when a terminal asks (`asked`).
-// An entry does not name its strand, so the jobs are kept when their entry
-// lies on the primary's branch, read back from its leaf over a window wider
-// than one scan; the read happens only when a commit brought a long block.
+/// Filters admitted jobs to those lying on the primary strand's branch.
+///
+///
+/// Only the primary strand's blocks are summarized as they commit. The
+/// advisor and sub-agents produce as much reasoning as the primary and are
+/// read far less, so theirs are summarized when a terminal asks (`asked`).
+///
+/// An entry does not name its strand, so the jobs are kept when their entry
+/// lies on the primary's branch, read back from its leaf over a window wider
+/// than one scan; the read happens only when a commit brought a long block.
 fn on_primary(data: Data, admitted: List(Job)) -> List(Job) {
   use <- bool.guard(when: admitted == [], return: [])
   let store = data.wiring.session
+
+  // Read primary strand leaf to check branch containment.
   case session.strand_leaf(store, advisor.primary) {
     Ok(Some(session.Cell(value: Some(leaf), ..))) -> {
       let scan =
         storage.branch_scan(from: leaf)
         |> storage.branch_limit(primary_window)
+
+      // Scan primary branch to collect entry IDs.
       case storage.scan_branch(store.store, scan) {
         Ok(branch) -> {
           let on_branch = set.from_list(list.map(branch, fn(row) { row.id }))
@@ -1108,12 +1150,14 @@ fn on_primary(data: Data, admitted: List(Job)) -> List(Job) {
   }
 }
 
-// A terminal asked for blocks it found no summary for. Each is summarized
-// if it is eligible — long enough, not redacted, and from the summarizer's
-// endpoint, the same `jobs` test a commit makes — and not already waiting
-// or out, so asking again while a block is queued queues nothing more. The
-// jobs join the bounded settled queue, and each result is stored and
-// pushed as a commit's would be.
+/// Summarizes requested blocks that were not pre-summarized.
+///
+/// A terminal asked for blocks it found no summary for. Each is summarized
+/// if it is eligible — long enough, not redacted, and from the summarizer's
+/// endpoint, the same `jobs` test a commit makes — and not already waiting
+/// or out, so asking again while a block is queued queues nothing more. The
+/// jobs join the bounded settled queue, and each result is stored and
+/// pushed as a commit's would be.
 fn asked(
   data: Data,
   blocks: List(#(String, Int)),
@@ -1143,6 +1187,7 @@ fn asked(
     |> list.filter(fn(key) { !set.contains(busy, key) })
   use <- bool.lazy_guard(when: wanted == [], return: fn() { settle(data, []) })
 
+  // Fetch wanted entries from session store.
   case
     storage.get_entries(
       data.wiring.session.store,
@@ -1177,7 +1222,9 @@ fn asked(
 // the primary's streams are summarized live. Another strand's generation
 // is remembered as ignored, so its later fragments cost no read; the set
 // is emptied when it reaches `ignored_limit`, because a stream's end is not
-// always observed, and a forgotten stream costs one more read.
+/// Processes a live thinking fragment for block summarization.
+///
+/// always observed, and a forgotten stream costs one more read.
 fn streamed(
   data: Data,
   operation: OpId,
@@ -1189,18 +1236,23 @@ fn streamed(
     when: !tracked && set.contains(data.ignored, generation),
     return: fn() { settle(data, []) },
   )
+
+  // Resolve strand of operation for streaming thinking.
   let strand = case tracked {
     True -> Ok(advisor.primary)
     False -> notes.strand_of(data.wiring.session, operation)
   }
 
+  // Check if strand is primary before growing book.
   case strand {
     Error(Nil) -> settle(data, [])
     Ok(strand) if strand != advisor.primary -> {
+      // Clear ignored set if limit exceeded.
       let ignored = case set.size(data.ignored) >= ignored_limit {
         True -> set.new()
         False -> data.ignored
       }
+
       settle(Data(..data, ignored: set.insert(ignored, generation)), [])
     }
     Ok(strand) -> {
@@ -1227,6 +1279,7 @@ fn settle(data: Data, launches: List(Launch)) -> sm.Next(Phase, Data, Message) {
   sm.keep(data) |> sm.with_selector(selector(data))
 }
 
+/// Builds message selector across inbox, commit hints, and flight relays.
 fn selector(data: Data) -> process.Selector(Message) {
   let own =
     process.new_selector()
@@ -1242,11 +1295,15 @@ fn selector(data: Data) -> process.Selector(Message) {
   })
 }
 
-// The relay is linked to this machine and the run's scope to the relay, so
-// a machine that dies takes every request it started down with it.
+/// Launches a summarization task under managed weft relay.
+///
+/// The relay is linked to this machine and the run's scope to the relay, so
+/// a machine that dies takes every request it started down with it.
 fn launch(data: Data, launch: Launch) -> Data {
   let sink = process.new_subject()
   let wiring = data.wiring
+
+  // Prepare task and flight tracking record for launch kind.
   let #(kind, task) = case launch {
     SettledAsk(job:) -> #(
       SettledFlight(entry: job.entry, block: job.block),
@@ -1271,6 +1328,7 @@ fn launch(data: Data, launch: Launch) -> Data {
   )
 }
 
+/// Handles relayed outcomes and completions from launched summary tasks.
 fn relayed(
   data: Data,
   number: Int,
@@ -1299,8 +1357,10 @@ fn relayed(
   }
 }
 
-// The run's last word: the worker has exited, so its slot in the book is
-// free, and the book may have more for it.
+/// Finalizes a completed summary task and triggers next launches from book.
+///
+/// The run's last word: the worker has exited, so its slot in the book is
+/// free, and the book may have more for it.
 fn finished(
   data: Data,
   number: Int,
@@ -1311,17 +1371,21 @@ fn finished(
   let data = report(data, ending_of(flight.landed, lost))
   let pace = data.wiring.pace
 
+  // Notify book of landed task and collect new launches.
   let #(book, launches) = case flight.kind {
     SettledFlight(..) -> blocksummarybook.settled_landed(data.book, pace)
     LiveFlight(generation:) ->
       blocksummarybook.landed(data.book, pace, generation)
   }
+
   settle(Data(..data, book:), launches)
 }
 
-// All seven outcomes are written out (`docs/weft.md` rule 9). A plain task
-// never produces the last two; the arms are there so a run that grows an
-// owner fails exhaustiveness rather than taking a catch-all.
+/// Evaluates weft task ending outcome into a result string.
+///
+/// All seven outcomes are written out (`docs/weft.md` rule 9). A plain task
+/// never produces the last two; the arms are there so a run that grows an
+/// owner fails exhaustiveness rather than taking a catch-all.
 fn ending_of(landed: Landing, lost: Option(String)) -> Result(Nil, String) {
   case landed {
     Landed(weft.Completed(value:, ..)) -> Ok(value)
@@ -1343,7 +1407,9 @@ fn ending_of(landed: Landing, lost: Option(String)) -> Result(Nil, String) {
   }
 }
 
+/// Reports unusable summary errors with log level based on frequency.
 fn report(data: Data, ending: Result(Nil, String)) -> Data {
+  // Log error if ending failed, or retain data unchanged.
   case ending, data.reported {
     Ok(Nil), _ -> data
     Error(reason), Quiet -> {
@@ -1363,9 +1429,11 @@ fn report(data: Data, ending: Result(Nil, String)) -> Data {
 
 // --- one request -------------------------------------------------------------
 
-// A committed block: ask, bound the answer, store it, then publish it. The
-// store comes first so a terminal that reattaches after the push has
-// passed still finds the label by exact key.
+/// Summarizes a settled reasoning block, persisting and publishing the result.
+///
+/// A committed block: ask, bound the answer, store it, then publish it. The
+/// store comes first so a terminal that reattaches after the push has
+/// passed still finds the label by exact key.
 fn summarize_settled(wiring: Wiring, job: Job) -> Result(Nil, String) {
   use label <- result.try(ask(wiring, job.source, job.text))
   use Nil <- result.try(wiring.write(key(job.entry, job.block), encode(label)))
@@ -1376,9 +1444,11 @@ fn summarize_settled(wiring: Wiring, job: Job) -> Result(Nil, String) {
   Ok(Nil)
 }
 
-// A live stream: ask and publish, storing nothing. The label describes
-// text that is still being written, and the settled block's own label
-// replaces it once the entry commits.
+/// Summarizes a live reasoning fragment and publishes the label.
+///
+/// A live stream: ask and publish, storing nothing. The label describes
+/// text that is still being written, and the settled block's own label
+/// replaces it once the entry commits.
 fn summarize_live(
   wiring: Wiring,
   generation: String,
@@ -1413,9 +1483,12 @@ pub fn ask_for(
   Nil
 }
 
-// Accounting commits before parsing or publication, even when the answer
-// failed or proves unusable. The text fallback owns no authority to erase spend.
+/// Queries the summarizer model route and records accounting.
+///
+/// Accounting commits before parsing or publication, even when the answer
+/// failed or proves unusable. The text fallback owns no authority to erase spend.
 fn ask(wiring: Wiring, source: Source, text: String) -> Result(String, String) {
+  // Query summarizer route and record request accounting.
   use answer <- result.try(
     case wiring.route.summarizer.ask(request(source, text)) {
       Ok(answer) -> {
@@ -1436,6 +1509,7 @@ fn ask(wiring: Wiring, source: Source, text: String) -> Result(String, String) {
       }
     },
   )
+
   parse(answer.text)
   |> result.replace_error("the summarizer's answer was empty")
 }

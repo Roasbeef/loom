@@ -37,11 +37,14 @@ pub fn invoke(
   input: value.JsonValue,
 ) -> Result(surface.Execution, store.Refusal) {
   use candidate <- result.try(store.authorized(catalogue, selection))
+
+  // Ensure the candidate artifact is an executable skill program.
   use Nil <- result.try(case candidate.kind {
     record.Program -> Ok(Nil)
     record.Extension | record.Prompt ->
       Error(store.Authority("selected artifact is not an executable skill"))
   })
+
   use source <- result.try(
     list.key_find(candidate.files, "program.gleam")
     |> result.replace_error(store.Corrupt("skill has no program.gleam")),
@@ -96,7 +99,9 @@ pub fn test_with(
   evaluate.report_of(result.map(observed, executed))
 }
 
+/// Maps a completed skill test execution to its evaluation verdict and report summary.
 fn executed(execution: surface.Execution) -> #(record.Verdict, String) {
+  // Classify execution outcome into a terminal evaluation verdict.
   let verdict = case execution.result {
     surface.Ran(surface.Completed(_), _) -> record.Passed
 
@@ -107,6 +112,7 @@ fn executed(execution: surface.Execution) -> #(record.Verdict, String) {
     surface.RunFailed(_) ->
       record.Inconclusive("jailed skill test did not complete")
   }
+
   #(
     verdict,
     json.to_string(
@@ -130,6 +136,8 @@ fn executed(execution: surface.Execution) -> #(record.Verdict, String) {
 /// `outcome(execution)` is `tool.success(..)` for a completed run.
 pub fn outcome(execution: surface.Execution) -> tool.ToolOutcome {
   let rendered = surface.execution_value(execution)
+
+  // Format tool outcome based on whether execution ran to completion.
   let outcome = case execution.result {
     surface.Ran(surface.Completed(_), _) ->
       tool.success(value.to_string(rendered))
@@ -139,9 +147,11 @@ pub fn outcome(execution: surface.Execution) -> tool.ToolOutcome {
     | surface.CompileFailed(_)
     | surface.RunFailed(_) -> tool.failure(value.to_string(rendered))
   }
+
   tool.with_details(outcome, rendered)
 }
 
+/// Runs candidate author test in sandbox and returns execution outcome.
 fn test_execution(
   candidate: record.Candidate,
   run: fn(String) -> Result(surface.Execution, store.Refusal),
@@ -150,18 +160,24 @@ fn test_execution(
     list.key_find(candidate.files, "program.gleam")
     |> result.replace_error(store.Corrupt("skill has no program.gleam")),
   )
+
+  // Extract declared author test entry point function.
   use check <- result.try(case candidate.test_entry {
     Some(check) -> Ok(check)
     None -> Error(store.TestFailed("skill has no author test function"))
   })
+
+  // Validate identifier characters and length before synthesizing runner.
   use Nil <- result.try(case legal_function(check) {
     True -> Ok(Nil)
     False -> Error(store.Authority("test function must be an identifier"))
   })
+
   let submitted = source <> "\n\npub fn main() {\n  " <> check <> "()\n}\n"
   run(submitted)
 }
 
+/// Validates that an identifier matches allowed skill function name characters.
 fn legal_function(name: String) -> Bool {
   name != ""
   && string.length(name) <= 64

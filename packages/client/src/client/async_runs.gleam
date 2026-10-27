@@ -341,6 +341,8 @@ pub fn interact(
   let probe = fn() {
     ask(name, fn(reply) { Inspect(strand:, id:, action:, reply:) })
   }
+
+  // Poll for completion or return immediately for non-waiting actions.
   case action, within_ms > 0 {
     Check, True | Receive(_), True | ReceiveEnveloped(_), True -> {
       let outcome =
@@ -354,6 +356,8 @@ pub fn interact(
               }
           }
         })
+
+      // Map polling outcome into result.
       case outcome {
         poll.Answered(value) -> Ok(value)
         poll.Failed(reason) -> Error(reason)
@@ -364,6 +368,7 @@ pub fn interact(
   }
 }
 
+/// Checks whether an action should continue waiting for updates.
 fn waiting(value: JsonValue, action: Action) -> Bool {
   case action, value {
     Receive(_), json.Null | ReceiveEnveloped(_), json.Null -> True
@@ -376,6 +381,7 @@ fn waiting(value: JsonValue, action: Action) -> Bool {
   }
 }
 
+/// Sends a synchronous message to the service actor and awaits a reply.
 fn ask(
   name: address.Address(Message),
   build: fn(Subject(Result(JsonValue, String))) -> Message,
@@ -390,7 +396,9 @@ fn ask(
   |> result.unwrap(Error("async execution service did not answer"))
 }
 
+/// Handles incoming actor messages and steps the service state.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  // Dispatch on incoming message variant.
   case message {
     Recover ->
       case recover(state.wiring) {
@@ -413,6 +421,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           json.Null,
         )
         |> result.map_error(string.inspect)
+
+      // Ensure abort marker was persisted successfully.
       case marked {
         Error(reason) -> {
           process.send(reply, Error(reason))
@@ -452,6 +462,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
+/// Rebuilds message selectors and continues actor execution.
 fn resume(state: State) -> actor.Next(State, Message) {
   let selector =
     dict.fold(
@@ -463,13 +474,17 @@ fn resume(state: State) -> actor.Next(State, Message) {
         })
       },
     )
+
+  // Include recovery answer selector if waiting on recovery.
   let selector = case state.answers {
     None -> selector
     Some(answers) -> process.select_map(selector, answers, Recovered)
   }
+
   actor.continue(state) |> actor.with_selector(selector)
 }
 
+/// Validates an execution launch request against current capacity and stored facts.
 fn admit(
   state: State,
   record: execution.Execution,
@@ -483,11 +498,16 @@ fn admit(
     api.fact_cell(state.wiring.runtime, execution.abort_key(record.operation))
     |> result.map_error(string.inspect),
   )
+
+  // Verify initiating operation was not aborted.
   use Nil <- result.try(case aborted {
     None -> Ok(Nil)
     Some(_) -> Error("initiating operation has been aborted")
   })
+
   use existing <- result.try(load(state.wiring.runtime, record.id))
+
+  // Check if execution record already exists.
   case existing {
     Some(existing) ->
       case
@@ -508,6 +528,7 @@ fn admit(
   }
 }
 
+/// Spawns a new managed task worker for an admitted execution.
 fn start_worker(
   state: State,
   record: execution.Execution,
@@ -516,6 +537,8 @@ fn start_worker(
   let #(now, _) = clock.read(state.wiring.clock)
   let operation = ids.op_id_to_string(record.operation)
   let launches = dict.get(state.launches, operation) |> result.unwrap(0)
+
+  // Verify capacity limits before spawning worker.
   use Nil <- result.try(
     case
       dict.size(state.live) < 8
@@ -528,6 +551,7 @@ fn start_worker(
         Error("async execution capacity, source size, or deadline exceeded")
     },
   )
+
   let record = execution.Execution(..record, phase: execution.Running)
   use _seq <- result.try(
     api.claim_reserved_fact(
@@ -571,17 +595,22 @@ fn start_worker(
   Ok(#(state, value))
 }
 
+/// Loads an execution record from runtime storage.
 fn load(
   runtime: api.Runtime,
   id: String,
 ) -> Result(Option(execution.Execution), String) {
+  // Validate execution identifier format.
   use Nil <- result.try(case execution.valid_id(id) {
     True -> Ok(Nil)
     False -> Error("invalid execution handle")
   })
+
   use cell <- result.try(
     api.fact(runtime, execution.key(id)) |> result.map_error(string.inspect),
   )
+
+  // Decode execution record if present.
   case cell {
     None -> Ok(None)
     Some(value) ->
@@ -611,6 +640,7 @@ pub fn record(
   load(runtime, id)
 }
 
+/// Saves an execution record to runtime storage.
 fn save(
   runtime: api.Runtime,
   record: execution.Execution,
@@ -629,6 +659,7 @@ fn save(
   |> result.map_error(string.inspect)
 }
 
+/// Evaluates an inspection action against an execution record.
 fn inspect(
   state: State,
   strand: String,
@@ -638,11 +669,15 @@ fn inspect(
   let state = promote_progress(state, id)
   let answer = {
     use record <- result.try(load(state.wiring.runtime, id))
+
+    // Ensure execution is owned by requesting strand.
     case record {
       Some(record) if record.strand == strand -> Ok(record)
       Some(_) | None -> Error("execution handle is not owned by this strand")
     }
   }
+
+  // Dispatch on inspection result and action type.
   case answer {
     Error(reason) -> #(state, Error(reason))
     Ok(record) ->
@@ -688,11 +723,14 @@ type InputView {
   Enveloped
 }
 
+/// Serializes an execution record into a JSON inspection value.
 fn inspect_value(
   state: State,
   record: execution.Execution,
 ) -> Result(JsonValue, String) {
   use readiness <- result.try(readiness(state.wiring.runtime, record.id))
+
+  // Determine readiness status fields.
   let readiness_fields = case readiness {
     None -> [#("readiness", json.String("preparing"))]
     Some(readiness) -> [
@@ -700,6 +738,8 @@ fn inspect_value(
       #("endpoints", json.Array(list.map(readiness.endpoints, json.String))),
     ]
   }
+
+  // Include volatile progress and delivery fields.
   let volatile_fields = case dict.get(state.live, record.id) {
     Error(Nil) -> []
     Ok(held) ->
@@ -708,6 +748,8 @@ fn inspect_value(
         delivery_fields(held.delivery),
       )
   }
+
+  // Combine static and volatile fields into final JSON object.
   case execution.encode(record) {
     json.Object(fields) ->
       Ok(
@@ -720,6 +762,7 @@ fn inspect_value(
   }
 }
 
+/// Formats progress snapshot into JSON object fields.
 fn progress_fields(progress: Option(Snapshot)) -> List(#(String, JsonValue)) {
   case progress {
     None -> []
@@ -736,16 +779,20 @@ fn progress_fields(progress: Option(Snapshot)) -> List(#(String, JsonValue)) {
   }
 }
 
+/// Formats delivery snapshot into JSON object fields.
 fn delivery_fields(
   delivery: Option(DeliverySnapshot),
 ) -> List(#(String, JsonValue)) {
+  // Check if delivery observation is present.
   case delivery {
     None -> []
     Some(delivery) -> {
+      // Map delivery status and optional rejection reason.
       let #(status, reason) = case delivery.outcome {
         Delivered -> #("delivered", [])
         Rejected(reason) -> #("rejected", [#("reason", json.String(reason))])
       }
+
       [
         #(
           "latest_delivery",
@@ -761,6 +808,7 @@ fn delivery_fields(
   }
 }
 
+/// Reads execution readiness status from runtime storage.
 fn readiness(
   runtime: api.Runtime,
   id: String,
@@ -769,6 +817,8 @@ fn readiness(
     api.fact(runtime, execution.readiness_key(id))
     |> result.map_error(string.inspect),
   )
+
+  // Decode readiness fact if present.
   case value {
     None -> Ok(None)
     Some(value) ->
@@ -778,6 +828,7 @@ fn readiness(
   }
 }
 
+/// Validates and records execution readiness.
 fn publish_readiness(
   wiring: Wiring,
   record: execution.Execution,
@@ -785,14 +836,19 @@ fn publish_readiness(
   idle_within_ms: Int,
 ) -> Result(JsonValue, String) {
   let #(now, _) = clock.read(wiring.clock)
+
+  // Verify execution admits readiness publication.
   use Nil <- result.try(case execution.admits(record, now) {
     True -> Ok(Nil)
     False -> Error("execution is closed before readiness")
   })
+
   use aborted <- result.try(
     api.fact_cell(wiring.runtime, execution.abort_key(record.operation))
     |> result.map_error(string.inspect),
   )
+
+  // Ensure initiating operation is not aborted.
   use Nil <- result.try(case aborted {
     None -> Ok(Nil)
     Some(_) -> Error("initiating operation has been aborted")
@@ -803,6 +859,8 @@ fn publish_readiness(
     True -> Ok(Nil)
     False -> Error("ready requires one to sixteen unique endpoint names")
   })
+
+  // Ensure idle timeout interval is valid.
   use Nil <- result.try(case endpoints, idle_within_ms {
     ["default"], 0 -> Ok(Nil)
     _, value if value >= 1 && value <= 300_000 -> Ok(Nil)
@@ -813,6 +871,8 @@ fn publish_readiness(
   // Record verified readiness for the execution.
   let ready = execution.Readiness(endpoints:, idle_within_ms:)
   use existing <- result.try(readiness(wiring.runtime, record.id))
+
+  // Persist readiness if not already registered.
   case existing {
     Some(existing) if existing == ready -> Ok(json.Null)
     Some(_) -> Error("execution readiness is immutable")
@@ -828,6 +888,7 @@ fn publish_readiness(
   }
 }
 
+/// Updates execution live state with published readiness.
 fn publish_ready(
   state: State,
   record: execution.Execution,
@@ -836,6 +897,8 @@ fn publish_ready(
 ) -> #(State, Result(JsonValue, String)) {
   let answer =
     publish_readiness(state.wiring, record, endpoints, idle_within_ms)
+
+  // Check publication answer and live worker presence.
   case answer, dict.get(state.live, record.id) {
     Error(reason), _ -> #(state, Error(reason))
     _, Error(Nil) -> #(state, Error("execution is not live"))
@@ -851,11 +914,14 @@ fn publish_ready(
   }
 }
 
+/// Ensures default readiness is registered for an execution.
 fn ready_default(
   wiring: Wiring,
   record: execution.Execution,
 ) -> Result(execution.Readiness, String) {
   use existing <- result.try(readiness(wiring.runtime, record.id))
+
+  // Return existing default readiness or publish default.
   case existing {
     Some(
       execution.Readiness(endpoints: ["default"], idle_within_ms: 0) as ready,
@@ -868,6 +934,7 @@ fn ready_default(
   }
 }
 
+/// Records a progress snapshot for a live execution.
 fn publish_progress(
   state: State,
   id: String,
@@ -880,6 +947,8 @@ fn publish_progress(
         False -> #(state, Error("execution progress exceeds 16384 bytes"))
         True -> {
           let #(now, _) = clock.read(state.wiring.clock)
+
+          // Rate-limit progress updates.
           let #(held, snapshot) = case held.progress {
             None -> {
               let snapshot = Snapshot(sequence: 1, updated_ms: now, value:)
@@ -902,6 +971,7 @@ fn publish_progress(
               current,
             )
           }
+
           let state = State(..state, live: dict.insert(state.live, id, held))
           #(
             state,
@@ -917,6 +987,8 @@ fn publish_progress(
   }
 }
 
+/// Records delivery observation for an execution input.
+/// Records delivery observation for an execution input.
 fn publish_delivery(
   state: State,
   id: String,
@@ -924,31 +996,42 @@ fn publish_delivery(
   endpoint: String,
   outcome: DeliveryOutcome,
 ) -> #(State, Result(JsonValue, String)) {
+  // Validate delivery outcome reason length.
   let valid_reason = case outcome {
     Delivered -> True
     Rejected(reason) -> string.byte_size(reason) <= 1024
   }
+
   let answer = {
+    // Validate sequence number and rejection reason.
     use Nil <- result.try(case sequence > 0 && valid_reason {
       True -> Ok(Nil)
       False -> Error("invalid delivery observation")
     })
+
     use ready <- result.try(readiness(state.wiring.runtime, id))
     use ready <- result.try(option.to_result(
       ready,
       "execution has not published readiness",
     ))
+
+    // Verify target endpoint was registered.
     use Nil <- result.try(case list.contains(ready.endpoints, endpoint) {
       True -> Ok(Nil)
       False -> Error("delivery endpoint was not registered")
     })
+
     Ok(Nil)
   }
+
+  // Update live delivery state if execution is active.
   case answer, dict.get(state.live, id) {
     Error(reason), _ -> #(state, Error(reason))
     _, Error(Nil) -> #(state, Error("execution is not live"))
     Ok(Nil), Ok(held) -> {
       let delivery = DeliverySnapshot(sequence:, endpoint:, outcome:)
+
+      // Reset idle anchor timestamp on successful delivery.
       let idle_anchor_ms = case outcome {
         Delivered -> {
           let #(now, _) = clock.read(state.wiring.clock)
@@ -956,12 +1039,14 @@ fn publish_delivery(
         }
         Rejected(_) -> held.idle_anchor_ms
       }
+
       let held = Held(..held, delivery: Some(delivery), idle_anchor_ms:)
       #(State(..state, live: dict.insert(state.live, id, held)), Ok(json.Null))
     }
   }
 }
 
+/// Receives the next enveloped input message for an execution.
 fn receive_enveloped(
   state: State,
   record: execution.Execution,
@@ -973,12 +1058,17 @@ fn receive_enveloped(
       ready,
       "execution has not published readiness",
     ))
+
+    // Ensure typed readiness is active.
     use Nil <- result.try(case ready.idle_within_ms > 0 {
       True -> Ok(Nil)
       False -> Error("enveloped receive requires typed readiness")
     })
+
     Ok(ready)
   }
+
+  // Check live state and idle timeout before consuming input.
   case answer, dict.get(state.live, record.id) {
     Error(reason), _ -> #(state, Error(reason))
     _, Error(Nil) -> #(
@@ -987,6 +1077,8 @@ fn receive_enveloped(
     )
     Ok(ready), Ok(held) -> {
       let #(now, _) = clock.read(state.wiring.clock)
+
+      // Test whether execution exceeded its idle timeout.
       case held.idle_anchor_ms {
         Some(anchor) if now - anchor >= ready.idle_within_ms -> {
           let state =
@@ -1006,12 +1098,16 @@ fn receive_enveloped(
   }
 }
 
+/// Promotes pending rate-limited progress if interval has elapsed.
 fn promote_progress(state: State, id: String) -> State {
+  // Check if live worker has pending progress.
   case dict.get(state.live, id) {
     Ok(
       Held(progress: Some(current), pending_progress: Some(pending), ..) as held,
     ) -> {
       let #(now, _) = clock.read(state.wiring.clock)
+
+      // Test whether 100ms throttle interval has passed.
       case now - current.updated_ms >= 100 {
         False -> state
         True -> {
@@ -1031,11 +1127,15 @@ fn promote_progress(state: State, id: String) -> State {
   }
 }
 
+/// Transitions an execution to draining phase and cancels its worker scope.
 fn close(state: State, id: String, outcome: Option(execution.Phase)) -> State {
+  // Locate live worker to close.
   case dict.get(state.live, id) {
     Error(Nil) -> state
     Ok(held) -> {
       let record = execution.Execution(..held.record, phase: execution.Draining)
+
+      // Save draining phase to storage.
       case save(state.wiring.runtime, record) {
         Error(_) -> state
         Ok(Nil) -> {
@@ -1050,14 +1150,17 @@ fn close(state: State, id: String, outcome: Option(execution.Phase)) -> State {
   }
 }
 
+/// Processes worker outcome and drain proof reports.
 fn reported(
   state: State,
   id: String,
   report: weft.Pulled(JsonValue, String),
 ) -> State {
+  // Dispatch on pulled report variant.
   case report {
     weft.NotYet -> state
     weft.PulledOutcome(outcome) -> {
+      // Map worker outcome to execution phase.
       let phase = case outcome {
         weft.Completed(value:, ..) -> execution.Finished(value)
 
@@ -1071,6 +1174,7 @@ fn reported(
         | weft.CancellationUnconfirmed(..) ->
           execution.Lost("execution worker lost")
       }
+
       close(state, id, Some(phase))
     }
     weft.AllDelivered -> mark_drain(state, id, Proven)
@@ -1081,14 +1185,18 @@ fn reported(
   }
 }
 
+/// Records drain status proof for an execution.
 fn mark_drain(state: State, id: String, drain: Drain) -> State {
+  // Look up live worker to mark drain status.
   case dict.get(state.live, id) {
     Error(Nil) -> state
     Ok(held) -> {
+      // Map drain proof status to execution outcome.
       let outcome = case drain {
         LostProof -> Some(execution.Lost("execution scope lost"))
         Awaiting | Proven -> held.outcome
       }
+
       State(
         ..state,
         live: dict.insert(state.live, id, Held(..held, drain:, outcome:)),
@@ -1099,12 +1207,14 @@ fn mark_drain(state: State, id: String, drain: Drain) -> State {
 
 // --- telling the owner ----------------------------------------------------
 
-// A settled execution's notice to the strand that launched it, if its end
-// is news. Called once the terminal phase is saved: after the drain proof
-// for an ordinary end, and from recovery for one a restart ended. A
-// delivery that fails is dropped, because the record is terminal and a
-// `check` or `join` reads it.
+/// Delivers a completion notice to the launching strand if the terminal phase is notable.
+/// A settled execution's notice to the strand that launched it, if its end
+/// is news. Called once the terminal phase is saved: after the drain proof
+/// for an ordinary end, and from recovery for one a restart ended. A
+/// delivery that fails is dropped, because the record is terminal and a
+/// `check` or `join` reads it.
 fn tell(runtime: api.Runtime, record: execution.Execution) -> Nil {
+  // Check whether notice delivery is warranted.
   case worth_telling(record.phase) {
     True -> {
       let _delivered =
@@ -1120,6 +1230,7 @@ fn tell(runtime: api.Runtime, record: execution.Execution) -> Nil {
   }
 }
 
+/// Determines whether an execution phase change should notify the owner strand.
 fn worth_telling(phase: execution.Phase) -> Bool {
   case phase {
     execution.Finished(_) -> True
@@ -1133,9 +1244,11 @@ fn worth_telling(phase: execution.Phase) -> Bool {
 // for the common small report, with the rest a `join` away.
 const notice_result_bytes = 2048
 
-// The completion notice's text. Its first line names it completely, as a
-// client's collapsed view of a `[loom]` message expects.
+/// Formats the completion notice text for a finished or lost execution.
+/// The completion notice's text. Its first line names it completely, as a
+/// client's collapsed view of a `[loom]` message expects.
 fn completion_text(record: execution.Execution) -> String {
+  // Describe terminal outcome.
   let ended = case record.phase {
     execution.Finished(result) ->
       "finished\n\nIts result:\n"
@@ -1147,6 +1260,7 @@ fn completion_text(record: execution.Execution) -> String {
     execution.Starting | execution.Running | execution.Draining ->
       "is still running"
   }
+
   "[loom] async code-mode execution "
   <> record.id
   <> " "
@@ -1165,11 +1279,14 @@ fn clipped(text: String, limit: Int) -> String {
 
 // --- the idle heartbeat ---------------------------------------------------
 
-// One heartbeat sample, when one is due. Every owner of a live execution
-// is asked whether its strand has an open run, and one that has been idle
-// for the whole interval is woken with a listing of what is still running.
+/// Periodically samples active executions and notifies idle strands.
+/// One heartbeat sample, when one is due. Every owner of a live execution
+/// is asked whether its strand has an open run, and one that has been idle
+/// for the whole interval is woken with a listing of what is still running.
 fn heartbeat(state: State, now: Int) -> State {
   let interval = state.wiring.heartbeat_ms
+
+  // Check if heartbeat sampling interval has elapsed.
   case interval > 0 && now >= state.next_sample_ms {
     False -> state
     True -> {
@@ -1191,6 +1308,7 @@ fn heartbeat(state: State, now: Int) -> State {
   }
 }
 
+/// Formats a single status line for a running execution in a heartbeat notice.
 fn heartbeat_line(record: execution.Execution, now: Int) -> String {
   "async execution "
   <> record.id
@@ -1200,9 +1318,10 @@ fn heartbeat_line(record: execution.Execution, now: Int) -> String {
   <> notice.minutes(int.max(record.deadline_ms - now, 0))
 }
 
-// Every execution still running, grouped by the strand that launched it.
-// A draining one is on its way out and is not work the owner is waiting
-// on.
+/// Groups active live executions by their owner strand.
+/// Every execution still running, grouped by the strand that launched it.
+/// A draining one is on its way out and is not work the owner is waiting
+/// on.
 fn live_by_owner(
   live: Dict(String, Held),
 ) -> Dict(String, List(execution.Execution)) {
@@ -1217,6 +1336,7 @@ fn live_by_owner(
   })
 }
 
+/// Sweeps active executions to enforce deadlines and finalize drained executions.
 fn sweep(state: State) -> State {
   let recovering =
     list.filter(state.recovering, fn(record) {
@@ -1236,6 +1356,7 @@ fn sweep(state: State) -> State {
   let #(now, _) = clock.read(state.wiring.clock)
   let state = heartbeat(state, now)
   dict.fold(state.live, state, fn(state, id, held) {
+    // Check execution deadline and abort status.
     case held.record.phase {
       execution.Starting | execution.Running ->
         case
@@ -1264,9 +1385,13 @@ fn sweep(state: State) -> State {
             held.record.operation,
             id,
           )
+
+        // Finalize execution once drain is proven and children are stopped.
         case drained, held.drain, held.outcome {
           Ok(True), Proven, Some(phase) | Ok(True), LostProof, Some(phase) -> {
             let settled = execution.Execution(..held.record, phase:)
+
+            // Save settled execution record.
             case save(state.wiring.runtime, settled) {
               Ok(Nil) -> {
                 tell(state.wiring.runtime, settled)
@@ -1278,11 +1403,13 @@ fn sweep(state: State) -> State {
           _, _, _ -> state
         }
       }
+
       execution.Finished(_) | execution.Lost(_) -> state
     }
   })
 }
 
+/// Fences orphaned executions and initializes survivor recovery queries.
 fn recover(
   wiring: Wiring,
 ) -> Result(
@@ -1307,6 +1434,7 @@ fn recover(
   // other record is settled here, before any request is served.
   use settled <- result.try(
     list.try_map(records, fn(record) {
+      // Determine recovery disposition based on saved phase.
       case record.phase {
         execution.Finished(_) -> Ok(Settled(record))
         execution.Lost(_) -> {
@@ -1367,12 +1495,13 @@ type Found {
 
 const restarted_reason = "execution service restarted"
 
-// Saves the phase recovery decided for a record a previous service left
-// unfinished, stops what may still run, and tells the launcher. This recovery
-// is what ended the execution, so nobody has been told; one already terminal
-// was told, or chose not to be, by the incarnation that wrote it. An execution
-// recovered as finished still has its owned children drained by the sweep, as
-// a finished one always does.
+/// Saves recovered execution phase and stops child operations.
+/// Saves the phase recovery decided for a record a previous service left
+/// unfinished, stops what may still run, and tells the launcher. This recovery
+/// is what ended the execution, so nobody has been told; one already terminal
+/// was told, or chose not to be, by the incarnation that wrote it. An execution
+/// recovered as finished still has its owned children drained by the sweep, as
+/// a finished one always does.
 fn conclude(
   wiring: Wiring,
   record: execution.Execution,
@@ -1380,6 +1509,8 @@ fn conclude(
 ) -> Result(execution.Execution, String) {
   let record = execution.Execution(..record, phase:)
   use Nil <- result.try(save(wiring.runtime, record))
+
+  // Abort lingering child operations if execution is not finished.
   case phase {
     execution.Finished(_) -> Nil
     execution.Lost(_)
@@ -1387,6 +1518,7 @@ fn conclude(
     | execution.Running
     | execution.Draining -> wiring.abort(record.operation, record.step)
   }
+
   tell(wiring.runtime, record)
   Ok(record)
 }
@@ -1396,7 +1528,9 @@ fn conclude(
 // answer comes back as a `Recovered` message, so a store that is slow or an
 // executor that cannot be reached delays only these records and never the
 // service's other requests.
+/// Queries executors for surviving values of unfinished executions.
 fn ask_survivors(state: State, asking: List(execution.Execution)) -> State {
+  // Check if executor inquiry is configured and items remain.
   case asking, state.wiring.surviving_value {
     [], _ | _, NothingSurvives -> state
     _, AskWhere(read:) -> {
@@ -1419,6 +1553,7 @@ fn ask_survivors(state: State, asking: List(execution.Execution)) -> State {
 // program's result, as a tool call recovers a stored outcome; any other
 // ending, including a question that crashed, means the program's end is
 // unknown, so the record is lost and never resumed.
+/// Ingests recovered execution values from background inquiries.
 fn recovered(
   state: State,
   pulled: weft.Pulled(Result(JsonValue, Nil), Nil),
@@ -1451,11 +1586,14 @@ fn recovered(
   }
 }
 
+/// Updates recovered execution status after inquiry completes.
+/// Updates recovered execution status after inquiry completes.
 fn answered(
   state: State,
   index: Int,
   phase: execution.Phase,
 ) -> Result(State, String) {
+  // Look up asked execution by index.
   case dict.get(state.asking, index) {
     Error(Nil) -> Ok(state)
     Ok(record) -> {
@@ -1470,6 +1608,7 @@ fn answered(
   }
 }
 
+/// Increments the count of launches performed by an operation.
 fn increment_launch(
   launches: Dict(String, Int),
   operation: ids.OpId,
@@ -1498,10 +1637,13 @@ fn input_key(id: String) -> String {
   execution.prefix <> "input/" <> id
 }
 
+/// Reads the input journal values for an execution from runtime storage.
 fn inputs(runtime: api.Runtime, id: String) -> Result(List(JsonValue), String) {
   use value <- result.try(
     api.fact(runtime, input_key(id)) |> result.map_error(string.inspect),
   )
+
+  // Decode array of input journal entries.
   case value {
     None -> Ok([])
     Some(json.Array(values)) -> Ok(values)
@@ -1509,6 +1651,7 @@ fn inputs(runtime: api.Runtime, id: String) -> Result(List(JsonValue), String) {
   }
 }
 
+/// Appends a new input entry to an execution's input journal.
 fn append_input(
   wiring: Wiring,
   record: execution.Execution,
@@ -1516,14 +1659,19 @@ fn append_input(
   value: JsonValue,
 ) -> Result(JsonValue, String) {
   let #(now, _) = clock.read(wiring.clock)
+
+  // Verify execution admits input.
   use Nil <- result.try(case execution.admits(record, now) {
     True -> Ok(Nil)
     False -> Error("execution is closed to input")
   })
+
   use aborted <- result.try(
     api.fact_cell(wiring.runtime, execution.abort_key(record.operation))
     |> result.map_error(string.inspect),
   )
+
+  // Verify operation was not aborted.
   use Nil <- result.try(case aborted {
     None -> Ok(Nil)
     Some(_) -> Error("initiating operation has been aborted")
@@ -1535,10 +1683,13 @@ fn append_input(
     ready,
     "execution is not ready for input",
   ))
+
+  // Verify endpoint registration.
   use Nil <- result.try(case list.contains(ready.endpoints, endpoint) {
     True -> Ok(Nil)
     False -> Error("execution endpoint is not registered")
   })
+
   use values <- result.try(inputs(wiring.runtime, record.id))
   let entry =
     json.Object([#("endpoint", json.String(endpoint)), #("value", value)])
@@ -1554,6 +1705,7 @@ fn append_input(
       False -> Error("execution input journal limit exceeded")
     },
   )
+
   use _ <- result.try(
     api.put_reserved_fact(
       wiring.runtime,
@@ -1565,6 +1717,7 @@ fn append_input(
   Ok(json.Int(list.length(next)))
 }
 
+/// Reads the next input entry after the given cursor position.
 fn input_after(
   runtime: api.Runtime,
   record: execution.Execution,
@@ -1572,9 +1725,13 @@ fn input_after(
   view: InputView,
 ) -> Result(JsonValue, String) {
   use values <- result.try(inputs(runtime, record.id))
+
+  // Fetch the next available input item after cursor.
   case list.first(list.drop(values, int.max(0, after))) {
     Ok(value) -> {
       use pair <- result.try(input_entry(value))
+
+      // Format input item based on requested view.
       case view, pair.0 {
         Raw, "default" ->
           Ok(
@@ -1604,17 +1761,22 @@ fn input_after(
   }
 }
 
+/// Parses a raw or typed input journal entry into an endpoint-payload pair.
 fn input_entry(value: JsonValue) -> Result(#(String, JsonValue), String) {
+  // Parse input payload shape.
   case value {
     json.Object(fields) -> {
       use endpoint <- result.try(
         list.key_find(fields, "endpoint")
         |> result.replace_error("input endpoint"),
       )
+
+      // Validate endpoint text type.
       use endpoint <- result.try(case endpoint {
         json.String(endpoint) -> Ok(endpoint)
         _ -> Error("text input endpoint")
       })
+
       use value <- result.try(
         list.key_find(fields, "value") |> result.replace_error("input value"),
       )

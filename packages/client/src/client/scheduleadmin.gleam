@@ -143,6 +143,8 @@ pub fn admin(wiring: Wiring) -> Admin {
 // answer to "what is standing configuration and what did this session
 // grow". Both halves are rendered by the same `row`, so an operator's
 // heartbeat and a strand's read as one table rather than two.
+
+/// Establishes listing for the caller, keeping its validation and result policy at this boundary.
 fn listing(wiring: Wiring) -> Result(List(Row), String) {
   use runtime <- result.try(borrow(wiring))
   use live <- result.try(
@@ -158,6 +160,7 @@ fn listing(wiring: Wiring) -> Result(List(Row), String) {
   Ok(list.append(operator, created))
 }
 
+/// Establishes row for the caller, keeping its validation and result policy at this boundary.
 fn row(runtime: Runtime, sched: Schedule) -> Row {
   Row(
     name: sched.name,
@@ -188,6 +191,8 @@ fn owner_label(owner: schedule.Owner) -> String {
 // the durable side is unreachable. Everything after it is the model
 // door's cancel with the ownership test removed and nothing else
 // changed.
+
+/// Establishes cancellation for the caller, keeping its validation and result policy at this boundary.
 fn cancellation(
   wiring: Wiring,
   target: String,
@@ -247,6 +252,8 @@ fn unavailable(refusal: schedule_tool.Refusal) -> CancelRefusal {
 // could not be read. The rest are spelled out anyway rather than swept
 // into a catch-all, so a future seam refusal arrives as a sentence
 // instead of as someone else's words.
+
+/// Establishes reason of for the caller, keeping its validation and result policy at this boundary.
 fn reason_of(refusal: schedule_tool.Refusal) -> String {
   case refusal {
     schedule_tool.Unavailable(reason:) -> reason

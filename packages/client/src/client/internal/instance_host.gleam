@@ -100,6 +100,8 @@ pub fn prepare(
     |> result.map_error(string.inspect),
   )
   let stop = fn() { process.send(started.data, Stop) }
+
+  // Start custodial monitoring or stop the state machine immediately on error.
   case custody.start(started.pid, stop, consumer:, failures:) {
     Ok(owner) -> Ok(Host(started.data, started.pid, owner))
     Error(error) -> {
@@ -171,7 +173,9 @@ pub fn cancel(host: Host) -> Nil {
   custody.cancel(host.custody)
 }
 
+/// Handles incoming supervisor events across preparation and live lifecycle phases.
 fn handle(phase: Phase, book: Book(instance), message: Message) {
+  // Dispatch lifecycle commands or process exit notifications for the host actor.
   case phase, message {
     Prepared, Begin(owner) -> assemble(book, owner)
     Live, Begin(_owner) -> sm.keep(book)
@@ -191,7 +195,9 @@ fn handle(phase: Phase, book: Book(instance), message: Message) {
   }
 }
 
+/// Executes instance build hooks and monitors fatal children during initial activation.
 fn assemble(book: Book(instance), owner: custody.Owner) {
+  // Run the caller instance builder to publish state or report assembly failure.
   case book.build(owner) {
     Error(reason) -> {
       process.send(book.results, Error(reason))

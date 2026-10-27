@@ -213,6 +213,7 @@ pub fn step(book: Book, event: Event, now: Int, pace: Pace) -> Plan {
 
 // --- events -------------------------------------------------------------------
 
+/// Applies a pacing lifecycle event to update per-strand tracking records.
 fn apply(
   tracks: Dict(String, Track),
   event: Event,
@@ -241,6 +242,7 @@ fn apply(
   }
 }
 
+/// Updates tracking state when an operation steps forward or changes context.
 fn stepped(
   booked: Result(Track, Nil),
   operation: String,
@@ -283,9 +285,11 @@ fn stepped(
   }
 }
 
-// The request's own start, not its answer, is what `every_ms` counts
-// from, so a slow summarizer does not stretch the cadence by its own
-// latency on top of the interval.
+/// Re-schedules or backs off a strand after an in-flight glance request settles.
+///
+/// The request's own start, not its answer, is what `every_ms` counts
+/// from, so a slow summarizer does not stretch the cadence by its own
+/// latency on top of the interval.
 fn settled(
   tracks: Dict(String, Track),
   strand: String,
@@ -295,11 +299,15 @@ fn settled(
   now: Int,
   pace: Pace,
 ) -> Dict(String, Track) {
+  // Determine baseline timestamp for interval scheduling from the request start.
   let since = case track.phase {
     Asking(since:) -> since
     Resting -> now
   }
+
   let rested = Track(..track, phase: Resting)
+
+  // Re-arm due timer on success or back off exponentially on summarizer failure.
   case track.operation == operation, ending {
     // An answer about the predecessor frees the slot and changes nothing
     // else: the successor's own schedule was set when it first stepped.
@@ -346,6 +354,7 @@ fn double(delay: Int, times: Int, cap: Int) -> Int {
 
 // --- the launch pass ------------------------------------------------------------
 
+/// Removes dormant strands that have exceeded the retention lifetime bound.
 fn retire(
   tracks: Dict(String, Track),
   now: Int,
@@ -359,9 +368,11 @@ fn retire(
   })
 }
 
-// Most overdue first, and by strand name within one instant, so which
-// strands win the free slots is a function of the book rather than of a
-// dict's iteration order.
+/// Selects overdue strands up to available concurrency slots and marks them asking.
+///
+/// Most overdue first, and by strand name within one instant, so which
+/// strands win the free slots is a function of the book rather than of a
+/// dict's iteration order.
 fn launch_due(
   tracks: Dict(String, Track),
   now: Int,
@@ -406,8 +417,10 @@ fn is_due(track: Track, now: Int) -> Bool {
 }
 
 // The soonest instant a resting, fresh strand becomes due. A strand that
-// is already due but found no slot needs no wake: a slot frees only when a
-// request settles, and a settlement is an event of its own.
+/// Computes the earliest upcoming wake deadline across resting strands.
+///
+/// is already due but found no slot needs no wake: a slot frees only when a
+/// request settles, and a settlement is an event of its own.
 fn next_wake(tracks: Dict(String, Track), now: Int) -> Option(Int) {
   dict.fold(tracks, None, fn(soonest, _strand, track) {
     case track.phase, track.activity {

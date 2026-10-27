@@ -65,6 +65,8 @@ pub fn validate(
       let code = string.utf_codepoint_to_int(point)
       code > 31 && { code < 127 || code > 159 }
     })
+
+  // Check whether both principal and human name pass validation rules.
   case valid_principal && valid_name {
     True -> Ok(Origin(principal, name))
     False -> Error(invalid())
@@ -117,12 +119,15 @@ pub fn decode_field(
   }
 }
 
-// A missing discriminator is the durable human form written since proposal
-// 016. Peer attribution is always tagged, so a corrupt peer cannot silently
-// fall back to a human or anonymous source during replay.
+/// Decodes an origin object when present in serialized JSON.
+///
+/// A missing discriminator is the durable human form written since proposal
+/// 016. Peer attribution is always tagged, so a corrupt peer cannot silently
+/// fall back to a human or anonymous source during replay.
 fn decode_present(
   fields: List(#(String, JsonValue)),
 ) -> Result(Origin, CorruptionReport) {
+  // Inspect the optional kind tag to branch on origin type.
   case list.key_find(fields, "kind") {
     Error(Nil) -> {
       use principal <- result.try(text(fields, "principal"))
@@ -216,6 +221,7 @@ pub fn display_label(origin: Origin) -> String {
   }
 }
 
+/// Validates that an identifier string is within bounds and free of control chars.
 fn bounded_identity(value: String, maximum: Int) -> Bool {
   string.byte_size(value) >= 1
   && string.byte_size(value) <= maximum
@@ -226,11 +232,11 @@ fn bounded_identity(value: String, maximum: Int) -> Bool {
   })
 }
 
-// Reads one required string field. A field of another JSON type is a
-// corruption report rather than an absence: `decode_field` has already
-// established that an origin object is present, so a `principal` that is
-// a number is malformed attribution, not attribution that was never
-// written.
+/// Reads one required string field. A field of another JSON type is a
+/// corruption report rather than an absence: `decode_field` has already
+/// established that an origin object is present, so a `principal` that is
+/// a number is malformed attribution, not attribution that was never
+/// written.
 fn text(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -241,10 +247,11 @@ fn text(
   }
 }
 
-// The single report every rejection in this module answers with. One
-// wording for every shape of malformed attribution, because the reader
-// of a corruption report can act on "this message's author is not
-// readable" and can do nothing at all with which field it was.
+/// Builds the single corruption report every rejection in this module answers with.
+///
+/// One wording for every shape of malformed attribution, because the reader
+/// of a corruption report can act on "this message's author is not
+/// readable" and can do nothing at all with which field it was.
 fn invalid() -> CorruptionReport {
   corruption.report(
     at: "core/origin",
@@ -297,7 +304,7 @@ pub fn project(
   }
 }
 
-// Prepends one quoted label block. JSON quoting presents the origin as data.
+/// Prepends one quoted label block. JSON quoting presents the origin as data.
 fn labelled(
   content: List(UserBlock),
   author: Origin,

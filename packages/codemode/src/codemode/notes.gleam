@@ -91,6 +91,8 @@ pub fn routing(
         source_index:,
         minter: agent.Program(ordinal: request.ordinal),
       )
+
+    // Dispatch capability request to the appropriate notes handler.
     case request.cap {
       "notes.put" -> put_plan(door, caller, request)
       "notes.get" -> get_plan(door, caller, request)
@@ -101,6 +103,7 @@ pub fn routing(
   }
 }
 
+/// Plans a notes.put capability call validating key and JSON value payload.
 fn put_plan(
   door: Door,
   caller: Caller,
@@ -126,6 +129,7 @@ fn put_plan(
   )
 }
 
+/// Plans a notes.get capability call fetching a note by key.
 fn get_plan(
   door: Door,
   caller: Caller,
@@ -143,17 +147,21 @@ fn get_plan(
   )
 }
 
+/// Plans a notes.list capability call scanning notes by prefix.
 fn list_plan(
   door: Door,
   caller: Caller,
   request: CapRequest,
 ) -> Result(CapPlan, CapDenial) {
   use held <- result.try(args.field(request.args, "prefix"))
+
+  // Decode optional prefix argument as text or none.
   use prefix <- result.try(case held {
     msgpack.NilValue -> Ok(None)
     msgpack.StringValue(text) -> Ok(Some(text))
     _ -> Error(args.invalid("prefix must be text or null"))
   })
+
   Ok(
     satellite.ServedHere(fn() {
       case door.scan(caller, prefix) {
@@ -179,6 +187,7 @@ fn list_plan(
   )
 }
 
+/// Plans a notes.read capability call projecting note content as file text.
 fn read_plan(
   door: Door,
   caller: Caller,
@@ -200,6 +209,7 @@ fn read_plan(
   )
 }
 
+/// Retrieves a single note entry matching key exactly from blackboard cells.
 fn exact(
   door: Door,
   caller: Caller,
@@ -213,8 +223,11 @@ fn exact(
   )
 }
 
+/// Serializes JSON value and ensures byte size does not exceed the note limit.
 fn bounded_text(value: JsonValue) -> Result(String, CapDenial) {
   let text = json.to_string(value)
+
+  // Guard against notes exceeding the 1 MiB size ceiling.
   case bit_array.byte_size(bit_array.from_string(text)) <= max_bytes {
     True -> Ok(text)
     False ->
@@ -239,8 +252,10 @@ fn refused(refusal: Refusal) -> framing.CapOutcome {
   )
 }
 
-// The virtual projection has the same byte bound as structured reads, but
-// returns JSON text in the filesystem facade's existing contents envelope.
+/// Formats note JSON text into a filesystem read contents envelope.
+///
+/// The virtual projection has the same byte bound as structured reads, but
+/// returns JSON text in the filesystem facade's existing contents envelope.
 fn virtual_answer(value: JsonValue) -> framing.CapOutcome {
   case bounded_text(value) {
     Error(denial) -> framing.CapErr(code: denial.code, message: denial.message)
@@ -253,8 +268,10 @@ fn virtual_answer(value: JsonValue) -> framing.CapOutcome {
   }
 }
 
-// Bound the stored value, excluding the fixed reply envelope, so a value
-// accepted at the write limit remains readable through the structured API.
+/// Builds a structured found note response envelope with the decoded value.
+///
+/// Bound the stored value, excluding the fixed reply envelope, so a value
+/// accepted at the write limit remains readable through the structured API.
 fn found_answer(value: JsonValue) -> framing.CapOutcome {
   case bounded_text(value) {
     Error(denial) -> framing.CapErr(code: denial.code, message: denial.message)

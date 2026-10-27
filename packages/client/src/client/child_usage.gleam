@@ -60,8 +60,10 @@ pub fn of_strands(
   |> dict.from_list
 }
 
-// The ids of the entries on a strand's branch, leaf to root. Only message
-// entries are asked for, since a usage row prices an assistant response.
+/// Reads the message entry ids for `strand` back from its current leaf.
+///
+/// The ids of the entries on a strand's branch, leaf to root. Only message
+/// entries are asked for, since a usage row prices an assistant response.
 fn branch_of(
   runtime: api.Runtime,
   strand: String,
@@ -70,6 +72,8 @@ fn branch_of(
     session.strand_leaf(runtime.session, strand)
     |> result.map_error(fn(_) { "strand.leaf is unreadable for " <> strand }),
   )
+
+  // Scan the branch when the leaf is present, otherwise return an empty set.
   case leaf {
     Some(session.Cell(value: Some(leaf), ..)) ->
       writer.scan_branch(
@@ -88,6 +92,7 @@ fn branch_of(
   }
 }
 
+/// Extracts the string entry id from an entry row.
 fn entry_id(row: entry.Entry) -> String {
   case row {
     entry.MessageEntry(id:, ..)
@@ -97,6 +102,7 @@ fn entry_id(row: entry.Entry) -> String {
   }
 }
 
+/// Sums the usage of rows whose entry id is present on the given branch.
 fn summed(rows: List(entry.UsageRow), branch: Set(String)) -> ChildUsage {
   let total =
     list.fold(rows, accounting.zero_usage(), fn(total, row) {
@@ -112,6 +118,7 @@ fn summed(rows: List(entry.UsageRow), branch: Set(String)) -> ChildUsage {
   from_message(total)
 }
 
+/// Converts an accumulated message usage into a `ChildUsage` record.
 fn from_message(usage: message.Usage) -> ChildUsage {
   ChildUsage(
     input: usage.input,

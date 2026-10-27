@@ -209,10 +209,12 @@ pub fn begin(cache: Cache) -> Pass {
 @internal
 pub fn shortcuts(cache: Cache) -> #(Int, Int, Int) {
   list.fold(cache.slots, #(0, 0, 0), fn(acc, slot) {
+    // Extract checkpoint position if a head exists.
     let at = case slot.head {
       Head(at:, ..) -> at
       NoHead -> 0
     }
+
     #(
       acc.0 + list.length(slot.settled),
       int.max(acc.1, at),
@@ -281,6 +283,7 @@ fn extends(fragments: List(String), count: Int, slot: Slot) -> Bool {
   && list.drop(fragments, count - slot.count) == slot.fragments
 }
 
+/// Constructs an initial empty Slot tracking a live streaming response.
 fn fresh(
   speaker: Speaker,
   fragments: List(String),
@@ -312,8 +315,8 @@ fn full_rows(text: String, layout: Layout) -> List(span.Line) {
   |> layout.finish(OpensLine)
 }
 
-// One frame of a slot. An error means the text cannot be split safely and
-// the caller draws it in full.
+/// One frame of a slot. An error means the text cannot be split safely and
+/// the caller draws it in full.
 fn render_slot(
   slot: Slot,
   text: String,
@@ -336,6 +339,7 @@ fn render_slot(
     True -> raw_tail
     False -> text_hygiene.multiline(raw_tail)
   }
+
   use Nil <- result.try(splittable(tail))
 
   // The tail is the only part parsed on this frame, and of its opening
@@ -357,13 +361,14 @@ fn render_slot(
     True -> checkpoint(settled, text, bits, lines, layout)
     False -> settled
   }
+
   Ok(#(drawn, settled))
 }
 
-// The tail's Markdown lines. With a checkpoint only the text after it is
-// parsed, and its first line is joined to the checkpoint's; a line after
-// the checkpoint that could reach back into the paragraph drops it, and
-// the tail is parsed whole.
+/// The tail's Markdown lines. With a checkpoint only the text after it is
+/// parsed, and its first line is joined to the checkpoint's; a line after
+/// the checkpoint that could reach back into the paragraph drops it, and
+/// the tail is parsed whole.
 fn tail_lines(
   slot: Slot,
   text: String,
@@ -378,6 +383,8 @@ fn tail_lines(
       Slot(..slot, head: NoHead, plain: Barred),
     )
   }
+
+  // Determine whether to parse with a cached paragraph head or as a whole.
   case slot.head {
     NoHead -> #(
       markdown.render_sanitized(tail, room, markdown.ShowSource),
@@ -401,9 +408,9 @@ fn tail_lines(
   }
 }
 
-// The sanitized text from `at` to the end. `at` is inside the text the
-// hygiene pass leaves unchanged, so the pass over the rest is the pass over
-// the tail from there.
+/// The sanitized text from `at` to the end. `at` is inside the text the
+/// hygiene pass leaves unchanged, so the pass over the rest is the pass over
+/// the tail from there.
 fn open_text(
   slot: Slot,
   text: String,
@@ -411,6 +418,8 @@ fn open_text(
   at: Int,
 ) -> Result(String, Nil) {
   use rest <- result.try(text_from(text, bits, at))
+
+  // Return raw text if unchanged, or apply hygiene multiline filter.
   case slot.unchanged_to == bit_array.byte_size(bits) {
     True -> Ok(rest)
     False -> Ok(text_hygiene.multiline(rest))
@@ -425,10 +434,10 @@ fn joined(line: span.Line, rest: List(span.Line)) -> List(span.Line) {
   }
 }
 
-// Whether the text after a checkpoint leaves the paragraph before it as it
-// was: no line of it is a setext underline and none holds a `|`. The test
-// is broader than the grammar — any line of only `=` or only `-` counts,
-// however indented — which costs only a checkpoint.
+/// Whether the text after a checkpoint leaves the paragraph before it as it
+/// was: no line of it is a setext underline and none holds a `|`. The test
+/// is broader than the grammar — any line of only `=` or only `-` counts,
+/// however indented — which costs only a checkpoint.
 fn keeps_paragraph(rest: String) -> Bool {
   !string.contains(rest, "|")
   && !list.any(string.split(rest, "\n"), fn(row) {
@@ -464,12 +473,7 @@ fn text_between(bits: BitArray, from: Int, to: Int) -> Result(String, Nil) {
   |> result.try(bit_array.to_string)
 }
 
-// A reference definition, a footnote reference or an inline footnote gives
-// text in one block a meaning that depends on another: a link resolves
-// against a definition anywhere in the document, and footnotes are numbered
-// across it. Split rendering cannot reproduce that, so text holding any of
-// them is rendered whole. The tail is checked on every frame and every
-// settled block was part of a checked tail when it settled.
+/// Validates that Markdown tail does not contain reference links or footnotes that break split parsing.
 fn splittable(tail: String) -> Result(Nil, Nil) {
   case
     string.contains(tail, "]:")
@@ -481,16 +485,17 @@ fn splittable(tail: String) -> Result(Nil, Nil) {
   }
 }
 
-// Each tail line with its rows, reusing the last frame's rows for a line
-// that is unchanged and re-wrapping from them for one that is not. The
-// pairing is by position, and every pair is a line with the rows
-// `markdown.wrap_line` gives it, so a pairing that no longer lines up costs
-// a full wrap of that line and nothing else.
+/// Each tail line with its rows, reusing the last frame's rows for a line
+/// that is unchanged and re-wrapping from them for one that is not. The
+/// pairing is by position, and every pair is a line with the rows
+/// `markdown.wrap_line` gives it, so a pairing that no longer lines up costs
+/// a full wrap of that line and nothing else.
 fn wrapped(
   lines: List(span.Line),
   memo: List(#(span.Line, List(span.Line))),
   room: Int,
 ) -> List(#(span.Line, List(span.Line))) {
+  // Pair current lines with cached wrapped lines to reuse unchanged wraps.
   case lines, memo {
     [], _ -> []
     [line, ..rest], [] -> [
@@ -498,10 +503,12 @@ fn wrapped(
       ..wrapped(rest, [], room)
     ]
     [line, ..rest], [previous, ..older] -> {
+      // Reuse memoized wrap if line content has not changed.
       let rows = case line == previous.0 {
         True -> previous.1
         False -> markdown.rewrap(previous, line, room)
       }
+
       [#(line, rows), ..wrapped(rest, older, room)]
     }
   }
@@ -537,24 +544,21 @@ fn settle(slot: Slot, bits: BitArray, layout: Layout) -> Slot {
 // may find every cut in the answer at once; the rest wait for later frames.
 const settle_attempts = 4
 
-// `scanned` always names the first offset not yet looked at, so a frame
-// whose attempts run out leaves the remaining cuts to the next one. A cut is
-// only looked for where its first line is complete, up to the last line
-// feed in the checked text; the partial line after it is searched once it
-// ends. That line feed is looked for backwards from the end of the checked
-// text only as far as the search starts, so a long unbroken line is not
-// read again on every frame.
+/// Scans from offset to settle closed markdown blocks into completed output lines.
 fn settle_from(
   slot: Slot,
   bits: BitArray,
   layout: Layout,
   attempts: Int,
 ) -> Slot {
+  // Stop scanning when attempt budget is exhausted.
   case attempts {
     0 -> slot
     _ -> {
       let from = int.max(slot.scanned, slot.tail_from + 2)
       let complete = last_line_feed(bits, slot.unchanged_to - 1, from)
+
+      // Look for a blank line followed by an ASCII letter to cut at.
       case cut_point(bits, from, complete) {
         Error(Nil) -> Slot(..slot, scanned: int.max(slot.scanned, complete))
         Ok(at) -> settle_at(slot, bits, at, layout, attempts)
@@ -563,7 +567,7 @@ fn settle_from(
   }
 }
 
-// One cut's attempt, and the search for the next from just after it.
+/// Attempts a cut at candidate offset, committing settled rows if valid.
 fn settle_at(
   slot: Slot,
   bits: BitArray,
@@ -571,15 +575,16 @@ fn settle_at(
   layout: Layout,
   attempts: Int,
 ) -> Slot {
+  // Verify whether the cut renders identically split versus whole.
   let slot = case checked_cut(bits, slot.tail_from, at, layout) {
     Ok(parts) -> take(slot, parts, at, layout)
     Error(Nil) -> slot
   }
+
   settle_from(Slot(..slot, scanned: at + 1), bits, layout, attempts - 1)
 }
 
-// The Markdown lines of the tail before the cut at `at`, if the tail up to
-// the end of the cut's first line renders the same split there as whole.
+/// Checks whether candidate cut produces identical rendering when split versus whole.
 fn checked_cut(
   bits: BitArray,
   from: Int,
@@ -597,6 +602,8 @@ fn checked_cut(
       parts,
       markdown.render_sanitized(first, layout.room, markdown.ShowSource),
     )
+
+  // Compare rendered lines between split segments and whole slice.
   case
     markdown.render_sanitized(whole, layout.room, markdown.ShowSource)
     == separate
@@ -606,9 +613,7 @@ fn checked_cut(
   }
 }
 
-// Settles `parts`, the lines of the tail before a checked cut at `at`. Their
-// rows come from the tail's memo where a line is unchanged, which it usually
-// is: the block was on screen as part of the tail a frame ago.
+/// Commits validated split parts into slot settled rows.
 fn take(slot: Slot, parts: List(span.Line), at: Int, layout: Layout) -> Slot {
   let rows =
     wrapped(parts, slot.memo, layout.room)
@@ -625,9 +630,7 @@ fn take(slot: Slot, parts: List(span.Line), at: Int, layout: Layout) -> Slot {
   )
 }
 
-// The first byte offset from `index` up to `limit` that starts a line
-// beginning with an ASCII letter and preceded by a blank line: the two bytes
-// before it are line feeds.
+/// Searches forward for an offset preceded by double newlines and starting with an ASCII letter.
 fn cut_point(bits: BitArray, index: Int, limit: Int) -> Result(Int, Nil) {
   case index >= limit {
     True -> Error(Nil)
@@ -640,12 +643,7 @@ fn cut_point(bits: BitArray, index: Int, limit: Int) -> Result(Int, Nil) {
   }
 }
 
-// The one scan here that repeats across frames: it reads back over the open
-// last line every frame, so its cost is that line's length, not the answer's.
-//
-// The byte just past the last line feed at or before `index`, or `floor`
-// when there is none at or after it. It scans backwards and stops at
-// `floor`, so it reads at most the text a cut could still be found in.
+/// Finds byte offset immediately following the last newline at or before index.
 fn last_line_feed(bits: BitArray, index: Int, floor: Int) -> Int {
   case index < floor {
     True -> floor
@@ -657,7 +655,7 @@ fn last_line_feed(bits: BitArray, index: Int, floor: Int) -> Int {
   }
 }
 
-// The offset just past the line feed that ends the line starting at `from`.
+/// Finds byte offset immediately following the newline ending the line at from.
 fn next_line_end(bits: BitArray, from: Int) -> Result(Int, Nil) {
   case bit_array.slice(bits, from, 1) {
     Ok(<<10>>) -> Ok(from + 1)
@@ -666,18 +664,7 @@ fn next_line_end(bits: BitArray, from: Int) -> Result(Int, Nil) {
   }
 }
 
-// Moves the checkpoint as far into the tail's opening paragraph as the
-// conditions on `Head` allow, reading each byte for them once.
-//
-// A new checkpoint is placed only after checking it against this frame's
-// parse of the whole tail: the text before it must parse into a single
-// paragraph line, and joining that line to the parse of the rest must give
-// exactly `lines`. That also settles that the tail opens with a paragraph
-// at all. A checkpoint that fails the check bars checkpoints for the rest
-// of the tail, so the check is not paid again on every frame. Moving an
-// existing checkpoint forward parses only the lines it passes, which are
-// plain paragraph lines by the conditions and so parse on their own into
-// the words they add to the paragraph's line.
+/// Advances the paragraph checkpoint as far into the tail as formatting allows.
 fn checkpoint(
   slot: Slot,
   text: String,
@@ -685,17 +672,23 @@ fn checkpoint(
   lines: List(span.Line),
   layout: Layout,
 ) -> Slot {
+  // Compute start offset from existing checkpoint or tail beginning.
   let start = case slot.head {
     NoHead -> slot.tail_from
     Head(at:, ..) -> at
   }
+
   let complete = last_line_feed(bits, slot.unchanged_to - 1, start)
+
+  // Proceed only when plain paragraph text is readable.
   case slot.plain {
     Barred -> slot
     Readable -> {
       let #(plain_to, plain) =
         plain_extent(bits, int.max(slot.plain_to, start), complete)
       let slot = Slot(..slot, plain_to:, plain:)
+
+      // Locate last ASCII letter line start within plain extent.
       case last_opening(bits, plain_to, start) {
         Error(Nil) -> slot
         Ok(at) -> moved(slot, text, bits, start, at, lines, layout)
@@ -704,8 +697,8 @@ fn checkpoint(
   }
 }
 
-// Places or moves the checkpoint to `at`, the text from `start` to it
-// being plain paragraph lines.
+/// Places or moves the checkpoint to `at`, the text from `start` to it
+/// being plain paragraph lines.
 fn moved(
   slot: Slot,
   text: String,
@@ -724,11 +717,14 @@ fn moved(
         markdown.ShowSource,
       )),
     )
+
+    // Validate that the checkpoint extends an existing head or initiates one.
     case slot.head {
       // The passed lines must also be free of a setext underline and a
       // table row on their own, so the checkpoint's safety does not rest
       // on `tail_lines` having checked them on an earlier frame.
       Head(line: head, ..) ->
+        // Verify the passed text preserves paragraph continuity.
         case keeps_paragraph(passed) {
           True -> Ok(Head(at:, line: markdown.join_soft_break(head, line)))
           False -> Error(Nil)
@@ -737,6 +733,8 @@ fn moved(
         use rest <- result.try(open_text(slot, text, bits, at))
         let parsed =
           markdown.render_sanitized(rest, layout.room, markdown.ShowSource)
+
+        // Ensure rest joins seamlessly and produces exact original rendered lines.
         case keeps_paragraph(rest) && joined(line, parsed) == lines {
           True -> Ok(Head(at:, line:))
           False -> Error(Nil)
@@ -744,13 +742,15 @@ fn moved(
       }
     }
   }
+
+  // Update slot with successfully verified head or bar future checkpoints.
   case placed {
     Ok(head) -> Slot(..slot, head:)
     Error(Nil) -> Slot(..slot, plain: Barred)
   }
 }
 
-// The paragraph line of text that parses into exactly one paragraph.
+/// Returns the single line when lines list corresponds to a single paragraph.
 fn one_paragraph(lines: List(span.Line)) -> Result(span.Line, Nil) {
   case lines {
     [line, span.Line(spans: [], ..)] -> Ok(line)
@@ -759,10 +759,7 @@ fn one_paragraph(lines: List(span.Line)) -> Result(span.Line, Nil) {
   }
 }
 
-// How far from `from` up to `limit` the text stays plain checkpoint text,
-// and whether it is still plain there. It stops at a character that opens
-// or closes inline Markdown, at a blank line, and at a hard break: two
-// spaces or a backslash before a line feed.
+/// Finds the extent of plain unformatted text suitable for paragraph checkpointing.
 fn plain_extent(bits: BitArray, from: Int, limit: Int) -> #(Int, Plain) {
   case from >= limit {
     True -> #(int.max(from, limit), Readable)
@@ -778,11 +775,7 @@ fn plain_extent(bits: BitArray, from: Int, limit: Int) -> #(Int, Plain) {
   }
 }
 
-// Whether the byte at `at` ends checkpoint text: one of the characters
-// Markdown pairs across a line — `*`, `_`, a backtick, `~`, `=`, brackets,
-// angle brackets, `|` and a backslash — or `&`, whose entity may stand for
-// the whitespace a join trims, or the line feed of a blank line or of a hard
-// break.
+/// Checks whether a byte character prevents treating text as a plain paragraph checkpoint.
 fn bars_checkpoint(bits: BitArray, at: Int, byte: Int) -> Bool {
   case byte {
     0x2A
@@ -802,11 +795,7 @@ fn bars_checkpoint(bits: BitArray, at: Int, byte: Int) -> Bool {
   }
 }
 
-// Whether the line feed just after `index` ends a blank line — one of only
-// spaces, which Markdown counts as blank and which ends the paragraph — or
-// a line with a hard break, two or more spaces before its line feed. It
-// reads back over the spaces before the line feed, so its cost is those
-// spaces.
+/// Checks whether a newline is preceded by spaces forming a hard break or blank line.
 fn ends_break_or_blank(bits: BitArray, index: Int, spaces: Int) -> Bool {
   case bit_array.slice(bits, index, 1) {
     Ok(<<0x20>>) -> ends_break_or_blank(bits, index - 1, spaces + 1)
@@ -815,9 +804,7 @@ fn ends_break_or_blank(bits: BitArray, index: Int, spaces: Int) -> Bool {
   }
 }
 
-// The last line start after `start` and at or before `limit` whose first
-// character is an ASCII letter: where a checkpoint may go. It reads back
-// only over the plain text found since the last one.
+/// Scans backward to find the last line starting with an ASCII letter within range.
 fn last_opening(bits: BitArray, limit: Int, start: Int) -> Result(Int, Nil) {
   case limit <= start {
     True -> Error(Nil)

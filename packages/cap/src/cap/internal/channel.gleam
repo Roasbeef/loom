@@ -276,6 +276,7 @@ pub fn subject(handle: Handle) -> Subject(Msg) {
   handle.subject
 }
 
+/// Performs a capability call against the channel actor and waits for the result.
 fn perform(
   subject: Subject(Msg),
   cap: String,
@@ -287,12 +288,15 @@ fn perform(
     subject,
     Perform(cap:, args:, deadline_ms:, caller: process.self(), reply:),
   )
+
+  // Await the capability call result from the channel actor.
   case process.receive(reply, deadline_ms + reply_margin_ms) {
     Ok(outcome) -> outcome
     Error(Nil) -> Error(Unreachable("no cap_result within deadline"))
   }
 }
 
+/// The message handler for the capability channel actor.
 fn handle(state: State, msg: Msg) -> actor.Next(State, Msg) {
   case msg {
     Perform(cap:, args:, deadline_ms:, caller:, reply:) ->
@@ -325,10 +329,7 @@ fn handle(state: State, msg: Msg) -> actor.Next(State, Msg) {
   }
 }
 
-// A program asked to perform one capability call. An already-failed
-// channel refuses in-band at once; otherwise the call is marshalled and
-// tracked in-flight against a monitor on its caller — the tracking that
-// makes a killed caller's call cancellable.
+/// Handles an outgoing capability perform request, marshaling and tracking it.
 fn handle_perform(
   state: State,
   cap: String,
@@ -346,6 +347,8 @@ fn handle_perform(
     }
     None -> {
       let id = state.next_id
+
+      // Encode and send the capability call payload.
       case wire.encode_cap_call(id, state.token, cap, args, deadline_ms) {
         Error(_) -> {
           process.send(reply, Error(Unreachable("cap_call did not encode")))
@@ -363,15 +366,13 @@ fn handle_perform(
   }
 }
 
-// A `cap_result` arrived for `id`. A result for a call already
-// cancelled or already answered is dropped — idempotent by
-// construction, since a stale `Deliver` after the caller's monitor
-// fired finds nothing left in `inflight`.
+/// Delivers a received capability outcome back to the waiting caller.
 fn handle_deliver(
   state: State,
   id: Int,
   outcome: CapOutcome,
 ) -> actor.Next(State, Msg) {
+  // Check whether this in-flight call is still awaiting delivery.
   case dict.get(state.inflight, id) {
     Error(Nil) -> actor.continue(state)
     Ok(in_flight) -> {
@@ -382,9 +383,7 @@ fn handle_deliver(
   }
 }
 
-// Answers every in-flight caller `Unreachable(reason)` and drops its
-// monitor. Shared by the `Fail` (reader-driven) and `Stop` (teardown)
-// paths so neither abandons a blocked caller.
+/// Answers every in-flight caller with an error and drops their monitors.
 fn settle_inflight(state: State, reason: String) -> Nil {
   list.each(dict.to_list(state.inflight), fn(entry) {
     let in_flight = entry.1
@@ -393,11 +392,7 @@ fn settle_inflight(state: State, reason: String) -> Nil {
   })
 }
 
-// A monitored caller died before its `cap_result` arrived — the race /
-// parallel_map cancellation path. Emit a `cancel` frame for each of its
-// in-flight calls so the broker revokes and kills, then drop them. A
-// caller has at most one call in flight (a `call` blocks its caller), so
-// this is normally a single frame.
+/// Cancels in-flight calls belonging to a deceased caller process.
 fn cancel_for_caller(state: State, pid: Pid) -> actor.Next(State, Msg) {
   let #(dead, alive) =
     list.partition(dict.to_list(state.inflight), fn(entry) {

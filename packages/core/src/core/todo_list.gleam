@@ -210,8 +210,11 @@ pub fn validate(board: Board) -> Result(Board, String) {
   board
 }
 
+/// Validates a task's text length and optional blocked reason.
 fn validate_task(task: Task) -> Result(Nil, String) {
   use Nil <- result.try(text_within(task.text, max_text_bytes, "a task"))
+
+  // Check if a blocked task has a valid reason length.
   case task.status {
     Blocked(Some(reason)) ->
       text_within(reason, max_reason_bytes, "a blocked reason")
@@ -219,6 +222,7 @@ fn validate_task(task: Task) -> Result(Nil, String) {
   }
 }
 
+/// Checks that a count does not exceed the allowed bound.
 fn at_most(count: Int, bound: Int, what: String) -> Result(Nil, String) {
   case count > bound {
     True ->
@@ -227,8 +231,11 @@ fn at_most(count: Int, bound: Int, what: String) -> Result(Nil, String) {
   }
 }
 
+/// Ensures a text field is non-empty and within the specified byte limit.
 fn text_within(text: String, bound: Int, what: String) -> Result(Nil, String) {
   let size = string.byte_size(text)
+
+  // Validate that the string is neither blank nor oversized.
   case string.trim(text) == "", size > bound {
     True, _ -> Error(what <> " must not be blank")
     False, True ->
@@ -243,8 +250,10 @@ fn text_within(text: String, bound: Int, what: String) -> Result(Nil, String) {
   }
 }
 
-// Duplicates are reported by name, because the model has to find the one
-// it repeated and the tool's error is the only place it will learn which.
+/// Ensures a list of names contains no duplicate entries.
+///
+/// Duplicates are reported by name, because the model has to find the one
+/// it repeated and the tool's error is the only place it will learn which.
 fn unique(names: List(String), what: String) -> Result(Nil, String) {
   let outcome =
     list.try_fold(names, set.new(), fn(seen, name) {
@@ -253,6 +262,8 @@ fn unique(names: List(String), what: String) -> Result(Nil, String) {
         False -> Ok(set.insert(seen, name))
       }
     })
+
+  // Return an error naming the duplicate when folding detected one.
   case outcome {
     Ok(_) -> Ok(Nil)
     Error(name) -> Error("duplicate " <> what <> " " <> string.inspect(name))
@@ -298,13 +309,17 @@ fn encode_phase(phase: Phase) -> JsonValue {
   ])
 }
 
-// The reason field appears only on a blocked task that has one, so an
-// ordinary task stays two fields wide in the digest a model reads.
+/// Serializes a task into its JSON representation.
+///
+/// The reason field appears only on a blocked task that has one, so an
+/// ordinary task stays two fields wide in the digest a model reads.
 fn encode_task(task: Task) -> JsonValue {
   let base = [
     #("text", json.String(task.text)),
     #("status", json.String(status_name(task.status))),
   ]
+
+  // Append the reason field if the task is blocked with a reason.
   case task.status {
     Blocked(Some(reason)) ->
       json.Object(list.append(base, [#("reason", json.String(reason))]))
@@ -348,6 +363,7 @@ fn decode_task(value: JsonValue) -> Result(Task, CorruptionReport) {
   Task(text:, status:)
 }
 
+/// Decodes a status value from its string name.
 fn decode_status(
   value: JsonValue,
   name: String,
@@ -372,6 +388,7 @@ fn decode_status(
   }
 }
 
+/// Extracts a required string field from a JSON object.
 fn string_field(
   value: JsonValue,
   key: String,
@@ -384,6 +401,7 @@ fn string_field(
   }
 }
 
+/// Extracts a required array field from a JSON object.
 fn array_field(
   value: JsonValue,
   key: String,
@@ -396,6 +414,7 @@ fn array_field(
   }
 }
 
+/// Builds a corruption report for an unexpected JSON field shape.
 fn corrupt(
   subject: String,
   expected: String,
@@ -409,8 +428,10 @@ fn corrupt(
   )
 }
 
-// The first occurrence wins, matching `core/json`'s documented tiebreak
-// for hand-built objects with a repeated key.
+/// Looks up a field in a JSON object by key.
+///
+/// The first occurrence wins, matching `core/json`'s documented tiebreak
+/// for hand-built objects with a repeated key.
 fn field(value: JsonValue, key: String) -> Result(JsonValue, Nil) {
   case value {
     json.Object(fields) -> list.key_find(fields, key)

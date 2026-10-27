@@ -970,7 +970,10 @@ pub fn encode_command(envelope: CommandEnvelope) -> String {
   )
 }
 
+/// Command body keeps this client operation’s decoding or state decision in one place.
 fn command_body(command: Command) -> #(String, JsonValue) {
+  // This match resolves command before the surrounding protocol step continues.
+  // This match resolves command before the enclosing validation continues.
   case command {
     EscalationsDecided -> #("escalations_decided", json.Object([]))
     Evolution(action:, arguments:) -> #(
@@ -1109,6 +1112,7 @@ fn command_body(command: Command) -> #(String, JsonValue) {
         #("action", json.String(btw.action_name(action))),
         #(
           "text",
+          // This match validates the input shape before constructing its result.
           json.String(case action {
             btw.Ask(text) -> text
             _ -> ""
@@ -1218,14 +1222,20 @@ fn command_body(command: Command) -> #(String, JsonValue) {
   }
 }
 
+/// Proposal decision name keeps this client operation’s decoding or state decision in one place.
 fn proposal_decision_name(decision: ProposalDecision) -> String {
+  // This match resolves decision before the surrounding protocol step continues.
+  // This match resolves decision before the enclosing validation continues.
   case decision {
     ProposalApprove -> "approve"
     ProposalReject -> "reject"
   }
 }
 
+/// Encode forget target keeps this client operation’s decoding or state decision in one place.
 fn encode_forget_target(target: ForgetTarget) -> JsonValue {
+  // This match resolves target before the surrounding protocol step continues.
+  // This match resolves target before the enclosing validation continues.
   case target {
     ForgetGrant(grant:) ->
       json.Object([
@@ -1238,15 +1248,21 @@ fn encode_forget_target(target: ForgetTarget) -> JsonValue {
   }
 }
 
+/// Decode forget target keeps this client operation’s decoding or state decision in one place.
 fn decode_forget_target(value: JsonValue) -> Result(ForgetTarget, String) {
   use fields <- result.try(body_fields(value))
   use kind <- result.try(required_string(fields, "kind"))
+
+  // This match resolves kind before the surrounding protocol step continues.
+  // This match resolves kind before the enclosing validation continues.
   case kind {
     "grant" -> {
+      // This match validates the input shape before constructing its result.
       use grant <- result.try(case list.key_find(fields, "grant") {
         Ok(grant) -> decode_grant(grant)
         Error(Nil) -> Error("a grant is required")
       })
+
       Ok(ForgetGrant(grant:))
     }
     "action" -> {
@@ -1262,20 +1278,27 @@ fn decode_forget_target(value: JsonValue) -> Result(ForgetTarget, String) {
 // nonempty list of at most `max_summary_blocks` blocks, each a canonical
 // entry id and a nonnegative index. Duplicates collapse, because the reply
 // would carry one row for them anyway.
+/// Decode block summaries keeps this client operation’s decoding or state decision in one place.
 fn decode_block_summaries(body: JsonValue) -> Result(Command, String) {
   use fields <- result.try(body_fields(body))
+
+  // This match resolves list.key_find(fields, "blocks") before the enclosing validation continues.
   use values <- result.try(case list.key_find(fields, "blocks") {
     Ok(json.Array(values)) if values != [] -> Ok(values)
     Ok(_) | Error(Nil) -> Error("blocks must be a nonempty array")
   })
+
+  // This match resolves list.drop(values, max_summary_blocks) == [] before the enclosing validation continues.
   use Nil <- result.try(case list.drop(values, max_summary_blocks) == [] {
     True -> Ok(Nil)
     False -> Error("at most thirty-two blocks are allowed")
   })
+
   use blocks <- result.try(list.try_map(values, decode_summary_block))
   Ok(BlockSummariesGet(list.unique(blocks)))
 }
 
+/// Decode summary block keeps this client operation’s decoding or state decision in one place.
 fn decode_summary_block(value: JsonValue) -> Result(SummaryBlock, String) {
   use fields <- result.try(body_fields(value))
   use entry <- result.try(required_string(fields, "entry"))
@@ -1287,6 +1310,7 @@ fn decode_summary_block(value: JsonValue) -> Result(SummaryBlock, String) {
   Ok(SummaryBlock(entry:, block:))
 }
 
+/// Strand text keeps this client operation’s decoding or state decision in one place.
 fn strand_text(strand: String, text: String) -> JsonValue {
   json.Object([
     #("strand", json.String(strand)),
@@ -1296,7 +1320,10 @@ fn strand_text(strand: String, text: String) -> JsonValue {
 
 // The subject's fields lead the body, discriminated by `subject`, so the
 // two shapes share one event name and a client reads `subject` first.
+/// Summary subject keeps this client operation’s decoding or state decision in one place.
 fn summary_subject(subject: SummarySubject) -> List(#(String, JsonValue)) {
+  // This match resolves subject before the surrounding protocol step continues.
+  // This match resolves subject before the enclosing validation continues.
   case subject {
     SummarizedBlock(entry:, block:) -> [
       #("subject", json.String("block")),
@@ -1312,7 +1339,10 @@ fn summary_subject(subject: SummarySubject) -> List(#(String, JsonValue)) {
   }
 }
 
+/// Scope to string keeps this client operation’s decoding or state decision in one place.
 fn scope_to_string(scope: ForkScope) -> String {
+  // This match resolves scope before the surrounding protocol step continues.
+  // This match resolves scope before the enclosing validation continues.
   case scope {
     ScopeBranch -> "branch"
     ScopeTree -> "tree"
@@ -1341,11 +1371,16 @@ pub fn decode_command(text: String) -> Result(CommandEnvelope, ProtocolFault) {
     |> result.map_error(fn(report) { MalformedFrame(report:) }),
   )
   use fields <- result.try(envelope_fields(value, None))
+
+  // This match resolves list.key_find(fields, "id") before the enclosing validation continues.
   let id = case list.key_find(fields, "id") {
     Ok(json.Int(id)) if id > 0 -> Some(id)
     _ -> None
   }
+
   use Nil <- result.try(check_version(fields, id))
+
+  // This match resolves id before the enclosing validation continues.
   use id <- result.try(case id {
     Some(id) -> Ok(id)
     None ->
@@ -1353,14 +1388,18 @@ pub fn decode_command(text: String) -> Result(CommandEnvelope, ProtocolFault) {
   })
 
   // Extract command name and parse the corresponding command body.
+  // This match resolves list.key_find(fields, "cmd") before the enclosing validation continues.
   use cmd <- result.try(case list.key_find(fields, "cmd") {
     Ok(json.String(cmd)) -> Ok(cmd)
     _ -> Error(BadEnvelope(reason: "a string cmd name", id: Some(id)))
   })
+
+  // This match resolves list.key_find(fields, "body") before the enclosing validation continues.
   let body = case list.key_find(fields, "body") {
     Ok(body) -> body
     Error(Nil) -> json.Object([])
   }
+
   use command <- result.try(
     decode_command_body(cmd, body)
     |> result.map_error(fn(reason) { BadBody(id:, cmd:, reason:) }),
@@ -1368,13 +1407,18 @@ pub fn decode_command(text: String) -> Result(CommandEnvelope, ProtocolFault) {
   Ok(CommandEnvelope(id:, command:))
 }
 
+/// Decode command body keeps this client operation’s decoding or state decision in one place.
 fn decode_command_body(
   cmd: String,
   body: JsonValue,
 ) -> Result(Command, String) {
+  // This match resolves cmd before the surrounding protocol step continues.
+  // This match resolves cmd before the enclosing validation continues.
   case cmd {
     "escalations_decided" -> {
       use fields <- result.try(body_fields(body))
+
+      // This match resolves fields before the surrounding protocol step continues.
       case fields {
         [] -> Ok(EscalationsDecided)
         _ -> Error("escalations_decided takes no fields")
@@ -1383,6 +1427,8 @@ fn decode_command_body(
     "evolution" -> {
       use fields <- result.try(body_fields(body))
       use action <- result.try(required_string(fields, "action"))
+
+      // This match validates the input shape before constructing its result.
       use _ <- result.try(case action {
         "catalogue"
         | "inspect"
@@ -1400,24 +1446,33 @@ fn decode_command_body(
         | "mark_outcome" -> Ok(Nil)
         other -> Error("unsupported evolution action: " <> other)
       })
+
+      // This match validates the input shape before constructing its result.
       use arguments <- result.try(case list.key_find(fields, "arguments") {
         Ok(json.Object(items)) -> Ok(json.Object(items))
         Ok(_) | Error(Nil) -> Error("evolution arguments must be an object")
       })
+
       Ok(Evolution(action:, arguments:))
     }
     "escalations_get" -> {
       use fields <- result.try(body_fields(body))
+
+      // This match validates the input shape before constructing its result.
       use values <- result.try(case list.key_find(fields, "ids") {
         Ok(json.Array(values)) if values != [] -> Ok(values)
         Ok(_) | Error(Nil) -> Error("ids must be a nonempty array")
       })
+
+      // This match validates the input shape before constructing its result.
       use _ <- result.try(case list.drop(values, 8) == [] {
         True -> Ok(Nil)
         False -> Error("at most eight escalation IDs are allowed")
       })
+
       use ids <- result.try(
         list.try_map(values, fn(value) {
+          // This match resolves value before the surrounding protocol step continues.
           case value {
             json.String(id) if id != "" ->
               transfer_identifier([#("id", json.String(id))], "id")
@@ -1459,6 +1514,8 @@ fn decode_command_body(
     "prompt_content" -> {
       use fields <- result.try(body_fields(body))
       use strand <- result.try(required_string(fields, "strand"))
+
+      // This match validates the input shape before constructing its result.
       use content <- result.try(case list.key_find(fields, "content") {
         Ok(json.Array([])) -> Error("content must be a non-empty array")
         Ok(json.Array(items)) ->
@@ -1467,6 +1524,7 @@ fn decode_command_body(
         Ok(_) -> Error("content must be a non-empty array")
         Error(Nil) -> Error("content is required")
       })
+
       Ok(PromptContent(strand:, content:))
     }
     "steer" -> decode_strand_text(body, Steer)
@@ -1517,8 +1575,11 @@ fn decode_command_body(
         Ok(_) -> Error("grants must be an array of grant objects")
         Error(Nil) -> Error("grants is required")
       })
+
       use action <- result.try(required_string(fields, "action"))
       use expected_seq <- result.try(nonnegative_field(fields, "expected_seq"))
+
+      // This match resolves list.key_find(fields, "scope") before the surrounding protocol step continues.
       case list.key_find(fields, "scope") {
         Error(Nil) | Ok(json.String("once")) ->
           Ok(Approve(escalation_id:, grants:, action:, expected_seq:))
@@ -1537,11 +1598,14 @@ fn decode_command_body(
       use fields <- result.try(body_fields(body))
       use strand <- result.try(required_string(fields, "strand"))
       use scope_text <- result.try(required_string(fields, "scope"))
+
+      // This match validates the input shape before constructing its result.
       use scope <- result.try(case scope_text {
         "branch" -> Ok(ScopeBranch)
         "tree" -> Ok(ScopeTree)
         other -> Error("unknown fork scope: " <> other)
       })
+
       use name <- result.try(optional_string(fields, "name"))
       Ok(Fork(strand:, scope:, name:))
     }
@@ -1588,6 +1652,8 @@ fn decode_command_body(
       use objective <- result.try(bounded_objective(raw))
       use check <- result.try(optional_bounded_check(fields, "check"))
       use budget <- result.try(nonnegative_field(fields, "token_budget"))
+
+      // This match resolves budget > 0 before the surrounding protocol step continues.
       case budget > 0 {
         True -> Ok(GoalSet(objective:, token_budget: budget, check:))
 
@@ -1642,6 +1708,8 @@ fn decode_command_body(
       use fields <- result.try(body_fields(body))
       use child <- result.try(required_string(fields, "child"))
       use before <- result.try(required_int(fields, "before"))
+
+      // This match resolves child != "" && string.byte_size(child) <= 512 && before >= 0 before the surrounding protocol step continues.
       case child != "" && string.byte_size(child) <= 512 && before >= 0 {
         True -> Ok(ChildHistoryGet(child:, before:))
         False ->
@@ -1661,10 +1729,13 @@ fn decode_command_body(
     "set_config" -> {
       use fields <- result.try(body_fields(body))
       use strand <- result.try(optional_string(fields, "strand"))
+
+      // This match validates the input shape before constructing its result.
       use config <- result.try(case list.key_find(fields, "config") {
         Ok(config) -> Ok(config)
         Error(Nil) -> Error("a config object is required")
       })
+
       Ok(SetConfig(strand:, config:))
     }
 
@@ -1688,10 +1759,13 @@ fn decode_command_body(
     "permissions" -> Ok(PermissionsGet)
     "permission_forget" -> {
       use fields <- result.try(body_fields(body))
+
+      // This match validates the input shape before constructing its result.
       use target <- result.try(case list.key_find(fields, "target") {
         Ok(target) -> decode_forget_target(target)
         Error(Nil) -> Error("a target is required")
       })
+
       use expected_seq <- result.try(optional_int(fields, "expected_seq"))
       Ok(PermissionForget(target:, expected_seq:))
     }
@@ -1700,26 +1774,34 @@ fn decode_command_body(
     "proposal_decide" -> {
       use fields <- result.try(body_fields(body))
       use id <- result.try(required_string(fields, "id"))
+
+      // This match validates the input shape before constructing its result.
       use decision <- result.try(case required_string(fields, "decision") {
         Ok("approve") -> Ok(ProposalApprove)
         Ok("reject") -> Ok(ProposalReject)
         Ok(_) -> Error("decision must be approve or reject")
         Error(reason) -> Error(reason)
       })
+
       Ok(ProposalDecide(id:, decision:))
     }
     other -> Ok(UnknownCommand(cmd: other, body:))
   }
 }
 
+/// Decode prompt block keeps this client operation’s decoding or state decision in one place.
 fn decode_prompt_block(value: JsonValue) -> Result(UserBlock, String) {
   use block <- result.try(
     codec.decode_user_block(value)
     |> result.map_error(fn(report) { report.expected }),
   )
+
+  // This match resolves block before the surrounding protocol step continues.
+  // This match resolves block before the enclosing validation continues.
   case block {
     UserText(..) -> Ok(block)
     UserImage(data:, mime_type:) ->
+      // This match resolves string.trim(mime_type), bit_array.base64_decode(data) before the surrounding protocol step continues.
       case string.trim(mime_type), bit_array.base64_decode(data) {
         "", _ -> Error("a non-empty media type")
         _, Error(_) -> Error("valid base64 image bytes")
@@ -1728,6 +1810,7 @@ fn decode_prompt_block(value: JsonValue) -> Result(UserBlock, String) {
   }
 }
 
+/// Decode strand text keeps this client operation’s decoding or state decision in one place.
 fn decode_strand_text(
   body: JsonValue,
   build: fn(String, String) -> Command,
@@ -1765,6 +1848,13 @@ pub fn encode_event(envelope: EventEnvelope) -> String {
 /// ```gleam
 /// // protocol.event_value(envelope)
 /// ```
+/// Event value preserves the client boundary contract for this value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// event_value(...)
+/// ```
 @internal
 pub fn event_value(envelope: EventEnvelope) -> JsonValue {
   let #(name, body) = event_body(envelope.event)
@@ -1777,7 +1867,10 @@ pub fn event_value(envelope: EventEnvelope) -> JsonValue {
   ])
 }
 
+/// Event body keeps this client operation’s decoding or state decision in one place.
 fn event_body(event: Event) -> #(String, JsonValue) {
+  // This match resolves event before the surrounding protocol step continues.
+  // This match resolves event before the enclosing validation continues.
   case event {
     SnapshotBegin(body) -> #("snapshot_begin", body)
     SnapshotChunk(body) -> #("snapshot_chunk", body)
@@ -1910,6 +2003,7 @@ fn event_body(event: Event) -> #(String, JsonValue) {
 
 // The credited ledger row and its unsolicited observation have identical
 // fixed-shape counters. Only their event names and delivery rules differ.
+/// Usage body keeps this client operation’s decoding or state decision in one place.
 fn usage_body(
   strand: String,
   op: Option(String),
@@ -1922,6 +2016,7 @@ fn usage_body(
     #("usage", Some(codec.encode_usage(usage))),
     #(
       "last_usage",
+      // This match resolves last_usage before the enclosing validation continues.
       Some(case last_usage {
         None -> json.Null
         Some(last) -> codec.encode_usage(last)
@@ -1930,7 +2025,10 @@ fn usage_body(
   ])
 }
 
+/// Encode snapshot keeps this client operation’s decoding or state decision in one place.
 fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
+  // This match resolves snapshot before the surrounding protocol step continues.
+  // This match resolves snapshot before the enclosing validation continues.
   case snapshot {
     FullSnapshot(
       session:,
@@ -1947,11 +2045,15 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
         #("next_seq", Some(json.Int(next_seq))),
         #("strands", Some(json.Array(list.map(strands, encode_strand)))),
         #("entries", Some(json.Array(list.map(entries, encode_entry_record)))),
+
+        // This match validates the input shape before constructing its result.
         #("escalations", case escalations {
           [] -> None
           records -> Some(json.Array(list.map(records, encode_escalation)))
         }),
         #("usage", Some(codec.encode_usage(usage))),
+
+        // This match validates the input shape before constructing its result.
         #("remote_usage", case remote_usage {
           [] -> None
           entries -> Some(json.Array(list.map(entries, remote_usage.encode)))
@@ -2040,6 +2142,8 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
             None -> []
           },
           [#("available", json.Array(list.map(available, json.String)))],
+
+          // This match resolves switched before the surrounding protocol step continues.
           case switched {
             Some(moved) -> [#("moved", json.Int(moved))]
             None -> []
@@ -2052,6 +2156,7 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
 // Every field is always present: a listing is a table an operator reads
 // row by row, and a row that omits its `fired` count or its `wake` makes
 // the reader guess which default it was written under.
+/// Encode schedule info keeps this client operation’s decoding or state decision in one place.
 fn encode_schedule_info(info: ScheduleInfo) -> JsonValue {
   json.Object([
     #("name", json.String(info.name)),
@@ -2065,13 +2170,17 @@ fn encode_schedule_info(info: ScheduleInfo) -> JsonValue {
 }
 
 // The one place the wake question is a boolean at all.
+/// Wake to wire keeps this client operation’s decoding or state decision in one place.
 fn wake_to_wire(wake: ScheduleWake) -> Bool {
+  // This match resolves wake before the surrounding protocol step continues.
+  // This match resolves wake before the enclosing validation continues.
   case wake {
     WakesIdle -> True
     SteersOnly -> False
   }
 }
 
+/// Encode model info keeps this client operation’s decoding or state decision in one place.
 fn encode_model_info(info: ModelInfo) -> JsonValue {
   json.Object([
     #("name", json.String(info.name)),
@@ -2082,6 +2191,7 @@ fn encode_model_info(info: ModelInfo) -> JsonValue {
   ])
 }
 
+/// Encode strand keeps this client operation’s decoding or state decision in one place.
 fn encode_strand(strand: Strand) -> JsonValue {
   object_of([
     #("id", Some(json.String(strand.id))),
@@ -2099,6 +2209,7 @@ fn encode_strand(strand: Strand) -> JsonValue {
   ])
 }
 
+/// Encode entry record keeps this client operation’s decoding or state decision in one place.
 fn encode_entry_record(record: EntryRecord) -> JsonValue {
   json.Object([
     #("strand", json.String(record.strand)),
@@ -2108,6 +2219,13 @@ fn encode_entry_record(record: EntryRecord) -> JsonValue {
 
 // Historical records may name no action, so those fields remain optional.
 // Every v2 record still includes the exact decision sequence and its origin.
+/// Encode escalation preserves the client boundary contract for this value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// encode_escalation(...)
+/// ```
 pub fn encode_escalation(record: EscalationRecord) -> JsonValue {
   object_of([
     #("seq", Some(json.Int(record.seq))),
@@ -2119,10 +2237,13 @@ pub fn encode_escalation(record: EscalationRecord) -> JsonValue {
     #("tool", non_empty(record.tool)),
     #("action", non_empty(record.action)),
     #("preview", non_empty(record.preview)),
+
+    // This match resolves record.asked before the enclosing validation continues.
     #("asked", case record.asked {
       0 -> None
       asked -> Some(json.Int(asked))
     }),
+
     #("denial", option.map(record.denial, encode_denial)),
     #("placement", option.map(record.placement, json.String)),
     #(
@@ -2150,13 +2271,17 @@ pub fn stale_approval_details(record: EscalationRecord) -> JsonValue {
   json.Object([#("escalation", encode_escalation(record))])
 }
 
+/// Non empty keeps this client operation’s decoding or state decision in one place.
 fn non_empty(text: String) -> Option(JsonValue) {
+  // This match resolves text before the surrounding protocol step continues.
+  // This match resolves text before the enclosing validation continues.
   case text {
     "" -> None
     text -> Some(json.String(text))
   }
 }
 
+/// Encode denial keeps this client operation’s decoding or state decision in one place.
 fn encode_denial(denial: Denial) -> JsonValue {
   object_of([
     #("reason", Some(json.String(denial.reason))),
@@ -2171,14 +2296,20 @@ fn encode_denial(denial: Denial) -> JsonValue {
   ])
 }
 
+/// Stream to string keeps this client operation’s decoding or state decision in one place.
 fn stream_to_string(stream: OutputStream) -> String {
+  // This match resolves stream before the surrounding protocol step continues.
+  // This match resolves stream before the enclosing validation continues.
   case stream {
     Stdout -> "stdout"
     Stderr -> "stderr"
   }
 }
 
+/// Kind to string keeps this client operation’s decoding or state decision in one place.
 fn kind_to_string(kind: DeltaKind) -> String {
+  // This match resolves kind before the surrounding protocol step continues.
+  // This match resolves kind before the enclosing validation continues.
   case kind {
     TextKind -> "text"
     ThinkingKind -> "thinking"
@@ -2207,24 +2338,32 @@ pub fn decode_event(text: String) -> Result(EventEnvelope, ProtocolFault) {
   )
   use fields <- result.try(envelope_fields(value, None))
   use Nil <- result.try(check_version(fields, None))
+
+  // This match resolves list.key_find(fields, "event") before the enclosing validation continues.
   use name <- result.try(case list.key_find(fields, "event") {
     Ok(json.String(name)) -> Ok(name)
     _ -> Error(BadEnvelope(reason: "a string event name", id: None))
   })
 
   // Extract optional correlation identifiers and payload body.
+  // This match resolves list.key_find(fields, "reply_to") before the enclosing validation continues.
   let reply_to = case list.key_find(fields, "reply_to") {
     Ok(json.Int(id)) -> Some(id)
     _ -> None
   }
+
+  // This match resolves list.key_find(fields, "seq") before the enclosing validation continues.
   let seq = case list.key_find(fields, "seq") {
     Ok(json.Int(seq)) -> Some(seq)
     _ -> None
   }
+
+  // This match resolves list.key_find(fields, "body") before the enclosing validation continues.
   let body = case list.key_find(fields, "body") {
     Ok(body) -> body
     Error(Nil) -> json.Object([])
   }
+
   use event <- result.try(
     decode_event_body(name, body)
     |> result.map_error(fn(reason) {
@@ -2234,7 +2373,10 @@ pub fn decode_event(text: String) -> Result(EventEnvelope, ProtocolFault) {
   Ok(EventEnvelope(reply_to:, seq:, event:))
 }
 
+/// Decode event body keeps this client operation’s decoding or state decision in one place.
 fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
+  // This match resolves name before the surrounding protocol step continues.
+  // This match resolves name before the enclosing validation continues.
   case name {
     "snapshot_begin" -> decode_transfer_begin(body)
     "snapshot_chunk" -> decode_transfer_chunk(body)
@@ -2242,6 +2384,8 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
     "mutation_outcome" -> {
       use fields <- result.try(body_fields(body))
       use status <- result.try(required_string(fields, "status"))
+
+      // This match resolves status before the surrounding protocol step continues.
       case status {
         // `queued` (protocol-change/018) is the third: the hub holds the
         // message in memory for a busy strand. It is deliberately not a
@@ -2258,6 +2402,8 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
     }
     "presence" -> {
       use fields <- result.try(body_fields(body))
+
+      // This match resolves list.key_find(fields, "peers") before the surrounding protocol step continues.
       case list.key_find(fields, "peers") {
         Ok(json.Array(peers)) -> Ok(PresenceEvent(peers))
         Ok(_) | Error(Nil) -> Error("peers must be an array")
@@ -2307,6 +2453,8 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
       use op <- result.try(required_string(fields, "op"))
       use generation <- result.try(optional_string(fields, "generation"))
       use kind_text <- result.try(required_string(fields, "kind"))
+
+      // This match validates the input shape before constructing its result.
       use kind <- result.try(case kind_text {
         "text" -> Ok(TextKind)
         "thinking" -> Ok(ThinkingKind)
@@ -2314,6 +2462,7 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
         "end" -> Ok(EndKind)
         other -> Error("unknown delta kind: " <> other)
       })
+
       use text <- result.try(optional_string(fields, "text"))
       use call_id <- result.try(optional_string(fields, "call_id"))
       use tool_name <- result.try(optional_string(fields, "tool_name"))
@@ -2340,11 +2489,14 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
       use source_index <- result.try(required_int(fields, "source_index"))
       use call_id <- result.try(required_string(fields, "call_id"))
       use stream_text <- result.try(required_string(fields, "stream"))
+
+      // This match validates the input shape before constructing its result.
       use stream <- result.try(case stream_text {
         "stdout" -> Ok(Stdout)
         "stderr" -> Ok(Stderr)
         other -> Error("unknown output stream: " <> other)
       })
+
       use tail <- result.try(required_string(fields, "tail"))
       use total_bytes <- result.try(required_int(fields, "total_bytes"))
       Ok(ToolOutputEvent(
@@ -2361,6 +2513,8 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
     "block_summary" -> {
       use fields <- result.try(body_fields(body))
       use subject_text <- result.try(required_string(fields, "subject"))
+
+      // This match validates the input shape before constructing its result.
       use subject <- result.try(case subject_text {
         "block" -> {
           use entry <- result.try(required_string(fields, "entry"))
@@ -2375,6 +2529,7 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
         }
         other -> Error("unknown summary subject: " <> other)
       })
+
       use text <- result.try(required_string(fields, "text"))
       Ok(BlockSummaryEvent(subject:, text:))
     }
@@ -2407,6 +2562,8 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
       use strand <- result.try(required_string(fields, "strand"))
       use op <- result.try(required_string(fields, "op"))
       use status <- result.try(required_string(fields, "status"))
+
+      // This match validates the input shape before constructing its result.
       use error <- result.try(case list.key_find(fields, "error") {
         Error(Nil) -> Ok(None)
         Ok(value) -> {
@@ -2416,32 +2573,40 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
           Ok(Some(ResultError(code:, message:)))
         }
       })
+
       Ok(StrandResultEvent(strand:, op:, status:, error:))
     }
     "error" -> {
       use fields <- result.try(body_fields(body))
       use code <- result.try(required_string(fields, "code"))
       use message <- result.try(required_string(fields, "message"))
+
+      // This match validates the input shape before constructing its result.
       let details = case list.key_find(fields, "details") {
         Ok(details) -> Some(details)
         Error(Nil) -> None
       }
+
       Ok(ErrorEvent(code:, message:, details:))
     }
     other -> Ok(UnknownEvent(event: other, body:))
   }
 }
 
+/// Decode usage body keeps this client operation’s decoding or state decision in one place.
 fn decode_usage_body(
   body: JsonValue,
 ) -> Result(#(String, Option(String), Usage, Option(Usage)), String) {
   use fields <- result.try(body_fields(body))
   use strand <- result.try(required_string(fields, "strand"))
   use op <- result.try(optional_string(fields, "op"))
+
+  // This match resolves list.key_find(fields, "usage") before the enclosing validation continues.
   use usage_value <- result.try(case list.key_find(fields, "usage") {
     Ok(value) -> Ok(value)
     Error(Nil) -> Error("a usage object is required")
   })
+
   use usage <- result.try(
     codec.decode_usage(usage_value)
     |> result.map_error(fn(report) { report.expected }),
@@ -2449,6 +2614,7 @@ fn decode_usage_body(
 
   // Historical frames described one attempt; present null explicitly carries
   // no final observation, and a malformed present value is refused.
+  // This match resolves list.key_find(fields, "last_usage") before the enclosing validation continues.
   use last_usage <- result.try(case list.key_find(fields, "last_usage") {
     Error(Nil) -> Ok(Some(usage))
     Ok(json.Null) -> Ok(None)
@@ -2457,11 +2623,13 @@ fn decode_usage_body(
       |> result.map(Some)
       |> result.map_error(fn(report) { report.expected })
   })
+
   Ok(#(strand, op, usage, last_usage))
 }
 
 // These checks bound each independent frame. The receiver additionally checks
 // identity, exact continuation index and contiguous offsets across frames.
+/// Decode transfer begin keeps this client operation’s decoding or state decision in one place.
 fn decode_transfer_begin(body) {
   use fields <- result.try(body_fields(body))
   use _ <- result.try(transfer_identifier(fields, "snapshot_id"))
@@ -2481,6 +2649,8 @@ fn decode_transfer_begin(body) {
   use _ <- result.try(
     origin.decode_field(fields) |> result.replace_error("invalid origin"),
   )
+
+  // This branch resolves the decode transfer chunk decision before the operation proceeds.
   case
     list.contains(
       ["recent", "catch_up", "history", "lineage", "escalations", "decided"],
@@ -2501,6 +2671,7 @@ fn decode_transfer_begin(body) {
   }
 }
 
+/// Decode transfer chunk keeps this client operation’s decoding or state decision in one place.
 fn decode_transfer_chunk(body) {
   use fields <- result.try(body_fields(body))
   use _ <- result.try(transfer_identifier(fields, "snapshot_id"))
@@ -2509,10 +2680,13 @@ fn decode_transfer_chunk(body) {
   use total <- result.try(nonnegative_field(fields, "total_bytes"))
   use offset <- result.try(nonnegative_field(fields, "offset"))
   use encoded <- result.try(required_string(fields, "data"))
+
+  // This match resolves string.byte_size(encoded) <= 32_768 before the enclosing validation continues.
   use _ <- result.try(case string.byte_size(encoded) <= 32_768 {
     True -> Ok(Nil)
     False -> Error("encoded fragment is too large")
   })
+
   use bytes <- result.try(
     bit_array.base64_decode(encoded)
     |> result.replace_error("invalid fragment base64"),
@@ -2520,6 +2694,8 @@ fn decode_transfer_chunk(body) {
   let size = bit_array.byte_size(bytes)
   use kind <- result.try(required_string(fields, "kind"))
   use seq <- result.try(nullable_sequence(fields, "record_seq"))
+
+  // This branch enforces the decode transfer chunk boundary before the next operation.
   use _ <- result.try(
     case
       size > 0
@@ -2531,6 +2707,9 @@ fn decode_transfer_chunk(body) {
       False -> Error("invalid fragment bounds")
     },
   )
+
+  // This match resolves kind, record_id, seq before the surrounding protocol step continues.
+  // This match resolves kind, record_id, seq before the enclosing validation continues.
   case kind, record_id, seq {
     "metadata", "metadata", None if total <= 2_097_152 -> Ok(SnapshotChunk(body))
     "entry", _, Some(seq) if seq > 0 -> {
@@ -2544,6 +2723,7 @@ fn decode_transfer_chunk(body) {
   }
 }
 
+/// Decode transfer end keeps this client operation’s decoding or state decision in one place.
 fn decode_transfer_end(body) {
   use fields <- result.try(body_fields(body))
   use _ <- result.try(transfer_identifier(fields, "snapshot_id"))
@@ -2553,15 +2733,22 @@ fn decode_transfer_end(body) {
   Ok(SnapshotEnd(body))
 }
 
+/// Transfer identifier keeps this client operation’s decoding or state decision in one place.
 fn transfer_identifier(fields, key) {
   use value <- result.try(required_string(fields, key))
+
+  // This match resolves string.byte_size(value) > 0 && string.byte_size(value) <= 256 before the surrounding protocol step continues.
+  // This match resolves string.byte_size(value) > 0 && string.byte_size(value) <= 256 before the enclosing validation continues.
   case string.byte_size(value) > 0 && string.byte_size(value) <= 256 {
     True -> Ok(value)
     False -> Error(key <> " must contain 1 to 256 bytes")
   }
 }
 
+/// Nullable sequence keeps this client operation’s decoding or state decision in one place.
 fn nullable_sequence(fields, key) {
+  // This match resolves list.key_find(fields, key) before the surrounding protocol step continues.
+  // This match resolves list.key_find(fields, key) before the enclosing validation continues.
   case list.key_find(fields, key) {
     Ok(json.Null) -> Ok(None)
     Ok(json.Int(value)) if value >= 0 -> Ok(Some(value))
@@ -2569,9 +2756,13 @@ fn nullable_sequence(fields, key) {
   }
 }
 
+/// Decode snapshot keeps this client operation’s decoding or state decision in one place.
 fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
   use fields <- result.try(body_fields(body))
   use mode <- result.try(required_string(fields, "mode"))
+
+  // This match resolves mode before the surrounding protocol step continues.
+  // This match resolves mode before the enclosing validation continues.
   case mode {
     "evolution" -> {
       use board <- result.try(
@@ -2584,20 +2775,27 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
       use session <- result.try(required_string(fields, "session"))
       use next_seq <- result.try(required_int(fields, "next_seq"))
       use strands <- result.try(decode_strands(fields))
+
+      // This match validates the input shape before constructing its result.
       use entries <- result.try(case list.key_find(fields, "entries") {
         Error(Nil) -> Ok([])
         Ok(json.Array(items)) -> list.try_map(items, decode_entry_record)
         Ok(_) -> Error("entries must be an array")
       })
+
+      // This match validates the input shape before constructing its result.
       use escalations <- result.try(case list.key_find(fields, "escalations") {
         Error(Nil) -> Ok([])
         Ok(json.Array(items)) -> list.try_map(items, decode_escalation)
         Ok(_) -> Error("escalations must be an array")
       })
+
+      // This match validates the input shape before constructing its result.
       use usage_value <- result.try(case list.key_find(fields, "usage") {
         Ok(value) -> Ok(value)
         Error(Nil) -> Error("a usage object is required")
       })
+
       use usage <- result.try(
         codec.decode_usage(usage_value)
         |> result.map_error(fn(report) { report.expected }),
@@ -2624,18 +2822,22 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
       Ok(SnapshotEvent(StrandsSnapshot(strands:)))
     }
     "config" -> {
+      // This match validates the input shape before constructing its result.
       use config <- result.try(case list.key_find(fields, "config") {
         Ok(config) -> Ok(config)
         Error(Nil) -> Error("a config object is required")
       })
+
       Ok(SnapshotEvent(ConfigSnapshot(config:)))
     }
     "models" -> {
+      // This match validates the input shape before constructing its result.
       use models <- result.try(case list.key_find(fields, "models") {
         Error(Nil) -> Ok([])
         Ok(json.Array(items)) -> list.try_map(items, decode_model_info)
         Ok(_) -> Error("models must be an array")
       })
+
       Ok(SnapshotEvent(ModelsSnapshot(models:)))
     }
     "skills" -> {
@@ -2721,11 +2923,13 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
       Ok(SnapshotEvent(QueuedInputSnapshot(board:)))
     }
     "schedules" -> {
+      // This match validates the input shape before constructing its result.
       use schedules <- result.try(case list.key_find(fields, "schedules") {
         Error(Nil) -> Ok([])
         Ok(json.Array(items)) -> list.try_map(items, decode_schedule_info)
         Ok(_) -> Error("schedules must be an array")
       })
+
       Ok(SnapshotEvent(SchedulesSnapshot(schedules:)))
     }
     "permissions" -> {
@@ -2751,10 +2955,13 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
     }
     "profile" -> {
       use current <- result.try(optional_string(fields, "profile"))
+
+      // This match validates the input shape before constructing its result.
       use available <- result.try(case list.key_find(fields, "available") {
         Error(Nil) -> Ok([])
         Ok(json.Array(items)) ->
           list.try_map(items, fn(item) {
+            // This match resolves item before the surrounding protocol step continues.
             case item {
               json.String(name) -> Ok(name)
               json.Object(_)
@@ -2768,6 +2975,7 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
           })
         Ok(_) -> Error("available must be an array")
       })
+
       use switched <- result.try(optional_int(fields, "moved"))
       Ok(SnapshotEvent(ProfileSnapshot(current:, available:, switched:)))
     }
@@ -2775,6 +2983,7 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
   }
 }
 
+/// Decode schedule info keeps this client operation’s decoding or state decision in one place.
 fn decode_schedule_info(value: JsonValue) -> Result(ScheduleInfo, String) {
   use fields <- result.try(body_fields(value))
   use name <- result.try(required_string(fields, "name"))
@@ -2784,17 +2993,20 @@ fn decode_schedule_info(value: JsonValue) -> Result(ScheduleInfo, String) {
 
   // The wire's boolean becomes the domain's two variants here and
   // nowhere else, so nothing above this line carries the polarity.
+  // This match resolves list.key_find(fields, "wake") before the enclosing validation continues.
   use wake <- result.try(case list.key_find(fields, "wake") {
     Ok(json.Bool(True)) -> Ok(WakesIdle)
     Ok(json.Bool(False)) -> Ok(SteersOnly)
     Ok(_) -> Error("wake must be a boolean")
     Error(Nil) -> Error("wake is required")
   })
+
   use fired <- result.try(required_int(fields, "fired"))
   use body <- result.try(required_string(fields, "body"))
   Ok(ScheduleInfo(name:, target:, owner:, when:, wake:, fired:, body:))
 }
 
+/// Decode model info keeps this client operation’s decoding or state decision in one place.
 fn decode_model_info(value: JsonValue) -> Result(ModelInfo, String) {
   use fields <- result.try(body_fields(value))
   use name <- result.try(required_string(fields, "name"))
@@ -2806,14 +3018,18 @@ fn decode_model_info(value: JsonValue) -> Result(ModelInfo, String) {
 }
 
 // A possibly-absent array of strings (absent reads as empty).
+/// String array keeps this client operation’s decoding or state decision in one place.
 fn string_array(
   fields: List(#(String, JsonValue)),
   key: String,
 ) -> Result(List(String), String) {
+  // This match resolves list.key_find(fields, key) before the surrounding protocol step continues.
+  // This match resolves list.key_find(fields, key) before the enclosing validation continues.
   case list.key_find(fields, key) {
     Error(Nil) -> Ok([])
     Ok(json.Array(items)) ->
       list.try_map(items, fn(item) {
+        // This match resolves item before the surrounding protocol step continues.
         case item {
           json.String(text) -> Ok(text)
           _ -> Error(key <> " entries must be strings")
@@ -2823,9 +3039,12 @@ fn string_array(
   }
 }
 
+/// Decode strands keeps this client operation’s decoding or state decision in one place.
 fn decode_strands(
   fields: List(#(String, JsonValue)),
 ) -> Result(List(Strand), String) {
+  // This match resolves list.key_find(fields, "strands") before the surrounding protocol step continues.
+  // This match resolves list.key_find(fields, "strands") before the enclosing validation continues.
   case list.key_find(fields, "strands") {
     Error(Nil) -> Ok([])
     Ok(json.Array(items)) -> list.try_map(items, decode_strand)
@@ -2833,11 +3052,14 @@ fn decode_strands(
   }
 }
 
+/// Decode strand keeps this client operation’s decoding or state decision in one place.
 fn decode_strand(value: JsonValue) -> Result(Strand, String) {
   use fields <- result.try(body_fields(value))
   use id <- result.try(required_string(fields, "id"))
   use name <- result.try(optional_string(fields, "name"))
   use leaf <- result.try(optional_string(fields, "leaf"))
+
+  // This match resolves list.key_find(fields, "live_op") before the enclosing validation continues.
   use live_op <- result.try(case list.key_find(fields, "live_op") {
     Error(Nil) -> Ok(None)
     Ok(value) -> {
@@ -2847,16 +3069,21 @@ fn decode_strand(value: JsonValue) -> Result(Strand, String) {
       Ok(Some(LiveOp(op:, phase:)))
     }
   })
+
   Ok(Strand(id:, name:, leaf:, live_op:))
 }
 
+/// Decode entry record keeps this client operation’s decoding or state decision in one place.
 fn decode_entry_record(value: JsonValue) -> Result(EntryRecord, String) {
   use fields <- result.try(body_fields(value))
   use strand <- result.try(required_string(fields, "strand"))
+
+  // This match resolves list.key_find(fields, "entry") before the enclosing validation continues.
   use entry_value <- result.try(case list.key_find(fields, "entry") {
     Ok(value) -> Ok(value)
     Error(Nil) -> Error("an entry object is required")
   })
+
   use entry <- result.try(
     codec.decode_entry(codec_entry(entry_value))
     |> result.map_error(fn(report) { report.expected }),
@@ -2864,6 +3091,13 @@ fn decode_entry_record(value: JsonValue) -> Result(EntryRecord, String) {
   Ok(EntryRecord(strand:, entry:))
 }
 
+/// Decode escalation preserves the client boundary contract for this value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// decode_escalation(...)
+/// ```
 pub fn decode_escalation(value: JsonValue) -> Result(EscalationRecord, String) {
   use fields <- result.try(body_fields(value))
   use seq <- result.try(nonnegative_field(fields, "seq"))
@@ -2874,6 +3108,8 @@ pub fn decode_escalation(value: JsonValue) -> Result(EscalationRecord, String) {
   use op <- result.try(required_string(fields, "op"))
   use strand <- result.try(required_string(fields, "strand"))
   use status <- result.try(required_string(fields, "status"))
+
+  // This match resolves list.key_find(fields, "denial") before the enclosing validation continues.
   use denial <- result.try(case list.key_find(fields, "denial") {
     Error(Nil) -> Ok(None)
     Ok(value) -> {
@@ -2881,6 +3117,7 @@ pub fn decode_escalation(value: JsonValue) -> Result(EscalationRecord, String) {
       Ok(Some(denial))
     }
   })
+
   use tool <- result.try(defaulted_string(fields, "tool"))
   use action <- result.try(defaulted_string(fields, "action"))
   use preview <- result.try(defaulted_string(fields, "preview"))
@@ -2888,12 +3125,15 @@ pub fn decode_escalation(value: JsonValue) -> Result(EscalationRecord, String) {
     optional_int(fields, "asked") |> result.map(option.unwrap(_, 0)),
   )
   use placement <- result.try(optional_string(fields, "placement"))
+
+  // This match resolves list.key_find(fields, "admitted") before the enclosing validation continues.
   use admitted <- result.try(case list.key_find(fields, "admitted") {
     Error(Nil) -> Ok(None)
     Ok(json.Array(items)) ->
       list.try_map(items, decode_grant) |> result.map(Some)
     Ok(_) -> Error("admitted must be an array of grants")
   })
+
   Ok(EscalationRecord(
     escalation_id:,
     op:,
@@ -2914,6 +3154,7 @@ pub fn decode_escalation(value: JsonValue) -> Result(EscalationRecord, String) {
 // Absent reads as empty — that is the tolerance the additive fields
 // were specified with — but present-and-not-a-string is still a
 // malformed body, the same distinction `optional_string` draws.
+/// Defaulted string keeps this client operation’s decoding or state decision in one place.
 fn defaulted_string(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -2921,22 +3162,29 @@ fn defaulted_string(
   optional_string(fields, key) |> result.map(option.unwrap(_, ""))
 }
 
+/// Nonnegative field keeps this client operation’s decoding or state decision in one place.
 fn nonnegative_field(fields, key) {
+  // This match resolves list.key_find(fields, key) before the surrounding protocol step continues.
+  // This match resolves list.key_find(fields, key) before the enclosing validation continues.
   case list.key_find(fields, key) {
     Ok(json.Int(value)) if value >= 0 -> Ok(value)
     Ok(_) | Error(Nil) -> Error(key <> " must be a nonnegative integer")
   }
 }
 
+/// Decode denial keeps this client operation’s decoding or state decision in one place.
 fn decode_denial(value: JsonValue) -> Result(Denial, String) {
   use fields <- result.try(body_fields(value))
   use reason <- result.try(required_string(fields, "reason"))
   use source <- result.try(required_string(fields, "source"))
+
+  // This match resolves list.key_find(fields, "enforcement") before the enclosing validation continues.
   use enforcement <- result.try(case list.key_find(fields, "enforcement") {
     Error(Nil) -> Ok(None)
     Ok(json.Array(items)) ->
       items
       |> list.try_map(fn(item) {
+        // This match resolves item before the surrounding protocol step continues.
         case item {
           json.String(text) -> Ok(text)
           _ -> Error("enforcement entries must be strings")
@@ -2945,11 +3193,14 @@ fn decode_denial(value: JsonValue) -> Result(Denial, String) {
       |> result.map(Some)
     Ok(_) -> Error("enforcement must be an array of strings")
   })
+
+  // This match resolves list.key_find(fields, "wanted") before the enclosing validation continues.
   use wanted <- result.try(case list.key_find(fields, "wanted") {
     Error(Nil) -> Ok([])
     Ok(json.Array(items)) -> list.try_map(items, decode_grant)
     Ok(_) -> Error("wanted must be an array of grants")
   })
+
   Ok(Denial(reason:, source:, enforcement:, wanted:))
 }
 
@@ -2972,6 +3223,8 @@ fn decode_denial(value: JsonValue) -> Result(Denial, String) {
 /// ```
 ///
 pub fn encode_grant(grant: Grant) -> JsonValue {
+  // This match resolves grant before the surrounding protocol step continues.
+  // This match resolves grant before the enclosing validation continues.
   case grant {
     policy.GrantWritableRoot(path:) ->
       json.Object([
@@ -3018,6 +3271,9 @@ pub fn encode_grant(grant: Grant) -> JsonValue {
 pub fn decode_grant(value: JsonValue) -> Result(Grant, String) {
   use fields <- result.try(body_fields(value))
   use kind <- result.try(required_string(fields, "type"))
+
+  // This match resolves kind before the surrounding protocol step continues.
+  // This match resolves kind before the enclosing validation continues.
   case kind {
     "writable_root" -> {
       use path <- result.try(required_string(fields, "path"))
@@ -3028,10 +3284,12 @@ pub fn decode_grant(value: JsonValue) -> Result(Grant, String) {
       Ok(policy.GrantReadableRoot(path:))
     }
     "network" -> {
+      // This match validates the input shape before constructing its result.
       use network_value <- result.try(case list.key_find(fields, "network") {
         Ok(value) -> Ok(value)
         Error(Nil) -> Error("a network object is required")
       })
+
       use network <- result.try(decode_network(network_value))
       Ok(policy.GrantNetwork(network:))
     }
@@ -3046,10 +3304,12 @@ pub fn decode_grant(value: JsonValue) -> Result(Grant, String) {
       Ok(policy.GrantLimit(field:, value:))
     }
     "scratch" -> {
+      // This match validates the input shape before constructing its result.
       use scratch_value <- result.try(case list.key_find(fields, "scratch") {
         Ok(value) -> Ok(value)
         Error(Nil) -> Error("a scratch object is required")
       })
+
       use scratch <- result.try(decode_scratch(scratch_value))
       Ok(policy.GrantScratch(scratch:))
     }
@@ -3057,7 +3317,10 @@ pub fn decode_grant(value: JsonValue) -> Result(Grant, String) {
   }
 }
 
+/// Encode network keeps this client operation’s decoding or state decision in one place.
 fn encode_network(network: policy.NetworkPolicy) -> JsonValue {
+  // This match resolves network before the surrounding protocol step continues.
+  // This match resolves network before the enclosing validation continues.
   case network {
     policy.NetworkOff -> json.Object([#("mode", json.String("off"))])
     policy.NetworkFull -> json.Object([#("mode", json.String("full"))])
@@ -3070,17 +3333,23 @@ fn encode_network(network: policy.NetworkPolicy) -> JsonValue {
   }
 }
 
+/// Decode network keeps this client operation’s decoding or state decision in one place.
 fn decode_network(value: JsonValue) -> Result(policy.NetworkPolicy, String) {
   use fields <- result.try(body_fields(value))
   use mode <- result.try(required_string(fields, "mode"))
+
+  // This match resolves mode before the surrounding protocol step continues.
+  // This match resolves mode before the enclosing validation continues.
   case mode {
     "off" -> Ok(policy.NetworkOff)
     "full" -> Ok(policy.NetworkFull)
     "proxy" -> {
+      // This match validates the input shape before constructing its result.
       use allow <- result.try(case list.key_find(fields, "allow") {
         Error(Nil) -> Ok([])
         Ok(json.Array(items)) ->
           list.try_map(items, fn(item) {
+            // This match resolves item before the surrounding protocol step continues.
             case item {
               json.String(host) -> Ok(host)
               _ -> Error("allow entries must be strings")
@@ -3088,6 +3357,7 @@ fn decode_network(value: JsonValue) -> Result(policy.NetworkPolicy, String) {
           })
         Ok(_) -> Error("allow must be an array of host globs")
       })
+
       use proxy <- result.try(required_string(fields, "proxy"))
       Ok(policy.NetworkProxy(allow:, proxy:))
     }
@@ -3095,7 +3365,10 @@ fn decode_network(value: JsonValue) -> Result(policy.NetworkPolicy, String) {
   }
 }
 
+/// Encode scratch keeps this client operation’s decoding or state decision in one place.
 fn encode_scratch(scratch: policy.Scratch) -> JsonValue {
+  // This match resolves scratch before the surrounding protocol step continues.
+  // This match resolves scratch before the enclosing validation continues.
   case scratch {
     policy.ScratchTmpfs -> json.Object([#("mode", json.String("tmpfs"))])
     policy.ScratchPath(path:) ->
@@ -3106,9 +3379,13 @@ fn encode_scratch(scratch: policy.Scratch) -> JsonValue {
   }
 }
 
+/// Decode scratch keeps this client operation’s decoding or state decision in one place.
 fn decode_scratch(value: JsonValue) -> Result(policy.Scratch, String) {
   use fields <- result.try(body_fields(value))
   use mode <- result.try(required_string(fields, "mode"))
+
+  // This match resolves mode before the surrounding protocol step continues.
+  // This match resolves mode before the enclosing validation continues.
   case mode {
     "tmpfs" -> Ok(policy.ScratchTmpfs)
     "path" -> {
@@ -3129,6 +3406,8 @@ fn decode_scratch(value: JsonValue) -> Result(policy.Scratch, String) {
 /// ```
 ///
 pub fn limit_field_to_string(field: policy.LimitField) -> String {
+  // This match resolves field before the surrounding protocol step continues.
+  // This match resolves field before the enclosing validation continues.
   case field {
     policy.CpuSeconds -> "cpu_seconds"
     policy.WallSeconds -> "wall_seconds"
@@ -3148,6 +3427,8 @@ pub fn limit_field_to_string(field: policy.LimitField) -> String {
 /// ```
 ///
 pub fn parse_limit_field(text: String) -> Result(policy.LimitField, String) {
+  // This match resolves text before the surrounding protocol step continues.
+  // This match resolves text before the enclosing validation continues.
   case text {
     "cpu_seconds" -> Ok(policy.CpuSeconds)
     "wall_seconds" -> Ok(policy.WallSeconds)
@@ -3162,10 +3443,14 @@ pub fn parse_limit_field(text: String) -> Result(policy.LimitField, String) {
 // --- shared helpers --------------------------------------------------------
 
 // Builds an object keeping only the present fields, in the given order.
+/// Object of keeps this client operation’s decoding or state decision in one place.
 fn object_of(fields: List(#(String, Option(JsonValue)))) -> JsonValue {
   fields
   |> list.filter_map(fn(field) {
     let #(name, value) = field
+
+    // This match resolves value before the surrounding protocol step continues.
+    // This match resolves value before the enclosing validation continues.
     case value {
       Some(value) -> Ok(#(name, value))
       None -> Error(Nil)
@@ -3174,20 +3459,26 @@ fn object_of(fields: List(#(String, Option(JsonValue)))) -> JsonValue {
   |> json.Object
 }
 
+/// Envelope fields keeps this client operation’s decoding or state decision in one place.
 fn envelope_fields(
   value: JsonValue,
   id: Option(Int),
 ) -> Result(List(#(String, JsonValue)), ProtocolFault) {
+  // This match resolves value before the surrounding protocol step continues.
+  // This match resolves value before the enclosing validation continues.
   case value {
     json.Object(fields) -> Ok(fields)
     _ -> Error(BadEnvelope(reason: "a json object envelope", id:))
   }
 }
 
+/// Check version keeps this client operation’s decoding or state decision in one place.
 fn check_version(
   fields: List(#(String, JsonValue)),
   id: Option(Int),
 ) -> Result(Nil, ProtocolFault) {
+  // This match resolves list.key_find(fields, "v") before the surrounding protocol step continues.
+  // This match resolves list.key_find(fields, "v") before the enclosing validation continues.
   case list.key_find(fields, "v") {
     Ok(json.Int(v)) if v == version -> Ok(Nil)
     _ ->
@@ -3198,7 +3489,10 @@ fn check_version(
   }
 }
 
+/// Body fields keeps this client operation’s decoding or state decision in one place.
 fn body_fields(value: JsonValue) -> Result(List(#(String, JsonValue)), String) {
+  // This match resolves value before the surrounding protocol step continues.
+  // This match resolves value before the enclosing validation continues.
   case value {
     json.Object(fields) -> Ok(fields)
     _ -> Error("a json object body")
@@ -3221,10 +3515,13 @@ pub const objective_limit = 4000
 // the empty string, so accepting it here would pin a goal that cannot be
 // read back. The refusal carries both counts, because "too long" without
 // the numbers leaves the operator trimming by guesswork.
+/// Bounded objective keeps this client operation’s decoding or state decision in one place.
 fn bounded_objective(raw: String) -> Result(String, String) {
   let objective = string.trim(raw)
   let length = string.length(objective)
 
+  // This match resolves objective, length > objective_limit before the surrounding protocol step continues.
+  // This match resolves objective, length > objective_limit before the enclosing validation continues.
   case objective, length > objective_limit {
     "", _empty -> Error("objective must not be empty")
 
@@ -3244,10 +3541,13 @@ fn bounded_objective(raw: String) -> Result(String, String) {
 // absent field is what both decoders read as "the operator named none",
 // which `goal_set` takes as leave-it-alone and `goal_check` as clear-it, so
 // a null would be a third spelling of a state that already has one.
+/// Named check keeps this client operation’s decoding or state decision in one place.
 fn named_check(
   key: String,
   command: Option(String),
 ) -> List(#(String, JsonValue)) {
+  // This match resolves command before the surrounding protocol step continues.
+  // This match resolves command before the enclosing validation continues.
   case command {
     None -> []
     Some(text) -> [#(key, json.String(text))]
@@ -3272,14 +3572,18 @@ pub const check_limit = 1000
 // check sends the command away, and a terminal that sends an empty string
 // means the same thing. The refusal carries both counts, because "too long"
 // without the numbers leaves the operator trimming by guesswork.
+/// Optional bounded check keeps this client operation’s decoding or state decision in one place.
 fn optional_bounded_check(
   fields: List(#(String, JsonValue)),
   key: String,
 ) -> Result(Option(String), String) {
+  // This match resolves list.key_find(fields, key) before the surrounding protocol step continues.
+  // This match resolves list.key_find(fields, key) before the enclosing validation continues.
   case list.key_find(fields, key) {
     Error(Nil) | Ok(json.Null) -> Ok(None)
 
     Ok(json.String(raw)) ->
+      // This match resolves string.trim(raw), string.length(string.trim(raw)) > check_limit before the surrounding protocol step continues.
       case string.trim(raw), string.length(string.trim(raw)) > check_limit {
         "", _empty -> Ok(None)
 
@@ -3299,10 +3603,13 @@ fn optional_bounded_check(
   }
 }
 
+/// Required string keeps this client operation’s decoding or state decision in one place.
 fn required_string(
   fields: List(#(String, JsonValue)),
   key: String,
 ) -> Result(String, String) {
+  // This match resolves list.key_find(fields, key) before the surrounding protocol step continues.
+  // This match resolves list.key_find(fields, key) before the enclosing validation continues.
   case list.key_find(fields, key) {
     Ok(json.String(text)) -> Ok(text)
     Ok(_) -> Error(key <> " must be a string")
@@ -3310,10 +3617,13 @@ fn required_string(
   }
 }
 
+/// Optional string keeps this client operation’s decoding or state decision in one place.
 fn optional_string(
   fields: List(#(String, JsonValue)),
   key: String,
 ) -> Result(Option(String), String) {
+  // This match resolves list.key_find(fields, key) before the surrounding protocol step continues.
+  // This match resolves list.key_find(fields, key) before the enclosing validation continues.
   case list.key_find(fields, key) {
     Error(Nil) -> Ok(None)
     Ok(json.String(text)) -> Ok(Some(text))
@@ -3321,10 +3631,13 @@ fn optional_string(
   }
 }
 
+/// Required int keeps this client operation’s decoding or state decision in one place.
 fn required_int(
   fields: List(#(String, JsonValue)),
   key: String,
 ) -> Result(Int, String) {
+  // This match resolves list.key_find(fields, key) before the surrounding protocol step continues.
+  // This match resolves list.key_find(fields, key) before the enclosing validation continues.
   case list.key_find(fields, key) {
     Ok(json.Int(value)) -> Ok(value)
     Ok(_) -> Error(key <> " must be an integer")
@@ -3333,18 +3646,23 @@ fn required_int(
 }
 
 const profile_words =
+  // This match resolves letters, numbers, _ and -, starting with a letter" before the enclosing validation continues.
   "profile must be a name of lowercase letters, numbers, _ and -, starting with a letter"
 
 // The optional profile of a `profile_set`. An absent field is the default
 // roles. A field that is present must be a profile name: null, the empty
 // string and a malformed name are refused rather than read as the default, so
 // a misspelled name can never move a session onto the default roles.
+/// Optional profile keeps this client operation’s decoding or state decision in one place.
 fn optional_profile(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(String), String) {
+  // This match resolves list.key_find(fields, "profile") before the surrounding protocol step continues.
+  // This match resolves list.key_find(fields, "profile") before the enclosing validation continues.
   case list.key_find(fields, "profile") {
     Error(Nil) -> Ok(None)
     Ok(json.String(name)) ->
+      // This match resolves catalogue.is_profile_name(name) before the surrounding protocol step continues.
       case catalogue.is_profile_name(name) {
         True -> Ok(Some(name))
         False -> Error(profile_words)
@@ -3353,10 +3671,13 @@ fn optional_profile(
   }
 }
 
+/// Optional int keeps this client operation’s decoding or state decision in one place.
 fn optional_int(
   fields: List(#(String, JsonValue)),
   key: String,
 ) -> Result(Option(Int), String) {
+  // This match resolves list.key_find(fields, key) before the surrounding protocol step continues.
+  // This match resolves list.key_find(fields, key) before the enclosing validation continues.
   case list.key_find(fields, key) {
     Error(Nil) -> Ok(None)
     Ok(json.Int(value)) -> Ok(Some(value))
@@ -3368,9 +3689,12 @@ fn optional_int(
 
 // codec → wire: rewrites assistant content blocks (in messages and in
 // compaction retained tails) into the fixture-pinned shapes.
+/// Wire entry keeps this client operation’s decoding or state decision in one place.
 fn wire_entry(value: JsonValue) -> JsonValue {
   map_object_field(value, "message", wire_message)
   |> map_object_field("retainedTail", fn(tail) {
+    // This match resolves tail before the surrounding protocol step continues.
+    // This match resolves tail before the enclosing validation continues.
     case tail {
       json.Array(items) -> json.Array(list.map(items, wire_message))
       other -> other
@@ -3379,9 +3703,12 @@ fn wire_entry(value: JsonValue) -> JsonValue {
 }
 
 // wire → codec: the inverse rewrite, applied before total decoding.
+/// Codec entry keeps this client operation’s decoding or state decision in one place.
 fn codec_entry(value: JsonValue) -> JsonValue {
   map_object_field(value, "message", codec_message)
   |> map_object_field("retainedTail", fn(tail) {
+    // This match resolves tail before the surrounding protocol step continues.
+    // This match resolves tail before the enclosing validation continues.
     case tail {
       json.Array(items) -> json.Array(list.map(items, codec_message))
       other -> other
@@ -3389,8 +3716,11 @@ fn codec_entry(value: JsonValue) -> JsonValue {
   })
 }
 
+/// Wire message keeps this client operation’s decoding or state decision in one place.
 fn wire_message(value: JsonValue) -> JsonValue {
   map_object_field(value, "content", fn(content) {
+    // This match resolves content before the surrounding protocol step continues.
+    // This match resolves content before the enclosing validation continues.
     case content {
       json.Array(items) -> json.Array(list.map(items, wire_block))
       other -> other
@@ -3398,8 +3728,11 @@ fn wire_message(value: JsonValue) -> JsonValue {
   })
 }
 
+/// Codec message keeps this client operation’s decoding or state decision in one place.
 fn codec_message(value: JsonValue) -> JsonValue {
   map_object_field(value, "content", fn(content) {
+    // This match resolves content before the surrounding protocol step continues.
+    // This match resolves content before the enclosing validation continues.
     case content {
       json.Array(items) -> json.Array(list.map(items, codec_block))
       other -> other
@@ -3407,9 +3740,13 @@ fn codec_message(value: JsonValue) -> JsonValue {
   })
 }
 
+/// Wire block keeps this client operation’s decoding or state decision in one place.
 fn wire_block(value: JsonValue) -> JsonValue {
+  // This match resolves value before the surrounding protocol step continues.
+  // This match resolves value before the enclosing validation continues.
   case value {
     json.Object(fields) ->
+      // This match resolves list.key_find(fields, "type") before the surrounding protocol step continues.
       case list.key_find(fields, "type") {
         // The wire nests the call under `toolCall`; the codec inlines it.
         Ok(json.String("toolCall")) ->
@@ -3423,6 +3760,7 @@ fn wire_block(value: JsonValue) -> JsonValue {
 
         // The wire always carries `redacted`; the codec omits `false`.
         Ok(json.String("thinking")) ->
+          // This match resolves list.key_find(fields, "redacted") before the surrounding protocol step continues.
           case list.key_find(fields, "redacted") {
             Ok(_) -> value
             Error(Nil) ->
@@ -3436,9 +3774,13 @@ fn wire_block(value: JsonValue) -> JsonValue {
   }
 }
 
+/// Codec block keeps this client operation’s decoding or state decision in one place.
 fn codec_block(value: JsonValue) -> JsonValue {
+  // This match resolves value before the surrounding protocol step continues.
+  // This match resolves value before the enclosing validation continues.
   case value {
     json.Object(fields) ->
+      // This match resolves list.key_find(fields, "type"), list.key_find(fields, "toolCall") before the surrounding protocol step continues.
       case list.key_find(fields, "type"), list.key_find(fields, "toolCall") {
         Ok(json.String("toolCall")), Ok(json.Object(call_fields)) ->
           json.Object([#("type", json.String("toolCall")), ..call_fields])
@@ -3448,15 +3790,19 @@ fn codec_block(value: JsonValue) -> JsonValue {
   }
 }
 
+/// Map object field keeps this client operation’s decoding or state decision in one place.
 fn map_object_field(
   value: JsonValue,
   key: String,
   change: fn(JsonValue) -> JsonValue,
 ) -> JsonValue {
+  // This match resolves value before the surrounding protocol step continues.
+  // This match resolves value before the enclosing validation continues.
   case value {
     json.Object(fields) ->
       json.Object(
         list.map(fields, fn(field) {
+          // This match resolves field.0 == key before the surrounding protocol step continues.
           case field.0 == key {
             True -> #(key, change(field.1))
             False -> field
@@ -3485,6 +3831,8 @@ fn map_object_field(
 /// ```
 ///
 pub fn to_wire_text(value: JsonValue) -> String {
+  // This match resolves value before the surrounding protocol step continues.
+  // This match resolves value before the enclosing validation continues.
   case value {
     json.Null -> "null"
     json.Bool(True) -> "true"
@@ -3510,8 +3858,12 @@ pub fn to_wire_text(value: JsonValue) -> String {
 // it chose scientific notation with a decimal exponent in Go's
 // positional range, expand it positionally. Anything outside the range
 // keeps the BEAM form (still valid JSON parsing to the same value).
+/// Wire float keeps this client operation’s decoding or state decision in one place.
 fn wire_float(number: Float) -> String {
   let text = float.to_string(number)
+
+  // This match resolves string.split_once(text, "e") before the surrounding protocol step continues.
+  // This match resolves string.split_once(text, "e") before the enclosing validation continues.
   case string.split_once(text, "e") {
     Error(Nil) -> text
     Ok(#(mantissa, exponent_text)) ->
@@ -3519,31 +3871,42 @@ fn wire_float(number: Float) -> String {
   }
 }
 
+/// Expand scientific keeps this client operation’s decoding or state decision in one place.
 fn expand_scientific(
   text: String,
   mantissa: String,
   exponent_text: String,
 ) -> String {
+  // This match resolves int.parse(exponent_text) before the surrounding protocol step continues.
+  // This match resolves int.parse(exponent_text) before the enclosing validation continues.
   case int.parse(exponent_text) {
     Error(Nil) -> text
     Ok(exponent) -> positional_float(text, mantissa, exponent)
   }
 }
 
+/// Positional float keeps this client operation’s decoding or state decision in one place.
 fn positional_float(text: String, mantissa: String, exponent: Int) -> String {
+  // This match resolves mantissa before the enclosing validation continues.
   let #(sign, mantissa) = case mantissa {
     "-" <> rest -> #("-", rest)
     other -> #("", other)
   }
+
+  // This match resolves string.split_once(mantissa, ".") before the enclosing validation continues.
   let #(whole, fraction) = case string.split_once(mantissa, ".") {
     Ok(#(whole, fraction)) -> #(whole, fraction)
     Error(Nil) -> #(mantissa, "")
   }
+
   let digits = whole <> fraction
 
   // The decimal point sits after `point` digits of `digits`.
   let point = string.length(whole) + exponent
   let total = string.length(digits)
+
+  // This match resolves point > -7 && point < 21 before the surrounding protocol step continues.
+  // This match resolves point > -7 && point < 21 before the enclosing validation continues.
   case point > -7 && point < 21 {
     False -> text
     True -> place_decimal_point(sign, digits, point, total)
@@ -3553,15 +3916,19 @@ fn positional_float(text: String, mantissa: String, exponent: Int) -> String {
 // `point <= 0`: the point sits before every digit, padded with zeros.
 // `point >= total`: the point sits after every digit, padded the other
 // way. Otherwise it falls inside `digits` and splits it in two.
+/// Place decimal point keeps this client operation’s decoding or state decision in one place.
 fn place_decimal_point(
   sign: String,
   digits: String,
   point: Int,
   total: Int,
 ) -> String {
+  // This match resolves point <= 0 before the surrounding protocol step continues.
+  // This match resolves point <= 0 before the enclosing validation continues.
   case point <= 0 {
     True -> sign <> "0." <> string.repeat("0", int.negate(point)) <> digits
     False ->
+      // This match resolves point >= total before the surrounding protocol step continues.
       case point >= total {
         True -> sign <> digits <> string.repeat("0", point - total) <> ".0"
         False ->

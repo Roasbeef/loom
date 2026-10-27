@@ -799,13 +799,13 @@ pub fn begin(helper: Helper) -> Nil {
   process.send(helper.commands, Begin)
 }
 
-// Opens the resolved runtime channel for a transport spec. The port
-// case must run in the calling (actor) process: port messages are
-// delivered to the opener, and the opener is where the selector lives.
+/// Opens the resolved runtime channel for a transport spec.
+/// Port messages are delivered to the opener.
 fn open_transport(
   transport: Transport,
   base: process.Selector(Msg),
 ) -> Result(#(Wire, process.Selector(Msg)), String) {
+  // Resolve and open transport variant.
   case transport {
     DeferredTransport(acquire) -> {
       use transport <- result.try(acquire())
@@ -837,6 +837,7 @@ fn open_transport(
 // translates it back into a structured SpawnError.
 const port_open_failure = "helper port could not be opened"
 
+/// Translates raw Erlang port messages into structured WireEvent variants.
 fn port_wire_event(message: Dynamic) -> WireEvent {
   case ffi_port.port_event(message) {
     ffi_port.PortBytes(data:) -> WireBytes(data:)
@@ -978,11 +979,7 @@ pub fn heartbeat(
   ))
 }
 
-// An exchange with the helper actor that produced no reply is a helper
-// failure like any the actor could have reported, and every caller of
-// these three settles one in band. The distinction the fault carries —
-// timed out versus never alive — is not one any of them can act on:
-// the actor is out of reach either way and nothing was dispatched.
+/// Converts call fault errors into HelperUnresponsive failure.
 fn or_unresponsive(
   attempt: Result(Result(a, ExecFailure), call.CallFault),
 ) -> Result(a, ExecFailure) {
@@ -1041,12 +1038,12 @@ pub fn close(
     }
     Error(failure) -> Error(failure)
   }
+
   process.demonitor_process(monitor)
   outcome
 }
 
-// Native proof and BEAM retirement are separate events. The monitor predates
-// both, and the remaining caller budget bounds the second observation too.
+/// Awaits BEAM monitor confirmation of helper actor exit within deadline.
 fn await_retired_owner(
   monitor: process.Monitor,
   deadline: Int,
@@ -1092,11 +1089,13 @@ pub fn wire(helper: Helper) -> Subject(WireEvent) {
 /// had to remember to write — `state.phase` re-checked inside the
 /// handshake deadline, an execution id carried on the cancel deadline so
 /// its handler could recognise its own fire.
+/// The helper state machine message handler.
 fn handle(
   phase: Phase,
   data: Data,
   message: Msg,
 ) -> state_machine.Next(Phase, Data, Msg) {
+  // Dispatch on incoming state machine message.
   case message {
     Begin ->
       case phase {
@@ -1191,6 +1190,8 @@ fn handle(
               ),
             )
           let next = advance(machine)
+
+          // Arm cancel deadline timer if machine remains in Live phase.
           case machine.phase {
             Live(..) ->
               state_machine.with_named_timeout(
@@ -1307,13 +1308,13 @@ fn handle(
   }
 }
 
-// Checkin is atomic with execution membership. A live execution cannot be
-// returned to lending; the pool must retire its physical owner instead.
+/// Releases a registered lease from active helper tracking.
 fn release_registered_lease(
   data: Data,
   id: Int,
   reply: Subject(Result(Nil, ExecFailure)),
 ) -> state_machine.Next(Phase, Data, Msg) {
+  // Refuse if any runner is still executing on this lease.
   case list.any(dict.values(data.runners), fn(run) { run.lease == Some(id) }) {
     True -> refuse_run(data, reply, HelperBusy)
     False -> {
@@ -1323,7 +1324,7 @@ fn release_registered_lease(
   }
 }
 
-// Only unused live leases dispatch; the canonical handle remains singleton.
+/// Returns whether a lease can be used for dispatching.
 fn runnable_lease(data: Data, lease: Option(Int)) -> Bool {
   case lease {
     None -> dict.size(data.leases) == 0 && dict.size(data.runners) == 0
@@ -1398,11 +1399,7 @@ fn entered(
 // talking about the same timer rather than about two.
 const heartbeat_timer = "helper.heartbeat"
 
-// Arms the idle liveness probe, unless the configuration disables it.
-//
-// The zero guard survives the port and is not a leftover: `0` means "do
-// not probe", and a periodic timeout armed for zero milliseconds is a
-// spin rather than a disabled probe.
+/// Arms the idle liveness probe, unless the configuration disables it.
 fn arm_heartbeat(data: Data) -> state_machine.Enter(Phase, Data, Msg) {
   case data.config.heartbeat_interval_ms > 0 {
     True ->
@@ -1417,15 +1414,7 @@ fn arm_heartbeat(data: Data) -> state_machine.Enter(Phase, Data, Msg) {
   }
 }
 
-// Hands a phase-and-data pair back to weft as a step.
-//
-// A `transition` to the phase the machine is already in is not a state
-// change — weft compares states structurally — so this arms nothing,
-// cancels nothing and runs no enter call when the work left the phase
-// alone. When the work did move the machine, the same call is the move,
-// and it takes the old phase's deadline with it. That equivalence is why
-// the frame path can be written as `Machine -> Machine` and turned into
-// a step in one place.
+/// Hands a phase-and-data pair back to weft as a step.
 fn advance(machine: Machine) -> state_machine.Next(Phase, Data, Msg) {
   let data = machine.data
   let next =
@@ -1438,8 +1427,7 @@ fn advance(machine: Machine) -> state_machine.Next(Phase, Data, Msg) {
   })
 }
 
-// Status describes the physical helper. The pool's private lease registration
-// asks about free concurrency separately, including already borrowed entries.
+/// Returns the external status representation of the helper.
 fn status_of(phase: Phase, data: Data) -> HelperStatus {
   case phase {
     Prepared | AwaitingHello -> StatusStarting
@@ -1452,14 +1440,14 @@ fn status_of(phase: Phase, data: Data) -> HelperStatus {
   }
 }
 
-// The pool has already published this owner. Port acquisition and selector
-// installation occur in that owner, so port messages cannot reach a short-lived
-// factory worker. An acquisition error here precedes every native port.
+/// Activates the helper owner by opening transport and installing selector.
 fn activate(data: Data) -> state_machine.Next(Phase, Data, Msg) {
   let base =
     process.new_selector()
     |> process.select(data.commands)
     |> process.select_map(data.wire, FromWire)
+
+  // Open the configured transport.
   case open_transport(data.config.transport, base) {
     Error(_reason) ->
       state_machine.transition(Dead(SendFailed, NoNativeResource), data)
@@ -1469,9 +1457,7 @@ fn activate(data: Data) -> state_machine.Next(Phase, Data, Msg) {
   }
 }
 
-// Settles execution callers before requesting native shutdown. The port stays
-// open while the helper cancels and joins its jail; only its exit-status event
-// advances PendingExit and releases postponed retirement requests.
+/// Initiates orderly helper shutdown by sending a Shutdown frame.
 fn handle_shutdown(machine: Machine) -> state_machine.Next(Phase, Data, Msg) {
   let data = notify_death(machine, ChannelClosed(status: 0))
   let #(data, id) = fresh_id(data)
@@ -1494,22 +1480,16 @@ fn handle_shutdown(machine: Machine) -> state_machine.Next(Phase, Data, Msg) {
     Ok(Nil) -> PendingExit(AfterShutdown)
     Error(Nil) -> PendingExit(Unprompted(exposure_of(machine)))
   }
+
   advance(Machine(Dead(ChannelClosed(0), retirement), run_cleanup(data)))
 }
 
-// Only an exit event selected while the port was retained may establish
-// native retirement. A late event after port_close cannot repair lost proof.
-//
-// A helper already `Dead` because it was shut down or killed keeps the
-// failure it died with: a caller who asks it to `Run` is told
-// `CancelEscalated`, not a bare exit status that hides why the helper went.
-// A helper that dies in a live phase has no earlier failure, so the status
-// is the failure, and the exit nobody asked for is judged by the jail it
-// leaves behind, exactly as a kill from the same phase would be.
+/// Handles native OS port exit status and evaluates retirement verdict.
 fn native_exit(
   machine: Machine,
   status: Int,
 ) -> state_machine.Next(Phase, Data, Msg) {
+  // Dispatch on current phase when port closes with status.
   case machine.phase {
     Prepared
     | Dead(retirement: NoNativeResource, ..)
@@ -1531,9 +1511,7 @@ fn native_exit(
   }
 }
 
-// What jail a live phase leaves behind when its helper stops. `Prepared` and
-// `Dead` have no live port to speak of; they answer `NoJail` so the match is
-// total, and no caller reaches them.
+/// Evaluates what jail exposure was active when the helper process died.
 fn exposure_of(machine: Machine) -> Exposure {
   case machine.phase {
     Prepared | AwaitingHello | Dead(..) -> NoJail
@@ -1545,36 +1523,7 @@ fn exposure_of(machine: Machine) -> Exposure {
   }
 }
 
-// Turns a native exit status into the retirement verdict, and is the one
-// place that decides what a status is evidence of.
-//
-// After a shutdown, status 0 is the helper's own account that it cancelled
-// and joined its jail, so it is `Ok`; any other status proves the process
-// is gone and nothing about the jail's descendants.
-//
-// After a kill, or an exit nobody asked for, the helper never joined
-// anything, and the status (137, when the signal is what ended it) says only
-// that the helper process is gone. Whether that retires it depends on how
-// much jail it left (`Exposure`):
-//
-// - `NoJail` and `SettledJail` left none. A helper that never accepted a
-//   hello had no jail to leave, and an idle one had already had its last
-//   jail killed by `Settle` before it wrote the `exec_exit` that made it
-//   idle. Its exit is a complete witness on every platform, Darwin and
-//   degraded Linux included, at the grade of the status-0 witness.
-// - `LiveJail` is the case that needs the jail's life bounded by the
-//   helper's. Under bwrap it is: bwrap is spawned `--die-with-parent`, so
-//   the kernel SIGKILLs it when the helper dies, and `--unshare-pid` makes
-//   bwrap's child the init of a fresh PID namespace, so the death of that
-//   init takes every process in the namespace with it. The `bwrap` feature
-//   in the accepted hello is the helper's statement that it built jails
-//   that way. This is weaker than the status-0 witness: the payload may
-//   keep running for a couple of scheduler wakeups after the status is
-//   selected and the namespace tears down over tens of milliseconds, and
-//   the per-exec cgroup directory is not removed. Without bwrap nothing
-//   promises even that: a degraded Linux payload shares the helper's
-//   namespaces and can `setsid` away, and on Darwin the descendant tracker
-//   died with the helper. Those stay unconfirmed.
+/// Evaluates whether native exit status constitutes confirmed retirement.
 fn native_verdict(
   status: Int,
   awaited: Awaiting,
@@ -1591,9 +1540,7 @@ fn native_verdict(
   }
 }
 
-// The idle liveness probe. A tick still outstanding when the next one
-// comes round is the helper having stopped speaking altogether, which is
-// a death rather than one dropped frame.
+/// Handles periodic heartbeat tick, checking for missed responses.
 fn handle_heartbeat_tick(
   machine: Machine,
 ) -> state_machine.Next(Phase, Data, Msg) {
@@ -1603,14 +1550,7 @@ fn handle_heartbeat_tick(
   }
 }
 
-// Writes this tick's probe; the next one is weft's to arm.
-//
-// A periodic timeout re-arms itself once this handler has returned, so
-// the ordering the hand-rolled version had to arrange by hand — arm
-// before the write, so a write that kills the channel leaves no gap —
-// comes for free and is now stronger. A write that kills the channel
-// lands in `Dead`, whose enter callback cancels the series, so there is
-// no tick scheduled for a machine with nothing left to probe.
+/// Sends an idle heartbeat tick frame to the helper.
 fn send_heartbeat_tick(
   machine: Machine,
 ) -> state_machine.Next(Phase, Data, Msg) {
@@ -1622,9 +1562,7 @@ fn send_heartbeat_tick(
   )
 }
 
-// A caller's `heartbeat` probe. The echo is correlated by frame id, so
-// several probes and the idle tick can be in flight at once without any
-// of them answering for another.
+/// Sends an explicit heartbeat probe frame on behalf of a caller.
 fn send_heartbeat(
   machine: Machine,
   reply: Subject(Result(Nil, ExecFailure)),
@@ -1638,24 +1576,7 @@ fn send_heartbeat(
   )
 }
 
-// The one dispatch path: `Live`, with a helper whose hello features the
-// request's demand can live with. Every other phase was refused in
-// `handle`, so this only has to weigh the caller's liveness and degradation.
-//
-// The liveness check is the late-`Run` fence. `run` uses `try_call`, and a
-// caller whose call times out has already been told `HelperUnresponsive`
-// while its `Run` is still queued in a wedged actor's mailbox. When the
-// actor recovers it would dispatch an execution that nobody is listening to,
-// after the caller was told it had failed. The events subject's owner is
-// the process that would receive the outcome, so an owner that is gone
-// means the caller gave up, and the `Run` is refused instead. The refusal
-// is `NotReady`, the same answer as any other helper that cannot take work,
-// and it goes to a reply subject nobody reads.
-//
-// This is a liveness fence and not a deadline. A caller that is still alive
-// but gave up, because it timed out and went on to wait for something else,
-// is not caught, and nor is one that dies in the instant after the check.
-// The broker's relay dies with its call, which is the case this is for.
+/// Evaluates caller liveness and enforcement demands before dispatching.
 fn handle_run(
   data: Data,
   features: List(String),
@@ -1684,8 +1605,7 @@ fn events_owner_alive(events: Subject(ExecEvent)) -> Bool {
   }
 }
 
-// The shared shape of every dispatch-time refusal: answer the caller and
-// keep the machine where it is, with no execution recorded.
+/// Refuses a run request with the given failure reason.
 fn refuse_run(
   data: Data,
   reply: Subject(Result(Nil, ExecFailure)),
@@ -1695,15 +1615,7 @@ fn refuse_run(
   state_machine.keep(data)
 }
 
-// Records the execution in the state and writes the `exec_start`.
-//
-// The caller is answered before the write, which is the order the
-// contract needs: `run` returning `Ok` promises exactly one terminal
-// event on the events subject, and a write that fails settles the
-// execution with one — so the acknowledgement must already be out.
-//
-// Immutable execution requirements live beside its lease and cancellation
-// state in Data; their membership changes do not alter the physical phase.
+/// Dispatches execution on helper and sets up runner tracking.
 fn dispatch_exec(
   data: Data,
   features: List(String),
@@ -1712,10 +1624,12 @@ fn dispatch_exec(
   events: Subject(ExecEvent),
   reply: Subject(Result(Nil, ExecFailure)),
 ) -> state_machine.Next(Phase, Data, Msg) {
+  // Allocate execution id from lease or fresh sequence.
   let #(data, id) = case lease {
     Some(id) -> #(Data(..data, leases: dict.insert(data.leases, id, Used)), id)
     None -> fresh_id(data)
   }
+
   let frame =
     framing.Frame(
       id:,
@@ -1814,17 +1728,16 @@ pub fn required_layers_for_features(
   policy: Option(SandboxPolicy),
   features: List(String),
 ) -> List(String) {
+  // Determine OS family from features.
   let os_name = case list.contains(features, "seatbelt") {
     True -> "darwin"
     False -> "linux"
   }
+
   required_layers_for(policy, os_name)
 }
 
-// The mandatory half of a demand. PlatformEnforcement keeps the Darwin
-// resource layers out of this list because ADR-006 proves they are not
-// platform guarantees; `tolerated_layers_for_demand` still requires an
-// explicit applied-or-skipped report for each one.
+/// Computes required layers for a specific enforcement demand.
 fn required_layers_for_demand(
   policy: Option(SandboxPolicy),
   features: List(String),
@@ -1835,16 +1748,16 @@ fn required_layers_for_demand(
   list.filter(required, fn(layer) { !list.contains(tolerated, layer) })
 }
 
-// Darwin's documented gaps are tolerated only by PlatformEnforcement and
-// only when the report names them. Linux has no corresponding relaxation:
-// its platform-strict demand is byte-for-byte as strict as full enforcement.
+/// Computes tolerated layer skips for a given demand and features.
 fn tolerated_layers_for_demand(
   policy: Option(SandboxPolicy),
   features: List(String),
   demand: EnforcementDemand,
 ) -> List(String) {
+  // Check whether platform enforcement permits gaps.
   case demand, list.contains(features, "seatbelt") {
     PlatformEnforcement, True -> {
+      // Resource limits on Darwin are tolerated rather than guaranteed.
       let resource = case policy {
         None -> []
         Some(policy) ->
@@ -1853,6 +1766,7 @@ fn tolerated_layers_for_demand(
             optional_layer(policy.limits.pids > 0, "rlimit-processes"),
           ])
       }
+
       list.append(resource, ["darwin-process-lifecycle"])
     }
     _, _ -> []
@@ -1866,6 +1780,8 @@ pub fn required_layers_for(
   os_name: String,
 ) -> List(String) {
   let base = base_layers_for(os_name)
+
+  // Evaluate required layers based on policy configuration.
   case policy {
     None -> base
     Some(policy) ->
@@ -1879,6 +1795,7 @@ pub fn required_layers_for(
   }
 }
 
+/// Computes the base enforcement layers for an operating system.
 fn base_layers_for(os_name: String) -> List(String) {
   case os_name {
     "darwin" -> ["seatbelt", "seatbelt-fs"]
@@ -1887,6 +1804,7 @@ fn base_layers_for(os_name: String) -> List(String) {
   }
 }
 
+/// Computes required network enforcement layers.
 fn network_layers_for(
   network: policy.NetworkPolicy,
   os_name: String,
@@ -1902,6 +1820,7 @@ fn network_layers_for(
   }
 }
 
+/// Computes required resource enforcement layers.
 fn resource_layers_for(limits: policy.Limits, os_name: String) -> List(String) {
   case limits.mem_bytes > 0 || limits.pids > 0 {
     False -> []
@@ -1939,10 +1858,7 @@ pub fn unapplied_layers(
   list.filter(required, fn(layer) { !list.contains(applied, layer) })
 }
 
-// The layer a report entry speaks for, stripped of its detail: the tag
-// runs to the first ":" or "=", so "landlock:abi=5" is the landlock
-// layer and "mounts:ro=2,rw=1,..." is the mount layer, while a plain
-// "seccomp-net" is its own tag.
+/// Extracts the base layer identifier from an enforcement tag.
 fn layer_tag(entry: String) -> String {
   let head =
     string.split_once(entry, ":")
@@ -1953,12 +1869,7 @@ fn layer_tag(entry: String) -> String {
   |> result.unwrap(head)
 }
 
-// Whether an exec_exit's enforcement report falls short of what the
-// policy called for: the helper set the degraded bool (bwrap absent),
-// any `skip:` entry says a layer was not applied, or a required layer
-// is simply absent from the list. The list, not the bool, is the ground
-// truth a FullEnforcement demand trusts — and absence counts against it
-// exactly as a skip does.
+/// Evaluates whether an enforcement report indicates degraded execution.
 fn degraded_report(
   enforcement: List(String),
   degraded: Bool,
@@ -1969,10 +1880,7 @@ fn degraded_report(
   || unapplied_layers(enforcement, required) != []
 }
 
-// Platform enforcement is strict about the platform's real boundary and
-// permissive only about the exact Darwin gaps ADR-006 names. A tolerated
-// layer must still speak: accepting an omitted report would recreate #54's
-// silent-stage-2 hole under a different demand.
+/// Evaluates whether an enforcement report violates platform enforcement demand.
 fn platform_degraded_report(
   enforcement: List(String),
   degraded: Bool,
@@ -1988,6 +1896,7 @@ fn platform_degraded_report(
   || unreported_layers(enforcement, tolerated) != []
 }
 
+/// Computes expected layers missing from report.
 fn unreported_layers(
   enforcement: List(String),
   expected: List(String),
@@ -2007,18 +1916,14 @@ fn report_layer_tag(entry: String) -> String {
   }
 }
 
-// Pushes one inbound chunk through the pure deframer and applies
-// whatever whole frames came out of it.
-//
-// The fault is weighed after the frames rather than before them: bytes
-// that arrived ahead of the corruption are real and their frames are
-// acted on, which is how a helper that dies mid-frame still delivers the
-// `exec_exit` it managed to write.
+/// Processes inbound raw bytes from the transport through the deframer.
 fn handle_bytes(machine: Machine, bytes: BitArray) -> Machine {
   let framing.Pushed(deframer:, inbound:, fault:) =
     framing.push(machine.data.deframer, bytes)
   let machine = Machine(..machine, data: Data(..machine.data, deframer:))
   let machine = list.fold(inbound, machine, apply_inbound)
+
+  // Check whether deframer encountered fatal framing fault.
   case fault, machine.phase {
     _, Dead(..) -> machine
     None, _ -> machine
@@ -2026,8 +1931,7 @@ fn handle_bytes(machine: Machine, bytes: BitArray) -> Machine {
   }
 }
 
-// Applies one deframed item to the machine. Once the channel is dead
-// further inbound items are dropped rather than acted on.
+/// Applies a single deframed inbound item to the machine.
 fn apply_inbound(machine: Machine, item: framing.Inbound) -> Machine {
   case machine.phase {
     Prepared | Dead(..) -> machine
@@ -2048,8 +1952,7 @@ fn apply_inbound(machine: Machine, item: framing.Inbound) -> Machine {
   }
 }
 
-// Handles one well-formed frame. Returns the next machine;
-// channel-fatal conditions mark it dead via `mark_dead`.
+/// Dispatches handling of a well-formed frame.
 fn handle_frame(machine: Machine, frame: Frame) -> Machine {
   case frame.body {
     framing.Hello(proto:, peer: _, features:, max_concurrency:) ->
@@ -2115,9 +2018,7 @@ fn handle_frame(machine: Machine, frame: Frame) -> Machine {
   }
 }
 
-// The hello is legal exactly once, in exactly one state. A second one —
-// or one in any state past the handshake — is a peer that has lost the
-// protocol, and the channel dies.
+/// Handles hello frame during handshake phase.
 fn handle_hello(
   machine: Machine,
   proto: Int,
@@ -2156,13 +2057,7 @@ fn handle_hello(
   }
 }
 
-// Answers the helper's hello, unlinks the fd-3 policy file (proof it was
-// read), and releases anything blocked on `await_ready`.
-//
-// The move to `Live` at the end is also what retires the handshake
-// deadline: it is a state timeout on `AwaitingHello`, so leaving that
-// state is the cancellation and a fire that raced this transition is
-// dropped by weft's timer book rather than handled.
+/// Completes handshake by sending broker hello and transitioning to Live.
 fn complete_handshake(machine: Machine, features: List(String)) -> Machine {
   // Contract: the broker's hello precedes any other frame it sends. The
   // helper has proven it read the fd-3 policy, so the temp file can be
@@ -2203,6 +2098,7 @@ fn complete_handshake(machine: Machine, features: List(String)) -> Machine {
   }
 }
 
+/// Forwards execution output chunk to subscriber.
 fn handle_exec_out(
   machine: Machine,
   id: Int,
@@ -2225,6 +2121,7 @@ fn handle_exec_out(
   }
 }
 
+/// Handles execution exit frame and validates enforcement report.
 fn handle_exec_exit(machine: Machine, id: Int, result: ExecResult) -> Machine {
   use exec <- settle(machine, id)
 
@@ -2252,6 +2149,7 @@ fn handle_exec_exit(machine: Machine, id: Int, result: ExecResult) -> Machine {
   }
 }
 
+/// Handles heartbeat response frame from helper.
 fn handle_heartbeat_frame(machine: Machine, id: Int) -> Machine {
   case list.key_pop(machine.data.pending_heartbeats, id) {
     Ok(#(reply, pending_heartbeats)) -> {
@@ -2265,6 +2163,7 @@ fn handle_heartbeat_frame(machine: Machine, id: Int) -> Machine {
   }
 }
 
+/// Handles error frame received from helper.
 fn handle_error_frame(
   machine: Machine,
   id: Int,
@@ -2275,13 +2174,13 @@ fn handle_error_frame(
   Failed(failure: RefusedByHelper(code:, message:))
 }
 
-// Settlement removes one runner and cancels only its named grace timer.
-// Unknown or repeated terminal ids find no runner and cannot notify twice.
+/// Settles a completed runner and sends terminal event.
 fn settle(
   machine: Machine,
   id: Int,
   event: fn(RunningExec) -> ExecEvent,
 ) -> Machine {
+  // Find runner to settle.
   case dict.get(machine.data.runners, id) {
     Error(Nil) -> machine
     Ok(exec) -> {
@@ -2311,8 +2210,7 @@ fn fresh_id(data: Data) -> #(Data, Int) {
 
 // --- sending and death --------------------------------------------------
 
-// Encodes and writes one frame; on any write failure the channel is
-// declared dead in the returned machine.
+/// Encodes and writes one frame to the transport.
 fn send_frame(machine: Machine, frame: Frame) -> Machine {
   case framing.encode(frame) {
     // Unencodable frames are broker bugs (ids are minted positive,
@@ -2341,7 +2239,9 @@ fn send_or_die(
   advance(send_frame(machine, frame))
 }
 
+/// Writes bytes to the underlying transport channel.
 fn transport_send(wire_out: Wire, bytes: BitArray) -> Result(Nil, Nil) {
+  // Write bytes according to transport wire variant.
   case wire_out {
     WireUnopened -> Error(Nil)
     WirePort(port:, os_pid: _, cleanup: _) -> ffi_port.port_send(port, bytes)
@@ -2352,15 +2252,15 @@ fn transport_send(wire_out: Wire, bytes: BitArray) -> Result(Nil, Nil) {
   }
 }
 
-// Discards a channel that has already failed, and says what is left of its
-// exit witness, which is nothing: the port is closed, so no status can be
-// selected from it any more.
+/// Closes transport channel on fatal error.
 fn close_transport(wire_out: Wire) -> Retirement {
+  // Close transport wire channel.
   case wire_out {
     WireUnopened -> Nil
     WirePort(port:, os_pid: _, cleanup: _) -> ffi_port.close_port(port)
     WireChannel(send: _, close:) -> close()
   }
+
   LostExit
 }
 
@@ -2386,7 +2286,9 @@ fn close_transport(wire_out: Wire) -> Retirement {
 // The `kill -KILL` goes to a pid that `erl_child_setup` may already have
 // reaped, so a pid reused in that window would be signalled instead. The
 // retained port neither widens nor narrows that window.
+/// Kills transport process while keeping port open for exit status witness.
 fn kill_transport(wire_out: Wire, exposure: Exposure) -> Retirement {
+  // Send SIGKILL to transport process if pid known.
   case wire_out {
     WireUnopened -> LostExit
     WirePort(port: _, os_pid: Some(pid), cleanup: _) if pid > 1 -> {
@@ -2404,15 +2306,19 @@ fn kill_transport(wire_out: Wire, exposure: Exposure) -> Retirement {
   }
 }
 
+/// Runs cleanup callback if not previously executed.
 fn run_cleanup(data: Data) -> Data {
+  // Check if cleanup already performed.
   case data.cleaned {
     True -> data
     False -> {
+      // Clean up transport resources.
       case data.wire_out {
         WireUnopened -> Nil
         WirePort(port: _, os_pid: _, cleanup:) -> cleanup()
         WireChannel(send: _, close: _) -> Nil
       }
+
       Data(..data, cleaned: True)
     }
   }
@@ -2434,7 +2340,9 @@ fn run_cleanup(data: Data) -> Data {
 // which leaves it `PendingExit(AfterKill(..))`, tagged with the jail the
 // phase it died in had, so the kill's exit status can still be selected. A
 // write that failed is the other case, and `mark_gone` takes it.
+/// Marks machine dead and notifies all active runners.
 fn mark_dead(machine: Machine, failure: ExecFailure) -> Machine {
+  // Transition machine to Dead phase.
   case machine.phase {
     Prepared -> Machine(Dead(failure, NoNativeResource), machine.data)
     Dead(..) -> machine
@@ -2465,7 +2373,9 @@ fn mark_dead(machine: Machine, failure: ExecFailure) -> Machine {
 // `real_helper_failed_write_keeps_a_queued_status_test` queues a real exit
 // status behind a write and `real_helper_failed_write_loses_the_proof_test`
 // closes a real helper's port from outside.
+/// Marks machine gone when transport port closed unexpectedly.
 fn mark_gone(machine: Machine, failure: ExecFailure) -> Machine {
+  // Transition to Dead phase awaiting exit witness.
   case machine.phase {
     Prepared -> Machine(Dead(failure, NoNativeResource), machine.data)
     Dead(..) -> machine
@@ -2476,8 +2386,7 @@ fn mark_gone(machine: Machine, failure: ExecFailure) -> Machine {
   }
 }
 
-// Settles everyone waiting, discards the channel in the way `discard`
-// says, and records what that left of the exit witness.
+/// Transitions machine to Dead phase and settles runners.
 fn bury(
   machine: Machine,
   failure: ExecFailure,
@@ -2497,9 +2406,7 @@ fn die(
   advance(mark_dead(machine, failure))
 }
 
-// Physical death empties all accepted runners before subsequent wire events
-// can be selected. Each named grace timer is cancelled by advance, while
-// postponed handshake waiters replay against the new Dead state.
+/// Notifies all active runners and pending heartbeats of helper failure.
 fn notify_death(machine: Machine, failure: ExecFailure) -> Data {
   list.each(dict.values(machine.data.runners), fn(exec) {
     process.send(exec.events, Failed(failure:))
@@ -2708,6 +2615,8 @@ pub type SpawnError {
 pub fn spawn_helper(config: SpawnConfig) -> Result(Helper, SpawnError) {
   use helper <- result.try(prepare_helper(config))
   begin(helper)
+
+  // Await ready handshake settlement.
   case await_ready(helper, waiting: helper.handshake_wait) {
     Ok(_) -> Ok(helper)
     Error(failure) -> {
@@ -2739,8 +2648,7 @@ pub fn prepare_helper(config: SpawnConfig) -> Result(Helper, SpawnError) {
   |> result.map_error(ActorFailed)
 }
 
-// Runs only inside the already-published helper owner. The janitor covers
-// owner death after policy-file creation, including an untrappable kill.
+/// Creates native OS port transport for helper process.
 fn native_transport(config: SpawnConfig) -> Result(Transport, SpawnError) {
   use policy_bytes <- result.try(
     policy.encode(config.base_policy)
@@ -3274,10 +3182,12 @@ pub fn close_pool(
     }
     Error(failure) -> Error(failure)
   }
+
   process.demonitor_process(monitor)
   outcome
 }
 
+/// The pool state machine event handler across all operational phases.
 fn handle_pool(
   phase: PoolPhase,
   state: PoolState,
@@ -3367,8 +3277,7 @@ fn handle_pool(
   }
 }
 
-// Pure counting over the one canonical inventory. Each entry is in exactly
-// one availability, so the five counters partition the entries.
+/// Computes pool census partition counts from active entries.
 fn census_of(state: PoolState) -> PoolCensus {
   let entries = state.entries
   let counted = fn(wanted: fn(Availability) -> Bool) {
@@ -3391,8 +3300,7 @@ fn census_of(state: PoolState) -> PoolCensus {
   )
 }
 
-// One view per entry, oldest spawn first, beside the census over the same
-// entries. The entries list is newest first, so it is reversed once.
+/// Constructs pool custody snapshot describing all helpers.
 fn custody_of(state: PoolState) -> PoolCustody {
   let helpers =
     list.reverse(state.entries)
@@ -3409,8 +3317,7 @@ fn custody_of(state: PoolState) -> PoolCustody {
   PoolCustody(census: census_of(state), helpers:)
 }
 
-// The pool's five availabilities, split into the two questions an observer
-// asks. `Unconfirmed` is the only one that reads the failure it holds.
+/// Maps helper entry availability to lending and custody states.
 fn custody_view(availability: Availability) -> #(Lending, Custody) {
   case availability {
     Available -> #(Lendable, Held)
@@ -3422,6 +3329,7 @@ fn custody_view(availability: Availability) -> #(Lending, Custody) {
   }
 }
 
+/// Constructs selector listening for helper owner down events.
 fn pool_selector(state: PoolState) -> process.Selector(PoolMsg) {
   let base =
     process.new_selector()
@@ -3434,10 +3342,12 @@ fn pool_selector(state: PoolState) -> process.Selector(PoolMsg) {
   })
 }
 
+/// Advances pool state and transitions to finished when all helpers retired.
 fn pool_step(
   phase: PoolPhase,
   state: PoolState,
 ) -> state_machine.Next(PoolPhase, PoolState, PoolMsg) {
+  // Evaluate pool transition based on phase and remaining entries.
   let phase = case phase, state.entries {
     PoolClosing, [] -> PoolFinished(Ok(Nil))
     PoolClosing, [_, ..] ->
@@ -3459,6 +3369,7 @@ fn pool_step(
       }
     PoolLive, _ | PoolFinished(..), _ -> phase
   }
+
   let next =
     state_machine.transition(phase, state)
     |> state_machine.with_selector(pool_selector(state))
@@ -3484,7 +3395,9 @@ fn idle_timer_name(entry: PoolEntry) -> String {
 // for the rest of the session. Borrowed helpers have no idle deadline.
 const helper_idle_ms = 60_000
 
+/// Initiates retirement of an idle helper entry.
 fn retire_entry(entry: PoolEntry, commands: Subject(PoolMsg)) -> PoolEntry {
+  // Dispatch retirement based on entry availability.
   case entry.availability {
     Draining | RetiringActor | Unconfirmed(_) -> entry
     Available | Borrowed -> {
@@ -3500,6 +3413,7 @@ fn retire_entry(entry: PoolEntry, commands: Subject(PoolMsg)) -> PoolEntry {
   }
 }
 
+/// Records retirement outcome for a helper entry.
 fn record_retirement(
   state: PoolState,
   pid: Pid,
@@ -3507,6 +3421,7 @@ fn record_retirement(
 ) -> PoolState {
   let entries =
     list.filter_map(state.entries, fn(entry) {
+      // Update entry status on matching helper pid.
       case entry.helper.pid == pid, outcome {
         False, _ -> Ok(entry)
         True, Ok(Nil) -> {
@@ -3520,8 +3435,7 @@ fn record_retirement(
   PoolState(..state, entries:)
 }
 
-// A native acknowledgement authorizes asking the actor to exit; only the
-// original normal monitor event completes that second retirement boundary.
+/// Records owner process exit for a retiring helper entry.
 fn record_owner_exit(
   state: PoolState,
   pid: Pid,
@@ -3529,6 +3443,7 @@ fn record_owner_exit(
 ) -> PoolState {
   let entries =
     list.filter_map(state.entries, fn(entry) {
+      // Check matching helper entry and exit status.
       case entry.helper.pid == pid, entry.availability, reason {
         False, _, _ -> Ok(entry)
         True, RetiringActor, process.Normal -> {
@@ -3546,9 +3461,7 @@ fn record_owner_exit(
   PoolState(..state, entries:, retired: state.retired + left)
 }
 
-// Returns a registered lease after its execution settles. Releasing a
-// dead, unresponsive or still-running lease retires its physical helper,
-// preserving custody for every sibling execution.
+/// Handles checkin of a returned helper lease.
 fn handle_checkin(
   state: PoolState,
   helper: Helper,
@@ -3590,14 +3503,15 @@ fn handle_checkin(
   }
 }
 
-// One lease return changes physical availability only when no sibling
-// remains. The returned marker arms the new idle interval in handle_checkin.
+/// Updates pool entry when a lease is returned.
 fn returned_lease(
   entry: PoolEntry,
   id: Int,
   returned: Option(PoolEntry),
 ) -> #(Option(PoolEntry), PoolEntry) {
   let borrowed = list.filter(entry.borrowed, fn(lease) { lease != id })
+
+  // Return entry to available if no other leases active.
   case borrowed {
     [] -> {
       let available = PoolEntry(..entry, borrowed:, availability: Available)
@@ -3614,8 +3528,7 @@ fn release_lease(helper: Helper, id: Int) -> Result(Nil, ExecFailure) {
   |> or_unresponsive
 }
 
-// Actor registration precedes publishing a handle. Late replies still leave
-// their lease inventoried, so a caller timeout cannot amplify execution slots.
+/// Acquires a new execution lease on a helper.
 fn acquire_lease(helper: Helper) -> Result(Helper, ExecFailure) {
   call.try_call(
     helper.commands,
@@ -3626,6 +3539,7 @@ fn acquire_lease(helper: Helper) -> Result(Helper, ExecFailure) {
   |> result.map(fn(id) { Helper(..helper, lease: Some(id)) })
 }
 
+/// Selects the next available helper from the pool or spawns a new one.
 fn next_helper(
   state: PoolState,
 ) -> #(PoolState, Result(Helper, CheckoutError)) {
@@ -3634,14 +3548,19 @@ fn next_helper(
       { entry.availability == Available || entry.availability == Borrowed }
       && list.length(entry.borrowed) < entry.quota
     })
+
+  // Checkout from candidate entry or spawn new helper.
   case candidate {
     Ok(entry) ->
+      // Attempt to acquire lease on candidate helper.
       case acquire_lease(entry.helper) {
         Ok(helper) -> {
+          // Record borrowed lease on helper entry.
           let borrowed = case helper.lease {
             Some(id) -> [id, ..entry.borrowed]
             None -> entry.borrowed
           }
+
           let entries =
             list.map(state.entries, fn(candidate) {
               case candidate.helper.pid == entry.helper.pid {
@@ -3698,7 +3617,9 @@ fn lendable_again(entry: PoolEntry) -> Bool {
   }
 }
 
+/// Spawns a new helper process to satisfy checkout request.
 fn spawn_new(state: PoolState) -> #(PoolState, Result(Helper, CheckoutError)) {
+  // Invoke helper spawn factory.
   case state.spawn() {
     Ok(helper) -> {
       let entry =
@@ -3736,21 +3657,29 @@ fn spawn_new(state: PoolState) -> #(PoolState, Result(Helper, CheckoutError)) {
             waiting: ready_probe_ms,
             sending: QueryCapacity,
           )
+
+        // Limit quota by advertised capacity.
         let quota = case capacity {
           Ok(capacity) -> int.min(entry.quota, capacity)
           Error(_) -> entry.quota
         }
+
         let known = PoolEntry(..entry, features:, quota:)
         use leased <- result.try(
           acquire_lease(helper)
           |> result.map_error(fn(failure) { #(known, failure) }),
         )
+
+        // Track borrowed lease id on entry.
         let borrowed = case leased.lease {
           Some(id) -> [id]
           None -> []
         }
+
         Ok(#(PoolEntry(..known, borrowed:), leased))
       }
+
+      // Settle checkout or retire on failure.
       case admitted {
         Ok(#(known, leased)) -> #(
           PoolState(..state, entries: [known, ..list.drop(state.entries, 1)]),

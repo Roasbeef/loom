@@ -435,6 +435,7 @@ pub fn decode(document: JsonValue) -> Result(Status, String) {
 // one that does not decode is left out and the rest of the reply is drawn. A
 // member that is a voter is counted from Ra's own list, which is the cluster as
 // the leader sees it.
+/// Formats or decodes the directory( component.
 fn directory(value: JsonValue) -> Result(Directory, String) {
   use members <- result.try(required_list(value, "members", text))
   use applied_index <- result.map(count_at(value, "applied_index"))
@@ -451,9 +452,12 @@ fn directory(value: JsonValue) -> Result(Directory, String) {
 // One entry of Ra's members as a vote: whether the entry is a voter. A voter
 // is the only entry counted, and an entry that is malformed is skipped like any
 // optional one.
+/// Formats or decodes the voter( component.
 fn voter(value: JsonValue) -> Result(Bool, String) {
   use _node <- result.try(text_at(value, "node"))
   use found <- result.try(field(value, "voter"))
+
+  // Check voting eligibility boolean.
   case found {
     json.Bool(is) -> Ok(is)
     json.Object(_)
@@ -465,6 +469,7 @@ fn voter(value: JsonValue) -> Result(Bool, String) {
   }
 }
 
+/// Formats or decodes the move( component.
 fn move(value: JsonValue) -> Result(Move, String) {
   use session <- result.try(text_at(value, "session_id"))
   use to <- result.try(text_at(value, "to"))
@@ -482,6 +487,7 @@ fn move(value: JsonValue) -> Result(Move, String) {
 // ledger that does not decode is left out and the rest of the reply is drawn.
 // Its own required parts are the head and the standing; a member entry that is
 // malformed is skipped, as an optional list's entries are.
+/// Formats or decodes the ledger( component.
 fn ledger(value: JsonValue) -> Result(Ledger, String) {
   use standing <- result.try(text_at(value, "state"))
   use head <- result.try(field(value, "head"))
@@ -499,6 +505,7 @@ fn ledger(value: JsonValue) -> Result(Ledger, String) {
   )
 }
 
+/// Formats or decodes the ledger_member( component.
 fn ledger_member(value: JsonValue) -> Result(LedgerMember, String) {
   use name <- result.map(text_at(value, "name"))
   LedgerMember(
@@ -521,6 +528,7 @@ fn optional_count(value: JsonValue, key: String) -> Option(Int) {
   json_wire.optional_count_at(value, key)
 }
 
+/// Formats or decodes the node( component.
 fn node(value: JsonValue) -> Result(Node, String) {
   use node <- result.try(text_at(value, "node"))
   use name <- result.try(text_at(value, "name"))
@@ -549,6 +557,7 @@ fn node(value: JsonValue) -> Result(Node, String) {
   )
 }
 
+/// Formats or decodes the orchestrator( component.
 fn orchestrator(value: JsonValue) -> Result(OrchestratorFacts, String) {
   use capacity <- result.try(count_at(value, "capacity"))
   use occupied <- result.try(count_at(value, "occupied"))
@@ -575,6 +584,7 @@ fn placed(value: JsonValue) -> Result(Placed, String) {
   Placed(executor_node:, resident:, saved:)
 }
 
+/// Formats or decodes the executor_facts( component.
 fn executor_facts(value: JsonValue) -> Result(ExecutorFacts, String) {
   use scopes <- result.try(field(value, "scopes"))
   use open <- result.try(count_at(scopes, "open"))
@@ -610,18 +620,23 @@ fn reason(value: JsonValue) -> Result(#(String, String), String) {
   #(node, word)
 }
 
+/// Formats or decodes the edge( component.
 fn edge(value: JsonValue) -> Result(Edge, String) {
   use from <- result.try(text_at(value, "from"))
   use to <- result.try(text_at(value, "to"))
   use kind <- result.map(text_at(value, "kind"))
+
+  // Map optional link connection state.
   let link = case optional_text(value, "link") {
     Some("connected") -> Connected
     Some("none") -> NotConnected
     Some(_) | None -> Unobserved
   }
+
   Edge(from:, to:, kind:, sessions: optional_count(value, "sessions"), link:)
 }
 
+/// Formats or decodes the executor( component.
 fn executor(value: JsonValue) -> Result(Executor, String) {
   use name <- result.try(text_at(value, "name"))
   use node <- result.try(text_at(value, "node"))
@@ -652,8 +667,11 @@ fn pool(value: JsonValue) -> Result(Pool, String) {
   Pool(name:, executors:, eligible:)
 }
 
+/// Formats or decodes the node_state_at( component.
 fn node_state_at(value: JsonValue, key: String) -> Result(NodeState, String) {
   use word <- result.try(text_at(value, key))
+
+  // Map node connection state.
   case word {
     "ok" -> Ok(NodeOk)
     "degraded" -> Ok(NodeDegraded)
@@ -662,6 +680,7 @@ fn node_state_at(value: JsonValue, key: String) -> Result(NodeState, String) {
   }
 }
 
+/// Formats or decodes the placement_state( component.
 fn placement_state(word: String) -> Result(PlacementState, String) {
   case word {
     "ready" -> Ok(PlacementReady)
@@ -691,12 +710,15 @@ fn optional_text(value: JsonValue, key: String) -> Option(String) {
 // A list the reply must have. Its entries must each decode, and it may not
 // outgrow `list_limit`, because the daemon bounds a reply and a client holds it
 // to the bound.
+/// Formats or decodes the required_list( component.
 fn required_list(
   value: JsonValue,
   key: String,
   read: fn(JsonValue) -> Result(a, String),
 ) -> Result(List(a), String) {
   use found <- result.try(field(value, key))
+
+  // Verify array and bounded item length.
   case found {
     json.Array(items) ->
       case list.drop(items, list_limit) == [] {
@@ -710,6 +732,7 @@ fn required_list(
 // A list the reply may leave out. Absent, malformed or oversized reads as none,
 // and so does any entry that does not decode: the optional parts of a reply
 // are drawn when they are well formed and skipped when they are not.
+/// Formats or decodes the optional_list( component.
 fn optional_list(
   value: JsonValue,
   key: String,
@@ -759,6 +782,7 @@ pub fn status_text(status: Status) -> String {
 // A line saying the daemon cut the reply to fit one frame, and how to see the
 // rest. An overview that left things out points at the one-node read, which
 // carries them; a one-node reply that was cut says which lists.
+/// Formats or decodes the cut_text( component.
 fn cut_text(status: Status) -> List(String) {
   case status.omitted, status.more {
     [], [] -> []
@@ -775,6 +799,7 @@ fn cut_text(status: Status) -> List(String) {
 
 // The verdict: who asked, how many nodes answered, when, and the state with each
 // node that is not ok and why.
+/// Formats or decodes the head_text( component.
 fn head_text(status: Status) -> String {
   let answered = list.count(status.nodes, fn(node) { node.state != NodeDown })
   "deployment as seen from "
@@ -794,6 +819,7 @@ fn head_text(status: Status) -> String {
 
 // The time of day of a Unix millisecond reading in UTC. The terminal has no
 // time zone to draw it in, and a time with no zone would be read as local.
+/// Formats or decodes the clock_text( component.
 fn clock_text(ms: Int) -> String {
   let seconds = ms / 1000
   let day = seconds % 86_400
@@ -809,6 +835,7 @@ fn two(number: Int) -> String {
   string.pad_start(int.to_string(number), to: 2, with: "0")
 }
 
+/// Formats or decodes the nodes_text( component.
 fn nodes_text(status: Status) -> String {
   table(
     ["NODE", "ROLE", "STATE", "BUILD", "SCOPES", "NOTE"],
@@ -836,6 +863,7 @@ fn build_text(node: Node) -> String {
 
 // Scopes held against the limit: the open ones and the ones that block a reopen,
 // which are the ones the limit counts.
+/// Formats or decodes the scopes_text( component.
 fn scopes_text(node: Node) -> String {
   case node.executor {
     Some(facts) ->
@@ -851,6 +879,7 @@ fn held(facts: ExecutorFacts) -> Int {
 // What is worth saying about a node beside its row: why it is down, what an
 // orchestrator reports of its slots and moves and whether it leads the
 // directory, and then the sentence for each reason it is degraded.
+/// Formats or decodes the note_text( component.
 fn note_text(status: Status, node: Node) -> String {
   let facts =
     list.flatten([
@@ -869,10 +898,13 @@ fn note_text(status: Status, node: Node) -> String {
         False -> []
       },
     ])
+
+  // Note reasons for degraded state.
   let degraded = case node.state {
     NodeDegraded -> list.map(node.reasons, fn(word) { reason_note(node, word) })
     NodeOk | NodeDown -> []
   }
+
   string.join(
     list.filter(
       [string.join(facts, ", "), string.join(degraded, "; ")],
@@ -882,6 +914,7 @@ fn note_text(status: Status, node: Node) -> String {
   )
 }
 
+/// Formats or decodes the orchestrator_words( component.
 fn orchestrator_words(found: OrchestratorFacts) -> List(String) {
   list.flatten([
     [
@@ -911,6 +944,7 @@ fn directory_leader(status: Status, node: Node) -> Bool {
 
 // A node's reason as a phrase for its row. The session of a scope that needs a
 // release is named when the reply carries the node's long lists.
+/// Formats or decodes the reason_note( component.
 fn reason_note(node: Node, word: String) -> String {
   case word {
     "unclean_scope" -> unclean_note(node)
@@ -925,6 +959,7 @@ fn reason_note(node: Node, word: String) -> String {
   }
 }
 
+/// Formats or decodes the unclean_note( component.
 fn unclean_note(node: Node) -> String {
   case node.executor {
     Some(ExecutorFacts(unclean: [_, ..] as scopes, ..)) ->
@@ -941,6 +976,7 @@ fn unclean_note(node: Node) -> String {
 }
 
 // "1 scope" or "3 scopes", followed by the words that say what is wrong.
+/// Formats or decodes the scopes_phrase( component.
 fn scopes_phrase(count: Int, words: String) -> String {
   case count {
     1 -> "1 scope" <> words
@@ -954,6 +990,7 @@ fn sessions_short(session: String) -> String {
 }
 
 // "ok", or the state with each node that is not ok and why.
+/// Formats or decodes the verdict( component.
 fn verdict(status: Status) -> String {
   case status.reasons {
     [] -> node_state_word(status.state)
@@ -970,9 +1007,12 @@ fn verdict(status: Status) -> String {
 
 // One reason as the verdict words it. A node that is down is "down" and its
 // row says why, and a degraded node's reason is a sentence about it.
+/// Formats or decodes the reason_sentence( component.
 fn reason_sentence(status: Status, found: #(String, String)) -> String {
   let name = short(named(status.nodes, found.0))
   let node = list.find(status.nodes, fn(each) { each.node == found.0 })
+
+  // Format reason sentence based on node state.
   case node {
     Ok(Node(state: NodeDown, ..)) -> name <> " down"
     Ok(Node(executor: Some(facts), ..)) if found.1 == "unclean_scope" ->
@@ -1012,6 +1052,7 @@ fn named(nodes: List(Node), node: String) -> String {
 // observed is drawn `==` when it is up and `..` when it is not, and a relation it
 // cannot observe is drawn `--`, so a reader never takes a relation for a
 // connection.
+/// Formats or decodes the links( component.
 fn links(status: Status, edges: List(Edge)) -> String {
   let asker = short(named(status.nodes, status.self))
   let rows =
@@ -1057,12 +1098,15 @@ fn widest(cells: List(String)) -> Int {
 
 // The edges grouped by the two nodes they join, in either direction, in the
 // order each pair first appears.
+/// Formats or decodes the pairs( component.
 fn pairs(edges: List(Edge)) -> List(#(String, String, List(Edge))) {
   list.fold(edges, [], fn(found, each) {
     let same = fn(pair: #(String, String, List(Edge))) {
       { pair.0 == each.from && pair.1 == each.to }
       || { pair.0 == each.to && pair.1 == each.from }
     }
+
+    // Test if reverse orientation edge is already present.
     case list.any(found, same) {
       True ->
         list.map(found, fn(pair) {
@@ -1078,8 +1122,11 @@ fn pairs(edges: List(Edge)) -> List(#(String, String, List(Edge))) {
 
 // The mark for a pair: connected if the asking daemon is connected, not
 // connected if it tried and is not, and not observable otherwise.
+/// Formats or decodes the link_mark( component.
 fn link_mark(related: List(Edge)) -> String {
   let links = list.map(related, fn(each) { each.link })
+
+  // Determine link connectivity symbol.
   case list.contains(links, Connected), list.contains(links, NotConnected) {
     True, _ -> "=="
     False, True -> ".."
@@ -1096,10 +1143,13 @@ fn relation_words(edge: Edge) -> String {
 
 // The directory as the asking daemon sees it: how many members and voters, who
 // leads, and whether its own copy is current.
+/// Formats or decodes the directory_lines( component.
 fn directory_lines(status: Status) -> List(String) {
+  // Format cluster directory lines if directory present.
   case status.directory {
     None -> []
     Some(found) -> {
+      // Check cluster view availability.
       let cluster = case found.unavailable {
         Some(why) -> "no cluster view (" <> clean(why) <> ")"
         None ->
@@ -1113,6 +1163,7 @@ fn directory_lines(status: Status) -> List(String) {
             None -> "no leader"
           }
       }
+
       [
         "DIRECTORY  "
         <> int.to_string(list.length(found.members))
@@ -1132,7 +1183,9 @@ fn directory_lines(status: Status) -> List(String) {
 
 // The moves in flight on the asking daemon. One is drawn on the heading's line
 // and several under it, and a list longer than `moves_drawn` counts the rest.
+/// Formats or decodes the move_lines( component.
 fn move_lines(status: Status) -> List(String) {
+  // Format active move operations if present.
   case status.moves {
     [] -> []
     [only] -> ["MOVES      1 in flight: " <> move_text(status, only)]
@@ -1153,6 +1206,7 @@ fn move_lines(status: Status) -> List(String) {
 
 // One move: the session, where it goes from and to, how long it has waited and
 // why. The session is cut to eight characters as the scopes' are.
+/// Formats or decodes the move_text( component.
 fn move_text(status: Status, move: Move) -> String {
   sessions_short(move.session)
   <> " "
@@ -1174,6 +1228,7 @@ fn move_text(status: Status, move: Move) -> String {
 // What a reply about one node carries beyond the table: each node's build and
 // uptime, its scopes and ledger, its workspaces, each scope that needs a release
 // with the command that frees it, an orchestrator's placements and its moves.
+/// Formats or decodes the detail_sections( component.
 fn detail_sections(status: Status) -> List(String) {
   list.filter_map(status.nodes, fn(node) {
     case detail_lines(status, node) {
@@ -1187,6 +1242,7 @@ fn detail_sections(status: Status) -> List(String) {
   })
 }
 
+/// Formats or decodes the detail_lines( component.
 fn detail_lines(status: Status, node: Node) -> List(String) {
   list.flatten([
     case node.build_version, node.build_commit {
@@ -1213,6 +1269,7 @@ fn detail_lines(status: Status, node: Node) -> List(String) {
   ])
 }
 
+/// Formats or decodes the executor_lines( component.
 fn executor_lines(facts: ExecutorFacts) -> List(String) {
   list.flatten([
     [
@@ -1270,6 +1327,7 @@ fn executor_lines(facts: ExecutorFacts) -> List(String) {
   ])
 }
 
+/// Formats or decodes the unclean_words( component.
 fn unclean_words(scope: Unclean) -> String {
   case scope.state, scope.count {
     "unknown_cleanup", Some(1) -> "1 child not proven gone"
@@ -1280,6 +1338,7 @@ fn unclean_words(scope: Unclean) -> String {
   }
 }
 
+/// Formats or decodes the orchestrator_lines( component.
 fn orchestrator_lines(
   status: Status,
   facts: OrchestratorFacts,
@@ -1323,6 +1382,7 @@ fn orchestrator_lines(
 }
 
 // A byte count in the largest unit that keeps it above one.
+/// Formats or decodes the bytes_text( component.
 fn bytes_text(bytes: Int) -> String {
   case bytes {
     n if n >= 1_073_741_824 -> int.to_string(n / 1_073_741_824) <> " GiB"
@@ -1338,6 +1398,7 @@ fn bytes_text(bytes: Int) -> String {
 // and not as behind, because the daemon only knows what it was told. The age is
 // the daemon's own clock, so two readings of one deployment never compare ages
 // from different machines.
+/// Formats or decodes the ledger_text( component.
 fn ledger_text(found: Ledger) -> String {
   let holding =
     list.count(found.members, fn(member) {
@@ -1387,10 +1448,13 @@ fn ledger_text(found: Ledger) -> String {
       <> clean(refused.step),
     ]
   }
+
   string.join(list.flatten([[head], standing, rows, refusal]), "\n")
 }
 
+/// Formats or decodes the member_row( component.
 fn member_row(found: Ledger, member: LedgerMember) -> List(String) {
+  // Format reported head and commit position.
   let #(holds, behind) = case member.reported {
     None -> #("-", "not reported")
     Some(seq) if seq >= found.head_seq -> #(
@@ -1402,14 +1466,18 @@ fn member_row(found: Ledger, member: LedgerMember) -> List(String) {
       "behind by " <> int.to_string(found.head_seq - seq),
     )
   }
+
+  // Format member observation age.
   let age = case member.age_ms {
     Some(ms) -> ", " <> age_text(ms) <> " ago"
     None -> ""
   }
+
   [short(member.name), holds, behind <> age]
 }
 
 // An age in the unit a reader reads at a glance.
+/// Formats or decodes the age_text( component.
 fn age_text(ms: Int) -> String {
   case ms {
     ms if ms < 60_000 -> int.to_string(ms / 1000) <> "s"
@@ -1428,6 +1496,7 @@ fn age_text(ms: Int) -> String {
 /// // deployment_view.executors_text(status)
 /// ```
 pub fn executors_text(status: Status) -> String {
+  // Render configured executors overview.
   case status.executors {
     [] -> "no executors are configured"
     executors -> {
@@ -1462,6 +1531,8 @@ pub fn executors_text(status: Status) -> String {
             ]
           }),
         )
+
+      // Format pool definitions if any.
       case status.pools {
         [] -> rows
         pools ->
@@ -1488,6 +1559,7 @@ pub fn executors_text(status: Status) -> String {
 // Why the executor is not simply ready: the node's reason when it is down, how
 // many scopes it has free when it is full or degraded, then the contradiction
 // between its census and its declaration, when it has one.
+/// Formats or decodes the note( component.
 fn note(status: Status, executor: Executor) -> String {
   let down =
     list.find(status.nodes, fn(node) {
@@ -1495,6 +1567,8 @@ fn note(status: Status, executor: Executor) -> String {
     })
     |> result.map(fn(node) { option.unwrap(node.reason, "down") })
     |> option.from_result
+
+  // Format scope capacity standing.
   let free = case executor.state, executor.free_scopes {
     PlacementFull, Some(count) | PlacementDegraded, Some(count) ->
       Some(int.to_string(count) <> " scopes free")
@@ -1504,12 +1578,14 @@ fn note(status: Status, executor: Executor) -> String {
     | PlacementDown, _
     -> None
   }
+
   let words =
     [down, free, executor.contradiction]
     |> list.filter_map(option.to_result(_, Nil))
   string.join(list.map(words, clean), "; ")
 }
 
+/// Formats or decodes the pools_of( component.
 fn pools_of(pools: List(Pool), executor: String) -> List(String) {
   list.filter_map(pools, fn(pool) {
     case list.contains(pool.executors, executor) {
@@ -1523,6 +1599,7 @@ fn dash(word: Option(String)) -> String {
   option.map(word, clean) |> option.unwrap("-")
 }
 
+/// Formats or decodes the node_state_word( component.
 fn node_state_word(state: NodeState) -> String {
   case state {
     NodeOk -> "ok"
@@ -1531,6 +1608,7 @@ fn node_state_word(state: NodeState) -> String {
   }
 }
 
+/// Formats or decodes the placement_word( component.
 fn placement_word(state: PlacementState) -> String {
   case state {
     PlacementReady -> "ready"
@@ -1563,6 +1641,7 @@ fn table(header: List(String), rows: List(List(String))) -> String {
 
 // Rows with no header, padded the same way. A row shorter than the first has
 // its missing cells drawn empty.
+/// Formats or decodes the aligned( component.
 fn aligned(rows: List(List(String))) -> String {
   let first = list.first(rows) |> result.unwrap([])
   let widths =
@@ -1614,20 +1693,26 @@ pub fn candidates(
 // One orchestrator of the reply as an offer, or none for the asking daemon: a
 // session does not move to the orchestrator it is on. The daemon leaves itself
 // out of the member already, so this is the client holding the daemon to it.
+/// Formats or decodes the offer( component.
 fn offer(
   value: JsonValue,
   self: String,
 ) -> Result(Option(move_candidates.Offer), String) {
   use node <- result.try(text_at(value, "node"))
+
+  // Skip self orchestrator offer.
   case node == self {
     True -> Ok(None)
     False -> offer_of(value) |> result.map(Some)
   }
 }
 
+/// Formats or decodes the offer_of( component.
 fn offer_of(value: JsonValue) -> Result(move_candidates.Offer, String) {
   use name <- result.try(text_at(value, "name"))
   use state <- result.try(text_at(value, "state"))
+
+  // Decode placement offer facts based on state.
   let facts = case
     state,
     optional_text(value, "imports"),
@@ -1644,6 +1729,7 @@ fn offer_of(value: JsonValue) -> Result(move_candidates.Offer, String) {
         serves: optional_list(value, "serves", text),
       )
   }
+
   Ok(move_candidates.Offer(name, facts))
 }
 
@@ -1663,9 +1749,11 @@ pub fn candidates_text(
   session: String,
   candidates: List(move_candidates.Candidate),
 ) -> String {
+  // Format candidate destination orchestrators.
   case candidates {
     [] -> "no orchestrator is configured to move " <> session <> " to"
     _ -> {
+      // Determine lead candidate summary.
       let lead = case move_candidates.eligible(candidates) {
         [] -> move_candidates.none_words()
         [first, ..] ->
@@ -1674,9 +1762,12 @@ pub fn candidates_text(
           <> " --to "
           <> text_hygiene.single_line(first)
       }
+
       let lines =
         list.map(candidates, fn(candidate) {
           let name = text_hygiene.single_line(candidate.name)
+
+          // Format individual candidate eligibility.
           case candidate.eligibility {
             move_candidates.Eligible -> "  " <> name <> "  can take it"
             move_candidates.Ineligible(reason:) ->

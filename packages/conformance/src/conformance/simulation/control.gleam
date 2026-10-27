@@ -176,6 +176,7 @@ pub fn start() -> Control {
   Control(subject: started.data, pid: started.pid)
 }
 
+/// Dispatches incoming simulation control messages to update actor state.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     Bump(key:, reply:) -> {
@@ -207,6 +208,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         }
       }
     CommitStarted(committer:, reply:) -> {
+      // Update accounting fences for the in-flight commit.
       let next = case state.accounting {
         Poisoned -> state
         Fenced(in_flight:) ->
@@ -219,11 +221,14 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             )),
           )
       }
+
       process.send(reply, Nil)
       actor.continue(next)
     }
     CommitSucceeded(committer:, reply:) -> {
       let commits = state.commits + 1
+
+      // Release the committer's fence or poison accounting on underflow.
       let next = case release_fence(state.accounting, committer) {
         Ok(accounting) ->
           State(
@@ -237,14 +242,17 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           )
         Error(Nil) -> poison_accounting(state)
       }
+
       process.send(reply, commits)
       actor.continue(next)
     }
     CommitFailed(committer:, reply:) -> {
+      // Release the committer's fence or poison accounting on underflow.
       let next = case release_fence(state.accounting, committer) {
         Ok(accounting) -> State(..state, accounting:)
         Error(Nil) -> poison_accounting(state)
       }
+
       process.send(reply, Nil)
       actor.continue(next)
     }
@@ -401,8 +409,7 @@ fn fences_held(in_flight: Dict(Pid, Int), committer: Pid) -> Int {
   }
 }
 
-// A committer closes only a fence it opened itself. A process with no open
-// fence is an underflow, which the caller turns into poisoned accounting.
+/// Closes a committer's open accounting fence, returning Error on underflow.
 fn release_fence(
   accounting: Accounting,
   committer: Pid,
@@ -428,6 +435,7 @@ fn seam_for(state: State, committer: Pid) -> Option(Pid) {
   }
 }
 
+/// Returns whether all in-flight committers have exited.
 fn accounting_quiet(accounting: Accounting) -> Bool {
   case accounting {
     Poisoned -> False
@@ -445,6 +453,7 @@ fn seam_closed(seam: Option(Pid)) -> Bool {
   }
 }
 
+/// Transitions accounting into the Poisoned state.
 fn poison_accounting(state: State) -> State {
   case state.accounting {
     Poisoned -> state
@@ -733,6 +742,7 @@ pub fn attempt(
     |> weft.deadline(within_ms)
     |> weft.start
 
+  // Match on the outcomes returned by weft.
   let outcome = case outcomes {
     [weft.Completed(value:, ..)] -> Answered(value)
 
@@ -775,14 +785,12 @@ pub fn attempt(
     // whole simulation.
     [] | [_, _, ..] -> Raised
   }
+
   record_attempt(ctl, at, outcome)
   outcome
 }
 
-// An answered attempt is the ordinary case and says nothing worth
-// recording. The other two are what a reader of a failing run needs, and
-// they are labelled by call site so the record names *which* admission
-// went unobserved rather than merely that one did.
+/// Records an attempt's outcome with the simulation control actor.
 fn record_attempt(ctl: Control, at: String, outcome: Attempted(value)) -> Nil {
   case outcome {
     Answered(..) -> Nil

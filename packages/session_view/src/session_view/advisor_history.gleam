@@ -114,7 +114,9 @@ pub fn visible(board: Board, strand: String) -> Board {
   }
 }
 
+/// Extracts assistant text blocks with advisor annotations.
 fn text_blocks(value: entry.Entry) -> List(Item) {
+  // Only assistant messages yield displayed transcript items.
   case value {
     entry.MessageEntry(
       id:,
@@ -142,6 +144,7 @@ fn text_blocks(value: entry.Entry) -> List(Item) {
 
 // A tool call records the requested verdict. The host may reject, drop or
 // downgrade it, and that later result cannot be inferred from this entry.
+/// Computes the requested advisor annotation from assistant tool calls.
 fn annotation(content: List(message.AssistantBlock)) -> Annotation {
   let requests =
     list.filter_map(content, fn(block) {
@@ -153,17 +156,23 @@ fn annotation(content: List(message.AssistantBlock)) -> Annotation {
         | message.AssistantToolCall(..) -> Error(Nil)
       }
     })
+
+  // Disambiguate when exactly one advise request is present.
   case requests {
     [arguments] -> request(arguments)
     [] | [_, _, ..] -> AdvisorUpdate
   }
 }
 
+/// Decodes the advise tool call argument shape into an Annotation.
 fn request(arguments: json.JsonValue) -> Annotation {
+  // Examine the argument payload object.
   case arguments {
     json.Object(fields) -> {
       let verdicts = list.filter(fields, fn(pair) { pair.0 == "verdict" })
       let texts = list.filter(fields, fn(pair) { pair.0 == "text" })
+
+      // Match the verdict and optional non-empty explanation text.
       case verdicts, texts {
         [#(_, json.String("quiet"))], []
         | [#(_, json.String("quiet"))], [#(_, json.String(""))]

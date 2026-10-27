@@ -84,11 +84,14 @@ pub fn supervised(
 /// `seam(name).command(access.Owner, principal, via, "core_status", args)` is native-only.
 pub fn seam(name: registry.Address(Message)) -> evolution.Seam {
   evolution.Seam(command: fn(authority, principal, _via, action, args) {
+    // Decide how to handle use _ <- result.try( authority {.
     use _ <- result.try(case authority {
       access.Owner -> Ok(Nil)
       access.Participant(_) ->
         Error("Forbidden: reviewed harness upgrades require the native owner")
     })
+
+    // Decide how to handle action {.
     case action {
       "core_status" -> {
         use request_id <- result.try(status_args(args))
@@ -103,6 +106,7 @@ pub fn seam(name: registry.Address(Message)) -> evolution.Seam {
   })
 }
 
+/// Establishes ask for the caller, keeping its validation and result policy at this boundary.
 fn ask(
   name: registry.Address(Message),
   request: fn(Subject(answer)) -> Message,
@@ -129,7 +133,9 @@ fn ask(
   result.unwrap(answer, Error("native harness control did not answer"))
 }
 
+/// Establishes handle for the caller, keeping its validation and result policy at this boundary.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  // Decide how to handle message {.
   case message {
     Submit(request, principal, reply) ->
       submit(state, request, principal, reply)
@@ -150,14 +156,17 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
+/// Establishes submit for the caller, keeping its validation and result policy at this boundary.
 fn submit(
   state: State,
   request: controller.Request,
   principal: String,
   reply: Subject(Result(json.JsonValue, String)),
 ) -> actor.Next(State, Message) {
+  // Decide how to handle dict.get(state.entries, request.request_id) {.
   case dict.get(state.entries, request.request_id) {
     Ok(entry) -> {
+      // Decide how to handle let answer =.
       let answer = case
         entry.request == request && entry.principal == principal
       {
@@ -167,6 +176,7 @@ fn submit(
             "Conflict: request identity was already used for another payload or principal",
           )
       }
+
       process.send(reply, answer)
       actor.continue(state)
     }
@@ -174,18 +184,22 @@ fn submit(
   }
 }
 
+/// Establishes admit for the caller, keeping its validation and result policy at this boundary.
 fn admit(
   state: State,
   request: controller.Request,
   principal: String,
   reply: Subject(Result(json.JsonValue, String)),
 ) -> actor.Next(State, Message) {
+  // Decide how to handle let admitted =  state.active, dict.size(state.entries) < 64 {.
   let admitted = case state.active, dict.size(state.entries) < 64 {
     None, True -> Ok(Nil)
     Some(_), _ -> Error("Busy: another reviewed harness operation is active")
     None, False ->
       Error("native harness receipt capacity is full for this session")
   }
+
+  // Decide how to handle admitted {.
   case admitted {
     Error(reason) -> {
       process.send(reply, Error(reason))
@@ -220,6 +234,7 @@ fn admit(
   }
 }
 
+/// Establishes record outcome for the caller, keeping its validation and result policy at this boundary.
 fn record_outcome(
   state: State,
   outcome: weft.Outcome(controller.Receipt, String),
@@ -235,6 +250,7 @@ fn record_outcome(
   }
 }
 
+/// Establishes record failed for the caller, keeping its validation and result policy at this boundary.
 fn record_failed(state: State, reason: String) -> State {
   record(
     state,
@@ -245,6 +261,7 @@ fn record_failed(state: State, reason: String) -> State {
   )
 }
 
+/// Establishes record for the caller, keeping its validation and result policy at this boundary.
 fn record(state: State, receipt: json.JsonValue) -> State {
   case state.active {
     None -> state
@@ -264,10 +281,12 @@ fn record(state: State, receipt: json.JsonValue) -> State {
   }
 }
 
+/// Establishes status for the caller, keeping its validation and result policy at this boundary.
 fn status(
   state: State,
   request_id: Option(String),
 ) -> Result(json.JsonValue, String) {
+  // Decide how to handle request_id {.
   case request_id {
     Some(request_id) ->
       dict.get(state.entries, request_id)
@@ -298,6 +317,7 @@ fn status(
   }
 }
 
+/// Establishes receipt json for the caller, keeping its validation and result policy at this boundary.
 fn receipt_json(receipt: controller.Receipt) -> json.JsonValue {
   json.Object([
     #("request_id", json.String(receipt.request_id)),
@@ -316,6 +336,7 @@ fn observation_json(observed: abi.Observation) -> json.JsonValue {
   json.Object(observation_fields(observed))
 }
 
+/// Establishes observation fields for the caller, keeping its validation and result policy at this boundary.
 fn observation_fields(
   observed: abi.Observation,
 ) -> List(#(String, json.JsonValue)) {
@@ -331,6 +352,7 @@ fn observation_fields(
   ]
 }
 
+/// Establishes parse for the caller, keeping its validation and result policy at this boundary.
 fn parse(args: json.JsonValue) -> Result(controller.Request, String) {
   use fields <- result.try(object(args))
   use <- bool.guard(
@@ -387,8 +409,11 @@ fn parse(args: json.JsonValue) -> Result(controller.Request, String) {
   ))
 }
 
+/// Establishes status args for the caller, keeping its validation and result policy at this boundary.
 fn status_args(args) {
   use fields <- result.try(object(args))
+
+  // Decide how to handle fields {.
   case fields {
     [] -> Ok(None)
     [#("request_id", json.String(value))] -> Ok(Some(value))
@@ -408,16 +433,22 @@ fn field(fields, key) {
   |> result.map_error(fn(_) { "native harness arguments lack " <> key })
 }
 
+/// Establishes text for the caller, keeping its validation and result policy at this boundary.
 fn text(fields, key) {
   use value <- result.try(field(fields, key))
+
+  // Decide how to handle value {.
   case value {
     json.String(value) -> Ok(value)
     _ -> Error("native harness argument must be text: " <> key)
   }
 }
 
+/// Establishes number for the caller, keeping its validation and result policy at this boundary.
 fn number(fields, key) {
   use value <- result.try(field(fields, key))
+
+  // Decide how to handle value {.
   case value {
     json.Int(value) -> Ok(value)
     _ -> Error("native harness argument must be an integer: " <> key)

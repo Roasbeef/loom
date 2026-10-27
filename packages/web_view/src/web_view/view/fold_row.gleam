@@ -91,10 +91,10 @@ pub fn step(
   )
 }
 
-// `Running · 1m 12s` for a call still running that has a start time and whose
-// verb does not already say it is running, `· 1m 12s` after a present-tense
-// verb (`Running make · 1m 12s`), and nothing for any other call. The words
-// are fixed, and the element's only input is the start time, a number.
+/// `Running · 1m 12s` for a call still running that has a start time and whose
+/// verb does not already say it is running, `· 1m 12s` after a present-tense
+/// verb (`Running make · 1m 12s`), and nothing for any other call. The words
+/// are fixed, and the element's only input is the start time, a number.
 fn running_time(
   standing: turns.Standing,
   words: Words,
@@ -330,8 +330,8 @@ pub fn step_body(
   }
 }
 
-// A changed failure rebuilds its body in full. Keeping the draw callbacks
-// inside this leaf avoids repeating joins and Unicode trims on other updates.
+/// A changed failure rebuilds its body in full. Keeping the draw callbacks
+/// inside this leaf avoids repeating joins and Unicode trims on other updates.
 fn failed_body(
   words: Words,
   rows: List(Line),
@@ -347,6 +347,8 @@ fn failed_body(
     |> list.map(refused_text)
     |> string.join("\n")
     |> string.trim
+
+  // Dispatch on failed_body state.
   case engine {
     "" -> element.fragment(list.map(rows, draw))
     _ ->
@@ -357,10 +359,10 @@ fn failed_body(
   }
 }
 
-// What the engine said when it refused a call. A failed call's row opens with
-// the call's own summary (`fs_edit`), which the step's line already says, and
-// the refusal follows on the lines after it; a result row is the refusal
-// whole.
+/// What the engine said when it refused a call. A failed call's row opens with
+/// the call's own summary (`fs_edit`), which the step's line already says, and
+/// the refusal follows on the lines after it; a result row is the refusal
+/// whole.
 fn refused_text(row: Line) -> String {
   case row.speaker == transcript_line.ToolFailure {
     False -> row.text
@@ -391,11 +393,13 @@ pub fn failure(sentence: String, engine: String) -> Element(message) {
   ])
 }
 
-// Text with its backtick pairs as code spans. The pieces between backticks
-// alternate text and code, so a text with an even number of pieces has an
-// unmatched backtick and is kept whole.
+/// Text with its backtick pairs as code spans. The pieces between backticks
+/// alternate text and code, so a text with an even number of pieces has an
+/// unmatched backtick and is kept whole.
 fn ticked(text: String) -> List(Element(message)) {
   let pieces = string.split(text, "`")
+
+  // Dispatch on ticked state.
   case list.length(pieces) % 2 {
     0 -> [html.text(text)]
     _ ->
@@ -409,16 +413,21 @@ fn ticked(text: String) -> List(Element(message)) {
   }
 }
 
-// A row's line, and its body behind one chevron when it has one. The element
-// is drawn only when there is a body, so the chevron means more to read.
+/// A row's line, and its body behind one chevron when it has one. The element
+/// is drawn only when there is a body, so the chevron means more to read.
 fn openable(
   attributes: List(attribute.Attribute(message)),
   head: List(Element(message)),
   body: List(Element(message)),
 ) -> Element(message) {
-  let line = html.span([attribute.class("row-head")], head)
+  // A flat row owns its header span. An expandable row uses the slotted
+  // header below and needs no second copy of that element.
   case body {
-    [] -> html.div([attribute.class("flat"), ..attributes], [line])
+    [] ->
+      html.div([attribute.class("flat"), ..attributes], [
+        html.span([attribute.class("row-head")], head),
+      ])
+
     [_, ..] ->
       element.element("loom-expand", [attribute.class("expand"), ..attributes], [
         html.span(
@@ -433,8 +442,8 @@ fn openable(
   }
 }
 
-// The line's words as spans: the verb, what it acted on in the face its kind
-// calls for, and the lines an edit changed.
+/// The line's words as spans: the verb, what it acted on in the face its kind
+/// calls for, and the lines an edit changed.
 fn spoken(words: Words) -> List(Element(message)) {
   [
     [html.span([attribute.class("verb")], [html.text(words.verb)])],
@@ -469,6 +478,7 @@ fn spoken(words: Words) -> List(Element(message)) {
   |> list.flatten
 }
 
+/// Standing class helper.
 fn standing_class(standing: turns.Standing) -> attribute.Attribute(message) {
   case standing {
     turns.Pending -> attribute.class("pending")
@@ -477,6 +487,7 @@ fn standing_class(standing: turns.Standing) -> attribute.Attribute(message) {
   }
 }
 
+/// Glyph helper.
 fn glyph(standing: turns.Standing) -> String {
   case standing {
     turns.Pending -> "●"
@@ -485,8 +496,8 @@ fn glyph(standing: turns.Standing) -> String {
   }
 }
 
-// The word for how a call stands, kept in the row for assistive technology
-// after the glyph that shows it.
+/// The word for how a call stands, kept in the row for assistive technology
+/// after the glyph that shows it.
 fn state(standing: turns.Standing) -> String {
   case standing {
     turns.Pending -> " running"

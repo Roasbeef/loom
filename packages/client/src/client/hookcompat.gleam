@@ -286,6 +286,8 @@ pub fn classify_matcher(raw: String) -> Matcher {
 // `,`, `|`. Any other character sends the whole string to the regex
 // path — the contract's table is a property of the whole value, not of
 // the separators.
+
+/// Checks that an exact event matcher contains only characters allowed by the hook configuration grammar.
 fn all_exact_chars(raw: String) -> Bool {
   raw
   |> string.to_graphemes
@@ -301,6 +303,8 @@ fn all_exact_chars(raw: String) -> Bool {
 // whitespace the contract tolerates. Empty alternatives are dropped
 // rather than kept: the empty string would match everything and is
 // never what a separator meant.
+
+/// Splits the compact exact-matcher syntax into normalized event-name alternatives.
 fn split_exact(raw: String) -> List(String) {
   raw
   |> string.replace(" ", ",")
@@ -444,6 +448,7 @@ pub type Handler {
 /// assert describes_handler(lint_command) == "command hook: lint.sh"
 /// ```
 pub fn describes_handler(handler: Handler) -> String {
+  // Match the handler identifying fields against the supported compatibility forms.
   let head = case handler.kind {
     Command -> "command hook: "
     Http -> "http hook: "
@@ -458,6 +463,8 @@ pub fn describes_handler(handler: Handler) -> String {
 // The part of the summary that identifies *which* handler this is, by
 // kind. Every kind has exactly one identifying field the parsers
 // require, so the case is total over what a parsed handler can carry.
+
+/// Builds the stable address used to identify one configured hook handler.
 fn handler_address(handler: Handler) -> String {
   case
     handler.command,
@@ -578,6 +585,8 @@ pub fn parse_claude_settings(
     |> result.map_error(describe_json_error),
   )
   use fields <- result.try(object_fields(value, "the settings file"))
+
+  // Dispatch the settings input according to its recognized JSON shape.
   case list.key_find(fields, "hooks") {
     Ok(nested) -> hooks_object(nested, source)
     Error(Nil) -> Ok(Config(entries: [], source:))
@@ -586,6 +595,8 @@ pub fn parse_claude_settings(
 
 // The hooks object itself, whichever document carried it: event keys
 // to matcher-group arrays, in the order declared.
+
+/// Decodes the JSON hooks object by validating each event and its groups.
 fn hooks_object(value: JsonValue, source: Source) -> Result(Config, String) {
   use event_fields <- result.try(object_fields(value, "the hooks object"))
   use entries <- result.try(
@@ -598,11 +609,15 @@ fn hooks_object(value: JsonValue, source: Source) -> Result(Config, String) {
 
 // Decodes one `event name: [groups]` pair, naming the event in every
 // refusal it produces.
+
+/// Decodes one JSON event entry and parses its handler groups.
 fn parse_event(
   field: #(String, JsonValue),
 ) -> Result(#(Event, List(Group)), String) {
   let #(name, value) = field
   use event <- result.try(decode_event(name))
+
+  // Distinguish a single group from a list of groups in the JSON event entry.
   use groups <- result.try(case value {
     json.Array(items) ->
       items
@@ -610,11 +625,14 @@ fn parse_event(
       |> result.all
     _ -> Error("the " <> name <> " hooks must be an array of matcher groups")
   })
+
   Ok(#(event, groups))
 }
 
 // Decodes one matcher group from the JSON shape, naming the event and
 // the group's matcher in every refusal.
+
+/// Parses one JSON handler group, including its matcher and handler list.
 fn parse_group(
   event: Event,
   at: Int,
@@ -627,14 +645,20 @@ fn parse_group(
   // 3" costs the operator a count; one naming the matcher reads
   // itself.
   use raw_matcher <- result.try(optional_string(group_fields, place, "matcher"))
+
+  // Select the supported JSON representation for a hook group.
   let place = case raw_matcher {
     Some(raw) -> place <> " (`" <> raw <> "`)"
     None -> place
   }
+
+  // Select the supported JSON representation for a hook group.
   let matcher = case raw_matcher {
     Some(raw) -> classify_matcher(raw)
     None -> All
   }
+
+  // Select the supported JSON representation for a hook group.
   use handlers <- result.try(case list.key_find(group_fields, "hooks") {
     Ok(json.Array(items)) ->
       items
@@ -643,6 +667,7 @@ fn parse_group(
     Ok(_) -> Error(place <> ": hooks must be an array of handler objects")
     Error(Nil) -> Error(place <> ": hooks is required")
   })
+
   Ok(Group(matcher:, handlers:))
 }
 
@@ -673,6 +698,8 @@ pub fn parse_loom(text: String, source: Source) -> Result(Config, String) {
     tom.parse(text)
     |> result.map_error(describe_toml_error),
   )
+
+  // Dispatch Loom hook configuration according to the available TOML table form.
   case dict.get(document, "hooks") {
     Ok(tom.Table(fields)) | Ok(tom.InlineTable(fields)) ->
       loom_events(fields, source)
@@ -684,6 +711,8 @@ pub fn parse_loom(text: String, source: Source) -> Result(Config, String) {
 }
 
 // The `[hooks]` nesting: keys under it are event names.
+
+/// Parses named event tables from the Loom TOML hook configuration.
 fn loom_events(
   fields: Dict(String, tom.Toml),
   source: Source,
@@ -699,6 +728,8 @@ fn loom_events(
 
 // The bare `[[hooks.<Event>]]` nesting, where each element of the
 // array under `hooks` is one group of one event.
+
+/// Parses bare Loom group tables while preserving the event association supplied by the enclosing key.
 fn loom_bare_groups(
   tables: List(Dict(String, tom.Toml)),
   source: Source,
@@ -720,11 +751,15 @@ fn loom_bare_groups(
 
 // Decodes one `event = [groups]` table under the Loom shape, naming
 // the event in every refusal.
+
+/// Decodes one TOML event entry and parses its groups.
 fn parse_loom_event(
   field: #(String, tom.Toml),
 ) -> Result(#(Event, List(Group)), String) {
   let #(name, value) = field
   use event <- result.try(decode_event(name))
+
+  // Distinguish the supported TOML event and group representations.
   use groups <- result.try(case value {
     tom.ArrayOfTables(tables) ->
       tables
@@ -739,12 +774,15 @@ fn parse_loom_event(
         <> "]] tables, one per matcher group",
       )
   })
+
   Ok(#(event, groups))
 }
 
 // Decodes one matcher group from the Loom TOML shape, with the same
 // matcher-naming refusals as the JSON path so both formats speak the
 // operator's own vocabulary back at them.
+
+/// Parses one TOML hook group and validates its matcher and handlers.
 fn parse_loom_group(
   event: Event,
   at: Int,
@@ -752,14 +790,20 @@ fn parse_loom_group(
 ) -> Result(Group, String) {
   let place = event_name(event) <> " group " <> string.inspect(at + 1)
   use raw_matcher <- result.try(optional_toml_string(fields, place, "matcher"))
+
+  // Validate this group representation and carry its matcher into the normalized form.
   let place = case raw_matcher {
     Some(raw) -> place <> " (`" <> raw <> "`)"
     None -> place
   }
+
+  // Choose the TOML group form and preserve its event matcher.
   let matcher = case raw_matcher {
     Some(raw) -> classify_matcher(raw)
     None -> All
   }
+
+  // Choose the TOML group form and preserve its event matcher.
   use handler_tables <- result.try(case dict.get(fields, "hooks") {
     Ok(tom.ArrayOfTables(tables)) -> Ok(tables)
     Ok(_) ->
@@ -771,6 +815,7 @@ fn parse_loom_group(
       )
     Error(Nil) -> Error(place <> ": hooks is required")
   })
+
   use handlers <- result.try(
     handler_tables
     |> list.index_map(fn(fields, at) { parse_loom_handler(place, at, fields) })
@@ -785,6 +830,8 @@ fn parse_loom_group(
 // which fields are required; everything the kind does not need is
 // still read, so a config round-trips through the model rather than
 // being narrowed to what this build runs.
+
+/// Parses one JSON handler object into a validated handler record.
 fn parse_json_handler(
   place: String,
   at: Int,
@@ -814,12 +861,16 @@ fn parse_json_handler(
 
 // The Loom-shape twin of `parse_json_handler`: same kind-first order,
 // same refusals, TOML accessors and Loom field spellings.
+
+/// Parses one TOML handler table into the common handler representation.
 fn parse_loom_handler(
   place: String,
   at: Int,
   fields: Dict(String, tom.Toml),
 ) -> Result(Handler, String) {
   let place = place <> " handler " <> string.inspect(at + 1)
+
+  // Dispatch the handler table by its configured handler kind.
   use kind <- result.try(case dict.get(fields, "type") {
     Error(Nil) -> Ok(Command)
     Ok(tom.String("command")) -> Ok(Command)
@@ -839,24 +890,33 @@ fn parse_loom_handler(
 // state them. `Prompt` and `Agent` handlers parse into the model — a
 // collection must load without edits — so their `prompt` is required
 // here even though nothing runs it yet.
+
+/// Checks that a handler supplies the fields required by its kind before configuration is accepted.
 fn check_required(
   kind: HandlerKind,
   h: Handler,
   place: String,
 ) -> Result(Nil, String) {
+  // Require a command for command handlers while allowing other handler kinds to omit it.
   let command_check = case kind, h.command {
     Command, None -> Error(place <> ": command is required")
     _, _ -> Ok(Nil)
   }
+
+  // Require a URL for HTTP handlers while allowing other handler kinds to omit it.
   let http_check = case kind, h.url {
     Http, None -> Error(place <> ": url is required")
     _, _ -> Ok(Nil)
   }
+
+  // Validate the current required handler field against the handler kind.
   let mcp_check = case kind, h.server, h.tool {
     McpTool, None, _ -> Error(place <> ": server is required")
     McpTool, _, None -> Error(place <> ": tool is required")
     _, _, _ -> Ok(Nil)
   }
+
+  // Validate the current required handler field against the handler kind.
   let prompt_check = case kind, h.prompt_text {
     Prompt, None -> Error(place <> ": prompt is required")
     Agent, None -> Error(place <> ": prompt is required")
@@ -887,6 +947,8 @@ fn toml_getters(fields: Dict(String, tom.Toml)) -> Getters {
 }
 
 // Reads one optional string field through either accessor.
+
+/// Reads an optional string from the selected source format with a field-qualified error.
 fn get_string(
   get: Getters,
   place: String,
@@ -899,6 +961,8 @@ fn get_string(
 }
 
 // Reads one optional integer field through either accessor.
+
+/// Reads an optional integer from the selected source format with type validation.
 fn get_int_field(
   get: Getters,
   place: String,
@@ -911,6 +975,8 @@ fn get_int_field(
 }
 
 // Reads the exec-form argument vector through either accessor.
+
+/// Reads an optional argument list and validates each element as a string.
 fn get_args(
   get: Getters,
   place: String,
@@ -925,6 +991,8 @@ fn get_args(
 // Reads one three-state boolean (`true` / `false` / absent) through
 // either accessor, into its named question. `once` and `async` and
 // `async_rewake` are the three the model carries.
+
+/// Reads an optional boolean from the selected source format.
 fn get_bool(
   get: Getters,
   _place: String,
@@ -950,6 +1018,8 @@ fn get_bool(
 // contract's tables list them, then enforces the kind's requirements.
 // Both parsers land here, which is why the per-kind checks exist in
 // exactly one place.
+
+/// Combines common hook fields with kind-specific values into a validated handler.
 fn handler_from_common(
   kind: HandlerKind,
   place: String,
@@ -1088,6 +1158,8 @@ pub fn merge(configs: List(Config)) -> Config {
     list.fold(flattened, #([], dict.new()), fn(state, entry) {
       let #(order, grouped) = state
       let #(event, groups) = entry
+
+      // Use the later configuration source when present, otherwise retain the earlier source.
       case dict.get(grouped, event) {
         Ok(existing) -> #(
           order,
@@ -1105,10 +1177,13 @@ pub fn merge(configs: List(Config)) -> Config {
       dict.get(grouped, event)
       |> result.map(fn(groups) { #(event, groups) })
     })
+
+  // Apply the later hook configuration only where its fields are explicitly present.
   let source = case list.last(configs) {
     Ok(config) -> config.source
     Error(Nil) -> Source(label: "none", origin: LoomInline)
   }
+
   Config(entries:, source:)
 }
 
@@ -1138,7 +1213,10 @@ fn render_event(entry: #(Event, List(Group))) -> List(String) {
 // Renders one matcher group: the header and matcher line, then its
 // handler tables nested under it. The regex matcher is written as the
 // operator wrote it, unquoted beyond TOML's own escaping.
+
+/// Renders one handler group in the canonical Loom TOML shape.
 fn render_group(name: String, group: Group) -> String {
+  // Render the matcher field only for matcher forms that require an explicit TOML value.
   let header = case group.matcher {
     All -> "[[hooks." <> name <> "]]\n"
     Exact(parts) ->
@@ -1150,6 +1228,7 @@ fn render_group(name: String, group: Group) -> String {
     Regex(raw) ->
       "[[hooks." <> name <> "]]\nmatcher = " <> quote_toml(raw) <> "\n"
   }
+
   header <> render_handlers(name, group.handlers)
 }
 
@@ -1164,9 +1243,13 @@ fn render_handlers(name: String, handlers: List(Handler)) -> String {
 // Renders one handler table, in the contract's field order. Fields the
 // model carries but this handler does not are simply not written;
 // `parse_loom` treats an absent field and a default-valued one alike.
+
+/// Renders one handler and its configured fields as canonical TOML.
 fn render_handler(name: String, handler: Handler) -> String {
   let prefix = "[[hooks." <> name <> ".hooks]]\n"
   let kind_line = "type = " <> quote_toml(handler_type(handler.kind)) <> "\n"
+
+  // Render the group matcher using its configured matching mode.
   let command_line = case handler.command {
     Some(command) -> "command = " <> quote_toml(command) <> "\n"
     None -> ""
@@ -1187,7 +1270,9 @@ fn render_handler(name: String, handler: Handler) -> String {
   <> render_lifetime(handler.lifetime)
 }
 
+/// Renders an optional argument list, omitting the key when it is absent.
 fn render_args(args: Option(List(String))) -> String {
+  // Render each handler field only when the common model carries it.
   case args {
     Some(parts) ->
       "args = [" <> string.join(list.map(parts, quote_toml), ", ") <> "]\n"
@@ -1223,15 +1308,20 @@ fn render_url(handler: Handler) -> String {
   }
 }
 
+/// Renders server and tool selectors only when those fields are configured.
 fn render_server_tool(handler: Handler) -> String {
+  // Include server and tool selectors independently when each is configured.
   let server = case handler.server {
     Some(server) -> "server = " <> quote_toml(server) <> "\n"
     None -> ""
   }
+
+  // Include server and tool selectors independently when each is configured.
   let tool = case handler.tool {
     Some(tool) -> "tool = " <> quote_toml(tool) <> "\n"
     None -> ""
   }
+
   server <> tool
 }
 
@@ -1242,7 +1332,9 @@ fn render_prompt(handler: Handler) -> String {
   }
 }
 
+/// Renders the optional if-rule matcher as TOML, omitting the field when no rule is configured.
 fn render_if_rule(handler: Handler) -> String {
+  // Include configured MCP server and tool selectors in the rendered form.
   case handler.if_rule {
     Some(rule) -> "if = " <> quote_toml(rule) <> "\n"
     None -> ""
@@ -1265,6 +1357,8 @@ fn render_lifetime(lifetime: Lifetime) -> String {
 
 // Quotes a string as a TOML basic string, escaping what TOML reads
 // specially so a value with a quote or a backslash round-trips.
+
+/// Escapes and quotes a string as a valid TOML basic string.
 fn quote_toml(text: String) -> String {
   "\""
   <> text
@@ -1378,6 +1472,8 @@ pub fn notes(config: Config) -> List(LoadNote) {
     config.entries
     |> list.filter_map(fn(entry) {
       let #(event, _) = entry
+
+      // Choose load-time notes from the event and handler properties that affect execution.
       case list.contains(no_moment_events, event) {
         True ->
           Ok(LoadNote(
@@ -1396,6 +1492,8 @@ pub fn notes(config: Config) -> List(LoadNote) {
 // One handler's findings. Each note says what the operator wrote and
 // what this build does with it — the honest middle between faking a
 // fire and refusing the collection.
+
+/// Reports load-time conditions that prevent a parsed handler from running as configured.
 fn handler_notes(
   event: Event,
   handler: Handler,
@@ -1408,6 +1506,7 @@ fn handler_notes(
     True -> []
 
     False -> {
+      // Choose load-time notes from the event and handler properties that affect execution.
       let kind_note = case handler.kind {
         Command -> []
         _ -> [
@@ -1418,6 +1517,8 @@ fn handler_notes(
           ),
         ]
       }
+
+      // Classify the handler condition that should be reported to the operator.
       let once_note = case handler.lifetime {
         Repeats -> []
         Once -> [
@@ -1429,6 +1530,7 @@ fn handler_notes(
           ),
         ]
       }
+
       list.append(kind_note, once_note)
     }
   }
@@ -1437,7 +1539,10 @@ fn handler_notes(
 // --- shared field accessors --------------------------------------------------
 
 // The TOML spelling of a refusal the catalogue's voice would write.
+
+/// Turns a TOML parser error into stable, source-readable diagnostic text.
 fn describe_toml_error(error: tom.ParseError) -> String {
+  // Classify the handler condition that should be reported to the operator.
   case error {
     tom.Unexpected(got:, expected:) ->
       "not valid toml: expected " <> expected <> ", got `" <> got <> "`"
@@ -1448,6 +1553,8 @@ fn describe_toml_error(error: tom.ParseError) -> String {
 
 // The JSON spelling of the same refusal, through the corruption
 // report's own description.
+
+/// Turns a JSON corruption report into a location-specific diagnostic.
 fn describe_json_error(report: CorruptionReport) -> String {
   "not valid json: "
   <> "expected "
@@ -1459,6 +1566,8 @@ fn describe_json_error(report: CorruptionReport) -> String {
 }
 
 // The JSON object's fields, refusing non-objects with the place named.
+
+/// Requires a JSON object at the named configuration location and returns its fields.
 fn object_fields(
   value: JsonValue,
   place: String,
@@ -1470,6 +1579,8 @@ fn object_fields(
 }
 
 // An optional JSON string field, refusing a present non-string.
+
+/// Reads an optional string from JSON fields, distinguishing absence from malformed content.
 fn optional_string(
   fields: List(#(String, JsonValue)),
   place: String,
@@ -1483,6 +1594,8 @@ fn optional_string(
 }
 
 // An optional TOML string field, refusing a present non-string.
+
+/// Reads an optional string from TOML fields with location-aware type errors.
 fn optional_toml_string(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1496,6 +1609,8 @@ fn optional_toml_string(
 }
 
 // An optional JSON integer field.
+
+/// Reads an optional JSON integer and validates its allowed range.
 fn optional_json_int(
   fields: List(#(String, JsonValue)),
   place: String,
@@ -1509,6 +1624,8 @@ fn optional_json_int(
 }
 
 // An optional TOML integer field.
+
+/// Reads an optional TOML integer and validates its allowed range.
 fn optional_toml_int(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1523,6 +1640,8 @@ fn optional_toml_int(
 
 // The exec-form argument vector from JSON: an array of strings, or
 // absent.
+
+/// Reads an optional JSON argument array and validates its string elements.
 fn optional_json_args(
   fields: List(#(String, JsonValue)),
   place: String,
@@ -1544,6 +1663,8 @@ fn optional_json_args(
 }
 
 // The same argument vector from TOML.
+
+/// Reads an optional TOML argument array and validates its string elements.
 fn optional_toml_args(
   fields: Dict(String, tom.Toml),
   place: String,

@@ -145,6 +145,7 @@ pub fn parse(text: String) -> Result(List(Workspace), String) {
 pub fn from_document(
   document: Dict(String, tom.Toml),
 ) -> Result(List(Workspace), String) {
+  // Decide how to handle dict.get(document, "workspaces") {.
   case dict.get(document, "workspaces") {
     Error(Nil) -> Ok([])
     Ok(tom.Table(tables)) -> {
@@ -156,6 +157,8 @@ pub fn from_document(
 
       // The table is only useful to a node that peers can reach.
       use found <- result.try(distribution.from_document(document))
+
+      // Decide how to handle found {.
       case found {
         Some(_settings) -> Ok(configured)
         None ->
@@ -180,7 +183,9 @@ pub fn find(
   list.find(configured, fn(workspace) { workspace.name == name })
 }
 
+/// Establishes row for the caller, keeping its validation and result policy at this boundary.
 fn row(name: String, value: tom.Toml) -> Result(Workspace, String) {
+  // Decide how to handle use Nil <- result.try( catalogue.is_workspace_name(name) {.
   use Nil <- result.try(case catalogue.is_workspace_name(name) {
     True -> Ok(Nil)
     False ->
@@ -190,6 +195,8 @@ fn row(name: String, value: tom.Toml) -> Result(Workspace, String) {
         <> " is not a workspace name: 1 to 128 bytes, no / and no NUL",
       )
   })
+
+  // Decide how to handle value {.
   case value {
     tom.Table(fields) -> {
       use Nil <- result.try(known_keys(
@@ -197,6 +204,8 @@ fn row(name: String, value: tom.Toml) -> Result(Workspace, String) {
         ["root", "mode", "base"],
         "[workspaces." <> name <> "]",
       ))
+
+      // Decide how to handle dict.get(fields, "root") {.
       case dict.get(fields, "root") {
         Ok(tom.String(root)) -> {
           use Nil <- result.try(
@@ -221,11 +230,15 @@ fn row(name: String, value: tom.Toml) -> Result(Workspace, String) {
 // starting with `-` (which Git would read as an option), and free of control
 // characters and spaces. Whether the name resolves in `root` is Git's to say
 // when the first worktree is made.
+
+/// Establishes mode of for the caller, keeping its validation and result policy at this boundary.
 fn mode_of(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(Mode, String) {
   let base = dict.get(fields, "base")
+
+  // Decide how to handle dict.get(fields, "mode"), base {.
   case dict.get(fields, "mode"), base {
     Error(Nil), Error(Nil) | Ok(tom.String("shared")), Error(Nil) -> Ok(Shared)
     Ok(tom.String("worktree")), Error(Nil) -> Ok(Worktree(base: default_base))
@@ -243,12 +256,15 @@ fn mode_of(
   }
 }
 
+/// Establishes usable base for the caller, keeping its validation and result policy at this boundary.
 fn usable_base(text: String) -> Result(String, String) {
   let printable =
     list.all(string.to_utf_codepoints(text), fn(point) {
       let code = string.utf_codepoint_to_int(point)
       code > 32 && code != 127
     })
+
+  // Decide how to handle text != "" && !string.starts_with(text, "-") && printable {.
   case text != "" && !string.starts_with(text, "-") && printable {
     True -> Ok(text)
     False ->
@@ -282,6 +298,7 @@ pub fn absolute(root: String) -> Result(Nil, String) {
   }
 }
 
+/// Establishes known keys for the caller, keeping its validation and result policy at this boundary.
 fn known_keys(
   present: List(String),
   allowed: List(String),

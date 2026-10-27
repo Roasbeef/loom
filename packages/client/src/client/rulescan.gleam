@@ -347,6 +347,7 @@ pub fn supervised(
   supervision.worker(fn() { start(options, runtime, name) })
 }
 
+/// Handle keeps this client operation’s decoding or state decision in one place.
 fn handle(
   state: State,
   _event: writer.Event,
@@ -357,17 +358,25 @@ fn handle(
 // One pass over every strand. A store read that fails is not an error
 // worth stopping for: hints are lossy by contract, so the pass simply
 // ends and the next commit brings the scanner back.
+/// Pass keeps this client operation’s decoding or state decision in one place.
 fn pass(state: State) -> State {
   use <- bool.guard(when: state.options.rules == [], return: state)
+
+  // This match resolves session.register_keys(state.runtime.session, register.StrandLeaf, "") before the surrounding protocol step continues.
+  // This match resolves session.register_keys(state.runtime.session, register.StrandLeaf, "") before the enclosing validation continues.
   case session.register_keys(state.runtime.session, register.StrandLeaf, "") {
     Error(_reason) -> state
     Ok(names) -> list.fold(names, state, scan_strand)
   }
 }
 
+/// Scan strand keeps this client operation’s decoding or state decision in one place.
 fn scan_strand(state: State, strand: String) -> State {
   let known = dict.get(state.progress, strand)
   use <- bool.guard(when: finished(known), return: state)
+
+  // This match resolves leaf_of(state, strand) before the surrounding protocol step continues.
+  // This match resolves leaf_of(state, strand) before the enclosing validation continues.
   case leaf_of(state, strand) {
     Error(Nil) | Ok(None) -> state
     Ok(Some(leaf)) -> scan_from(state, strand, leaf, progress_for(known))
@@ -382,7 +391,10 @@ fn scan_strand(state: State, strand: String) -> State {
 // That is what keeps a long session's steady-state cost at one register
 // read per strand and then zero, and an abandoned hold's cost at the one
 // lineage read that abandoned it and then zero as well.
+/// Finished keeps this client operation’s decoding or state decision in one place.
 fn finished(known: Result(Progress, Nil)) -> Bool {
+  // This match resolves known before the surrounding protocol step continues.
+  // This match resolves known before the enclosing validation continues.
   case known {
     Error(Nil) -> False
     Ok(progress) -> progress.pending == [] || progress.hold == Abandoned
@@ -393,7 +405,10 @@ fn finished(known: Result(Progress, Nil)) -> Bool {
 // `None` leaf is the flag `scan_from` reads as "load me from the store".
 // Nothing else can produce a `None` leaf there: every pass that reaches
 // `judge` records the leaf it scanned.
+/// Progress for keeps this client operation’s decoding or state decision in one place.
 fn progress_for(known: Result(Progress, Nil)) -> Progress {
+  // This match resolves known before the surrounding protocol step continues.
+  // This match resolves known before the enclosing validation continues.
   case known {
     Ok(progress) -> progress
     Error(Nil) ->
@@ -407,12 +422,14 @@ fn progress_for(known: Result(Progress, Nil)) -> Progress {
   }
 }
 
+/// Scan from keeps this client operation’s decoding or state decision in one place.
 fn scan_from(
   state: State,
   strand: String,
   leaf: EntryId,
   progress: Progress,
 ) -> State {
+  // This match resolves progress.leaf before the enclosing validation continues.
   let progress = case progress.leaf {
     Some(_seen) -> progress
     None -> load_progress(state, strand, progress)
@@ -425,6 +442,9 @@ fn scan_from(
     when: progress.leaf == Some(leaf) && progress.hold == NotHeld,
     return: state,
   )
+
+  // This match resolves new_entries(state, leaf, progress.scanned) before the surrounding protocol step continues.
+  // This match resolves new_entries(state, leaf, progress.scanned) before the enclosing validation continues.
   case new_entries(state, leaf, progress.scanned) {
     Error(Nil) -> state
     Ok(entries) -> judge(state, strand, leaf, progress, entries)
@@ -433,6 +453,7 @@ fn scan_from(
 
 // The durable half of a strand's state, read once per incarnation: how
 // far the last scanner got, and which rules it had already spent.
+/// Load progress keeps this client operation’s decoding or state decision in one place.
 fn load_progress(state: State, strand: String, blank: Progress) -> Progress {
   let scanned = rules.cursor_seq(read_fact(state, rules.cursor_key(strand:)))
   let pending =
@@ -444,6 +465,7 @@ fn load_progress(state: State, strand: String, blank: Progress) -> Progress {
   Progress(..blank, scanned:, checkpointed: scanned, pending:)
 }
 
+/// Judge keeps this client operation’s decoding or state decision in one place.
 fn judge(
   state: State,
   strand: String,
@@ -466,10 +488,12 @@ fn judge(
   // must still be above it on the next pass, or the rule is lost — and
   // an abandoned strand never gets a next pass to lose it on, but the
   // cursor stays honest regardless of which case this is.
+  // This match resolves hold before the enclosing validation continues.
   let scanned = case hold {
     Holding | Abandoned -> progress.scanned
     NotHeld -> newest(entries, progress.scanned)
   }
+
   let checkpointed =
     checkpoint(state, strand, scanned, progress.checkpointed, pending)
   let progress =
@@ -485,6 +509,7 @@ fn judge(
 // saw is never rechecked, which is the whole of "once per incarnation
 // per strand" (see the module doc). `Abandoned` itself is handled only
 // so this `case` is exhaustive over `Hold`, not because it is reachable.
+/// Next hold keeps this client operation’s decoding or state decision in one place.
 fn next_hold(
   state: State,
   strand: String,
@@ -492,14 +517,18 @@ fn next_hold(
   held: Bool,
   pending: List(String),
 ) -> Hold {
+  // This match resolves was before the surrounding protocol step continues.
+  // This match resolves was before the enclosing validation continues.
   case was {
     Abandoned -> Abandoned
     Holding ->
+      // This match resolves held before the surrounding protocol step continues.
       case held {
         True -> Holding
         False -> NotHeld
       }
     NotHeld ->
+      // This match resolves held before the surrounding protocol step continues.
       case held {
         False -> NotHeld
         True -> begin_hold(state, strand, pending)
@@ -512,7 +541,10 @@ fn next_hold(
 // that may never open. Judged once, here, against the lineage ledger —
 // see `provably_dead` for what "dead" means and why FAIL OPEN keeps
 // every doubtful case merely held.
+/// Begin hold keeps this client operation’s decoding or state decision in one place.
 fn begin_hold(state: State, strand: String, pending: List(String)) -> Hold {
+  // This match resolves provably_dead(state, strand) before the surrounding protocol step continues.
+  // This match resolves provably_dead(state, strand) before the enclosing validation continues.
   case provably_dead(state, strand) {
     True -> {
       // The rule names travel with the verdict: this line is the only
@@ -539,10 +571,14 @@ fn begin_hold(state: State, strand: String, pending: List(String)) -> Hold {
 // not landed yet) and a cell that will not decode both answer `False`,
 // because an operator's rule must never be silenced on a strand that
 // might still be given a run.
+/// Provably dead keeps this client operation’s decoding or state decision in one place.
 fn provably_dead(state: State, strand: String) -> Bool {
+  // This match resolves read_fact(state, lineage.register_key(strand)) before the surrounding protocol step continues.
+  // This match resolves read_fact(state, lineage.register_key(strand)) before the enclosing validation continues.
   case read_fact(state, lineage.register_key(strand)) {
     None -> False
     Some(payload) ->
+      // This match resolves lineage.decode(payload) before the surrounding protocol step continues.
       case lineage.decode(payload) {
         Ok(cell) -> cell.reaped
         Error(_report) -> False
@@ -550,10 +586,12 @@ fn provably_dead(state: State, strand: String) -> Bool {
   }
 }
 
+/// Scannable keeps this client operation’s decoding or state decision in one place.
 fn scannable(entry: Entry) -> Result(String, Nil) {
   option.to_result(rules.scannable_text(entry), Nil)
 }
 
+/// Newest keeps this client operation’s decoding or state decision in one place.
 fn newest(entries: List(Entry), floor: Seq) -> Seq {
   list.fold(entries, floor, fn(highest, entry: Entry) {
     int.max(highest, entry.seq)
@@ -578,6 +616,7 @@ type Fire {
   Failed(reason: String)
 }
 
+/// Fire all keeps this client operation’s decoding or state decision in one place.
 fn fire_all(
   state: State,
   strand: String,
@@ -585,6 +624,9 @@ fn fire_all(
 ) -> #(List(String), Bool) {
   list.fold(firing, #([], False), fn(outcome, rule) {
     let #(spent, held) = outcome
+
+    // This match resolves fire(state, strand, rule) before the surrounding protocol step continues.
+    // This match resolves fire(state, strand, rule) before the enclosing validation continues.
     case fire(state, strand, rule) {
       Fired | AlreadyFired -> #([rule.name, ..spent], held)
       Held | Failed(..) -> #(spent, True)
@@ -592,6 +634,7 @@ fn fire_all(
   })
 }
 
+/// Fire keeps this client operation’s decoding or state decision in one place.
 fn fire(state: State, strand: String, rule: Rule) -> Fire {
   let target = api.on_strand(state.runtime, strand)
   let mark =
@@ -608,6 +651,7 @@ fn fire(state: State, strand: String, rule: Rule) -> Fire {
 // The injected turn. A user-role message because that is the only shape
 // a provider API has for context the harness supplies; the text itself
 // says whose it is, which is `client/rules.injection`'s whole job.
+/// Injection keeps this client operation’s decoding or state decision in one place.
 fn injection(state: State, rule: Rule) -> message.AgentMessage {
   let #(now, _clock) = clock.read(state.runtime.effects.clock)
   message.UserMessage(
@@ -619,7 +663,10 @@ fn injection(state: State, rule: Rule) -> message.AgentMessage {
   )
 }
 
+/// Classify keeps this client operation’s decoding or state decision in one place.
 fn classify(admitted: Result(EntryId, api.ApiError)) -> Fire {
+  // This match resolves admitted before the surrounding protocol step continues.
+  // This match resolves admitted before the enclosing validation continues.
   case admitted {
     Ok(_entry) -> Fired
 
@@ -642,11 +689,15 @@ fn classify(admitted: Result(EntryId, api.ApiError)) -> Fire {
   }
 }
 
+/// Report keeps this client operation’s decoding or state decision in one place.
 fn report(state: State, strand: String, rule: Rule, verdict: Fire) -> Nil {
   let where = [
     field.text(key: "rule", value: rule.name),
     field.text(key: "strand", value: strand),
   ]
+
+  // This match resolves verdict before the surrounding protocol step continues.
+  // This match resolves verdict before the enclosing validation continues.
   case verdict {
     Fired -> log.info(state.options.logger, "rule.fired", where)
 
@@ -666,6 +717,7 @@ fn report(state: State, strand: String, rule: Rule, verdict: Fire) -> Nil {
 // The cursor checkpoint, written only when the scanner has run far
 // enough ahead of it to be worth the commit, and never on a strand whose
 // rules have all fired (nothing will read it again).
+/// Checkpoint keeps this client operation’s decoding or state decision in one place.
 fn checkpoint(
   state: State,
   strand: String,
@@ -676,6 +728,8 @@ fn checkpoint(
   let due =
     pending != [] && scanned - checkpointed >= state.options.checkpoint_every
   use <- bool.guard(when: !due, return: checkpointed)
+
+  // This branch resolves the checkpoint decision before the operation proceeds.
   case
     api.put_reserved_fact(
       state.runtime,
@@ -692,7 +746,10 @@ fn checkpoint(
   }
 }
 
+/// Leaf of keeps this client operation’s decoding or state decision in one place.
 fn leaf_of(state: State, strand: String) -> Result(Option(EntryId), Nil) {
+  // This match resolves session.strand_leaf(state.runtime.session, strand) before the surrounding protocol step continues.
+  // This match resolves session.strand_leaf(state.runtime.session, strand) before the enclosing validation continues.
   case session.strand_leaf(state.runtime.session, strand) {
     Ok(Some(session.Cell(value: leaf, ..))) -> Ok(leaf)
     Ok(None) -> Ok(None)
@@ -704,6 +761,7 @@ fn leaf_of(state: State, strand: String) -> Result(Option(EntryId), Nil) {
 // cursor before anything is fetched or decoded. Read straight from the
 // store rather than through the writer: this runs on the scanner's own
 // process, and a settlement must never queue behind a scan.
+/// New entries keeps this client operation’s decoding or state decision in one place.
 fn new_entries(
   state: State,
   leaf: EntryId,
@@ -719,6 +777,7 @@ fn new_entries(
   |> result.replace_error(Nil)
 }
 
+/// Read fact keeps this client operation’s decoding or state decision in one place.
 fn read_fact(state: State, key: String) -> Option(JsonValue) {
   storage.get_register(state.runtime.session.store, register.FactCustom, key)
   |> result.unwrap(None)

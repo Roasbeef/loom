@@ -100,6 +100,34 @@ pub fn defaults_fill_base_url_and_thinking_test() {
   assert entry.thinking == model.ThinkingOff
 }
 
+pub fn extended_thinking_levels_parse_test() {
+  let assert Ok(text) = simplifile.read(example_path)
+  list.each(
+    [#("xhigh", model.ThinkingXHigh), #("max", model.ThinkingMax)],
+    fn(pair) {
+      let changed =
+        string.replace(
+          text,
+          "thinking = \"unsupported\"",
+          "thinking = \"" <> pair.0 <> "\"",
+        )
+      let assert Ok(parsed) = catalog.parse(changed)
+      let assert Ok(entry) = catalog.find(parsed, "baseten-oss")
+      assert entry.thinking == pair.1
+      let responses =
+        string.replace(
+          text,
+          "thinking = \"high\"",
+          "thinking = \"" <> pair.0 <> "\"",
+        )
+      let assert Ok(parsed_responses) = catalog.parse(responses)
+      let assert Ok(response_entry) =
+        catalog.find(parsed_responses, "openai-responses")
+      assert response_entry.thinking == pair.1
+    },
+  )
+}
+
 pub fn main_model_is_chain_head_test() {
   let assert Ok(entry) = catalog.main_model(example())
   assert entry.name == "baseten-oss"

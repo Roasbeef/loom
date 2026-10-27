@@ -426,10 +426,12 @@ pub fn session_lease(
   base: SandboxPolicy,
   output: LeaseOutput,
 ) -> SandboxPolicy {
+  // Pick output byte limits based on whether output goes to logs or wire.
   let output_bytes = case output {
     OutputIsLog -> base.limits.output_bytes
     OutputIsWire -> 0
   }
+
   SandboxPolicy(
     ..base,
     limits: Limits(..base.limits, wall_s: 0, cpu_s: 0, output_bytes:),
@@ -490,6 +492,8 @@ pub fn validate(policy: SandboxPolicy) -> Result(Nil, PolicyError) {
   ))
   list.try_each(limit_fields(), fn(field) {
     let value = limit_get(policy.limits, field)
+
+    // Refuse negative limits on all fields.
     case value < 0 {
       True -> Error(NegativeLimit(field:, value:))
       False -> Ok(Nil)
@@ -511,20 +515,18 @@ fn refuse_scratch_root(scratch: Scratch) -> Result(Nil, PolicyError) {
   }
 }
 
-// A mount path is compared by component against protected entries and
-// against other mounts, and nothing on either side of the wire resolves
-// it first. So the two spellings a comparison cannot see through are
-// refused rather than normalized: normalizing here would leave the Go
-// helper free to disagree, and the helper's own decoder makes the same
-// two refusals for that reason.
+/// Refuses uncanonical mount paths containing trailing slashes or parent segments.
 fn refuse_uncanonical_mounts(mounts: List(Mount)) -> Result(Nil, PolicyError) {
   list.try_each(mounts, fn(mount) {
-    use _ <- result.try(
+    use _ <- result.try({
+      // Refuse trailing slashes on non-root mount paths.
       case mount.path != "/" && string.ends_with(mount.path, "/") {
         True -> Error(MountPathTrailingSlash(path: mount.path))
         False -> Ok(Nil)
-      },
-    )
+      }
+    })
+
+    // Refuse parent segment navigation inside mount paths.
     case list.contains(string.split(mount.path, "/"), "..") {
       True -> Error(MountPathParentSegment(path: mount.path))
       False -> Ok(Nil)
@@ -532,12 +534,7 @@ fn refuse_uncanonical_mounts(mounts: List(Mount)) -> Result(Nil, PolicyError) {
   })
 }
 
-// One path, one mount. `meet_mounts` reads a path's access out of the
-// first entry that carries it and the helper's emitters bind a region
-// once, so a repeated path is a policy with two answers and no rule for
-// picking between them. Refusing the pair is what makes both readings
-// unnecessary. Mount lists are a handful of entries, so the quadratic
-// scan is the whole cost.
+/// Refuses duplicate mount paths within the mount list.
 fn refuse_duplicate_mounts(mounts: List(Mount)) -> Result(Nil, PolicyError) {
   case mounts {
     [] -> Ok(Nil)
@@ -549,14 +546,7 @@ fn refuse_duplicate_mounts(mounts: List(Mount)) -> Result(Nil, PolicyError) {
   }
 }
 
-// A mount and a protected entry over the same region are a policy the
-// jail cannot carry out, in both directions and on both platforms. The
-// mount under the protected entry is bound onto the read-only tmpfs the
-// mask installed, and bubblewrap exits 1 saying only "Read-only file
-// system" (issue #60); the mount over the protected entry re-exposes it
-// on Linux and is overridden by the trailing deny on Darwin, so the two
-// platforms enforce different policies from the same document. Refusing
-// the pair is why neither emitter has to decide which one wins.
+/// Refuses mounts that overlap or contain protected filesystem paths.
 fn refuse_mounts_over_protected(
   mounts: List(Mount),
   protected: List(String),
@@ -575,24 +565,7 @@ fn refuse_mounts_over_protected(
   })
 }
 
-// A read-only mount at or above a writable root is a policy that says
-// "writable" and "read-only" about the same directory, and the two
-// platforms pick different answers (`protocol-change/057`). bwrap takes
-// the later operation, and rule 1a puts every explicit mount after every
-// grant, so the root comes out read-only; Seatbelt unions allow rules,
-// so it stays writable. The Linux answer is the worse one because it is
-// silent: the jail starts, reports the mount layer applied, and every
-// write under the root fails with EROFS. A mount of `/` does more — it
-// binds the host's `/proc`, `/dev` and `/tmp` back over the fresh ones —
-// and it covers every writable root there is, so it is refused by the
-// same test.
-//
-// Only this direction is refused. A read-only mount *under* a writable
-// root narrows one subtree the policy named on purpose (a build seed
-// inside the workspace), which both platforms honour the same way. A
-// read-write mount above a writable root leaves it writable. The Go
-// helper's `policy.checkMounts` makes the identical refusal in the
-// identical words.
+/// Refuses read-only mounts configured at or above writable roots.
 fn refuse_read_only_mounts_over_writable_roots(
   mounts: List(Mount),
   writable_roots: List(String),
@@ -709,7 +682,7 @@ pub fn narrow_unenforceable(
   }
 }
 
-// The most-restrictive combination of two policies.
+/// Computes the lattice meet of two sandbox policies.
 fn meet(base: SandboxPolicy, requirements: SandboxPolicy) -> SandboxPolicy {
   SandboxPolicy(
     writable_roots: meet_roots(base.writable_roots, requirements.writable_roots),
@@ -726,26 +699,7 @@ fn meet(base: SandboxPolicy, requirements: SandboxPolicy) -> SandboxPolicy {
   )
 }
 
-// The mount lattice, one path at a time.
-//
-// A mount survives only when both sides name the same path, which makes
-// this an intersection rather than a union and is what stops a tool from
-// binding a host path the session base never granted. Where both sides
-// name it, `access` takes the weaker of the two, since read-only is less
-// than read-write, and `requirement` takes the stronger, since
-// `MountRequired` is a refusal rather than a privilege and a side that
-// asks to fail closed on a missing source must not lose that by composing
-// with one that does not.
-//
-// Both choices are commutative, associative and idempotent, so composition
-// over mounts is a lattice meet in the same sense as the network and limit
-// fields, and the order two policies are composed in cannot change the
-// result. The requirements side supplies the order of the surviving list,
-// which keeps the encoding deterministic.
-//
-// Taking the first entry the base carries for a path is exact rather than
-// arbitrary because `validate` refuses a repeated mount path: there is at
-// most one entry to find.
+/// Computes the meet of mount lists across two policies.
 fn meet_mounts(base: List(Mount), requested: List(Mount)) -> List(Mount) {
   list.filter_map(requested, fn(want) {
     case list.find(base, fn(have) { have.path == want.path }) {
@@ -760,6 +714,7 @@ fn meet_mounts(base: List(Mount), requested: List(Mount)) -> List(Mount) {
   })
 }
 
+/// Computes the meet of two mount access levels, selecting the more restrictive.
 fn meet_access(left: MountAccess, right: MountAccess) -> MountAccess {
   case left, right {
     MountReadWrite, MountReadWrite -> MountReadWrite
@@ -769,6 +724,7 @@ fn meet_access(left: MountAccess, right: MountAccess) -> MountAccess {
   }
 }
 
+/// Computes the join of two mount requirements, choosing required if either is required.
 fn join_requirement(
   left: MountRequirement,
   right: MountRequirement,
@@ -839,6 +795,7 @@ pub const jail_scratch_mount = "/tmp"
 /// itself live under `/tmp`.
 pub const jail_replaced_roots = ["/proc", "/dev", jail_scratch_mount]
 
+/// Computes the meet of two network policies, keeping the narrower access mode.
 fn meet_network(
   base: NetworkPolicy,
   requested: NetworkPolicy,
@@ -859,13 +816,12 @@ fn meet_network(
   }
 }
 
-// Grant-side join: only ever widens. `Off < Proxy < Full`; joining two
-// proxies unions the allowlists and keeps the current (harness-owned)
-// proxy address unless there is none yet.
+/// Computes the join of two network policies, widening access mode.
 fn join_network(
   current: NetworkPolicy,
   granted: NetworkPolicy,
 ) -> NetworkPolicy {
+  // Join the two network policies.
   case current, granted {
     NetworkFull, _ | _, NetworkFull -> NetworkFull
     NetworkOff, other -> other
@@ -873,15 +829,18 @@ fn join_network(
     NetworkProxy(allow: current_allow, proxy: current_proxy),
       NetworkProxy(allow: granted_allow, proxy: granted_proxy)
     -> {
+      // Preserve existing proxy address unless unconfigured.
       let proxy = case current_proxy {
         "" -> granted_proxy
         _ -> current_proxy
       }
+
       NetworkProxy(allow: union(current_allow, granted_allow), proxy:)
     }
   }
 }
 
+/// Computes the meet of limits structures across all resource fields.
 fn meet_limits(base: Limits, requested: Limits) -> Limits {
   Limits(
     cpu_s: meet_limit(base.cpu_s, requested.cpu_s),
@@ -893,7 +852,7 @@ fn meet_limits(base: Limits, requested: Limits) -> Limits {
   )
 }
 
-// Per-field meet with 0 as "unlimited" (the top of the lattice).
+/// Computes the meet of two limit values with zero representing unlimited.
 fn meet_limit(a: Int, b: Int) -> Int {
   case a, b {
     0, other -> other
@@ -910,7 +869,9 @@ fn join_limit(a: Int, b: Int) -> Int {
   }
 }
 
+/// Applies an escalation grant to a policy, widening its permissions.
 fn apply_grant(policy: SandboxPolicy, grant: Grant) -> SandboxPolicy {
+  // Apply the specific grant type.
   case grant {
     GrantWritableRoot(path:) -> {
       let writable_roots = union(policy.writable_roots, [path])
@@ -937,7 +898,7 @@ fn apply_grant(policy: SandboxPolicy, grant: Grant) -> SandboxPolicy {
   }
 }
 
-// Every requirement the final policy does not satisfy.
+/// Computes the shortfall between requested requirements and the final policy.
 fn shortfall(
   requirements: SandboxPolicy,
   final: SandboxPolicy,
@@ -958,6 +919,7 @@ fn shortfall(
     ]
     False -> []
   }
+
   let env =
     requirements.env_allow
     |> list.filter(fn(name) { !list.contains(final.env_allow, name) })
@@ -966,6 +928,8 @@ fn shortfall(
     list.filter_map(limit_fields(), fn(field) {
       let wanted = limit_get(requirements.limits, field)
       let granted = limit_get(final.limits, field)
+
+      // Check if requested limit exceeds granted limit.
       case limit_exceeds(wanted, granted) {
         True -> Ok(NarrowedLimit(field:, wanted:, granted:))
         False -> Error(Nil)
@@ -977,6 +941,7 @@ fn shortfall(
     True -> []
     False -> [NarrowedScratch(wanted: requirements.scratch)]
   }
+
   let mounts =
     requirements.mounts
     |> list.filter(fn(want) { !mount_satisfied(want, final.mounts) })
@@ -984,12 +949,7 @@ fn shortfall(
   list.flatten([writable, readable, network, env, limits, scratch, mounts])
 }
 
-// Whether the composed policy carries a mount that gives the requirement
-// everything it asked for. The path must match exactly, because a mount is
-// one bind rather than a subtree, and a read-write request is unsatisfied
-// by a read-only bind. The requirement field is not compared: composition
-// only ever strengthens it, so it can never be the reason a request falls
-// short.
+/// Checks whether a required mount is satisfied by the final mount list.
 fn mount_satisfied(want: Mount, final: List(Mount)) -> Bool {
   list.any(final, fn(have) {
     have.path == want.path
@@ -1002,8 +962,7 @@ fn mount_satisfied(want: Mount, final: List(Mount)) -> Bool {
   })
 }
 
-// Whether `wanted` allows strictly more than `granted` on the network
-// lattice (proxy-vs-proxy compares allowlists).
+/// Returns whether requested network access exceeds granted network access.
 fn network_exceeds(wanted: NetworkPolicy, granted: NetworkPolicy) -> Bool {
   case wanted, granted {
     NetworkOff, _ -> False
@@ -1016,7 +975,7 @@ fn network_exceeds(wanted: NetworkPolicy, granted: NetworkPolicy) -> Bool {
   }
 }
 
-// Whether `wanted` is a looser limit than `granted` (0 = unlimited).
+/// Returns whether requested limit is looser than granted limit with 0 as unlimited.
 fn limit_exceeds(wanted: Int, granted: Int) -> Bool {
   case wanted, granted {
     _, 0 -> False
@@ -1029,6 +988,7 @@ fn limit_fields() -> List(LimitField) {
   [CpuSeconds, WallSeconds, MemBytes, Pids, FsizeBytes, OutputBytes]
 }
 
+/// Extracts the value of a specific limit field.
 fn limit_get(limits: Limits, field: LimitField) -> Int {
   case field {
     CpuSeconds -> limits.cpu_s
@@ -1040,6 +1000,7 @@ fn limit_get(limits: Limits, field: LimitField) -> Int {
   }
 }
 
+/// Sets the value of a specific limit field.
 fn limit_set(limits: Limits, field: LimitField, value: Int) -> Limits {
   case field {
     CpuSeconds -> Limits(..limits, cpu_s: value)
@@ -1152,6 +1113,8 @@ pub fn from_msgpack(
     "policy",
   ))
   use v <- result.try(required_int(entries, "v", "policy"))
+
+  // Verify policy version matches expected wire version.
   use Nil <- result.try(case v == version {
     True -> Ok(Nil)
     False ->
@@ -1161,6 +1124,7 @@ pub fn from_msgpack(
         int.to_string(v),
       ))
   })
+
   use writable_roots <- result.try(required_paths(entries, "writable_roots"))
   use readable_roots <- result.try(required_paths(entries, "readable_roots"))
   use protected <- result.try(required_paths(entries, "protected"))
@@ -1173,6 +1137,8 @@ pub fn from_msgpack(
     |> result.try(as_string_array(_, "policy.env_allow")),
   )
   use scratch_text <- result.try(required_string(entries, "scratch", "policy"))
+
+  // Decode scratch configuration from string value.
   use scratch <- result.try(case scratch_text {
     "tmpfs" -> Ok(ScratchTmpfs)
     "/" <> _ -> Ok(ScratchPath(path: scratch_text))
@@ -1183,6 +1149,7 @@ pub fn from_msgpack(
         scratch_text,
       ))
   })
+
   use mounts_value <- result.try(required(entries, "mounts", "policy"))
   use mounts <- result.try(mounts_from_msgpack(mounts_value))
   Ok(SandboxPolicy(
@@ -1197,6 +1164,7 @@ pub fn from_msgpack(
   ))
 }
 
+/// Encodes a mount structure into MsgPack value.
 fn mount_to_msgpack(mount: Mount) -> MsgPackValue {
   msgpack.MapValue([
     #(
@@ -1217,10 +1185,7 @@ fn mount_to_msgpack(mount: Mount) -> MsgPackValue {
   ])
 }
 
-// `required` is a bool on the wire, where msgpack has bools and the Go
-// side will have one too. It becomes the two-variant `MountRequirement`
-// here because a `Bool` field would make every reader of a `Mount(...)`
-// literal carry the polarity of the name (house rule R9).
+/// Decodes a list of mounts from a MsgPack value.
 fn mounts_from_msgpack(
   value: MsgPackValue,
 ) -> Result(List(Mount), CorruptionReport) {
@@ -1235,6 +1200,7 @@ fn mounts_from_msgpack(
   }
 }
 
+/// Decodes a single mount from a MsgPack map value.
 fn mount_from_msgpack(value: MsgPackValue) -> Result(Mount, CorruptionReport) {
   use entries <- result.try(as_map(value, "policy.mounts"))
   use Nil <- result.try(reject_unknown_keys(
@@ -1243,28 +1209,38 @@ fn mount_from_msgpack(value: MsgPackValue) -> Result(Mount, CorruptionReport) {
     "policy.mounts",
   ))
   use path <- result.try(required_string(entries, "path", "policy.mounts"))
+
+  // Verify mount path is absolute.
   use Nil <- result.try(case string.starts_with(path, "/") {
     True -> Ok(Nil)
     False -> Error(fail("policy.mounts.path", "an absolute path", path))
   })
+
   use access_text <- result.try(required_string(
     entries,
     "access",
     "policy.mounts",
   ))
+
+  // Decode mount access mode.
   use access <- result.try(case access_text {
     "ro" -> Ok(MountReadOnly)
     "rw" -> Ok(MountReadWrite)
     _ -> Error(fail("policy.mounts.access", "\"ro\" or \"rw\"", access_text))
   })
+
   use required <- result.try(required_bool(entries, "required", "policy.mounts"))
+
+  // Convert required bool to MountRequirement.
   let requirement = case required {
     True -> MountRequired
     False -> MountOptional
   }
+
   Ok(Mount(path:, access:, requirement:))
 }
 
+/// Encodes network policy to MsgPack value.
 fn network_to_msgpack(network: NetworkPolicy) -> MsgPackValue {
   case network {
     NetworkOff ->
@@ -1284,11 +1260,14 @@ fn network_to_msgpack(network: NetworkPolicy) -> MsgPackValue {
   }
 }
 
+/// Decodes network policy from MsgPack value.
 fn network_from_msgpack(
   value: MsgPackValue,
 ) -> Result(NetworkPolicy, CorruptionReport) {
   use entries <- result.try(as_map(value, "policy.network"))
   use mode <- result.try(required_string(entries, "mode", "policy.network"))
+
+  // Decode network policy according to mode variant.
   case mode {
     "off" -> {
       use Nil <- result.try(reject_unknown_keys(
@@ -1327,6 +1306,7 @@ fn network_from_msgpack(
   }
 }
 
+/// Encodes limits structure to MsgPack value.
 fn limits_to_msgpack(limits: Limits) -> MsgPackValue {
   msgpack.MapValue([
     #(msgpack.StringValue("cpu_s"), msgpack.IntValue(limits.cpu_s)),
@@ -1341,6 +1321,7 @@ fn limits_to_msgpack(limits: Limits) -> MsgPackValue {
   ])
 }
 
+/// Decodes limits structure from MsgPack value.
 fn limits_from_msgpack(
   value: MsgPackValue,
 ) -> Result(Limits, CorruptionReport) {
@@ -1361,6 +1342,7 @@ fn limits_from_msgpack(
 
 // --- decoding plumbing --------------------------------------------------
 
+/// Constructs a corruption report for policy decoding errors.
 fn fail(
   subject: String,
   expected: String,
@@ -1378,6 +1360,7 @@ fn string_array(items: List(String)) -> MsgPackValue {
   msgpack.ArrayValue(list.map(items, msgpack.StringValue))
 }
 
+/// Decodes a MsgPack value as a map entries list.
 fn as_map(
   value: MsgPackValue,
   subject: String,
@@ -1388,6 +1371,7 @@ fn as_map(
   }
 }
 
+/// Rejects any map keys not in the known keys list.
 fn reject_unknown_keys(
   entries: List(#(MsgPackValue, MsgPackValue)),
   known: List(String),
@@ -1405,6 +1389,7 @@ fn reject_unknown_keys(
   })
 }
 
+/// Finds a key in a MsgPack map entries list.
 fn find(
   entries: List(#(MsgPackValue, MsgPackValue)),
   key: String,
@@ -1417,6 +1402,7 @@ fn find(
   })
 }
 
+/// Extracts a required key from a MsgPack map entries list.
 fn required(
   entries: List(#(MsgPackValue, MsgPackValue)),
   key: String,
@@ -1428,12 +1414,15 @@ fn required(
   |> result.map_error(fn(_) { fail(subject, "required key " <> key, "missing") })
 }
 
+/// Extracts a required integer key from map entries.
 fn required_int(
   entries: List(#(MsgPackValue, MsgPackValue)),
   key: String,
   subject: String,
 ) -> Result(Int, CorruptionReport) {
   use value <- result.try(required(entries, key, subject))
+
+  // Verify value is an integer.
   case value {
     msgpack.IntValue(number) -> Ok(number)
     other ->
@@ -1441,11 +1430,14 @@ fn required_int(
   }
 }
 
+/// Extracts a non-negative integer limit from map entries.
 fn required_limit(
   entries: List(#(MsgPackValue, MsgPackValue)),
   key: String,
 ) -> Result(Int, CorruptionReport) {
   use number <- result.try(required_int(entries, key, "policy.limits"))
+
+  // Verify limit integer is non-negative.
   case number < 0 {
     True ->
       Error(fail(
@@ -1457,12 +1449,15 @@ fn required_limit(
   }
 }
 
+/// Extracts a required string key from map entries.
 fn required_string(
   entries: List(#(MsgPackValue, MsgPackValue)),
   key: String,
   subject: String,
 ) -> Result(String, CorruptionReport) {
   use value <- result.try(required(entries, key, subject))
+
+  // Verify value is a string.
   case value {
     msgpack.StringValue(text) -> Ok(text)
     other ->
@@ -1470,18 +1465,22 @@ fn required_string(
   }
 }
 
+/// Extracts a required boolean key from map entries.
 fn required_bool(
   entries: List(#(MsgPackValue, MsgPackValue)),
   key: String,
   subject: String,
 ) -> Result(Bool, CorruptionReport) {
   use value <- result.try(required(entries, key, subject))
+
+  // Verify value is a boolean.
   case value {
     msgpack.BoolValue(flag) -> Ok(flag)
     other -> Error(fail(subject <> "." <> key, "a bool", describe_value(other)))
   }
 }
 
+/// Extracts an array of absolute path strings from map entries.
 fn required_paths(
   entries: List(#(MsgPackValue, MsgPackValue)),
   key: String,
@@ -1499,6 +1498,7 @@ fn required_paths(
   Ok(paths)
 }
 
+/// Decodes a MsgPack value into a string array.
 fn as_string_array(
   value: MsgPackValue,
   subject: String,
@@ -1520,6 +1520,7 @@ fn as_string_array(
   }
 }
 
+/// Returns a human-readable description of a MsgPack value type.
 fn describe_value(value: MsgPackValue) -> String {
   case value {
     msgpack.NilValue -> "nil"

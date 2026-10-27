@@ -287,6 +287,7 @@ pub fn validate(plan: Plan) -> Result(Nil, Error) {
   )
   use _ <- result.try(
     list.try_map(plan.selections, fn(selection) {
+      // Check budgets and validate field names for each selection variant.
       case selection {
         ExactKey(_, key) -> check_budget(1, string.byte_size(key) + 65)
         KeyPage(_, prefix, after, limit) -> {
@@ -306,6 +307,8 @@ pub fn validate(plan: Plan) -> Result(Nil, Error) {
   )
   list.try_map(plan.references, fn(reference) {
     use Nil <- result.try(validate_field(reference.field))
+
+    // Check budget for optional prefixed field references.
     case reference {
       FromField(..) -> Ok(Nil)
       OptionalPrefixedField(prefix:, ..) ->
@@ -315,6 +318,7 @@ pub fn validate(plan: Plan) -> Result(Nil, Error) {
   |> result.replace(Nil)
 }
 
+/// Validates that a field name is non-empty, within length limits, and alphanumeric/underscore.
 fn validate_field(field: String) -> Result(Nil, Error) {
   case
     field != ""
@@ -381,6 +385,7 @@ pub fn collect(
 // Exact-key lookups reuse the indexed primitive used by reference expansion.
 // Unlike a required reference, an explicitly requested missing cell is an
 // absence in this cut, not corruption. All other failures remain failures.
+/// Retrieves headers matching an individual selection from the underlying source.
 fn selection_headers(
   source: Source,
   selection: Selection,
@@ -399,11 +404,13 @@ fn selection_headers(
   }
 }
 
+/// Validates that cells match any predicates attached to relevant selections.
 fn validate_predicates(
   selections: List(Selection),
   cell: Cell,
 ) -> Result(Nil, Error) {
   list.try_fold(selections, Nil, fn(_, selection) {
+    // Check selection predicate against matching cell namespace and prefix.
     case selection {
       ExactKey(_, _) | KeyPage(_, _, _, _) -> Ok(Nil)
       Selection(namespace, prefix, predicate) -> {
@@ -429,10 +436,13 @@ pub fn matches(
   predicate: Predicate,
   payload: json.JsonValue,
 ) -> Result(Bool, Error) {
+  // Evaluate whether the payload satisfies the predicate condition.
   case predicate {
     All -> Ok(True)
     StringFieldEquals(field, expected) -> {
       use value <- result.try(field_value(payload, field))
+
+      // Validate actual field value against expected string value.
       case value {
         json.String(actual) -> Ok(actual == expected)
         json.Null
@@ -446,6 +456,7 @@ pub fn matches(
   }
 }
 
+/// Resolves reference headers from cell payloads using the underlying snapshot source.
 fn reference_headers(
   references: List(Reference),
   cells: List(Cell),
@@ -461,6 +472,8 @@ fn reference_headers(
             cell.register.value.payload,
             reference.field,
           ))
+
+          // Extract nullable string key value from the reference field.
           case value {
             json.Null -> Ok(None)
             json.String(key) if key != "" -> Ok(Some(key))
@@ -486,6 +499,7 @@ fn reference_headers(
   list.flatten(nested)
 }
 
+/// Extracts a named field value from a JSON object payload.
 fn field_value(
   payload: json.JsonValue,
   field: String,
@@ -503,6 +517,7 @@ fn field_value(
   }
 }
 
+/// Accumulates headers into the collection tracking total bytes and budget limits.
 fn add_headers(
   acc: #(dict.Dict(String, Header), Int),
   headers: List(Header),
@@ -510,6 +525,8 @@ fn add_headers(
   list.try_fold(headers, acc, fn(acc, header) {
     let #(seen, bytes) = acc
     let key = header_key(header)
+
+    // Skip already-seen headers or account and budget new headers.
     case dict.has_key(seen, key) {
       True -> Ok(acc)
       False -> {
@@ -602,6 +619,7 @@ pub fn lineage(
   walk(Some(from), before, limit, 0, [], link)
 }
 
+/// Recursively walks entry ancestors within remaining limits and byte bounds.
 fn walk(
   next: Option(EntryId),
   before: Int,
@@ -610,14 +628,19 @@ fn walk(
   kept: List(Descriptor),
   link: fn(EntryId, Int) -> Result(Option(Link), Error),
 ) -> Result(List(Descriptor), Error) {
+  // Check termination conditions on remaining count and next entry identifier.
   case next, remaining {
     None, _ | Some(_), 0 -> Ok(kept)
     Some(id), _ -> {
       use found <- result.try(link(id, before))
+
+      // Process found parent link or terminate if no link was returned.
       case found {
         None -> Ok(kept)
         Some(Link(descriptor:, parent:)) -> {
           let size = bytes + descriptor.byte_length
+
+          // Check whether accumulated size exceeds lineage byte limits.
           case kept != [] && size > lineage_bytes_limit {
             True -> Ok(kept)
             False ->
@@ -651,6 +674,8 @@ pub fn validate_descriptor(
     descriptor.seq < 1 || descriptor.byte_length < 1,
     Error(InvalidRequest),
   )
+
+  // Verify descriptor byte length does not exceed maximum record limit.
   case descriptor.byte_length > record_bytes_limit {
     True -> Error(RecordTooLarge(descriptor.id, descriptor.byte_length))
     False -> Ok(descriptor)
@@ -670,6 +695,8 @@ pub fn validate_fragment(
   offset: Int,
 ) -> Result(Nil, Error) {
   use _ <- result.try(validate_descriptor(descriptor))
+
+  // Ensure offset falls within nonnegative bounds up to total descriptor byte length.
   case offset >= 0 && offset <= descriptor.byte_length {
     True -> Ok(Nil)
     False -> Error(InvalidRequest)
@@ -680,6 +707,7 @@ fn corrupt(expected: String) -> Result(a, Error) {
   Error(corruption_error(expected))
 }
 
+/// Constructs a storage corruption failure error for snapshot metadata.
 fn corruption_error(expected: String) -> Error {
   StorageFailure(
     storage.CorruptRow(corruption.report(

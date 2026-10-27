@@ -185,6 +185,10 @@ pub fn install(text: String, options: Options) -> Result(Installed, String) {
     Wanted("TLS options", optfile, distribution.tls_options(config)),
   ]
   use steps <- result.try(list.try_map(wanted, plan(_, options.overwrite)))
+
+  // Plan membership ledger write if bundle operates under signed ledger trust.
+
+  // The selected install outcome determines whether state can be published.
   use ledger_step <- result.try(case bundle.trust {
     distribution_bundle.StaticPeers(_) -> Ok([])
     distribution_bundle.SignedLedger(lines) ->
@@ -195,6 +199,7 @@ pub fn install(text: String, options: Options) -> Result(Installed, String) {
       )
       |> result.map(fn(planned) { [planned] })
   })
+
   use cookie <- result.try(plan_cookie(
     files.cookie,
     bundle.cookie,
@@ -239,8 +244,11 @@ type Planned {
   Planned(step: Step, write: Option(String))
 }
 
+/// Plans the installation write step for a single destination file based on existing disk state.
 fn plan(wanted: Wanted, overwrite: Overwrite) -> Result(Planned, String) {
   use found <- result.try(read_existing(wanted.path))
+
+  // Determine whether to create, keep unchanged, or replace the destination file.
   case found {
     None -> Ok(planned(wanted, Created, Some(wanted.content)))
     Some(content) if content == wanted.content ->
@@ -263,8 +271,7 @@ fn planned(wanted: Wanted, outcome: Outcome, write: Option(String)) -> Planned {
   Planned(step: Step(what: wanted.what, path: wanted.path, outcome:), write:)
 }
 
-// The cookie gets its own reason, because the file is shared with every other
-// distributed node this user starts.
+/// Plans cookie file installation, protecting against inadvertent replacement of user-wide Erlang cookies.
 fn plan_cookie(
   path: String,
   cookie: String,
@@ -272,6 +279,8 @@ fn plan_cookie(
 ) -> Result(Planned, String) {
   let wanted = Wanted("cookie", path, cookie)
   use found <- result.try(read_existing(path))
+
+  // Guard against silently replacing an existing conflicting Erlang cookie file.
   case found, overwrite {
     Some(content), RefuseExisting if content != cookie ->
       Error(
@@ -285,14 +294,7 @@ fn plan_cookie(
   }
 }
 
-// The ledger file is the one destination that rightfully differs between a
-// bundle and a machine: the node may have synced past the snapshot the bundle
-// carries, or the bundle may be newer than the node. Replacing it with a
-// different file would discard entries the node has applied, so the plan
-// compares the two as chains. A file the bundle's ledger extends is replaced by
-// the bundle's. A file that extends the bundle's ledger is kept, since it holds
-// everything the bundle says and more. Two ledgers that diverge are refused,
-// because one of them is a fork, unless `--force` says to take the bundle's.
+/// Plans membership ledger file installation by comparing existing and bundled ledger chain prefixes.
 fn plan_ledger(
   path: String,
   bundled: String,
@@ -300,10 +302,13 @@ fn plan_ledger(
 ) -> Result(Planned, String) {
   let wanted = Wanted("membership ledger", path, bundled)
   use found <- result.try(read_existing(path))
+
+  // Determine whether existing ledger file is absent, identical, or extended.
   case found {
     None -> Ok(planned(wanted, Created, Some(bundled)))
     Some(content) if content == bundled -> Ok(planned(wanted, Unchanged, None))
     Some(content) ->
+      // Reconcile chain extensions or detect diverging ledger forks.
       case
         string.starts_with(bundled, content),
         string.starts_with(content, bundled)
@@ -325,12 +330,13 @@ fn plan_ledger(
   }
 }
 
-// The sequence number and time of the bundle's newest ledger entry. The lines
-// were verified when the bundle decoded, so only their shape is read here.
+/// Extracts the sequence number and timestamp of the latest ledger entry carried by the bundle.
 fn snapshot_of(bundle: Bundle) -> Option(Snapshot) {
+  // Extract latest snapshot metadata for signed ledger bundles.
   case bundle.trust {
     distribution_bundle.StaticPeers(_) -> None
     distribution_bundle.SignedLedger(lines) ->
+      // Read the final ledger line to extract sequence and timestamp.
       case list.last(lines) {
         Error(Nil) -> None
         Ok(line) -> {
@@ -342,6 +348,8 @@ fn snapshot_of(bundle: Bundle) -> Option(Snapshot) {
             membership_entry.decode_body(raw.body)
             |> result.replace_error(Nil)
           }
+
+          // Return extracted snapshot details if decoded successfully.
           case read {
             Ok(entry) -> Some(Snapshot(seq: entry.seq, time: entry.time))
             Error(Nil) -> None
@@ -351,6 +359,7 @@ fn snapshot_of(bundle: Bundle) -> Option(Snapshot) {
   }
 }
 
+/// Reads the current text content of a file on disk if it exists, returning None on ENOENT.
 fn read_existing(path: String) -> Result(Option(String), String) {
   case simplifile.read(path) {
     Ok(content) -> Ok(Some(content))
@@ -360,6 +369,7 @@ fn read_existing(path: String) -> Result(Option(String), String) {
   }
 }
 
+/// Executes a planned disk write step using atomic permissions-restricted writes.
 fn apply(planned: Planned) -> Result(Nil, String) {
   case planned.write {
     None -> Ok(Nil)
@@ -382,11 +392,7 @@ fn read_config(path: String) -> Result(String, String) {
   Ok(option.unwrap(found, ""))
 }
 
-// Appends the tables the bundle owns and leaves the rest of the file as the
-// operator wrote it. A table that is already present with equal values is
-// skipped, which makes a second run a no-op. A table present with other values
-// is a conflict, and `--force` removes exactly its sections before the new
-// ones are appended.
+/// Merges bundle-owned configuration tables into existing TOML configuration text.
 fn merge(
   existing: String,
   tables: List(Table),
@@ -397,6 +403,8 @@ fn merge(
   use verdicts <- result.try(
     list.try_map(tables, fn(table) {
       use wanted <- result.try(wanted_value(table))
+
+      // Check whether existing configuration table matches wanted bundle table values.
       case lookup(document, table.path) {
         Error(Nil) -> Ok(#(table, Missing))
         Ok(found) if found == wanted -> Ok(#(table, Same))
@@ -413,6 +421,8 @@ fn merge(
         _ -> Error(Nil)
       }
     })
+
+  // Reject conflicting table modifications unless overwrite permission is granted.
   use Nil <- result.try(case conflicts, overwrite {
     [], _ -> Ok(Nil)
     _, ReplaceExisting -> Ok(Nil)
@@ -436,6 +446,8 @@ fn merge(
         #(table, _) -> Ok(table.text)
       }
     })
+
+  // Return unchanged document if no table additions were needed.
   case additions {
     [] -> Ok(existing)
     _ -> Ok(append(kept, additions))
@@ -448,14 +460,18 @@ type Verdict {
   Different
 }
 
+/// Merges validated distribution sections into the existing configuration text.
 fn append(kept: String, additions: List(String)) -> String {
   let body = string.join(additions, "\n")
+
+  // The existing text and additions determine the merged configuration.
   case string.trim(kept) {
     "" -> body
     _ -> string.trim_end(kept) <> "\n\n" <> body
   }
 }
 
+/// Parses TOML text into a table dictionary, returning descriptive parse errors.
 fn parse_document(
   text: String,
   path: String,
@@ -474,6 +490,7 @@ fn wanted_value(table: Table) -> Result(tom.Toml, String) {
   |> result.replace_error("the bundle's table text does not define its table")
 }
 
+/// Navigates a nested TOML dictionary by key path segments.
 fn lookup(
   document: Dict(String, tom.Toml),
   path: List(String),
@@ -493,7 +510,9 @@ fn lookup(
 // of them, up to the next header that does not. A line that is not a header
 // belongs to the section above it, so comments inside a dropped section go
 // with it and comments before the next header stay.
+/// Removes only the table sections owned by the selected bundle.
 fn remove_sections(text: String, paths: List(List(String))) -> String {
+  // Each line determines whether it belongs to a replaced table section.
   case paths {
     [] -> text
     _ -> {
@@ -504,10 +523,14 @@ fn remove_sections(text: String, paths: List(List(String))) -> String {
       let #(kept, _) =
         list.fold(string.split(text, "\n"), #([], False), fn(state, line) {
           let #(lines, dropping) = state
+
+          // Each line determines whether it belongs to a replaced table section.
           let dropping = case header(line) {
             Some(name) -> names_any(name, prefixes)
             None -> dropping
           }
+
+          // Each line determines whether it belongs to a replaced table section.
           case dropping {
             True -> #(lines, True)
             False -> #([line, ..lines], False)
@@ -524,18 +547,23 @@ fn names_any(header: String, prefixes: List(String)) -> Bool {
   })
 }
 
-// The dotted name inside a `[table]` or `[[array]]` header line, or None for
-// any other line.
+/// Parses the section name from a TOML table or array header line.
 fn header(line: String) -> Option(String) {
   let trimmed = string.trim(line)
+
+  // Identify lines beginning with section bracket delimiter.
   case string.starts_with(trimmed, "[") {
     False -> None
     True -> {
       let opened = string.drop_start(trimmed, 1)
+
+      // Handle table array double brackets.
       let inner = case string.starts_with(opened, "[") {
         True -> string.drop_start(opened, 1)
         False -> opened
       }
+
+      // Extract section header identifier before closing bracket.
       case string.split_once(inner, "]") {
         Ok(#(name, _)) -> Some(string.replace(name, " ", ""))
         Error(Nil) -> None
@@ -544,10 +572,7 @@ fn header(line: String) -> Option(String) {
   }
 }
 
-// The merged text must parse, must keep every table the bundle does not own,
-// and must configure distribution and executors the way the daemon reads them.
-// The result is the parsed `[distribution]`, from which the options file is
-// generated.
+/// Verifies that merged configuration text satisfies daemon schema and bundle invariants.
 fn accepted(
   merged: String,
   tables: List(Table),
@@ -562,6 +587,8 @@ fn accepted(
   use Nil <- result.try(
     list.try_each(tables, fn(table) {
       use wanted <- result.try(wanted_value(table))
+
+      // Confirm that the table lookup in parsed document matches bundle expectation.
       case lookup(document, table.path) {
         Ok(found) if found == wanted -> Ok(Nil)
         _ ->
@@ -590,25 +617,32 @@ fn accepted(
       |> result.replace(Nil)
       |> result.map_error(fn(reason) { path <> ": " <> reason })
   })
+
+  // Ensure the merged document declares an active distribution configuration.
   case found {
     Some(config) -> Ok(config)
     None -> Error(path <> " has no [distribution] table after the merge")
   }
 }
 
+/// Writes the merged configuration file to disk, recording whether it was created or merged.
 fn write_config(
   path: String,
   existing: String,
   merged: String,
 ) -> Result(Step, String) {
   let step = fn(outcome) { Step(what: "daemon configuration", path:, outcome:) }
+
+  // Check if merged configuration changed from existing content.
   case merged == existing {
     True -> Ok(step(Unchanged))
     False -> {
+      // Determine installation step outcome status.
       let outcome = case existing {
         "" -> Created
         _ -> Merged
       }
+
       use Nil <- result.try(
         simplifile.create_directory_all(parent(path))
         |> result.map_error(describe(parent(path), _)),
@@ -620,6 +654,7 @@ fn write_config(
   }
 }
 
+/// Computes the directory path containing `path`.
 fn parent(path: String) -> String {
   case list.reverse(string.split(path, "/")) {
     [_, ..rest] ->
@@ -631,11 +666,14 @@ fn parent(path: String) -> String {
   }
 }
 
+/// Constructs the shell command string to launch the installed daemon.
 fn start_command(options: Options, optfile: String) -> String {
+  // Format environment variable prefix when running with custom home directory.
   let home = case bootstrap.getenv("HOME") {
     Ok(current) if current == options.home -> ""
     _ -> "HOME=" <> options.home <> " "
   }
+
   home
   <> "LOOM_DISTRIBUTION_OPTFILE="
   <> optfile

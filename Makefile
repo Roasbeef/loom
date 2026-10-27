@@ -3,8 +3,8 @@
 # Every target is a thin wrapper over the scripts and package tooling, so
 # what CI runs and what you run locally are the same commands.
 
-PACKAGES := host core storage session machine prompt statem statem_parallel session_view web_view telemetry runtime provider \
-	broker executor mcp lsp tools cap ext codemode events harness client conformance tui lint
+PACKAGES := host core storage session machine prompt statem statem_parallel evalstat gepa session_view web_view telemetry runtime provider \
+	broker executor mcp lsp tools cap ext codemode events harness client conformance eval tui lint
 # Packages that target JavaScript. They are formatted, built and documented
 # with the rest; their pure tests run on a JavaScript runtime.
 JS_PACKAGES := web_client web_mermaid
@@ -31,6 +31,12 @@ check-gleam: binaries ## Full gate for the Gleam packages only
 .PHONY: check-%
 check-%: binaries ## Full gate for one package, e.g. make check-machine
 	@scripts/check.sh $*
+
+# Client assembly regressions exercise the real evolution plane and refuse a
+# missing seed instead of silently measuring an assembly without that plane.
+.PHONY: check-client
+check-client: binaries codemode-seed
+	@scripts/check.sh client
 
 # The gates a change can affect: the static gates, the changed packages and
 # every package that builds against or reads them, derived from the
@@ -82,6 +88,14 @@ test-web_client: ## Run the browser package's tests (needs Node, Bun or Deno)
 .PHONY: test-%
 test-%: sandbox ## Run tests for one package, e.g. make test-core
 	@bash scripts/test.sh $*
+
+# The portable packages that promise both targets run their suites on
+# JavaScript too (scripts/portable_js_test.sh finds the runtime); the full
+# gate runs this after each one's Erlang suite.
+.PHONY: test-portable-js
+test-portable-js: ## Run gepa's and evalstat's tests on the JavaScript target
+	@bash scripts/portable_js_test.sh gepa
+	@bash scripts/portable_js_test.sh evalstat
 
 .PHONY: build
 build: ## Warning-free build of every Gleam package
@@ -507,6 +521,10 @@ lsp-seed: ## Download workspace package dependencies before offline LSP use
 e2e-codemode: sandbox codemode-seed ## Code-mode end to end: jailed build, real satellite, real cap call
 	@bash scripts/test.sh codemode
 
+.PHONY: eval-run
+eval-run: ## Run or report an evaluation plan: make eval-run ARGS="run plan.json --tasks T --arms A"
+	cd packages/eval && gleam run -m eval/run_cli -- $(ARGS)
+
 .PHONY: e2e-evolution
 e2e-evolution: binaries codemode-seed ## Author, test, approve, replace and roll back one real session
 	@LOOM_EVOLUTION_E2E=1 LOOM_TEST_TIMEOUT_SECONDS=720 \
@@ -517,6 +535,19 @@ e2e-evolution: binaries codemode-seed ## Author, test, approve, replace and roll
 		bash scripts/test.sh client --match client@evolution_prompt_acceptance_test:
 	@LOOM_EVOLUTION_E2E=1 LOOM_TEST_TIMEOUT_SECONDS=720 \
 		bash scripts/test.sh client --match client@live_upgrade_acceptance_test:
+
+# Remote evolution against two shipped daemons: a session registered on an
+# executor proposes, tests, selects and invokes an extension and a program, and
+# a restarted executor stages the selection again. The executor compiles every
+# candidate, so the target builds the helper, the shipment and the code-mode
+# seed first. A host without one of them prints a SKIP line and passes.
+.PHONY: e2e-evolution-remote
+e2e-evolution-remote: sandbox codemode-seed server-shipment ## Propose, select and invoke on an executor session
+	@install -m 0755 $(HELPER) bin/loom-exec
+	@LOOM_BOOTSTRAP_E2E_SERVER="$(CURDIR)/bin/loomd" \
+		LOOM_TEST_PROVIDER_KEY=loom-provider-fixture-key \
+		LOOM_TEST_TIMEOUT_SECONDS=720 \
+		bash scripts/test.sh client --match client@evolution_remote_acceptance_test:
 
 # ------------------------------------------------------------- the signoff
 # The merge gate on a developer's own machines instead of hosted runners:
@@ -656,6 +687,10 @@ docker-smoke: ## Build the image, boot it, run a client command and the self-tes
 .PHONY: docker-distributed-smoke
 docker-distributed-smoke: ## Bring up docker/distributed (orchestrator + executor), check both run a TLS node, tear down; skips without Docker
 	@bash scripts/distributed_smoke.sh "$(DOCKER_IMAGE)"
+
+.PHONY: harbor-test
+harbor-test: ## Unit-test the Harbor agent adapter (integrations/harbor); skips without uv, not part of make check
+	@bash scripts/harbor_test.sh
 
 .PHONY: clean
 clean: ## Remove build artifacts

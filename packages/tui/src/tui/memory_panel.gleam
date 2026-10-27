@@ -112,6 +112,8 @@ pub fn update(
   let step = int.max(1, viewport_rows(area) - 1)
   let maximum = max_scroll(board, area)
   let here = int.min(state.scroll, maximum)
+
+  // Handle scrolling and exit navigation keys.
   case key {
     keys.Escape -> Close
     keys.Up -> Continue(State(scroll: int.max(0, here - 1)))
@@ -151,10 +153,13 @@ pub fn render(
   let rows = body_lines(board, notice, int.max(1, content.size.width))
   let maximum = int.max(0, list.length(rows) - content.size.height)
   let cleared = buf |> buffer.clear(area)
+
+  // Render border block frame if terminal dimensions allow.
   let framed = case card.size.height >= 8 && card.size.width >= 20 {
     True -> block.render(cleared, card, frame)
     False -> cleared
   }
+
   framed
   |> paragraph.render_styled(
     content,
@@ -174,13 +179,15 @@ pub fn render(
   ])
 }
 
-// The frame's inside, split into the body and the one key-hint row beneath
-// it. A terminal too small for a frame keeps the body and the row and drops
-// the border, as the proposals review does.
+/// The frame's inside, split into the body and the one key-hint row beneath
+/// it. A terminal too small for a frame keeps the body and the row and drops
+/// the border, as the proposals review does.
 fn layout_areas(
   area: geometry.Rect,
 ) -> #(geometry.Rect, geometry.Rect, geometry.Rect) {
   let framed = area.size.height >= 8 && area.size.width >= 20
+
+  // Compute horizontal margin when framed on wider terminals.
   let horizontal = case framed && area.size.width >= 70 {
     True -> 2
     False -> 0
@@ -207,6 +214,7 @@ fn layout_areas(
     True -> 1
     False -> 0
   }
+
   let content =
     geometry.rect_new(
       inside.position.x,
@@ -229,6 +237,7 @@ fn viewport_rows(area: geometry.Rect) -> Int {
   content.size.height
 }
 
+/// Computes maximum allowed scroll offset based on rendered content height.
 fn max_scroll(board: Option(words.Board), area: geometry.Rect) -> Int {
   let #(_, content, _) = layout_areas(area)
   int.max(
@@ -238,17 +247,20 @@ fn max_scroll(board: Option(words.Board), area: geometry.Rect) -> Int {
   )
 }
 
-// The body, from the top: the refusal if there was one, then the sections.
+/// The body, from the top: the refusal if there was one, then the sections.
 fn body_lines(
   board: Option(words.Board),
   notice: String,
   width: Int,
 ) -> List(span.Line) {
+  // Render refusal notice banner if present.
   let lead = case notice {
     "" -> []
     words ->
       wrapped(text_hygiene.single_line(words), theme.overlay_signal(), width)
   }
+
+  // Render board content or loading message.
   case board {
     None ->
       list.append(
@@ -259,6 +271,7 @@ fn body_lines(
   }
 }
 
+/// Assembles rendered sections for counts, receives, notes, rules, and proposals.
 fn sections(board: words.Board, width: Int) -> List(span.Line) {
   list.flatten([
     [counts_line(board, width)],
@@ -279,7 +292,7 @@ fn sections(board: words.Board, width: Int) -> List(span.Line) {
   ])
 }
 
-// The four counts on one row, as a label and its value each.
+/// Formats board status tiles on a single line.
 fn counts_line(board: words.Board, width: Int) -> span.Line {
   let tiles =
     words.tiles(board)
@@ -290,11 +303,13 @@ fn counts_line(board: words.Board, width: Int) -> span.Line {
   ])
 }
 
+/// Formats lines describing files and instructions received by each run.
 fn receives_lines(board: words.Board, width: Int) -> List(span.Line) {
   list.flatten([
     wrapped(words.inject_words(board), theme.overlay_plain(), width),
     wrapped(words.config_words, theme.overlay_quiet(), width),
     list.flat_map(board.receives, fn(file) {
+      // Style file reach according to injection status.
       let appearance = case file.reach {
         words.Injected -> theme.overlay_plain()
         words.NotInjected
@@ -302,11 +317,13 @@ fn receives_lines(board: words.Board, width: Int) -> List(span.Line) {
         | words.Unreadable(..)
         | words.UnknownReach(..) -> theme.overlay_quiet()
       }
+
       wrapped(words.receives_words(file), appearance, width)
     }),
   ])
 }
 
+/// Formats lines for the notes section of the memory panel.
 fn notes_lines(
   section: words.Section(words.Note),
   width: Int,
@@ -325,14 +342,16 @@ fn notes_lines(
   }
 }
 
-// One note on one line: its kind and date, a mark when it is legacy, and its
-// title with its description. The line is cut to the width and never
-// wrapped, so a note stays one row.
+/// One note on one line: its kind and date, a mark when it is legacy, and its
+/// title with its description. The line is cut to the width and never
+/// wrapped, so a note stays one row.
 fn note_line(note: words.Note, width: Int) -> span.Line {
+  // Style note entry according to typed versus legacy status.
   let appearance = case note.typing {
     words.Typed -> theme.overlay_plain()
     words.Legacy -> theme.overlay_quiet()
   }
+
   span.line_new([
     span.span_styled(
       text.truncate(
@@ -345,6 +364,7 @@ fn note_line(note: words.Note, width: Int) -> span.Line {
   ])
 }
 
+/// Formats lines for the approved rules section of the memory panel.
 fn rules_lines(
   section: words.Section(words.Rule),
   width: Int,
@@ -366,7 +386,7 @@ fn rules_lines(
   }
 }
 
-// A rule is its origin, then its first line beneath.
+/// Formats lines for a single approved rule entry.
 fn rule_lines(rule: words.Rule, width: Int) -> List(span.Line) {
   let origin =
     span.line_new([
@@ -375,6 +395,8 @@ fn rule_lines(rule: words.Rule, width: Int) -> List(span.Line) {
         theme.overlay_quiet(),
       ),
     ])
+
+  // Include rule text line beneath origin header if present.
   case rule.line {
     "" -> [origin]
     line -> [
@@ -406,6 +428,7 @@ fn heading(label: String, width: Int) -> span.Line {
   ])
 }
 
+/// Wraps multiline text to available width with the given style.
 fn wrapped(
   words: String,
   appearance: style.Style,

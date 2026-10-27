@@ -45,8 +45,8 @@ The terminal's whole update is `runtime.settle(step(runtime.message(event,
 model), runtime.receive(model)))` (`packages/tui/src/tui.gleam:1764`
 (`update`)). `step` takes `msg.Msg` (`tui/msg.gleam:59` (`Msg`)): an
 `Input(at, event)` it reduces through `apply_input` and `settle_update`
-(`packages/tui/src/tui.gleam:3570` (`apply_input`),
-`packages/tui/src/tui.gleam:3571` (`settle_update`)), or an `Arrived`
+(`packages/tui/src/tui.gleam:3631` (`apply_input`),
+`packages/tui/src/tui.gleam:3632` (`settle_update`)), or an `Arrived`
 that `admission.admit` only files (`tui/admission.gleam:68` (`admit`)).
 Every reducer reads and writes one record, `State(view)`
 (`tui/model.gleam:399` (`Model`)), whose `view` field already holds the
@@ -134,7 +134,7 @@ terminal, 4 handles, 3 split.
 | `input` | b | An etui `TextAreaState`; the web's editor is the browser's. |
 | `strand_workspaces` | split | The parked `scrollback` per strand is the session's history window and moves to a shared `Dict(#(session, strand), history_view.State)`; the editor, its history, the offset, anchors and height stay terminal; the record is `StrandWorkspace` (`tui/model.gleam:300`). |
 | `restored_workspace` | b | A viewport endpoint the next projection restores. |
-| `attachments` | a | What the next submission carries, not editor state; `submit_with_images` sends them (`session_view/commands.gleam:771` (`submit_with_images`)), and Part 2 adds images to the page's composer. |
+| `attachments` | a | What the next submission carries, not editor state; `submit_with_images` sends them (`session_view/commands.gleam:788` (`submit_with_images`)), and Part 2 adds images to the page's composer. |
 | `history`, `history_index`, `history_draft` | b | The composer's command history. |
 | `command_selected` | b | The palette's cursor. |
 | `submission_mode` | b | Tab's choice for the next Enter; the web sends its delivery with each submit. The shared `Submit` command carries it. |
@@ -232,7 +232,7 @@ type and no job slot. What it does hold from `tui/` today moves with it:
 over its lane's handles) and the `Peer`, `Interrupt`,
 `UnconfirmedSubmission`, `SubmissionSource`, `GoalReport` and
 `ConnectionBacklog` types from `tui/model`. `agents.summary`
-(`tui/agents.gleam:1410` (`summary`)) stays behind; the terminal derives
+(`tui/agents.gleam:1484` (`summary`)) stays behind; the terminal derives
 the footer string in its projection.
 
 ### The web view's `component.Model`
@@ -333,7 +333,7 @@ the shared step an `Acted`. The `JobReplied` arrival
 it is filed into does.
 
 `Stamp` loses `wall_ms`. The one reader is the session creation key
-(`tui/session_control.gleam:767` (`wall_ms`)), which stays in the
+(`tui/session_control.gleam:780` (`wall_ms`)), which stays in the
 terminal, and the terminal's stamp gains it back beside the shared one. The web shell sets `now_ms` and `transport_ms` to the same
 reading.
 
@@ -405,9 +405,9 @@ entry points above gain the parameter with it.
 reducers decide. Every `Channel` effect comes through `hold_channel`
 (`session_view/model.gleam:996` (`hold_channel`)), and the one `Record` a shared
 reducer queues is the channelless arrival
-(`session_view/lane_fold.gleam:1131` (`receive_unlaned`), the arrival of a message with no lane). The input's own recording line is queued by `start_step` before
+(`session_view/lane_fold.gleam:1177` (`receive_unlaned`), the arrival of a message with no lane). The input's own recording line is queued by `start_step` before
 the reducer runs
-(`tui/model.gleam:1203` (`start_step`)); the terminal's shell keeps
+(`tui/model.gleam:1196` (`start_step`)); the terminal's shell keeps
 queuing it, ahead of the shared call, so the recording's order holds. The
 terminal maps `Recorded(recorder, message)` to
 `recording.append(recorder, recording.Arrived(message))`, which writes the
@@ -426,7 +426,7 @@ fields the adoption arm resets today (`tui/interaction.gleam:260`
 `Attached`. `next_due` is
 `option.then(model.channel, session_channel.next_due)`; a host that has
 other reasons to wake, as the terminal does, combines it with its own
-(`tui/tick.gleam:589` (`lane_wait`)).
+(`tui/tick.gleam:604` (`lane_wait`)).
 
 ### The shells
 
@@ -459,7 +459,7 @@ terminal halves of the splits. A terminal reducer that calls into the
 shared step stores the result through `hold_shared`, the same discipline
 as `hold_channel`: the shared outbox is moved into the terminal's at the
 point of the call, so a step that decides a lane close, then a terminal
-`Discard`, then a lane write (`tui/interaction.gleam:383` (`Discard`))
+`Discard`, then a lane write (`tui/interaction.gleam:402` (`Discard`))
 still performs them in that order. The terminal's effect type gains one
 variant, `Step(step.Effect(Connection, Recorder))`,
 and `perform_io` gains two arms (`tui/runtime.gleam:446`
@@ -511,20 +511,20 @@ they reach that it misses.
 - The lane fold: `tick_channel`, `apply_channel_update`, `reconcile_cut`,
   `request_decisions`, `apply_cut` and `render_cut`
   (`tui/inbound.gleam:171` (`tick_channel`) through
-  `session_view/lane_fold.gleam:696` (`render_cut`)), less the four writes named
+  `session_view/lane_fold.gleam:719` (`render_cut`)), less the four writes named
   below.
 - The connection drain and the event fold: `drain_connection`,
   `handle_connection_message`, `handle_presentation_message`,
   `apply_event` and everything under it: streams, tool tails, usage, the
   cache watch, summaries, schedules, skills and models
-  (`tui/inbound.gleam:394` (`drain_connection`),
+  (`tui/inbound.gleam:400` (`drain_connection`),
   `session_view/event_fold.gleam:112` (`apply_event`)).
 - Submission bookkeeping: `send_frame` (`session_view/outbound.gleam:58`),
   `send_via`, `apply_submission`, `discard_own_turn` and
   `mutation_refusal`, less the `clear_composer` call and the queue
   editor's `request_id`.
 - The command arms: `interrupt_active` (`session_view/commands.gleam:91`),
-  `stop_strand`, `switch_active_strand` (`tui/submit.gleam:574`),
+  `stop_strand`, `switch_active_strand` (`tui/submit.gleam:590`),
   `select_model`, `decide` (`session_view/commands.gleam:179`), `send_prompt_to`,
   `cancel_pending` and `service_history`.
 - The auxiliary reads and their edges: every `service_*_read` from
@@ -533,7 +533,7 @@ they reach that it misses.
   `receive_advisor_nudges`, less `notes_target` and `notes_surface`.
 - The tick's clocks: `advance_activity_indicator` (`tui/tick.gleam:320`)
   and `advance_generation_clock` read the stamp and shared fields;
-  `drain_replay` (`tui/tick.gleam:282`) and `apply_replay_change`.
+  `drain_replay` (`tui/tick.gleam:288`) and `apply_replay_change`.
 - `queue_owner`, `queue_namespace`, `active_strand_phase`,
   `append_system`, `append_error`, `append_notice`, `start_step`, `emit`,
   `record`, `hold_channel` and `presentation` from `tui/model`.
@@ -548,7 +548,7 @@ reducer keeps its decision and drops the terminal write. The terminal
 shell, after the shared call, compares `before.shared` with
 `after.shared` and makes the terminal write itself. This is the shape
 `surfaces.sync_context(before, after)` already has
-(`session_view/surfaces.gleam:1678` (`sync_context`)) and the shape
+(`session_view/surfaces.gleam:1718` (`sync_context`)) and the shape
 `refresh_render_cache(before, after)` has (`tui/projection.gleam:79`
 (`refresh_render_cache`)); the shell gains one more before-and-after
 pass beside them. It is right when the terminal write is a consequence of
@@ -561,7 +561,7 @@ knows something the session does not, such as which pane is open.
 
 The worst cases in the code, and the cut for each:
 
-1. **`render_cut`** (`session_view/lane_fold.gleam:696` (`render_cut`)) writes 31
+1. **`render_cut`** (`session_view/lane_fold.gleam:719` (`render_cut`)) writes 31
    fields; four touch terminal state. `strip: agent_strip.observe(..)`
    becomes `roster: agent_roster.observe(..)`, the strip's focus being
    untouched by a capture. `cache_outlook` is reset when the active
@@ -572,7 +572,7 @@ The worst cases in the code, and the cut for each:
    `agent_summary` is dropped and derived at paint. The other 27 writes
    are shared and the function moves as it is.
 
-2. **`select_workspace`** (`session_view/event_fold.gleam:1643`
+2. **`select_workspace`** (`session_view/event_fold.gleam:1719`
    (`select_workspace`)) parks the editor, the history window, the
    viewport and the anchors under one key and restores another's. It
    splits into `step.select_workspace`, which parks and restores
@@ -583,12 +583,12 @@ The worst cases in the code, and the cut for each:
    and `active_strand` against `after`'s, so a switch from a strand key,
    the strip, a capture that renames the session or a replay's `Adopt`
    parks both halves. `restore_returned_draft`
-   (`session_view/event_fold.gleam:652` (`restore_returned_draft`)) is the one
+   (`session_view/event_fold.gleam:679` (`restore_returned_draft`)) is the one
    shared reducer that writes a parked editor: the returned text becomes a
    shared field, `returned_drafts: List(#(strand, text))`, and the shell
    appends it to the editor it owns.
 
-3. **`apply_channel_update`'s `Failed` arm** (`session_view/lane_fold.gleam:461`
+3. **`apply_channel_update`'s `Failed` arm** (`session_view/lane_fold.gleam:472`
    (`Failed`)) closes a `GoalInspector` overlay, fails the
    worktree navigator and starts the reconnect job (`tui/inbound.gleam:212`
    (`begin_reconnect`)). The shared arm keeps the peer transition, the
@@ -596,7 +596,7 @@ The worst cases in the code, and the cut for each:
    `before.shared.peer == Attached && after.shared.peer == Disconnected`
    closes the overlay and starts the job, which is a `StartJob` the
    terminal already owns. The same edge covers the arm of
-   `handle_presentation_message` for `Closed` (`session_view/lane_fold.gleam:1144` (`receive_unlaned`)).
+   `handle_presentation_message` for `Closed` (`session_view/lane_fold.gleam:1192` (`receive_unlaned`)).
    *As landed (S3d′):* recorded facts rather than a comparison of `peer`:
    `GoalReleased` and `ConnectionLost` on `Failed`, `ConnectionLost` on
    `Closed`, applied after the update.
@@ -611,7 +611,7 @@ The worst cases in the code, and the cut for each:
    remembers the text in the input history. The web's `drafts` counter is
    the same edge, so the two hosts empty their editors on the same fact.
 
-5. **`submit_text`** (now `commands.submit`, `session_view/commands.gleam:379` (`submit`)) parses
+5. **`submit_text`** (now `commands.submit`, `session_view/commands.gleam:385` (`submit`)) parses
    the draft and dispatches over `command.Command`, opening overlays for
    `Help`, `Models`, `Sessions` and the panels and sending frames for the
    rest. The shell parses first, as described under the message: surface
@@ -623,8 +623,8 @@ The worst cases in the code, and the cut for each:
    `pending_submission` marker moves into the shared `Submit` arm.
 
 6. **`present_pending_approval` and `close_settled_approval`**
-   (`tui/inbound.gleam:606` (`present_pending_approval`),
-   `session_view/lane_fold.gleam:625` (`close_settled_approval`)) open and close the
+   (`tui/inbound.gleam:615` (`present_pending_approval`),
+   `session_view/lane_fold.gleam:642` (`close_settled_approval`)) open and close the
    approval inspector from the projected approvals. Both are terminal:
    the page has no inspector and draws every pending record. They become
    the shell's edge on `after.shared.approvals`, run after every shared
@@ -641,31 +641,31 @@ The worst cases in the code, and the cut for each:
    lookup's inspector (`LookupAnswered`) are facts the terminal applies
    after the update.
 
-7. **`settle_update`** (`packages/tui/src/tui.gleam:3571`
+7. **`settle_update`** (`packages/tui/src/tui.gleam:3632`
    (`settle_update`)) runs nine calls after every event. Three are
    shared and move into `step.update`'s own settle: `sync_context`,
    `sync_advisor_nudges`, `sync_goal`. Six are terminal and stay:
    `request_visible_worktree` on a diff pane appearing, which becomes
    `Acted(RefreshWorktree)` because only the shell knows the pane appeared
-   (`tui/inbound.gleam:1077` (`request_visible_worktree`) reads
+   (`tui/inbound.gleam:1091` (`request_visible_worktree`) reads
    `layout.diff_shown`); `request_history_for_view`, which becomes
    `Acted(OlderHistory)` for the same reason
-   (`tui/interaction.gleam:2309` (`request_history_for_view`) reads the
+   (`tui/interaction.gleam:2374` (`request_history_for_view`) reads the
    viewport); `publish_herdr`; `refresh_render_cache`; the viewport snap;
    and `refresh_frame_cache`. The compile-time boundary the comment above
    `apply_input` describes keeps its shape: the shared `update` applies
    its settle to a parameter, and the terminal's `settle_update` applies
    its remaining steps to `updated` as it does now
-   (`packages/tui/src/tui.gleam:3570` (`apply_input`)).
+   (`packages/tui/src/tui.gleam:3631` (`apply_input`)).
 
-8. **The tick** (`tui/tick.gleam:139` (`update_tick`)) is a fixed
+8. **The tick** (`tui/tick.gleam:145` (`update_tick`)) is a fixed
    order of drains: replay, strip, activity, control, candidate,
    reconnect, activity poll, configuration, connection, then the settle
    chain. The order is kept by having the terminal's tick call the shared
    `Ticked` at the point where the connection drain sits today, after the
    terminal's job drains and the candidate's poll. `tick_strip`
-   (`tui/inbound.gleam:1180` (`tick_strip`)) reads the strip's focus and
-   stays; `advance_cache_outlook` (`tui/tick.gleam:349`
+   (`tui/inbound.gleam:1189` (`tick_strip`)) reads the strip's focus and
+   stays; `advance_cache_outlook` (`tui/tick.gleam:355`
    (`advance_cache_outlook`)) writes the footer label and stays, reading
    `shared.cache` and the stamp. `settle_tick`'s quiet-time and backlog
    bookkeeping stays terminal (`tui/tick.gleam:167` (`settle_tick`)).
@@ -676,7 +676,7 @@ The worst cases in the code, and the cut for each:
    terminal function over `TuiModel`, and the calls it makes into shared
    reducers become `Acted` commands or direct calls through `hold_shared`.
    `update_ready_key`'s order, Escape before the drain
-   (`tui/interaction.gleam:1951` (`update_ready_key`)), is kept because
+   (`tui/interaction.gleam:2006` (`update_ready_key`)), is kept because
    the shell decides when to call the shared drain, as it does today.
 
 ## 4. What the web view deletes
@@ -696,7 +696,7 @@ no lines.
 | `reduce`, `drained`, `take_filed`, `received` | the shared `Ticked`: `drain_connection` then `tick_channel` | `session_view/inbound` |
 | `apply` | `apply_channel_update` | `session_view/inbound` |
 | `captured`, `fresh`, `recaptured` | `reconcile_cut`, `apply_cut`, `render_cut` | `session_view/inbound` |
-| `used`, `settle_cache`, `settle_pushed`, `noted` | `receive_usage` (`session_view/event_fold.gleam:1058`), `settle_usage`, `settle_pending_cache`, `note_cache_miss` | `session_view/inbound` |
+| `used`, `settle_cache`, `settle_pushed`, `noted` | `receive_usage` (`session_view/event_fold.gleam:1116`), `settle_usage`, `settle_pending_cache`, `note_cache_miss` | `session_view/inbound` |
 | `relaned`, `restripped`, `strip_of`, `outlook`, `running_ms`, `strands` | `derive(before, after)`: rebuild blocks, pieces and the strip when `shared.render_revision` moved | shell, view state |
 | `ticked` | the same per-chip label comparison over `shared.cache` and `shared.stamp` | shell |
 | `settled` | `apply_submission`; `drafts` bumps on the `pending_submission` edge | `session_view/outbound`, shell |
@@ -2078,7 +2078,7 @@ them.
 
 4. **Compile time.** The step's settle chains are the two places the
    Erlang inliner has cost a minute before (the comment above
-   `packages/tui/src/tui.gleam:3570` (`apply_input`)). S3 creates a third
+   `packages/tui/src/tui.gleam:3631` (`apply_input`)). S3 creates a third
    chain, the shell's edges. *Recommendation:* every S3 landing measures
    `erlc +time` on the generated modules and keeps the parameter boundary
    in each of the three chains; the `beam-compile-review` skill has the

@@ -811,13 +811,11 @@ fn gopls_like(state: Gopls, inbound: Inbound) -> #(Gopls, List(Action)) {
     jsonrpc.Notification(method: "textDocument/didChange", params: Some(params)) -> {
       let assert json.Int(version) =
         field(field(params, "textDocument"), "version")
-      let later =
-        Later(5, [
-          Reply(fake_server.publish(a_uri, Some(version), ["undefined: x"])),
-        ])
       case state.answering {
         AnswersBarrier -> #(Gopls(..state, version:), [])
-        IgnoresBarrier -> #(Gopls(..state, version:), [later])
+        IgnoresBarrier -> #(Gopls(..state, version:), [
+          Reply(fake_server.publish(a_uri, Some(version), ["undefined: x"])),
+        ])
       }
     }
     jsonrpc.ServerRequest(id:, method: "textDocument/documentSymbol", ..) ->
@@ -832,6 +830,10 @@ fn gopls_like(state: Gopls, inbound: Inbound) -> #(Gopls, List(Action)) {
           ]),
         ])
       }
+    jsonrpc.ServerRequest(method: "test/emit", ..) as request -> {
+      let #(_, actions) = emitter(Nil, request)
+      #(state, actions)
+    }
     jsonrpc.ServerRequest(..)
     | jsonrpc.Notification(..)
     | jsonrpc.Response(..) -> #(state, [])
@@ -865,6 +867,11 @@ pub fn a_publication_without_the_barrier_does_not_settle_test() {
   assert client.sync(started, [client.Open(a, "go", "package a")]) == Ok(Nil)
   assert client.sync(started, [client.Change(a, "package a; var _ = x")])
     == Ok(Nil)
+
+  // The acknowledgement follows the change publication on the same stream,
+  // so the new version is stored before the settlement deadline begins. This
+  // test request does not answer the documentSymbol settlement barrier.
+  emit(started, [])
 
   // Rule (a): the new version arrived, but the barrier never answered.
   let assert Ok(settlement) = client.settle(started, [a], 60)

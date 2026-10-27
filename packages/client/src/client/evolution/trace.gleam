@@ -116,6 +116,8 @@ pub fn select(
     |> result.map_error(fn(_) { "trace source usage is unreadable" }),
   )
   use brief <- result.try(join(source, target, entries, rows, bounds))
+
+  // Check if scan ceilings were met and append limitation notes.
   let notes = case
     list.length(entries) == bounds.entries
     || list.length(rows) == bounds.usage_rows
@@ -126,6 +128,7 @@ pub fn select(
     ]
     False -> list.append(source_notes, brief.limitations)
   }
+
   Ok(Brief(..brief, limitations: notes))
 }
 
@@ -157,17 +160,21 @@ pub fn actual_model(
   )
 }
 
+/// Recursively searches entry history for the latest actual assistant model target.
 fn latest_model(
   leaf: Option(Option(EntryId)),
   entries: List(entry.Entry),
   fallback: record.ModelScope,
   remaining: Int,
 ) -> Result(record.ModelScope, String) {
+  // Verify recursion depth limit has not been exhausted.
   use Nil <- result.try(case remaining > 0 {
     True -> Ok(Nil)
     False ->
       Error("actual model ancestry exceeds the bounded native source window")
   })
+
+  // Inspect the current strand leaf pointer.
   case leaf {
     None | Some(None) -> Ok(fallback)
     Some(Some(id)) -> {
@@ -177,6 +184,8 @@ fn latest_model(
           "the actual model exceeds the bounded native source window",
         ),
       )
+
+      // Match entry variant and inspect assistant model parameters.
       case entry {
         entry.MessageEntry(
           message: message.AssistantMessage(provider:, model:, api:, ..),
@@ -194,6 +203,7 @@ fn latest_model(
 
 // Payload descriptors are admitted before any source bytes are copied. One
 // excerpt source is at most 16 KiB and the entire scan copies at most one MiB.
+/// Reads recent entries within configured byte and window bounds.
 fn read_entries(
   source: session.Session,
   limit: Int,
@@ -211,6 +221,8 @@ fn read_entries(
   use #(entries, _, notes) <- result.try(
     list.try_fold(list.reverse(cut.recent), #([], 0, []), fn(acc, descriptor) {
       let #(entries, copied, notes) = acc
+
+      // Enforce entry and cumulative payload byte length ceilings.
       case
         descriptor.byte_length > 16_384
         || copied + descriptor.byte_length > 1_048_576
@@ -246,10 +258,13 @@ fn read_entries(
       }
     }),
   )
+
+  // Check whether recent entries window bound was reached.
   let notes = case list.length(cut.recent) == window {
     True -> ["bounded recent source window reached", ..notes]
     False -> notes
   }
+
   Ok(#(list.reverse(entries), notes))
 }
 
@@ -273,16 +288,21 @@ pub fn join(
     session.id(source)
     |> result.map_error(fn(_) { "the source session identity is unreadable" }),
   )
+
+  // Ensure session holds a durable canonical session identity.
   use identity <- result.try(case identity {
     Some(id) -> Ok(ids.session_id_to_string(id))
     None -> Error("the source session has no durable identity")
   })
+
   use #(excerpts, remaining) <- result.try(
     list.try_fold(
       list.take(entries, bounds.entries),
       #([], bounds.bytes),
       fn(acc, row) {
         let #(kept, remaining) = acc
+
+        // Stop folding when excerpt count or byte budget is exhausted.
         case list.length(kept) >= bounds.excerpts || remaining <= 0 {
           True -> Ok(acc)
           False ->
@@ -315,6 +335,7 @@ pub fn join(
   )
 }
 
+/// Processes one entry row and constructs an excerpt if matching criteria.
 fn join_row(
   source: session.Session,
   identity: String,
@@ -325,6 +346,7 @@ fn join_row(
   kept: List(Excerpt),
   remaining: Int,
 ) -> Result(#(List(Excerpt), Int), String) {
+  // Match message entry with assistant target coordinates.
   case row {
     entry.MessageEntry(
       id:,
@@ -342,10 +364,14 @@ fn join_row(
         |> string.join("\n")
         |> scrub_excerpt(bounds.graphemes)
       let bytes = bit_array.byte_size(bit_array.from_string(text))
+
+      // Ensure excerpt text fits within remaining byte allowance.
       case bytes <= remaining {
         False -> Ok(#(kept, 0))
         True -> {
           let matching = list.filter(rows, fn(row) { row.entry_id == Some(id) })
+
+          // Select matching usage entry if present in rows.
           let usage = case matching {
             [] -> None
             rows ->
@@ -355,6 +381,7 @@ fn join_row(
                 }),
               )
           }
+
           Ok(#(
             [
               Excerpt(
@@ -379,6 +406,7 @@ fn join_row(
   }
 }
 
+/// Validates that trace bounds parameters are within allowable ranges.
 fn validate(bounds: Bounds) -> Result(Nil, String) {
   case
     bounds.entries > 0
@@ -397,6 +425,7 @@ fn validate(bounds: Bounds) -> Result(Nil, String) {
   }
 }
 
+/// Extracts plaintext from an assistant content block, omitting thinking.
 fn block_text(block: message.AssistantBlock) -> String {
   case block {
     message.AssistantThinking(..) -> ""
@@ -406,6 +435,7 @@ fn block_text(block: message.AssistantBlock) -> String {
   }
 }
 
+/// Recursively redacts sensitive keys from tool arguments JSON payload.
 fn scrub_json(value: json.JsonValue) -> json.JsonValue {
   case value {
     json.Object(fields) ->
@@ -433,6 +463,8 @@ fn scrub_json(value: json.JsonValue) -> json.JsonValue {
 /// ```
 pub fn scrub_excerpt(text: String, graphemes: Int) -> String {
   let prefix = string.slice(text, 0, 16_384)
+
+  // Drop trailing partial word if truncated at 16 KiB boundary.
   let prefix = case prefix == text {
     True -> prefix
     False ->
@@ -443,6 +475,7 @@ pub fn scrub_excerpt(text: String, graphemes: Int) -> String {
       |> list.reverse
       |> string.join(" ")
   }
+
   prefix |> field.scrub_text |> string.slice(0, graphemes)
 }
 
@@ -489,6 +522,7 @@ fn outcome_key(id: EntryId) -> String {
   "prompt/evolution-outcome/" <> ids.entry_id_to_string(id)
 }
 
+/// Reads recorded outcome for entry from custom registers.
 fn read_outcome(
   source: session.Session,
   id: EntryId,
@@ -497,18 +531,24 @@ fn read_outcome(
     storage.get_register(source.store, register.FactCustom, outcome_key(id))
     |> result.map_error(fn(_) { "the source outcome is unreadable" }),
   )
+
+  // Check whether outcome custom register cell exists.
   case cell {
     None -> Ok(Unmarked)
     Some(storage.Register(value:, ..)) -> decode_outcome(value.payload)
   }
 }
 
+/// Decodes custom register JSON payload into typed outcome verdict.
 fn decode_outcome(value: json.JsonValue) -> Result(Outcome, String) {
+  // Validate that outcome payload is a JSON object.
   case value {
     json.Object(fields) -> {
       let version = list.key_find(fields, "version")
       let principal = list.key_find(fields, "principal")
       let outcome = list.key_find(fields, "outcome")
+
+      // Verify expected field count, version and valid outcome status.
       case list.length(fields) == 3, version, principal, outcome {
         True,
           Ok(json.Int(1)),

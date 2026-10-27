@@ -130,31 +130,38 @@ pub type Via {
 /// ```
 pub fn decode(value: json.JsonValue) -> Result(Board, String) {
   use fields <- result.try(object(value, "board"))
+
+  // Decode the optional sequence number or fail if invalid.
   use seq <- result.try(case list.key_find(fields, "seq") {
     Ok(json.Int(seq)) if seq >= 0 -> Ok(Some(seq))
     Ok(json.Null) | Error(Nil) -> Ok(None)
     Ok(_) -> Error("invalid remembered permissions sequence")
   })
+
   use grants <- result.try(rows(fields, "grants", decode_permission))
   use actions <- result.try(rows(fields, "actions", decode_consent))
   Ok(Board(seq:, grants:, actions:))
 }
 
+/// Decodes a list of rows from a named field on an object.
 fn rows(
   fields: List(#(String, json.JsonValue)),
   name: String,
   decode_row: fn(json.JsonValue) -> Result(row, String),
 ) -> Result(List(row), String) {
+  // Extract the array of raw rows or report a missing field.
   use raw <- result.try(case list.key_find(fields, name) {
     Ok(json.Array(raw)) -> Ok(raw)
     Ok(_) | Error(Nil) -> Error("missing remembered " <> name)
   })
+
   use <- bool.lazy_guard(list.drop(raw, row_limit) != [], fn() {
     Error("too many remembered " <> name)
   })
   list.try_map(raw, decode_row)
 }
 
+/// Decodes a single remembered permission entry from JSON.
 fn decode_permission(value: json.JsonValue) -> Result(Permission, String) {
   use fields <- result.try(object(value, "permission"))
   use wire <- result.try(
@@ -163,22 +170,29 @@ fn decode_permission(value: json.JsonValue) -> Result(Permission, String) {
   )
   use grant <- result.try(object(wire, "grant"))
   use kind <- result.try(text(grant, "type"))
+
+  // Map the permission type string into its typed Kind variant.
   use kind <- result.try(case kind {
     "readable_root" -> text(grant, "path") |> result.map(Readable)
     "writable_root" -> text(grant, "path") |> result.map(Writable)
     "network" -> Ok(FullNetwork)
     other -> Ok(Unrecognized(other))
   })
+
   Ok(Permission(kind:, wire:, provenance: provenance(fields)))
 }
 
+/// Decodes a single remembered consent entry from JSON.
 fn decode_consent(value: json.JsonValue) -> Result(Consent, String) {
   use fields <- result.try(object(value, "consent"))
   use id <- result.try(text(fields, "id"))
+
+  // Extract the non-negative consent sequence number.
   use seq <- result.try(case list.key_find(fields, "seq") {
     Ok(json.Int(seq)) if seq >= 0 -> Ok(seq)
     _ -> Error("invalid remembered consent sequence")
   })
+
   Ok(Consent(
     id:,
     seq:,
@@ -189,19 +203,22 @@ fn decode_consent(value: json.JsonValue) -> Result(Consent, String) {
   ))
 }
 
-// A row's provenance. It is advisory, so anything that is not a complete
-// record is `Unknown` and never an error: a damaged annotation must not hide
-// the permission it describes.
+/// Extracts and decodes provenance metadata from a remembered record's fields.
 fn provenance(fields: List(#(String, json.JsonValue))) -> Provenance {
   let decoded = {
+    // Decode the provenance object when present.
     use record <- result.try(case list.key_find(fields, "provenance") {
       Ok(json.Object(record)) -> Ok(record)
       _ -> Error(Nil)
     })
+
+    // Decode the authentication mechanism via which the permission was granted.
     use via <- result.try(case list.key_find(record, "via") {
       Ok(json.Object(via)) -> decode_via(via)
       _ -> Error(Nil)
     })
+
+    // Decode the approval timestamp in milliseconds.
     use at_ms <- result.map(case list.key_find(record, "at_ms") {
       Ok(json.Int(at)) if at >= 0 -> Ok(at)
       _ -> Error(Nil)
@@ -224,6 +241,7 @@ fn provenance(fields: List(#(String, json.JsonValue))) -> Provenance {
   result.unwrap(decoded, Unknown)
 }
 
+/// Decodes the grant channel variant (Login or Device) from JSON fields.
 fn decode_via(fields: List(#(String, json.JsonValue))) -> Result(Via, Nil) {
   case list.key_find(fields, "kind"), list.key_find(fields, "fingerprint") {
     Ok(json.String("login")), Ok(json.String(fingerprint)) ->
@@ -288,18 +306,24 @@ pub fn describe(kind: Kind) -> String {
 /// assert remembered.describe_consent(consent) == "bash on main: make check"
 /// ```
 pub fn describe_consent(consent: Consent) -> String {
+  // Describe the tool name or fall back to generic command wording.
   let tool = case consent.tool {
     Some(tool) -> text_hygiene.single_line(tool)
     None -> "A command"
   }
+
+  // Describe the strand when specified.
   let on = case consent.strand {
     Some(strand) -> " on " <> text_hygiene.single_line(strand)
     None -> ""
   }
+
+  // Format the action preview if one was provided.
   let action = case consent.preview {
     Some(preview) if preview != "" -> ": " <> text_hygiene.single_line(preview)
     Some(_) | None -> ""
   }
+
   tool <> on <> action
 }
 
@@ -311,14 +335,17 @@ pub fn describe_consent(consent: Consent) -> String {
 /// assert remembered.who(remembered.Unknown) == "Approved before approvals were recorded"
 /// ```
 pub fn who(provenance: Provenance) -> String {
+  // Distinguish unrecorded approvals from approved provenance details.
   case provenance {
     Unknown -> "Approved before approvals were recorded"
     Approved(name:, principal:, via:, ..) -> {
+      // Determine the principal name or identifier of the approver.
       let person = case name, principal {
         Some(name), _ -> text_hygiene.single_line(name)
         None, Some(principal) -> text_hygiene.single_line(principal)
         None, None -> "Someone"
       }
+
       person
       <> case via {
         Login(fingerprint:) ->
@@ -373,6 +400,7 @@ pub fn summary(board: Board) -> String {
   }
 }
 
+/// Decodes a JSON value as an object field list, naming `what` on failure.
 fn object(
   value: json.JsonValue,
   what: String,
@@ -383,6 +411,7 @@ fn object(
   }
 }
 
+/// Decodes a non-empty string field by name from object fields.
 fn text(
   fields: List(#(String, json.JsonValue)),
   name: String,
@@ -393,6 +422,7 @@ fn text(
   }
 }
 
+/// Decodes an optional sliced string field by name from object fields.
 fn optional_text(
   fields: List(#(String, json.JsonValue)),
   name: String,

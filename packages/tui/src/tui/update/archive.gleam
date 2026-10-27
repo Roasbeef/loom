@@ -70,11 +70,14 @@ pub fn decode(bytes: BitArray, root: String) -> Result(List(Entry), String) {
   Ok(entries)
 }
 
+/// Reads tar archive blocks recursively and extracts entries.
 fn read(bytes, root, count, entries) {
   use <- bool.guard(
     count > 30_000,
     Error("release archive has too many entries"),
   )
+
+  // Parse next tar block header or EOF zeroes.
   case bytes {
     <<0:size(8192), rest:bits>> -> {
       use <- bool.guard(!zeroes(rest), Error("release has trailing tar data"))
@@ -88,6 +91,7 @@ fn read(bytes, root, count, entries) {
   }
 }
 
+/// Verifies that remaining bits contain only zero padding.
 fn zeroes(bytes) {
   case bytes {
     <<>> -> True
@@ -97,6 +101,7 @@ fn zeroes(bytes) {
   }
 }
 
+/// Parses one tar header block and extracts file or directory entry.
 fn read_entry(header, body, root) {
   use expected <- result.try(octal(header, 148, 8))
   use <- bool.guard(
@@ -107,10 +112,13 @@ fn read_entry(header, body, root) {
   use <- bool.guard(magic != "ustar", Error("release must use canonical ustar"))
   use name <- result.try(field(header, 0, 100))
   use prefix <- result.try(field(header, 345, 155))
+
+  // Combine prefix and name if prefix is set.
   let name = case prefix {
     "" -> name
     prefix -> prefix <> "/" <> name
   }
+
   use path <- result.try(relative_path(name, root))
   use size <- result.try(octal(header, 124, 12))
   use mode <- result.try(octal(header, 100, 8))
@@ -131,16 +139,21 @@ fn read_entry(header, body, root) {
   Ok(#(entry, remaining))
 }
 
+/// Classifies tar entry into File, Directory, or Alias.
 fn classify(kind, path, target, contents, mode) {
+  // Match entry kind character.
   case kind {
     "0" | "" -> {
       use <- bool.guard(path == "", Error("release root must be a directory"))
+
+      // Derive executable or data file permissions.
       let permissions = case
         mode % 2 == 1 || { mode / 8 } % 2 == 1 || { mode / 64 } % 2 == 1
       {
         True -> Executable
         False -> Data
       }
+
       Ok(File(path, contents, permissions))
     }
     "5" -> {
@@ -164,6 +177,7 @@ fn component_name(name) {
   manifest.basename(string.replace(name, "@", "_"))
 }
 
+/// Validates path components and strips expected root directory prefix.
 fn relative_path(name, root) {
   let name = trim_end_matches(name, "/")
   let parts = string.split(name, "/")
@@ -171,12 +185,15 @@ fn relative_path(name, root) {
     !list.all(parts, component_name),
     Error("invalid release archive path"),
   )
+
+  // Verify first component matches required root.
   case parts {
     [found, ..rest] if found == root -> Ok(string.join(rest, "/"))
     _ -> Error("release archive root differs from manifest")
   }
 }
 
+/// Verifies entry paths are unique and all parent directories exist.
 fn validate_tree(entries: List(Entry)) {
   let paths = list.map(entries, fn(entry) { #(entry.path, entry) })
   let by_path = dict.from_list(paths)
@@ -187,14 +204,20 @@ fn validate_tree(entries: List(Entry)) {
   use _ <- result.try(
     list.try_map(entries, fn(entry) {
       use Nil <- result.try(parents(entry.path, by_path))
+
+      // Validate symlink alias targets.
       case entry {
         File(_, _, _) | Directory(_) -> Ok(Nil)
         Alias(path, target) -> {
           let parent = parent(path)
+
+          // Resolve relative alias target against parent.
           let target = case parent {
             "" -> target
             _ -> parent <> "/" <> target
           }
+
+          // Check alias target exists in tree.
           case dict.get(by_path, target) {
             Ok(File(_, _, _)) -> Ok(Nil)
             _ -> Error("release alias target is not a regular sibling")
@@ -206,20 +229,26 @@ fn validate_tree(entries: List(Entry)) {
   Ok(Nil)
 }
 
+/// Verifies all ancestor directory components are present in archive.
 fn parents(path, entries) {
+  // Check parent path presence recursively.
   case path {
     "" -> Ok(Nil)
     _ -> {
       let parent = parent(path)
+
+      // Confirm parent entry is a directory.
       use Nil <- result.try(case dict.get(entries, parent) {
         Ok(Directory(_)) -> Ok(Nil)
         _ -> Error("release entry parent must be an explicit directory")
       })
+
       parents(parent, entries)
     }
   }
 }
 
+/// Returns parent directory path component.
 fn parent(path) {
   path
   |> string.split("/")
@@ -234,6 +263,7 @@ fn slice(bytes, offset, length) {
   |> result.map_error(fn(_) { "release tar is truncated" })
 }
 
+/// Slices and decodes a fixed-width header string field.
 fn field(bytes, offset, length) {
   use bytes <- result.try(slice(bytes, offset, length))
   use text <- result.try(
@@ -256,14 +286,18 @@ fn trim_end_matches(text, suffix) {
   }
 }
 
+/// Computes unsigned sum of bytes in 512-byte header block.
 fn checksum(bytes, offset, total) {
+  // Sum bytes treating checksum field area as spaces.
   case bytes {
     <<>> -> total
     <<byte, rest:bits>> -> {
+      // Checksum field bytes are treated as ASCII spaces.
       let value = case offset >= 148 && offset < 156 {
         True -> 32
         False -> byte
       }
+
       checksum(rest, offset + 1, total + value)
     }
     _ -> -1

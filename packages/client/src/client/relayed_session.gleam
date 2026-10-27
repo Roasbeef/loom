@@ -170,6 +170,8 @@ pub fn endpoint(
   resolve: fn(Terms, String, Decision, Int, Decider) -> Result(Answer, Refusal),
 ) -> Endpoint {
   let with = fn(use_runtime: fn(api.Runtime) -> Result(a, Refusal)) {
+    // This match resolves borrow() before the surrounding protocol step continues.
+    // This match resolves borrow() before the enclosing validation continues.
     case borrow() {
       Ok(runtime) -> use_runtime(runtime)
       Error(Nil) ->
@@ -201,10 +203,13 @@ pub fn overview(
   )
   use pending <- result.try(pending(runtime, ceiling))
   let #(now, _clock) = clock.read(runtime.effects.clock)
+
+  // This match resolves remote_child.all(runtime) before the enclosing validation continues.
   let children = case remote_child.all(runtime) {
     Ok(kept) -> remote_child.agents(kept, now)
     Error(_) -> []
   }
+
   Ok(Overview(doing:, updated_at: updated_at(runtime), pending:, children:))
 }
 
@@ -238,17 +243,22 @@ pub fn pending(
 
 // The record as the page is told it: the protocol's own shape and, for a
 // pending one, the part of what was asked that the ceiling admits.
+/// Shown keeps this client operation’s decoding or state decision in one place.
 fn shown(
   cell: api.EscalationCell,
   ceiling: Option(Ceiling),
 ) -> EscalationRecord {
   let view = escalation_view.view(cell.record, cell.seq)
+
+  // This match resolves view.denial before the enclosing validation continues.
   let wanted = case view.denial {
     Some(denial) -> denial.wanted
     None -> []
   }
+
   protocol.EscalationRecord(
     ..view,
+    // This match resolves ceiling before the enclosing validation continues.
     admitted: Some(case ceiling {
       Some(ceiling) -> approval_ceiling.admitted(ceiling, wanted)
       None -> []
@@ -259,9 +269,13 @@ fn shown(
 // When the main strand's branch last grew: the timestamp of its leaf. A session
 // with no leaf, or one whose leaf cannot be read, has no time, and the host
 // falls back to the session's creation.
+/// Updated at keeps this client operation’s decoding or state decision in one place.
 fn updated_at(runtime: api.Runtime) -> Option(Int) {
+  // This match resolves api.leaf(api.on_strand(runtime, main_strand)) before the surrounding protocol step continues.
+  // This match resolves api.leaf(api.on_strand(runtime, main_strand)) before the enclosing validation continues.
   case api.leaf(api.on_strand(runtime, main_strand)) {
     Ok(Some(id)) ->
+      // This match resolves writer.get_entries(runtime.tree.writer, [id]) before the surrounding protocol step continues.
       case writer.get_entries(runtime.tree.writer, [id]) {
         Ok(found) ->
           dict.get(found, id)
@@ -292,6 +306,7 @@ pub fn send(
   message_id: String,
   text: String,
 ) -> Result(JsonValue, Refusal) {
+  // This branch enforces the send boundary before the next operation.
   use Nil <- result.try(
     case
       message_id != ""
@@ -306,19 +321,24 @@ pub fn send(
         ))
     },
   )
+
   let key = receipt_prefix <> message_id
   let request = json.Object([#("text", json.String(text))])
   use existing <- result.try(
     api.fact(runtime, key)
     |> result.map_error(fn(error) { store_failure(string.inspect(error)) }),
   )
+
+  // This match resolves existing before the enclosing validation continues.
   use landing <- result.map(case existing {
     Some(held) -> same_send(held, request)
     None -> deliver(runtime, key, request, text)
   })
+
   remote_mail.encode_landing(landing)
 }
 
+/// Deliver keeps this client operation’s decoding or state decision in one place.
 fn deliver(
   runtime: api.Runtime,
   key: String,
@@ -333,6 +353,8 @@ fn deliver(
       origin: None,
     )
   let mark = api.Mark(key:, value: json.Object([#("request", request)]))
+
+  // This branch resolves the deliver decision before the operation proceeds.
   case
     api.send_to_strand_marking(
       runtime,
@@ -348,11 +370,14 @@ fn deliver(
     // A twin of this message committed between the read and the write. Its
     // receipt is the answer.
     Error(api.FactConflict(..)) ->
+      // This match resolves api.fact(runtime, key) before the surrounding protocol step continues.
+      // This match resolves api.fact(runtime, key) before the enclosing validation continues.
       case api.fact(runtime, key) {
         Ok(Some(held)) -> same_send(held, request)
         Ok(None) | Error(_) ->
           Error(store_failure("the send's receipt moved under the write"))
       }
+
     Error(error) -> Error(store_failure(string.inspect(error)))
   }
 }
@@ -360,12 +385,18 @@ fn deliver(
 // A receipt answers a repeat only if it is a receipt for this message. An id
 // reused for other content is refused and never answered with the first
 // message's receipt.
+/// Same send keeps this client operation’s decoding or state decision in one place.
 fn same_send(
   held: JsonValue,
   request: JsonValue,
 ) -> Result(remote_mail.Landing, Refusal) {
+  // This match resolves held before the surrounding protocol step continues.
+  // This match resolves held before the enclosing validation continues.
   case held {
     json.Object(fields) ->
+      // This match resolves list.key_find(fields, "request") == Ok(request) before the surrounding protocol step continues.
+
+      // This branch enforces the history page boundary before the next operation.
       case list.key_find(fields, "request") == Ok(request) {
         True -> Ok(remote_mail.Admitted)
         False ->
@@ -392,7 +423,10 @@ pub fn history_page(
   cursor: Int,
   limit: Int,
 ) -> Result(JsonValue, Refusal) {
+  // Invalid page bounds are rejected before a transcript read is attempted.
   use Nil <- result.try(
+    // This match resolves cursor >= 0 && limit >= 1 && limit <= remote_transcript.max_entries before the surrounding protocol step continues.
+    // This match resolves cursor >= 0 && limit >= 1 && limit <= remote_transcript.max_entries before the enclosing validation continues.
     case cursor >= 0 && limit >= 1 && limit <= remote_transcript.max_entries {
       True -> Ok(Nil)
       False ->
@@ -401,10 +435,14 @@ pub fn history_page(
         ))
     },
   )
+
   use leaf <- result.try(
     api.leaf(api.on_strand(runtime, main_strand))
     |> result.map_error(fn(error) { store_failure(string.inspect(error)) }),
   )
+
+  // This match resolves leaf before the surrounding protocol step continues.
+  // This match resolves leaf before the enclosing validation continues.
   case leaf {
     None ->
       Ok(
@@ -420,10 +458,13 @@ pub fn history_page(
     // older entries exist without a second read.
     Some(leaf) -> {
       let query = storage.branch_scan(leaf) |> storage.branch_limit(limit + 1)
+
+      // This match validates the input shape before constructing its result.
       let query = case cursor {
         0 -> query
         before -> storage.branch_cursor(query, before)
       }
+
       use scanned <- result.map(
         storage.scan_branch(runtime.session.store, query)
         |> result.map_error(fn(_error) {
@@ -439,6 +480,7 @@ pub fn history_page(
   }
 }
 
+/// Store failure keeps this client operation’s decoding or state decision in one place.
 fn store_failure(reason: String) -> Refusal {
   remote_top.StoreFailure(reason:)
 }

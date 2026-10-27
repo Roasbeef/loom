@@ -30,8 +30,14 @@ scenario(Name) ->
         ok = run(Name, Root),
         {ok, nil}
     catch Class:Reason:Stack ->
-        {error, unicode:characters_to_binary(
-            io_lib:format("~p:~p~n~p", [Class, Reason, Stack]))}
+        Description = unicode:characters_to_binary(
+            io_lib:format("~p:~p~n~p", [Class, Reason, Stack])),
+
+        %% EUnit truncates binary assertion values; stderr preserves the complete
+        %% failure description in CI artifacts without changing the result.
+        io:format(standard_error, "Distribution fixture ~ts failed:~n~ts~n",
+                  [Name, Description]),
+        {error, Description}
     after
         file:del_dir_r(Root)
     end.

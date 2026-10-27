@@ -6,6 +6,44 @@
 //// receives the remaining allowance before it starts. A partial run, missing
 //// tool execution, unknown outcome or unconfirmed teardown remains inconclusive.
 //// Scripted fixtures prove this lifecycle and cannot produce quality evidence.
+////
+//// A trial is graded, not merely marked: the independent verifier answers a
+//// `Grade` whose reward decides pass or fail at `pass_threshold`, and whose
+//// side information is kept for an optimizer. The paired fold runs
+//// `Limits.samples` independent samples of every task through each arm under
+//// the same aggregate budget, so a retained observation carries one report
+//// per (task, sample, arm) and the verdict sees every one of them.
+////
+//// The verdict is `evalstat`'s paired decision rule and nothing else
+//// (protocol-change/100). The graded reports become one `Trial` row per
+//// (task, sample, arm), the plan the fold was asked to run — every admitted
+//// task times `Limits.samples` — is the denominator, and only a demonstrated
+//// improvement (`Improved`) is `Passed`. A demonstrated harm and a powered
+//// tie are both `Failed`, because neither earns a selection; a comparison
+//// too small to have seen the target effect, or one missing a planned row,
+//// is `Inconclusive` with the statistic's own reason. Twenty trials hold at
+//// most ten (task, sample) pairs per arm, so through the model door the
+//// minimum detectable effect never falls below 0.28 and a powered tie is
+//// unreachable: a comparison there ends `Passed` only when nearly every
+//// task moves the candidate's way, and otherwise `Inconclusive`, which is
+//// the rule working, not a defect.
+////
+//// ## Flow
+////
+//// `evaluate` → `validate` → `run_trial` → `open_trial` → `drive` → `accept_step` → `score` → `admit_grade` → `retain_trial` → `verdict` → `decide` → `observation`
+////
+//// 1. `evaluate` checks the request with `validate`, reads the candidate's
+////    profile, and folds `run_trial` over every task, sample and arm.
+//// 2. `run_trial` admits one trial against the trial count and `allowance`,
+////    and `open_trial` opens the runtime through the caller's callbacks.
+//// 3. `drive` and `accept_step` step the coding operation, debiting usage
+////    and checking identity until it finishes, stops or exhausts `within`.
+//// 4. After `retirement.perform`, `score` asks the verifier for a `Grade`
+////    and `admit_grade` checks every member (`grade_defect`, `clip_bytes`).
+//// 5. `retain_trial` writes the trial's report (`grade_json`), and after the
+////    fold `verdict` hands the graded rows to `decide`, which asks the
+////    statistics package over the plan, and `observation` produces the
+////    durable evidence.
 
 import client/evolution/prompt
 import client/evolution/record
@@ -13,15 +51,23 @@ import client/evolution/retirement
 import client/evolution/store
 import client/evolution/trace
 import client/mcp
+import core/accounting
 import core/clock.{type Clock}
 import core/json
 import core/message
+import evalstat
+import evalstat/pairing
+import evalstat/trial
+import evalstat/verdict as decision
 import gleam/bit_array
+import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import provider/model
+import provider/pricing
 import provider/profile.{type Profile}
 
 /// A task and criterion admitted independently of the proposed prompt.
@@ -53,7 +99,56 @@ pub type Limits {
     output_bytes: Int,
     /// Absolute comparison wall budget, at most fifteen minutes.
     wall_ms: Int,
+    /// Independent samples of every task per arm, one to five. Each sample
+    /// is a fresh runtime and a trial of its own, debited from the same
+    /// aggregate budget as the rest.
+    samples: Int,
   )
+}
+
+/// A trial passes when its grade's reward reaches this value. The exact-byte
+/// verifier answers only `1.0` or `0.0`, so the threshold is the whole rule
+/// until a program verifier with a scoring policy of its own exists.
+pub const pass_threshold = 1.0
+
+/// Which independent verifier graded a trial, and what it observed doing so.
+pub type VerifierRun {
+  /// The exact-byte comparison of the task's admitted expected files, run in
+  /// the host after witnessed retirement.
+  ExpectedFiles
+
+  /// A hidden program run in a fresh jail after retirement, with the argv
+  /// that was cleared, its exit status and its wall time in milliseconds.
+  ProgramRun(argv: List(String), exit_status: Int, wall_ms: Int)
+}
+
+/// An independent verifier's grade of one retired trial workspace.
+pub type Grade {
+  Grade(
+    /// Scalar reward from `0.0` through `1.0`; `passed` compares it with
+    /// `pass_threshold`. Anything outside that range is refused at scoring.
+    reward: Float,
+    /// Named sub-scores, in the shape of a verifier's reward map. Empty for
+    /// the exact-byte verifier.
+    scores: List(#(String, Float)),
+    /// Bounded diagnostic prose for an optimizer, such as the first differing
+    /// path. Never the expected bytes, which stay in the host.
+    side_info: String,
+    /// The verifier that produced this grade.
+    verifier: VerifierRun,
+  )
+}
+
+/// Whether a grade's reward reaches `pass_threshold`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// rollout.passed(rollout.Grade(1.0, [], "", rollout.ExpectedFiles))
+/// // -> True
+/// ```
+pub fn passed(grade: Grade) -> Bool {
+  grade.reward >=. pass_threshold
 }
 
 /// Remaining budget that the runtime enforces before its next real effect.
@@ -110,6 +205,61 @@ pub type Unreported {
   )
 }
 
+/// How one admitted provider attempt ended, as the guard's ledger reads it
+/// from the gateway's settlement report. `attempt_charge` turns it into the
+/// charge the fold is handed for the attempt, so the one ledger the guard
+/// keeps is the one source of the comparison's spend.
+pub type Settlement {
+  Settlement(
+    /// The provider, model and API that actually served the attempt.
+    scope: record.ModelScope,
+    /// The usage the attempt reported, priced; the zero record when none.
+    usage: message.Usage,
+    /// Whether a response settled, and how it stopped.
+    response: Response,
+  )
+}
+
+/// Whether an attempt settled a response at all.
+pub type Response {
+  /// A response settled with this stop reason. `Errored` is a response too,
+  /// and it is the one stop reason the completeness rule excludes.
+  Answered(stop_reason: message.StopReason)
+
+  /// No response: a failure, a cancellation or a lost drain proof.
+  Unanswered
+}
+
+/// What one admitted attempt is charged against the allowance. The guard's
+/// ledger charges by the `basis` and sums the usage records themselves
+/// before reckoning tokens, so the figure it hands the fold is the fold's
+/// own reckoning of the sum; `tokens` here is the one record's reckoning,
+/// for a reader of a single attempt.
+pub type Charge {
+  Charge(
+    /// Tokens, by the fold's own reckoning of this one usage record.
+    tokens: Int,
+    /// Priced dollars.
+    dollars: Float,
+    /// Retained output bytes, at the reservation's rate of four per token.
+    output_bytes: Int,
+    /// Whether the charge is the attempt's measured usage or its worst case.
+    basis: Basis,
+  )
+}
+
+/// Which rule produced a charge.
+pub type Basis {
+  /// The attempt reported complete usage for the exact target, and is
+  /// charged exactly that.
+  Measured
+
+  /// The attempt's usage is unknown or incomplete, and the target's whole
+  /// context window, written and read from cache, plus its output ceiling
+  /// are charged beside whatever it did report.
+  WorstCase
+}
+
 /// One settled coding step with actual native turn and tool execution counts.
 pub type Step {
   Step(
@@ -139,8 +289,8 @@ pub type Trial {
   Trial(
     /// Advance real coding work under the supplied remaining aggregate budget.
     step: fn(Allowance) -> Result(Step, String),
-    /// Independently evaluate the fixture after close proves native retirement.
-    score: fn(String) -> Result(trace.Outcome, String),
+    /// Independently grade the fixture after close proves native retirement.
+    score: fn(String) -> Result(Grade, String),
     /// Cancel remaining work and prove native retirement.
     close: retirement.Task,
     /// Remove the isolated fixture only after retirement and independent scoring.
@@ -169,6 +319,37 @@ pub type Callbacks {
   )
 }
 
+/// Which arm of the comparison a trial ran under.
+pub type Arm {
+  /// The unchanged base: no profile overlay.
+  Base
+
+  /// The proposed prompt: exactly the candidate's immutable overlay.
+  Candidate
+}
+
+/// One graded trial as `decide` reads it: the plan coordinates the fold ran
+/// it under and the grade the verifier answered, or `None` for a trial the
+/// fold stopped before scoring.
+pub type Row {
+  Row(
+    /// The admitted task's identifier.
+    task: String,
+    /// The sample index, from one through `Limits.samples`.
+    sample: Int,
+    /// Which arm ran.
+    arm: Arm,
+    /// The admitted grade, or `None` when the trial never reached scoring.
+    grade: Option(Grade),
+  )
+}
+
+/// One retained trial report, with the facts the verdict reads kept typed
+/// beside the JSON so the decision never parses its own evidence.
+type Retained {
+  Retained(row: Row, report: json.JsonValue)
+}
+
 /// Aggregate counters and partial trial reports remain owned after a failure.
 type State {
   State(
@@ -183,14 +364,15 @@ type State {
     unreported_dollars: Float,
     output_bytes: Int,
     tools: Int,
-    reports: List(json.JsonValue),
+    reports: List(Retained),
     stop: Option(String),
     cleanup: Option(#(String, retirement.Task)),
     trial_start: #(Int, Int, Float, Int, Int, Float),
     trial_started: Int,
     composition_digests: List(String),
     output: String,
-    outcome: trace.Outcome,
+    sample: Int,
+    grade: Option(Grade),
   )
 }
 
@@ -220,6 +402,8 @@ pub fn evaluate(
     prompt.candidate_profile(candidate) |> result.map_error(store.Bounds),
   )
   let #(_, provider, model_id, profile_api, _, _, _) = profile.fields(profile)
+
+  // Verify that candidate profile matches rollout target coordinates.
   use Nil <- result.try(
     case
       provider == target.provider
@@ -256,16 +440,26 @@ pub fn evaluate(
       trial_started: started,
       composition_digests: [],
       output: "",
-      outcome: trace.Unmarked,
+      sample: 0,
+      grade: None,
     )
+
+  // Every sample of a task runs its base arm and then its candidate arm, so
+  // the pair that the verdict compares is adjacent in the budget's order and
+  // a budget that runs out leaves whole pairs behind rather than one arm of
+  // every sample.
+  let samples =
+    list.index_map(list.repeat(Nil, limits.samples), fn(_, index) { index + 1 })
   let state =
     list.fold(tasks, state, fn(state, task) {
-      let state = run_trial(state, callbacks, target, api, task, None)
-      run_trial(state, callbacks, target, api, task, Some(profile))
+      list.fold(samples, state, fn(state, sample) {
+        let state = run_trial(state, callbacks, target, api, task, sample, None)
+        run_trial(state, callbacks, target, api, task, sample, Some(profile))
+      })
     })
 
   // Record retained evaluation evidence and clean up.
-  let verdict = verdict(state, callbacks.mode, list.length(tasks) * 2)
+  let verdict = verdict(state, callbacks.mode, tasks)
   let observation =
     observation(state, callbacks.mode, tasks, candidate_id, target, api)
   let retained =
@@ -276,9 +470,12 @@ pub fn evaluate(
       verdict,
       json.to_string(observation),
     )
+
+  // Check if unconfirmed cleanup needs to be surfaced.
   case state.cleanup {
     None -> retained
     Some(#(reason, close)) -> {
+      // Combine recorded reason with cleanup diagnostic.
       let reason = case retained {
         Ok(evidence) ->
           reason
@@ -289,14 +486,36 @@ pub fn evaluate(
           <> "; partial evidence did not commit: "
           <> bounded(store.describe(error))
       }
+
       Error(store.CleanupUnconfirmed(reason, close))
     }
   }
 }
 
+/// Validates task collection bounds and trial limits ceilings.
 fn validate(tasks: List(Task), limits: Limits) -> Result(Nil, String) {
   let task_bytes =
     tasks |> list.map(task_json) |> json.Array |> json.to_string |> bytes
+  let needed = list.length(tasks) * 2 * limits.samples
+
+  // A comparison whose trial budget cannot hold every (task, sample, arm)
+  // would spend the whole budget and end Inconclusive by construction, so it
+  // is refused before any trial opens, naming the product the caller must
+  // either fund or shrink.
+  use Nil <- result.try(case needed <= limits.trials {
+    True -> Ok(Nil)
+    False ->
+      Error(
+        "rollout needs "
+        <> int.to_string(needed)
+        <> " trials (tasks x 2 arms x "
+        <> int.to_string(limits.samples)
+        <> " samples) but the trial budget admits "
+        <> int.to_string(limits.trials),
+      )
+  })
+
+  // Verify tasks are non-empty and within budget limits.
   case
     tasks != []
     && list.length(tasks) <= 10
@@ -318,6 +537,8 @@ fn validate(tasks: List(Task), limits: Limits) -> Result(Nil, String) {
     && limits.output_bytes <= 65_536
     && limits.wall_ms > 0
     && limits.wall_ms <= 900_000
+    && limits.samples > 0
+    && limits.samples <= 5
   {
     True -> Ok(Nil)
     False -> Error("invalid rollout tasks or aggregate budget")
@@ -325,14 +546,17 @@ fn validate(tasks: List(Task), limits: Limits) -> Result(Nil, String) {
 }
 
 // Each arm retires native execution before independent fixture scoring begins.
+/// Runs a single trial arm against the target model and records progress.
 fn run_trial(
   state: State,
   callbacks: Callbacks,
   target: model.ResolvedModel,
   api: String,
   task: Task,
+  sample: Int,
   profile: Option(Profile),
 ) -> State {
+  // Check whether execution is stopped or budget limit is met.
   case state.stop, state.trials >= state.limits.trials {
     Some(_), _ -> state
     None, True -> State(..state, stop: Some("aggregate trial budget exhausted"))
@@ -340,6 +564,8 @@ fn run_trial(
       let #(trial_started, clock) = clock.read(state.clock)
       let state = State(..state, clock:)
       let #(allowance, state) = allowance(state)
+
+      // Verify trial allowance availability before opening trial.
       case allowance {
         Error(reason) -> State(..state, stop: Some(reason))
         Ok(allowance) ->
@@ -359,7 +585,8 @@ fn run_trial(
                 state.unreported_dollars,
               ),
               output: "",
-              outcome: trace.Unmarked,
+              sample:,
+              grade: None,
             ),
             callbacks,
             TrialRequest(
@@ -375,11 +602,13 @@ fn run_trial(
   }
 }
 
+/// Opens runtime environment for a trial and handles execution lifecycle.
 fn open_trial(
   state: State,
   callbacks: Callbacks,
   request: TrialRequest,
 ) -> State {
+  // Attempt to open isolated trial runtime.
   let state = case callbacks.open(request) {
     Error(reason) ->
       State(
@@ -388,12 +617,17 @@ fn open_trial(
       )
     Ok(trial) -> {
       let state = drive(state, trial, request)
+
+      // Perform runtime retirement cleanup.
       case retirement.perform(trial.close) {
         Ok(Nil) -> {
+          // Score trial outcome if trial did not halt early.
           let state = case state.stop {
             None -> score(state, trial, request)
             Some(_) -> state
           }
+
+          // Execute private fixture cleanup task.
           case trial.cleanup() {
             Ok(Nil) -> state
             Error(reason) ->
@@ -427,17 +661,24 @@ fn open_trial(
       }
     }
   }
+
   let #(now, clock) = clock.read(state.clock)
   let state = State(..state, clock:)
+
+  // Check whether cumulative wall clock budget has expired.
   let state = case now >= state.started + state.limits.wall_ms {
     True -> State(..state, stop: Some("aggregate wall budget exhausted"))
     False -> state
   }
+
   retain_trial(state, request, now)
 }
 
+/// Steps trial execution loop until finished or interrupted.
 fn drive(state: State, trial: Trial, request: TrialRequest) -> State {
   let #(available, state) = allowance(state)
+
+  // Check remaining allowance before stepping trial.
   case available {
     Error(reason) -> State(..state, stop: Some(reason))
     Ok(available) -> {
@@ -450,18 +691,21 @@ fn drive(state: State, trial: Trial, request: TrialRequest) -> State {
   }
 }
 
+/// Records resource consumption and checks output bounds for completed trial step.
 fn accept_step(
   state: State,
   trial: Trial,
   request: TrialRequest,
   step: Step,
 ) -> State {
+  // Verify model target matches requested model scope.
   let target_matches = case request.target {
     model.ForResolved(target) ->
       step.target
       == record.ModelScope(target.provider, target.model_id, request.api)
     model.ForRole(..) -> False
   }
+
   let expected =
     option.map(request.profile, fn(profile) { profile.fields(profile).0 })
   let used =
@@ -488,6 +732,8 @@ fn accept_step(
         step.composition_digests,
       ),
     )
+
+  // Validate step metrics stay within native limits and admission bounds.
   case
     !target_matches
     || step.profile_id != expected
@@ -509,6 +755,8 @@ fn accept_step(
     False -> {
       let #(now, clock) = clock.read(state.clock)
       let state = State(..state, clock:)
+
+      // Evaluate step progress and loop or terminate trial.
       case within(state, now), step.progress {
         False, _ ->
           State(..state, stop: Some("aggregate rollout budget exhausted"))
@@ -520,6 +768,7 @@ fn accept_step(
   }
 }
 
+/// Asks the independent verifier for the finished trial's grade.
 fn score(state: State, trial: Trial, request: TrialRequest) -> State {
   case state.tools > 0 {
     False ->
@@ -531,29 +780,146 @@ fn score(state: State, trial: Trial, request: TrialRequest) -> State {
             ..state,
             stop: Some("independent scoring failed: " <> bounded(reason)),
           )
-        Ok(trace.Unmarked) ->
-          State(..state, stop: Some("independent task outcome is absent"))
-        Ok(outcome) -> State(..state, outcome:)
+        Ok(grade) -> admit_grade(state, grade)
       }
   }
 }
 
+/// Retained side information per report, in bytes after scrubbing.
+const max_side_info_bytes = 1024
+
+/// Named scores a grade may carry, and the byte length of one name.
+const max_scores = 8
+
+const max_score_name_bytes = 32
+
+/// Entries and total bytes of a program verifier's retained argv.
+const max_argv_entries = 8
+
+const max_argv_bytes = 512
+
+// Every member of a grade is checked before it is retained, because the
+// grade is written into evidence only after the whole budget is spent: a
+// duplicate score name would make the canonical JSON unparseable and a large
+// member would push the observation past the store's 64 KiB evidence
+// ceiling, and either loses all evidence of a paid comparison. A defect
+// stops the fold with a named reason, so the verdict is Inconclusive and the
+// partial observation still commits.
+//
+// Worst-case size at 20 trials, for the record. The members this shape added
+// cost per report at most 1,024 bytes of side information, 8 scores of a
+// 32-byte name and a float (about 450 bytes), a 512-byte argv and the
+// verifier's fixed fields, so about 2 KiB per report and about 40 KiB over
+// 20 trials: the new members alone cannot be what breaks the 64 KiB
+// evidence ceiling. The exact-byte verifier contributes under 300 bytes per
+// report. Known issue, separate from this shape and not fixed here: the
+// pre-existing `output` excerpt is bounded in graphemes (1,024, up to 4 KiB
+// of UTF-8 before JSON escaping), so 20 reports of it alone could reach 80
+// KiB; a program verifier's wide answers add to that, not to the grade.
+/// Retains a grade whose members are all in bounds, side information clipped.
+fn admit_grade(state: State, grade: Grade) -> State {
+  case grade_defect(grade) {
+    Error(reason) -> State(..state, stop: Some(reason))
+    Ok(Nil) ->
+      State(
+        ..state,
+        grade: Some(
+          Grade(
+            ..grade,
+            side_info: clip_bytes(bounded(grade.side_info), max_side_info_bytes),
+          ),
+        ),
+      )
+  }
+}
+
+/// The first bound a grade violates, named, or `Ok` when every member fits.
+fn grade_defect(grade: Grade) -> Result(Nil, String) {
+  let names = list.map(grade.scores, fn(score) { score.0 })
+
+  // Only a program run carries an argv to bound; the exact-byte verifier
+  // contributes nothing here.
+  let #(argv_entries, argv_bytes) = case grade.verifier {
+    ExpectedFiles -> #([], 0)
+    ProgramRun(argv:, ..) -> #(
+      argv,
+      list.fold(argv, 0, fn(total, entry) { total + bytes(entry) }),
+    )
+  }
+
+  // The table is read in order, so the reason names the first defect found.
+  let defects = [
+    #(
+      grade.reward <. 0.0 || grade.reward >. 1.0,
+      "independent grade is out of range",
+    ),
+    #(
+      list.drop(grade.scores, max_scores) != [],
+      "independent grade carries more than 8 scores",
+    ),
+    #(
+      list.any(names, fn(name) {
+        name == "" || bytes(name) > max_score_name_bytes
+      }),
+      "independent grade score name is empty or over 32 bytes",
+    ),
+    #(list.unique(names) != names, "independent grade score names repeat"),
+    #(
+      list.any(grade.scores, fn(score) { score.1 <. 0.0 || score.1 >. 1.0 }),
+      "independent grade score is out of range",
+    ),
+    #(
+      list.drop(argv_entries, max_argv_entries) != [],
+      "independent verifier argv has more than 8 entries",
+    ),
+    #(
+      argv_bytes > max_argv_bytes,
+      "independent verifier argv exceeds 512 bytes",
+    ),
+  ]
+
+  // The first true row is the defect reported; no row true is admission.
+  case list.find(defects, fn(defect) { defect.0 }) {
+    Ok(#(_, reason)) -> Error(reason)
+    Error(Nil) -> Ok(Nil)
+  }
+}
+
+/// Keeps the longest prefix of whole graphemes that fits in `limit` bytes.
+fn clip_bytes(text: String, limit: Int) -> String {
+  let #(kept, _) =
+    list.fold_until(string.to_graphemes(text), #([], 0), fn(acc, grapheme) {
+      let size = acc.1 + bytes(grapheme)
+
+      // A grapheme that would cross the limit ends the prefix before it.
+      case size > limit {
+        True -> list.Stop(acc)
+        False -> list.Continue(#([grapheme, ..acc.0], size))
+      }
+    })
+  kept |> list.reverse |> string.concat
+}
+
+/// Adds report entry for completed trial to state history.
 fn retain_trial(state: State, request: TrialRequest, now: Int) -> State {
+  let profile = option.map(request.profile, fn(p) { profile.fields(p).0 })
+
+  // `outcome` stays beside `grade` as its three-word projection, so a reader
+  // of older observations and a reader of these see the same word in the
+  // same place; `grade` and `sample` are the members this shape added.
   let report =
     json.Object([
       #("task", json.String(request.task.id)),
-      #("profile", case request.profile {
+      #("profile", case profile {
         None -> json.Null
-        Some(profile) -> json.String(profile.fields(profile).0)
+        Some(id) -> json.String(id)
       }),
-      #(
-        "outcome",
-        json.String(case state.outcome {
-          trace.Succeeded -> "succeeded"
-          trace.Failed -> "failed"
-          trace.Unmarked -> "unmarked"
-        }),
-      ),
+      #("outcome", json.String(outcome_word(state.grade))),
+      #("grade", case state.grade {
+        None -> json.Null
+        Some(grade) -> grade_json(grade)
+      }),
+      #("sample", json.Int(state.sample)),
       #("tools", json.Int(state.tools)),
       #(
         "composition_digests",
@@ -578,9 +944,67 @@ fn retain_trial(state: State, request: TrialRequest, now: Int) -> State {
         Some(reason) -> json.String(reason)
       }),
     ])
-  State(..state, reports: [report, ..state.reports])
+
+  // The arm is the overlay's presence: a base trial carries no profile and
+  // a candidate trial carries exactly the candidate's.
+  let arm = case profile {
+    None -> Base
+    Some(_) -> Candidate
+  }
+
+  let row =
+    Row(task: request.task.id, sample: state.sample, arm:, grade: state.grade)
+  State(..state, reports: [Retained(row:, report:), ..state.reports])
 }
 
+/// Projects a grade onto the operator-outcome vocabulary of `trace.Outcome`.
+fn outcome_word(grade: Option(Grade)) -> String {
+  case option.map(grade, passed) {
+    None -> outcome_name(trace.Unmarked)
+    Some(True) -> outcome_name(trace.Succeeded)
+    Some(False) -> outcome_name(trace.Failed)
+  }
+}
+
+/// The wire word of each operator outcome, as `trace` and the trace door spell it.
+fn outcome_name(outcome: trace.Outcome) -> String {
+  case outcome {
+    trace.Succeeded -> "succeeded"
+    trace.Failed -> "failed"
+    trace.Unmarked -> "unmarked"
+  }
+}
+
+/// Encodes a grade with its verifier for the retained observation.
+fn grade_json(grade: Grade) -> json.JsonValue {
+  json.Object([
+    #("reward", json.Float(grade.reward)),
+    #(
+      "scores",
+      json.Object(
+        list.map(grade.scores, fn(score) { #(score.0, json.Float(score.1)) }),
+      ),
+    ),
+    #("side_info", json.String(grade.side_info)),
+    #("verifier", verifier_json(grade.verifier)),
+  ])
+}
+
+/// Encodes which verifier ran, with a program run's argv, exit and wall time.
+fn verifier_json(verifier: VerifierRun) -> json.JsonValue {
+  case verifier {
+    ExpectedFiles -> json.Object([#("kind", json.String("expected-files"))])
+    ProgramRun(argv:, exit_status:, wall_ms:) ->
+      json.Object([
+        #("kind", json.String("program")),
+        #("argv", json.Array(list.map(argv, json.String))),
+        #("exit_status", json.Int(exit_status)),
+        #("wall_ms", json.Int(wall_ms)),
+      ])
+  }
+}
+
+/// Checks if cumulative resource usage remains strictly within limits.
 fn within(state: State, now: Int) -> Bool {
   state.turns <= state.limits.turns
   && state.tokens + state.unreported_tokens <= state.limits.tokens
@@ -589,6 +1013,7 @@ fn within(state: State, now: Int) -> Bool {
   && now < state.started + state.limits.wall_ms
 }
 
+/// Calculates remaining resource allowance for subsequent trial runs.
 fn allowance(state: State) -> #(Result(Allowance, String), State) {
   let #(now, clock) = clock.read(state.clock)
   let state = State(..state, clock:)
@@ -600,6 +1025,8 @@ fn allowance(state: State) -> #(Result(Allowance, String), State) {
       output_bytes: state.limits.output_bytes - state.output_bytes,
       deadline_ms: state.started + state.limits.wall_ms,
     )
+
+  // Determine if positive allowance remains across all budget metrics.
   let result = case
     state.trials <= state.limits.trials
     && left.turns > 0
@@ -611,41 +1038,243 @@ fn allowance(state: State) -> #(Result(Allowance, String), State) {
     True -> Ok(left)
     False -> Error("aggregate rollout budget exhausted")
   }
+
   #(result, state)
 }
 
-fn verdict(state: State, mode: Mode, expected: Int) -> record.Verdict {
-  case mode, state.stop, list.length(state.reports) == expected {
-    ScriptedLifecycle, _, _ ->
+/// The one rule an admitted attempt is charged by. A settlement is complete
+/// when the exact target served it, a response settled with a stop reason
+/// other than `Errored`, and the provider reported a positive total; such an
+/// attempt is charged its priced measured usage, the tokens reckoned as
+/// `accept_step` reckons a usage record. Any other settlement is charged
+/// `reserved`, the worst case the guard debited when it admitted the
+/// attempt, beside whatever usage it did report: the report is real spend
+/// and joins the measured records, and the reservation is the answer to not
+/// knowing whether that report was whole. The reservation rather than the
+/// target's whole worst case, because the guard pins the attempt's output
+/// ceiling to what the allowance had left (`reservation`), and the pinned
+/// ceiling bounds what the attempt could really have spent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // rollout.attempt_charge(target, api, settlement, reserved, card).basis == rollout.Measured
+/// ```
+pub fn attempt_charge(
+  target: model.ResolvedModel,
+  api: String,
+  settlement: Settlement,
+  reserved: Charge,
+  card: pricing.Pricing,
+) -> Charge {
+  let Settlement(scope:, usage:, response:) = settlement
+  let exact = scope == record.ModelScope(target.provider, target.model_id, api)
+
+  // Completeness is the fold's three-part rule: the exact target answered,
+  // it did not answer with an error, and it reported a positive total.
+  let complete = case response {
+    Answered(stop_reason:) ->
+      exact && stop_reason != message.Errored && usage.total_tokens > 0
+    Unanswered -> False
+  }
+
+  let used =
+    int.max(
+      usage.total_tokens,
+      usage.input + usage.output + usage.cache_read + usage.cache_write,
+    )
+  let cost = pricing.price(usage, card).cost.total
+
+  // An incomplete attempt is not charged instead of its reservation but as
+  // well as it: the usage it reported reaches the fold's ledger whatever the
+  // stop reason said, and the reservation is the answer to not knowing
+  // whether that report was whole.
+  case complete {
+    True -> Charge(used, cost, usage.output * 4, Measured)
+    False ->
+      Charge(
+        reserved.tokens + used,
+        reserved.dollars +. cost,
+        reserved.output_bytes,
+        WorstCase,
+      )
+  }
+}
+
+/// The worst case one attempt against a target can cost when its output is
+/// pinned at `output` tokens: the whole context window as input, written to
+/// and read from the cache, plus that output, priced on the card; and four
+/// retained bytes per output token. The guard reserves this with the output
+/// clipped to what the allowance has left, so a target whose whole ceiling
+/// does not fit the door's caps is still admitted at the ceiling that does.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // rollout.reservation(target, 8192, card).tokens == target.context_window * 3 + 8192
+/// ```
+pub fn reservation(
+  target: model.ResolvedModel,
+  output: Int,
+  card: pricing.Pricing,
+) -> Charge {
+  let maximum =
+    message.Usage(
+      ..accounting.zero_usage(),
+      input: target.context_window,
+      output:,
+      cache_read: target.context_window,
+      cache_write: target.context_window,
+    )
+  Charge(
+    target.context_window * 3 + output,
+    pricing.price(maximum, card).cost.total,
+    output * 4,
+    WorstCase,
+  )
+}
+
+/// The worst case one attempt against a target can cost at the target's own
+/// output ceiling: `reservation` with nothing clipped.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // rollout.worst_case(target, card).tokens == target.context_window * 3 + target.max_output_tokens
+/// ```
+pub fn worst_case(
+  target: model.ResolvedModel,
+  card: pricing.Pricing,
+) -> Charge {
+  reservation(target, target.max_output_tokens, card)
+}
+
+/// Decides the comparison, or names why it cannot be decided. The fold's
+/// own stops come first: an unconfirmed teardown, a failed open, a verifier
+/// defect or an exhausted budget is `Inconclusive` with that reason before
+/// any statistic is consulted, because such a trial says nothing about its
+/// arm and must not be laundered into a row the rule would count or
+/// exclude. Scripted fixtures prove the lifecycle and never measure quality.
+fn verdict(state: State, mode: Mode, tasks: List(Task)) -> record.Verdict {
+  case mode, state.stop {
+    ScriptedLifecycle, _ ->
       record.Inconclusive(
         "scripted lifecycle evidence does not measure model quality",
       )
-    LiveProduction, Some(reason), _ -> record.Inconclusive(reason)
-    LiveProduction, None, False ->
-      record.Inconclusive("paired task set is incomplete")
-    LiveProduction, None, True ->
-      case list.any(state.reports, candidate_failed) {
-        True -> record.Failed
-        False -> record.Passed
-      }
+    LiveProduction, Some(reason) -> record.Inconclusive(reason)
+    LiveProduction, None ->
+      decide(
+        list.map(state.reports, fn(retained) { retained.row }),
+        list.map(tasks, fn(task) { task.id }),
+        state.limits.samples,
+      )
   }
 }
 
-// Only candidate-arm failures decide adoption; baseline failures remain evidence.
-fn candidate_failed(report: json.JsonValue) -> Bool {
-  case report {
-    json.Object(fields) ->
-      list.key_find(fields, "outcome") == Ok(json.String("failed"))
-      && list.key_find(fields, "profile") != Ok(json.Null)
-    json.Array(_)
-    | json.String(_)
-    | json.Int(_)
-    | json.Float(_)
-    | json.Bool(_)
-    | json.Null -> False
+/// The arm names the rows carry into `evalstat`; the rule reads them only
+/// to tell the two sides apart.
+const base_arm = "base"
+
+const candidate_arm = "candidate"
+
+/// The governed decision rule over graded rows: `evalstat`'s task-level
+/// paired verdict under its default policy (a ten-point target effect and
+/// the clustered interval), mapped onto the three words the catalogue
+/// stores. `Improved` is `Passed`; `Harmed` and `Indistinguishable` are both
+/// `Failed`, since neither is the demonstrated improvement a selection
+/// needs; `Underpowered` and `Incomplete` are `Inconclusive` carrying the
+/// statistic's reason, the minimum detectable effect and the task count
+/// that would have sufficed.
+///
+/// The plan is the denominator. `expected` is built from `tasks` and
+/// `samples`, never from the rows that happen to exist, so a planned trial
+/// with no row is `Incomplete` rather than a smaller comparison. A row with
+/// no grade is left out and so reported missing: the fold stops before
+/// `verdict` whenever that happens, and an ungraded trial is not evidence
+/// about either arm.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // Identical arms over three tasks: no spread, so the rule cannot see
+/// // any effect and says so.
+/// let assert record.Inconclusive(reason) =
+///   rollout.decide(rows, ["a", "b", "c"], 1)
+/// assert string.starts_with(reason, "underpowered")
+/// ```
+pub fn decide(
+  rows: List(Row),
+  tasks: List(String),
+  samples: Int,
+) -> record.Verdict {
+  let expected = pairing.plan(tasks, samples)
+  let trials = list.filter_map(rows, trial_of)
+  let ruling =
+    evalstat.paired_verdict(
+      trials,
+      base_arm,
+      candidate_arm,
+      expected,
+      decision.default_policy(),
+    )
+
+  // Only a demonstrated improvement spends a selection; a tie the design
+  // could have broken is as much a refusal as a demonstrated harm.
+  case ruling {
+    decision.Improved(..) -> record.Passed
+    decision.Harmed(..) -> record.Failed
+    decision.Indistinguishable(..) -> record.Failed
+    decision.Underpowered(mde:, needed_tasks:, reason:) ->
+      record.Inconclusive(
+        "underpowered: "
+        <> reason
+        <> "; minimum detectable effect "
+        <> float.to_string(float.to_precision(mde, 3))
+        <> " against a target of "
+        <> float.to_string(decision.default_policy().target_effect)
+        <> "; "
+        <> int.to_string(needed_tasks)
+        <> " tasks would have sufficed",
+      )
+    decision.Incomplete(reason:) ->
+      record.Inconclusive("paired task set is incomplete: " <> reason)
   }
 }
 
+/// One graded row as an `evalstat` trial, or nothing for an ungraded one.
+/// The index is the sample less one, because the plan counts from zero.
+/// The cost is zeroed: the rule reads the outcome alone, and the trial's
+/// spend is already in its retained report.
+fn trial_of(row: Row) -> Result(trial.Trial, Nil) {
+  use grade <- result.try(option.to_result(row.grade, Nil))
+
+  // The exact-byte verifier and a program verifier both answer a reward; a
+  // reward at the threshold is the pass and anything below is the
+  // verifier's rejection. The fold has no other outcome to report here: a
+  // trial that ran out of budget stopped the whole comparison above.
+  let outcome = case passed(grade) {
+    True -> trial.Passed
+    False -> trial.VerifierFailed
+  }
+
+  // The arm travels as the name the rule was given for each side.
+  let arm = case row.arm {
+    Base -> base_arm
+    Candidate -> candidate_arm
+  }
+
+  Ok(trial.Trial(
+    task: row.task,
+    arm:,
+    index: row.sample - 1,
+    reward: grade.reward,
+    scores: grade.scores,
+    outcome:,
+    cost: trial.Cost(0, 0.0, 0, 0, 0),
+  ))
+}
+
+/// Constructs detailed observation JSON report for the rollout evaluation.
 fn observation(
   state: State,
   mode: Mode,
@@ -679,6 +1308,7 @@ fn observation(
         #("dollars", json.Float(state.limits.dollars)),
         #("output_bytes", json.Int(state.limits.output_bytes)),
         #("wall_ms", json.Int(state.limits.wall_ms)),
+        #("samples", json.Int(state.limits.samples)),
       ]),
     ),
     #(
@@ -702,10 +1332,14 @@ fn observation(
         #("dollars", json.Float(state.unreported_dollars)),
       ]),
     ),
-    #("trials", json.Array(list.reverse(state.reports))),
+    #(
+      "trials",
+      json.Array(state.reports |> list.reverse |> list.map(fn(r) { r.report })),
+    ),
   ])
 }
 
+/// Serializes a task specification into JSON format.
 fn task_json(task: Task) -> json.JsonValue {
   json.Object([
     #("id", json.String(task.id)),

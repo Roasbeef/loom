@@ -116,6 +116,8 @@ pub type ChildRefusal {
 /// assert !remote_mail.retryable(remote_mail.UnknownChild)
 /// ```
 pub fn retryable(refusal: ChildRefusal) -> Bool {
+  // This match resolves refusal before the surrounding protocol step continues.
+  // This match resolves refusal before the enclosing validation continues.
   case refusal {
     ParentSessionNotOpen | Busy(..) -> True
     UnknownChild | OriginMismatch | StoreFailure(..) -> False
@@ -131,6 +133,8 @@ pub fn retryable(refusal: ChildRefusal) -> Bool {
 ///   == "the parent session has no record of this child"
 /// ```
 pub fn describe_refusal(refusal: ChildRefusal) -> String {
+  // This match resolves refusal before the surrounding protocol step continues.
+  // This match resolves refusal before the enclosing validation continues.
   case refusal {
     UnknownChild -> "the parent session has no record of this child"
     ParentSessionNotOpen -> "the parent session is not open"
@@ -151,6 +155,8 @@ pub fn describe_refusal(refusal: ChildRefusal) -> String {
 ///   == json.Object([#("kind", json.String("delivered"))])
 /// ```
 pub fn encode_receipt(receipt: Receipt) -> JsonValue {
+  // This match resolves receipt before the surrounding protocol step continues.
+  // This match resolves receipt before the enclosing validation continues.
   case receipt {
     Delivered -> json.Object([#("kind", json.String("delivered"))])
     Declined(reason:) ->
@@ -173,6 +179,9 @@ pub fn encode_receipt(receipt: Receipt) -> JsonValue {
 pub fn decode_receipt(value: JsonValue) -> Result(Receipt, String) {
   use fields <- result.try(object(value, "a mail receipt"))
   use kind <- result.try(text(fields, "kind"))
+
+  // This match resolves kind before the surrounding protocol step continues.
+  // This match resolves kind before the enclosing validation continues.
   case kind {
     "delivered" -> Ok(Delivered)
     "declined" -> text(fields, "reason") |> result.map(Declined)
@@ -214,6 +223,8 @@ pub type Landing {
 ///   == json.Object([#("delivery", json.String("admitted"))])
 /// ```
 pub fn encode_landing(landing: Landing) -> JsonValue {
+  // This match resolves landing before the surrounding protocol step continues.
+  // This match resolves landing before the enclosing validation continues.
   case landing {
     Steered(entry:) ->
       json.Object([
@@ -224,6 +235,8 @@ pub fn encode_landing(landing: Landing) -> JsonValue {
       json.Object([
         #("delivery", json.String("started")),
         #("operation", json.String(ids.op_id_to_string(operation))),
+
+        // This match validates the input shape before constructing its result.
         #("remainingMs", case remaining_ms {
           Some(ms) -> json.Int(ms)
           None -> json.Null
@@ -245,6 +258,9 @@ pub fn encode_landing(landing: Landing) -> JsonValue {
 pub fn decode_landing(value: JsonValue) -> Result(Landing, String) {
   use fields <- result.try(object(value, "a landing"))
   use delivery <- result.try(text(fields, "delivery"))
+
+  // This match resolves delivery before the surrounding protocol step continues.
+  // This match resolves delivery before the enclosing validation continues.
   case delivery {
     "steered" -> {
       use raw <- result.try(text(fields, "entry"))
@@ -257,11 +273,14 @@ pub fn decode_landing(value: JsonValue) -> Result(Landing, String) {
       use operation <- result.try(
         ids.parse_op_id(raw) |> result.map_error(corruption.describe),
       )
+
+      // This match validates the input shape before constructing its result.
       use remaining_ms <- result.map(case list.key_find(fields, "remainingMs") {
         Ok(json.Int(ms)) -> Ok(Some(ms))
         Ok(json.Null) | Error(Nil) -> Ok(None)
         Ok(_) -> Error("expected `remainingMs` to be an integer")
       })
+
       Started(operation:, remaining_ms:)
     }
     "admitted" -> Ok(Admitted)
@@ -269,20 +288,26 @@ pub fn decode_landing(value: JsonValue) -> Result(Landing, String) {
   }
 }
 
+/// Object keeps this client operation’s decoding or state decision in one place.
 fn object(
   value: JsonValue,
   what: String,
 ) -> Result(List(#(String, JsonValue)), String) {
+  // This match resolves value before the surrounding protocol step continues.
+  // This match resolves value before the enclosing validation continues.
   case value {
     json.Object(fields) -> Ok(fields)
     other -> Error("expected " <> what <> ", got " <> json.to_string(other))
   }
 }
 
+/// Text keeps this client operation’s decoding or state decision in one place.
 fn text(
   fields: List(#(String, JsonValue)),
   name: String,
 ) -> Result(String, String) {
+  // This match resolves list.key_find(fields, name) before the surrounding protocol step continues.
+  // This match resolves list.key_find(fields, name) before the enclosing validation continues.
   case list.key_find(fields, name) {
     Ok(json.String(found)) -> Ok(found)
     Ok(_) -> Error("expected `" <> name <> "` to be text")

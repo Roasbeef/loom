@@ -78,8 +78,8 @@ pub fn view(chip: Chip) -> Element(message) {
   ])
 }
 
-// The figures that are known, in a fixed order. A figure that is not known is
-// not drawn: an empty row would read as a value.
+/// The figures that are known, in a fixed order. A figure that is not known is
+/// not drawn: an empty row would read as a value.
 fn figures(chip: Chip) -> List(Element(message)) {
   list.flatten([
     case strand_card.task_words(chip.line.title) {
@@ -121,6 +121,7 @@ fn figures(chip: Chip) -> List(Element(message)) {
   ])
 }
 
+/// Figure helper.
 fn figure(
   label: String,
   value: List(Element(message)),
@@ -131,9 +132,9 @@ fn figure(
   ]
 }
 
-// The tools the strand ran most recently, newest last as `agent_view` bounds
-// them. With none, the first line of its latest answer when it has given one,
-// and otherwise a line saying there is nothing yet.
+/// The tools the strand ran most recently, newest last as `agent_view` bounds
+/// them. With none, the first line of its latest answer when it has given one,
+/// and otherwise a line saying there is nothing yet.
 fn recent(chip: Chip) -> Element(message) {
   let recent = chip.recent
   let answer = chip.answer

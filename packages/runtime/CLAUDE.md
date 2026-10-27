@@ -241,6 +241,11 @@ extended by the M3 runtime wave.
   grace is the `Cancelling` state's **state timeout**, so it is armed by the
   move in, cancelled by the move out, and never re-armed by the `keep` that
   every late delta produces.
+  Startup projects the preparation callback and timeout before copying into
+  that worker. Prepared surfaces do not retain their unused compatibility
+  request facade there; legacy requests are wrapped without invocation until
+  the permit. The native provider_custodian_retention_test observes the actual
+  linked fixture worker and preserves normal exit plus full-subtree drain.
 - `runtime/writer.Message` — the writer actor's mailbox; `writer.Event` is
   the `Committed(ordinal, seqs, ts)` published to subscribers.
 - `runtime/writer.Subscriber` distinguishes `Direct(Subject(Event))`
@@ -1066,3 +1071,20 @@ and lease custody. The shorter quiet period lets a parked writer release
 transient commit/read heap before the next heartbeat wakes its mailbox.
 `writer_renewal_test` observes actual hibernation, request wake-up, repeated
 renewal and abnormal retirement after lease loss.
+
+
+## Bounded Responses recovery
+
+Recoverable Responses corruption carries a positive `retry_max_attempts` ceiling
+through assistant diagnostics. The planner narrows the captured retry policy
+before checking the existing attempt number, persists the resulting `Bounded`
+policy, and never widens it on later transport failures or orphan recovery.
+Configured one- and two-attempt budgets remain stricter. Failed summaries use
+the same rule through `OperationError.details`: a host hook producing
+`SummaryFailed` must preserve the failed response diagnostics there. The default
+runtime summary hook produces successful summaries only; no production failed
+summary adapter exists to translate those diagnostics automatically.
+
+No durable schema field or configuration option is added. Original assistant
+failures and usage commit on both retry and exhaustion; summary request usage
+settles before summary progress. See protocol-change/101.

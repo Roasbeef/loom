@@ -398,6 +398,7 @@ fn mint_uuid(generator: Generator) -> #(Uuid, Generator) {
 // Shared by `mint_uuid` (reads the clock) and `mint_follower` (reuses a
 // leader's timestamp instead), so the two id-shapes draw randomness through
 // one path and differ only in where `ms` comes from.
+/// Mints a UUIDv7 from an explicitly supplied millisecond timestamp.
 fn mint_uuid_at(generator: Generator, ms: Int) -> #(Uuid, Generator) {
   let #(a, state) = next_random(generator.state)
   let #(b, state) = next_random(state)
@@ -410,9 +411,11 @@ fn mint_uuid_at(generator: Generator, ms: Int) -> #(Uuid, Generator) {
   #(uuid, Generator(..generator, state:))
 }
 
-// The SplitMix64 sequence: a tiny, well-studied 64-bit generator. Chosen
-// because it is a handful of masked integer operations, has full 2^64
-// period, and makes minting fully deterministic from the injected seed.
+/// Generates the next 64-bit pseudorandom state using SplitMix64.
+///
+/// The SplitMix64 sequence: a tiny, well-studied 64-bit generator. Chosen
+/// because it is a handful of masked integer operations, has full 2^64
+/// period, and makes minting fully deterministic from the injected seed.
 fn next_random(state: Int) -> #(Int, Int) {
   let state = int.bitwise_and(state + 0x9E3779B97F4A7C15, mask_64)
   let z = state
@@ -434,6 +437,7 @@ fn next_random(state: Int) -> #(Int, Int) {
 
 // --- internal: text form ------------------------------------------------
 
+/// Formats a UUID struct into standard 8-4-4-4-12 canonical string form.
 fn uuid_to_string(uuid: Uuid) -> String {
   let Uuid(ms:, rand_a:, rand_b:) = uuid
 
@@ -460,6 +464,7 @@ fn hex(value: Int, width: Int) -> String {
   |> string.pad_start(to: width, with: "0")
 }
 
+/// Parses a UUIDv7 string into typed components, validating version and variant bits.
 fn parse_uuid(text: String) -> Result(Uuid, CorruptionReport) {
   let malformed = fn(expected: String) {
     corruption.report(
@@ -469,8 +474,11 @@ fn parse_uuid(text: String) -> Result(Uuid, CorruptionReport) {
       context: text,
     )
   }
+
+  // Split the UUID text into five dash-separated hexadecimal groups.
   case string.split(text, on: "-") {
     [group_1, group_2, group_3, group_4, group_5] -> {
+      // Parse each of the 5 hexadecimal groups to integers.
       case
         parse_hex(group_1, 8),
         parse_hex(group_2, 4),
@@ -481,6 +489,8 @@ fn parse_uuid(text: String) -> Result(Uuid, CorruptionReport) {
         Ok(time_high), Ok(time_low), Ok(g3), Ok(g4), Ok(g5) -> {
           let version = int.bitwise_shift_right(g3, 12)
           let variant = int.bitwise_shift_right(g4, 14)
+
+          // Verify that version is 7 and variant bits match RFC 9562 standard.
           case version == 7, variant == 0b10 {
             True, True ->
               Ok(Uuid(
@@ -517,6 +527,7 @@ fn parse_hex(text: String, width: Int) -> Result(Int, Nil) {
   parse_hex_loop(<<text:utf8>>, width, 0)
 }
 
+/// Tail-recursive loop parsing remaining hexadecimal digits from a bit array.
 fn parse_hex_loop(
   digits: BitArray,
   remaining: Int,
@@ -538,6 +549,7 @@ fn parse_hex_loop(
   }
 }
 
+/// Returns the numeric value of an ASCII hexadecimal character byte.
 fn hex_digit_value(digit: Int) -> Result(Int, Nil) {
   case digit {
     _ if digit >= 0x30 && digit <= 0x39 -> Ok(digit - 0x30)

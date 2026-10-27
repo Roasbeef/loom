@@ -33,11 +33,11 @@ pub fn multiline(text: String) -> String {
   }
 }
 
-// Complete terminal escape sequences are formatting instructions rather than
-// transcript text. Removing them as units avoids leaving their visible CSI or
-// OSC payload behind after the leading control byte is replaced. The same
-// pass replaces unsafe codepoints, so safe text is decoded and rebuilt only
-// once rather than allocating a separate one-character string for each codepoint.
+/// Complete terminal escape sequences are formatting instructions rather than
+/// transcript text. Removing them as units avoids leaving their visible CSI or
+/// OSC payload behind after the leading control byte is replaced. The same
+/// pass replaces unsafe codepoints, so safe text is decoded and rebuilt only
+/// once rather than allocating a separate one-character string for each codepoint.
 fn strip_terminal_sequences(text: String) -> String {
   text
   |> string.to_utf_codepoints
@@ -46,6 +46,7 @@ fn strip_terminal_sequences(text: String) -> String {
   |> string.from_utf_codepoints
 }
 
+/// Strips escape sequences and replaces unsafe codepoints from codepoints list.
 fn strip_sequences(
   remaining: List(UtfCodepoint),
   kept: List(UtfCodepoint),
@@ -60,8 +61,8 @@ fn strip_sequences(
   }
 }
 
-// Keep codepoints until the final string construction. This also preserves
-// owned output rather than returning a slice of the untrusted input buffer.
+/// Keep codepoints until the final string construction. This also preserves
+/// owned output rather than returning a slice of the untrusted input buffer.
 fn keep_visible(first: UtfCodepoint, kept: List(UtfCodepoint)) {
   let code = string.utf_codepoint_to_int(first)
 
@@ -74,6 +75,7 @@ fn keep_visible(first: UtfCodepoint, kept: List(UtfCodepoint)) {
   }
 }
 
+/// Matches the opening byte of a terminal sequence and returns remaining tail.
 fn terminal_sequence_tail(
   first: UtfCodepoint,
   rest: List(UtfCodepoint),
@@ -86,6 +88,7 @@ fn terminal_sequence_tail(
   }
 }
 
+/// Dispatches on sequence indicator following escape byte 0x1B.
 fn escape_sequence_tail(
   remaining: List(UtfCodepoint),
 ) -> Option(List(UtfCodepoint)) {
@@ -104,14 +107,18 @@ fn csi_tail(remaining: List(UtfCodepoint)) -> Option(List(UtfCodepoint)) {
   csi_tail_with(remaining, False)
 }
 
+/// Scans CSI parameters, intermediates, and final command byte.
 fn csi_tail_with(
   remaining: List(UtfCodepoint),
   intermediates_started: Bool,
 ) -> Option(List(UtfCodepoint)) {
+  // Parse the sequence of parameter and intermediate bytes up to the final byte.
   case remaining {
     [] -> None
     [first, ..rest] -> {
       let code = string.utf_codepoint_to_int(first)
+
+      // Classify the codepoint as final byte, parameter byte, or intermediate.
       case
         code >= 0x40 && code <= 0x7E,
         code >= 0x30 && code <= 0x3F && !intermediates_started,
@@ -126,6 +133,7 @@ fn csi_tail_with(
   }
 }
 
+/// Consumes an OSC payload until BEL (0x07), ST (0x9C), or ESC backslash.
 fn osc_tail(remaining: List(UtfCodepoint)) -> Option(List(UtfCodepoint)) {
   case remaining {
     [] -> None
@@ -139,6 +147,7 @@ fn osc_tail(remaining: List(UtfCodepoint)) -> Option(List(UtfCodepoint)) {
   }
 }
 
+/// Handles the two-byte 7-bit string terminator ESC \ at the end of an OSC.
 fn osc_escape_tail(
   remaining: List(UtfCodepoint),
 ) -> Option(List(UtfCodepoint)) {
@@ -178,12 +187,13 @@ pub fn unchanged_prefix(text: String) -> Int {
   unchanged_bytes(bit_array.from_string(text), 0)
 }
 
-// One step of `unchanged_prefix`. Printable ASCII and the line feed are the
-// common case and are checked by value; a longer UTF-8 sequence is decoded
-// by arithmetic, which every target supports, and kept unless `invisible`
-// says the pass would replace it. The text is a `String`, so every sequence
-// is well formed and the arms below are the only shapes it can take.
+/// One step of `unchanged_prefix`. Printable ASCII and the line feed are the
+/// common case and are checked by value; a longer UTF-8 sequence is decoded
+/// by arithmetic, which every target supports, and kept unless `invisible`
+/// says the pass would replace it. The text is a `String`, so every sequence
+/// is well formed and the arms below are the only shapes it can take.
 fn unchanged_bytes(bits: BitArray, count: Int) -> Int {
+  // Check leading byte shapes to identify contiguous unchanged ASCII and UTF-8 bytes.
   case bits {
     <<byte, rest:bytes>> if byte >= 0x20 && byte < 0x7F ->
       unchanged_bytes(rest, count + 1)
@@ -240,6 +250,8 @@ pub fn single_line(text: String) -> String {
 /// ```
 pub fn fit_tail(text: String, width: Int) -> String {
   let length = string.length(text)
+
+  // Decide whether truncation with ellipsis is required.
   case width <= 0, length <= width {
     True, _ -> ""
     False, True -> text
@@ -249,6 +261,7 @@ pub fn fit_tail(text: String, width: Int) -> String {
   }
 }
 
+/// Identifies invisible or unsafe control and format codepoints.
 fn invisible(code: Int) -> Bool {
   code < 0x20
   || code == 0x7F

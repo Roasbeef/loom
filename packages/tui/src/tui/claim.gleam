@@ -119,6 +119,8 @@ pub type Failure {
 pub fn claim_main(arguments: List(String)) -> Nil {
   let outcome = {
     use #(options, token) <- result.try(parse_claim(arguments))
+
+    // Prompt for claim token interactively when not passed as argument.
     use token <- result.try(case token {
       Some(token) -> Ok(token)
       None ->
@@ -137,6 +139,8 @@ pub fn claim_main(arguments: List(String)) -> Nil {
     redeem(remote, token, options.name)
     |> result.map(fn(claimed) { #(remote, claimed) })
   }
+
+  // Report claim result or exit with formatted error diagnostic.
   case outcome {
     Ok(#(remote, claimed)) -> {
       io.println_error(
@@ -170,6 +174,8 @@ pub fn enroll_main(arguments: List(String)) -> Nil {
     use remote <- result.try(remote(options) |> result.map_error(Invalid))
     enroll(remote)
   }
+
+  // Report enrollment digest or exit with error.
   case outcome {
     Ok(value) -> {
       io.println_error(
@@ -204,6 +210,8 @@ pub fn parse_claim(
     gather(arguments, Options("", "", "", ""), []),
   )
   use Nil <- result.try(required_address(options))
+
+  // Match optional positional token argument.
   case positional {
     [] -> Ok(#(options, None))
     [token] -> Ok(#(options, Some(token)))
@@ -223,16 +231,21 @@ pub fn parse_enroll(arguments: List(String)) -> Result(Options, Failure) {
     gather(arguments, Options("", "", "", ""), []),
   )
   use Nil <- result.try(required_address(options))
+
+  // Ensure enroll does not accept custom display name options.
   use Nil <- result.try(case options.name {
     "" -> Ok(Nil)
     _given -> Error(Invalid(usage))
   })
+
+  // Ensure enroll takes no positional arguments.
   case positional {
     [] -> Ok(options)
     [_, ..] -> Error(Invalid(usage))
   }
 }
 
+/// Recursively gathers CLI options and positional arguments.
 fn gather(
   arguments: List(String),
   options: Options,
@@ -275,11 +288,16 @@ fn required_address(options: Options) -> Result(Nil, Failure) {
 /// ```
 pub fn remote(options: Options) -> Result(Remote, String) {
   use Nil <- result.try(claim.remote_address(options.address))
+
+  // Determine remote storage directory label.
   use label <- result.try(case options.label {
     "" -> default_label(options.address)
     given -> Ok(given)
   })
+
   use Nil <- result.try(valid_label(label))
+
+  // Determine state directory root path.
   use state <- result.try(case options.state_directory {
     "" ->
       bootstrap.getenv("HOME")
@@ -287,6 +305,7 @@ pub fn remote(options: Options) -> Result(Remote, String) {
       |> result.replace_error("HOME is unset; pass --state-dir")
     given -> Ok(given)
   })
+
   use state <- result.try(bootstrap.absolute_path(state))
   let remotes = state <> "/remotes"
   let directory = remotes <> "/" <> label
@@ -299,12 +318,16 @@ pub fn remote(options: Options) -> Result(Remote, String) {
   Ok(Remote(options.address, label, directory))
 }
 
-// The host, with the port when one is given and it is not 443, so two
-// daemons on one host keep separate files.
+/// Derives a default directory label from the remote address host and port.
+///
+/// The host, with the port when one is given and it is not 443, so two
+/// daemons on one host keep separate files.
 fn default_label(address: String) -> Result(String, String) {
   use parsed <- result.try(
     uri.parse(address) |> result.replace_error("invalid control address"),
   )
+
+  // Form label from host and non-default port.
   case parsed.host, parsed.port {
     Some(host), None | Some(host), Some(443) -> Ok(host)
     Some(host), Some(port) -> Ok(host <> ":" <> int.to_string(port))
@@ -312,11 +335,15 @@ fn default_label(address: String) -> Result(String, String) {
   }
 }
 
-// The label becomes one path component, so it may not climb out of
-// `remotes/` or name a hidden or empty entry.
+/// Validates that a label is a safe single path component.
+///
+/// The label becomes one path component, so it may not climb out of
+/// `remotes/` or name a hidden or empty entry.
 fn valid_label(label: String) -> Result(Nil, String) {
   let allowed =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-:[]"
+
+  // Validate label characters and size constraints.
   case
     label != ""
     && !string.starts_with(label, ".")
@@ -401,6 +428,8 @@ pub fn redeem(
     prepare(remote, token) |> result.map_error(Invalid),
   )
   let digest = claim.digest(credential)
+
+  // Perform claim exchange over websocket.
   case exchange(endpoint, token, digest, name) {
     Error(failure) -> Error(failure)
     Ok(Answered(claimed)) -> {
@@ -441,8 +470,10 @@ pub fn redeem(
   }
 }
 
-// A finished claim lives in `remote.json`; a second claim for the same label
-// would overwrite the credential that claim bound.
+/// Checks that no finished claim or enrollment already exists for this remote.
+///
+/// A finished claim lives in `remote.json`; a second claim for the same label
+/// would overwrite the credential that claim bound.
 fn unfinished(remote: Remote) -> Result(Nil, Failure) {
   case simplifile.is_file(record_path(remote)) {
     Ok(False) -> Ok(Nil)
@@ -470,6 +501,8 @@ fn unfinished(remote: Remote) -> Result(Nil, Failure) {
 /// ```
 pub fn prepare(remote: Remote, token: String) -> Result(String, String) {
   let claim_digest = claim.digest(token)
+
+  // Check if credential for this token is already stored on disk.
   case stored(claim_path(remote)), stored(credential_path(remote)) {
     Ok(named), Ok(credential) if named == claim_digest -> Ok(credential)
     _, _ -> {
@@ -487,13 +520,17 @@ pub fn prepare(remote: Remote, token: String) -> Result(String, String) {
   }
 }
 
-// A stored value is 64 lowercase hex characters in a private file; anything
-// else, including a file other users can read, is treated as absent.
+/// Reads a 256-bit hexadecimal value from a private file.
+///
+/// A stored value is 64 lowercase hex characters in a private file; anything
+/// else, including a file other users can read, is treated as absent.
 fn stored(path: String) -> Result(String, Nil) {
   use bytes <- result.try(
     bootstrap.read_private_bounded(path, 64) |> result.replace_error(Nil),
   )
   use text <- result.try(bit_array.to_string(bytes))
+
+  // Validate hex format and length.
   case claim.is_hex_256(text) {
     True -> Ok(text)
     False -> Error(Nil)
@@ -553,18 +590,25 @@ fn exchange(
   outcome
 }
 
-// The name is sent only when one was chosen, so a claim without `--name` is
-// byte-for-byte the message older daemons accept.
+/// Encodes claim request body parameters, including optional custom display name.
+///
+/// The name is sent only when one was chosen, so a claim without `--name` is
+/// byte-for-byte the message older daemons accept.
 fn claim_body(digest: String, name: String) -> List(#(String, JsonValue)) {
   let credential = #("credential_digest", json.String(digest))
+
+  // Append name field when specified by caller.
   case name {
     "" -> [credential]
     chosen -> [credential, #("name", json.String(chosen))]
   }
 }
 
+/// Awaits and verifies the initial v2 protocol hello event from the daemon.
 fn hello(inbox) -> Result(Nil, Nil) {
   use fields <- result.try(next_event(inbox))
+
+  // Match hello greeting event and protocol version.
   case list.key_find(fields, "event"), list.key_find(fields, "body") {
     Ok(json.String("hello")), Ok(json.Object(body)) ->
       case list.key_find(body, "protocol") {
@@ -575,19 +619,25 @@ fn hello(inbox) -> Result(Nil, Nil) {
   }
 }
 
-// Only the first three refusals are final: the claim is unknown or void, it
-// expired, or it is bound elsewhere. Anything else leaves the credential in
-// place for a rerun.
+/// Awaits the correlated response to a claim submission and maps outcomes.
+///
+/// Only the first three refusals are final: the claim is unknown or void, it
+/// expired, or it is bound elsewhere. Anything else leaves the credential in
+/// place for a rerun.
 fn answer(inbox, digest: String) -> Result(Answer, Failure) {
   let unknown =
     Unknown(
       "the claim reply was lost or invalid; rerun the same command to complete or refuse it",
     )
   use fields <- result.try(next_event(inbox) |> result.replace_error(unknown))
+
+  // Confirm response correlates with the first request.
   use Nil <- result.try(case list.key_find(fields, "reply_to") {
     Ok(json.Int(1)) -> Ok(Nil)
     Ok(_) | Error(Nil) -> Error(unknown)
   })
+
+  // Match success event or map error refusal code.
   case list.key_find(fields, "event"), list.key_find(fields, "body") {
     Ok(json.String("credentials.claim")), Ok(body) ->
       claimed(body, digest)
@@ -609,24 +659,32 @@ fn answer(inbox, digest: String) -> Result(Answer, Failure) {
   }
 }
 
-// The reply is checked, not trusted: the fingerprint must be this
-// credential's, so a reply that names another binding is not reported as
-// this one's success.
+/// Decodes and validates claimed principal, name, fingerprint, and memberships.
+///
+/// The reply is checked, not trusted: the fingerprint must be this
+/// credential's, so a reply that names another binding is not reported as
+/// this one's success.
 fn claimed(body: JsonValue, digest: String) -> Result(Claimed, Nil) {
   use fields <- result.try(object(body))
   use principal_id <- result.try(text(fields, "principal_id"))
   use name <- result.try(text(fields, "name"))
   use fingerprint <- result.try(text(fields, "fingerprint"))
+
+  // Verify received fingerprint matches local credential digest.
   use Nil <- result.try(case fingerprint == string.slice(digest, 0, 16) {
     True -> Ok(Nil)
     False -> Error(Nil)
   })
+
+  // Parse memberships list.
   use sessions <- result.try(case list.key_find(fields, "sessions") {
     Ok(json.Array(values)) ->
       list.try_map(values, fn(value) {
         use fields <- result.try(object(value))
         use session_id <- result.try(text(fields, "session_id"))
         use role <- result.try(text(fields, "role"))
+
+        // Validate allowed membership role.
         case role {
           "operator" | "observer" -> Ok(Membership(session_id, role))
           _other -> Error(Nil)
@@ -634,16 +692,22 @@ fn claimed(body: JsonValue, digest: String) -> Result(Claimed, Nil) {
       })
     Ok(_) | Error(Nil) -> Error(Nil)
   })
+
   Ok(Claimed(principal_id, name, fingerprint, sessions))
 }
 
+/// Receives the next wire frame from websocket inbox and parses JSON payload.
 fn next_event(inbox) -> Result(List(#(String, JsonValue)), Nil) {
   use message <- result.try(process.receive(inbox, 10_000))
+
+  // Handle websocket event variants.
   case message {
     websocket.Connected -> next_event(inbox)
     websocket.Incoming(text) -> {
       use value <- result.try(json.parse(text) |> result.replace_error(Nil))
       use fields <- result.try(object(value))
+
+      // Confirm v2 protocol version header.
       case list.key_find(fields, "v") {
         Ok(json.Int(2)) -> Ok(fields)
         Ok(_) | Error(Nil) -> Error(Nil)
@@ -660,6 +724,7 @@ fn object(value: JsonValue) -> Result(List(#(String, JsonValue)), Nil) {
   }
 }
 
+/// Extracts a non-empty string property by name from a list of key-value pairs.
 fn text(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -679,6 +744,7 @@ fn text(
 /// // json.to_string(claim.report(remote, claimed))
 /// ```
 pub fn report(remote: Remote, claimed: Claimed) -> JsonValue {
+  // Generate launch command line for the first session if present.
   let launch = case claimed.sessions {
     [first, ..] -> [
       #(
@@ -695,6 +761,7 @@ pub fn report(remote: Remote, claimed: Claimed) -> JsonValue {
     ]
     [] -> []
   }
+
   json.Object([
     #("principal_id", json.String(claimed.principal_id)),
     #("name", json.String(claimed.name)),

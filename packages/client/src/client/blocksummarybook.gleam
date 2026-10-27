@@ -258,6 +258,7 @@ pub fn grow(
   operation operation: OpId,
   chunk chunk: String,
 ) -> #(Book, List(Launch)) {
+  // Look up existing live stream or create a fresh tracking entry.
   let #(book, live) = case dict.get(book.streams, generation) {
     Ok(live) -> #(book, live)
     Error(Nil) -> #(
@@ -277,6 +278,7 @@ pub fn grow(
       ),
     )
   }
+
   let size = string.byte_size(chunk)
   let live =
     Live(
@@ -303,6 +305,7 @@ pub fn grow(
 /// ```
 ///
 pub fn ended(book: Book, generation: String) -> Book {
+  // Look up stream and close or remove it.
   case dict.get(book.streams, generation) {
     Error(Nil) -> book
     Ok(Live(flight: Idle, ..)) ->
@@ -335,6 +338,7 @@ pub fn landed(
   pace: Pace,
   generation: String,
 ) -> #(Book, List(Launch)) {
+  // Handle landing of live request.
   case dict.get(book.streams, generation) {
     Error(Nil) -> #(book, [])
     Ok(Live(ending: Closed, ..)) -> #(
@@ -356,8 +360,10 @@ pub fn landed(
   }
 }
 
-// The one place a live launch is decided. Every event that can make a
-// stream due ends here, so the three conditions are stated once.
+/// Considers launching a summarization request for live stream if thresholds met.
+///
+/// The one place a live launch is decided. Every event that can make a
+/// stream due ends here, so the three conditions are stated once.
 fn consider(
   book: Book,
   pace: Pace,
@@ -371,6 +377,7 @@ fn consider(
   let due =
     live.flight == Idle && live.bytes >= pace.floor_bytes && grown && slot
 
+  // Launch live summarization if due, or retain updated live state.
   case due {
     False -> #(
       Book(..book, streams: dict.insert(book.streams, generation, live)),
@@ -398,8 +405,10 @@ fn consider(
   }
 }
 
-// How many live requests are out, counting a stream that has ended with
-// its request still out: that request still occupies a slot.
+/// Counts how many live stream requests are currently in flight.
+///
+/// How many live requests are out, counting a stream that has ended with
+/// its request still out: that request still occupies a slot.
 fn asking_live(book: Book) -> Int {
   dict.fold(book.streams, 0, fn(count, _generation, live) {
     case live.flight {
@@ -409,12 +418,15 @@ fn asking_live(book: Book) -> Int {
   })
 }
 
-// Makes room for one more stream when the book is full, by forgetting the
-// oldest stream with no request out. While fewer requests may be out than
-// streams may be tracked there is always such a stream; the oldest of all
-// is the fallback that keeps the bound if the pace says otherwise, and
-// its request's end then finds nothing and launches nothing.
+/// Evicts oldest idle stream if stream limit has been reached.
+///
+/// Makes room for one more stream when the book is full, by forgetting the
+/// oldest stream with no request out. While fewer requests may be out than
+/// streams may be tracked there is always such a stream; the oldest of all
+/// is the fallback that keeps the bound if the pace says otherwise, and
+/// its request's end then finds nothing and launches nothing.
 fn evict(book: Book, pace: Pace) -> Book {
+  // Check if current stream count exceeds limit.
   case dict.size(book.streams) < pace.max_streams {
     True -> book
     False -> {
@@ -425,6 +437,8 @@ fn evict(book: Book, pace: Pace) -> Book {
           int.compare({ left.1 }.order, { right.1 }.order)
         })
       let idle = list.find(ranked, fn(pair) { { pair.1 }.flight == Idle })
+
+      // Evict first idle stream, or fallback to oldest ranked stream.
       case result.lazy_or(idle, fn() { list.first(ranked) }) {
         Ok(#(generation, _live)) ->
           Book(..book, streams: dict.delete(book.streams, generation))
@@ -434,17 +448,22 @@ fn evict(book: Book, pace: Pace) -> Book {
   }
 }
 
-// Keeps the newest `window_bytes` once the retained text has grown to twice
-// that. Whole chunks are dropped from the old end, so a cut never lands
-// inside a character; the halving means a trim runs once per window of
-// growth rather than once per fragment.
+/// Trims retained text chunks to respect configured window buffer.
+///
+/// Keeps the newest `window_bytes` once the retained text has grown to twice
+/// that. Whole chunks are dropped from the old end, so a cut never lands
+/// inside a character; the halving means a trim runs once per window of
+/// growth rather than once per fragment.
 fn trim(live: Live, pace: Pace) -> Live {
+  // Trim retained chunks if exceeding twice the window budget.
   case live.retained > pace.window_bytes * 2 {
     False -> live
     True -> {
       let #(kept, retained) =
         list.fold_until(live.chunks, #([], 0), fn(acc, chunk) {
           let #(kept, retained) = acc
+
+          // Stop folding once window budget is met.
           case retained >= pace.window_bytes {
             True -> list.Stop(acc)
             False ->
@@ -486,10 +505,13 @@ fn newlines(chunk: String) -> Int {
 pub fn admit(book: Book, pace: Pace, jobs: List(Job)) -> #(Book, List(Launch)) {
   let waiting = list.append(book.waiting, jobs)
   let excess = list.length(waiting) - pace.settled_backlog
+
+  // Drop oldest excess jobs if backlog bound is exceeded.
   let waiting = case excess > 0 {
     True -> list.drop(waiting, excess)
     False -> waiting
   }
+
   start_waiting(Book(..book, waiting:), pace, [])
 }
 
@@ -512,12 +534,15 @@ pub fn settled_landed(book: Book, pace: Pace) -> #(Book, List(Launch)) {
   start_waiting(book, pace, [])
 }
 
-// Launches waiting jobs oldest first while a slot is free.
+/// Starts waiting jobs oldest first while a slot is free.
+///
+/// Launches waiting jobs oldest first while a slot is free.
 fn start_waiting(
   book: Book,
   pace: Pace,
   launched: List(Launch),
 ) -> #(Book, List(Launch)) {
+  // Launch next waiting job if settled concurrency permit is available.
   case book.waiting, book.asking < pace.settled_concurrency {
     [job, ..rest], True -> {
       let book = Book(..book, waiting: rest, asking: book.asking + 1)

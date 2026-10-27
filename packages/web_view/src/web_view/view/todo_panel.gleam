@@ -72,6 +72,7 @@ pub fn view(board: Option(Board), reviewers: List(String)) -> Element(message) {
   use <- element.memo([element.ref(board), element.ref(reviewers)])
   let drawn = board_elements(board)
 
+  // Dispatch on view state.
   case drawn, reviewers {
     [], [] -> element.none()
     _, _ ->
@@ -85,15 +86,17 @@ pub fn view(board: Option(Board), reviewers: List(String)) -> Element(message) {
   }
 }
 
-// The board's element, or nothing when there is no board, it has no phase to
-// look at, or every task on it is closed. A closed board has no work left to
-// show, and the steps that closed it are in the turn's fold.
+/// The board's element, or nothing when there is no board, it has no phase to
+/// look at, or every task on it is closed. A closed board has no work left to
+/// show, and the steps that closed it are in the turn's fold.
 fn board_elements(board: Option(Board)) -> List(Element(message)) {
+  // Dispatch on board_elements state.
   case board {
     None -> []
     Some(board) -> {
       let #(closed, total) = todo_list.count(board)
 
+      // Dispatch on board_elements state.
       case todo_list.focus(board), closed == total {
         None, _ -> []
         Some(_), True -> []
@@ -105,10 +108,10 @@ fn board_elements(board: Option(Board)) -> List(Element(message)) {
 
 // --- an open board -------------------------------------------------------------
 
-// The one-line summary, folded over the header, the focused phase's tasks in
-// order, and the folded rest. The tasks are one list in the phase's order
-// with the active one marked, so the panel scrolls inside its capped height
-// rather than windowing around it.
+/// The one-line summary, folded over the header, the focused phase's tasks in
+/// order, and the folded rest. The tasks are one list in the phase's order
+/// with the active one marked, so the panel scrolls inside its capped height
+/// rather than windowing around it.
 fn open(
   board: Board,
   phase: Phase,
@@ -130,10 +133,11 @@ fn open(
   ])
 }
 
-// The collapsed line: the label, how many tasks are closed, and the active
-// task's text when there is one. A board with no active task, whose open work
-// is all blocked or not started, says only the count.
+/// The collapsed line: the label, how many tasks are closed, and the active
+/// task's text when there is one. A board with no active task, whose open work
+/// is all blocked or not started, says only the count.
 fn line(board: Board, closed: Int, total: Int) -> Element(message) {
+  // Dispatch on line state.
   let doing = case todo_list.active(board) {
     Some(#(_, task)) -> [
       html.span([attribute.class("todo-quiet")], [html.text(" · ")]),
@@ -162,6 +166,7 @@ fn line(board: Board, closed: Int, total: Int) -> Element(message) {
   )
 }
 
+/// Header helper.
 fn header(phase: Phase, closed: Int, total: Int) -> Element(message) {
   let #(phase_closed, phase_total) = todo_list.tally(phase.tasks)
 
@@ -177,10 +182,12 @@ fn header(phase: Phase, closed: Int, total: Int) -> Element(message) {
   ])
 }
 
-// One task: the status glyph, the status as a word for a screen reader, the
-// text, and a blocked task's reason after it.
+/// One task: the status glyph, the status as a word for a screen reader, the
+/// text, and a blocked task's reason after it.
 fn task_item(task: Task) -> Element(message) {
   let #(class, glyph) = mark(task.status)
+
+  // Dispatch on task_item state.
   let reason = case task.status {
     Blocked(reason: Some(reason)) -> [
       html.span([attribute.class("todo-quiet")], [
@@ -207,8 +214,8 @@ fn task_item(task: Task) -> Element(message) {
   )
 }
 
-// A status's class and glyph, the terminal's table. The class is a literal
-// from this closed set, never derived from the status's name.
+/// A status's class and glyph, the terminal's table. The class is a literal
+/// from this closed set, never derived from the status's name.
 fn mark(status: Status) -> #(String, String) {
   case status {
     Done -> #("todo-done", "✓")
@@ -219,10 +226,10 @@ fn mark(status: Status) -> #(String, String) {
   }
 }
 
-// Every phase but the focused one, in order, on one row: a finished phase is
-// a check, anything else its closed count, so the row reads as the road
-// behind and ahead of the phase being worked. A board of one phase has no
-// such row.
+/// Every phase but the focused one, in order, on one row: a finished phase is
+/// a check, anything else its closed count, so the row reads as the road
+/// behind and ahead of the phase being worked. A board of one phase has no
+/// such row.
 fn others(board: Board, focus: Phase) -> Element(message) {
   let parts =
     board.phases
@@ -236,6 +243,7 @@ fn others(board: Board, focus: Phase) -> Element(message) {
       }
     })
 
+  // Dispatch on others state.
   case parts {
     [] -> element.none()
     [_, ..] ->
@@ -247,12 +255,12 @@ fn others(board: Board, focus: Phase) -> Element(message) {
 
 // --- the reviewer band ---------------------------------------------------------
 
-// The band is the terminal's lines as they are: two per reviewer, where the
-// second, the task brief, is indented, and a last line counting the rest.
-// The indent is kept as whitespace the stylesheet preserves, so the page
-// reads as the terminal does and this module parses nothing back out of a
-// line. The lines come from session text already cleaned by
-// `reviewer_status.lines`, and are drawn as text nodes.
+/// The band is the terminal's lines as they are: two per reviewer, where the
+/// second, the task brief, is indented, and a last line counting the rest.
+/// The indent is kept as whitespace the stylesheet preserves, so the page
+/// reads as the terminal does and this module parses nothing back out of a
+/// line. The lines come from session text already cleaned by
+/// `reviewer_status.lines`, and are drawn as text nodes.
 fn band(lines: List(String)) -> List(Element(message)) {
   case lines {
     [] -> []

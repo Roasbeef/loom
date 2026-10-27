@@ -71,6 +71,7 @@ pub fn admit(model: Model, arrivals: List(Arrival)) -> Model {
   list.fold(arrivals, model, admit_one)
 }
 
+/// Routes a single received arrival into the appropriate buffer or job slot.
 fn admit_one(model: Model, arrival: Arrival) -> Model {
   case arrival {
     msg.Frame(source:, message:) ->
@@ -87,10 +88,8 @@ fn admit_one(model: Model, arrival: Arrival) -> Model {
   }
 }
 
-// A frame the adopted inbox refused goes to the waiting attempt when it came
-// from the attempt's socket; the attempt keeps it for the adopted lane if it
-// arrives after the capture. Anything else came from a replaced socket and
-// is dropped here.
+/// Files a frame from a connection attempt into the candidate socket when
+/// matching, dropping stale frames from replaced sockets.
 fn admit_attempt_frame(
   model: Model,
   source: Subject(connection_event.Message),
@@ -103,11 +102,10 @@ fn admit_attempt_frame(
   }
 }
 
-// A reply goes to the slot of its kind only when that slot names the
-// reply's key. Otherwise it belongs to a job no reducer waits for any more,
-// one that was cancelled or whose slot moved on; that comparison of keys is
-// the only fence a job reply passes.
+/// Routes a background daemon job arrival to its matching slot, releasing
+/// unhandled arrivals whose slots have moved on.
 fn admit_reply(model: Model, arrival: job.Arrival(job.Daemon)) -> Model {
+  // Dispatch arrival to the handler matching its key.
   let admitted = case arrival {
     job.ControlArrived(key:, reply:) -> admit_control(model, key, reply)
     job.ReconnectArrived(key:, reply:) -> admit_reconnect(model, key, reply)
@@ -121,12 +119,15 @@ fn admit_reply(model: Model, arrival: job.Arrival(job.Daemon)) -> Model {
         Model(..model, view: view_set.candidate(model.view, candidate))
       })
   }
+
+  // Release resources if the reply was unhandled or outdated.
   case admitted {
     Ok(model) -> model
     Error(Nil) -> tui_model.release(model, arrival)
   }
 }
 
+/// Delivers a control request reply to the active control job if keys match.
 fn admit_control(
   model: Model,
   key: job.Key,
@@ -148,6 +149,7 @@ fn admit_control(
   }
 }
 
+/// Delivers a reconnect job reply to the pending reconnection attempt.
 fn admit_reconnect(
   model: Model,
   key: job.Key,
@@ -166,6 +168,7 @@ fn admit_reconnect(
   }
 }
 
+/// Delivers an activity polling reply to the pending activity query.
 fn admit_activity(
   model: Model,
   key: job.Key,
@@ -187,6 +190,7 @@ fn admit_activity(
   }
 }
 
+/// Delivers an image opening job reply to the awaiting view slot.
 fn admit_image(
   model: Model,
   key: job.Key,
@@ -202,6 +206,7 @@ fn admit_image(
   }
 }
 
+/// Delivers a configuration job reply to the awaiting configuring slot.
 fn admit_configuration(
   model: Model,
   key: job.Key,

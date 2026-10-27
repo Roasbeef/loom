@@ -77,7 +77,15 @@ accumulate across attempts or alter a tool's name, input schema or execution
 policy. Native attempt observation fingerprints the resulting composition even
 when the attempt fails. A request guard runs before credentials and transport,
 so an independent rollout can enforce exact targeting and conservative
-aggregate budgets on every actual dispatch. See
+aggregate budgets on every actual dispatch. `gateway.with_attempt_settled`
+installs the observer that closes that loop: it is told once per attempt the
+request guard admitted, in the pump's process, after the attempt's terminal
+is priced and before the terminal is delivered, with the target, the API
+dialect, the walk ordinal, the priced usage the ledger row will carry and
+whether a response settled (`AttemptSettled`, `AttemptEnding`). An attempt
+the guard refused is never reported, which is what lets the governed
+rollout's guard credit a worst-case reservation back without ever crediting
+one it never debited. See
 [the evolution architecture](../../docs/architecture/evolution.md).
 
 ## Purpose
@@ -107,6 +115,10 @@ not split the batch. These are transient wire projections.
   response-budget refusal retain their bounded cancellation paths.
 
 - `ProviderError.WithContext` carries the protocol 028 diagnostic envelope.
+- Responses unclosed-part corruption uses `RecoverableStreamCorruption` and
+  `RetryableWithin` with three total attempts; the gateway forwards it without
+  fallback. Other malformed witnesses remain terminal. Structural diagnostics
+  retain only allowlisted labels and counts, not response content or IDs.
   `FailureObservation` names one of four local boundaries, the initiating
   event, known request/attempt identity, and configured time bounds. The
   envelope normalizes to at most one observation per boundary; oversized
@@ -156,7 +168,8 @@ not split the batch. These are transient wire projections.
   identity). `ForRole.thinking` is the caller's reasoning-budget
   overlay (`protocol-change/009`): `None` leaves each walked entry's own
   declared level in force, `Some(level)` applies that level to **every**
-  target the walk attempts.
+  target the walk attempts. Responses encodes xhigh and max verbatim; the
+  other adapters map both to their existing high setting.
 - `provider/stream.StreamHandle` — the consumption contract WP-E relies
   on: zero or more `Delta` events, then exactly one terminal `Settled` or
   `Failed`, and nothing after it. Its cancel capability signals the one

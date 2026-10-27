@@ -95,6 +95,8 @@ pub fn stubs_at(
   owner: String,
   time: Clock,
 ) -> Result(List(Kept), String) {
+  // This match resolves simplifile.is_file(path) before the surrounding protocol step continues.
+  // This match resolves simplifile.is_file(path) before the enclosing validation continues.
   case simplifile.is_file(path) {
     Ok(True) -> {
       use opened <- result.try(
@@ -151,6 +153,8 @@ pub fn pass(
   logger: Logger,
 ) -> fn() -> Backlog {
   fn() {
+    // This match resolves rows() before the surrounding protocol step continues.
+    // This match resolves rows() before the enclosing validation continues.
     case rows() {
       Error(reason) -> {
         log.warn(logger, "remote_release.unreadable", [
@@ -166,6 +170,8 @@ pub fn pass(
           |> list.flat_map(fn(group) {
             release_group(group.1, settle, release, logger)
           })
+
+        // This match resolves remaining before the surrounding protocol step continues.
         case remaining {
           [] -> Clear
           [_, ..] -> Owed(Quick)
@@ -177,12 +183,15 @@ pub fn pass(
 
 // The rows keyed by the orchestrator they are owed to, in name order, each
 // group in the order the rows came.
+/// Group by orchestrator keeps this client operation’s decoding or state decision in one place.
 fn group_by_orchestrator(
   rows: List(RemoteRelease),
 ) -> List(#(String, List(RemoteRelease))) {
   rows
   |> list.fold(dict.new(), fn(groups, row) {
     dict.upsert(groups, row.orchestrator, fn(found) {
+      // This match resolves found before the surrounding protocol step continues.
+      // This match resolves found before the enclosing validation continues.
       case found {
         Some(held) -> [row, ..held]
         None -> [row]
@@ -198,15 +207,19 @@ fn group_by_orchestrator(
 // that was answered is settled and leaves the list. Everything after a silence
 // stays owed without being sent, since each would wait out the same deadline to
 // learn the same thing.
+/// Release group keeps this client operation’s decoding or state decision in one place.
 fn release_group(
   rows: List(RemoteRelease),
   settle: fn(RemoteRelease) -> Result(Nil, String),
   release: fn(String, Parent) -> Result(Int, peer_mail.Failure),
   logger: Logger,
 ) -> List(RemoteRelease) {
+  // This match resolves rows before the surrounding protocol step continues.
+  // This match resolves rows before the enclosing validation continues.
   case rows {
     [] -> []
     [row, ..rest] ->
+      // This match resolves release(row.orchestrator, parent_of(row)) before the surrounding protocol step continues.
       case release(row.orchestrator, parent_of(row)) {
         Ok(stopped) ->
           after_answer(row, rest, settle, release, logger, [
@@ -224,6 +237,7 @@ fn release_group(
 // Settles the row an orchestrator answered and goes on to the rest. A row whose
 // settlement the store refused stays owed: the release is idempotent, and the
 // next pass sends it again.
+/// After answer keeps this client operation’s decoding or state decision in one place.
 fn after_answer(
   row: RemoteRelease,
   rest: List(RemoteRelease),
@@ -232,6 +246,7 @@ fn after_answer(
   logger: Logger,
   answer: List(field.Field),
 ) -> List(RemoteRelease) {
+  // This match resolves settle(row) before the enclosing validation continues.
   let unsettled = case settle(row) {
     Ok(Nil) -> {
       log.info(
@@ -252,11 +267,13 @@ fn after_answer(
       [row]
     }
   }
+
   list.append(unsettled, release_group(rest, settle, release, logger))
 }
 
 // The parent a release names. Only the session says what is released, and the
 // strand is the one the spawner's profile never reads.
+/// Parent of keeps this client operation’s decoding or state decision in one place.
 fn parent_of(row: RemoteRelease) -> Parent {
   remote_spawn.Parent(session: row.parent_session, strand: "main")
 }

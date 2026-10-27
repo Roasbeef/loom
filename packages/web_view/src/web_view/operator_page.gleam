@@ -287,6 +287,8 @@ pub fn update(
 ) -> #(component.Model(socket), Effect(Msg(socket))) {
   let before = component.notice(model)
   let held = model
+
+  // Handle operator page specific messages or forward to component update.
   let #(model, effects) = case message {
     Observed(message:) -> component.update(model, message)
     Submitted(text:, delivery:, images:) ->
@@ -347,6 +349,7 @@ pub fn update(
     True -> model
     False -> component.renew_notice(model)
   }
+
   #(model, effect.map(effects, Observed))
 }
 
@@ -541,9 +544,9 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
   )
 }
 
-// The sidebar's place in the frame. A page whose catalogue read listed
-// nothing has no sidebar to draw, and the frame is told so, so that its bar
-// draws no button that would hide an empty column.
+/// The sidebar's place in the frame. A page whose catalogue read listed
+/// nothing has no sidebar to draw, and the frame is told so, so that its bar
+/// draws no button that would hide an empty column.
 fn sidebar_place(model: component.Model(socket)) -> shell.Sidebar(Msg(socket)) {
   case component.session_groups(model) {
     [] -> shell.Unlisted
@@ -560,10 +563,10 @@ fn sidebar_place(model: component.Model(socket)) -> shell.Sidebar(Msg(socket)) {
   }
 }
 
-// What the sidebar's top and foot offer. "New session" goes to the home page,
-// where a session is started, so it exists where the page can go there. A
-// session page has no admin to open and no list of rows to manage, and the
-// name of the person is not something the page holds.
+/// What the sidebar's top and foot offer. "New session" goes to the home page,
+/// where a session is started, so it exists where the page can go there. A
+/// session page has no admin to open and no list of rows to manage, and the
+/// name of the person is not something the page holds.
 fn sidebar_page(model: component.Model(socket)) -> sidebar.Page(Msg(socket)) {
   sidebar.Page(
     doors: sidebar.RowsOpen,
@@ -581,8 +584,8 @@ fn sidebar_page(model: component.Model(socket)) -> sidebar.Page(Msg(socket)) {
   )
 }
 
-// What the sidebar offers for archiving a row: the quiet button and its
-// question on a page the daemon handed the capability, and nothing otherwise.
+/// What the sidebar offers for archiving a row: the quiet button and its
+/// question on a page the daemon handed the capability, and nothing otherwise.
 fn archive_offer(
   model: component.Model(socket),
 ) -> archiving.Archiving(Msg(socket)) {
@@ -598,9 +601,9 @@ fn archive_offer(
   }
 }
 
-// The Open button of a peer message that names a session the page can open,
-// or none. The name and the identity in the button are the catalogue's entry,
-// found by the identity the peer's message carries.
+/// The Open button of a peer message that names a session the page can open,
+/// or none. The name and the identity in the button are the catalogue's entry,
+/// found by the identity the peer's message carries.
 fn openable(
   model: component.Model(socket),
   session: String,
@@ -611,9 +614,9 @@ fn openable(
   })
 }
 
-// The controls, with what each sends. The fork form sends its text as one
-// field. The bar is drawn in the dock for an operator only: an observer's
-// page has no message for any of it.
+/// The controls, with what each sends. The fork form sends its text as one
+/// field. The bar is drawn in the dock for an operator only: an observer's
+/// page has no message for any of it.
 fn bar(model: component.Model(socket)) -> controls.Bar(Msg(socket)) {
   controls.Bar(
     goal: component.goal(model),
@@ -643,20 +646,26 @@ fn form_submit_text(
   event.on("submit", written_text(to_message)) |> event.prevent_default
 }
 
+/// Decodes form submission field text and transforms into target message.
 fn written_text(
   to_message: fn(String) -> Msg(socket),
 ) -> decode.Decoder(Msg(socket)) {
   use fields <- decode.subfield(["detail", "formData"], decode.list(field()))
+
+  // Validate control text input.
   case control_text(fields) {
     Ok(text) -> decode.success(to_message(text))
     Error(Nil) -> decode.failure(to_message(""), "text form")
   }
 }
 
+/// Decodes form submission field text into a session control command.
 fn written(
   control: fn(String) -> component.Control,
 ) -> decode.Decoder(Msg(socket)) {
   use fields <- decode.subfield(["detail", "formData"], decode.list(field()))
+
+  // Validate control text input.
   case control_text(fields) {
     Ok(text) -> decode.success(Controlled(control(text)))
     Error(Nil) -> decode.failure(Controlled(control("")), "control form")
@@ -699,6 +708,7 @@ pub const approvals_marker = "loom-approvals"
 // and this one, whether or not a card is drawn, so the path a browser event
 // names for the composer's form is the same before and after a card
 // appears, and a submit in flight still reaches the form.
+/// Renders pending tool approval requests and proposed changes cards.
 fn approvals(
   pending: List(approval.Review),
   raised_on: List(#(String, String)),
@@ -712,6 +722,8 @@ fn approvals(
       }),
       list.map(proposed, fn(pair) { #("proposal-" <> pair.0, pair.1) }),
     )
+
+  // Render approvals section if any cards are pending.
   case cards {
     [] -> element.none()
     [_, ..] ->
@@ -746,15 +758,18 @@ fn approvals(
 // per inserted card: cards are keyed by sequence, so a later patch updates
 // the same node rather than inserting a new one, and the animation does not
 // start again.
+/// Renders an individual tool approval review card.
 fn card(
   record: approval.Review,
   raised_on: List(#(String, String)),
   owner: Bool,
 ) -> Element(Msg(socket)) {
+  // Default empty tool name to generic description.
   let tool = case record.tool {
     "" -> "this request"
     tool -> tool
   }
+
   let deny =
     button(
       "approval-deny",
@@ -776,6 +791,8 @@ fn card(
       html.text(" wants to " <> approval.wants(record.tool)),
     ])
   let arming = html.span([attribute.class("arm-note")], [html.text("Arming…")])
+
+  // Present formatted request details or refusal message.
   case approval.presentation(record) {
     Ok(shown) ->
       html.article([attribute.class("approval-card")], [
@@ -820,10 +837,10 @@ fn card(
   }
 }
 
-// The grants a child's request on another orchestrator asked for that the
-// spawner's approval ceiling does not admit: greyed, each with its reason, and
-// not part of what Allow carries. A request with nothing outside the ceiling
-// draws no element.
+/// The grants a child's request on another orchestrator asked for that the
+/// spawner's approval ceiling does not admit: greyed, each with its reason, and
+/// not part of what Allow carries. A request with nothing outside the ceiling
+/// draws no element.
 fn outside(record: approval.Review) -> Element(Msg(socket)) {
   case approval.outside_lines(record) {
     [] -> element.none()
@@ -837,13 +854,13 @@ fn outside(record: approval.Review) -> Element(Msg(socket)) {
   }
 }
 
-// What follows "Allow once" on a card whose request can be remembered: the
-// button that remembers it, which names the tool as the one before it does,
-// and the arming note. A request the terminal could not remember either
-// (`approval.rememberable`: a limit, an environment variable, scratch space,
-// or a grant set that is not whole) offers only the note. The same rule is
-// asked again when the button is pressed (`component.decide`), so a card drawn
-// from a record that has since moved cannot remember what it did not show.
+/// What follows "Allow once" on a card whose request can be remembered: the
+/// button that remembers it, which names the tool as the one before it does,
+/// and the arming note. A request the terminal could not remember either
+/// (`approval.rememberable`: a limit, an environment variable, scratch space,
+/// or a grant set that is not whole) offers only the note. The same rule is
+/// asked again when the button is pressed (`component.decide`), so a card drawn
+/// from a record that has since moved cannot remember what it did not show.
 fn session_offer(
   record: approval.Review,
   tool: String,
@@ -863,6 +880,7 @@ fn session_offer(
   }
 }
 
+/// Renders a generic button element for an operator page action.
 fn button(
   class: String,
   label: String,
@@ -878,14 +896,14 @@ fn button(
   )
 }
 
-// The composer, as a card of three rows: whom it addresses, the editor, and
-// a footer holding the hint, the attach button, who the page acts as and the
-// actions. The editor is uncontrolled and keyed by how many drafts have been
-// sent, so a sent draft is replaced by an empty editor and a refused one
-// stays as the operator left it. The attach element is keyed the same way, so
-// a sent draft leaves with its attachments, and it sits in the footer so its
-// button is the footer's icon. The only handler is the form's submit; Enter in
-// the editor is a newline, never a submission and never a decision.
+/// The composer, as a card of three rows: whom it addresses, the editor, and
+/// a footer holding the hint, the attach button, who the page acts as and the
+/// actions. The editor is uncontrolled and keyed by how many drafts have been
+/// sent, so a sent draft is replaced by an empty editor and a refused one
+/// stays as the operator left it. The attach element is keyed the same way, so
+/// a sent draft leaves with its attachments, and it sits in the footer so its
+/// button is the footer's icon. The only handler is the form's submit; Enter in
+/// the editor is a newline, never a submission and never a decision.
 fn composer(model: component.Model(socket)) -> Element(Msg(socket)) {
   let sent = int.to_string(component.drafts(model))
   html.form(
@@ -924,11 +942,11 @@ fn composer(model: component.Model(socket)) -> Element(Msg(socket)) {
   )
 }
 
-// A pulsing dot before the hint while a turn runs, so a long turn between
-// tool calls, or one waiting on the model, never looks stuck. It says nothing
-// about which of the two it is, since the page does not know, and the hint's own
-// words are the plain word. The dot is decoration, hidden from assistive
-// technology, and the stylesheet stills it under reduced motion.
+/// A pulsing dot before the hint while a turn runs, so a long turn between
+/// tool calls, or one waiting on the model, never looks stuck. It says nothing
+/// about which of the two it is, since the page does not know, and the hint's own
+/// words are the plain word. The dot is decoration, hidden from assistive
+/// technology, and the stylesheet stills it under reduced motion.
 fn busy_mark(activity: component.Activity) -> List(Element(Msg(socket))) {
   case activity {
     component.Idle -> []
@@ -949,11 +967,11 @@ fn hint(activity: component.Activity) -> String {
   }
 }
 
-// The element that attaches images to the draft. `<loom-attach>` is
-// form-associated, so its images join the form as one field named `images`,
-// in the same submit as the draft (protocol-change/051, the addendum on
-// images). Its `limits` attribute is the daemon's own numbers and media types
-// (`web_view/image.limits_attribute`) and holds no session text.
+/// The element that attaches images to the draft. `<loom-attach>` is
+/// form-associated, so its images join the form as one field named `images`,
+/// in the same submit as the draft (protocol-change/051, the addendum on
+/// images). Its `limits` attribute is the daemon's own numbers and media types
+/// (`web_view/image.limits_attribute`) and holds no session text.
 fn attach() -> Element(Msg(socket)) {
   element.element(
     "loom-attach",
@@ -993,6 +1011,7 @@ fn draft(model: component.Model(socket)) -> Element(Msg(socket)) {
 // puts the draft back (`web_client/pending_rule`). A notice that keeps the
 // draft without refusing it, the lane holding a send until a read answers, is
 // not counted, so the line stays until the send.
+/// Renders the custom loom-composer textarea editor element.
 fn editor(model: component.Model(socket)) -> Element(Msg(socket)) {
   let returns = component.returns(model)
   let returned = component.returned(model)
@@ -1041,9 +1060,9 @@ fn editor(model: component.Model(socket)) -> Element(Msg(socket)) {
   )
 }
 
-// The line above the editor: whom the composer addresses, as a tag in the
-// strand's hue. The tag has no handler and no marker, so it is a label and
-// not a control; the target menu is ruled out of the page.
+/// The line above the editor: whom the composer addresses, as a tag in the
+/// strand's hue. The tag has no handler and no marker, so it is a label and
+/// not a control; the target menu is ruled out of the page.
 fn addressing(model: component.Model(socket)) -> Element(Msg(socket)) {
   html.div([attribute.class("to")], [
     html.span([], [html.text("To")]),
@@ -1069,8 +1088,8 @@ fn hue(model: component.Model(socket)) -> turns.Hue {
   component.marks(model).hue
 }
 
-// Who the page acts as, from the attachment the last capture was taken for,
-// in the footer's quiet type: `Owner · operator`.
+/// Who the page acts as, from the attachment the last capture was taken for,
+/// in the footer's quiet type: `Owner · operator`.
 fn who(model: component.Model(socket)) -> Element(Msg(socket)) {
   html.span([attribute.class("who")], [
     html.text(case component.attachment(model) {
@@ -1083,9 +1102,9 @@ fn who(model: component.Model(socket)) -> Element(Msg(socket)) {
   ])
 }
 
-// The addressed strand's cache outlook, drawn as the chip's ring is and
-// worded by `cache_miss.outlook_label`. A tail about to lapse is the one
-// reading worth the signal colour; nothing else here nags.
+/// The addressed strand's cache outlook, drawn as the chip's ring is and
+/// worded by `cache_miss.outlook_label`. A tail about to lapse is the one
+/// reading worth the signal colour; nothing else here nags.
 fn outlook(chip: Option(strip.Chip)) -> Element(Msg(socket)) {
   case chip {
     Some(strip.Chip(cache: Some(#(held, label)), ..)) ->
@@ -1101,6 +1120,7 @@ fn outlook(chip: Option(strip.Chip)) -> Element(Msg(socket)) {
   }
 }
 
+/// Returns the string label for a principal's session role.
 fn role_text(role: snapshot.Role) -> String {
   case role {
     snapshot.Owner -> "owner"
@@ -1109,10 +1129,10 @@ fn role_text(role: snapshot.Role) -> String {
   }
 }
 
-// An idle strand takes one Send; a busy one takes a Queue, which the daemon
-// holds and runs after the current operation, or a Steer, which folds into
-// it. Each is a submit button naming its delivery, so the one pressed
-// travels with the form.
+/// An idle strand takes one Send; a busy one takes a Queue, which the daemon
+/// holds and runs after the current operation, or a Steer, which folds into
+/// it. Each is a submit button naming its delivery, so the one pressed
+/// travels with the form.
 fn actions(activity: component.Activity) -> List(Element(Msg(socket))) {
   case activity {
     component.Idle -> [submit_button("prompt", "Send", "send")]
@@ -1123,6 +1143,7 @@ fn actions(activity: component.Activity) -> List(Element(Msg(socket))) {
   }
 }
 
+/// Renders an action button that carries its delivery mode on submit.
 fn submit_button(
   delivery: String,
   label: String,
@@ -1139,6 +1160,7 @@ fn submit_button(
   )
 }
 
+/// Renders operator notice banner text or quiet status element.
 fn notice(notice: component.Notice) -> Element(Msg(socket)) {
   case notice {
     component.Quiet ->
@@ -1154,12 +1176,14 @@ fn notice(notice: component.Notice) -> Element(Msg(socket)) {
   }
 }
 
-// The composer's submit, decoded totally from the form's fields: exactly
-// one draft, and at most one delivery, which is `prompt` or `steer`. Any
-// other field, a repeated one or an unknown delivery refuses the event, so
-// a forged submit cannot smuggle in a command the form does not offer.
+/// The composer's submit, decoded totally from the form's fields: exactly
+/// one draft, and at most one delivery, which is `prompt` or `steer`. Any
+/// other field, a repeated one or an unknown delivery refuses the event, so
+/// a forged submit cannot smuggle in a command the form does not offer.
 fn composed() -> decode.Decoder(Msg(socket)) {
   use fields <- decode.subfield(["detail", "formData"], decode.list(field()))
+
+  // Decode draft composition message from form fields.
   case composition(fields) {
     Ok(message) -> decode.success(message)
     Error(Nil) ->
@@ -1199,13 +1223,18 @@ pub fn composition(
     list.filter(fields, fn(field) {
       field.0 != "draft" && field.0 != "delivery" && field.0 != "images"
     })
+
+  // Match expected form fields shape.
   case drafts, deliveries, attached, others {
     [#(_, text)], _, _, [] -> {
+      // Decode optional attached image payload.
       use images <- result.try(case attached {
         [] -> Ok([])
         [#(_, encoded)] -> image_list(encoded)
         _ -> Error(Nil)
       })
+
+      // Map delivery mode to message constructor.
       case deliveries {
         [] -> Ok(Submitted(text, operator.Prompt, images))
         [#(_, "prompt")] -> Ok(Submitted(text, operator.Prompt, images))
@@ -1217,7 +1246,7 @@ pub fn composition(
   }
 }
 
-// The strings of a JSON array of strings, or a refusal for anything else.
+/// The strings of a JSON array of strings, or a refusal for anything else.
 fn image_list(encoded: String) -> Result(List(String), Nil) {
   case json.parse(encoded) {
     Ok(json.Array(items)) ->
@@ -1231,8 +1260,8 @@ fn image_list(encoded: String) -> Result(List(String), Nil) {
   }
 }
 
-// The side panel is outside transcript projection and uses only escaped text.
-// Its buttons submit the same slash commands as the terminal composer.
+/// The side panel is outside transcript projection and uses only escaped text.
+/// Its buttons submit the same slash commands as the terminal composer.
 fn side_panel(model: component.Model(socket)) -> Element(Msg(socket)) {
   case component.btw_state(model).visibility {
     btw.Hidden -> element.none()

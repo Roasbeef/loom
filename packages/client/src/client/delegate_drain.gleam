@@ -98,9 +98,11 @@ pub fn pass(
   logger: Logger,
 ) -> fn() -> Backlog {
   fn() {
+    // This branch resolves runtime before the operation continues.
     case runtime() {
       Error(Nil) -> owed
       Ok(open) ->
+        // This branch resolves delegate_outbox mail_rows open before the operation continues.
         case delegate_outbox.mail_rows(open) {
           Error(reason) -> {
             log.warn(logger, "delegate_drain.unreadable", [
@@ -123,9 +125,7 @@ pub fn pass(
   }
 }
 
-// Sends what is owed when the laptop's node is connected, and answers whether
-// anything is still unsent. A laptop that is away is not asked, and what is
-// pending stays owed.
+/// Drains pending mail, progress glances, and authority questions to the laptop if connected.
 fn send_if_connected(
   runtime: api.Runtime,
   link: SpawnerLink,
@@ -134,11 +134,14 @@ fn send_if_connected(
   pending: List(#(String, Mail)),
   now: Int,
 ) -> Bool {
+  // Check connectivity to the remote laptop before processing queued items.
   case laptop.connected() {
     False -> pending != [] || questions_waiting(runtime, now)
     True -> {
       let #(left, silent) = mail_step(runtime, link, laptop, logger, pending)
       let asking = question_step(runtime, link, laptop, logger, now)
+
+      // Halt step if the laptop went silent during mail delivery.
       case silent {
         True -> True
         False -> {
@@ -150,7 +153,9 @@ fn send_if_connected(
   }
 }
 
+/// Owed if keeps this client decision explicit for its callers.
 fn owed_if(condition: Bool) -> Backlog {
+  // This branch resolves condition before the operation continues.
   case condition {
     True -> owed
     False -> Clear
@@ -159,10 +164,7 @@ fn owed_if(condition: Bool) -> Backlog {
 
 // --- mail ----------------------------------------------------------------------
 
-// Sends each pending row in key order and settles it on an answer. Answers
-// whether any row is still pending and whether the laptop went silent, which
-// ends the pass: every row owed to a laptop that did not answer would wait out
-// the same deadline to learn the same thing.
+/// Drains queued mail rows sequentially across active delegate strands.
 fn mail_step(
   runtime: api.Runtime,
   link: SpawnerLink,
@@ -170,6 +172,7 @@ fn mail_step(
   logger: Logger,
   rows: List(#(String, Mail)),
 ) -> #(Bool, Bool) {
+  // Process queued mail rows recursively until empty.
   case rows {
     [] -> #(False, False)
     [#(key, row), ..rest] -> {
@@ -178,6 +181,8 @@ fn mail_step(
           session: link.parent_session,
           strand: row.parent_strand,
         )
+
+      // Transmit the mail message to the laptop over the spawner link.
       case laptop.mail(parent, row.child, row.id, row.text) {
         // Silence leaves the row pending, and the remaining rows with it.
         Error(Nil) -> #(True, True)
@@ -222,9 +227,9 @@ fn mail_step(
   }
 }
 
-// Writes the answer on the row. A write that fails leaves the row pending, so
-// the next pass sends the mail again and the laptop answers from its receipt.
+/// Persists the settlement receipt or refusal state for a delivered mail row.
 fn settle(runtime: api.Runtime, logger: Logger, key: String, row: Mail) -> Nil {
+  // This branch resolves delegate_outbox settle_mail runtime key row before the operation continues.
   case delegate_outbox.settle_mail(runtime, key, row) {
     Ok(Nil) ->
       log.info(logger, "delegate_drain.settled", [
@@ -240,15 +245,14 @@ fn settle(runtime: api.Runtime, logger: Logger, key: String, row: Mail) -> Nil {
 
 // --- progress ------------------------------------------------------------------
 
-// Sends the newest glance of each child that the laptop has not acknowledged.
-// Answers whether any is still unsent: a glance the laptop did not answer for, a
-// parent that was closed, or a read that failed. The first silence ends the step.
+/// Inspects unsent progress glances and flushes them to the remote laptop.
 fn progress_step(
   runtime: api.Runtime,
   link: SpawnerLink,
   laptop: Laptop,
   logger: Logger,
 ) -> Bool {
+  // Retrieve unsent glances from outbox storage.
   case delegate_outbox.unsent_glances(runtime) {
     Error(reason) -> {
       log.warn(logger, "delegate_drain.glances_unreadable", [
@@ -260,6 +264,7 @@ fn progress_step(
   }
 }
 
+/// Transmits a batch of progress glances to the laptop in sequence.
 fn send_glances(
   runtime: api.Runtime,
   link: SpawnerLink,
@@ -267,6 +272,7 @@ fn send_glances(
   logger: Logger,
   unsent: List(delegate_outbox.Unsent),
 ) -> Bool {
+  // Recursively transmit unacknowledged glances.
   case unsent {
     [] -> False
     [next, ..rest] -> {
@@ -275,6 +281,8 @@ fn send_glances(
           session: link.parent_session,
           strand: next.parent_strand,
         )
+
+      // Deliver progress glance notification to the spawner laptop.
       case laptop.progress(parent, next.child, next.glance) {
         Error(Nil) -> True
 
@@ -282,6 +290,7 @@ fn send_glances(
         // unacknowledged and the next pass sends the newest one again.
         Ok(Error(remote_mail.ParentSessionNotOpen))
         | Ok(Error(remote_mail.Busy(..))) -> {
+          // This branch resolves the input state before the operation continues.
           let _left = send_glances(runtime, link, laptop, logger, rest)
           True
         }
@@ -289,6 +298,7 @@ fn send_glances(
         // Answered, or refused for good. Either way the laptop will not be asked
         // about this glance again.
         Ok(Ok(Nil)) | Ok(Error(_)) -> {
+          // Record progress acknowledgement timestamp in outbox storage.
           case
             delegate_outbox.acknowledge(
               runtime,
@@ -303,6 +313,7 @@ fn send_glances(
                 field.text("reason", reason),
               ])
           }
+
           send_glances(runtime, link, laptop, logger, rest)
         }
       }
@@ -316,20 +327,16 @@ fn send_glances(
 // laptop is away and nothing can be sent. A row whose answer window has closed
 // will be dropped when the laptop is back, and does not keep the pass ticking
 // until then.
+/// Questions waiting keeps this client decision explicit for its callers.
 fn questions_waiting(runtime: api.Runtime, now: Int) -> Bool {
+  // This branch resolves delegate_outbox question_rows runtime before the operation continues.
   case delegate_outbox.question_rows(runtime) {
     Ok(rows) -> list.any(rows, fn(row) { row.1.until > now })
     Error(_) -> True
   }
 }
 
-// Sends what each request row owes and answers whether any row is still waiting.
-//
-// A row is judged against the record it names, read as it is now. A newer raise
-// leaves the older row nothing to say, and a closed answer window hands the
-// record to the box's owner. Otherwise a pending record is sent until the laptop acknowledges
-// that `seq`, and a decided one is sent once more, so that the laptop clears the
-// card, before its row is dropped.
+/// Drains pending escalation questions and forwards decisions or status updates.
 fn question_step(
   runtime: api.Runtime,
   link: SpawnerLink,
@@ -337,6 +344,7 @@ fn question_step(
   logger: Logger,
   now: Int,
 ) -> Bool {
+  // Load pending question rows from outbox.
   case delegate_outbox.question_rows(runtime) {
     Error(reason) -> {
       log.warn(logger, "delegate_drain.questions_unreadable", [
@@ -352,6 +360,7 @@ fn question_step(
   }
 }
 
+/// Evaluates and dispatches a single authority question row.
 fn one_question(
   runtime: api.Runtime,
   link: SpawnerLink,
@@ -362,6 +371,7 @@ fn one_question(
 ) -> Bool {
   let #(key, row) = entry
   let drop = fn() {
+    // Drop obsolete question row from outbox storage.
     case delegate_outbox.drop_question(runtime, key) {
       Ok(Nil) -> False
       Error(reason) -> {
@@ -372,9 +382,12 @@ fn one_question(
       }
     }
   }
+
+  // Inspect durable escalation cell to verify current record status.
   case api.escalation_cell(runtime, row.id) {
     Error(_) -> drop()
     Ok(cell) ->
+      // This branch resolves cell record status before the operation continues.
       case cell.record.status {
         durable.Pending ->
           pending_question(runtime, link, laptop, logger, now, key, row, cell)
@@ -382,6 +395,8 @@ fn one_question(
         durable.Approved | durable.Rejected | durable.Consumed -> {
           let delivered =
             send_record(link, laptop, row, escalation_record(link, cell))
+
+          // Check delivery result to drop settled question or keep waiting.
           case delivered {
             Delivered | Final -> drop()
             Waiting -> True
@@ -391,9 +406,7 @@ fn one_question(
   }
 }
 
-// A row whose record is still pending. `Error(Nil)` says the row has nothing
-// left to say, because a newer raise replaced it or its answer window closed, and
-// the caller drops it. `Ok` says whether the row is still waiting.
+/// Handles an escalation record that remains in pending state.
 fn pending_question(
   runtime: api.Runtime,
   link: SpawnerLink,
@@ -404,9 +417,11 @@ fn pending_question(
   row: delegate_outbox.Question,
   cell: api.EscalationCell,
 ) -> Result(Bool, Nil) {
+  // This branch resolves cell seq row seq now row until before the operation continues.
   case cell.seq > row.seq || now >= row.until {
     True -> Error(Nil)
     False ->
+      // This branch resolves row sending before the operation continues.
       case row.sending {
         delegate_outbox.Acknowledged -> Ok(True)
         delegate_outbox.NotAcknowledged ->
@@ -415,7 +430,7 @@ fn pending_question(
   }
 }
 
-// Sends a pending request and records the laptop's acknowledgement of its `seq`.
+/// Transmits a pending escalation request and records acknowledgment on delivery.
 fn send_question(
   runtime: api.Runtime,
   link: SpawnerLink,
@@ -425,9 +440,11 @@ fn send_question(
   row: delegate_outbox.Question,
   cell: api.EscalationCell,
 ) -> Bool {
+  // Attempt transmission of escalation record to the remote laptop.
   case send_record(link, laptop, row, escalation_record(link, cell)) {
     Waiting -> True
     Final -> {
+      // Drop permanently refused question from outbox.
       case delegate_outbox.drop_question(runtime, key) {
         Ok(Nil) -> Nil
         Error(reason) ->
@@ -435,9 +452,11 @@ fn send_question(
             field.text("reason", reason),
           ])
       }
+
       False
     }
     Delivered -> {
+      // Mark question row as acknowledged after successful delivery.
       case
         delegate_outbox.settle_question(
           runtime,
@@ -451,6 +470,7 @@ fn send_question(
             field.text("reason", reason),
           ])
       }
+
       True
     }
   }
@@ -468,6 +488,7 @@ type Sent {
   Waiting
 }
 
+/// Sends an escalation record to the remote laptop and maps the transport outcome.
 fn send_record(
   link: SpawnerLink,
   laptop: Laptop,
@@ -476,10 +497,13 @@ fn send_record(
 ) -> Sent {
   let parent =
     remote_spawn.Parent(session: link.parent_session, strand: row.parent_strand)
+
+  // Dispatch escalation RPC to the laptop.
   case laptop.escalation(parent, row.child, record) {
     Error(Nil) -> Waiting
     Ok(Ok(Nil)) -> Delivered
     Ok(Error(refusal)) ->
+      // This branch resolves remote_mail retryable refusal before the operation continues.
       case remote_mail.retryable(refusal) {
         True -> Waiting
         False -> Final
@@ -487,20 +511,22 @@ fn send_record(
   }
 }
 
-// The record as the laptop is told it: the protocol's own shape, and for a
-// pending one the part of what was asked that the ceiling admits, so the
-// operator's client can show the rest as out of reach.
+/// Prepares a wire-format escalation record bounded by the spawner approval ceiling.
 fn escalation_record(
   link: SpawnerLink,
   cell: api.EscalationCell,
 ) -> protocol.EscalationRecord {
   let shown = escalation_view.view(cell.record, cell.seq)
+
+  // Extract requested grants from denial detail if present.
   let wanted = case shown.denial {
     Some(denial) -> denial.wanted
     None -> []
   }
+
   protocol.EscalationRecord(
     ..shown,
+    // This branch resolves link ceiling before the operation continues.
     admitted: Some(case link.ceiling {
       Some(ceiling) -> approval_ceiling.admitted(ceiling, wanted)
       None -> []

@@ -102,7 +102,7 @@ step, source index, strand, the call, its arguments, the persisted replay
 policy and the consumed grants going out; a finished `AgentMessage` or a
 failure reason coming back. No closure, port or local handle crosses.
 
-`wiring.run_tool` (`client/wiring.gleam:1121`) is two functions in sequence.
+`wiring.run_tool` (`client/wiring.gleam:1111`) is two functions in sequence.
 `read_authority` reads the call's authority from SQLite (directory additions
 and standing grants, no filesystem), then `run_workspace_tool` builds a
 `tool.Ctx` and dispatches the tool. For a session whose workspace lives on an
@@ -118,7 +118,7 @@ never one per file access.
 Tools that act on the conversation rather than the checkout (`agent_*`,
 `history_search`, `remember`, `schedule_*`, `context`, `advise`, skills,
 peers) keep running on the orchestrator. Clearance stays on the orchestrator
-too. `wiring.clear` is pure over `tool.Declarations` (`wiring.gleam:1085`,
+too. `wiring.clear` is pure over `tool.Declarations` (`wiring.gleam:1121`,
 `tools/tool.gleam:573-589`), so the orchestrator builds declarations for the
 workspace tools with the same registration code, fed by census facts instead
 of local probes, and clears every call before it is sent.
@@ -138,7 +138,7 @@ orchestrator:
    shape: get, compare-and-set, and a prefix listing the jobs actor uses at
    boot (`client/jobs.gleam:2772`). Only those reserved prefixes are served.
 3. **Notices.** A finished background job tells its strand through the
-   owner's `notify` function (`client/jobs.gleam:3119`), which locally is
+   owner's `notify` function (`client/jobs.gleam:3276`), which locally is
    `notice.deliver` (`client/notice.gleam:162-174`) and writes to the
    conversation; the executor sends the notice text and the orchestrator
    delivers it.
@@ -201,7 +201,7 @@ PR #819's parallel reimplementation lost.
 When a workspace host starts it returns what the orchestrator needs to build
 the prompt and the tool table: platform and enforcement level, the toolchain
 probe, available language servers, helper degradation, the shell, the Git
-program (`host_git.program`, `workspace_plane.gleam:530`, probes the host it runs on),
+program (`host_git.program`, `workspace_plane.gleam:541`, probes the host it runs on),
 the workspace root as an opaque string, the guidance files' text, the project
 hook files' bytes and the base policy summary. The orchestrator renders and
 pins the prompt from it, exactly as it pins guidance today, and checks the
@@ -325,7 +325,7 @@ that check.
 Close is a ledger transition. The host sets `closing` (this commit is the
 fence), cancels live calls and jobs, stops the LSP manager, code-mode host and
 broker, then closes the helper pool and waits for its retirement result
-(`exec.close_pool`, `broker/exec.gleam:3244-3310`; job runners, language
+(`exec.close_pool`, `broker/exec.gleam:3160-3310`; job runners, language
 servers and satellites are all helper children, so pool retirement covers
 them). It removes the scope's sockets and work directories. Then it sets
 `closed` with `close_outcome = all_retired` or `unknown(count)`. A monitor
@@ -456,7 +456,7 @@ host creates no scope and changes no state
 (`client/remote/host.gleam:580`). The orchestrator's open then stops the
 session's owner port and fails with `executor_unavailable: the executor speaks
 protocol version N and this orchestrator does not`
-(`refused`, `client/remote/workspace.gleam:736`; the wording is
+(`refused`, `client/remote/workspace.gleam:851`; the wording is
 `client/remote/protocol.gleam:573`). There is no negotiation and no accepted
 range. `Run`, `Query` and the other messages carry no version of their own,
 because each session open begins with an `Attach`. The constant's doc comment
@@ -477,8 +477,8 @@ call that was `admitted` into `unknown`, as for any executor restart.
 **The 16 MiB per-call reservation inside the 512 MiB budget.** Admission
 reserves `default_max_result_bytes` for every call, 16 MiB, twice the largest
 file `fs_read` returns (`client/remote/host.gleam:316`). The daemon passes it as
-`max_result_bytes` (`client/daemon/main.gleam:909`) and the host hands it to
-`exec_ledger.admit` (`client/remote/host.gleam:1275`). The ledger's byte budget
+`max_result_bytes` (`client/daemon/main.gleam:932`) and the host hands it to
+`exec_ledger.admit` (`client/remote/host.gleam:1346`). The ledger's byte budget
 is `default_max_ledger_bytes`, 512 MiB (`storage/exec_ledger.gleam:559`), and
 `require_budget` refuses a call when the bytes held by `admitted` and
 `terminal` rows plus the new reservation would pass it

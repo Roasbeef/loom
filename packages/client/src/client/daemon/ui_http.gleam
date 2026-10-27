@@ -216,55 +216,70 @@ pub const max_position = 256
 /// // ui_http.route(request) == ui_http.Socket("0198...")
 /// ```
 pub fn route(request: Request(body)) -> Route {
+  // This branch resolves request method request path_segments request before the operation continues.
   case request.method, request.path_segments(request) {
     http.Get, [] -> Root
 
     // Only the exchange lives at the unkeyed session path. A page asked for
     // there has no key, so no cookie scoped to a key reaches it.
     http.Get, ["ui", "sessions", id] ->
+      // This branch resolves query request ticket before the operation continues.
       case query(request, "ticket") {
         Some(ticket) -> Exchange(id, ticket)
         None -> Unknown
       }
+
     http.Post, ["ui", "sessions", id] ->
       ConfirmedExchange(ui_sessions.SessionExchange(id))
     http.Get, ["ui", "p", key, "sessions", id] -> Page(key, id)
     http.Get, ["ui", "p", key, "sessions", id, "ws"] ->
       Socket(key, id, query(request, "csrf-token"))
     http.Get, ["ui", "p", key, "sessions", id, "image", ref, position] ->
+      // This branch resolves image plausible_ref ref int parse position before the operation continues.
       case image.plausible_ref(ref), int.parse(position) {
         True, Ok(place) if place >= 0 && place < max_position ->
           Image(key, id, ref, place)
         _, _ -> Unknown
       }
+
     http.Get, ["ui", "p", key, "sessions", id, "result", ref, "page", index] ->
+      // This branch resolves ids parse_entry_id ref int parse index before the operation continues.
       case ids.parse_entry_id(ref), int.parse(index) {
         Ok(ref), Ok(index) if index >= 0 && index < 2098 ->
           ResultPage(key, id, ref, index)
         _, _ -> Unknown
       }
+
     http.Get, ["ui", "p", key, "sessions", id, "result", ref, "download"] ->
+      // This branch resolves ids parse_entry_id ref before the operation continues.
       case ids.parse_entry_id(ref) {
         Ok(ref) -> ResultDownload(key, id, ref)
         Error(_) -> Unknown
       }
+
     http.Get, ["ui", "home"] ->
+      // This branch resolves query request ticket before the operation continues.
       case query(request, "ticket") {
         Some(ticket) -> HomeExchange(ticket)
         None -> Unknown
       }
+
     http.Post, ["ui", "home"] -> ConfirmedExchange(ui_sessions.HomeExchange)
     http.Get, ["ui", "p", key, "home"] -> HomePage(key)
     http.Get, ["ui", "p", key, "orchestrators", name, "sessions", id] ->
+      // This branch resolves relayed_target name id before the operation continues.
       case relayed_target(name, id) {
         True -> RelayedPage(key, name, id)
         False -> Unknown
       }
+
     http.Get, ["ui", "p", key, "orchestrators", name, "sessions", id, "ws"] ->
+      // This branch resolves relayed_target name id before the operation continues.
       case relayed_target(name, id) {
         True -> RelayedSocket(key, name, id, query(request, "csrf-token"))
         False -> Unknown
       }
+
     http.Get, ["ui", "p", key, "home", "ws"] ->
       HomeSocket(key, query(request, "csrf-token"))
     http.Get, ["ui", "l", key, "home"] -> LoginPage(key)
@@ -273,15 +288,18 @@ pub fn route(request: Request(body)) -> Route {
     http.Post, ["ui", "claim"] -> ClaimSubmit
 
     http.Get, ["ui", "admin"] ->
+      // This branch resolves query request ticket before the operation continues.
       case query(request, "ticket") {
         Some(ticket) -> AdminExchange(ticket)
         None -> Unknown
       }
+
     http.Post, ["ui", "admin"] -> ConfirmedExchange(ui_sessions.AdminExchange)
     http.Get, ["ui", "p", key, "admin"] -> AdminPage(key)
     http.Get, ["ui", "p", key, "admin", "ws"] ->
       AdminSocket(key, query(request, "csrf-token"))
     http.Get, ["ui", "assets", name] ->
+      // This branch resolves name before the operation continues.
       case name {
         _ if name == page.runtime_asset -> Asset(Runtime)
         _ if name == page.stylesheet_asset -> Asset(Stylesheet)
@@ -295,6 +313,7 @@ pub fn route(request: Request(body)) -> Route {
         _ if name == page.mermaid_script_asset -> Asset(MermaidScript)
         _ -> Unknown
       }
+
     _, _ -> Unknown
   }
 }
@@ -313,6 +332,7 @@ pub fn route(request: Request(body)) -> Route {
 /// ```
 pub fn relayed_target(orchestrator: String, session_id: String) -> Bool {
   catalogue.is_profile_name(orchestrator)
+  // This branch resolves ids parse_session_id session_id before the operation continues.
   && case ids.parse_session_id(session_id) {
     Ok(parsed) -> ids.session_id_to_string(parsed) == session_id
     Error(_) -> False
@@ -379,25 +399,27 @@ pub fn page_origin(
 /// ```
 pub fn loopback_host(request: Request(body)) -> Result(String, Nil) {
   use host <- result.try(request.get_header(request, "host"))
+
+  // Split host into name and port components, handling IPv6 bracket syntax.
   let name = case string.split_once(host, "]") {
     // A bracketed IPv6 literal, with or without a port after the bracket.
     Ok(#(literal, rest)) -> #(literal <> "]", rest)
     Error(Nil) ->
+      // This branch resolves string split_once host before the operation continues.
       case string.split_once(host, ":") {
         Ok(#(name, port)) -> #(name, ":" <> port)
         Error(Nil) -> #(host, "")
       }
   }
+
+  // Verify that the host is a recognized loopback name and carries a valid port.
   case loopback_name(name.0) && valid_port(name.1) {
     True -> Ok(host)
     False -> Error(Nil)
   }
 }
 
-// Whether a host name, without its port, is one the view treats as loopback:
-// the three literals, or a name under `.localhost`. The name must be ASCII as
-// sent, because lowercasing folds some non-ASCII characters (U+212A, the
-// Kelvin sign, becomes `k`) and so would let a different name pass.
+/// Checks whether the hostname is an approved loopback target (IPv4, IPv6, localhost, or sub-localhost).
 fn loopback_name(name: String) -> Bool {
   let ascii = string.byte_size(name) == string.length(name)
   let lowered = string.lowercase(name)
@@ -416,11 +438,9 @@ const max_name_length = 253
 // The longest DNS label.
 const max_label_length = 63
 
-// Whether a lowercased name is one or more DNS labels and then `.localhost`.
-// The suffix is stripped and what remains must be non-empty labels, so
-// `.localhost`, `a..localhost` and a name ending in a dot all fail: the first
-// two have an empty label and the last does not end in `.localhost`.
+/// Validates that a hostname consists of valid DNS labels under the .localhost domain.
 fn under_localhost(name: String) -> Bool {
+  // Test for .localhost suffix before validating individual DNS labels.
   case string.ends_with(name, ".localhost") {
     False -> False
     True -> {
@@ -432,9 +452,7 @@ fn under_localhost(name: String) -> Bool {
   }
 }
 
-// One DNS label as a host name spells it (RFC 1123): letters, digits and
-// hyphens, one to 63 of them, with no hyphen at either end. An underscore,
-// which a URL host may carry, and any non-ASCII character are not in it.
+/// Validates an individual DNS label according to RFC 1123 format rules.
 fn dns_label(label: String) -> Bool {
   let letters = string.to_graphemes(label)
   letters != []
@@ -446,7 +464,9 @@ fn dns_label(label: String) -> Bool {
   && !string.ends_with(label, "-")
 }
 
+/// Validates that an optional port suffix has valid numeric syntax.
 fn valid_port(suffix: String) -> Bool {
+  // This branch resolves suffix before the operation continues.
   case suffix {
     "" -> True
     ":" <> digits ->
@@ -499,6 +519,7 @@ pub fn exchange_allowed(request: Request(body)) -> Bool {
 /// // ui_http.navigation_allowed(request)
 /// ```
 pub fn navigation_allowed(request: Request(body)) -> Bool {
+  // This branch resolves request get_header request sec fetch site before the operation continues.
   case request.get_header(request, "sec-fetch-site") {
     Ok("none") | Ok("same-origin") -> True
     Ok(_) | Error(Nil) -> False
@@ -519,6 +540,7 @@ pub fn navigation_allowed(request: Request(body)) -> Bool {
 /// // ui_http.same_origin_post(request)
 /// ```
 pub fn same_origin_post(request: Request(body)) -> Bool {
+  // This branch resolves request get_header request sec fetch site before the operation continues.
   case request.get_header(request, "sec-fetch-site") {
     Ok("same-origin") -> True
     Ok(_) | Error(Nil) -> False
@@ -540,15 +562,20 @@ pub const max_form_bytes = 1024
 /// // ui_http.form_declared(request)
 /// ```
 pub fn form_declared(request: Request(body)) -> Bool {
+  // Parse and bound the Content-Length header value.
   let length = case request.get_header(request, "content-length") {
     Ok(text) -> int.parse(text) |> result.unwrap(max_form_bytes + 1)
     Error(Nil) -> max_form_bytes + 1
   }
+
   let chunked = result.is_ok(request.get_header(request, "transfer-encoding"))
+
+  // Verify that Content-Type specifies form-urlencoded encoding.
   let kind = case request.get_header(request, "content-type") {
     Ok(text) -> string.lowercase(text) == "application/x-www-form-urlencoded"
     Error(Nil) -> False
   }
+
   length >= 0 && length <= max_form_bytes && !chunked && kind
 }
 
@@ -579,18 +606,20 @@ pub fn posted_ticket(body: BitArray) -> Result(String, Nil) {
   posted_secret(body, "ticket")
 }
 
-// A form body of exactly one field, `name`, holding one of the daemon's own
-// 32-byte secrets in lowercase hexadecimal. A second field, or a value of any
-// other shape, is refused.
+/// Extracts a 64-character lowercase hex secret parameter from URL-encoded form data.
 fn posted_secret(body: BitArray, name: String) -> Result(String, Nil) {
   use text <- result.try(bit_array.to_string(body))
   use fields <- result.try(uri.parse_query(text))
+
+  // Match on parsed fields ensuring exactly one field matching the requested parameter name.
   case fields {
     [#(field, value)] if field == name ->
+      // This branch resolves string byte_size value 64 lowercase_hex value before the operation continues.
       case string.byte_size(value) == 64 && lowercase_hex(value) {
         True -> Ok(value)
         False -> Error(Nil)
       }
+
     _ -> Error(Nil)
   }
 }
@@ -616,6 +645,8 @@ fn lowercase_hex(value: String) -> Bool {
 pub fn posted_claim(body: BitArray) -> Result(#(String, Option(String)), Nil) {
   use text <- result.try(bit_array.to_string(body))
   use fields <- result.try(uri.parse_query(text))
+
+  // Match sorted claim fields allowing optional name beside mandatory token.
   case list.sort(fields, fn(a, b) { string.compare(a.0, b.0) }) {
     [#("name", name), #("token", token)] -> Ok(#(token, named(name)))
     [#("token", token)] -> Ok(#(token, None))
@@ -623,7 +654,9 @@ pub fn posted_claim(body: BitArray) -> Result(#(String, Option(String)), Nil) {
   }
 }
 
+/// Named keeps this client decision explicit for its callers.
 fn named(name: String) -> Option(String) {
+  // This branch resolves name before the operation continues.
   case name {
     "" -> None
     given -> Some(given)
@@ -642,6 +675,7 @@ fn named(name: String) -> Option(String) {
 /// // ui_http.origin_matches(request, ui_http.Loopback("127.0.0.1:4000"))
 /// ```
 pub fn origin_matches(request: Request(body), origin: PageOrigin) -> Bool {
+  // This branch resolves request get_header request origin before the operation continues.
   case request.get_header(request, "origin") {
     Ok(sent) -> sent == address(origin)
     Error(Nil) -> False
@@ -660,6 +694,7 @@ pub fn origin_matches(request: Request(body), origin: PageOrigin) -> Bool {
 ///   == "http://127.0.0.1:4000"
 /// ```
 pub fn address(origin: PageOrigin) -> String {
+  // This branch resolves origin before the operation continues.
   case origin {
     Loopback(host) -> "http://" <> host
     Remote(listed) -> ui_origin.to_string(listed)
@@ -677,6 +712,7 @@ pub fn address(origin: PageOrigin) -> String {
 ///   == "ws://127.0.0.1:4000"
 /// ```
 pub fn socket_origin(origin: PageOrigin) -> String {
+  // This branch resolves origin before the operation continues.
   case origin {
     Loopback(host) -> "ws://" <> host
     Remote(listed) -> "wss://" <> ui_origin.host(listed)
@@ -694,6 +730,7 @@ pub fn socket_origin(origin: PageOrigin) -> String {
 ///   == "loom ui"
 /// ```
 pub fn sign_in_command(origin: PageOrigin) -> String {
+  // This branch resolves origin before the operation continues.
   case origin {
     Loopback(_) -> "loom ui"
     Remote(_) -> "loom ui --device"
@@ -712,6 +749,7 @@ pub fn sign_in_command(origin: PageOrigin) -> String {
 ///   == "loom_ui"
 /// ```
 pub fn session_cookie_name(origin: PageOrigin) -> String {
+  // This branch resolves origin before the operation continues.
   case origin {
     Loopback(_) -> cookie_name
     Remote(_) -> remote_cookie_name
@@ -728,6 +766,7 @@ pub fn session_cookie_name(origin: PageOrigin) -> String {
 ///   == "loom_login"
 /// ```
 pub fn login_cookie_name_for(origin: PageOrigin) -> String {
+  // This branch resolves origin before the operation continues.
   case origin {
     Loopback(_) -> login_cookie_name
     Remote(_) -> remote_login_cookie_name
@@ -737,7 +776,9 @@ pub fn login_cookie_name_for(origin: PageOrigin) -> String {
 // The attributes after the path that only a listed origin carries. `Secure`
 // keeps the cookie off plain `http`, which the `__Secure-` prefix also
 // requires before a browser will store the cookie at all.
+/// Transport keeps this client decision explicit for its callers.
 fn transport(origin: PageOrigin) -> String {
+  // This branch resolves origin before the operation continues.
   case origin {
     Loopback(_) -> ""
     Remote(_) -> "; Secure"
@@ -768,6 +809,7 @@ pub fn session_cookies(
   let name = session_cookie_name(origin)
   request.get_cookies(request)
   |> list.filter_map(fn(pair) {
+    // This branch resolves pair 0 name before the operation continues.
     case pair.0 == name {
       True -> Ok(pair.1)
       False -> Error(Nil)
@@ -801,6 +843,7 @@ pub fn login_cookies(
   let name = login_cookie_name_for(origin)
   request.get_cookies(request)
   |> list.filter_map(fn(pair) {
+    // This branch resolves pair 0 name before the operation continues.
     case pair.0 == name {
       True -> Ok(pair.1)
       False -> Error(Nil)

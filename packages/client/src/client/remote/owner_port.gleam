@@ -247,6 +247,7 @@ pub fn reconcile(port: Port) -> Nil {
   process.send(port.control, Tick)
 }
 
+/// Initialise keeps this client operation’s decoding or state decision in one place.
 fn initialise(
   config: Config,
   control: Subject(Event),
@@ -262,9 +263,12 @@ fn initialise(
   |> Ok
 }
 
+/// Result of start keeps this client operation’s decoding or state decision in one place.
 fn result_of_start(
   started: Result(actor.Started(Port), actor.StartError),
 ) -> Result(Port, String) {
+  // This match resolves started before the surrounding protocol step continues.
+  // This match resolves started before the enclosing validation continues.
   case started {
     Ok(running) -> Ok(running.data)
     Error(error) ->
@@ -272,7 +276,10 @@ fn result_of_start(
   }
 }
 
+/// Handle event keeps this client operation’s decoding or state decision in one place.
 fn handle_event(state: State, event: Event) -> actor.Next(State, Event) {
+  // This match resolves event before the surrounding protocol step continues.
+  // This match resolves event before the enclosing validation continues.
   case event {
     FromExecutor(message) -> {
       serve(state.config, state.link, message)
@@ -294,9 +301,13 @@ fn handle_event(state: State, event: Event) -> actor.Next(State, Event) {
 
 // Each request runs beside the port, ending if its requester does. A `Tail` is
 // answered here because it has no reply to wait for.
+/// Serve keeps this client operation’s decoding or state decision in one place.
 fn serve(config: Config, link: Option(HostLink), message: OwnerMessage) -> Nil {
   let services = config.services
   let executions = config.executions
+
+  // This match resolves message before the surrounding protocol step continues.
+  // This match resolves message before the enclosing validation continues.
   case message {
     protocol.Escalate(refused:, remaining_ms:, reply:) -> {
       let #(now, _clock) = clock.read(config.clock)
@@ -329,6 +340,7 @@ fn serve(config: Config, link: Option(HostLink), message: OwnerMessage) -> Nil {
     // attach binds the link before any tool runs there, so a missing link is a
     // request from a workspace this port no longer serves.
     protocol.LaunchExecution(terms:, reply:) ->
+      // This match resolves link before the surrounding protocol step continues.
       case link {
         Some(bound) -> answer(reply, fn() { executions.launch(terms, bound) })
         None -> process.send(reply, Error("the executor is not attached"))
@@ -359,7 +371,10 @@ fn serve(config: Config, link: Option(HostLink), message: OwnerMessage) -> Nil {
 // connection arrives as a `noconnection` DOWN and cancels the run, where 0.4.5
 // checked the pid with `erlang:is_process_alive/1`, which raises `badarg` for a
 // pid of another node and crashed the scope into the port.
+/// Answer keeps this client operation’s decoding or state decision in one place.
 fn answer(reply: Subject(reply), compute: fn() -> reply) -> Nil {
+  // This match resolves process.subject_owner(reply) before the surrounding protocol step continues.
+  // This match resolves process.subject_owner(reply) before the enclosing validation continues.
   case process.subject_owner(reply) {
     Ok(requester) -> {
       let _witness =
@@ -382,7 +397,10 @@ fn answer(reply: Subject(reply), compute: fn() -> reply) -> Nil {
 // The timer, or a request to reconcile now. A pass still running when the next
 // tick comes is left to finish: two passes would acknowledge the same keys
 // twice.
+/// Tick keeps this client operation’s decoding or state decision in one place.
 fn tick(state: State) -> State {
+  // This match resolves state.link, reconciling(state) before the surrounding protocol step continues.
+  // This match resolves state.link, reconciling(state) before the enclosing validation continues.
   case state.link, reconciling(state) {
     Some(link), False -> {
       let pass = detached(fn() { acknowledge_listed(state.config, link) })
@@ -392,7 +410,10 @@ fn tick(state: State) -> State {
   }
 }
 
+/// Reconciling keeps this client operation’s decoding or state decision in one place.
 fn reconciling(state: State) -> Bool {
+  // This match resolves state.reconciling before the surrounding protocol step continues.
+  // This match resolves state.reconciling before the enclosing validation continues.
   case state.reconciling {
     Some(pass) -> process.is_alive(weft.witness_pid(pass))
     None -> False
@@ -401,6 +422,7 @@ fn reconciling(state: State) -> Bool {
 
 // Runs `work` in a weft run of its own, linked to the port so that a port that
 // exits takes it along.
+/// Detached keeps this client operation’s decoding or state decision in one place.
 fn detached(work: fn() -> Nil) -> weft.Witnessed {
   weft.new([
     fn() {
@@ -412,7 +434,10 @@ fn detached(work: fn() -> Nil) -> weft.Witnessed {
 }
 
 // Asks the host what it holds and acknowledges the settled keys.
+/// Acknowledge listed keeps this client operation’s decoding or state decision in one place.
 fn acknowledge_listed(config: Config, link: HostLink) -> Nil {
+  // This match resolves link.list() before the surrounding protocol step continues.
+  // This match resolves link.list() before the enclosing validation continues.
   case link.list() {
     Ok(unacked) -> acknowledge_settled(config, link, unacked)
     Error(_unreachable) -> Nil
@@ -422,12 +447,15 @@ fn acknowledge_listed(config: Config, link: HostLink) -> Nil {
 // Acknowledges every listed key whose result the orchestrator already holds,
 // whether the executor stored an outcome or lost it, and stops every running
 // execution whose record here has closed.
+/// Acknowledge settled keeps this client operation’s decoding or state decision in one place.
 fn acknowledge_settled(
   config: Config,
   link: HostLink,
   unacked: Unacked,
 ) -> Nil {
   list.each(list.append(unacked.terminal, unacked.unknown), fn(key) {
+    // This match resolves config.settled(key) before the surrounding protocol step continues.
+    // This match resolves config.settled(key) before the enclosing validation continues.
     case config.settled(key) {
       True -> link.ack(key)
       False -> Nil
@@ -438,6 +466,8 @@ fn acknowledge_settled(
   // network lost, or was left running by an orchestrator that restarted. The
   // stop is idempotent on the executor, so sending it on every pass is safe.
   list.each(unacked.executions, fn(key) {
+    // This match resolves config.executions.standing(key) before the surrounding protocol step continues.
+    // This match resolves config.executions.standing(key) before the enclosing validation continues.
     case config.executions.standing(key) {
       RecordLive -> Nil
       RecordClosing | RecordClosed -> link.stop(key)

@@ -277,8 +277,10 @@ type Fitting {
 }
 
 // The wants that have a fit at this width, in the order they were met. An
-// image that cannot be fitted is remembered, so a tick does not look it up
-// again.
+/// Fits each requested image box within the facts dimensions.
+///
+/// An image that cannot be fitted is remembered, so a tick does not look it up
+/// again.
 fn fitted(shown: Shown, facts: Facts) -> Fitting {
   let done =
     list.fold(facts.wants, Fitting(shown:, placed: []), fn(fitting, want) {
@@ -287,8 +289,11 @@ fn fitted(shown: Shown, facts: Facts) -> Fitting {
   Fitting(..done, placed: list.reverse(done.placed))
 }
 
+/// Fits a single wanted image box or consults the cache.
 fn fit(fitting: Fitting, want: Want, facts: Facts) -> Fitting {
   let current = image_box.picture_rows(facts.height)
+
+  // Check if this image has already been fitted for the current dimensions.
   case dict.get(fitting.shown.fits, want.id) {
     Ok(Fitted(width:, rows:, box:)) if width == facts.width && rows == current ->
       Fitting(..fitting, placed: [Placed(want:, box:), ..fitting.placed])
@@ -298,17 +303,12 @@ fn fit(fitting: Fitting, want: Want, facts: Facts) -> Fitting {
   }
 }
 
-// The first time an image is wanted at a pane size: its picture is read from
-// the transcript and its box fitted, and the answer is remembered either way.
-//
-// A picture that cannot be found is not reported. A box the projection built
-// carries the fingerprint of an image it read from the transcript, so a miss
-// means the marked cells are not a box at all, such as a pasted line that
-// happens to look like one, and a notice about an image would be about
-// nothing.
+/// Looks up picture dimensions from facts and determines appropriate placement.
 fn look_up(fitting: Fitting, want: Want, facts: Facts) -> Fitting {
   let rows = image_box.picture_rows(facts.height)
   let unfitted = Unfitted(facts.width, rows)
+
+  // Resolve the picture definition and compute its layout box.
   case facts.picture(want.id) {
     Error(_) ->
       Fitting(..fitting, shown: remember(fitting.shown, want.id, unfitted))
@@ -337,9 +337,7 @@ fn remember(shown: Shown, id: ImageId, fit: Fit) -> Shown {
 
 // ----------------------------------------------------------------- kitty
 
-// The images in view are uploaded, re-placed or kept, and the images that
-// left view are deleted first, so the terminal's memory falls before it
-// grows.
+/// Generates kitty protocol commands to sync visible and removed images.
 fn kitty(shown: Shown, facts: Facts) -> Outcome {
   let fitting = fitted(shown, facts)
   let placed = unique(fitting.placed)
@@ -359,9 +357,11 @@ fn kitty(shown: Shown, facts: Facts) -> Outcome {
   })
 }
 
-// One image in view against what the terminal holds.
+/// Uploads or places an individual image for the kitty graphics protocol.
 fn upload(outcome: Outcome, id: ImageId, box: Box, facts: Facts) -> Outcome {
   let shown = outcome.shown
+
+  // Inspect current upload status to upload, re-place, or skip.
   case
     list.contains(shown.failed, id),
     list.find(shown.uploaded, fn(held) { held.id == id })
@@ -393,6 +393,7 @@ fn upload(outcome: Outcome, id: ImageId, box: Box, facts: Facts) -> Outcome {
   }
 }
 
+/// Replaces an existing upload record with updated placement information.
 fn replace_upload(held: List(Uploaded), next: Uploaded) -> List(Uploaded) {
   list.map(held, fn(entry) {
     case entry.id == next.id {
@@ -411,6 +412,7 @@ fn png(bytes: BitArray) -> Result(BitArray, Failure) {
   }
 }
 
+/// Marks an image as failed and records the failure reason in outcome.
 fn failed(outcome: Outcome, id: ImageId, failure: Failure) -> Outcome {
   Outcome(
     ..outcome,
@@ -419,7 +421,7 @@ fn failed(outcome: Outcome, id: ImageId, failure: Failure) -> Outcome {
   )
 }
 
-// A box is wanted once however many rows of the transcript show it.
+/// Deduplicates placed boxes by image ID.
 fn unique(placed: List(Placed)) -> List(Placed) {
   list.fold(placed, [], fn(seen: List(Placed), entry: Placed) {
     case list.any(seen, fn(held) { held.want.id == entry.want.id }) {
@@ -432,10 +434,7 @@ fn unique(placed: List(Placed)) -> List(Placed) {
 
 // ---------------------------------------------------------------- iTerm2
 
-// The pictures drawn that are no longer where the frame has them are erased
-// now. The pictures the frame has that are not drawn are drawn if they were
-// owed by the last reconcile, which means a frame has been drawn since, and
-// are otherwise owed.
+/// Generates iTerm2 inline image escape sequences for visible image boxes.
 fn iterm2(shown: Shown, facts: Facts) -> Outcome {
   let fitting = fitted(shown, facts)
   let shown = fitting.shown
@@ -478,6 +477,7 @@ fn whole(want: Want) -> Bool {
   }
 }
 
+/// Emits an iTerm2 draw command for an image spot if bytes are available.
 fn draw(outcome: Outcome, spot: Spot, facts: Facts) -> Outcome {
   case facts.bytes(spot.id) {
     Ok(bytes) ->
@@ -505,6 +505,7 @@ pub fn sequence(commands: List(Command)) -> String {
   commands |> list.map(command_bytes) |> string.concat
 }
 
+/// Renders an individual image command into terminal control bytes.
 fn command_bytes(command: Command) -> String {
   case command {
     Upload(id:, png:, box:) -> kitty.transmit(id, png) <> kitty.place(id, box)

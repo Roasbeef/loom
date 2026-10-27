@@ -210,6 +210,7 @@ pub fn build_on(
 
 // --- the provider ---------------------------------------------------------
 
+/// Serves one provider request under the simulation's fault schedule and script.
 fn request(
   ctl: Control,
   script: Script,
@@ -260,6 +261,8 @@ fn request(
     Ran -> {
       mark_request(ctl, spec)
       intervene(ctl, script, trigger_of_request(spec))
+
+      // Answer from the script if a settlement is defined for this phase.
       case settlement(script, spec) {
         Some(settle) -> {
           mark_settlement(ctl, settle)
@@ -272,6 +275,7 @@ fn request(
   }
 }
 
+/// Builds a stream handle that stays pending until released by cancellation.
 fn starved_handle(
   events: process.Subject(stream.StreamEvent),
   consumer: process.Pid,
@@ -302,6 +306,8 @@ fn starved_handle(
           process.spawn_unlinked(fn() {
             let control = process.new_subject()
             process.send(ready, control)
+
+            // Hold until cancellation releases the preselected starved failure.
             case process.receive_forever(control) {
               ReleaseStarved ->
                 process.send(
@@ -342,6 +348,7 @@ fn starved_handle(
   })
 }
 
+/// Records coverage marks for one observed request variant.
 fn mark_request(ctl: Control, spec: effects.RequestSpec) -> Nil {
   case spec {
     effects.GenerationRequest(..) -> control.mark(ctl, "generation-request")
@@ -350,6 +357,7 @@ fn mark_request(ctl: Control, spec: effects.RequestSpec) -> Nil {
   }
 }
 
+/// Records coverage marks for one scripted settlement kind.
 fn mark_settlement(ctl: Control, settle: Settle) -> Nil {
   case settle {
     script.Answer(..) -> Nil
@@ -363,6 +371,7 @@ fn mark_settlement(ctl: Control, settle: Settle) -> Nil {
 // A subagent request never fires a `DuringTurn` intervention: those name
 // the main strand's turns, and a child forked over shared history would
 // otherwise claim them at an unrelated moment.
+/// Resolves the optional intervention trigger associated with a request spec.
 fn trigger_of_request(spec: effects.RequestSpec) -> Option(Trigger) {
   case spec {
     effects.GenerationRequest(context:, configuration:, ..) ->
@@ -374,6 +383,7 @@ fn trigger_of_request(spec: effects.RequestSpec) -> Option(Trigger) {
   }
 }
 
+/// Looks up the scripted settlement matching a request spec.
 fn settlement(script: Script, spec: effects.RequestSpec) -> Option(Settle) {
   case spec {
     effects.GenerationRequest(context:, configuration:, ..) ->
@@ -398,6 +408,7 @@ fn settlement(script: Script, spec: effects.RequestSpec) -> Option(Settle) {
 }
 
 // The newest user message's text in a projected context, "" when none.
+/// Extracts the text of the newest user message from a projected context.
 fn newest_user_text(context: List(AgentMessage)) -> String {
   list.fold(context, "", fn(found, message) {
     case message {
@@ -448,6 +459,7 @@ pub fn summaries_of(context: List(AgentMessage)) -> Int {
   script.summaries_in(list.map(context, text_of))
 }
 
+/// Extracts joined plain text from a message.
 fn text_of(message: AgentMessage) -> String {
   case message {
     UserMessage(content:, ..) ->
@@ -464,10 +476,12 @@ fn text_of(message: AgentMessage) -> String {
   }
 }
 
+/// Sends stream events for a scripted settlement.
 fn send_settlement(
   events: process.Subject(stream.StreamEvent),
   settle: Settle,
 ) -> Nil {
+  // Dispatch stream events based on settlement kind.
   case settle {
     script.Transient ->
       process.send(
@@ -476,6 +490,8 @@ fn send_settlement(
       )
     other -> {
       let message = response(other)
+
+      // Convert the simulated agent message into a settled stream event.
       case stream.settle(message) {
         Ok(settled) ->
           process.send(
@@ -506,6 +522,7 @@ fn usage_of(message: AgentMessage) -> message.Usage {
   }
 }
 
+/// Builds a simulated transient HTTP server error.
 fn transient() -> stream.ProviderError {
   stream.HttpError(
     status: 500,
@@ -515,6 +532,7 @@ fn transient() -> stream.ProviderError {
   )
 }
 
+/// Converts a scripted settlement into an agent message.
 fn response(settle: Settle) -> AgentMessage {
   case settle {
     script.Answer(text:, tokens:) ->
@@ -577,6 +595,7 @@ fn response(settle: Settle) -> AgentMessage {
   }
 }
 
+/// Constructs an assistant message from simulated blocks and stop reason.
 fn assistant(
   content: List(message.AssistantBlock),
   stop: message.StopReason,
@@ -642,20 +661,25 @@ pub fn usage(tokens: Int) -> message.Usage {
 // scheduling that clearance only happens after the earlier call settled,
 // so reaching it under parallel settings is the overlapping-frontier
 // path itself.
+/// Evaluates clearance for one requested tool execution.
 fn clearance(
   ctl: Control,
   script: Script,
   strand: String,
   query: effects.ClearanceQuery,
 ) -> effects.Clearance {
+  // Check whether the tool is recognized in the simulation registry.
   case list.key_find(script.registry, query.call.name) {
     Error(Nil) ->
       effects.ClearanceRefused(reason: "unknown tool: " <> query.call.name)
     Ok(replay) -> {
+      // Mark whether this clearance represents an overlapping parallel call frontier.
       case script.parallel && query.source_index >= 1 {
         True -> control.mark(ctl, "parallel-tools")
         False -> Nil
       }
+
+      // Decide whether to initiate the durable escalation protocol or clear directly.
       case script.escalate {
         True -> escalation_dance(ctl, strand, query, replay)
         False ->
@@ -677,12 +701,14 @@ fn clearance(
 // mid-commit costs the approval, not the run: a re-clearance that finds
 // no grant clears under the base policy, which converges to the same
 // transcript because the scripted tools ignore grants entirely.
+/// Executes the one-time escalation flow and restarts the strand driver.
 fn escalation_dance(
   ctl: Control,
   strand: String,
   query: effects.ClearanceQuery,
   replay: ReplayPolicy,
 ) -> effects.Clearance {
+  // Claim the one-shot escalation dance for this run.
   case control.claim(ctl, "escalation-dance") {
     True -> {
       control.mark(ctl, "escalation-raised")
@@ -700,20 +726,24 @@ fn escalation_dance(
       effects.ClearanceRefused(reason: "unreachable: the driver was killed")
     }
     False -> {
+      // Record whether an active grant was consumed on re-clearance.
       case query.grants {
         [] -> Nil
         _ -> control.mark(ctl, "escalation-consumed")
       }
+
       effects.Cleared(effective_arguments: query.call.arguments, replay:)
     }
   }
 }
 
+/// Raises and immediately approves a simulated escalation request.
 fn raise_and_approve(
   ctl: Control,
   strand: String,
   query: effects.ClearanceQuery,
 ) -> Result(Nil, Nil) {
+  // Ensure the live runtime handle is available before raising the escalation.
   case control.runtime(ctl) {
     None -> Error(Nil)
     Some(runtime) -> {
@@ -730,6 +760,8 @@ fn raise_and_approve(
           #("reason", json.String("scripted denial")),
           #("wanted", json.Array([scripted_grant()])),
         ])
+
+      // Submit the escalation proposal to the session API.
       case api.raise_escalation_for(runtime, "esc-sim", denial, scope: scope) {
         Error(_) -> Error(Nil)
         Ok(Nil) ->
@@ -746,6 +778,7 @@ fn scripted_grant() -> json.JsonValue {
   json.Object([#("grant", json.String("scripted"))])
 }
 
+/// Executes one tool call against the script and fault schedule.
 fn execute(
   ctl: Control,
   vc: Clockwork,
@@ -769,27 +802,36 @@ fn execute(
       option.map(plane.begin(active, ctl), fn(open) { #(active, open) })
     None -> None
   }
+
+  // Determine whether this tool execution is faulted or allowed to run.
   case
     effect_fault(ctl, vc, schedule, index, strand:, loss_allowed: LossRefused)
   {
     Killed | Starved -> {
+      // Record if a fault landed while an effect plane execution was open.
       case execution {
         Some(_) -> control.mark(ctl, "fault-during-execution")
         None -> Nil
       }
+
       effects.ToolFailed(reason: "the tree was killed mid-execution")
     }
     Ran -> {
       intervene(ctl, script, Some(script.DuringCall(call: run.call.id)))
+
+      // Complete the active effect plane execution if one was opened.
       case execution {
         Some(#(active, open)) -> plane.finish(active, open)
         None -> Nil
       }
+
+      // Look up the simulated output and error status for the called tool.
       let #(text, is_error) = case list.key_find(script.tools, run.call.name) {
         Ok(script.ToolOk(text:)) -> #(text, False)
         Ok(script.ToolErr(text:)) -> #(text, True)
         Error(Nil) -> #("out:" <> run.call.name, False)
       }
+
       effects.ToolCompleted(
         result: ToolResultMessage(
           tool_call_id: run.call.id,
@@ -846,6 +888,7 @@ fn loss_allowance(spec: effects.RequestSpec) -> LossAllowance {
 // Which strand's driver is serving a request spec: the subagent answers
 // by its own durable model identity, everything else runs on the main
 // strand the surface was built for.
+/// Identifies the target strand for a request specification.
 fn strand_of_spec(spec: effects.RequestSpec, main: String) -> String {
   case spec {
     effects.GenerationRequest(configuration:, ..)
@@ -869,6 +912,7 @@ fn strand_of_spec(spec: effects.RequestSpec, main: String) -> String {
 // provider deadline and grace; `request` gives the measurements. That race
 // is also what seed 1493 lost, when a starved provider effect was parked
 // before this function ordered survival first.
+/// Evaluates survival and delay faults for one tool execution.
 fn effect_fault(
   ctl: Control,
   vc: Clockwork,
@@ -885,6 +929,7 @@ fn effect_fault(
 
 // The faults that decide whether this dispatch produces a settlement at
 // all: the two tree kills, and the two ways an effect is lost.
+/// Resolves survival faults (crashes, strand kills, and losses) for an effect.
 fn effect_survival(
   ctl: Control,
   schedule: Schedule,
@@ -940,6 +985,7 @@ fn effect_survival(
 // The delay a surviving dispatch settles behind. Reached only once the
 // effect is known to settle, so the park it performs can always be
 // released by the runner's next clock advance.
+/// Parks the virtual clock if a slow-effect fault is scheduled for this effect index.
 fn effect_delay(
   ctl: Control,
   vc: Clockwork,
@@ -963,6 +1009,7 @@ fn effect_delay(
 // one-shot slot and runs its consequence, every later pass (or a losing
 // race with another fault at the same index) finds it already claimed
 // and leaves the fate alone.
+/// Executes an effect action once if its claim key has not been previously claimed.
 fn claimed_effect(
   ctl: Control,
   key: String,
@@ -978,6 +1025,7 @@ fn claimed_effect(
 // the crash the session is supposed to survive. The effect process
 // running this code is orphaned by that, which is the point: it is the
 // mid-flight interruption a commit-boundary crash can never produce.
+/// Terminates the runtime tree writer process to simulate a session crash.
 fn kill_tree(ctl: Control) -> Nil {
   case control.runtime(ctl) {
     None -> Nil
@@ -996,6 +1044,7 @@ fn kill_tree(ctl: Control) -> Nil {
 // This is the interruption neither a commit-boundary crash nor a tree
 // kill can produce — the tree survives, so the restarted incarnation's
 // recovery races whatever the dead incarnation left behind.
+/// Terminates one strand driver process to simulate a strand restart.
 fn kill_strand(ctl: Control, strand: String) -> Nil {
   case control.runtime(ctl) {
     None -> Nil
@@ -1031,6 +1080,7 @@ fn kill_strand(ctl: Control, strand: String) -> Nil {
 // the runner reports the intervention landed, which is what lets the
 // settlement lose its seq race to the steer by construction rather than
 // by luck.
+/// Checks for due interventions and blocks until the runner reports delivery.
 fn intervene(ctl: Control, script: Script, trigger: Option(Trigger)) -> Nil {
   case trigger {
     None -> Nil
@@ -1042,6 +1092,7 @@ fn intervene(ctl: Control, script: Script, trigger: Option(Trigger)) -> Nil {
   }
 }
 
+/// Filters the script's interventions for those matching the given trigger.
 fn interventions_due(
   script: Script,
   trigger: Trigger,
@@ -1128,6 +1179,7 @@ pub fn apply(
 
 // Nothing to admit against until the runtime handle is published; a
 // trigger that fires before then simply has no session to reach.
+/// Dispatches a batch of interventions once the runtime is available.
 fn apply_all(
   ctl: Control,
   raw: Session,
@@ -1156,6 +1208,7 @@ fn apply_all(
 // commit-indexed fault and retire the pinned corpus as a before/after
 // oracle. A note changes no schedule, and on a green run this path
 // does not fire at all.
+/// Claims due interventions and applies them against the active session runtime.
 fn apply_on(
   ctl: Control,
   raw: Session,
@@ -1164,6 +1217,8 @@ fn apply_on(
   awaited: Bool,
 ) -> Nil {
   let claimed = claim_interventions(ctl, due)
+
+  // Dispatch claimed interventions synchronously or in a detached process.
   case claimed, awaited {
     [], _ -> Nil
     [_, ..], True -> admit_claimed(ctl, raw, runtime, claimed)
@@ -1177,12 +1232,15 @@ fn apply_on(
 // carrier that loses its reply can be retried without admitting the payload
 // twice. The in-memory claim says the schedule owes a turn; the durable fact
 // says whether that turn already entered the queue.
+/// Filters interventions to those successfully claimed on the control actor.
 fn claim_interventions(
   ctl: Control,
   due: List(script.Intervention),
 ) -> List(script.Intervention) {
   list.filter(due, fn(intervention) {
     let path = intervention_path(intervention)
+
+    // Attempt to register the intervention claim.
     case
       control.claim_intervention(
         ctl,
@@ -1199,6 +1257,7 @@ fn claim_interventions(
   })
 }
 
+/// Submits claimed interventions to the queue and retries unresolved admissions.
 fn admit_claimed(
   ctl: Control,
   raw: Session,
@@ -1221,6 +1280,8 @@ fn admit_claimed(
     list.append(admissions, aborts)
     |> perform_ordered(runtime, _, [])
   }
+
+  // Attempt intervention admissions and handle answered vs expired attempts.
   case control.attempt(ctl, at: "intervene", action:, within_ms: 2000) {
     control.Answered(#(outcomes, deferred)) -> {
       settle_answered(ctl, raw, outcomes)
@@ -1237,6 +1298,7 @@ fn admit_claimed(
 // Stop at the first unavailable writer. Executing the remaining admissions
 // or aborts before retrying that item would change this logical moment's
 // order merely because the writer happened to restart between two calls.
+/// Sequentially executes a list of interventions until completion or writer unavailability.
 fn perform_ordered(
   runtime: api.Runtime,
   remaining: List(script.Intervention),
@@ -1260,12 +1322,14 @@ fn perform_ordered(
 // root lives, its permanent writer must either return or make the root fail.
 // Reuse the lost-reply retry boundary; adding a new simulated step would alter
 // the fault schedule rather than test the original conversation.
+/// Retries admissions whose outcome was ambiguous due to a writer restart.
 fn retry_unresolved(
   ctl: Control,
   raw: Session,
   runtime: api.Runtime,
   unresolved: List(script.Intervention),
 ) -> Nil {
+  // Check if there are unresolved items and if the supervisor is still running.
   case unresolved, process.is_alive(runtime.tree.supervisor) {
     [], _ -> Nil
     [_, ..], True -> {
@@ -1276,6 +1340,7 @@ fn retry_unresolved(
   }
 }
 
+/// Marks answered interventions and records landings if unadmitted.
 fn settle_answered(
   ctl: Control,
   raw: Session,
@@ -1284,6 +1349,8 @@ fn settle_answered(
   list.each(outcomes, fn(outcome) {
     let #(intervention, result) = outcome
     control.intervened(ctl, intervention_path(intervention))
+
+    // Inspect whether the intervention was committed to storage.
     case intervention_admitted(raw, intervention) {
       True -> Nil
       False -> record_landing(ctl, intervention, result)
@@ -1293,12 +1360,14 @@ fn settle_answered(
 
 // Close every debt whose atomic fact proves the queue transaction landed and
 // return only the ambiguous admissions for another carrier to retry.
+/// Filters claimed interventions, retaining only those not yet durably committed.
 fn settle_durable(
   ctl: Control,
   raw: Session,
   claimed: List(script.Intervention),
 ) -> List(script.Intervention) {
   list.filter(claimed, fn(intervention) {
+    // Check if the intervention fact already exists in the durable store.
     case intervention_admitted(raw, intervention) {
       False -> True
       True -> {
@@ -1309,6 +1378,7 @@ fn settle_durable(
   })
 }
 
+/// Checks if an intervention was recorded in the session store register.
 fn intervention_admitted(
   raw: Session,
   intervention: script.Intervention,
@@ -1317,12 +1387,15 @@ fn intervention_admitted(
     intervention
     |> script.intervention_key
     |> script.intervention_fact_key
+
+  // Query the custom fact register for this intervention's marker.
   case storage.get_register(raw.store, register.FactCustom, key) {
     Ok(Some(_cell)) -> True
     Ok(None) | Error(_) -> False
   }
 }
 
+/// Dispatches a single intervention against the runtime API.
 fn perform(
   runtime: api.Runtime,
   intervention: script.Intervention,
@@ -1377,6 +1450,7 @@ pub fn intervention_user(
   )
 }
 
+/// Notes or marks the outcome of an intervention admission.
 fn record_landing(
   ctl: Control,
   intervention: script.Intervention,
@@ -1423,6 +1497,7 @@ type Admission {
 }
 
 // One admission's verdict, worded as the note the runner would print.
+/// Maps an API call result to an Admission status.
 fn landed(what: String, outcome: Result(a, api.ApiError)) -> Admission {
   case outcome {
     Ok(_) -> Settled(Ok(Nil))
@@ -1460,6 +1535,7 @@ pub fn user(text: String) -> AgentMessage {
 // trips only once the durable projection itself agrees — no unsummarized
 // generation turns and at least `after` turns of them — so the decision
 // is the same after a crash as it was before one.
+/// Evaluates whether the compaction threshold has been reached.
 fn threshold_decision(
   ctl: Control,
   raw: Session,
@@ -1472,6 +1548,7 @@ fn threshold_decision(
   }
 }
 
+/// Verifies turn count in the projected context against the threshold limit.
 fn threshold_past_turn(
   ctl: Control,
   raw: Session,
@@ -1489,6 +1566,7 @@ fn threshold_past_turn(
 // The simulation hooks, built through the production hook registry
 // (`runtime/hooks`) so production wiring and the simulation share one
 // seam; only the script-driven slots are replaced.
+/// Assembles the runtime hooks for the simulation surface.
 fn hooks(
   ctl: Control,
   script: Script,
@@ -1509,6 +1587,7 @@ fn hooks(
     compaction(context)
   })
   |> hooks.with_structural_decision(fn(_op, _task) {
+    // Deliver the configured structural decision (supplied vs generated).
     case script.structural {
       script.Supplied -> {
         control.mark(ctl, "structural-supplied")
@@ -1529,6 +1608,8 @@ fn hooks(
       script.Generated(split: True) -> 2
       _ -> 1
     }
+
+    // Check whether the required summary settlements have committed.
     case control.read(ctl, "summary_settled:" <> task) >= wanted {
       True -> SummaryProduced(summary: summary_text, usage: None)
       False -> SummaryNeedsRequest

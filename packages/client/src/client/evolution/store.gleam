@@ -236,10 +236,13 @@ pub fn propose(
   use Nil <- result.try(admit_source(candidate))
   use Nil <- result.try(admit_origin(store, candidate))
   use Nil <- result.try(current(store, candidate.identity))
+
+  // The proposal and current selection determine whether a candidate may be staged.
   use Nil <- result.try(case record.identified(candidate).id == candidate.id {
     True -> Ok(Nil)
     False -> Error(Changed)
   })
+
   let text = record.encode_candidate(candidate)
   use Nil <- result.try(bound(text, max_candidate_bytes, "candidate source"))
   use _ <- result.try(
@@ -404,6 +407,7 @@ pub fn read_board(store: Store) -> Result(Board, Refusal) {
 
 // The visible candidates, in index order. `catalogue` and `read_board` share it
 // so the two reads can never disagree about who sees what.
+/// Decodes the catalogue snapshot and its bounded persisted records.
 fn catalogue_in(
   store: Store,
   opened: session.Session,
@@ -424,6 +428,7 @@ fn catalogue_in(
 
 // Every retained observation, newest first, without its observation text. The
 // caller keeps only the rows of candidates it may see.
+/// Returns evidence that remains visible under the requested candidate scope.
 fn observed_evidence(
   opened: session.Session,
 ) -> Result(List(record.Evidence), Refusal) {
@@ -445,6 +450,7 @@ fn selection_key_of(candidate: record.Candidate) -> String {
 // scope the capability may not select in is skipped rather than refused,
 // because the board shows what is visible and the selection of a hidden scope
 // is not.
+/// Reads the current selection set from the catalogue state.
 fn current_selections(
   store: Store,
   opened: session.Session,
@@ -452,6 +458,8 @@ fn current_selections(
 ) -> Result(List(#(String, record.Selection)), Refusal) {
   list.try_fold(candidates, [], fn(found, candidate) {
     let key = selection_key_of(candidate)
+
+    // The stored selection rows determine the current selected candidates.
     case
       list.key_find(found, key),
       result.is_ok(scope_visible(store, candidate.scope))
@@ -473,6 +481,7 @@ fn current_selections(
   })
 }
 
+/// Decodes the candidate approval record from persisted catalogue state.
 fn approval_in(
   opened: session.Session,
   candidate: record.Candidate,
@@ -481,6 +490,8 @@ fn approval_in(
     opened,
     approval_key(candidate.id, candidate.scope),
   ))
+
+  // The approval record determines which candidate authority is active.
   case found {
     None -> Ok(None)
     Some(register) -> {
@@ -506,6 +517,7 @@ fn approval_in(
 // The newest audit entries the capability may see, and how many older ones it
 // may see and is not shown. Filtering happens before counting, so the count
 // never discloses an event of a scope the capability cannot read.
+/// Reads the selection history associated with the candidate and scope.
 fn history_in(
   store: Store,
   opened: session.Session,
@@ -533,6 +545,7 @@ fn history_in(
 
 // An owner sees every entry. Anyone else sees the entries whose scope names
 // something they may see, so an entry with no readable scope is the owner's.
+/// Checks whether an audit event belongs in the caller-visible catalogue view.
 fn event_visible(store: Store, event: Event) -> Bool {
   case store.authority, event.scope {
     Owner, _ -> True
@@ -543,6 +556,7 @@ fn event_visible(store: Store, event: Event) -> Bool {
 
 // One audit entry as an event, or `Error(Nil)` for an entry that is not an
 // approval, revocation or selection (the catalogue also journals retentions).
+/// Builds the audit record for a committed catalogue operation.
 fn audit_event(
   audited: entry.Entry,
   candidates: List(record.Candidate),
@@ -586,6 +600,7 @@ pub fn event_from(
   }
 }
 
+/// Builds the stable refusal for a catalogue record that cannot be decoded.
 fn unreadable(kind: String, seq: Int, ts: Int) -> Event {
   Event(
     seq:,
@@ -602,6 +617,7 @@ fn unreadable(kind: String, seq: Int, ts: Int) -> Event {
   )
 }
 
+/// Resolves one candidate by its catalogue name.
 fn named(candidates: List(record.Candidate), candidate_id: String) -> String {
   case
     list.find(candidates, fn(candidate) {
@@ -613,6 +629,7 @@ fn named(candidates: List(record.Candidate), candidate_id: String) -> String {
   }
 }
 
+/// Decodes the audit event that records candidate approval.
 fn approved_event(
   seq: Int,
   ts: Int,
@@ -643,6 +660,7 @@ fn approved_event(
   })
 }
 
+/// Decodes the audit event that records candidate revocation.
 fn revoked_event(
   seq: Int,
   ts: Int,
@@ -677,6 +695,7 @@ fn revoked_event(
 // A selection entry is an object in the current format and `reason: selection`
 // in the one before it. The old text carries no principal, surface or request
 // identity, and its reason is whatever precedes the last `: {"candidate":`.
+/// Decodes the audit event that records a candidate selection.
 fn selected_event(seq: Int, ts: Int, text: String) -> Event {
   let current = {
     use selection_text <- decode.field("selection", decode.string)
@@ -689,6 +708,8 @@ fn selected_event(seq: Int, ts: Int, text: String) -> Event {
   let parsed =
     json.parse(text, current)
     |> result.lazy_or(fn() { legacy_selected(text) })
+
+  // The event payload determines whether it represents a valid selection.
   case parsed {
     Error(_) -> unreadable("selected", seq, ts)
     Ok(#(selection_text, principal, via, reason, request_id)) ->
@@ -715,10 +736,13 @@ fn selected_event(seq: Int, ts: Int, text: String) -> Event {
 // Reads the text a selection audit entry had before it became an object. The
 // reason may itself contain a colon, so the split is at the last occurrence of
 // the marker that begins the selection object.
+/// Reads a legacy selection event when its required identity is present.
 fn legacy_selected(
   text: String,
 ) -> Result(#(String, String, String, String, String), json.DecodeError) {
   let marker = ": {\"candidate\":"
+
+  // The legacy event is accepted only when its stored identity is complete.
   case list.reverse(string.split(text, marker)) {
     [last, next, ..earlier] ->
       Ok(#(
@@ -876,6 +900,100 @@ pub fn selected(
   with_session(store, fn(opened) { selection_in(opened, scope, name) })
 }
 
+/// Lists the selections scoped to one session that are still approved, which
+/// are the extensions and programs that session would serve if it were open.
+///
+/// A daemon asks this before handing the session to another orchestrator,
+/// because the selection lives in this daemon's catalogue and does not travel
+/// with the session. It is a read for the owner, so it takes no store from the
+/// caller and compares no identity: identity gates proposals, evidence and
+/// approvals, and none of the reads below consult it. A selection whose
+/// approval was revoked stays on file but serves nothing, so it is not listed.
+///
+/// A directory with no catalogue database holds no selections. The database is
+/// not created to find that out, so asking about a daemon that never used
+/// evolution leaves its state directory as it was. An existing database is
+/// opened under the store's usual lease, waiting at most one second for it
+/// (`borrow`); a catalogue that stays busy answers `Busy`, and the caller must
+/// not read that as an empty list.
+///
+/// ## Examples
+///
+/// `session_selections(state <> "/evolution", "session-a", clock)` is
+/// `Ok([])` for a session that serves nothing.
+pub fn session_selections(
+  root: String,
+  session_id: String,
+  clock: Clock,
+) -> Result(List(record.Selection), Refusal) {
+  use present <- result.try(
+    simplifile.is_file(root <> "/evolution.db")
+    |> result.map_error(fn(error) {
+      Unavailable(simplifile.describe_error(error))
+    }),
+  )
+
+  // Without a database file there is nothing to open, and opening would make
+  // the directory and the database.
+  case present {
+    False -> Ok([])
+    True -> {
+      let unchecked = record.Identity("", "", "")
+      use reader <- result.try(open(root, Owner, unchecked, clock))
+      with_session(reader, fn(opened) {
+        use candidates <- result.try(catalogue_in(reader, opened))
+        let names =
+          list.filter_map(candidates, fn(candidate) {
+            case candidate.scope == record.Session(session_id) {
+              True -> Ok(candidate.name)
+              False -> Error(Nil)
+            }
+          })
+          |> list.unique
+
+        list.try_fold(names, [], fn(found, name) {
+          use selected <- result.try(approved_selection_in(
+            opened,
+            record.Session(session_id),
+            name,
+          ))
+          Ok(list.append(found, option.values([selected])))
+        })
+      })
+    }
+  }
+}
+
+// The selection of a name if its current approval names the selected evidence.
+// Revocation deletes the approval and leaves the selection register, so the
+// approval is what says the selection still serves.
+/// Reads one selection and keeps it only while its approval still holds.
+fn approved_selection_in(
+  opened: session.Session,
+  scope: record.Scope,
+  name: String,
+) -> Result(Option(record.Selection), Refusal) {
+  use found <- result.try(selection_in(opened, scope, name))
+
+  // No selection register means nothing was ever selected under this name.
+  case found {
+    None -> Ok(None)
+    Some(selection) -> {
+      use approval <- result.try(cell(
+        opened,
+        approval_key(selection.candidate_id, scope),
+      ))
+
+      // A missing or different approval is the revoked state, not an error.
+      case approved_evidence(approval, selection.evidence_id) {
+        Ok(Nil) -> Ok(Some(selection))
+        Error(NotApproved) -> Ok(None)
+        Error(refusal) -> Error(refusal)
+      }
+    }
+  }
+}
+
 /// Publishes after current approval and expected generation both hold.
 ///
 /// The caller stages and proves predecessor retirement before committing here.
@@ -978,6 +1096,8 @@ pub fn select_request_admitted(
     )
   with_session(store, fn(opened) {
     use prior <- result.try(receipt_in(opened, request_id))
+
+    // The durable receipt determines whether this request was already admitted.
     case prior {
       Some(#(written_signature, selection)) ->
         case written_signature == signature {
@@ -1029,6 +1149,8 @@ pub fn request_receipt(
   use Nil <- result.try(bound(reason, 4096, "operator reason"))
   with_session(store, fn(opened) {
     use prior <- result.try(receipt_in(opened, request_id))
+
+    // The request identity selects its durable admission receipt.
     case prior {
       None -> Ok(None)
       Some(#(written_signature, selected)) -> {
@@ -1042,6 +1164,8 @@ pub fn request_receipt(
           })
           |> result.replace_error(Corrupt("invalid receipt expectation")),
         )
+
+        // The request identity selects its durable admission receipt.
         use expected <- result.try(case expected_text {
           None -> Ok(None)
           Some(text) ->
@@ -1049,10 +1173,13 @@ pub fn request_receipt(
             |> result.map(Some)
             |> result.replace_error(Corrupt("invalid receipt expectation"))
         })
+
+        // The request identity selects its durable admission receipt.
         let generation = case expected {
           None -> 0
           Some(selection) -> selection.generation
         }
+
         let signature =
           selection_signature(
             id,
@@ -1076,6 +1203,7 @@ pub fn request_receipt(
   })
 }
 
+/// Builds the identity signature used to compare candidate selections.
 fn selection_signature(
   id: record.CandidateId,
   evidence_id: record.EvidenceId,
@@ -1112,6 +1240,8 @@ pub fn receipt(
 ) -> Result(Option(record.Selection), Refusal) {
   with_session(store, fn(opened) {
     use prior <- result.try(receipt_in(opened, request_id))
+
+    // The receipt state determines whether the committed request can be returned.
     case prior {
       None -> Ok(None)
       Some(#(_, selection)) -> {
@@ -1122,6 +1252,7 @@ pub fn receipt(
   })
 }
 
+/// Commits a new selection while preserving durable request idempotency.
 fn select_new(
   store: Store,
   opened: session.Session,
@@ -1139,10 +1270,13 @@ fn select_new(
   use candidate <- result.try(candidate_in(store, opened, id))
   use evidence <- result.try(evidence_in(opened, evidence_id))
   use Nil <- result.try(approvable(store, candidate, evidence, scope))
+
+  // The current selection and request identity determine whether a new selection is committed.
   use Nil <- result.try(case candidate.name == name {
     True -> Ok(Nil)
     False -> Error(Changed)
   })
+
   let approved_key = approval_key(id, scope)
   use approved <- result.try(cell(opened, approved_key))
   use Nil <- result.try(approved_evidence(approved, evidence_id))
@@ -1151,14 +1285,19 @@ fn select_new(
   let key = selection_key(scope, name)
   use prior <- result.try(cell(opened, key))
   use actual <- result.try(selection_in(opened, scope, name))
+
+  // The current selection and request identity determine whether a new selection is committed.
   use Nil <- result.try(case actual == expected {
     True -> Ok(Nil)
     False -> Error(Stale)
   })
+
+  // The current selection and request identity determine whether a new selection is committed.
   let generation = case actual {
     None -> 1
     Some(selection) -> selection.generation + 1
   }
+
   let selection =
     record.Selection(candidate_id: id, evidence_id:, scope:, name:, generation:)
 
@@ -1190,14 +1329,18 @@ fn select_new(
   Ok(selection)
 }
 
+/// Decodes one durable request receipt from catalogue storage.
 fn receipt_in(
   opened: session.Session,
   request_id: String,
 ) -> Result(Option(#(String, record.Selection)), Refusal) {
+  // The stored receipt value determines whether the request can be decoded.
   case request_id {
     "" -> Ok(None)
     _ -> {
       use found <- result.try(cell(opened, "receipt/" <> request_id))
+
+      // The stored receipt value determines whether the request can be decoded.
       case found {
         None -> Ok(None)
         Some(register) -> {
@@ -1222,20 +1365,25 @@ fn receipt_in(
   }
 }
 
+/// Persists request receipt state for the admitted operation.
 fn receipt_writes(
   opened: session.Session,
   request_id: String,
   signature: String,
   selection: record.Selection,
 ) -> Result(#(List(tx.Write), List(tx.SeqExpectation)), Refusal) {
+  // The request outcome determines which receipt facts are persisted.
   case request_id {
     "" -> Ok(#([], []))
     _ -> {
       use retained <- result.try(index(opened, "receipts"))
+
+      // The request outcome determines which receipt facts are persisted.
       use Nil <- result.try(case list.length(retained) < 512 {
         True -> Ok(Nil)
         False -> Error(Bounds("operator request receipts"))
       })
+
       let key = "receipt/" <> request_id
       let text =
         json.to_string(
@@ -1281,6 +1429,8 @@ pub fn authorized(
       selection.scope,
       selection.name,
     ))
+
+    // The authority record determines whether this candidate can be used.
     case current_selection == Some(selection) {
       True -> Ok(candidate)
       False -> Error(Stale)
@@ -1303,6 +1453,7 @@ pub fn approved(
   with_session(store, fn(opened) { approved_in(store, opened, selection) })
 }
 
+/// Decodes the approved candidate and its authority metadata.
 fn approved_in(
   store: Store,
   opened: session.Session,
@@ -1313,12 +1464,15 @@ fn approved_in(
     opened,
     selection.candidate_id,
   ))
+
+  // The decoded approval record determines the approved candidate.
   use Nil <- result.try(
     case selection.name == candidate.name && selection.generation > 0 {
       True -> Ok(Nil)
       False -> Error(Corrupt("selection identity disagrees with its candidate"))
     },
   )
+
   use evidence <- result.try(evidence_in(opened, selection.evidence_id))
   use Nil <- result.try(approvable(store, candidate, evidence, selection.scope))
   use approved <- result.try(cell(
@@ -1350,6 +1504,7 @@ pub fn describe(refusal: Refusal) -> String {
   }
 }
 
+/// Runs a catalogue operation under the requested session scope.
 fn with_session(
   store: Store,
   work: fn(session.Session) -> Result(a, Refusal),
@@ -1374,11 +1529,14 @@ fn with_session(
 // Every catalogue capability for a canonical path contends on the same fenced
 // SQLite lease. Only a refused open is repeated: work and retirement each run
 // once after custody is acquired, including an acquisition at the wall deadline.
+/// Loads and validates the candidate before granting it to the caller.
 fn borrow(store: Store) {
   let path = store.root <> "/evolution.db"
   let clock = store.clock
   let #(at, _) = clock.read(clock)
   let owner = "evolution-" <> int.to_string(at)
+
+  // The candidate record is exposed only after its authority and contents validate.
   case
     poll.until(within: 1000, every: 10, attempt: fn() {
       case
@@ -1403,6 +1561,7 @@ fn borrow(store: Store) {
   }
 }
 
+/// Decodes a persisted candidate and its content metadata.
 fn candidate_in(
   store: Store,
   opened: session.Session,
@@ -1412,15 +1571,19 @@ fn candidate_in(
   use candidate <- result.try(
     record.decode_candidate(text) |> result.map_error(Corrupt),
   )
+
+  // The stored candidate payload determines whether the candidate record is complete.
   use Nil <- result.try(case candidate.id == id {
     True -> Ok(Nil)
     False -> Error(Changed)
   })
+
   use Nil <- result.try(admit_source(candidate))
   use Nil <- result.try(visible(store, candidate))
   Ok(candidate)
 }
 
+/// Decodes persisted candidate evidence and validates its fields.
 fn evidence_in(
   opened: session.Session,
   id: record.EvidenceId,
@@ -1432,12 +1595,15 @@ fn evidence_in(
   use evidence <- result.try(
     record.decode_evidence(text) |> result.map_error(Corrupt),
   )
+
+  // The stored evidence payload determines whether the evidence record is valid.
   case evidence.id == id {
     True -> Ok(evidence)
     False -> Error(Changed)
   }
 }
 
+/// Checks the candidate and evidence required for an approval transition.
 fn approvable(
   store: Store,
   candidate: record.Candidate,
@@ -1446,12 +1612,16 @@ fn approvable(
 ) -> Result(Nil, Refusal) {
   use Nil <- result.try(current(store, candidate.identity))
   use Nil <- result.try(current(store, evidence.identity))
+
+  // The candidate state and evidence determine whether approval can be granted.
   use Nil <- result.try(
     case candidate.id == evidence.candidate_id && candidate.scope == scope {
       True -> Ok(Nil)
       False -> Error(Changed)
     },
   )
+
+  // The candidate state and evidence determine whether approval can be granted.
   use Nil <- result.try(case candidate.kind, evidence.purpose {
     record.Prompt, record.AuthorTests ->
       Error(TestFailed("prompt approval requires independent rollout evidence"))
@@ -1460,6 +1630,8 @@ fn approvable(
     | record.Program, _
     -> Ok(Nil)
   })
+
+  // The candidate state and evidence determine whether approval can be granted.
   case evidence.verdict {
     record.Passed -> Ok(Nil)
     record.Failed -> Error(TestFailed("required checks failed"))
@@ -1474,8 +1646,11 @@ fn current(store: Store, identity: record.Identity) -> Result(Nil, Refusal) {
   }
 }
 
+/// Validates source files, bounds, and provenance before storing a candidate.
 fn admit_source(candidate: record.Candidate) -> Result(Nil, Refusal) {
   let paths = list.map(candidate.files, fn(file) { file.0 })
+
+  // The source artifact is validated and bounded before it enters the catalogue.
   use Nil <- result.try(
     case
       list.length(paths) <= 256
@@ -1485,11 +1660,14 @@ fn admit_source(candidate: record.Candidate) -> Result(Nil, Refusal) {
       False -> Error(Bounds("candidate file count or duplicate paths"))
     },
   )
+
+  // The source artifact is validated and bounded before it enters the catalogue.
   use Nil <- result.try(case list.all(paths, legal_path) {
     True -> Ok(Nil)
     False ->
       Error(Authority("candidate path is outside the immutable source envelope"))
   })
+
   use Nil <- result.try(bound(candidate.name, 128, "candidate name"))
   use Nil <- result.try(bound(
     candidate.origin.session_id,
@@ -1523,6 +1701,8 @@ fn admit_source(candidate: record.Candidate) -> Result(Nil, Refusal) {
     "encoded candidate description",
   ))
   use Nil <- result.try(bound(candidate.input_schema, 16_384, "input schema"))
+
+  // The source artifact is validated and bounded before it enters the catalogue.
   case candidate.kind {
     record.Extension -> admit_extension_descriptors(candidate)
     record.Prompt -> Ok(Nil)
@@ -1531,6 +1711,8 @@ fn admit_source(candidate: record.Candidate) -> Result(Nil, Refusal) {
         value.parse(candidate.input_schema)
         |> result.replace_error(Corrupt("skill input schema is invalid JSON")),
       )
+
+      // The source artifact is validated and bounded before it enters the catalogue.
       case schema {
         value.Object(_) -> {
           use Nil <- result.try(bound(
@@ -1554,6 +1736,7 @@ fn admit_source(candidate: record.Candidate) -> Result(Nil, Refusal) {
 // Admission owns discovery bounds before tests can approve an executable version.
 // A complete identity and schema must fit one page; byte truncation cannot
 // silently change the contract a caller will later invoke.
+/// Validates extension tool descriptors against the catalogue bounds.
 fn admit_extension_descriptors(
   candidate: record.Candidate,
 ) -> Result(Nil, Refusal) {
@@ -1584,6 +1767,7 @@ fn admit_extension_descriptors(
   })
 }
 
+/// Checks that a descriptor field fits its declared size limit.
 fn descriptor_bound(
   candidate: record.Candidate,
   name: String,
@@ -1605,6 +1789,7 @@ fn descriptor_bound(
   )
 }
 
+/// Validates that a candidate path is a safe relative path.
 fn legal_path(path: String) -> Bool {
   string.byte_size(path) <= 256
   && list.all(string.split(path, "/"), fn(segment) {
@@ -1621,14 +1806,18 @@ fn legal_path(path: String) -> Bool {
   })
 }
 
+/// Validates the source origin before admitting its artifact.
 fn admit_origin(
   store: Store,
   candidate: record.Candidate,
 ) -> Result(Nil, Refusal) {
   use Nil <- result.try(visible(store, candidate))
+
+  // The origin metadata determines whether the candidate source is trusted.
   case store.authority {
     Owner -> Ok(Nil)
     Caller(session_id, workspace) | SessionOperator(session_id, workspace) -> {
+      // The origin metadata determines whether the candidate source is trusted.
       use Nil <- result.try(
         case
           candidate.origin.session_id == session_id
@@ -1638,9 +1827,11 @@ fn admit_origin(
           False -> Error(Authority("proposal origin is not this caller"))
         },
       )
+
       scope_visible(store, candidate.scope)
     }
     ModelAuthor(session_id, workspace, target) -> {
+      // The origin metadata determines whether the candidate source is trusted.
       use Nil <- result.try(
         case
           candidate.origin.session_id == session_id
@@ -1650,6 +1841,8 @@ fn admit_origin(
           False -> Error(Authority("model proposal origin is not this caller"))
         },
       )
+
+      // The origin metadata determines whether the candidate source is trusted.
       case
         candidate.scope == record.ExactModel(target)
         && candidate.kind == record.Prompt
@@ -1662,6 +1855,7 @@ fn admit_origin(
   }
 }
 
+/// Checks whether a catalogue record is visible under the caller’s scope.
 fn visible(store: Store, candidate: record.Candidate) -> Result(Nil, Refusal) {
   case store.authority {
     Owner -> Ok(Nil)
@@ -1691,6 +1885,7 @@ fn visible(store: Store, candidate: record.Candidate) -> Result(Nil, Refusal) {
   }
 }
 
+/// Checks whether a candidate scope is visible to this session.
 fn scope_visible(store: Store, scope: record.Scope) -> Result(Nil, Refusal) {
   case store.authority, scope {
     Owner, _ -> Ok(Nil)
@@ -1717,16 +1912,21 @@ fn scope_visible(store: Store, scope: record.Scope) -> Result(Nil, Refusal) {
   }
 }
 
+/// Resolves the candidate owner from its scope and persisted origin.
 fn owner(
   store: Store,
   scope: record.Scope,
   principal: String,
 ) -> Result(Nil, Refusal) {
   use Nil <- result.try(bound(principal, 256, "operator identity"))
+
+  // The scope and owner fields determine who controls the candidate.
   use Nil <- result.try(case principal != "" {
     True -> Ok(Nil)
     False -> Error(Authority("authenticated operator identity missing"))
   })
+
+  // The scope and owner fields determine who controls the candidate.
   case store.authority, scope {
     Owner, _ -> Ok(Nil)
     SessionOperator(session_id, _), record.Session(id) ->
@@ -1744,6 +1944,7 @@ fn owner(
   }
 }
 
+/// Reads one named field from the persisted candidate representation.
 fn cell(
   opened: session.Session,
   key: String,
@@ -1752,15 +1953,20 @@ fn cell(
   |> result.replace_error(Unavailable("catalogue register read failed"))
 }
 
+/// Extracts a required stored value or reports a malformed record.
 fn required(opened: session.Session, key: String) -> Result(String, Refusal) {
   use found <- result.try(cell(opened, key))
+
+  // The required state determines the valid catalogue transition.
   case found {
     None -> Error(Unknown)
     Some(register) -> text_of(register)
   }
 }
 
+/// Decodes a required text value from persisted catalogue data.
 fn text_of(register: storage.Register) -> Result(String, Refusal) {
+  // The text of state determines the valid catalogue transition.
   case register.value.payload {
     value.String(text) -> {
       use Nil <- result.try(bound(
@@ -1774,11 +1980,14 @@ fn text_of(register: storage.Register) -> Result(String, Refusal) {
   }
 }
 
+/// Builds the bounded candidate index used by catalogue lookups.
 fn index(
   opened: session.Session,
   key: String,
 ) -> Result(List(String), Refusal) {
   use found <- result.try(cell(opened, "index/" <> key))
+
+  // The bounded index maps a stored candidate identity to its record.
   case found {
     None -> Ok([])
     Some(register) -> {
@@ -1787,6 +1996,8 @@ fn index(
         json.parse(text, decode.list(decode.string))
         |> result.replace_error(Corrupt("invalid bounded catalogue index")),
       )
+
+      // The bounded index maps a stored candidate identity to its record.
       case list.length(entries) <= 512 {
         True -> Ok(entries)
         False -> Error(Corrupt("catalogue index exceeds bound"))
@@ -1795,6 +2006,7 @@ fn index(
   }
 }
 
+/// Retains evidence under the candidate identity without losing prior custody.
 fn retain(
   opened: session.Session,
   key: String,
@@ -1804,9 +2016,13 @@ fn retain(
   clock: Clock,
 ) -> Result(Nil, Refusal) {
   use prior <- result.try(cell(opened, key))
+
+  // The evidence record is retained only when its durable identity is valid.
   case prior {
     Some(register) -> {
       use existing <- result.try(text_of(register))
+
+      // The evidence record is retained only when its durable identity is valid.
       case existing == text {
         True -> Ok(Nil)
         False -> Error(Changed)
@@ -1816,6 +2032,7 @@ fn retain(
   }
 }
 
+/// Stores new evidence after validating its identity and encoded size.
 fn retain_new(
   opened: session.Session,
   key: String,
@@ -1825,11 +2042,16 @@ fn retain_new(
   clock: Clock,
 ) -> Result(Nil, Refusal) {
   use retained <- result.try(index(opened, collection))
+
+  // New evidence is validated and committed without replacing an existing record.
   use Nil <- result.try(case list.length(retained) < limit {
     True -> Ok(Nil)
     False -> Error(Bounds("retained " <> collection <> " count"))
   })
+
   use budget <- result.try(cell(opened, "retained_bytes"))
+
+  // New evidence is validated and committed without replacing an existing record.
   use bytes <- result.try(case budget {
     None -> Ok(0)
     Some(register) -> {
@@ -1838,11 +2060,15 @@ fn retain_new(
       |> result.replace_error(Corrupt("invalid storage byte census"))
     }
   })
+
   let size = bytes + string.byte_size(text)
+
+  // New evidence is validated and committed without replacing an existing record.
   use Nil <- result.try(case size <= max_retained_bytes {
     True -> Ok(Nil)
     False -> Error(Bounds("aggregate catalogue bytes"))
   })
+
   use prior_index <- result.try(cell(opened, "index/" <> collection))
   commit(
     opened,
@@ -1869,6 +2095,7 @@ fn set(key: String, text: String) -> tx.Write {
   tx.SetRegister(register.FactCustom, key, register.value(value.String(text)))
 }
 
+/// Checks that the current selection matches the expected identity.
 fn expect(key: String, cell: Option(storage.Register)) -> tx.SeqExpectation {
   tx.Expect(
     register.FactCustom,
@@ -1877,6 +2104,7 @@ fn expect(key: String, cell: Option(storage.Register)) -> tx.SeqExpectation {
   )
 }
 
+/// Commits a catalogue update under the session’s durable store.
 fn commit(
   opened: session.Session,
   writes: List(tx.Write),
@@ -1888,6 +2116,7 @@ fn commit(
   commit_admitted(opened, writes, expected, event, text, clock, fn() { Ok(Nil) })
 }
 
+/// Applies an admitted selection commit and records its durable receipt.
 fn commit_admitted(
   opened: session.Session,
   writes: List(tx.Write),
@@ -1898,6 +2127,8 @@ fn commit_admitted(
   admit: fn() -> Result(Nil, Refusal),
 ) -> Result(Nil, Refusal) {
   use event_cell <- result.try(cell(opened, "event_count"))
+
+  // The admitted commit result determines which durable selection changes are applied.
   use count <- result.try(case event_cell {
     None -> Ok(0)
     Some(register) -> {
@@ -1905,10 +2136,13 @@ fn commit_admitted(
       int.parse(text) |> result.replace_error(Corrupt("invalid event census"))
     }
   })
+
+  // The admitted commit result determines which durable selection changes are applied.
   use Nil <- result.try(case count < 4096 {
     True -> Ok(Nil)
     False -> Error(Bounds("evolution audit event count"))
   })
+
   use Nil <- result.try(bound(text, 16_384, "evolution audit event"))
   let #(event_id, _) =
     ids.mint_entry(ids.generator(clock, seed: ffi_os.unique_positive_integer()))
@@ -1951,6 +2185,7 @@ fn approval_key(id: record.CandidateId, scope: record.Scope) -> String {
   "approval/" <> record.scope_key(scope) <> "/" <> record.id_string(id)
 }
 
+/// Builds the stable key used to identify a selection record.
 fn selection_key(scope: record.Scope, name: String) -> String {
   // A model target owns one profile slot regardless of an author's alias.
   case scope {
@@ -1960,6 +2195,7 @@ fn selection_key(scope: record.Scope, name: String) -> String {
   }
 }
 
+/// Renders the approval state as stable caller-visible text.
 fn approval_text(
   id: record.CandidateId,
   evidence: record.EvidenceId,
@@ -1982,6 +2218,7 @@ fn approval_text(
 // which named no principal and could not be split back apart when the reason
 // itself held a colon, so a history reader had to guess. It is an object now,
 // and `legacy_selected` still reads the old shape.
+/// Builds the audit event for a candidate selection change.
 fn selection_audit(
   selection: record.Selection,
   principal: String,
@@ -2000,14 +2237,17 @@ fn selection_audit(
   )
 }
 
+/// Loads evidence associated with the approved candidate.
 fn approved_evidence(
   found: Option(storage.Register),
   id: record.EvidenceId,
 ) -> Result(Nil, Refusal) {
+  // The approval record determines which evidence is associated with the candidate.
   use text <- result.try(case found {
     None -> Error(NotApproved)
     Some(register) -> text_of(register)
   })
+
   let decoder = {
     use evidence <- decode.field("evidence", decode.string)
     decode.success(evidence)
@@ -2016,12 +2256,15 @@ fn approved_evidence(
     json.parse(text, decoder)
     |> result.replace_error(Corrupt("invalid approval")),
   )
+
+  // The approval record determines which evidence is associated with the candidate.
   case evidence == record.evidence_string(id) {
     True -> Ok(Nil)
     False -> Error(NotApproved)
   }
 }
 
+/// Encodes a selection using the persisted catalogue format.
 fn encode_selection(selection: record.Selection) -> String {
   json.to_string(
     json.object([
@@ -2034,12 +2277,15 @@ fn encode_selection(selection: record.Selection) -> String {
   )
 }
 
+/// Decodes a stored selection record and validates its fields.
 fn selection_in(
   opened: session.Session,
   scope: record.Scope,
   name: String,
 ) -> Result(Option(record.Selection), Refusal) {
   use found <- result.try(cell(opened, selection_key(scope, name)))
+
+  // The persisted selection fields determine whether a selection can be reconstructed.
   case found {
     None -> Ok(None)
     Some(register) -> {
@@ -2051,12 +2297,15 @@ fn selection_in(
   }
 }
 
+/// Decodes a selection record from its stored JSON representation.
 fn selection_decoder() -> decode.Decoder(record.Selection) {
   use candidate <- decode.field("candidate", decode.string)
   use evidence <- decode.field("evidence", decode.string)
   use scope <- decode.field("scope", record.scope_decoder())
   use name <- decode.field("name", decode.string)
   use generation <- decode.field("generation", decode.int)
+
+  // The stored selection value is decoded only when every required field is valid.
   case record.candidate_id(candidate), record.evidence_id(evidence) {
     Ok(candidate_id), Ok(evidence_id) ->
       decode.success(record.Selection(
@@ -2087,6 +2336,7 @@ fn bound(text: String, limit: Int, what: String) -> Result(Nil, Refusal) {
   }
 }
 
+/// Maps a catalogue open failure to the stable refusal vocabulary.
 fn open_error(error: session.OpenError) -> Refusal {
   case error {
     session.SqliteOpenFailed(sqlite.AdmissionBusy)

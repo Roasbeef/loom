@@ -163,6 +163,8 @@ pub fn arrivals(model: Model) -> List(msg.Arrival) {
       tui_model.connection_batch - buffered.held(model.shared.inbox),
     )
     |> list.map(msg.Frame(connection, _))
+
+  // Pull replayed messages when running in replay mode.
   let replayed = case model.shared.peer {
     session_model.Replaying ->
       buffered.waiting(
@@ -174,11 +176,14 @@ pub fn arrivals(model: Model) -> List(msg.Arrival) {
     | session_model.Disconnected
     | session_model.Preview -> []
   }
+
+  // Drain candidate attempt frame messages if capacity exists.
   let from_attempt = case attachment.frame_room(model.view.candidate) {
     Error(Nil) -> []
     Ok(#(frames, room)) ->
       buffered.waiting(frames, room) |> list.map(msg.Frame(frames, _))
   }
+
   list.flatten([from_connection, replayed, from_attempt])
 }
 
@@ -210,6 +215,7 @@ pub fn arrivals(model: Model) -> List(msg.Arrival) {
 /// let message = runtime.message(backend.Paste("/tmp/shot.png"), model)
 /// ```
 pub fn message(event: backend.InputEvent, model: Model) -> Msg {
+  // Pre-load file payload if input event is an image paste.
   let pasted = case event {
     backend.Paste(text) -> image_drop.load_paste(text)
     backend.KeyPress(_)
@@ -221,6 +227,7 @@ pub fn message(event: backend.InputEvent, model: Model) -> Msg {
     | backend.MouseDrag(..)
     | backend.MouseMove(..) -> Ok(None)
   }
+
   msg.Input(
     at: read_stamp(model.view.monotonic_time_ms, model.view.transport_time_ms),
     wall_ms: host_bootstrap.system_time_ms(),
@@ -282,10 +289,7 @@ pub fn adopt_control(model: Model, host: daemon_selection.Host) -> Model {
 // alive, and whether it is is a process read, which the step does not do.
 // So the host reads it here, as it hands the end over, and the attempt gets
 // `Finished` with the answer instead of the relay's `AllDelivered`. The
-// read is taken only for the attempt the end belongs to; an end for any
-// other key is dropped by the admission below whatever it carries. A socket
-// can die after this read as it could after the step's read before phase
-// 3; the adopted lane's own transport-loss handling covers that case.
+/// Verifies arrival belongs to candidate and checks candidate liveness.
 fn checked(
   model: Model,
   arrival: job.Arrival(job.Daemon),
@@ -420,12 +424,12 @@ pub fn flush(model: Model) -> Model {
   settle(take(model))
 }
 
-// Starts, cancels and control closes change the runtime's table; every
-// other effect is one call that leaves it as it was.
+/// Dispatches a single side-effect against running background jobs.
 fn perform_one(
   running: job_runner.Running,
   requested: Effect,
 ) -> job_runner.Running {
+  // Dispatch effect according to lifecycle kind.
   case requested {
     effect.StartJob(key, spec) -> job_runner.start(running, key, spec)
     effect.CancelJob(key) -> job_runner.cancel(running, key)
@@ -448,6 +452,7 @@ fn perform_one(
   }
 }
 
+/// Executes terminal, socket, recording, clipboard, and process IO effects.
 fn perform_io(requested: Effect) -> Nil {
   case requested {
     effect.Step(step_effect.Lane(output)) -> terminal_lane.perform(output)

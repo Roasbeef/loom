@@ -85,15 +85,17 @@ pub fn view(name: String, offer: Offer(message)) -> Element(message) {
   }
 }
 
-// The form: the field in its `<loom-rename>` wrapper and the submit button.
-// While a request is with the daemon the button is disabled, though the form
-// keeps its handler: a submit meanwhile is ignored by the component, which is
-// the layer that holds.
+/// The form: the field in its `<loom-rename>` wrapper and the submit button.
+/// While a request is with the daemon the button is disabled, though the form
+/// keeps its handler: a submit meanwhile is ignored by the component, which is
+/// the layer that holds.
 fn form(control: Control, submit: Attribute(message)) -> Element(message) {
+  // Dispatch on form state.
   let asking = case control {
     names.Asking -> [attribute.disabled(True)]
     names.Ready | names.Done | names.Refused(..) -> []
   }
+
   html.form(
     [
       attribute.class("yourname-form"),
@@ -107,8 +109,8 @@ fn form(control: Control, submit: Attribute(message)) -> Element(message) {
   )
 }
 
-// The status line: empty except after an answer, so the region's children keep
-// their places. A refusal is in the reason's fixed words.
+/// The status line: empty except after an answer, so the region's children keep
+/// their places. A refusal is in the reason's fixed words.
 fn status(control: Control) -> Element(message) {
   case control {
     names.Refused(reason:) ->

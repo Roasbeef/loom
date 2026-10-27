@@ -54,9 +54,10 @@
 //// ## Who builds one
 ////
 //// `machine/local` builds the machine for a workspace in this VM. It is the
-//// code that was `evolution/native`, moved without rewriting. `serve` chooses
-//// which machine a session holds when it assembles the session. Everything
-//// below `serve` receives a `Machine` and cannot tell which kind it is.
+//// code that was `evolution/native`, moved without rewriting. `machine/remote`
+//// builds it for a workspace on an executor. `serve` chooses which machine a
+//// session holds when it assembles the session. Everything below `serve`
+//// receives a `Machine` and cannot tell which kind it is.
 ////
 //// ## What stays outside the seam
 ////
@@ -70,18 +71,18 @@
 //// `machine/local` as its `open` function, because the plane is shared with
 //// the session's other planes.
 ////
-//// ## What the remote machine will add
+//// ## The remote machine
 ////
-//// A later change adds `machine/remote`, a `Machine` whose functions send
-//// protocol-change/098's messages to the executor that holds the workspace.
-//// It reads `identity` from the executor's census, sends `snapshot` and
-//// `evaluate` as `EvolutionSnapshot` and `EvolutionEvaluate`, and stages by
-//// `EvolutionStage`, which answers the handle and declarations a returned
-//// `live.Generation` is built from. It will narrow the `tool.Ctx` argument of
-//// `snapshot`, `evaluate` and `run_program` to the plain coordinates the wire
-//// can carry. This module adds none of that: the local machine needs no wire
-//// vocabulary, and a field only the remote side would use does not belong
-//// here yet.
+//// `machine/remote` is a `Machine` whose functions send protocol-change/098's
+//// messages to the executor that holds the workspace. `identity` is what the
+//// executor's census reported. `snapshot` and `evaluate` send
+//// `EvolutionSnapshot` and `EvolutionEvaluate`, `run_program` sends
+//// `EvolutionRun`, and `stage` sends `EvolutionStage` and builds the
+//// `live.Generation` from the handle and declarations it answers. The
+//// `tool.Ctx` argument of `snapshot`, `evaluate` and `run_program` is narrowed
+//// to the coordinates the wire can carry: the call's key, its strand and the
+//// session's stored authority. `serve` chooses between the two machines when it
+//// assembles a session; nothing else sees which one it holds.
 
 import client/evolution/evaluate
 import client/evolution/live

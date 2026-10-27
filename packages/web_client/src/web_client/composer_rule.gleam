@@ -91,14 +91,18 @@ pub fn entries(attribute: String) -> List(Entry) {
   |> result.unwrap([])
 }
 
+/// Decodes a command table entry from its compact JSON representation.
 fn entry() -> decode.Decoder(Entry) {
   use command <- decode.field("c", decode.string)
   use hint <- decode.field("d", decode.string)
   use takes_argument <- decode.field("a", decode.bool)
+
+  // Map argument requirement flag to completion behavior.
   let then = case takes_argument {
     True -> Continues
     False -> Complete
   }
+
   decode.success(Entry(command:, hint:, then:))
 }
 
@@ -121,6 +125,8 @@ fn entry() -> decode.Decoder(Entry) {
 /// ```
 pub fn matching(entries: List(Entry), draft: String) -> List(Entry) {
   let lead = string.trim_start(draft)
+
+  // Match against argument-taking prefix heads or single command words.
   case list.find(heads(entries), fn(head) { string.starts_with(lead, head) }) {
     Ok(head) -> {
       let partial = string.trim(string.drop_start(lead, string.length(head)))
@@ -130,6 +136,8 @@ pub fn matching(entries: List(Entry), draft: String) -> List(Entry) {
     }
     Error(Nil) -> {
       let word = string.trim(lead)
+
+      // Filter non-argument command prefixes for single-word slash drafts.
       case string.starts_with(word, "/"), string.contains(word, " ") {
         True, False ->
           list.filter(entries, fn(row) {
@@ -142,8 +150,7 @@ pub fn matching(entries: List(Entry), draft: String) -> List(Entry) {
   }
 }
 
-// The words that take a closed vocabulary, each with the space that follows
-// it: the text before the first space of every argument row.
+/// Collects unique command prefixes that accept closed argument options.
 fn heads(entries: List(Entry)) -> List(String) {
   list.filter_map(entries, fn(row) {
     case string.split_once(row.command, " ") {
@@ -240,6 +247,8 @@ pub fn revealed(
   viewport: Float,
 ) -> Float {
   let bottom = row_top +. row_height
+
+  // Scroll viewport up or down to bring the highlighted row into view.
   case row_top <. scrolled, bottom >. scrolled +. viewport {
     True, _ -> row_top
     False, True -> bottom -. viewport

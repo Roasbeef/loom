@@ -32,10 +32,13 @@ pub fn view(
   search: fn(String) -> message,
 ) -> Element(message) {
   let opened = notes.selected(state)
+
+  // Dispatch on view state.
   let mode = case opened {
     Ok(_) -> "detail"
     Error(Nil) -> "index"
   }
+
   html.section(
     [
       attribute.class("pane pane-notes strand-notes"),
@@ -86,13 +89,17 @@ pub fn view(
   )
 }
 
+/// Status helper.
 fn status(state: notes.State) -> String {
+  // Dispatch on status state.
   let progress = case state.read {
     notes.Unread -> "Read this strand’s notes with Refresh."
     notes.Queued | notes.Waiting -> "Reading notes…"
     notes.Unavailable -> "Notes unavailable. Try Refresh again."
     notes.Ready -> ""
   }
+
+  // Dispatch on status state.
   let snapshot = case state.board {
     None -> ""
     Some(board) -> {
@@ -112,9 +119,11 @@ fn status(state: notes.State) -> String {
       }
     }
   }
+
   string.join(list.filter([progress, snapshot], fn(text) { text != "" }), " ")
 }
 
+/// Index helper.
 fn index(
   state: notes.State,
   press: fn(notes.Press) -> message,
@@ -170,8 +179,8 @@ fn index(
   }
 }
 
-// Complete previews reuse the existing inline renderer. The leaf memo keeps
-// stream arrivals from reparsing unchanged text; excerpts remain literal.
+/// Complete previews reuse the existing inline renderer. The leaf memo keeps
+/// stream arrivals from reparsing unchanged text; excerpts remain literal.
 fn preview(text: String, extent: notes_view.Extent) -> Element(message) {
   use <- element.memo([element.ref(text), element.ref(extent)])
   html.span([attribute.class("notes-preview")], case extent {
@@ -180,6 +189,7 @@ fn preview(text: String, extent: notes_view.Extent) -> Element(message) {
   })
 }
 
+/// Metadata helper.
 fn metadata(note: notes_view.Note) -> Element(message) {
   html.span([attribute.class("notes-meta")], [
     html.text(
@@ -194,6 +204,7 @@ fn metadata(note: notes_view.Note) -> Element(message) {
   ])
 }
 
+/// Reader helper.
 fn reader(
   state: notes.State,
   note: notes_view.Note,
@@ -258,6 +269,7 @@ fn reader(
   ])
 }
 
+/// Mode button helper.
 fn mode_button(
   label: String,
   current: notes.Mode,
@@ -277,7 +289,7 @@ fn mode_button(
   )
 }
 
-// Projection belongs to snapshot adoption; a missing fixture cache stays literal.
+/// Projection belongs to snapshot adoption; a missing fixture cache stays literal.
 fn presentation(
   state: notes.State,
   note: notes_view.Note,

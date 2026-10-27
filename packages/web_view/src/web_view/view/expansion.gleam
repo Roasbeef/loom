@@ -66,8 +66,8 @@ pub fn notice() -> String {
   <> " bytes of an expanded row. Tool results offer paged viewing and a full download."
 }
 
-// Takes lines while the budget lasts. `rows` and `chars` are what is left;
-// the result is the lines kept, in order, and whether all of `lines` fit.
+/// Takes lines while the budget lasts. `rows` and `chars` are what is left;
+/// the result is the lines kept, in order, and whether all of `lines` fit.
 fn take(
   lines: List(Line),
   rows: Int,
@@ -82,6 +82,8 @@ fn take(
         True -> {
           let #(text, spanned, clip) = clipped(text, rows, chars)
           let kept = [Line(speaker:, text:), ..kept]
+
+          // Dispatch on take state.
           case clip {
             Clipped -> #(list.reverse(kept), Clipped)
             Whole ->
@@ -92,17 +94,21 @@ fn take(
   }
 }
 
-// One line's text cut to `rows` lines and `chars` bytes, with the number of
-// lines the result spans. The byte check comes first and cuts by codepoints,
-// so the split that counts newlines never sees more than the budget however
-// long the text is.
+/// One line's text cut to `rows` lines and `chars` bytes, with the number of
+/// lines the result spans. The byte check comes first and cuts by codepoints,
+/// so the split that counts newlines never sees more than the budget however
+/// long the text is.
 fn clipped(text: String, rows: Int, chars: Int) -> #(String, Int, Clip) {
+  // Dispatch on clipped state.
   let #(text, by_size) = case string.byte_size(text) > chars {
     True -> #(utf8_window.prefix(text, chars), Clipped)
     False -> #(text, Whole)
   }
+
   let rows_of = string.split(text, "\n")
   let spanned = list.length(rows_of)
+
+  // Dispatch on clipped state.
   case spanned > rows, by_size {
     True, _ -> #(string.join(list.take(rows_of, rows), "\n"), rows, Clipped)
     False, size -> #(text, spanned, size)

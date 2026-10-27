@@ -101,6 +101,7 @@ pub fn encode_hook_result(
   id: Int,
   answer: Answer,
 ) -> Result(BitArray, msgpack.EncodeError) {
+  // Serialize either a success response with value or an error with code.
   let body = case answer {
     Answered(value:) ->
       msgpack.MapValue([
@@ -119,9 +120,11 @@ pub fn encode_hook_result(
         ),
       ])
   }
+
   encode_frame(id, "hook_result", body)
 }
 
+/// Encodes a framed message payload prefixed with its 32-bit length.
 fn encode_frame(
   id: Int,
   kind: String,
@@ -136,6 +139,8 @@ fn encode_frame(
     ])
   use payload <- result.try(msgpack.encode(envelope))
   let size = bit_array.byte_size(payload)
+
+  // Check that the serialized frame fits within maximum allowed frame bytes.
   case size > max_frame_bytes {
     True -> Error(msgpack.UnencodableLength(length: size))
     False -> Ok(<<size:size(32), payload:bits>>)
@@ -211,6 +216,8 @@ pub fn string_field(
   key: String,
 ) -> Result(String, String) {
   use found <- result.try(field(value, key))
+
+  // Extract the string value or reject non-string types.
   case found {
     msgpack.StringValue(text) -> Ok(text)
     _ -> Error("field " <> key <> " is not a string")
@@ -220,6 +227,8 @@ pub fn string_field(
 /// Reads a required integer field.
 pub fn int_field(value: MsgPackValue, key: String) -> Result(Int, String) {
   use found <- result.try(field(value, key))
+
+  // Extract the integer value or reject non-integer types.
   case found {
     msgpack.IntValue(number) -> Ok(number)
     _ -> Error("field " <> key <> " is not an integer")
@@ -229,6 +238,8 @@ pub fn int_field(value: MsgPackValue, key: String) -> Result(Int, String) {
 /// Reads a required boolean field.
 pub fn bool_field(value: MsgPackValue, key: String) -> Result(Bool, String) {
   use found <- result.try(field(value, key))
+
+  // Extract the boolean value or reject non-boolean types.
   case found {
     msgpack.BoolValue(flag) -> Ok(flag)
     _ -> Error("field " <> key <> " is not a boolean")
@@ -242,6 +253,8 @@ pub fn binary_field(
   key: String,
 ) -> Result(BitArray, String) {
   use found <- result.try(field(value, key))
+
+  // Extract the binary bytes, treating nil as empty.
   case found {
     msgpack.BinaryValue(bytes:) -> Ok(bytes)
     msgpack.NilValue -> Ok(<<>>)
@@ -255,6 +268,8 @@ pub fn array_field(
   key: String,
 ) -> Result(List(MsgPackValue), String) {
   use found <- result.try(field(value, key))
+
+  // Extract the array items, treating nil as empty.
   case found {
     msgpack.ArrayValue(items:) -> Ok(items)
     msgpack.NilValue -> Ok([])

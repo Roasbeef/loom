@@ -63,7 +63,7 @@
 //// model_id = "provider-model-id"
 //// context_window = 200000
 //// max_output_tokens = 32000
-//// thinking = "off"                   # off|low|medium|high|unsupported
+//// thinking = "off"                   # off|low|medium|high|xhigh|max|unsupported
 //// vision = false                     # optional override; GLM-5.3 defaults to false
 //// max_images = 8                     # positive request-wide image limit
 ////
@@ -673,6 +673,9 @@ fn validate_spawners(document: Dict(String, tom.Toml)) -> Result(Nil, String) {
 
 // tom renders a TOML parse failure as a structured value; the server
 // prints strings, so both variants are worded here.
+
+/// Renders a TOML parse failure into a human-readable diagnostic error string.
+/// Renders a TOML parse failure into a human-readable diagnostic error string.
 fn describe_parse_error(error: tom.ParseError) -> String {
   case error {
     tom.Unexpected(got:, expected:) ->
@@ -684,11 +687,16 @@ fn describe_parse_error(error: tom.ParseError) -> String {
 
 // Reads a top-level table's entries. `[models.x]` headers and inline
 // `models = {x = ...}` tables are both TOML; accept either shape.
+
+/// Reads a top-level table's entries from either header tables or inline tables.
 fn table_entries(
   document: Dict(String, tom.Toml),
   key: String,
 ) -> Result(List(#(String, tom.Toml)), Nil) {
   case dict.get(document, key) {
+    // Extract mcp table from document if present.
+    // Extract profiles table from document if present.
+    // Extract set table from tools table.
     Ok(tom.Table(entries)) | Ok(tom.InlineTable(entries)) ->
       Ok(dict.to_list(entries))
     _ -> Error(Nil)
@@ -698,21 +706,32 @@ fn table_entries(
 // Every model entry, sorted by name so the catalogue (and everything
 // derived from it — the gateway registry, the `models` listing) is
 // deterministic regardless of file order, which the TOML dict loses.
+
+/// Parses all model configuration tables sorted deterministically by model name.
 fn parse_models(
   tables: List(#(String, tom.Toml)),
 ) -> Result(List(CatalogModel), String) {
+  // Decide how tables affects parse_models before continuing catalogue parsing.
   use Nil <- result.try(case tables {
+    // Verify that the models table contains at least one entry.
     [] -> Error("the [models] table is empty; define [models.<name>] entries")
     _ -> Ok(Nil)
   })
+
   tables
   |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
   |> list.try_map(fn(entry) { parse_model(entry.0, entry.1) })
 }
 
+/// Parses a single model configuration table into a CatalogModel.
 fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
   let place = "models." <> name
+
+  // Decide how value affects parse_model before continuing catalogue parsing.
   use fields <- result.try(case value {
+    // Extract fields dictionary from TOML table.
+    // Extract fields from MCP server table.
+    // Extract profile table fields.
     tom.Table(fields) | tom.InlineTable(fields) -> Ok(fields)
     _ -> Error(place <> " must be a table")
   })
@@ -721,7 +740,13 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
   // `api_key_env` silently ignored would dispatch with the wrong key
   // name and fail confusingly at the first request. `headers` gets its
   // own message because it could smuggle a credential into any adapter.
+
+  // Decide how dict.has_key(fields, "headers") affects parse_model before continuing catalogue parsing.
   use Nil <- result.try(case dict.has_key(fields, "headers") {
+    // Disallow api_key_env for codex subscription.
+    // Disallow reserving default profile name.
+    // Refuse unknown keys instead of ignoring them: a typoed
+    // Refuse unsupported per-model headers.
     True ->
       Error(
         place
@@ -730,6 +755,7 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
       )
     False -> Ok(Nil)
   })
+
   use Nil <- result.try(known_keys(
     dict.keys(fields),
     [
@@ -740,7 +766,10 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     place,
   ))
   use dialect_text <- result.try(required_string(fields, place, "dialect"))
+
+  // Decide how dialect_text affects parse_model before continuing catalogue parsing.
   use dialect <- result.try(case dialect_text {
+    // Parse dialect identifier string.
     "anthropic" -> Ok(Anthropic)
     "openai" -> Ok(OpenAiCompatible)
     "openai-responses" -> Ok(OpenAiResponses)
@@ -756,12 +785,17 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
         <> "\"",
       )
   })
+
   use Nil <- result.try(validate_auth(fields, place, dialect))
   use cyber_access <- result.try(parse_cyber_access(fields, place, dialect))
   use service_tier <- result.try(parse_service_tier(fields, place, dialect))
 
   // Configure base endpoint address and authentication environment keys.
+
+  // Decide how dialect affects parse_model before continuing catalogue parsing.
   use base_url <- result.try(case dialect {
+    // Configure authentication environment variable.
+    // Configure base endpoint address.
     CodexSubscription(profile: _) -> Ok("")
     Anthropic | OpenAiCompatible | OpenAiResponses | Gemini ->
       case optional_string(fields, place, "base_url") {
@@ -770,6 +804,8 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
         Error(message) -> Error(message)
       }
   })
+
+  // Decide how dialect affects parse_model before continuing catalogue parsing.
   use api_key_env <- result.try(case dialect {
     CodexSubscription(profile: _) -> Ok("")
     Anthropic | OpenAiCompatible | OpenAiResponses | Gemini ->
@@ -784,26 +820,36 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     place,
     "max_output_tokens",
   ))
+
+  // Decide how optional_string(fields, place, "thinking") affects parse_model before continuing catalogue parsing.
   use thinking <- result.try(case optional_string(fields, place, "thinking") {
+    // Parse model thinking level configuration.
     Ok(Ok(level)) -> parse_thinking(place, level)
     Ok(Error(Nil)) -> Ok(model.ThinkingOff)
     Error(message) -> Error(message)
   })
+
   use pricing <- result.try(parse_pricing(fields, place))
 
   // Explicit endpoint declarations win. Otherwise use the known model's
   // capability, so older catalogues route GLM image turns without requiring
   // a newly introduced flag. Unknown identities retain legacy behavior.
+
+  // Decide how dict.get(fields, "vision") affects parse_model before continuing catalogue parsing.
   use vision <- result.try(case dict.get(fields, "vision") {
     Ok(tom.Bool(True)) -> Ok(ReadsImages)
     Ok(tom.Bool(False)) -> Ok(TextOnly)
     Ok(_other) -> Error(place <> ".vision must be true or false")
     Error(Nil) -> Ok(default_image_reading(model_id))
   })
+
+  // Decide how dict.has_key(fields, "max_images") affects parse_model before continuing catalogue parsing.
   use max_images <- result.try(case dict.has_key(fields, "max_images") {
+    // Parse maximum image limit per turn.
     True -> positive_int(fields, place, "max_images")
     False -> Ok(image_budget.default_max_images)
   })
+
   Ok(CatalogModel(
     name:,
     dialect:,
@@ -821,24 +867,38 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
   ))
 }
 
-// Only Responses dialects have this request field. Refusing it elsewhere
-// prevents an entry labelled Daybreak from silently using an ordinary adapter.
+/// Parses optional cyber_access for Responses dialects and refuses unsupported dialects.
+/// An entry labelled for another adapter must not silently pass this selection
+/// through as ordinary request policy.
 fn parse_cyber_access(
   fields: Dict(String, tom.Toml),
   place: String,
   dialect: Dialect,
 ) -> Result(Option(model.CyberAccessProgram), String) {
   use selection <- result.try(optional_string(fields, place, "cyber_access"))
+
+  // Check if cyber_access field is specified.
+
+  // Check if service_tier field is specified.
   case selection {
     Error(Nil) -> Ok(None)
     Ok(value) -> {
+      // Decide how dialect affects parse_cyber_access before continuing catalogue parsing.
       use Nil <- result.try(case dialect {
+        // Validate dialect supports cyber_access.
+        // Validate dialect supports service_tier.
         OpenAiResponses | CodexSubscription(profile: _) -> Ok(Nil)
         Anthropic | OpenAiCompatible | Gemini ->
           Error(
             place <> ".cyber_access is only supported for Responses dialects",
           )
       })
+
+      // Parse cyber access program name.
+
+      // Parse service tier identifier.
+
+      // Check client_id string format constraints.
       case value {
         "standard" -> Ok(Some(model.StandardCyberAccess))
         "daybreak_blue" -> Ok(Some(model.DaybreakBlue))
@@ -856,15 +916,20 @@ fn parse_cyber_access(
 
 // A serving tier is meaningful only on Responses endpoints. Invalid selections
 // fail during catalogue loading rather than silently changing request policy.
+
+/// Parses service_tier configuration for Responses endpoints.
 fn parse_service_tier(
   fields: Dict(String, tom.Toml),
   place: String,
   dialect: Dialect,
 ) -> Result(Option(model.ResponsesServiceTier), String) {
   use selection <- result.try(optional_string(fields, place, "service_tier"))
+
+  // Decide how selection affects parse_service_tier before continuing catalogue parsing.
   case selection {
     Error(Nil) -> Ok(None)
     Ok(value) -> {
+      // Decide how dialect affects parse_service_tier before continuing catalogue parsing.
       use Nil <- result.try(case dialect {
         OpenAiResponses | CodexSubscription(profile: _) -> Ok(Nil)
         Anthropic | OpenAiCompatible | Gemini ->
@@ -872,6 +937,8 @@ fn parse_service_tier(
             place <> ".service_tier is only supported for Responses dialects",
           )
       })
+
+      // Decide how value affects parse_service_tier before continuing catalogue parsing.
       case value {
         "default" -> Ok(Some(model.DefaultServiceTier))
         "fast" -> Ok(Some(model.FastServiceTier))
@@ -904,15 +971,33 @@ fn default_image_reading(model_id: String) -> ImageReading {
 // that is too high goes and writes the real discount down. Defaulting them
 // to zero would do the opposite and quietly under-report spend, which is
 // the failure an operator cannot see.
+
+// The optional `[models.<name>.pricing]` table. Absent means unpriced, and
+// an unpriced model records the zero cost it always has — annotating no
+// model is a supported configuration, not a degraded one.
+//
+// `input` and `output` are required once the table exists, because a rate
+// card that prices neither of the two buckets every response fills is a
+// typo rather than a choice. The two cache rates default to `input`: the
+// cached buckets are prompt tokens either way, so charging them at the
+// prompt rate can only over-report, and an operator who notices a total
+// that is too high goes and writes the real discount down. Defaulting them
+// to zero would do the opposite and quietly under-report spend, which is
+// the failure an operator cannot see.
+/// Parses pricing configuration table for token rate calculations.
 fn parse_pricing(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(Option(pricing.Pricing), String) {
+  // Decide how dict.get(fields, "pricing") affects parse_pricing before continuing catalogue parsing.
   use table <- result.try(case dict.get(fields, "pricing") {
+    // Extract pricing table if present.
     Ok(tom.Table(rates)) | Ok(tom.InlineTable(rates)) -> Ok(Some(rates))
     Ok(_other) -> Error(place <> ".pricing must be a table")
     Error(Nil) -> Ok(None)
   })
+
+  // Parse individual token pricing rates.
   case table {
     None -> Ok(None)
     Some(rates) -> {
@@ -945,11 +1030,20 @@ fn parse_pricing(
 // `3.0` and an operator writing a whole-dollar rate will write the former,
 // so both are accepted; anything else, and any negative amount, names the
 // model and the key it came from.
+
+// A rate is a dollar amount per million tokens. TOML distinguishes `3` from
+// `3.0` and an operator writing a whole-dollar rate will write the former,
+// so both are accepted; anything else, and any negative amount, names the
+// model and the key it came from.
+/// Parses a numeric token rate from a float or integer value.
 fn rate_of(
   value: tom.Toml,
   place: String,
   key: String,
 ) -> Result(Float, String) {
+  // Extract numeric rate from float or int TOML value.
+
+  // Decide how value affects rate_of before continuing catalogue parsing.
   let amount = case value {
     tom.Float(rate) -> Ok(rate)
     tom.Int(rate) -> Ok(int.to_float(rate))
@@ -961,7 +1055,10 @@ fn rate_of(
         <> " must be a number of US dollars per million tokens",
       )
   }
+
   use amount <- result.try(amount)
+
+  // Verify rate is not negative.
   case amount <. 0.0 {
     True ->
       Error(
@@ -975,6 +1072,7 @@ fn rate_of(
   }
 }
 
+/// Parses a required token pricing rate.
 fn required_rate(
   rates: Dict(String, tom.Toml),
   place: String,
@@ -986,6 +1084,7 @@ fn required_rate(
   }
 }
 
+/// Parses an optional token pricing rate with default fallback.
 fn optional_rate(
   rates: Dict(String, tom.Toml),
   place: String,
@@ -1000,16 +1099,25 @@ fn optional_rate(
 
 // Authentication is closed at loading: a subscription entry carries only
 // a native login profile, while API-key entries carry only a secret name.
+
+// Authentication is closed at loading: a subscription entry carries only
+// a native login profile, while API-key entries carry only a secret name.
+/// Validates authentication configuration consistency with model dialect.
 fn validate_auth(
   fields: Dict(String, tom.Toml),
   place: String,
   dialect: Dialect,
 ) -> Result(Nil, String) {
+  // Check authentication requirements per dialect.
   case dialect {
     CodexSubscription(profile: _) -> validate_subscription_auth(fields, place)
     OpenAiResponses -> {
       use Nil <- result.try(reject_api_key_profile(fields, place))
       use auth <- result.try(required_string(fields, place, "auth"))
+
+      // Verify auth mode is api-key.
+
+      // Determine HTTP authentication scheme from auth setting.
       case auth {
         "api-key" -> Ok(Nil)
         _ -> Error(place <> ".auth must be \"api-key\" for openai-responses")
@@ -1017,6 +1125,8 @@ fn validate_auth(
     }
     Anthropic | OpenAiCompatible | Gemini -> {
       use Nil <- result.try(reject_api_key_profile(fields, place))
+
+      // Ensure auth field is not set for non-responses dialects.
       case dict.has_key(fields, "auth") {
         True -> Error(place <> ".auth is only supported for openai-responses")
         False -> Ok(Nil)
@@ -1027,20 +1137,31 @@ fn validate_auth(
 
 // A subscription profile names credentials held outside the catalogue.
 // Refuse every field that could redirect those credentials or paste a key.
+
+// A subscription profile names credentials held outside the catalogue.
+// Refuse every field that could redirect those credentials or paste a key.
+/// Validates subscription authentication parameters.
 fn validate_subscription_auth(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(Nil, String) {
   use auth <- result.try(required_string(fields, place, "auth"))
+
+  // Decide how auth affects validate_subscription_auth before continuing catalogue parsing.
   use Nil <- result.try(case auth {
+    // Check auth mode is codex.
     "codex" -> Ok(Nil)
     _ -> Error(place <> ".auth must be \"codex\" for codex-subscription")
   })
+
+  // Decide how dict.has_key(fields, "api_key_env") affects validate_subscription_auth before continuing catalogue parsing.
   use Nil <- result.try(case dict.has_key(fields, "api_key_env") {
     True ->
       Error(place <> ".api_key_env is not supported for codex-subscription")
     False -> Ok(Nil)
   })
+
+  // Disallow base_url for codex subscription.
   case dict.has_key(fields, "base_url") {
     True -> Error(place <> ".base_url is not supported for codex-subscription")
     False -> Ok(Nil)
@@ -1048,6 +1169,8 @@ fn validate_subscription_auth(
 }
 
 // An API-key entry cannot silently adopt a subscription profile.
+
+/// Rejects profile field on API-key model entries.
 fn reject_api_key_profile(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1060,11 +1183,17 @@ fn reject_api_key_profile(
 
 // Native login accepts one portable profile-name grammar. Check
 // it here so a loaded catalogue cannot fail later on a path-like name.
+
+// Native login accepts one portable profile-name grammar. Check
+// it here so a loaded catalogue cannot fail later on a path-like name.
+/// Parses subscription profile name and checks syntax validity.
 fn parse_subscription_profile(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(String, String) {
   use profile <- result.try(required_string(fields, place, "profile"))
+
+  // Check profile string matches valid subscription profile pattern.
   case valid_subscription_profile(profile) {
     True -> Ok(profile)
     False ->
@@ -1075,6 +1204,7 @@ fn parse_subscription_profile(
   }
 }
 
+/// Validates characters and length of subscription profile identifier.
 fn valid_subscription_profile(profile: String) -> Bool {
   let alphanumeric =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
@@ -1082,6 +1212,8 @@ fn valid_subscription_profile(profile: String) -> Bool {
   // Every permitted character is one byte, so a longer profile is refused
   // before any of its graphemes are walked.
   use <- bool.guard(when: string.byte_size(profile) > 64, return: False)
+
+  // Validate all graphemes are within alphanumeric and punctuation set.
   case string.to_graphemes(profile) {
     [] -> False
     [first, ..rest] ->
@@ -1122,6 +1254,11 @@ fn strip_trailing_slash(url: String) -> String {
 // "unsupported" is the config author's word for "this model has no
 // reasoning mode"; it maps to off, which sends no thinking field at
 // all — exactly what such an endpoint needs to receive.
+
+// "unsupported" is the config author's word for "this model has no
+// reasoning mode"; it maps to off, which sends no thinking field at
+// all — exactly what such an endpoint needs to receive.
+/// Parses model thinking level identifier.
 fn parse_thinking(
   place: String,
   level: String,
@@ -1131,10 +1268,12 @@ fn parse_thinking(
     "low" -> Ok(model.ThinkingLow)
     "medium" -> Ok(model.ThinkingMedium)
     "high" -> Ok(model.ThinkingHigh)
+    "xhigh" -> Ok(model.ThinkingXHigh)
+    "max" -> Ok(model.ThinkingMax)
     other ->
       Error(
         place
-        <> ".thinking must be off, low, medium, high, or unsupported, got \""
+        <> ".thinking must be off, low, medium, high, xhigh, max, or unsupported, got \""
         <> other
         <> "\"",
       )
@@ -1147,26 +1286,39 @@ fn parse_thinking(
 // derived from the catalogue must be deterministic. Duplicate names
 // cannot reach here: tom refuses a repeated `[mcp.<name>]` header as
 // KeyAlreadyInUse before this parser runs.
+
+// The optional [mcp] table: absent parses to no servers, present it
+// must be a table of [mcp.<name>] entries. Sorted by name for the same
+// reason models are — the TOML dict loses file order, and everything
+// derived from the catalogue must be deterministic. Duplicate names
+// cannot reach here: tom refuses a repeated `[mcp.<name>]` header as
+// KeyAlreadyInUse before this parser runs.
+/// Parses optional [mcp] table into a list of configured MCP servers.
 fn parse_mcp_servers(
   document: Dict(String, tom.Toml),
 ) -> Result(List(McpServer), String) {
+  // Decide how dict.get(document, "mcp") affects parse_mcp_servers before continuing catalogue parsing.
   use tables <- result.try(case dict.get(document, "mcp") {
     Ok(tom.Table(entries)) | Ok(tom.InlineTable(entries)) ->
       Ok(dict.to_list(entries))
     Ok(_other) -> Error("mcp must be a table of [mcp.<name>] entries")
     Error(Nil) -> Ok([])
   })
+
   tables
   |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
   |> list.try_map(fn(entry) { parse_mcp_server(entry.0, entry.1) })
 }
 
+/// Parses one [mcp.<name>] server configuration table.
 fn parse_mcp_server(
   name: String,
   value: tom.Toml,
 ) -> Result(McpServer, String) {
   let place = "mcp." <> name
   use Nil <- result.try(mcp_server_name(name))
+
+  // Decide how value affects parse_mcp_server before continuing catalogue parsing.
   use fields <- result.try(case value {
     tom.Table(fields) | tom.InlineTable(fields) -> Ok(fields)
     _ -> Error(place <> " must be a table")
@@ -1181,16 +1333,21 @@ fn parse_mcp_server(
     place,
   ))
   use target <- result.try(mcp_target(fields, place))
+
+  // Decide how optional_string(fields, place, "runs_on") affects parse_mcp_server before continuing catalogue parsing.
   use runs_on <- result.try(case optional_string(fields, place, "runs_on") {
+    // Parse host runner location for MCP server.
     Ok(Error(Nil)) | Ok(Ok("orchestrator")) -> Ok(RunsOnOrchestrator)
     Ok(Ok("executor")) -> Ok(RunsOnExecutor)
     Ok(Ok(_other)) ->
       Error(place <> ".runs_on must be \"orchestrator\" or \"executor\"")
     Error(message) -> Error(message)
   })
+
   Ok(McpServer(name:, target:, runs_on:))
 }
 
+/// Determines whether MCP server target is stdio command or remote HTTP.
 fn mcp_target(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1202,6 +1359,8 @@ fn mcp_target(
   ))
   use auth <- result.try(mcp_optional_nonempty(fields, place, "auth"))
   use client_id <- result.try(mcp_client_id(fields, place))
+
+  // Check command and url fields to select transport kind.
   case dict.has_key(fields, "command"), dict.has_key(fields, "url") {
     True, True -> Error(place <> " cannot set both command and url")
     False, False ->
@@ -1213,7 +1372,12 @@ fn mcp_target(
       )
     True, False -> {
       use command <- result.try(mcp_command(fields, place))
+
+      // Decide how auth affects mcp_target before continuing catalogue parsing.
       use Nil <- result.try(case auth {
+        // Verify auth is absent for stdio servers.
+        // Verify client_id is absent for stdio servers.
+        // Validate optional port number.
         None -> Ok(Nil)
         Some(_) ->
           Error(
@@ -1223,6 +1387,8 @@ fn mcp_target(
             <> ".url)",
           )
       })
+
+      // Decide how client_id affects mcp_target before continuing catalogue parsing.
       use Nil <- result.try(case client_id {
         None -> Ok(Nil)
         Some(_) ->
@@ -1233,6 +1399,7 @@ fn mcp_target(
             <> ".auth is \"oauth\"",
           )
       })
+
       Ok(McpStdio(command:, api_key_env:))
     }
     False, True -> {
@@ -1250,6 +1417,7 @@ fn mcp_target(
   }
 }
 
+/// Reads an optional string field, checking that it is not empty if set.
 fn mcp_optional_nonempty(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1263,19 +1431,27 @@ fn mcp_optional_nonempty(
   }
 }
 
+/// Reads and validates optional client ID for MCP OAuth authentication.
 fn mcp_client_id(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(Option(String), String) {
   use value <- result.try(mcp_optional_nonempty(fields, place, "client_id"))
+
+  // Decide how value affects mcp_client_id before continuing catalogue parsing.
   case value {
     None -> Ok(None)
     Some(id) ->
+      // Validate client_id byte length and forbidden control characters.
+
+      // Check path syntax and forbidden characters.
       case
         string.byte_size(id) <= 256
         && !string.contains(id, "\n")
         && !string.contains(id, "\r")
       {
+        // Match URL components for acceptable HTTP/HTTPS scheme and host.
+        // Parse go module mirror path.
         True -> Ok(Some(id))
         False ->
           Error(
@@ -1286,20 +1462,26 @@ fn mcp_client_id(
   }
 }
 
+/// Parses and validates remote MCP server URL.
 fn mcp_url(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(#(String, String, String), String) {
+  // Decide how dict.get(fields, "url") affects mcp_url before continuing catalogue parsing.
   use raw <- result.try(case dict.get(fields, "url") {
+    // Extract url string from server fields.
     Ok(tom.String("")) -> Error(place <> ".url must be non-empty")
     Ok(tom.String(text)) -> Ok(text)
     Ok(_other) -> Error(place <> ".url must be a string")
     Error(Nil) -> Error(place <> ".url is required")
   })
+
   let invalid =
     place
     <> ".url must be an absolute http:// or https:// URL without userinfo or fragment"
   use parsed <- result.try(uri.parse(raw) |> result.replace_error(invalid))
+
+  // Decide how the validation result affects mcp_url before continuing catalogue parsing.
   use #(scheme, host) <- result.try(
     case parsed.scheme, parsed.host, parsed.userinfo, parsed.fragment {
       Some("https"), Some(host), None, None if host != "" -> Ok(#("https", host))
@@ -1307,14 +1489,18 @@ fn mcp_url(
       _, _, _, _ -> Error(invalid)
     },
   )
+
+  // Decide how parsed.port determines mcp_url validation.
   use Nil <- result.try(case parsed.port {
     None -> Ok(Nil)
     Some(port) if port > 0 && port <= 65_535 -> Ok(Nil)
     Some(_) -> Error(place <> ".url has an invalid port")
   })
+
   Ok(#(raw, scheme, host))
 }
 
+/// Validates HTTP authentication settings for a remote MCP server.
 fn mcp_http_auth(
   place: String,
   scheme: String,
@@ -1324,6 +1510,7 @@ fn mcp_http_auth(
   client_id: Option(String),
 ) -> Result(McpHttpAuth, String) {
   let no_client_id = fn() {
+    // Verify client_id is not set.
     case client_id {
       None -> Ok(Nil)
       Some(_) ->
@@ -1335,9 +1522,21 @@ fn mcp_http_auth(
         )
     }
   }
+
+  // Decide how auth determines mcp_http_auth validation.
   case auth {
     None -> {
       use Nil <- result.try(no_client_id())
+
+      // Disallow api_key_env when auth is none.
+
+      // Disallow api_key_env when auth is oauth.
+
+      // Require api_key_env when auth is bearer.
+
+      // Require api_key_env when auth is macaroon.
+
+      // Select auth type based on api_key_env.
       case api_key_env {
         None -> Ok(McpNoAuth)
         Some(env_name) -> Ok(McpBearerAuth(api_key_env: env_name))
@@ -1345,6 +1544,8 @@ fn mcp_http_auth(
     }
     Some("none") -> {
       use Nil <- result.try(no_client_id())
+
+      // Decide how api_key_env determines mcp_http_auth validation.
       case api_key_env {
         None -> Ok(McpNoAuth)
         Some(_) ->
@@ -1358,6 +1559,8 @@ fn mcp_http_auth(
     }
     Some("bearer") -> {
       use Nil <- result.try(no_client_id())
+
+      // Decide how api_key_env determines mcp_http_auth validation.
       case api_key_env {
         Some(env_name) -> Ok(McpBearerAuth(api_key_env: env_name))
         None ->
@@ -1371,6 +1574,8 @@ fn mcp_http_auth(
     }
     Some("macaroon") -> {
       use Nil <- result.try(no_client_id())
+
+      // Decide how api_key_env determines mcp_http_auth validation.
       case api_key_env {
         Some(env_name) -> Ok(McpMacaroonAuth(api_key_env: env_name))
         None ->
@@ -1392,6 +1597,7 @@ fn mcp_http_auth(
             <> ".auth is \"oauth\"",
           )
         None ->
+          // Ensure OAuth endpoint uses HTTPS or loopback.
           case scheme == "https" || is_loopback_host(host) {
             True -> Ok(McpOAuth(client_id:))
             False ->
@@ -1424,9 +1630,20 @@ fn is_loopback_host(host: String) -> Bool {
 // because a server name is exactly one segment. "internal" is refused
 // by name: `cap/internal/*` is the unimportable marshaling layer, and a
 // `cap/mcp/internal` would sit confusingly beside it.
+
+// The table key becomes the `cap/mcp/<name>` module a code-mode program
+// imports, so it must be one legal lowercase-ASCII identifier segment —
+// judged by the same grammar gate the vetting policy holds every import
+// to (`vet_policy.is_legal_module_name`), with the slash excluded here
+// because a server name is exactly one segment. "internal" is refused
+// by name: `cap/internal/*` is the unimportable marshaling layer, and a
+// `cap/mcp/internal` would sit confusingly beside it.
+/// Validates that an MCP server name conforms to single-segment module identifier rules.
 fn mcp_server_name(name: String) -> Result(Nil, String) {
   let legal =
     !string.contains(name, "/") && vet_policy.is_legal_module_name(name)
+
+  // Check reserved names and legal module identifier format.
   case name, legal {
     "internal", _ ->
       Error(
@@ -1453,6 +1670,15 @@ fn mcp_server_name(name: String) -> Result(Nil, String) {
 // config-legal name, mangling is the identity. The shapes are
 // `client/lsp/profile.mangling_fault`'s, so an `[mcp.<name>]` key and an
 // `[lsp.<name>]` key meet one grammar.
+
+// The generator's name mangler digests any name it has to change, so a
+// key it would change becomes cap/mcp/<name>_<8hex> — not the
+// cap/mcp/<name> this module's doc promises. Refusing every
+// mangle-altered shape keeps that contract provable: on every
+// config-legal name, mangling is the identity. The shapes are
+// `client/lsp/profile.mangling_fault`'s, so an `[mcp.<name>]` key and an
+// `[lsp.<name>]` key meet one grammar.
+/// Checks that an MCP server name does not change when mangled.
 fn mcp_name_survives_mangling(name: String) -> Result(Nil, String) {
   use what <- or_mangled(profile.mangling_fault(name))
   Error(
@@ -1467,6 +1693,10 @@ fn mcp_name_survives_mangling(name: String) -> Result(Nil, String) {
 
 // A clean name passes as `Ok(Nil)`; a fault is handed to the caller,
 // which words the refusal for its own table.
+
+// A clean name passes as `Ok(Nil)`; a fault is handed to the caller,
+// which words the refusal for its own table.
+/// Helper handling mangling fault error dispatch.
 fn or_mangled(
   fault: Result(Nil, String),
   refuse: fn(String) -> Result(Nil, String),
@@ -1479,18 +1709,29 @@ fn or_mangled(
 
 // The server's argv: a TOML array of non-empty strings, executable
 // first, so at least one element.
+
+// The server's argv: a TOML array of non-empty strings, executable
+// first, so at least one element.
+/// Parses command argv array for stdio MCP server.
 fn mcp_command(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(List(String), String) {
+  // Decide how dict.get(fields, "command") determines mcp_command validation.
   use items <- result.try(case dict.get(fields, "command") {
+    // Extract command array from server table.
+    // Extract env array from tools table.
+    // Extract mounts array from fields.
+    // Extract path array from tools table.
     Ok(tom.Array(items)) -> Ok(items)
     Ok(_other) ->
       Error(place <> ".command must be an array of strings (the argv)")
     Error(Nil) -> Error(place <> ".command is required")
   })
+
   use argv <- result.try(
     list.try_map(items, fn(item) {
+      // Match table structure of workspace mount entry.
       case item {
         tom.String("") ->
           Error(place <> ".command elements must be non-empty strings")
@@ -1500,6 +1741,8 @@ fn mcp_command(
       }
     }),
   )
+
+  // Verify command argv contains at least an executable.
   case argv {
     [] -> Error(place <> ".command must name at least the executable")
     _some -> Ok(argv)
@@ -1556,6 +1799,14 @@ pub fn parse_mcp(text: String) -> Result(List(McpServer), String) {
 // `client/lsp/profile`, the one decoder an extension manifest's profiles
 // will go through as well, so the two can never accept different things
 // (ADR-016 §1).
+
+// The optional [lsp] table: absent parses to no servers, which is the
+// workspace that registers no `lsp_*` tools and pays nothing. Present, it
+// must be a table of [lsp.<name>] tables, and they are decoded by
+// `client/lsp/profile`, the one decoder an extension manifest's profiles
+// will go through as well, so the two can never accept different things
+// (ADR-016 §1).
+/// Parses optional [lsp] table into language server configurations.
 fn parse_lsp_servers(
   document: Dict(String, tom.Toml),
 ) -> Result(List(LspServer), String) {
@@ -1570,12 +1821,19 @@ fn parse_lsp_servers(
 // The role table: every key must be a routable role name, every value a
 // non-empty array of defined entry names, and main must be routed —
 // the harness cannot run a strand without a main identity.
+
+// The role table: every key must be a routable role name, every value a
+// non-empty array of defined entry names, and main must be routed —
+// the harness cannot run a strand without a main identity.
+/// Parses roles table and checks that main role is configured.
 fn parse_roles(
   entries: List(#(String, tom.Toml)),
   models: List(CatalogModel),
 ) -> Result(List(#(model.Role, List(String))), String) {
   use routed <- result.try(parse_role_table("roles", entries, models))
   let roles = in_canonical_order(routed)
+
+  // Ensure main role is routed in role table.
   case list.key_find(roles, model.Main) {
     Ok(_chain) -> Ok(roles)
     Error(Nil) -> Error("the [roles] table must route main")
@@ -1587,6 +1845,13 @@ fn parse_roles(
 // main, while a profile's table names only the roles it replaces. `place` is
 // the table's path in the file, so a refusal names `profiles.fast.roles.main`
 // and not an ambiguous `roles.main`.
+
+// Checks each row of a role table and resolves it against the defined
+// entries, without deciding which roles must be present: `[roles]` must route
+// main, while a profile's table names only the roles it replaces. `place` is
+// the table's path in the file, so a refusal names `profiles.fast.roles.main`
+// and not an ambiguous `roles.main`.
+/// Parses a role table mapping role names to fallback chains.
 fn parse_role_table(
   place: String,
   entries: List(#(String, tom.Toml)),
@@ -1612,12 +1877,17 @@ fn parse_role_table(
       model.Vision -> vision_chain_all_read(place, chain, models)
       _ -> Ok(Nil)
     })
+
     Ok(#(role, chain))
   })
 }
 
 // Canonical role order, independent of TOML dict order, so listings and
 // snapshots are deterministic.
+
+// Canonical role order, independent of TOML dict order, so listings and
+// snapshots are deterministic.
+/// Sorts routed roles into canonical order.
 fn in_canonical_order(
   routed: List(#(model.Role, List(String))),
 ) -> List(#(model.Role, List(String))) {
@@ -1632,11 +1902,19 @@ fn in_canonical_order(
 // entries as `[roles]`, so a typoed model or role name in a profile nobody has
 // selected yet still refuses the file instead of failing the first session
 // that picks it. Its roles are laid over `defaults` so the result is complete.
+
+// The `[profiles]` table: each key a profile name, each value a table whose
+// only key is `roles`. A profile is validated here, at load, against the same
+// entries as `[roles]`, so a typoed model or role name in a profile nobody has
+// selected yet still refuses the file instead of failing the first session
+// that picks it. Its roles are laid over `defaults` so the result is complete.
+/// Parses profiles table into a list of Profile configurations.
 fn parse_profiles(
   document: Dict(String, tom.Toml),
   models: List(CatalogModel),
   defaults: List(#(model.Role, List(String))),
 ) -> Result(List(Profile), String) {
+  // Decide how dict.get(document, "profiles") determines parse_profiles validation.
   use tables <- result.try(case dict.get(document, "profiles") {
     Ok(tom.Table(entries)) | Ok(tom.InlineTable(entries)) ->
       Ok(dict.to_list(entries))
@@ -1644,6 +1922,7 @@ fn parse_profiles(
       Error("profiles must be a table of [profiles.<name>.roles] entries")
     Error(Nil) -> Ok([])
   })
+
   tables
   |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
   |> list.try_map(fn(entry) {
@@ -1651,6 +1930,7 @@ fn parse_profiles(
   })
 }
 
+/// Parses an individual profile configuration and applies role overrides.
 fn parse_profile(
   name: String,
   value: tom.Toml,
@@ -1658,7 +1938,10 @@ fn parse_profile(
   defaults: List(#(model.Role, List(String))),
 ) -> Result(Profile, String) {
   let place = "profiles." <> name
+
+  // Decide how stored_catalogue.is_profile_name(name) determines parse_profile validation.
   use Nil <- result.try(case stored_catalogue.is_profile_name(name) {
+    // Validate profile name characters.
     True -> Ok(Nil)
     False ->
       Error(
@@ -1669,6 +1952,8 @@ fn parse_profile(
         <> " characters)",
       )
   })
+
+  // Decide how name == default_profile determines parse_profile validation.
   use Nil <- result.try(case name == default_profile {
     True ->
       Error(
@@ -1681,10 +1966,13 @@ fn parse_profile(
       )
     False -> Ok(Nil)
   })
+
+  // Decide how value determines parse_profile validation.
   use fields <- result.try(case value {
     tom.Table(fields) | tom.InlineTable(fields) -> Ok(fields)
     _ -> Error(place <> " must be a table")
   })
+
   use Nil <- result.try(known_keys(dict.keys(fields), ["roles"], place))
 
   // Parse role assignments declared under the profile's roles table.
@@ -1693,10 +1981,14 @@ fn parse_profile(
       Ok(dict.to_list(entries))
     _ -> Error(place <> " needs a [" <> place <> ".roles] table")
   })
+
+  // Decide how entries determines parse_profile validation.
   use Nil <- result.try(case entries {
+    // Ensure profile declares at least one role.
     [] -> Error(place <> ".roles must name at least one role")
     _ -> Ok(Nil)
   })
+
   use replaced <- result.try(parse_role_table(
     place <> ".roles",
     entries,
@@ -1716,7 +2008,9 @@ fn override_roles(
   in_canonical_order(list.append(replaced, defaults))
 }
 
+/// Parses a role name string into a Role enum variant.
 fn parse_role(place: String, name: String) -> Result(model.Role, String) {
+  // Match role name keyword.
   case name {
     "main" -> Ok(model.Main)
     "subagent" -> Ok(model.Subagent)
@@ -1735,12 +2029,15 @@ fn parse_role(place: String, name: String) -> Result(model.Role, String) {
   }
 }
 
+/// Parses a fallback chain array of model names.
 fn parse_chain(
   place: String,
   value: tom.Toml,
   models: List(CatalogModel),
 ) -> Result(List(String), String) {
+  // Decide how value determines parse_chain validation.
   use names <- result.try(case value {
+    // Extract model names array from TOML value.
     tom.Array(items) ->
       list.try_map(items, fn(item) {
         case item {
@@ -1750,10 +2047,14 @@ fn parse_chain(
       })
     _ -> Error(place <> " must be an array of model names, best first")
   })
+
+  // Decide how names determines parse_chain validation.
   use Nil <- result.try(case names {
+    // Ensure chain contains at least one model name.
     [] -> Error(place <> " must name at least one model")
     _ -> Ok(Nil)
   })
+
   list.try_each(names, fn(name) {
     case list.find(models, fn(entry) { entry.name == name }) {
       Ok(_entry) -> Ok(Nil)
@@ -1770,6 +2071,14 @@ fn parse_chain(
 // model that cannot read it — the silent drop the key exists to
 // refuse. The entry exists by the time this runs; `parse_chain`
 // already rejected unknown names.
+
+// The vision chain's own strictness: every entry it names declares
+// `vision = true`. Reached only for the `vision` role, where a
+// text-only entry would let a retryable failure walk an image to a
+// model that cannot read it — the silent drop the key exists to
+// refuse. The entry exists by the time this runs; `parse_chain`
+// already rejected unknown names.
+/// Verifies that all models in a vision role chain declare image reading support.
 fn vision_chain_all_read(
   place: String,
   chain: List(String),
@@ -1791,6 +2100,8 @@ fn vision_chain_all_read(
 }
 
 // Shared strictness helper: the present keys must all be known ones.
+
+/// Validates that a dictionary contains only known allowed keys.
 fn known_keys(
   present: List(String),
   allowed: List(String),
@@ -1811,6 +2122,7 @@ fn known_keys(
   }
 }
 
+/// Reads a required non-empty string field from a TOML table.
 fn required_string(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1825,6 +2137,8 @@ fn required_string(
 }
 
 // Ok(Ok(text)) present, Ok(Error(Nil)) absent, Error(message) mistyped.
+
+/// Reads an optional string field from a TOML table.
 fn optional_string(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1837,6 +2151,7 @@ fn optional_string(
   }
 }
 
+/// Reads a positive integer field from a TOML table.
 fn positive_int(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -2001,6 +2316,7 @@ pub fn workspace_from_document(
   }
 }
 
+/// Parses the [workspace] configuration table.
 fn workspace_table(
   fields: Dict(String, tom.Toml),
 ) -> Result(WorkspaceConfig, String) {
@@ -2009,12 +2325,17 @@ fn workspace_table(
     ["read_scope", "mounts", "go_cache_limit_mib", "go_module_mirror"],
     "[workspace]",
   ))
+
+  // Decide how use go_cache_limit_mib <- result.try( determines workspace_table validation.
   use go_cache_limit_mib <- result.try(
     case dict.has_key(fields, "go_cache_limit_mib") {
+      // Parse go cache limit.
       True -> positive_int(fields, "workspace", "go_cache_limit_mib")
       False -> Ok(default_go_cache_limit_mib)
     },
   )
+
+  // Decide how use go_module_mirror <- result.try( determines workspace_table validation.
   use go_module_mirror <- result.try(
     case optional_string(fields, "workspace", "go_module_mirror") {
       Ok(Ok(path)) -> mirror_path(path) |> result.map(Some)
@@ -2022,13 +2343,18 @@ fn workspace_table(
       Error(reason) -> Error(reason)
     },
   )
+
+  // Decide how use read_scope <- result.try( determines workspace_table validation.
   use read_scope <- result.try(
     case optional_string(fields, "workspace", "read_scope") {
+      // Parse filesystem read scope.
       Ok(Ok(word)) -> parse_read_scope(word)
       Ok(Error(Nil)) -> Ok(HostReads)
       Error(reason) -> Error(reason)
     },
   )
+
+  // Decide how dict.get(fields, "mounts") determines workspace_table validation.
   use items <- result.try(case dict.get(fields, "mounts") {
     Ok(tom.Array(items)) -> Ok(items)
 
@@ -2040,6 +2366,7 @@ fn workspace_table(
     Ok(_other) -> Error(mounts_shape)
     Error(Nil) -> Ok([])
   })
+
   use mounts <- result.try(list.try_map(items, workspace_mount))
 
   // A repeated path is two answers to "may this region be written", and
@@ -2073,16 +2400,33 @@ fn workspace_table(
 // the same directory has one spelling, and the root itself is refused: it
 // is never a module cache and would make the read-only mount cover the
 // whole host.
+
+// The mirror path is spliced into a `GOPROXY` value, a comma and pipe
+// separated list of URLs, as `file://<path>/cache/download`. Go parses
+// that as a URL, so a path with a separator, a `%`, a `?`, a `#` or a
+// space would be read as something other than the directory the operator
+// named. Refusing those characters here costs an operator with an unusual
+// path a worded error, and avoids writing a URL escaper whose mistakes
+// would send Go to a different directory. A trailing slash is dropped so
+// the same directory has one spelling, and the root itself is refused: it
+// is never a module cache and would make the read-only mount cover the
+// whole host.
+/// Validates and normalizes Go module mirror directory path.
 fn mirror_path(path: String) -> Result(String, String) {
   let place = "[workspace] go_module_mirror"
+
+  // Strip trailing slash from mirror path.
   let trimmed = case string.ends_with(path, "/") {
     True -> string.drop_end(path, 1)
     False -> path
   }
+
   let dotted =
     list.any(string.split(trimmed, "/"), fn(segment) {
       segment == ".." || segment == "."
     })
+
+  // Decide how this value determines mirror_path validation.
   case
     string.starts_with(trimmed, "/"),
     trimmed,
@@ -2128,6 +2472,7 @@ const mirror_path_alphabet =
 /// ```
 @internal
 pub fn parse_read_scope(word: String) -> Result(ReadScope, String) {
+  // Match mount access mode string.
   case word {
     "host" -> Ok(HostReads)
     "workspace" -> Ok(WorkspaceReads)
@@ -2138,7 +2483,9 @@ pub fn parse_read_scope(word: String) -> Result(ReadScope, String) {
 const mounts_shape =
   "workspace.mounts must be an array of { path = \"/abs\", access = \"ro\"|\"rw\" } tables"
 
+/// Parses one mount table entry in workspace mounts list.
 fn workspace_mount(item: tom.Toml) -> Result(WorkspaceMount, String) {
+  // Decide how item determines workspace_mount validation.
   case item {
     tom.Table(fields) | tom.InlineTable(fields) -> {
       use Nil <- result.try(known_keys(
@@ -2159,6 +2506,7 @@ fn workspace_mount(item: tom.Toml) -> Result(WorkspaceMount, String) {
         True -> Ok(Nil)
         False -> Error("workspace.mounts path " <> path <> " must be absolute")
       })
+
       use access <- result.try(required_string(
         fields,
         "a workspace.mounts entry",
@@ -2171,6 +2519,7 @@ fn workspace_mount(item: tom.Toml) -> Result(WorkspaceMount, String) {
   }
 }
 
+/// Parses mount access mode string into MountAccess enum.
 fn parse_mount_access(word: String) -> Result(MountAccess, String) {
   case word {
     "ro" -> Ok(MountReadOnly)
@@ -2240,17 +2589,26 @@ pub fn tools_from_document(
 // `[tools.set]` is a sub-table of `[tools]`, so `set` arrives as an
 // ordinary key here and belongs in the allowed list beside the two
 // scalars.
+
+// `[tools.set]` is a sub-table of `[tools]`, so `set` arrives as an
+// ordinary key here and belongs in the allowed list beside the two
+// scalars.
+/// Parses [tools] configuration table.
 fn tools_table(fields: Dict(String, tom.Toml)) -> Result(ToolsConfig, String) {
   use Nil <- result.try(known_keys(
     dict.keys(fields),
     ["network", "env", "set", "path"],
     "[tools]",
   ))
+
+  // Decide how optional_string(fields, "tools", "network") determines tools_table validation.
   use network <- result.try(case optional_string(fields, "tools", "network") {
+    // Parse network egress posture.
     Ok(Ok(word)) -> parse_tool_network(word)
     Ok(Error(Nil)) -> Ok(ToolNetworkFull)
     Error(message) -> Error(message)
   })
+
   use env <- result.try(tool_env_names(fields))
   use set <- result.try(tool_set_pairs(fields))
   use path <- result.try(tool_path_entries(fields))
@@ -2299,15 +2657,21 @@ pub fn parse_tool_network(word: String) -> Result(ToolNetwork, String) {
 
 // The pass-through names, in file order: an array is ordered and the
 // environment is built in the order stated, so nothing is sorted here.
+
+// The pass-through names, in file order: an array is ordered and the
+// environment is built in the order stated, so nothing is sorted here.
+/// Parses list of pass-through environment variable names in tools table.
 fn tool_env_names(
   fields: Dict(String, tom.Toml),
 ) -> Result(List(String), String) {
+  // Decide how dict.get(fields, "env") determines tool_env_names validation.
   use items <- result.try(case dict.get(fields, "env") {
     Ok(tom.Array(items)) -> Ok(items)
     Ok(_other) ->
       Error("tools.env must be an array of environment variable names")
     Error(Nil) -> Ok([])
   })
+
   use names <- result.try(
     list.try_map(items, fn(item) {
       case item {
@@ -2323,6 +2687,10 @@ fn tool_env_names(
       profile.not_server_owned("tools.env", name)
     }),
   )
+
+  // Ensure no duplicate directory paths in tools.path.
+
+  // Ensure no duplicate environment variable names.
   case list.length(list.unique(names)) == list.length(names) {
     True -> Ok(names)
     False -> Error("tools.env names a variable twice")
@@ -2337,18 +2705,31 @@ fn tool_env_names(
 // is the whole meaning of the list. Absolute, because a relative entry
 // would resolve against whatever the shell's working directory happened
 // to be — the workspace, which the model writes to.
+
+// The literal pairs. Sorted by name for the reason model entries are:
+// the TOML dict loses file order, and a boot's constructed environment
+// should not depend on which order a dict happened to hand its keys
+// back.
+// Directories for the tail of `PATH`, in file order because search order
+// is the whole meaning of the list. Absolute, because a relative entry
+// would resolve against whatever the shell's working directory happened
+// to be — the workspace, which the model writes to.
+/// Parses PATH directory entries from tools table.
 fn tool_path_entries(
   fields: Dict(String, tom.Toml),
 ) -> Result(List(String), String) {
+  // Decide how dict.get(fields, "path") determines tool_path_entries validation.
   use items <- result.try(case dict.get(fields, "path") {
     Ok(tom.Array(items)) -> Ok(items)
     Ok(_other) -> Error("tools.path must be an array of absolute directories")
     Error(Nil) -> Ok([])
   })
+
   use names <- result.try(
     list.try_map(items, fn(item) {
       case item {
         tom.String(name) ->
+          // Check directory is absolute path.
           case string.starts_with(name, "/") {
             True -> Ok(name)
             False ->
@@ -2362,21 +2743,26 @@ fn tool_path_entries(
       }
     }),
   )
+
+  // Decide how list.length(list.unique(names)) == list.length(names) determines tool_path_entries validation.
   case list.length(list.unique(names)) == list.length(names) {
     True -> Ok(names)
     False -> Error("tools.path lists a directory twice")
   }
 }
 
+/// Parses literal environment variable key-value pairs from tools table.
 fn tool_set_pairs(
   fields: Dict(String, tom.Toml),
 ) -> Result(List(#(String, String)), String) {
+  // Decide how dict.get(fields, "set") determines tool_set_pairs validation.
   use entries <- result.try(case dict.get(fields, "set") {
     Ok(tom.Table(entries)) | Ok(tom.InlineTable(entries)) ->
       Ok(dict.to_list(entries))
     Ok(_other) -> Error("tools.set must be a [tools.set] table")
     Error(Nil) -> Ok([])
   })
+
   use pairs <- result.try(
     entries
     |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
@@ -2512,6 +2898,7 @@ pub fn advisor_from_document(
   }
 }
 
+/// Parses the [advisor] configuration table.
 fn advisor_table(
   fields: Dict(String, tom.Toml),
 ) -> Result(AdvisorConfig, String) {
@@ -2531,6 +2918,13 @@ fn advisor_table(
 // first. An explicit `tools = []` is honoured as written: an advisor
 // that only reasons over the feed it was handed is a posture, not a
 // mistake.
+
+// File order, because a tool list is read down rather than looked up,
+// and an operator who put the one they care about first should see it
+// first. An explicit `tools = []` is honoured as written: an advisor
+// that only reasons over the feed it was handed is a posture, not a
+// mistake.
+/// Parses the tool names list from the advisor table.
 fn advisor_tools(
   fields: Dict(String, tom.Toml),
 ) -> Result(List(String), String) {
@@ -2553,6 +2947,13 @@ fn advisor_tools(
 // run-end-only cadence the advisor shipped with, which is a posture; a
 // negative interval is a number with no reading at all, and clamping it
 // would hide the typo that produced it.
+
+// Zero is legal and negative is not, the same split `advisor_cooldown`
+// makes and for the same reason. Zero is the operator asking for the
+// run-end-only cadence the advisor shipped with, which is a posture; a
+// negative interval is a number with no reading at all, and clamping it
+// would hide the typo that produced it.
+/// Parses the feed step interval from the advisor table.
 fn advisor_feed_steps(fields: Dict(String, tom.Toml)) -> Result(Int, String) {
   case dict.get(fields, "feed_every_steps") {
     Ok(tom.Int(steps)) if steps >= 0 -> Ok(steps)
@@ -2570,6 +2971,12 @@ fn advisor_feed_steps(fields: Dict(String, tom.Toml)) -> Result(Int, String) {
 // block should land, which is a posture a reviewer-shaped advisor might
 // want; a negative window is a number with no reading at all, and
 // clamping it would hide the typo that produced it.
+
+// Zero is legal and negative is not. Zero is the operator saying every
+// block should land, which is a posture a reviewer-shaped advisor might
+// want; a negative window is a number with no reading at all, and
+// clamping it would hide the typo that produced it.
+/// Parses the block cooldown review count from the advisor table.
 fn advisor_cooldown(fields: Dict(String, tom.Toml)) -> Result(Int, String) {
   case dict.get(fields, "block_cooldown_reviews") {
     Ok(tom.Int(reviews)) if reviews >= 0 -> Ok(reviews)
@@ -2752,6 +3159,8 @@ pub fn retargets(leaving: Catalog, entering: Catalog) -> List(Retarget) {
   list.filter_map([model.Main, model.Subagent, advisor_role], fn(role) {
     use from <- result.try(role_head(leaving, role))
     use to <- result.try(role_head(entering, role))
+
+    // Retarget if model provider or model_id changed.
     case from.name == to.name && from.model_id == to.model_id {
       True -> Error(Nil)
       False -> Ok(Retarget(role:, from:, to:))
@@ -2835,6 +3244,10 @@ pub fn select_model(catalog: Catalog, key: String) -> Result(Catalog, String) {
 ///
 pub fn unknown_model(known: List(String), key: String) -> String {
   let prefix = "unknown model \"" <> key <> "\"; the configuration defines"
+
+  // Format list of known model keys.
+
+  // Format list of known profile names.
   case known {
     [] -> prefix <> " no models"
     known -> prefix <> ": " <> string.join(known, ", ")
@@ -2857,6 +3270,8 @@ pub fn unknown_model(known: List(String), key: String) -> String {
 ///
 pub fn unknown_profile(known: List(String), name: String) -> String {
   let prefix = "unknown profile \"" <> name <> "\"; the configuration defines"
+
+  // Decide how known determines unknown_profile validation.
   case known {
     [] -> prefix <> " no profiles"
     known -> prefix <> ": " <> string.join(known, ", ")
@@ -2870,7 +3285,17 @@ pub fn unknown_profile(known: List(String), name: String) -> String {
 // operator reading a listing back should instead meet the word they
 // typed. Every variant is named rather than delegated, so a further role
 // reaches this decision through the compiler.
+
+// A role as the `[roles]` table keys it, which is what these two
+// listings report. `provider/model.role_to_string` is the wrong renderer
+// here: it prefixes an application role with `custom:` so an error
+// message about a durable summary can say which kind it met, and an
+// operator reading a listing back should instead meet the word they
+// typed. Every variant is named rather than delegated, so a further role
+// reaches this decision through the compiler.
+/// Maps a Role enum into its configuration key string.
 fn role_key(role: model.Role) -> String {
+  // Match role to string key.
   case role {
     model.Main -> "main"
     model.Subagent -> "subagent"
@@ -2973,10 +3398,17 @@ pub fn gateway(
 // provider name the gateway registers and the durable identity a strand
 // stores — so the card that prices a settlement is always the card written
 // beside the model that produced it, fallback walks included.
+
+// A rate card is attached under the entry's own name, which is also the
+// provider name the gateway registers and the durable identity a strand
+// stores — so the card that prices a settlement is always the card written
+// beside the model that produced it, fallback walks included.
+/// Attaches rate pricing cards to registered provider entry.
 fn priced(
   gateway: provider_gateway.Gateway,
   entry: CatalogModel,
 ) -> provider_gateway.Gateway {
+  // Attach price table if defined.
   case entry.pricing {
     Some(card) -> provider_gateway.price(gateway, entry.name, card)
     None -> gateway
@@ -2985,10 +3417,15 @@ fn priced(
 
 // Access follows the configured endpoint name just as pricing does. The
 // provider still owns approval and compatibility; this only selects a program.
+
+// Access follows the configured endpoint name just as pricing does. The
+// provider still owns approval and compatibility; this only selects a program.
+/// Applies cyber access program configuration to gateway.
 fn cyber_selected(
   gateway: provider_gateway.Gateway,
   entry: CatalogModel,
 ) -> provider_gateway.Gateway {
+  // Configure cyber access if specified.
   case entry.cyber_access {
     None -> gateway
     Some(program) ->
@@ -2998,17 +3435,24 @@ fn cyber_selected(
 
 // Each route attempt selects its own tier, including explicit default and
 // omitted selections on fallbacks after a fast endpoint fails.
+
+// Each route attempt selects its own tier, including explicit default and
+// omitted selections on fallbacks after a fast endpoint fails.
+/// Applies service tier selection to gateway.
 fn tier_selected(
   gateway: provider_gateway.Gateway,
   entry: CatalogModel,
 ) -> provider_gateway.Gateway {
+  // Configure service tier if specified.
   case entry.service_tier {
     None -> gateway
     Some(tier) -> provider_gateway.with_service_tier(gateway, entry.name, tier)
   }
 }
 
+/// Maps a CatalogModel into provider gateway configuration.
 fn provider_config(entry: CatalogModel) -> provider_gateway.ProviderConfig {
+  // Map dialect to specific ProviderConfig record.
   case entry.dialect {
     Anthropic ->
       provider_gateway.AnthropicProvider(

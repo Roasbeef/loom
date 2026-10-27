@@ -454,6 +454,7 @@ pub fn prepare_owned(
   )
 }
 
+/// Prepares and initializes an individual MCP client for a configured server.
 fn prepare_one(
   configured: catalog.McpServer,
   options: Options,
@@ -467,10 +468,12 @@ fn prepare_one(
   |> result.map_error(fn(error) { refuse(describe_start_error(error)) })
 }
 
+/// Constructs a client Transport from an MCP target configuration.
 fn prepare_transport(
   configured: catalog.McpServer,
   options: Options,
 ) -> Result(transport.Transport, String) {
+  // Construct transport based on target communication protocol.
   case configured.target {
     catalog.McpStdio(command:, api_key_env:) -> {
       use env <- result.try(server_env(api_key_env, options.secrets))
@@ -502,12 +505,14 @@ fn prepare_transport(
   }
 }
 
+/// Resolves authentication credentials and handlers for HTTP MCP connections.
 fn prepare_http_auth(
   server: String,
   url: String,
   auth: catalog.McpHttpAuth,
   options: Options,
 ) -> Result(mcp_http.Auth, String) {
+  // Build authentication strategy based on configured HTTP auth mode.
   case auth {
     catalog.McpNoAuth -> Ok(mcp_http.NoAuth)
     catalog.McpBearerAuth(api_key_env:) -> {
@@ -523,10 +528,12 @@ fn prepare_http_auth(
   }
 }
 
+/// Looks up HTTP bearer token secret from environment or secret store.
 fn lookup_http_secret(
   api_key_env: String,
   secrets: SecretStore,
 ) -> Result(String, String) {
+  // Lookup secret key in configured store.
   case secret.lookup(secrets, api_key_env) {
     Error(Nil) ->
       Error(
@@ -548,18 +555,21 @@ fn lookup_http_secret(
   }
 }
 
+/// Sets up OAuth token retrieval and refresh mechanisms for an HTTP server.
 fn prepare_oauth_auth(
   server: String,
   url: String,
   client_id: Option(String),
   options: Options,
 ) -> Result(mcp_http.Auth, String) {
+  // Resolve OAuth credential storage directory.
   use directory <- result.try(case options.oauth_directory {
     Some(dir) -> Ok(dir)
     None ->
       mcp_credentials.directory()
       |> result.map_error(mcp_oauth.describe_auth_error(server, _))
   })
+
   let injected = options.oauth_services
   let authorize = fn(ledger: weft.Ledger) {
     let services =
@@ -586,6 +596,8 @@ fn prepare_oauth_auth(
     weft.new_prepared([weft.managed(authorize)])
     |> weft.deadline(int.max(options.handshake_timeout_ms, 5000))
     |> weft.start
+
+  // Verify initial token acquisition outcome.
   case initial {
     [weft.Completed(..)] ->
       Ok(mcp_http.OAuth(authorize:, refresh_unauthorized:))
@@ -646,6 +658,8 @@ pub fn start_prepared(prepared: Prepared) -> #(Layer, List(Refusal)) {
 // neither — kept rather than folded into a catch-all so a future change
 // to this run's shape fails the exhaustiveness check instead of silently
 // taking the wrong arm.
+
+/// Evaluates client connection task outcome into a connected Server or refusal.
 fn resolve_outcome(
   configured: catalog.McpServer,
   outcome: weft.Outcome(Server, Refusal),
@@ -733,6 +747,7 @@ fn prepared_clients(prepared: Prepared) -> List(mcp_client.Client) {
 // that is finishing.
 const collector_margin_ms = 1000
 
+/// Terminates running MCP clients within specified deadline window.
 fn close_clients(
   clients: List(mcp_client.Client),
   within: Int,
@@ -776,6 +791,7 @@ fn close_clients(
   Ok(Nil)
 }
 
+/// Discovers tools and initializes Server state for a connected client.
 fn start_one(
   configured: catalog.McpServer,
   client: mcp_client.Client,
@@ -821,6 +837,8 @@ fn start_one(
 // under the same name. A configured variable that is unset is a worded
 // refusal *before* anything spawns, and neither the value nor its
 // absence is ever quoted with the value beside it.
+
+/// Resolves environment variable pairs containing required secrets.
 fn server_env(
   api_key_env: Option(String),
   secrets: SecretStore,
@@ -843,6 +861,8 @@ fn server_env(
 // A configured argv, executable first. `catalog` guarantees it is
 // non-empty, and a shell string is not a thing `transport.Spawn` can
 // express, so nothing here is interpretable by a shell.
+
+/// Builds a transport.Spawn configuration from an executable command and environment.
 fn spawn_of(
   command: List(String),
   env: List(#(String, String)),
@@ -953,6 +973,7 @@ pub fn routing(layer: Layer, over inner: CapRouter) -> CapRouter {
   }
 }
 
+/// Plans MCP tool invocation by validating target server, tool name, and arguments.
 fn call_plan(
   layer: Layer,
   request: CapRequest,
@@ -977,6 +998,7 @@ fn call_plan(
   )
 }
 
+/// Finds a connected server by identifier within the MCP layer.
 fn find(layer: Layer, name: String) -> Result(Server, CapDenial) {
   // `map_error` rather than `replace_error`: the message concatenates
   // four strings and names every configured server, and it is wanted on
@@ -1004,6 +1026,8 @@ fn configured_names(layer: Layer) -> String {
 // at plan time, so a value this wire cannot carry is refused before the
 // call is admitted rather than after a round trip that could not have
 // happened.
+
+/// Converts MsgPack arguments into JSON for tool invocation payload.
 fn arguments_json(args: MsgPackValue) -> Result(JsonValue, CapDenial) {
   use value <- result.try(
     field(args, "arguments")
@@ -1090,6 +1114,8 @@ pub fn tool_result(answer: protocol.CallToolResult) -> CapOutcome {
 // away and the host encodes the frame again — but asking "will this
 // frame fit" any other way means estimating, and it happens at most once
 // per MCP call.
+
+/// Validates that return value does not exceed nesting depth limits.
 fn carriable(value: MsgPackValue) -> CapOutcome {
   case fits_depth(value, msgpack.max_depth - envelope_depth) {
     False ->
@@ -1111,6 +1137,7 @@ fn carriable(value: MsgPackValue) -> CapOutcome {
   }
 }
 
+/// Checks encoded message size against payload wire byte ceilings.
 fn carriable_size(value: MsgPackValue, size: Int) -> CapOutcome {
   case size > max_result_bytes() {
     True ->
@@ -1158,6 +1185,8 @@ const envelope_depth = 2
 // Whether `value` nests within `budget` container levels, short-circuit:
 // a hostile value is refused as soon as it runs past the budget rather
 // than after it has been walked to the bottom.
+
+/// Recursively verifies MsgPack value depth against maximum budget.
 fn fits_depth(value: MsgPackValue, budget: Int) -> Bool {
   case value {
     msgpack.ArrayValue(items:) ->
@@ -1176,6 +1205,7 @@ fn fits_depth(value: MsgPackValue, budget: Int) -> Bool {
   }
 }
 
+/// Converts structured JSON content into equivalent MsgPack key-value pairs.
 fn structured_value(
   content: Option(JsonValue),
 ) -> Result(List(#(MsgPackValue, MsgPackValue)), interchange.InterchangeFault) {
@@ -1193,6 +1223,8 @@ fn structured_value(
 // alone, which is what `cap/mcp.Other` carries. The payload of a
 // non-text block stays in the library result but is dropped at this
 // capability boundary. Loom exposes only its kind to the jailed program.
+
+/// Serializes an MCP content block into a MsgPack map representation.
 fn content_block(block: protocol.ContentBlock) -> MsgPackValue {
   case block {
     protocol.Text(text:) ->
@@ -1210,6 +1242,8 @@ fn content_block(block: protocol.ContentBlock) -> MsgPackValue {
 // Every way a `tools/call` fails, under a code the program can branch
 // on. Matched variant by variant rather than with a catch-all, so a
 // sixth `ClientError` cannot inherit somebody else's code.
+
+/// Translates client communication errors into capability denials or fault outcomes.
 fn call_failure(error: mcp_client.ClientError) -> CapOutcome {
   case error {
     mcp_client.Unavailable(reason:) ->
@@ -1306,6 +1340,8 @@ pub fn describe_call_error(error: mcp_client.ClientError) -> String {
 // rather than assumed: the satellite is untrusted, so a wrong-shaped
 // frame is a refusal the program reads and not a call made with a
 // guessed value.
+
+/// Extracts a named field value from a MsgPack map.
 fn field(args: MsgPackValue, key: String) -> Result(MsgPackValue, String) {
   case args {
     msgpack.MapValue(entries:) ->
@@ -1322,8 +1358,11 @@ fn field(args: MsgPackValue, key: String) -> Result(MsgPackValue, String) {
   }
 }
 
+/// Extracts and verifies a string parameter from tool arguments.
 fn string_arg(args: MsgPackValue, key: String) -> Result(String, String) {
   use value <- result.try(field(args, key))
+
+  // Validate that field holds a string value.
   case value {
     msgpack.StringValue(text) -> Ok(text)
     _other -> Error("`" <> key <> "` is not a string")

@@ -107,6 +107,22 @@ pub fn new() -> Labels {
   )
 }
 
+/// Whether the attachment holds any stored or live labels.
+///
+/// Wanted and asked keys, and whether reads were refused, only schedule reads:
+/// they hold no label a row can display. Any stored or live value counts,
+/// including empty text and a live generation not yet tied to an entry, so a
+/// caller can skip label projection only when both books are empty.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert block_summary.has_labels(block_summary.new()) == False
+/// ```
+pub fn has_labels(labels: Labels) -> Bool {
+  !dict.is_empty(labels.stored) || !dict.is_empty(labels.live)
+}
+
 /// The stored label of one committed block.
 ///
 /// ## Examples
@@ -160,6 +176,7 @@ pub fn carried(labels: Labels, entry: String) -> Option(String) {
 /// ```
 ///
 pub fn receive(labels: Labels, subject: Subject, text: String) -> Labels {
+  // Handle the `receive` branch dispatch.
   case subject {
     SettledBlock(key:) ->
       Labels(..labels, stored: dict.insert(labels.stored, key, text))
@@ -203,6 +220,7 @@ pub fn receive_board(labels: Labels, found: List(#(Key, String))) -> Labels {
 /// ```
 ///
 pub fn want(labels: Labels, keys: List(Key)) -> Labels {
+  // Handle the `want` branch dispatch.
   case labels.reads {
     Refused -> labels
     Answered -> {
@@ -227,6 +245,7 @@ pub fn want(labels: Labels, keys: List(Key)) -> Labels {
 /// ```
 ///
 pub fn next_read(labels: Labels) -> Option(#(List(Key), Labels)) {
+  // Handle the `next_read` branch dispatch.
   case labels.wanted, labels.reads {
     [], _ | _, Refused -> None
     wanted, Answered -> {
@@ -303,6 +322,7 @@ pub fn decode_board(board: JsonValue) -> Result(List(#(Key, String)), String) {
   }
 }
 
+/// Helper `decode_row` for decode row.
 fn decode_row(row: JsonValue) -> Result(#(Key, String), String) {
   case row {
     json.Object(fields) ->

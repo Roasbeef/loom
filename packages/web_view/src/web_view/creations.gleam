@@ -327,10 +327,14 @@ pub fn unstarted_words(why: Option(String), remains: Remains) -> String {
 /// ```
 pub fn chosen_name(typed: String, workspace: String) -> Result(String, Nil) {
   let typed = string.trim(typed)
+
+  // Default an empty custom name to the workspace folder name.
   let name = case typed {
     "" -> folder(workspace)
     named -> named
   }
+
+  // Validate the resulting session name against length and hygiene bounds.
   case
     name != ""
     && string.byte_size(name) <= name_limit
@@ -354,6 +358,8 @@ pub fn chosen_name(typed: String, workspace: String) -> Result(String, Nil) {
 pub fn folder(workspace: String) -> String {
   let segments =
     string.split(workspace, "/") |> list.filter(fn(part) { part != "" })
+
+  // Take the final directory segment as the fallback name.
   case list.last(segments) {
     Ok(name) -> name
     Error(Nil) -> "New session"
@@ -378,6 +384,8 @@ pub fn folder(workspace: String) -> String {
 /// ```
 pub fn registered_name(typed: String) -> Result(String, Nil) {
   let name = string.trim(typed)
+
+  // Ensure the registered name contains no slashes and satisfies bounds.
   case
     name != ""
     && string.byte_size(name) <= registered_name_limit
@@ -404,6 +412,8 @@ pub fn registered_name(typed: String) -> Result(String, Nil) {
 /// ```
 pub fn typed_path(typed: String) -> Result(String, Nil) {
   let path = string.trim(typed)
+
+  // Ensure the path string satisfies length and hygiene limits.
   case
     path != ""
     && string.byte_size(path) <= path_limit
@@ -470,6 +480,7 @@ fn first_is_library(segments: List(String)) -> Bool {
 /// assert creations.inside("/home/o", "/home/o/Library/Keychains") == Error(creations.HiddenFolder)
 /// ```
 pub fn inside(home: String, folder: String) -> Result(Nil, Reason) {
+  // Check whether the folder equals home or sits strictly beneath it.
   case folder == home, string.starts_with(folder, home <> "/") {
     True, _ -> Error(HomeItself)
     False, False -> Error(OutsideHome)
@@ -479,6 +490,8 @@ pub fn inside(home: String, folder: String) -> Result(Nil, Reason) {
       let hidden =
         list.any(segments, string.starts_with(_, "."))
         || first_is_library(segments)
+
+      // Refuse hidden paths or those descending into Library.
       case below != "" && !hidden {
         True -> Ok(Nil)
         False -> Error(HiddenFolder)

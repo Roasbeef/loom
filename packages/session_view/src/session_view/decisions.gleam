@@ -97,25 +97,31 @@ pub fn from_ledger(
 }
 
 // One ledger entry as a decision for `strand`, or nothing.
+/// Helper `decision` for decision.
 fn decision(
   review: approval.Review,
   raised: List(#(String, String)),
   strand: String,
 ) -> Result(Decision, Nil) {
+  // Handle the `decision` branch dispatch.
   use verdict <- result.try(case review.status {
     approval.Pending -> Error(Nil)
     approval.Approved | approval.Consumed -> Ok(Allowed)
     approval.Rejected -> Ok(Denied)
   })
+
   use owner <- result.try(
     list.key_find(raised, review.id)
     |> result.lazy_or(fn() { option.to_result(review.strand, Nil) }),
   )
   use <- bool.guard(owner != strand, Error(Nil))
+
+  // Handle the `decision` branch dispatch.
   let who = case review.origin {
     Some(author) -> origin.display_label(author)
     None -> "Someone"
   }
+
   Ok(Decision(
     seq: review.seq,
     strand: owner,
@@ -126,16 +132,23 @@ fn decision(
 }
 
 // The strand a stored escalation was raised on: the record's scope names it.
+/// Helper `raised_on` for raised on.
 fn raised_on(value: json.JsonValue) -> Result(String, Nil) {
+  // Handle the `raised_on` branch dispatch.
   use fields <- result.try(case value {
     json.Object(fields) -> Ok(fields)
     _ -> Error(Nil)
   })
+
   use scope <- result.try(list.key_find(fields, "scope"))
+
+  // Handle the `raised_on` branch dispatch.
   use scope <- result.try(case scope {
     json.Object(scope) -> Ok(scope)
     _ -> Error(Nil)
   })
+
+  // Handle the `raised_on` branch dispatch.
   case list.key_find(scope, "strand") {
     Ok(json.String(strand)) -> Ok(strand)
     _ -> Error(Nil)

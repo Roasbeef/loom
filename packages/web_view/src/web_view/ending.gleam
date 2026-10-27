@@ -208,6 +208,8 @@ pub type Advice {
 /// ```
 pub fn advised(ending: Ending, session_id: String) -> Advice {
   let command = Some("loom ui --session " <> session_id)
+
+  // Recommend recovery actions based on why the session page ended.
   case ending {
     PageEnded ->
       Advice(
@@ -303,6 +305,8 @@ pub fn home_headline(ending: Ending) -> String {
 /// ```
 pub fn home_advised(ending: Ending) -> Advice {
   let command = Some("loom ui")
+
+  // Recommend recovery actions based on why the home page ended.
   case ending {
     PageEnded ->
       Advice(
@@ -360,6 +364,8 @@ pub fn admin_headline(ending: Ending) -> String {
 pub fn admin_advised(ending: Ending) -> Advice {
   let command = Some("loom ui")
   let fresh = " Then press Admin on the home page for a fresh admin page."
+
+  // Recommend recovery actions based on why the admin page ended.
   case ending {
     PageEnded ->
       Advice(

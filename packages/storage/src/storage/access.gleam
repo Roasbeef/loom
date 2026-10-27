@@ -457,6 +457,7 @@ pub fn bootstrap_owner(
   })
 }
 
+/// Verifies that the existing owner matches the presented bootstrap credential.
 fn verify_owner_credential(
   store: Catalogue,
   existing: Principal,
@@ -488,6 +489,7 @@ pub fn create_member(
   catalogue.atomic(store, fn() { insert_principal(store, proposed, digest) })
 }
 
+/// Inserts a newly created principal and its initial bearer credential.
 fn insert_principal(store: Catalogue, proposed: Principal, digest: Digest) {
   use Nil <- result.try(bearer_only(digest))
   use Nil <- result.try(absent(get(store, proposed.id)))
@@ -607,11 +609,13 @@ fn withdraw(store: Catalogue, id: String) -> Result(Nil, Error) {
 // Inserts the one thing an enrollment grants. A claim digest already present,
 // or a credential digest already present in any state, is a conflict: rows are
 // never deleted, so presence means an earlier claim or a tombstone.
+/// Enrolls a member with either an open claim or an active bearer credential.
 fn enroll(
   store: Catalogue,
   id: String,
   enrollment: Enrollment,
 ) -> Result(Nil, Error) {
+  // Insert the enrollment claim or credential according to the enrollment variant.
   case enrollment {
     ClaimEnrollment(claim:, expires_at_ms:) -> {
       use Nil <- result.try(absent(claim_row(store, claim.value)))
@@ -645,6 +649,8 @@ fn enroll(
 @internal
 pub fn claim_known(store: Catalogue, claim: ClaimDigest) -> Result(Nil, Error) {
   use row <- result.try(claim_row(store, claim.value))
+
+  // Check whether the claim is in an active or open state rather than voided.
   case row.state {
     OpenClaim | ClaimedBy(_) -> Ok(Nil)
     VoidClaim -> Error(Missing)
@@ -753,6 +759,7 @@ fn presented_digest(presented: Presented) -> Digest {
   }
 }
 
+/// Executes the redemption transaction and maps resulting error states.
 fn claim_as(
   store: Catalogue,
   claim: ClaimDigest,
@@ -774,12 +781,15 @@ fn claim_as(
         Error(ConflictingClaim) -> Ok(Error(ConflictingClaim))
       }
     })
+
+  // Unwrap the atomic transaction outcome or wrap as a ClaimStore error.
   case outcome {
     Ok(answer) -> answer
     Error(error) -> Error(ClaimStore(error))
   }
 }
 
+/// Redeems a claim by binding a presented credential or validating a replay.
 fn redeem(
   store: Catalogue,
   claim: ClaimDigest,
@@ -788,11 +798,14 @@ fn redeem(
   now_ms: Int,
   equal: fn(String, String) -> Bool,
 ) -> Result(Claimed, ClaimRefusal) {
+  // Retrieve the existing claim row from the catalogue.
   use row <- result.try(case claim_row(store, claim.value) {
     Ok(row) -> Ok(row)
     Error(Missing) -> Error(UnknownClaim)
     Error(error) -> Error(ClaimStore(error))
   })
+
+  // Dispatch on the state of the retrieved claim row.
   case row.state {
     VoidClaim -> Error(UnknownClaim)
 
@@ -801,12 +814,16 @@ fn redeem(
     // success, and only while it still authenticates.
     ClaimedBy(bound) -> {
       let wanted = presented_digest(presented)
+
+      // Look up the credential row bound to this claim.
       use found <- result.try(case credential(store, bound, wanted.kind) {
         // The row exists, since the claim references it, so only a bound
         // credential of the other kind is absent from this lookup.
         Error(Missing) -> Error(ConflictingClaim)
         other -> stored(other)
       })
+
+      // Verify credential state and matching digest for replay.
       case found.state, equal(bound.value, wanted.value) {
         Revoked, _ -> Error(UnknownClaim)
         Active, True -> claimed(store, row.principal_id)
@@ -818,6 +835,7 @@ fn redeem(
   }
 }
 
+/// Binds a presented credential to an open claim row after validating constraints.
 fn bind(
   store: Catalogue,
   row: ClaimRow,
@@ -883,6 +901,8 @@ fn bind(
       ),
     )),
   )
+
+  // Update display name if a replacement name was chosen.
   use Nil <- result.try(case chosen {
     None -> Ok(Nil)
     Some(display_name) ->
@@ -891,9 +911,11 @@ fn bind(
         sql.rename_access_principal(display_name, row.principal_id),
       ))
   })
+
   claimed(store, row.principal_id)
 }
 
+/// Constructs the Claimed record for a successfully bound principal.
 fn claimed(store: Catalogue, id: String) -> Result(Claimed, ClaimRefusal) {
   use found <- result.try(stored(member(store, id)))
   use rows <- result.try(
@@ -911,6 +933,7 @@ fn claimed(store: Catalogue, id: String) -> Result(Claimed, ClaimRefusal) {
 
 // A conflict from a presence check is the claim's conflict; anything else is
 // the store's.
+/// Maps internal storage errors into corresponding claim refusal categories.
 fn refusal(error: Error) -> ClaimRefusal {
   case error {
     Conflict -> ConflictingClaim
@@ -927,11 +950,14 @@ fn stored(result: Result(a, Error)) -> Result(a, ClaimRefusal) {
 // 053's rule 3 is that a member has an open claim and no credential, or no open
 // claim, and a login is a credential. Counting bearers alone would let a member
 // whose only credential is a login bind a second one.
+/// Ensures that a principal currently holds no active credentials.
 fn no_active_credential(store: Catalogue, id: String) -> Result(Nil, Error) {
   use rows <- result.try(catalogue.query(
     store,
     sql.active_member_credentials(id),
   ))
+
+  // Reject binding if any active credential exists for this member.
   case rows {
     [] -> Ok(Nil)
     [_, ..] -> Error(Conflict)
@@ -941,11 +967,14 @@ fn no_active_credential(store: Catalogue, id: String) -> Result(Nil, Error) {
 // Decodes a claim row totally. The schema's CHECKs make a claimed row carry
 // both its credential and its instant; a row that does not is corrupt, never
 // an open claim.
+/// Reads and decodes a claim row by its digest value.
 fn claim_row(store: Catalogue, value: String) -> Result(ClaimRow, Error) {
   use rows <- result.try(catalogue.query(store, sql.access_claim(value)))
   use row <- result.try(one(rows))
   use claim <- result.try(claim_digest(row.digest))
   use Nil <- result.try(valid_id(row.principal_id))
+
+  // Decode stored claim state, bound credential digest, and claim timestamp.
   use state <- result.try(
     case row.state, row.credential_digest, row.claimed_at_ms {
       "open", None, None -> Ok(OpenClaim)
@@ -955,11 +984,15 @@ fn claim_row(store: Catalogue, value: String) -> Result(ClaimRow, Error) {
       _, _, _ -> Error(Invalid("invalid persisted claim state"))
     },
   )
+
   Ok(ClaimRow(claim, row.principal_id, row.expires_at_ms, state))
 }
 
+/// Verifies that a principal exists and has member kind rather than owner.
 fn member(store: Catalogue, id: String) {
   use found <- result.try(get(store, id))
+
+  // Verify that the retrieved principal has member kind.
   case found.kind {
     MemberPrincipal -> Ok(found)
     OwnerPrincipal -> Error(Conflict)
@@ -987,10 +1020,12 @@ pub fn principals_page(
   after: String,
   now_ms: Int,
 ) -> Result(ListingPage, Error) {
+  // Validate after cursor identifier if non-empty.
   use Nil <- result.try(case after {
     "" -> Ok(Nil)
     id -> valid_id(id)
   })
+
   catalogue.coherent(store, fn() {
     use rows <- result.try(catalogue.query(store, sql.principal_listing(after)))
     use listed <- result.map(
@@ -1014,6 +1049,7 @@ pub fn principals_page(
 // the credential that claim made (the browser claim has no bearer), so it is
 // listed here too, with the instant the claim was redeemed, and counted beside
 // as one of the principal's logins. Any other login is only counted.
+/// Summarizes the current credential state of a principal for listing pages.
 fn credential_summary(
   store: Catalogue,
   id: String,
@@ -1023,6 +1059,8 @@ fn credential_summary(
     store,
     sql.principal_active_credential(id, Some(now_ms)),
   ))
+
+  // Check whether an active credential exists or evaluate open claims.
   case active {
     [row, ..] -> {
       use digest <- result.map(credential_digest(row.digest))
@@ -1033,6 +1071,8 @@ fn credential_summary(
         store,
         sql.principal_open_claim(id),
       ))
+
+      // Classify open claims into active, expired, or absent.
       case open {
         [] -> CredentialNone
         [row, ..] if row.expires_at_ms > now_ms ->
@@ -1116,10 +1156,12 @@ pub fn session_members_page(
   session_id: String,
   after: String,
 ) -> Result(SessionMemberPage, Error) {
+  // Validate after cursor identifier if non-empty.
   use Nil <- result.try(case after {
     "" -> Ok(Nil)
     id -> valid_id(id)
   })
+
   catalogue.coherent(store, fn() {
     use _found <- result.try(catalogue.get(store, session_id))
     use rows <- result.try(catalogue.query(
@@ -1166,6 +1208,8 @@ pub fn authenticate(
   digest: Digest,
 ) -> Result(Principal, Error) {
   use found <- result.try(credential(store, digest, digest.kind))
+
+  // Verify that the credential is in an active state.
   case found.state {
     Active -> get(store, found.principal_id)
     Revoked -> Error(Missing)
@@ -1289,14 +1333,18 @@ pub fn issue_login(
   expires_at_ms: Int,
   issued_by: Option(String),
 ) -> Result(Nil, Error) {
+  // Verify that login credentials carry the browser kind.
   use Nil <- result.try(case digest.kind {
     Browser -> Ok(Nil)
     Bearer -> Error(Invalid("a login row is a browser credential"))
   })
+
+  // Validate the issuing parent fingerprint format if present.
   use Nil <- result.try(case issued_by {
     None -> Ok(Nil)
     Some(parent) -> fingerprint_shape(parent)
   })
+
   catalogue.atomic(store, fn() {
     use _found <- result.try(get(store, principal_id))
     use Nil <- result.try(unused(store, digest))
@@ -1338,10 +1386,13 @@ pub fn signins_page(
   now_ms: Int,
 ) -> Result(SigninPage, Error) {
   use Nil <- result.try(valid_id(principal_id))
+
+  // Validate after cursor fingerprint format if non-empty.
   use Nil <- result.try(case after {
     "" -> Ok(Nil)
     fingerprint -> fingerprint_shape(fingerprint)
   })
+
   catalogue.coherent(store, fn() {
     use _found <- result.try(get(store, principal_id))
     use rows <- result.try(catalogue.query(
@@ -1366,6 +1417,7 @@ pub fn signins_page(
 }
 
 // Counts the principal's active browser logins whose expiry has not come.
+/// Counts the active unexpired browser logins held by a principal.
 fn login_count(
   store: Catalogue,
   principal_id: String,
@@ -1476,16 +1528,20 @@ pub fn resumed(
   digest: Digest,
   now_ms: Int,
 ) -> Result(Stamp, Error) {
+  // Ensure that the digest represents a browser credential.
   use Nil <- result.try(case digest.kind {
     Browser -> Ok(Nil)
     Bearer -> Error(Invalid("a login row is a browser credential"))
   })
+
   catalogue.atomic(store, fn() {
     use rows <- result.try(catalogue.query(
       store,
       sql.login_resumed_at(digest.value),
     ))
     use row <- result.try(one(rows))
+
+    // Skip update if already stamped within the resume window.
     case row.last_resumed_ms {
       Some(last) if now_ms - last < resume_stamp_window_ms -> Ok(Unchanged)
       Some(_) | None -> {
@@ -1525,6 +1581,8 @@ pub fn grant(
   catalogue.atomic(store, fn() {
     use found <- result.try(get(store, principal_id))
     use _session <- result.try(catalogue.get(store, session_id))
+
+    // Prevent granting session roles to the owner principal.
     case found.kind {
       OwnerPrincipal -> Error(Conflict)
       MemberPrincipal -> grant_changed(store, principal_id, session_id, role)
@@ -1534,12 +1592,14 @@ pub fn grant(
 
 // Membership changes invalidate continuation pages in the same transaction.
 // Identical retries preserve the revision and do not force listing to restart.
+/// Applies membership role changes and increments the catalogue revision.
 fn grant_changed(
   store: Catalogue,
   principal_id: String,
   session_id: String,
   role: Role,
 ) {
+  // Check whether current role matches or update is required.
   case membership(store, principal_id, session_id) {
     Ok(current) if current == role -> Ok(Nil)
     Ok(_) | Error(Missing) -> {
@@ -1569,6 +1629,8 @@ pub fn revoke_membership(
   catalogue.atomic(store, fn() {
     use _principal <- result.try(get(store, principal_id))
     use _session <- result.try(catalogue.get(store, session_id))
+
+    // Check whether membership exists before revoking and bumping revision.
     case membership(store, principal_id, session_id) {
       Error(Missing) -> Ok(Nil)
       Error(error) -> Error(error)
@@ -1606,6 +1668,8 @@ pub fn authorization(
   catalogue.coherent(store, fn() {
     use found <- result.try(get(store, principal_id))
     use _session <- result.try(catalogue.get(store, session_id))
+
+    // Owners hold universal authority; members require membership lookup.
     case found.kind {
       OwnerPrincipal -> Ok(Owner)
       MemberPrincipal ->
@@ -1614,6 +1678,7 @@ pub fn authorization(
   })
 }
 
+/// Looks up a principal's role within a session.
 fn membership(store: Catalogue, principal_id: String, session_id: String) {
   use rows <- result.try(catalogue.query(
     store,
@@ -1623,6 +1688,7 @@ fn membership(store: Catalogue, principal_id: String, session_id: String) {
   role_from(row.role)
 }
 
+/// Parses a persisted role string into a typed Role.
 fn role_from(text: String) -> Result(Role, Error) {
   case text {
     "operator" -> Ok(Operator)
@@ -1631,6 +1697,7 @@ fn role_from(text: String) -> Result(Role, Error) {
   }
 }
 
+/// Looks up a credential record by digest value and expected kind.
 fn credential(store: Catalogue, digest: Digest, kind: CredentialKind) {
   use rows <- result.try(catalogue.query(
     store,
@@ -1640,9 +1707,12 @@ fn credential(store: Catalogue, digest: Digest, kind: CredentialKind) {
   decoded_credential(row.digest, row.principal_id, row.state)
 }
 
+/// Validates and constructs a Credential record from stored fields.
 fn decoded_credential(digest: String, principal_id: String, state: String) {
   use _digest <- result.try(credential_digest(digest))
   use Nil <- result.try(valid_id(principal_id))
+
+  // Parse the persisted credential state string into typed CredentialState.
   case state {
     "active" -> Ok(Credential(principal_id, Active))
     "revoked" -> Ok(Credential(principal_id, Revoked))
@@ -1669,6 +1739,7 @@ fn bearer_only(digest: Digest) -> Result(Nil, Error) {
 
 // A digest is one primary key across both kinds, so "is this digest free" and
 // "does this digest exist" ask both kinds. Only an authentication names one.
+/// Looks up an existing credential across any credential kind.
 fn held(store: Catalogue, digest: Digest) {
   use rows <- result.try(catalogue.query(
     store,
@@ -1690,9 +1761,12 @@ fn new_principal(id: String, display_name: String, kind: String) {
 }
 
 // A principal read back from the catalogue, or built from a validated write.
+/// Validates fields and constructs a Principal record from stored values.
 fn principal(id: String, display_name: String, kind: String) {
   use Nil <- result.try(valid_id(id))
   use Nil <- result.try(stored_name(display_name))
+
+  // Parse the persisted principal kind string into typed PrincipalKind.
   case kind {
     "owner" -> Ok(Principal(id, display_name, OwnerPrincipal))
     "member" -> Ok(Principal(id, display_name, MemberPrincipal))
@@ -1700,6 +1774,7 @@ fn principal(id: String, display_name: String, kind: String) {
   }
 }
 
+/// Verifies that an identifier meets byte length and ASCII character restrictions.
 fn valid_id(id: String) {
   case
     string.byte_size(id) > 0
@@ -1722,6 +1797,7 @@ fn valid_id(id: String) {
 // listing would fail for that principal after an upgrade. Decoding never
 // rewrites a name; it only declines to be the place a stored name is judged
 // against a rule it did not have when it was written.
+/// Validates a stored display name under backward-compatible encoding rules.
 fn stored_name(name: String) {
   case
     string.trim(name) != ""
@@ -1744,6 +1820,7 @@ fn stored_name(name: String) {
 // name is drawn beside other text and such a character reorders it or leaves
 // the name drawing as nothing. It is stricter than `stored_name` only on
 // writes so that tightening it cannot strand an existing row.
+/// Validates a new display name prohibiting control and invisible characters.
 fn new_name(name: String) {
   case
     stored_name(name),
@@ -1782,6 +1859,7 @@ fn role_name(role: Role) {
 
 // Unique-key lookups have a bounded result. Multiple rows indicate corrupt
 // persisted identity, never permission to choose the first apparent owner.
+/// Returns exactly one row from query results or Missing on empty result.
 fn one(rows: List(a)) -> Result(a, Error) {
   case rows {
     [row] -> Ok(row)
@@ -1790,6 +1868,7 @@ fn one(rows: List(a)) -> Result(a, Error) {
   }
 }
 
+/// Asserts that a record lookup returned Missing rather than an existing record.
 fn absent(found: Result(a, Error)) -> Result(Nil, Error) {
   case found {
     Error(Missing) -> Ok(Nil)

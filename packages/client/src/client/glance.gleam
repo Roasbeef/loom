@@ -65,6 +65,14 @@
 //// The cell is never deleted. There is one per strand, it is overwritten
 //// by the next operation's first summary, and a reader shows it only while
 //// its `operation` is still the strand's current one.
+//// Resolves a committed operation to its strand and schedules a summary only for watched strands.
+//// Applies one pacing event, launches due requests, and arms the next required wake.
+//// Starts one bounded summarization task and records its sink as the strand flight.
+//// Converts the final task status to a pacing event after freeing the strand flight.
+//// Maps every relay landing state to a report or a human-readable failure.
+//// Returns accepted prompt entries in their recorded order for runnable operations.
+//// Reads the bounded branch before the operation source leaf.
+//// Reuses a stored title only when its cell belongs to this operation.
 
 import client/advisor
 import client/auxiliary.{type Summarizer}
@@ -356,6 +364,7 @@ pub fn supervised(wiring: Wiring) -> ChildSpecification(Subject(Message)) {
   sm.supervised(builder(wiring))
 }
 
+/// Builds the state-machine callbacks and initializes the per-session pacing book.
 fn builder(
   wiring: Wiring,
 ) -> sm.Builder(Phase, Data, Message, Subject(Message)) {
@@ -376,6 +385,7 @@ fn builder(
   |> sm.on_event(handle)
 }
 
+/// Dispatches each mailbox event to the transition that owns its effect.
 fn handle(
   state: Phase,
   data: Data,
@@ -388,10 +398,10 @@ fn handle(
   }
 }
 
-// A step on a strand the terminal already covers, or on an operation whose
-// metadata will not read, books nothing. The metadata read is what turns
-// the hook's bare operation id into a strand, and it is done here rather
-// than in the hook so the driver never waits on the store for a label.
+/// A step on a strand the terminal already covers, or on an operation whose
+/// metadata will not read, books nothing. The metadata read is what turns
+/// the hook's bare operation id into a strand, and it is done here rather
+/// than in the hook so the driver never waits on the store for a label.
 fn stepped(
   data: Data,
   operation: OpId,
@@ -429,10 +439,10 @@ pub fn is_watched(strand: String) -> Bool {
   strand != advisor.primary && strand != advisor.strand
 }
 
-// Every event ends here: the pure plan, its launches, then exactly one
-// statement about the wake and a selector that matches the flights now
-// booked. Rebuilding the selector on every plan is what keeps "selected
-// while booked" true without tracking which event changed the flights.
+/// Every event ends here: the pure plan, its launches, then exactly one
+/// statement about the wake and a selector that matches the flights now
+/// booked. Rebuilding the selector on every plan is what keeps "selected
+/// while booked" true without tracking which event changed the flights.
 fn plan(data: Data, event: glancepace.Event) -> sm.Next(Phase, Data, Message) {
   let #(now, _clock) = clock.read(data.wiring.clock)
   let planned = glancepace.step(data.book, event, now, data.wiring.pace)
@@ -443,6 +453,7 @@ fn plan(data: Data, event: glancepace.Event) -> sm.Next(Phase, Data, Message) {
   |> sm.with_selector(selector(data))
 }
 
+/// Replaces or cancels the named wake according to the next due instant.
 fn rearm(
   step: sm.Next(Phase, Data, Message),
   wake: Option(Int),
@@ -460,6 +471,7 @@ fn rearm(
   }
 }
 
+/// Selects machine messages and the relay sinks for currently booked requests.
 fn selector(data: Data) -> process.Selector(Message) {
   let own = process.new_selector() |> process.select(data.inbox)
   dict.fold(data.flights, own, fn(selector, strand, flight) {
@@ -469,8 +481,8 @@ fn selector(data: Data) -> process.Selector(Message) {
   })
 }
 
-// The pacing guarantees a strand has at most one request out, so the
-// insert below never replaces a flight that is still booked.
+/// The pacing guarantees a strand has at most one request out, so the
+/// insert below never replaces a flight that is still booked.
 fn launch(data: Data, launch: glancepace.Launch) -> Data {
   let sink = process.new_subject()
   let wiring = data.wiring
@@ -486,6 +498,7 @@ fn launch(data: Data, launch: glancepace.Launch) -> Data {
   Data(..data, flights: dict.insert(data.flights, launch.strand, flight))
 }
 
+/// Records task outcomes and clears a flight only after its relay has drained.
 fn relayed(
   data: Data,
   strand: String,
@@ -515,10 +528,10 @@ fn relayed(
   }
 }
 
-// The run's last word: the worker has exited, so the strand's slot is
-// free. The report is logged before the plan, against the book as it was,
-// because whether this is the first failure of a streak is a question
-// about the failures counted before this one.
+/// The run's last word: the worker has exited, so the strand's slot is
+/// free. The report is logged before the plan, against the book as it was,
+/// because whether this is the first failure of a streak is a question
+/// about the failures counted before this one.
 fn finished(
   data: Data,
   strand: String,
@@ -529,20 +542,22 @@ fn finished(
   let ending = ending_of(flight.landed, lost)
   report(data, strand, flight.operation, ending)
 
+  // Classify the completed report for the pacing book.
   let settled = case ending {
     Ok(Written) -> glancepace.Summarized
     Ok(Gone) -> glancepace.Ended
     Error(_reason) -> glancepace.Unusable
   }
+
   plan(
     data,
     glancepace.Settled(strand:, operation: flight.operation, ending: settled),
   )
 }
 
-// All seven outcomes are written out (`docs/weft.md` rule 9). A plain task
-// never produces the last two; the arms are there so a run that grows an
-// owner fails exhaustiveness rather than taking a catch-all.
+/// All seven outcomes are written out (`docs/weft.md` rule 9). A plain task
+/// never produces the last two; the arms are there so a run that grows an
+/// owner fails exhaustiveness rather than taking a catch-all.
 fn ending_of(landed: Landing, lost: Option(String)) -> Result(Report, String) {
   case landed {
     Landed(weft.Completed(value:, ..)) -> Ok(value)
@@ -564,6 +579,7 @@ fn ending_of(landed: Landing, lost: Option(String)) -> Result(Report, String) {
   }
 }
 
+/// Logs successful, obsolete, and failed summaries with streak-aware severity.
 fn report(
   data: Data,
   strand: String,
@@ -574,11 +590,15 @@ fn report(
     field.text(key: "strand", value: strand),
     field.text(key: "operation", value: operation),
   ]
+
+  // Choose log severity and event name from the request result.
   case ending {
     Ok(Written) -> log.debug(data.wiring.logger, "glance.written", fields)
     Ok(Gone) -> log.debug(data.wiring.logger, "glance.operation_ended", fields)
     Error(reason) -> {
       let fields = [field.text(key: "reason", value: reason), ..fields]
+
+      // Escalate only the first failure in a consecutive operation streak.
       case streak(data.book, strand, operation) {
         0 -> log.warn(data.wiring.logger, "glance.unusable", fields)
         _later -> log.debug(data.wiring.logger, "glance.unusable", fields)
@@ -587,10 +607,10 @@ fn report(
   }
 }
 
-// How many consecutive failures this operation had before the one being
-// reported. A strand that has moved on to another operation starts a new
-// streak.
+/// Counts consecutive failures for this strand's current operation. A strand
+/// that has moved on to another operation starts a new streak.
 fn streak(book: glancepace.Book, strand: String, operation: String) -> Int {
+  // Count failures only when the current track still names this operation.
   case glancepace.track(book, strand) {
     Ok(track) if track.operation == operation -> track.failures
     Ok(_other) | Error(Nil) -> 0
@@ -599,10 +619,8 @@ fn streak(book: glancepace.Book, strand: String, operation: String) -> Int {
 
 // --- one request -------------------------------------------------------------
 
-// The whole of one request, on its own worker. Every step that can fail
-// says so in words, because the words are what the loop logs; the one
-// early success is an operation that is no longer live, which is not a
-// failure and asks nothing.
+/// Reads bounded operation context, asks the summarizer, and returns a parsed
+/// reply. A no-longer-live operation succeeds without asking or writing.
 fn summarize(
   wiring: Wiring,
   launch: glancepace.Launch,
@@ -638,6 +656,7 @@ fn summarize(
       }
     },
   )
+
   use reply <- result.try(
     glanceslice.parse(answer.text, title)
     |> result.replace_error("the summarizer's answer was not usable"),
@@ -645,6 +664,7 @@ fn summarize(
   write(wiring, launch, reply)
 }
 
+/// Commits the parsed glance through the reserved session fact interface.
 fn write(
   wiring: Wiring,
   launch: glancepace.Launch,
@@ -674,6 +694,7 @@ fn write(
   })
 }
 
+/// Reads the strand state to identify its current operation, if any.
 fn live_operation(
   store: Session,
   strand: String,
@@ -687,6 +708,7 @@ fn live_operation(
   }
 }
 
+/// Parses an operation id and reads its durable operation metadata.
 fn operation_meta(
   store: Session,
   operation: String,
@@ -697,6 +719,8 @@ fn operation_meta(
       "the operation id did not parse: " <> operation
     }),
   )
+
+  // Distinguish absent metadata from a storage failure for the caller's error.
   case session.op_meta(store, id) {
     Ok(Some(session.Cell(value: meta, ..))) -> Ok(meta)
     Ok(None) -> Error("the operation has no metadata: " <> operation)
@@ -705,8 +729,8 @@ fn operation_meta(
   }
 }
 
-// The accepted prompt, in acceptance order. A compaction or navigation has
-// no prompt, which leaves the request to the branch alone.
+/// The accepted prompt, in acceptance order. A compaction or navigation has
+/// no prompt, which leaves the request to the branch alone.
 fn prompt_entries(
   store: Session,
   meta: Operation,
@@ -724,22 +748,26 @@ fn prompt_entries(
   }
 }
 
-// The strand's branch back to the operation's source leaf, newest first
-// and at most `branch_window` entries. The stop is inclusive, so the
-// source leaf itself — the last thing *before* this operation — is
-// dropped when the scan reached it.
+/// The strand's branch back to the operation's source leaf, newest first
+/// and at most `branch_window` entries. The stop is inclusive, so the
+/// source leaf itself — the last thing *before* this operation — is
+/// dropped when the scan reached it.
 fn recent_entries(
   store: Session,
   strand: String,
   meta: Operation,
 ) -> Result(List(Entry), String) {
   use leaf <- result.try(strand_leaf(store, strand))
+
+  // A strand without a leaf contributes no branch context.
   case leaf {
     None -> Ok([])
     Some(leaf) -> {
       let scan =
         storage.branch_scan(from: leaf)
         |> storage.branch_limit(branch_window)
+
+      // Stop at the source leaf so this operation cannot summarize itself.
       let scan = case meta.source_leaf {
         Some(source) -> storage.branch_stop_at_id(scan, source)
         None -> scan
@@ -754,6 +782,7 @@ fn recent_entries(
   }
 }
 
+/// Reads the strand branch leaf needed to prepare recent context.
 fn strand_leaf(
   store: Session,
   strand: String,
@@ -773,9 +802,9 @@ fn without(rows: List(Entry), source: Option(EntryId)) -> List(Entry) {
   }
 }
 
-// The title this operation's glance already carries. A cell that will not
-// read, belongs to another operation or has no title asks for a fresh one,
-// which costs a longer answer and nothing else.
+/// The title this operation's glance already carries. A cell that will not
+/// read, belongs to another operation or has no title asks for a fresh one,
+/// which costs a longer answer and nothing else.
 fn stored_title(
   store: Session,
   strand: String,
@@ -787,8 +816,11 @@ fn stored_title(
       register.FactCustom,
       glance_cell.key(strand),
     )
+
+  // Decode the stored cell only after the register read succeeds.
   case stored {
     Ok(Some(storage.Register(value:, ..))) ->
+      // Reuse only a valid cell for this operation with a non-empty title.
       case glance_cell.decode(value.payload) {
         Ok(found) if found.operation == operation && found.title != "" ->
           glanceslice.Titled(text: found.title)

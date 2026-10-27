@@ -61,6 +61,8 @@ pub fn read(
     use value <- result.map(decode_blob(blob))
     #(value, cache)
   })
+
+  // Check whether the decoded register value is already cached for this blob.
   case dict.get(cache.values, blob) {
     Ok(value) -> Ok(#(value, cache))
     Error(Nil) -> {
@@ -74,6 +76,7 @@ pub fn read(
         True -> new()
         False -> cache
       }
+
       #(
         value,
         Cache(dict.insert(cache.values, blob, value), cache.bytes + size),
@@ -82,7 +85,7 @@ pub fn read(
   }
 }
 
-// Preserve the durability boundary's UTF-8 and JSON corruption reports.
+/// Decodes a persisted register bit array into a typed register value, reporting corruption on failure.
 fn decode_blob(blob: BitArray) -> Result(RegisterValue, CorruptionReport) {
   use text <- result.try(
     bit_array.to_string(blob)

@@ -142,8 +142,8 @@ pub fn panel_with_remote(
   )
 }
 
-// One row for each orchestrator whose children have settled, or nothing. The
-// name is a text node, like every name drawn from the session.
+/// One row for each orchestrator whose children have settled, or nothing. The
+/// name is a text node, like every name drawn from the session.
 fn remote_section(remote: List(remote_usage.RemoteUsage)) -> Element(message) {
   case remote {
     [] -> element.none()
@@ -162,9 +162,9 @@ fn remote_section(remote: List(remote_usage.RemoteUsage)) -> Element(message) {
   }
 }
 
-// What the last Compact now press found, in a sentence under the buttons. It
-// stays until the next press, which clears it, so a refusal is not a notice
-// that fades before it can be read.
+/// What the last Compact now press found, in a sentence under the buttons. It
+/// stays until the next press, which clears it, so a refusal is not a notice
+/// that fades before it can be read.
 fn compaction_note(compaction: context_view.Compaction) -> Element(message) {
   case compaction {
     context_view.Unrefused -> element.none()
@@ -180,10 +180,10 @@ fn compaction_note(compaction: context_view.Compaction) -> Element(message) {
   }
 }
 
-// The Refresh button and, on a page that may compact, the Compact now button.
-// They are the panel's first child so that their place does not depend on
-// whether a board has arrived, which is what lets the page socket name the
-// Refresh button's path (`component.context_refresh_path`).
+/// The Refresh button and, on a page that may compact, the Compact now button.
+/// They are the panel's first child so that their place does not depend on
+/// whether a board has arrived, which is what lets the page socket name the
+/// Refresh button's path (`component.context_refresh_path`).
 fn actions_row(actions: Actions(message)) -> Element(message) {
   html.div([attribute.class("ctx-actions")], [
     html.button(
@@ -211,8 +211,8 @@ fn actions_row(actions: Actions(message)) -> Element(message) {
   ])
 }
 
-// What the panel says when no board is held: the host's own notice or the
-// state of the read, in words.
+/// What the panel says when no board is held: the host's own notice or the
+/// state of the read, in words.
 fn unavailable_words(state: context_view.State) -> String {
   case state.request, state.notice {
     context_view.Unavailable, _ ->
@@ -226,7 +226,7 @@ fn unavailable_words(state: context_view.State) -> String {
   }
 }
 
-// How the board's reading stands: a read out means the figures may be stale.
+/// How the board's reading stands: a read out means the figures may be stale.
 fn freshness_words(
   state: context_view.State,
   board: context_view.Board,
@@ -240,7 +240,7 @@ fn freshness_words(
   }
 }
 
-// The board's whole drawing, from the headline to the item list.
+/// The board's whole drawing, from the headline to the item list.
 fn board_view(
   state: context_view.State,
   board: context_view.Board,
@@ -280,7 +280,7 @@ fn board_view(
   ])
 }
 
-// Where the headline's number comes from, in plain words.
+/// Where the headline's number comes from, in plain words.
 fn basis_words(board: context_view.Board) -> String {
   case board.basis {
     "reported_plus_estimate" ->
@@ -290,9 +290,9 @@ fn basis_words(board: context_view.Board) -> String {
   }
 }
 
-// How much room is left before the session compacts itself, or that it will
-// not. The threshold is the window less the reserve, and the count it is
-// measured against is the one compaction itself uses.
+/// How much room is left before the session compacts itself, or that it will
+/// not. The threshold is the window less the reserve, and the count it is
+/// measured against is the one compaction itself uses.
 fn until_words(board: context_view.Board) -> String {
   case board.checkpoint_at {
     Some(at) ->
@@ -338,9 +338,9 @@ fn category(board: context_view.Board, name: String) -> Int {
   }
 }
 
-// The stacked bar: one segment for every part that holds tokens, each as wide
-// as its share of the window. The bar is an image for a screen reader, which
-// the legend beneath it reads in full.
+/// The stacked bar: one segment for every part that holds tokens, each as wide
+/// as its share of the window. The bar is an image for a screen reader, which
+/// the legend beneath it reads in full.
 fn bar(board: context_view.Board, split: Split) -> Element(message) {
   html.div(
     [
@@ -357,7 +357,7 @@ fn bar(board: context_view.Board, split: Split) -> Element(message) {
   )
 }
 
-// One part of the window: its class, its tokens.
+/// One part of the window: its class, its tokens.
 fn parts(split: Split) -> List(#(Part, Int)) {
   [
     #(SystemPrompt, split.system),
@@ -380,6 +380,7 @@ type Part {
   Free
 }
 
+/// Part class helper.
 fn part_class(part: Part) -> String {
   case part {
     SystemPrompt -> "ctx-system"
@@ -391,6 +392,7 @@ fn part_class(part: Part) -> String {
   }
 }
 
+/// Part name helper.
 fn part_name(part: Part) -> String {
   case part {
     SystemPrompt -> "System prompt"
@@ -402,8 +404,8 @@ fn part_name(part: Part) -> String {
   }
 }
 
-// One segment of the bar. Its width is an integer percentage this module
-// computed, so the `style` attribute holds nothing the board wrote.
+/// One segment of the bar. Its width is an integer percentage this module
+/// computed, so the `style` attribute holds nothing the board wrote.
 fn segment(part: Part, tokens: Int, window: Int) -> Element(message) {
   html.span(
     [
@@ -421,9 +423,9 @@ fn share(tokens: Int, window: Int) -> Int {
   int.clamp(tokens * 100 / window, 1, 100)
 }
 
-// The rows under the bar: a swatch, the part's name, its tokens and its share
-// of the window. A part with no tokens has no row, which also leaves a
-// session with automatic compaction off without a reserve row.
+/// The rows under the bar: a swatch, the part's name, its tokens and its share
+/// of the window. A part with no tokens has no row, which also leaves a
+/// session with automatic compaction off without a reserve row.
 fn legend(board: context_view.Board, split: Split) -> Element(message) {
   html.ul(
     [attribute.class("ctx-legend")],
@@ -436,6 +438,7 @@ fn legend(board: context_view.Board, split: Split) -> Element(message) {
   )
 }
 
+/// Row helper.
 fn row(part: Part, tokens: Int, window: Int) -> Element(message) {
   html.li([attribute.class("ctx-row")], [
     html.span(
@@ -461,11 +464,11 @@ fn percent(tokens: Int, window: Int) -> String {
   }
 }
 
-// The item list: a closed `<details>` holding the tools by name and the
-// messages by kind, each the largest rows first and bounded, and a line
-// saying how many rows the observation left out. The groupings read only the
-// items the board lists, which is a prefix, so a board that omitted some says
-// so and the totals above stay the whole.
+/// The item list: a closed `<details>` holding the tools by name and the
+/// messages by kind, each the largest rows first and bounded, and a line
+/// saying how many rows the observation left out. The groupings read only the
+/// items the board lists, which is a prefix, so a board that omitted some says
+/// so and the totals above stay the whole.
 fn inventory(board: context_view.Board) -> Element(message) {
   let items = board.items
   let omitted = board.omitted
@@ -478,8 +481,8 @@ fn inventory(board: context_view.Board) -> Element(message) {
   })
 }
 
-// Grouping belongs inside the leaf memo, including normalization of every
-// untrusted label. Its references cover every value the callback reads.
+/// Grouping belongs inside the leaf memo, including normalization of every
+/// untrusted label. Its references cover every value the callback reads.
 fn inventory_list(
   items: List(context_view.Item),
   omitted: Int,
@@ -501,7 +504,7 @@ fn inventory_list(
   ])
 }
 
-// One titled list of the largest rows, and a line for the ones not drawn.
+/// One titled list of the largest rows, and a line for the ones not drawn.
 fn group(title: String, rows: List(#(String, Int, Int))) -> Element(message) {
   case rows {
     [] -> element.none()
@@ -552,7 +555,7 @@ pub fn tools(board: context_view.Board) -> List(#(String, Int, Int)) {
   tool_items(board.items)
 }
 
-// Tool rows read only the item inventory, independent of the board headline.
+/// Tool rows read only the item inventory, independent of the board headline.
 fn tool_items(items: List(context_view.Item)) -> List(#(String, Int, Int)) {
   items
   |> list.filter(fn(item) { item.category == "Tools" })
@@ -578,7 +581,7 @@ pub fn kinds(board: context_view.Board) -> List(#(String, Int, Int)) {
   message_items(board.items)
 }
 
-// Message groups read only the same inventory the leaf references.
+/// Message groups read only the same inventory the leaf references.
 fn message_items(items: List(context_view.Item)) -> List(#(String, Int, Int)) {
   items
   |> list.filter(fn(item) { item.category == "Messages" })
@@ -592,7 +595,7 @@ fn message_items(items: List(context_view.Item)) -> List(#(String, Int, Int)) {
   |> largest_first
 }
 
-// The kind of a message from its listed name, without the leading place.
+/// The kind of a message from its listed name, without the leading place.
 fn without_place(name: String) -> String {
   case string.split_once(name, ". ") {
     Ok(#(place, kind)) ->
@@ -604,8 +607,8 @@ fn without_place(name: String) -> String {
   }
 }
 
-// Largest rows first, and equal rows by name so the order does not change
-// between two draws of the same board.
+/// Largest rows first, and equal rows by name so the order does not change
+/// between two draws of the same board.
 fn largest_first(rows: List(#(String, Int, Int))) -> List(#(String, Int, Int)) {
   list.sort(rows, fn(left, right) {
     case int.compare(right.1, left.1) {

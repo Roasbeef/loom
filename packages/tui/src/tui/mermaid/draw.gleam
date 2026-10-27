@@ -87,6 +87,7 @@ pub fn flowchart(
   })
 }
 
+/// Paints each node box of the flowchart onto a blank canvas according to placement geometry.
 fn paint_boxes(chart: Flowchart, placement: Placement) -> Canvas {
   let blank = canvas.new(placement.width, placement.height)
   list.zip(chart.nodes, placement.boxes)
@@ -95,17 +96,19 @@ fn paint_boxes(chart: Flowchart, placement: Placement) -> Canvas {
   })
 }
 
-// Edge indices from the nearest endpoints to the farthest, ties in source
-// order. Short edges are routed first so that they get the direct path and a
-// long edge goes around them. An edge whose endpoint has no box sorts last and
-// is refused when it is routed.
+/// Edge indices from the nearest endpoints to the farthest, ties in source
+/// order. Short edges are routed first so that they get the direct path and a
+/// long edge goes around them. An edge whose endpoint has no box sorts last and
+/// is refused when it is routed.
 fn routing_order(edges: List(Edge), boxes: List(Box)) -> List(Int) {
   edges
   |> list.index_map(fn(edge, index) {
+    // Compute Manhattan distance between endpoints to order shortest edges first.
     let span = case model.at(boxes, edge.from), model.at(boxes, edge.to) {
       Ok(from), Ok(to) -> distance(from, to)
       _, _ -> 1_000_000
     }
+
     #(span, index)
   })
   |> list.sort(fn(a, b) {
@@ -122,6 +125,7 @@ fn distance(a: Box, b: Box) -> Int {
   + int.absolute_value(a.y + a.height / 2 - b.y - b.height / 2)
 }
 
+/// Finds a path and commits edge routing onto the drawing canvas within remaining expansion budget.
 fn route_edge(
   current: Drawing,
   chart: Flowchart,
@@ -137,10 +141,14 @@ fn route_edge(
     use target <- result.map(model.at(placement.boxes, edge.to))
     #(edge, flow, source, target)
   }
+
+  // Check whether edge endpoints and flow orientation were successfully looked up.
   case lookups {
     Error(Nil) -> Error(Failed(model.Unroutable, spent))
     Ok(#(edge, flow, source, target)) -> {
       let #(exit, entry) = sides_for(placement.direction, flow)
+
+      // Find a route between the exit and entry sides.
       case
         route.find(current.canvas, source, exit, target, entry, budget - spent)
       {
@@ -167,16 +175,19 @@ fn failure_refusal(reason: route.Reason) -> Refusal {
   }
 }
 
-// The side an edge leaves from and the side it arrives at. A forward edge
-// leaves on the side the diagram flows toward; a backward one leaves on the
-// opposite side and arrives on the flow side.
+/// The side an edge leaves from and the side it arrives at. A forward edge
+/// leaves on the side the diagram flows toward; a backward one leaves on the
+/// opposite side and arrives on the flow side.
 fn sides_for(direction: Direction, flow: layout.Flow) -> #(Side, Side) {
+  // Determine exit side based on overall diagram flow direction.
   let toward = case direction {
     model.TopDown -> route.Bottom
     model.BottomUp -> route.Top
     model.LeftRight -> route.Right
     model.RightLeft -> route.Left
   }
+
+  // Map forward or backward edge flow to corresponding exit and entry sides.
   case flow {
     layout.Forward -> #(toward, route.opposite(toward))
     layout.Backward -> #(route.opposite(toward), toward)
@@ -187,7 +198,7 @@ fn sides_for(direction: Direction, flow: layout.Flow) -> #(Side, Side) {
 // Writing a route
 // ---------------------------------------------------------------------------
 
-// The side bit a neighbouring cell lies on.
+/// The side bit a neighbouring cell lies on.
 fn bit_toward(from: #(Int, Int), neighbour: #(Int, Int)) -> Int {
   case neighbour.0 - from.0, neighbour.1 - from.1 {
     1, _ -> canvas.right
@@ -197,7 +208,7 @@ fn bit_toward(from: #(Int, Int), neighbour: #(Int, Int)) -> Int {
   }
 }
 
-// The bit that faces the box a side belongs to, from the cell beside it.
+/// The bit that faces the box a side belongs to, from the cell beside it.
 fn bit_into_box(side: Side) -> Int {
   case side {
     route.Top -> canvas.down
@@ -207,10 +218,10 @@ fn bit_into_box(side: Side) -> Int {
   }
 }
 
-// Writes a route. Its first and last cells touch a box, so they become fixed
-// glyphs no later route may cross; the cells between are crossable lines. Each
-// cell is written knowing its neighbours on the route, which one pass over the
-// cells paired with the cells before and after them provides.
+/// Writes a route. Its first and last cells touch a box, so they become fixed
+/// glyphs no later route may cross; the cells between are crossable lines. Each
+/// cell is written knowing its neighbours on the route, which one pass over the
+/// cells paired with the cells before and after them provides.
 fn commit(
   current: Canvas,
   path: List(#(Int, Int)),
@@ -223,12 +234,16 @@ fn commit(
   list.zip(path, list.zip(before, after))
   |> list.fold(current, fn(painted, entry_of) {
     let #(cell, #(previous, following)) = entry_of
+
+    // Calculate the line mask combining directions toward adjacent cells.
     let mask = case previous, following {
       option.None, option.None -> bit_into_box(exit) + bit_into_box(entry)
       option.None, _ -> bit_into_box(exit) + toward(cell, following)
       _, option.None -> toward(cell, previous) + bit_into_box(entry)
       _, _ -> toward(cell, previous) + toward(cell, following)
     }
+
+    // Draw terminal glyphs or intermediate path lines.
     case previous, following {
       _, option.None -> end_glyph(painted, cell, mask, entry, edge)
       option.None, _ ->
@@ -251,8 +266,8 @@ fn toward(from: #(Int, Int), neighbour: option.Option(#(Int, Int))) -> Int {
   }
 }
 
-// The last cell of a route: an arrowhead facing the box, or the line itself
-// for an edge with no arrowhead.
+/// The last cell of a route: an arrowhead facing the box, or the line itself
+/// for an edge with no arrowhead.
 fn end_glyph(
   painted: Canvas,
   cell: #(Int, Int),
@@ -274,7 +289,7 @@ fn end_glyph(
   }
 }
 
-// The arrowhead that points into the box on a side.
+/// The arrowhead that points into the box on a side.
 fn arrow_glyph(entry: Side) -> String {
   case entry {
     route.Top -> "▼"
@@ -295,21 +310,24 @@ type Spot {
   BelowHorizontal
 }
 
-// Writes an edge label beside the first stretch of the route with room for it.
-// The label needs a blank cell on each side of its text, so it never touches
-// a box, a line or another label. A vertical flow prefers the side of a
-// vertical stretch and a horizontal flow the row above a horizontal one,
-// because those are where the label reads as belonging to the line.
+/// Writes an edge label beside the first stretch of the route with room for it.
+/// The label needs a blank cell on each side of its text, so it never touches
+/// a box, a line or another label. A vertical flow prefers the side of a
+/// vertical stretch and a horizontal flow the row above a horizontal one,
+/// because those are where the label reads as belonging to the line.
 fn place_label(
   painted: Canvas,
   path: List(#(Int, Int)),
   label: String,
   direction: Direction,
 ) -> Result(Canvas, Refusal) {
+  // Empty labels succeed immediately without painting extra ink.
   case label {
     "" -> Ok(painted)
     _ -> {
       let width = text.cell_width(label)
+
+      // Try placement spots suited to diagram orientation.
       let spots = case direction {
         model.TopDown | model.BottomUp -> [
           BesideVertical,
@@ -322,6 +340,7 @@ fn place_label(
           BesideVertical,
         ]
       }
+
       let interior = from_the_middle(interior_cells(path))
       let straight =
         list.flat_map(spots, fn(spot) {
@@ -351,10 +370,10 @@ fn interior_cells(path: List(#(Int, Int))) -> List(#(Int, Int)) {
   }
 }
 
-// The interior cells nearest the middle of the route first. A label by the
-// first cell would sit against the box the route leaves, where it blocks the
-// cells other edges need to reach that box's side; near the middle it is clear
-// of both ends and reads as belonging to the edge as a whole.
+/// The interior cells nearest the middle of the route first. A label by the
+/// first cell would sit against the box the route leaves, where it blocks the
+/// cells other edges need to reach that box's side; near the middle it is clear
+/// of both ends and reads as belonging to the edge as a whole.
 fn from_the_middle(cells: List(#(Int, Int))) -> List(#(Int, Int)) {
   let middle = list.length(cells) / 2
   cells
@@ -365,9 +384,9 @@ fn from_the_middle(cells: List(#(Int, Int))) -> List(#(Int, Int)) {
   |> list.map(fn(entry) { entry.1 })
 }
 
-// A label position for a spot at an interior cell, if that cell is a straight
-// stretch of the right orientation. The result is where the text starts and
-// the span of cells that must be blank, margins included.
+/// A label position for a spot at an interior cell, if that cell is a straight
+/// stretch of the right orientation. The result is where the text starts and
+/// the span of cells that must be blank, margins included.
 fn candidate(
   painted: Canvas,
   cell: #(Int, Int),
@@ -375,6 +394,8 @@ fn candidate(
   width: Int,
 ) -> Result(#(Int, Int, Int, Int), Nil) {
   let #(x, y) = cell
+
+  // Match straight line orientations with candidate placement spots.
   case canvas.cell(painted, x, y), spot {
     Some(canvas.Line(mask:, ..)), BesideVertical
       if mask == canvas.up + canvas.down
@@ -389,8 +410,8 @@ fn candidate(
   }
 }
 
-// The first candidate whose whole span is blank, with the label written
-// there. A candidate row is that of its text; the span runs across it.
+/// The first candidate whose whole span is blank, with the label written
+/// there. A candidate row is that of its text; the span runs across it.
 fn first_free(
   painted: Canvas,
   candidates: List(#(Int, Int, Int, Int)),

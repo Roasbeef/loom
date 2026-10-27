@@ -271,6 +271,8 @@ pub fn focus_attribute(position: Int) -> attribute.Attribute(message) {
 /// ```
 pub fn view(strip: Strip, focus: fn(String) -> message) -> Element(message) {
   use <- element.memo([element.ref(strip)])
+
+  // Dispatch on view state.
   case strip.chips, strip.advisor, strip.settled {
     [], None, [] -> element.none()
     _, _, _ -> {
@@ -282,12 +284,15 @@ pub fn view(strip: Strip, focus: fn(String) -> message) -> Element(message) {
             chip_element(chip, position, strip.followed, focus),
           )
         })
+
+      // Dispatch on view state.
       let advisor = case strip.advisor {
         Some(chip) -> [
           #("advisor", chip_element(chip, live, strip.followed, focus)),
         ]
         None -> []
       }
+
       let first_settled = list.length(cards) + list.length(advisor)
 
       html.nav(
@@ -307,15 +312,16 @@ pub fn view(strip: Strip, focus: fn(String) -> message) -> Element(message) {
   }
 }
 
-// The settled group, or nothing while no strand has settled. Its cards
-// continue the positions the live cards began, so a marker's number names one
-// card. The text that says how many strands are older than the ones drawn is
-// a list item and not a control.
+/// The settled group, or nothing while no strand has settled. Its cards
+/// continue the positions the live cards began, so a marker's number names one
+/// card. The text that says how many strands are older than the ones drawn is
+/// a list item and not a control.
 fn settled_group(
   strip: Strip,
   first: Int,
   focus: fn(String) -> message,
 ) -> List(#(String, Element(message))) {
+  // Dispatch on settled_group state.
   case strip.settled {
     [] -> []
     settled -> {
@@ -323,6 +329,8 @@ fn settled_group(
         list.index_map(settled, fn(chip, offset) {
           chip_element(chip, first + offset, strip.followed, focus)
         })
+
+      // Dispatch on settled_group state.
       let earlier = case strip.earlier {
         0 -> []
         count -> [
@@ -331,6 +339,7 @@ fn settled_group(
           ]),
         ]
       }
+
       let total = list.length(settled) + strip.earlier
       [
         #(
@@ -352,6 +361,7 @@ fn settled_group(
   }
 }
 
+/// Chip element helper.
 fn chip_element(
   chip: Chip,
   position: Int,
@@ -419,8 +429,8 @@ pub fn status(line: agent_roster.Line) -> Element(message) {
   ])
 }
 
-// The chip of the strand the page shows is marked as the current one by its
-// ring and, on its button, in words for a screen reader.
+/// The chip of the strand the page shows is marked as the current one by its
+/// ring and, on its button, in words for a screen reader.
 fn chip_attributes(
   chip: Chip,
   followed: String,
@@ -435,16 +445,18 @@ fn chip_attributes(
   }
 }
 
-// The button's handler and its state. The current chip is pressed and still
-// carries the handler: focusing the strand already shown changes nothing,
-// which is `component.focus`'s to say and cheaper than a second view for a
-// chip that a stale browser may still press.
+/// The button's handler and its state. The current chip is pressed and still
+/// carries the handler: focusing the strand already shown changes nothing,
+/// which is `component.focus`'s to say and cheaper than a second view for a
+/// chip that a stale browser may still press.
 fn press_attributes(
   strand: String,
   followed: String,
   focus: fn(String) -> message,
 ) -> List(attribute.Attribute(message)) {
   let press = event.on_click(focus(strand))
+
+  // Dispatch on press_attributes state.
   case strand == followed {
     True -> [attribute.attribute("aria-current", "true"), press]
     False -> [press]
@@ -512,6 +524,7 @@ pub fn ring(chip: Chip, size: Size) -> Element(message) {
 /// // strip.avatar("review-readme-usage", strip.Card) draws the letter R
 /// ```
 pub fn avatar(name: String, size: Size) -> Element(message) {
+  // Dispatch on avatar state.
   let initial = case string.first(name) {
     Ok(grapheme) -> string.uppercase(grapheme)
     Error(Nil) -> "?"

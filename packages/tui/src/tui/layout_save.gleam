@@ -48,6 +48,7 @@ import tui/view_set
 /// let model = layout_save.remember_launch(model, "")
 /// ```
 pub fn remember_launch(model: Model, state_override: String) -> Model {
+  // Resolve the state directory to discover where saved layouts live.
   case bootstrap.state_directory(state_override) {
     Error(_) -> model
     Ok(root) -> {
@@ -96,10 +97,13 @@ pub fn apply(model: Model, target: layout_memory.Target) -> Model {
 /// let model = layout_save.settle(model)
 /// ```
 pub fn settle(model: Model) -> Model {
+  // Check whether a layout target was configured for persistence.
   case model.view.layout_target {
     None -> model
     Some(target) -> {
       let current = current(model)
+
+      // Check if the current layout matches what was previously saved.
       case current == target.saved {
         True -> model
         False ->

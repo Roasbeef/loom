@@ -157,7 +157,9 @@ type CodeModeHint {
 
 // Keep the direct tool's contract beside its program alternative. Reads
 // return plain text, edits match unique strings, and processes take argv;
-// none is a claim that the direct tool's wire schema works inside a program.
+/// Returns tool hints for available code mode capabilities.
+///
+/// none is a claim that the direct tool's wire schema works inside a program.
 fn code_mode_hints() -> List(CodeModeHint) {
   [
     CodeModeHint(
@@ -193,12 +195,15 @@ fn code_mode_hints() -> List(CodeModeHint) {
   ]
 }
 
-// Default-seam hints need no extra choice at the call site. An alternative
-// seam's wider surface remains discoverable through code_mode and cap://.
+/// Appends code mode capability guidance text to eligible tool descriptions.
+///
+/// Default-seam hints need no extra choice at the call site. An alternative
+/// seam's wider surface remains discoverable through code_mode and cap://.
 fn with_code_mode_hints(
   tools: List(Tool),
   mode: Option(codemode_tool.CodeMode),
 ) -> List(Tool) {
+  // Check if code mode is active and add hints to tools.
   case mode {
     None -> tools
     Some(mode) -> {
@@ -221,8 +226,10 @@ fn with_code_mode_hints(
   }
 }
 
-// Profiles describe the native door, so they follow its admission on each
-// offer rather than the presence of a compiler or a configured catalogue.
+/// Augments code mode seam definitions with LSP guidance profiles.
+///
+/// Profiles describe the native door, so they follow its admission on each
+/// offer rather than the presence of a compiler or a configured catalogue.
 fn with_lsp_guidance(
   mode: codemode_tool.CodeMode,
   hints: List(#(String, String)),
@@ -237,10 +244,12 @@ fn with_lsp_guidance(
   )
 }
 
+/// Augments a single seam offer with LSP language notes if supported.
 fn lsp_offer_guidance(
   offer: codemode_tool.SeamOffer,
   hints: List(#(String, String)),
 ) -> codemode_tool.SeamOffer {
+  // Check if seam offer supports cap/lsp capabilities.
   case
     list.contains(offer.allowed_imports, "cap/lsp")
     && list.contains(offer.serviced_caps, "lsp.definition")
@@ -250,6 +259,8 @@ fn lsp_offer_guidance(
       let profiles =
         list.map(hints, fn(profile) { "- `" <> profile.0 <> "`: " <> profile.1 })
       let notes = string.join(profiles, "\n")
+
+      // Append formatted LSP notes if any profiles exist.
       case notes {
         "" -> offer
         _ ->
@@ -364,6 +375,7 @@ pub fn workspace_tools(
   lsp: Option(query.Door),
   lsp_hints: List(#(String, String)),
 ) -> List(Tool) {
+  // Apply LSP guidance to code mode configuration if LSP door is active.
   let code_mode = case lsp {
     None -> code_mode
     Some(_door) -> option.map(code_mode, with_lsp_guidance(_, lsp_hints))
@@ -389,6 +401,7 @@ pub fn workspace_tools(
       #(fs.write_tool_with(observer), fs.edit_tool_with(observer))
     }
   }
+
   let read_schemes =
     list.flatten([
       case code_mode {
@@ -575,6 +588,8 @@ pub fn deactivate(
   names: List(String),
 ) -> List(Contribution) {
   use contribution <- list.map(contributions)
+
+  // Filter active tools according to contribution origin.
   case contribution.origin {
     Extension(..) -> contribution
 
@@ -655,16 +670,19 @@ pub fn origin_text(origin: Origin) -> String {
   }
 }
 
-// One contribution's claim on the names earlier contributions have not
-// taken. Its own repeats are de-duplicated first, so a single author
-// restating a name never collides with themselves — that is the
-// override `tool.registry` settles by last-registration-wins.
+/// Records tool name claims while checking for shadowing conflicts.
+///
+/// One contribution's claim on the names earlier contributions have not
+/// taken. Its own repeats are de-duplicated first, so a single author
+/// restating a name never collides with themselves — that is the
+/// override `tool.registry` settles by last-registration-wins.
 fn claim(
   claimed: Dict(String, Origin),
   contribution: Contribution,
 ) -> Result(Dict(String, Origin), Collision) {
   let names = list.unique(list.map(contribution.tools, fn(each) { each.name }))
 
+  // Verify that none of the names have already been claimed.
   case first_taken(names, claimed, contribution.origin) {
     Ok(collision) -> Error(collision)
     Error(Nil) ->
@@ -676,8 +694,10 @@ fn claim(
   }
 }
 
-// The first of these names an earlier contribution already holds, as the
-// collision it would be. `Error(Nil)` is the clear path.
+/// Finds the first tool name that conflicts with an existing claim.
+///
+/// The first of these names an earlier contribution already holds, as the
+/// collision it would be. `Error(Nil)` is the clear path.
 fn first_taken(
   names: List(String),
   claimed: Dict(String, Origin),
@@ -729,6 +749,7 @@ pub fn directory_tools(
 ) -> List(Tool) {
   list.append(
     list.map(tools, fn(offered) {
+      // Replace bash tool with directory-enabled variant.
       case offered.name {
         "bash" -> {
           let selected = bash.tool_with_directory(jobs, directory)

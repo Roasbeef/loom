@@ -31,10 +31,12 @@ pub type Layout {
 /// ```
 @internal
 pub fn layout(area: geometry.Rect, labels: Int, selected: Int) -> Layout {
+  // Choose compact or full heading height based on available vertical space.
   let heading_height = case area.size.height < 8 {
     True -> int.min(1, area.size.height)
     False -> int.min(2, area.size.height)
   }
+
   let remaining = int.max(0, area.size.height - heading_height)
 
   // Determine vertical height allocated to navigation items.
@@ -43,12 +45,16 @@ pub fn layout(area: geometry.Rect, labels: Int, selected: Int) -> Layout {
     height if height < 10 -> 2
     _ -> 6
   }
+
   let navigation_height =
     int.min(int.min(navigation_limit, labels), int.max(0, remaining - 2))
+
+  // Reserve one row for the selected patch header if room remains.
   let selected_height = case remaining - navigation_height > 0 {
     True -> 1
     False -> 0
   }
+
   let patch_height = int.max(0, remaining - navigation_height - selected_height)
 
   // Calculate scrolled navigation offset to keep the selected item in view.
@@ -105,10 +111,13 @@ pub fn navigation_hit(
   at: geometry.Position,
   labels: Int,
 ) -> Result(Int, Nil) {
+  // Check whether the click falls within the navigation boundaries.
   case geometry.contains(panel.navigation, at) {
     False -> Error(Nil)
     True -> {
       let index = panel.navigation_offset + at.y - panel.navigation.position.y
+
+      // Ensure the computed index is within range of available labels.
       case index < labels {
         True -> Ok(index)
         False -> Error(Nil)

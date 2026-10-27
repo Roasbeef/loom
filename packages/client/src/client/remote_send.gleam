@@ -82,10 +82,13 @@ pub fn key(id: String) -> String {
 /// // remote_send.queue(runtime, remote_send.Row(id:, orchestrator: "box", parent_strand: "main", child:, text: "hello"))
 /// ```
 pub fn queue(runtime: api.Runtime, row: Row) -> Result(Nil, String) {
+  // This match resolves string.byte_size(row.text) <= max_text_bytes before the enclosing validation continues.
   use Nil <- result.try(case string.byte_size(row.text) <= max_text_bytes {
     True -> Ok(Nil)
     False -> Error("the message is longer than a message may be")
   })
+
+  // This branch resolves the queue decision before the operation proceeds.
   case
     api.put_reserved_fact_expecting(
       runtime,
@@ -97,6 +100,9 @@ pub fn queue(runtime: api.Runtime, row: Row) -> Result(Nil, String) {
     Ok(_) -> Ok(Nil)
     Error(api.FactConflict(..)) -> {
       use found <- result.try(read(runtime, key(row.id)))
+
+      // This match resolves found before the surrounding protocol step continues.
+      // This match resolves found before the enclosing validation continues.
       case found {
         Some(held) if held == row -> Ok(Nil)
         Some(_) | None ->
@@ -138,10 +144,14 @@ pub fn settle(runtime: api.Runtime, id: String) -> Result(Nil, String) {
   |> result.map_error(string.inspect)
 }
 
+/// Read keeps this client operation’s decoding or state decision in one place.
 fn read(runtime: api.Runtime, at: String) -> Result(Option(Row), String) {
   use cell <- result.try(
     api.fact(runtime, at) |> result.map_error(string.inspect),
   )
+
+  // This match resolves cell before the surrounding protocol step continues.
+  // This match resolves cell before the enclosing validation continues.
   case cell {
     None -> Ok(None)
     Some(value) -> decode(value) |> result.map(Some)
@@ -175,6 +185,8 @@ pub fn encode(row: Row) -> JsonValue {
 /// assert remote_send.decode(json.Null) == Error("expected a send row, got null")
 /// ```
 pub fn decode(value: JsonValue) -> Result(Row, String) {
+  // This match resolves value before the surrounding protocol step continues.
+  // This match resolves value before the enclosing validation continues.
   case value {
     json.Object(fields) -> {
       use id <- result.try(text(fields, "id"))
@@ -201,10 +213,13 @@ pub fn decode(value: JsonValue) -> Result(Row, String) {
   }
 }
 
+/// Text keeps this client operation’s decoding or state decision in one place.
 fn text(
   fields: List(#(String, JsonValue)),
   name: String,
 ) -> Result(String, String) {
+  // This match resolves list.key_find(fields, name) before the surrounding protocol step continues.
+  // This match resolves list.key_find(fields, name) before the enclosing validation continues.
   case list.key_find(fields, name) {
     Ok(json.String(found)) -> Ok(found)
     Ok(_) -> Error("expected `" <> name <> "` to be text")

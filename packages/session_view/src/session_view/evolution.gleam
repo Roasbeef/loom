@@ -511,10 +511,12 @@ pub type Reply {
 /// assert evolution.decode_board(json.Null) |> result.is_error
 /// ```
 pub fn decode_board(value: json.JsonValue) -> Result(Board, String) {
+  // Ensure the top-level board payload is a JSON object.
   use fields <- result.try(case value {
     json.Object(fields) -> Ok(fields)
     _ -> Error("the evolution board is not an object")
   })
+
   let #(candidates, bad_candidates) =
     rows(fields, "candidates", candidate_limit, decode_candidate)
   let #(selections, bad_selections) =
@@ -560,15 +562,16 @@ pub fn decode_board(value: json.JsonValue) -> Result(Board, String) {
   ))
 }
 
-// Reads one array of rows. A missing array is an empty one, a row that does
-// not decode is counted, and the rows past the client's own bound are counted
-// too, so `unread` says how much of the reply the host is not drawing.
+/// Reads one array of rows. A missing array is an empty one, a row that does
+/// not decode is counted, and the rows past the client's own bound are counted
+/// too, so `unread` says how much of the reply the host is not drawing.
 fn rows(
   fields: Fields,
   key: String,
   limit: Int,
   decode: fn(json.JsonValue) -> Result(a, String),
 ) -> #(List(a), Int) {
+  // Extract array rows under key up to limit.
   case list.key_find(fields, key) {
     Ok(json.Array(items)) -> {
       let kept = list.take(items, limit)
@@ -584,6 +587,7 @@ fn rows(
 type Fields =
   List(#(String, json.JsonValue))
 
+/// Decodes a candidate record from a JSON value.
 fn decode_candidate(value: json.JsonValue) -> Result(Candidate, String) {
   use fields <- result.try(object(value))
   use candidate_id <- result.try(required_text(fields, "candidate_id"))
@@ -599,12 +603,15 @@ fn decode_candidate(value: json.JsonValue) -> Result(Candidate, String) {
   use approval <- result.try(optional_row(fields, "approval", decode_approval))
   use chosen <- result.try(optional_row(fields, "selected", decode_chosen))
   use evidence <- result.try(evidence_rows(fields))
+
+  // Extract optional candidate parent string if present.
   use parent <- result.try(case list.key_find(fields, "parent") {
     Ok(json.String(parent)) if parent != "" ->
       Ok(Some(text_hygiene.single_line(parent)))
     Ok(json.Null) | Ok(json.String(_)) | Error(Nil) -> Ok(None)
     Ok(_) -> Error("invalid candidate parent")
   })
+
   Ok(Candidate(
     candidate_id:,
     name:,
@@ -635,6 +642,7 @@ fn decode_candidate(value: json.JsonValue) -> Result(Candidate, String) {
   ))
 }
 
+/// Decodes candidate evidence entries up to evidence_limit.
 fn evidence_rows(fields: Fields) -> Result(List(Evidence), String) {
   case list.key_find(fields, "evidence") {
     Ok(json.Array(items)) ->
@@ -644,8 +652,11 @@ fn evidence_rows(fields: Fields) -> Result(List(Evidence), String) {
   }
 }
 
+/// Decodes candidate scope from its fields dictionary.
 fn decode_scope(fields: Fields) -> Result(Scope, String) {
   use kind <- result.try(required_text(fields, "kind"))
+
+  // Decode scope variant based on the kind field.
   case kind {
     "session" -> {
       use session <- result.try(required_text(fields, "session"))
@@ -664,6 +675,7 @@ fn decode_scope(fields: Fields) -> Result(Scope, String) {
   }
 }
 
+/// Decodes approval record from candidate fields dictionary.
 fn decode_approval(fields: Fields) -> Result(Approval, String) {
   use evidence_id <- result.try(required_text(fields, "evidence_id"))
   Ok(Approval(
@@ -679,6 +691,7 @@ fn decode_chosen(fields: Fields) -> Result(Chosen, String) {
   Ok(Chosen(generation:, evidence_id:))
 }
 
+/// Decodes an evidence record from a JSON value.
 fn decode_evidence(value: json.JsonValue) -> Result(Evidence, String) {
   use fields <- result.try(object(value))
   use evidence_id <- result.try(required_text(fields, "evidence_id"))
@@ -704,6 +717,7 @@ fn decode_evidence(value: json.JsonValue) -> Result(Evidence, String) {
   ))
 }
 
+/// Decodes a selection entry from its JSON representation.
 fn decode_selection(value: json.JsonValue) -> Result(Selection, String) {
   use fields <- result.try(object(value))
   use scope_fields <- result.try(required_object(fields, "scope"))
@@ -727,6 +741,7 @@ fn decode_selection(value: json.JsonValue) -> Result(Selection, String) {
   )
 }
 
+/// Decodes the published generation record from board fields.
 fn decode_generation(fields: Fields) -> Result(Generation, String) {
   use candidate_id <- result.try(required_text(fields, "candidate_id"))
   use name <- result.try(required_text(fields, "name"))
@@ -739,6 +754,7 @@ fn decode_generation(fields: Fields) -> Result(Generation, String) {
   ))
 }
 
+/// Decodes an in-flight waiting selection from a JSON value.
 fn decode_waiting(value: json.JsonValue) -> Result(Waiting, String) {
   use fields <- result.try(object(value))
   use request_id <- result.try(required_text(fields, "request_id"))
@@ -752,6 +768,7 @@ fn decode_waiting(value: json.JsonValue) -> Result(Waiting, String) {
   ))
 }
 
+/// Maps a raw phase state string to a Phase variant.
 fn phase_of(state: String) -> Phase {
   case state {
     "queued" -> Queued
@@ -760,6 +777,7 @@ fn phase_of(state: String) -> Phase {
   }
 }
 
+/// Decodes a history audit event from a JSON value.
 fn decode_event(value: json.JsonValue) -> Result(Event, String) {
   use fields <- result.try(object(value))
   use seq <- result.try(required_int(fields, "seq"))
@@ -790,6 +808,7 @@ fn decode_event(value: json.JsonValue) -> Result(Event, String) {
   ))
 }
 
+/// Maps an audit surface string to a typed Surface variant.
 fn surface(word: String) -> Surface {
   case word {
     "cli" -> Cli
@@ -844,6 +863,7 @@ fn int_or(fields: Fields, key: String, default: Int) -> Int {
   }
 }
 
+/// Reads a boolean freshness flag into Current or Outdated.
 fn freshness(fields: Fields, key: String) -> Result(Freshness, String) {
   case list.key_find(fields, key) {
     Ok(json.Bool(True)) -> Ok(Current)
@@ -852,8 +872,8 @@ fn freshness(fields: Fields, key: String) -> Result(Freshness, String) {
   }
 }
 
-// An optional nested object. Absent and null are `None`; present and
-// unreadable is an error, which fails the row that holds it.
+/// An optional nested object. Absent and null are `None`; present and
+/// unreadable is an error, which fails the row that holds it.
 fn optional_row(
   fields: Fields,
   key: String,
@@ -940,6 +960,7 @@ pub fn arguments(
   request_id: String,
   deadline_ms: Int,
 ) -> json.JsonValue {
+  // Build argument fields corresponding to the specific request variant.
   let fields = case request {
     Approve(candidate_id:, evidence_id:) -> [
       #("candidate_id", json.String(candidate_id)),
@@ -962,6 +983,8 @@ pub fn arguments(
     ReadEvidence(evidence_id:) -> [#("evidence_id", json.String(evidence_id))]
     CoreStatus -> []
   }
+
+  // Attach terminal surface annotation if requested and recorded.
   case via, records_surface(request) {
     ClaimsTerminal, Records ->
       json.Object(list.append(fields, [#("via", json.String("terminal"))]))
@@ -1028,6 +1051,7 @@ fn named(body: json.JsonValue, key: String) -> Result(String, String) {
   required_text(fields, key)
 }
 
+/// Decodes response payload into either a whole JSON object or large page descriptor.
 fn read_page(body: json.JsonValue) -> Page {
   case body {
     json.Object(fields) ->
@@ -1039,11 +1063,13 @@ fn read_page(body: json.JsonValue) -> Page {
   }
 }
 
-// The three actions that report a selection share one vocabulary: a `state`
-// word, or, for a selection of a global candidate that commits at once, the
-// bare committed selection.
+/// The three actions that report a selection share one vocabulary: a `state`
+/// word, or, for a selection of a global candidate that commits at once, the
+/// bare committed selection.
 fn read_report(body: json.JsonValue) -> Result(Report, String) {
   use fields <- result.try(object(body))
+
+  // Extract generation from committed selection object if present.
   let committed = case list.key_find(fields, "committed") {
     Ok(json.Object(selection)) ->
       case list.key_find(selection, "generation") {
@@ -1052,6 +1078,8 @@ fn read_report(body: json.JsonValue) -> Result(Report, String) {
       }
     _ -> None
   }
+
+  // Parse state and generation fields into report status.
   case list.key_find(fields, "state"), list.key_find(fields, "generation") {
     Ok(json.String("queued")), _ -> Ok(InFlight(Queued))
     Ok(json.String("running")), _ -> Ok(InFlight(Running))
@@ -1157,6 +1185,8 @@ pub fn purpose_words(purpose: Purpose) -> String {
 /// ```
 pub fn principal_words(principal: String) -> String {
   let one_line = text_hygiene.single_line(principal)
+
+  // Truncate long principal names with an ellipsis.
   case string.length(one_line) > 16 {
     True -> string.slice(one_line, 0, 14) <> "…"
     False -> one_line
@@ -1234,6 +1264,8 @@ pub fn generation_words(generation: Int, liveness: Liveness) -> String {
 /// ```
 pub fn refusal_words(code: String, message: String) -> String {
   let said = text_hygiene.single_line(message)
+
+  // Match refusal code and message against known user-friendly explanations.
   case code, said {
     "forbidden", _ ->
       "Your attachment may not do that to the evolution catalogue."
@@ -1362,6 +1394,7 @@ pub type SelectTarget {
   )
 }
 
+/// Finds the current generation of a candidate matching by name and scope.
 fn current_generation(board: Board, candidate: Candidate) -> Int {
   list.find(board.selections, fn(selection) {
     selection.name == candidate.name && selection.scope == candidate.scope
@@ -1390,6 +1423,8 @@ pub fn rollback_choices(board: Board, current: Candidate) -> List(Candidate) {
   |> list.filter(fn(id) { id != current.candidate_id })
   |> list.filter_map(fn(id) {
     use candidate <- result.try(find(board, id))
+
+    // Filter candidates matching current scope, approved, and current identity.
     case
       candidate.scope == current.scope,
       candidate.approval,

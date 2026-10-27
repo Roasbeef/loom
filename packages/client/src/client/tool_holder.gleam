@@ -161,10 +161,12 @@ pub fn stop(holder: Holder(config)) -> Result(Nil, String) {
   result.replace_error(outcome, "the tool configuration holder did not retire")
 }
 
+/// Establishes handle for the caller, keeping its validation and result policy at this boundary.
 fn handle(
   config: config,
   message: Message(config),
 ) -> actor.Next(config, Message(config)) {
+  // Decide how to handle message {.
   case message {
     Fetch(reply:) -> {
       process.send(reply, config)

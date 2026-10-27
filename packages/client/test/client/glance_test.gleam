@@ -307,6 +307,7 @@ fn scripted(asked: Subject(String)) -> auxiliary.Summarizer {
       accounting: accounting.from_usage(accounting.unknown_usage(
         usage_evidence.Other,
       )),
+      stop_reason: message.Stop,
     ))
   })
 }

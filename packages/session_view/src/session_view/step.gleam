@@ -147,6 +147,8 @@ pub fn advance_activity_clocks(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
   let shared = advance_generation_clock(shared)
+
+  // Reset activity clock when inactive or update elapsed seconds when live.
   case session_model.active_strand_live(shared) {
     False ->
       shared
@@ -160,6 +162,8 @@ pub fn advance_activity_clocks(
         shared
         |> shared_set.activity_started_ms(Some(started))
         |> shared_set.activity_elapsed_s(activity_elapsed_s)
+
+      // Invalidate frame only when the second boundary rolls over.
       case activity_elapsed_s == shared.activity_elapsed_s {
         True -> advanced
         False -> session_model.invalidate_frame(advanced)
@@ -175,13 +179,16 @@ pub fn advance_activity_clocks(
 // every durable one, because the record cache's inputs have not moved. A
 // generation with no reasoning row on screen is read but not repainted,
 // since nothing drawn depends on the figure.
+/// Advances generation clock elapsed seconds and repaints thinking streams.
 fn advance_generation_clock(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
+  // Calculate elapsed generation seconds if thinking has started.
   let elapsed = case session_model.generation_started_ms(shared) {
     None -> 0
     Some(started) -> int.max({ shared.stamp.now_ms - started } / 1000, 0)
   }
+
   use <- bool.guard(
     when: elapsed == shared.generation_elapsed_s,
     return: shared,
@@ -193,6 +200,8 @@ fn advance_generation_clock(
     && list.any(shared.streams, fn(stream) {
       stream.strand == shared.active_strand && stream.kind == "thinking"
     })
+
+  // Invalidate transcript and frame when an active reasoning row is visible.
   case reasoning_shown {
     False -> advanced
     True ->
@@ -433,6 +442,7 @@ pub fn update_retaining_surfaces(
   Shared(socket, recorder, source, replay_source),
   List(step_effect.Effect(socket, recorder)),
 ) {
+  // Reduce incoming message and accumulate resulting effects.
   let reduced = case message {
     msg.Arrived(arrivals:) -> list.fold(arrivals, shared, file)
     msg.Input(at:, event: msg.Ticked) -> tick(shared_set.stamp(shared, at))
@@ -441,6 +451,7 @@ pub fn update_retaining_surfaces(
       settle(started, commands.act(started, command))
     }
   }
+
   #(shared_set.outbox(reduced, []), list.reverse(reduced.outbox))
 }
 
@@ -525,6 +536,7 @@ pub fn forget_surfaces(
 // Both hosts now have a queue editor. Tick and focus retain its notices until
 // the host consumes them; only surfaces neither shared-step host shows retire
 // here. Explicit forget_surfaces remains the host's end-of-message cleanup.
+/// Clears surface facts and goal observations while preserving queue notices.
 fn forget_unshown_surfaces(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
@@ -536,6 +548,7 @@ fn forget_unshown_surfaces(
 // Files one arrival into the buffer that waits for it. A frame from a source
 // the record no longer reads came from a socket that was replaced, and a
 // host with no waiting attempt to offer it to drops it.
+/// Files an arriving socket message or replayed event into the input buffer.
 fn file(
   shared: Shared(socket, recorder, source, replay_source),
   arrival: msg.Arrival(source),
@@ -553,6 +566,7 @@ fn file(
 // The terminal's tick, less its surfaces, over the record the event started
 // from. The units are applied to `shared`, a parameter, as `settle_tick` does
 // for the terminal, and the settle compares against `started`.
+/// Advances timers, drains connection buffers, and processes ticks.
 fn tick(
   started: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
@@ -570,11 +584,14 @@ fn tick(
 // The roster's clock moves with the stamp, and the frame is stale when a
 // second a strip draws changed. The terminal advances it only while its
 // strip is drawn; a host that always has one advances it on every tick.
+/// Advances agent roster clock and repaints if strip seconds changed.
 fn advance_roster(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
   let #(roster, repaint) = agent_roster.tick(shared.roster, shared.stamp.now_ms)
   let advanced = shared_set.roster(shared, roster)
+
+  // Invalidate frame if the agent roster changed display state.
   case repaint {
     agent_roster.Changed -> session_model.invalidate_frame(advanced)
     agent_roster.Unchanged -> advanced
@@ -584,6 +601,7 @@ fn advance_roster(
 // Every held frame goes to the adopted lane, oldest first, through the
 // engine's drain, and each update the lane produces is applied before the
 // next frame is taken, so a frame sees everything an earlier one did.
+/// Drains held incoming socket frames into the adopted session channel.
 fn drain_connection(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
@@ -599,6 +617,7 @@ fn drain_connection(
   }
 }
 
+/// Takes the next incoming socket message from the connection inbox.
 fn take_frame(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> #(
@@ -609,10 +628,12 @@ fn take_frame(
   #(shared_set.inbox(shared, taken), next)
 }
 
+/// Dispatches a single received socket message into channel state.
 fn receive_frame(
   shared: Shared(socket, recorder, source, replay_source),
   incoming: connection_event.Message,
 ) -> Shared(socket, recorder, source, replay_source) {
+  // Pass incoming message to lane fold if channel is open.
   case shared.channel {
     Some(channel) -> {
       let #(shared, updates) = lane_fold.receive(shared, channel, incoming)
@@ -633,9 +654,11 @@ fn apply_update(
 
 // The lane's own tick, where its idle refresh and deadlines are checked,
 // followed by the history read the reduction may have left owed.
+/// Advances deadlines and triggers idle refresh on the adopted channel.
 fn tick_lane(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
+  // Run channel tick and service pending history reads if attached.
   case shared.channel {
     None -> shared
     Some(_) -> {

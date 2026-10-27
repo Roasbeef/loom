@@ -1308,6 +1308,16 @@ markers and verifies that deltas, completion records, and final output
 agree. Malformed model arguments remain an in-band corrective tool result
 under #189; conflicting wire records are `MalformedStream`.
 
+[Protocol 103](../../protocol-change/103-bounded-responses-recovery.md) keeps
+that validation strict while allowing bounded recovery for the specific case
+where an output item closes before a streamed part. The adapter emits
+`RecoverableStreamCorruption`; the gateway forwards it without fallback so
+its failure and usage reach durable settlement. The machine narrows the
+captured policy to at most three total generation attempts and retains that
+ceiling across later transport errors, orphans and serialize/reload. A stricter
+configured budget still wins. Only allowlisted structural part/status details
+enter the diagnostic; no text, arguments or ciphertext are recorded.
+
 ### Secrets
 
 **Secrets live in exactly one place.** Provider configuration holds a

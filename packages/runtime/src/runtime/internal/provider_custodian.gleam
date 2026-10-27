@@ -19,6 +19,10 @@
 //// recovery run behind the custodian, not become a fabricated provider
 //// response. The whole boundary is a Gleam process protocol.
 ////
+//// `preparation` selects the callable before `prepare` copies startup into
+//// the parked worker. Its compatibility request facade is unused there and
+//// must not duplicate rendered tool definitions or other closure captures.
+////
 //// ## The request worker is a `weft/state_machine`
 ////
 //// `Parked → Forwarding → Cancelling → Draining`, four states which are the
@@ -115,7 +119,8 @@ type Handles {
 /// out of the machine's data.
 type Startup {
   Startup(
-    surface: effects.ProviderSurface,
+    prepare: fn(effects.RequestSpec) -> stream.PreparedStream,
+    timeout_ms: Int,
     spec: effects.RequestSpec,
     consumer: Pid,
     outer: Subject(stream.StreamEvent),
@@ -252,7 +257,14 @@ pub fn prepare(
 ) -> Prepared {
   let consumer = process.self()
   let outer = process.new_subject()
-  let startup = Startup(surface:, spec:, consumer:, outer:)
+  let startup =
+    Startup(
+      prepare: preparation(surface),
+      timeout_ms: effects.provider_timeout_ms(surface),
+      spec:,
+      consumer:,
+      outer:,
+    )
 
   // A plain linked start, because the link is the point: the worker and this
   // effect are one failure domain, so an unexpected surface crash faults the
@@ -266,6 +278,7 @@ pub fn prepare(
     |> sm.on_enter(entered)
     |> sm.start
 
+  // Dispatches on whether the initialised state machine worker started successfully.
   case started {
     Ok(worker) -> published(worker, consumer, outer)
 
@@ -276,8 +289,22 @@ pub fn prepare(
   }
 }
 
+/// Projects preparation without calling the surface. Both variants cross their
+/// first provider instruction only after the worker receives its begin permit.
+fn preparation(
+  surface: effects.ProviderSurface,
+) -> fn(effects.RequestSpec) -> stream.PreparedStream {
+  case surface {
+    effects.PreparedProviderSurface(prepare:, ..) -> prepare
+    effects.ProviderSurface(request:, ..) -> fn(spec) {
+      stream.PreparedStream(handle: request(spec), begin: fn() { Nil })
+    }
+  }
+}
+
 // Publishes the started worker to a custodian of its own, and returns the
 // handle its caller will publish to the reaper.
+/// Publishes the started worker to a custodian and returns the prepared handle.
 fn published(
   worker: sm.Started(Handles),
   consumer: Pid,
@@ -297,6 +324,7 @@ fn published(
 
 // A worker that never started owns nothing to drain, so its handle is an
 // immediate one carrying the failure the caller will read as its terminal.
+/// Returns an immediate failure stream handle when the worker fails to start.
 fn unstarted(outer: Subject(stream.StreamEvent)) -> Prepared {
   process.send(
     outer,
@@ -318,6 +346,7 @@ fn unstarted(outer: Subject(stream.StreamEvent)) -> Prepared {
 // The stop capability exists before publication. Selecting it here lets a
 // rejected reaper adoption retire the parked worker without ever crossing the
 // provider seam.
+/// Initializes the state machine channels and initial parked state.
 fn initialise(
   startup: Startup,
 ) -> Result(sm.Initialised(Phase, Data, Msg, Handles), String) {
@@ -359,6 +388,8 @@ fn handle(phase: Phase, data: Data, message: Msg) -> sm.Next(Phase, Data, Msg) {
     // after it.
     Forwarding, Serving(request:), Inner(event:) -> {
       deliver(request, event)
+
+      // Determines whether the inner stream event is intermediate or terminal.
       case event {
         stream.Delta(..) -> sm.keep(data)
         stream.Settled(..) | stream.Failed(..) ->
@@ -507,13 +538,14 @@ fn handle(phase: Phase, data: Data, message: Msg) -> sm.Next(Phase, Data, Msg) {
 // The step replaces the selector because the inner stream's events subject
 // was created two lines above, in this process, and could not have been named
 // when the machine started.
+/// Admits the startup request, prepares the provider stream, and begins forwarding or cancelling.
 fn admit(
   startup: Startup,
   stop: Subject(Nil),
   owner: custodian.Custodian,
 ) -> sm.Next(Phase, Data, Msg) {
   let stream.PreparedStream(handle: inner, begin: begin_inner) =
-    effects.prepare_provider(startup.surface, startup.spec)
+    startup.prepare(startup.spec)
   let consumer_monitor = process.monitor(startup.consumer)
   let drain = watch_inner(inner)
   let serving =
@@ -527,12 +559,13 @@ fn admit(
         startup.spec,
         stream.RuntimeSource,
         stream.CancellationRequested,
-        effects.provider_timeout_ms(startup.surface),
+        startup.timeout_ms,
         cancel_grace_ms,
       ),
     ))
   let selector = request_selector(inner, stop, consumer_monitor, drain)
 
+  // Decides whether to begin streaming or immediately cancel based on adoption outcome.
   case custodian.adopt(owner, inner.owner, inner.cancel) {
     True -> {
       begin_inner()
@@ -611,6 +644,7 @@ fn entered(_from: Phase, to: Phase, data: Data) -> sm.Enter(Phase, Data, Msg) {
 //
 // The permit is deliberately absent: it is one-way, and a selector that no
 // longer names it is how the machine says a second `begin` reaches nobody.
+/// Constructs a selector for the active streaming request and monitors.
 fn request_selector(
   inner: stream.StreamHandle,
   stop: Subject(Nil),
@@ -626,6 +660,7 @@ fn request_selector(
   |> select_drain(drain)
 }
 
+/// Augments the selector with a monitor for the inner stream drain when active.
 fn select_drain(
   selector: process.Selector(Msg),
   drain: Drain,
@@ -655,6 +690,7 @@ fn watch_inner(inner: stream.StreamHandle) -> Drain {
 // A transitive owner speaks for work beneath it. Only its normal exit proves
 // that every descendant drained; this is `stream`'s own adjudication, made
 // where the `Down` is selected rather than waited for.
+/// Evaluates a monitor down event into an inner stream drain proof verdict.
 fn drain_proof(down: process.Down) -> DrainProof {
   case down {
     process.ProcessDown(reason:, ..) ->
@@ -676,6 +712,7 @@ fn abandon(request: Request, data: Data) -> sm.Next(Phase, Data, Msg) {
 }
 
 // Cancellation crossed this boundary and was never acknowledged.
+/// Delivers an unconfirmed cancellation error when grace expires without confirmation.
 fn unconfirmed(request: Request, data: Data) -> sm.Next(Phase, Data, Msg) {
   deliver(
     request,

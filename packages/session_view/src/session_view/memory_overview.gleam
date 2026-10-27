@@ -182,10 +182,13 @@ pub type Waiting {
 pub fn decode(value: json.JsonValue) -> Result(Board, String) {
   use fields <- result.try(object(value, "board"))
   use inject <- result.try(text(fields, "inject"))
+
+  // Decode the receives files array up to the bound.
   use receives <- result.try(case list.key_find(fields, "receives") {
     Ok(json.Array(raw)) -> list.try_map(list.take(raw, 8), decode_receives)
     Ok(_) | Error(Nil) -> Error("missing memory receives")
   })
+
   use notes <- result.try(section(fields, "notes", decode_note))
   use rules <- result.try(section(fields, "rules", decode_rule))
   use proposals <- result.try(decode_waiting(fields))
@@ -202,15 +205,19 @@ pub fn decode(value: json.JsonValue) -> Result(Board, String) {
   ))
 }
 
+/// Decodes a receives entry for a memory file into a Receives record.
 fn decode_receives(value: json.JsonValue) -> Result(Receives, String) {
   use fields <- result.try(object(value, "file"))
   use file <- result.try(text(fields, "file"))
   use state <- result.try(text(fields, "state"))
   use bytes <- result.try(count(fields, "bytes"))
+
+  // Extract the reason text if present, otherwise empty string.
   let reason = case text(fields, "reason") {
     Ok(reason) -> text_hygiene.single_line(reason)
     Error(_) -> ""
   }
+
   Ok(
     Receives(file: text_hygiene.single_line(file), bytes:, reach: case state {
       "injected" -> Injected
@@ -222,24 +229,32 @@ fn decode_receives(value: json.JsonValue) -> Result(Receives, String) {
   )
 }
 
+/// Decodes a memory section (like notes or rules) from the board fields.
 fn section(
   fields: List(#(String, json.JsonValue)),
   name: String,
   decode_row: fn(json.JsonValue) -> Result(row, String),
 ) -> Result(Section(row), String) {
+  // Extract section object by name.
   use body <- result.try(case list.key_find(fields, name) {
     Ok(value) -> object(value, name)
     Error(Nil) -> Error("missing memory section: " <> name)
   })
+
   use state <- result.try(text(body, "state"))
+
+  // Parse section rows if ok, otherwise return unavailable section.
   case state {
     "ok" -> {
       use total <- result.try(count(body, "total"))
       use omitted <- result.try(count(body, "omitted"))
+
+      // Extract the raw rows array from the section body.
       use raw <- result.try(case list.key_find(body, "rows") {
         Ok(json.Array(raw)) -> Ok(raw)
         Ok(_) | Error(Nil) -> Error("missing memory rows: " <> name)
       })
+
       use rows <- result.map(list.try_map(list.take(raw, row_limit), decode_row))
       Listed(rows:, total:, omitted:)
     }
@@ -251,16 +266,20 @@ fn section(
   }
 }
 
+/// Decodes a single note JSON object into a Note record.
 fn decode_note(value: json.JsonValue) -> Result(Note, String) {
   use fields <- result.try(object(value, "note"))
   use kind <- result.try(text(fields, "kind"))
   use date <- result.try(text(fields, "date"))
   use title <- result.try(text(fields, "title"))
   let description = result.unwrap(text(fields, "description"), "")
+
+  // Check if note is flagged with legacy typing.
   let typing = case list.key_find(fields, "legacy") {
     Ok(json.Bool(True)) -> Legacy
     Ok(_) | Error(Nil) -> Typed
   }
+
   Ok(Note(
     kind: text_hygiene.single_line(kind),
     date: text_hygiene.single_line(date),
@@ -270,6 +289,7 @@ fn decode_note(value: json.JsonValue) -> Result(Note, String) {
   ))
 }
 
+/// Decodes a single rule JSON object into a Rule record.
 fn decode_rule(value: json.JsonValue) -> Result(Rule, String) {
   use fields <- result.try(object(value, "rule"))
   use id <- result.try(text(fields, "id"))
@@ -284,14 +304,19 @@ fn decode_rule(value: json.JsonValue) -> Result(Rule, String) {
   ))
 }
 
+/// Decodes the proposals waiting state into a Waiting record.
 fn decode_waiting(
   fields: List(#(String, json.JsonValue)),
 ) -> Result(Waiting, String) {
+  // Extract proposals section object.
   use body <- result.try(case list.key_find(fields, "proposals") {
     Ok(value) -> object(value, "proposals")
     Error(Nil) -> Error("missing memory proposals")
   })
+
   use state <- result.try(text(body, "state"))
+
+  // Extract pending count if status is ok, otherwise record unavailable.
   case state {
     "ok" -> count(body, "pending") |> result.map(Waiting)
     _ ->
@@ -386,6 +411,7 @@ fn total_words(total: Option(Int)) -> String {
 /// assert memory_overview.size_words(1536) == "1.5 KiB"
 /// ```
 pub fn size_words(bytes: Int) -> String {
+  // Format byte size in bytes or KiB depending on threshold.
   case bytes < 1024 {
     True -> int.to_string(bytes) <> " B"
     False -> {
@@ -403,11 +429,13 @@ pub fn size_words(bytes: Int) -> String {
 /// assert memory_overview.inject_words(board) == "[memory] inject = notes"
 /// ```
 pub fn inject_words(board: Board) -> String {
+  // Format injection mode words.
   let mode = case board.inject {
     InjectsNothing -> "off"
     InjectsNotes -> "notes"
     UnknownInject(mode:) -> "unknown (" <> mode <> ")"
   }
+
   "[memory] inject = " <> mode
 }
 
@@ -420,11 +448,13 @@ pub fn inject_words(board: Board) -> String {
 /// assert memory_overview.receives_words(file) == "loom-rules.md · 912 B · every new session reads it"
 /// ```
 pub fn receives_words(file: Receives) -> String {
+  // Normalize memory file names with explanatory labels.
   let name = case file.file {
     "loom-rules.md" -> "loom-rules.md (approved rules)"
     "loom-memory.notes" -> "loom-memory.notes (notes index)"
     other -> other
   }
+
   name
   <> " · "
   <> case file.reach {
@@ -447,6 +477,8 @@ pub fn receives_words(file: Receives) -> String {
 /// ```
 pub fn note_head(note: Note) -> String {
   let base = note.kind <> " · " <> note.date
+
+  // Format note header suffix according to typing.
   case note.typing {
     Typed -> base
     Legacy -> base <> " · legacy"
@@ -476,14 +508,18 @@ pub fn note_text(note: Note) -> String {
 /// assert memory_overview.rule_head(rule) == "prop-0123456789 · approved 2026-10-11 · session 0198c0de"
 /// ```
 pub fn rule_head(rule: Rule) -> String {
+  // Format approved date if present.
   let approved = case rule.approved {
     "" -> []
     date -> ["approved " <> date]
   }
+
+  // Format short session identity if present.
   let session = case rule.session {
     "" -> []
     session -> ["session " <> string.slice(session, 0, 8)]
   }
+
   string.join(list.flatten([[rule.id], approved, session]), " · ")
 }
 
@@ -546,6 +582,7 @@ pub fn refusal_words(code: String, message: String) -> String {
   }
 }
 
+/// Validates that a JSON value is an object and extracts its fields.
 fn object(
   value: json.JsonValue,
   what: String,
@@ -556,6 +593,7 @@ fn object(
   }
 }
 
+/// Extracts a required string field from key-value pairs.
 fn text(
   fields: List(#(String, json.JsonValue)),
   name: String,
@@ -566,6 +604,7 @@ fn text(
   }
 }
 
+/// Extracts a required non-negative integer count field from key-value pairs.
 fn count(
   fields: List(#(String, json.JsonValue)),
   name: String,

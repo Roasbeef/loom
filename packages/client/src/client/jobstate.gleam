@@ -485,6 +485,8 @@ pub fn step(
 // The terminal states share one arm and it is written by naming all three
 // variants rather than with a catch-all, so a fourth terminal state added
 // later is a compile error here instead of a silent absorption.
+
+/// Computes the valid next job lifecycle state given a incoming job event.
 fn next_state(
   state: JobState,
   event: JobEvent,
@@ -513,6 +515,8 @@ fn next_state(
 // cell for a process that is gone, which is exactly the "hide a running
 // job" harm this namespace is reserved against, arriving by accident
 // instead of by forgery.
+
+/// Advances state from Starting on helper acceptance, kill request, or early exit.
 fn from_starting(event: JobEvent) -> JobState {
   case event {
     HelperAccepted -> Running
@@ -531,6 +535,8 @@ fn from_starting(event: JobEvent) -> JobState {
 // runner sends it once, on the relay's own channel. A second means one
 // job dispatched two runs, and absorbing that would leave the second
 // execution with no record and no reaper.
+
+/// Advances state from Running, rejecting duplicate helper acceptance.
 fn from_running(event: JobEvent) -> Result(JobState, IllegalTransition) {
   case event {
     HelperAccepted -> Error(AcceptedTwice(state: Running))
@@ -553,6 +559,8 @@ fn from_running(event: JobEvent) -> Result(JobState, IllegalTransition) {
 // and because the party that asked first is the one a reader of the
 // terminal state needs named — overwriting it would let a session-stop
 // sweep erase the owner's own `job_kill` from the record.
+
+/// Advances state from Draining until process termination is observed.
 fn from_draining(by: KillCause, event: JobEvent) -> JobState {
   case event {
     HelperAccepted -> Draining(by:)
@@ -587,6 +595,8 @@ fn from_draining(by: KillCause, event: JobEvent) -> JobState {
 // `job_kill` and session stop both pass through the actor, which drains
 // the record before the ladder starts, and a helper lost with the runner
 // reports nothing at all.
+
+/// Classifies a process exit result into Exited or Killed based on termination flags.
 fn exit_state(result: ExecResult) -> JobState {
   case result.timed_out, result.cancelled {
     True, _ -> Killed(by: ByDeadline, result:)
@@ -656,6 +666,8 @@ fn nullable_string(value: Option(String)) -> JsonValue {
 // A tag rather than a bare string for the live phases too, so that adding
 // a field to `Running` later is a change to this object and not a change
 // to the shape a stored cell has.
+
+/// Serializes job lifecycle state into structured json.
 fn encode_state(state: JobState) -> JsonValue {
   case state {
     Starting -> json.Object([#("phase", json.String("starting"))])
@@ -689,6 +701,7 @@ fn encode_state(state: JobState) -> JsonValue {
   }
 }
 
+/// Maps a kill cause to its stable wire string tag.
 fn cause_to_string(cause: KillCause) -> String {
   case cause {
     ByOwner -> "owner"
@@ -698,6 +711,7 @@ fn cause_to_string(cause: KillCause) -> String {
   }
 }
 
+/// Maps a loss reason to its stable wire string tag.
 fn reason_to_string(reason: LossReason) -> String {
   case reason {
     VmRestart -> "vm_restart"
@@ -712,6 +726,8 @@ fn reason_to_string(reason: LossReason) -> String {
 // `cancelled` had no reader: a stored subset would settle today which of
 // these eleven fields a future poll may render, and the record outlives
 // the build that wrote it.
+
+/// Encodes complete process execution metrics and exit attributes into json.
 fn encode_result(result: ExecResult) -> JsonValue {
   json.Object([
     #("code", json.Int(result.code)),
@@ -750,6 +766,8 @@ fn encode_result(result: ExecResult) -> JsonValue {
 ///
 pub fn decode(payload: JsonValue) -> Result(JobRecord, CorruptionReport) {
   let where = "client/jobstate.decode"
+
+  // Decode the outer job record object fields.
   case payload {
     json.Object(fields) -> {
       use id_text <- result.try(require_string(fields, "id", where))
@@ -789,6 +807,8 @@ pub fn decode(payload: JsonValue) -> Result(JobRecord, CorruptionReport) {
 // cell outlives the build that wrote it, and a stored id carrying a
 // separator would make every later `job_key` round-trip disagree with the
 // key the cell is actually filed under.
+
+/// Validates that a string is a well-formed JobId without path separators.
 fn require_job_id(
   text: String,
   where: String,
@@ -805,6 +825,7 @@ fn require_job_id(
   }
 }
 
+/// Decodes execution specification fields from a job payload object.
 fn decode_spec(
   fields: List(#(String, JsonValue)),
   where: String,
@@ -818,12 +839,16 @@ fn decode_spec(
 
 // The phase tag decides the shape, and an unknown tag is corruption
 // rather than a fallback to any live or terminal phase — see `decode`.
+
+/// Decodes the tagged job state object into a typed JobState.
 fn decode_state(
   fields: List(#(String, JsonValue)),
   where: String,
 ) -> Result(JobState, CorruptionReport) {
   use state <- result.try(require_object(fields, "state", where))
   use phase <- result.try(require_string(state, "phase", where))
+
+  // Branch on phase tag to decode corresponding lifecycle attributes.
   case phase {
     "starting" -> Ok(Starting)
 
@@ -867,6 +892,8 @@ fn decode_state(
 // is also what a promotion that failed leaves. Anything other than a
 // string or a null is corruption, because a ref that will not read as text
 // is a ref no `fs_read` can be handed.
+
+/// Decodes optional spill blob references for stdout and stderr streams.
 fn decode_spill(
   fields: List(#(String, JsonValue)),
   where: String,
@@ -880,12 +907,16 @@ fn decode_spill(
 // One stream's ref, blamed by its path inside the spill rather than by
 // its bare name, so a report tells an operator which cell broke instead
 // of naming a key that appears in more than one object.
+
+/// Reads an optional string ref from the spill object or validates null representation.
 fn spill_ref(
   fields: List(#(String, JsonValue)),
   key: String,
   where: String,
 ) -> Result(Option(String), CorruptionReport) {
   let on = "spill." <> key
+
+  // Look up the requested stream spill key in fields.
   case list.key_find(fields, key) {
     Error(Nil) ->
       Error(corruption.report(
@@ -909,11 +940,14 @@ fn spill_ref(
   }
 }
 
+/// Decodes the kill cause tag from a draining or killed state object.
 fn decode_cause(
   state: List(#(String, JsonValue)),
   where: String,
 ) -> Result(KillCause, CorruptionReport) {
   use text <- result.try(require_string(state, "by", where))
+
+  // Decode the kill cause tag into its domain variant.
   case text {
     "owner" -> Ok(ByOwner)
     "deadline" -> Ok(ByDeadline)
@@ -929,11 +963,14 @@ fn decode_cause(
   }
 }
 
+/// Decodes the lost reason tag from a lost state object.
 fn decode_reason(
   state: List(#(String, JsonValue)),
   where: String,
 ) -> Result(LossReason, CorruptionReport) {
   use text <- result.try(require_string(state, "reason", where))
+
+  // Decode the reason tag into its LossReason variant.
   case text {
     "vm_restart" -> Ok(VmRestart)
     "owner_restart" -> Ok(OwnerRestart)
@@ -948,6 +985,7 @@ fn decode_reason(
   }
 }
 
+/// Decodes the detailed process execution report from state object.
 fn decode_result(
   state: List(#(String, JsonValue)),
   where: String,
@@ -989,6 +1027,7 @@ fn decode_result(
 // stored object is read field by field, and a missing or mistyped field
 // is named in the report so the cell that broke can be found by hand.
 
+/// Retrieves a required field value by key or reports corruption if missing.
 fn require(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -1006,12 +1045,15 @@ fn require(
   }
 }
 
+/// Ensures a required field is present and structured as a JSON object.
 fn require_object(
   fields: List(#(String, JsonValue)),
   key: String,
   where: String,
 ) -> Result(List(#(String, JsonValue)), CorruptionReport) {
   use value <- result.try(require(fields, key, where))
+
+  // Assert that the JSON value is an object variant.
   case value {
     json.Object(inner) -> Ok(inner)
     other ->
@@ -1024,12 +1066,15 @@ fn require_object(
   }
 }
 
+/// Ensures a required field is present and holds a string value.
 fn require_string(
   fields: List(#(String, JsonValue)),
   key: String,
   where: String,
 ) -> Result(String, CorruptionReport) {
   use value <- result.try(require(fields, key, where))
+
+  // Assert that the JSON value is a string variant.
   case value {
     json.String(text) -> Ok(text)
     other ->
@@ -1042,12 +1087,15 @@ fn require_string(
   }
 }
 
+/// Ensures a required field is present and holds an integer value.
 fn require_int(
   fields: List(#(String, JsonValue)),
   key: String,
   where: String,
 ) -> Result(Int, CorruptionReport) {
   use value <- result.try(require(fields, key, where))
+
+  // Assert that the JSON value is an integer variant.
   case value {
     json.Int(number) -> Ok(number)
     other ->
@@ -1060,12 +1108,15 @@ fn require_int(
   }
 }
 
+/// Ensures a required field is present and holds a boolean value.
 fn require_bool(
   fields: List(#(String, JsonValue)),
   key: String,
   where: String,
 ) -> Result(Bool, CorruptionReport) {
   use value <- result.try(require(fields, key, where))
+
+  // Assert that the JSON value is a boolean variant.
   case value {
     json.Bool(flag) -> Ok(flag)
     other ->
@@ -1078,12 +1129,15 @@ fn require_bool(
   }
 }
 
+/// Ensures a required field is present and holds a list of string elements.
 fn require_string_list(
   fields: List(#(String, JsonValue)),
   key: String,
   where: String,
 ) -> Result(List(String), CorruptionReport) {
   use value <- result.try(require(fields, key, where))
+
+  // Assert that the JSON value is an array of strings.
   case value {
     json.Array(items) -> list.try_map(items, require_string_item(_, where, key))
     other ->
@@ -1096,6 +1150,7 @@ fn require_string_list(
   }
 }
 
+/// Validates an individual array element as a string.
 fn require_string_item(
   item: JsonValue,
   where: String,

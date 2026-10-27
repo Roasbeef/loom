@@ -1540,15 +1540,15 @@ pub fn init(start: Start(socket)) -> #(Model(socket), Effect(Msg(socket))) {
   #(model, effect.batch([open(start.transport), arm()]))
 }
 
-// Opens the transport inside the component's process, once. The inbox and
-// the subject the outcome arrives on are both created here, in the
-// component's process, so every frame and the open's answer are read by
-// the process that owns them. `connect` returns at once; the answer is a
-// message, so a slow gateway attach cannot hold the component's start.
-//
-// A frame's mapping drains the inbox behind it, so a burst that is already
-// waiting becomes one message and one render. Neither mapping reads the
-// clock: `update` does, once, when it takes the message.
+/// Opens the transport inside the component's process, once. The inbox and
+/// the subject the outcome arrives on are both created here, in the
+/// component's process, so every frame and the open's answer are read by
+/// the process that owns them. `connect` returns at once; the answer is a
+/// message, so a slow gateway attach cannot hold the component's start.
+///
+/// A frame's mapping drains the inbox behind it, so a burst that is already
+/// waiting becomes one message and one render. Neither mapping reads the
+/// clock: `update` does, once, when it takes the message.
 fn open(transport: Transport(socket)) -> Effect(Msg(socket)) {
   use _dispatch, opened <- server_component.select
   let inbox = process.new_subject()
@@ -1565,8 +1565,8 @@ fn open(transport: Transport(socket)) -> Effect(Msg(socket)) {
   })
 }
 
-// Up to `room` messages already in the inbox, oldest first, without waiting
-// for any.
+/// Up to `room` messages already in the inbox, oldest first, without waiting
+/// for any.
 fn waiting(
   inbox: Subject(connection_event.Message),
   room: Int,
@@ -1607,6 +1607,8 @@ pub fn update(
   message: Msg(socket),
 ) -> #(Model(socket), Effect(Msg(socket))) {
   let at = model.view.transport.now()
+
+  // Handle incoming server component messages.
   case message {
     // The lane starts with its subscribe in flight, and anything filed
     // before it existed is handed to it at once, in arrival order, by the
@@ -1777,6 +1779,8 @@ pub fn update(
             peering: peer_links.answered(model.view.peering, answer),
           ),
         )
+
+      // Handle the resulting peer links response.
       case answer {
         peer_links.Changed(..) -> peers_read(model, at)
         peer_links.Listed(..) | peer_links.Declined(..) -> #(
@@ -1815,7 +1819,7 @@ pub fn update(
   }
 }
 
-// Hands the daemon's request for an image the answer the lane gave.
+/// Hands the daemon's request for an image the answer the lane gave.
 fn answering(
   reply: Subject(Result(Image, Nil)),
   found: Result(Image, Nil),
@@ -1824,12 +1828,12 @@ fn answering(
   process.send(reply, found)
 }
 
-// The daemon's answer to a request to open another session. A ticket becomes
-// the address `<loom-switch>` navigates to. A refusal is shown in the
-// composer's notice in the fixed words for its reason, and a switch that
-// succeeded says `saying` in the same place until the browser has left. The
-// answer to a request to go home is folded in the same way as the answer to
-// a request to open a session: both end in one navigation.
+/// The daemon's answer to a request to open another session. A ticket becomes
+/// the address `<loom-switch>` navigates to. A refusal is shown in the
+/// composer's notice in the fixed words for its reason, and a switch that
+/// succeeded says `saying` in the same place until the browser has left. The
+/// answer to a request to go home is folded in the same way as the answer to
+/// a request to open a session: both end in one navigation.
 fn linked(
   model: Model(socket),
   answer: sessions.Answer,
@@ -1860,16 +1864,18 @@ fn linked(
   }
 }
 
-// Asks for the sidebar's list when the page has never asked, or last asked
-// `sessions_refresh_ms` or more ago, and otherwise leaves the message's result
-// as it is. The answer arrives as `SessionsListed`. Only `Opened` and
-// `Ticked` come here: a batch of frames is the busiest message a page takes
-// and has no reason to read the catalogue.
+/// Asks for the sidebar's list when the page has never asked, or last asked
+/// `sessions_refresh_ms` or more ago, and otherwise leaves the message's result
+/// as it is. The answer arrives as `SessionsListed`. Only `Opened` and
+/// `Ticked` come here: a batch of frames is the busiest message a page takes
+/// and has no reason to read the catalogue.
 fn relisted(
   done: #(Model(socket), Effect(Msg(socket))),
   at: Int,
 ) -> #(Model(socket), Effect(Msg(socket))) {
   let #(model, effects) = done
+
+  // Check whether session listing refresh is due.
   case model.view.listed_at {
     Some(before) if at - before < sessions_refresh_ms -> done
     Some(_) | None -> #(
@@ -1879,20 +1885,24 @@ fn relisted(
   }
 }
 
-// Asks for the activity of the sidebar's running sessions again when the last
-// ask was `activity_refresh_ms` or more ago, so a row's word follows its
-// session within seconds and not on the list's thirty. A page that has no
-// list asks nothing. Only `Ticked` comes here, and the answer arrives as
-// `ActivityObserved` from the daemon's task, so the runtime waits on nothing.
+/// Asks for the activity of the sidebar's running sessions again when the last
+/// ask was `activity_refresh_ms` or more ago, so a row's word follows its
+/// session within seconds and not on the list's thirty. A page that has no
+/// list asks nothing. Only `Ticked` comes here, and the answer arrives as
+/// `ActivityObserved` from the daemon's task, so the runtime waits on nothing.
 fn reobserved(
   done: #(Model(socket), Effect(Msg(socket))),
   at: Int,
 ) -> #(Model(socket), Effect(Msg(socket))) {
   let #(model, effects) = done
+
+  // Check whether activity refresh is due.
   let due = case model.view.activity_asked_at {
     Some(before) -> at - before >= activity_refresh_ms
     None -> True
   }
+
+  // Request fresh activity when due and groups are present.
   case due, model.view.groups {
     True, [_, ..] -> #(
       Model(..model, view: View(..model.view, activity_asked_at: Some(at))),
@@ -1902,17 +1912,20 @@ fn reobserved(
   }
 }
 
-// Marks the strand's live jobs as wanted when the page opened or last asked
-// `jobs_refresh_ms` or more ago, and no answer is outstanding. The
-// shared step sends the read once the lane is ready for it
-// (`surfaces.service_jobs_read`), so this only says that one is owed. The
-// read is `live_jobs`, a read the gateway allows every role, and its answer
-// is a snapshot the lane folds like any other, so it adds no event.
+/// Marks the strand's live jobs as wanted when the page opened or last asked
+/// `jobs_refresh_ms` or more ago, and no answer is outstanding. The
+/// shared step sends the read once the lane is ready for it
+/// (`surfaces.service_jobs_read`), so this only says that one is owed. The
+/// read is `live_jobs`, a read the gateway allows every role, and its answer
+/// is a snapshot the lane folds like any other, so it adds no event.
 fn jobs_wanted(model: Model(socket), at: Int) -> Model(socket) {
+  // Check whether jobs query refresh is due.
   let due = case model.view.jobs_asked_at {
     Some(before) -> at - before >= jobs_refresh_ms
     None -> True
   }
+
+  // Request jobs refresh if due and not already awaiting.
   case due, model.shared.jobs_awaiting {
     True, None ->
       Model(
@@ -1923,10 +1936,10 @@ fn jobs_wanted(model: Model(socket), at: Int) -> Model(socket) {
   }
 }
 
-// Starts the activity read for the running sessions the sidebar lists, in the
-// order it draws them and no more than the home's bound, and returns at once;
-// the answer arrives later as `ActivityObserved`, dispatched from the daemon's
-// task. A list with no running session asks nothing.
+/// Starts the activity read for the running sessions the sidebar lists, in the
+/// order it draws them and no more than the home's bound, and returns at once;
+/// the answer arrives later as `ActivityObserved`, dispatched from the daemon's
+/// task. A list with no running session asks nothing.
 fn observing(
   transport: Transport(socket),
   groups: List(sessions.Group),
@@ -1936,6 +1949,8 @@ fn observing(
     |> list.filter(fn(entry) { entry.residency == sessions.Live })
     |> list.take(sessions.activity_limit)
     |> list.map(fn(entry) { entry.id })
+
+  // Request activity observation if running sessions exist.
   case running {
     [] -> effect.none()
     [_, ..] -> {
@@ -1965,8 +1980,8 @@ fn stamp(at: Int) -> msg.Stamp {
   msg.Stamp(now_ms: at, transport_ms: at)
 }
 
-// Runs `messages` through the shared step in order, collecting the effects
-// each decided, and finishes the message.
+/// Runs `messages` through the shared step in order, collecting the effects
+/// each decided, and finishes the message.
 fn stepping(
   model: Model(socket),
   messages: List(msg.Msg(Nil)),
@@ -1983,6 +1998,8 @@ fn stepping(
   // leaves in the message that freed the lane and not in some later one.
   let owed = model.view.decided
   let model = decisions_read(Model(..model, shared:), at)
+
+  // Dispatch the appropriate step effects according to decision state.
   let #(shared, effects) = case owed, model.view.decided {
     Owed, Asked -> {
       let #(shared, sent) =
@@ -1991,15 +2008,16 @@ fn stepping(
     }
     Owed, Owed | Asked, _ -> #(model.shared, effects)
   }
+
   finished(Model(..model, shared:), effects, at)
 }
 
-// Sends the one read of the session's decided approvals, once the lane has
-// adopted a cut and has no request out. A busy lane refuses it, and the read
-// stays owed for the next message to ask again; only a sent read is spent.
-// The read never waits in the lane's queue, which would hold the slot an
-// operator's first command needs. The frame leaves with the step the message
-// is about to run.
+/// Sends the one read of the session's decided approvals, once the lane has
+/// adopted a cut and has no request out. A busy lane refuses it, and the read
+/// stays owed for the next message to ask again; only a sent read is spent.
+/// The read never waits in the lane's queue, which would hold the slot an
+/// operator's first command needs. The frame leaves with the step the message
+/// is about to run.
 fn decisions_read(model: Model(socket), at: Int) -> Model(socket) {
   case model.view.decided, model.shared.channel {
     Owed, Some(lane) ->
@@ -2015,10 +2033,10 @@ fn decisions_read(model: Model(socket), at: Int) -> Model(socket) {
   }
 }
 
-// The end of every message: what the page draws is derived from the record
-// the step left, the page's own read is sent if it wants one, the deadline
-// timer is armed for the lane's next due reading, and the effects the step
-// decided are performed as one.
+/// The end of every message: what the page draws is derived from the record
+/// the step left, the page's own read is sent if it wants one, the deadline
+/// timer is armed for the lane's next due reading, and the effects the step
+/// decided are performed as one.
 fn finished(
   model: Model(socket),
   effects: List(step_effect.Effect(socket, Nil)),
@@ -2031,18 +2049,19 @@ fn finished(
   #(model, effect.batch([perform(model.view.transport, effects), observing]))
 }
 
-// Sends the page's own read when `refreshed` has decided it wants one. The
-// read is the window's scan, owed from the moment the page chose it, and the
-// frame leaves in the step's tick, the reduction that sends any read, so it
-// goes out in the message that wanted it and not in some later one. A busy lane
-// refuses it and it stays owed for the next message to send. The tick changes
-// the scan's own demand and nothing the page draws, so the projection is
-// recorded again rather than rebuilt by the next message.
+/// Sends the page's own read when `refreshed` has decided it wants one. The
+/// read is the window's scan, owed from the moment the page chose it, and the
+/// frame leaves in the step's tick, the reduction that sends any read, so it
+/// goes out in the message that wanted it and not in some later one. A busy lane
+/// refuses it and it stays owed for the next message to send. The tick changes
+/// the scan's own demand and nothing the page draws, so the projection is
+/// recorded again rather than rebuilt by the next message.
 fn serviced(
   model: Model(socket),
   effects: List(step_effect.Effect(socket, Nil)),
   at: Int,
 ) -> #(Model(socket), List(step_effect.Effect(socket, Nil))) {
+  // Determine next background read actions needed for history or summaries.
   case
     history_view.range(model.shared.scrollback),
     history_view.lineage(model.shared.scrollback),
@@ -2058,16 +2077,18 @@ fn serviced(
   }
 }
 
-// Asks the daemon to observe the workspace when the page may, no read is out,
-// the transcript shows a tool result the last read did not see (the page's
-// first read is owed from the start), and `worktrees.refresh_ms` have passed
-// since the last ask. A burst of tool calls therefore asks once, and a page
-// with nothing happening asks nothing. The answer arrives as `Worktreed`.
+/// Asks the daemon to observe the workspace when the page may, no read is out,
+/// the transcript shows a tool result the last read did not see (the page's
+/// first read is owed from the start), and `worktrees.refresh_ms` have passed
+/// since the last ask. A burst of tool calls therefore asks once, and a page
+/// with nothing happening asks nothing. The answer arrives as `Worktreed`.
 fn observed(
   model: Model(socket),
   at: Int,
 ) -> #(Model(socket), Effect(Msg(socket))) {
   let view = model.view
+
+  // Calculate elapsed time since worktree observation was requested.
   let since = case view.worktree_asked_at {
     Some(before) -> at - before
     None -> worktrees.lost_ms
@@ -2078,6 +2099,8 @@ fn observed(
     worktrees.Idle -> since >= worktrees.refresh_ms
     worktrees.Out -> since >= worktrees.lost_ms
   }
+
+  // Check whether to initiate a new worktree observation request.
   case view.transport.worktree, free, view.worktree_seen {
     Some(ask), True, seen if seen != view.latest_result -> #(
       Model(
@@ -2104,14 +2127,15 @@ fn asking_worktree(
   ask(fn(read) { dispatch(Worktreed(read)) })
 }
 
-// Takes the prompts the daemon handed back out of the shared record, which
-// keeps them only until a step forgets them. The daemon held each prompt
-// only in memory, so this is its last copy (protocol-change/038); the page
-// keeps it for the composer's element to put in the editor, and says what
-// came back. A prompt for a strand the page does not compose for, or for
-// another session, has no editor here, and the notice says so instead of
-// pretending it was restored.
+/// Takes the prompts the daemon handed back out of the shared record, which
+/// keeps them only until a step forgets them. The daemon held each prompt
+/// only in memory, so this is its last copy (protocol-change/038); the page
+/// keeps it for the composer's element to put in the editor, and says what
+/// came back. A prompt for a strand the page does not compose for, or for
+/// another session, has no editor here, and the notice says so instead of
+/// pretending it was restored.
 fn taken(model: Model(socket)) -> Model(socket) {
+  // Restore returned drafts into the draft editor.
   case model.shared.returned_drafts {
     [] -> model
     drafts -> {
@@ -2138,10 +2162,10 @@ fn taken(model: Model(socket)) -> Model(socket) {
   }
 }
 
-// The end of every step over the record: the returned prompts are taken
-// first, since forgetting the step's leftovers would not drop them but a host
-// must not leave them behind, and then the facts a host has no surface for
-// are forgotten.
+/// The end of every step over the record: the returned prompts are taken
+/// first, since forgetting the step's leftovers would not drop them but a host
+/// must not leave them behind, and then the facts a host has no surface for
+/// are forgotten.
 fn settled(model: Model(socket)) -> Model(socket) {
   let held = taken(model)
   let held =
@@ -2164,6 +2188,8 @@ fn settled(model: Model(socket)) -> Model(socket) {
         _ -> state
       }
     })
+
+  // Determine board read status after checking ended state.
   let read = case held.shared.ended, board.read {
     Some(_), notes.Queued | Some(_), notes.Waiting -> notes.Unavailable
     _, _ ->
@@ -2178,6 +2204,7 @@ fn settled(model: Model(socket)) -> Model(socket) {
         _, _, _ -> board.read
       }
   }
+
   Model(
     shared: step.forget_surfaces(held.shared),
     view: View(
@@ -2199,8 +2226,8 @@ pub fn notes_state(model: Model(socket)) -> notes.State {
   model.view.notes
 }
 
-// An explicit read joins the existing shared lane; local navigation sends
-// nothing. Repeated presses while the lane owes the read are coalesced.
+/// An explicit read joins the existing shared lane; local navigation sends
+/// nothing. Repeated presses while the lane owes the read are coalesced.
 fn notes_pressed(
   model: Model(socket),
   press: notes.Press,
@@ -2208,6 +2235,8 @@ fn notes_pressed(
 ) -> #(Model(socket), Effect(Msg(socket))) {
   let state = notes.press(model.view.notes, press)
   let changed = Model(..model, view: View(..model.view, notes: state))
+
+  // Dispatch notes button action or query.
   case press, state.read, model.view.notes.read, model.view.status {
     notes.Refresh, notes.Queued, notes.Queued, _
     | notes.Refresh, notes.Queued, notes.Waiting, _
@@ -2235,25 +2264,29 @@ fn notes_pressed(
   }
 }
 
-// The strand keys with the strand on screen numbered, if the page has not
-// shown it before. The next number is one past the count, since numbers are
-// never taken back.
+/// The strand keys with the strand on screen numbered, if the page has not
+/// shown it before. The next number is one past the count, since numbers are
+/// never taken back.
 fn numbered(model: Model(socket)) -> Dict(String, Int) {
   let keys = model.view.strand_keys
+
+  // Assign a numeric index to the active strand key if absent.
   case dict.has_key(keys, model.shared.active_strand) {
     True -> keys
     False -> dict.insert(keys, model.shared.active_strand, dict.size(keys) + 1)
   }
 }
 
-// What the page says when prompts come back: how many, for which strand, and
-// whether they are in the composer.
+/// What the page says when prompts come back: how many, for which strand, and
+/// whether they are in the composer.
 fn returned_words(
   drafts: List(session_model.ReturnedDraft),
   mine: List(session_model.ReturnedDraft),
   focused: String,
 ) -> String {
   let elsewhere = list.length(drafts) - list.length(mine)
+
+  // Format drafts returned to the focused strand.
   let here = case mine {
     [] -> []
     [_, ..] -> [
@@ -2263,22 +2296,25 @@ fn returned_words(
       <> ", put back in the composer",
     ]
   }
+
+  // Format drafts held elsewhere.
   let there = case elsewhere {
     0 -> []
     count -> [
       counted(count) <> " held for another session, which the page cannot show",
     ]
   }
+
   "The daemon handed back "
   <> string.join(list.append(here, there), "; ")
   <> "."
 }
 
-// Whom the returned prompts were held for. A prompt returned for the strand
-// the page shows is named by that strand alone. One held for another strand
-// of the session is put back in the same editor, which addresses the strand
-// on screen, so the words name the strand it was held for and the reader can
-// see that the composer's addressee differs from it before pressing Send.
+/// Whom the returned prompts were held for. A prompt returned for the strand
+/// the page shows is named by that strand alone. One held for another strand
+/// of the session is put back in the same editor, which addresses the strand
+/// on screen, so the words name the strand it was held for and the reader can
+/// see that the composer's addressee differs from it before pressing Send.
 fn held_for(
   drafts: List(session_model.ReturnedDraft),
   focused: String,
@@ -2287,6 +2323,8 @@ fn held_for(
     drafts
     |> list.map(fn(draft) { draft.strand })
     |> list.unique
+
+  // Format the target strands holding returned drafts.
   case named {
     [only] if only == focused -> focused
     _ -> string.join(named, ", ") <> " (you are addressing " <> focused <> ")"
@@ -2333,16 +2371,19 @@ pub fn apply(
 
 // --- what the page draws ---------------------------------------------------
 
-// Brings everything the page draws up to the shared record, and builds
-// nothing that did not move: the history window follows the session again
-// once its read is answered, the transcript is projected when its inputs
-// moved, the strip when its inputs or a drawn cache label did, and the
-// status follows the lane.
+/// Brings everything the page draws up to the shared record, and builds
+/// nothing that did not move: the history window follows the session again
+/// once its read is answered, the transcript is projected when its inputs
+/// moved, the strip when its inputs or a drawn cache label did, and the
+/// status follows the lane.
 fn refreshed(model: Model(socket)) -> Model(socket) {
+  // Resume scrolling if not in browsing mode.
   let model = case model.view.paging {
     Browsing -> model
     Tail | Paged | Full | Crowded -> resumed(model)
   }
+
+  // Update layout when projected records changed.
   let model = case
     projected_of(
       model.shared,
@@ -2355,6 +2396,8 @@ fn refreshed(model: Model(socket)) -> Model(socket) {
     True -> model
     False -> relaned(model)
   }
+
+  // Recompute strip presentation when stripped items changed.
   let model = case stripped_of(model.shared) == model.view.stripped {
     False -> restripped(model)
     True ->
@@ -2363,41 +2406,44 @@ fn refreshed(model: Model(socket)) -> Model(socket) {
         False -> model
       }
   }
+
   model |> streamed |> statused
 }
 
-// Follows the shared record's live streams for the followed strand, which
-// `transcript_lines.display_streams` picks as the terminal does: the pushed
-// fragments, or the capture's sampled preview of an answer already running
-// when the page attached, and neither once the terminal's own records hold
-// the answer.
-//
-// Three things are added for a page that draws only captures.
-//
-// - A stream whose answer the projected window already holds is dropped, so
-//   a capture that lands before the entry's push cannot draw the answer
-//   twice.
-// - The record drops a strand's streams when the entry lands, ahead of the
-//   capture that gives this page the row. So when the record has no stream,
-//   the streams the page last drew stay while their answer is still owed
-//   (`response_awaited`): its entry is not in the window the page projects
-//   and the capture still shows the operation running. Once the entry is
-//   drawn as a row, or the capture says the operation ended without one,
-//   they go. A stream that reserved no entry (an older daemon) is never kept.
-// - A page that attached mid-answer draws the capture's sampled preview
-//   until the first pushed fragment, which the shared record then puts in
-//   its place, so the answer would shrink to that fragment and grow again.
-//   The page keeps what it drew of a request while the pushed text is
-//   shorter than that (`steadied`); the terminal, which has the same
-//   source, still shows the shorter text.
-//
-// This runs after the projection, so it reads the window that was just
-// built.
+/// Follows the shared record's live streams for the followed strand, which
+/// `transcript_lines.display_streams` picks as the terminal does: the pushed
+/// fragments, or the capture's sampled preview of an answer already running
+/// when the page attached, and neither once the terminal's own records hold
+/// the answer.
+///
+/// Three things are added for a page that draws only captures.
+///
+/// - A stream whose answer the projected window already holds is dropped, so
+///   a capture that lands before the entry's push cannot draw the answer
+///   twice.
+/// - The record drops a strand's streams when the entry lands, ahead of the
+///   capture that gives this page the row. So when the record has no stream,
+///   the streams the page last drew stay while their answer is still owed
+///   (`response_awaited`): its entry is not in the window the page projects
+///   and the capture still shows the operation running. Once the entry is
+///   drawn as a row, or the capture says the operation ended without one,
+///   they go. A stream that reserved no entry (an older daemon) is never kept.
+/// - A page that attached mid-answer draws the capture's sampled preview
+///   until the first pushed fragment, which the shared record then puts in
+///   its place, so the answer would shrink to that fragment and grow again.
+///   The page keeps what it drew of a request while the pushed text is
+///   shorter than that (`steadied`); the terminal, which has the same
+///   source, still shows the shorter text.
+///
+/// This runs after the projection, so it reads the window that was just
+/// built.
 fn streamed(model: Model(socket)) -> Model(socket) {
   let shown =
     session_model.presentation(model.shared)
     |> transcript_lines.display_streams
     |> list.filter(fn(stream) { stream.kind != "end" })
+
+  // Update live streaming transcript records.
   case shown, model.view.streams {
     [], [] -> model
     [_, ..], last -> {
@@ -2416,9 +2462,9 @@ fn streamed(model: Model(socket)) -> Model(socket) {
   }
 }
 
-// The pushed streams, except that a stream keeps the text drawn last time
-// for its request and kind while that is longer: only a sampled preview is
-// ever longer than the pushed text that replaces it.
+/// The pushed streams, except that a stream keeps the text drawn last time
+/// for its request and kind while that is longer: only a sampled preview is
+/// ever longer than the pushed text that replaces it.
 fn steadied(pushed: List(Stream), last: List(Stream)) -> List(Stream) {
   list.map(pushed, fn(stream) {
     let earlier =
@@ -2431,7 +2477,7 @@ fn steadied(pushed: List(Stream), last: List(Stream)) -> List(Stream) {
   })
 }
 
-// The records of the window the page projects, newest first.
+/// The records of the window the page projects, newest first.
 fn projected_records(model: Model(socket)) -> List(protocol.EntryRecord) {
   case model.shared.captured {
     None -> []
@@ -2440,8 +2486,8 @@ fn projected_records(model: Model(socket)) -> List(protocol.EntryRecord) {
   }
 }
 
-// Whether the answer this stream is writing is still to come as a row. A
-// stream for another strand than the one the page follows is never drawn.
+/// Whether the answer this stream is writing is still to come as a row. A
+/// stream for another strand than the one the page follows is never drawn.
 fn awaited(model: Model(socket), stream: Stream) -> Bool {
   case model.shared.captured, stream.strand == model.shared.active_strand {
     _, False -> False
@@ -2455,6 +2501,7 @@ fn awaited(model: Model(socket), stream: Stream) -> Bool {
   }
 }
 
+/// Projects the transcript items for the given strand.
 fn projected_of(
   shared: Session(socket),
   paging: Paging,
@@ -2473,6 +2520,7 @@ fn projected_of(
   )
 }
 
+/// Strips transcript items of extraneous internal tracking details.
 fn stripped_of(shared: Session(socket)) -> Stripped {
   Stripped(
     followed: shared.active_strand,
@@ -2483,15 +2531,17 @@ fn stripped_of(shared: Session(socket)) -> Stripped {
   )
 }
 
-// Asking for older rows freezes the history window (`history_view.older`),
-// so a capture that lands while the read is out cannot move the endpoint
-// the reply will be placed against. Once the read is answered or refused, or
-// the lane has failed, no read is owed and the window follows the session
-// again, taking in the newest capture, which `captured` kept while the
-// window was frozen. The terminal leaves the window frozen until its reader
-// scrolls back to the tail; this page never scrolls, so it resumes here.
+/// Asking for older rows freezes the history window (`history_view.older`),
+/// so a capture that lands while the read is out cannot move the endpoint
+/// the reply will be placed against. Once the read is answered or refused, or
+/// the lane has failed, no read is owed and the window follows the session
+/// again, taking in the newest capture, which `captured` kept while the
+/// window was frozen. The terminal leaves the window frozen until its reader
+/// scrolls back to the tail; this page never scrolls, so it resumes here.
 fn resumed(model: Model(socket)) -> Model(socket) {
   let shared = model.shared
+
+  // Determine whether scrollback resumption should be captured.
   case shared.scrollback.mode, shared.scrollback.request, shared.captured {
     history_view.Reading, history_view.Quiet, Some(#(cut, view)) ->
       Model(
@@ -2510,35 +2560,36 @@ fn resumed(model: Model(socket)) -> Model(socket) {
   }
 }
 
-// Projects what the page draws of the strand from the history window, the
-// turns it has closed and the notices. This is the one place a projection
-// runs.
-//
-// A turn that has closed is not kept as records. When its records are all in
-// the window and nothing more will be added to it, the page keeps a summary
-// of it (`turn_ledger.Sealed`: its prompt, its answer and its divider) and
-// drops its records from the window, so a turn of a thousand calls costs the
-// page what a turn of two does and the turns around it stay reachable. The
-// window holds only what is still moving, the running turn, and the page
-// draws the closed turns from their summaries. A closed turn's steps are read
-// when the reader opens its fold and dropped when the fold closes.
-//
-// The order of one projection is the order of the questions it answers.
-// `scanned` takes what the page's transient read found, if a read has
-// answered, and closes the turns it found. `trimmed` drops the window's
-// records older than the newest closed turn's end, since those are the
-// summary's. `laid_out` then asks which turns of the window are closed, closes
-// them, decides how many turns fit the page's limit (`fold_budget`), and draws
-// the closed turns from their summaries and the rest from the window.
-// `begun` last starts the one read the page wants next, if it wants one and
-// has none out.
-//
-// The window is written in the two places this module has always written it:
-// it is trimmed, and it is asked for a read. The read is the window's own scan
-// (`history_view.scan`), which walks the strand's ancestry a page at a time and
-// keeps what it reads apart from the window, so a read through a turn of
-// thousands of records never evicts the live end.
+/// Projects what the page draws of the strand from the history window, the
+/// turns it has closed and the notices. This is the one place a projection
+/// runs.
+///
+/// A turn that has closed is not kept as records. When its records are all in
+/// the window and nothing more will be added to it, the page keeps a summary
+/// of it (`turn_ledger.Sealed`: its prompt, its answer and its divider) and
+/// drops its records from the window, so a turn of a thousand calls costs the
+/// page what a turn of two does and the turns around it stay reachable. The
+/// window holds only what is still moving, the running turn, and the page
+/// draws the closed turns from their summaries. A closed turn's steps are read
+/// when the reader opens its fold and dropped when the fold closes.
+///
+/// The order of one projection is the order of the questions it answers.
+/// `scanned` takes what the page's transient read found, if a read has
+/// answered, and closes the turns it found. `trimmed` drops the window's
+/// records older than the newest closed turn's end, since those are the
+/// summary's. `laid_out` then asks which turns of the window are closed, closes
+/// them, decides how many turns fit the page's limit (`fold_budget`), and draws
+/// the closed turns from their summaries and the rest from the window.
+/// `begun` last starts the one read the page wants next, if it wants one and
+/// has none out.
+///
+/// The window is written in the two places this module has always written it:
+/// it is trimmed, and it is asked for a read. The read is the window's own scan
+/// (`history_view.scan`), which walks the strand's ancestry a page at a time and
+/// keeps what it reads apart from the window, so a read through a turn of
+/// thousands of records never evicts the live end.
 fn relaned(model: Model(socket)) -> Model(socket) {
+  // Re-layout transcript records based on capture state.
   let laid = case model.shared.captured {
     None -> settled_projection(model)
     Some(#(cut, view)) ->
@@ -2548,19 +2599,20 @@ fn relaned(model: Model(socket)) -> Model(socket) {
           relaid(model, cut, view, 4) |> settled_projection
       }
   }
+
   labels_wanted(laid)
 }
 
-// Marks the reasoning blocks the page now draws as wanted, so the lane reads
-// the stored summarizer labels the page lacks for them (`block_summary.want`;
-// the shared step sends the read once the lane is free). This is the one place
-// the page learns which blocks it draws, and it runs when a projection was
-// rebuilt: the window's turns, the closed turns the page holds, the steps of
-// a fold the reader opened and a page of older history all end up in `pieces`,
-// so a block that arrived through a lineage read or an opened fold is asked
-// about like one in the window. A block already labelled, already asked about
-// or already waiting is not added again, and the read names at most
-// `block_summary.max_blocks` of them.
+/// Marks the reasoning blocks the page now draws as wanted, so the lane reads
+/// the stored summarizer labels the page lacks for them (`block_summary.want`;
+/// the shared step sends the read once the lane is free). This is the one place
+/// the page learns which blocks it draws, and it runs when a projection was
+/// rebuilt: the window's turns, the closed turns the page holds, the steps of
+/// a fold the reader opened and a page of older history all end up in `pieces`,
+/// so a block that arrived through a lineage read or an opened fold is asked
+/// about like one in the window. A block already labelled, already asked about
+/// or already waiting is not added again, and the read names at most
+/// `block_summary.max_blocks` of them.
 fn labels_wanted(model: Model(socket)) -> Model(socket) {
   let summaries =
     block_summary.want(
@@ -2570,11 +2622,11 @@ fn labels_wanted(model: Model(socket)) -> Model(socket) {
   Model(..model, shared: shared_set.summaries(model.shared, summaries))
 }
 
-// A historical page draws the oldest blocks that fit. Its raw record window
-// is already bounded by history_view; lowering its endpoint to the last drawn
-// record ensures the next older read can evict the newer end without skipping
-// anything that was never on screen. The newest historical group stays open
-// even if the live operation settles, since this endpoint can cut a turn.
+/// A historical page draws the oldest blocks that fit. Its raw record window
+/// is already bounded by history_view; lowering its endpoint to the last drawn
+/// record ensures the next older read can evict the newer end without skipping
+/// anything that was never on screen. The newest historical group stays open
+/// even if the live operation settles, since this endpoint can cut a turn.
 fn browsed(
   model: Model(socket),
   cut: snapshot.Captured,
@@ -2601,11 +2653,15 @@ fn browsed(
     |> list.drop(list.length(blocks))
     |> list.first
     |> result.try(transcript_lines.block_seq)
+
+  // Filter records preceding the excluded sequence limit.
   let records = case excluded {
     Ok(seq) ->
       list.filter(branch.records, fn(record) { record.entry.seq < seq })
     Error(Nil) -> branch.records
   }
+
+  // Update scrollback window with browsing records.
   let scrollback = case records {
     [newest, ..] -> {
       let items =
@@ -2627,6 +2683,7 @@ fn browsed(
     }
     [] -> scrollback
   }
+
   Model(
     shared: shared_set.scrollback(model.shared, scrollback),
     view: View(
@@ -2644,10 +2701,10 @@ fn browsed(
   )
 }
 
-// Tool groups are a compact presentation, not a paging boundary. Split them
-// at call ownership boundaries only after every preceding call's result, so
-// an older page can retain a small prefix without orphaning a result or
-// discarding calls hidden behind an oversized group.
+/// Tool groups are a compact presentation, not a paging boundary. Split them
+/// at call ownership boundaries only after every preceding call's result, so
+/// an older page can retain a small prefix without orphaning a result or
+/// discarding calls hidden behind an oversized group.
 fn historical_blocks(
   blocks: List(transcript_lines.Block),
   records: List(protocol.EntryRecord),
@@ -2680,8 +2737,8 @@ fn historical_blocks(
   })
 }
 
-// Calls sharing an entry or overlapping outcomes stay indivisible. The next
-// entry may begin a fresh block only beyond the outcomes already joined.
+/// Calls sharing an entry or overlapping outcomes stay indivisible. The next
+/// entry may begin a fresh block only beyond the outcomes already joined.
 fn historical_calls(
   calls: List(tool_activity.Call),
   sequences: dict.Dict(ids.EntryId, Int),
@@ -2689,6 +2746,7 @@ fn historical_calls(
   held: List(tool_activity.Call),
   groups: List(List(tool_activity.Call)),
 ) -> List(List(tool_activity.Call)) {
+  // Partition tool calls into grouped execution sequences.
   case calls {
     [] ->
       list.reverse([list.reverse(held), ..groups])
@@ -2699,6 +2757,8 @@ fn historical_calls(
         call.result_source
         |> option.then(fn(id) { option.from_result(dict.get(sequences, id)) })
         |> option.unwrap(seq)
+
+      // Break call groups at the sequence boundary.
       case seq > through, held {
         True, [_, ..] ->
           historical_calls(rest, sequences, end, [call], [
@@ -2718,19 +2778,22 @@ fn historical_calls(
   }
 }
 
-// An indivisible entry or overlapping call batch can exceed the row limit.
-// Keep it whole rather than silently advancing past something never shown;
-// the record and expansion limits still bound this exceptional page.
+/// An indivisible entry or overlapping call batch can exceed the row limit.
+/// Keep it whole rather than silently advancing past something never shown;
+/// the record and expansion limits still bound this exceptional page.
 fn oldest_blocks(
   blocks: List(transcript_lines.Block),
   limit: Int,
   rows: Int,
   kept: List(transcript_lines.Block),
 ) -> List(transcript_lines.Block) {
+  // Collect the oldest transcript blocks within the display row limit.
   case blocks {
     [] -> list.reverse(kept)
     [block, ..rest] -> {
       let next = rows + list.length(block.rows)
+
+      // Check whether accumulated rows exceed the display limit.
       case next > limit, list.length(block.rows) > limit {
         True, True -> list.reverse([block, ..kept])
         True, False -> list.reverse(kept)
@@ -2740,12 +2803,12 @@ fn oldest_blocks(
   }
 }
 
-// One pass of the projection, and another when the read the pass chose was
-// answered from what the page already held. A read starts from the records of
-// the capture, and a turn closed a moment ago is still among them, so the
-// answer can be there at once and the page draws what it found in the same
-// message. `fuel` bounds the passes: each answered read spends one want, and a
-// page wants at most a few things at a time.
+/// One pass of the projection, and another when the read the pass chose was
+/// answered from what the page already held. A read starts from the records of
+/// the capture, and a turn closed a moment ago is still among them, so the
+/// answer can be there at once and the page draws what it found in the same
+/// message. `fuel` bounds the passes: each answered read spends one want, and a
+/// page wants at most a few things at a time.
 fn relaid(
   model: Model(socket),
   cut: snapshot.Captured,
@@ -2754,6 +2817,8 @@ fn relaid(
 ) -> Model(socket) {
   let model = scanned(model, cut, view) |> trimmed
   let #(model, window) = laid_out(model, view, cut)
+
+  // Check whether background reading was begun or completed.
   case begun(model, window, cut, view) {
     Began(model) -> model
     Answered(model) if fuel > 0 -> relaid(model, cut, view, fuel - 1)
@@ -2761,9 +2826,9 @@ fn relaid(
   }
 }
 
-// Records what the projection was built from, after the trim and the paging
-// it may have written, so the next `refreshed` compares against what the record
-// holds now and not against what the projection started from.
+/// Records what the projection was built from, after the trim and the paging
+/// it may have written, so the next `refreshed` compares against what the record
+/// holds now and not against what the projection started from.
 fn settled_projection(model: Model(socket)) -> Model(socket) {
   Model(
     ..model,
@@ -2794,9 +2859,9 @@ fn frontier(sealed: List(turn_ledger.Sealed)) -> Int {
   }
 }
 
-// Drops the records of the window that belong to closed turns. A capture holds
-// the newest hundred records of the whole session, so each one brings back the
-// records of turns already closed, and this drops them again.
+/// Drops the records of the window that belong to closed turns. A capture holds
+/// the newest hundred records of the whole session, so each one brings back the
+/// records of turns already closed, and this drops them again.
 fn trimmed(model: Model(socket)) -> Model(socket) {
   case frontier(model.view.sealed) {
     0 -> model
@@ -2811,9 +2876,9 @@ fn trimmed(model: Model(socket)) -> Model(socket) {
   }
 }
 
-// Takes what the page's read found once a read has answered. The read is the
-// window's scan; while one is owed or out there is nothing to take, and one
-// that was refused or lost is given up.
+/// Takes what the page's read found once a read has answered. The read is the
+/// window's scan; while one is owed or out there is nothing to take, and one
+/// that was refused or lost is given up.
 fn scanned(
   model: Model(socket),
   cut: snapshot.Captured,
@@ -2830,12 +2895,12 @@ fn scanned(
   }
 }
 
-// What a read found, taken when it is enough, and otherwise the next read.
-//
-// The scan holds a stretch of the strand's ancestry newest first, and it is
-// drawn as the window is, so a closed turn has the same pieces whichever of
-// the two it came from. The cache notices are the window's and name records
-// the scan did not read, so none is passed.
+/// What a read found, taken when it is enough, and otherwise the next read.
+///
+/// The scan holds a stretch of the strand's ancestry newest first, and it is
+/// drawn as the window is, so a closed turn has the same pieces whichever of
+/// the two it came from. The cache notices are the window's and name records
+/// the scan did not read, so none is passed.
 fn read(
   model: Model(socket),
   purpose: Purpose,
@@ -2843,12 +2908,16 @@ fn read(
   view: snapshot_view.View,
 ) -> Model(socket) {
   let shared = model.shared
+
+  // Scan history branch and apply read results.
   case history_view.scanned(shared.scrollback, view) {
     None -> abandoned(model)
     Some(branch) -> {
       let blocks =
         transcript.branch_blocks(branch, cut, view, shared.active_strand, [])
       let source = source_of(shared.scrollback, branch)
+
+      // Process newly found blocks from the branch scan.
       case found(model, purpose, blocks, branch, view, source) {
         Ok(taken) -> ended(taken)
         Error(Nil) ->
@@ -2864,11 +2933,11 @@ fn read(
   }
 }
 
-// Whether the scan can be asked for more: it can not once it holds the
-// strand's first record, and not once it can no longer be read
-// (`history_view.scan_readable`: a read found nothing below what it holds, its
-// bound was reached, or the parent it is missing is a record over the
-// presentation limit, which it holds as a descriptor and no read will load).
+/// Whether the scan can be asked for more: it can not once it holds the
+/// strand's first record, and not once it can no longer be read
+/// (`history_view.scan_readable`: a read found nothing below what it holds, its
+/// bound was reached, or the parent it is missing is a record over the
+/// presentation limit, which it holds as a descriptor and no read will load).
 fn source_of(
   scrollback: history_view.State,
   branch: snapshot_view.Branch,
@@ -2882,7 +2951,7 @@ fn source_of(
   }
 }
 
-// What the read was for, done with what it found.
+/// What the read was for, done with what it found.
 fn found(
   model: Model(socket),
   purpose: Purpose,
@@ -2930,18 +2999,20 @@ fn found(
   }
 }
 
-// The turns found below the page's oldest, which are older than every turn it
-// holds and so go last. A read that was exhausted and found nothing says the
-// strand has no more.
+/// The turns found below the page's oldest, which are older than every turn it
+/// holds and so go last. A read that was exhausted and found nothing says the
+/// strand has no more.
 fn below(
   model: Model(socket),
   found: List(turn_ledger.Sealed),
   source: turn_ledger.Source,
 ) -> Model(socket) {
+  // Determine if bottom of transcript history is reached.
   let bottom = case found, source {
     [], turn_ledger.Exhausted -> Reached
     _, _ -> model.view.floor
   }
+
   Model(
     ..model,
     view: View(
@@ -2953,11 +3024,11 @@ fn below(
   )
 }
 
-// The strand's newest turns, read from its leaf because the window held none of
-// its records. They are the first turns the page closes, so they are taken as
-// the turns below the window are. A read that found nothing to draw (a strand
-// whose records draw no row) marks the floor reached, which is what keeps the
-// page from asking for them on every layout.
+/// The strand's newest turns, read from its leaf because the window held none of
+/// its records. They are the first turns the page closes, so they are taken as
+/// the turns below the window are. A read that found nothing to draw (a strand
+/// whose records draw no row) marks the floor reached, which is what keeps the
+/// page from asking for them on every layout.
 fn first_turns(
   model: Model(socket),
   found: List(turn_ledger.Sealed),
@@ -2966,21 +3037,24 @@ fn first_turns(
   below(model, found, source)
 }
 
-// The turn the window held only the end of, whole at last. It is the newest
-// of the turns the page holds. It replaces any turn the page closed from the
-// end of it alone, which is what a turn is when records arrive after it was
-// sealed, and it replaces what the page held below when it does not follow on
-// from it, which only a window that lost records to its bound can bring about.
+/// The turn the window held only the end of, whole at last. It is the newest
+/// of the turns the page holds. It replaces any turn the page closed from the
+/// end of it alone, which is what a turn is when records arrive after it was
+/// sealed, and it replaces what the page held below when it does not follow on
+/// from it, which only a window that lost records to its bound can bring about.
 fn beside(
   model: Model(socket),
   found: List(turn_ledger.Sealed),
 ) -> Model(socket) {
+  // Merge newly sealed turns with existing history entries.
   let sealed = case found {
     [turn, ..] -> {
       let older =
         list.filter(model.view.sealed, fn(held) {
           held.first_seq < turn.first_seq
         })
+
+      // Link contiguous parent turns if matching.
       case older {
         [newest, ..] ->
           case turn.parent == Some(newest.end.id) {
@@ -2992,11 +3066,12 @@ fn beside(
     }
     [] -> model.view.sealed
   }
+
   Model(..model, view: View(..model.view, sealed:, completion: Untried))
 }
 
-// The steps of a fold, read, kept while the fold stays open. A fold the reader
-// closed while the read was out keeps nothing.
+/// The steps of a fold, read, kept while the fold stays open. A fold the reader
+/// closed while the read was out keeps nothing.
 fn opened(
   model: Model(socket),
   fold: Int,
@@ -3031,7 +3106,7 @@ fn sealed_of(
   list.find(sealed, fn(turn) { turn_ledger.fold_id(turn) == Some(fold) })
 }
 
-// Ends the page's read: what it read is dropped and the page wants nothing.
+/// Ends the page's read: what it read is dropped and the page wants nothing.
 fn ended(model: Model(socket)) -> Model(socket) {
   Model(
     shared: shared_set.scrollback(
@@ -3042,13 +3117,15 @@ fn ended(model: Model(socket)) -> Model(socket) {
   )
 }
 
-// A read that was refused or lost is given up, and the page does not ask for
-// the same thing again until the reader does. The turns below the page are
-// offered again, a turn whose start could not be read is drawn as far as it is
-// known, and a fold whose steps could not be read says how many it did not
-// show.
+/// A read that was refused or lost is given up, and the page does not ask for
+/// the same thing again until the reader does. The turns below the page are
+/// offered again, a turn whose start could not be read is drawn as far as it is
+/// known, and a fold whose steps could not be read says how many it did not
+/// show.
 fn abandoned(model: Model(socket)) -> Model(socket) {
   let view = model.view
+
+  // Reset in-flight read state on abandonment.
   let given = case view.purpose {
     ForOlder -> View(..view, older: Unasked)
     ForLead | ForTail -> View(..view, completion: Spent)
@@ -3063,6 +3140,7 @@ fn abandoned(model: Model(socket)) -> Model(socket) {
       )
     Resting -> view
   }
+
   ended(Model(..model, view: given))
 }
 
@@ -3080,20 +3158,20 @@ type Lead {
   Unfinished
 }
 
-// What the blocks before the window's first input are.
-//
-// They are the end of a turn that began before the window only when the
-// record before them is unknown to the page. Where the page holds a closed
-// turn the window starts right after it, so blocks before the first input are
-// records that arrived after that turn closed, unless the record before them is
-// not the turn's last, which happens only to a turn the window lost the start
-// of to its bound. A strand's own first records are whole. Records after a
-// closed turn that have no input of their own belong to that turn, and are
-// read with it again (`turn_ledger`, "When a turn is sealed"), so they are
-// unfinished like any end of a turn whose start is not held. When they are the
-// running turn itself, with no turn after them, they are drawn as far as they
-// are known, as a running turn always is, and read once it settles. A read that
-// could not complete them leaves the page to draw what it has.
+/// What the blocks before the window's first input are.
+///
+/// They are the end of a turn that began before the window only when the
+/// record before them is unknown to the page. Where the page holds a closed
+/// turn the window starts right after it, so blocks before the first input are
+/// records that arrived after that turn closed, unless the record before them is
+/// not the turn's last, which happens only to a turn the window lost the start
+/// of to its bound. A strand's own first records are whole. Records after a
+/// closed turn that have no input of their own belong to that turn, and are
+/// read with it again (`turn_ledger`, "When a turn is sealed"), so they are
+/// unfinished like any end of a turn whose start is not held. When they are the
+/// running turn itself, with no turn after them, they are drawn as far as they
+/// are known, as a running turn always is, and read once it settles. A read that
+/// could not complete them leaves the page to draw what it has.
 fn lead_of(
   model: Model(socket),
   lead: List(transcript_lines.Block),
@@ -3119,16 +3197,16 @@ fn lead_of(
   }
 }
 
-// Whether the page still gives up on completing a lead after the window was
-// laid out.
-//
-// `Spent` records that a read for the lead of the window was refused or could not
-// reach the turn's input, so the lead is drawn as it stands and not asked for
-// again. That holds of one lead only. Once it has been closed, the frontier has
-// moved past it, and the next records that arrive with no input of their own (a
-// resume, an input that landed before its operation) are another lead, which has
-// not been tried. Keeping `Spent` would close each of them as a turn of its
-// own, and the turn would be drawn as two dividers where a reload draws one.
+/// Whether the page still gives up on completing a lead after the window was
+/// laid out.
+///
+/// `Spent` records that a read for the lead of the window was refused or could not
+/// reach the turn's input, so the lead is drawn as it stands and not asked for
+/// again. That holds of one lead only. Once it has been closed, the frontier has
+/// moved past it, and the next records that arrive with no input of their own (a
+/// resume, an input that landed before its operation) are another lead, which has
+/// not been tried. Keeping `Spent` would close each of them as a turn of its
+/// own, and the turn would be drawn as two dividers where a reload draws one.
 fn completion_after(
   standing: Lead,
   completion: Completion,
@@ -3159,8 +3237,8 @@ fn uncovered(block: transcript_lines.Block, frontier: Int) -> Bool {
   }
 }
 
-// The turns of the window, oldest first, that are closed: all of them unless
-// the strand is running, when the newest is the running turn.
+/// The turns of the window, oldest first, that are closed: all of them unless
+/// the strand is running, when the newest is the running turn.
 fn closing(
   groups: List(List(transcript_lines.Block)),
   latest: turns.Latest,
@@ -3190,7 +3268,7 @@ type Window {
   )
 }
 
-// Closes the turns of the window that are closed, and lays the page out.
+/// Closes the turns of the window that are closed, and lays the page out.
 fn laid_out(
   model: Model(socket),
   view: snapshot_view.View,
@@ -3225,6 +3303,8 @@ fn laid_out(
   let #(lead, opened) = turns.grouped(all, view.strands)
   let latest = turns.latest(view, shared.agent_rows, shared.active_strand)
   let standing = lead_of(model, lead, branch.unloaded, opened, latest)
+
+  // Assemble turn groups based on lead turn standing.
   let groups = case standing {
     Whole -> [lead, ..opened]
     NoLead | Unfinished -> opened
@@ -3242,6 +3322,7 @@ fn laid_out(
     Unfinished -> []
     NoLead | Whole -> closing(groups, latest)
   }
+
   let fresh =
     turn_ledger.seal_all(
       closed,
@@ -3276,25 +3357,25 @@ fn laid_out(
   #(drawn(model, window, view), window)
 }
 
-// The turn weights, newest first, for the window's turns and then the closed
-// turns, and which of them fit the page's limit.
-//
-// A turn costs what it draws (`fold_budget.weigh`): its prompt, its answer and
-// its divider, plus the steps of its fold while the reader has it open. Which
-// turns the page holds never depends on the open folds (`fold_budget.fit`):
-// the turns are chosen as if every fold were closed, and the rows they leave
-// over go to the open folds, most recently opened first. A fold that does not
-// fit whole draws its newest steps that do, if it is the most recent that did
-// not fit, and an older one is closed. So pressing a divider cannot move where
-// the page is cut or fill it.
-//
-// The newest turn is always held. A running turn is drawn open, so it costs
-// every row of its blocks. When it alone is over the limit, which a long run of
-// work can be, the page holds its newest blocks that fit, and at least its
-// newest block, so a page mid-turn still shows the turn's end. That turn is
-// then keyed by the window's start, which moves each time the turn grows by a
-// block, so its held rows, at most the limit, are drawn again on that capture.
-// Only a turn longer than the whole limit pays this, and only while it runs.
+/// The turn weights, newest first, for the window's turns and then the closed
+/// turns, and which of them fit the page's limit.
+///
+/// A turn costs what it draws (`fold_budget.weigh`): its prompt, its answer and
+/// its divider, plus the steps of its fold while the reader has it open. Which
+/// turns the page holds never depends on the open folds (`fold_budget.fit`):
+/// the turns are chosen as if every fold were closed, and the rows they leave
+/// over go to the open folds, most recently opened first. A fold that does not
+/// fit whole draws its newest steps that do, if it is the most recent that did
+/// not fit, and an older one is closed. So pressing a divider cannot move where
+/// the page is cut or fill it.
+///
+/// The newest turn is always held. A running turn is drawn open, so it costs
+/// every row of its blocks. When it alone is over the limit, which a long run of
+/// work can be, the page holds its newest blocks that fit, and at least its
+/// newest block, so a page mid-turn still shows the turn's end. That turn is
+/// then keyed by the window's start, which moves each time the turn grows by a
+/// block, so its held rows, at most the limit, are drawn again on that capture.
+/// Only a turn longer than the whole limit pays this, and only while it runs.
 fn drawn(
   model: Model(socket),
   window: Window,
@@ -3302,6 +3383,8 @@ fn drawn(
 ) -> Model(socket) {
   let limit = limit(model.view.paging)
   let weights = weights(model, window, view.strands)
+
+  // Check whether the drawn transcript window overruns display limits.
   case weights.window {
     [head, ..] if head.base > limit ->
       overrun(model, window, view, weights.group_blocks)
@@ -3330,12 +3413,15 @@ type Weights {
   )
 }
 
+/// Calculates layout weights for elements in the view.
 fn weights(
   model: Model(socket),
   window: Window,
   strands: List(protocol.Strand),
 ) -> Weights {
   let newest_first = list.reverse(window.groups)
+
+  // Compute weights for the newest and older turn groups.
   let held = case newest_first {
     [] -> []
     [newest, ..older] -> [
@@ -3343,6 +3429,7 @@ fn weights(
       ..list.map(older, fold_budget.weigh(_, strands))
     ]
   }
+
   Weights(
     window: held,
     sealed: list.map(model.view.sealed, closed_weight(_, model.view.steps)),
@@ -3350,8 +3437,8 @@ fn weights(
   )
 }
 
-// A closed turn's weight, with the rows its fold adds taken from the steps the
-// page holds for it when it holds them.
+/// A closed turn's weight, with the rows its fold adds taken from the steps the
+/// page holds for it when it holds them.
 fn closed_weight(
   turn: turn_ledger.Sealed,
   steps: Dict(Int, turn_ledger.Steps),
@@ -3372,8 +3459,8 @@ fn closed_weight(
   }
 }
 
-// The weight of the newest turn. A running turn is drawn open, with every
-// block's rows, so it costs them all; a settled one costs its divider.
+/// The weight of the newest turn. A running turn is drawn open, with every
+/// block's rows, so it costs them all; a settled one costs its divider.
 fn newest_weight(
   turn: List(transcript_lines.Block),
   strands: List(protocol.Strand),
@@ -3385,19 +3472,21 @@ fn newest_weight(
   }
 }
 
-// A running turn that alone is over the page's limit: the page draws its
-// newest blocks and nothing before it, and keeps what it holds untouched, so
-// the turns below it are drawn again once it settles.
+/// A running turn that alone is over the page's limit: the page draws its
+/// newest blocks and nothing before it, and keeps what it holds untouched, so
+/// the turns below it are drawn again once it settles.
 fn overrun(
   model: Model(socket),
   window: Window,
   view: snapshot_view.View,
   newest_first: List(List(transcript_lines.Block)),
 ) -> Model(socket) {
+  // Extract newest block group during overrun handling.
   let newest = case newest_first {
     [turn, ..] -> turn
     [] -> []
   }
+
   let blocks =
     newest_blocks(list.reverse(newest), limit(model.view.paging), 0, [])
   let pieces =
@@ -3425,8 +3514,8 @@ fn overrun(
   )
 }
 
-// The page's turns once the limit is applied: the window's turns that fit,
-// then the closed turns that fit, drawn.
+/// The page's turns once the limit is applied: the window's turns that fit,
+/// then the closed turns that fit, drawn.
 fn fitted_page(
   model: Model(socket),
   window: Window,
@@ -3474,10 +3563,13 @@ fn fitted_page(
     True -> Beyond
     False -> Within
   }
+
+  // Check whether sealed bytes exceeded available budget.
   let bytes = case list.length(kept_sealed) < list.length(by_rows) {
     True -> Beyond
     False -> Within
   }
+
   let paging = paged(model.view.paging, rows, bytes, window.latest)
   Model(
     ..model,
@@ -3559,10 +3651,10 @@ pub fn paged(
   }
 }
 
-// The newest closed turns, given newest first, whose summaries fit `budget`
-// bytes of text, and at least the newest. Rows bound what the runtime retains of
-// a turn drawn; this bounds what the page retains of the text, which one row can
-// make large.
+/// The newest closed turns, given newest first, whose summaries fit `budget`
+/// bytes of text, and at least the newest. Rows bound what the runtime retains of
+/// a turn drawn; this bounds what the page retains of the text, which one row can
+/// make large.
 fn within_bytes(
   newest_first: List(turn_ledger.Sealed),
   budget: Int,
@@ -3573,6 +3665,7 @@ fn within_bytes(
   }
 }
 
+/// Fits content items within available viewport bounds.
 fn fitting(
   older: List(turn_ledger.Sealed),
   room: Int,
@@ -3586,10 +3679,10 @@ fn fitting(
   }
 }
 
-// A closed turn's pieces as the page draws them: its divider is open, with the
-// steps the page holds for it and the earlier ones it does not, when the reader
-// has its fold open, and reads "reading" until the steps arrive. A fold that
-// fits only in part draws the newest steps its room allows.
+/// A closed turn's pieces as the page draws them: its divider is open, with the
+/// steps the page holds for it and the earlier ones it does not, when the reader
+/// has its fold open, and reads "reading" until the steps arrive. A fold that
+/// fits only in part draws the newest steps its room allows.
 fn opened_pieces(
   turn: turn_ledger.Sealed,
   fitted: fold_budget.Fitted,
@@ -3616,10 +3709,12 @@ fn opened_pieces(
               id: Some(fold),
             )
           True, Ok(held) -> {
+            // Constrain fold items within the computed allowance.
             let #(items, hidden) = case dict.get(fitted.allowance, fold) {
               Ok(allowed) -> fold_budget.newest(held.items, allowed)
               Error(Nil) -> #(held.items, 0)
             }
+
             turns.Work(
               key:,
               worked:,
@@ -3644,16 +3739,16 @@ fn opened_pieces(
   })
 }
 
-// The cache misses noticed after a closed turn's records were dropped.
-//
-// A miss is noticed from the next turn's usage, after the turn that paid for
-// it settled, and the notice names the last entry the strand held then. When
-// that entry is the closed turn's last record the window holds nothing to splice
-// the row in beside, so the row is drawn after the turn's own pieces. A miss
-// the turn already holds, because the notice came before the turn closed, is
-// not drawn twice. The row's key is the last record's sequence and an
-// occurrence past any a block of that record has, as a block's key is built, so
-// a keyed lane keeps it across captures.
+/// The cache misses noticed after a closed turn's records were dropped.
+///
+/// A miss is noticed from the next turn's usage, after the turn that paid for
+/// it settled, and the notice names the last entry the strand held then. When
+/// that entry is the closed turn's last record the window holds nothing to splice
+/// the row in beside, so the row is drawn after the turn's own pieces. A miss
+/// the turn already holds, because the notice came before the turn closed, is
+/// not drawn twice. The row's key is the last record's sequence and an
+/// occurrence past any a block of that record has, as a block's key is built, so
+/// a keyed lane keeps it across captures.
 fn late_misses(
   turn: turn_ledger.Sealed,
   notices: List(CacheNotice),
@@ -3687,10 +3782,10 @@ fn late_misses(
   })
 }
 
-// Whether the strand has turns older than the oldest the page holds. The
-// oldest closed turn knows whether anything lies before it; with none closed
-// the window does. A read that reached the strand's first record says there is
-// nothing more, whatever the last turn's parent was.
+/// Whether the strand has turns older than the oldest the page holds. The
+/// oldest closed turn knows whether anything lies before it; with none closed
+/// the window does. A read that reached the strand's first record says there is
+/// nothing more, whatever the last turn's parent was.
 fn earlier_of(
   model: Model(socket),
   kept_sealed: List(turn_ledger.Sealed),
@@ -3725,7 +3820,7 @@ fn unread_before(leaf: String) -> Earlier {
   }
 }
 
-// The Changes board of the closed turns and the window, joined oldest first.
+/// The Changes board of the closed turns and the window, joined oldest first.
 fn joined_changes(
   kept_sealed: List(turn_ledger.Sealed),
   records: List(protocol.EntryRecord),
@@ -3738,7 +3833,7 @@ fn joined_changes(
   |> changes_view.append(changes_view.fold(records))
 }
 
-// The Trace of the closed turns and the window, joined oldest first.
+/// The Trace of the closed turns and the window, joined oldest first.
 fn joined_trace(
   kept_sealed: List(turn_ledger.Sealed),
   records: List(protocol.EntryRecord),
@@ -3751,9 +3846,9 @@ fn joined_trace(
   |> trace_view.append(trace_view.fold(records))
 }
 
-// The newest tool result of the closed turns and the window. The workspace is
-// read again when a newer one appears, and a window emptied by closing its turns
-// must not look like one.
+/// The newest tool result of the closed turns and the window. The workspace is
+/// read again when a newer one appears, and a window emptied by closing its turns
+/// must not look like one.
 fn joined_result(
   kept_sealed: List(turn_ledger.Sealed),
   records: List(protocol.EntryRecord),
@@ -3773,22 +3868,23 @@ type Began(socket) {
   Answered(Model(socket))
 }
 
-// Starts the one read the page wants next, when it wants one and has none out.
-//
-// What it wants, in order: the start of the turn the window began inside,
-// since a turn drawn from half its records would show the wrong figures; the
-// steps of a fold the reader opened that the page does not hold; and the turns
-// below the oldest the page holds, when the reader asked for them. Each read
-// starts at one record of the strand's ancestry and walks down. The records it
-// starts from are the ones the page holds of that turn, never the event's. It
-// begins with the records the page already has, and only what those do not
-// settle goes to the daemon. A press for turns there are none of ends there.
+/// Starts the one read the page wants next, when it wants one and has none out.
+///
+/// What it wants, in order: the start of the turn the window began inside,
+/// since a turn drawn from half its records would show the wrong figures; the
+/// steps of a fold the reader opened that the page does not hold; and the turns
+/// below the oldest the page holds, when the reader asked for them. Each read
+/// starts at one record of the strand's ancestry and walks down. The records it
+/// starts from are the ones the page holds of that turn, never the event's. It
+/// begins with the records the page already has, and only what those do not
+/// settle goes to the daemon. A press for turns there are none of ends there.
 fn begun(
   model: Model(socket),
   window: Window,
   cut: snapshot.Captured,
   view: snapshot_view.View,
 ) -> Began(socket) {
+  // Check whether a history read is needed and can begin.
   case model.view.purpose, wanted(model, window, cut) {
     ForOlder, _ | ForLead, _ | ForTail, _ | ForSteps(_), _ -> Began(model)
     Resting, Some(#(purpose, leaf, before)) -> {
@@ -3806,6 +3902,8 @@ fn begun(
           view: View(..model.view, purpose:),
         )
       let read = read(started, purpose, cut, view)
+
+      // Evaluate the resulting read progress.
       case read.view.purpose {
         Resting -> Answered(read)
         ForOlder | ForLead | ForTail | ForSteps(_) -> Began(read)
@@ -3827,19 +3925,21 @@ fn begun(
   }
 }
 
-// What the page reads next, and the record the read starts from and the
-// sequence it stays below.
-//
-// A window that holds none of the strand's records is read before anything
-// else, once: with nothing to draw there is no turn to complete, no fold to
-// open, and the page would say the conversation begins where it has not
-// started to read.
+/// What the page reads next, and the record the read starts from and the
+/// sequence it stays below.
+///
+/// A window that holds none of the strand's records is read before anything
+/// else, once: with nothing to draw there is no turn to complete, no fold to
+/// open, and the page would say the conversation begins where it has not
+/// started to read.
 fn wanted(
   model: Model(socket),
   window: Window,
   cut: snapshot.Captured,
 ) -> Option(#(Purpose, String, Int)) {
   let view = model.view
+
+  // Determine which missing history region should be requested.
   case window.lead, window.reach, unread_tail(model, window, cut) {
     Unfinished, Ok(end), _ -> Some(#(ForLead, end.id, end.seq + 1))
     _, _, Some(#(leaf, before)) ->
@@ -3851,8 +3951,8 @@ fn wanted(
   }
 }
 
-// The read of an open fold's steps, or of the turns below the page when the
-// reader pressed "Load older".
+/// The read of an open fold's steps, or of the turns below the page when the
+/// reader pressed "Load older".
 fn reader_asked(
   model: Model(socket),
   window: Window,
@@ -3877,12 +3977,12 @@ fn below_cut(cut: snapshot.Captured) -> Int {
   }
 }
 
-// The strand's newest record, and the sequence to read below, when the page
-// holds nothing of the strand: no closed turn, and none of its records in the
-// window, though its leaf names one. The leaf is below the cut, which is the
-// newest records of the whole session. A leaf is the identity of a record; the
-// note a cut gives for a strand it does not list is not one, and names nothing to
-// read.
+/// The strand's newest record, and the sequence to read below, when the page
+/// holds nothing of the strand: no closed turn, and none of its records in the
+/// window, though its leaf names one. The leaf is below the cut, which is the
+/// newest records of the whole session. A leaf is the identity of a record; the
+/// note a cut gives for a strand it does not list is not one, and names nothing to
+/// read.
 fn unread_tail(
   model: Model(socket),
   window: Window,
@@ -3902,7 +4002,7 @@ fn unread_tail(
   }
 }
 
-// The first open fold of a closed turn whose steps the page does not hold.
+/// The first open fold of a closed turn whose steps the page does not hold.
 fn missing_steps(model: Model(socket)) -> Option(#(Int, turn_ledger.Sealed)) {
   list.find_map(model.view.folds, fn(fold) {
     case
@@ -3916,10 +4016,10 @@ fn missing_steps(model: Model(socket)) -> Option(#(Int, turn_ledger.Sealed)) {
   |> option.from_result
 }
 
-// Where a read for the turns below the page starts: the parent of the oldest
-// turn the page holds, which is a closed turn's first record's parent, or the
-// window's own when nothing is closed. A page that holds nothing starts at the
-// strand's leaf.
+/// Where a read for the turns below the page starts: the parent of the oldest
+/// turn the page holds, which is a closed turn's first record's parent, or the
+/// window's own when nothing is closed. A page that holds nothing starts at the
+/// strand's leaf.
 fn below_origin(
   model: Model(socket),
   window: Window,
@@ -3946,18 +4046,21 @@ fn limit(paging: Paging) -> Int {
   }
 }
 
-// The newest blocks of one turn, given newest first, that fit `limit`, and
-// at least one.
+/// The newest blocks of one turn, given newest first, that fit `limit`, and
+/// at least one.
 fn newest_blocks(
   newest_first: List(transcript_lines.Block),
   limit: Int,
   rows: Int,
   kept: List(transcript_lines.Block),
 ) -> List(transcript_lines.Block) {
+  // Accumulate newest blocks until row limit is reached.
   case newest_first {
     [] -> kept
     [block, ..rest] -> {
       let rows = rows + list.length(block.rows)
+
+      // Enforce the row limit on collected blocks.
       case rows > limit, kept {
         True, [_, ..] -> kept
         True, [] | False, _ -> newest_blocks(rest, limit, rows, [block, ..kept])
@@ -3970,10 +4073,10 @@ fn row_count(blocks: List(transcript_lines.Block)) -> Int {
   list.fold(blocks, 0, fn(sum, block) { sum + list.length(block.rows) })
 }
 
-// The agent strip from the roster, the agent rows and the cache ledger, as
-// of the shared record's clock. Which strands are listed and what each line
-// says is `agent_roster.chips`; which outlook may be shown is
-// `cache_watch.shown`.
+/// The agent strip from the roster, the agent rows and the cache ledger, as
+/// of the shared record's clock. Which strands are listed and what each line
+/// says is `agent_roster.chips`; which outlook may be shown is
+/// `cache_watch.shown`.
 fn restripped(model: Model(socket)) -> Model(socket) {
   Model(
     ..model,
@@ -3985,6 +4088,7 @@ fn restripped(model: Model(socket)) -> Model(socket) {
   )
 }
 
+/// Renders the strand and agent activity status strip.
 fn strip_of(shared: Session(socket)) -> strip.Strip {
   // Children on other orchestrators follow the session's own strands, from
   // the daemon's list of the session's stubs (protocol-change/090).
@@ -4014,12 +4118,12 @@ fn strip_of(shared: Session(socket)) -> strip.Strip {
   )
 }
 
-// A settled strand's card. It says how the strand ended and nothing that
-// changes: the roster's clock for a finished operation keeps counting, so its
-// elapsed figure would grow after the strand stopped, and no capture records
-// when an operation ended. The line's elapsed time is therefore dropped, and
-// the figures only a live strand has (cache outlook, running time) are left
-// out with it.
+/// A settled strand's card. It says how the strand ended and nothing that
+/// changes: the roster's clock for a finished operation keeps counting, so its
+/// elapsed figure would grow after the strand stopped, and no capture records
+/// when an operation ended. The line's elapsed time is therefore dropped, and
+/// the figures only a live strand has (cache outlook, running time) are left
+/// out with it.
 fn settled_chip(
   shared: Session(socket),
   line: agent_roster.Line,
@@ -4054,10 +4158,10 @@ fn apart_from_main(shared: Session(socket), strand: String) -> Option(String) {
   }
 }
 
-// The first line of a strand's latest answer, or nothing while it has given
-// none: the row's excerpt is only an answer when it names the entry it came
-// from, and `agent_view` words the excerpt of an entry outside the loaded
-// history as unavailable, which is not an answer either.
+/// The first line of a strand's latest answer, or nothing while it has given
+/// none: the row's excerpt is only an answer when it names the entry it came
+/// from, and `agent_view` words the excerpt of an entry outside the loaded
+/// history as unavailable, which is not an answer either.
 fn answer_line(row: agent_view.Row) -> Option(String) {
   case row.update_entry, row.update {
     None, _ -> None
@@ -4082,12 +4186,13 @@ fn running_ms(shared: Session(socket), id: String) -> Option(Int) {
   |> option.then(agent_roster.running_ms(shared.roster, _))
 }
 
-// A strand the capture lists with a live phase is running, which is the
-// terminal's test too, and `cache_watch.shown` says nothing for it.
+/// A strand the capture lists with a live phase is running, which is the
+/// terminal's test too, and `cache_watch.shown` says nothing for it.
 fn outlook(
   shared: Session(socket),
   id: String,
 ) -> Option(#(cache_miss.Outlook, String)) {
+  // Determine cache activity status for the strand.
   let activity = case
     list.find(shared.strands, fn(listed) { listed.id == id })
   {
@@ -4095,20 +4200,21 @@ fn outlook(
     Ok(protocol.Strand(live_phase: None, ..)) | Error(Nil) ->
       cache_watch.Resting
   }
+
   cache_watch.shown(shared.cache, id, activity, shared.stamp.now_ms)
   |> option.map(fn(held) { #(held, cache_miss.outlook_label(held)) })
 }
 
-// A tick's part in the strip. The browser counts each chip's elapsed time,
-// so a second passing redraws nothing; the strip is rebuilt only when a
-// drawn cache label changed, which is once a minute at most until a
-// countdown's last minute. An idle page's tick therefore leaves the strip
-// as the same value and its memoized subtree is not diffed. The timer fires
-// only when the lane is due, so a label can lag by up to one refresh
-// interval. A countdown label is an upper bound on what remains, so a late
-// one still states something true. The labels are compared chip by chip
-// rather than by rebuilding the strip, which would redo every line's text
-// on every tick.
+/// A tick's part in the strip. The browser counts each chip's elapsed time,
+/// so a second passing redraws nothing; the strip is rebuilt only when a
+/// drawn cache label changed, which is once a minute at most until a
+/// countdown's last minute. An idle page's tick therefore leaves the strip
+/// as the same value and its memoized subtree is not diffed. The timer fires
+/// only when the lane is due, so a label can lag by up to one refresh
+/// interval. A countdown label is an upper bound on what remains, so a late
+/// one still states something true. The labels are compared chip by chip
+/// rather than by rebuilding the strip, which would redo every line's text
+/// on every tick.
 fn label_moved(model: Model(socket)) -> Bool {
   let shared = model.shared
   list.any(chips(model.view.strip), fn(chip) {
@@ -4125,10 +4231,11 @@ fn chips(strip: strip.Strip) -> List(strip.Chip) {
   }
 }
 
-// The connection's status follows the lane. A cut makes a connecting page
-// follow, a lane that ended makes it disconnected, and a disconnected page
-// stays so: the last drawn cut is what it keeps showing.
+/// The connection's status follows the lane. A cut makes a connecting page
+/// follow, a lane that ended makes it disconnected, and a disconnected page
+/// stays so: the last drawn cut is what it keeps showing.
 fn statused(model: Model(socket)) -> Model(socket) {
+  // Calculate aggregate connection and lifecycle status.
   let status = case
     model.view.status,
     model.shared.ended,
@@ -4140,6 +4247,7 @@ fn statused(model: Model(socket)) -> Model(socket) {
     Connecting, None, Some(_) -> Connected
     Connecting, None, None | Connected, None, _ -> model.view.status
   }
+
   Model(..model, view: View(..model.view, status:))
 }
 
@@ -4192,12 +4300,12 @@ pub fn submit(
   }
 }
 
-// A composer submit the page refused with the draft kept: the refusal, and
-// the count the composer's element reads to take its pending line down
-// (`refusals`). Only the composer's paths count, since the element's line is
-// the composer's draft: a stale approval, a reply that found no message or a
-// control form refused are told in the notice and must leave a steer the
-// lane holds in flight, or a second press would send it twice.
+/// A composer submit the page refused with the draft kept: the refusal, and
+/// the count the composer's element reads to take its pending line down
+/// (`refusals`). Only the composer's paths count, since the element's line is
+/// the composer's draft: a stale approval, a reply that found no message or a
+/// control form refused are told in the notice and must leave a steer the
+/// lane holds in flight, or a second press would send it twice.
 fn refused_draft(
   model: Model(socket),
   text: String,
@@ -4209,14 +4317,14 @@ fn refused_draft(
   )
 }
 
-// A draft that passed the page's own limits, with the images that passed
-// `web_image.admit`, parsed and handed to the shared step.
-//
-// The step sends an image prompt from the composer's attachments, which are
-// the terminal's state for images not yet sent. The page keeps none between
-// submits: each submit's images are set here as the whole of them and cleared
-// after, whatever the step decided, so a refused submit whose element still
-// holds its images sends them once, on the next submit, and never twice.
+/// A draft that passed the page's own limits, with the images that passed
+/// `web_image.admit`, parsed and handed to the shared step.
+///
+/// The step sends an image prompt from the composer's attachments, which are
+/// the terminal's state for images not yet sent. The page keeps none between
+/// submits: each submit's images are set here as the whole of them and cleared
+/// after, whatever the step decided, so a refused submit whose element still
+/// holds its images sends them once, on the next submit, and never twice.
 fn submitting(
   model: Model(socket),
   text: String,
@@ -4247,6 +4355,7 @@ fn submitting(
             Some(_) -> 1
             None -> 0
           }
+
           let #(next, effects) =
             commanded(
               Model(..model, shared: attaching),
@@ -4335,8 +4444,8 @@ pub fn decide(
   }
 }
 
-// The decision on a record the page drew, now that the answer is one this
-// page may give.
+/// The decision on a record the page drew, now that the answer is one this
+/// page may give.
 fn decided(
   model: Model(socket),
   record: approval.Review,
@@ -4344,11 +4453,13 @@ fn decided(
 ) -> #(Model(socket), Effect(Msg(socket))) {
   {
     {
+      // Map the user permission prompt answer to an operator choice.
       let choice = case answer {
         AllowOnce -> operator.AllowOnce
         AllowForSession -> operator.AllowForSession
         Deny -> operator.Deny
       }
+
       let #(model, effects) =
         commanded(model, msg.Decide(review: record, choice:))
 
@@ -4359,8 +4470,8 @@ fn decided(
   }
 }
 
-// The list is owed a fresh read after an approval for the session. A refused
-// approval changed nothing, and the read it earns is harmless.
+/// The list is owed a fresh read after an approval for the session. A refused
+/// approval changed nothing, and the read it earns is harmless.
 fn owing_permissions(model: Model(socket), answer: Answer) -> Model(socket) {
   case answer {
     AllowForSession ->
@@ -4392,6 +4503,8 @@ fn owing_permissions(model: Model(socket), answer: Answer) -> Model(socket) {
 /// ```
 pub fn want_permissions(model: Model(socket)) -> Model(socket) {
   let at = model.view.transport.now()
+
+  // Evaluate whether to request permission or memory updates.
   case
     may_remember(model),
     holding.due(model.view.holding, at),
@@ -4496,6 +4609,7 @@ pub fn judge_logins(
   }
 }
 
+/// Evaluates whether an item meets interactive selection criteria.
 fn judging(
   ask: fn(List(holding.Login), fn(List(holding.Login)) -> Nil) -> Nil,
   logins: List(holding.Login),
@@ -4668,6 +4782,8 @@ pub fn memory_notice(model: Model(socket)) -> String {
 /// ```
 pub fn want_proposals(model: Model(socket)) -> Model(socket) {
   let at = model.view.transport.now()
+
+  // Evaluate whether to request standing proposals refresh.
   case
     may_review_proposals(model),
     proposing.due(model.view.proposing, at),
@@ -4833,8 +4949,8 @@ pub fn reject_proposal(
   }
 }
 
-// Whether this page may decide the proposal and its own board lists it as
-// pending. The decision is the owner's, and the daemon checks again.
+/// Whether this page may decide the proposal and its own board lists it as
+/// pending. The decision is the owner's, and the daemon checks again.
 fn pending_proposal(model: Model(socket), id: String) -> Bool {
   case may_review_proposals(model), model.shared.proposals {
     True, Some(board) ->
@@ -4880,6 +4996,8 @@ pub fn evolution_reach(model: Model(socket)) -> evolving.Reach {
 pub fn want_evolution(model: Model(socket)) -> Model(socket) {
   let watching =
     shared_set.evolution_watch(model.shared, session_model.WatchingEvolution)
+
+  // Evaluate evolution board refresh readiness.
   case model.shared.evolution_read_ms, model.shared.evolution_refresh {
     None, worktree_view.Settled ->
       Model(
@@ -5033,10 +5151,10 @@ pub fn confirm_evolve(
   }
 }
 
-// A change the lane refused, because its command slot was busy or the
-// attachment may not make it, leaves words in the notice, since a change that
-// is sent clears the notice first. The question stays open, so the person
-// presses the confirm again instead of finding the row as it was.
+/// A change the lane refused, because its command slot was busy or the
+/// attachment may not make it, leaves words in the notice, since a change that
+/// is sent clears the notice first. The question stays open, so the person
+/// presses the confirm again instead of finding the row as it was.
 fn retained_evolution(
   sent: Model(socket),
   offered: evolving.Armed,
@@ -5054,8 +5172,8 @@ fn retained_evolution(
   }
 }
 
-// The board moved past the question: nothing is sent, the question closes, the
-// words say why, and the board is read again.
+/// The board moved past the question: nothing is sent, the question closes, the
+/// words say why, and the board is read again.
 fn superseded_evolution(model: Model(socket)) -> Model(socket) {
   let closed = cancel_evolve(model)
   Model(
@@ -5068,7 +5186,7 @@ fn superseded_evolution(model: Model(socket)) -> Model(socket) {
   )
 }
 
-// The change as the page's board offers it now, or nothing when it does not.
+/// The change as the page's board offers it now, or nothing when it does not.
 fn offered_evolution(
   model: Model(socket),
   armed: evolving.Armed,
@@ -5176,8 +5294,8 @@ pub fn control(
   }
 }
 
-// A form's text as the command it is for, or the notice saying it is not
-// one. Text over the page's limit is refused as a draft is.
+/// A form's text as the command it is for, or the notice saying it is not
+/// one. Text over the page's limit is refused as a draft is.
 fn written(
   model: Model(socket),
   verb: String,
@@ -5200,22 +5318,23 @@ fn written(
   }
 }
 
-// Runs a form's command, and counts the form as sent once the lane accepts
-// the command, whether it went out at once or was queued behind a read.
-//
-// Acceptance is decided by the step's own admission check, before the command
-// runs (`outbound.mutation_refusal`), and not by whether a frame has left. A
-// lane that is waiting for a read's reply admits a mutation and queues it, so
-// its request identity does not move until the reply lands and the queued
-// frame is sent. Reading that as a refusal would keep the text in the form
-// after the command was accepted, and the operator would send it again. A
-// command that is not a mutation (the complaint that a name is missing) is
-// never accepted, and neither is one the check refuses, so those keep the
-// text and the notice says why.
+/// Runs a form's command, and counts the form as sent once the lane accepts
+/// the command, whether it went out at once or was queued behind a read.
+///
+/// Acceptance is decided by the step's own admission check, before the command
+/// runs (`outbound.mutation_refusal`), and not by whether a frame has left. A
+/// lane that is waiting for a read's reply admits a mutation and queues it, so
+/// its request identity does not move until the reply lands and the queued
+/// frame is sent. Reading that as a refusal would keep the text in the form
+/// after the command was accepted, and the operator would send it again. A
+/// command that is not a mutation (the complaint that a name is missing) is
+/// never accepted, and neither is one the check refuses, so those keep the
+/// text and the notice says why.
 fn sent_from_form(
   model: Model(socket),
   session: command.Session,
 ) -> #(Model(socket), Effect(Msg(socket))) {
+  // Determine whether the command was accepted without refusal.
   let accepted = case
     outbound.mutation_refusal(model.shared, session),
     outbound.mutating_submission(model.shared, session)
@@ -5223,7 +5342,10 @@ fn sent_from_form(
     None, True -> True
     Some(_), _ | None, False -> False
   }
+
   let #(after, effects) = commanded(model, msg.Control(command: session))
+
+  // Dispatch effects based on acceptance.
   case accepted {
     True -> #(
       Model(
@@ -5236,8 +5358,8 @@ fn sent_from_form(
   }
 }
 
-// The fork form's words: a fork, or the command's complaint that the name is
-// missing. Nothing else can follow `/fork `.
+/// The fork form's words: a fork, or the command's complaint that the name is
+/// missing. Nothing else can follow `/fork `.
 fn forking(parsed: command.Command) -> Result(command.Session, String) {
   case parsed {
     command.Session(command.Fork(_) as fork) -> Ok(fork)
@@ -5277,6 +5399,7 @@ pub fn reply(
   model: Model(socket),
   key: String,
 ) -> #(Model(socket), Effect(Msg(socket))) {
+  // Look up the referenced peer block to construct a reply.
   case list.find_map(model.view.pieces, peer_named(_, key)) {
     Error(Nil) ->
       refused(
@@ -5304,9 +5427,9 @@ pub fn reply(
   }
 }
 
-// The start of a prompt asking for a reply, when `piece` is the peer message
-// drawn under `key`. The identity is the daemon's, and goes through the
-// terminal's hygiene because the operator sends it on as text.
+/// The start of a prompt asking for a reply, when `piece` is the peer message
+/// drawn under `key`. The identity is the daemon's, and goes through the
+/// terminal's hygiene because the operator sends it on as text.
 fn peer_named(piece: turns.Piece, key: String) -> Result(String, Nil) {
   case piece {
     turns.Peer(key: found, session:, strand:, ..) if found == key ->
@@ -5331,8 +5454,8 @@ fn peer_named(piece: turns.Piece, key: String) -> Result(String, Nil) {
   }
 }
 
-// An input the page refused before it became a command. The refusal stays
-// until the operator's next input.
+/// An input the page refused before it became a command. The refusal stays
+/// until the operator's next input.
 fn refused(
   model: Model(socket),
   text: String,
@@ -5343,12 +5466,12 @@ fn refused(
   )
 }
 
-// One command through the step at the transport's own reading, which the
-// request's deadline and the timer armed for it are measured from. What the
-// step decided is folded back as its notice, and the composer's draft is
-// counted as consumed when the command took it at dispatch. The facts the
-// command recorded are the only ones this host reads, and it empties them
-// after.
+/// One command through the step at the transport's own reading, which the
+/// request's deadline and the timer armed for it are measured from. What the
+/// step decided is folded back as its notice, and the composer's draft is
+/// counted as consumed when the command took it at dispatch. The facts the
+/// command recorded are the only ones this host reads, and it empties them
+/// after.
 fn commanded(
   model: Model(socket),
   command: msg.Command,
@@ -5364,6 +5487,8 @@ fn commanded(
       model.shared |> shared_set.notice("") |> shared_set.answer(""),
       msg.Input(at: stamp(at), event: msg.Acted(command)),
     )
+
+  // Track whether the draft input was consumed by this action.
   let consumed = case list.any(shared.surface_facts, took_draft) {
     True -> model.view.consumed + 1
     False -> model.view.consumed
@@ -5472,9 +5597,9 @@ pub fn resume(
   }
 }
 
-// Whether the page's list shows `target` as a saved session that may be
-// resumed. The daemon decides again; this keeps a frame that named a row the
-// page never drew from reaching it.
+/// Whether the page's list shows `target` as a saved session that may be
+/// resumed. The daemon decides again; this keeps a frame that named a row the
+/// page never drew from reaching it.
 fn resumable(model: Model(socket), target: String) -> Bool {
   list.any(model.view.groups, fn(group) {
     list.any(group.entries, fn(entry) {
@@ -5483,8 +5608,8 @@ fn resumable(model: Model(socket), target: String) -> Bool {
   })
 }
 
-// Starts the daemon's task and returns at once. The task's answer arrives
-// later as `Linked`, dispatched from the task's own process.
+/// Starts the daemon's task and returns at once. The task's answer arrives
+/// later as `Linked`, dispatched from the task's own process.
 fn resuming(
   transport: Transport(socket),
   target: String,
@@ -5598,7 +5723,7 @@ pub fn invite(
   }
 }
 
-// The daemon's answer, in the component's process, as a message.
+/// The daemon's answer, in the component's process, as a message.
 fn inviting(
   ask: fn(invites.Role) -> invites.Answer,
   role: invites.Role,
@@ -5607,11 +5732,11 @@ fn inviting(
   dispatch(Invited(ask(role)))
 }
 
-// The daemon's answer to a request to invite. An invitation becomes what the
-// control shows, and a refusal is worded in the control's own status line. An
-// answer that arrives when no request is out was not asked for and is
-// dropped, so the token is never taken into a state that is not waiting for
-// it.
+/// The daemon's answer to a request to invite. An invitation becomes what the
+/// control shows, and a refusal is worded in the control's own status line. An
+/// answer that arrives when no request is out was not asked for and is
+/// dropped, so the token is never taken into a state that is not waiting for
+/// it.
 fn invited(model: Model(socket), answer: invites.Answer) -> Model(socket) {
   case model.view.share, answer {
     invites.Asking, invites.Minted(invitation:) ->
@@ -5725,10 +5850,10 @@ fn sharing(ask: fn(fn(grants.Answer) -> Nil) -> Nil) -> Effect(Msg(socket)) {
   ask(fn(answer) { dispatch(MadeShareable(answer)) })
 }
 
-// The daemon's answer to the task. A session made shareable draws the
-// invitation buttons in the sentence's place; a refusal is worded in the
-// control's own status line, in the reason's fixed words. An answer that arrives
-// when no task is out was not asked for and is dropped.
+/// The daemon's answer to the task. A session made shareable draws the
+/// invitation buttons in the sentence's place; a refusal is worded in the
+/// control's own status line, in the reason's fixed words. An answer that arrives
+/// when no task is out was not asked for and is dropped.
 fn made_shareable(
   model: Model(socket),
   answer: grants.Answer,
@@ -5790,16 +5915,19 @@ pub fn ask_archive(model: Model(socket), target: String) -> Model(socket) {
   }
 }
 
-// The action a press on `target` means, when this page may ask it at all.
+/// The action a press on `target` means, when this page may ask it at all.
 fn archivable(
   model: Model(socket),
   target: String,
 ) -> Result(actions.Action, Nil) {
   use _ <- result.try(option.to_result(model.view.transport.manage, Nil))
+
+  // Allow archiving only when actively connected.
   use _ <- result.try(case model.view.status {
     Connected -> Ok(Nil)
     Connecting | Ended(_) -> Error(Nil)
   })
+
   use <- bool.guard(target == model.shared.session, Error(Nil))
   list.find_map(model.view.groups, fn(group) {
     list.find(group.entries, fn(entry) { entry.id == target })
@@ -5843,8 +5971,8 @@ pub fn confirm_archive(
   }
 }
 
-// What the notice says while the request is out: a running row is stopped
-// first, so only that action says so.
+/// What the notice says while the request is out: a running row is stopped
+/// first, so only that action says so.
 fn working_words(action: actions.Action) -> String {
   case action {
     actions.StopArchive -> "Working on it. A running session is stopped first."
@@ -5871,8 +5999,8 @@ pub fn cancel_archive(model: Model(socket)) -> Model(socket) {
   }
 }
 
-// Starts the daemon's task and returns at once. The answer arrives later as
-// `ManageAnswered`, dispatched from the task's own process.
+/// Starts the daemon's task and returns at once. The answer arrives later as
+/// `ManageAnswered`, dispatched from the task's own process.
 fn managing(
   ask: fn(actions.Action, String, fn(actions.Answer) -> Nil) -> Nil,
   action: actions.Action,
@@ -5882,15 +6010,17 @@ fn managing(
   ask(action, target, fn(answer) { dispatch(ManageAnswered(answer)) })
 }
 
-// The daemon's answer ends the request, says what happened in the composer's
-// notice in fixed words, and reads the list again, so the row is gone or
-// changed in what the page draws. An answer that arrives when no request is
-// out was not asked for and is dropped.
+/// The daemon's answer ends the request, says what happened in the composer's
+/// notice in fixed words, and reads the list again, so the row is gone or
+/// changed in what the page draws. An answer that arrives when no request is
+/// out was not asked for and is dropped.
 fn archive_answered(
   model: Model(socket),
   answer: actions.Answer,
 ) -> #(Model(socket), Effect(Msg(socket))) {
   let relist = listing(model.view.transport)
+
+  // Handle completion or failure of the archiving action.
   case model.view.archiving, answer {
     actions.Working(..), actions.Done(action:) -> #(
       Model(
@@ -5976,19 +6106,23 @@ pub fn share(model: Model(socket)) -> invites.Share {
   model.view.share
 }
 
-// Reads the focused strand's peer links when the page has none for it, or
-// the last read is `peers_refresh_ms` old. Only `Opened`, `Ticked` and a focus
-// change come here. A page with no capability, or with a request outstanding,
-// asks nothing.
+/// Reads the focused strand's peer links when the page has none for it, or
+/// the last read is `peers_refresh_ms` old. Only `Opened`, `Ticked` and a focus
+/// change come here. A page with no capability, or with a request outstanding,
+/// asks nothing.
 fn peers_due(
   done: #(Model(socket), Effect(Msg(socket))),
   at: Int,
 ) -> #(Model(socket), Effect(Msg(socket))) {
   let #(model, effects) = done
+
+  // Check whether peers query refresh interval elapsed.
   let elapsed = case model.view.peers_asked_at {
     Some(before) -> at - before >= peers_refresh_ms
     None -> True
   }
+
+  // Request peers refresh if stale or elapsed.
   case
     peer_links.stale(model.view.peering, model.shared.active_strand) || elapsed
   {
@@ -6000,8 +6134,8 @@ fn peers_due(
   }
 }
 
-// Asks for the focused strand's links now, if the page may and nothing is
-// outstanding.
+/// Asks for the focused strand's links now, if the page may and nothing is
+/// outstanding.
 fn peers_read(
   model: Model(socket),
   at: Int,
@@ -6011,10 +6145,10 @@ fn peers_read(
   #(Model(..model, view: View(..model.view, peers_asked_at: Some(at))), asked)
 }
 
-// Sends one request to the daemon from the component's own process and marks
-// the controls as waiting, or does nothing when the page has no capability,
-// the controls are not offered, or a request is already outstanding. The
-// answer arrives as `PeersAnswered`.
+/// Sends one request to the daemon from the component's own process and marks
+/// the controls as waiting, or does nothing when the page has no capability,
+/// the controls are not offered, or a request is already outstanding. The
+/// answer arrives as `PeersAnswered`.
 fn peers_ask(
   model: Model(socket),
   request: peer_links.Request,
@@ -6063,6 +6197,8 @@ pub fn peering(
   let held = fn(next) {
     #(Model(..model, view: View(..model.view, peering: next)), effect.none())
   }
+
+  // Dispatch peer links interaction press.
   case press {
     peer_links.OpenLink -> held(peer_links.open_link(control))
     peer_links.PickSession(session:, ..) ->
@@ -6111,6 +6247,7 @@ pub fn linking(
   model: Model(socket),
   typed: String,
 ) -> #(Model(socket), Effect(Msg(socket))) {
+  // Confirm linking configuration state.
   case model.view.peering {
     peer_links.Offered(
       step: peer_links.Configuring(session:, wake:, reverse:, ..),
@@ -6119,6 +6256,8 @@ pub fn linking(
     ) -> {
       let target = string.trim(typed)
       let valid = strand_text_ok(target)
+
+      // Validate target strand format before submitting link.
       case valid {
         False -> #(
           Model(
@@ -6150,8 +6289,8 @@ pub fn linking(
   }
 }
 
-// Whether a typed strand is one a link may name: not empty, at most 128
-// bytes, and without a control character.
+/// Whether a typed strand is one a link may name: not empty, at most 128
+/// bytes, and without a control character.
 fn strand_text_ok(target: String) -> Bool {
   let controlled =
     string.to_utf_codepoints(target)
@@ -6162,8 +6301,8 @@ fn strand_text_ok(target: String) -> Bool {
   target != "" && string.byte_size(target) <= 128 && !controlled
 }
 
-// The sessions the sidebar lists as running, other than this page's own, as
-// identity and name: the only sessions a link can be made to.
+/// The sessions the sidebar lists as running, other than this page's own, as
+/// identity and name: the only sessions a link can be made to.
 fn peer_candidates(model: Model(socket)) -> List(#(String, String)) {
   model.view.groups
   |> list.flat_map(fn(group) { group.entries })
@@ -6185,10 +6324,17 @@ pub fn peer_links_section(
   model: Model(socket),
   presses: peer_links_view.Presses(message),
 ) -> Element(message) {
+  // Only the picker draws candidates. Selection events still validate against
+  // the complete live catalogue, including a second pick before the next draw.
+  let candidates = case model.view.peering {
+    peer_links.Offered(step: peer_links.Choosing, ..) -> peer_candidates(model)
+    peer_links.Offered(..) | peer_links.Withheld -> []
+  }
+
   peer_links_view.view(
     model.view.peering,
     model.shared.active_strand,
-    peer_candidates(model),
+    candidates,
     presses,
   )
 }
@@ -6230,8 +6376,8 @@ pub fn renaming(
   }
 }
 
-// Starts the daemon's task and returns at once. The task's answer arrives later
-// as `Renamed`, dispatched from the task's own process.
+/// Starts the daemon's task and returns at once. The task's answer arrives later
+/// as `Renamed`, dispatched from the task's own process.
 fn asking_rename(
   ask: fn(String, fn(renames.Answer) -> Nil) -> Nil,
   name: String,
@@ -6240,12 +6386,12 @@ fn asking_rename(
   ask(name, fn(answer) { dispatch(Renamed(answer)) })
 }
 
-// The daemon's answer to a request to rename. A stored name becomes the
-// heading's and the sidebar's at once, in the page's own state, rather than
-// waiting for the next read of the catalogue; the name is the one the daemon
-// reports, never the one the browser sent. A refusal is worded in the
-// control's own status line. An answer that arrives when no request is out was
-// not asked for and is dropped.
+/// The daemon's answer to a request to rename. A stored name becomes the
+/// heading's and the sidebar's at once, in the page's own state, rather than
+/// waiting for the next read of the catalogue; the name is the one the daemon
+/// reports, never the one the browser sent. A refusal is worded in the
+/// control's own status line. An answer that arrives when no request is out was
+/// not asked for and is dropped.
 fn renamed(model: Model(socket), answer: renames.Answer) -> Model(socket) {
   case model.view.renaming, answer {
     renames.Asking, renames.Renamed(name:) ->
@@ -6309,10 +6455,12 @@ pub fn rename_form(
   model: Model(socket),
   submit: attribute.Attribute(message),
 ) -> Element(message) {
+  // Look up current session label for rename pre-fill.
   let current = case option.map(model.view.label, fn(label) { label.name }) {
     Some("") | None -> None
     named -> named
   }
+
   rename_view.view(model.view.renaming, current, model.view.renamed, submit)
 }
 
@@ -6405,12 +6553,12 @@ pub fn focus(
   focus_at(model, strand, model.view.transport.now())
 }
 
-// `focus` at the reading `update` took at its top.
-// A card names a strand of the session or a child on another orchestrator. A
-// remote child has no strand here, so its card opens a peek at its transcript
-// and leaves the strand on screen where it is. Any other card closes an open
-// peek first, which is how the peek's back link, the marker relay's click on
-// `main`'s card, closes it with no event of its own.
+/// `focus` at the reading `update` took at its top.
+/// A card names a strand of the session or a child on another orchestrator. A
+/// remote child has no strand here, so its card opens a peek at its transcript
+/// and leaves the strand on screen where it is. Any other card closes an open
+/// peek first, which is how the peek's back link, the marker relay's click on
+/// `main`'s card, closes it with no event of its own.
 fn focus_at(
   model: Model(socket),
   strand: String,
@@ -6441,12 +6589,15 @@ fn peek_at(
   commanded(model, msg.Control(command.Peek(child)))
 }
 
+/// Shifts focus to the strand at the specified coordinate.
 fn focus_strand_at(
   model: Model(socket),
   strand: String,
   at: Int,
 ) -> #(Model(socket), Effect(Msg(socket))) {
   let shared = model.shared
+
+  // Validate strand transition eligibility.
   case
     strand == shared.active_strand,
     session_model.is_known_strand(shared.strands, strand),
@@ -6502,6 +6653,7 @@ fn focus_strand_at(
         )
         _, _ -> #(Tail, [])
       }
+
       finished(
         Model(
           shared: focused,
@@ -6558,10 +6710,10 @@ pub fn older(model: Model(socket)) -> #(Model(socket), Effect(Msg(socket))) {
   older_at(model, model.view.transport.now())
 }
 
-// A capped page changes direction rather than refusing history. Start at the
-// oldest displayed turn, or keep the running window when no summary is held.
-// Summaries are deliberately not adopted as records: the range read restores
-// the immutable ancestry before it is drawn.
+/// A capped page changes direction rather than refusing history. Start at the
+/// oldest displayed turn, or keep the running window when no summary is held.
+/// Summaries are deliberately not adopted as records: the range read restores
+/// the immutable ancestry before it is drawn.
 fn browse_at(
   model: Model(socket),
   view: snapshot_view.View,
@@ -6572,6 +6724,8 @@ fn browse_at(
     |> history_view.cancel
     |> history_view.scan_end
     |> history_view.resume
+
+  // Anchor scrollback to oldest sealed turn if available.
   let scrollback = case list.last(model.view.sealed) {
     Ok(oldest) ->
       history_view.State(
@@ -6585,12 +6739,15 @@ fn browse_at(
         model.view.blocks
         |> list.first
         |> result.try(transcript_lines.block_seq)
+
+      // Retain historical items from first visible block.
       case first {
         Ok(seq) -> history_view.retain_from(held, seq)
         Error(Nil) -> held
       }
     }
   }
+
   let scrollback = history_view.freeze(scrollback)
   let branch = history_view.branch(scrollback, view)
   let scrollback = history_view.older(scrollback, branch.unloaded)
@@ -6612,15 +6769,17 @@ fn browse_at(
   )
 }
 
-// Returning retires the exact historical request before merging the newest
-// capture. A late history reply cannot attach to this endpoint. Summaries are
-// rebuilt from that capture, so no gap from the historical page is sealed.
+/// Returning retires the exact historical request before merging the newest
+/// capture. A late history reply cannot attach to this endpoint. Summaries are
+/// rebuilt from that capture, so no gap from the historical page is sealed.
 fn latest_at(
   model: Model(socket),
   at: Int,
 ) -> #(Model(socket), Effect(Msg(socket))) {
+  // Jump to latest records if currently browsing historical records.
   case model.view.paging {
     Browsing -> {
+      // Re-capture scrollback state from active live cut.
       let scrollback = case model.shared.captured {
         Some(#(cut, view)) ->
           history_view.capture(
@@ -6631,6 +6790,7 @@ fn latest_at(
           )
         None -> history_view.empty()
       }
+
       finished(
         Model(
           shared: shared_set.scrollback(model.shared, scrollback),
@@ -6679,11 +6839,11 @@ pub fn browsing(model: Model(socket)) -> Bool {
   model.view.paging == Browsing
 }
 
-// `older` at the reading `update` took at its top.
-//
-// The press is a want. It raises the page's limit and asks the page to read
-// the turns below its oldest, and the read itself starts in `refreshed`, from
-// the oldest closed turn's parent, when the page has no other read out.
+/// `older` at the reading `update` took at its top.
+///
+/// The press is a want. It raises the page's limit and asks the page to read
+/// the turns below its oldest, and the read itself starts in `refreshed`, from
+/// the oldest closed turn's parent, when the page has no other read out.
 fn older_at(
   model: Model(socket),
   at: Int,
@@ -6692,6 +6852,8 @@ fn older_at(
     model.view.paging == Full
     || model.view.paging == Crowded
     || { activity(model) == Busy && row_count(model.view.blocks) >= live_rows }
+
+  // Check top status and determine older history fetch action.
   case top(model), model.shared.captured, model.view.status {
     lane.Earlier, Some(#(_, view)), Connected if model.view.paging == Browsing -> {
       let branch = history_view.branch(model.shared.scrollback, view)
@@ -6729,10 +6891,10 @@ fn older_at(
   }
 }
 
-// The press is a want for a fresh board. The state is marked stale, which a
-// read already out coalesces into one more, and the tick that follows is the
-// shared step's own, where the read is sent when the lane is free. A page that
-// is not following a session has no lane to ask.
+/// The press is a want for a fresh board. The state is marked stale, which a
+/// read already out coalesces into one more, and the tick that follows is the
+/// shared step's own, where the read is sent when the lane is free. A page that
+/// is not following a session has no lane to ask.
 fn context_refresh_at(
   model: Model(socket),
   at: Int,
@@ -6782,8 +6944,8 @@ pub fn fold_click(path: String) -> Bool {
   }
 }
 
-// A turn's work key, as `turns` builds it: `work:` then the input block's
-// key, a sequence and an index with a dot between them, or the window's start.
+/// A turn's work key, as `turns` builds it: `work:` then the input block's
+/// key, a sequence and an index with a dot between them, or the window's start.
 fn is_work_key(key: String) -> Bool {
   case string.split(key, ":") {
     ["work", "window-start"] -> True
@@ -6805,22 +6967,22 @@ fn is_counter(text: String) -> Bool {
   }
 }
 
-// Opens a closed fold, or closes an open one, and draws the page again.
-//
-// The fold is named by the number the divider's handler was drawn with, and a
-// number that is not the id of a fold the page holds, because its turn left
-// the page or never had work, changes nothing. The page must still be reading
-// a session, which is the condition "Load older" needs: a page whose transport
-// ended draws its last cut and stays still, so its steps are not drawn after
-// the session closed to it. The newest fold opened goes first in the list, so
-// the budget can close the oldest ones first when they do not all fit.
-//
-// Opening a fold of a closed turn asks the page for that turn's newest steps,
-// which it does not hold, and the divider reads "reading" until they arrive.
-// The read starts at the turn's last record, which the page holds in the
-// turn's summary and which nothing in the event chose, so a press can ask for
-// the steps of a turn the page draws and no other. Closing the fold drops its
-// steps.
+/// Opens a closed fold, or closes an open one, and draws the page again.
+///
+/// The fold is named by the number the divider's handler was drawn with, and a
+/// number that is not the id of a fold the page holds, because its turn left
+/// the page or never had work, changes nothing. The page must still be reading
+/// a session, which is the condition "Load older" needs: a page whose transport
+/// ended draws its last cut and stays still, so its steps are not drawn after
+/// the session closed to it. The newest fold opened goes first in the list, so
+/// the budget can close the oldest ones first when they do not all fit.
+///
+/// Opening a fold of a closed turn asks the page for that turn's newest steps,
+/// which it does not hold, and the divider reads "reading" until they arrive.
+/// The read starts at the turn's last record, which the page holds in the
+/// turn's summary and which nothing in the event chose, so a press can ask for
+/// the steps of a turn the page draws and no other. Closing the fold drops its
+/// steps.
 fn folded_at(
   model: Model(socket),
   fold: Int,
@@ -6832,10 +6994,12 @@ fn folded_at(
     list.any(model.view.pieces, is_fold(_, fold))
   {
     Connected, Some(_), True -> {
+      // Toggle fold inclusion in view fold list.
       let folds = case list.contains(model.view.folds, fold) {
         True -> list.filter(model.view.folds, fn(open) { open != fold })
         False -> [fold, ..model.view.folds]
       }
+
       finished(Model(..model, view: View(..model.view, folds:)), [], at)
     }
 
@@ -6855,20 +7019,23 @@ fn folded_at(
 /// `expansion.max_characters`, so the page holds at most this many of those.
 pub const open_messages = 8
 
-// Opens a shortened message, or shortens an open one.
-//
-// The message is named by the block key the button's handler was drawn with. A
-// key that names no shortened message in the lane, because its turn left the
-// page or the message was never shortened, changes nothing, and neither does a
-// press on a page that is not following a session, as with a fold. The newest
-// message opened goes first, so the oldest is the one a ninth press closes.
+/// Opens a shortened message, or shortens an open one.
+///
+/// The message is named by the block key the button's handler was drawn with. A
+/// key that names no shortened message in the lane, because its turn left the
+/// page or the message was never shortened, changes nothing, and neither does a
+/// press on a page that is not following a session, as with a fold. The newest
+/// message opened goes first, so the oldest is the one a ninth press closes.
 fn messaged(model: Model(socket), key: String) -> Model(socket) {
+  // Toggle expansion of truncated message block.
   case model.view.status, turns.abridges(model.view.pieces, key) {
     Connected, True -> {
+      // Add or remove message key from expanded set.
       let said = case list.contains(model.view.said, key) {
         True -> list.filter(model.view.said, fn(open) { open != key })
         False -> list.take([key, ..model.view.said], open_messages)
       }
+
       Model(..model, view: View(..model.view, said:))
     }
     Connected, False | Connecting, _ | Ended(_), _ -> model
@@ -6925,7 +7092,7 @@ fn is_block_key(key: String) -> Bool {
   }
 }
 
-// Whether a piece is the settled work with this number.
+/// Whether a piece is the settled work with this number.
 fn is_fold(piece: turns.Piece, fold: Int) -> Bool {
   case piece {
     turns.Work(id: Some(found), folding: turns.Folded, ..)
@@ -6956,9 +7123,12 @@ fn is_fold(piece: turns.Piece, fold: Int) -> Bool {
 /// // component.top(model) == lane.Earlier
 /// ```
 pub fn top(model: Model(socket)) -> lane.Top {
+  // Determine upper boundary indicator for scrollback view.
   case model.view.paging, model.shared.captured {
     Browsing, Some(#(_, view)) -> {
       let branch = history_view.branch(model.shared.scrollback, view)
+
+      // Report scrollback load progress at top.
       case model.shared.scrollback.request, branch.unloaded {
         history_view.Wanted, _ | history_view.Pending(_), _ -> lane.Loading
         history_view.Quiet, Some(_) -> lane.Earlier
@@ -6969,8 +7139,8 @@ pub fn top(model: Model(socket)) -> lane.Top {
   }
 }
 
-// The tail's turn summaries keep their existing boundary while browsing has
-// its own ancestry endpoint and pending range.
+/// The tail's turn summaries keep their existing boundary while browsing has
+/// its own ancestry endpoint and pending range.
 fn live_top(model: Model(socket)) -> lane.Top {
   case model.view.status {
     // Until the first cut arrives the page knows nothing of the strand, and
@@ -6990,9 +7160,9 @@ fn live_top(model: Model(socket)) -> lane.Top {
   }
 }
 
-// Whether the page is reading the turns older than the ones it holds: the
-// reader asked for them and has not been given them, or the page is reading the
-// start of the turn its window began inside.
+/// Whether the page is reading the turns older than the ones it holds: the
+/// reader asked for them and has not been given them, or the page is reading the
+/// start of the turn its window began inside.
 fn reading_older(model: Model(socket)) -> Bool {
   case model.view.purpose, model.view.older {
     ForOlder, _
@@ -7016,13 +7186,14 @@ pub fn paging(model: Model(socket)) -> Paging {
   model.view.paging
 }
 
-// The step's effects, performed through the host's transport in the order
-// the step decided them, in one effect: Lustre does not order a batch. The
-// shape is the terminal's `terminal_lane.perform`.
+/// The step's effects, performed through the host's transport in the order
+/// the step decided them, in one effect: Lustre does not order a batch. The
+/// shape is the terminal's `terminal_lane.perform`.
 fn perform(
   transport: Transport(socket),
   effects: List(step_effect.Effect(socket, Nil)),
 ) -> Effect(Msg(socket)) {
+  // Execute step effects through server component dispatcher.
   case effects {
     [] -> effect.none()
     [_, ..] -> {
@@ -7044,20 +7215,20 @@ fn perform(
   }
 }
 
-// Arms the one timer for the lane's next due reading, measured from `now`,
-// the reading the transition that moved it ran at, after cancelling the
-// timer armed before. A lane with nothing due, or no lane, arms nothing.
-//
-// This is the one action `update` performs itself rather than returning as
-// an effect. The `Timer` handle has to be in the model for the next arming
-// to cancel it, and an effect could only hand it back as a second message,
-// which Lustre would render a second time. `send_after` and `cancel_timer`
-// do not block, and a test driving `update` through the simulator has no
-// timer subject, so it arms nothing.
-//
-// A timer that fired before the cancel reached it leaves one `Ticked`
-// behind. The tick it runs is harmless: `next_due` is exact, so a lane that
-// is not yet due does nothing.
+/// Arms the one timer for the lane's next due reading, measured from `now`,
+/// the reading the transition that moved it ran at, after cancelling the
+/// timer armed before. A lane with nothing due, or no lane, arms nothing.
+///
+/// This is the one action `update` performs itself rather than returning as
+/// an effect. The `Timer` handle has to be in the model for the next arming
+/// to cancel it, and an effect could only hand it back as a second message,
+/// which Lustre would render a second time. `send_after` and `cancel_timer`
+/// do not block, and a test driving `update` through the simulator has no
+/// timer subject, so it arms nothing.
+///
+/// A timer that fired before the cancel reached it leaves one `Ticked`
+/// behind. The tick it runs is harmless: `next_due` is exact, so a lane that
+/// is not yet due does nothing.
 fn rearm(model: Model(socket), now: Int) -> Model(socket) {
   let _ = option.map(model.view.armed, process.cancel_timer)
   let due =
@@ -7068,11 +7239,14 @@ fn rearm(model: Model(socket), now: Int) -> Model(socket) {
         earliest(surfaces.btw_due(model.shared), evolution_wake(model, now)),
       ),
     )
+
+  // Re-arm timer if interval is due.
   let armed = case model.view.timer, due {
     Some(timer), Some(due) ->
       Some(process.send_after(timer, int.max(0, due - now), Nil))
     Some(_), None | None, _ -> None
   }
+
   Model(..model, view: View(..model.view, armed:))
 }
 
@@ -7086,9 +7260,9 @@ fn evolution_wake(model: Model(socket), now: Int) -> Option(Int) {
   |> option.map(fn(due) { int.max(due, now + evolution_retry_ms) })
 }
 
-// The sooner of two optional instants. The lane's reading and the context
-// board's deferred read are separate reasons to wake, and one timer serves
-// both because the tick that runs for either reduces the whole record.
+/// The sooner of two optional instants. The lane's reading and the context
+/// board's deferred read are separate reasons to wake, and one timer serves
+/// both because the tick that runs for either reduces the whole record.
 fn earliest(first: Option(Int), second: Option(Int)) -> Option(Int) {
   case first, second {
     Some(a), Some(b) -> Some(int.min(a, b))
@@ -7165,8 +7339,8 @@ pub fn live(model: Model(socket)) -> List(live.Row) {
   }
 }
 
-// Live previews belong only below the live endpoint, never below a historical
-// page that may end in the middle of another turn.
+/// Live previews belong only below the live endpoint, never below a historical
+/// page that may end in the middle of another turn.
 fn live_rows_of(model: Model(socket)) -> List(live.Row) {
   let shared = model.shared
   let elapsed_ms =
@@ -7176,6 +7350,8 @@ fn live_rows_of(model: Model(socket)) -> List(live.Row) {
   let streamed =
     list.filter_map(model.view.streams, fn(stream) {
       let text = stream.fragments |> list.reverse |> string.concat
+
+      // Render streaming line based on fragment kind.
       case stream.kind {
         "thinking" ->
           Ok(live.Thinking(
@@ -7231,6 +7407,7 @@ pub fn queue_row(
   queue_input.view(model.view.queue_editor, input, QueueAction)
 }
 
+/// Enqueues an administrative action to be executed.
 fn queue_action(
   model: Model(socket),
   action: queue_input.Action,
@@ -7297,6 +7474,7 @@ pub fn session_filter(model: Model(socket)) -> listing.Filter {
 pub fn narrow(model: Model(socket), machine: String) -> Model(socket) {
   let all = listing.entries(model.view.groups)
 
+  // Narrow sidebar filter to chosen machine.
   case listing.chosen(all, model.view.machine, machine) {
     Ok(filter) -> Model(..model, view: View(..model.view, filter:))
     Error(Nil) -> model
@@ -7361,14 +7539,14 @@ pub fn session_activity(
   }
 }
 
-// What the page's own session is doing, from the strip it draws. The rule is
-// the daemon's activity read's, so the page's row and the home's row for the
-// same session say the same word: a strand waiting on a decision needs the
-// person; otherwise a strand with an operation (working, or waiting on a
-// provider retry) is working; otherwise a main strand whose last run failed
-// with nothing else running has failed, and nothing waits on the operator;
-// otherwise idle. A page whose strip lists no strand has
-// no capture yet and says nothing.
+/// What the page's own session is doing, from the strip it draws. The rule is
+/// the daemon's activity read's, so the page's row and the home's row for the
+/// same session say the same word: a strand waiting on a decision needs the
+/// person; otherwise a strand with an operation (working, or waiting on a
+/// provider retry) is working; otherwise a main strand whose last run failed
+/// with nothing else running has failed, and nothing waits on the operator;
+/// otherwise idle. A page whose strip lists no strand has
+/// no capture yet and says nothing.
 fn live_activity(model: Model(socket)) -> Option(sessions.Activity) {
   let listed = chips(model.view.strip)
   let statuses = list.map(listed, fn(chip) { chip.line.status })
@@ -7376,10 +7554,14 @@ fn live_activity(model: Model(socket)) -> Option(sessions.Activity) {
     list.any(statuses, fn(status) {
       status == agent_view.Working || status == agent_view.Waiting
     })
+
+  // Detect whether primary strand has failed.
   let main_failed = case model.view.strip.chips {
     [main, ..] -> main.line.status == agent_view.Failed
     [] -> False
   }
+
+  // Report live activity icon state.
   case listed {
     [] -> None
     [_, ..] ->
@@ -7594,8 +7776,8 @@ pub fn raised_on(model: Model(socket)) -> List(#(String, String)) {
   model.view.raised
 }
 
-// The strands requests were raised on: the capture's pending cells first,
-// then what was remembered, one entry for each request, the newest sixty-four.
+/// The strands requests were raised on: the capture's pending cells first,
+/// then what was remembered, one entry for each request, the newest sixty-four.
 fn remembered(
   known: List(#(String, String)),
   cells: List(snapshot_view.Cell),
@@ -7683,10 +7865,10 @@ pub fn rows(model: Model(socket)) -> List(transcript.Row) {
   list.flat_map(model.view.pieces, piece_rows)
 }
 
-// The rows one piece draws, as `fold_budget` counts them: the rows of a block,
-// one for a divider, and for each step of an open fold its line and its
-// result's rows. Pieces drawn as cards (a spawn, a peer's message) hold no
-// block and are not rows here.
+/// The rows one piece draws, as `fold_budget` counts them: the rows of a block,
+/// one for a divider, and for each step of an open fold its line and its
+/// result's rows. Pieces drawn as cards (a spawn, a peer's message) hold no
+/// block and are not rows here.
 fn piece_rows(piece: turns.Piece) -> List(transcript.Row) {
   case piece {
     turns.Plain(block:, ..) | turns.Prompt(block:, ..) -> block_rows(block)
@@ -7721,6 +7903,7 @@ fn divider_row(key: String, worked: turns.Worked) -> transcript.Row {
   )
 }
 
+/// Renders item rows for list presentation.
 fn item_rows(item: turns.Item) -> List(transcript.Row) {
   case item {
     turns.Narrated(block:, ..) -> block_rows(block)
@@ -7845,10 +8028,10 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
   )
 }
 
-// The observer bar's note beside the "Observer · read-only" pill: the fixed
-// words that say how to get operator access, or, after a press of "Home" that the daemon refused, the reason in its fixed
-// words. The observer's page has no composer to hold a notice, and it is the
-// only refusal the page can have.
+/// The observer bar's note beside the "Observer · read-only" pill: the fixed
+/// words that say how to get operator access, or, after a press of "Home" that the daemon refused, the reason in its fixed
+/// words. The observer's page has no composer to hold a notice, and it is the
+/// only refusal the page can have.
 fn observer_words(model: Model(socket)) -> String {
   case notice(model) {
     Warned(text) | Said(text) -> text
@@ -7982,6 +8165,8 @@ pub fn detail(model: Model(socket)) -> Option(Element(message)) {
   // An open peek at a remote child's transcript takes the tab, whichever
   // strand is on screen (protocol-change/090).
   use <- option.lazy_or(peek.view(model.shared.peek))
+
+  // Render detail card for secondary followed strands.
   case model.shared.active_strand == primary {
     True -> None
     False ->
@@ -8209,12 +8394,14 @@ fn current_code(model: Model(socket)) -> Option(listing.Code) {
   |> option.from_result
 }
 
-// The top bar's context figure. The primary strand's has no value until its
-// first turn commits, and the bar draws nothing for that, since a dash there
-// reads as missing data. A strand the reader has focused keeps its dash,
-// which the bar's title explains: that strand has had no turn yet.
+/// The top bar's context figure. The primary strand's has no value until its
+/// first turn commits, and the bar draws nothing for that, since a dash there
+/// reads as missing data. A strand the reader has focused keeps its dash,
+/// which the bar's title explains: that strand has had no turn yet.
 fn context_figure(model: Model(socket)) -> String {
   let words = context_view.footer(model.shared.context)
+
+  // Append token count suffix for primary strand footer.
   case
     string.ends_with(words, " —")
     && model.shared.active_strand == agent_roster.primary
@@ -8232,7 +8419,7 @@ fn ended_ending(status: Status) -> Option(Ending) {
   }
 }
 
-// The tone the heading's status pill takes.
+/// The tone the heading's status pill takes.
 fn status_tone(status: Status) -> heading.Tone {
   case status {
     Connecting -> heading.Pending
@@ -8241,7 +8428,7 @@ fn status_tone(status: Status) -> heading.Tone {
   }
 }
 
-// The connection's status as the heading words it.
+/// The connection's status as the heading words it.
 fn status_text(status: Status) -> String {
   case status {
     Connecting -> "connecting"

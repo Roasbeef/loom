@@ -447,10 +447,13 @@ pub fn project(session: Session, strand: String) -> Projected {
   }
 }
 
+/// Projects the conversation branch starting from the given leaf entry id.
 fn project_from_leaf(session: Session, leaf: ids.EntryId) -> Projected {
   let scan =
     storage.branch_scan(from: leaf)
     |> storage.branch_stop_at_kind(storage.Compaction)
+
+  // Scans the branch from leaf and projects the returned entries.
   case storage.scan_branch(session.store, scan) {
     Error(_unreadable) -> uncompacted([])
     Ok(newest_first) -> project_from_scan(newest_first)
@@ -476,6 +479,8 @@ pub fn project_from_scan(newest_first: List(entry.Entry)) -> Projected {
   // insertion shifts later positions, so disable every candidate origin.
   // Equal counts rely on direct_origins mirroring the default entry filter.
   let provenance_exact = list.length(direct) == list.length(messages)
+
+  // Uses direct origins when counts match exactly or repeats None otherwise.
   let origins = case provenance_exact {
     True -> direct
     False -> list.repeat(None, list.length(messages))
@@ -518,6 +523,7 @@ pub fn project_from_scan(newest_first: List(entry.Entry)) -> Projected {
 // The default projection normally emits one message for each ordinary entry.
 // If orphan healing inserts a synthetic result, the counts differ and the
 // entire projection loses provenance rather than shifting identities.
+/// Collects direct entry id origins from message entries in chronological order.
 fn direct_origins(newest_first: List(Entry)) -> List(Option(EntryId)) {
   newest_first
   |> list.reverse
@@ -574,6 +580,7 @@ pub fn with_tool_references(
 // A copied compaction tail has no source field of its own. Resolve it only
 // when a compaction will actually publish references, so ordinary threshold
 // estimation remains one stop-at-compaction scan.
+/// Resolves entry origins, looking up ancestral compaction tails when needed.
 fn resolve_origins(
   opened: Session,
   projected: Projected,
@@ -588,6 +595,7 @@ fn resolve_origins(
 // The checkpoint parent is the exact pre-compaction leaf. Scanning from it
 // reconstructs that window, independently of newer messages on this branch.
 // An unavailable ancestor costs compression, never the retained evidence.
+/// Resolves entry origins across ancestor compaction boundaries.
 fn resolve_copied_origins(
   opened: Session,
   projected: Projected,
@@ -606,6 +614,7 @@ fn resolve_copied_origins(
 // Recover older copied origins first, then prove this checkpoint's suffix
 // can be aligned with that prior projection. Recursion follows checkpoint
 // ancestry; it runs at compaction, not for every provider request.
+/// Verifies and aligns copied entry origins from scanned ancestor entries.
 fn resolve_from_entries(
   opened: Session,
   projected: Projected,
@@ -614,6 +623,8 @@ fn resolve_from_entries(
 ) -> List(Option(EntryId)) {
   let previous = project_from_scan(entries)
   let previous_origins = resolve_origins(opened, previous)
+
+  // Checks whether previous origins match messages length and cover the retained count.
   case
     list.length(previous_origins) == list.length(previous.messages),
     retained_count <= list.length(previous_origins)
@@ -633,6 +644,7 @@ fn resolve_from_entries(
 // Searching for equal text would confuse repeated outputs, and a call ID is
 // not an entry address. Custom hosts may supply modified retained tails, so
 // an equally long suffix is not sufficient evidence by itself.
+/// Verifies message equality between prior projection and carried messages.
 fn verified_copied_origins(
   projected: Projected,
   previous: Projected,
@@ -656,6 +668,8 @@ fn verified_copied_origins(
     list.zip(list.zip(previous_messages, copied), carried_messages)
     |> list.map(fn(pair) {
       let #(#(original, origin), carried) = pair
+
+      // Compares the original message with the carried message to retain origin.
       case original == carried {
         True -> origin
         False -> None
@@ -684,6 +698,7 @@ fn verified_copied_origins(
 /// ```
 ///
 pub fn estimate_message(message: AgentMessage) -> Int {
+  // Estimates message character length by summing its block lengths.
   let characters = case message {
     message.UserMessage(content:, ..) -> sum(content, user_block_characters)
     message.AssistantMessage(content:, ..) ->
@@ -693,6 +708,7 @@ pub fn estimate_message(message: AgentMessage) -> Int {
     message.CustomMessage(schema:, payload:) ->
       string.length(schema) + string.length(json.to_string(payload))
   }
+
   characters / 4
 }
 
@@ -703,6 +719,7 @@ fn user_block_characters(block: message.UserBlock) -> Int {
   }
 }
 
+/// Computes character count for an assistant message content block.
 fn assistant_block_characters(block: message.AssistantBlock) -> Int {
   case block {
     message.AssistantText(text:, ..) -> string.length(text)
@@ -746,6 +763,8 @@ pub fn context_tokens(
   estimate: fn(AgentMessage) -> Int,
 ) -> Int {
   let fresh = list.drop(projected.messages, projected.carried)
+
+  // Uses reported tokens if available or falls back to estimating the whole projection.
   case newest_reported(fresh, 0, None) {
     None -> sum(projected.messages, estimate)
     Some(#(index, reported)) ->
@@ -771,6 +790,7 @@ pub fn has_reported_usage(projected: Projected) -> Bool {
 // a non-zero usage. Synthetic settlements (aborts, transport failures)
 // report zero and are skipped — they never described a real request, and
 // an error response is dropped from the projection anyway.
+/// Finds the newest reported total tokens in assistant messages.
 fn newest_reported(
   messages: List(AgentMessage),
   index: Int,
@@ -823,6 +843,8 @@ pub fn preparation(
     Some(_) -> list.drop(projected.messages, 1)
     None -> projected.messages
   }
+
+  // Strips the leading summary from origins when a previous summary exists.
   let body_origins = case projected.previous_summary {
     Some(_) -> list.drop(projected.origins, 1)
     None -> projected.origins
@@ -842,6 +864,8 @@ pub fn preparation(
   let retained_tail =
     reference_tail(tail, tail_origins, projected.reference_session)
   let to_summarize = list.take(body, list.length(body) - list.length(tail))
+
+  // Returns empty preparation if no messages remain to summarize.
   case to_summarize {
     [] -> EmptyPreparation
     _ ->
@@ -875,6 +899,7 @@ pub fn reference_outcome(
   outcome: PreparationOutcome,
   projected: Projected,
 ) -> PreparationOutcome {
+  // Projects tool references into the compaction preparation outcome.
   case outcome {
     EmptyPreparation -> EmptyPreparation
     Prepared(
@@ -887,6 +912,7 @@ pub fn reference_outcome(
         Some(_) -> list.drop(projected.origins, 1)
         None -> projected.origins
       }
+
       let tail_origins =
         list.drop(
           body_origins,
@@ -910,11 +936,13 @@ pub fn reference_outcome(
 // References are only useful for exchanges the model has already observed.
 // The newest assistant message and everything after it remain byte-for-byte
 // intact, including results that triggered this checkpoint.
+/// Replaces eligible past tool results with compact references in the retained tail.
 fn reference_tail(
   messages: List(AgentMessage),
   origins: List(Option(EntryId)),
   session: Option(SessionId),
 ) -> List(AgentMessage) {
+  // Replaces results with references if a reference session is provided.
   case session {
     None -> messages
     Some(session) -> {
@@ -935,6 +963,7 @@ fn reference_tail(
 // Walk messages and source entries together, building the answer in reverse.
 // `calls` belongs to the latest assistant message, not the whole transcript:
 // provider call IDs are correlation labels and may recur in later exchanges.
+/// Loops through messages to insert references for eligible historical tool results.
 fn reference_loop(
   messages: List(AgentMessage),
   origins: List(Option(EntryId)),
@@ -969,6 +998,7 @@ fn reference_loop(
           maybe_reference(result, origin, session, next_calls)
         _ -> current
       }
+
       reference_loop(
         rest,
         remaining_origins,
@@ -989,12 +1019,14 @@ fn reference_loop(
 // Elide only a successful text result with a proven durable source and one
 // matching call in its assistant group. The call itself is never rewritten.
 // Images and ambiguous matches retain their original provider representation.
+/// Decides whether a tool result can be replaced with a reference marker and excerpt.
 fn maybe_reference(
   result: AgentMessage,
   origin: Option(EntryId),
   session: SessionId,
   calls: List(message.ToolCall),
 ) -> AgentMessage {
+  // Checks if the tool result is eligible for reference substitution.
   case result, origin {
     message.ToolResultMessage(
       tool_call_id:,
@@ -1052,6 +1084,7 @@ fn result_content(result: AgentMessage) -> List(message.ToolResultBlock) {
 }
 
 // Match the payload being replaced: result text, not JSON details or images.
+/// Computes the total byte size of text content within tool result blocks.
 fn result_text_bytes(content: List(message.ToolResultBlock)) -> Int {
   list.fold(content, 0, fn(total, block) {
     case block {
@@ -1062,6 +1095,7 @@ fn result_text_bytes(content: List(message.ToolResultBlock)) -> Int {
 }
 
 // A text excerpt cannot represent visual evidence, even beside a large log.
+/// Checks whether any block in the tool result content is an image.
 fn has_image(content: List(message.ToolResultBlock)) -> Bool {
   list.any(content, fn(block) {
     case block {
@@ -1074,6 +1108,7 @@ fn has_image(content: List(message.ToolResultBlock)) -> Bool {
 // This is an ordinary tool-result body, not an executable or privileged link.
 // The model may call history_search with these IDs when it needs omitted data.
 // That tool resolves the host-owned source path and validates the session.
+/// Formats reference replacement text containing tool call metadata and excerpt.
 fn reference_text(
   tool_call_id: String,
   tool_name: String,
@@ -1098,6 +1133,7 @@ fn reference_text(
 // Keep the beginning and ending evidence without guessing a semantic summary.
 // Escape backticks so tool output cannot close the display fence. A grapheme
 // budget avoids splitting displayed characters; maybe_reference checks bytes.
+/// Formats an excerpt of tool result text, eliding the middle if too long.
 fn excerpt(content: List(message.ToolResultBlock)) -> String {
   let text =
     content
@@ -1108,10 +1144,14 @@ fn excerpt(content: List(message.ToolResultBlock)) -> String {
       }
     })
     |> string.join("\n")
+
+  // Extracts and fences excerpt text if nonempty.
   case text {
     "" -> ""
     _ -> {
       let edge = reference_excerpt_graphemes / 2
+
+      // Clips text to head and tail excerpts if longer than the grapheme budget.
       let clipped = case string.length(text) > reference_excerpt_graphemes {
         True ->
           string.slice(text, 0, edge)
@@ -1119,6 +1159,7 @@ fn excerpt(content: List(message.ToolResultBlock)) -> String {
           <> string.slice(text, string.length(text) - edge, edge)
         False -> text
       }
+
       "\nExact output excerpt:\n```tool-output\n"
       <> string.replace(clipped, "`", "\\u0060")
       <> "\n```"
@@ -1128,6 +1169,7 @@ fn excerpt(content: List(message.ToolResultBlock)) -> String {
 
 // The last assistant and all following input remain verbatim. With no
 // assistant, -1 makes every message ineligible for replacement.
+/// Finds the index of the newest assistant message in the list.
 fn newest_assistant_index(messages: List(AgentMessage)) -> Int {
   messages
   |> list.index_fold(-1, fn(newest, item, index) {
@@ -1141,6 +1183,7 @@ fn newest_assistant_index(messages: List(AgentMessage)) -> Int {
 // The newest messages fitting the keep-recent budget, oldest first. The
 // walk stops at the first message that does not fit rather than skipping
 // it: a retained tail must be a contiguous suffix of the projection.
+/// Selects recent messages up to the token budget starting from the newest.
 fn recent(
   messages: List(AgentMessage),
   budget: Int,
@@ -1149,16 +1192,20 @@ fn recent(
   recent_loop(list.reverse(messages), budget, estimate, [])
 }
 
+/// Recursively accumulates newest messages within the token budget.
 fn recent_loop(
   newest_first: List(AgentMessage),
   remaining: Int,
   estimate: fn(AgentMessage) -> Int,
   kept: List(AgentMessage),
 ) -> List(AgentMessage) {
+  // Traverses messages newest first to accumulate those fitting the budget.
   case newest_first {
     [] -> kept
     [message, ..rest] -> {
       let cost = estimate(message)
+
+      // Checks if the message cost fits within the remaining token budget.
       case cost <= remaining {
         True -> recent_loop(rest, remaining - cost, estimate, [message, ..kept])
         False -> kept
@@ -1171,6 +1218,7 @@ fn recent_loop(
 // queued user input that no model has read. The budget is a soft target:
 // removing unread input to meet it would turn compaction into data loss.
 // Before the first assistant, every input message is still protected.
+/// Protects messages from the latest assistant message onward.
 fn latest_exchange(
   messages: List(AgentMessage),
   protected: List(AgentMessage),
@@ -1185,18 +1233,23 @@ fn latest_exchange(
 // Align backward when a budget cutoff lands inside a tool batch. The
 // remembered suffix starts at the last non-result message, so both the
 // assistant's calls and all their results remain visible together.
+/// Aligns the compaction cut backward to preserve complete tool call batches.
 fn cut(
   messages: List(AgentMessage),
   remaining: Int,
   aligned: List(AgentMessage),
 ) -> List(AgentMessage) {
+  // Steps through messages until remaining reaches zero, then aligns.
   case messages {
     [] -> aligned
     [message, ..rest] -> {
+      // Aligns cut point to start of tool batch on tool result messages.
       let aligned = case message {
         message.ToolResultMessage(..) -> aligned
         _ -> messages
       }
+
+      // Checks if remaining budget reached zero to return aligned messages.
       case remaining <= 0 {
         True -> aligned
         False -> cut(rest, remaining - 1, aligned)

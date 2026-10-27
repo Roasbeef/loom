@@ -125,10 +125,13 @@ pub fn inspect(source: Source, expected: ids.SessionId) -> Result(Cut, String) {
         || header.metadata_bytes > snapshot.metadata_bytes_limit,
       return: Error("history source metadata exceeds its byte budget"),
     )
+
+    // Validate that the next sequence number in the header is positive.
     use next_seq <- result.try(case header.next_seq {
       Some(value) if value > 0 -> Ok(value)
       Some(_) | None -> Error("invalid history source high-water")
     })
+
     use row <- result.try(one(source, sql.history_source_metadata()))
     use blob <- result.try(row.metadata |> result_from_option)
     use text <- result.try(
@@ -138,23 +141,31 @@ pub fn inspect(source: Source, expected: ids.SessionId) -> Result(Cut, String) {
     use value <- result.try(
       json.parse(text) |> result.map_error(string.inspect),
     )
+
+    // Ensure that parsed JSON source metadata is an object structure.
     use fields <- result.try(case value {
       json.Object(fields) -> Ok(fields)
       _ -> Error("source metadata is not an object")
     })
+
     use <- bool.guard(
       when: list.key_find(fields, "session_id")
         != Ok(json.String(ids.session_id_to_string(expected))),
       return: Error("history source session identity mismatch"),
     )
+
+    // Extract the optional generation counter from metadata fields.
     use generation <- result.try(case list.key_find(fields, "generation") {
       Ok(json.Int(value)) if value >= 0 -> Ok(value)
       Error(Nil) -> Ok(0)
       Ok(_) -> Error("invalid history source generation")
     })
+
     use Nil <- result.map(statement(source, "COMMIT"))
     Cut(expected, generation, next_seq)
   }
+
+  // Roll back the deferred transaction on read failure or return the cut.
   case read {
     Ok(cut) -> Ok(cut)
     Error(reason) -> {
@@ -222,11 +233,14 @@ pub fn entry(
     source,
     sql.history_source_entry(ids.entry_id_to_string(id), Some(cut.next_seq)),
   ))
+
+  // Ensure exactly one matching entry row exists below the high-water mark.
   use row <- result.try(case rows {
     [row] -> Ok(row)
     [] -> Error("history entry was not found")
     [_, _, ..] -> Error("history entry identity is ambiguous")
   })
+
   use seq <- result.try(result_from_option(row.seq))
   use bytes <- result.try(result_from_option(row.payload_bytes))
   let descriptor = snapshot.Descriptor(id, seq, bytes)
@@ -277,6 +291,7 @@ fn result_from_option(value: Option(a)) -> Result(a, String) {
   }
 }
 
+/// Executes a generated SQL query against the history source connection.
 fn query(
   source: Source,
   generated: #(String, List(dev.Param), decode.Decoder(a)),
@@ -287,23 +302,21 @@ fn query(
   |> result.map_error(describe)
 }
 
-// The session catalog holds exactly one row, so both "no row" and "several"
-// mean the file is not the single-session database this reader was given.
+/// Executes a query expecting exactly one row from the history source database.
 fn one(
   source: Source,
   generated: #(String, List(dev.Param), decode.Decoder(a)),
 ) -> Result(a, String) {
   use rows <- result.try(query(source, generated))
+
+  // Require exactly one row returned from the single-session database.
   case rows {
     [row] -> Ok(row)
     [] | [_, _, ..] -> Error("history source requires exactly one session row")
   }
 }
 
-// The history queries bind only non-null strings and nullable integers. The
-// remaining variants are listed rather than caught, so a future generator
-// change breaks the build here instead of binding something unintended, the
-// way the catalogue and snapshot bridges already do.
+/// Encodes a query parameter value into its sqlight representation.
 fn parameter(value: dev.Param) -> Result(sqlight.Value, String) {
   case value {
     dev.ParamInt(value) -> Ok(sqlight.int(value))

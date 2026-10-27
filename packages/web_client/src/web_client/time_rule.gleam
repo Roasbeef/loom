@@ -49,10 +49,13 @@ pub fn instant(value: String) -> Result(Int, Nil) {
 pub fn clock(milliseconds: Int, offset_minutes: Int) -> String {
   let utc_minutes = { int.max(milliseconds, 0) + minute_ms - 1 } / minute_ms
   let local = { utc_minutes - offset_minutes } % 1440
+
+  // Wrap negative modulo results back into the 24-hour day.
   let local = case local < 0 {
     True -> local + 1440
     False -> local
   }
+
   pad(local / 60) <> ":" <> pad(local % 60)
 }
 

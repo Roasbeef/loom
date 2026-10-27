@@ -69,6 +69,7 @@ pub fn connect(
   |> result.map_error(admission_notice)
 }
 
+/// Translates websocket upgrade failures into user-facing connection diagnostics.
 fn admission_notice(reason: String) -> String {
   case reason {
     "InitFailed(\"WebSocket handshake failed with status 503\")" ->
@@ -110,6 +111,7 @@ pub fn connect_waking(
   |> result.map_error(admission_notice)
 }
 
+/// Maps raw websocket events into the TUI's internal connection message type.
 fn terminal_event(event: websocket.Message) -> Message {
   case event {
     websocket.Connected -> Connected

@@ -237,6 +237,8 @@ pub fn describe(error: KeyError) -> String {
 /// ```
 pub fn passphrase(text: String) -> Result(Passphrase, KeyError) {
   let size = string.byte_size(text)
+
+  // Check bounds on passphrase byte length.
   case size < minimum_passphrase_bytes, size > maximum_passphrase_bytes {
     True, _ -> Error(PassphraseTooShort)
     _, True -> Error(PassphraseTooLong)
@@ -266,19 +268,25 @@ pub fn passphrase_from_terminal(
   asking: Asking,
 ) -> Result(Passphrase, KeyError) {
   use first <- result.try(ask("Authority key passphrase: "))
+
+  // Confirm passphrase if asked twice.
   use _ <- result.try(case asking {
     AskOnce -> Ok(Nil)
     AskTwice -> {
       use again <- result.try(ask("Repeat the passphrase: "))
+
+      // Compare the repeated passphrase to the first entry.
       case again == first {
         True -> Ok(Nil)
         False -> Error(PassphrasesDiffer)
       }
     }
   })
+
   passphrase(first)
 }
 
+/// Prompts the terminal for secret input without echoing.
 fn ask(prompt: String) -> Result(String, KeyError) {
   ffi_pki.read_secret(prompt)
   |> result.map_error(fn(defect) {
@@ -311,6 +319,7 @@ pub fn passphrase_from_file(path: String) -> Result(Passphrase, KeyError) {
   passphrase(strip_newline(text))
 }
 
+/// Removes one trailing CRLF or LF line ending from text.
 fn strip_newline(text: String) -> String {
   case string.ends_with(text, "\r\n"), string.ends_with(text, "\n") {
     True, _ -> string.drop_end(text, 2)
@@ -371,10 +380,13 @@ pub fn open(
   deployment: String,
 ) -> Result(String, KeyError) {
   use envelope <- result.try(decode_envelope(text))
+
+  // Verify deployment binding before deriving decryption key.
   use _ <- result.try(case envelope.deployment == deployment {
     True -> Ok(Nil)
     False -> Error(WrongDeployment)
   })
+
   let derived =
     ffi_pki.derive_key(passphrase.bytes, envelope.salt, envelope.iterations)
   use plaintext <- result.try(
@@ -396,6 +408,7 @@ fn associated_data(deployment: String) -> BitArray {
   <<format:utf8, 0, deployment:utf8>>
 }
 
+/// Serializes an authority key envelope as formatted JSON.
 fn encode(envelope: Envelope) -> String {
   let base64 = fn(bytes) {
     json.string(bit_array.base64_url_encode(bytes, False))
@@ -413,29 +426,40 @@ fn encode(envelope: Envelope) -> String {
   <> "\n"
 }
 
-// The decoder is total. The format is read first so that an envelope of a
-// future format is named as unsupported and not as malformed, and the keys
-// are then required to be exactly the format's.
+/// Decodes and validates a sealed authority key envelope from JSON.
+/// The decoder is total. The format is read first so that an envelope of a
+/// future format is named as unsupported and not as malformed, and the keys
+/// are then required to be exactly the format's.
 fn decode_envelope(text: String) -> Result(Envelope, KeyError) {
   use fields <- result.try(
     json.parse(text, decode.dict(decode.string, decode.dynamic))
     |> result.replace_error(NotAnEnvelope(NotAnObject)),
   )
   use marker <- result.try(read(fields, "format", decode.string))
+
+  // Validate envelope format identifier.
   use _ <- result.try(case marker == format {
     True -> Ok(Nil)
     False -> Error(UnsupportedFormat)
   })
+
+  // Ensure envelope dictionary contains exactly the required sorted keys.
   use _ <- result.try(case list.sort(dict.keys(fields), string.compare) {
     present if present == sorted_keys -> Ok(Nil)
     _ -> Error(NotAnEnvelope(KeysNotExact))
   })
+
   use deployment <- result.try(read(fields, "deployment", decode.string))
+
+  // Validate 32-character hexadecimal deployment identity.
   use _ <- result.try(case is_deployment_id(deployment) {
     True -> Ok(Nil)
     False -> Error(NotAnEnvelope(FieldInvalid("deployment")))
   })
+
   use rounds <- result.try(read(fields, "iterations", decode.int))
+
+  // Verify PBKDF2 iteration bounds.
   use _ <- result.try(
     case rounds >= minimum_iterations && rounds <= maximum_iterations {
       True -> Ok(Nil)
@@ -460,6 +484,7 @@ const sorted_keys = [
   "ciphertext", "deployment", "format", "iterations", "nonce", "salt", "tag",
 ]
 
+/// Reads and decodes a typed property from an envelope field dictionary.
 fn read(
   fields: Dict(String, Dynamic),
   key: String,
@@ -472,8 +497,9 @@ fn read(
   |> result.replace_error(NotAnEnvelope(FieldInvalid(key)))
 }
 
-// A binary field: unpadded URL-safe base64 in the canonical encoding, whose
-// decoded length is within the bounds.
+/// Decodes and validates a bounded URL-safe base64 binary property.
+/// A binary field: unpadded URL-safe base64 in the canonical encoding, whose
+/// decoded length is within the bounds.
 fn binary(
   fields: Dict(String, Dynamic),
   key: String,
@@ -486,6 +512,8 @@ fn binary(
     bit_array.base64_url_decode(text) |> result.replace_error(invalid),
   )
   let size = bit_array.byte_size(bytes)
+
+  // Verify canonical encoding and size bounds.
   case
     bit_array.base64_url_encode(bytes, False) == text
     && size >= least
@@ -549,10 +577,13 @@ pub fn keep(
   passphrase: Passphrase,
 ) -> Result(String, KeyError) {
   let key_path = directory <> "/" <> key_file
+
+  // Ensure authority key file does not already exist.
   use _ <- result.try(case bootstrap.path_exists(key_path) {
     True -> Error(AlreadyKept(key_path))
     False -> Ok(Nil)
   })
+
   use _ <- result.try(
     bootstrap.ensure_private_directory(directory)
     |> result.map_error(fn(reason) { Io(directory, reason) }),

@@ -231,6 +231,7 @@ fn hash_64(line: String) -> Int {
   hash_loop(<<line:utf8>>, fnv_offset_basis)
 }
 
+/// Folds 64-bit FNV-1a steps over UTF-8 bytes under a 64-bit mask.
 fn hash_loop(bytes: BitArray, accumulator: Int) -> Int {
   case bytes {
     <<byte, rest:bytes>> ->
@@ -264,10 +265,14 @@ fn hash_loop(bytes: BitArray, accumulator: Int) -> Int {
 /// ```
 ///
 pub fn split_lines(content: String) -> Split {
+  // An empty content payload produces no lines, whereas non-empty content
+  // splits on newline and checks for a trailing newline segment.
   case content {
     "" -> Split(lines: [], trailing_newline: False)
     _ -> {
       let segments = string.split(content, on: "\n")
+
+      // A trailing empty segment marks an original trailing newline.
       case list.reverse(segments) {
         ["", ..rest] -> Split(lines: list.reverse(rest), trailing_newline: True)
         _ -> Split(lines: segments, trailing_newline: False)
@@ -286,6 +291,8 @@ pub fn split_lines(content: String) -> Split {
 ///
 pub fn join_lines(split: Split) -> String {
   let joined = string.join(split.lines, with: "\n")
+
+  // Append the trailing newline if the original split preserved one.
   case split.trailing_newline {
     True -> joined <> "\n"
     False -> joined
@@ -421,6 +428,8 @@ pub fn display_prefix(text: String) -> Result(String, Nil) {
     all_graphemes_in(number, "0123456789")
     && all_graphemes_in(anchor_text, "0123456789abcdef")
     && string.slice(rest, at_index: 8, length: 1) == "|"
+
+  // Only emit the recognized prefix when all characters and delimiters match.
   case is_prefix {
     True -> Ok(number <> ":" <> anchor_text <> "|")
     False -> Error(Nil)
@@ -479,14 +488,16 @@ type Placed {
 pub fn apply(content: String, plan: Plan) -> Result(String, ApplyError) {
   let split = split_lines(content)
   let total_lines = list.length(split.lines)
+
+  // Fail immediately on structural plan defects before testing anchors.
   case malformed_reason(plan) {
     [reason, ..] -> Error(MalformedPlan(reason:))
     [] -> apply_checked(content, plan, split, total_lines)
   }
 }
 
-// Structural checks passed; verify the anchors the plan referenced are
-// still current before comparing against the whole-file digest.
+/// Structural checks passed; verify the anchors the plan referenced are
+/// still current before comparing against the whole-file digest.
 fn apply_checked(
   content: String,
   plan: Plan,
@@ -494,15 +505,17 @@ fn apply_checked(
   total_lines: Int,
 ) -> Result(String, ApplyError) {
   let annotated = annotate(content)
+
+  // Halt on stale anchor references before checking whole-file digest.
   case stale_references(plan, annotated, total_lines) {
     [_, ..] as stale -> Error(StaleAnchors(stale:))
     [] -> apply_if_current(content, plan, split, annotated, total_lines)
   }
 }
 
-// Anchors matched; the digest is the coarser check that also catches
-// changes an anchored reference cannot see (a shift outside every
-// hunk's context, for instance).
+/// Anchors matched; the digest is the coarser check that also catches
+/// changes an anchored reference cannot see (a shift outside every
+/// hunk's context, for instance).
 fn apply_if_current(
   content: String,
   plan: Plan,
@@ -520,10 +533,12 @@ fn apply_if_current(
   }
 }
 
-// Content is exactly the pre-image the plan was computed against; the
-// last possible rejection is two hunks touching the same line.
+/// Content is exactly the pre-image the plan was computed against; the
+/// last possible rejection is two hunks touching the same line.
 fn apply_hunks(split: Split, plan: Plan) -> Result(String, ApplyError) {
   let placed = list.map(plan.hunks, place)
+
+  // Verify placed hunks do not overlap each other before splicing.
   case overlap(placed) {
     Ok(line) -> Error(OverlappingHunks(line:))
     Error(Nil) -> Ok(apply_placed(split, placed))
@@ -597,14 +612,15 @@ pub fn plan_between(
 // A newline-terminated `base` — or an empty one, which `apply` terminates
 // on growth — joins its lines with a newline after the last, so `edited`
 // must end in one and its lines are its ordinary split. An unterminated
-// `base` joins with no final newline, so the raw split of `edited` is the
-// answer, and an `edited` that *does* end in a newline carries it as a
-// final empty line: `"a\n"` is `["a", ""]` joined bare.
+/// Computes the target lines accounting for whether base and edited end with a
+/// trailing newline.
 fn target_lines(
   base: String,
   edited: String,
 ) -> Result(List(String), Unplannable) {
   let terminated_base = base == "" || split_lines(base).trailing_newline
+
+  // Validate that the termination style of edited matches base.
   case terminated_base, string.ends_with(edited, "\n") {
     // Nothing to nothing is the one pair where an empty base needs no
     // growth, and so no final newline.
@@ -616,10 +632,10 @@ fn target_lines(
   }
 }
 
-// The one hunk that turns `base`'s lines into `target`: everything between
-// the longest common prefix and the longest common suffix. The suffix is
-// measured on what the prefix left, so the two can never claim the same
-// line twice.
+/// The one hunk that turns `base`'s lines into `target`: everything between
+/// the longest common prefix and the longest common suffix. The suffix is
+/// measured on what the prefix left, so the two can never claim the same
+/// line twice.
 fn hunks_between(base: String, target: List(String)) -> List(Hunk) {
   let lines = split_lines(base).lines
   let prefix = common_prefix_length(lines, target, 0)
@@ -633,6 +649,8 @@ fn hunks_between(base: String, target: List(String)) -> List(Hunk) {
   // An insertion needs the line it follows; there is none when the
   // change begins before the first line.
   let preceding = list.take(lines, prefix) |> list.last
+
+  // Produce the appropriate hunk variant based on whether lines were removed or inserted.
   case removed, inserted, preceding {
     [], [], _ -> []
     [], _, Error(Nil) -> [InsertAtStart(lines: inserted)]
@@ -650,7 +668,7 @@ fn hunks_between(base: String, target: List(String)) -> List(Hunk) {
   }
 }
 
-// How many leading elements two lists share.
+/// How many leading elements two lists share.
 fn common_prefix_length(
   left: List(String),
   right: List(String),
@@ -663,9 +681,9 @@ fn common_prefix_length(
   }
 }
 
-// The anchored endpoints of the removed run, which starts on the line after
-// the common prefix. `first` is the run's head, already matched by the
-// caller, so the fallback for `list.last` is never taken.
+/// The anchored endpoints of the removed run, which starts on the line after
+/// the common prefix. `first` is the run's head, already matched by the
+/// caller, so the fallback for `list.last` is never taken.
 fn removed_span(
   prefix: Int,
   first: String,
@@ -741,15 +759,19 @@ pub fn applied_regions(
 // `apply_placed` splices bottom-up in pre-image coordinates, so a hunk's
 // post-image position is its pre-image position plus the net line change
 // of every hunk that starts before it — which is what `shift` carries.
+/// Calculates post-image line ranges for each placed hunk.
 fn produced_ranges(
   placed: List(Placed),
   shift: Int,
   built: List(Region),
 ) -> List(Region) {
+  // Walk placed hunks in order, tracking cumulative line shift.
   case placed {
     [] -> list.reverse(built)
     [hunk, ..rest] -> {
       let produced = list.length(hunk.replacement)
+
+      // Insertions remove zero lines, while replacements and deletions remove their span.
       let removed = case hunk.insert {
         True -> 0
         False -> hunk.end - hunk.start + 1
@@ -772,12 +794,14 @@ fn produced_ranges(
   }
 }
 
-// One range widened by the context and clamped to the file. A range that
-// survives no part of the file — the whole of it deleted, say — drops out
-// rather than being reported as an inverted range.
+/// One range widened by the context and clamped to the file. A range that
+/// survives no part of the file — the whole of it deleted, say — drops out
+/// rather than being reported as an inverted range.
 fn with_context(region: Region, total: Int) -> Result(Region, Nil) {
   let start = int.max(region.start - applied_context_lines, 1)
   let end = int.min(region.end + applied_context_lines, total)
+
+  // Ensure the clamped range remains non-inverted.
   case start <= end {
     True -> Ok(Region(start:, end:))
     False -> Error(Nil)
@@ -800,6 +824,7 @@ fn merge_regions(regions: List(Region)) -> List(Region) {
   |> merge_loop([])
 }
 
+/// Recursively merges adjacent or overlapping line regions.
 fn merge_loop(regions: List(Region), merged: List(Region)) -> List(Region) {
   case regions, merged {
     [], _ -> list.reverse(merged)
@@ -815,8 +840,8 @@ fn merge_loop(regions: List(Region), merged: List(Region)) -> List(Region) {
   }
 }
 
-// The current content's anchored lines for every region a plan
-// touches (each hunk's full range plus context), in line order.
+/// The current content's anchored lines for every region a plan
+/// touches (each hunk's full range plus context), in line order.
 fn touched_regions(
   plan: Plan,
   annotated: List(AnchoredLine),
@@ -837,9 +862,10 @@ fn touched_regions(
   })
 }
 
-// Structural problems, checked before any content comparison.
+/// Structural problems, checked before any content comparison.
 fn malformed_reason(plan: Plan) -> List(String) {
   list.flat_map(plan.hunks, fn(hunk) {
+    // Validate line bounds and range ordering for the hunk.
     let range_problems = case hunk {
       Replace(from:, to:, lines: _) | Delete(from:, to:) ->
         case from.line < 1, from.line > to.line {
@@ -860,6 +886,8 @@ fn malformed_reason(plan: Plan) -> List(String) {
         }
       InsertAtStart(lines: _) -> []
     }
+
+    // Verify replacement lines do not contain embedded newline characters.
     let newline_problems = case hunk {
       Replace(from: _, to: _, lines:)
       | InsertAfter(at: _, lines:)
@@ -870,13 +898,14 @@ fn malformed_reason(plan: Plan) -> List(String) {
         }
       Delete(from: _, to: _) -> []
     }
+
     list.append(range_problems, newline_problems)
   })
 }
 
-// Every reference whose anchor does not match the current content,
-// including references past the end of the file (a shrink is also a
-// concurrent modification).
+/// Every reference whose anchor does not match the current content,
+/// including references past the end of the file (a shrink is also a
+/// concurrent modification).
 fn stale_references(
   plan: Plan,
   annotated: List(AnchoredLine),
@@ -887,10 +916,14 @@ fn stale_references(
   |> list.filter_map(fn(ref) {
     let current =
       list.find(annotated, fn(anchored) { anchored.line == ref.line })
+
+    // Check whether the line was found and has matching anchor.
     let matches = case current {
       Ok(anchored) -> anchored.anchor == ref.anchor
       Error(Nil) -> False
     }
+
+    // Retain only stale references with fresh context regions.
     case matches {
       True -> Error(Nil)
       False ->
@@ -903,9 +936,9 @@ fn stale_references(
   })
 }
 
-// The references a hunk carries. Range hunks reference their
-// endpoints only — interior lines have no caller-supplied anchors and
-// are verified by the whole-file digest check instead.
+/// The references a hunk carries. Range hunks reference their
+/// endpoints only — interior lines have no caller-supplied anchors and
+/// are verified by the whole-file digest check instead.
 fn refs(hunk: Hunk) -> List(Ref) {
   case hunk {
     Replace(from:, to:, lines: _) | Delete(from:, to:) ->
@@ -918,7 +951,7 @@ fn refs(hunk: Hunk) -> List(Ref) {
   }
 }
 
-// Fresh anchors around a stale line, clamped to the file.
+/// Fresh anchors around a stale line, clamped to the file.
 fn fresh_region(
   annotated: List(AnchoredLine),
   line: Int,
@@ -980,9 +1013,9 @@ fn removed_count(placed: Placed) -> Int {
   }
 }
 
-// One `@@` section. An insertion sits after `start` (or before line 1
-// when `start` is 0) and removes nothing; a replacement or deletion
-// removes `[start, end]`. Context is clipped to the file.
+/// One `@@` section. An insertion sits after `start` (or before line 1
+/// when `start` is 0) and removes nothing; a replacement or deletion
+/// removes `[start, end]`. Context is clipped to the file.
 fn diff_section(
   lines: List(String),
   total: Int,
@@ -992,6 +1025,8 @@ fn diff_section(
   // Where the change begins on the old side: the first removed line, or
   // for an insertion the line the new text lands in front of.
   let removed = removed_count(placed)
+
+  // Align start position based on whether this hunk is an insertion.
   let first_removed = case placed.insert {
     True -> placed.start + 1
     False -> placed.start
@@ -1041,6 +1076,7 @@ fn slice_lines(lines: List(String), from: Int, to: Int) -> List(String) {
   }
 }
 
+/// Converts a hunk into an internal placed range representation.
 fn place(hunk: Hunk) -> Placed {
   case hunk {
     Replace(from:, to:, lines:) ->
@@ -1054,16 +1090,18 @@ fn place(hunk: Hunk) -> Placed {
   }
 }
 
-// First overlapping line between any two hunks, if any. Two removal
-// ranges conflict when they intersect; an insertion conflicts when its
-// anchor line sits inside another hunk's removal range, or when two
-// insertions share the same point. Strict by design: an ambiguous plan
-// is rejected rather than guessed at — a single Replace hunk can always
-// express the intent unambiguously.
+/// First overlapping line between any two hunks, if any. Two removal
+/// ranges conflict when they intersect; an insertion conflicts when its
+/// anchor line sits inside another hunk's removal range, or when two
+/// insertions share the same point. Strict by design: an ambiguous plan
+/// is rejected rather than guessed at — a single Replace hunk can always
+/// express the intent unambiguously.
 fn overlap(placed: List(Placed)) -> Result(Int, Nil) {
   let pairs = distinct_pairs(placed)
   list.find_map(pairs, fn(pair) {
     let #(a, b) = pair
+
+    // Check overlap rules depending on hunk kinds (insertions vs removals).
     case a.insert, b.insert {
       False, False ->
         case a.start <= b.end && b.start <= a.end {
@@ -1089,6 +1127,7 @@ fn overlap(placed: List(Placed)) -> Result(Int, Nil) {
   })
 }
 
+/// Produces all distinct unordered pairs from a list.
 fn distinct_pairs(placed: List(Placed)) -> List(#(Placed, Placed)) {
   case placed {
     [] -> []
@@ -1100,9 +1139,9 @@ fn distinct_pairs(placed: List(Placed)) -> List(#(Placed, Placed)) {
   }
 }
 
-// Splices bottom-up so earlier hunks' line numbers stay valid. The
-// overlap rules guarantee all start positions are distinct, so the
-// descending order is unambiguous.
+/// Splices bottom-up so earlier hunks' line numbers stay valid. The
+/// overlap rules guarantee all start positions are distinct, so the
+/// descending order is unambiguous.
 fn apply_placed(split: Split, placed: List(Placed)) -> String {
   let descending = list.sort(placed, fn(a, b) { int.compare(b.start, a.start) })
   let lines =
@@ -1126,10 +1165,11 @@ fn apply_placed(split: Split, placed: List(Placed)) -> String {
     [], [_, ..] -> True
     _, _ -> split.trailing_newline
   }
+
   join_lines(Split(lines:, trailing_newline:))
 }
 
-// Replaces `remove` lines at 0-based index `at` with `insert`.
+/// Replaces `remove` lines at 0-based index `at` with `insert`.
 fn splice(
   lines: List(String),
   at index: Int,

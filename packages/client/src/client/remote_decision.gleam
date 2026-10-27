@@ -165,6 +165,7 @@ pub fn admit_relayed(
 
 // The judgement both doors share. `within` says whether the record is one the
 // decider may answer, and `outside` is the refusal when it is not.
+/// Judge keeps this client operation’s decoding or state decision in one place.
 fn judge(
   runtime: api.Runtime,
   spawner: String,
@@ -177,9 +178,12 @@ fn judge(
   decider: Decider,
   now_ms: Int,
 ) -> Answer {
+  // This match resolves ceiling before the surrounding protocol step continues.
+  // This match resolves ceiling before the enclosing validation continues.
   case ceiling {
     None -> Refused(reason: remote_escalation.outside_the_ceiling)
     Some(ceiling) ->
+      // This match resolves decision before the surrounding protocol step continues.
       case decision {
         Forget(grant:) -> forget(runtime, spawner, grant)
         Deny ->
@@ -219,12 +223,16 @@ fn judge(
 // Withdraws a grant this spawner's operator approved for the session. A grant
 // that is not remembered, or that was approved by anyone else, is not theirs to
 // withdraw.
+/// Forget keeps this client operation’s decoding or state decision in one place.
 fn forget(runtime: api.Runtime, spawner: String, grant: Grant) -> Answer {
+  // This match resolves permissions.forgetting_for_spawner(runtime, spawner, grant) before the surrounding protocol step continues.
+  // This match resolves permissions.forgetting_for_spawner(runtime, spawner, grant) before the enclosing validation continues.
   case permissions.forgetting_for_spawner(runtime, spawner, grant) {
     Error(permissions.Stale) ->
       Refused(reason: "that permission is no longer remembered")
     Error(permissions.Failed(reason:)) -> Refused(reason:)
     Ok(edits) ->
+      // This match resolves api.edit_reserved_facts(runtime, edits) before the surrounding protocol step continues.
       case api.edit_reserved_facts(runtime, edits) {
         Ok(Nil) -> Forgotten
         Error(_) ->
@@ -238,6 +246,7 @@ fn forget(runtime: api.Runtime, spawner: String, grant: Grant) -> Answer {
 // The commit that follows asserts the same sequence, so a claim that lands
 // between the check and the commit loses the commit and the operator is shown
 // the new question.
+/// Decide keeps this client operation’s decoding or state decision in one place.
 fn decide(
   runtime: api.Runtime,
   within: fn(durable.Escalation) -> Bool,
@@ -246,6 +255,8 @@ fn decide(
   expected_seq: Int,
   commit: fn(api.EscalationCell) -> Answer,
 ) -> Answer {
+  // This match resolves api.escalation_cell(runtime, escalation_id) before the surrounding protocol step continues.
+  // This match resolves api.escalation_cell(runtime, escalation_id) before the enclosing validation continues.
   case api.escalation_cell(runtime, escalation_id) {
     Error(_) -> Refused(reason: "unknown escalation: " <> escalation_id)
     Ok(cell) -> {
@@ -271,11 +282,14 @@ fn decide(
 
 // Whether the call that raised the record ran in a descendant of the parent. A
 // record with no scope names no call and is nobody's.
+/// Raised under keeps this client operation’s decoding or state decision in one place.
 fn raised_under(
   runtime: api.Runtime,
   record: durable.Escalation,
   parent: Parent,
 ) -> Bool {
+  // This match resolves record.scope before the surrounding protocol step continues.
+  // This match resolves record.scope before the enclosing validation continues.
   case record.scope {
     None -> False
     Some(scope) ->
@@ -283,6 +297,7 @@ fn raised_under(
         of: api.parent_reference_prefix <> parent.strand,
         strand: scope.strand,
         cells: fn(name) {
+          // This match resolves api.fact(runtime, lineage.register_key(name)) before the surrounding protocol step continues.
           case api.fact(runtime, lineage.register_key(name)) {
             Ok(Some(value)) -> lineage.decode(value) |> option.from_result
             Ok(None) | Error(_) -> None
@@ -293,10 +308,12 @@ fn raised_under(
   }
 }
 
+/// Stale keeps this client operation’s decoding or state decision in one place.
 fn stale(cell: api.EscalationCell, reason: String) -> Answer {
   Stale(record: escalation_view.view(cell.record, cell.seq), reason:)
 }
 
+/// Deny keeps this client operation’s decoding or state decision in one place.
 fn deny(
   runtime: api.Runtime,
   cell: api.EscalationCell,
@@ -314,6 +331,7 @@ fn deny(
 // ceiling is checked after the echoes, so a stale approval is told it is stale
 // whatever it asked for, and before the commit, so that nothing outside the
 // ceiling is ever written.
+/// Approve keeps this client operation’s decoding or state decision in one place.
 fn approve(
   runtime: api.Runtime,
   spawner: String,
@@ -351,6 +369,9 @@ fn approve(
   )
   let origin = Some(remote_escalation.origin_of(decider))
   let payloads = list.map(approved, grants.encode)
+
+  // This match resolves scope before the surrounding protocol step continues.
+  // This match resolves scope before the enclosing validation continues.
   case scope {
     Once -> api.approve_escalation_at(runtime, cell, payloads, origin)
     Session ->
@@ -377,6 +398,7 @@ fn approve(
           )
       }
   }
+  // This match resolves scope before the enclosing validation continues.
   |> answered(runtime, cell, case scope {
     Once -> escalate.ApprovedOnce
     Session -> escalate.ApprovedForSession
@@ -388,9 +410,12 @@ fn approve(
 // symlink whose target is outside it, so a grant that is not canonical is not
 // judged inside the ceiling. This is the rule `permissions.revalidate` applies
 // to a remembered grant. A path that cannot be resolved is not canonical.
+/// Canonical keeps this client operation’s decoding or state decision in one place.
 fn canonical(approved: List(Grant)) -> Bool {
   let filesystem = fs.real_filesystem()
   list.all(approved, fn(grant) {
+    // This match resolves grant before the surrounding protocol step continues.
+    // This match resolves grant before the enclosing validation continues.
     case grant {
       policy.GrantWritableRoot(path:)
       | policy.GrantReadableRoot(path:)
@@ -404,13 +429,17 @@ fn canonical(approved: List(Grant)) -> Bool {
   })
 }
 
+/// Wanted of keeps this client operation’s decoding or state decision in one place.
 fn wanted_of(record: durable.Escalation) -> Result(List(Grant), String) {
   grants.decode_denial(record.denial)
   |> result.map(fn(decoded) { decoded.wanted })
   |> result.map_error(fn(_) { "the stored denial is unreadable" })
 }
 
+/// Or refuse keeps this client operation’s decoding or state decision in one place.
 fn or_refuse(found: Result(a, String), then: fn(a) -> Answer) -> Answer {
+  // This match resolves found before the surrounding protocol step continues.
+  // This match resolves found before the enclosing validation continues.
   case found {
     Ok(value) -> then(value)
     Error(reason) -> Refused(reason:)
@@ -420,12 +449,15 @@ fn or_refuse(found: Result(a, String), then: fn(a) -> Answer) -> Answer {
 // The answer to a commit. A lost compare-and-set is the question having moved,
 // and the operator is shown it as it now is. Any other failure is a refusal that
 // the box may be asked again about.
+/// Answered keeps this client operation’s decoding or state decision in one place.
 fn answered(
   committed: Result(durable.Escalation, api.ApiError),
   runtime: api.Runtime,
   cell: api.EscalationCell,
   decision: escalate.OperatorDecision,
 ) -> Answer {
+  // This match resolves committed before the surrounding protocol step continues.
+  // This match resolves committed before the enclosing validation continues.
   case committed {
     // The decision, and for a session approval the remembered grant, are
     // durable in the commit that answered `Ok`, and only then is the child told.
@@ -439,6 +471,7 @@ fn answered(
       read_back(runtime, cell)
     }
     Error(api.RaceLost) ->
+      // This match resolves api.escalation_cell(runtime, cell.record.id) before the surrounding protocol step continues.
       case api.escalation_cell(runtime, cell.record.id) {
         Ok(fresh) -> stale(fresh, "the request changed while it was decided")
         Error(_) -> Refused(reason: "the request changed while it was decided")
@@ -448,7 +481,10 @@ fn answered(
 }
 
 // The record after the commit, as the box has it.
+/// Read back keeps this client operation’s decoding or state decision in one place.
 fn read_back(runtime: api.Runtime, cell: api.EscalationCell) -> Answer {
+  // This match resolves api.escalation_cell(runtime, cell.record.id) before the surrounding protocol step continues.
+  // This match resolves api.escalation_cell(runtime, cell.record.id) before the enclosing validation continues.
   case api.escalation_cell(runtime, cell.record.id) {
     Ok(fresh) -> Decided(record: escalation_view.view(fresh.record, fresh.seq))
     Error(_) ->

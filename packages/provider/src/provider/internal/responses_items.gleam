@@ -30,6 +30,8 @@ pub fn template(value: JsonValue) -> JsonValue {
       json.Object(
         list.filter_map(fields, fn(field) {
           let #(key, value) = field
+
+          // Strip encrypted content and normalize text fields to empty templates.
           case key {
             "encrypted_content" -> Error(Nil)
             "text" | "refusal" | "arguments" -> Ok(#(key, json.String("")))
@@ -69,6 +71,7 @@ pub fn restore(
   Ok(output)
 }
 
+/// Replaces or appends a named property in a JSON object.
 fn put(value: JsonValue, name: String, replacement: JsonValue) -> JsonValue {
   case value {
     json.Object(fields) ->
@@ -81,11 +84,14 @@ fn put(value: JsonValue, name: String, replacement: JsonValue) -> JsonValue {
   }
 }
 
+/// Restores a single canonical item against the remaining assistant blocks.
 fn restore_item(
   raw: JsonValue,
   content: List(message.AssistantBlock),
 ) -> Result(#(JsonValue, List(message.AssistantBlock)), Nil) {
   use kind <- result.try(wire.string_field(raw, "type"))
+
+  // Match item type and available assistant blocks to restore payload.
   case kind, content {
     "function_call", [message.AssistantToolCall(call), ..rest] -> {
       use <- bool.guard(
@@ -94,10 +100,13 @@ fn restore_item(
           || function_namespace(raw) != Ok(call.namespace),
         Error(Nil),
       )
+
+      // Extract arguments from tool call, preserving malformed text if present.
       let arguments = case message.malformed_arguments_of(call.arguments) {
         Ok(malformed) -> malformed.0
         Error(Nil) -> json.to_string(call.arguments)
       }
+
       Ok(#(put(raw, "arguments", json.String(arguments)), rest))
     }
     "message", _ -> {
@@ -110,6 +119,8 @@ fn restore_item(
     -> {
       use summary <- result.try(wire.array_field(raw, "summary"))
       let parts = result.unwrap(wire.array_field(raw, "content"), [])
+
+      // Determine remaining assistant blocks after handling empty thinking.
       let remaining = case summary, parts, content {
         [], [], [message.AssistantThinking(thinking: "", ..), ..rest] -> rest
         _, _, _ -> content
@@ -119,20 +130,26 @@ fn restore_item(
       use summary_state <- result.try(restore_parts(summary, remaining))
       use content_state <- result.try(restore_parts(parts, summary_state.1))
       let raw = put(raw, "summary", json.Array(summary_state.0))
+
+      // Reattach restored content parts if present.
       let raw = case parts {
         [] -> raw
         _ -> put(raw, "content", json.Array(content_state.0))
       }
+
+      // Reattach thought signature as encrypted content when present.
       let raw = case signature {
         None -> raw
         Some(text) -> put(raw, "encrypted_content", json.String(text))
       }
+
       Ok(#(raw, content_state.1))
     }
     _, _ -> Error(Nil)
   }
 }
 
+/// Rehydrates content parts across remaining assistant blocks.
 fn restore_parts(
   parts: List(JsonValue),
   content: List(message.AssistantBlock),
@@ -141,6 +158,8 @@ fn restore_parts(
     list.try_fold(parts, #([], content), fn(state, raw) {
       let #(parts, remaining) = state
       use kind <- result.try(wire.string_field(raw, "type"))
+
+      // Match part type against head assistant block to restore original text.
       use block <- result.try(case kind, remaining {
         "output_text", [message.AssistantText(text, _), ..rest] ->
           Ok(#("text", text, rest))
@@ -153,6 +172,7 @@ fn restore_parts(
         -> Ok(#("text", text, rest))
         _, _ -> Error(Nil)
       })
+
       Ok(#([put(raw, block.0, json.String(block.1)), ..parts], block.2))
     }),
   )
@@ -172,10 +192,14 @@ pub fn item(value: JsonValue) -> Result(JsonValue, Nil) {
   use kind <- result.try(wire.string_field(value, "type"))
   use status <- result.try(optional_status(value))
   let head = [#("id", json.String(id)), #("type", json.String(kind))]
+
+  // Encode optional status property if present.
   let status = case status {
     None -> []
     Some(status) -> [#("status", json.String(status))]
   }
+
+  // Decode item-specific fields based on type.
   use fields <- result.try(case kind {
     "message" -> {
       use role <- result.try(wire.string_field(value, "role"))
@@ -189,10 +213,13 @@ pub fn item(value: JsonValue) -> Result(JsonValue, Nil) {
         }),
         Error(Nil),
       )
+
+      // Include message phase when present.
       let phase = case phase {
         None -> []
         Some(phase) -> [#("phase", json.String(phase))]
       }
+
       Ok(list.append(
         [#("role", json.String(role)), #("content", json.Array(parts))],
         phase,
@@ -203,10 +230,13 @@ pub fn item(value: JsonValue) -> Result(JsonValue, Nil) {
       use name <- result.try(nonempty(value, "name"))
       use arguments <- result.try(wire.string_field(value, "arguments"))
       use namespace <- result.try(function_namespace(value))
+
+      // Encode optional function namespace if present.
       let namespace = case namespace {
         None -> []
         Some(name) -> [#("namespace", json.String(name))]
       }
+
       Ok(list.append(
         [
           #("call_id", json.String(call_id)),
@@ -220,10 +250,13 @@ pub fn item(value: JsonValue) -> Result(JsonValue, Nil) {
       use summary <- result.try(wire.array_field(value, "summary"))
       use summary <- result.try(list.try_map(summary, summary_part))
       use encrypted <- result.try(optional_string(value, "encrypted_content"))
+
+      // Format encrypted content property if present.
       let encrypted = case encrypted {
         None -> []
         Some(text) -> [#("encrypted_content", json.String(text))]
       }
+
       use content <- result.try(optional_content(value))
       Ok(
         list.flatten([[#("summary", json.Array(summary))], encrypted, content]),
@@ -231,6 +264,7 @@ pub fn item(value: JsonValue) -> Result(JsonValue, Nil) {
     }
     _ -> Error(Nil)
   })
+
   Ok(json.Object(list.flatten([head, status, fields])))
 }
 
@@ -245,6 +279,8 @@ pub fn item(value: JsonValue) -> Result(JsonValue, Nil) {
 /// ```
 pub fn message_phase(value: JsonValue) -> Result(Option(String), Nil) {
   use phase <- result.try(optional_string(value, "phase"))
+
+  // Validate that phase is a known allowed variant.
   case phase {
     None | Some("commentary") | Some("final_answer") -> Ok(phase)
     Some(_) -> Error(Nil)
@@ -265,9 +301,11 @@ pub fn function_namespace(value: JsonValue) -> Result(Option(String), Nil) {
   Ok(namespace)
 }
 
+/// Validates optional reasoning content parts.
 fn optional_content(
   value: JsonValue,
 ) -> Result(List(#(String, JsonValue)), Nil) {
+  // Decode reasoning content parts if present.
   case wire.field(value, "content") {
     Error(Nil) -> Ok([])
     Ok(json.Array(parts)) -> {
@@ -290,8 +328,11 @@ fn optional_content(
   }
 }
 
+/// Validates optional status string against allowed lifecycle values.
 fn optional_status(value: JsonValue) -> Result(Option(String), Nil) {
   use status <- result.try(optional_string(value, "status"))
+
+  // Check that status is among supported lifecycle states.
   case status {
     None | Some("completed") | Some("incomplete") -> Ok(status)
     Some(_) -> Error(Nil)
@@ -325,6 +366,8 @@ pub fn optional_string(
 /// ```
 pub fn nonempty(value: JsonValue, name: String) -> Result(String, Nil) {
   use text <- result.try(wire.string_field(value, name))
+
+  // Require string to contain non-empty text.
   case text {
     "" -> Error(Nil)
     _ -> Ok(text)
@@ -340,6 +383,8 @@ pub fn nonempty(value: JsonValue, name: String) -> Result(String, Nil) {
 /// ```
 pub fn part(value: JsonValue) -> Result(JsonValue, Nil) {
   use kind <- result.try(wire.string_field(value, "type"))
+
+  // Parse and normalize supported content part kinds.
   case kind {
     "output_text" -> {
       use text <- result.try(wire.string_field(value, "text"))
@@ -371,6 +416,7 @@ pub fn part(value: JsonValue) -> Result(JsonValue, Nil) {
   }
 }
 
+/// Validates that a part is a summary_text block and canonicalizes it.
 fn summary_part(value: JsonValue) -> Result(JsonValue, Nil) {
   use <- bool.guard(
     wire.string_field(value, "type") != Ok("summary_text"),
@@ -379,6 +425,7 @@ fn summary_part(value: JsonValue) -> Result(JsonValue, Nil) {
   part(value)
 }
 
+/// Decodes optional annotations array on a content part.
 fn annotations(value: JsonValue) -> Result(List(JsonValue), Nil) {
   case wire.field(value, "annotations") {
     Error(Nil) -> Ok([])
@@ -396,6 +443,8 @@ fn annotations(value: JsonValue) -> Result(List(JsonValue), Nil) {
 /// ```
 pub fn annotation(value: JsonValue) -> Result(JsonValue, Nil) {
   use kind <- result.try(wire.string_field(value, "type"))
+
+  // Decode annotation fields based on citation kind.
   use fields <- result.try(case kind {
     "url_citation" -> {
       use start <- result.try(wire.int_field(value, "start_index"))
@@ -423,6 +472,7 @@ pub fn annotation(value: JsonValue) -> Result(JsonValue, Nil) {
     }
     _ -> Error(Nil)
   })
+
   Ok(json.Object([#("type", json.String(kind)), ..fields]))
 }
 
@@ -435,6 +485,7 @@ pub fn annotation(value: JsonValue) -> Result(JsonValue, Nil) {
 /// ```
 pub fn blocks(items: List(JsonValue)) -> List(message.AssistantBlock) {
   list.flat_map(items, fn(item) {
+    // Map item type into assistant block sequence.
     case wire.string_field(item, "type") {
       Ok("function_call") -> [
         message.AssistantToolCall(message.ToolCall(
@@ -475,10 +526,12 @@ pub fn blocks(items: List(JsonValue)) -> List(message.AssistantBlock) {
       }
       Ok("message") ->
         list.map(result.unwrap(wire.array_field(item, "content"), []), fn(part) {
+          // Extract text from either refusal or text payload.
           let text = case wire.string_field(part, "type") {
             Ok("refusal") -> wire.string_field_or(part, "refusal", "")
             _ -> wire.string_field_or(part, "text", "")
           }
+
           message.AssistantText(text, None)
         })
       _ -> []

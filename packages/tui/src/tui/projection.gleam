@@ -94,12 +94,16 @@ pub fn refresh_render_cache(before: Model, after: Model) -> Model {
       layout.transcript_viewport_height(before),
       layout.transcript_viewport_height(after),
     )
+
+  // Rebuild projection cache if any display property changed.
   case changed {
     True -> {
       let width = layout.transcript_width(after)
       let same_workspace =
         before.shared.active_strand == after.shared.active_strand
         && before.shared.session == after.shared.session
+
+      // Preserve reading history line buffer when workspace is unchanged.
       let reading_lines = case
         tui_model.reading_history(after),
         same_workspace,
@@ -111,6 +115,7 @@ pub fn refresh_render_cache(before: Model, after: Model) -> Model {
         True, _, _, Some(lines) -> Some(lines)
         True, _, _, None -> Some(transient_lines(after))
       }
+
       let cached =
         refresh_diff_cache(
           before,
@@ -141,6 +146,8 @@ pub fn refresh_render_cache(before: Model, after: Model) -> Model {
         False, True, [_, ..] -> before.view.rendered_anchors
         False, _, _ -> record_anchors_for(cached, width)
       }
+
+      // Compute anchor endpoint for relative relocation.
       let endpoint = case after.view.restored_workspace {
         Some(saved) -> #(saved.anchors, saved.height, saved.prefix)
         None ->
@@ -157,6 +164,8 @@ pub fn refresh_render_cache(before: Model, after: Model) -> Model {
             False -> #([], layout.transcript_viewport_height(after), 0)
           }
       }
+
+      // Relocate scroll offset against preserved anchors.
       let anchored = case tui_model.reading_history(after) {
         False -> 0
         True ->
@@ -194,6 +203,7 @@ pub fn refresh_render_cache(before: Model, after: Model) -> Model {
       // attribution (`attribution_changed`). Otherwise the count only needs
       // clamping, since a shrunk projection must not leave the viewport
       // claiming rows that no longer exist.
+      // claiming rows that no longer exist.
       let revealed_rows = case
         tui_model.reading_history(after)
         || after.view.notes_open
@@ -204,6 +214,7 @@ pub fn refresh_render_cache(before: Model, after: Model) -> Model {
         True -> rendered_row_count
         False -> int.min(after.view.revealed_rows, rendered_row_count)
       }
+
       Model(
         ..cached,
         view: View(
@@ -249,14 +260,15 @@ fn attribution_changed(before: Model, after: Model) -> Bool {
   != transcript_lines.solo_owner(after.shared.captured)
 }
 
-// File selection and received observations invalidate the render revision even
-// when the conversation is unchanged. The outer render cache must admit those
-// transitions before this independent patch cache can inspect its own inputs.
-// Diff rows have their own width and scroll position. Reuse the projection
-// while only live fragments or composer text changed: admitted records already
-// invalidate the durable cache, and pending legacy entries name an append.
-// Closing the view releases its rows rather than retaining a hidden history.
+/// File selection and received observations invalidate the render revision even
+/// when the conversation is unchanged. The outer render cache must admit those
+/// transitions before this independent patch cache can inspect its own inputs.
+/// Diff rows have their own width and scroll position. Reuse the projection
+/// while only live fragments or composer text changed: admitted records already
+/// invalidate the durable cache, and pending legacy entries name an append.
+/// Closing the view releases its rows rather than retaining a hidden history.
 fn refresh_diff_cache(before: Model, after: Model) -> Model {
+  // Refresh patch diff cache when changes panel is shown.
   let cached = case layout.diff_shown(after) {
     False ->
       Model(
@@ -285,6 +297,8 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
         && after.view.diff_worktree_source
         == #(after.shared.worktree.board, after.shared.worktree.selected)
         && layout.diff_width(before) == layout.diff_width(after)
+
+      // Reuse cached diff rows if layout parameters match.
       case matches {
         True -> after
         False -> {
@@ -329,6 +343,7 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
       }
     }
   }
+
   Model(
     ..cached,
     view: view_set.diff_scroll_offset(
@@ -342,6 +357,7 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
   )
 }
 
+/// Returns previously cached diff lines if dimensions match.
 fn previous_diff_layout(
   before: Model,
   after: Model,
@@ -361,14 +377,7 @@ pub fn viewport_height_changed(before: Int, after: Int) -> Bool {
   before != after
 }
 
-// Durable rows survive live stream fragments. Compact tool groups can change
-// when a result arrives, so their projection is rebuilt from current entries.
-// Unchanged presentation lines reuse their wrapped rows within the same width;
-// a changed outcome has a different key and cannot retain its pending label.
-// Expanded append-only history still extends the row list as one small batch.
-// Both wrapped rows and their source anchors share this layout key. Pending
-// records are checked separately: rows can append them, while anchors need a
-// complete rebuild so repeated text still names its own durable entry.
+/// Verifies if model record cache dimensions and settings match request.
 fn record_cache_matches(model: Model, width: Int) -> Bool {
   model.shared.record_cache_valid
   && model.view.record_cache_width == width
@@ -377,10 +386,7 @@ fn record_cache_matches(model: Model, width: Int) -> Bool {
   && model.view.record_cache_details == model.shared.details_expanded
 }
 
-// A short terminal gives a picture fewer rows, so rows built for another
-// number of picture rows are not the rows of this one. The number comes from
-// the terminal's height, so typing never changes it. On a terminal that draws
-// nothing no row depends on it, and a resize that changes it keeps the cache.
+/// Verifies whether terminal image rendering height matches cache.
 fn same_image_height(model: Model) -> Bool {
   case model.view.image_support {
     image_support.TextOnly(..) -> True
@@ -390,6 +396,7 @@ fn same_image_height(model: Model) -> Bool {
   }
 }
 
+/// Rebuilds or appends to the durable transcript record row cache.
 fn refresh_record_cache(model: Model, width: Int) -> Model {
   // Expanded history is append-only, so a pending record there can only add
   // rows. Compact history groups consecutive calls, and `tool_activity`
@@ -412,11 +419,14 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
       && model.shared.pending_records != []
     }
   let cache_matches = record_cache_matches(model, width) && !regrouped
+
+  // Handle matching cache or full rebuild of durable records.
   case cache_matches, model.shared.pending_records {
     // A reducer that emptied the transcript bumped the model's epoch, and
     // rows wrapped before it describe lines that are gone, so a rebuild
     // after it starts with no hints, as the reducer used to leave it.
     False, _ -> {
+      // Re-use previous line cache if dimensions and active strand match.
       let previous = case
         model.view.record_cache_width == width
         && same_image_height(model)
@@ -427,6 +437,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
         True -> model.view.caches.record_line_cache
         False -> dict.new()
       }
+
       let #(lines, compact_call_cache, compact_entry_cache) =
         record_projection(model)
       let #(record_rows, record_line_cache, record_gutters) =
@@ -466,6 +477,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
         ),
       )
     }
+
     True, [] -> model
     True, pending -> {
       let #(lines, calls, narratives) =
@@ -537,38 +549,44 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
 // so the seam is the same in both views.
 //
 // The live tail sits on the same seam and asks the same question of it: a
-// reasoning row still streaming under a settled result must stand where its
-// settled form will, or the transcript moves a row when it lands.
+/// Separates the top entry with a spacer line if required.
 fn separated_from_screen(lines: List(Line), model: Model) -> List(Line) {
+  // Determine if a non-empty row has already been drawn.
   let drawn = case list.first(model.view.caches.record_rows) {
     Ok(row) -> span.line_width(row) > 0
     Error(Nil) -> False
   }
+
   let wanted = drawn && transcript_lines.opens_bare(lines, BetweenEntries)
 
+  // Prepend spacer line if bare opening is wanted.
   case wanted {
     True -> [Line(Spacer, ""), ..lines]
     False -> lines
   }
 }
 
-// An image's row says why the picture is not drawn when this terminal
-// knows: inside Herdr, which passes no pane graphics through, or on a
-// terminal that would draw it but for the image itself (too large, or a
-// format its protocol cannot carry). The note is added here, to the line,
-// so the rows and the anchors built from the same lines agree on the row it
-// adds.
+/// An image's row says why the picture is not drawn when this terminal
+/// knows: inside Herdr, which passes no pane graphics through, or on a
+/// terminal that would draw it but for the image itself (too large, or a
+/// format its protocol cannot carry). The note is added here, to the line,
+/// so the rows and the anchors built from the same lines agree on the row it
+/// adds.
 fn noted_images(lines: List(Line), model: Model) -> List(Line) {
   let #(done, _) =
     list.fold(lines, #([], AfterOther), fn(acc, line) {
       let #(done, previous) = acc
+
+      // Annotate image row if picture speaker is present.
       case image_of(line.speaker) {
         None -> #([line, ..done], AfterOther)
         Some(picture) -> {
+          // Append image status note if applicable.
           let noted = case image_note(model, picture) {
             Some(note) -> Line(line.speaker, line.text <> "\n" <> note)
             None -> line
           }
+
           #([noted, ..stacked(done, previous, model)], AfterImage)
         }
       }
@@ -582,9 +600,7 @@ type Previous {
   AfterOther
 }
 
-// One blank row between two images in a row, so two boxes (or two
-// placeholder rows with their notes) do not run together. It is added only
-// on a terminal that draws images, where the images are boxes.
+/// Inserts a blank row between consecutive images when graphics are supported.
 fn stacked(done: List(Line), previous: Previous, model: Model) -> List(Line) {
   case previous, model.view.image_support {
     AfterImage, image_support.KittyPlaceholders(..)
@@ -594,9 +610,7 @@ fn stacked(done: List(Line), previous: Previous, model: Model) -> List(Line) {
   }
 }
 
-// The picture an image row carries, and nothing for any other speaker. Every
-// speaker is named, so a new one is a compile error here rather than
-// quietly not an image.
+/// Extracts picture data from an ImageRow speaker.
 fn image_of(speaker: Speaker) -> Option(Option(image_header.Picture)) {
   case speaker {
     ImageRow(picture) -> Some(picture)
@@ -624,7 +638,7 @@ fn image_of(speaker: Speaker) -> Option(Option(image_header.Picture)) {
   }
 }
 
-// The reason a picture is not drawn, when the terminal can name it.
+/// Computes refusal note string for an unrenderable picture.
 fn image_note(
   model: Model,
   picture: Option(image_header.Picture),
@@ -635,9 +649,7 @@ fn image_note(
   }
 }
 
-// The rows of a line. An image the terminal can draw becomes a box; every
-// other line, and every image it cannot draw, is the line `render_line`
-// draws.
+/// Formats rows for a single transcript line taking image support into account.
 fn line_rows_for(
   line: Line,
   width: Int,
@@ -665,8 +677,7 @@ fn line_rows_for(
 // Each line is rendered independently, including its speaker prefix and
 // trailing blank rows. Reusing that complete result preserves wrapping and
 // styling without parsing or measuring unchanged text again. The next map is
-// built only from current lines; hints from a replaced cut do not become an
-// ever-growing store of discarded history.
+/// Wraps lines into cached styled rows.
 fn cached_record_lines(
   lines: List(Line),
   width: Int,
@@ -695,8 +706,7 @@ fn cached_record_lines(
   })
 }
 
-// Cached wrapping is reused here; identity is supplied by the durable entry,
-// never inferred from text equality. Equal user messages keep distinct anchors.
+/// Builds transcript source anchors paired with durable entry identities.
 fn record_anchors_for(
   model: Model,
   width: Int,
@@ -709,6 +719,8 @@ fn record_anchors_for(
   let sequences = transcript_lines.entry_sequences(entries)
   let notices =
     transcript_lines.active_notices(session_model.presentation(model.shared))
+
+  // Generate anchored blocks according to details view mode.
   let blocks = case model.shared.details_expanded {
     True -> {
       // The compact projection owns call/result association, including reused
@@ -857,6 +869,7 @@ fn record_anchors_for(
       |> transcript_lines.separated_tool_blocks(BetweenEntries)
     }
   }
+
   [#("", transcript_lines.separated_lines(model.shared.transcript)), ..blocks]
   |> list.flat_map(fn(block) {
     block.1
@@ -887,9 +900,7 @@ fn record_anchors_for(
 
 // Tool calls keep the same block identity in compact and expanded views.
 // Provider IDs are qualified by their durable owner, since a later response
-// may legitimately reuse them. Text and reasoning use their source index.
-// `joined` is the compact window's joined results (`transcript_lines.joined`),
-// or `None` in expanded history, which draws each result as its own entry.
+/// Extracts anchored entry block rows with call and result identifiers.
 fn anchored_entry_blocks(
   value: entry.Entry,
   model: Model,
@@ -899,6 +910,8 @@ fn anchored_entry_blocks(
   let owner = transcript_lines.solo_owner(model.shared.captured)
   let id = ids.entry_id_to_string(value.id)
   let found = transcript_lines.labels_for(value, model.shared.summaries)
+
+  // Process entry content blocks according to entry kind.
   case value {
     entry.MessageEntry(
       message: message.AssistantMessage(
@@ -911,23 +924,30 @@ fn anchored_entry_blocks(
     ) -> {
       let blocks =
         list.index_map(content, fn(block, index) {
+          // Determine anchor identity for content block.
           let key = case block {
             message.AssistantToolCall(call) -> id <> "/call/" <> call.id
             message.AssistantText(..) | message.AssistantThinking(..) ->
               id <> "/block/" <> int.to_string(index)
           }
+
           let label = list.key_find(found, index) |> option.from_result
+
+          // Render assistant block lines with or without joined results.
           let lines = case joined {
             Some(joined) ->
               transcript_lines.joined_block_lines(block, label, value, joined)
             None ->
               transcript_lines.assistant_block_lines(block, details, label)
           }
+
           #(key, lines)
         })
         |> transcript_lines.separated_tool_blocks(WithinResponse)
       let terminal =
         transcript_lines.assistant_terminal_lines(stop_reason, error_message)
+
+      // Append terminal lines if assistant ended with notice.
       case terminal {
         [] -> blocks
         _ -> list.append(blocks, [#(id <> "/terminal", terminal)])
@@ -947,18 +967,12 @@ fn anchored_entry_blocks(
   }
 }
 
-// The live answer is the one line here whose text grows on every frame, so
-// it is laid out by `live_tail`, which keeps what the last frame decided and
-// reprocesses only what the new text can change. Every other transient line
-// is rendered afresh; they are small. Frozen reading lines are not live, so
-// they are rendered afresh too and leave the live cache as it was.
-//
-// The viewport consumes rows newest-first. Keeping that order in the cache
-// makes each live frame prepend only the small transient stream projection.
+/// Renders full layout rows and gutters for transcript viewport.
 fn rendered_layout_for(
   model: Model,
   width: Int,
 ) -> #(List(span.Line), List(Int), live_tail.Cache) {
+  // Check help or notes overlay state.
   case model.view.help_open, model.view.notes_open {
     True, _ -> {
       let rows =
@@ -972,6 +986,7 @@ fn rendered_layout_for(
       #([], [], model.view.caches.live_tail)
     }
     False, False -> {
+      // Check if frozen reading lines are active.
       let #(transient_rows, transient_gutters, cache) = case
         model.view.reading_lines
       {
@@ -998,6 +1013,7 @@ fn rendered_layout_for(
           #(rows, gutters, live_tail.finish(pass))
         }
       }
+
       #(
         transient_rows
           |> list.reverse
@@ -1011,8 +1027,7 @@ fn rendered_layout_for(
   }
 }
 
-// Rows and copy gutters are emitted together so a live stream is parsed and
-// wrapped once. The metadata is an integer per row, not another text tree.
+/// Renders lines into styled span rows.
 fn rendered_lines(
   lines: List(Line),
   width: Int,
@@ -1037,6 +1052,7 @@ fn rendered_lines(
 // has, and only when exactly one stream draws with that speaker, so the line
 // and its fragments cannot be mismatched. Its byte count must also be the
 // line's, which a stream's text always is.
+/// Renders rows for one line utilizing live-tail incremental formatting.
 fn line_rows(
   line: Line,
   width: Int,
@@ -1045,6 +1061,8 @@ fn line_rows(
   strand: String,
 ) -> #(List(span.Line), live_tail.Pass) {
   let bytes = string.byte_size(line.text)
+
+  // Look for matching active stream source.
   case list.filter(sources, fn(source) { source.0 == line.speaker }) {
     [#(speaker, stream)] if stream.bytes == bytes -> {
       let layout =
@@ -1060,11 +1078,7 @@ fn line_rows(
   }
 }
 
-// The active strand's live streams whose lines are Markdown, each with the
-// speaker `transcript_lines.stream_lines` draws it as: an answer as
-// `Assistant`, and a reasoning stream as `Reasoning` when details are
-// expanded. A collapsed reasoning stream is a one-row digest and a tool call
-// is its name, neither of which grows into many rows.
+/// Collects active markdown live streaming sources.
 fn live_sources(model: Model) -> List(#(Speaker, Stream)) {
   let extent = transcript_lines.details_extent(model.shared.details_expanded)
   session_model.presentation(model.shared)
@@ -1080,9 +1094,7 @@ fn live_sources(model: Model) -> List(#(Speaker, Stream)) {
   })
 }
 
-// Only prefixes whose ownership is explicit in `speaker_rows` are removed.
-// Assistant Markdown and user blocks can contain arbitrary leading spaces;
-// those begin after these fixed cells and are never inspected here.
+/// Computes width of indentation gutter for line copying.
 fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
   case line.speaker {
     Assistant | Reasoning if index > 0 -> 2
@@ -1121,8 +1133,7 @@ fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
   }
 }
 
-// The live tail is a bounded, disposable observation. Scrollback retains one
-// immutable projection so later fragments cannot reflow text under the reader.
+/// Formats transient tail lines for the active strand.
 fn transient_lines(model: Model) -> List(Line) {
   let presentation = session_model.presentation(model.shared)
   transcript_lines.stream_lines(
@@ -1138,15 +1149,9 @@ fn transient_lines(model: Model) -> List(Line) {
   |> separated_from_screen(model)
 }
 
-// Pending advice is a labeled, disposable observation in the scrollable tail.
-// It is never appended to durable records, and inspecting it does not deliver
-// it. Collapsed, each nudge is one preview row under the heading, which
-// already names the rows as pending advice, so a row spends no width saying it
-// again. A queue that grows through a
-// long run would otherwise print every body in full and push the run itself
-// out of view. Detail mode prints the complete bodies, the same toggle the
-// delivered nudges answer to, so every received line stays readable.
+/// Gathers pending advisor nudge preview lines.
 fn pending_nudge_lines(model: Model) -> List(Line) {
+  // Check if active strand has pending advisor nudges.
   case model.shared.nudges {
     Some(board)
       if board.strand == model.shared.active_strand && board.pending != []
@@ -1155,6 +1160,8 @@ fn pending_nudge_lines(model: Model) -> List(Line) {
         "Advisor · pending, not delivered · "
         <> int.to_string(board.total)
         <> " nudges"
+
+      // Format nudge rows according to detail extent.
       let rows = case
         transcript_lines.details_extent(model.shared.details_expanded)
       {
@@ -1173,6 +1180,8 @@ fn pending_nudge_lines(model: Model) -> List(Line) {
             [Line(System, "Pending advisor nudge"), Line(ToolDetail, body)]
           })
       }
+
+      // Append note if nudges were truncated.
       let omitted = case board.total > list.length(board.pending) {
         True -> [
           Line(
@@ -1182,6 +1191,7 @@ fn pending_nudge_lines(model: Model) -> List(Line) {
         ]
         False -> []
       }
+
       [Line(System, heading), ..list.append(rows, omitted)]
     }
     Some(_) | None -> []
@@ -1264,9 +1274,7 @@ fn visible_advisor_history(model: Model) -> advisor_history.Board {
   )
 }
 
-// The row and anchor projections merge the same captured blocks. The stable
-// entry and text-block identity lets reading mode stay on an advisor update
-// when a later capture extends the conversation.
+/// Formats advisor anchor blocks paired with line entries.
 fn advisor_anchor_blocks(
   board: advisor_history.Board,
 ) -> List(#(Int, List(#(String, List(Line))))) {

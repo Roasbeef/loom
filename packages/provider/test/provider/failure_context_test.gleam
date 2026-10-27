@@ -1,5 +1,6 @@
 //// Failure facts survive wrapping without acquiring authority over drain proof.
 
+import core/corruption
 import core/json
 import gleam/list
 import gleam/option.{None, Some}
@@ -22,6 +23,12 @@ fn observation(source, cause) {
 pub fn wrapped_errors_preserve_retry_and_cancellation_classification_test() {
   let errors = [
     stream.ProviderCancelled,
+    stream.RecoverableStreamCorruption(corruption.report(
+      at: "adapter",
+      on: "item",
+      expected: "closed",
+      context: "open",
+    )),
     stream.CancellationUnconfirmed,
     stream.DrainProofLost,
     stream.HttpError(429, "rate_limit_error", "wait", Some(5000)),

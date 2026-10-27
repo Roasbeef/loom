@@ -326,6 +326,8 @@ pub fn main() -> Nil {
         handler.level_variable,
       )),
     )
+
+  // Parse arguments and execute daemon startup pipeline.
   case
     parse(argv.load().arguments)
     |> result.try(claim_endpoint)
@@ -405,6 +407,7 @@ pub fn publish_endpoint(
   published
 }
 
+/// Acquires an exclusive file lock to prevent concurrent daemon launches.
 fn acquire_launch_lock(paths: endpoint.Paths) {
   case
     poll.until(within: 5000, every: 25, attempt: fn() {
@@ -453,6 +456,8 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
       dict.new(),
     )
   use config <- result.try(parse_loop(arguments, initial))
+
+  // Resolve state root directory from flag or user home directory.
   use state_root <- result.try(case config.state_root {
     "" ->
       bootstrap.getenv("HOME")
@@ -460,14 +465,17 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
       |> result.map(fn(home) { home <> "/.loom" })
     path -> Ok(path)
   })
+
   use state_root <- result.try(bootstrap.absolute_path(state_root))
   Ok(Config(..config, state_root:))
 }
 
+/// Recursively parses command line arguments into an options record.
 fn parse_loop(
   arguments: List(String),
   config: Config,
 ) -> Result(Config, String) {
+  // Process each command line argument token.
   case arguments {
     [] -> Ok(config)
     ["--state-dir", value, ..rest] ->
@@ -480,6 +488,8 @@ fn parse_loop(
       use capacity <- result.try(
         int.parse(value) |> result.replace_error("invalid --capacity"),
       )
+
+      // Ensure capacity falls within allowed integer bounds.
       case capacity > 0 && capacity <= 1024 {
         True -> parse_loop(rest, Config(..config, capacity:))
         False -> Error("--capacity must be between 1 and 1024")
@@ -556,21 +566,21 @@ fn parse_loop(
   }
 }
 
-// Trusted distribution is started first, before the catalogue or any session
-// resource is opened, so a VM booted wrongly is refused with nothing to undo.
-// Without a `[distribution]` table nothing happens and the VM stays
-// non-distributed. The membership is kept for the sessions registered on an
-// executor, which resolve their peer through it when they open.
-//
-// A configured ledger is opened and its process started first, and
-// distribution after it. The constraint is that the pin table must exist before
-// the listener does: in ledger mode the TLS callback refuses every handshake
-// with `ledger_unavailable` while the table is absent, so a listener opened
-// first would turn away the first peers for no reason of theirs. The ledger
-// process needs no distribution to start, because a monitor of node changes is
-// valid on a VM that is not distributed yet. `ledger_boot.start` does both in
-// that order and keeps the process linked to this one for the life of the
-// daemon, like the other services.
+/// Trusted distribution is started first, before the catalogue or any session
+/// resource is opened, so a VM booted wrongly is refused with nothing to undo.
+/// Without a `[distribution]` table nothing happens and the VM stays
+/// non-distributed. The membership is kept for the sessions registered on an
+/// executor, which resolve their peer through it when they open.
+///
+/// A configured ledger is opened and its process started first, and
+/// distribution after it. The constraint is that the pin table must exist before
+/// the listener does: in ledger mode the TLS callback refuses every handshake
+/// with `ledger_unavailable` while the table is absent, so a listener opened
+/// first would turn away the first peers for no reason of theirs. The ledger
+/// process needs no distribution to start, because a monitor of node changes is
+/// valid on a VM that is not distributed yet. `ledger_boot.start` does both in
+/// that order and keeps the process linked to this one for the life of the
+/// daemon, like the other services.
 fn start_distribution(
   document: dict.Dict(String, tom.Toml),
   configuration: String,
@@ -581,6 +591,8 @@ fn start_distribution(
     distribution.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
+
+  // Start distribution ledger if settings were found.
   case found {
     None -> Ok(None)
     Some(settings) ->
@@ -613,6 +625,7 @@ pub fn ledger_directory(
   listed: List(orchestrators.Orchestrator),
   logger: Logger,
 ) -> Result(Option(directory_settings.Settings), String) {
+  // Use configured settings without a ledger, or derive them from ledger status.
   case ledger {
     None -> Ok(configured)
     Some(service) -> {
@@ -620,6 +633,8 @@ pub fn ledger_directory(
         ledger_service.status(service, 5000)
         |> result.replace_error("the ledger process did not answer"),
       )
+
+      // Keep only a directory configuration found in the authoritative ledger status.
       case directory_settings.from_ledger(status.ledger, local) {
         None -> Ok(None)
         Some(found) -> {
@@ -631,6 +646,8 @@ pub fn ledger_directory(
             list.count(seats.places(status.ledger), fn(place) {
               place.seat == store.Voter
             })
+
+          // Validate voter bounds and odd count parity.
           case
             voters < directory_settings.minimum_members
             || voters > directory_settings.maximum_members
@@ -642,6 +659,7 @@ pub fn ledger_directory(
               ])
             False -> Nil
           }
+
           Some(found)
         }
       }
@@ -649,15 +667,15 @@ pub fn ledger_directory(
   }
 }
 
-// The tables that name a peer are checked against the ledger once, here, after
-// the ledger process holds the file and before the daemon listens. Parsing them
-// never reads the ledger (`client/ledger_reference`), because a session parses
-// them on every create and open and a ledger changes while a daemon runs. A
-// node no entry ever named refuses the start. A node that was a member and no
-// longer is a row the daemon logs and keeps, so that a `revoke` never turns the
-// next restart into an outage of the sessions that do not use that node. The
-// executor names that pools and spawners list are judged the same way, because
-// the ledger can give an executor a row that no table defines.
+/// The tables that name a peer are checked against the ledger once, here, after
+/// the ledger process holds the file and before the daemon listens. Parsing them
+/// never reads the ledger (`client/ledger_reference`), because a session parses
+/// them on every create and open and a ledger changes while a daemon runs. A
+/// node no entry ever named refuses the start. A node that was a member and no
+/// longer is a row the daemon logs and keeps, so that a `revoke` never turns the
+/// next restart into an outage of the sessions that do not use that node. The
+/// executor names that pools and spawners list are judged the same way, because
+/// the ledger can give an executor a row that no table defines.
 fn audit_started(
   booted: Option(ledger_boot.Booted),
   document: dict.Dict(String, tom.Toml),
@@ -667,6 +685,8 @@ fn audit_started(
   logger: Logger,
 ) -> Result(Nil, String) {
   use found <- result.try(distribution.from_document(document))
+
+  // Audit started distribution ledger or configuration path.
   case
     option.then(booted, fn(started) { started.ledger }),
     option.then(found, distribution.ledger_path)
@@ -823,12 +843,13 @@ pub fn reference_rows(
   ])
 }
 
-// The handle the `ledger.*` commands use: the process and this node's names. The
-// node is distributed by now, so its own name is the VM's.
+/// The handle the `ledger.*` commands use: the process and this node's names. The
+/// node is distributed by now, so its own name is the VM's.
 fn ledger_handle(
   booted: Option(ledger_boot.Booted),
   configuration: String,
 ) -> Result(Option(ledger_control.Handle), String) {
+  // Extract ledger handle from booted node subsystems.
   case booted {
     Some(ledger_boot.Booted(ledger: Some(service), membership:)) -> {
       // The node is distributed by now. `ledger.holdings` asks the orchestrators
@@ -847,10 +868,10 @@ fn ledger_handle(
   }
 }
 
-// Each served checkout has to be a directory now, so an operator who mistyped
-// a root learns it at startup and not from the first session that attaches.
-// The plane factory checks again at every attach, because a directory can go
-// away in between.
+/// Each served checkout has to be a directory now, so an operator who mistyped
+/// a root learns it at startup and not from the first session that attaches.
+/// The plane factory checks again at every attach, because a directory can go
+/// away in between.
 fn existing_roots(served: List(workspaces.Workspace)) -> Result(Nil, String) {
   list.try_each(served, fn(workspace) {
     bootstrap.canonical_directory(workspace.root)
@@ -887,6 +908,7 @@ pub fn start_executor(
   config: Config,
   logger: Logger,
 ) -> Result(Option(ExecutorHost), String) {
+  // Skip executor setup when no workspace is configured.
   case config.workspaces {
     [] -> Ok(None)
     configured -> {
@@ -977,10 +999,10 @@ pub fn start_directory(
   }
 }
 
-// Who the member actor takes its members from: the configured list, or the
-// ledger the daemon runs, read afresh on every tick because the seats change
-// while the daemon runs. The read is a local call to the ledger process, which
-// answers it between two messages.
+/// Who the member actor takes its members from: the configured list, or the
+/// ledger the daemon runs, read afresh on every tick because the seats change
+/// while the daemon runs. The read is a local call to the ledger process, which
+/// answers it between two messages.
 fn members_of(
   config: Config,
   settings: directory_settings.Settings,
@@ -1040,6 +1062,7 @@ pub fn start_orchestrator_port(
   movers: session_movers.Control,
   reads: orchestrator_port.Reads,
 ) -> Result(Nil, String) {
+  // Skip orchestrator port setup unless membership is configured.
   case config.membership {
     None -> Ok(Nil)
     Some(_) -> {
@@ -1151,13 +1174,13 @@ pub fn start_orchestrator_port(
   }
 }
 
-// The report this daemon gives of itself, to a peer that asks and to its own
-// `deployment.status`. Each source is a function the daemon holds and
-// `node_facts.report` calls under one deadline: the executor host's own account,
-// the registry and the movers for the orchestrator facts, and the directory
-// member for the cluster view. The start time is taken here, which is when the
-// daemon begins to answer, and uptime is the difference of two readings of this
-// node's clock.
+/// The report this daemon gives of itself, to a peer that asks and to its own
+/// `deployment.status`. Each source is a function the daemon holds and
+/// `node_facts.report` calls under one deadline: the executor host's own account,
+/// the registry and the movers for the orchestrator facts, and the directory
+/// member for the cluster view. The start time is taken here, which is when the
+/// daemon begins to answer, and uptime is the difference of two readings of this
+/// node's clock.
 fn node_reads(
   config: Config,
   daemon: root.Root(instance),
@@ -1202,9 +1225,9 @@ fn node_reads(
   )
 }
 
-// The nodes of the orchestrators and executors this daemon lists, once each and
-// in name order. With a ledger these are the nodes it links this daemon to, so
-// the list names who this daemon would dial and not only who its file pinned.
+/// The nodes of the orchestrators and executors this daemon lists, once each and
+/// in name order. With a ledger these are the nodes it links this daemon to, so
+/// the list names who this daemon would dial and not only who its file pinned.
 fn listed_nodes(config: Config) -> List(String) {
   list.append(
     list.map(roster.rows(orchestrator_roster(config)), fn(row) { row.node }),
@@ -1220,16 +1243,17 @@ fn nodes_of(nodes: List(String)) -> List(String) {
   nodes |> list.unique |> list.sort(string.compare)
 }
 
-// What this daemon says as an orchestrator. A daemon that is none (an executor
-// in a ledger, or one with nothing listed) says nothing, as does one whose
-// registry or catalogue would not answer: a count it could not make is left out
-// and never reported as zero.
+/// What this daemon says as an orchestrator. A daemon that is none (an executor
+/// in a ledger, or one with nothing listed) says nothing, as does one whose
+/// registry or catalogue would not answer: a count it could not make is left out
+/// and never reported as zero.
 fn orchestrator_facts(
   config: Config,
   registry: manager.Manager(instance),
   local: String,
   movers: session_movers.Control,
 ) -> Option(node_report.OrchestratorFacts) {
+  // Include orchestrator facts only when this node owns membership.
   case ownership_of(config, local) {
     None -> None
     Some(_) -> {
@@ -1285,6 +1309,7 @@ pub fn start_link_keepers(
   config: Config,
   logger: Logger,
 ) -> Result(link_keeper.Keepers, String) {
+  // Start link keepers only for a configured membership.
   case config.membership {
     None -> Ok(dict.new())
     Some(membership) -> {
@@ -1317,9 +1342,9 @@ pub fn start_link_keepers(
   }
 }
 
-// What a keeper does about one orchestrator's connection: reads the connection
-// set, and connects within a bound shorter than a beat. The peer is resolved at
-// each use, because a ledger can pin a member after the daemon started.
+/// What a keeper does about one orchestrator's connection: reads the connection
+/// set, and connects within a bound shorter than a beat. The peer is resolved at
+/// each use, because a ledger can pin a member after the daemon started.
 fn orchestrator_link(
   membership: distribution.Membership,
   orchestrator: orchestrators.Orchestrator,
@@ -1332,6 +1357,7 @@ fn orchestrator_link(
       }
     },
     connect: fn() {
+      // Connect to remote distribution peer for orchestrator.
       case distribution.peer(membership, orchestrator.node) {
         Ok(peer) -> {
           let _outcome = distribution.connect(peer, 1500)
@@ -1366,6 +1392,7 @@ pub fn start_release_drain(
   daemon: root.Root(instance),
   logger: Logger,
 ) -> Result(Nil, String) {
+  // Establish release drain process for coordinating session handoffs.
   case config.membership {
     None -> Ok(Nil)
     Some(membership) -> {
@@ -1403,10 +1430,10 @@ pub fn start_release_drain(
   }
 }
 
-// What a directory member says: the cluster as it sees it, and whether its own
-// copy is current. The copy is confirmed by a fence and a read of this node's
-// own migration marker, so a member that has lost its quorum says `Unconfirmed`
-// instead of describing a cluster it can no longer vouch for.
+/// What a directory member says: the cluster as it sees it, and whether its own
+/// copy is current. The copy is confirmed by a fence and a read of this node's
+/// own migration marker, so a member that has lost its quorum says `Unconfirmed`
+/// instead of describing a cluster it can no longer vouch for.
 fn directory_facts(
   config: Config,
   local: String,
@@ -1572,11 +1599,16 @@ pub fn spawn_host(
     },
     history: fn(origin, child, cursor, limit) {
       use spawner <- result.try(spawner_of(origin))
+
+      // Validate allowed transcript forwarding modes.
       use Nil <- result.try(case spawner.transcript {
         spawners.Visible -> Ok(Nil)
         spawners.Hidden -> Error(remote_spawn.TranscriptHidden)
       })
+
       use found <- result.try(existing(spawner, origin.parent))
+
+      // Query history on existing child endpoint if found.
       case found {
         Some(endpoint) -> endpoint.history(origin.parent, child, cursor, limit)
         None ->
@@ -1688,18 +1720,18 @@ pub fn catalogue_holds(
   }
 }
 
-// How one session reaches the other orchestrators it may start children on
-// (protocol-change/084). A daemon with no distribution reaches none. A session
-// may start a child elsewhere only while its owner holds it alone, which is the
-// test default peer links already use, asked at each spawn because inviting a
-// member changes the answer.
-//
-// A delegate session is held by this daemon's owner alone, so that test would
-// offer it every orchestrator. Its children may spawn only where the spawner's
-// `spawn_on` says (phase 4), so its reach is narrowed to that list and offered
-// when the list names one. A delegate session whose spawner was removed, or
-// whose marker cannot be read, reaches none: nothing is offered that the policy
-// cannot vouch for.
+/// How one session reaches the other orchestrators it may start children on
+/// (protocol-change/084). A daemon with no distribution reaches none. A session
+/// may start a child elsewhere only while its owner holds it alone, which is the
+/// test default peer links already use, asked at each spawn because inviting a
+/// member changes the answer.
+///
+/// A delegate session is held by this daemon's owner alone, so that test would
+/// offer it every orchestrator. Its children may spawn only where the spawner's
+/// `spawn_on` says (phase 4), so its reach is narrowed to that list and offered
+/// when the list names one. A delegate session whose spawner was removed, or
+/// whose marker cannot be read, reaches none: nothing is offered that the policy
+/// cannot vouch for.
 fn reach_of(
   config: Config,
   registry: manager.Manager(instance),
@@ -1763,21 +1795,24 @@ pub fn depth_cap_of(
   }
 }
 
-// The directory the control socket asks when its own catalogue misses. With no
-// distribution there is nobody to ask and the directory answers `Unknown`.
-//
-// A directory member reads its copy of the owner record instead of asking its
-// peers, and on an orchestrator (a daemon that places sessions on executors)
-// it also carries the record writes; an executor member builds none, which is
-// how it is held to never writing (protocol-change/083).
+/// The directory the control socket asks when its own catalogue misses. With no
+/// distribution there is nobody to ask and the directory answers `Unknown`.
+///
+/// A directory member reads its copy of the owner record instead of asking its
+/// peers, and on an orchestrator (a daemon that places sessions on executors)
+/// it also carries the record writes; an executor member builds none, which is
+/// how it is held to never writing (protocol-change/083).
 fn session_directory_of(
   config: Config,
   registry: manager.Manager(instance),
 ) -> session_directory.Directory {
+  // Determine session directory configuration based on cluster membership.
   case config.membership {
     None -> session_directory.none()
     Some(membership) -> {
       let local = atom.to_string(node.name(node.self()))
+
+      // Resolve base voter configuration from settings.
       let base = case config.directory {
         Some(_) ->
           session_directory.khepri(
@@ -1793,6 +1828,7 @@ fn session_directory_of(
             session_directory.over_distribution(membership),
           )
       }
+
       let connected =
         base
         |> session_directory.with_reach(remote_peer.over_distribution(
@@ -1808,6 +1844,8 @@ fn session_directory_of(
           membership,
           orchestrator_roster(config),
         ))
+
+      // Choose the directory handle according to member and ownership state.
       case config.directory, config.member {
         Some(_), Some(handle) ->
           session_directory.as_member(
@@ -1821,32 +1859,34 @@ fn session_directory_of(
   }
 }
 
-// How `deployment.status` connects to the nodes of this daemon's own
-// configuration: over the distribution it started, under its own node name. A
-// daemon with no `[distribution]` table has no peers to connect to. The host
-// name is read here, once, so a reply never makes the call.
+/// How `deployment.status` connects to the nodes of this daemon's own
+/// configuration: over the distribution it started, under its own node name. A
+/// daemon with no `[distribution]` table has no peers to connect to. The host
+/// name is read here, once, so a reply never makes the call.
 fn deployment_reach(config: Config) -> deployment.Reach {
   let self = atom.to_string(node.name(node.self()))
+
+  // Determine network reach from distribution cluster mode.
   let reach = case config.membership {
     Some(membership) -> deployment.over(membership, self)
     None -> deployment.alone(self)
   }
 
-  // In ledger mode the daemon is a member, and the ledger's name for it is the
-  // one its peers use for it, so pages title it the way they title a peer.
+  // Set peer name from membership ledger if enrolled.
   let reach = case config.ledger {
     Some(handle) -> deployment.named(reach, handle.name)
     None -> reach
   }
+
   deployment.Reach(..reach, host: ffi_os.host_name() |> option.from_result)
 }
 
-// The executors this daemon uses: the `[executors.<name>]` rows of its file
-// and, when it runs from a ledger, a row for each executor the ledger links it
-// to (protocol-change/086, phase 2). A part of the daemon that outlives a
-// request holds the roster and reads it at the moment it decides, so an
-// executor enrolled or revoked while the daemon runs is seen by the next
-// decision. A daemon without a ledger has the rows of its file, as before.
+/// The executors this daemon uses: the `[executors.<name>]` rows of its file
+/// and, when it runs from a ledger, a row for each executor the ledger links it
+/// to (protocol-change/086, phase 2). A part of the daemon that outlives a
+/// request holds the roster and reads it at the moment it decides, so an
+/// executor enrolled or revoked while the daemon runs is seen by the next
+/// decision. A daemon without a ledger has the rows of its file, as before.
 fn executor_roster(config: Config) -> Roster(executors.Executor) {
   case config.ledger {
     Some(handle) ->
@@ -1859,8 +1899,8 @@ fn executor_roster(config: Config) -> Roster(executors.Executor) {
   }
 }
 
-// The orchestrators this daemon asks and moves sessions to, combined the same
-// way as the executors.
+/// The orchestrators this daemon asks and moves sessions to, combined the same
+/// way as the executors.
 fn orchestrator_roster(config: Config) -> Roster(orchestrators.Orchestrator) {
   case config.ledger {
     Some(handle) ->
@@ -1915,9 +1955,9 @@ pub fn ownership_of(
   }
 }
 
-// The role the ledger gives the node, or `Error` when the process does not
-// answer or does not list the node. A daemon that cannot confirm its role holds
-// no writes, as one that is not an orchestrator holds none.
+/// The role the ledger gives the node, or `Error` when the process does not
+/// answer or does not list the node. A daemon that cannot confirm its role holds
+/// no writes, as one that is not an orchestrator holds none.
 fn ledger_role(
   service: Service,
   local: String,
@@ -1951,6 +1991,7 @@ pub fn start_movers(
   daemon: root.Root(instance),
   logger: Logger,
 ) -> Result(session_movers.Control, String) {
+  // Without membership, report moves that cannot be resumed.
   case config.membership {
     None -> {
       // Without distribution there is nobody to hand a session to, but a move
@@ -1958,6 +1999,8 @@ pub fn start_movers(
       // cannot be resumed, and the operator is told so rather than left to find
       // a session that refuses to open.
       use ready <- result.map(root.ready(daemon, within: 20_000))
+
+      // Warn when persisted moves remain without a resume path.
       case manager.moving_sessions(ready.registry) {
         Ok([_, ..] as stuck) ->
           log.warn(logger, "daemon.moves_cannot_resume", [
@@ -1965,6 +2008,7 @@ pub fn start_movers(
           ])
         Ok([]) | Error(_) -> Nil
       }
+
       session_movers.idle()
     }
     Some(membership) -> {
@@ -1972,6 +2016,8 @@ pub fn start_movers(
       let registry = ready.registry
       let sessions_directory = ready.sessions_directory
       let directory = session_directory_of(config, registry)
+
+      // Resolve authority and upkeep processes for directory ownership.
       let #(authority, upkeep) = case directory.ownership {
         // The movers' periodic pass seeds the store from the catalogue until
         // it has once, then finishes the deletions left marked; on request it
@@ -2004,6 +2050,7 @@ pub fn start_movers(
         }
         None -> #(session_mover.Rows, session_movers.no_upkeep())
       }
+
       let environment =
         session_mover.Environment(
           authority:,
@@ -2038,9 +2085,9 @@ pub fn start_movers(
   }
 }
 
-// How a mover asks an executor to close the scope of a session that has no
-// runtime. An executor this daemon does not list, or whose node it does not
-// trust, cannot be asked, and the move waits as it does for one that is down.
+/// How a mover asks an executor to close the scope of a session that has no
+/// runtime. An executor this daemon does not list, or whose node it does not
+/// trust, cannot be asked, and the move waits as it does for one that is down.
 fn closer_of(
   config: Config,
   membership: distribution.Membership,
@@ -2055,12 +2102,12 @@ fn closer_of(
   }
 }
 
-// TEST-ONLY. `LOOM_MOVE_CRASH_AFTER=<step>` halts the VM the moment the named
-// step of a session move is durable, so a shipped test can lose the source at
-// each of the six steps and watch a restart finish the move. The steps are
-// `intent`, `close`, `cut`, `send`, `activate` and `retire`. Unset, or set to
-// anything else, it does nothing. It is read once at startup, is not documented
-// for operators, and has no counterpart in the configuration file.
+/// TEST-ONLY. `LOOM_MOVE_CRASH_AFTER=<step>` halts the VM the moment the named
+/// step of a session move is durable, so a shipped test can lose the source at
+/// each of the six steps and watch a restart finish the move. The steps are
+/// `intent`, `close`, `cut`, `send`, `activate` and `retire`. Unset, or set to
+/// anything else, it does nothing. It is read once at startup, is not documented
+/// for operators, and has no counterpart in the configuration file.
 fn crash_after_step() -> fn(session_move.Step) -> Nil {
   case
     bootstrap.getenv("LOOM_MOVE_CRASH_AFTER")
@@ -2115,6 +2162,8 @@ pub fn prepare_startup(
     config.session_defaults,
     "",
   ))
+
+  // Decode the optional daemon web-view configuration.
   use document <- result.try(case configuration {
     "" -> Ok(dict.new())
     path -> {
@@ -2133,6 +2182,7 @@ pub fn prepare_startup(
       })
     }
   })
+
   use connection_limits <- result.try(
     limits.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
@@ -2166,6 +2216,8 @@ pub fn prepare_startup(
     ui_origin.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
+
+  // Validate that a requested view mode has a compatible origin set.
   use view <- result.try(case view, origins {
     ViewOff, [] -> Ok(ViewOff)
     ViewOff, [_, ..] ->
@@ -2177,6 +2229,7 @@ pub fn prepare_startup(
       )
     ViewOn(_), _ -> Ok(ViewOn(origins:))
   })
+
   use peer_policy <- result.try(
     peer_defaults.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
@@ -2205,6 +2258,8 @@ pub fn prepare_startup(
     directory_settings.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
+
+  // Validate session directory configuration requirements.
   case directory {
     Some(found) ->
       case directory_settings.even(found) {
@@ -2216,6 +2271,7 @@ pub fn prepare_startup(
       }
     None -> Nil
   }
+
   use spawners <- result.try(
     spawners.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
@@ -2353,6 +2409,8 @@ pub fn prepare_startup(
         let chosen = fn(executor) {
           manager.seed_executor(directory, session_id, executor)
         }
+
+        // Validate executor and pool exclusivity on registered sessions.
         case registration.executor, registration.pool {
           "", "" ->
             serve.assemble_in_domain(
@@ -2402,10 +2460,10 @@ pub fn prepare_startup(
   |> result.map(fn(daemon) { #(config, daemon) })
 }
 
-// An explicit `--bind` outranks the file, so the file's address replaces only
-// the built-in default. The resolved address is written back into the
-// `Config`, which is what the listener binds and `publish_endpoint` records
-// for clients to discover.
+/// An explicit `--bind` outranks the file, so the file's address replaces only
+/// the built-in default. The resolved address is written back into the
+/// `Config`, which is what the listener binds and `publish_endpoint` records
+/// for clients to discover.
 fn with_file_address(
   config: Config,
   file_address: Option(listen_address.Address),
@@ -2525,9 +2583,9 @@ pub fn spawner_link_of(
   }
 }
 
-// How a delegate session reaches its parent's orchestrator: over the daemon's
-// membership, to the spawner's pinned node, and never by dialing. A daemon with
-// no distribution has no laptop to reach.
+/// How a delegate session reaches its parent's orchestrator: over the daemon's
+/// membership, to the spawner's pinned node, and never by dialing. A daemon with
+/// no distribution has no laptop to reach.
 fn laptop_of(
   config: Config,
   link: Option(delegate_outbox.SpawnerLink),
@@ -2539,11 +2597,11 @@ fn laptop_of(
   }
 }
 
-// The function the Agency's holder calls to claim one spawn against the
-// spawner's rolling day, or `None` for a spawner with neither day cap. The
-// registry's refusal is a spawner's refusal by `delegate_host.refused`, and a
-// registry that does not answer within the holder's bound is a `StoreFailure`,
-// which the laptop retries, and never a cap.
+/// The function the Agency's holder calls to claim one spawn against the
+/// spawner's rolling day, or `None` for a spawner with neither day cap. The
+/// registry's refusal is a spawner's refusal by `delegate_host.refused`, and a
+/// registry that does not answer within the holder's bound is a `StoreFailure`,
+/// which the laptop retries, and never a cap.
 fn spawn_claimer(
   registry: manager.Manager(instance),
   spawner: spawners.Spawner,
@@ -2565,8 +2623,8 @@ fn spawn_claimer(
   }
 }
 
-// The function that adds a child's tokens to the spawner's day, or one that does
-// nothing when the spawner sets no day budget.
+/// The function that adds a child's tokens to the spawner's day, or one that does
+/// nothing when the spawner sets no day budget.
 fn spend_recorder(
   registry: manager.Manager(instance),
   spawner: spawners.Spawner,
@@ -2633,6 +2691,8 @@ pub fn sweep_delegate_sessions(
         }
       },
     )
+
+  // Sweep stale delegated-session registrations using the ready registry.
   case
     manager.sweep_delegates(
       ready.registry,
@@ -2697,18 +2757,18 @@ pub type SweepTick {
   SweepTick
 }
 
-// What a session's hub needs to read and switch its own model profile
-// (protocol-change/082). Every closure runs in the hub's process, over the
-// registry handle the builder was given, so none of them holds a credential:
-// the hub has already judged who may switch (the owner), and what it asks of
-// the daemon is the registry's write and a restart of this very session.
-//
-// `configuration` is the file this session loads, resolved the way creation
-// resolved it (`profiles.effective`), so the names the hub offers are the names
-// its own open will accept, and the file its watcher reads for changes from the
-// `baseline` fingerprint taken before the open. The restart runs in a process the session does not
-// own (`restart.begin`), and a failure of either step is logged and leaves the
-// profile saved for the next open.
+/// What a session's hub needs to read and switch its own model profile
+/// (protocol-change/082). Every closure runs in the hub's process, over the
+/// registry handle the builder was given, so none of them holds a credential:
+/// the hub has already judged who may switch (the owner), and what it asks of
+/// the daemon is the registry's write and a restart of this very session.
+///
+/// `configuration` is the file this session loads, resolved the way creation
+/// resolved it (`profiles.effective`), so the names the hub offers are the names
+/// its own open will accept, and the file its watcher reads for changes from the
+/// `baseline` fingerprint taken before the open. The restart runs in a process the session does not
+/// own (`restart.begin`), and a failure of either step is logged and leaves the
+/// profile saved for the next open.
 fn profile_desk(
   registry: manager.Manager(serve.Resident),
   registration: catalogue.Registration,
@@ -2754,9 +2814,9 @@ fn profile_desk(
   )
 }
 
-// Domain construction precedes session assembly, so its failures never reach
-// the session diagnostic below. Preserve a fixed classification before the
-// failed owner retires; the domain identity itself contains a workspace path.
+/// Domain construction precedes session assembly, so its failures never reach
+/// the session diagnostic below. Preserve a fixed classification before the
+/// failed owner retires; the domain identity itself contains a workspace path.
 fn diagnose_domain_start(
   outcome: Result(value, String),
   logger: Logger,
@@ -2764,6 +2824,7 @@ fn diagnose_domain_start(
 ) -> Result(value, String) {
   outcome
   |> result.map_error(fn(reason) {
+    // Classify failure cause based on error message substrings.
     let class = case
       configuration != ""
       && {
@@ -2777,20 +2838,22 @@ fn diagnose_domain_start(
       True -> "configuration_rejected"
       False -> "assembly_failed"
     }
+
     log.error(logger, "daemon.domain_start_failed", [
       field.text("stage", "domain_assembly"),
       field.text("class", class),
       field.text("reason", glance.clip(reason, 2048)),
     ])
+
     reason
   })
 }
 
-// A failed builder can retire before the control client reads its operation.
-// Record the classified cause here, while it still exists, rather than keeping
-// failed instances alive for diagnostics. The caller receives the same error;
-// only fixed labels, a validated session identity and the path-free detail
-// that `start_class` returns enter the log.
+/// A failed builder can retire before the control client reads its operation.
+/// Record the classified cause here, while it still exists, rather than keeping
+/// failed instances alive for diagnostics. The caller receives the same error;
+/// only fixed labels, a validated session identity and the path-free detail
+/// that `start_class` returns enter the log.
 fn diagnose_start(
   outcome: Result(value, String),
   logger: Logger,
@@ -2844,8 +2907,10 @@ pub fn start_class(
   stage: StartStage,
   reason: String,
 ) -> #(String, String, List(field.Field)) {
+  // Classify the startup failure according to its preparation stage.
   case stage {
     SettingsResolution -> {
+      // Distinguish missing helper files from other settings rejection.
       let class = case
         string.starts_with(reason, "no loom-exec sandbox helper found.")
         || string.starts_with(reason, "the helper binary does not exist: ")
@@ -2853,9 +2918,11 @@ pub fn start_class(
         True -> "helper_unavailable"
         False -> "settings_rejected"
       }
+
       #("settings_resolution", class, [])
     }
     RuntimeAssembly -> {
+      // Determine failure class for runtime assembly errors.
       let #(class, detail) = case reason {
         "the session base policy is not one the sandbox can enforce: " <> _ -> #(
           "policy_rejected",
@@ -2890,6 +2957,7 @@ pub fn start_class(
 
         _ -> #("assembly_failed", [])
       }
+
       #("runtime_assembly", class, detail)
     }
   }
@@ -3026,10 +3094,13 @@ pub fn listen_moving(
     mist.new(fn(request) { server.handle(routing, request) })
     |> mist.bind(config.bind_host)
     |> mist.port(config.bind_port)
+
+  // Configure IPv6 bind mode if requested.
   let builder = case config.bind_host {
     "::1" -> mist.with_ipv6(builder)
     _ -> builder
   }
+
   use listener <- result.try(root.start_listener(
     daemon,
     builder,
@@ -3038,8 +3109,8 @@ pub fn listen_moving(
   Ok(Serving(daemon, ready, listener))
 }
 
-// Capture the daemon owner's choice before any session is admitted. The final
-// --config wins just as in the session resolver; absence stays explicit.
+/// Capture the daemon owner's choice before any session is admitted. The final
+/// --config wins just as in the session resolver; absence stays explicit.
 fn captured_domain_configuration(
   arguments: List(String),
   selected: String,
@@ -3055,6 +3126,7 @@ fn captured_domain_configuration(
   }
 }
 
+/// Main daemon runtime execution loop coordinating subsystems and wait signals.
 fn run(
   config: Config,
   paths: endpoint.Paths,
@@ -3065,6 +3137,8 @@ fn run(
   let watch = process.monitor(root.pid(daemon))
   let signals = process.new_subject()
   host.relay_sigterm(signals, ffi_os.wait_for_sigterm)
+
+  // Execute daemon startup sequence under signal monitoring.
   case
     {
       use member <- result.try(start_directory(config, logger))
@@ -3121,10 +3195,12 @@ fn run(
       ffi_os.halt(1)
     }
     Ok(#(serving, executor)) -> {
+      // Format host string for startup log message.
       let host = case config.bind_host {
         "::1" -> "[::1]"
         host -> host
       }
+
       io.println(
         "loomd: daemon listening on ws://"
         <> host
@@ -3134,11 +3210,14 @@ fn run(
         <> serving.ready.state_root
         <> "/owner.token)",
       )
+
+      // Print web view status notice if enabled.
       case config.view {
         ViewOn(_) ->
           io.println("loomd: web view on; run `loom ui` for your home page")
         ViewOff -> Nil
       }
+
       log.info(logger, "daemon.listening", [
         field.count("port", serving.listener.port),
       ])
@@ -3147,13 +3226,14 @@ fn run(
   }
 }
 
-// The web view's assets, tables and socket, when startup enabled the UI.
-// The tables' actor is linked to this process, which lives as long as the
-// daemon does.
+/// The web view's assets, tables and socket, when startup enabled the UI.
+/// The tables' actor is linked to this process, which lives as long as the
+/// daemon does.
 fn web_view(
   config: Config,
   daemon: root.Root(serve.Resident),
 ) -> Result(Option(server.Ui(serve.Resident)), String) {
+  // Launch web view server if enabled in configuration.
   case config.view {
     ViewOff -> Ok(None)
     ViewOn(origins:) -> {
@@ -3173,6 +3253,7 @@ fn web_view(
       // The relayed session page asks the orchestrators this daemon is configured
       // with over its distribution (protocol-change/094). A daemon with none can
       // name no orchestrator, so its relay answers every name as not configured.
+      // Route through membership when configured; otherwise refuse every name.
       let relay = case config.membership {
         Some(membership) ->
           top_relay.over(membership, orchestrator_roster(config))
@@ -3182,6 +3263,7 @@ fn web_view(
             top_relay.production(),
           )
       }
+
       use root_key <- result.map(ui_login.root_key(
         ready.state_root,
         ready.registry,
@@ -3235,6 +3317,7 @@ fn web_view(
   }
 }
 
+/// Awaits termination signals or lifecycle exit events.
 fn wait(
   daemon: root.Root(instance),
   watch: process.Monitor,
@@ -3246,6 +3329,8 @@ fn wait(
     process.new_selector()
     |> process.select_map(signals, Signal)
     |> process.select_specific_monitor(watch, fn(down) { RootGone(down.reason) })
+
+  // Monitor executor process if running locally.
   let selector = case executor {
     Some(hosted) ->
       process.select_specific_monitor(selector, hosted.monitor, fn(down) {
@@ -3253,10 +3338,14 @@ fn wait(
       })
     None -> selector
   }
+
+  // Await incoming OS signal or supervised process DOWN event.
   case process.selector_receive_forever(selector) {
     Signal(host.Signalled) -> {
       let outcome = root.shutdown(daemon, within: 30_000)
       report_shutdown(logger, outcome)
+
+      // Return process exit code depending on shutdown outcome.
       case outcome {
         Ok(Nil) -> Nil
         Error(_) -> ffi_os.halt(1)
@@ -3279,6 +3368,7 @@ fn wait(
   }
 }
 
+/// Reports clean shutdown or abnormal exit details to stderr.
 fn report_shutdown(logger: Logger, outcome: Result(Nil, String)) {
   case outcome {
     Ok(Nil) -> log.info(logger, "daemon.stopped", [])

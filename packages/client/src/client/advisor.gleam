@@ -806,6 +806,7 @@ pub fn supervised(wiring: Wiring) -> ChildSpecification(Subject(Message)) {
 
 // --- the message loop ------------------------------------------------------
 
+/// Documents `handle` contract and behavior.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case state.wiring.runtime() {
     // A borrow that fails is an ordinary state, not a fault: the holder
@@ -820,11 +821,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
-// Every caller of a call must be answered on every path, or a driver
-// waits out its timeout for an answer that was never coming.
+/// waits out its timeout for an answer that was never coming.
+/// Every caller of a call must be answered on every path, or a driver
 fn unavailable(state: State, message: Message) -> Nil {
   log.debug(state.wiring.logger, "advisor.runtime_unavailable", [])
 
+  // State what the branch decides before dispatching.
   case message {
     Judge(reply:, ..) ->
       process.send(
@@ -863,9 +865,11 @@ fn unavailable(state: State, message: Message) -> Nil {
   }
 }
 
+/// Documents `serve` contract and behavior.
 fn serve(state: State, runtime: Runtime, message: Message) -> State {
   let memory = recall(state, runtime)
 
+  // State what the branch decides before dispatching.
   case message {
     // A primary run end is one occasion with two readings. An active
     // goal that finds the primary idle replaces the ordinary run-end
@@ -895,6 +899,7 @@ fn serve(state: State, runtime: Runtime, message: Message) -> State {
     PrimaryStepped(operation:) -> {
       let counted = Memory(..memory, stepped: memory.stepped + 1)
 
+      // State what the branch decides before dispatching.
       case due(state, counted) {
         False -> remembering(state, counted)
         True -> feed(state, runtime, counted, operation, StepsElapsed)
@@ -917,6 +922,7 @@ fn serve(state: State, runtime: Runtime, message: Message) -> State {
     AdvisorRunEnded(operation:) -> {
       let memory = Memory(..memory, reviewed: Some(operation))
 
+      // State what the branch decides before dispatching.
       case goal_replaces_review(memory) {
         True ->
           remembering(
@@ -946,6 +952,7 @@ fn serve(state: State, runtime: Runtime, message: Message) -> State {
         [] -> renewed
         _queued -> store_guard(state, runtime, renewed, drained)
       }
+
       process.send(reply, nudges)
 
       // The drain is answered before the goal is evaluated, because the
@@ -975,10 +982,13 @@ fn serve(state: State, runtime: Runtime, message: Message) -> State {
     TakeAtRunEnd(operation:, deadline:, reply:) -> {
       let #(nudges, spent) = drain_at_run_end(state, runtime, memory, deadline)
       process.send(reply, nudges)
+
+      // State what the branch decides before dispatching.
       let ending = case now(state.wiring) > deadline {
         True -> memory.ending
         False -> Some(operation)
       }
+
       remembering(state, Memory(..spent, ending:))
     }
 
@@ -1099,7 +1109,7 @@ fn run_start(memory: Memory, operation: OpId) -> goalloop.Event {
   }
 }
 
-// The run-end drain, and the bound that keeps it from running away.
+/// The run-end drain, and the bound that keeps it from running away.
 fn drain_at_run_end(
   state: State,
   runtime: Runtime,
@@ -1146,13 +1156,13 @@ fn remembering(state: State, memory: Memory) -> State {
 
 // --- the two cells ---------------------------------------------------------
 
-// The durable pair, read once per actor lifetime. A guard cell that is
-// absent or will not decode yields the empty guard, and a cursor cell in
-// that state yields no cursor, which `recall` fills from the branch's
-// position at actor start: the advisor then reviews from now, which
-// loses at most the stretch nobody recorded a position for, and the
-// alternative — refusing to start a loop because a cell is corrupt —
-// costs the session its reviewer for good.
+/// costs the session its reviewer for good.
+/// alternative — refusing to start a loop because a cell is corrupt —
+/// loses at most the stretch nobody recorded a position for, and the
+/// position at actor start: the advisor then reviews from now, which
+/// that state yields no cursor, which `recall` fills from the branch's
+/// absent or will not decode yields the empty guard, and a cursor cell in
+/// The durable pair, read once per actor lifetime. A guard cell that is
 fn recall(state: State, runtime: Runtime) -> Memory {
   case state.recall {
     Read(memory:) -> memory
@@ -1173,6 +1183,7 @@ fn recall(state: State, runtime: Runtime) -> Memory {
   }
 }
 
+/// Documents `read_guard` contract and behavior.
 fn read_guard(state: State, runtime: Runtime) -> advisorguard.Guard {
   case read_cell(state, runtime, guard_key) {
     None -> advisorguard.new()
@@ -1191,11 +1202,12 @@ fn read_guard(state: State, runtime: Runtime) -> advisorguard.Guard {
   }
 }
 
-// The cursor is one integer, so its decoder is one `case` rather than a
-// module: anything that is not an integer was written by something that
-// does not own this cell, and reviewing from the position the actor
-// started at is the safe reading of that.
+/// started at is the safe reading of that.
+/// does not own this cell, and reviewing from the position the actor
+/// module: anything that is not an integer was written by something that
+/// The cursor is one integer, so its decoder is one `case` rather than a
 fn read_cursor(state: State, runtime: Runtime) -> Option(Seq) {
+  // Read saved cursor sequence number from storage.
   case read_cell(state, runtime, cursor_key) {
     Some(json.Int(seq)) -> Some(seq)
 
@@ -1210,7 +1222,9 @@ fn read_cursor(state: State, runtime: Runtime) -> Option(Seq) {
   }
 }
 
+/// Documents `read_cell` contract and behavior.
 fn read_cell(state: State, runtime: Runtime, key: String) -> Option(JsonValue) {
+  // Read raw fact payload for cell key.
   case api.fact(runtime, key) {
     Ok(payload) -> payload
 
@@ -1224,11 +1238,11 @@ fn read_cell(state: State, runtime: Runtime, key: String) -> Option(JsonValue) {
   }
 }
 
-// The goal cell, or no goal. Unreadable is the same as absent here — the
-// guard's decoder asymmetry, applied to a cell the loop must survive
-// finding unreadable: refusing to review over a corrupt goal cell would
-// cost the session its reviewer over bookkeeping nothing else depends on,
-// and the operator's `goal_set` rewrites the cell whole.
+/// and the operator's `goal_set` rewrites the cell whole.
+/// cost the session its reviewer over bookkeeping nothing else depends on,
+/// finding unreadable: refusing to review over a corrupt goal cell would
+/// guard's decoder asymmetry, applied to a cell the loop must survive
+/// The goal cell, or no goal. Unreadable is the same as absent here — the
 fn read_goal(state: State, runtime: Runtime) -> Option(goalstate.Goal) {
   case read_cell(state, runtime, goal_key) {
     None -> None
@@ -1247,18 +1261,18 @@ fn read_goal(state: State, runtime: Runtime) -> Option(goalstate.Goal) {
   }
 }
 
-// The goal cell is written before anything is sent or woken, the same
-// ordering `store_guard` takes: a crash between the write and the wake
-// costs one continuation, while the reverse ordering could wake a
-// primary toward a goal the cell no longer records.
-// Every transition stamps `updated_ms` from this session's clock, and the
-// cell's own decoder refuses a payload whose `updated_ms` precedes its
-// `created_ms`. A wall clock that steps backwards — an NTP correction, a
-// laptop resuming — would otherwise write a cell that no restart can read,
-// and an unreadable goal cell is no goal at all: the operator's pinned
-// objective would vanish because the host adjusted its clock. Clamping here
-// rather than at each of the eight transitions is what makes that
-// unrepresentable instead of remembered.
+/// unrepresentable instead of remembered.
+/// rather than at each of the eight transitions is what makes that
+/// objective would vanish because the host adjusted its clock. Clamping here
+/// and an unreadable goal cell is no goal at all: the operator's pinned
+/// laptop resuming — would otherwise write a cell that no restart can read,
+/// `created_ms`. A wall clock that steps backwards — an NTP correction, a
+/// cell's own decoder refuses a payload whose `updated_ms` precedes its
+/// Every transition stamps `updated_ms` from this session's clock, and the
+/// primary toward a goal the cell no longer records.
+/// costs one continuation, while the reverse ordering could wake a
+/// ordering `store_guard` takes: a crash between the write and the wake
+/// The goal cell is written before anything is sent or woken, the same
 fn store_goal(
   state: State,
   runtime: Runtime,
@@ -1275,9 +1289,9 @@ fn store_goal(
   only_while_checking(Memory(..memory, goal: Some(ordered)))
 }
 
-// A guard that would not commit is still the guard this actor acts on:
-// the cell exists so a restart inherits the cooldown, and losing that
-// costs one window rather than the loop.
+/// costs one window rather than the loop.
+/// the cell exists so a restart inherits the cooldown, and losing that
+/// A guard that would not commit is still the guard this actor acts on:
 fn store_guard(
   state: State,
   runtime: Runtime,
@@ -1288,6 +1302,7 @@ fn store_guard(
   Memory(..memory, guard:)
 }
 
+/// Documents `store_cursor` contract and behavior.
 fn store_cursor(
   state: State,
   runtime: Runtime,
@@ -1298,12 +1313,12 @@ fn store_cursor(
   Memory(..memory, cursor: Some(cursor))
 }
 
-// The write goes through the reserved door because the ordinary one
-// refuses this prefix. The reads above stay on the plain `fact`, which
-// never consulted the reservation and is how every other owner of a
-// reserved namespace reads its own cells back. The Ok arm is the publication
-// boundary: logging a refused write never invalidates a board as though the
-// new goal had become durable.
+/// new goal had become durable.
+/// boundary: logging a refused write never invalidates a board as though the
+/// reserved namespace reads its own cells back. The Ok arm is the publication
+/// never consulted the reservation and is how every other owner of a
+/// refuses this prefix. The reads above stay on the plain `fact`, which
+/// The write goes through the reserved door because the ordinary one
 fn write_cell(
   state: State,
   runtime: Runtime,
@@ -1321,10 +1336,10 @@ fn write_cell(
   }
 }
 
-// The reserved door's other half: clearing the goal retires the cell
-// rather than writing an empty one, so an absent cell is the one
-// durable representation of no goal and the codec never meets a
-// payload it would have to read as absence.
+/// payload it would have to read as absence.
+/// durable representation of no goal and the codec never meets a
+/// rather than writing an empty one, so an absent cell is the one
+/// The reserved door's other half: clearing the goal retires the cell
 fn delete_cell(state: State, runtime: Runtime, key: String) -> Nil {
   case api.delete_reserved_fact(runtime, key) {
     Ok(Nil) -> goal_written(runtime, key)
@@ -1337,10 +1352,10 @@ fn delete_cell(state: State, runtime: Runtime, key: String) -> Nil {
   }
 }
 
-// Publication follows the writer's successful reply, so a subscriber's read
-// cannot precede this write. Guard and cursor writes do not invalidate goals.
-// Outputs is the existing live delivery topic; the event deliberately carries
-// no goal data. Subscribers must ask the bounded reader for the current cell.
+/// no goal data. Subscribers must ask the bounded reader for the current cell.
+/// Outputs is the existing live delivery topic; the event deliberately carries
+/// cannot precede this write. Guard and cursor writes do not invalidate goals.
+/// Publication follows the writer's successful reply, so a subscriber's read
 fn goal_written(runtime: Runtime, key: String) -> Nil {
   case key == goal_key {
     False -> Nil
@@ -1355,6 +1370,7 @@ fn goal_written(runtime: Runtime, key: String) -> Nil {
 
 // --- the feed --------------------------------------------------------------
 
+/// Documents `feed` contract and behavior.
 fn feed(
   state: State,
   runtime: Runtime,
@@ -1402,25 +1418,25 @@ fn due(state: State, memory: Memory) -> Bool {
   && memory.stepped >= state.wiring.settings.feed_every_steps
 }
 
-// Whether this moment owes the advisor a feed.
-//
-// The occasions ask two different questions. The primary's own moments —
-// a finished run, and a step threshold inside an unfinished one — offer
-// whatever is past the cursor unless the advisor is busy. A review end
-// offers only a delta that a busy advisor caused to be skipped, because
-// the primary appends throughout its own run and an ungated catch-up
-// would review it one tool round trip at a time.
-//
-// That debt is also what makes the step threshold a floor rather than an
-// interval, and it is worth being plain about the cost. A primary working
-// continuously will trip the threshold while the advisor is still
-// reading, record a debt, and be fed again the moment that review ends —
-// so the loop settles at one review per review duration for as long as
-// the primary keeps working, rather than one per `feed_every_steps`.
-// That is the intent: it is what bounds how stale a verdict can be when
-// the reviewer is the slower model, which is the pairing this feature is
-// for. What it is not is free, and `docs/architecture/advisor.md` carries
-// the cost model an operator should read before lowering the threshold.
+/// the cost model an operator should read before lowering the threshold.
+/// for. What it is not is free, and `docs/architecture/advisor.md` carries
+/// the reviewer is the slower model, which is the pairing this feature is
+/// That is the intent: it is what bounds how stale a verdict can be when
+/// the primary keeps working, rather than one per `feed_every_steps`.
+/// so the loop settles at one review per review duration for as long as
+/// reading, record a debt, and be fed again the moment that review ends —
+/// continuously will trip the threshold while the advisor is still
+/// interval, and it is worth being plain about the cost. A primary working
+/// That debt is also what makes the step threshold a floor rather than an
+///
+/// would review it one tool round trip at a time.
+/// the primary appends throughout its own run and an ungated catch-up
+/// offers only a delta that a busy advisor caused to be skipped, because
+/// whatever is past the cursor unless the advisor is busy. A review end
+/// a finished run, and a step threshold inside an unfinished one — offer
+/// The occasions ask two different questions. The primary's own moments —
+///
+/// Whether this moment owes the advisor a feed.
 fn owing(opened: Session, memory: Memory, occasion: Occasion) -> Owing {
   case occasion {
     PrimaryFinished | StepsElapsed ->
@@ -1437,8 +1453,8 @@ fn owing(opened: Session, memory: Memory, occasion: Occasion) -> Owing {
   }
 }
 
-// Every step that answers "nothing to review" answers `Error(Nil)`, and
-// the cursor then stays where it was: a feed is skipped, never faked.
+/// the cursor then stays where it was: a feed is skipped, never faked.
+/// Every step that answers "nothing to review" answers `Error(Nil)`, and
 fn attempt_feed(
   state: State,
   runtime: Runtime,
@@ -1450,6 +1466,7 @@ fn attempt_feed(
   let entries = new_entries(state.wiring.session, leaf, memory.cursor)
   use newest <- result.try(newest_seq(entries))
 
+  // State what the branch decides before dispatching.
   case advisorslice.render(entries, advisorslice.default_bounds) {
     // The scan found entries and none of them render — a stretch of
     // custom rows on their own. The cursor still advances, or the same
@@ -1462,6 +1479,7 @@ fn attempt_feed(
   }
 }
 
+/// Documents `deliver_feed` contract and behavior.
 fn deliver_feed(
   state: State,
   runtime: Runtime,
@@ -1481,8 +1499,10 @@ fn deliver_feed(
     Some(_open) -> advisorslice.RunOpen(steps: stepped)
     None -> advisorslice.RunEnded
   }
+
   let framed = advisorslice.feed_message(slice, now(state.wiring), moment)
 
+  // State what the branch decides before dispatching.
   case api.send_to_strand(runtime, to: strand, message: framed) {
     Ok(_delivery) -> {
       log.debug(state.wiring.logger, "advisor.fed", [
@@ -1541,13 +1561,13 @@ fn goal_replaces_review(memory: Memory) -> Bool {
   }
 }
 
-// The operation a strand currently has open, if the store will say. An
-// unreadable cell answers `None`, which both callers want and for
-// related reasons: the busy check then costs one redundant feed rather
-// than a review nobody asked for, and the feed's own moment label falls
-// back to the quieter claim — a slice described as mid-run when it is
-// not would invite a reviewer to withhold a verdict the primary could
-// still have acted on.
+/// still have acted on.
+/// not would invite a reviewer to withhold a verdict the primary could
+/// back to the quieter claim — a slice described as mid-run when it is
+/// than a review nobody asked for, and the feed's own moment label falls
+/// related reasons: the busy check then costs one redundant feed rather
+/// unreadable cell answers `None`, which both callers want and for
+/// The operation a strand currently has open, if the store will say. An
 fn running(opened: Session, name: String) -> Option(OpId) {
   case session.strand_state(opened, name) {
     Ok(Some(session.Cell(value: current, ..))) -> current.current_operation
@@ -1565,9 +1585,9 @@ fn moment_name(moment: advisorslice.Moment) -> String {
   }
 }
 
-// The newest seq under the primary's leaf, or nothing when the primary
-// has no leaf yet. Read straight from the store for the same reason the
-// scan is: this runs on the actor's process at start, never on a driver.
+/// scan is: this runs on the actor's process at start, never on a driver.
+/// has no leaf yet. Read straight from the store for the same reason the
+/// The newest seq under the primary's leaf, or nothing when the primary
 fn present_seq(opened: Session) -> Option(Seq) {
   use leaf <- option.then(option.from_result(primary_leaf(opened)))
   storage.branch_scan(from: leaf)
@@ -1580,6 +1600,7 @@ fn present_seq(opened: Session) -> Option(Seq) {
   |> option.map(fn(newest: Entry) { newest.seq })
 }
 
+/// Documents `primary_leaf` contract and behavior.
 fn primary_leaf(opened: Session) -> Result(EntryId, Nil) {
   case session.strand_leaf(opened, primary) {
     Ok(Some(session.Cell(value: leaf, ..))) -> option.to_result(leaf, Nil)
@@ -1589,11 +1610,11 @@ fn primary_leaf(opened: Session) -> Result(EntryId, Nil) {
   }
 }
 
-// The entries appended to the primary's branch since the cursor, oldest
-// first and every kind included — a compaction is exactly the event a
-// reviewer should see. Read straight from the store rather than through
-// the writer: this runs on the actor's own process, and a settlement
-// must never queue behind a review.
+/// must never queue behind a review.
+/// the writer: this runs on the actor's own process, and a settlement
+/// reviewer should see. Read straight from the store rather than through
+/// first and every kind included — a compaction is exactly the event a
+/// The entries appended to the primary's branch since the cursor, oldest
 fn new_entries(
   opened: Session,
   leaf: EntryId,
@@ -1607,6 +1628,7 @@ fn new_entries(
   |> result.unwrap([])
 }
 
+/// Documents `from_cursor` contract and behavior.
 fn from_cursor(
   q: storage.BranchScan,
   after: Option(Seq),
@@ -1627,6 +1649,7 @@ fn newest_seq(entries: List(Entry)) -> Result(Seq, Nil) {
 
 // --- judging a verdict -----------------------------------------------------
 
+/// Documents `judge` contract and behavior.
 fn judge(
   state: State,
   runtime: Runtime,
@@ -1684,17 +1707,17 @@ fn judge(
   }
 }
 
-// Whether a goal feed is open and *this* run owes its verdict, read from
-// the durable phase rather than from the actor's heap. That is the whole of
-// the difference a restart sees: an actor that has just replaced a dead one
-// knows a verdict is owed, so the reviewer's answer is acted on instead of
-// being refused as answering no open feed.
-//
-// The phase alone is not the question. `AwaitingVerdict` names the advisor
-// run the feed opened, and a `continue` arriving from any *other* advisor
-// run is an ordinary review reaching for the goal words — it would wake the
-// primary toward an objective it was never shown. So the run asking must be
-// the run that owes, which is what the recorded operation is for.
+/// the run that owes, which is what the recorded operation is for.
+/// primary toward an objective it was never shown. So the run asking must be
+/// run is an ordinary review reaching for the goal words — it would wake the
+/// run the feed opened, and a `continue` arriving from any *other* advisor
+/// The phase alone is not the question. `AwaitingVerdict` names the advisor
+///
+/// being refused as answering no open feed.
+/// knows a verdict is owed, so the reviewer's answer is acted on instead of
+/// the difference a restart sees: an actor that has just replaced a dead one
+/// the durable phase rather than from the actor's heap. That is the whole of
+/// Whether a goal feed is open and *this* run owes its verdict, read from
 fn goal_feed_open(state: State, memory: Memory) -> Bool {
   case memory.goal {
     Some(goalstate.Goal(phase: goalstate.AwaitingVerdict(feed:), ..)) ->
@@ -1706,15 +1729,15 @@ fn goal_feed_open(state: State, memory: Memory) -> Bool {
 
 // --- the goal loop ---------------------------------------------------------
 
-// One evaluation of the goal's level: gather what the session is doing,
-// ask the pure loop what should happen, perform it, store the result.
-//
-// This is the whole of the actor's goal logic, and its shape is the
-// rework's point. The actor decides nothing — `client/goalloop` owns
-// every transition, so the state space is property-testable without
-// spawning a process — and the actor performs everything, because
-// sending a frame and opening a run are effects a pure function must not
-// have.
+/// have.
+/// sending a frame and opening a run are effects a pure function must not
+/// spawning a process — and the actor performs everything, because
+/// every transition, so the state space is property-testable without
+/// rework's point. The actor decides nothing — `client/goalloop` owns
+/// This is the whole of the actor's goal logic, and its shape is the
+///
+/// ask the pure loop what should happen, perform it, store the result.
+/// One evaluation of the goal's level: gather what the session is doing,
 fn evaluate(
   state: State,
   runtime: Runtime,
@@ -1740,10 +1763,10 @@ fn evaluate(
   }
 }
 
-// The cell is written only when the goal actually moved. A level read
-// that finds nothing to do is the common case — every tick on a session
-// whose primary is working — and committing an unchanged record there
-// would be a durable write per tick per session for no change.
+/// would be a durable write per tick per session for no change.
+/// whose primary is working — and committing an unchanged record there
+/// that finds nothing to do is the common case — every tick on a session
+/// The cell is written only when the goal actually moved. A level read
 fn stored_if_moved(
   state: State,
   runtime: Runtime,
@@ -1757,24 +1780,24 @@ fn stored_if_moved(
   }
 }
 
-// The facts one evaluation reads, with the one-commit lag disbelieved
-// for the runs this actor has been told ended.
-//
-// The driver resolves a run-end hook before the settlement that clears
-// `current_operation`, so for one commit the store still shows a
-// finished run as open. A level read that believed the cell would never
-// see the primary idle at the only moment a goal feed exists to be sent,
-// so the operation the occasion names is disbelieved here — and nothing
-// else is, because any other open run means the strand is genuinely
-// busy.
-//
-// The advisor's last ended review is disbelieved too, on every occasion
-// rather than only the one that announced it. The end notice is a single
-// cast, and an evaluation that comes after it inside the same commit — a
-// goal pinned onto the idle session, a check result that releases the feed —
-// would otherwise find the cell still busy and rest until the periodic tick,
-// because nothing announces that end again. An operation id is never reused,
-// so remembering one that ended cannot hide a later review.
+/// so remembering one that ended cannot hide a later review.
+/// because nothing announces that end again. An operation id is never reused,
+/// would otherwise find the cell still busy and rest until the periodic tick,
+/// goal pinned onto the idle session, a check result that releases the feed —
+/// cast, and an evaluation that comes after it inside the same commit — a
+/// rather than only the one that announced it. The end notice is a single
+/// The advisor's last ended review is disbelieved too, on every occasion
+///
+/// busy.
+/// else is, because any other open run means the strand is genuinely
+/// so the operation the occasion names is disbelieved here — and nothing
+/// see the primary idle at the only moment a goal feed exists to be sent,
+/// finished run as open. A level read that believed the cell would never
+/// `current_operation`, so for one commit the store still shows a
+/// The driver resolves a run-end hook before the settlement that clears
+///
+/// for the runs this actor has been told ended.
+/// The facts one evaluation reads, with the one-commit lag disbelieved
 fn observe(
   state: State,
   memory: Memory,
@@ -1797,16 +1820,16 @@ fn observe(
   )
 }
 
-// Whether the stretch the loop's own wake started did any work.
-//
-// Two things are decided here and both were findings. The stretch is
-// measured from the seq the wake recorded rather than from the feed cursor,
-// because an ordinary mid-run review advances the cursor: a woken run whose
-// last step tripped `feed_every_steps` was then judged over whatever came
-// after that review, which for a run that was about to stop is nothing, and
-// two of those paused a goal that was working. And the question is asked
-// only in the phase that has a stretch to judge, so a paused, limited or
-// complete goal pays no branch scan for an answer nothing reads.
+/// complete goal pays no branch scan for an answer nothing reads.
+/// only in the phase that has a stretch to judge, so a paused, limited or
+/// two of those paused a goal that was working. And the question is asked
+/// after that review, which for a run that was about to stop is nothing, and
+/// last step tripped `feed_every_steps` was then judged over whatever came
+/// because an ordinary mid-run review advances the cursor: a woken run whose
+/// measured from the seq the wake recorded rather than from the feed cursor,
+/// Two things are decided here and both were findings. The stretch is
+///
+/// Whether the stretch the loop's own wake started did any work.
 fn measured(state: State, memory: Memory) -> goalloop.Progress {
   case memory.goal {
     Some(goalstate.Goal(phase: goalstate.Continuing(since_seq:, ..), ..)) ->
@@ -1819,21 +1842,21 @@ fn measured(state: State, memory: Memory) -> goalloop.Progress {
   }
 }
 
-// How the run the phase names ended, read from the durable record the
-// terminal transaction writes.
-//
-// The abort notice is a cast, and a cast is dropped when the actor is
-// absent — a supervisor restart between the operator's Ctrl-C and the run's
-// finish loses it. The level read then finds a `Continuing` phase whose run
-// is gone and, without this, calls it a finished stretch and wakes the
-// primary again: the operator's abort answered with a continuation inside
-// the tick's interval. The result is written atomically with the settlement
-// that clears `current_operation`, so at the moment the store stops showing
-// the run open its outcome is already there to read.
-//
-// A phase naming no run answers `RanItsCourse` without a read. Nothing
-// consults the value in those phases, and the store call is not worth
-// making to say so.
+/// making to say so.
+/// consults the value in those phases, and the store call is not worth
+/// A phase naming no run answers `RanItsCourse` without a read. Nothing
+///
+/// the run open its outcome is already there to read.
+/// that clears `current_operation`, so at the moment the store stops showing
+/// the tick's interval. The result is written atomically with the settlement
+/// primary again: the operator's abort answered with a continuation inside
+/// is gone and, without this, calls it a finished stretch and wakes the
+/// finish loses it. The level read then finds a `Continuing` phase whose run
+/// absent — a supervisor restart between the operator's Ctrl-C and the run's
+/// The abort notice is a cast, and a cast is dropped when the actor is
+///
+/// terminal transaction writes.
+/// How the run the phase names ended, read from the durable record the
 fn woken_ending(state: State, memory: Memory) -> goalloop.Ending {
   case memory.goal {
     Some(goalstate.Goal(phase: goalstate.Continuing(woken:, ..), ..)) ->
@@ -1846,14 +1869,15 @@ fn woken_ending(state: State, memory: Memory) -> goalloop.Ending {
   }
 }
 
-// Whether one operation's durable terminal record says the operator
-// aborted it. An absent or undecodable record answers `False`: a run whose
-// outcome cannot be read is a run this loop treats as having ended on its
-// own, which costs one continuation rather than a goal stuck paused on a
-// record nobody can parse.
+/// record nobody can parse.
+/// own, which costs one continuation rather than a goal stuck paused on a
+/// outcome cannot be read is a run this loop treats as having ended on its
+/// aborted it. An absent or undecodable record answers `False`: a run whose
+/// Whether one operation's durable terminal record says the operator
 fn aborted_run(state: State, operation: OpId) -> Bool {
   let key = operation_mod.result_fact_key(operation)
 
+  // State what the branch decides before dispatching.
   case
     storage.get_register(state.wiring.session.store, register.FactCustom, key)
   {
@@ -1869,7 +1893,7 @@ fn aborted_run(state: State, operation: OpId) -> Bool {
   }
 }
 
-// Which run, if any, this occasion reports as finished.
+/// Which run, if any, this occasion reports as finished.
 fn ending(event: goalloop.Event) -> Option(OpId) {
   case event {
     goalloop.PrimaryEnded(operation:) | goalloop.AdvisorEnded(operation:) ->
@@ -1883,6 +1907,7 @@ fn ending(event: goalloop.Event) -> Option(OpId) {
   }
 }
 
+/// Documents `open_run` contract and behavior.
 fn open_run(opened: Session, name: String, ended: List(OpId)) -> Option(OpId) {
   case running(opened, name) {
     None -> None
@@ -1934,6 +1959,7 @@ type Performed {
   GoalRefused(reason: String)
 }
 
+/// Documents `perform` contract and behavior.
 fn perform(
   state: State,
   runtime: Runtime,
@@ -1955,41 +1981,41 @@ fn perform(
   }
 }
 
-// The operator's check, started off this actor's process and never on it.
-//
-// The actor must not block for a moment longer than `pending_timeout_ms`:
-// it answers the nudge drains on the strand driver's critical path, and the
-// broker's clearance is synchronous in the calling process by design — a
-// broker that parked on checkout would deadlock, so the wait for a pool slot
-// happens in the borrower. So the borrower is a weft task, which is also
-// what makes the three failure modes cost nothing new. The scope is linked
-// to this actor, so an actor that dies takes an in-flight check with it; the
-// backstop kills and joins the worker, so a command that ignores its own
-// wall is still reaped; and the durable `Checking` deadline the phase
-// carries is what a replacement actor reads, so a result that never arrives
-// is repaired by the next evaluation rather than waited for.
-//
-// The backstop is the wall plus room to settle, never the wall itself. Both
-// clocks start here and the task's starts first, so a backstop equal to the
-// wall always killed the worker before the sandbox's own timed-out
-// settlement could arrive — the result carrying the tail of the build that
-// was killed, which is the part that says why, was unreachable, and the feed
-// waited for the next tick instead of going out with it.
-//
-// The handle is kept, because the slot it holds is not the jail's to give
-// back. Every check clears under the one attribution-only operation and the
-// `goal-check` step, and that ledger's `max_outstanding` is one, so a check
-// nobody wants any more still occupies the pair until it settles. Cancelling
-// the witnessed run kills the task, and the task's death is what the broker
-// relay's caller-watch is for: it cancels the execution, drains to the helper's
-// terminal event and settles, which returns the helper and the budget slot
-// (`packages/broker/src/broker/broker.gleam`, the `CallerGone` arm of `relay`).
-//
-// That drain is asynchronous to the cancel, so the replacement this actor
-// starts a moment later can still find the slot taken. The runner waits the
-// window out rather than reporting the refusal — `goalcheck.slot_wait_ms` — so
-// the reviewer reads the command's real exit status instead of being shown
-// evidence the harness had merely not waited for.
+/// evidence the harness had merely not waited for.
+/// the reviewer reads the command's real exit status instead of being shown
+/// window out rather than reporting the refusal — `goalcheck.slot_wait_ms` — so
+/// starts a moment later can still find the slot taken. The runner waits the
+/// That drain is asynchronous to the cancel, so the replacement this actor
+///
+/// (`packages/broker/src/broker/broker.gleam`, the `CallerGone` arm of `relay`).
+/// terminal event and settles, which returns the helper and the budget slot
+/// relay's caller-watch is for: it cancels the execution, drains to the helper's
+/// the witnessed run kills the task, and the task's death is what the broker
+/// nobody wants any more still occupies the pair until it settles. Cancelling
+/// `goal-check` step, and that ledger's `max_outstanding` is one, so a check
+/// back. Every check clears under the one attribution-only operation and the
+/// The handle is kept, because the slot it holds is not the jail's to give
+///
+/// waited for the next tick instead of going out with it.
+/// was killed, which is the part that says why, was unreachable, and the feed
+/// settlement could arrive — the result carrying the tail of the build that
+/// wall always killed the worker before the sandbox's own timed-out
+/// clocks start here and the task's starts first, so a backstop equal to the
+/// The backstop is the wall plus room to settle, never the wall itself. Both
+///
+/// is repaired by the next evaluation rather than waited for.
+/// carries is what a replacement actor reads, so a result that never arrives
+/// wall is still reaped; and the durable `Checking` deadline the phase
+/// backstop kills and joins the worker, so a command that ignores its own
+/// to this actor, so an actor that dies takes an in-flight check with it; the
+/// what makes the three failure modes cost nothing new. The scope is linked
+/// happens in the borrower. So the borrower is a weft task, which is also
+/// broker that parked on checkout would deadlock, so the wait for a pool slot
+/// broker's clearance is synchronous in the calling process by design — a
+/// it answers the nudge drains on the strand driver's critical path, and the
+/// The actor must not block for a moment longer than `pending_timeout_ms`:
+///
+/// The operator's check, started off this actor's process and never on it.
 fn run_check(
   state: State,
   memory: Memory,
@@ -2022,16 +2048,16 @@ fn run_check(
   #(GoalChecking, Memory(..without_check(memory), checking: Some(witnessed)))
 }
 
-// The check in flight, dropped unless the goal is still in the phase it was
-// started for.
-//
-// One rule covers every way a check is abandoned — the operator cleared the
-// goal, paused it, replaced the command, the primary went back to work, the
-// deadline passed — because all of them are the same fact about the cell:
-// the phase is no longer `Checking`. It is applied where the goal cache is
-// written rather than at each of those doors, which is what keeps the
-// at-most-one-outstanding invariant out of reach of a door somebody adds
-// later.
+/// later.
+/// at-most-one-outstanding invariant out of reach of a door somebody adds
+/// written rather than at each of those doors, which is what keeps the
+/// the phase is no longer `Checking`. It is applied where the goal cache is
+/// deadline passed — because all of them are the same fact about the cell:
+/// goal, paused it, replaced the command, the primary went back to work, the
+/// One rule covers every way a check is abandoned — the operator cleared the
+///
+/// started for.
+/// The check in flight, dropped unless the goal is still in the phase it was
 fn only_while_checking(memory: Memory) -> Memory {
   case memory.goal {
     Some(goalstate.Goal(phase: goalstate.Checking(..), ..)) -> memory
@@ -2040,12 +2066,13 @@ fn only_while_checking(memory: Memory) -> Memory {
   }
 }
 
-// Cancels the check the memory remembers and forgets it.
-//
-// Unconditional on whether the run is still alive: `cancel_witnessed` is
-// idempotent and harmless once the scope has exited, so a handle for a check
-// that already reported needs no test of its own.
+/// that already reported needs no test of its own.
+/// idempotent and harmless once the scope has exited, so a handle for a check
+/// Unconditional on whether the run is still alive: `cancel_witnessed` is
+///
+/// Cancels the check the memory remembers and forgets it.
 fn without_check(memory: Memory) -> Memory {
+  // Clear any active check verification state.
   case memory.checking {
     None -> memory
 
@@ -2056,11 +2083,11 @@ fn without_check(memory: Memory) -> Memory {
   }
 }
 
-// The deadline the phase this action came with carries. `next_action` moves
-// the phase to `Checking` in the same step as it asks for the check, so the
-// other arms are unreachable; zero is the value that makes an unreachable
-// one harmless, because a result reported against it matches no phase and a
-// phase carrying it is abandoned at the next evaluation.
+/// phase carrying it is abandoned at the next evaluation.
+/// one harmless, because a result reported against it matches no phase and a
+/// other arms are unreachable; zero is the value that makes an unreachable
+/// the phase to `Checking` in the same step as it asks for the check, so the
+/// The deadline the phase this action came with carries. `next_action` moves
 fn checking_deadline(goal: goalstate.Goal) -> Int {
   case goal.phase {
     goalstate.Checking(deadline_ms:) -> deadline_ms
@@ -2072,15 +2099,15 @@ fn checking_deadline(goal: goalstate.Goal) -> Int {
   }
 }
 
-// The goal feed: the stretch since the cursor inside the frame that
-// names the objective and the budget (protocol 044 §3).
-//
-// The slice is optional and a feed with no new entries still goes out.
-// That is the resume path: an idle primary whose last stretch was
-// already reviewed has nothing new on its branch, and the earlier draft
-// returned without sending there — so `/goal resume` flipped the status
-// to active and started nothing, which is the same silent stall read
-// from a third direction.
+/// from a third direction.
+/// to active and started nothing, which is the same silent stall read
+/// returned without sending there — so `/goal resume` flipped the status
+/// already reviewed has nothing new on its branch, and the earlier draft
+/// That is the resume path: an idle primary whose last stretch was
+/// The slice is optional and a feed with no new entries still goes out.
+///
+/// names the objective and the budget (protocol 044 §3).
+/// The goal feed: the stretch since the cursor inside the frame that
 fn feed_goal(
   state: State,
   runtime: Runtime,
@@ -2095,6 +2122,7 @@ fn feed_goal(
       now(state.wiring),
     )
 
+  // State what the branch decides before dispatching.
   case api.send_to_strand(runtime, to: strand, message: frame) {
     Error(error) -> {
       log.warn(state.wiring.logger, "advisor.goal_feed_failed", [
@@ -2122,9 +2150,9 @@ fn feed_goal(
   }
 }
 
-// The cursor advances only when a slice went out, and the phase records
-// which review owes the verdict. Both writes happen after the send,
-// because both describe what the send did.
+/// because both describe what the send did.
+/// which review owes the verdict. Both writes happen after the send,
+/// The cursor advances only when a slice went out, and the phase records
 fn fed(
   state: State,
   runtime: Runtime,
@@ -2144,6 +2172,7 @@ fn fed(
     None -> memory
   }
 
+  // State what the branch decides before dispatching.
   case owing_review(state, delivery) {
     Some(feed) -> #(
       GoalReached(how: "offered the session's goal to the reviewer"),
@@ -2183,12 +2212,12 @@ fn slice_size(shown: Option(#(advisorslice.Slice, Seq))) -> Int {
   }
 }
 
-// The goal continuation's own door onto the primary — not the nudge wake
-// door, whose turn gate and queue drain are both wrong for a
-// continuation (protocol 044 §4). No turn gate and no `take_pending`, so
-// the nudge channel keeps its one wake per operator turn through an
-// arbitrarily long goal loop; the loop is closed by its own bounds
-// instead.
+/// instead.
+/// arbitrarily long goal loop; the loop is closed by its own bounds
+/// the nudge channel keeps its one wake per operator turn through an
+/// continuation (protocol 044 §4). No turn gate and no `take_pending`, so
+/// door, whose turn gate and queue drain are both wrong for a
+/// The goal continuation's own door onto the primary — not the nudge wake
 fn wake_for_goal(
   state: State,
   runtime: Runtime,
@@ -2199,6 +2228,7 @@ fn wake_for_goal(
   let frame =
     advisorslice.continuation_message(goal, remaining, now(state.wiring))
 
+  // State what the branch decides before dispatching.
   case send_advice(state, runtime, frame) {
     Ok(api.Started(operation:)) ->
       woken_for_goal(state, runtime, memory, goal, operation)
@@ -2216,11 +2246,11 @@ fn wake_for_goal(
   }
 }
 
-// The woken run recorded twice, in the two places that read it for
-// different questions: the durable phase, which the abort notice and the
-// zero-progress measurement key on, and the heap `woke`, which keeps the
-// nudge channel from reading this actor's own wake as the operator
-// arriving with fresh work.
+/// arriving with fresh work.
+/// nudge channel from reading this actor's own wake as the operator
+/// zero-progress measurement key on, and the heap `woke`, which keeps the
+/// different questions: the durable phase, which the abort notice and the
+/// The woken run recorded twice, in the two places that read it for
 fn woken_for_goal(
   state: State,
   runtime: Runtime,
@@ -2250,16 +2280,16 @@ fn woken_for_goal(
   )
 }
 
-// The one-shot wrap-up a tripped bound sends, worded for the bound that
-// tripped. It rides the block door — steer a working primary, wake an
-// idle one — because a bound reached is exactly a "stop soon".
-//
-// One-shot without a guard: the goal this action comes with is already
-// `Limited`, and a `Limited` goal rests, so no later evaluation can
-// reach this action again until the operator resumes. The earlier draft
-// leaned on the guard's duplicate ring for the same property and told
-// the primary its token budget was exhausted whichever bound had
-// tripped.
+/// tripped.
+/// the primary its token budget was exhausted whichever bound had
+/// leaned on the guard's duplicate ring for the same property and told
+/// reach this action again until the operator resumes. The earlier draft
+/// `Limited`, and a `Limited` goal rests, so no later evaluation can
+/// One-shot without a guard: the goal this action comes with is already
+///
+/// idle one — because a bound reached is exactly a "stop soon".
+/// tripped. It rides the block door — steer a working primary, wake an
+/// The one-shot wrap-up a tripped bound sends, worded for the bound that
 fn wrap_up(
   state: State,
   runtime: Runtime,
@@ -2270,6 +2300,7 @@ fn wrap_up(
   let because = goalloop.stopped_because(goal.status)
   let sent = emit(state, runtime, text)
 
+  // State what the branch decides before dispatching.
   case sent {
     Ok(_delivered) -> Nil
 
@@ -2291,9 +2322,9 @@ fn wrap_up(
   )
 }
 
-// What a performed action is worth saying about on an occasion nobody is
-// waiting on. A verdict's own caller reads the same value as an
-// acknowledgement instead; see `verdict_ack`.
+/// acknowledgement instead; see `verdict_ack`.
+/// waiting on. A verdict's own caller reads the same value as an
+/// What a performed action is worth saying about on an occasion nobody is
 fn report(state: State, performed: Performed) -> Nil {
   case performed {
     GoalQuiet | GoalReached(..) | GoalChecking -> Nil
@@ -2312,9 +2343,9 @@ fn report(state: State, performed: Performed) -> Nil {
 
 // --- answering a goal feed -------------------------------------------------
 
-// A goal word from the reviewer. It is the same evaluation every other
-// occasion makes, with the answer as the event, and the reviewer reads
-// what the action did as its acknowledgement.
+/// what the action did as its acknowledgement.
+/// occasion makes, with the answer as the event, and the reviewer reads
+/// A goal word from the reviewer. It is the same evaluation every other
 fn goal_word(
   state: State,
   runtime: Runtime,
@@ -2333,6 +2364,7 @@ fn goal_word(
     remembering(state, memory)
   })
 
+  // State what the branch decides before dispatching.
   case memory.goal {
     // Unreachable while `goal_feed_open` is the guard above: a phase
     // cannot be `AwaitingVerdict` without a goal to carry it. The arm
@@ -2349,6 +2381,7 @@ fn goal_word(
   }
 }
 
+/// Documents `answered` contract and behavior.
 fn answered(
   state: State,
   runtime: Runtime,
@@ -2370,7 +2403,7 @@ fn answered(
   remembering(state, memory)
 }
 
-// What the reviewer is told its verdict did.
+/// What the reviewer is told its verdict did.
 fn verdict_ack(
   performed: Performed,
   goal: goalstate.Goal,
@@ -2406,26 +2439,26 @@ fn verdict_ack(
 
 // --- accounting -----------------------------------------------------------
 
-// Whether this goal's spend is accounted at all.
-//
-// Only a running goal's is. A stopped goal runs nothing, so every usage row
-// the session commits while it is held belongs to whatever the operator is
-// doing instead — and accounting it anyway cost a ledger scan and a durable
-// cell write per row for a loop that was not running, which on a paused goal
-// is every row of every turn the operator types.
-//
-// What that gives up is stated rather than hidden: **spend while the goal is
-// stopped is not charged to it** (protocol 044 §5, amended). A resume
-// accounts from where the ledger stands when the loop starts again, because
-// the cursor stays where the last accounted row left it and the scan
-// afterwards begins there — so the gap is not double-counted either.
-//
-// The loop is not quite silent while stopped, and the exclusion is one run
-// wide rather than none. A woken run can straddle the pause that stops it, and
-// the wrap-up a tripped bound sends is opened after the status has already
-// moved, so spend from at most one harness-opened run goes uncharged. Against
-// a bound the budget reads as a floor that is one run of headroom, which is
-// what a durable write per row on every stopped goal was buying.
+/// what a durable write per row on every stopped goal was buying.
+/// a bound the budget reads as a floor that is one run of headroom, which is
+/// moved, so spend from at most one harness-opened run goes uncharged. Against
+/// the wrap-up a tripped bound sends is opened after the status has already
+/// wide rather than none. A woken run can straddle the pause that stops it, and
+/// The loop is not quite silent while stopped, and the exclusion is one run
+///
+/// afterwards begins there — so the gap is not double-counted either.
+/// the cursor stays where the last accounted row left it and the scan
+/// accounts from where the ledger stands when the loop starts again, because
+/// stopped is not charged to it** (protocol 044 §5, amended). A resume
+/// What that gives up is stated rather than hidden: **spend while the goal is
+///
+/// is every row of every turn the operator types.
+/// cell write per row for a loop that was not running, which on a paused goal
+/// doing instead — and accounting it anyway cost a ledger scan and a durable
+/// the session commits while it is held belongs to whatever the operator is
+/// Only a running goal's is. A stopped goal runs nothing, so every usage row
+///
+/// Whether this goal's spend is accounted at all.
 fn accounted(
   state: State,
   runtime: Runtime,
@@ -2438,32 +2471,32 @@ fn accounted(
   }
 }
 
-// The one code path that adds to the goal's token total.
-//
-// There used to be two, and both were wrong. One added on the arrival of
-// a cast and moved `accounted_through_seq` to that cast's row, so a lost
-// cast for an earlier seq was skipped forever — the permanent undercount
-// the design says cannot happen. The other filtered the ledger with a
-// predicate that was always true, so the reviewer's own spend, which
-// lands after the primary's last row on every cycle, was charged to the
-// primary's budget.
-//
-// Now the ledger is the only adder. Rows past the cursor are attributed
-// the way the gateway attributes them: the row names an entry, and the
-// entry is the primary's when it is on the primary's branch. The branch
-// scan is bounded by the accounting window rather than by a row cap,
-// because a capped set is a *prefix* of the chain and would drop the
-// primary's older rows as foreign — the failure a truncated set produces
-// once membership is actually tested.
-//
-// Two under-counts are stated rather than guessed at. A row whose
-// `entry_id` is `None` — a structural summary's own spend — is not
-// counted, because which strand a compaction belonged to is a guess. And
-// a row whose entry was committed at or below the cursor is not counted:
-// entries and usage rows share one session-wide seq counter and a row is
-// written in the same transaction as its entry, so this needs two
-// strands committing across one another, and the loss is one row of a
-// budget the bound reads as a floor.
+/// budget the bound reads as a floor.
+/// strands committing across one another, and the loss is one row of a
+/// written in the same transaction as its entry, so this needs two
+/// entries and usage rows share one session-wide seq counter and a row is
+/// a row whose entry was committed at or below the cursor is not counted:
+/// counted, because which strand a compaction belonged to is a guess. And
+/// `entry_id` is `None` — a structural summary's own spend — is not
+/// Two under-counts are stated rather than guessed at. A row whose
+///
+/// once membership is actually tested.
+/// primary's older rows as foreign — the failure a truncated set produces
+/// because a capped set is a *prefix* of the chain and would drop the
+/// scan is bounded by the accounting window rather than by a row cap,
+/// entry is the primary's when it is on the primary's branch. The branch
+/// the way the gateway attributes them: the row names an entry, and the
+/// Now the ledger is the only adder. Rows past the cursor are attributed
+///
+/// primary's budget.
+/// lands after the primary's last row on every cycle, was charged to the
+/// predicate that was always true, so the reviewer's own spend, which
+/// the design says cannot happen. The other filtered the ledger with a
+/// cast for an earlier seq was skipped forever — the permanent undercount
+/// a cast and moved `accounted_through_seq` to that cast's row, so a lost
+/// There used to be two, and both were wrong. One added on the arrival of
+///
+/// The one code path that adds to the goal's token total.
 fn account_recompute(
   state: State,
   runtime: Runtime,
@@ -2474,6 +2507,7 @@ fn account_recompute(
     storage.usage_scan()
     |> storage.usage_seq_range(Some(goal.accounted_through_seq + 1), None)
 
+  // State what the branch decides before dispatching.
   case storage.scan_usage(store, window) {
     // A ledger that will not answer leaves the cursor where it is, so
     // the next evaluation asks for the same window again.
@@ -2489,21 +2523,21 @@ fn account_recompute(
   }
 }
 
-// Where the ledger stands right now: the newest usage row's seq, or zero
-// on a session that has committed none.
-//
-// One row, newest first, rather than a count or a sum. It is the cursor a
-// fresh goal starts from, so what it has to be right about is only "no row
-// at or below this is the goal's" — an unreadable ledger answers zero and
-// costs the first evaluation an over-count it can never repeat, because the
-// cursor moves past every row it examines.
-//
-// The same number also bounds the branch scan `primary_entries` makes, which
-// is what makes a row's *entry* have to sit above the cursor too. That holds
-// because the ledger writes a row in the same transaction as the entry it
-// names, so the two seqs are adjacent; a row naming an entry from before the
-// pin is not a shape the store produces, and if one ever were, it would go
-// uncounted rather than miscounted.
+/// uncounted rather than miscounted.
+/// pin is not a shape the store produces, and if one ever were, it would go
+/// names, so the two seqs are adjacent; a row naming an entry from before the
+/// because the ledger writes a row in the same transaction as the entry it
+/// is what makes a row's *entry* have to sit above the cursor too. That holds
+/// The same number also bounds the branch scan `primary_entries` makes, which
+///
+/// cursor moves past every row it examines.
+/// costs the first evaluation an over-count it can never repeat, because the
+/// at or below this is the goal's" — an unreadable ledger answers zero and
+/// fresh goal starts from, so what it has to be right about is only "no row
+/// One row, newest first, rather than a count or a sum. It is the cursor a
+///
+/// on a session that has committed none.
+/// Where the ledger stands right now: the newest usage row's seq, or zero
 fn newest_usage_seq(state: State) -> Int {
   storage.usage_scan()
   |> storage.usage_order(storage.NewestFirst)
@@ -2520,7 +2554,7 @@ fn newest_row_seq(rows: List(entry.UsageRow)) -> Int {
   }
 }
 
-// The primary's own entry ids inside the accounting window.
+/// The primary's own entry ids inside the accounting window.
 fn primary_entries(state: State, through: Seq) -> Set(EntryId) {
   case primary_leaf(state.wiring.session) {
     Error(Nil) -> set.new()
@@ -2541,6 +2575,7 @@ fn entry_ids(entries: List(Entry)) -> Set(EntryId) {
   |> set.from_list
 }
 
+/// Documents `summed` contract and behavior.
 fn summed(
   goal: goalstate.Goal,
   rows: List(entry.UsageRow),
@@ -2582,19 +2617,21 @@ fn remote_tokens(runtime: Runtime) -> Option(Int) {
   |> option.from_result
 }
 
-// One pass over the window, oldest first. Every row advances the cursor
-// whether or not it is counted — a row this sum refuses is a row it must
-// never re-examine — and only the primary's rows add.
+/// never re-examine — and only the primary's rows add.
+/// whether or not it is counted — a row this sum refuses is a row it must
+/// One pass over the window, oldest first. Every row advances the cursor
 fn tally(
   rows: List(entry.UsageRow),
   primaries: Set(EntryId),
   usage: message.Usage,
   through: Int,
 ) -> #(message.Usage, Int) {
+  // State what the branch decides before dispatching.
   case rows {
     [] -> #(usage, through)
 
     [row, ..rest] -> {
+      // State what the branch decides before dispatching.
       let usage = case the_primarys(row, primaries) {
         True -> accounting.add_usage(usage, row.usage)
         False -> usage
@@ -2618,21 +2655,21 @@ fn the_primarys(row: entry.UsageRow, primaries: Set(EntryId)) -> Bool {
 
 // --- the operator's commands ----------------------------------------------
 
-// The tail every operator goal command shares: answer the caller, then
-// read the level once.
-//
-// The evaluation is not optional on any of the four, and routing all of
-// them through one tail is what makes a command that forgets it
-// unwriteable rather than merely absent. `/goal resume` was that
-// omission: it wrote `Active` into the cell, answered `Ok`, and
-// returned, so an idle primary — which has no next occasion — sat with
-// an Active goal, nothing running and nothing scheduled until the repair
-// tick two minutes later. That is the stall the rework exists to remove,
-// reached through the operator's own door.
-//
-// A command that moved nothing pays a level read that answers `Rest`: a
-// cleared goal evaluates against `None` and returns at once, and a
-// paused one rests on its status.
+/// paused one rests on its status.
+/// cleared goal evaluates against `None` and returns at once, and a
+/// A command that moved nothing pays a level read that answers `Rest`: a
+///
+/// reached through the operator's own door.
+/// tick two minutes later. That is the stall the rework exists to remove,
+/// an Active goal, nothing running and nothing scheduled until the repair
+/// returned, so an idle primary — which has no next occasion — sat with
+/// omission: it wrote `Active` into the cell, answered `Ok`, and
+/// unwriteable rather than merely absent. `/goal resume` was that
+/// them through one tail is what makes a command that forgets it
+/// The evaluation is not optional on any of the four, and routing all of
+///
+/// read the level once.
+/// The tail every operator goal command shares: answer the caller, then
 fn commanded(
   state: State,
   runtime: Runtime,
@@ -2650,8 +2687,8 @@ fn commanded(
   remembering(state, evaluate(state, runtime, moved, goalloop.Level))
 }
 
-// Clearing the goal retires the cell: absence is the one durable
-// representation of no goal, so the codec never meets a tombstone.
+/// representation of no goal, so the codec never meets a tombstone.
+/// Clearing the goal retires the cell: absence is the one durable
 fn clear_goal(
   state: State,
   runtime: Runtime,
@@ -2662,19 +2699,19 @@ fn clear_goal(
   #(Ok(Nil), without_check(Memory(..memory, goal: None)))
 }
 
-// Sets or replaces the goal. The same objective under any status but
-// `complete` is a refresh — the spend so far kept, the budget replaced —
-// because the operator re-pinning the work they meant is not a new goal
-// (the distinction protocol 044 §7 makes). A changed objective, or any
-// complete goal, starts fresh.
-//
-// Where the accounting *cursor* lands depends on the status the refresh
-// found, and `refreshed` says why.
-//
-// A refresh clears the loop's bound counters and its phase whatever it
-// kept. The operator arriving with a larger budget means the goal should
-// run, and a refresh that inherited a spent continuation cap would trip
-// again on its first evaluation.
+/// again on its first evaluation.
+/// run, and a refresh that inherited a spent continuation cap would trip
+/// kept. The operator arriving with a larger budget means the goal should
+/// A refresh clears the loop's bound counters and its phase whatever it
+///
+/// found, and `refreshed` says why.
+/// Where the accounting *cursor* lands depends on the status the refresh
+///
+/// complete goal, starts fresh.
+/// (the distinction protocol 044 §7 makes). A changed objective, or any
+/// because the operator re-pinning the work they meant is not a new goal
+/// `complete` is a refresh — the spend so far kept, the budget replaced —
+/// Sets or replaces the goal. The same objective under any status but
 fn set_goal(
   state: State,
   runtime: Runtime,
@@ -2701,6 +2738,8 @@ fn set_goal(
   // goal pinned in a session that already delegated would otherwise be charged
   // for every child that settled before it existed.
   let remote_from = option.unwrap(remote_tokens(runtime), 0)
+
+  // State what the branch decides before dispatching.
   let pinned = case memory.goal {
     Some(goal) if goal.objective == objective ->
       refreshed(goal, token_budget, now_ms, accounted_from, remote_from)
@@ -2731,9 +2770,9 @@ fn set_goal(
   #(Ok(Nil), store_goal(state, runtime, memory, pinned))
 }
 
-// The refresh, which keeps what the operator did not change and clears
-// what the loop spent. A complete goal is not refreshed: completion is
-// terminal, so re-pinning the same objective starts a fresh cell.
+/// terminal, so re-pinning the same objective starts a fresh cell.
+/// what the loop spent. A complete goal is not refreshed: completion is
+/// The refresh, which keeps what the operator did not change and clears
 fn refreshed(
   goal: goalstate.Goal,
   token_budget: Int,
@@ -2773,8 +2812,8 @@ fn refreshed(
   }
 }
 
-// What every refresh clears, whatever the status it came from: the stop, the
-// phase, and the three counters a resume clears for the same reason.
+/// phase, and the three counters a resume clears for the same reason.
+/// What every refresh clears, whatever the status it came from: the stop, the
 fn refresh_of(
   goal: goalstate.Goal,
   token_budget: Int,
@@ -2792,26 +2831,27 @@ fn refresh_of(
   )
 }
 
-// Sets or clears the check on a goal that already exists, leaving the
-// objective, the budget and the accounting where they are.
-//
-// The phase returns to idle, and that is the whole of what "clearing or
-// pausing mid-check leaves nothing that acts later" needs: a check in flight
-// reports against the deadline its `Checking` phase carried, and a phase
-// that no longer carries it ignores the report. The process is cancelled with
-// it, because the pair it clears under admits one check at a time and the
-// replacement would be refused for a reason the operator could not see.
-//
-// The recorded result goes with the command it described. An operator who
-// changes `make check` for `go test ./...` should not see the old command's
-// output in the next feed, and the reviewer should not be shown evidence
-// from a command the operator has stopped asking about.
+/// from a command the operator has stopped asking about.
+/// output in the next feed, and the reviewer should not be shown evidence
+/// changes `make check` for `go test ./...` should not see the old command's
+/// The recorded result goes with the command it described. An operator who
+///
+/// replacement would be refused for a reason the operator could not see.
+/// it, because the pair it clears under admits one check at a time and the
+/// that no longer carries it ignores the report. The process is cancelled with
+/// reports against the deadline its `Checking` phase carried, and a phase
+/// pausing mid-check leaves nothing that acts later" needs: a check in flight
+/// The phase returns to idle, and that is the whole of what "clearing or
+///
+/// objective, the budget and the accounting where they are.
+/// Sets or clears the check on a goal that already exists, leaving the
 fn set_goal_check(
   state: State,
   runtime: Runtime,
   memory: Memory,
   command: Option(String),
 ) -> #(Result(Nil, String), Memory) {
+  // State what the branch decides before dispatching.
   case memory.goal {
     None -> #(
       Error("there is no goal to attach a check to; pin one with /goal first"),
@@ -2833,18 +2873,18 @@ fn set_goal_check(
   }
 }
 
-// Pauses and resumes, as the operator asks. Pausing an already-paused
-// goal is a committed no-op; resuming a complete goal refuses —
-// completion is the reviewer's verdict, not a status to undo (protocol
-// 044 §7).
-//
-// The pause is matched on the status rather than written over whatever it
-// finds, because a rewrite loses two things the operator needs. A
-// `Limited` goal rewritten to `Paused(ByOperator)` forgets which bound
-// stopped it, so the panel's cause and the resume's advice both become
-// "you paused it"; and `Complete` rewritten to a pause is resumable, which
-// is a door onto restarting a finished goal that the reviewer's verdict is
-// supposed to close.
+/// supposed to close.
+/// is a door onto restarting a finished goal that the reviewer's verdict is
+/// "you paused it"; and `Complete` rewritten to a pause is resumable, which
+/// stopped it, so the panel's cause and the resume's advice both become
+/// `Limited` goal rewritten to `Paused(ByOperator)` forgets which bound
+/// finds, because a rewrite loses two things the operator needs. A
+/// The pause is matched on the status rather than written over whatever it
+///
+/// 044 §7).
+/// completion is the reviewer's verdict, not a status to undo (protocol
+/// goal is a committed no-op; resuming a complete goal refuses —
+/// Pauses and resumes, as the operator asks. Pausing an already-paused
 fn pause_goal(
   state: State,
   runtime: Runtime,
@@ -2876,6 +2916,7 @@ fn pause_goal(
   }
 }
 
+/// Documents `held` contract and behavior.
 fn held(state: State, goal: goalstate.Goal) -> goalstate.Goal {
   goalstate.Goal(
     ..goal,
@@ -2885,6 +2926,7 @@ fn held(state: State, goal: goalstate.Goal) -> goalstate.Goal {
   )
 }
 
+/// Documents `resume_goal` contract and behavior.
 fn resume_goal(
   state: State,
   runtime: Runtime,
@@ -2910,20 +2952,20 @@ fn resume_goal(
   }
 }
 
-// A resume clears the bound counters as well as the status, because the
-// operator arriving is what the continuation cap counts from and a
-// resume that inherited a spent cap would trip again at once. The
-// evaluation that starts the loop again is `commanded`'s, which is what
-// makes a resume onto an idle primary send a feed rather than wait for
-// an occasion that cannot come.
-//
-// The accounting cursor moves to where the ledger stands now, which is the
-// other half of "spend while the goal is stopped is not charged to it": a
-// stopped goal accounts nothing, so a resume that left the cursor behind
-// would charge the whole held stretch to the budget on its first evaluation —
-// the same trap `set_goal` avoids by reading the newest row at pin time. The
-// remote children's total moves with it, so a child that settled while the goal
-// was stopped is not charged either.
+/// was stopped is not charged either.
+/// remote children's total moves with it, so a child that settled while the goal
+/// the same trap `set_goal` avoids by reading the newest row at pin time. The
+/// would charge the whole held stretch to the budget on its first evaluation —
+/// stopped goal accounts nothing, so a resume that left the cursor behind
+/// other half of "spend while the goal is stopped is not charged to it": a
+/// The accounting cursor moves to where the ledger stands now, which is the
+///
+/// an occasion that cannot come.
+/// makes a resume onto an idle primary send a feed rather than wait for
+/// evaluation that starts the loop again is `commanded`'s, which is what
+/// resume that inherited a spent cap would trip again at once. The
+/// operator arriving is what the continuation cap counts from and a
+/// A resume clears the bound counters as well as the status, because the
 fn continued(
   state: State,
   runtime: Runtime,
@@ -2942,9 +2984,9 @@ fn continued(
   )
 }
 
-// The stretch of primary work since the cursor, rendered for the goal
-// feed — the same scan the ordinary feed uses, factored out because the
-// goal occasion wants the slice and its newest seq together.
+/// goal occasion wants the slice and its newest seq together.
+/// feed — the same scan the ordinary feed uses, factored out because the
+/// The stretch of primary work since the cursor, rendered for the goal
 fn feed_slice(
   state: State,
   memory: Memory,
@@ -2965,6 +3007,7 @@ fn feed_slice(
   }
 }
 
+/// Documents `decide` contract and behavior.
 fn decide(
   state: State,
   runtime: Runtime,
@@ -3021,12 +3064,12 @@ pub type Nudges {
   Refused(reason: String)
 }
 
-// Which decisions may wake a stopped primary, and which may not.
-//
-// Only the two that just added to the queue: a `Deliver` has already
-// sent its own text through the block channel, and a `Dropped` or a
-// `Silent` recorded nothing at all, so waking the primary for either
-// would deliver on an occasion the guard did not authorize.
+/// would deliver on an occasion the guard did not authorize.
+/// `Silent` recorded nothing at all, so waking the primary for either
+/// sent its own text through the block channel, and a `Dropped` or a
+/// Only the two that just added to the queue: a `Deliver` has already
+///
+/// Which decisions may wake a stopped primary, and which may not.
 fn nudge_door(
   state: State,
   runtime: Runtime,
@@ -3044,7 +3087,7 @@ fn nudge_door(
   }
 }
 
-// The nudge channel's own door onto a primary that has stopped.
+/// The nudge channel's own door onto a primary that has stopped.
 fn wake_primary(
   state: State,
   runtime: Runtime,
@@ -3060,6 +3103,7 @@ fn wake_primary(
     #(Held, memory)
   })
 
+  // State what the branch decides before dispatching.
   case running(state.wiring.session, primary) {
     None -> deliver_nudges(state, runtime, memory)
 
@@ -3073,9 +3117,9 @@ fn wake_primary(
   }
 }
 
-// The run-end hook and settlement are separate transactions. A nudge
-// arriving between them joins the run's durable follow-up queue. If the
-// run closed before admission, the ordinary send door opens a new run.
+/// run closed before admission, the ordinary send door opens a new run.
+/// arriving between them joins the run's durable follow-up queue. If the
+/// The run-end hook and settlement are separate transactions. A nudge
 fn deliver_ending_nudges(
   state: State,
   runtime: Runtime,
@@ -3086,6 +3130,7 @@ fn deliver_ending_nudges(
   let spent = Memory(..memory, turn: Spent)
   let framed = advisorslice.nudges_message(nudges, now(state.wiring))
 
+  // State what the branch decides before dispatching.
   case api.follow_up(api.on_strand(runtime, primary), framed) {
     Ok(_) -> #(
       Woken(how: carrying("placed on the primary's ending run", nudges)),
@@ -3107,11 +3152,11 @@ fn deliver_ending_nudges(
   }
 }
 
-// Drains the whole queue onto the primary as one fenced message.
-//
-// The queue cannot be empty here: the only decisions that reach this
-// door are `Queued` and `Downgraded`, and both of them have just put
-// their own text on it.
+/// their own text on it.
+/// door are `Queued` and `Downgraded`, and both of them have just put
+/// The queue cannot be empty here: the only decisions that reach this
+///
+/// Drains the whole queue onto the primary as one fenced message.
 fn deliver_nudges(
   state: State,
   runtime: Runtime,
@@ -3134,6 +3179,7 @@ fn deliver_nudges(
   // carry are gone either way.
   let spent = Memory(..memory, turn: Spent)
 
+  // State what the branch decides before dispatching.
   case send_advice(state, runtime, framed) {
     Ok(api.Started(operation:)) -> #(
       Woken(how: carrying("started a run on the idle primary", nudges)),
@@ -3222,6 +3268,7 @@ pub fn outcome(
   }
 }
 
+/// Documents `queued_ack` contract and behavior.
 fn queued_ack(nudges: Nudges) -> Result(advise.Ack, String) {
   case nudges {
     Held -> Ok(advise.Queued)
@@ -3230,6 +3277,7 @@ fn queued_ack(nudges: Nudges) -> Result(advise.Ack, String) {
   }
 }
 
+/// Documents `downgraded_ack` contract and behavior.
 fn downgraded_ack(
   nudges: Nudges,
   reason: String,
@@ -3251,9 +3299,9 @@ fn opened_run(sent: Result(api.Delivery, String)) -> Option(OpId) {
   }
 }
 
-// Which door the message went through is the advisor's own business:
-// a steered primary reads the advice at its next checkpoint, and a
-// started one reads it as the whole of a fresh run.
+/// started one reads it as the whole of a fresh run.
+/// a steered primary reads the advice at its next checkpoint, and a
+/// Which door the message went through is the advisor's own business:
 fn landed(delivery: api.Delivery) -> advise.Ack {
   case delivery {
     api.Steered(..) -> advise.Delivered(how: "steered the primary's open run")
@@ -3263,11 +3311,11 @@ fn landed(delivery: api.Delivery) -> advise.Ack {
   }
 }
 
-// A delivery that fails still counts against the cooldown, and the text
-// is already in the guard's duplicate ring, so this block is spent. That
-// is the cheaper mistake: the alternative is an advisor that re-raises
-// the same block at every run end against a primary whose queue is
-// refusing, and the cost of the choice is one quiet window.
+/// refusing, and the cost of the choice is one quiet window.
+/// the same block at every run end against a primary whose queue is
+/// is the cheaper mistake: the alternative is an advisor that re-raises
+/// is already in the guard's duplicate ring, so this block is spent. That
+/// A delivery that fails still counts against the cooldown, and the text
 fn emit(
   state: State,
   runtime: Runtime,
@@ -3280,10 +3328,10 @@ fn emit(
   )
 }
 
-// The one door onto the primary, shared by the block channel and the
-// nudge channel's wake. One send, one warned line and one wording for a
-// refusal, whichever channel was speaking: the advisor reads the same
-// sentence either way, and a census groups both under one event name.
+/// sentence either way, and a census groups both under one event name.
+/// refusal, whichever channel was speaking: the advisor reads the same
+/// nudge channel's wake. One send, one warned line and one wording for a
+/// The one door onto the primary, shared by the block channel and the
 fn send_advice(
   state: State,
   runtime: Runtime,
@@ -3299,16 +3347,16 @@ fn send_advice(
   })
 }
 
-// The two vocabularies are separate on purpose: `tools/advise` names
-// what a model may ask for and `client/advisorguard` names what the
-// harness decides, and neither package depends on the other. The goal
-// words have no advisorguard counterpart and never reach this function:
-// `judge` answers them before `decide` runs, because a goal verdict is
-// not advice — the emission guard's cooldown, duplicate ring and queue
-// bound the advice channels, and a goal continuation is a sanctioned
-// wake with bounds of its own. The arms below keep the function total
-// so a later change cannot route a goal word through the guard by
-// forgetting an arm here.
+/// forgetting an arm here.
+/// so a later change cannot route a goal word through the guard by
+/// wake with bounds of its own. The arms below keep the function total
+/// bound the advice channels, and a goal continuation is a sanctioned
+/// not advice — the emission guard's cooldown, duplicate ring and queue
+/// `judge` answers them before `decide` runs, because a goal verdict is
+/// words have no advisorguard counterpart and never reach this function:
+/// harness decides, and neither package depends on the other. The goal
+/// what a model may ask for and `client/advisorguard` names what the
+/// The two vocabularies are separate on purpose: `tools/advise` names
 fn translate(verdict: advise.Verdict) -> advisorguard.Verdict {
   case verdict {
     advise.Quiet -> advisorguard.Quiet
@@ -3427,10 +3475,10 @@ pub fn hooks(built: effects.Hooks, wiring: Wiring) -> effects.Hooks {
   )
 }
 
-// A cast and then the inner answer, unchanged. The notification is a
-// side effect beside the slot's own contract, never instead of it: a
-// harness follow-up placed by an earlier layer must still be the value
-// the driver reads.
+/// the driver reads.
+/// harness follow-up placed by an earlier layer must still be the value
+/// side effect beside the slot's own contract, never instead of it: a
+/// A cast and then the inner answer, unchanged. The notification is a
 fn notify(wiring: Wiring, operation: OpId) -> Nil {
   case notes.strand_of(wiring.session, operation) {
     Ok(name) -> cast(wiring, ended_message(name, operation))
@@ -3441,18 +3489,19 @@ fn notify(wiring: Wiring, operation: OpId) -> Nil {
   }
 }
 
-// A cast on the primary's steps and on nobody else's. The advisor's own
-// requests reach this slot too — the usage ledger is not strand-scoped —
-// and counting those would let a long review trip the threshold it is
-// itself the reason for, feeding the reviewer on the strength of its own
-// token spend.
-//
-// The goal's accounting trigger rides the same slot behind the same
-// strand filter, and carries nothing. One `strand_of` read serves both
-// casts. The row deliberately does not travel: the arithmetic is the
-// evaluation's own ledger scan (see `account_recompute`), so a lost cast
-// delays a refresh instead of skipping a row forever.
+/// delays a refresh instead of skipping a row forever.
+/// evaluation's own ledger scan (see `account_recompute`), so a lost cast
+/// casts. The row deliberately does not travel: the arithmetic is the
+/// strand filter, and carries nothing. One `strand_of` read serves both
+/// The goal's accounting trigger rides the same slot behind the same
+///
+/// token spend.
+/// itself the reason for, feeding the reviewer on the strength of its own
+/// and counting those would let a long review trip the threshold it is
+/// requests reach this slot too — the usage ledger is not strand-scoped —
+/// A cast on the primary's steps and on nobody else's. The advisor's own
 fn spent(wiring: Wiring, operation: OpId, _row: entry.UsageRow) -> Nil {
+  // Check if spent tokens belong to the primary strand.
   case notes.strand_of(wiring.session, operation) {
     Ok(name) if name == primary -> {
       cast(wiring, Some(PrimaryStepped(operation:)))
@@ -3463,6 +3512,7 @@ fn spent(wiring: Wiring, operation: OpId, _row: entry.UsageRow) -> Nil {
   }
 }
 
+/// Documents `ended_message` contract and behavior.
 fn ended_message(name: String, operation: OpId) -> Option(Message) {
   use <- bool.guard(
     when: name == primary,
@@ -3476,6 +3526,7 @@ fn ended_message(name: String, operation: OpId) -> Option(Message) {
   None
 }
 
+/// Documents `cast` contract and behavior.
 fn cast(wiring: Wiring, message: Option(Message)) -> Nil {
   case message {
     None -> Nil
@@ -3490,17 +3541,18 @@ fn cast(wiring: Wiring, message: Option(Message)) -> Nil {
   }
 }
 
-// The nudges queued for the primary, folded in after whatever the inner
-// layers injected. A strand that is not the primary never asks, so the
-// advisor's own run start pays nothing.
-//
-// The operation travels with the question because the actor reads it as
-// well as answering: a run start is where the turn's unsolicited
-// delivery is handed back, and which run this is decides whether it is.
+/// delivery is handed back, and which run this is decides whether it is.
+/// well as answering: a run start is where the turn's unsolicited
+/// The operation travels with the question because the actor reads it as
+///
+/// advisor's own run start pays nothing.
+/// layers injected. A strand that is not the primary never asks, so the
+/// The nudges queued for the primary, folded in after whatever the inner
 fn pending(wiring: Wiring, operation: OpId) -> List(AgentMessage) {
   let mine = notes.strand_of(wiring.session, operation) == Ok(primary)
   use <- bool.guard(when: !mine, return: [])
 
+  // State what the branch decides before dispatching.
   case ask(wiring.name, pending_timeout_ms, TakePending(operation, _)) {
     Ok([]) -> []
 
@@ -3517,14 +3569,14 @@ fn pending(wiring: Wiring, operation: OpId) -> List(AgentMessage) {
   }
 }
 
-// The primary's run end, and the nudge channel's second door.
-//
-// A follow-up placed here is born placed: `machine/planner`'s
-// `finish_boundary` commits the message and a `NeedAssistant`
-// continuation of the *same* operation together, so no run start fires
-// and no fresh run is opened. That is what makes this the right slot for
-// a nudge — the primary reads it before it stops, at the cost of one
-// more provider request on a run it was already paying for.
+/// more provider request on a run it was already paying for.
+/// a nudge — the primary reads it before it stops, at the cost of one
+/// and no fresh run is opened. That is what makes this the right slot for
+/// continuation of the *same* operation together, so no run start fires
+/// `finish_boundary` commits the message and a `NeedAssistant`
+/// A follow-up placed here is born placed: `machine/planner`'s
+///
+/// The primary's run end, and the nudge channel's second door.
 fn follow_up(
   wiring: Wiring,
   operation: OpId,
@@ -3542,6 +3594,7 @@ fn follow_up(
   }
 }
 
+/// Documents `drained` contract and behavior.
 fn drained(wiring: Wiring, operation: OpId) -> Option(AgentMessage) {
   let mine = notes.strand_of(wiring.session, operation) == Ok(primary)
   use <- bool.guard(when: !mine, return: None)
@@ -3557,6 +3610,7 @@ fn drained(wiring: Wiring, operation: OpId) -> Option(AgentMessage) {
   // the actor as it does here.
   let deadline = now(wiring) + pending_timeout_ms
 
+  // State what the branch decides before dispatching.
   case
     ask(wiring.name, pending_timeout_ms, TakeAtRunEnd(operation, deadline, _))
   {
@@ -3566,10 +3620,10 @@ fn drained(wiring: Wiring, operation: OpId) -> Option(AgentMessage) {
   }
 }
 
-// The standing instructions, prepended to the advisor's own requests and
-// to nothing else. They lead the list because a provider's prompt cache
-// is keyed on a byte prefix, and text that moves with the conversation
-// would invalidate that prefix on every request.
+/// would invalidate that prefix on every request.
+/// is keyed on a byte prefix, and text that moves with the conversation
+/// to nothing else. They lead the list because a provider's prompt cache
+/// The standing instructions, prepended to the advisor's own requests and
 fn instructed(
   wiring: Wiring,
   operation: OpId,
@@ -3628,6 +3682,7 @@ pub fn ensure_strand(
       active_tool_names: active_tools(settings, registry_names),
     )
 
+  // State what the branch decides before dispatching.
   case
     api.create_idle_strand(runtime, named: strand, configuration:, at: None)
   {
@@ -3664,6 +3719,7 @@ pub fn active_tools(
   |> list.sort(string.compare)
 }
 
+/// Documents `unanswerable` contract and behavior.
 fn unanswerable() -> Result(Nil, String) {
   Error(
     "the `advise` tool is not registered on this host, so an advisor "
@@ -3672,6 +3728,7 @@ fn unanswerable() -> Result(Nil, String) {
   )
 }
 
+/// Documents `describe_create` contract and behavior.
 fn describe_create(error: api.CreateStrandError) -> String {
   case error {
     api.StrandExists(name:) -> "the strand " <> name <> " already exists"
@@ -3695,13 +3752,13 @@ fn describe_create(error: api.CreateStrandError) -> String {
 
 // --- asking the actor ------------------------------------------------------
 
-// One question to the actor, degrading an absent or wedged actor to
-// `Error(Nil)` rather than to the caller's death. Sent and selected by
-// hand, watching the callee's monitor, which is the pattern
-// `client/scratch.ask` and `client/escalate.borrow` already use for the
-// same reason: `process.call` exits its *caller* on a timeout or a dead
-// callee, and both callers here are a strand driver or a live tool
-// effect, where a dead caller is a run that never settles.
+/// effect, where a dead caller is a run that never settles.
+/// callee, and both callers here are a strand driver or a live tool
+/// same reason: `process.call` exits its *caller* on a timeout or a dead
+/// `client/scratch.ask` and `client/escalate.borrow` already use for the
+/// hand, watching the callee's monitor, which is the pattern
+/// `Error(Nil)` rather than to the caller's death. Sent and selected by
+/// One question to the actor, degrading an absent or wedged actor to
 pub fn ask(
   name: address.Address(Message),
   timeout_ms: Int,

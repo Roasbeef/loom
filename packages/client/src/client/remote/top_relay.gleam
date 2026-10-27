@@ -189,6 +189,8 @@ pub type Failure {
 ///   == "the orchestrator is not reachable"
 /// ```
 pub fn describe(failure: Failure) -> String {
+  // This match resolves failure before the surrounding protocol step continues.
+  // This match resolves failure before the enclosing validation continues.
   case failure {
     NotConfigured(name:) -> name <> " is not one of this daemon's orchestrators"
     Unreachable -> "the orchestrator is not reachable"
@@ -322,6 +324,7 @@ pub fn all_sessions(
   read_pages(relay, name, "", max_pages, [])
 }
 
+/// Read pages keeps this client operation’s decoding or state decision in one place.
 fn read_pages(
   relay: Relay,
   name: String,
@@ -331,6 +334,9 @@ fn read_pages(
 ) -> Result(List(remote_top.Row), Failure) {
   use page <- result.try(sessions(relay, name, after, remote_top.max_rows))
   let read = list.append(read, page.rows)
+
+  // This match resolves page.more, list.last(page.rows), pages_left before the surrounding protocol step continues.
+  // This match resolves page.more, list.last(page.rows), pages_left before the enclosing validation continues.
   case page.more, list.last(page.rows), pages_left {
     remote_top.Last, _, _ | remote_top.Further, Error(Nil), _ -> Ok(read)
     remote_top.Further, Ok(_), 1 -> Ok(read)
@@ -490,6 +496,7 @@ pub fn session_for_request(
 // reached on a connection that exists. A name the roster does not hold is the
 // one definitive failure, and every way of not reaching the node is
 // `Unreachable`.
+/// Dial keeps this client operation’s decoding or state decision in one place.
 fn dial(
   membership: Membership,
   configured: Roster(Orchestrator),
@@ -513,6 +520,7 @@ fn dial(
 }
 
 // One question, asked once.
+/// Once keeps this client operation’s decoding or state decision in one place.
 fn once(
   relay: Relay,
   name: String,
@@ -520,6 +528,9 @@ fn once(
     Result(Result(a, remote_top.Refusal), Silence),
 ) -> Result(a, Failure) {
   use at <- result.try(relay.dial(name))
+
+  // This match resolves ask(at) before the surrounding protocol step continues.
+  // This match resolves ask(at) before the enclosing validation continues.
   case ask(at) {
     Ok(Ok(answer)) -> Ok(answer)
     Ok(Error(refusal)) -> Error(Refused(refusal:))
@@ -541,6 +552,7 @@ type Tries {
 // once, because nothing was sent and the link was already down; a later one
 // that cannot connect is a link that dropped after a send, and the thing may
 // have happened, so it is tried again.
+/// Resending keeps this client operation’s decoding or state decision in one place.
 fn resending(
   relay: Relay,
   name: String,
@@ -564,14 +576,19 @@ fn resending(
             relay.timing.call_ms,
             relay.timing.retry_window_ms - { clock.now() - started },
           )
+
+        // This match resolves relay.dial(name), tries before the surrounding protocol step continues.
+        // This match resolves relay.dial(name), tries before the enclosing validation continues.
         case relay.dial(name), tries {
           Error(NotConfigured(_) as failure), _ -> poll.Broken(failure)
           Error(failure), Fresh -> poll.Broken(failure)
           Error(failure), After(_) -> poll.Pending(After(failure))
           Ok(at), _ ->
+            // This match resolves ask(at, left) before the surrounding protocol step continues.
             case ask(at, left) {
               Ok(Ok(answer)) -> poll.Settled(answer)
               Ok(Error(refusal)) ->
+                // This match resolves remote_top.retryable(refusal) before the surrounding protocol step continues.
                 case remote_top.retryable(refusal) {
                   True -> poll.Pending(After(Refused(refusal:)))
                   False -> poll.Broken(Refused(refusal:))
@@ -582,6 +599,9 @@ fn resending(
         }
       },
     )
+
+  // This match resolves folded before the surrounding protocol step continues.
+  // This match resolves folded before the enclosing validation continues.
   case folded {
     poll.Answer(value:) -> Ok(value)
     poll.Failure(error:) -> Error(error)
@@ -609,6 +629,8 @@ fn resending(
 /// assert !top_relay.outcome_unknown(top_relay.Unreachable)
 /// ```
 pub fn outcome_unknown(failure: Failure) -> Bool {
+  // This match resolves failure before the surrounding protocol step continues.
+  // This match resolves failure before the enclosing validation continues.
   case failure {
     Silent -> True
     NotConfigured(_) | Unreachable | OlderBuild | Refused(_) | Unreadable(_) ->

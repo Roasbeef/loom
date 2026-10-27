@@ -83,7 +83,7 @@ Each job has a `job/<id>` register in the session store. It is a key
 prefix inside the existing `fact.custom` namespace, so it costs no
 protocol change (`core/register.gleam:27-28` freezes the namespace set;
 prefixes are free). It becomes the tenth reserved corner: one line in
-`reserved_fact_key` (`runtime/api.gleam:2711`), one row in the table
+`reserved_fact_key` (`runtime/api.gleam:2810`), one row in the table
 at `api.gleam:1669-1682`, written only through
 `put_reserved_fact_expecting`. Creation uses the expect-absent CAS the
 schedule seam uses for a named create (`client/scheduleseam.gleam:390-401`),
@@ -118,7 +118,7 @@ actor out of the strand's turn machinery entirely.
 ### 3. One actor, one runner per job, weft all the way down
 
 `client/jobs.gleam` is a `weft/actor` in the *restartable* services tier
-beside `extension_hosts` (`client/serve.gleam:4803`), bound to a
+beside `extension_hosts` (`client/serve.gleam:5028`), bound to a
 reclaimable `weft/registry` address so a replacement is the same address
 and no caller caches a subject. Losing it costs what losing the extension
 registry costs: every runner it owned dies with it, and the reap rule
@@ -163,7 +163,7 @@ the token deadline *is* the budget deadline (`broker/token.gleam:38-45`,
 `{op_id, step_id}` where `step_id` is the model batch (ADR-005), the
 first clearance opens the ledger with its `max_outstanding`, and a later
 clearance cannot widen it (`broker.gleam:140-147`). `bash` opens that
-ledger with `max_outstanding: 1` (`bash.gleam:903`). So if a job cleared
+ledger with `max_outstanding: 1` (`bash.gleam:941`). So if a job cleared
 under the batch's own identity, a foreground `bash` earlier in the same
 batch would cap it, and a second job in the batch would be refused
 `OutstandingCapReached` while the first still ran. That is the wrong
@@ -399,7 +399,7 @@ registers, and `Cut.cells` is namespace and key addressed
 (`storage/snapshot.gleam:149`), so the TUI's cut decoder can count
 `job/*` cells without a type change; poll results are tool results and
 already visible. `live_phase` cannot express *n* jobs because it is
-derived from a strand's one open operation, which is what a `LiveOp` names (`client/gateway.gleam:6304`),
+derived from a strand's one open operation, which is what a `LiveOp` names (`client/gateway.gleam:6558`),
 and we do not bend it: an idle strand with two jobs shows idle, with a
 job count beside it once the renderer grows one. A live `job_output`
 event and a jobs panel are follow-ups that #186 and #240 already own,

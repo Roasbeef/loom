@@ -106,6 +106,7 @@ pub fn reconnect_daemon(
   resolve_daemon_with(options, owner, within_ms, daemon_bootstrap.reconnect, [])
 }
 
+/// Resolves daemon startup configuration and connects to the active daemon.
 fn resolve_daemon_with(
   options: Options,
   owner,
@@ -152,15 +153,21 @@ pub fn daemon_launch_arguments(
   config: String,
 ) -> List(String) {
   let arguments = ["--state-dir", state]
+
+  // Include configuration path argument if specified.
   let arguments = case config {
     "" -> arguments
     path -> list.append(arguments, ["--config", path])
   }
+
   let helper = filepath.join(filepath.directory_name(server), "loom-exec")
+
+  // Check if adjacent execution helper exists and is executable.
   let arguments = case host.is_executable_file(helper) {
     True -> list.append(arguments, ["--helper", helper])
     False -> arguments
   }
+
   arguments
 }
 
@@ -311,6 +318,7 @@ pub fn resolve(options: Options) -> Result(Target, String) {
   outcome
 }
 
+/// Resolves server endpoint state while holding the process launch lock.
 fn resolve_locked(
   options: Options,
   workspace: String,
@@ -321,6 +329,8 @@ fn resolve_locked(
       case endpoint_matches(endpoint, workspace, paths) {
         True -> {
           use reuse <- result.try(reuse_endpoint(endpoint, paths.endpoint))
+
+          // Handle reuse outcome or replace server.
           case reuse {
             Reused(target) -> Ok(target)
             Replace -> start_server(options, workspace, paths)
@@ -333,6 +343,7 @@ fn resolve_locked(
   }
 }
 
+/// Preserves existing endpoint if incompatible or starts a replacement.
 fn preserve_incompatible_or_start(
   endpoint: Endpoint,
   options: Options,
@@ -352,6 +363,7 @@ fn preserve_incompatible_or_start(
   }
 }
 
+/// Validates an existing endpoint record and verifies server process health.
 fn reuse_endpoint(
   endpoint: Endpoint,
   endpoint_path: String,
@@ -379,6 +391,7 @@ fn reuse_endpoint(
 // last attempt at the deadline, and `Fail` kept apart from `Retry`. What
 // each wait decides for itself is only what a probe failure means given
 // the process identity, and what expiry means for the caller.
+/// Waits for a starting server process to become live and responsive.
 fn await_starting(
   endpoint: Endpoint,
   endpoint_path: String,
@@ -400,6 +413,8 @@ fn await_starting(
         Error(_) -> retry_starting(endpoint)
       }
     })
+
+  // Evaluate poll outcome for adopted or replaced server.
   case outcome {
     poll.Answered(Reused(target)) -> {
       let endpoint = Endpoint(..endpoint, status: "ready")
@@ -422,6 +437,7 @@ fn await_starting(
 // the same process, or one whose identity cannot be read, is still worth
 // waiting for. An endpoint with no pid at all is a start that has not
 // published one yet.
+/// Handles starting state retry attempts while server initializes.
 fn retry_starting(endpoint: Endpoint) -> poll.Attempt(Reuse, String) {
   case endpoint.server_pid > 0 {
     False -> poll.Retry
@@ -433,6 +449,7 @@ fn retry_starting(endpoint: Endpoint) -> poll.Attempt(Reuse, String) {
   }
 }
 
+/// Handles timeout or death of an unconfirmed starting server process.
 fn abandoned_start(endpoint: Endpoint) -> Result(Reuse, String) {
   case match_process(endpoint.server_pid, endpoint.server_birth) {
     SameProcess ->
@@ -449,6 +466,7 @@ fn abandoned_start(endpoint: Endpoint) -> Result(Reuse, String) {
   }
 }
 
+/// Polls an already live server process until authenticated snapshot responds.
 fn await_live(endpoint: Endpoint) -> Result(Reuse, String) {
   let outcome =
     poll.until(
@@ -465,6 +483,8 @@ fn await_live(endpoint: Endpoint) -> Result(Reuse, String) {
         }
       },
     )
+
+  // Evaluate live server poll outcome.
   case outcome {
     poll.Answered(reuse) -> Ok(reuse)
     poll.Failed(reason) -> Error(reason)
@@ -480,6 +500,7 @@ fn await_live(endpoint: Endpoint) -> Result(Reuse, String) {
   }
 }
 
+/// Spawns a new server child process and writes the initial starting endpoint.
 fn start_server(
   options: Options,
   workspace: String,
@@ -521,6 +542,8 @@ fn start_server(
   )
   use started <- result.try(spawn(endpoint, server, config))
   let StartedProcess(process:, pid:) = started
+
+  // Inspect process identity of spawned server.
   case host.process_identity(pid) {
     Error(reason) -> {
       stop_started(StartedProcess(process:, pid:))
@@ -532,6 +555,8 @@ fn start_server(
     }
     Ok(host.ProcessPresent(server_birth)) -> {
       let endpoint = Endpoint(..endpoint, server_pid: pid, server_birth:)
+
+      // Publish starting endpoint with discovered pid.
       case write_endpoint(paths.endpoint, endpoint) {
         Error(reason) -> {
           stop_started(StartedProcess(process:, pid:))
@@ -549,6 +574,7 @@ fn start_server(
   }
 }
 
+/// Releases the child process execution lock and waits for readiness probe.
 fn release_and_await(
   endpoint: Endpoint,
   started: StartedProcess,
@@ -556,6 +582,8 @@ fn release_and_await(
   startup_deadline_ms: Int,
 ) -> Result(Target, String) {
   let StartedProcess(process:, pid:) = started
+
+  // Release spawned server process.
   case host.release_server_process(process) {
     Error(reason) -> {
       stop_started(StartedProcess(process:, pid:))
@@ -566,6 +594,7 @@ fn release_and_await(
   }
 }
 
+/// Polls until the newly started server responds to authenticated snapshot probes.
 fn await_new_server(
   endpoint: Endpoint,
   started: StartedProcess,
@@ -590,9 +619,13 @@ fn await_new_server(
         }
       },
     )
+
+  // Handle poll outcome of newly started server.
   case outcome {
     poll.Answered(target) -> {
       let ready = Endpoint(..endpoint, status: "ready")
+
+      // Publish ready endpoint record.
       case write_endpoint(endpoint_path, ready) {
         Ok(Nil) -> Ok(target)
         Error(reason) -> {
@@ -601,6 +634,7 @@ fn await_new_server(
         }
       }
     }
+
     poll.Failed(reason) -> Error(reason)
     poll.Expired -> {
       stop_started(started)
@@ -613,9 +647,11 @@ fn await_new_server(
   }
 }
 
+/// Repeatedly polls until the cross-process launch lock is acquired.
 fn acquire_lock(path: String) -> Result(host.LaunchLock, String) {
   let outcome =
     poll.until(within: lock_timeout_ms, every: 25, attempt: fn() {
+      // Try acquiring cross-process launch lock.
       case host.try_launch_lock(path) {
         Ok(lock) -> poll.Done(lock)
 
@@ -625,6 +661,8 @@ fn acquire_lock(path: String) -> Result(host.LaunchLock, String) {
         Error(reason) -> poll.Fail(reason)
       }
     })
+
+  // Evaluate lock acquisition poll outcome.
   case outcome {
     poll.Answered(lock) -> Ok(lock)
     poll.Failed(reason) -> Error("acquire launch lock: " <> reason)
@@ -637,6 +675,7 @@ fn canonical_workspace(path: String) -> Result(String, String) {
   |> result.map_error(fn(reason) { "resolve workspace: " <> reason })
 }
 
+/// Computes private launcher and socket paths derived from the workspace.
 fn resolve_paths(options: Options, workspace: String) -> Result(Paths, String) {
   use unresolved_state <- result.try(state_directory(options.state_directory))
   use Nil <- result.try(
@@ -650,6 +689,8 @@ fn resolve_paths(options: Options, workspace: String) -> Result(Paths, String) {
     |> result.map_error(fn(reason) { "resolve state directory: " <> reason }),
   )
   let default_session_directory = filepath.join(state_directory, "sessions")
+
+  // Ensure session storage directory exists.
   use Nil <- result.try(case options.session_file {
     "" ->
       host.ensure_private_directory(default_session_directory)
@@ -658,6 +699,7 @@ fn resolve_paths(options: Options, workspace: String) -> Result(Paths, String) {
       })
     _ -> Ok(Nil)
   })
+
   use session <- result.try(session_path(
     options.session_file,
     state_directory,
@@ -693,8 +735,11 @@ fn resolve_paths(options: Options, workspace: String) -> Result(Paths, String) {
 // resolves a name whose final component does not exist, and a launcher
 // that then passed the path along would boot a server that refuses a
 // catalogue nobody wrote — which is what CI's bootstrap e2e did.
+/// Ensures the default catalogue database file exists in private storage.
 fn present_default_catalogue(state_directory: String) -> String {
   let path = default_catalogue_path(state_directory)
+
+  // Check if default catalogue file exists.
   case host.path_exists(path) {
     True -> host.canonical_path(path) |> result.unwrap(path)
     False -> ""
@@ -729,6 +774,7 @@ pub fn default_catalogue_path(state_directory: String) -> String {
 /// assert bootstrap.state_directory("/var/loom") == Ok("/var/loom")
 /// ```
 pub fn state_directory(override: String) -> Result(String, String) {
+  // Resolve override path or fallback to HOME state directory.
   case override {
     "" -> {
       use home <- result.try(
@@ -742,6 +788,7 @@ pub fn state_directory(override: String) -> Result(String, String) {
   |> result.map_error(fn(reason) { "resolve state directory: " <> reason })
 }
 
+/// Returns the private session database storage directory for a workspace.
 fn session_path(
   override: String,
   state_directory: String,
@@ -757,11 +804,14 @@ fn session_path(
   }
 }
 
+/// Computes the persistent session path derived from canonical workspace identity.
 fn canonical_session_path(path: String) -> Result(String, String) {
   use absolute <- result.try(
     host.absolute_path(path)
     |> result.map_error(fn(reason) { "resolve session file: " <> reason }),
   )
+
+  // Resolve canonical path for existing session file or parent.
   case host.path_exists(absolute) {
     True ->
       host.canonical_path(absolute)
@@ -778,6 +828,7 @@ fn canonical_session_path(path: String) -> Result(String, String) {
   }
 }
 
+/// Creates all parent launcher directories with strict mode 0700 permissions.
 fn ensure_private_directories(
   directories: List(String),
 ) -> Result(Nil, String) {
@@ -796,29 +847,38 @@ fn ensure_private_directories(
 /// twelve-hex digest keeps equal basenames in different directories distinct.
 @internal
 pub fn workspace_name(workspace: String) -> String {
+  // Extract base workspace directory name.
   let base = case filepath.base_name(workspace) {
     "" | "." | "/" -> "workspace"
     value -> value
   }
+
   let slug =
     slug_loop(string.to_utf_codepoints(string.lowercase(base)), "", 0, False)
+
+  // Ensure trimmed slug is non-empty.
   let slug = case trim_slug(slug) {
     "" -> "workspace"
     value -> value
   }
+
   slug <> "-" <> digest_prefix(workspace, 12)
 }
 
+/// Sanitizes path characters into a valid alphanumeric directory slug.
 fn slug_loop(
   characters: List(UtfCodepoint),
   accumulator: String,
   length: Int,
   last_was_dash: Bool,
 ) -> String {
+  // Process codepoints up to 32 characters.
   case characters, length >= 32 {
     _, True | [], False -> accumulator
     [character, ..rest], False -> {
       let code = string.utf_codepoint_to_int(character)
+
+      // Test if character is alphanumeric.
       case
         { code >= 0x61 && code <= 0x7a } || { code >= 0x30 && code <= 0x39 }
       {
@@ -853,6 +913,7 @@ fn digest_prefix(value: String, length: Int) -> String {
   |> string.slice(at_index: 0, length:)
 }
 
+/// Verifies that an existing endpoint matches the current workspace and configuration.
 fn endpoint_matches(
   endpoint: Endpoint,
   workspace: String,
@@ -881,6 +942,8 @@ fn endpoint_matches(
 pub fn local_gateway_address(address: String) -> Bool {
   let prefix = "ws://127.0.0.1:"
   let suffix = "/v1/ws"
+
+  // Verify gateway URI prefix and suffix pattern.
   case
     string.starts_with(address, prefix) && string.ends_with(address, suffix)
   {
@@ -890,6 +953,8 @@ pub fn local_gateway_address(address: String) -> Bool {
         address
         |> string.drop_start(string.length(prefix))
         |> string.drop_end(string.length(suffix))
+
+      // Validate port number in range.
       case int.parse(port) {
         Ok(value) -> value > 0 && value <= 65_535
         Error(Nil) -> False
@@ -905,12 +970,15 @@ pub fn local_gateway_address(address: String) -> Bool {
 @internal
 pub fn session_id(path: String) -> String {
   let base = filepath.base_name(path)
+
+  // Extract identifier before dot.
   case string.split(base, ".") {
     [first, ..] if first != "" -> first
     _ -> base
   }
 }
 
+/// Reads and decodes cached endpoint metadata from disk.
 fn read_endpoint(path: String) -> Result(Endpoint, String) {
   use bytes <- result.try(host.read_bounded(path, max_endpoint_bytes))
   use text <- result.try(
@@ -924,6 +992,7 @@ fn read_endpoint(path: String) -> Result(Endpoint, String) {
   decode_endpoint(value)
 }
 
+/// Parses JSON endpoint payload into typed Starting or Ready variants.
 fn decode_endpoint(value: json.JsonValue) -> Result(Endpoint, String) {
   use fields <- result.try(object_fields(value, "endpoint record"))
   use version <- result.try(required_int(fields, "version"))
@@ -954,6 +1023,7 @@ fn decode_endpoint(value: json.JsonValue) -> Result(Endpoint, String) {
   ))
 }
 
+/// Atomically serializes and writes endpoint record to private file.
 fn write_endpoint(path: String, endpoint: Endpoint) -> Result(Nil, String) {
   endpoint
   |> encode_endpoint
@@ -962,6 +1032,7 @@ fn write_endpoint(path: String, endpoint: Endpoint) -> Result(Nil, String) {
   |> host.atomic_write_private(path, _)
 }
 
+/// Serializes endpoint record into JSON representation.
 fn encode_endpoint(endpoint: Endpoint) -> json.JsonValue {
   json.Object([
     #("version", json.Int(endpoint.version)),
@@ -979,6 +1050,7 @@ fn encode_endpoint(endpoint: Endpoint) -> json.JsonValue {
   ])
 }
 
+/// Extracts JSON object key-value pairs from value.
 fn object_fields(
   value: json.JsonValue,
   context: String,
@@ -994,6 +1066,7 @@ fn object_fields(
   }
 }
 
+/// Reads a required non-empty string property from object fields.
 fn required_string(
   fields: List(#(String, json.JsonValue)),
   key: String,
@@ -1005,6 +1078,7 @@ fn required_string(
   }
 }
 
+/// Reads a required integer property from object fields.
 fn required_int(
   fields: List(#(String, json.JsonValue)),
   key: String,
@@ -1033,6 +1107,7 @@ pub fn server_executable(explicit: String) -> Result(String, String) {
   find_server(explicit)
 }
 
+/// Discovers a usable Loom server binary from config, bundle, or path.
 fn find_server(explicit: String) -> Result(String, String) {
   case explicit {
     "" -> find_configured_server()
@@ -1042,6 +1117,7 @@ fn find_server(explicit: String) -> Result(String, String) {
   }
 }
 
+/// Inspects loom configuration for an explicit server binary override.
 fn find_configured_server() -> Result(String, String) {
   case host.getenv("LOOM_SERVER") {
     Ok(configured) ->
@@ -1051,7 +1127,9 @@ fn find_configured_server() -> Result(String, String) {
   }
 }
 
+/// Locates a pre-installed server binary packaged with the client distribution.
 fn find_installed_server() -> Result(String, String) {
+  // Discover candidate server path adjacent to running binary.
   let sibling_candidates = case host.getenv("LOOM_EXECUTABLE") {
     Ok(executable) ->
       case string.starts_with(executable, "/") {
@@ -1060,10 +1138,13 @@ fn find_installed_server() -> Result(String, String) {
       }
     Error(Nil) -> []
   }
+
+  // Discover candidate server paths on PATH.
   let path_candidates = case host.getenv("PATH") {
     Ok(path) -> installed_path_candidates(path)
     Error(Nil) -> []
   }
+
   find_first_server(list.append(sibling_candidates, path_candidates))
 }
 
@@ -1080,6 +1161,7 @@ pub fn installed_path_candidates(path: String) -> List(String) {
   |> list.map(fn(directory) { filepath.join(directory, "loomd") })
 }
 
+/// Returns the first existing and executable binary from candidate list.
 fn find_first_server(candidates: List(String)) -> Result(String, String) {
   case candidates {
     [] ->
@@ -1094,6 +1176,7 @@ fn find_first_server(candidates: List(String)) -> Result(String, String) {
   }
 }
 
+/// Spawns server executable with configured arguments and working directory.
 fn spawn(
   endpoint: Endpoint,
   server: String,
@@ -1117,6 +1200,7 @@ fn stop_started(started: StartedProcess) -> Nil {
   host.close_server_process(process)
 }
 
+/// Builds standard CLI argument list passed to server child process.
 fn server_arguments(
   endpoint: Endpoint,
   server: String,
@@ -1148,10 +1232,12 @@ fn server_arguments(
 // in a workspace can put a file there. Absent, the server shapes its
 // catalogue from the environment as before; the launcher still never
 // reads a catalogue out of the workspace.
+/// Resolves and validates the server configuration file path.
 fn resolve_config(
   config: String,
   state_directory: String,
 ) -> Result(String, String) {
+  // Match explicit configuration or default catalogue file.
   case config {
     "" -> Ok(present_default_catalogue(state_directory))
     path -> {
@@ -1170,6 +1256,7 @@ fn resolve_config(
         host.NoEntry ->
           Error("resolve config " <> path <> ": file does not exist")
       })
+
       host.canonical_path(path)
       |> result.map_error(fn(reason) {
         "resolve config " <> path <> ": " <> reason
@@ -1220,17 +1307,23 @@ pub fn launch_arguments(
     "--token-file",
     token_file,
   ]
+
+  // Add configuration path if specified.
   let arguments = case config {
     "" -> arguments
     path -> list.append(arguments, ["--config", path])
   }
+
   let helper = filepath.join(filepath.directory_name(server), "loom-exec")
+
+  // Check if adjacent execution helper exists and is executable.
   case host.is_executable_file(helper) {
     True -> list.append(arguments, ["--helper", helper])
     False -> arguments
   }
 }
 
+/// Confirms whether a live process matches expected startup credentials.
 fn match_process(pid: Int, birth: String) -> ProcessMatch {
   case pid > 1 && birth != "" {
     False -> DifferentProcess
@@ -1243,6 +1336,7 @@ fn match_process(pid: Int, birth: String) -> ProcessMatch {
   }
 }
 
+/// Formats failure message when process identity cannot be confirmed.
 fn identity_unknown_message(pid: Int, reason: String) -> String {
   "could not verify loomd process "
   <> int.to_string(pid)
@@ -1251,6 +1345,7 @@ fn identity_unknown_message(pid: Int, reason: String) -> String {
   <> "; the endpoint was preserved to avoid starting a competing session writer"
 }
 
+/// Attempts authenticated websocket connection to verify server health.
 fn probe(endpoint: Endpoint) -> Result(Target, String) {
   use token <- result.try(read_token(endpoint.token_file))
   let inbox = connection.new_inbox()
@@ -1269,6 +1364,7 @@ fn probe(endpoint: Endpoint) -> Result(Target, String) {
   })
 }
 
+/// Awaits initial conversation snapshot to confirm server readiness.
 fn await_snapshot(
   inbox: process.Subject(connection_event.Message),
   expected_session: String,
@@ -1279,6 +1375,8 @@ fn await_snapshot(
   // other launcher wait is, and each frame that is not the answer resumes
   // the receive against what remains of it.
   let remaining = int.max(0, deadline - host.monotonic_time_ms())
+
+  // Receive message frame or handle timeout.
   case process.receive(inbox, remaining) {
     Error(Nil) -> Error("gateway snapshot timed out")
     Ok(connection_event.Connected) ->
@@ -1306,18 +1404,22 @@ fn await_snapshot(
   }
 }
 
+/// Reads 256-bit hexadecimal authentication token from private file.
 fn read_token(path: String) -> Result(String, String) {
   use bytes <- result.try(host.read_private_bounded(path, max_token_bytes))
   use token <- result.try(
     bit_array.to_string(bytes)
     |> result.replace_error("token file is not UTF-8"),
   )
+
+  // Validate trimmed token length.
   case string.trim(token) {
     "" -> Error("token file is empty: " <> path)
     value -> Ok(value)
   }
 }
 
+/// Extracts the trailing lines of the server log file for diagnostics.
 fn log_tail(endpoint: Endpoint) -> String {
   case
     host.current_log_tail(

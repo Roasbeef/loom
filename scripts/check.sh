@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-packages=(host core storage session machine prompt statem statem_parallel session_view web_view web_client web_mermaid telemetry runtime provider broker executor mcp lsp tools cap ext codemode events harness client tui conformance lint sandbox)
+packages=(host core storage session machine prompt statem statem_parallel evalstat gepa session_view web_view web_client web_mermaid telemetry runtime provider broker executor mcp lsp tools cap ext codemode events harness client tui conformance eval lint sandbox)
 targets=("${@:-${packages[@]}}")
 
 if [ $# -eq 0 ]; then
@@ -96,6 +96,11 @@ for pkg in "${targets[@]}"; do
       export LOOM_TEST_SHARD="${LOOM_CLIENT_TEST_SHARD:-${LOOM_TEST_SHARD:-1/1}}"
     fi
     bash ../../scripts/test.sh "$pkg"
+    # The two portable packages promise their suites on both targets, and
+    # the gate holds them to it (scripts/portable_js_test.sh says why).
+    case "$pkg" in
+    gepa | evalstat) bash ../../scripts/portable_js_test.sh "$pkg" ;;
+    esac
   )
   # This fixture checks the work removed by leaf memoisation and the provider
   # worker's copy boundary in a disposable VM, separate from correctness tests.

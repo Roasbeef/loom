@@ -31,10 +31,14 @@ pub type Context {
 /// ```
 pub fn session_name(context: Context) -> String {
   let base = context.path |> filepath.base_name |> text_hygiene.single_line
+
+  // Format branch component if present.
   let branch = case context.branch {
     Some(branch) -> branch |> text_hygiene.single_line |> string.trim
     None -> ""
   }
+
+  // Compose session display title.
   let name = case string.trim(base), branch {
     "", _ | "/", _ | ".", _ -> "New session"
     base, "" -> base
@@ -49,13 +53,15 @@ pub fn session_name(context: Context) -> String {
   }
 }
 
-// Stop at the first grapheme that does not fit: skipping it would silently
-// join unrelated parts of the original name instead of preserving a prefix.
+/// Truncates grapheme list to fit within byte limit.
 fn name_prefix(graphemes: List(String), remaining: Int) -> String {
+  // Match empty or head grapheme.
   case graphemes {
     [] -> ""
     [first, ..rest] -> {
       let bytes = string.byte_size(first)
+
+      // Check remaining byte budget.
       case bytes <= remaining {
         True -> first <> name_prefix(rest, remaining - bytes)
         False -> ""
@@ -88,12 +94,17 @@ pub fn discover_from(path: String) -> Context {
   }
 }
 
+/// Looks for a .git directory marker in path or its ancestors.
 fn repository_marker(path: String) -> Result(#(String, String), Nil) {
   let marker = filepath.join(path, ".git")
+
+  // Probe marker file or ascend to parent directory.
   case simplifile.exists(marker, follow_links: False) {
     Ok(True) -> Ok(#(path, marker))
     Error(_) | Ok(False) -> {
       let parent = filepath.directory_name(path)
+
+      // Terminate search at filesystem root.
       case parent == path || parent == "" {
         True -> Error(Nil)
         False -> repository_marker(parent)
@@ -102,6 +113,7 @@ fn repository_marker(path: String) -> Result(#(String, String), Nil) {
   }
 }
 
+/// Reads the branch or detached head name from the git repository.
 fn read_branch(root: String, marker: String) -> Option(String) {
   case git_directory(root, marker) {
     Some(directory) ->
@@ -113,6 +125,7 @@ fn read_branch(root: String, marker: String) -> Option(String) {
   }
 }
 
+/// Resolves .git directory whether a directory or a worktree file.
 fn git_directory(root: String, marker: String) -> Option(String) {
   case simplifile.is_directory(marker) {
     Ok(True) -> Some(marker)
@@ -124,6 +137,7 @@ fn git_directory(root: String, marker: String) -> Option(String) {
   }
 }
 
+/// Reads a small text file up to 4KB.
 fn read_small_file(path: String) -> Option(String) {
   case workspace_file.read_small_regular(path, 4096) {
     Ok(contents) ->
@@ -135,9 +149,12 @@ fn read_small_file(path: String) -> Option(String) {
   }
 }
 
+/// Parses gitdir pointer from worktree marker file.
 fn parse_git_directory(root: String, contents: String) -> Option(String) {
   let prefix = "gitdir: "
   let directory = string.trim(contents)
+
+  // Check for gitdir prefix line.
   case string.starts_with(directory, prefix) {
     False -> None
     True -> {
@@ -159,6 +176,8 @@ fn resolve_git_directory(root: String, path: String) -> String {
 pub fn branch_from_head(contents: String) -> Option(String) {
   let head = string.trim(contents)
   let prefix = "ref: refs/heads/"
+
+  // Distinguish branch ref, detached commit, or empty HEAD.
   case head == "", string.starts_with(head, prefix) {
     True, _ -> None
     False, True -> branch_name(string.drop_start(head, string.length(prefix)))
@@ -166,6 +185,7 @@ pub fn branch_from_head(contents: String) -> Option(String) {
   }
 }
 
+/// Validates branch name length and character hygiene.
 fn branch_name(name: String) -> Option(String) {
   case
     string.drop_start(name, 128) == ""
@@ -177,6 +197,7 @@ fn branch_name(name: String) -> Option(String) {
   }
 }
 
+/// Extracts short 8-char commit prefix for detached HEAD state.
 fn detached_head(head: String) -> Option(String) {
   case
     { exact_length(head, 40) || exact_length(head, 64) }

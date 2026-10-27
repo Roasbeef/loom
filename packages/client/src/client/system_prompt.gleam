@@ -127,6 +127,8 @@ pub fn pinned_profiles_in(
     storage.get_register(session.store, register.FactCustom, profiles_key)
     |> result.map_error(fn(_) { "the pinned model profiles are unreadable" }),
   )
+
+  // Decide how to handle pin {.
   case pin {
     None -> Ok(None)
     Some(storage.Register(value:, ..)) ->
@@ -249,20 +251,27 @@ pub fn environment(host: Host) -> pack.Environment {
 ///
 pub fn platform(raw: #(String, String)) -> String {
   let #(os, architecture) = raw
+
+  // Decide how to handle let os =  os {.
   let os = case os {
     "darwin" -> "macos"
     "nt" -> "windows"
     other -> other
   }
+
+  // Decide how to handle let architecture =  string.split_once(architecture, on: "-") {.
   let architecture = case string.split_once(architecture, on: "-") {
     Ok(#(head, _rest)) -> head
     Error(Nil) -> architecture
   }
+
+  // Decide how to handle let architecture =  architecture {.
   let architecture = case architecture {
     "aarch64" -> "arm64"
     "amd64" -> "x86_64"
     other -> other
   }
+
   os <> "/" <> architecture
 }
 
@@ -324,6 +333,12 @@ pub type Origin {
   /// A pack file named by `LOOM_PROMPT_PACK`.
   PackFile(path: String)
 
+  /// Pack source text handed to the session by its host (`Settings.pack`),
+  /// never read from the environment. `label` is a short phrase that
+  /// finishes the sentence "the prompt pack ..." for a person, such as
+  /// "provided by arm 3f2a".
+  Provided(label: String)
+
   /// `LOOM_SYSTEM_PROMPT`: no pack was consulted at all.
   Override
 
@@ -370,6 +385,7 @@ pub fn pack_source(path: Option(String)) -> Result(#(Origin, String), String) {
   }
 }
 
+/// Establishes unreadable pack for the caller, keeping its validation and result policy at this boundary.
 fn unreadable_pack(path: String, error: simplifile.FileError) -> String {
   pack_path_variable
   <> " names a prompt pack that could not be read: "
@@ -405,6 +421,8 @@ pub fn render_pack(
     }),
   )
   let text = pack.render(decoded, environment(host))
+
+  // Decide how to handle string.trim(text) {.
   case string.trim(text) {
     "" ->
       Error(
@@ -462,6 +480,7 @@ pub fn named(origin: Origin) -> String {
   case origin {
     Shipped -> "shipped with this build"
     PackFile(path:) -> path
+    Provided(label:) -> label
     Override -> override_variable
     Pinned -> system_key
   }
@@ -514,6 +533,7 @@ pub fn assemble(
   override override: Option(String),
   render render: fn() -> Result(Rendered, String),
 ) -> Result(Assembled, String) {
+  // Decide how to handle explicit(override), pinned {.
   case explicit(override), pinned {
     Some(text), _ ->
       Ok(Assembled(
@@ -550,6 +570,8 @@ pub fn assemble(
 // An override of whitespace is no override: an empty `system` block is
 // worse than none, and it is how a profile that exports the variable
 // unconditionally would silently disable the pack.
+
+/// Establishes explicit for the caller, keeping its validation and result policy at this boundary.
 fn explicit(override: Option(String)) -> Option(String) {
   case override {
     Some(text) ->
@@ -609,6 +631,8 @@ pub fn pinned_for(
 ) -> Result(Option(String), String) {
   use pinned <- result.try(pinned_value_in(session))
   let demand = demand_name(demand)
+
+  // Decide how to handle pinned {.
   case pinned {
     None -> Ok(None)
     Some(Legacy(..)) -> Ok(None)
@@ -617,6 +641,7 @@ pub fn pinned_for(
   }
 }
 
+/// Establishes pinned value in for the caller, keeping its validation and result policy at this boundary.
 fn pinned_value_in(session: Session) -> Result(Option(PinnedValue), String) {
   case storage.get_register(session.store, register.FactCustom, system_key) {
     Error(error) ->
@@ -673,6 +698,7 @@ pub fn pinned(runtime: Runtime) -> Result(Option(String), String) {
 /// ```
 ///
 pub fn pin(runtime: Runtime, assembled: Assembled) -> Result(Nil, String) {
+  // Decide how to handle assembled.fresh {.
   case assembled.fresh {
     False -> Ok(Nil)
     True -> {
@@ -702,6 +728,7 @@ pub fn pin_for(
   assembled: Assembled,
   demand: EnforcementDemand,
 ) -> Result(Nil, String) {
+  // Decide how to handle assembled.fresh {.
   case assembled.fresh {
     False -> Ok(Nil)
     True -> {
@@ -721,6 +748,8 @@ pub fn pin_for(
 // Provenance may trail the behavioural write because it is diagnostic only:
 // a failed provenance commit loses attribution, never the binding between the
 // words a model reads and the demand the broker enforces.
+
+/// Establishes write provenance for the caller, keeping its validation and result policy at this boundary.
 fn write_provenance(
   runtime: Runtime,
   assembled: Assembled,
@@ -736,6 +765,7 @@ fn write_provenance(
   )
 }
 
+/// Establishes demand name for the caller, keeping its validation and result policy at this boundary.
 fn demand_name(demand: EnforcementDemand) -> String {
   case demand {
     exec.FullEnforcement -> "full"
@@ -744,6 +774,7 @@ fn demand_name(demand: EnforcementDemand) -> String {
   }
 }
 
+/// Establishes write for the caller, keeping its validation and result policy at this boundary.
 fn write(
   runtime: Runtime,
   key: String,
@@ -762,6 +793,8 @@ fn write(
 // exact two-field record. Any other shape means something reached past the
 // reservation, and re-rendering over it would hide exactly the thing worth
 // seeing.
+
+/// Establishes decode pinned for the caller, keeping its validation and result policy at this boundary.
 fn decode_pinned(payload: JsonValue) -> Result(PinnedValue, CorruptionReport) {
   case payload {
     json.String(value:) -> Ok(Legacy(text: value))
@@ -770,10 +803,12 @@ fn decode_pinned(payload: JsonValue) -> Result(PinnedValue, CorruptionReport) {
   }
 }
 
+/// Establishes decode bound for the caller, keeping its validation and result policy at this boundary.
 fn decode_bound(
   fields: List(#(String, JsonValue)),
   payload: JsonValue,
 ) -> Result(PinnedValue, CorruptionReport) {
+  // Decide how to handle list.length(fields) == 2 {.
   case list.length(fields) == 2 {
     False -> invalid_pinned(payload)
     True -> {
@@ -783,6 +818,8 @@ fn decode_bound(
         "enforcement",
         payload,
       ))
+
+      // Decide how to handle enforcement {.
       case enforcement {
         "full" | "platform" | "best-effort" -> Ok(Bound(text:, enforcement:))
         _ -> invalid_pinned(payload)
@@ -791,6 +828,7 @@ fn decode_bound(
   }
 }
 
+/// Establishes pinned string field for the caller, keeping its validation and result policy at this boundary.
 fn pinned_string_field(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -802,6 +840,7 @@ fn pinned_string_field(
   }
 }
 
+/// Establishes invalid pinned for the caller, keeping its validation and result policy at this boundary.
 fn invalid_pinned(payload: JsonValue) -> Result(a, CorruptionReport) {
   Error(corruption.report(
     at: "client/system_prompt.decode_pinned",
@@ -981,6 +1020,8 @@ pub fn render_guidance(
 // the same file under the convention's second name — this repository
 // keeps its own that way, by `cp` — and carrying it twice would spend
 // the guidance budget on a copy while the cut falls on something new.
+
+/// Establishes distinct from for the caller, keeping its validation and result policy at this boundary.
 fn distinct_from(
   claude: Option(GuidanceFile),
   agents: Option(GuidanceFile),
@@ -1075,11 +1116,15 @@ type Candidate {
 // the one name the cross-tool convention settled on; a second global
 // file under a second name would only make the precedence harder to
 // predict.
+
+/// Establishes workspace slot for the caller, keeping its validation and result policy at this boundary.
 fn workspace_slot(
   workspace: String,
   file: String,
 ) -> #(Option(GuidanceFile), List(String)) {
   let path = workspace <> "/" <> file
+
+  // Decide how to handle candidate(path) {.
   case candidate(path) {
     Present(text:) -> #(
       Some(GuidanceFile(path:, origin: WorkspaceFile, text:)),
@@ -1101,6 +1146,7 @@ fn user_default(home: Option(String)) -> #(Option(GuidanceFile), List(String)) {
   }
 }
 
+/// Establishes user default under for the caller, keeping its validation and result policy at this boundary.
 fn user_default_under(
   home: String,
   directories: List(String),
@@ -1116,6 +1162,7 @@ fn user_default_under(
   }
 }
 
+/// Establishes user default at for the caller, keeping its validation and result policy at this boundary.
 fn user_default_at(
   home: String,
   path: String,

@@ -106,17 +106,20 @@ pub fn check_in(
   folder
 }
 
-// A session's workspace is writable, so a folder that is the daemon's state
-// directory, lies in it or contains it would hand the agent the catalogue, the
-// credentials and every session's database. The default state directory is
-// hidden and so already refused; this covers one the owner placed elsewhere in
-// home. The state root is canonicalized here so a link to it is no way round;
-// one that cannot be resolved refuses every folder, which fails closed.
+/// Ensures the workspace candidate is strictly outside the daemon state root.
+/// A session's workspace is writable, so a folder that is the daemon's state
+/// directory, lies in it or contains it would hand the agent the catalogue, the
+/// credentials and every session's database. The default state directory is
+/// hidden and so already refused; this covers one the owner placed elsewhere in
+/// home. The state root is canonicalized here so a link to it is no way round;
+/// one that cannot be resolved refuses every folder, which fails closed.
 fn apart_from(folder: String, state_root: String) -> Result(Nil, Reason) {
   use root <- result.try(
     bootstrap.canonical_directory(state_root)
     |> result.replace_error(creations.Unavailable),
   )
+
+  // Refuse folders overlapping or identical to the daemon state directory.
   case
     folder == root
     || string.starts_with(folder, root <> "/")
@@ -127,10 +130,11 @@ fn apart_from(folder: String, state_root: String) -> Result(Nil, Reason) {
   }
 }
 
-// The folder's owner is the home directory's, and that owner has read, write and
-// search permission on it. The daemon runs as the owner of the home directory,
-// so the comparison stands in for "owned by the daemon user" without asking the
-// operating system for the daemon's own identity.
+/// Checks that the candidate folder is owned by the user and has rwx permissions.
+/// The folder's owner is the home directory's, and that owner has read, write and
+/// search permission on it. The daemon runs as the owner of the home directory,
+/// so the comparison stands in for "owned by the daemon user" without asking the
+/// operating system for the daemon's own identity.
 fn usable(folder: String, home: String) -> Result(Nil, Reason) {
   let info = fn(path) {
     simplifile.file_info(path) |> result.replace_error(creations.NotAFolder)
@@ -138,6 +142,8 @@ fn usable(folder: String, home: String) -> Result(Nil, Reason) {
   use folder_info <- result.try(info(folder))
   use home_info <- result.try(info(home))
   let owner_all = 0o700
+
+  // Verify identical ownership and owner read/write/execute permission bits.
   case
     folder_info.user_id == home_info.user_id
     && int.bitwise_and(folder_info.mode, owner_all) == owner_all

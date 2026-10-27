@@ -7,13 +7,16 @@
 
 import gleam/dict
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/string
+import lane_fixture
 import lustre/element.{type Element}
+import page_fixture
 import session_view/step_words
 import session_view/transcript_line.{type Line, Line}
 import session_view/transcript_lines
 import session_view/turns
+import web_view/component
 import web_view/view/fold_row
 import web_view/view/lane
 
@@ -214,4 +217,103 @@ pub fn empty_failed_step_has_no_expandable_body_test() {
   assert list.is_empty(body)
   let html = fold_row.step(turns.Failed, words, None, body) |> element.to_string
   assert !string.contains(html, "loom-expand")
+}
+
+// The full source survives a sealed answer even when the drawn row is only a
+// digest. Reusing the preview alone must not expand that source again.
+pub fn unchanged_stored_reasoning_reuses_its_source_and_body_test() {
+  let model =
+    component.new(page_fixture.start())
+    |> component.apply([lane_fixture.reasoned_answers(4, None)])
+  let drawn = fn() {
+    lane.rows(
+      component.pieces(model),
+      [],
+      element.none(),
+      fn(line) { element.text(line.text) },
+      lane.NoReplies,
+      lane.no_marks(),
+      lane.NoFolds,
+      "",
+    )
+  }
+  let view = drawn()
+  let #(cache, trims, _) = counted(fn() { first(view) })
+  assert trims > 0
+
+  let #(#(_, cache), trims, parses) =
+    counted(fn() { patch(cache, view, drawn()) })
+  assert trims == 0
+  assert parses == 0
+  let #(#(_, _), trims, parses) = counted(fn() { patch(cache, view, drawn()) })
+  assert trims == 0
+  assert parses == 0
+}
+
+fn held_reasoning(text: String, took: Int) -> turns.Piece {
+  turns.Plain(
+    transcript_lines.Block("held", transcript_lines.FromSpacer, [
+      #(
+        "held:0",
+        Line(transcript_line.SummarizedReasoning, "Reasoning\nSame summary"),
+      ),
+    ]),
+    dict.from_list([#("held:0", [Line(transcript_line.Reasoning, text)])]),
+    Some(took),
+  )
+}
+
+fn thought_lane(pieces: List(turns.Piece)) -> Element(Nil) {
+  lane.rows(
+    pieces,
+    [],
+    element.none(),
+    fn(line) { element.text(line.text) },
+    lane.NoReplies,
+    lane.no_marks(),
+    lane.NoFolds,
+    "",
+  )
+}
+
+// A row's label can stay the same while its source body or elapsed figure
+// changes. Both remain dependencies, as does its right to inherit live state.
+pub fn a_reasoning_leaf_refreshes_body_time_and_handoff_test() {
+  let view = thought_lane([held_reasoning("first body\nsecond line", 1000)])
+  let cache = first(view)
+  let changed = thought_lane([held_reasoning("new body\nsecond\nthird", 2000)])
+  let #(text, cache) = patch(cache, view, changed)
+  assert string.contains(text, "new body")
+  assert string.contains(text, "3 lines")
+  assert string.contains(text, "2s")
+
+  let newer =
+    turns.Plain(
+      transcript_lines.Block("newer", transcript_lines.FromSpacer, [
+        #("newer:0", Line(transcript_line.ReasoningDigest, "newer thought")),
+      ]),
+      dict.new(),
+      None,
+    )
+  let appended =
+    thought_lane([
+      held_reasoning("new body\nsecond\nthird", 2000),
+      newer,
+    ])
+  let #(text, cache) = patch(cache, changed, appended)
+  assert string.contains(text, "handoff")
+  assert string.contains(text, "no")
+  let #(#(_, _), trims, parses) =
+    counted(fn() {
+      patch(
+        cache,
+        appended,
+        thought_lane([
+          held_reasoning("new body\nsecond\nthird", 2000),
+          newer,
+        ]),
+      )
+    })
+  assert trims == 0
+  assert parses == 0
 }

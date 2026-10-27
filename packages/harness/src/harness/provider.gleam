@@ -50,7 +50,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import harness/admission
-import harness/model_facts.{ReadsImages, TextOnly}
+import harness/model_facts.{TextOnly}
 import harness/routing.{type Routing}
 import harness/vision
 import machine/strand.{type StrandConfiguration}
@@ -235,10 +235,12 @@ fn generation(
     ).reading
 
   // Determine whether this request needs routing through the vision provider chain.
-  let routed = case
+  let route_images =
     reading == TextOnly
     && admission.image_bearing(provider.session, operation, context)
-  {
+
+  // Only an image-bearing request on a text-only model looks for a vision route.
+  let routed = case route_images {
     True -> routing.vision_route(provider.routing, configuration)
     False -> None
   }
@@ -250,9 +252,12 @@ fn generation(
       generation_request(
         provider,
         configuration,
-        case reading {
-          TextOnly -> vision.placeholdered(context)
-          ReadsImages -> context
+        // Image-reading models retain their context. A text-only context
+        // classified without images also needs no rebuilding; an image-bearing
+        // run without a vision route still needs placeholders.
+        case route_images {
+          True -> vision.placeholdered(context)
+          False -> context
         },
         routing.request_target(provider.routing, configuration),
       )

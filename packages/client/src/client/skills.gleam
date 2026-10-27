@@ -48,10 +48,12 @@ pub fn page(
   )
 }
 
+/// Establishes page rows for the caller, keeping its validation and result policy at this boundary.
 fn page_rows(
   remaining: List(skill.Skill),
   rows: List(json.JsonValue),
 ) -> List(json.JsonValue) {
+  // Decide how to handle remaining {.
   case remaining {
     [] -> rows
     [entry, ..rest] -> {
@@ -62,6 +64,8 @@ fn page_rows(
           #("argument_hint", json.String(entry.argument_hint)),
         ])
       let candidate = list.append(rows, [row])
+
+      // Decide how to handle transfer.encoded_size(json.Array(candidate), 48_000) {.
       case transfer.encoded_size(json.Array(candidate), 48_000) {
         Ok(_) -> page_rows(rest, candidate)
         Error(_) -> rows
@@ -84,9 +88,12 @@ pub fn expand_message(
   catalogue: skill.Catalogue,
   input: message.AgentMessage,
 ) -> Result(message.AgentMessage, String) {
+  // Decide how to handle input {.
   case input {
     message.UserMessage(content: [message.UserText(text:, ..), ..rest], ..) as user -> {
       use expanded <- result.try(expand_text(catalogue, text))
+
+      // Decide how to handle expanded == text {.
       case expanded == text {
         True -> Ok(input)
         False ->
@@ -102,12 +109,15 @@ pub fn expand_message(
   }
 }
 
+/// Establishes expand text for the caller, keeping its validation and result policy at this boundary.
 fn expand_text(
   catalogue: skill.Catalogue,
   text: String,
 ) -> Result(String, String) {
+  // Decide how to handle string.trim_start(text) {.
   case string.trim_start(text) {
     "/" <> command -> {
+      // Decide how to handle let #(name, arguments) =  string.split_once(command, " ") {.
       let #(name, arguments) = case string.split_once(command, " ") {
         Ok(#(name, arguments)) -> #(string.trim_end(name), arguments)
 
@@ -116,6 +126,8 @@ fn expand_text(
         // verbatim, including their trailing newline or tab.
         Error(Nil) -> #(string.trim_end(command), "")
       }
+
+      // Decide how to handle skill.lookup(catalogue, name) {.
       case skill.lookup(catalogue, name) {
         Error(_) -> Ok(text)
         Ok(entry) ->

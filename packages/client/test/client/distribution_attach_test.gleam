@@ -5,6 +5,7 @@
 import client/distribution_attach
 import client/distribution_plan
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 
@@ -101,4 +102,25 @@ pub fn every_recipe_keeps_the_tool_hidden_and_not_listening_test() {
   assert list.all(commands, fn(line) {
     string.contains(line, "-hidden -dist_listen false")
   })
+}
+
+pub fn the_attach_root_is_the_override_or_below_home_test() {
+  assert distribution_attach.attach_root(None, "/h") == "/h/.pickglass/attach"
+  assert distribution_attach.attach_root(Some(""), "/h")
+    == "/h/.pickglass/attach"
+  assert distribution_attach.attach_root(Some("/r"), "/h") == "/r"
+}
+
+pub fn only_a_plain_word_is_a_directory_name_test() {
+  assert distribution_attach.is_directory_name("inspector")
+  assert !distribution_attach.is_directory_name("")
+  assert !distribution_attach.is_directory_name(".hidden")
+  assert !distribution_attach.is_directory_name("a/b")
+}
+
+pub fn the_pickglass_lines_use_attach_and_never_promise_a_bare_attach_test() {
+  let text = distribution_attach.pickglass_lines("/r", "tool", "x@h")
+  assert string.contains(text, "pickglass attach --node x@h --attach tool")
+  assert string.contains(text, "--attach-dir '/r/tool'")
+  assert !string.contains(text, "only")
 }

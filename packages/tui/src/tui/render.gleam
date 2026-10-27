@@ -246,6 +246,8 @@ pub fn render_frame(
       model.shared.active_strand,
     )
     |> render_command_palette(body_area, model)
+
+  // Handle render frame branch dispatch.
   let base = case layout.borrowed_diff_panel(model) {
     Some(area) ->
       base
@@ -254,6 +256,8 @@ pub fn render_frame(
       |> render_diff_view(layout.panel_inner(area), model)
     None -> base
   }
+
+  // Handle render frame branch dispatch.
   let rendered = case model.view.overlay {
     NoOverlay -> base
     ModelSelector(selector) -> model_selector.render(base, screen, selector)
@@ -326,6 +330,7 @@ pub fn render_frame(
       )
   }
 
+  // Handle render frame branch dispatch.
   let rendered = case model.view.overlay {
     AgentInspector(agents.Inspector(focus: agents.Composing, ..)) ->
       render_command_palette(
@@ -349,6 +354,8 @@ pub fn render_frame(
         ]
         |> list.find(fn(area) { area.position == selected.area.position })
         |> result.unwrap(selected.area)
+
+      // Handle render frame branch dispatch.
       case
         model.view.caches.selection_frame,
         geometry.intersect(selected.area, current_area)
@@ -366,6 +373,8 @@ pub fn render_frame(
     }
     None -> rendered
   }
+
+  // Handle render frame branch dispatch.
   let cursor = case model.view.overlay, model.view.queue_editor.surface {
     NoOverlay, queue_editor.Editor -> queue_editor_cursor(model, queue_area)
     NoOverlay, _ -> text_area.cursor_screen_pos(input_view, editor_area)
@@ -383,6 +392,7 @@ pub fn render_frame(
     | ApprovalInspector(_), _
     -> Error(Nil)
   }
+
   let #(rendered, cursor) =
     render_summary_surface(rendered, cursor, screen, model)
   let #(rendered, cursor) =
@@ -390,8 +400,7 @@ pub fn render_frame(
   #(appearance.apply(rendered, model.view.palette), cursor)
 }
 
-// The screen under its first row, which the identity line keeps while a
-// full-screen surface is open, so the session it belongs to stays named.
+/// Renders and formats below identity elements for the TUI surface.
 fn below_identity(screen: Rect) -> Rect {
   geometry.rect_new(
     screen.position.x,
@@ -427,6 +436,8 @@ pub fn render_panel_border(
 ) -> buffer.Buffer {
   let width = area.size.width
   let height = area.size.height
+
+  // Handle render panel border branch dispatch.
   case width < 2 || height < 2 {
     True -> buf
     False -> {
@@ -467,6 +478,7 @@ pub fn render_panel_border(
   }
 }
 
+/// Renders and formats render vertical edges elements for the TUI surface.
 fn render_vertical_edges(
   buf: buffer.Buffer,
   x_left: Int,
@@ -485,6 +497,7 @@ fn render_vertical_edges(
   }
 }
 
+/// Renders and formats render changes panel elements for the TUI surface.
 fn render_changes_panel(
   buf: buffer.Buffer,
   area: Rect,
@@ -505,7 +518,7 @@ fn session_title(model: Model) -> String {
   }
 }
 
-// The identity line's facts: what does not change while a turn runs.
+/// Renders and formats identity elements for the TUI surface.
 fn identity(
   model: Model,
   strip: List(agent_strip.Line),
@@ -520,8 +533,7 @@ fn identity(
   )
 }
 
-// A model reads by its last path segment, `Kimi-K3`; the full identity is
-// in the workspace detail and `/model`.
+/// Renders and formats short model elements for the TUI surface.
 fn short_model(model: String) -> String {
   model
   |> text_hygiene.single_line
@@ -530,7 +542,7 @@ fn short_model(model: String) -> String {
   |> result.unwrap(model)
 }
 
-// The viewed strand's reasoning effort, from the capture's configuration.
+/// Renders and formats effort elements for the TUI surface.
 fn effort(model: Model) -> Option(String) {
   case model.shared.captured {
     Some(#(_, view)) ->
@@ -543,9 +555,7 @@ fn effort(model: Model) -> Option(String) {
   }
 }
 
-// How many things wait on the operator: the agents whose rows say they
-// need input, and each open approval whose strand is not one of them, which
-// covers a question main itself asked.
+/// Renders and formats needs you elements for the TUI surface.
 fn needs_you(model: Model, strip: List(agent_strip.Line)) -> Int {
   let waiting =
     strip
@@ -561,11 +571,12 @@ fn needs_you(model: Model, strip: List(agent_strip.Line)) -> Int {
   })
 }
 
-// Every live fact the input frame's rules carry.
+/// Renders and formats frame status elements for the TUI surface.
 fn frame_status(
   model: Model,
   strip: List(agent_strip.Line),
 ) -> input_frame.Status {
+  // Handle frame status branch dispatch.
   let activity = case layout.active_status_label(model) {
     None -> input_frame.Resting
     Some(doing) ->
@@ -578,6 +589,7 @@ fn frame_status(
         },
       )
   }
+
   input_frame.Status(
     target: recipient_label(model),
     keys: string.trim(input_title_keys(model)),
@@ -598,14 +610,15 @@ fn frame_status(
   )
 }
 
-// The key hints an empty draft shows, for the keys that do something right
-// now: Left only opens the picker from an empty composer with daemon
-// control, and Down enters the strip only while the strip is drawn.
+/// Renders and formats placeholder elements for the TUI surface.
 fn placeholder(model: Model, strip: List(agent_strip.Line)) -> Option(String) {
+  // Handle placeholder branch dispatch.
   let composing = case model.view.overlay, model.view.strip_focus {
     NoOverlay, agent_strip.Composing -> True
     _, _ -> False
   }
+
+  // Handle placeholder branch dispatch.
   case composing, text_area.value(model.view.input) {
     True, "" ->
       [
@@ -623,11 +636,7 @@ fn placeholder(model: Model, strip: List(agent_strip.Line)) -> Option(String) {
   }
 }
 
-// A reading surface needs a gutter, not four persistent edges or a heading:
-// the identity line names the strand. While the reader is above the tail,
-// the panel's bottom row names the way back and how far it is, just above
-// the input frame where the eye returns to type. The row is the panel's own
-// spare edge, so the transcript keeps every row it had.
+/// Renders and formats render reading row elements for the TUI surface.
 fn render_reading_row(
   buf: buffer.Buffer,
   area: Rect,
@@ -666,6 +675,7 @@ fn render_reading_row(
   }
 }
 
+/// Renders and formats render transcript elements for the TUI surface.
 fn render_transcript(
   buf: buffer.Buffer,
   area: Rect,
@@ -682,6 +692,7 @@ fn render_transcript(
   }
 }
 
+/// Renders and formats render main transcript elements for the TUI surface.
 fn render_main_transcript(
   buf: buffer.Buffer,
   area: Rect,
@@ -704,6 +715,7 @@ fn render_main_transcript(
   }
 }
 
+/// Renders and formats render rows elements for the TUI surface.
 fn render_rows(
   buf: buffer.Buffer,
   area: Rect,
@@ -773,10 +785,7 @@ fn transcript_offset(model: Model) -> Int {
   model.view.scroll_offset + tui_model.viewport_backlog(model)
 }
 
-// The speaker's background continues to the right edge. Padding has a known
-// cell width, so it can be written directly instead of segmented and measured
-// as another span. Writing it after the content preserves the span renderer's
-// ordering, including its behavior at wide-grapheme boundaries.
+/// Renders and formats render transcript row elements for the TUI surface.
 fn render_transcript_row(
   buf: buffer.Buffer,
   area: Rect,
@@ -784,6 +793,8 @@ fn render_transcript_row(
   row: Int,
 ) -> buffer.Buffer {
   let position = geometry.Position(area.position.x, area.position.y + row)
+
+  // Handle render transcript row branch dispatch.
   case line.spans {
     // A message's bar belongs to the margin column the transcript keeps to
     // its left, so it is painted there and the rest of the row is painted
@@ -822,14 +833,15 @@ fn render_transcript_row(
   }
 }
 
-// What borrows the transcript's area, named with its strand, or `None` for
-// the transcript itself.
+/// Renders and formats surface title elements for the TUI surface.
 fn surface_title(model: Model) -> Option(String) {
+  // Handle surface title branch dispatch.
   let surface = case model.view.help_open, model.view.notes_open {
     True, _ -> Some("help")
     False, True -> Some("agent notes")
     False, False -> None
   }
+
   option.map(surface, fn(surface) {
     " "
     <> surface
@@ -839,6 +851,7 @@ fn surface_title(model: Model) -> Option(String) {
   })
 }
 
+/// Renders and formats transcript content elements for the TUI surface.
 fn transcript_content(
   lines: List(Line),
   width: Int,
@@ -976,6 +989,8 @@ pub fn finish_markdown_rows(
             ..line.spans
           ])
         })
+
+      // Handle finish markdown rows branch dispatch.
       case run {
         live_tail.OpensLine -> [answer_heading(strand), ..body]
         live_tail.ContinuesLine -> body
@@ -1005,9 +1020,7 @@ pub fn finish_markdown_rows(
   }
 }
 
-// The row an answer opens with: the answer's mark and the name of the
-// strand that gave it, which is what the operator reads to know whose
-// words follow.
+/// Renders and formats answer heading elements for the TUI surface.
 fn answer_heading(strand: String) -> span.Line {
   span.line_new([
     span.span_styled("◆ ", theme.current_bold()),
@@ -1018,23 +1031,30 @@ fn answer_heading(strand: String) -> span.Line {
   ])
 }
 
+/// Renders and formats marked rows elements for the TUI surface.
 fn marked_rows(
   speaker: Speaker,
   rows: List(span.Line),
   run: live_tail.RowRun,
 ) -> List(span.Line) {
   let #(mark, mark_style) = speaker_mark(speaker, "")
+
+  // Handle marked rows branch dispatch.
   let first = case run {
     live_tail.OpensLine -> mark
     live_tail.ContinuesLine -> speaker_gutter
   }
+
   let marked =
     list.index_map(rows, fn(line, index) {
       let span.Line(spans:, alignment:) = line
+
+      // Handle marked rows branch dispatch.
       let prefix = case index == 0 {
         True -> first
         False -> speaker_gutter
       }
+
       span.Line(
         spans: [span.span_styled(prefix, mark_style), ..spans],
         alignment:,
@@ -1043,9 +1063,7 @@ fn marked_rows(
   marked
 }
 
-// The mark that opens a speaker's first row and the style it is drawn in. A
-// tool call's mark depends on its text, which is the only reason the text is
-// an argument; every other speaker's mark is fixed.
+/// Renders and formats speaker mark elements for the TUI surface.
 fn speaker_mark(speaker: Speaker, text: String) -> #(String, style.Style) {
   case speaker {
     System -> #("◇ ", theme.quiet_text())
@@ -1082,18 +1100,19 @@ fn speaker_mark(speaker: Speaker, text: String) -> #(String, style.Style) {
   }
 }
 
-// The rows one speaker's body occupies, before any wrapping the speaker did
-// not already do for itself. Every arm ends by handing its mark to
-// `prefix_rendered_lines` or drawing it inline, so the mark and the gutter
-// beneath it are decided in one place.
+/// Renders and formats speaker rows elements for the TUI surface.
 fn speaker_rows(line: Line, width: Int, strand: String) -> List(span.Line) {
   let #(mark, mark_style) = speaker_mark(line.speaker, line.text)
+
+  // Handle speaker rows branch dispatch.
   let body = case
     line.speaker == ToolCall && string.starts_with(line.text, "✓ ")
   {
     True -> string.drop_start(line.text, 2)
     False -> line.text
   }
+
+  // Handle speaker rows branch dispatch.
   case line.speaker {
     // The operator's turn is its own text in a shaded band, opened by the
     // prompt's mark and wrapped under itself; the band, not a title row,
@@ -1113,10 +1132,12 @@ fn speaker_rows(line: Line, width: Int, strand: String) -> List(span.Line) {
           markdown.wrap_line(span.line_plain(text), room)
         })
         |> list.index_map(fn(row, index) {
+          // Handle speaker rows branch dispatch.
           let prefix = case index == 0 {
             True -> span.span_styled("› ", mark_style)
             False -> span.span_styled(speaker_gutter, body_style)
           }
+
           span.Line(..row, spans: [
             prefix,
             ..list.map(row.spans, fn(value) {
@@ -1181,10 +1202,12 @@ fn speaker_rows(line: Line, width: Int, strand: String) -> List(span.Line) {
       |> text_hygiene.multiline
       |> string.split("\n")
       |> list.index_map(fn(text, index) {
+        // Handle speaker rows branch dispatch.
         let prefix = case index == 0 {
           True -> mark
           False -> speaker_gutter
         }
+
         span.line_new([
           span.span_styled(prefix, mark_style),
           span.span_plain(text),
@@ -1200,18 +1223,19 @@ fn speaker_rows(line: Line, width: Int, strand: String) -> List(span.Line) {
 /// The key an image's row offers, at the end of its words.
 pub const image_key = "o opens externally"
 
-// An image's row: the mark, the words cut so the key fits beside them, and
-// the key. A note after a newline is a quiet row of its own under the words.
+/// Renders and formats image rows elements for the TUI surface.
 fn image_rows(
   text: String,
   mark: String,
   mark_style: style.Style,
   width: Int,
 ) -> List(span.Line) {
+  // Handle image rows branch dispatch.
   let #(words, note) = case string.split_once(text, "\n") {
     Ok(#(words, note)) -> #(words, Some(note))
     Error(Nil) -> #(text, None)
   }
+
   let room = int.max(0, width - 2 - 3 - string.length(image_key))
   let words = text.truncate(text_hygiene.single_line(words), room, "…")
   let first =
@@ -1223,6 +1247,8 @@ fn image_rows(
       ),
       span.span_styled("   " <> image_key, theme.quiet_text()),
     ])
+
+  // Handle image rows branch dispatch.
   case note {
     Some(note) -> [
       first,
@@ -1242,27 +1268,23 @@ fn image_rows(
 /// summarizer's text, not the model's reasoning.
 pub const summarized_mark = "∴ Reasoning (summarized)"
 
-// A header row, clipped to the pane as a digest is, and the summary beneath
-// it as dim rows indented under the mark. The text is the header, a
-// newline, and the summary; `transcript_lines` builds it that way.
+/// Renders and formats summarized rows elements for the TUI surface.
 fn summarized_rows(
   text: String,
   mark: String,
   mark_style: style.Style,
   width: Int,
 ) -> List(span.Line) {
+  // Handle summarized rows branch dispatch.
   let #(header, summary) = case string.split_once(text, "\n") {
     Ok(halves) -> halves
     Error(Nil) -> #(text, "")
   }
+
   [digest_row(header, mark, mark_style, width), ..summary_rows(summary, width)]
 }
 
-// The summary wrapped at word boundaries to the room beside a two-cell
-// indent, at most `transcript_lines.summary_rows` rows. A longer summary
-// keeps its first rows and ends the last one with an ellipsis, so the block
-// never grows past its bound however long the text; a word wider than the
-// room is cut rather than allowed to widen the row.
+/// Renders and formats summary rows elements for the TUI surface.
 fn summary_rows(summary: String, width: Int) -> List(span.Line) {
   let room = width - 2
   let words =
@@ -1276,6 +1298,8 @@ fn summary_rows(summary: String, width: Int) -> List(span.Line) {
     words
     |> list.fold([], fn(rows, word) {
       let word = text.truncate(word, room, "…")
+
+      // Handle summary rows branch dispatch.
       case rows {
         [current, ..earlier] ->
           case text.cell_width(current) + 1 + text.cell_width(word) <= room {
@@ -1287,6 +1311,8 @@ fn summary_rows(summary: String, width: Int) -> List(span.Line) {
     })
     |> list.reverse
   let kept = list.take(rows, transcript_lines.summary_rows)
+
+  // Handle summary rows branch dispatch.
   let kept = case list.drop(rows, transcript_lines.summary_rows) {
     [] -> kept
     [_, ..] -> ellipsized(kept, room)
@@ -1297,7 +1323,7 @@ fn summary_rows(summary: String, width: Int) -> List(span.Line) {
   })
 }
 
-// Marks the last kept row as cut short.
+/// Renders and formats ellipsized elements for the TUI surface.
 fn ellipsized(rows: List(String), room: Int) -> List(String) {
   case list.reverse(rows) {
     [last, ..earlier] ->
@@ -1306,13 +1332,7 @@ fn ellipsized(rows: List(String), room: Int) -> List(String) {
   }
 }
 
-// One row, whatever the pane is. Clipping rather than wrapping is what makes
-// the height invariant hold at every width: bounding the digest text by a
-// character count only moves the width at which it wraps, because the mark
-// and the expand hint are a further thirty-four cells the count knows nothing
-// about. The hint is the part a reader acts on, so the opening line gives up
-// cells for it; when the pane cannot hold even the hint, the whole body is
-// clipped and the hint goes with it rather than crowding out the words.
+/// Renders and formats digest row elements for the TUI surface.
 fn digest_row(
   text: String,
   mark: String,
@@ -1321,6 +1341,8 @@ fn digest_row(
 ) -> span.Line {
   let body = text_hygiene.single_line(text)
   let room = width - text.cell_width(mark)
+
+  // Handle digest row branch dispatch.
   let #(opening, hint) = case
     string.ends_with(body, transcript_lines.expand_hint)
   {
@@ -1330,11 +1352,15 @@ fn digest_row(
     )
     False -> #(body, "")
   }
+
   let for_opening = room - text.cell_width(hint)
+
+  // Handle digest row branch dispatch.
   let clipped = case for_opening > 0 {
     True -> text.truncate(opening, for_opening, "…") <> hint
     False -> text.truncate(body, room, "…")
   }
+
   span.line_new([
     span.span_styled(mark, mark_style),
     span.span_plain(clipped),
@@ -1352,6 +1378,7 @@ fn digest_row(
 // own nesting is then measured from it.
 const speaker_gutter = "  "
 
+/// Renders and formats prefix rendered lines elements for the TUI surface.
 fn prefix_rendered_lines(
   lines: List(span.Line),
   mark: String,
@@ -1360,10 +1387,13 @@ fn prefix_rendered_lines(
   lines
   |> list.index_map(fn(line, index) {
     let span.Line(spans:, alignment:) = line
+
+    // Handle prefix rendered lines branch dispatch.
     let prefix = case index == 0 {
       True -> mark
       False -> speaker_gutter
     }
+
     span.Line(
       spans: [span.span_styled(prefix, mark_style), ..spans],
       alignment:,
@@ -1397,10 +1427,13 @@ pub fn help_content() -> span.Text {
   ])
 }
 
+/// Renders and formats agent detail content elements for the TUI surface.
 fn agent_detail_content(model: Model, inspector: agents.Inspector) {
   let selected = inspector.selected
   let message = inspector.message
   let scroll = inspector.scroll
+
+  // Handle agent detail content branch dispatch.
   case inspector.detail {
     agents.Overview -> None
     agents.Messages -> {
@@ -1432,6 +1465,7 @@ fn agent_detail_content(model: Model, inspector: agents.Inspector) {
   }
 }
 
+/// Renders and formats notes content elements for the TUI surface.
 fn notes_content(model: Model, area: Rect, target: String) -> span.Text {
   let rows = prepared_notes(model, target, area)
   let context = note_context(model, target)
@@ -1453,17 +1487,23 @@ pub fn prepared_notes(
   area: Rect,
 ) -> List(note_panel.Row) {
   let width = note_panel.body_width(area)
+
+  // Handle prepared notes branch dispatch.
   case model.shared.note_board {
     Some(board) if board.strand == target -> {
       let chosen = selected_note(model, board)
       list.map(board.notes, fn(note) {
+        // Handle prepared notes branch dispatch.
         let extent = case note.extent {
           notes_view.Complete -> "Complete"
           notes_view.Excerpt -> "Excerpt"
         }
+
+        // Handle prepared notes branch dispatch.
         let body = case chosen == Some(note.key) {
           False -> []
           True -> {
+            // Handle prepared notes branch dispatch.
             let value = case model.view.note_mode, note.extent {
               note_panel.Raw, notes_view.Complete -> raw_note_line(note.text)
               note_panel.Readable, notes_view.Complete ->
@@ -1472,9 +1512,11 @@ pub fn prepared_notes(
               | note_panel.Readable, notes_view.Excerpt
               -> Line(ToolResult, note.text)
             }
+
             transcript_content([value], width, target).lines
           }
         }
+
         note_panel.Row(
           key: note.key,
           seq: note.seq,
@@ -1489,6 +1531,7 @@ pub fn prepared_notes(
   }
 }
 
+/// Renders and formats historical note rows elements for the TUI surface.
 fn historical_note_rows(model: Model, target: String, width: Int) {
   case historical_note_payload(model, target) {
     None -> []
@@ -1516,6 +1559,7 @@ fn historical_note_rows(model: Model, target: String, width: Int) {
   }
 }
 
+/// Renders and formats note context elements for the TUI surface.
 fn note_context(model: Model, target: String) -> List(String) {
   case model.shared.note_board {
     Some(board) if board.strand == target -> [
@@ -1550,6 +1594,7 @@ fn note_context(model: Model, target: String) -> List(String) {
   }
 }
 
+/// Renders and formats missing note context elements for the TUI surface.
 fn missing_note_context(model: Model, target: String) -> List(String) {
   case model.view.overlay {
     AgentInspector(_) -> [
@@ -1568,22 +1613,30 @@ fn missing_note_context(model: Model, target: String) -> List(String) {
   }
 }
 
+/// Renders and formats note compact status elements for the TUI surface.
 fn note_compact_status(board: notes_view.Board, model: Model) -> String {
+  // Handle note compact status branch dispatch.
   let freshness = case model.shared.captured {
     Some(#(cut, _)) if cut.next_seq - 1 > board.as_of -> "stale · "
     _ -> "current read · "
   }
+
+  // Handle note compact status branch dispatch.
   let omitted = case board.total - list.length(board.notes) {
     count if count > 0 -> int.to_string(count) <> " more notes omitted · "
     _ -> ""
   }
+
   freshness <> omitted <> "↑/↓ or [/] select · r refresh · Ctrl+g readable/raw"
 }
 
+/// Renders and formats historical note payload elements for the TUI surface.
 fn historical_note_payload(model: Model, target: String) -> Option(String) {
   model.shared.records
   |> list.find_map(fn(record) {
     let protocol.EntryRecord(strand:, entry:) = record
+
+    // Handle historical note payload branch dispatch.
     case strand == target, entry {
       True, entry.MessageEntry(message: value, ..) ->
         transcript_lines.agent_notes_payload(value) |> option.to_result(Nil)
@@ -1594,6 +1647,7 @@ fn historical_note_payload(model: Model, target: String) -> Option(String) {
   |> result.unwrap(None)
 }
 
+/// Renders and formats note read status elements for the TUI surface.
 fn note_read_status(board: notes_view.Board, model: Model) -> String {
   case model.shared.captured {
     Some(#(cut, _)) if cut.next_seq - 1 > board.as_of ->
@@ -1603,9 +1657,9 @@ fn note_read_status(board: notes_view.Board, model: Model) -> String {
   }
 }
 
-// Only the accepted operation's own revision establishes that a note predates
-// this turn. Unrelated session activity says nothing about the note's accuracy.
+/// Renders and formats note turn relation elements for the TUI surface.
 fn note_turn_relation(seq: Int, model: Model, target: String) -> String {
+  // Handle note turn relation branch dispatch.
   case model.shared.captured {
     None -> ""
     Some(#(_, view)) -> {
@@ -1615,6 +1669,8 @@ fn note_turn_relation(seq: Int, model: Model, target: String) -> String {
           cell.namespace == register.OpMeta && cell.key == current
         })
       }
+
+      // Handle note turn relation branch dispatch.
       case started {
         Ok(cell) if seq < cell.seq -> " · written before current turn"
         _ -> ""
@@ -1623,8 +1679,7 @@ fn note_turn_relation(seq: Int, model: Model, target: String) -> String {
   }
 }
 
-// Raw inspection keeps the JSON representation but gives its structure rows.
-// Excerpts never enter this path because a cut value may not parse completely.
+/// Renders and formats raw note line elements for the TUI surface.
 fn raw_note_line(text: String) -> Line {
   case json.parse(text) {
     Ok(value) ->
@@ -1653,6 +1708,7 @@ pub fn selected_note(model: Model, board: notes_view.Board) -> Option(String) {
   }
 }
 
+/// Renders and formats render footer elements for the TUI surface.
 fn render_footer(
   buf: buffer.Buffer,
   area: Rect,
@@ -1662,6 +1718,8 @@ fn render_footer(
     render_compact_footer(buf, area, model)
   })
   let #(project, model_name, usage, status, combined) = footer_sections(model)
+
+  // Handle render footer branch dispatch.
   case area.size.height {
     1 -> render_single_footer(buf, area, project, usage, combined)
     2 -> render_stacked_footer(buf, area, project, model_name, usage, status)
@@ -1669,8 +1727,7 @@ fn render_footer(
   }
 }
 
-// Billing detail is available with Ctrl+g. Everyday work needs the model,
-// context estimate, session cost, and attention state rather than cache totals.
+/// Renders and formats render compact footer elements for the TUI surface.
 fn render_compact_footer(
   buf: buffer.Buffer,
   area: Rect,
@@ -1695,6 +1752,8 @@ fn render_compact_footer(
     ]
     |> list.filter(fn(piece) { piece != "" })
   let status = agents.summary_rows(layout.displayed_agents(model))
+
+  // Handle render compact footer branch dispatch.
   case area.size.height > 1 {
     True ->
       paragraph.render_styled(
@@ -1775,11 +1834,15 @@ pub fn fit_pieces(pieces: List(String), limit: Int) -> String {
   }
 }
 
+/// Renders and formats fit rest elements for the TUI surface.
 fn fit_rest(pieces: List(String), limit: Int, taken: String) -> String {
+  // Handle fit rest branch dispatch.
   case pieces {
     [] -> taken
     [next, ..rest] -> {
       let longer = taken <> " · " <> next
+
+      // Handle fit rest branch dispatch.
       case text.cell_width(longer) <= limit {
         True -> fit_rest(rest, limit, longer)
         False -> taken
@@ -1788,6 +1851,7 @@ fn fit_rest(pieces: List(String), limit: Int, taken: String) -> String {
   }
 }
 
+/// Renders and formats footer sections elements for the TUI surface.
 fn footer_sections(
   model: Model,
 ) -> #(span.Line, span.Line, span.Line, span.Line, span.Line) {
@@ -1882,8 +1946,7 @@ fn remote_pieces(entries: List(remote_usage.RemoteUsage)) -> List(String) {
   }
 }
 
-// The same roster summary the compact footer shows, so expanding details
-// does not change how the agents are counted.
+/// Renders and formats model footer status elements for the TUI surface.
 fn model_footer_status(model: Model) -> String {
   footer_status(
     agents.summary_rows(layout.displayed_agents(model)),
@@ -1935,6 +1998,8 @@ pub fn footer_status(
 @internal
 pub fn footer_project_limit(width: Int) -> Int {
   let floor = layout.footer_project_cells - 2
+
+  // Handle footer project limit branch dispatch.
   case layout.footer_rows(width) {
     1 -> floor
     _ -> int.max(floor, width - layout.footer_model_cells - 2)
@@ -1960,6 +2025,8 @@ pub fn footer_project_limit(width: Int) -> Int {
 @internal
 pub fn footer_status_limit(width: Int) -> Int {
   let floor = layout.footer_status_cells - 2
+
+  // Handle footer status limit branch dispatch.
   case layout.footer_rows(width) {
     1 -> floor + width - layout.footer_single_row_cells()
     2 -> int.max(floor, width - layout.footer_usage_cells - 2)
@@ -1985,12 +2052,15 @@ pub fn footer_status_limit(width: Int) -> Int {
 @internal
 pub fn footer_usage_limit(width: Int) -> Int {
   let cap = layout.footer_usage_cells - 2
+
+  // Handle footer usage limit branch dispatch.
   case layout.footer_rows(width) {
     1 | 2 -> cap
     _ -> int.min(cap, width - 2)
   }
 }
 
+/// Renders and formats render single footer elements for the TUI surface.
 fn render_single_footer(
   buf: buffer.Buffer,
   area: Rect,
@@ -2007,6 +2077,7 @@ fn render_single_footer(
   statusbar.render(buf, area, bar)
 }
 
+/// Renders and formats render stacked footer elements for the TUI surface.
 fn render_stacked_footer(
   buf: buffer.Buffer,
   area: Rect,
@@ -2025,6 +2096,8 @@ fn render_stacked_footer(
     |> statusbar.with_style(theme.paper, theme.graphite)
     |> statusbar.with_left([usage])
     |> statusbar.with_right([status])
+
+  // Handle render stacked footer branch dispatch.
   case geometry.split_v(area, [Length(1), Length(1)]) {
     [primary_area, usage_area] ->
       buf
@@ -2034,6 +2107,7 @@ fn render_stacked_footer(
   }
 }
 
+/// Renders and formats render split footer elements for the TUI surface.
 fn render_split_footer(
   buf: buffer.Buffer,
   area: Rect,
@@ -2055,6 +2129,8 @@ fn render_split_footer(
     statusbar.statusbar_new()
     |> statusbar.with_style(theme.paper, theme.graphite)
     |> statusbar.with_left([status])
+
+  // Handle render split footer branch dispatch.
   case geometry.split_v(area, [Length(1), Length(1), Length(1)]) {
     [primary_area, usage_area, status_area] ->
       buf
@@ -2065,17 +2141,15 @@ fn render_split_footer(
   }
 }
 
-// Etui's incremental diff can retain cells when one action replaces most of
-// the viewport. Detail mode is exactly that action: bounded tool summaries
-// become full stack traces in one frame. Alternating an invisible modifier on
-// otherwise blank canvas cells makes those vacated positions explicit diff
-// writes without forcing every steady streaming frame to repaint.
+/// Renders and formats repaint canvas elements for the TUI surface.
 fn repaint_canvas(screen: Rect, phase: Bool) -> buffer.Buffer {
   // The buffer's default already represents every blank cell. The old bulk
   // fill materialized the whole grid even though its one-character row only
   // changed the first column. Keep the default sparse and write that column
   // only in the alternate phase, preserving the existing diff markers.
   let blank = buffer.buffer_new(screen)
+
+  // Handle repaint canvas branch dispatch.
   case phase {
     False -> blank
     True ->
@@ -2090,6 +2164,7 @@ fn repaint_canvas(screen: Rect, phase: Bool) -> buffer.Buffer {
   }
 }
 
+/// Renders and formats render pending band elements for the TUI surface.
 fn render_pending_band(
   buf: buffer.Buffer,
   area: Rect,
@@ -2118,9 +2193,7 @@ fn render_pending_band(
   )
 }
 
-// What the next key does, for the input frame's top rule after the
-// recipient. The strip and the workspace own the keyboard while they are
-// browsed, so they name their own keys instead.
+/// Renders and formats input title keys elements for the TUI surface.
 fn input_title_keys(model: Model) -> String {
   case model.view.overlay, model.view.strip_focus {
     AgentInspector(agents.Inspector(focus: agents.Browsing, ..)), _ ->
@@ -2134,8 +2207,7 @@ fn input_title_keys(model: Model) -> String {
   }
 }
 
-// A long child ID must not hide whether Enter sends, queues, or steers.
-// Its distinguishing suffix remains visible; the workspace shows it in full.
+/// Renders and formats recipient label elements for the TUI surface.
 fn recipient_label(model: Model) -> String {
   model.shared.active_strand
   |> text_hygiene.single_line
@@ -2144,6 +2216,7 @@ fn recipient_label(model: Model) -> String {
   |> string.reverse
 }
 
+/// Renders and formats render paste chip elements for the TUI surface.
 fn render_paste_chip(
   buf: buffer.Buffer,
   area: Rect,
@@ -2162,6 +2235,7 @@ fn render_paste_chip(
   paragraph.render_styled(buf, area, lines)
 }
 
+/// Renders and formats render command palette elements for the TUI surface.
 fn render_command_palette(
   buf: buffer.Buffer,
   body: Rect,
@@ -2172,6 +2246,8 @@ fn render_command_palette(
       text_area.value(model.view.input),
       model.shared.skills,
     )
+
+  // Handle render command palette branch dispatch.
   case suggestions, model.view.overlay {
     [], _
     | _, ModelSelector(_)
@@ -2259,14 +2335,13 @@ pub fn goal_availability(model: Model) -> focused_goal_panel.Availability {
   }
 }
 
-// The panel paints every cell of its rows, padded to the width, so it needs
-// no interior clear; it is inset one column to line up with the
-// conversation's own left margin.
+/// Renders and formats render todo panel elements for the TUI surface.
 fn render_todo_panel(
   buf: buffer.Buffer,
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
+  // Handle render todo panel branch dispatch.
   case layout.todo_board(model), area.size.height {
     None, _ | _, 0 -> buf
     Some(board), rows -> {
@@ -2290,6 +2365,7 @@ fn render_todo_panel(
   }
 }
 
+/// Renders and formats render inline queue elements for the TUI surface.
 fn render_inline_queue(
   buf: buffer.Buffer,
   area: Rect,
@@ -2306,10 +2382,14 @@ fn render_inline_queue(
     True -> " · held until your next message "
     False -> " "
   }
+
+  // Handle render inline queue branch dispatch.
   let tiny_controls = case held {
     True -> "held ↵ Esc"
     False -> layout.tiny_queue_controls()
   }
+
+  // Handle render inline queue branch dispatch.
   let short_title = case held {
     True -> " queue · held ↵ Esc "
     False -> " queue · ↑↓ Pg ↵ e Esc "
@@ -2352,6 +2432,8 @@ fn render_inline_queue(
       let rows = layout.queue_rows(model)
       let inner = layout.panel_inner(area)
       let body = layout.queue_content_area(area)
+
+      // Handle render inline queue branch dispatch.
       let title = case area.size.height {
         height if height <= 2 ->
           tiny_queue_title(
@@ -2364,6 +2446,7 @@ fn render_inline_queue(
         height if height <= 4 -> short_title
         _ -> " queued inputs · " <> model.shared.active_strand <> held_hint
       }
+
       buf
       |> buffer.clear(area)
       |> render_panel_border(area, title, theme.signal)
@@ -2385,6 +2468,7 @@ fn render_inline_queue(
   }
 }
 
+/// Renders and formats tiny queue title elements for the TUI surface.
 fn tiny_queue_title(
   rows: List(snapshot_view.PendingInput),
   selected: Int,
@@ -2392,6 +2476,7 @@ fn tiny_queue_title(
   controls: String,
   width: Int,
 ) -> String {
+  // Handle tiny queue title branch dispatch.
   case list.first(list.drop(rows, selected)) {
     Error(Nil) -> " queue · " <> controls <> " "
     Ok(row) -> {
@@ -2416,6 +2501,7 @@ fn tiny_queue_title(
   }
 }
 
+/// Renders and formats queue inspector controls elements for the TUI surface.
 fn queue_inspector_controls(
   state: queue_editor.State,
   area: Rect,
@@ -2438,20 +2524,26 @@ fn queue_inspector_controls(
   list.take(lines, layout.queue_control_rows(area))
 }
 
+/// Renders and formats render queue draft elements for the TUI surface.
 fn render_queue_draft(
   buf: buffer.Buffer,
   area: Rect,
   state: queue_editor.State,
 ) -> buffer.Buffer {
+  // Handle render queue draft branch dispatch.
   case state.draft {
     None -> buf
     Some(draft) -> {
       let inner = layout.panel_inner(area)
       let editor_area = layout.queue_draft_area(area)
+
+      // Handle render queue draft branch dispatch.
       let priority = case draft.document.kind {
         queued_input.Queue -> "queue"
         queued_input.Steer -> "steer"
       }
+
+      // Handle render queue draft branch dispatch.
       let delivery = case draft.delivery {
         queue_editor.Editable -> "editable revision"
         queue_editor.Saving -> "save awaiting acknowledgement"
@@ -2509,6 +2601,7 @@ fn render_queue_draft(
   }
 }
 
+/// Renders and formats queue input view elements for the TUI surface.
 fn queue_input_view(input: text_area.TextAreaState, area: Rect) {
   let wrapped = layout.input_view_state(input, area.size.width)
   let offset = int.max(0, wrapped.cursor_y - int.max(1, area.size.height) + 1)
@@ -2519,7 +2612,9 @@ fn queue_input_view(input: text_area.TextAreaState, area: Rect) {
   )
 }
 
+/// Renders and formats queue editor cursor elements for the TUI surface.
 fn queue_editor_cursor(model: Model, area: Rect) {
+  // Handle queue editor cursor branch dispatch.
   case model.view.queue_editor.draft {
     Some(draft) -> {
       let editor_area = layout.queue_draft_area(area)
@@ -2537,6 +2632,7 @@ fn queue_editor_cursor(model: Model, area: Rect) {
   }
 }
 
+/// Renders and formats diff title elements for the TUI surface.
 fn diff_title(model: Model) -> String {
   case model.shared.worktree.focus, model.shared.worktree.board {
     worktree_view.Navigator, Some(_) -> " worktree · NAV ↑↓ r Enter PgUp/Dn "
@@ -2558,6 +2654,7 @@ type DiffNavigationItem {
   DiffNavigationItem(label: String, tone: DiffTone)
 }
 
+/// Renders and formats diff navigation items elements for the TUI surface.
 fn diff_navigation_items(
   state: worktree_view.State,
 ) -> List(DiffNavigationItem) {
@@ -2575,12 +2672,15 @@ fn diff_navigation_items(
               text_hygiene.single_line(
                 file.index_status <> file.worktree_status,
               )
+
+            // Handle diff navigation items branch dispatch.
             let badge = case file.kind {
               "binary" -> "[BIN]"
               "metadata_only" -> "[META]"
               "no_net_change" -> "[NO Δ]"
               _ -> "[" <> string.trim(status) <> "]"
             }
+
             DiffNavigationItem(
               badge <> " " <> text_hygiene.single_line(file.path),
               diff_tone(status, file.kind),
@@ -2592,6 +2692,7 @@ fn diff_navigation_items(
   }
 }
 
+/// Renders and formats diff tone elements for the TUI surface.
 fn diff_tone(status: String, kind: String) -> DiffTone {
   case kind, string.contains(status, "D"), string.contains(status, "A") {
     _, True, _ -> DiffRemoved
@@ -2602,6 +2703,7 @@ fn diff_tone(status: String, kind: String) -> DiffTone {
   }
 }
 
+/// Renders and formats diff navigation line elements for the TUI surface.
 fn diff_navigation_line(
   item: DiffNavigationItem,
   index: Int,
@@ -2616,6 +2718,8 @@ fn diff_navigation_line(
     True -> "▸ "
     False -> "  "
   }
+
+  // Handle diff navigation line branch dispatch.
   let background = case chosen {
     True -> theme.raised
     False -> theme.graphite
@@ -2641,12 +2745,16 @@ fn diff_navigation_line(
   ])
 }
 
+/// Renders and formats diff selected header elements for the TUI surface.
 fn diff_selected_header(state: worktree_view.State, width: Int) -> span.Line {
+  // Handle diff selected header branch dispatch.
   let label = case state.board {
     None -> "Captured edits · current worktree unavailable"
     Some(board) -> {
       let files = board.files
       let commits_index = list.length(files) + 1
+
+      // Handle diff selected header branch dispatch.
       case state.selected {
         0 ->
           "All files · observation "
@@ -2671,6 +2779,7 @@ fn diff_selected_header(state: worktree_view.State, width: Int) -> span.Line {
       }
     }
   }
+
   let value =
     label
     |> text.truncate(width, "…")
@@ -2680,6 +2789,7 @@ fn diff_selected_header(state: worktree_view.State, width: Int) -> span.Line {
   ])
 }
 
+/// Renders and formats render diff view elements for the TUI surface.
 fn render_diff_view(
   buf: buffer.Buffer,
   area: Rect,
@@ -2717,16 +2827,20 @@ fn render_diff_view(
   )
 }
 
+/// Renders and formats diff heading lines elements for the TUI surface.
 fn diff_heading_lines(
   state: worktree_view.State,
   height: Int,
 ) -> List(span.Line) {
+  // Handle diff heading lines branch dispatch.
   let focus = case state.focus {
     worktree_view.Composer ->
       "Composer focus · Ctrl+d file navigation · Esc close"
     worktree_view.Navigator ->
       "Navigator focus · ↑/↓ files · r refresh · PgUp/PgDn patch · Enter composer · Esc close"
   }
+
+  // Handle diff heading lines branch dispatch.
   case height {
     0 -> []
     1 -> [
@@ -2739,6 +2853,7 @@ fn diff_heading_lines(
   }
 }
 
+/// Renders and formats queue count line elements for the TUI surface.
 fn queue_count_line(model: Model) -> String {
   case model.shared.captured {
     Some(#(_, view)) ->
@@ -2761,6 +2876,7 @@ fn queue_count_line(model: Model) -> String {
 /// The rows of the summary surface for the selected tab.
 @internal
 pub fn summary_lines(model: Model, width: Int) -> List(span.Line) {
+  // Handle summary lines branch dispatch.
   let #(jobs, jobs_notice) = case model.shared.jobs {
     Some(board) if board.strand == model.shared.active_strand -> #(
       Some(board),
@@ -2769,6 +2885,7 @@ pub fn summary_lines(model: Model, width: Int) -> List(span.Line) {
     Some(_) -> #(None, "Live jobs unavailable for the current strand")
     None -> #(None, model.shared.jobs_notice)
   }
+
   summary_panel.lines(
     model.view.summary_tab,
     completion_summary.latest(
@@ -2786,6 +2903,7 @@ pub fn summary_lines(model: Model, width: Int) -> List(span.Line) {
   )
 }
 
+/// Renders and formats jobs observation line elements for the TUI surface.
 fn jobs_observation_line(model: Model) -> String {
   case model.shared.jobs_observed_ms {
     Some(observed) ->
@@ -2797,14 +2915,15 @@ fn jobs_observation_line(model: Model) -> String {
   }
 }
 
-// Context belongs to one measured provider request. Session usage accumulates
-// every request and strand, so it can never stand in for this number.
+/// Renders and formats context usage line elements for the TUI surface.
 fn context_usage_line(model: Model) -> String {
+  // Handle context usage line branch dispatch.
   let records = case model.shared.captured {
     Some(#(cut, view)) ->
       snapshot_view.branch(view, cut.window, model.shared.active_strand).records
     None -> model.shared.records
   }
+
   let measured =
     records
     |> list.find_map(fn(record) {
@@ -2815,6 +2934,8 @@ fn context_usage_line(model: Model) -> String {
         _ -> Error(Nil)
       }
     })
+
+  // Handle context usage line branch dispatch.
   case measured {
     Ok(usage) ->
       "Context at last measured request: "
@@ -2832,7 +2953,9 @@ fn context_usage_line(model: Model) -> String {
   }
 }
 
+/// Renders and formats render summary surface elements for the TUI surface.
 fn render_summary_surface(buf, cursor, screen, model: Model) {
+  // Handle render summary surface branch dispatch.
   case model.view.summary_surface {
     queue_editor.Closed -> #(buf, cursor)
     queue_editor.Inspector | queue_editor.Editor -> {
@@ -2870,15 +2993,20 @@ fn render_summary_surface(buf, cursor, screen, model: Model) {
   }
 }
 
+/// Renders and formats render context surface elements for the TUI surface.
 fn render_context_surface(buf, cursor, screen, model: Model) {
+  // Handle render context surface branch dispatch.
   case model.shared.context.surface {
     context_view.Hidden -> #(buf, cursor)
     context_view.Overview | context_view.All -> {
       let inner = layout.panel_inner(screen)
+
+      // Handle render context surface branch dispatch.
       let title = case screen.size.width < 60 {
         True -> " context · a · PgUp/Dn · r · Esc "
         False -> " context · a detail · PgUp/Dn · r refresh · Esc back "
       }
+
       let lines = context_panel.lines(model.shared.context, inner.size.width)
       let offset =
         int.min(
@@ -2894,12 +3022,7 @@ fn render_context_surface(buf, cursor, screen, model: Model) {
   }
 }
 
-// A remote child's transcript in the lower lane, under the framing that says
-// whose working it is and where it was recorded (protocol-change/090). The
-// words are model text from another machine, so each line is drawn as plain
-// text and never through the Markdown renderer the transcript uses. The page
-// is the newest one, so the lane shows its tail when it is taller than the
-// lane.
+/// Renders and formats render peek elements for the TUI surface.
 fn render_peek(buf: buffer.Buffer, area: Rect, model: Model) -> buffer.Buffer {
   let #(main, side) = layout.transcript_areas(area, model)
   let lines =
@@ -2913,8 +3036,7 @@ fn render_peek(buf: buffer.Buffer, area: Rect, model: Model) -> buffer.Buffer {
   |> paragraph.render_styled(side, shown)
 }
 
-// Main rows keep updating above a bounded side panel. The composer accepts
-// /btw follow-ups explicitly, so ordinary input keeps its existing recipient.
+/// Renders and formats render btw elements for the TUI surface.
 fn render_btw(buf: buffer.Buffer, area: Rect, model: Model) -> buffer.Buffer {
   let #(main, side) = layout.transcript_areas(area, model)
   let lines =

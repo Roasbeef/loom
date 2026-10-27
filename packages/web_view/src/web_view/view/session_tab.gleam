@@ -143,9 +143,9 @@ pub fn view(
   )
 }
 
-// The groups, memoized on what they are drawn from. The wrapper is the pane's
-// second child and the stylesheet makes it `display:contents`, so each group
-// is placed in the pane's column by its own `order`.
+/// The groups, memoized on what they are drawn from. The wrapper is the pane's
+/// second child and the stylesheet makes it `display:contents`, so each group
+/// is placed in the pane's column by its own `order`.
 fn rows(
   goal: List(String),
   cost: String,
@@ -180,9 +180,9 @@ fn rows(
   )
 }
 
-// One group: an optional eyebrow heading and its rows. The class names the
-// group, which is how the stylesheet places it. The Session group has no
-// heading of its own, because the pane's title is its heading.
+/// One group: an optional eyebrow heading and its rows. The class names the
+/// group, which is how the stylesheet places it. The Session group has no
+/// heading of its own, because the pane's title is its heading.
 fn group(
   name: String,
   heading: Option(String),
@@ -204,9 +204,9 @@ fn group(
   )
 }
 
-// The workspace of the Session group, or nothing when the label was not read.
-// The name and its Rename control are the pane's last child, which the
-// stylesheet draws first in the group.
+/// The workspace of the Session group, or nothing when the label was not read.
+/// The name and its Rename control are the pane's last child, which the
+/// stylesheet draws first in the group.
 fn workspace_group(
   workspace: Option(String),
   runs_on: Option(String),
@@ -224,9 +224,9 @@ fn workspace_group(
   }
 }
 
-// The line that says where the session runs: text only, in the quiet style,
-// and nothing for a session that runs on this host. It follows the path inside
-// the Session group, so it moves no child of the pane.
+/// The line that says where the session runs: text only, in the quiet style,
+/// and nothing for a session that runs on this host. It follows the path inside
+/// the Session group, so it moves no child of the pane.
 fn where_line(runs_on: Option(String)) -> List(Element(message)) {
   case runs_on {
     None -> []
@@ -266,8 +266,8 @@ fn people_group(viewers: Option(Viewers)) -> List(Element(message)) {
   }
 }
 
-// The cost: the figure and the word that says it is an estimate. An unpriced
-// session has no figure to qualify, so the dash stands alone.
+/// The cost: the figure and the word that says it is an estimate. An unpriced
+/// session has no figure to qualify, so the dash stands alone.
 fn cost_line(cost: String) -> Element(message) {
   case cost {
     "—" -> html.p([attribute.class("session-quiet")], [html.text(cost)])
@@ -279,7 +279,7 @@ fn cost_line(cost: String) -> Element(message) {
   }
 }
 
-// The goal: the terminal's words for a pinned goal, or that there is none.
+/// The goal: the terminal's words for a pinned goal, or that there is none.
 fn goal_rows(goal: List(String)) -> List(Element(message)) {
   case goal {
     [] -> [
@@ -289,7 +289,7 @@ fn goal_rows(goal: List(String)) -> List(Element(message)) {
   }
 }
 
-// The jobs: the count and the daemon's board, or that none was read.
+/// The jobs: the count and the daemon's board, or that none was read.
 fn jobs_rows(jobs: Jobs) -> List(Element(message)) {
   case jobs {
     Unread -> [
@@ -314,7 +314,7 @@ fn jobs_rows(jobs: Jobs) -> List(Element(message)) {
   }
 }
 
-// The viewers: how many are attached and one line for each principal.
+/// The viewers: how many are attached and one line for each principal.
 fn viewer_rows(viewers: Viewers) -> List(Element(message)) {
   [
     html.p([], [html.text(int.to_string(viewers.total) <> " attached")]),
@@ -329,13 +329,13 @@ fn viewer_rows(viewers: Viewers) -> List(Element(message)) {
   ]
 }
 
-// One principal as `<name> · <role> · you`: the name, the role they hold in the
-// session, how many tabs when more than one, and whether the page is theirs
-// (`you`) or another person's (`viewing`). The role is one word in the terms
-// the home uses. An owner who has a page open may operate it, so `owner` and
-// `operator` are both `operator`, and only a principal whose every page is
-// read-only is an `observer`. The engine's own terms for a grant's roles and
-// attached pages never reach the line.
+/// One principal as `<name> · <role> · you`: the name, the role they hold in the
+/// session, how many tabs when more than one, and whether the page is theirs
+/// (`you`) or another person's (`viewing`). The role is one word in the terms
+/// the home uses. An owner who has a page open may operate it, so `owner` and
+/// `operator` are both `operator`, and only a principal whose every page is
+/// read-only is an `observer`. The engine's own terms for a grant's roles and
+/// attached pages never reach the line.
 fn viewer(viewer: Viewer) -> Element(message) {
   html.li([], [
     html.text(viewer.name),
@@ -363,7 +363,7 @@ fn role_word(roles: List(String)) -> String {
   }
 }
 
-// The line that says rows were left out, or nothing.
+/// The line that says rows were left out, or nothing.
 fn more(left: Int, words: String) -> Element(message) {
   case left {
     0 -> element.none()

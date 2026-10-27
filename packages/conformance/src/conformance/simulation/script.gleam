@@ -238,6 +238,8 @@ pub fn describe(script: Script) -> String {
     script.ops
     |> list.map(describe_op)
     |> string.join(" then ")
+
+  // Format structural setting for diagnostic display.
   let structural = case script.structural {
     Supplied -> "supplied"
     Generated(split: False) -> "generated"
@@ -249,6 +251,8 @@ pub fn describe(script: Script) -> String {
     None -> "no threshold"
     Some(n) -> "threshold@" <> int.to_string(n)
   }
+
+  // Format subagent setting for diagnostic display.
   let subagent = case script.subagent {
     None -> "no subagent"
     Some(_brief) -> "subagent"
@@ -259,10 +263,13 @@ pub fn describe(script: Script) -> String {
     True -> "parallel"
     False -> "sequential"
   }
+
+  // Format escalation mode for diagnostic display.
   let escalation = case script.escalate {
     True -> "escalate"
     False -> "no escalation"
   }
+
   ops
   <> " | "
   <> threshold
@@ -278,6 +285,7 @@ pub fn describe(script: Script) -> String {
   <> string.join(list.map(script.interventions, describe_intervention), ",")
 }
 
+/// Formats an operation for diagnostic description.
 fn describe_op(op: Op) -> String {
   case op {
     RunOp(settles:, ..) ->
@@ -288,6 +296,7 @@ fn describe_op(op: Op) -> String {
   }
 }
 
+/// Formats a settle behavior for diagnostic description.
 fn describe_settle(settle: Settle) -> String {
   case settle {
     Answer(..) -> "answer"
@@ -298,6 +307,7 @@ fn describe_settle(settle: Settle) -> String {
   }
 }
 
+/// Formats an intervention for diagnostic description.
 fn describe_intervention(intervention: Intervention) -> String {
   case intervention {
     Steer(trigger:, ..) -> "steer@" <> describe_trigger(trigger)
@@ -306,6 +316,7 @@ fn describe_intervention(intervention: Intervention) -> String {
   }
 }
 
+/// Formats an intervention trigger for diagnostic description.
 fn describe_trigger(trigger: Trigger) -> String {
   case trigger {
     DuringTurn(turn:) -> "turn" <> int.to_string(turn)
@@ -382,6 +393,8 @@ pub fn generate(rng: Rng) -> #(Script, Rng) {
   // A run continues only while its turns keep asking for more, so the
   // shape is: some number of continuing turns, then one that ends it.
   let #(drawn_count, rng) = random.weighted(rng, [#(3, 0), #(4, 1), #(2, 2)], 0)
+
+  // Determine continuing turn count ensuring tool batch when needed.
   let continuing_count = case { parallel || escalate } && drawn_count == 0 {
     True -> 1
     False -> drawn_count
@@ -391,6 +404,8 @@ pub fn generate(rng: Rng) -> #(Script, Rng) {
   // scripted value, so two polls would reuse its call ids and a call id
   // must name exactly one call in the tree.
   let #(drawn_defer, rng) = random.int_between(rng, 0, continuing_count)
+
+  // Position the deferred turn to avoid consuming required tool batches.
   let defer_at = case
     { parallel || escalate } && continuing_count == 1 && drawn_defer == 0
   {
@@ -399,6 +414,7 @@ pub fn generate(rng: Rng) -> #(Script, Rng) {
     True -> 1
     False -> drawn_defer
   }
+
   let #(continuing, rng) =
     fold_turns(rng, 0, continuing_count, defer_at, parallel, [])
   let #(final, rng) = terminal_settle(rng)
@@ -464,10 +480,7 @@ pub fn generate(rng: Rng) -> #(Script, Rng) {
   )
 }
 
-// The continuing turns, in order: the one at `defer_at` (if any) is the
-// deferred turn, the rest are tool batches. Call ids carry their turn, so
-// no two calls in a script share an id. Under parallel scheduling every
-// batch carries two calls, so the overlapping frontier is real.
+/// Generates sequential continuing turns matching specified defer and parallelism settings.
 fn fold_turns(
   rng: Rng,
   turn: Int,
@@ -495,12 +508,16 @@ fn calls(rng: Rng, prefix: String) -> #(Settle, Rng) {
   batch(rng, prefix, pair: False)
 }
 
+/// Draws a batch of tool calls for a turn.
 fn batch(rng: Rng, prefix: String, pair pair: Bool) -> #(Settle, Rng) {
   let #(drawn, rng) = random.int_between(rng, 1, 2)
+
+  // Select tool count based on pair setting.
   let count = case pair {
     True -> 2
     False -> drawn
   }
+
   let #(names, rng) =
     random.list_of(rng, count, fn(rng) {
       random.pick(rng, ["read", "write", "probe"], "read")
@@ -513,10 +530,12 @@ fn batch(rng: Rng, prefix: String, pair pair: Bool) -> #(Settle, Rng) {
   #(Calls(calls:, tokens:), rng)
 }
 
-// A turn that ends the run, one way or another.
+/// Draws a terminal settle behavior that concludes a run.
 fn terminal_settle(rng: Rng) -> #(Settle, Rng) {
   let #(tokens, rng) = random.int_between(rng, 1, 9)
   let #(kind, rng) = random.int_between(rng, 1, 100)
+
+  // Select terminal settlement outcome based on the random draw.
   case kind {
     n if n <= 60 -> #(Answer(text: "answered", tokens:), rng)
     n if n <= 80 -> #(Transient, rng)
@@ -524,29 +543,35 @@ fn terminal_settle(rng: Rng) -> #(Settle, Rng) {
   }
 }
 
-// What a deferred poll settles with: an answer that ends the turn, or a
-// tool batch that keeps the run going past the poll.
+/// Draws a poll settle behavior for deferred operations.
 fn poll_settle(rng: Rng) -> #(Settle, Rng) {
   let #(tokens, rng) = random.int_between(rng, 1, 9)
   let #(with_calls, rng) = random.chance(rng, 35)
+
+  // Determine whether poll settles with calls or an answer.
   case with_calls {
     True -> calls(rng, "poll")
     False -> #(Answer(text: "deferred answer", tokens:), rng)
   }
 }
 
+/// Generates a randomized mapping of tool behaviors for simulation.
 fn tool_table(rng: Rng) -> #(List(#(String, ToolBehavior)), Rng) {
   list.fold(["read", "write", "probe"], #([], rng), fn(acc, name) {
     let #(table, rng) = acc
     let #(errored, rng) = random.chance(rng, 20)
+
+    // Set tool response behavior based on the error chance draw.
     let behavior = case errored {
       True -> ToolErr(text: "tool " <> name <> " refused")
       False -> ToolOk(text: "out:" <> name)
     }
+
     #([#(name, behavior), ..table], rng)
   })
 }
 
+/// Generates unique simulated interventions for the script.
 fn interventions(rng: Rng) -> #(List(Intervention), Rng) {
   let #(count, rng) = random.weighted(rng, [#(4, 0), #(4, 1), #(2, 2)], 0)
   let #(drawn, rng) = random.list_of(rng, count, intervention)
@@ -557,8 +582,11 @@ fn interventions(rng: Rng) -> #(List(Intervention), Rng) {
   #(list.unique(drawn), rng)
 }
 
+/// Draws a single randomized intervention and its trigger.
 fn intervention(rng: Rng) -> #(Intervention, Rng) {
   let #(kind, rng) = random.int_between(rng, 1, 100)
+
+  // Select an intervention kind based on the weighted random draw.
   case kind {
     n if n <= 40 -> {
       let #(trigger, rng) = live_trigger(rng)
@@ -575,22 +603,14 @@ fn intervention(rng: Rng) -> #(Intervention, Rng) {
   }
 }
 
-// Where a queue admission can land and mean something: while an effect
-// is in flight, so the settlement that follows has to lose its seq race
-// to it.
-//
-// `AtTerminalCommit` is deliberately not among these. That trigger fires
-// after the terminal transaction is already durable, so the operation it
-// would attach to no longer exists and admission can only be refused —
-// and because it fires asynchronously from the writer, a script with a
-// second operation could have it attach to *that* one instead, which is
-// a race with no property behind it. Cancellation is the one thing worth
-// racing a terminal commit with, and it keeps the trigger.
+/// Draws a live trigger occurring during a turn or tool call.
 fn live_trigger(rng: Rng) -> #(Trigger, Rng) {
   let #(turn, rng) = random.int_between(rng, 0, 2)
   let #(index, rng) = random.int_between(rng, 0, 1)
   let #(name, rng) = random.pick(rng, ["read", "write", "probe"], "read")
   let #(kind, rng) = random.int_between(rng, 1, 100)
+
+  // Decide whether trigger occurs during a turn or during a tool call.
   case kind <= 60 {
     True -> #(DuringTurn(turn:), rng)
     False -> #(
@@ -602,8 +622,11 @@ fn live_trigger(rng: Rng) -> #(Trigger, Rng) {
   }
 }
 
+/// Draws an abort trigger, either at terminal commit or live.
 fn abort_trigger(rng: Rng) -> #(Trigger, Rng) {
   let #(terminal, rng) = random.chance(rng, 35)
+
+  // Choose between an abort at terminal commit or during execution.
   case terminal {
     True -> #(AtTerminalCommit, rng)
     False -> live_trigger(rng)

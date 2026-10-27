@@ -313,9 +313,9 @@ pub fn view(
   ])
 }
 
-// The sentence that says why a bookmark's home has no Admin, Stop, Archive or
-// Delete, or nothing on a page that has no such question. It follows the lists,
-// so it moves no row's path.
+/// The sentence that says why a bookmark's home has no Admin, Stop, Archive or
+/// Delete, or nothing on a page that has no such question. It follows the lists,
+/// so it moves no row's path.
 fn withheld_line(manage: Manage(message)) -> List(Element(message)) {
   case manage {
     Withheld -> [
@@ -330,9 +330,9 @@ fn withheld_line(manage: Manage(message)) -> List(Element(message)) {
   }
 }
 
-// One project: its heading and the list of its sessions. The heading is the
-// project's directory name, qualified when two projects share one
-// (`sessions.titles`), and the project's whole path is its `title`.
+/// One project: its heading and the list of its sessions. The heading is the
+/// project's directory name, qualified when two projects share one
+/// (`sessions.titles`), and the project's whole path is its `title`.
 fn group(
   group: Group,
   titles: Dict(String, String),
@@ -437,6 +437,7 @@ type State {
 const attention_title =
   "This session was never finished, or its recovery stopped. Nothing is running it and a page cannot open it. You can archive or delete it."
 
+/// Standing helper.
 fn standing(
   entry: Entry,
   activity: Result(Activity, Nil),
@@ -464,7 +465,7 @@ fn standing(
   }
 }
 
-// The class a glyph's hue and motion follow, a complete literal.
+/// The class a glyph's hue and motion follow, a complete literal.
 fn activity_class(activity: Activity) -> String {
   case activity {
     NeedsYou -> "needs-you"
@@ -500,12 +501,12 @@ fn open_form(rename: Rename(message)) -> Option(Open) {
   }
 }
 
-// One session's list item. The whole item is one button when a press can open
-// it and one block of text when not, so the words read the same either way. On
-// a page that may rename or act on a row, a group of quiet buttons follows it,
-// after the item so that the item's own path is the same on every page. The row
-// whose rename form is open is the form and nothing else, and so is the row
-// whose delete is waiting on its second press.
+/// One session's list item. The whole item is one button when a press can open
+/// it and one block of text when not, so the words read the same either way. On
+/// a page that may rename or act on a row, a group of quiet buttons follows it,
+/// after the item so that the item's own path is the same on every page. The row
+/// whose rename form is open is the form and nothing else, and so is the row
+/// whose delete is waiting on its second press.
 fn row(
   entry: Entry,
   activity: Result(Activity, Nil),
@@ -564,6 +565,8 @@ fn row(
   // Determine row action classes and render active form or item row.
   let classes = [attribute.class("home-row"), attribute.class(standing.class)]
   let manage = in_row(manage)
+
+  // Dispatch on row state.
   case rename, manage {
     Offered(open: Some(Open(session:, control:)), cancel:, submit:, ..), _
       if session == entry.id
@@ -633,8 +636,8 @@ fn row(
   }
 }
 
-// The buttons a row draws. A row waiting on the daemon offers none of its own,
-// so Stop and Rename cannot be pressed while its open is out.
+/// The buttons a row draws. A row waiting on the daemon offers none of its own,
+/// so Stop and Rename cannot be pressed while its open is out.
 fn offered(
   standing: Standing,
   entry: Entry,
@@ -648,13 +651,13 @@ fn offered(
   }
 }
 
-// The quiet buttons a row carries, in the order they are drawn: Rename where
-// the page may rename, then the actions that fit the row's state. A running row
-// can only be stopped, since the registry refuses to archive or delete what a
-// process holds; a saved one can be archived or deleted, and a blocked one
-// too, since nothing runs it. While a request for this row is out the buttons
-// are disabled, though the handlers stay, because the component is the layer
-// that ignores a second press.
+/// The quiet buttons a row carries, in the order they are drawn: Rename where
+/// the page may rename, then the actions that fit the row's state. A running row
+/// can only be stopped, since the registry refuses to archive or delete what a
+/// process holds; a saved one can be archived or deleted, and a blocked one
+/// too, since nothing runs it. While a request for this row is out the buttons
+/// are disabled, though the handlers stay, because the component is the layer
+/// that ignores a second press.
 fn acts(
   entry: Entry,
   rename: Rename(message),
@@ -668,12 +671,16 @@ fn acts(
       act("home-rename", "Rename this session", "Rename", edit(entry.id), []),
     ]
   }
+
+  // Dispatch on acts state.
   let working = case manage {
     Managed(stage: actions.Working(session:, ..), ..) if session == entry.id -> [
       attribute.disabled(True),
     ]
     _ -> []
   }
+
+  // Dispatch on acts state.
   let managing = case manage, entry.residency {
     Unmanaged, _ | Withheld, _ -> []
     Managed(stop:, ..), Live -> [
@@ -709,9 +716,11 @@ fn acts(
       delete_button(entry, delete, working),
     ]
   }
+
   list.append(renaming, managing)
 }
 
+/// Archive button helper.
 fn archive_button(
   entry: Entry,
   archive: fn(String) -> message,
@@ -726,6 +735,7 @@ fn archive_button(
   )
 }
 
+/// Delete button helper.
 fn delete_button(
   entry: Entry,
   delete: fn(String) -> message,
@@ -740,9 +750,9 @@ fn delete_button(
   )
 }
 
-// Move asks which orchestrators could take the session. The handler stays on a
-// session with no executor, whose button is disabled, because the page is the
-// layer that ignores the press and the daemon refuses it again.
+/// Move asks which orchestrators could take the session. The handler stays on a
+/// session with no executor, whose button is disabled, because the page is the
+/// layer that ignores the press and the daemon refuses it again.
 fn move_button(
   entry: Entry,
   move: fn(String) -> message,
@@ -768,7 +778,7 @@ fn move_button(
   }
 }
 
-// One quiet button of the group.
+/// One quiet button of the group.
 fn act(
   class: String,
   title: String,
@@ -788,8 +798,8 @@ fn act(
   )
 }
 
-// The class that tints a confirmation: toward the danger hue for a delete,
-// which cannot be undone, and neutral for a stop, which can.
+/// The class that tints a confirmation: toward the danger hue for a delete,
+/// which cannot be undone, and neutral for a stop, which can.
 fn confirm_class(action: actions.Action) -> String {
   case action {
     actions.Delete -> "confirm-delete"
@@ -801,10 +811,10 @@ fn confirm_class(action: actions.Action) -> String {
   }
 }
 
-// What the row itself sees of the page's stage. Stop and Delete ask in the
-// row; the sidebar's Archive and Stop-and-archive ask in the sidebar
-// (`view/archiving`), so for the row the page is calm while one of those asks,
-// and the same state never draws the question twice.
+/// What the row itself sees of the page's stage. Stop and Delete ask in the
+/// row; the sidebar's Archive and Stop-and-archive ask in the sidebar
+/// (`view/archiving`), so for the row the page is calm while one of those asks,
+/// and the same state never draws the question twice.
 fn in_row(manage: Manage(message)) -> Manage(message) {
   case manage {
     Managed(stage: actions.Confirming(action:, ..), ..) as managed ->
@@ -816,16 +826,17 @@ fn in_row(manage: Manage(message)) -> Manage(message) {
   }
 }
 
-// The row's second step before an action that cannot be taken back or that
-// cuts a turn short: one question in fixed words, the session's name beneath it
-// as a text node so the person sees which row they are about to act on, a
-// button that sends the request and a Cancel that puts the row back.
+/// The row's second step before an action that cannot be taken back or that
+/// cuts a turn short: one question in fixed words, the session's name beneath it
+/// as a text node so the person sees which row they are about to act on, a
+/// button that sends the request and a Cancel that puts the row back.
 fn confirming(
   entry: Entry,
   action: actions.Action,
   confirm: message,
   cancel: message,
 ) -> Element(message) {
+  // Dispatch on confirming state.
   let #(label, lead, button, class) = case action {
     actions.Delete -> #(
       "Delete this session",
@@ -855,6 +866,7 @@ fn confirming(
       "home-confirm-go",
     )
   }
+
   html.div(
     [
       attribute.class("home-confirm"),
@@ -885,13 +897,13 @@ fn confirming(
   )
 }
 
-// A row's chooser for Move, in place of its words: one button for each
-// orchestrator that could take the session, and one line for each that could
-// not, naming it and the reason in fixed words. When none could, the lead says
-// so and Cancel is all that is left. The names are the daemon's configuration
-// keys, drawn as text nodes; a button's handler names the session the row was
-// drawn for and the destination it was drawn with, and the page ignores a press
-// whose destination is not among the eligible ones it holds.
+/// A row's chooser for Move, in place of its words: one button for each
+/// orchestrator that could take the session, and one line for each that could
+/// not, naming it and the reason in fixed words. When none could, the lead says
+/// so and Cancel is all that is left. The names are the daemon's configuration
+/// keys, drawn as text nodes; a button's handler names the session the row was
+/// drawn for and the destination it was drawn with, and the page ignores a press
+/// whose destination is not among the eligible ones it holds.
 fn choosing(
   entry: Entry,
   candidates: List(Candidate),
@@ -907,10 +919,13 @@ fn choosing(
           Ok(candidate.name <> " " <> move_candidates.reason_words(reason))
       }
     })
+
+  // Dispatch on choosing state.
   let lead = case destinations {
     [] -> move_candidates.none_words()
     [_, ..] -> "Move this session to:"
   }
+
   html.div(
     [
       attribute.class("home-confirm"),
@@ -956,24 +971,26 @@ fn choosing(
   )
 }
 
-// A row's rename form, in place of the row's words. The session's current name
-// is a text node in the lead, and never the field's `value` or `placeholder`,
-// which are attributes; `<loom-rename>` copies it into the field in the browser
-// when the form opens (`view/rename.field`). The field is uncontrolled, and the one submit sends its
-// text under the name `text`; Cancel is a button that closes the form. While a
-// request is out the buttons are disabled, though the handlers stay, because the
-// component is the layer that ignores a second one. A refusal is in the reason's
-// fixed words.
+/// A row's rename form, in place of the row's words. The session's current name
+/// is a text node in the lead, and never the field's `value` or `placeholder`,
+/// which are attributes; `<loom-rename>` copies it into the field in the browser
+/// when the form opens (`view/rename.field`). The field is uncontrolled, and the one submit sends its
+/// text under the name `text`; Cancel is a button that closes the form. While a
+/// request is out the buttons are disabled, though the handlers stay, because the
+/// component is the layer that ignores a second one. A refusal is in the reason's
+/// fixed words.
 fn editing(
   entry: Entry,
   control: Control,
   cancel: message,
   submit: Attribute(message),
 ) -> Element(message) {
+  // Dispatch on editing state.
   let asking = case control {
     renames.Asking -> [attribute.disabled(True)]
     renames.Withheld | renames.Ready | renames.Done | renames.Refused(..) -> []
   }
+
   html.form(
     [
       attribute.class("home-rename-form"),
@@ -1009,8 +1026,8 @@ fn editing(
   )
 }
 
-// The status line: empty except after a refusal, so the form's children keep
-// their places.
+/// The status line: empty except after a refusal, so the form's children keep
+/// their places.
 fn status(control: Control) -> Element(message) {
   case control {
     renames.Refused(reason:) ->
@@ -1027,43 +1044,47 @@ fn status(control: Control) -> Element(message) {
   }
 }
 
-// The quiet line under the name. A session with a subtitle leads with it, then
-// the standing's words, and says no age: the subtitle is what tells sessions of
-// one workspace apart (protocol-change/067), and the creation time stays in the
-// session's own page. Any other session reads as it always did: the standing's
-// words joined by a middle dot, then the age, where a running session's says it
-// was created and a saved one's is the bare age, since "saved" already says
-// what it is. The activity word is its own `home-activity` span, so a row that
-// needs the person can tint that one word and leave the subtitle in the quiet
-// colour: a sixty-character prompt in the signal colour reads as an error. The
-// subtitle is a person's own prompt, so it is a text node and nothing else.
-//
-// A row waiting on the daemon says "Opening…" and nothing else. A note for the
-// row, if there is one, ends the line after a middle dot, in the same line so
-// the row's height never changes when it appears or fades.
+/// The quiet line under the name. A session with a subtitle leads with it, then
+/// the standing's words, and says no age: the subtitle is what tells sessions of
+/// one workspace apart (protocol-change/067), and the creation time stays in the
+/// session's own page. Any other session reads as it always did: the standing's
+/// words joined by a middle dot, then the age, where a running session's says it
+/// was created and a saved one's is the bare age, since "saved" already says
+/// what it is. The activity word is its own `home-activity` span, so a row that
+/// needs the person can tint that one word and leave the subtitle in the quiet
+/// colour: a sixty-character prompt in the signal colour reads as an error. The
+/// subtitle is a person's own prompt, so it is a text node and nothing else.
+///
+/// A row waiting on the daemon says "Opening…" and nothing else. A note for the
+/// row, if there is one, ends the line after a middle dot, in the same line so
+/// the row's height never changes when it appears or fades.
 fn quiet_line(
   standing: Standing,
   entry: Entry,
   now: Int,
   note: Option(Notice),
 ) -> List(Element(message)) {
+  // Dispatch on quiet_line state.
   let line = case standing.state {
     Waking -> [html.text("Opening…")]
     Running(_) | Stored | Attention | Unstarted(_) | Leaving(_) ->
       described(standing, entry, now)
   }
+
+  // Dispatch on quiet_line state.
   case note {
     Some(notice) -> list.append(line, [inline(notice)])
     None -> line
   }
 }
 
-// The standing's words, the person's role, and the subtitle or the age.
+/// The standing's words, the person's role, and the subtitle or the age.
 fn described(
   standing: Standing,
   entry: Entry,
   now: Int,
 ) -> List(Element(message)) {
+  // Dispatch on described state.
   let lead = case standing.state {
     Running(Some(doing)) -> [
       html.span([attribute.class("home-activity")], [html.text(doing)]),
@@ -1090,6 +1111,8 @@ fn described(
       list.append(lead, [html.text(" · " <> sessions.role_words(role))])
     None -> lead
   }
+
+  // Dispatch on described state.
   let words = case entry.subtitle {
     Some(subtitle) -> [
       html.span([attribute.class("home-subtitle")], [html.text(subtitle)]),
@@ -1098,6 +1121,8 @@ fn described(
     ]
     None -> {
       let age = created(entry.created_at, sessions.ago(now, entry.created_at))
+
+      // Dispatch on described state.
       case entry.residency {
         Live -> list.append(lead, [html.text(" · created "), age])
         Saved | Blocked | FailedStart(_) | Moving(_) ->
@@ -1122,10 +1147,10 @@ fn described(
   }
 }
 
-// A note's words as a span ending the row's quiet line, with the middle dot that
-// joins it to the words before it inside the span, so the dot fades with a said
-// note and does not outlast it. A refused note stays in the danger colour
-// (`view/notice`), and neither draws a handler.
+/// A note's words as a span ending the row's quiet line, with the middle dot that
+/// joins it to the words before it inside the span, so the dot fades with a said
+/// note and does not outlast it. A refused note stays in the danger colour
+/// (`view/notice`), and neither draws a handler.
 fn inline(notice: Notice) -> Element(message) {
   case notice {
     notice.Said(words:) ->
@@ -1148,13 +1173,14 @@ fn inline(notice: Notice) -> Element(message) {
   }
 }
 
-// Where the page's note lands, given what it lists now. A note beside a session
-// goes in that session's row, or in its workspace's heading when the row is gone
-// (an archived or a deleted session), naming the session there. A note beside a
-// workspace goes in its heading. A note about a folder that holds no session
-// goes in that section's head. Anything else, or a workspace the page no longer
-// draws, goes under the page's heading.
+/// Where the page's note lands, given what it lists now. A note beside a session
+/// goes in that session's row, or in its workspace's heading when the row is gone
+/// (an archived or a deleted session), naming the session there. A note beside a
+/// workspace goes in its heading. A note about a folder that holds no session
+/// goes in that section's head. Anything else, or a workspace the page no longer
+/// draws, goes under the page's heading.
 fn landing(groups: List(Group), note: Option(Note)) -> Option(Landing) {
+  // Dispatch on landing state.
   case note {
     None -> None
     Some(Note(place: Page, notice:)) -> Some(Under(notice))
@@ -1166,6 +1192,8 @@ fn landing(groups: List(Group), note: Option(Note)) -> Option(Landing) {
         list.any(groups, fn(group) {
           list.any(group.entries, fn(entry) { entry.id == id })
         })
+
+      // Dispatch on landing state.
       case held {
         True -> Some(InRow(id, notice))
         False -> Some(in_heading(groups, workspace, named(label, notice)))
@@ -1181,8 +1209,8 @@ fn in_heading(groups: List(Group), path: String, notice: Notice) -> Landing {
   }
 }
 
-// A note's words with the session's name in front, for a place that is not the
-// session's own row: "docs sweep archived." and "docs sweep: <the refusal>".
+/// A note's words with the session's name in front, for a place that is not the
+/// session's own row: "docs sweep archived." and "docs sweep: <the refusal>".
 fn named(label: String, notice: Notice) -> Notice {
   case notice {
     notice.Said(words:) -> notice.Said(label <> " " <> string.lowercase(words))
@@ -1194,8 +1222,8 @@ fn named(label: String, notice: Notice) -> Notice {
   }
 }
 
-// The row as one button, which the stylesheet stretches over the whole item,
-// with a chevron at its right edge that says it opens.
+/// The row as one button, which the stylesheet stretches over the whole item,
+/// with a chevron at its right edge that says it opens.
 fn pressable(
   title: String,
   press: message,
@@ -1219,8 +1247,8 @@ fn chevron() -> Element(message) {
   ])
 }
 
-// The age as a `<time>` whose `datetime` is the creation minute in UTC and
-// whose `title` is the same minute in words.
+/// The age as a `<time>` whose `datetime` is the creation minute in UTC and
+/// whose `title` is the same minute in words.
 fn created(at: Int, age: String) -> Element(message) {
   let #(date, clock) = utc(at)
   html.time(
@@ -1252,10 +1280,10 @@ pub fn utc(milliseconds: Int) -> #(String, String) {
   )
 }
 
-// The proleptic Gregorian date of a day count since 1970-01-01. This is
-// Howard Hinnant's `civil_from_days`: the days are shifted to begin on
-// 0000-03-01, so a leap day is the last day of a year, and counted in
-// 400-year eras of 146,097 days.
+/// The proleptic Gregorian date of a day count since 1970-01-01. This is
+/// Howard Hinnant's `civil_from_days`: the days are shifted to begin on
+/// 0000-03-01, so a leap day is the last day of a year, and counted in
+/// 400-year eras of 146,097 days.
 fn civil(days: Int) -> #(Int, Int, Int) {
   let shifted = days + 719_468
   let era = shifted / 146_097
@@ -1281,11 +1309,16 @@ fn civil(days: Int) -> #(Int, Int, Int) {
     day_of_era - { 365 * year_of_era + year_of_era / 4 - year_of_era / 100 }
   let month_index = { 5 * day_of_year + 2 } / 153
   let day = day_of_year - { 153 * month_index + 2 } / 5 + 1
+
+  // Dispatch on civil state.
   let month = case month_index < 10 {
     True -> month_index + 3
     False -> month_index - 9
   }
+
   let year = year_of_era + era * 400
+
+  // Dispatch on civil state.
   case month <= 2 {
     True -> #(year + 1, month, day)
     False -> #(year, month, day)

@@ -285,7 +285,7 @@ over its life.
 `remember` is registered only when the domain's memory store opens
 (`client/serve.gleam`, `memory_seam`), and it is a seam of closures like
 `history_search`: the `tools` package cannot open a session, so
-`client/memory.gleam:487` (`remember_seam`) does the write. It opens the
+`client/memory.gleam:501` (`remember_seam`) does the write. It opens the
 store for that one call under a short 30-second writer lease, commits one
 `memory/note` entry, and closes it. A note is a custom entry type the host
 chooses. If another `remember` call holds the lease at that moment, the call
@@ -318,7 +318,7 @@ waiting, preserving the previous index; startup continues. A failure is logged a
 never fails the open. With `inject = "off"` the open does not rebuild it.
 
 **What `[memory] inject` does.** The key decides what a run carries. The
-default, `notes`, installs `notes_hooks` (`client/memory.gleam:1069`) on the
+default, `notes`, installs `notes_hooks` (`client/memory.gleam:1113`) on the
 `run_start` hook. At each accepted run the hook reads the index file and
 appends it as a user message ahead of the prompt, wrapped at that moment under
 its own `loom-notes` fence and an attribution sentence
@@ -333,7 +333,7 @@ instructions win every conflict. A repository with no notes, or an index over
 
 Bodies are fetched on demand. A model that wants a note's full text calls
 `history_search` with `kind: note`. The store joins the history owner's
-sources through `client/serve.gleam:1251` (`with_memory_source`), so each note
+sources through `client/serve.gleam:1314` (`with_memory_source`), so each note
 is indexed under kind `note`, with its title, description and text as its
 words.
 
@@ -507,9 +507,9 @@ Everything below sits in that directory unless the table says otherwise.
 Protection means the jail bars writes to the path. Writing is the entire
 poisoning path: the notes index and the rules file reach later sessions
 unasked, and a search snippet reaches a later session whenever a model
-searches for it. `client/workspace_policy.gleam:1274` (`protecting_memory`)
+searches for it. `client/workspace_policy.gleam:1341` (`protecting_memory`)
 covers the store and the notes index, and
-`client/workspace_policy.gleam:1302` (`protecting_rules`) covers the rules
+`client/workspace_policy.gleam:1369` (`protecting_rules`) covers the rules
 file. The protection is conditional on the paths because none of them need
 exist, and the jail refuses to mask a missing path under a read-only parent.
 The state root's `workspaces/` and `domains/` directories are also masked

@@ -63,6 +63,7 @@ fn is_zero_limit(limit: Option(Int)) -> Bool {
 /// ```
 ///
 pub fn step(state: Refine, entry: Entry) -> Refine {
+  // Dispatch on whether the scan pipeline has already completed.
   case state.done {
     True -> state
     False -> {
@@ -74,15 +75,20 @@ pub fn step(state: Refine, entry: Entry) -> Refine {
       let stops = matches_stop(q, entry)
       let emit =
         matches_filter(q, entry) && matches_cursor(q.order, q.cursor, entry.seq)
+
+      // Accumulate the entry if it matched the filter and cursor conditions.
       let state = case emit {
         True ->
           Refine(..state, taken: [entry, ..state.taken], count: state.count + 1)
         False -> state
       }
+
+      // Determine whether the accumulated count has reached the requested limit.
       let at_limit = case q.limit {
         Some(limit) -> state.count >= limit
         None -> False
       }
+
       Refine(..state, done: stops || at_limit)
     }
   }
@@ -115,34 +121,46 @@ pub fn results(state: Refine) -> List(Entry) {
   list.reverse(state.taken)
 }
 
+/// Checks whether an entry satisfies either the kind or identity stop condition.
 fn matches_stop(q: BranchScan, entry: Entry) -> Bool {
+  // Check whether the entry kind triggers the stop condition.
   let kind_stops = case q.stop_at_kind {
     Some(kind) -> storage.kind_of(entry) == kind
     None -> False
   }
+
+  // Check whether the entry identifier triggers the stop condition.
   let id_stops = case q.stop_at_id {
     Some(id) -> entry.id == id
     None -> False
   }
+
   kind_stops || id_stops
 }
 
+/// Checks whether an entry satisfies the scan query's kind and custom-type filter.
 fn matches_filter(q: BranchScan, entry: Entry) -> Bool {
+  // Validate that the entry kind matches any configured filter.
   let kind_ok = case q.kind {
     Some(kind) -> storage.kind_of(entry) == kind
     None -> True
   }
+
+  // Validate that the entry matches any configured custom type name.
   let custom_ok = case q.custom_type {
     Some(name) ->
+      // Match the custom type name on custom entries.
       case entry {
         CustomEntry(custom_type:, ..) -> custom_type == name
         MessageEntry(..) | CompactionEntry(..) | BranchSummaryEntry(..) -> False
       }
     None -> True
   }
+
   kind_ok && custom_ok
 }
 
+/// Checks whether the entry sequence falls strictly within the cursor boundary for the scan order.
 fn matches_cursor(
   order: ScanOrder,
   cursor: Option(ids.Seq),

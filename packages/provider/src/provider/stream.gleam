@@ -203,6 +203,9 @@ pub type ProviderError {
   /// The stream carried data the adapter could not decode.
   MalformedStream(report: CorruptionReport)
 
+  /// A Responses item closed before one of its parts had closed.
+  RecoverableStreamCorruption(report: CorruptionReport)
+
   /// The provider used a stop reason the adapter does not know.
   UnmappedStopReason(raw: String)
 
@@ -314,6 +317,7 @@ pub fn with_context(
       |> result.unwrap(observation)
     _ -> observation
   }
+
   let observations =
     failure_context(error)
     |> list.filter(fn(prior) { prior.source != observation.source })
@@ -428,6 +432,7 @@ fn optional_int(value) {
   }
 }
 
+/// Maps an error observation source to its human-readable label.
 fn source_name(source) {
   case source {
     AttemptSource -> "attempt"
@@ -437,6 +442,7 @@ fn source_name(source) {
   }
 }
 
+/// Maps an error observation cause to its human-readable description.
 fn cause_name(cause) {
   case cause {
     ExplicitStop -> "explicit stop"
@@ -460,10 +466,13 @@ fn cause_name(cause) {
 /// ```
 ///
 pub fn describe_error(error: ProviderError) -> String {
+  // Render human-readable error description based on provider error variant.
   case error {
     WithContext(inner, FailureContext(observations)) -> {
       let meaningful =
         list.filter(observations, fn(value) { value.cause != TerminalResponse })
+
+      // Format source and cause suffix from first meaningful failure observation.
       let suffix = case meaningful {
         [first, ..] ->
           " ("
@@ -473,6 +482,7 @@ pub fn describe_error(error: ProviderError) -> String {
           <> ")"
         [] -> ""
       }
+
       describe_error(inner) <> suffix
     }
     ProviderCancelled -> "provider request was cancelled"
@@ -491,7 +501,8 @@ pub fn describe_error(error: ProviderError) -> String {
     StreamError(api_error_type:, message:) ->
       "provider stream error (" <> api_error_type <> "): " <> message
     StreamDisconnected(context:) -> "provider stream disconnected: " <> context
-    MalformedStream(report:) -> corruption.describe(report)
+    MalformedStream(report:) | RecoverableStreamCorruption(report:) ->
+      corruption.describe(report)
     UnmappedStopReason(raw:) -> "provider used an unmapped stop reason: " <> raw
     NoIdentity(role:) -> "no model identity configured for role " <> role
     UnknownProvider(provider:) -> "no provider registered under " <> provider
@@ -627,12 +638,14 @@ pub fn feed(
   feed_loop(parser, buffer, from, [])
 }
 
+/// Drives the SSE line parser across buffered input chunks.
 fn feed_loop(
   parser: SseParser,
   buffer: BitArray,
   from: Int,
   reversed_events: List(SseEvent),
 ) -> #(SseParser, List(SseEvent)) {
+  // Extract the next line or handle partial buffer when no line terminator is found.
   case take_line(buffer, from) {
     LineFound(line:, rest:) -> {
       let #(parser, new_events) = handle_line(parser, line)
@@ -678,6 +691,7 @@ type LineScan {
 // `at` and splits the buffer around it. A trailing \r with nothing after
 // it stays unscanned: the next chunk may begin with \n, and splitting
 // early would make the result depend on chunk boundaries.
+/// Scans buffer for a line terminator and splits into line and rest.
 fn take_line(buffer: BitArray, at: Int) -> LineScan {
   case bit_array.slice(buffer, at, 1) {
     Ok(<<0x0A>>) ->
@@ -721,6 +735,7 @@ fn drop_bytes(buffer: BitArray, count: Int) -> BitArray {
 // Processes one complete line per the SSE grammar: blank dispatches,
 // `:` comments are dropped, `event:`/`data:` accumulate, and other
 // fields (`id`, `retry`, unknown names) are ignored.
+/// Parses a single SSE line and updates parser state or dispatches events.
 fn handle_line(
   parser: SseParser,
   line: BitArray,
@@ -744,8 +759,11 @@ fn handle_line(
 
 // Blank line: dispatch the buffered event. Per the SSE specification an
 // event with an empty data buffer is discarded (its event name resets).
+/// Dispatches the accumulated SSE event on a blank line.
 fn dispatch(parser: SseParser) -> #(SseParser, List(SseEvent)) {
   let reset = reset_event(parser)
+
+  // Dispatch non-empty data lines or discard empty event.
   case parser.data_lines {
     [] -> #(reset, [])
     lines -> #(reset, [
@@ -761,13 +779,18 @@ fn dispatch(parser: SseParser) -> #(SseParser, List(SseEvent)) {
 // budget. Each later line contributes one newline because dispatch joins the
 // fields with `\n`; counting the eventual value rather than list cells makes
 // the invariant independent of how the wire chunks those lines.
+/// Appends data line to current SSE event buffer while enforcing size limits.
 fn add_data(parser: SseParser, value: String) -> #(SseParser, List(SseEvent)) {
+  // Account for newline delimiter if this is a subsequent data line.
   let separator = case parser.data_lines {
     [] -> 0
     [_, ..] -> 1
   }
+
   let data_bytes = parser.data_bytes + separator + string.byte_size(value)
   let data_line_count = parser.data_line_count + 1
+
+  // Check whether event byte size or line count limit is exceeded.
   case data_bytes > max_event_bytes || data_line_count > max_event_data_lines {
     True -> #(reset_event(parser), [
       SseMalformed(reason: case data_line_count > max_event_data_lines {
@@ -793,6 +816,7 @@ fn add_data(parser: SseParser, value: String) -> #(SseParser, List(SseEvent)) {
   }
 }
 
+/// Resets event fields on an SseParser after dispatch or error.
 fn reset_event(parser: SseParser) -> SseParser {
   SseParser(
     ..parser,
@@ -1007,6 +1031,8 @@ pub fn watch_drain(handle: StreamHandle) -> DrainWitness {
 ///
 pub fn await_drain(witness: DrainWitness, within timeout: Int) -> DrainOutcome {
   let DrainWitness(owner:, monitor:) = witness
+
+  // Await process down signal or report drained/proof lost.
   case owner, monitor {
     None, None -> Drained
     Some(_owner), Some(monitor) ->
@@ -1030,6 +1056,7 @@ pub fn await_drain(witness: DrainWitness, within timeout: Int) -> DrainOutcome {
 /// ```
 ///
 pub fn await_drain_forever(witness: DrainWitness) -> DrainOutcome {
+  // Block indefinitely until drain witness process monitors settle.
   let outcome = case witness {
     DrainWitness(owner: None, monitor: None) -> Drained
     DrainWitness(owner: Some(_owner), monitor: Some(monitor)) ->
@@ -1038,6 +1065,7 @@ pub fn await_drain_forever(witness: DrainWitness) -> DrainOutcome {
       |> process.selector_receive_forever()
     _ -> ProofLost
   }
+
   release_drain(witness)
   outcome
 }
@@ -1081,10 +1109,13 @@ pub fn await_stopped(
 ) -> DrainOutcome {
   let witness = watch_drain(handle)
   let outcome = await_drain(witness, within: timeout)
+
+  // Release witness monitor if wait timed out.
   case outcome {
     TimedOut -> release_drain(witness)
     Drained | ProofLost -> Nil
   }
+
   outcome
 }
 
@@ -1108,6 +1139,7 @@ pub fn await_stopped_forever(handle: StreamHandle) -> DrainOutcome {
   |> await_drain_forever
 }
 
+/// Interprets process down reason into a drain outcome.
 fn drain_outcome(down: process.Down) -> DrainOutcome {
   case down {
     process.ProcessDown(reason:, ..) ->
@@ -1152,6 +1184,7 @@ pub fn await_terminal(
   await_terminal_loop(handle, timeout, [])
 }
 
+/// Gathers delta events until terminal event arrives or wait times out.
 fn await_terminal_loop(
   handle: StreamHandle,
   timeout: Int,
@@ -1304,6 +1337,8 @@ pub fn run_tracked(
     )
   let http_events = process.new_subject()
   let http.Transport(prepare_streaming:) = transport
+
+  // Prepare streaming request with injected transport.
   case prepare_streaming(request, http_events) {
     Error(reason) -> {
       AttemptTerminal(contextual_event(
@@ -1344,6 +1379,7 @@ pub fn run_tracked(
   }
 }
 
+/// Pumps streaming events, control signals, and monitors until completion.
 fn run_loop(
   selector: Selector(AttemptEvent),
   running: http.RunningRequest,
@@ -1356,6 +1392,7 @@ fn run_loop(
   context: FailureObservation,
   response_bytes response_bytes: Int,
 ) -> AttemptOutcome {
+  // Receive and handle the next event from the attempt selector.
   case process.selector_receive_forever(selector) {
     DeadlineExpired -> {
       let report = accounting.from_usage(machine.usage(state))
@@ -1453,6 +1490,7 @@ fn run_loop(
             accounting.from_usage(machine.usage(state)),
           )
       }
+
       let report = terminal_accounting(terminal)
       finish_outcome(
         deadline_timer,
@@ -1470,11 +1508,14 @@ fn run_loop(
       let refused = machine.on_status(state, status, [])
       let #(refused, _) = machine.on_chunk(refused, body)
       let report = accounting.empty()
+
+      // Extract refusal terminal or generate fallback error.
       let terminal = case forward(machine.on_end(refused), deliver) {
         Some(Failed(error, _)) -> Failed(error, report)
         Some(Settled(_, _)) | Some(Delta(_)) | None ->
           Failed(TransportFailed("local request refused"), report)
       }
+
       finish_outcome(
         deadline_timer,
         case finish_attempt(consumer_monitor, transport_monitor) {
@@ -1497,6 +1538,7 @@ fn run_loop(
             accounting.from_usage(machine.usage(state)),
           )
       }
+
       let report = terminal_accounting(terminal)
       finish_outcome(
         deadline_timer,
@@ -1519,6 +1561,7 @@ fn run_loop(
 // ask native transport work to retire, because no `ResponseEnd` has arrived.
 // Its existing monitor remains the drain proof, though, so the valid terminal
 // must wait for that owner instead of entering the bounded cancellation path.
+/// Processes an incoming HTTP chunk through response size limits and machine fold.
 fn run_chunk(
   selector: Selector(AttemptEvent),
   running: http.RunningRequest,
@@ -1533,6 +1576,8 @@ fn run_chunk(
   chunk chunk: BitArray,
 ) -> AttemptOutcome {
   let response_bytes = response_bytes + bit_array.byte_size(chunk)
+
+  // Check cumulative response byte budget before folding chunk.
   case response_bytes > max_response_bytes {
     True -> {
       let report = accounting.from_usage(machine.usage(state))
@@ -1547,6 +1592,8 @@ fn run_chunk(
     }
     False -> {
       let #(state, events) = machine.on_chunk(state, chunk)
+
+      // Forward folded events and settle attempt if terminal was emitted.
       case forward(events, deliver) {
         Some(terminal) -> {
           // The terminal carries the accounting the machine settled with, so a
@@ -1604,6 +1651,7 @@ pub fn terminal_accounting(event: StreamEvent) -> RequestAccounting {
   }
 }
 
+/// Generates a MalformedStream error when cumulative response exceeds max bytes.
 fn response_too_large(report: RequestAccounting) -> StreamEvent {
   Failed(
     MalformedStream(corruption.report(
@@ -1626,6 +1674,7 @@ fn finish_outcome(timer: Timer, outcome: AttemptOutcome) -> AttemptOutcome {
 
 // Cancels live transport work before forgetting either monitor. Cancellation
 // is silent at this layer: the gateway owner alone chooses the public terminal.
+/// Cancels running request and waits up to grace period for drain.
 fn stop_attempt(
   running: http.RunningRequest,
   consumer_monitor: Monitor,
@@ -1644,6 +1693,7 @@ fn stop_attempt(
 // A parsed terminal ends the provider protocol before native HTTP ownership
 // necessarily exits. Ask that owner to retire, then retain its positive proof
 // without allowing the cancellation grace to replace the terminal result.
+/// Cancels running request and waits indefinitely for chunk terminal drain.
 fn finish_chunk_terminal(
   running: http.RunningRequest,
   consumer_monitor: Monitor,
@@ -1657,6 +1707,7 @@ fn finish_chunk_terminal(
 // explicit cancellation, normal completion has no reporting grace which can
 // replace a valid provider result. The attempt therefore remains at this
 // ordering barrier until the already-installed monitor reports the real exit.
+/// Waits indefinitely for transport monitor exit and releases monitors.
 fn finish_attempt(
   consumer_monitor: Monitor,
   transport_monitor: Monitor,
@@ -1669,6 +1720,7 @@ fn finish_attempt(
   outcome
 }
 
+/// Releases process monitors on consumer and transport.
 fn release_attempt_monitors(
   consumer_monitor: Monitor,
   transport_monitor: Monitor,
@@ -1679,10 +1731,12 @@ fn release_attempt_monitors(
 
 // Delivers deltas in order and returns the first terminal event, dropping
 // anything a buggy machine might emit after it.
+/// Forwards delta events to delivery callback and returns first terminal event.
 fn forward(
   events: List(StreamEvent),
   deliver: fn(Delta) -> Nil,
 ) -> Option(StreamEvent) {
+  // Traverse events list delivering deltas until terminal is found.
   case events {
     [] -> None
     [Delta(delta:), ..rest] -> {

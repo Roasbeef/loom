@@ -139,10 +139,10 @@ pub fn view(
   )
 }
 
-// The class for the audience, the word that says whether there is a sidebar,
-// the count of strands waiting on a decision and, when the host has one, the
-// workspace digest. The operator's frame carries a second class, which the
-// observer's lacks.
+/// The class for the audience, the word that says whether there is a sidebar,
+/// the count of strands waiting on a decision and, when the host has one, the
+/// workspace digest. The operator's frame carries a second class, which the
+/// observer's lacks.
 fn frame_attributes(
   audience: Audience,
   sidebar: Sidebar(message),
@@ -152,10 +152,12 @@ fn frame_attributes(
   workspace: String,
   waiting: Int,
 ) -> List(attribute.Attribute(message)) {
+  // Dispatch on frame_attributes state.
   let word = case sidebar {
     Listed(_) -> "listed"
     Unlisted -> "none"
   }
+
   let facts = [
     attribute.attribute("sidebar", word),
     attribute.attribute("needing", int.to_string(needing)),
@@ -168,6 +170,8 @@ fn frame_attributes(
       ]),
     )
   ]
+
+  // Dispatch on frame_attributes state.
   case audience {
     Operator -> [
       attribute.class("loom-session"),
@@ -183,11 +187,11 @@ fn frame_attributes(
   }
 }
 
-// The `waiting` attribute, written only while a session on the list waits on
-// the person. The stylesheet draws it as the count on the sidebar's menu button,
-// so the phone shows that something needs the person while the sidebar is shut.
-// It is a number the component counted and is capped at ten, the largest the
-// stylesheet has a word for.
+/// The `waiting` attribute, written only while a session on the list waits on
+/// the person. The stylesheet draws it as the count on the sidebar's menu button,
+/// so the phone shows that something needs the person while the sidebar is shut.
+/// It is a number the component counted and is capped at ten, the largest the
+/// stylesheet has a word for.
 fn waiting_fact(waiting: Int) -> List(attribute.Attribute(message)) {
   case waiting > 0 {
     True -> [
@@ -197,8 +201,8 @@ fn waiting_fact(waiting: Int) -> List(attribute.Attribute(message)) {
   }
 }
 
-// The `proposals` attribute, written only while a proposal waits, so a page
-// that has none, which is every page but the owner's, carries nothing.
+/// The `proposals` attribute, written only while a proposal waits, so a page
+/// that has none, which is every page but the owner's, carries nothing.
 fn proposals_fact(
   proposals: Int,
   rest: List(attribute.Attribute(message)),
@@ -209,10 +213,10 @@ fn proposals_fact(
   }
 }
 
-// The `evolution` attribute, written on a page that has the Evolution tab and
-// carrying how many candidates wait, even when that is none: the attribute's
-// presence is what makes the shell draw the tab, so the observer's page, which
-// never has one, draws no button and no handler beneath the pane's path.
+/// The `evolution` attribute, written on a page that has the Evolution tab and
+/// carrying how many candidates wait, even when that is none: the attribute's
+/// presence is what makes the shell draw the tab, so the observer's page, which
+/// never has one, draws no button and no handler beneath the pane's path.
 fn evolution_fact(
   evolution: Option(Int),
 ) -> List(attribute.Attribute(message)) {

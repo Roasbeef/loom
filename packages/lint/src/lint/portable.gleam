@@ -1,4 +1,4 @@
-//// R6: the five packages held to the portable subset, and what that
+//// R6: the seven packages held to the portable subset, and what that
 //// membership protects.
 ////
 //// `core`, `machine` and `prompt` contain no `@external` and reach for no
@@ -36,6 +36,22 @@
 //// with, so it has to run wherever they do, JavaScript included, and a
 //// BEAM-only dependency there would quietly make every portable package's
 //// test suite BEAM-only. Its tests run on both targets.
+////
+//// `evalstat`, the evaluation instrument's statistics, joined for both
+//// reasons at once. The governed `rollout.verdict` and a future web report
+//// both call the same decision rule, and it is the one piece of the
+//// instrument whose correctness is mathematical rather than operational:
+//// its A/A and planted-degradation properties have to run over thousands
+//// of synthetic plans without spawning a process, and its bootstrap has to
+//// print the same digits wherever a report is rendered, so its generator
+//// is pure Gleam and its tests run on both targets.
+////
+//// `gepa`, the reflective prompt search as a library, joined for the plain
+//// reason that it is meant to be embedded elsewhere: a project that is not
+//// Loom depends on it without taking Loom, so it may name no Loom package
+//// and no BEAM-only one, and its state machine is property-tested on both
+//// targets the way `evalstat`'s rule is. The eval package consumes it; it
+//// consumes nothing in the tree.
 ////
 //// The second property is the one nothing recorded, and it is the one a
 //// contributor cannot be expected to infer. Reaching for a fast hash, a

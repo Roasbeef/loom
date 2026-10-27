@@ -40,22 +40,28 @@ pub fn prepare(
     storage.get_register(opened.store, register.FactCustom, key)
     |> result.map_error(string.inspect),
   )
+
+  // Decide how to handle existing {.
   case existing {
     Some(cell) -> decode(cell.value.payload, identity, workspace)
     None -> initialize(opened, identity, workspace, probe)
   }
 }
 
+/// Establishes initialize for the caller, keeping its validation and result policy at this boundary.
 fn initialize(opened: session.Session, identity, workspace, probe) {
   use prompt <- result.try(
     storage.get_register(opened.store, register.FactCustom, "prompt/system")
     |> result.map_error(string.inspect),
   )
+
+  // Decide how to handle let start =  prompt {.
   let start = case prompt {
     Some(_) ->
       worktree_diff.Unavailable("Session starting revision was not recorded")
     None -> probe()
   }
+
   use _ <- result.try(
     storage.commit(
       opened.store,
@@ -75,12 +81,15 @@ fn initialize(opened: session.Session, identity, workspace, probe) {
   Ok(start)
 }
 
+/// Establishes encode for the caller, keeping its validation and result policy at this boundary.
 fn encode(start, identity, workspace) {
+  // Decide how to handle let #(kind, value) =  start {.
   let #(kind, value) = case start {
     worktree_diff.Revision(revision) -> #("revision", revision)
     worktree_diff.Empty -> #("empty", "")
     worktree_diff.Unavailable(reason) -> #("unavailable", reason)
   }
+
   json.Object([
     #("session", json.String(identity)),
     #("workspace", json.String(workspace)),
@@ -89,11 +98,14 @@ fn encode(start, identity, workspace) {
   ])
 }
 
+/// Establishes decode for the caller, keeping its validation and result policy at this boundary.
 fn decode(value, identity, workspace) {
+  // Decide how to handle use fields <- result.try( value {.
   use fields <- result.try(case value {
     json.Object(fields) -> Ok(fields)
     _ -> Error("Invalid session Git baseline")
   })
+
   use owner <- result.try(text(fields, "session"))
   use directory <- result.try(text(fields, "workspace"))
   use kind <- result.try(text(fields, "kind"))
@@ -104,6 +116,8 @@ fn decode(value, identity, workspace) {
       "Session starting revision belongs to another session or workspace",
     )),
   )
+
+  // Decide how to handle kind {.
   case kind {
     "revision" -> {
       let valid =
@@ -111,6 +125,8 @@ fn decode(value, identity, workspace) {
         && list.all(string.to_graphemes(value), fn(c) {
           string.contains("0123456789abcdef", c)
         })
+
+      // Decide how to handle valid {.
       case valid {
         True -> Ok(worktree_diff.Revision(value))
         False -> Error("Invalid session Git revision")

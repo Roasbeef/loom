@@ -231,6 +231,7 @@ pub fn adopt(
   }
 }
 
+/// Scans a legacy blob directory and adopts verified content-addressed files into the store.
 fn adopt_directory(
   legacy: String,
   store: String,
@@ -239,10 +240,13 @@ fn adopt_directory(
   now: fn() -> Int,
   empty: Report,
 ) -> Report {
+  // Read legacy directory entries and filter for content-addressed files.
   let names = case simplifile.read_directory(legacy) {
     Ok(names) -> list.filter(names, is_address) |> list.sort(string.compare)
     Error(_) -> []
   }
+
+  // Ensure target store directory exists before beginning adoption.
   case names, filesystem.create_directory_all(store) {
     [], _ -> empty
     _, Error(error) ->
@@ -275,9 +279,10 @@ fn adopt_directory(
   }
 }
 
-// The names a previous pass refused for good. A missing or unreadable
-// marker is an empty set, and a line that is not an address is dropped, so
-// the file is read without trusting it.
+/// Reads previously recorded permanent rejections from the rejection marker file.
+/// The names a previous pass refused for good. A missing or unreadable
+/// marker is an empty set, and a line that is not an address is dropped, so
+/// the file is read without trusting it.
 fn remembered_refusals(
   store: String,
   filesystem: FileSystem,
@@ -295,9 +300,10 @@ fn remembered_refusals(
   }
 }
 
-// Adds this pass's lasting refusals to the marker. A pass that refused
-// nothing for good leaves the file untouched, and a failed write is
-// ignored: the next pass will refuse the same names again.
+/// Writes newly discovered lasting rejections into the persistent marker file.
+/// Adds this pass's lasting refusals to the marker. A pass that refused
+/// nothing for good leaves the file untouched, and a failed write is
+/// ignored: the next pass will refuse the same names again.
 fn remembering(report: Report, refused: set.Set(String), pass: Pass) -> Report {
   let fresh =
     list.filter_map(report.rejected, fn(rejection) {
@@ -306,6 +312,8 @@ fn remembering(report: Report, refused: set.Set(String), pass: Pass) -> Report {
         Passing -> Error(Nil)
       }
     })
+
+  // If any new lasting rejections occurred, update the rejection marker file.
   case fresh {
     [] -> report
     _ -> {
@@ -342,10 +350,11 @@ type Pass {
   )
 }
 
-// One name at a time, with the deadline checked before each. The names that
-// remain when it passes are counted rather than examined, because a
-// directory of many large blobs on a slow disk is the case the deadline
-// exists for.
+/// Adopts remaining blob candidates one by one until the deadline elapses.
+/// One name at a time, with the deadline checked before each. The names that
+/// remain when it passes are counted rather than examined, because a
+/// directory of many large blobs on a slow disk is the case the deadline
+/// exists for.
 fn adopting(names: List(String), pass: Pass, report: Report) -> Report {
   case names {
     [] -> report
@@ -357,8 +366,11 @@ fn adopting(names: List(String), pass: Pass, report: Report) -> Report {
   }
 }
 
+/// Adopts a single blob candidate, skipping if present or copying from legacy source.
 fn one(name: String, pass: Pass, report: Report) -> Report {
   let target = blob.ref_path(pass.store, name)
+
+  // Check if target blob already exists in the store.
   case pass.filesystem.is_file(target) {
     Ok(True) -> Report(..report, already_present: report.already_present + 1)
     Ok(False) | Error(_) ->
@@ -373,14 +385,14 @@ fn one(name: String, pass: Pass, report: Report) -> Report {
   }
 }
 
-// Reads one legacy file, proves it is the content its name claims, and
-// writes it through the store's own staged rename.
-//
-// The type and size are read with `link_info`, which does not follow a
-// link, so a planted symbolic link is refused instead of being read. The
-// digest comparison is what makes the copy safe: the legacy directory is
-// writable by jailed tools now, and only bytes that hash to their own name
-// can be an artifact.
+/// Copies and verifies content hash of a candidate blob file from legacy directory.
+/// Reads one legacy file, proves it is the content its name claims, and
+/// writes it through the store's own staged rename.
+/// The type and size are read with `link_info`, which does not follow a
+/// link, so a planted symbolic link is refused instead of being read. The
+/// digest comparison is what makes the copy safe: the legacy directory is
+/// writable by jailed tools now, and only bytes that hash to their own name
+/// can be an artifact.
 fn copy(
   name: String,
   target: String,
@@ -400,10 +412,13 @@ fn copy(
       #(Passing, "unreadable: " <> fs_text(error))
     }),
   )
+
+  // Ensure content hash matches claimed name before writing.
   use Nil <- result.try(case blob.ref_for(bytes) == name {
     True -> Ok(Nil)
     False -> Error(#(Lasting, "its content does not hash to its name"))
   })
+
   blob.write_addressed(
     filesystem: pass.filesystem,
     path: target,
@@ -415,6 +430,7 @@ fn copy(
   })
 }
 
+/// Validates that a file info represents a regular file within byte size limits.
 fn regular_and_bounded(
   info: simplifile.FileInfo,
 ) -> Result(Nil, #(Permanence, String)) {
@@ -443,13 +459,13 @@ fn staging_tag() -> String {
   <> int.to_string(ffi_os.unique_positive_integer())
 }
 
-// Whether a directory entry is shaped like an address: `sha256-` followed
-// by exactly 64 lowercase hex digits. Staging names begin with a dot and
-// are excluded by the prefix alone.
-//
-// The length is asked as two bounded questions, since dropping the first
-// 63 characters leaves something only if there are at least 64, and
-// dropping 64 leaves nothing only if there are at most 64.
+/// Tests whether a filename matches the standard sha256 content address format.
+/// Whether a directory entry is shaped like an address: `sha256-` followed
+/// by exactly 64 lowercase hex digits. Staging names begin with a dot and
+/// are excluded by the prefix alone.
+/// The length is asked as two bounded questions, since dropping the first
+/// 63 characters leaves something only if there are at least 64, and
+/// dropping 64 leaves nothing only if there are at most 64.
 fn is_address(name: String) -> Bool {
   let digits = string.drop_start(name, address_prefix_length)
   string.starts_with(name, address_prefix)
@@ -462,6 +478,7 @@ fn is_lower_hex(character: String) -> Bool {
   string.contains("0123456789abcdef", character)
 }
 
+/// Converts a tool filesystem error into human-readable description text.
 fn fs_text(error: tool.FsError) -> String {
   case error {
     tool.FsNotFound(path:) -> "missing: " <> path
@@ -470,6 +487,7 @@ fn fs_text(error: tool.FsError) -> String {
   }
 }
 
+/// Emits structured warning and summary log lines for the adoption report.
 fn report_to(logger: Logger, report: Report) -> Nil {
   list.each(report.rejected, fn(rejection) {
     log.warn(logger, "blobs.legacy_skipped", [
@@ -477,6 +495,8 @@ fn report_to(logger: Logger, report: Report) -> Nil {
       field.text(key: "reason", value: rejection.reason),
     ])
   })
+
+  // Log adoption summary if any files were adopted or unfinished.
   case report.adopted > 0 || report.unfinished > 0 {
     True ->
       log.info(logger, "blobs.legacy_adopted", [

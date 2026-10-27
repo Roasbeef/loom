@@ -1,0 +1,192 @@
+//// How loom-session.db, loom-session.db-wal and loom-session.gleam-atif.json
+//// were made. Save this as packages/eval/test/eval/xcheck_test.gleam, change
+//// `directory` to a scratch path outside /tmp, run
+////
+////     bash scripts/test.sh eval --match 'xcheck_test:'
+////
+//// and take `copied/session.db`, `copied/session.db-wal` and `gleam.json`.
+//// It writes a session with Loom's own storage package, copies the live files
+//// the way the adapter copies a session out of a container, and exports the
+//// original with eval/atif. Do not commit the test module itself.
+
+import core/clock
+import core/entry.{type Entry, type UsageRow, MessageEntry, UsageRow}
+import core/ids.{type EntryId}
+import core/json
+import core/message.{
+  type AssistantBlock, type Usage, AssistantMessage, AssistantText,
+  AssistantThinking, AssistantToolCall, Stop, ToolCall, ToolResultMessage,
+  ToolResultText, ToolUse, Usage, UsageCost, UserMessage, UserText,
+}
+import core/tx.{InsertEntry, InsertUsage, Tx}
+import core/usage_evidence
+import eval/atif
+import gleam/list
+import gleam/option.{None, Some}
+import simplifile
+import storage/sqlite
+import storage/storage
+
+fn generator(seed: Int) -> ids.Generator {
+  ids.generator(clock.stepping(from: 1000, by: 1), seed:)
+}
+
+fn entry_ids(count: Int) -> List(EntryId) {
+  list.repeat(Nil, count)
+  |> list.fold(#([], generator(3)), fn(state, _) {
+    let #(made, gen) = state
+    let #(id, gen) = ids.mint_entry(gen)
+    #([id, ..made], gen)
+  })
+  |> fn(state) { list.reverse(state.0) }
+}
+
+fn usage_ids(count: Int) -> List(ids.UsageId) {
+  list.repeat(Nil, count)
+  |> list.fold(#([], generator(4)), fn(state, _) {
+    let #(made, gen) = state
+    let #(id, gen) = ids.mint_usage(gen)
+    #([id, ..made], gen)
+  })
+  |> fn(state) { list.reverse(state.0) }
+}
+
+fn user(id: EntryId, parent, text: String, ts: Int) -> Entry {
+  MessageEntry(
+    id:,
+    parent:,
+    seq: 0,
+    ts:,
+    message: UserMessage(
+      content: [UserText(text:, text_signature: None)],
+      timestamp: ts,
+      origin: None,
+    ),
+    terminate: False,
+  )
+}
+
+fn usage(input: Int, output: Int, cache_read: Int, total: Float) -> Usage {
+  Usage(
+    input:,
+    output:,
+    cache_read:,
+    cache_write: 0,
+    cache_write_1h: None,
+    reasoning: None,
+    total_tokens: input + output + cache_read,
+    cost: UsageCost(
+      input: 0.0,
+      output: 0.0,
+      cache_read: 0.0,
+      cache_write: 0.0,
+      total:,
+    ),
+    evidence: usage_evidence.priced_api(),
+  )
+}
+
+fn answer(id: EntryId, parent, content: List(AssistantBlock), ts: Int) -> Entry {
+  MessageEntry(
+    id:,
+    parent:,
+    seq: 0,
+    ts:,
+    message: AssistantMessage(
+      content:,
+      api: "anthropic-messages",
+      provider: "harbor",
+      model: "claude-test",
+      response_model: None,
+      response_id: None,
+      diagnostics: None,
+      usage: usage(1, 1, 0, 0.0),
+      stop_reason: case content {
+        [AssistantText(..), AssistantToolCall(..), ..] -> ToolUse
+        [AssistantThinking(..), ..] -> ToolUse
+        _ -> Stop
+      },
+      deferred: None,
+      error_message: None,
+      raw_stop_reason: None,
+      end_turn: None,
+      timestamp: ts,
+    ),
+    terminate: False,
+  )
+}
+
+fn result(id: EntryId, parent, call_id: String, text: String, ts: Int) -> Entry {
+  MessageEntry(
+    id:,
+    parent:,
+    seq: 0,
+    ts:,
+    message: ToolResultMessage(
+      tool_call_id: call_id,
+      tool_name: "bash",
+      content: [ToolResultText(text:, text_signature: None)],
+      details: None,
+      usage: None,
+      added_tool_names: None,
+      is_error: False,
+      timestamp: ts,
+    ),
+    terminate: False,
+  )
+}
+
+fn row(id, tied, adjustment, value) -> UsageRow {
+  UsageRow(id:, seq: 0, entry_id: tied, adjustment:, usage: value, details: None)
+}
+
+pub fn xcheck_test() {
+  let directory = "/path/outside/tmp/xcheck"
+  let _ = simplifile.delete(directory)
+  let assert Ok(Nil) = simplifile.create_directory_all(directory)
+  let path = directory <> "/session.db"
+  let assert [a, b, c, d, e] = entry_ids(5)
+  let assert [u1, u2, u3, u4] = usage_ids(4)
+  let assert Ok(store) =
+    sqlite.open(sqlite.config(path:, owner: "writer"), clock.fixed(at: 10_000))
+  let call = fn(id, command) {
+    AssistantToolCall(ToolCall(
+      id:,
+      name: "bash",
+      arguments: json.Object([#("command", json.String(command))]),
+      thought_signature: None,
+      namespace: None,
+    ))
+  }
+  let assert Ok(_) =
+    storage.commit(
+      store,
+      Tx(
+        writes: [
+          InsertEntry(user(a, None, "make /app/hello.txt contain hi", 1_760_000_001_000)),
+          InsertEntry(answer(b, Some(a), [
+            AssistantThinking(thinking: "SECRET REASONING", thinking_signature: Some("sig"), redacted: False),
+            AssistantText(text: "I will write the file.", text_signature: None),
+            call("c1", "echo hi > /app/hello.txt"),
+            call("c2", "cat /app/hello.txt sk-livekey123"),
+          ], 1_760_000_002_000)),
+          InsertEntry(result(c, Some(b), "c1", "", 1_760_000_003_000)),
+          InsertEntry(result(d, Some(c), "c2", "hi\n", 1_760_000_004_000)),
+          InsertEntry(answer(e, Some(d), [AssistantText(text: "Done.", text_signature: None)], 1_760_000_005_000)),
+          InsertUsage(row(u1, Some(b), False, usage(100, 20, 10, 0.5))),
+          InsertUsage(row(u2, Some(e), False, usage(50, 5, 60, 0.25))),
+          InsertUsage(row(u3, None, False, usage(7, 0, 0, 0.01))),
+          InsertUsage(row(u4, Some(b), True, usage(1, 1, 0, 0.0))),
+        ],
+        expected: [],
+      ),
+    )
+
+  // Copy the live files aside the way the adapter's container copy does, and keep a Gleam export of the original.
+  let assert Ok(Nil) = simplifile.create_directory_all(directory <> "/copied")
+  let assert Ok(_) = simplifile.copy_file(path, directory <> "/copied/session.db")
+  let _ = simplifile.copy_file(path <> "-wal", directory <> "/copied/session.db-wal")
+  let assert Ok(trajectory) = atif.from_session_db(path)
+  let assert Ok(Nil) = atif.write(trajectory, directory <> "/gleam.json")
+  let assert Ok(Nil) = storage.close(store)
+}

@@ -80,6 +80,12 @@ pub type ThinkingLevel {
 
   /// A large reasoning budget.
   ThinkingHigh
+
+  /// A very large reasoning budget.
+  ThinkingXHigh
+
+  /// The maximum reasoning budget.
+  ThinkingMax
 }
 
 /// The cybersecurity access program an operator selects for Responses.

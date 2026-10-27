@@ -20,14 +20,14 @@ pub fn read(bytes: BitArray) -> Result(List(String), String) {
   }
 }
 
-/// Parses remaining entries from the literal table binary stream.
+/// Iterates through literal table entries collecting atom names.
 fn literals(
   bytes: BitArray,
   remaining: Int,
   atoms: List(String),
   budget: Int,
 ) -> Result(List(String), String) {
-  // Walk each literal entry while remaining count and budget allow.
+  // Process each literal entry until all expected entries are decoded.
   case remaining, bytes {
     0, <<>> -> Ok(atoms)
     _, <<size:32, 131:8, term:bytes-size(size - 1), rest:bytes>>
@@ -35,7 +35,7 @@ fn literals(
     -> {
       use parsed <- result.try(walk(term, [1], atoms, budget))
 
-      // Verify that no trailing unparsed bytes remain after the term.
+      // Verify that the whole literal term was consumed without trailing bytes.
       case parsed.0 {
         <<>> -> literals(rest, remaining - 1, parsed.1, parsed.2)
         _ -> Error("BEAM literal has trailing term bytes")
@@ -45,14 +45,14 @@ fn literals(
   }
 }
 
-/// Walks pending nested ETF terms iteratively within the remaining node budget.
+/// Traverses literal term structure using a bounded stack of child counts.
 fn walk(
   bytes: BitArray,
   pending: List(Int),
   atoms: List(String),
   budget: Int,
 ) -> Result(#(BitArray, List(String), Int), String) {
-  // Continue to next pending term count or decode next node.
+  // Check the pending term stack for remaining elements to decode.
   case pending {
     [] -> Ok(#(bytes, atoms, budget))
     [0, ..rest] -> walk(bytes, rest, atoms, budget)
@@ -64,14 +64,14 @@ fn walk(
   }
 }
 
-/// Decodes a single ETF node tag, advancing through atoms and compound terms.
+/// Decodes an ETF term tag at the head of the byte sequence.
 fn node(
   bytes: BitArray,
   pending: List(Int),
   atoms: List(String),
   budget: Int,
 ) -> Result(#(BitArray, List(String), Int), String) {
-  // Match ETF term tag byte and dispatch traversal.
+  // Dispatch on the ETF term tag byte.
   case bytes {
     <<97:8, _:8, rest:bytes>>
     | <<98:8, _:32, rest:bytes>>
@@ -110,7 +110,7 @@ fn node(
   }
 }
 
-/// Pushes child term counts onto the pending stack after checking bounds.
+/// Pushes child counts onto the traversal stack while checking depth and budget.
 fn children(
   bytes: BitArray,
   count: Int,
@@ -124,12 +124,12 @@ fn children(
   }
 }
 
-/// Decodes Latin1 encoded atom bytes into a Gleam String.
+/// Converts a Latin-1 encoded atom byte slice into a UTF-8 string.
 fn latin1(
   bytes: BitArray,
   codepoints: List(UtfCodepoint),
 ) -> Result(String, String) {
-  // Accumulate Latin1 codepoints until byte sequence is exhausted.
+  // Decode each Latin-1 byte to a unicode codepoint.
   case bytes {
     <<>> -> Ok(string.from_utf_codepoints(list.reverse(codepoints)))
     <<value:8, rest:bytes>> -> {

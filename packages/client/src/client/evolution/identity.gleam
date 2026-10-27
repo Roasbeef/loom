@@ -35,10 +35,13 @@ pub fn current(host: codemode.Config) -> Result(record.Identity, String) {
     ["--version"],
     5000,
   ))
+
+  // Ensure the native compiler was invoked successfully before proceeding.
   use Nil <- result.try(case status == 0 {
     True -> Ok(Nil)
     False -> Error("the native compiler version could not be observed")
   })
+
   use manifest <- result.try(text(host.seed_root <> "/manifest.toml"))
   use preludes <- result.try(
     list.try_map(["cap", "core", "ext"], fn(name) {
@@ -85,7 +88,11 @@ pub fn current(host: codemode.Config) -> Result(record.Identity, String) {
   Ok(record.Identity(
     build:,
     seam:,
-    evaluator: mcp.sha256_hex(build <> ":author-tests-and-live-rollout-1"),
+    // The suffix names the verdict rule. `rollout-2` is the paired
+    // statistical verdict of protocol-change/100; evidence graded under the
+    // asymmetric `rollout-1` rule is `Changed` to every approval and
+    // selection, so an old `Passed` cannot be spent under the new meaning.
+    evaluator: mcp.sha256_hex(build <> ":author-tests-and-live-rollout-2"),
   ))
 }
 
@@ -93,13 +100,19 @@ fn imports(names: List(String)) -> json.JsonValue {
   json.Array(list.map(list.sort(names, string.compare), json.String))
 }
 
+/// Resolves the native build identity, preferring the release commit metadata
+/// or falling back to the current development VM process birth identity.
 fn native_build() -> Result(String, String) {
   let identity = build_identity.current()
+
+  // Use the verified release build commit if known; otherwise bind to the VM birth.
   case identity.commit == build_identity.unknown_commit {
     False -> Ok(build_identity.describe(identity))
     True -> {
       let pid = bootstrap.current_process_id()
       use birth <- result.try(bootstrap.process_identity(pid))
+
+      // Require active process identity for the development runtime instance.
       case birth {
         bootstrap.ProcessAbsent -> Error("development VM birth is unavailable")
         bootstrap.ProcessPresent(..) -> Ok(string.inspect(#(pid, birth)))

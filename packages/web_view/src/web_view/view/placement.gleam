@@ -50,8 +50,8 @@ pub fn view(agent: String, code: Option(Code)) -> Element(message) {
   }
 }
 
-// The commands' half, when the page knows where they run. A folder is on the
-// machine the agent runs on, so it is named with that machine.
+/// The commands' half, when the page knows where they run. A folder is on the
+/// machine the agent runs on, so it is named with that machine.
 fn commands(agent: String, code: Option(Code)) -> List(Element(message)) {
   case code {
     None -> []
@@ -66,7 +66,7 @@ fn commands(agent: String, code: Option(Code)) -> List(Element(message)) {
   }
 }
 
-// One half of the strip: a quiet label and the machine or place it names.
+/// One half of the strip: a quiet label and the machine or place it names.
 fn tag(
   label: String,
   words: String,

@@ -134,6 +134,8 @@ pub fn both(
     #(0, fn() { first() |> map_ok(Left) }),
     #(1, fn() { second() |> map_ok(Right) }),
   ]
+
+  // Run concurrent tasks under collector and evaluate outcomes.
   case run_collect(tagged, 2, fail_fast: True) {
     Error([failure, ..]) -> Error(failure)
     Error([]) -> Error(Crashed(index: 0, reason: "empty failure set"))
@@ -178,6 +180,7 @@ fn index_tasks(
 
 // --- the collecting runner ----------------------------------------------
 
+/// Spawns workers and runs the collecting event loop.
 fn run_collect(
   tasks: List(#(Int, fn() -> Result(b, e))),
   max_concurrency: Int,
@@ -202,6 +205,7 @@ fn run_collect(
   assemble(count, done, fail_fast)
 }
 
+/// Loops waiting for worker completion or down signals until work is complete.
 fn collect_loop(
   runner: Runner(b, e),
   fail_fast: Bool,
@@ -226,6 +230,7 @@ fn collect_loop(
 // One task reported its own `Result` back: record the outcome, then
 // either stop everything (fail-fast, and this one failed) or keep
 // collecting.
+/// Handles a reported outcome from a finished worker.
 fn handle_reported(
   runner: Runner(b, e),
   fail_fast: Bool,
@@ -233,11 +238,16 @@ fn handle_reported(
   outcome: Result(b, e),
 ) -> Dict(Int, Outcome(b, e)) {
   let runner = retire(runner, index)
+
+  // Store either a success value or an error outcome.
   let stored = case outcome {
     Ok(value) -> ValueOutcome(value)
     Error(error) -> ErrorOutcome(error)
   }
+
   let runner = Runner(..runner, done: dict.insert(runner.done, index, stored))
+
+  // Stop immediately if fail-fast and this worker failed.
   case fail_fast && is_error(outcome) {
     True -> {
       cancel_running(runner.running)
@@ -250,11 +260,13 @@ fn handle_reported(
 // A monitored worker died. A DOWN for one already retired (its Normal
 // exit landing after its own `Reported`) is stale and ignored; a live
 // worker's death is recorded as a crash.
+/// Handles an unexpected process exit from a worker.
 fn handle_worker_down(
   runner: Runner(b, e),
   fail_fast: Bool,
   down: process.Down,
 ) -> Dict(Int, Outcome(b, e)) {
+  // Find the running worker index corresponding to the down pid.
   case down_index(runner, down) {
     Error(Nil) -> collect_loop(runner, fail_fast)
     Ok(#(index, reason)) -> {
@@ -264,6 +276,8 @@ fn handle_worker_down(
           ..runner,
           done: dict.insert(runner.done, index, CrashOutcome(reason)),
         )
+
+      // Stop immediately on worker crash when fail-fast is enabled.
       case fail_fast {
         True -> {
           cancel_running(runner.running)
@@ -277,6 +291,7 @@ fn handle_worker_down(
 
 // --- the racing runner --------------------------------------------------
 
+/// Executes tasks concurrently until the first one returns.
 fn run_race(
   tasks: List(#(Int, fn() -> Result(a, e))),
 ) -> Result(a, Failure(e)) {
@@ -299,7 +314,9 @@ fn run_race(
   race_loop(fill(runner))
 }
 
+/// Event loop awaiting the first successful or terminal worker signal in a race.
 fn race_loop(runner: Runner(a, e)) -> Result(a, Failure(e)) {
+  // Receive next signal from the collector selector.
   case process.selector_receive(runner.selector, within: 60_000) {
     Error(Nil) -> {
       cancel_running(runner.running)
@@ -308,6 +325,8 @@ fn race_loop(runner: Runner(a, e)) -> Result(a, Failure(e)) {
     Ok(Reported(index:, outcome:)) -> {
       let runner = retire(runner, index)
       cancel_running(runner.running)
+
+      // Unpack the winning task result.
       case outcome {
         Ok(value) -> Ok(value)
         Error(error) -> Error(Returned(index:, error:))
@@ -328,7 +347,9 @@ fn race_loop(runner: Runner(a, e)) -> Result(a, Failure(e)) {
 // --- shared runner plumbing ---------------------------------------------
 
 // Dispatch pending tasks until `max_concurrency` are running.
+/// Dispatches pending tasks up to the maximum concurrency limit.
 fn fill(runner: Runner(b, e)) -> Runner(b, e) {
+  // Check if pending tasks exist and concurrency capacity remains.
   case runner.pending, dict.size(runner.running) < runner.max_concurrency {
     [#(index, task), ..rest], True -> {
       let child = spawn_worker(runner.collector, index, task)
@@ -344,6 +365,7 @@ fn fill(runner: Runner(b, e)) -> Runner(b, e) {
   }
 }
 
+/// Spawns an unlinked worker process and installs a monitor.
 fn spawn_worker(
   collector: Subject(Report(b, e)),
   index: Int,
@@ -360,7 +382,9 @@ fn spawn_worker(
 
 // Remove a worker from the running set, demonitoring so its later Normal
 // DOWN does not reach us.
+/// Removes a worker from the active set and drops its monitor.
 fn retire(runner: Runner(b, e), index: Int) -> Runner(b, e) {
+  // Look up and retire the worker at index.
   case dict.get(runner.running, index) {
     Error(Nil) -> runner
     Ok(#(_pid, monitor)) -> {
@@ -370,6 +394,7 @@ fn retire(runner: Runner(b, e), index: Int) -> Runner(b, e) {
   }
 }
 
+/// Identifies the index of a crashed worker from process Down info.
 fn down_index(
   runner: Runner(b, e),
   down: process.Down,
@@ -378,6 +403,8 @@ fn down_index(
     process.ProcessDown(pid:, reason:, ..) ->
       list.find_map(dict.to_list(runner.running), fn(entry) {
         let #(index, #(worker_pid, _monitor)) = entry
+
+        // Match worker pid against the down process pid.
         case worker_pid == pid {
           True -> Ok(#(index, reason_text(reason)))
           False -> Error(Nil)
@@ -387,6 +414,7 @@ fn down_index(
   }
 }
 
+/// Signals cancellation to all running workers and awaits their termination.
 fn cancel_running(running: Dict(Int, #(Pid, Monitor))) -> Nil {
   let children = dict.values(running)
 
@@ -401,6 +429,7 @@ fn cancel_running(running: Dict(Int, #(Pid, Monitor))) -> Nil {
 // before the kill has a Down waiting for this exact reference. Consuming that
 // signal is the join barrier: only after it may the combinator claim no child
 // process or process-owned capability call survived the returned result.
+/// Waits for a killed worker to emit its Down signal.
 fn await_cancelled(child: #(Pid, Monitor)) -> Nil {
   let #(_pid, monitor) = child
   let _down =
@@ -410,6 +439,7 @@ fn await_cancelled(child: #(Pid, Monitor)) -> Nil {
   Nil
 }
 
+/// Gathers collected task outcomes in index order, honoring fail-fast policy.
 fn assemble(
   count: Int,
   done: Dict(Int, Outcome(b, e)),
@@ -428,6 +458,8 @@ fn assemble(
     dict.to_list(done)
     |> list.filter_map(fn(entry) {
       let #(index, outcome) = entry
+
+      // Extract error outcomes from recorded results.
       case outcome {
         ValueOutcome(_) -> Error(Nil)
         ErrorOutcome(error:) -> Ok(Returned(index:, error:))
@@ -435,15 +467,13 @@ fn assemble(
       }
     })
 
-  // Fail-fast cancellation deliberately leaves unfinished indices absent from
-  // `done`. Once a triggering failure is recorded, those gaps describe work
-  // this runner cancelled; they must not replace the real failure with a
-  // lower-indexed "no outcome recorded" crash. A genuine channel stall has no
-  // observed failure and retains the conservative missing-outcome diagnosis.
+  // Decide between observed failures or complete result set under fail-fast.
   let failures = case fail_fast, observed_failures {
     True, [_, ..] -> observed_failures
     _, _ -> all_failures
   }
+
+  // Return aggregated successful results or list of failures.
   case failures {
     [] ->
       Ok(
@@ -458,6 +488,7 @@ fn assemble(
   }
 }
 
+/// Retrieves the outcome at index or returns a Crashed error if missing.
 fn one(index: Int, done: Dict(Int, Outcome(b, e))) -> Result(b, Failure(e)) {
   case dict.get(done, index) {
     Ok(ValueOutcome(value:)) -> Ok(value)
@@ -496,6 +527,7 @@ fn clamp_concurrency(max_concurrency: Int) -> Int {
   }
 }
 
+/// Converts an exit reason to descriptive text.
 fn reason_text(reason: process.ExitReason) -> String {
   case reason {
     process.Normal -> "normal"

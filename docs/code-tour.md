@@ -205,7 +205,7 @@ runtime writer's post-commit publication as `CommitHint`, a bus
 publication as `BusHint`, and streamed provider deltas as
 `ProviderDelta`.
 
-`handle_text` becomes `dispatch` (`client/gateway.gleam:4892`), which
+`handle_text` becomes `dispatch` (`client/gateway.gleam:5061`), which
 decodes strictly on the envelope and tolerantly on names — an
 unrecognized `cmd` survives as `UnknownCommand` so the hub can answer
 `unsupported` in band — then `run_command`
@@ -257,7 +257,7 @@ tree-write that moved the leaf refuses the acceptance rather than
 mis-parenting its entries.
 
 The commit itself is a call into one actor. `writer.commit` is
-`process.call_forever` into the StorageWriter (`runtime/writer.gleam:364`),
+`process.call_forever` into the StorageWriter (`runtime/writer.gleam:372`),
 whose mailbox *is* the serialization order for the session — "transactions
 on one session are serialized" is a property of the process topology, not
 a convention someone must remember. On success the writer publishes a
@@ -452,7 +452,7 @@ two:
                    in one atomic transaction
 ```
 
-`admit_generation` (`machine/planner.gleam:1143`) mints `R` and `U`, folds them into
+`admit_generation` (`machine/planner.gleam:1181`) mints `R` and `U`, folds them into
 `GenerationEffectPending`, and returns the intent transaction beside the
 next state. `runtime/strand_runtime.gleam:679` commits it and only then
 runs the continuation that starts the effect:
@@ -501,7 +501,7 @@ to rerun.
 
 ## 8. The request
 
-`start_effect` (`runtime/strand_runtime.gleam:1933`) projects the context
+`start_effect` (`runtime/strand_runtime.gleam:2037`) projects the context
 and hands a `RequestSpec` to the injected provider surface. The
 projection is a branch scan from the leaf that stops at the first
 compaction entry, run through `session.project_scan`
@@ -600,7 +600,7 @@ compaction on its way out; ask about tool use before a genuine length
 stop and a truncated response executes calls cut in half.
 
 Then one transaction, in pi's normative order
-(`settle_writes`, `machine/planner.gleam:1537`):
+(`settle_writes`, `machine/planner.gleam:1546`):
 
 ```gleam
   [
@@ -625,7 +625,7 @@ actor — created before the runtime so the writer re-registers it on every
 tree restart — turns that into a `CommitHint` cast at the hub
 (`client/gateway.gleam:830`).
 
-The hint carries nothing. It triggers `pull` (`client/gateway.gleam:3779`),
+The hint carries nothing. It triggers `pull` (`client/gateway.gleam:3881`),
 which reads everything in storage above the hub's high-water seq and
 merges four sources: new entries reachable from each strand's leaf plus a
 completeness pass for entries no leaf covers, new usage rows attributed
@@ -653,7 +653,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:7097`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:7394`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
@@ -732,10 +732,10 @@ clearance proceeds under the base policy; a crash after consumption
 spends the approval without an execution. Both directions fail safe: one
 approval is worth at most one widened execution of exactly the call a
 human approved. What the clearance won then travels onto the dispatch it
-authorized — `take_cleared` (`runtime/strand_runtime.gleam:2201`) hands
+authorized — `take_cleared` (`runtime/strand_runtime.gleam:2095`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
-`Ctx.grants` (`run_grants`, `client/wiring.gleam:1629`). That is the
+`Ctx.grants` (`run_grants`, `client/wiring.gleam:1707`). That is the
 whole channel: an approval a human gave for this call, reaching the
 policy composition this call is judged by. It used to stop at the query.
 
@@ -743,16 +743,16 @@ Then `Dispatch` again — intent commit, then the effect — and the tool
 runs on its own spawned process. `client/wiring.run_tool` builds a fresh
 `Ctx` per call carrying the driver's own durable coordinates —
 `{strand, op_id, step_id, source_index}` — and dispatches through the
-registry (`run_tool`, `client/wiring.gleam:1121`). All four come from the driver, so a
+registry (`run_tool`, `client/wiring.gleam:1111`). All four come from the driver, so a
 model that names another strand in its arguments does not become it.
 
-`tool.dispatch` is total (`tools/tool.gleam:747`): an unknown name yields
+`tool.dispatch` is total (`tools/tool.gleam:757`): an unknown name yields
 an in-band error result rather than a crash, and so does every other
 failure a tool can meet. Tool failures are **data**. That is what makes
 "tools never crash the strand" a structural claim rather than a
 discipline.
 
-For `bash`, `call_spec` (`tools/bash.gleam:815`) builds a `CallSpec` naming the
+For `bash`, `call_spec` (`tools/bash.gleam:852`) builds a `CallSpec` naming the
 op and step ids, the session base policy, the tool's own
 policy-shaped requirements, the consumed grants, `RefuseNarrowed`, the
 argv, the constructed environment, and a pooled budget
@@ -813,7 +813,7 @@ may be newer.
 
 ### Into the jail
 
-`spawn_helper` (`broker/exec.gleam:2708`) is where the Erlang side meets
+`spawn_helper` (`broker/exec.gleam:2615`) is where the Erlang side meets
 the OS. The helper's base policy has to arrive on file descriptor 3, and
 Erlang ports cannot map arbitrary descriptors, so the broker writes the
 policy to a mode-0600 file inside a mode-0700 directory and starts the
@@ -1176,7 +1176,7 @@ closure on the **Agency** record (`tools/agent.gleam`) — and everything
 with teeth lives on the far side of that seam, in `client/agency.gleam`,
 where a live runtime is visible.
 
-`spawn` (`client/agency.gleam:1262`) reads the durable lineage ledger,
+`spawn` (`client/agency.gleam:1283`) reads the durable lineage ledger,
 checks the depth cap, and mints the child's name from coordinates that
 are already durable in the intent (`client/agency.gleam:520`):
 `sub:{parent}/{slug}-{digest}`, where the slug is the purpose bounded and
@@ -1202,7 +1202,7 @@ beside the prose report rather than as a sentence the parent would have to
 parse. That is what makes deterministic orchestration over children
 something other than a script that regexes prose.
 
-`api.create_strand` (`runtime/api.gleam:1528`) then seeds the child's
+`api.create_strand` (`runtime/api.gleam:1591`) then seeds the child's
 three registers — its own model identity, its own leaf (a cursor into the
 shared tree), its own strand state — starts its driver through the
 factory, and accepts the task brief as its first run. Because the
@@ -1213,10 +1213,10 @@ between the seed commit and the brief commit leaves a strand nothing else
 could finish.
 
 Collecting the result is a store read, not a message.
-`await_strand_result` (`runtime/api.gleam:1976`) keys on the *operation*,
+`await_strand_result` (`runtime/api.gleam:2053`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
-register (`build.set_last_result`, `machine/planner.gleam:3799`). Keying
+register (`build.set_last_result`, `machine/planner.gleam:3973`). Keying
 on the strand register alone had a hole: a child that starts a second
 run overwrites it, and a parent still waiting on the first run's result
 would read the second's.
@@ -1239,7 +1239,7 @@ corner would buy.
 
 Not every second strand is a child. If the catalogue routes an `advisor`
 role, `serve` seeds one more strand at boot — through
-`create_idle_strand` (`runtime/api.gleam:1603`) rather than through the
+`create_idle_strand` (`runtime/api.gleam:1666`) rather than through the
 Agency, so it gets no lineage cell and so is addressable by nobody,
 lists nobody, and is reaped by nobody. At each end of a run on `main` a
 wrapped `run_end` slot casts to `client/advisor`'s actor, which scans
@@ -1506,7 +1506,7 @@ and revoked when it answers — so a node that outlives an execution
 outlives no authority.
 
 Registration is where an extension meets the harness, and the seam that
-lets it is `registry` (`client/contributions.gleam:424`): the tool table
+lets it is `registry` (`client/contributions.gleam:440`): the tool table
 is an ordered list of contributions, each naming its origin. Within one
 contribution a repeated name is the author overriding themselves; between
 two it takes the boot down naming both, because an extension that could

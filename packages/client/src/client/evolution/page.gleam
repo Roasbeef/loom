@@ -30,19 +30,26 @@ pub fn envelope(
   use requested <- result.try(tool.optional_int(arguments, "offset_bytes"))
   let bytes = bit_array.from_string(encoded)
   let total = bit_array.byte_size(bytes)
+
+  // Inspect inline if small and unoffset; otherwise return a chunked page.
   case requested, total <= 32_768 {
     None, True ->
       json.parse(encoded)
       |> result.replace_error("Corrupt: verified envelope JSON")
+
     _, _ -> {
+      // Determine the byte offset to begin slicing the envelope.
       let offset = case requested {
         None -> 0
         Some(offset) -> offset
       }
+
+      // Verify that the requested byte offset falls within envelope boundaries.
       use Nil <- result.try(case offset >= 0 && offset <= total {
         True -> Ok(Nil)
         False -> Error("Bounds: envelope byte offset is outside this record")
       })
+
       let count = int.min(16_384, total - offset)
       use fragment <- result.try(
         bit_array.slice(bytes, offset, count)
@@ -99,6 +106,8 @@ pub fn items(
   let offset = option.unwrap(offset, 0)
   let count = option.unwrap(count, 8)
   let total = list.length(values)
+
+  // Validate pagination parameters against bounds and total item count.
   use Nil <- result.try(
     case
       offset >= 0
@@ -112,6 +121,7 @@ pub fn items(
       False -> Error("Bounds: catalogue offset, count or byte budget")
     },
   )
+
   use selected <- result.try(
     take_items(list.drop(values, offset), count, byte_budget - 2, []),
   )
@@ -153,17 +163,21 @@ pub fn offset_json(offset: Option(Int)) -> json.JsonValue {
   }
 }
 
+/// Recursively takes up to `count` items while staying within `bytes` budget.
 fn take_items(
   remaining: List(json.JsonValue),
   count: Int,
   bytes: Int,
   selected: List(json.JsonValue),
 ) -> Result(List(json.JsonValue), String) {
+  // Check if remaining candidates or item budget are exhausted.
   case remaining, count {
     [], _ | _, 0 -> Ok(list.reverse(selected))
     [item, ..rest], _ -> {
       let size =
         bit_array.byte_size(bit_array.from_string(json.to_string(item))) + 1
+
+      // Verify if candidate item fits within remaining byte allowance.
       case size <= bytes, selected {
         True, _ -> take_items(rest, count - 1, bytes - size, [item, ..selected])
         False, [] ->

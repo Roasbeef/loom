@@ -43,7 +43,15 @@ pub type Proposal {
   )
 }
 
-/// Authorizes source reach, then borrows the native owned snapshot capability.
+/// Captures the proposal's source through the machine that holds the workspace,
+/// then admits it to the catalogue.
+///
+/// The directory is handed to `snapshot` as the caller named it. Resolving it
+/// here would use this process's filesystem and workspace, which are not the
+/// executor's for a registered session: the orchestrator would send the
+/// executor an absolute path of its own making. The machine resolves the
+/// directory under its own workspace and refuses what escapes it, with
+/// `source_path`.
 ///
 /// ## Examples
 ///
@@ -55,40 +63,7 @@ pub fn capture_with(
   ctx: tool.Ctx,
   snapshot: fn(tool.Ctx, String) -> Result(archive.Tree, store.Refusal),
 ) -> Result(record.Candidate, store.Refusal) {
-  // A candidate's source is the workspace or an approved directory addition,
-  // never the whole host view a session base may read: the snapshot becomes
-  // an immutable artifact, so its reach is the narrower of the two.
-  let access = directory_access.approved(ctx.directory_access, ctx.grants)
-  let reach =
-    sandbox.SandboxPolicy(..ctx.base_policy, readable_roots: [
-      ctx.workspace,
-      ..list.append(access.readable, access.writable)
-    ])
-  use path <- result.try(
-    fs.resolve_readable(
-      ctx.filesystem,
-      ctx.workspace,
-      reach,
-      proposal.directory,
-    )
-    |> result.map_error(fn(error) { store.Authority(string.inspect(error)) }),
-  )
-  use Nil <- result.try(
-    case
-      list.any(
-        [store.root(catalogue), ..ctx.base_policy.protected],
-        fn(protected) {
-          path == protected
-          || string.starts_with(path, protected <> "/")
-          || string.starts_with(protected, path <> "/")
-        },
-      )
-    {
-      True -> Error(store.Authority("source snapshot overlaps protected state"))
-      False -> Ok(Nil)
-    },
-  )
-  use tree <- result.try(snapshot(ctx, path))
+  use tree <- result.try(snapshot(ctx, proposal.directory))
   use files <- result.try(
     list.try_map(tree.files, fn(file) {
       bit_array.to_string(file.bytes)
@@ -99,6 +74,53 @@ pub fn capture_with(
     }),
   )
   from_files(catalogue, proposal, origin, files)
+}
+
+/// Authorizes one source directory and answers the absolute path to capture.
+///
+/// A candidate's source is the workspace or an approved directory addition,
+/// never the whole host view a session base may read: the snapshot becomes an
+/// immutable artifact, so its reach is the narrower of the two. The directory
+/// is resolved through the real filesystem, so a symlink leaving that reach is
+/// refused, and the result is refused when it overlaps the session's protected
+/// entries or any of `extra`, the state that holds the catalogue.
+///
+/// The machine that holds the workspace calls this, with no `extra`: the
+/// session's protected entries hold the evolution directory, which is where
+/// the catalogue and every candidate's scratch live.
+///
+/// ## Examples
+///
+/// `source_path(ctx, "src/ext", [])` is the canonical path of `src/ext`.
+pub fn source_path(
+  ctx: tool.Ctx,
+  directory: String,
+  extra: List(String),
+) -> Result(String, store.Refusal) {
+  let access = directory_access.approved(ctx.directory_access, ctx.grants)
+  let reach =
+    sandbox.SandboxPolicy(..ctx.base_policy, readable_roots: [
+      ctx.workspace,
+      ..list.append(access.readable, access.writable)
+    ])
+  use path <- result.try(
+    fs.resolve_readable(ctx.filesystem, ctx.workspace, reach, directory)
+    |> result.map_error(fn(error) { store.Authority(string.inspect(error)) }),
+  )
+
+  // An overlap in either direction is refused: a source inside protected
+  // state would copy it into the artifact, and a source containing it would
+  // too.
+  case
+    list.any(list.append(extra, ctx.base_policy.protected), fn(protected) {
+      path == protected
+      || string.starts_with(path, protected <> "/")
+      || string.starts_with(protected, path <> "/")
+    })
+  {
+    True -> Error(store.Authority("source snapshot overlaps protected state"))
+    False -> Ok(path)
+  }
 }
 
 /// Captures through a fixed tar command under the caller's composed jail policy.
@@ -137,11 +159,8 @@ pub fn snapshot_owned(
   |> result.map_error(fn(error) { store.Bounds(archive.describe(error)) })
 }
 
-// The capture reads exactly what the caller's own composed policy lets it read.
-// Writable roots become readable, so a workspace the caller may write can also
-// be archived, and nothing else is widened. The call then narrows to read-only
-// with no network, a tmpfs scratch, one environment name and small limits, and
-// `compose` applies that request on top of the readable base.
+/// Derives the confined read-only sandbox policy for candidate tar archive capture,
+/// converting writable roots to readable and stripping network and extra environment access.
 fn capture_policy(ctx: tool.Ctx) -> sandbox.SandboxPolicy {
   let #(composed, _) =
     sandbox.compose(ctx.base_policy, ctx.base_policy, ctx.grants)
@@ -195,6 +214,8 @@ pub fn capture_limits() -> sandbox.Limits {
   )
 }
 
+/// Executes a jailed tar snapshot command to archive candidate files, bounding execution
+/// time and resource usage to capture immutable candidate source bytes.
 fn snapshot_call(
   ctx: tool.Ctx,
   path: String,
@@ -242,6 +263,8 @@ fn snapshot_call(
 
   // Cancellation precedes retirement when settlement cannot be observed.
   let collected = tool.collect_events(events, waiting: 20_000)
+
+  // Ensure tool execution completed within the wait window or cancel the pending run.
   use collected <- result.try(case collected {
     Ok(value) -> Ok(value)
     Error(Nil) -> {
@@ -249,6 +272,8 @@ fn snapshot_call(
       Error(store.Unavailable("source capture did not settle"))
     }
   })
+
+  // Evaluate the process exit code and limits to return clean stdout bytes or refusal.
   case collected.outcome {
     broker.CallFailed(failure) ->
       Error(store.Authority(string.inspect(failure)))
@@ -270,18 +295,20 @@ fn snapshot_call(
   }
 }
 
-// Admits already captured bytes; `capture_with` owns provenance construction.
-// The files, including any tests, are bound into the candidate's digest.
+/// Constructs and persists a candidate from validated archive files and proposal metadata,
+/// verifying name legality and structure requirements.
 fn from_files(
   catalogue: store.Store,
   proposal: Proposal,
   origin: record.Origin,
   files: List(#(String, String)),
 ) -> Result(record.Candidate, store.Refusal) {
+  // Validate candidate identifier against character and length constraints.
   use Nil <- result.try(case legal_name(proposal.name) {
     True -> Ok(Nil)
     False -> Error(store.Bounds("candidate name must be a bounded identifier"))
   })
+
   use Nil <- result.try(admit_files(proposal.kind, files))
   let candidate =
     record.identified(record.Candidate(
@@ -299,6 +326,8 @@ fn from_files(
   store.propose(catalogue, candidate)
 }
 
+/// Validates that archive files conform to the invariants required by the candidate kind:
+/// seam checks for extensions, module shape for programs, and safe paths for prompts.
 fn admit_files(
   kind: record.Kind,
   files: List(#(String, String)),
@@ -341,6 +370,8 @@ fn admit_files(
   }
 }
 
+/// Verifies that a candidate name is a non-empty, 64-character bounded ASCII identifier
+/// containing only lowercase alphanumeric characters, underscores, and hyphens.
 fn legal_name(name: String) -> Bool {
   string.length(name) > 0
   && string.length(name) <= 64

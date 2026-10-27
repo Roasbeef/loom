@@ -24,10 +24,13 @@
 //// answers those names locally (`owner_codemode.over_owner_serving`).
 ////
 //// The six `evolution.*` names are the owner's because the catalogue and the
-//// generation owner live beside the session. No remote workspace is offered
-//// `cap/evolution` yet: a session on an executor has no evolution plane, so
-//// the placement states where the names will be answered once one does
-//// (`protocol-change/098`), and the owner's chain denies them until then.
+//// generation owner live beside the session. A session on an executor whose
+//// census says it compiles candidates is offered `cap/evolution`
+//// (`owner_codemode.offering_evolution`), sends the six names to the owner, and
+//// the owner answers them from the doors over `evolution/machine/remote`
+//// (`OwnerSide.evolution`; `protocol-change/098`, "the evolution operations
+//// arrive as capability calls"). An executor that cannot compile is not offered
+//// the module, and the owner answers the names with the executor's reason.
 
 import client/async_codemode
 import client/codemode

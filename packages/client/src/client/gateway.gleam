@@ -1179,6 +1179,7 @@ type ObservationKind {
   HistoryObservation
 }
 
+/// Wraps an observation board into its corresponding protocol snapshot event.
 fn observation_snapshot(kind: ObservationKind, board: JsonValue) {
   protocol.SnapshotEvent(case kind {
     WorktreeObservation -> protocol.WorktreeDiffSnapshot(board)
@@ -1187,6 +1188,7 @@ fn observation_snapshot(kind: ObservationKind, board: JsonValue) {
   })
 }
 
+/// Evaluates whether an observer connection is permitted to receive the requested observation.
 fn observation_allowed(state: State, connection: Int, kind: ObservationKind) {
   case kind {
     WorktreeObservation -> worktree_owner(state, connection)
@@ -1364,6 +1366,7 @@ pub fn start_host_fixture(
   start_with_delivery(options, name, HostOnly)
 }
 
+/// Starts the gateway actor configured with the specified delivery mode.
 fn start_with_delivery(
   options: Options,
   name: address.Address(Message),
@@ -1384,6 +1387,7 @@ fn start_with_delivery(
     // the gateway to the ownership inspector under its canonical session id.
     session_owner.label(options.runtime, owner.Gateway)
 
+    // Evaluate control flow transition for start with delivery.
     let selector = case options.bus {
       Some(events_bus) -> {
         // Keyed by the session's *canonical* id, never by the
@@ -1419,6 +1423,7 @@ fn start_with_delivery(
             )
           None -> Nil
         }
+
         process.new_selector()
         |> process.select(subject)
         |> bus.select_published(BusHint)
@@ -1427,6 +1432,7 @@ fn start_with_delivery(
         process.new_selector()
         |> process.select(subject)
     }
+
     let _reset_side_conversations =
       option.map(options.btw, fn(name) { address.send(name, btw.Reset) })
 
@@ -1729,6 +1735,8 @@ pub fn decide(
     })
     |> result.replace_error(Nil)
   }
+
+  // Evaluate the synchronous call outcome and unwrap the response.
   case asked {
     Ok(answer) -> answer
     Error(Nil) ->
@@ -1772,6 +1780,8 @@ pub fn decide_relayed(
     })
     |> result.replace_error(Nil)
   }
+
+  // Evaluate the synchronous call outcome and unwrap the response.
   case asked {
     Ok(answer) -> answer
     Error(Nil) ->
@@ -1998,6 +2008,8 @@ pub fn tool_output_observer(
 ) -> fn(effects.ToolRun) -> fn(tool.OutputTail) -> Nil {
   fn(run: effects.ToolRun) {
     let message.ToolCall(id: call_id, ..) = run.call
+
+    // Resolve the session identity for the opened session.
     case session.id(opened) {
       Ok(Some(id)) -> {
         let key = bus.key(of: id)
@@ -2033,18 +2045,20 @@ pub fn tool_output_observer(
   }
 }
 
-// Constructing the callback from the durable operation id in one place keeps
-// the immediate facade and the prepared production path observationally
-// identical.
+/// Constructing the callback from the durable operation id in one place keeps
+/// the immediate facade and the prepared production path observationally
+/// identical.
 fn observe_provider(
   name: address.Address(Message),
   spec: effects.RequestSpec,
 ) -> fn(stream.StreamEvent) -> Nil {
+  // Parse the tool specification parameters.
   let operation = case spec {
     effects.GenerationRequest(operation:, ..) -> operation
     effects.PollRequest(operation:, ..) -> operation
     effects.SummaryRequest(operation:, ..) -> operation
   }
+
   let generation = request_identity(spec)
   fn(event) {
     case event {
@@ -2056,9 +2070,10 @@ fn observe_provider(
   }
 }
 
-// Step and attempt belong to the durable request, so every observer derives
-// the same identity without minting a second counter or consulting live state.
+/// Step and attempt belong to the durable request, so every observer derives
+/// the same identity without minting a second counter or consulting live state.
 fn request_identity(spec: effects.RequestSpec) -> String {
+  // Parse the tool specification parameters.
   let parts = case spec {
     effects.GenerationRequest(step_id:, attempt:, response_entry:, ..) -> [
       json.String("generation"),
@@ -2079,6 +2094,7 @@ fn request_identity(spec: effects.RequestSpec) -> String {
       json.Int(request_index),
     ]
   }
+
   json.to_string(json.Array(parts))
 }
 
@@ -2097,11 +2113,13 @@ fn request_identity(spec: effects.RequestSpec) -> String {
 @internal
 pub fn tap_preview_provider(surface: effects.ProviderSurface, to name) {
   provider_relay.previewing(surface, fn(spec) {
+    // Parse the tool specification parameters.
     let operation = case spec {
       effects.GenerationRequest(operation:, ..)
       | effects.PollRequest(operation:, ..)
       | effects.SummaryRequest(operation:, ..) -> ids.op_id_to_string(operation)
     }
+
     let lease = {
       use subject <- result.try(
         address.lookup(name) |> result.replace_error("hub absent"),
@@ -2122,19 +2140,23 @@ pub fn tap_preview_provider(surface: effects.ProviderSurface, to name) {
   })
 }
 
+/// Constructs a provider relay observation callback for live tool preview streaming.
 fn preview_observer(
   lease,
   operation: String,
   generation: String,
 ) -> provider_relay.ObservationCallback {
   provider_relay.ObservationCallback(fn(event) {
+    // Deliver only while the preview lease is active, and distinguish event kinds for the sink.
     case lease, event {
       Ok(#(subject, source)), stream.Delta(delta) -> {
+        // Convert the provider delta variant to the preview protocol label and text.
         let #(kind, text) = case delta {
           stream.TextDelta(_, text) -> #("text", text)
           stream.ThinkingDelta(_, text) -> #("thinking", text)
           stream.ToolCallDelta(_, _, _, text) -> #("tool_call", text)
         }
+
         let sent =
           call.try_call(subject, waiting: 200, sending: Preview(
             source,
@@ -2146,6 +2168,8 @@ fn preview_observer(
           ))
           |> result.replace_error("preview delivery timed out")
           |> result.flatten
+
+        // Verify that the preview frame was admitted by the delivery channel.
         case sent {
           Ok(Nil) -> preview_observer(lease, operation, generation)
           Error(_) -> ignored_preview(lease)
@@ -2160,10 +2184,11 @@ fn preview_observer(
   })
 }
 
-// A timed-out payload still occupies its original source lease until terminal
-// release or original observer DOWN. No later delta can enqueue another one.
+/// A timed-out payload still occupies its original source lease until terminal
+/// release or original observer DOWN. No later delta can enqueue another one.
 fn ignored_preview(lease) -> provider_relay.ObservationCallback {
   provider_relay.ObservationCallback(fn(event) {
+    // Evaluate control flow transition for ignored preview.
     case event {
       stream.Delta(_) -> ignored_preview(lease)
       stream.Settled(..) | stream.Failed(..) -> {
@@ -2174,7 +2199,9 @@ fn ignored_preview(lease) -> provider_relay.ObservationCallback {
   })
 }
 
+/// Releases the current live preview stream lease.
 fn release_preview(lease) {
+  // Evaluate active preview lease state and event status.
   case lease {
     Error(_) -> Nil
     Ok(#(subject, source)) -> {
@@ -2193,12 +2220,16 @@ fn preview_text(text: String) -> String {
   preview_prefix(bytes, int.min(bit_array.byte_size(bytes), 24_576), 4)
 }
 
+/// Formats a bounded prefix preview string for streamed tool response data.
 fn preview_prefix(bytes: BitArray, size: Int, attempts: Int) -> String {
+  // Check whether preview text truncation attempts have reached the bound.
   case attempts {
     0 -> ""
     _ -> {
       let prefix =
         bit_array.slice(bytes, 0, size) |> result.try(bit_array.to_string)
+
+      // Check whether preview text truncation attempts have reached the bound.
       case prefix {
         Ok(text) ->
           text |> string.to_utf_codepoints |> string.from_utf_codepoints
@@ -2218,6 +2249,7 @@ fn send_if_alive(name: address.Address(Message), message: Message) -> Nil {
 
 // --- the hub loop ----------------------------------------------------------
 
+/// Returns the next actor continuation step preserving current gateway state.
 fn continue(state: State) -> actor.Next(State, Message) {
   let selector =
     dict.fold(
@@ -2252,6 +2284,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   continue(dispatch_message(state, message))
 }
 
+/// Routes incoming gateway messages to their specific protocol or lifecycle handlers.
 fn dispatch_message(state: State, message: Message) -> State {
   case message {
     ObservationReported(connection:, pulled:) ->
@@ -2360,6 +2393,7 @@ fn dispatch_message(state: State, message: Message) -> State {
       socket,
       reply,
     ) -> {
+      // Evaluate control flow transition for dispatch message.
       let admitted = case
         binding.session_id
         == ids.session_id_to_string(api.session_id(state.runtime))
@@ -2368,6 +2402,8 @@ fn dispatch_message(state: State, message: Message) -> State {
         True -> check_binding(binding, check)
         False -> Error("attachment names a different session")
       }
+
+      // Evaluate control flow transition for dispatch message.
       case admitted {
         Error(reason) -> {
           process.send(reply, Error(reason))
@@ -2542,15 +2578,15 @@ fn dispatch_message(state: State, message: Message) -> State {
 
 // --- materializing the durable stream --------------------------------------
 
-// A network request owns exactly one reply destination, and holds it only for
-// the turn that answers it. What the socket also receives, since
-// `protocol-change/018`, are frames that answer no request: a `committed`
-// notice, a stream delta, the roster, a fault. Those never find this
-// destination — `response` is `Some` only between the two assignments below —
-// so the credit a request buys is still exactly one bounded reply. What they
-// carry is a *notice*, never a durable payload: the record still travels the
-// credited snapshot path, which is where the size bound and the retention
-// window are enforced.
+/// A network request owns exactly one reply destination, and holds it only for
+/// the turn that answers it. What the socket also receives, since
+/// `protocol-change/018`, are frames that answer no request: a `committed`
+/// notice, a stream delta, the roster, a fault. Those never find this
+/// destination — `response` is `Some` only between the two assignments below —
+/// so the credit a request buys is still exactly one bounded reply. What they
+/// carry is a *notice*, never a durable payload: the record still travels the
+/// credited snapshot path, which is where the size bound and the retention
+/// window are enforced.
 fn request_frame(
   state: State,
   connection: Int,
@@ -2563,18 +2599,19 @@ fn request_frame(
   })
 }
 
-// Runs `answer` with the connection's one reply capability installed, then
-// takes it back. Both the request that was just admitted and a capture that
-// finishes later answer through here, so a reply can leave only while a
-// request's capability is held and no push can ever find it. An attachment
-// that is gone, was never authenticated, or belongs to a poisoned hub is told
-// it is closed instead, because the socket is still waiting for one reply.
+/// Runs `answer` with the connection's one reply capability installed, then
+/// takes it back. Both the request that was just admitted and a capture that
+/// finishes later answer through here, so a reply can leave only while a
+/// request's capability is held and no push can ever find it. An attachment
+/// that is gone, was never authenticated, or belongs to a poisoned hub is told
+/// it is closed instead, because the socket is still waiting for one reply.
 fn with_response(
   state: State,
   connection: Int,
   response: Subject(Result(String, String)),
   answer: fn(State) -> State,
 ) -> State {
+  // Evaluate control flow transition for with response.
   case state.health, dict.get(state.connections, connection) {
     Reading, Ok(Connection(authentication: Authenticated(..), ..) as link) -> {
       let state =
@@ -2584,6 +2621,8 @@ fn with_response(
           Connection(..link, response: Some(response)),
         )
       let state = answer(state)
+
+      // Evaluate control flow transition for with response.
       case dict.get(state.connections, connection) {
         Ok(link) ->
           put_connection(state, connection, Connection(..link, response: None))
@@ -2601,10 +2640,13 @@ fn put_connection(state: State, id: Int, link: Connection) -> State {
   State(..state, connections: dict.insert(state.connections, id, link))
 }
 
+/// Cleans up expired background snapshot transfer sessions.
 fn expire_transfers(state: State) -> State {
   let now = bootstrap.monotonic_time_ms()
   list.fold(dict.to_list(state.connections), state, fn(state, pair) {
     let #(id, link) = pair
+
+    // Evaluate control flow transition for expire transfers.
     case link.transfer {
       Some(current) ->
         case transfer.expired(current, now) {
@@ -2616,6 +2658,7 @@ fn expire_transfers(state: State) -> State {
   })
 }
 
+/// Decodes incoming wire frame text and dispatches network commands.
 fn network_dispatch(state: State, connection: Int, text: String) -> State {
   case protocol.decode_command(text) {
     // A body the decoder refused is a command the client sent and the
@@ -2649,6 +2692,7 @@ fn network_dispatch(state: State, connection: Int, text: String) -> State {
   }
 }
 
+/// Dispatches validated network protocol commands according to client authority.
 fn network_command(
   state: State,
   connection: Int,
@@ -2658,6 +2702,8 @@ fn network_command(
   case command {
     protocol.Subscribe(session_id, _) -> {
       let canonical = ids.session_id_to_string(api.session_id(state.runtime))
+
+      // Evaluate control flow transition for network command.
       case session_id == canonical {
         // A join is announced to every subscribed peer, the newcomer
         // included, and each copy leaves through `deliver`'s per-peer
@@ -2763,6 +2809,7 @@ fn network_command(
   }
 }
 
+/// Computes a bounded snapshot capture plan for recent state history.
 fn snapshot_plan(recent: Int) -> snapshot.Plan {
   snapshot.Plan(
     [
@@ -2810,6 +2857,7 @@ fn snapshot_plan(recent: Int) -> snapshot.Plan {
   )
 }
 
+/// Initiates an asynchronous snapshot transfer stream for an authorized client.
 fn begin_transfer(
   state: State,
   connection: Int,
@@ -2840,11 +2888,16 @@ fn begin_transfer(
       state
     },
   )
+
+  // Dispatch snapshot transfer according to the requested window shape.
   let recent = case window {
     transfer.Recent -> int.min(100, state.recent_entries)
     _ -> 0
   }
+
   let now = bootstrap.monotonic_time_ms()
+
+  // Dispatch snapshot transfer according to the requested window shape.
   let plan = case window {
     transfer.Escalations(ids) ->
       // An id holding a slash may name a child's request on another
@@ -2894,10 +2947,13 @@ fn begin_transfer(
   let run =
     weft.new([fn() { capture(plan, capture_wait_ms) }])
     |> weft.deadline(capture_deadline_ms)
+
+  // Evaluate control flow transition for begin transfer.
   let run = case link.consumer {
     Some(socket) -> weft.cancel_when_exits(run, socket)
     None -> run
   }
+
   let _relay = weft.start_relayed(run, to: reports)
   let pending =
     PendingCapture(
@@ -2930,10 +2986,10 @@ fn capturing(state: State, connection: Int) -> Bool {
   })
 }
 
-// A capture's report is one of three things: the run's one outcome, its final
-// word after that, or its final word with no outcome before it. Only the
-// first, or the third, answers the socket, and the entry is dropped only at a
-// final word so that word still has a receiver.
+/// A capture's report is one of three things: the run's one outcome, its final
+/// word after that, or its final word with no outcome before it. Only the
+/// first, or the third, answers the socket, and the entry is dropped only at a
+/// final word so that word still has a receiver.
 fn capture_reported(
   state: State,
   capture: Int,
@@ -2957,6 +3013,7 @@ fn capture_reported(
           answer_capture(state, pending, capture_result(outcome))
         }
         weft.AllDelivered | weft.RunLost(..) -> {
+          // Evaluate control flow transition for capture reported.
           let state = case pending.progress {
             Answered -> state
 
@@ -2966,15 +3023,16 @@ fn capture_reported(
             Awaiting ->
               answer_capture(state, pending, Error(snapshot.ReadTimedOut))
           }
+
           State(..state, captures: dict.delete(state.captures, capture))
         }
       }
   }
 }
 
-// What a finished run says about its one read. Only a read that returned says
-// anything about storage; a run that was cancelled, cut off by its deadline,
-// or lost its worker produced no answer, which is the same thing a timeout is.
+/// What a finished run says about its one read. Only a read that returned says
+/// anything about storage; a run that was cancelled, cut off by its deadline,
+/// or lost its worker produced no answer, which is the same thing a timeout is.
 fn capture_result(
   outcome: weft.Outcome(snapshot.Cut, snapshot.Error),
 ) -> Result(snapshot.Cut, snapshot.Error) {
@@ -2989,15 +3047,17 @@ fn capture_result(
   }
 }
 
-// Answers the request that asked for this capture, from the hub's own
-// process. The cut is assembled with the roster, pending inputs and settings
-// as they are now, which is no staler than the synchronous read was.
+/// Answers the request that asked for this capture, from the hub's own
+/// process. The cut is assembled with the roster, pending inputs and settings
+/// as they are now, which is no staler than the synchronous read was.
 fn answer_capture(
   state: State,
   pending: PendingCapture,
   captured: Result(snapshot.Cut, snapshot.Error),
 ) -> State {
   use state <- with_response(state, pending.connection, pending.response)
+
+  // Evaluate control flow transition for answer capture.
   case captured {
     Ok(cut) ->
       captured_transfer(
@@ -3013,6 +3073,7 @@ fn answer_capture(
   }
 }
 
+/// Commits a captured snapshot cut into an active transfer state.
 fn captured_transfer(
   state: State,
   connection: Int,
@@ -3145,6 +3206,8 @@ fn captured_transfer(
     ]
     HostFixture -> []
   }
+
+  // Dispatch snapshot transfer according to the requested window shape.
   let window_name = case window {
     transfer.Recent -> "recent"
     transfer.Reconcile(_) -> "catch_up"
@@ -3153,6 +3216,7 @@ fn captured_transfer(
     transfer.Escalations(_) -> "escalations"
     transfer.Decided -> "decided"
   }
+
   reply(
     state,
     connection,
@@ -3176,6 +3240,7 @@ fn captured_transfer(
   state
 }
 
+/// Advances an active transfer stream to the requested page index.
 fn advance_transfer(
   state: State,
   connection: Int,
@@ -3188,6 +3253,8 @@ fn advance_transfer(
     option.to_result(link.transfer, Nil)
   }
   let now = bootstrap.monotonic_time_ms()
+
+  // Evaluate control flow transition for advance transfer.
   case current {
     Ok(current) ->
       case transfer.matches(current, snapshot_id, index, now) {
@@ -3216,6 +3283,7 @@ fn advance_transfer(
 // attachment on the session waited out the difference.
 const continuation_wall_ms = 5000
 
+/// Handles a transfer request against a stale or missing transfer session.
 fn stale_transfer(state: State, connection: Int, id: Int) -> State {
   reply_error(
     state,
@@ -3227,9 +3295,9 @@ fn stale_transfer(state: State, connection: Int, id: Int) -> State {
   state
 }
 
-// `until` is the instant this continuation's reads must be answered by; it is
-// established once by `advance_transfer` and threaded through the recursion so
-// the second read spends what the first left rather than a second full budget.
+/// `until` is the instant this continuation's reads must be answered by; it is
+/// established once by `advance_transfer` and threaded through the recursion so
+/// the second read spends what the first left rather than a second full budget.
 fn drive_transfer(
   state: State,
   connection: Int,
@@ -3242,6 +3310,8 @@ fn drive_transfer(
   use <- bool.lazy_guard(transfer.expired(current, now), fn() {
     stale_transfer(state, connection, id)
   })
+
+  // Evaluate control flow transition for drive transfer.
   case transfer.step(current, now:, until:) {
     transfer.Emit(event, next) -> {
       let state = retain_transfer(state, connection, Some(next))
@@ -3318,6 +3388,7 @@ fn drive_transfer(
   }
 }
 
+/// Reads the next page slice from an active snapshot reader.
 fn continue_read(
   state: State,
   connection: Int,
@@ -3346,6 +3417,7 @@ fn continue_read(
   }
 }
 
+/// Records or clears active transfer tracking for a connection.
 fn retain_transfer(
   state: State,
   connection: Int,
@@ -3358,19 +3430,19 @@ fn retain_transfer(
   }
 }
 
-// What a failed read says about the storage actor behind it, which is the only
-// thing that decides whether this hub is fenced.
-//
-// `ReaderUnavailable` is proof: the exchange monitors the actor, so it is
-// reported only when that process is absent or died before replying. Nothing
-// can answer for it afterwards, and its custody must drain before the session
-// is reopened. `ReadTimedOut` is not proof of anything but a deadline. The
-// actor may simply be behind a long write, a startup burst or a stalled disk,
-// and every read here is asked from a process that owns its own reply subject,
-// so a late answer has nowhere to land and a repeat is safe. It therefore
-// costs the one request that waited, which is told to retry, and nothing else.
-// Reading it as a dead reader is what let one slow capture disconnect every
-// client of a session and refuse every later attach until it was reopened.
+/// What a failed read says about the storage actor behind it, which is the only
+/// thing that decides whether this hub is fenced.
+///
+/// `ReaderUnavailable` is proof: the exchange monitors the actor, so it is
+/// reported only when that process is absent or died before replying. Nothing
+/// can answer for it afterwards, and its custody must drain before the session
+/// is reopened. `ReadTimedOut` is not proof of anything but a deadline. The
+/// actor may simply be behind a long write, a startup burst or a stalled disk,
+/// and every read here is asked from a process that owns its own reply subject,
+/// so a late answer has nowhere to land and a repeat is safe. It therefore
+/// costs the one request that waited, which is told to retry, and nothing else.
+/// Reading it as a dead reader is what let one slow capture disconnect every
+/// client of a session and refuse every later attach until it was reopened.
 fn reader_failed(
   state: State,
   connection: Int,
@@ -3389,10 +3461,13 @@ fn reader_failed(
           HostFixture -> Nil
         }
       })
+
+      // Evaluate control flow transition for reader failed.
       case dict.get(state.connections, connection) {
         Ok(link) -> link.read_failed()
         Error(Nil) -> Nil
       }
+
       State(
         ..poisoned,
         connections: dict.map_values(poisoned.connections, fn(_, link) {
@@ -3435,19 +3510,22 @@ fn reader_failed(
   }
 }
 
-// Membership resolution is the admission ordering point. Work already admitted
-// may finish, but the next command or outbound batch must resolve access again.
+/// Membership resolution is the admission ordering point. Work already admitted
+/// may finish, but the next command or outbound batch must resolve access again.
 fn check_binding(
   binding: Binding,
   check: fn() -> Result(#(access.Principal, access.Authority), String),
 ) {
   use #(principal, authority) <- result.try(check())
+
+  // Inspect connection authentication credentials and binding authority.
   case principal.id == binding.principal.id && authority == binding.authority {
     True -> Ok(principal)
     False -> Error("attachment authority changed")
   }
 }
 
+/// Re-evaluates client connection authorization against the current session token.
 fn revalidate(state: State, id: Int) -> State {
   case dict.get(state.connections, id) {
     Error(Nil) | Ok(Connection(authentication: HostFixture, ..)) -> state
@@ -3482,6 +3560,7 @@ fn revalidate_all(state: State) -> State {
   list.fold(dict.keys(state.connections), state, revalidate)
 }
 
+/// Handles a disconnected client socket monitor down event.
 fn remove_socket(state: State, down: process.Down) -> State {
   let sources =
     dict.filter(state.preview_sources, fn(_, watch) { watch != down.monitor })
@@ -3493,6 +3572,8 @@ fn remove_socket(state: State, down: process.Down) -> State {
     )
   list.fold(dict.to_list(state.connections), state, fn(state, pair) {
     let #(id, link) = pair
+
+    // Inspect connection authentication credentials and binding authority.
     case link.authentication {
       Authenticated(_, _, _, watch) if watch == down.monitor ->
         remove_connection(state, id)
@@ -3501,7 +3582,9 @@ fn remove_socket(state: State, down: process.Down) -> State {
   })
 }
 
+/// Allocates a live preview streaming lease for an active operation.
 fn lease_preview(state: State, pid, expires, reply) -> State {
+  // Evaluate control flow transition for lease preview.
   case
     state.health == Reading
     && bootstrap.monotonic_time_ms() < expires
@@ -3525,6 +3608,7 @@ fn lease_preview(state: State, pid, expires, reply) -> State {
   }
 }
 
+/// Records incoming live preview chunk data into gateway state.
 fn record_preview(
   state: State,
   source,
@@ -3534,6 +3618,7 @@ fn record_preview(
   text: String,
   reply,
 ) -> State {
+  // Evaluate control flow transition for record preview.
   case
     state.health == Reading
     && dict.has_key(state.preview_sources, source)
@@ -3565,7 +3650,9 @@ fn record_preview(
   }
 }
 
+/// Cleans up active preview lease state upon stream completion.
 fn forget_preview(state: State, source) -> State {
+  // Evaluate control flow transition for forget preview.
   case dict.get(state.preview_sources, source) {
     Error(Nil) -> state
     Ok(watch) -> {
@@ -3580,6 +3667,7 @@ fn forget_preview(state: State, source) -> State {
   }
 }
 
+/// Evaluates whether active preview streaming monitors remain live.
 fn retained_preview(
   preview: Option(LivePreview),
   sources: Dict(Int, process.Monitor),
@@ -3594,12 +3682,16 @@ fn retained_preview(
   }
 }
 
+/// Drops an active client connection and releases its subscribed resources.
 fn remove_connection(state: State, id: Int) -> State {
+  // Evaluate control flow transition for remove connection.
   case dict.get(state.connections, id) {
     Error(Nil) -> state
     Ok(link) -> {
       let _forgotten =
         option.map(state.btw, fn(name) { address.send(name, btw.Forget(id)) })
+
+      // Inspect connection authentication credentials and binding authority.
       case link.authentication {
         Authenticated(_, _, close, watch) -> {
           close()
@@ -3607,6 +3699,7 @@ fn remove_connection(state: State, id: Int) -> State {
         }
         HostFixture -> Nil
       }
+
       let state =
         State(..state, connections: dict.delete(state.connections, id))
       publish_presence(state)
@@ -3615,6 +3708,7 @@ fn remove_connection(state: State, id: Int) -> State {
   }
 }
 
+/// Formats an access authority tier as human-readable role text.
 fn role_text(authority: access.Authority) {
   case authority {
     access.Owner -> "owner"
@@ -3623,10 +3717,10 @@ fn role_text(authority: access.Authority) {
   }
 }
 
-// Presence is a fact about the network protocol, so only an authenticated,
-// subscribed connection is a peer: a host fixture is a test sink with no
-// identity to publish, and an attachment that has not subscribed has not yet
-// told anyone it is here.
+/// Presence is a fact about the network protocol, so only an authenticated,
+/// subscribed connection is a peer: a host fixture is a test sink with no
+/// identity to publish, and an attachment that has not subscribed has not yet
+/// told anyone it is here.
 fn roster(state: State) {
   dict.values(state.connections)
   |> list.filter_map(fn(link) {
@@ -3647,6 +3741,7 @@ fn roster(state: State) {
   })
 }
 
+/// Broadcasts presence and subscription state changes to all connected peers.
 fn publish_presence(state: State) {
   let event = protocol.PresenceEvent(roster(state))
   dict.each(state.connections, fn(id, link) {
@@ -3667,11 +3762,11 @@ fn connection_origin(state: State, connection: Int) {
   |> result.unwrap(None)
 }
 
-// The commands that only the owner may send, beyond what an operator may. The
-// answer is what a member who sends one is told it may not do, or `None` for a
-// command a member may send. A profile switch restarts the session for everyone
-// attached and rewrites the owner's registration, so it is the owner's alone, as
-// remembering permissions is.
+/// The commands that only the owner may send, beyond what an operator may. The
+/// answer is what a member who sends one is told it may not do, or `None` for a
+/// command a member may send. A profile switch restarts the session for everyone
+/// attached and rewrites the owner's registration, so it is the owner's alone, as
+/// remembering permissions is.
 fn owner_only(command: Command) -> Option(String) {
   case command {
     protocol.ApproveForSession(..)
@@ -3688,9 +3783,9 @@ fn owner_only(command: Command) -> Option(String) {
   }
 }
 
-// Whether the connection is an authenticated member rather than the daemon's
-// owner. A host fixture carries no principal and is the trusted in-VM sink, so
-// it is not a member.
+/// Whether the connection is an authenticated member rather than the daemon's
+/// owner. A host fixture carries no principal and is the trusted in-VM sink, so
+/// it is not a member.
 fn member_attached(state: State, connection: Int) -> Bool {
   case dict.get(state.connections, connection) {
     Ok(Connection(
@@ -3707,6 +3802,7 @@ fn member_attached(state: State, connection: Int) -> Bool {
   }
 }
 
+/// Returns whether a connection has observer-only access permissions.
 fn observer(state: State, connection: Int) {
   case dict.get(state.connections, connection) {
     Ok(Connection(
@@ -3720,6 +3816,7 @@ fn observer(state: State, connection: Int) {
   }
 }
 
+/// Determines whether a protocol command is read-only or mutates state.
 fn read_only(command: Command) {
   case command {
     protocol.Evolution(action, _) ->
@@ -3779,6 +3876,7 @@ fn read_only(command: Command) {
   }
 }
 
+/// Pulls new session journal entries and broadcasts delta events to subscribers.
 fn pull_and_broadcast(state: State) -> State {
   let #(state, emits) = pull(state)
 
@@ -3787,6 +3885,8 @@ fn pull_and_broadcast(state: State) -> State {
   // `state.live` has been replaced and before anything leaves, so a drain
   // that fails reports against the state the failure was decided under.
   let state = drain_idle_strands(state) |> reopen_if_owed
+
+  // Decide whether delivery mode is restricted to host-only or network-enabled.
   case state.delivery {
     // The host fixture stream is the whole record; it has no size bound
     // to respect and its fixtures read the entries themselves.
@@ -3807,6 +3907,8 @@ fn pull_and_broadcast(state: State) -> State {
               event: protocol.CommittedEvent(notice_strand(state, emit.event)),
               observation_strand: None,
             )
+
+          // Evaluate control flow transition for pull and broadcast.
           case emit.event, emit.observation_strand {
             protocol.UsageEvent(op:, usage:, last_usage:, ..), Some(strand) -> {
               let observed =
@@ -3820,6 +3922,8 @@ fn pull_and_broadcast(state: State) -> State {
                   ),
                   observation_strand: None,
                 )
+
+              // Evaluate control flow transition for pull and broadcast.
               case bounded_usage_observation(observed) {
                 True -> [notice, observed]
                 False -> [notice]
@@ -3830,13 +3934,14 @@ fn pull_and_broadcast(state: State) -> State {
         }),
       )
   }
+
   state
 }
 
-// A reload the configuration owes is paid here, after the pull has replaced
-// `live` and after any held prompt for an idle strand has been admitted, so a
-// queue that starts a run defers the reopen rather than being cut off by it. A
-// draining hub is already being stopped and owes nothing.
+/// A reload the configuration owes is paid here, after the pull has replaced
+/// `live` and after any held prompt for an idle strand has been admitted, so a
+/// queue that starts a run defers the reopen rather than being cut off by it. A
+/// draining hub is already being stopped and owes nothing.
 fn reopen_if_owed(state: State) -> State {
   case state.reload, state.profile, state.admission {
     Owed, Some(desk), Accepting ->
@@ -3851,10 +3956,10 @@ fn reopen_if_owed(state: State) -> State {
   }
 }
 
-// The usage envelope has a fixed set of counters, but a provider can still
-// report unusually large integers. A push spends no transfer credit, so an
-// oversized observation is omitted and its committed notice still repairs
-// the authoritative session total through the bounded capture.
+/// The usage envelope has a fixed set of counters, but a provider can still
+/// report unusually large integers. A push spends no transfer credit, so an
+/// oversized observation is omitted and its committed notice still repairs
+/// the authoritative session total through the bounded capture.
 fn bounded_usage_observation(emit: Emit) -> Bool {
   protocol.event_value(protocol.EventEnvelope(
     reply_to: None,
@@ -3865,12 +3970,12 @@ fn bounded_usage_observation(emit: Emit) -> Bool {
   |> result.is_ok
 }
 
-// The strand a durable emit landed on, which is a notice's whole body.
-// Every event `pull` can produce names one; the rest are replies,
-// transfers and ephemera that never reach this function, and they are
-// listed rather than swept into a catch-all so that an emit kind added
-// later has to answer the question here instead of silently taking the
-// fallback.
+/// The strand a durable emit landed on, which is a notice's whole body.
+/// Every event `pull` can produce names one; the rest are replies,
+/// transfers and ephemera that never reach this function, and they are
+/// listed rather than swept into a catch-all so that an emit kind added
+/// later has to answer the question here instead of silently taking the
+/// fallback.
 fn notice_strand(state: State, event: WireEvent) -> String {
   case event {
     protocol.EntryEvent(record:) -> record.strand
@@ -3900,9 +4005,9 @@ fn notice_strand(state: State, event: WireEvent) -> String {
   }
 }
 
-// Reads everything above the high-water from storage and returns it as
-// seq-ordered emits, advancing the high-water. Read-only; never
-// commits.
+/// Reads everything above the high-water from storage and returns it as
+/// seq-ordered emits, advancing the high-water. Read-only; never
+/// commits.
 fn pull(state: State) -> #(State, List(Emit)) {
   let hw = state.high_water
   let strands = strand_names(state)
@@ -3940,17 +4045,17 @@ fn pull(state: State) -> #(State, List(Emit)) {
   #(State(..state, high_water:, live:, entry_strand:), emits)
 }
 
-// Opens a session's gateway at the end of its history: the same `high_water`,
-// `live` and `entry_strand` that `pull` at a high-water of zero would leave,
-// without building any emit.
-//
-// A pull has to decode every entry because it hands each one to a peer. The
-// prime hands them to nobody, and what it keeps of an entry is its strand
-// and its seq, so the entries come from `learn_entries`, which reads only
-// their heads. On a long session the payloads are most of the bytes, and
-// decoding them was the larger part of reopening it. The usage, register and
-// escalation sources are the ones `pull` runs; the high-water is the
-// greatest seq any of them, or the entries, reached, exactly as in `pull`.
+/// Opens a session's gateway at the end of its history: the same `high_water`,
+/// `live` and `entry_strand` that `pull` at a high-water of zero would leave,
+/// without building any emit.
+///
+/// A pull has to decode every entry because it hands each one to a peer. The
+/// prime hands them to nobody, and what it keeps of an entry is its strand
+/// and its seq, so the entries come from `learn_entries`, which reads only
+/// their heads. On a long session the payloads are most of the bytes, and
+/// decoding them was the larger part of reopening it. The usage, register and
+/// escalation sources are the ones `pull` runs; the high-water is the
+/// greatest seq any of them, or the entries, reached, exactly as in `pull`.
 fn prime(state: State) -> State {
   let hw = state.high_water
   let strands = strand_names(state)
@@ -4013,6 +4118,7 @@ pub fn entry_history_by_decoding(store: session.Session) -> EntryHistory {
   render_entry_history(cache, greatest_seq(emits, 0))
 }
 
+/// Renders cached transcript entry attribution history for wire delivery.
 fn render_entry_history(
   cache: Dict(String, EntryAttribution),
   high_water: Int,
@@ -4020,21 +4126,26 @@ fn render_entry_history(
   let attribution =
     dict.to_list(cache)
     |> list.map(fn(pair) {
+      // Evaluate control flow transition for render entry history.
       let label = case pair.1 {
         BranchOwned(strand:) -> "owned:" <> strand
         Unverified(strand:) -> "unverified:" <> strand
         Shared(strand:) -> "shared:" <> strand
       }
+
       #(pair.0, label)
     })
     |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
   EntryHistory(high_water:, attribution:)
 }
 
+/// Deduplicates broadcast delta events by event sequence number.
 fn dedupe_by_seq(emits: List(Emit)) -> List(Emit) {
   emits
   |> list.fold(#([], -1), fn(accumulator, emit) {
     let #(kept, last) = accumulator
+
+    // Evaluate control flow transition for dedupe by seq.
     case emit.seq == last {
       True -> #(kept, last)
       False -> #([emit, ..kept], emit.seq)
@@ -4047,6 +4158,7 @@ fn strand_names(state: State) -> List(String) {
   strand_names_in(state.runtime.session)
 }
 
+/// Lists all distinct active strand names present in the session store.
 fn strand_names_in(store: session.Session) -> List(String) {
   case storage.list_registers(store.store, register.StrandConfig, None) {
     Ok(cells) ->
@@ -4057,32 +4169,33 @@ fn strand_names_in(store: session.Session) -> List(String) {
   }
 }
 
-// Every entry above the high-water is read once, and each strand's branch
-// is found among those rows rather than read again.
-//
-// A branch scan answers the root path of its start (spec Part 1.2), and a
-// parent is always committed before its child, so the part of a strand's
-// path above the high-water is exactly its leaf followed back through
-// parent links for as long as the link stays above the high-water — and
-// every one of those entries is among the rows read here. The gateway used
-// to read each strand's path from storage as well, which decoded every
-// branch entry twice; the prime that opens a session reads the whole
-// history, so on a long session that second decode was a third of opening
-// it.
-//
-// Who owns which entry is decided by `attribute` over the rows' heads, the
-// same function the prime applies to heads read without their payloads, so
-// the two cannot disagree about a claim. This function adds only what a
-// pull needs and the prime does not: each claim becomes an entry emit.
-//
-// When the read fails nothing is claimed, and the high-water stays where
-// it was for the next pull to try again.
+/// Every entry above the high-water is read once, and each strand's branch
+/// is found among those rows rather than read again.
+///
+/// A branch scan answers the root path of its start (spec Part 1.2), and a
+/// parent is always committed before its child, so the part of a strand's
+/// path above the high-water is exactly its leaf followed back through
+/// parent links for as long as the link stays above the high-water — and
+/// every one of those entries is among the rows read here. The gateway used
+/// to read each strand's path from storage as well, which decoded every
+/// branch entry twice; the prime that opens a session reads the whole
+/// history, so on a long session that second decode was a third of opening
+/// it.
+///
+/// Who owns which entry is decided by `attribute` over the rows' heads, the
+/// same function the prime applies to heads read without their payloads, so
+/// the two cannot disagree about a claim. This function adds only what a
+/// pull needs and the prime does not: each claim becomes an entry emit.
+///
+/// When the read fails nothing is claimed, and the high-water stays where
+/// it was for the next pull to try again.
 fn new_entries(
   store: session.Session,
   strands: List(String),
   hw: Int,
   cache: Dict(String, EntryAttribution),
 ) -> #(Dict(String, EntryAttribution), List(Emit)) {
+  // Evaluate control flow transition for new entries.
   case
     storage.scan_entries(
       store.store,
@@ -4113,19 +4226,20 @@ fn new_entries(
   }
 }
 
-// What a prime keeps of the entries above the high-water: the attribution
-// cache and the greatest seq they reach, built from heads alone.
-//
-// Every entry read is claimed by one of `attribute`'s two passes, so each
-// one a pull would have emitted is counted here, and the greatest of their
-// seqs is the entry source's contribution to the high-water. A failed read
-// claims nothing and leaves the cache and the high-water as they were.
+/// What a prime keeps of the entries above the high-water: the attribution
+/// cache and the greatest seq they reach, built from heads alone.
+///
+/// Every entry read is claimed by one of `attribute`'s two passes, so each
+/// one a pull would have emitted is counted here, and the greatest of their
+/// seqs is the entry source's contribution to the high-water. A failed read
+/// claims nothing and leaves the cache and the high-water as they were.
 fn learn_entries(
   store: session.Session,
   strands: List(String),
   hw: Int,
   cache: Dict(String, EntryAttribution),
 ) -> #(Dict(String, EntryAttribution), Int) {
+  // Evaluate control flow transition for learn entries.
   case
     storage.scan_entry_heads(
       store.store,
@@ -4149,21 +4263,26 @@ type Attributed {
   Attributed(strand: String, head: EntryHead)
 }
 
-// The claim rules, over heads: which strand each entry above the
-// high-water belongs to, and in what order the claims were made. Both a
-// pull and a prime run exactly this, so the rules exist once; the claims
-// come back newest first, as a fold leaves them.
-//
-// Each strand's branch is claimed first, in strand order, and an entry
-// two branches reach becomes `Shared`. A completeness pass then claims
-// whatever no leaf covered, through its parent's attribution, falling
-// back to the first strand.
+/// The claim rules, over heads: which strand each entry above the
+/// high-water belongs to, and in what order the claims were made. Both a
+/// pull and a prime run exactly this, so the rules exist once; the claims
+/// come back newest first, as a fold leaves them.
+///
+/// Each strand's branch is claimed first, in strand order, and an entry
+/// two branches reach becomes `Shared`. A completeness pass then claims
+/// whatever no leaf covered, through its parent's attribution, falling
+/// back to the first strand.
 fn attribute(
   store: session.Session,
   strands: List(String),
   heads: List(EntryHead),
   cache: Dict(String, EntryAttribution),
 ) -> #(Dict(String, EntryAttribution), List(Attributed)) {
+  // An empty entry cut has no branch to claim. In particular, an idle
+  // commit hint must not read every strand's leaf merely to find no head.
+  use <- bool.lazy_guard(when: list.is_empty(heads), return: fn() {
+    #(cache, [])
+  })
   let by_id =
     list.fold(heads, dict.new(), fn(by_id, head) {
       dict.insert(by_id, ids.entry_id_to_string(head.id), head)
@@ -4182,14 +4301,15 @@ fn attribute(
     [first, ..] -> first
     [] -> "main"
   }
+
   list.fold(heads, #(cache, claimed), fn(accumulator, head) {
     claim_by_parent(accumulator, head, fallback)
   })
 }
 
-// One strand's branch above the high-water, oldest first, folded into the
-// running cache/claims pair. A strand with no leaf, or whose leaf is at or
-// below the high-water, contributes nothing.
+/// One strand's branch above the high-water, oldest first, folded into the
+/// running cache/claims pair. A strand with no leaf, or whose leaf is at or
+/// below the high-water, contributes nothing.
 fn claim_branch(
   store: session.Session,
   by_id: Dict(String, EntryHead),
@@ -4206,10 +4326,10 @@ fn claim_branch(
   }
 }
 
-// Follows parent links from `id` through `by_id`, answering the path root
-// first. It stops at the first entry the heads do not hold, and after at
-// most as many steps as there are heads, so a parent cycle in a corrupt
-// store ends the walk instead of looping.
+/// Follows parent links from `id` through `by_id`, answering the path root
+/// first. It stops at the first entry the heads do not hold, and after at
+/// most as many steps as there are heads, so a parent cycle in a corrupt
+/// store ends the walk instead of looping.
 fn root_path(
   by_id: Dict(String, EntryHead),
   id: String,
@@ -4232,8 +4352,8 @@ fn root_path(
   }
 }
 
-// Claims one entry for `strand` unless the cache already has it (an entry
-// another strand's branch already attributed).
+/// Claims one entry for `strand` unless the cache already has it (an entry
+/// another strand's branch already attributed).
 fn claim_row(
   accumulator: #(Dict(String, EntryAttribution), List(Attributed)),
   strand: String,
@@ -4241,6 +4361,8 @@ fn claim_row(
 ) -> #(Dict(String, EntryAttribution), List(Attributed)) {
   let #(cache, claims) = accumulator
   let id = ids.entry_id_to_string(head.id)
+
+  // Evaluate control flow transition for claim row.
   case dict.get(cache, id) {
     Error(Nil) -> #(dict.insert(cache, id, BranchOwned(strand)), [
       Attributed(strand:, head:),
@@ -4258,9 +4380,9 @@ fn claim_row(
   }
 }
 
-// Claims one entry the branch scans missed, by walking its parent's
-// attribution (or the fallback strand when the parent is unattributed
-// too).
+/// Claims one entry the branch scans missed, by walking its parent's
+/// attribution (or the fallback strand when the parent is unattributed
+/// too).
 fn claim_by_parent(
   accumulator: #(Dict(String, EntryAttribution), List(Attributed)),
   head: EntryHead,
@@ -4268,9 +4390,12 @@ fn claim_by_parent(
 ) -> #(Dict(String, EntryAttribution), List(Attributed)) {
   let #(cache, claims) = accumulator
   let id = ids.entry_id_to_string(head.id)
+
+  // Evaluate control flow transition for claim by parent.
   case dict.has_key(cache, id) {
     True -> #(cache, claims)
     False -> {
+      // Evaluate control flow transition for claim by parent.
       let strand = case head.parent {
         Some(parent) ->
           case dict.get(cache, ids.entry_id_to_string(parent)) {
@@ -4279,6 +4404,7 @@ fn claim_by_parent(
           }
         None -> fallback
       }
+
       #(dict.insert(cache, id, Unverified(strand)), [
         Attributed(strand:, head:),
         ..claims
@@ -4293,6 +4419,7 @@ fn entry_attribution_strand(attribution: EntryAttribution) -> String {
   }
 }
 
+/// Maps a journal entry record into a wire emit delta event.
 fn entry_emit(strand: String, row: Entry) -> Emit {
   Emit(
     seq: entry_seq_of(row),
@@ -4301,12 +4428,15 @@ fn entry_emit(strand: String, row: Entry) -> Emit {
   )
 }
 
+/// Emits usage delta accounting events for newly committed journal entries.
 fn new_usage(
   state: State,
   entry_strand: Dict(String, EntryAttribution),
   hw: Int,
 ) -> List(Emit) {
   let store = state.runtime.session.store
+
+  // Evaluate control flow transition for new usage.
   case
     storage.scan_usage(
       store,
@@ -4318,18 +4448,25 @@ fn new_usage(
     Ok(rows) ->
       list.map(rows, fn(row: UsageRow) {
         let attribution = usage_entry_attribution(entry_strand, row.entry_id)
+
+        // Evaluate control flow transition for new usage.
         let observation_strand = case attribution {
           Some(BranchOwned(strand)) -> Some(strand)
           Some(Unverified(_)) | Some(Shared(_)) | None -> None
         }
+
+        // Evaluate control flow transition for new usage.
         let strand = case attribution {
           Some(attribution) -> entry_attribution_strand(attribution)
           None -> single_live_strand(state)
         }
+
+        // Evaluate control flow transition for new usage.
         let op = case dict.get(state.live, strand) {
           Ok(op) -> Some(op)
           Error(Nil) -> None
         }
+
         Emit(
           seq: row.seq,
           event: protocol.UsageEvent(
@@ -4344,8 +4481,8 @@ fn new_usage(
   }
 }
 
-// A usage row may carry an entry identity without the gateway having seen
-// that entry yet. Only the attribution cache can supply ownership evidence.
+/// A usage row may carry an entry identity without the gateway having seen
+/// that entry yet. Only the attribution cache can supply ownership evidence.
 fn usage_entry_attribution(
   entry_strand: Dict(String, EntryAttribution),
   entry_id: Option(EntryId),
@@ -4360,8 +4497,8 @@ fn usage_entry_attribution(
   }
 }
 
-// The strand best positioned to own an unattributable record: the one
-// with a live operation when exactly one has one, else the first.
+/// The strand best positioned to own an unattributable record: the one
+/// with a live operation when exactly one has one, else the first.
 fn single_live_strand(state: State) -> String {
   case dict.to_list(state.live) {
     [#(strand, _)] -> strand
@@ -4373,6 +4510,7 @@ fn single_live_strand(state: State) -> String {
   }
 }
 
+/// Discovers newly registered strand lifecycle events since the last high-water mark.
 fn register_events(
   state: State,
   strands: List(String),
@@ -4388,6 +4526,7 @@ fn register_events(
   })
 }
 
+/// Queries the active operation identifier and sequence number for a strand.
 fn current_operation(
   store: session.Session,
   strand: String,
@@ -4401,10 +4540,10 @@ fn current_operation(
   }
 }
 
-// A terminal result that landed since the last pull. Keyed on the
-// `strand.last_result` register's own seq — never on the live-op diff,
-// because a fast operation can open and settle entirely between two
-// pulls.
+/// A terminal result that landed since the last pull. Keyed on the
+/// `strand.last_result` register's own seq — never on the live-op diff,
+/// because a fast operation can open and settle entirely between two
+/// pulls.
 fn terminal_result_emits(
   store: session.Session,
   strand: String,
@@ -4413,6 +4552,7 @@ fn terminal_result_emits(
   hw: Int,
   emits: List(Emit),
 ) -> List(Emit) {
+  // Evaluate operation result outcome.
   case session.last_result(store, strand) {
     Ok(Some(session.Cell(value:, seq:))) if seq > hw -> {
       let #(op, status, error) = result_view(value)
@@ -4431,6 +4571,7 @@ fn terminal_result_emits(
         ]
         _, _ -> emits
       }
+
       [
         Emit(
           seq:,
@@ -4444,7 +4585,7 @@ fn terminal_result_emits(
   }
 }
 
-// The open operation's current phase.
+/// The open operation's current phase.
 fn open_operation_phase(
   store: session.Session,
   strand: String,
@@ -4453,10 +4594,13 @@ fn open_operation_phase(
   emits: List(Emit),
   hw: Int,
 ) -> #(Dict(String, String), List(Emit)) {
+  // Evaluate control flow transition for open operation phase.
   case current {
     None -> #(dict.delete(live, strand), emits)
     Some(op_text) -> {
       let live = dict.insert(live, strand, op_text)
+
+      // Evaluate control flow transition for open operation phase.
       case ids.parse_op_id(op_text) {
         Error(_) -> #(live, emits)
         Ok(op_id) ->
@@ -4487,8 +4631,8 @@ fn escalation_events(state: State, hw: Int) -> List(Emit) {
   )
 }
 
-// The requests filed from other orchestrators that changed in a range of
-// register sequences, as the events the session's own records are.
+/// The requests filed from other orchestrators that changed in a range of
+/// register sequences, as the events the session's own records are.
 fn remote_escalation_events(
   state: State,
   within: fn(Int) -> Bool,
@@ -4517,8 +4661,11 @@ fn remote_escalation_events(
   }
 }
 
+/// Queries pending local permission escalation events for broadcast.
 fn local_escalation_events(state: State, hw: Int) -> List(Emit) {
   let store = state.runtime.session.store
+
+  // Evaluate control flow transition for local escalation events.
   case
     storage.list_registers(
       store,
@@ -4530,6 +4677,8 @@ fn local_escalation_events(state: State, hw: Int) -> List(Emit) {
     Ok(cells) ->
       list.filter_map(cells, fn(cell) {
         let #(_key, storage.Register(value:, seq:)) = cell
+
+        // Evaluate control flow transition for local escalation events.
         case seq > hw {
           False -> Error(Nil)
           True ->
@@ -4556,6 +4705,7 @@ fn escalation_event(
 
 // --- entry field access ----------------------------------------------------
 
+/// Extracts the durable entry identifier string from a journal row.
 fn entry_id_of(row: Entry) -> EntryId {
   case row {
     entry.MessageEntry(id:, ..) -> id
@@ -4565,6 +4715,7 @@ fn entry_id_of(row: Entry) -> EntryId {
   }
 }
 
+/// Extracts the sequence ordinal number from a journal row.
 fn entry_seq_of(row: Entry) -> Int {
   case row {
     entry.MessageEntry(seq:, ..) -> seq
@@ -4576,8 +4727,8 @@ fn entry_seq_of(row: Entry) -> Int {
 
 // --- display views of machine state ----------------------------------------
 
-// The display phase label of an operation state (protocol.md's open
-// label set; `op.state` stays the truth).
+/// The display phase label of an operation state (protocol.md's open
+/// label set; `op.state` stays the truth).
 fn phase_of(state: operation.OperationState) -> String {
   case state {
     operation.RunState(control:, phase:, ..) ->
@@ -4604,14 +4755,17 @@ fn phase_of(state: operation.OperationState) -> String {
   }
 }
 
-// The strand_result view of a terminal result: operation id text,
-// status, and the error for failures.
+/// The strand_result view of a terminal result: operation id text,
+/// status, and the error for failures.
 fn result_view(
   last: operation.LastResult,
 ) -> #(String, String, Option(protocol.ResultError)) {
+  // Evaluate control flow transition for result view.
   case last {
     operation.RunLastResult(operation: op, outcome:, ..) -> {
       let op = ids.op_id_to_string(op)
+
+      // Handle asynchronous task execution outcome.
       case outcome {
         operation.RunCompleted(..) -> #(op, "done", None)
         operation.RunAborted -> #(op, "aborted", None)
@@ -4629,11 +4783,14 @@ fn result_view(
   }
 }
 
+/// Renders a structural operation outcome into protocol result fields.
 fn structural_view(
   op: OpId,
   outcome: operation.StructuralOutcome,
 ) -> #(String, String, Option(protocol.ResultError)) {
   let op = ids.op_id_to_string(op)
+
+  // Handle asynchronous task execution outcome.
   case outcome {
     operation.StructuralCompleted -> #(op, "done", None)
     operation.StructuralDeclined -> #(op, "done", None)
@@ -4653,16 +4810,16 @@ fn broadcast(state: State, emits: List(Emit)) -> Nil {
   broadcast_except(state, emits, -1, None)
 }
 
-// Sends one event to one connection.
-//
-// A network attachment splits on the *envelope*, not on the connection.
-// An envelope carrying a `reply_to` is the answer to a command and owes
-// that command's one reply capability its bounded response. An envelope
-// with none answers nothing — a notice, a delta, a roster, a fault — and
-// leaves through `deliver`, which runs the same per-frame `check_binding`
-// the reply path runs and retires the attachment when the answer changed
-// (`protocol-change/018`). The explicitly admitted worktree completion uses
-// `push_worktree` after its pending acknowledgement has spent that capability.
+/// Sends one event to one connection.
+///
+/// A network attachment splits on the *envelope*, not on the connection.
+/// An envelope carrying a `reply_to` is the answer to a command and owes
+/// that command's one reply capability its bounded response. An envelope
+/// with none answers nothing — a notice, a delta, a roster, a fault — and
+/// leaves through `deliver`, which runs the same per-frame `check_binding`
+/// the reply path runs and retires the attachment when the answer changed
+/// (`protocol-change/018`). The explicitly admitted worktree completion uses
+/// `push_worktree` after its pending acknowledgement has spent that capability.
 fn send_to(state: State, connection: Int, envelope: EventEnvelope) -> Nil {
   case dict.get(state.connections, connection) {
     Ok(link) ->
@@ -4678,9 +4835,10 @@ fn send_to(state: State, connection: Int, envelope: EventEnvelope) -> Nil {
   }
 }
 
-// A network attachment has one reply capability, held only during its request.
-// Authorization is checked again at this last boundary before delivery.
+/// A network attachment has one reply capability, held only during its request.
+/// Authorization is checked again at this last boundary before delivery.
 fn send_response(response, envelope: EventEnvelope, binding, check, close) {
+  // Process response payload.
   case response, envelope.reply_to {
     Some(response), Some(_) -> {
       let outcome = {
@@ -4688,6 +4846,8 @@ fn send_response(response, envelope: EventEnvelope, binding, check, close) {
         bounded_response(envelope)
       }
       process.send(response, outcome)
+
+      // Handle asynchronous task execution outcome.
       case outcome {
         Error(_) -> close()
         Ok(_) -> Nil
@@ -4697,7 +4857,9 @@ fn send_response(response, envelope: EventEnvelope, binding, check, close) {
   }
 }
 
+/// Serializes an event envelope into a bounded JSON text response.
 fn bounded_response(envelope: EventEnvelope) -> Result(String, String) {
+  // Evaluate control flow transition for bounded response.
   let event = case envelope.event {
     protocol.EntryEvent(_) | protocol.OpTransitionEvent(..) ->
       mutation_outcome("admitted")
@@ -4705,6 +4867,7 @@ fn bounded_response(envelope: EventEnvelope) -> Result(String, String) {
       mutation_outcome("committed")
     other -> other
   }
+
   let value = protocol.event_value(EventEnvelope(..envelope, event:))
   use _ <- result.try(transfer.encoded_size(value, 65_536))
   Ok(json.to_string(value))
@@ -4714,6 +4877,7 @@ fn mutation_outcome(status: String) -> WireEvent {
   protocol.MutationOutcome(json.Object([#("status", json.String(status))]))
 }
 
+/// Sends an asynchronous protocol reply event to a client connection.
 fn reply(state: State, connection: Int, id: Int, event: WireEvent) -> Nil {
   send_to(
     state,
@@ -4722,7 +4886,7 @@ fn reply(state: State, connection: Int, id: Int, event: WireEvent) -> Nil {
   )
 }
 
-// Each output batch resolves membership before entering the socket mailbox.
+/// Each output batch resolves membership before entering the socket mailbox.
 fn deliver(link: Connection, frame: String) {
   case link.authentication {
     HostFixture -> link.sink(frame)
@@ -4734,6 +4898,7 @@ fn deliver(link: Connection, frame: String) {
   }
 }
 
+/// Sends an error event reply with code and message to a client connection.
 fn reply_error(
   state: State,
   connection: Int,
@@ -4749,12 +4914,12 @@ fn reply_error(
   )
 }
 
-// Deltas go to every subscribed connection under either delivery. Under
-// `Network` this is what makes a peer see an answer being generated
-// rather than the discontinuous snapshot sample; the text is clipped to
-// the same 24 KiB `preview_text` bound that sample uses, which is what
-// keeps a pushed frame under the reply ceiling without a second size
-// mechanism (`protocol-change/018`).
+/// Deltas go to every subscribed connection under either delivery. Under
+/// `Network` this is what makes a peer see an answer being generated
+/// rather than the discontinuous snapshot sample; the text is clipped to
+/// the same 24 KiB `preview_text` bound that sample uses, which is what
+/// keeps a pushed frame under the reply ceiling without a second size
+/// mechanism (`protocol-change/018`).
 fn broadcast_delta(
   state: State,
   operation: OpId,
@@ -4763,6 +4928,8 @@ fn broadcast_delta(
 ) -> Nil {
   let op_text = ids.op_id_to_string(operation)
   let strand = strand_of_operation(state, operation)
+
+  // Extract the event delta payload kind and text.
   let event = case delta {
     Some(stream.TextDelta(index: _, text:)) ->
       protocol.StreamDeltaEvent(
@@ -4809,13 +4976,14 @@ fn broadcast_delta(
         arguments_fragment: None,
       )
   }
+
   push_to_subscribed(state, event)
 }
 
-// The rolling tail of a running tool call, to every subscribed peer
-// (`protocol-change/031`). Unlike a delta the text needs no clipping
-// here: the collector already bounded it at `tools/tool.tail_bytes`, a
-// sixth of the preview bound a pushed frame is held to.
+/// The rolling tail of a running tool call, to every subscribed peer
+/// (`protocol-change/031`). Unlike a delta the text needs no clipping
+/// here: the collector already bounded it at `tools/tool.tail_bytes`, a
+/// sixth of the preview bound a pushed frame is held to.
 fn broadcast_tool_output(
   state: State,
   strand: String,
@@ -4845,8 +5013,8 @@ fn broadcast_tool_output(
   )
 }
 
-// The bus names a summary's subject in durable types; the wire names it in
-// text, the way every other pushed frame names entries and operations.
+/// The bus names a summary's subject in durable types; the wire names it in
+/// text, the way every other pushed frame names entries and operations.
 fn summary_subject(subject: bus.SummarySubject) -> protocol.SummarySubject {
   case subject {
     bus.SettledBlock(entry:, block:) ->
@@ -4860,11 +5028,13 @@ fn summary_subject(subject: bus.SummarySubject) -> protocol.SummarySubject {
   }
 }
 
-// The strand a provider operation runs on, for a pushed delta that does not
-// carry one. Tool output carries its authoritative `ToolRun.strand` through
-// the bus instead of using this presentation fallback.
+/// The strand a provider operation runs on, for a pushed delta that does not
+/// carry one. Tool output carries its authoritative `ToolRun.strand` through
+/// the bus instead of using this presentation fallback.
 fn strand_of_operation(state: State, operation: OpId) -> String {
   let op_text = ids.op_id_to_string(operation)
+
+  // Evaluate control flow transition for strand of operation.
   case
     dict.to_list(state.live)
     |> list.find(fn(pair) { pair.1 == op_text })
@@ -4878,10 +5048,10 @@ fn strand_of_operation(state: State, operation: OpId) -> String {
   }
 }
 
-// One unsolicited frame to every subscribed connection, under either
-// delivery. `deliver` re-checks each peer's authority as the frame
-// leaves, which is what makes a push a second way out of the hub without
-// being a second, unchecked one (`protocol-change/018`).
+/// One unsolicited frame to every subscribed connection, under either
+/// delivery. `deliver` re-checks each peer's authority as the frame
+/// leaves, which is what makes a push a second way out of the hub without
+/// being a second, unchecked one (`protocol-change/018`).
 fn push_to_subscribed(state: State, event: WireEvent) -> Nil {
   let frame =
     protocol.encode_event(EventEnvelope(reply_to: None, seq: None, event:))
@@ -4895,19 +5065,19 @@ fn push_to_subscribed(state: State, event: WireEvent) -> Nil {
 
 // --- command dispatch ------------------------------------------------------
 
-// The hub's own error-channel combinator: run `then` on success, or send
-// `id` an error frame built from the `(code, message)` failure and leave
-// `state` unchanged. Mirrors `machine/planner`'s `or_fault` and
-// `tools/tool`'s `or_outcome` — the shape a command handler's error arm
-// always was (`reply_error` then return `state`), pulled out so a chain
-// of fallible steps reads as a chain rather than a staircase.
-//
-// ## Examples
-//
-// ```gleam
-// // use record <- or_reply(find_escalation(state, id), state, connection, id)
-// ```
-//
+/// The hub's own error-channel combinator: run `then` on success, or send
+/// `id` an error frame built from the `(code, message)` failure and leave
+/// `state` unchanged. Mirrors `machine/planner`'s `or_fault` and
+/// `tools/tool`'s `or_outcome` — the shape a command handler's error arm
+/// always was (`reply_error` then return `state`), pulled out so a chain
+/// of fallible steps reads as a chain rather than a staircase.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // use record <- or_reply(find_escalation(state, id), state, connection, id)
+/// ```
+///
 fn or_reply(
   result: Result(a, #(String, String)),
   state: State,
@@ -4915,6 +5085,7 @@ fn or_reply(
   id: Int,
   then: fn(a) -> State,
 ) -> State {
+  // Evaluate operation result outcome.
   case result {
     Ok(value) -> then(value)
     Error(#(code, message)) -> {
@@ -4924,7 +5095,9 @@ fn or_reply(
   }
 }
 
+/// Parses wire text and dispatches a validated client request frame.
 fn dispatch(state: State, connection: Int, text: String) -> State {
+  // Validate and execute the protocol command against subscription permissions.
   case protocol.decode_command(text) {
     Error(protocol.MalformedFrame(report:)) -> {
       send_to(
@@ -4973,8 +5146,8 @@ fn dispatch(state: State, connection: Int, text: String) -> State {
   }
 }
 
-// Worktree bytes require the current owner binding, independently of the
-// general read-only command classification. A trusted host fixture is local.
+/// Worktree bytes require the current owner binding, independently of the
+/// general read-only command classification. A trusted host fixture is local.
 fn worktree_owner(state: State, connection: Int) -> Bool {
   case dict.get(state.connections, connection) {
     Ok(Connection(authentication: HostFixture, ..)) -> True
@@ -4984,6 +5157,7 @@ fn worktree_owner(state: State, connection: Int) -> Bool {
   }
 }
 
+/// Starts an asynchronous worktree status diff observation for an authorized client.
 fn begin_worktree(state: State, connection: Int, id: Int) -> State {
   use <- bool.lazy_guard(!worktree_owner(state, connection), fn() {
     reply_error(
@@ -5004,6 +5178,7 @@ fn begin_worktree(state: State, connection: Int, id: Int) -> State {
   )
 }
 
+/// Dispatches a side-channel query action on the specified strand.
 fn side_query(
   state: State,
   connection: Int,
@@ -5012,10 +5187,14 @@ fn side_query(
   action: btw_view.Action,
 ) -> State {
   use <- known_strand(state, connection, id, strand)
+
+  // Evaluate control flow transition for side query.
   let answer = case state.btw {
     None -> Error("side queries are unavailable on this daemon")
     Some(name) -> btw.query(name, connection, strand, action)
   }
+
+  // Evaluate control flow transition for side query.
   case answer {
     Ok(board) ->
       reply(
@@ -5026,9 +5205,11 @@ fn side_query(
       )
     Error(reason) -> reply_error(state, connection, id, "btw_refused", reason)
   }
+
   state
 }
 
+/// Starts a context observation capture for the specified strand.
 fn begin_context(
   state: State,
   connection: Int,
@@ -5040,12 +5221,12 @@ fn begin_context(
   begin_observation(state, connection, id, ContextObservation, capture)
 }
 
-// A page of a remote child's transcript, read in an observation's task: the
-// reader asks the other orchestrator, which may be slow or away, and the hub
-// answers `pending` at once and pushes the page or the failure when the task
-// reports. The child is named as the remote children list names it, and the
-// reader finds its stub, so a name that is not a child of this session is the
-// reader's refusal, not a read of anything.
+/// A page of a remote child's transcript, read in an observation's task: the
+/// reader asks the other orchestrator, which may be slow or away, and the hub
+/// answers `pending` at once and pushes the page or the failure when the task
+/// reports. The child is named as the remote children list names it, and the
+/// reader finds its stub, so a name that is not a child of this session is the
+/// reader's refusal, not a read of anything.
 fn begin_history(
   state: State,
   connection: Int,
@@ -5058,13 +5239,15 @@ fn begin_history(
   begin_observation(state, connection, id, HistoryObservation, capture)
 }
 
-// Pushes the session's remote children to every subscribed connection when a
-// stub changes, reading the stubs in a weft run so a slow store cannot stall
-// the hub's turn.
+/// Pushes the session's remote children to every subscribed connection when a
+/// stub changes, reading the stubs in a weft run so a slow store cannot stall
+/// the hub's turn.
 fn broadcast_remote_children(state: State) -> Nil {
   let subscribed =
     dict.values(state.connections)
     |> list.filter(fn(link) { link.subscription == Subscribed })
+
+  // Evaluate control flow transition for broadcast remote children.
   case subscribed {
     [] -> Nil
     links -> {
@@ -5095,9 +5278,10 @@ fn broadcast_remote_children(state: State) -> Nil {
   }
 }
 
-// The session's clock, the one the Agency stamps a glance's arrival and a
-// child's deadline with, so the ages and the liveness here are read on it.
+/// The session's clock, the one the Agency stamps a glance's arrival and a
+/// child's deadline with, so the ages and the liveness here are read on it.
 fn remote_agents(runtime: api.Runtime) -> List(remote_agent.RemoteAgent) {
+  // Evaluate control flow transition for remote agents.
   case remote_child.all(runtime) {
     Ok(kept) -> {
       let #(now, _clock) = clock.read(runtime.effects.clock)
@@ -5112,19 +5296,20 @@ fn remote_agents(runtime: api.Runtime) -> List(remote_agent.RemoteAgent) {
 // the strip until the next stub change and nothing else.
 const remote_children_push_ms = 5000
 
-// Pushes the session's remote children to one connection that has just
-// subscribed, so its strip lists them before any stub changes. A session with
-// no remote child pushes nothing, which a client reads as none. The push is
-// order-free with the subscription's own reply.
-//
-// The stubs are read in a weft run and not on the hub's turn. The read goes to
-// the session's store with no deadline of its own, and the subscription's
-// capture is answered by a later message to this mailbox: a stalled store held
-// here would keep the capture's in-band refusal from reaching the socket before
-// it gave up. The run delivers through `deliver`, which checks the binding as
-// every push does. A push read before a stub changed may land after the push
-// that change caused, and the next change corrects the strip.
+/// Pushes the session's remote children to one connection that has just
+/// subscribed, so its strip lists them before any stub changes. A session with
+/// no remote child pushes nothing, which a client reads as none. The push is
+/// order-free with the subscription's own reply.
+///
+/// The stubs are read in a weft run and not on the hub's turn. The read goes to
+/// the session's store with no deadline of its own, and the subscription's
+/// capture is answered by a later message to this mailbox: a stalled store held
+/// here would keep the capture's in-band refusal from reaching the socket before
+/// it gave up. The run delivers through `deliver`, which checks the binding as
+/// every push does. A push read before a stub changed may land after the push
+/// that change caused, and the next change corrects the strip.
 fn push_remote_children(state: State, connection: Int) -> Nil {
+  // Evaluate control flow transition for push remote children.
   case dict.get(state.connections, connection) {
     Error(Nil) -> Nil
     Ok(link) -> {
@@ -5132,18 +5317,22 @@ fn push_remote_children(state: State, connection: Int) -> Nil {
       let run =
         weft.new([fn() { Ok(deliver_remote_children(runtime, link)) }])
         |> weft.deadline(remote_children_push_ms)
+
+      // Evaluate control flow transition for push remote children.
       let run = case link.consumer {
         Some(socket) -> weft.cancel_when_exits(run, socket)
         None -> run
       }
+
       let _witnessed: weft.Witnessed = weft.start_witnessed(run)
       Nil
     }
   }
 }
 
-// The body of the subscriber's push, run apart from the hub.
+/// The body of the subscriber's push, run apart from the hub.
 fn deliver_remote_children(runtime: api.Runtime, link: Connection) -> Nil {
+  // Evaluate control flow transition for deliver remote children.
   case remote_agents(runtime) {
     [] -> Nil
     children -> {
@@ -5157,6 +5346,7 @@ fn deliver_remote_children(runtime: api.Runtime, link: Connection) -> Nil {
   }
 }
 
+/// Initiates an asynchronous background observation task via Weft.
 fn begin_observation(
   state: State,
   connection: Int,
@@ -5178,14 +5368,19 @@ fn begin_observation(
       state
     },
   )
+
+  // Evaluate control flow transition for begin observation.
   case capture, dict.get(state.connections, connection) {
     Some(capture), Ok(link) -> {
       let reports = process.new_subject()
       let run = weft.new([capture]) |> weft.deadline(14_000)
+
+      // Evaluate control flow transition for begin observation.
       let run = case link.consumer {
         Some(socket) -> weft.cancel_when_exits(run, socket)
         None -> run
       }
+
       let _relay = weft.start_relayed(run, to: reports)
       let pending = PendingObservation(id, kind, reports, Capturing)
       send_to(
@@ -5221,6 +5416,7 @@ fn begin_observation(
   }
 }
 
+/// Handles a completed background observation task result from Weft.
 fn observation_reported(
   state: State,
   connection: Int,
@@ -5251,6 +5447,7 @@ fn observation_reported(
           )
         }
         weft.AllDelivered | weft.RunLost(..) -> {
+          // Evaluate control flow transition for observation reported.
           let state = case pending.phase {
             Reported -> state
             Capturing ->
@@ -5265,6 +5462,7 @@ fn observation_reported(
                 ),
               )
           }
+
           State(
             ..state,
             observations: dict.delete(state.observations, connection),
@@ -5274,6 +5472,7 @@ fn observation_reported(
   }
 }
 
+/// Formats an observation outcome into structured JSON output.
 fn observation_result(
   id: Int,
   outcome: weft.Outcome(JsonValue, String),
@@ -5296,6 +5495,7 @@ fn observation_result(
   }
 }
 
+/// Constructs a standardized failure response JSON for an observation error.
 fn failed_observation(id: Int, message: String) -> JsonValue {
   json.Object([
     #("status", json.String("failed")),
@@ -5305,10 +5505,10 @@ fn failed_observation(id: Int, message: String) -> JsonValue {
   ])
 }
 
-// This completion is a bounded push to exactly the admitting connection. Its
-// board retains request identity; reply_to is absent because the synchronous
-// pending acknowledgement already consumed that request capability.
-// Revalidation precedes serialization and delivery checks again.
+/// This completion is a bounded push to exactly the admitting connection. Its
+/// board retains request identity; reply_to is absent because the synchronous
+/// pending acknowledgement already consumed that request capability.
+/// Revalidation precedes serialization and delivery checks again.
 fn push_observation(
   state: State,
   connection: Int,
@@ -5319,6 +5519,8 @@ fn push_observation(
   let state = revalidate(state, connection)
   use <- bool.guard(!observation_allowed(state, connection, kind), state)
   let envelope = EventEnvelope(None, None, observation_snapshot(kind, board))
+
+  // Process response payload.
   case dict.get(state.connections, connection), bounded_response(envelope) {
     Ok(link), Ok(frame) -> deliver(link, frame)
     Ok(link), Error(_) -> {
@@ -5338,19 +5540,24 @@ fn push_observation(
     }
     Error(Nil), _ -> Nil
   }
+
   state
 }
 
+/// Reads active background job status for the specified strand.
 fn read_live_jobs(
   state: State,
   connection: Int,
   id: Int,
   strand: String,
 ) -> State {
+  // Handle asynchronous task execution outcome.
   let outcome = case state.live_jobs {
     Some(read) -> read(strand)
     None -> Error("live jobs are unavailable")
   }
+
+  // Handle asynchronous task execution outcome.
   case outcome {
     Ok(board) ->
       send_to(
@@ -5364,21 +5571,22 @@ fn read_live_jobs(
       )
     Error(reason) -> reply_error(state, connection, id, "unavailable", reason)
   }
+
   state
 }
 
-// The advisor's queued nudges, read straight from the guard cell through the
-// bounded reader. There is no host capability to inject and no actor to ask:
-// the advisor actor owns the write side, and a read that went through it
-// could be made to drain a queue the primary's next run start is entitled to.
-//
-// A malformed cell is `unavailable` rather than an empty board, because an
-// empty board asserts that the advisor has nothing waiting. A refused capture
-// is the server's own reader failing on the server's own budget, so it takes
-// the same path every other capture here takes.
-// The goal status read: the exact-key observation, never a call to the
-// actor. A read that spoke to the actor could not answer while it is
-// mid-review, and the panel wants the current state, not the next one.
+/// The advisor's queued nudges, read straight from the guard cell through the
+/// bounded reader. There is no host capability to inject and no actor to ask:
+/// the advisor actor owns the write side, and a read that went through it
+/// could be made to drain a queue the primary's next run start is entitled to.
+///
+/// A malformed cell is `unavailable` rather than an empty board, because an
+/// empty board asserts that the advisor has nothing waiting. A refused capture
+/// is the server's own reader failing on the server's own budget, so it takes
+/// the same path every other capture here takes.
+/// The goal status read: the exact-key observation, never a call to the
+/// actor. A read that spoke to the actor could not answer while it is
+/// mid-review, and the panel wants the current state, not the next one.
 fn read_goal(state: State, connection: Int, id: Int) -> State {
   case goal_pending.read(state.runtime.session, bootstrap.system_time_ms()) {
     Ok(board) -> {
@@ -5404,12 +5612,12 @@ fn read_goal(state: State, connection: Int, id: Int) -> State {
   }
 }
 
-// One goal mutation, answered with `committed` when the actor took it —
-// the reply protocol 044 §7 fixes — and refused worded when the seam is
-// absent: no advisor means no reviewer, and a goal without its judge is
-// not a state the operator can steer.
-// Catalogue transitions receive the binding that passed admission. They never
-// derive an actor or a role from candidate provenance or socket arguments.
+/// One goal mutation, answered with `committed` when the actor took it —
+/// the reply protocol 044 §7 fixes — and refused worded when the seam is
+/// absent: no advisor means no reviewer, and a goal without its judge is
+/// not a state the operator can steer.
+/// Catalogue transitions receive the binding that passed admission. They never
+/// derive an actor or a role from candidate provenance or socket arguments.
 fn evolution_command(
   state: State,
   connection: Int,
@@ -5426,6 +5634,8 @@ fn evolution_command(
       dict.get(state.connections, connection)
       |> result.replace_error("evolution connection is unavailable"),
     )
+
+    // Inspect connection authentication credentials and binding authority.
     let #(authority, principal, via) = case link.authentication {
       Authenticated(binding, ..) -> #(
         evolution_control.for_principal(
@@ -5438,9 +5648,11 @@ fn evolution_command(
       )
       HostFixture -> #(access.Owner, "host-fixture", evolution_store.Cli)
     }
+
     seam.command(authority, principal, via, action, arguments)
   }
 
+  // Handle asynchronous task execution outcome.
   case outcome {
     Error(reason) ->
       reply_error(state, connection, id, protocol.code_bad_request, reason)
@@ -5452,18 +5664,19 @@ fn evolution_command(
         protocol.SnapshotEvent(protocol.EvolutionSnapshot(board)),
       )
   }
+
   state
 }
 
-// The surface an evolution command came through, for the audit entry. A page
-// is known first by the door that admitted it: an owner page opened by `loom
-// ui` has no sign-in and carries the terminal's bearer, so only the listener
-// can say it is a page. After that a sign-in or a browser credential also
-// marks a page, and the daemon reads all three from the binding. Every other
-// attachment is a bearer, and a terminal and the `loom evolution` command hold
-// the same kind of bearer, so the terminal says which it is in an optional
-// `via` argument. That claim is audit text only: it can name `terminal` or
-// `cli`, never `web`, and nothing reads it for authority.
+/// The surface an evolution command came through, for the audit entry. A page
+/// is known first by the door that admitted it: an owner page opened by `loom
+/// ui` has no sign-in and carries the terminal's bearer, so only the listener
+/// can say it is a page. After that a sign-in or a browser credential also
+/// marks a page, and the daemon reads all three from the binding. Every other
+/// attachment is a bearer, and a terminal and the `loom evolution` command hold
+/// the same kind of bearer, so the terminal says which it is in an optional
+/// `via` argument. That claim is audit text only: it can name `terminal` or
+/// `cli`, never `web`, and nothing reads it for authority.
 fn evolution_via(
   binding: Binding,
   arguments: JsonValue,
@@ -5486,12 +5699,14 @@ fn evolution_via(
   }
 }
 
+/// Dispatches goal tracking commands on the active session.
 fn goal_command(
   state: State,
   connection: Int,
   id: Int,
   command: GoalCommand,
 ) -> State {
+  // Evaluate control flow transition for goal command.
   case state.goal_control {
     None -> {
       reply_error(
@@ -5505,6 +5720,7 @@ fn goal_command(
     }
 
     Some(seam) -> {
+      // Validate and execute the protocol command against subscription permissions.
       let outcome = case command {
         GoalSet(objective:, token_budget:, check:) ->
           seam.set(objective, token_budget, check)
@@ -5514,6 +5730,7 @@ fn goal_command(
         GoalResume -> seam.resume()
       }
 
+      // Handle asynchronous task execution outcome.
       case outcome {
         // The actor's refusal is the operator's answer, worded for the
         // reader: a non-positive budget, a resume of a complete goal.
@@ -5541,7 +5758,9 @@ type GoalCommand {
   GoalResume
 }
 
+/// Queries pending advisor consultation requests for the active session.
 fn read_advisor_pending(state: State, connection: Int, id: Int) -> State {
+  // Evaluate control flow transition for read advisor pending.
   case advisor_pending.read(state.runtime.session, bootstrap.system_time_ms()) {
     Ok(board) -> {
       reply(
@@ -5563,10 +5782,10 @@ fn read_advisor_pending(state: State, connection: Int, id: Int) -> State {
   }
 }
 
-// Exact-key reads of stored summarizer labels (protocol 050). The protocol
-// decoder has already bounded the list and checked every entry id, so the
-// read costs at most `max_summary_blocks` cells. A store that will not
-// answer is the reader's failure, handled as every other capture's is.
+/// Exact-key reads of stored summarizer labels (protocol 050). The protocol
+/// decoder has already bounded the list and checked every entry id, so the
+/// read costs at most `max_summary_blocks` cells. A store that will not
+/// answer is the reader's failure, handled as every other capture's is.
 fn read_block_summaries(
   state: State,
   connection: Int,
@@ -5574,6 +5793,8 @@ fn read_block_summaries(
   blocks: List(protocol.SummaryBlock),
 ) -> State {
   let wanted = list.map(blocks, fn(block) { #(block.entry, block.block) })
+
+  // Evaluate control flow transition for read block summaries.
   case blocksummary.read(state.runtime.session, wanted) {
     Ok(blocksummary.Read(board:, missing:)) -> {
       reply(
@@ -5591,6 +5812,7 @@ fn read_block_summaries(
         Some(demand), [_, ..] -> demand(missing)
         Some(_demand), [] | None, _ -> Nil
       }
+
       state
     }
 
@@ -5598,6 +5820,7 @@ fn read_block_summaries(
   }
 }
 
+/// Executes a validated protocol command against session actor state.
 fn run_command(
   state: State,
   connection: Int,
@@ -5658,6 +5881,8 @@ fn run_command(
     Ok(Connection(subscription:, ..)) -> subscription
     Error(Nil) -> Unsubscribed
   }
+
+  // Validate and execute the protocol command against subscription permissions.
   case command, subscription {
     protocol.UnknownCommand(cmd:, ..), _ -> {
       reply_error(
@@ -5855,6 +6080,7 @@ fn run_command(
 
 // --- subscribe, snapshots, replay ------------------------------------------
 
+/// Subscribes a client connection to live session updates from an optional sequence.
 fn subscribe(
   state: State,
   connection: Int,
@@ -5862,11 +6088,13 @@ fn subscribe(
   session_name: String,
   from_seq: Option(Int),
 ) -> State {
+  // Evaluate control flow transition for subscribe.
   let expected_session = case dict.get(state.connections, connection) {
     Ok(Connection(authentication: Authenticated(binding, ..), ..)) ->
       binding.session_id
     Ok(_) | Error(Nil) -> state.session_id
   }
+
   use <- bool.lazy_guard(when: session_name != expected_session, return: fn() {
     reply_error(
       state,
@@ -5881,6 +6109,8 @@ fn subscribe(
   // Register subscription and notify presence across connections.
   let state = pull_and_broadcast(state)
   let state = mark_subscribed(state, connection)
+
+  // Evaluate control flow transition for subscribe.
   case dict.get(state.connections, connection) {
     Ok(Connection(authentication: Authenticated(binding, _, _, _), origin:, ..)) -> {
       send_to(
@@ -5906,6 +6136,8 @@ fn subscribe(
     }
     Ok(_) | Error(Nil) -> Nil
   }
+
+  // Evaluate control flow transition for subscribe.
   case from_seq {
     Some(from) if from > 0 && from <= state.high_water + 1 -> {
       reply(
@@ -5946,6 +6178,7 @@ fn announce_join(state: State, before: Subscription) -> Nil {
   }
 }
 
+/// Marks a connection as active subscriber in gateway state.
 fn mark_subscribed(state: State, connection: Int) -> State {
   case dict.get(state.connections, connection) {
     Error(Nil) -> state
@@ -5961,10 +6194,11 @@ fn mark_subscribed(state: State, connection: Int) -> State {
   }
 }
 
-// `catch_up` on a subscribed connection: resume marker plus replay
-// (protocol.md open question 5: because event seqs are storage seqs,
-// this same path pages arbitrarily far back through the transcript).
+/// `catch_up` on a subscribed connection: resume marker plus replay
+/// (protocol.md open question 5: because event seqs are storage seqs,
+/// this same path pages arbitrarily far back through the transcript).
 fn replay(state: State, connection: Int, id: Int, from_seq: Int) -> Nil {
+  // Evaluate control flow transition for replay.
   case from_seq > 0 && from_seq <= state.high_water + 1 {
     True -> {
       reply(
@@ -5982,8 +6216,8 @@ fn replay(state: State, connection: Int, id: Int, from_seq: Int) -> Nil {
   }
 }
 
-// Rebuilds the durable events with `from_seq <= seq <= high_water` from
-// storage scans and current registers, and sends them in seq order.
+/// Rebuilds the durable events with `from_seq <= seq <= high_water` from
+/// storage scans and current registers, and sends them in seq order.
 fn replay_events(state: State, connection: Int, from_seq: Int) -> Nil {
   let store = state.runtime.session
   let strands = strand_names(state)
@@ -6006,8 +6240,8 @@ fn replay_events(state: State, connection: Int, from_seq: Int) -> Nil {
   })
 }
 
-// Rebuilds entry events in `[from_seq, range_top]`, attributed from the
-// cache when known, otherwise located by branch membership.
+/// Rebuilds entry events in `[from_seq, range_top]`, attributed from the
+/// cache when known, otherwise located by branch membership.
 fn replay_entry_emits(
   state: State,
   strands: List(String),
@@ -6025,15 +6259,19 @@ fn replay_entry_emits(
     Ok(rows) ->
       list.map(rows, fn(row) {
         let id_text = ids.entry_id_to_string(entry_id_of(row))
+
+        // Evaluate control flow transition for replay entry emits.
         let strand = case dict.get(state.entry_strand, id_text) {
           Ok(attribution) -> entry_attribution_strand(attribution)
           Error(Nil) -> locate_entry(state, strands, entry_id_of(row))
         }
+
         entry_emit(strand, row)
       })
   }
 }
 
+/// Replays historical usage accounting events within the requested sequence range.
 fn replay_usage_emits(
   state: State,
   strands: List(String),
@@ -6052,11 +6290,13 @@ fn replay_usage_emits(
   }
 }
 
+/// Formats a single historical usage row as an emit event.
 fn replay_usage_row(
   state: State,
   strands: List(String),
   row: UsageRow,
 ) -> Emit {
+  // Evaluate control flow transition for replay usage row.
   let strand = case row.entry_id {
     Some(entry_id) ->
       case dict.get(state.entry_strand, ids.entry_id_to_string(entry_id)) {
@@ -6065,6 +6305,7 @@ fn replay_usage_row(
       }
     None -> single_live_strand(state)
   }
+
   Emit(
     seq: row.seq,
     event: protocol.UsageEvent(
@@ -6077,7 +6318,7 @@ fn replay_usage_row(
   )
 }
 
-// Register-backed events replay as current state at current seq.
+/// Register-backed events replay as current state at current seq.
 fn replay_register_emits(
   store: session.Session,
   strands: List(String),
@@ -6091,6 +6332,7 @@ fn replay_register_emits(
   })
 }
 
+/// Replays operation lifecycle phase transitions within a sequence range.
 fn replay_op_transition(
   store: session.Session,
   strand: String,
@@ -6123,12 +6365,14 @@ fn replay_op_transition(
   }
 }
 
+/// Replays strand terminal outcome results within a sequence range.
 fn replay_strand_result(
   store: session.Session,
   strand: String,
   from_seq: Int,
   range_top: Int,
 ) -> List(Emit) {
+  // Evaluate operation result outcome.
   case session.last_result(store, strand) {
     Ok(Some(session.Cell(value:, seq:)))
       if seq >= from_seq && seq <= range_top
@@ -6146,6 +6390,7 @@ fn replay_strand_result(
   }
 }
 
+/// Replays permission escalation events within a sequence range.
 fn replay_escalation_emits(
   state: State,
   from_seq: Int,
@@ -6159,6 +6404,7 @@ fn replay_escalation_emits(
   )
 }
 
+/// Replays local escalation events within a sequence range.
 fn replay_local_escalation_emits(
   state: State,
   from_seq: Int,
@@ -6175,6 +6421,8 @@ fn replay_local_escalation_emits(
     Ok(cells) ->
       list.filter_map(cells, fn(cell) {
         let #(_key, storage.Register(value:, seq:)) = cell
+
+        // Evaluate control flow transition for replay local escalation emits.
         case seq >= from_seq && seq <= range_top {
           False -> Error(Nil)
           True ->
@@ -6192,13 +6440,15 @@ fn replay_local_escalation_emits(
   }
 }
 
-// Attributes an entry outside the cache by branch membership.
+/// Attributes an entry outside the cache by branch membership.
 fn locate_entry(
   state: State,
   strands: List(String),
   entry_id: EntryId,
 ) -> String {
   let store = state.runtime.session
+
+  // Select target strand name, falling back to primary main strand.
   case list.find(strands, entry_in_branch(store, _, entry_id)) {
     Ok(strand) -> strand
     Error(Nil) ->
@@ -6209,8 +6459,8 @@ fn locate_entry(
   }
 }
 
-// Whether `entry_id` sits on `strand`'s branch: its leaf's scan, stopped
-// at that id, actually reached it.
+/// Whether `entry_id` sits on `strand`'s branch: its leaf's scan, stopped
+/// at that id, actually reached it.
 fn entry_in_branch(
   store: session.Session,
   strand: String,
@@ -6233,26 +6483,32 @@ fn entry_in_branch(
   }
 }
 
-// This legacy materializer remains unbounded. The bounded reader integration
-// replaces this seam; authentication alone does not establish transfer bounds.
+/// This legacy materializer remains unbounded. The bounded reader integration
+/// replaces this seam; authentication alone does not establish transfer bounds.
 fn connection_snapshot(state: State, connection: Int) -> WireEvent {
+  // Evaluate control flow transition for connection snapshot.
   let session_id = case dict.get(state.connections, connection) {
     Ok(Connection(authentication: Authenticated(binding, ..), ..)) ->
       binding.session_id
     _ -> state.session_id
   }
+
   full_snapshot(State(..state, session_id:))
 }
 
+/// Compiles a complete full-state snapshot event for a newly subscribed client.
 fn full_snapshot(state: State) -> WireEvent {
   let store = state.runtime.session
   let strands = list.map(strand_names(state), strand_view(store, _))
   let entries = recent_entries(state)
   let escalations = pending_escalations(state)
+
+  // Evaluate control flow transition for full snapshot.
   let usage = case storage.stats(store.store) {
     Ok(storage.SessionStats(usage:, ..)) -> usage
     Error(_) -> accounting.unknown_usage(usage_evidence.Other)
   }
+
   protocol.SnapshotEvent(protocol.FullSnapshot(
     session: state.session_id,
     next_seq: state.high_water + 1,
@@ -6264,10 +6520,10 @@ fn full_snapshot(state: State) -> WireEvent {
   ))
 }
 
-// What the settled children on other orchestrators used, from the stubs of this
-// session, for the snapshot's `remote_usage`. Stubs that cannot be read give no
-// entries, which a client draws as no remote spend: the field is a display, and
-// the budgets that depend on the figure read the stubs themselves.
+/// What the settled children on other orchestrators used, from the stubs of this
+/// session, for the snapshot's `remote_usage`. Stubs that cannot be read give no
+/// entries, which a client draws as no remote spend: the field is a display, and
+/// the budgets that depend on the figure read the stubs themselves.
 fn remote_usage_of(runtime: api.Runtime) -> List(remote_usage.RemoteUsage) {
   case remote_child.all(runtime) {
     Ok(kept) ->
@@ -6286,40 +6542,50 @@ fn remote_usage_of(runtime: api.Runtime) -> List(remote_usage.RemoteUsage) {
   }
 }
 
-// One strand's snapshot row: its leaf (as text) and its live operation,
-// when it has either.
+/// One strand's snapshot row: its leaf (as text) and its live operation,
+/// when it has either.
 fn strand_view(store: session.Session, strand: String) -> protocol.Strand {
+  // Evaluate control flow transition for strand view.
   let leaf = case session.strand_leaf(store, strand) {
     Ok(Some(session.Cell(value: Some(leaf), ..))) ->
       Some(ids.entry_id_to_string(leaf))
     _ -> None
   }
+
   let live_op = strand_live_op(store, strand)
   Strand(id: strand, name: Some(strand), leaf:, live_op:)
 }
 
+/// Resolves active live operation details for a strand if running.
 fn strand_live_op(
   store: session.Session,
   strand: String,
 ) -> Option(protocol.LiveOp) {
   case session.strand_state(store, strand) {
     Ok(Some(session.Cell(value:, ..))) ->
+      // Read operation phase only when the strand currently owns an operation.
       case value.current_operation {
         Some(op) -> {
+          // Missing operation state is reported as the starting phase.
           let phase = case session.op_state(store, op) {
             Ok(Some(session.Cell(value: op_state, ..))) -> phase_of(op_state)
             _ -> "starting"
           }
+
           Some(LiveOp(op: ids.op_id_to_string(op), phase:))
         }
         None -> None
       }
+
     _ -> None
   }
 }
 
+/// Queries recent transcript journal entries for the full state snapshot.
 fn recent_entries(state: State) -> List(EntryRecord) {
   let store = state.runtime.session.store
+
+  // Evaluate control flow transition for recent entries.
   case
     storage.scan_entries(
       store,
@@ -6334,16 +6600,20 @@ fn recent_entries(state: State) -> List(EntryRecord) {
       |> list.reverse
       |> list.map(fn(row) {
         let id_text = ids.entry_id_to_string(entry_id_of(row))
+
+        // Evaluate control flow transition for recent entries.
         let strand = case dict.get(state.entry_strand, id_text) {
           Ok(attribution) -> entry_attribution_strand(attribution)
           Error(Nil) ->
             locate_entry(state, strand_names(state), entry_id_of(row))
         }
+
         EntryRecord(strand:, entry: row)
       })
   }
 }
 
+/// Queries all pending permission escalations across local and remote sources.
 fn pending_escalations(state: State) -> List(protocol.EscalationRecord) {
   list.append(
     local_pending_escalations(state),
@@ -6355,6 +6625,7 @@ fn pending_escalations(state: State) -> List(protocol.EscalationRecord) {
   )
 }
 
+/// Queries pending local permission escalations.
 fn local_pending_escalations(state: State) -> List(protocol.EscalationRecord) {
   case api.escalations(state.runtime) {
     Error(_) -> []
@@ -6386,6 +6657,7 @@ fn user_message(state: State, connection: Int, text: String) -> AgentMessage {
   ])
 }
 
+/// Formats a sequence of user content blocks into an agent input message.
 fn content_message(
   state: State,
   connection: Int,
@@ -6399,6 +6671,7 @@ fn content_message(
   )
 }
 
+/// Submits plain text prompt input to the specified strand.
 fn prompt(
   state: State,
   connection: Int,
@@ -6415,6 +6688,7 @@ fn prompt(
   )
 }
 
+/// Submits structured content blocks as prompt input to the specified strand.
 fn prompt_content(
   state: State,
   connection: Int,
@@ -6431,6 +6705,7 @@ fn prompt_content(
   )
 }
 
+/// Submits an agent message to a strand, managing input queues and runs.
 fn prompt_message(
   state: State,
   connection: Int,
@@ -6456,6 +6731,8 @@ fn prompt_message(
   })
   let target = api.on_strand(state.runtime, strand)
   let admitted = api.prompt(target, [expanded])
+
+  // Evaluate control flow transition for prompt message.
   case admitted {
     // A busy strand is a scheduling question, not a conflict. Ordinary
     // prompts and follow-ups mean "next turn", and holding them lets two
@@ -6488,12 +6765,12 @@ fn prompt_message(
   }
 }
 
-// Puts one prompt at the tail of its strand's queue, or refuses the
-// submission when the queue is full. The bound is what keeps a strand
-// whose run never settles from accumulating unbounded hub memory, and the
-// refusal is the `conflict` the whole command answered with before this
-// existed — so a client that has not learned about `queued` still sees a
-// vocabulary it knows once the queue is deep.
+/// Puts one prompt at the tail of its strand's queue, or refuses the
+/// submission when the queue is full. The bound is what keeps a strand
+/// whose run never settles from accumulating unbounded hub memory, and the
+/// refusal is the `conflict` the whole command answered with before this
+/// existed — so a client that has not learned about `queued` still sees a
+/// vocabulary it knows once the queue is deep.
 fn hold_prompt(
   state: State,
   connection: Int,
@@ -6544,6 +6821,8 @@ fn hold_prompt(
           author:,
           revision: 0,
         )
+
+      // Evaluate control flow transition for hold prompt.
       let queue = case order {
         AfterTurn -> list.append(queued, [item])
         SteerNext -> {
@@ -6552,6 +6831,7 @@ fn hold_prompt(
           list.append(steers, [item, ..turns])
         }
       }
+
       let state =
         put_held(State(..state, next_held: state.next_held + 1), strand, queue)
         |> release_halt(strand)
@@ -6569,11 +6849,11 @@ fn hold_prompt(
   }
 }
 
-// A client submission is the one event that ends an Escape's halt. The
-// queue it just joined drains as one batch, so the messages held when the
-// operator stopped the run and the message they typed afterwards reach the
-// successor together and in order. Any other drain mode is left alone: an
-// ordinary busy hold keeps draining one head at a time.
+/// A client submission is the one event that ends an Escape's halt. The
+/// queue it just joined drains as one batch, so the messages held when the
+/// operator stopped the run and the message they typed afterwards reach the
+/// successor together and in order. Any other drain mode is left alone: an
+/// ordinary busy hold keeps draining one head at a time.
 fn release_halt(state: State, strand: String) -> State {
   case dict.get(state.held, strand) {
     Ok(HeldQueue(drain: Halted, ..) as queue) ->
@@ -6591,8 +6871,8 @@ fn release_halt(state: State, strand: String) -> State {
   }
 }
 
-// Whether the strand is holding input that an abort halted. Its one caller
-// is the queue bound, which a release is exempt from.
+/// Whether the strand is holding input that an abort halted. Its one caller
+/// is the queue bound, which a release is exempt from.
 fn halted_queue(state: State, strand: String) -> Bool {
   case dict.get(state.held, strand) {
     Ok(HeldQueue(drain: Halted, ..)) -> True
@@ -6608,19 +6888,19 @@ fn held_items(state: State, strand: String) -> List(Held) {
   |> result.unwrap([])
 }
 
-// Return every held prompt to its submitter and empty the queues.
-//
-// The walk is over the dictionary rather than over the strands, because the
-// dictionary *is* the set of strands holding something — an emptied strand
-// leaves it, so no holder is visited twice and none is missed. Each item
-// goes to `item.submitter`, which is a connection id and not an identity:
-// a submitter that detached during the drain is an unknown connection and
-// `send_to` drops the frame, exactly as the rejection path already accepts
-// (see `Held.submitter`).
-//
-// The queue is emptied wholesale rather than retired item by item. A later
-// `drain_idle_strands` must find nothing, and the batch intent of a halted
-// queue must not outlive the daemon it belonged to.
+/// Return every held prompt to its submitter and empty the queues.
+///
+/// The walk is over the dictionary rather than over the strands, because the
+/// dictionary *is* the set of strands holding something — an emptied strand
+/// leaves it, so no holder is visited twice and none is missed. Each item
+/// goes to `item.submitter`, which is a connection id and not an identity:
+/// a submitter that detached during the drain is an unknown connection and
+/// `send_to` drops the frame, exactly as the rejection path already accepts
+/// (see `Held.submitter`).
+///
+/// The queue is emptied wholesale rather than retired item by item. A later
+/// `drain_idle_strands` must find nothing, and the batch intent of a halted
+/// queue must not outlive the daemon it belonged to.
 fn drain_held_queues(state: State) -> State {
   dict.each(state.held, fn(strand, queue) {
     list.each(queue.items, fn(item) {
@@ -6650,12 +6930,12 @@ fn broadcast_queue_changed(state: State) -> State {
   state
 }
 
-// One held item as the custody return a client restores a draft from. The
-// kind is the item's own order, and the text is the *complete* submitted
-// text, unlike the queue-board preview: a draft restored from a clipped
-// prefix would silently lose what the operator typed. Image blocks cannot
-// travel as text, so the count says how many the client must keep beside the
-// draft it now owns again.
+/// One held item as the custody return a client restores a draft from. The
+/// kind is the item's own order, and the text is the *complete* submitted
+/// text, unlike the queue-board preview: a draft restored from a clipped
+/// prefix would silently lose what the operator typed. Image blocks cannot
+/// travel as text, so the count says how many the client must keep beside the
+/// draft it now owns again.
 fn held_return(strand: String, item: Held) -> WireEvent {
   let #(text, images) = editable_content(item.prompt)
   protocol.HeldInputReturned(
@@ -6676,6 +6956,7 @@ fn order_text(order: InputOrder) -> String {
   }
 }
 
+/// Updates the held input queue for a strand in gateway state.
 fn put_held(state: State, strand: String, queue: List(Held)) -> State {
   // A replacement queue inherits the strand's existing drain intent, which is
   // what lets input submitted after an abort join the batch that abort marked.
@@ -6685,6 +6966,8 @@ fn put_held(state: State, strand: String, queue: List(Held)) -> State {
     dict.get(state.held, strand)
     |> result.map(fn(existing) { existing.drain })
     |> result.unwrap(OnlyHead)
+
+  // Evaluate control flow transition for put held.
   let state = case queue {
     // An emptied strand leaves the dictionary rather than sitting in it
     // as an empty list, so `drain_idle_strands` iterates over strands
@@ -6696,11 +6979,12 @@ fn put_held(state: State, strand: String, queue: List(Held)) -> State {
         held: dict.insert(state.held, strand, HeldQueue(queue, drain)),
       )
   }
+
   broadcast_queue_changed(state)
 }
 
-// These rows are queue identities, not guessed transcript matches. Two peers
-// may submit identical text; each row retires only when its own item drains.
+/// These rows are queue identities, not guessed transcript matches. Two peers
+/// may submit identical text; each row retires only when its own item drains.
 fn pending_inputs(state: State, connection: Int) -> List(JsonValue) {
   dict.to_list(state.held)
   |> list.flat_map(fn(pair) {
@@ -6730,8 +7014,8 @@ fn pending_inputs(state: State, connection: Int) -> List(JsonValue) {
   })
 }
 
-// The binding was revalidated at admission. Comparing its stable identity here
-// permits a reconnect by the original author without granting owner override.
+/// The binding was revalidated at admission. Comparing its stable identity here
+/// permits a reconnect by the original author without granting owner override.
 fn input_author(
   state: State,
   connection: Int,
@@ -6758,6 +7042,7 @@ fn held_id(item: Held) -> String {
   item.id
 }
 
+/// Retrieves a queued input entry for operator editing.
 fn editable_input(
   state: State,
   connection: Int,
@@ -6773,6 +7058,8 @@ fn editable_input(
       "input is no longer queued",
     )),
   )
+
+  // Evaluate control flow transition for editable input.
   case item.author == author {
     True -> Ok(item)
     False ->
@@ -6783,8 +7070,8 @@ fn editable_input(
   }
 }
 
-// Only complete text crosses the editing boundary. Image payloads stay in the
-// queue and their count tells the editor what it will preserve on replacement.
+/// Only complete text crosses the editing boundary. Image payloads stay in the
+/// queue and their count tells the editor what it will preserve on replacement.
 fn queued_board(
   strand: String,
   item: Held,
@@ -6799,6 +7086,8 @@ fn queued_board(
       #("text", json.String(text)),
       #("attachment_count", json.Int(list.length(images))),
     ])
+
+  // Evaluate control flow transition for queued board.
   case string.byte_size(protocol.to_wire_text(board)) <= 48_000 {
     True -> Ok(board)
     False ->
@@ -6809,7 +7098,9 @@ fn queued_board(
   }
 }
 
+/// Extracts editable user blocks from a prompt message.
 fn editable_content(prompt: AgentMessage) -> #(String, List(UserBlock)) {
+  // Evaluate control flow transition for editable content.
   case prompt {
     message.UserMessage(content:, ..) -> {
       let text =
@@ -6836,6 +7127,7 @@ fn editable_content(prompt: AgentMessage) -> #(String, List(UserBlock)) {
   }
 }
 
+/// Reads the contents of a queued input entry for a client request.
 fn read_queued_input(
   state: State,
   connection: Int,
@@ -6859,8 +7151,8 @@ fn read_queued_input(
   state
 }
 
-// Withdrawal and drain are serialized by the gateway. An admitted identity
-// conflicts rather than cancelling running work or removing a different row.
+/// Withdrawal and drain are serialized by the gateway. An admitted identity
+/// conflicts rather than cancelling running work or removing a different row.
 fn remove_queued_input(
   state: State,
   connection: Int,
@@ -6875,6 +7167,8 @@ fn remove_queued_input(
     connection,
     id,
   )
+
+  // Reject stale revisions before removing the input.
   use Nil <- or_reply(
     case item.revision == expected_revision {
       True -> Ok(Nil)
@@ -6884,6 +7178,7 @@ fn remove_queued_input(
     connection,
     id,
   )
+
   let state =
     put_held(
       state,
@@ -6896,8 +7191,8 @@ fn remove_queued_input(
   state
 }
 
-// The queue and revision are replaced in one gateway turn. A prior drain has
-// removed the identity and conflicts; an edit that wins keeps the exact slot.
+/// The queue and revision are replaced in one gateway turn. A prior drain has
+/// removed the identity and conflicts; an edit that wins keeps the exact slot.
 fn edit_queued_input(
   state: State,
   connection: Int,
@@ -6913,6 +7208,8 @@ fn edit_queued_input(
     connection,
     id,
   )
+
+  // Reject stale revisions before replacing the input.
   use Nil <- or_reply(
     case item.revision == expected_revision {
       True -> Ok(Nil)
@@ -6922,6 +7219,7 @@ fn edit_queued_input(
     connection,
     id,
   )
+
   let #(_, images) = editable_content(item.prompt)
 
   // Text blocks are deliberately consolidated. Record update retains the
@@ -6934,6 +7232,7 @@ fn edit_queued_input(
       ])
     other -> other
   }
+
   let updated =
     Held(..item, prompt:, typed: prompt, revision: item.revision + 1)
   use _board <- or_reply(queued_board(strand, updated), state, connection, id)
@@ -6950,6 +7249,7 @@ fn edit_queued_input(
   state
 }
 
+/// Extracts plain text representation from an agent prompt message.
 fn pending_text(prompt: AgentMessage) -> String {
   case prompt {
     message.UserMessage(content:, ..) ->
@@ -6967,10 +7267,10 @@ fn pending_text(prompt: AgentMessage) -> String {
   }
 }
 
-// Every strand holding prompts whose live operation has gone. The caller
-// has just replaced `state.live` from the registers, so "idle" is a
-// lookup rather than a diff of two pulls: a strand whose successor
-// operation is already open reads as busy and stays held.
+/// Every strand holding prompts whose live operation has gone. The caller
+/// has just replaced `state.live` from the registers, so "idle" is a
+/// lookup rather than a diff of two pulls: a strand whose successor
+/// operation is already open reads as busy and stays held.
 fn drain_idle_strands(state: State) -> State {
   use <- bool.lazy_guard(when: state.admission == Draining, return: fn() {
     state
@@ -6984,8 +7284,8 @@ fn drain_idle_strands(state: State) -> State {
   })
 }
 
-// The queue owns whether this successor receives its head, every held
-// message, or nothing at all.
+/// The queue owns whether this successor receives its head, every held
+/// message, or nothing at all.
 fn drain_strand(state: State, strand: String) -> State {
   case dict.get(state.held, strand) {
     Ok(HeldQueue(items: [head, ..tail] as items, drain:)) ->
@@ -7004,9 +7304,9 @@ fn drain_strand(state: State, strand: String) -> State {
   }
 }
 
-// Hands one batch to the runtime and keeps the remainder. The gateway
-// retains every member until the admission succeeds, so a refusal loses
-// nothing it had already acknowledged.
+/// Hands one batch to the runtime and keeps the remainder. The gateway
+/// retains every member until the admission succeeds, so a refusal loses
+/// nothing it had already acknowledged.
 fn admit_held(
   state: State,
   strand: String,
@@ -7014,6 +7314,8 @@ fn admit_held(
   rest: List(Held),
 ) -> State {
   let target = api.on_strand(state.runtime, strand)
+
+  // Evaluate control flow transition for admit held.
   case api.prompt(target, list.map(batch, fn(item) { item.prompt })) {
     // Original queue acknowledgements already transferred custody. Each
     // admitted message now reaches the peers through ordinary notices.
@@ -7053,12 +7355,12 @@ fn admit_held(
 // prompt names the session.
 const main_strand = "main"
 
-// Tells the host, once, what the first accepted human prompt on the main
-// strand said. The report is cleared before it is made, so a prompt accepted
-// while the callee is slow cannot be reported twice, and a message with no
-// text block (an image alone) leaves the report waiting for one that has text.
-// The callee returns at once: the catalogue write runs on the daemon's
-// registry, never on this hub's turn.
+/// Tells the host, once, what the first accepted human prompt on the main
+/// strand said. The report is cleared before it is made, so a prompt accepted
+/// while the callee is slow cannot be reported twice, and a message with no
+/// text block (an image alone) leaves the report waiting for one that has text.
+/// The callee returns at once: the catalogue write runs on the daemon's
+/// registry, never on this hub's turn.
 fn report_first_prompt(
   state: State,
   strand: String,
@@ -7092,8 +7394,8 @@ fn is_user_entry(row: Entry) -> Bool {
   }
 }
 
-// Pulls, broadcasts, and replies with the *last* emit the matcher
-// accepts (carrying its seq); replies `internal` if nothing matched.
+/// Pulls, broadcasts, and replies with the *last* emit the matcher
+/// accepts (carrying its seq); replies `internal` if nothing matched.
 fn reply_with_matched(
   state: State,
   connection: Int,
@@ -7135,12 +7437,13 @@ fn reply_with_matched(
         "the command committed but its event was not materialized",
       )
   }
+
   state
 }
 
-// Broadcasts emits to all subscribed connections, except that the
-// issuing connection's copy of the matched emit is suppressed (it
-// arrives as the reply instead, with `reply_to` and the same seq).
+/// Broadcasts emits to all subscribed connections, except that the
+/// issuing connection's copy of the matched emit is suppressed (it
+/// arrives as the reply instead, with `reply_to` and the same seq).
 fn broadcast_except(
   state: State,
   emits: List(Emit),
@@ -7156,6 +7459,8 @@ fn broadcast_except(
       ))
     dict.each(state.connections, fn(link_id, link: Connection) {
       let suppressed = link_id == connection && Some(emit) == matched
+
+      // Evaluate control flow transition for broadcast except.
       case link.subscription, suppressed {
         Subscribed, False -> deliver(link, frame)
         Subscribed, True | Unsubscribed, False | Unsubscribed, True -> Nil
@@ -7164,16 +7469,16 @@ fn broadcast_except(
   })
 }
 
-// Continues for a known strand, or replies with an `unknown_strand` error
-// frame and leaves the gateway state unchanged. The failed lookup sends
-// a response, just as `or_reply` does; it is not a pure predicate.
-//
-// ## Examples
-//
-// ```gleam
-// // use <- known_strand(state, connection, id, strand)
-// ```
-//
+/// Continues for a known strand, or replies with an `unknown_strand` error
+/// frame and leaves the gateway state unchanged. The failed lookup sends
+/// a response, just as `or_reply` does; it is not a pure predicate.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // use <- known_strand(state, connection, id, strand)
+/// ```
+///
 fn known_strand(
   state: State,
   connection: Int,
@@ -7181,6 +7486,7 @@ fn known_strand(
   strand: String,
   continue: fn() -> State,
 ) -> State {
+  // Evaluate control flow transition for known strand.
   case strand_exists(state, strand) {
     True -> continue()
     False -> {
@@ -7196,6 +7502,7 @@ fn known_strand(
   }
 }
 
+/// Submits steering input to an active running strand operation.
 fn steer(
   state: State,
   connection: Int,
@@ -7215,8 +7522,8 @@ fn steer(
   hold_prompt(state, connection, id, strand, message, typed, SteerNext)
 }
 
-// Follow-up is a queued turn. It belongs outside the current operation so
-// Escape and steering cannot discard it during that operation's abort drain.
+/// Follow-up is a queued turn. It belongs outside the current operation so
+/// Escape and steering cannot discard it during that operation's abort drain.
 fn follow_up(
   state: State,
   connection: Int,
@@ -7227,9 +7534,10 @@ fn follow_up(
   prompt(state, connection, id, strand, text)
 }
 
-// A human control captures its target before sending any asynchronous work.
-// The runtime marker and broker sweep must refer to that same operation.
+/// A human control captures its target before sending any asynchronous work.
+/// The runtime marker and broker sweep must refer to that same operation.
 fn stop_current(state: State, strand: String) -> Nil {
+  // Evaluate control flow transition for stop current.
   case session.strand_state(state.runtime.session, strand) {
     Ok(Some(session.Cell(
       value: machine_strand.StrandState(current_operation: Some(op), ..),
@@ -7242,8 +7550,11 @@ fn stop_current(state: State, strand: String) -> Nil {
   }
 }
 
+/// Requests immediate cancellation and abort of an active strand operation.
 fn abort(state: State, connection: Int, id: Int, strand: String) -> State {
   use <- known_strand(state, connection, id, strand)
+
+  // Evaluate control flow transition for abort.
   case session.strand_state(state.runtime.session, strand) {
     Ok(Some(session.Cell(
       value: machine_strand.StrandState(current_operation: Some(op), ..),
@@ -7278,9 +7589,9 @@ fn abort(state: State, connection: Int, id: Int, strand: String) -> State {
   }
 }
 
-// Asks the strand's run `op` to stop, as the operator's abort does and as a
-// spawner's page does for a session it started (protocol-change/094): the one
-// body, so the two cannot mean different things by stop.
+/// Asks the strand's run `op` to stop, as the operator's abort does and as a
+/// spawner's page does for a session it started (protocol-change/094): the one
+/// body, so the two cannot mean different things by stop.
 fn abort_run(state: State, strand: String, op: OpId) -> State {
   // Halt existing custody before requesting cancellation. The queue
   // keeps every message it holds and starts nothing on the idle
@@ -7320,12 +7631,13 @@ fn abort_run(state: State, strand: String, op: OpId) -> State {
 
     False -> Nil
   }
+
   state
 }
 
-// Stops the main strand's run for a spawner's page, if it has one. A strand
-// with no run is a stop that has nothing to do, not a conflict, because the
-// page cannot know that the run ended a moment ago.
+/// Stops the main strand's run for a spawner's page, if it has one. A strand
+/// with no run is a stop that has nothing to do, not a conflict, because the
+/// page cannot know that the run ended a moment ago.
 fn stop_for_relayed(state: State) -> State {
   case session.strand_state(state.runtime.session, advisor.primary) {
     Ok(Some(session.Cell(
@@ -7355,25 +7667,25 @@ type ApprovalLifetime {
   ForSession
 }
 
-// One approval, decided against one read.
-//
-// An approval used to be a statement about a record id: `grants: None`
-// meant "whatever this record wants", resolved when the commit ran
-// (#72). A claim refreshes a pending record's denial from the call
-// that took the claim, so between the diff a human read and the diff
-// that got committed there was a mutable value and no check — a human
-// answering `wants: wall_s 60` could commit `wants: wall_s 600`.
-//
-// So the client now says what it rendered, and this reads the record
-// **once** — the cell, carrying the seq of the write that put it there
-// — checks the echoed diff and the echoed action digest against that
-// value, and commits the approval CAS-guarded at that same seq. The
-// shared read is the whole mechanism, not a tidiness: a claim is
-// exactly the event that changes what a record wants, it bumps the
-// register seq when it lands, and a claim landing between the check
-// and the commit therefore loses the commit instead of passing unseen.
-// Read twice and the check would be about a record the commit never
-// touched.
+/// One approval, decided against one read.
+///
+/// An approval used to be a statement about a record id: `grants: None`
+/// meant "whatever this record wants", resolved when the commit ran
+/// (#72). A claim refreshes a pending record's denial from the call
+/// that took the claim, so between the diff a human read and the diff
+/// that got committed there was a mutable value and no check — a human
+/// answering `wants: wall_s 60` could commit `wants: wall_s 600`.
+///
+/// So the client now says what it rendered, and this reads the record
+/// **once** — the cell, carrying the seq of the write that put it there
+/// — checks the echoed diff and the echoed action digest against that
+/// value, and commits the approval CAS-guarded at that same seq. The
+/// shared read is the whole mechanism, not a tidiness: a claim is
+/// exactly the event that changes what a record wants, it bumps the
+/// register seq when it lands, and a claim landing between the check
+/// and the commit therefore loses the commit instead of passing unseen.
+/// Read twice and the check would be about a record the commit never
+/// touched.
 fn approve(
   state: State,
   connection: Int,
@@ -7422,9 +7734,9 @@ fn approve(
   })
 }
 
-// Both decisions compare the exact question the client displayed. This point
-// read retains the sequence for the final CAS; a same-action reopen is a new
-// question even though its action digest has not changed.
+/// Both decisions compare the exact question the client displayed. This point
+/// read retains the sequence for the final CAS; a same-action reopen is a new
+/// question even though its action digest has not changed.
 fn pending_escalation_cell(
   state: State,
   escalation_id: String,
@@ -7461,6 +7773,7 @@ fn pending_escalation_cell(
   Ok(cell)
 }
 
+/// Validates that requested permissions form a non-empty grant set.
 fn wanted_diff(
   record: runtime_escalation.Escalation,
 ) -> Result(List(Grant), WireEvent) {
@@ -7474,19 +7787,19 @@ fn wanted_diff(
   })
 }
 
-// Whether the answer is about the record in hand.
-//
-// Two echoes, two different jobs. The action digest is the link this
-// series was missing: a spend-time check binds execution to what the
-// record held at approval, and this binds the record at approval to
-// what the human was shown. The diff is the older rule — a client may
-// narrow an approval below what was asked for and never widen it past
-// it — and it is a check on staleness for free, because a refreshed
-// denial names magnitudes the rendered one did not.
-//
-// The narrowing direction stays legal on purpose: a record that has
-// come to want *more* than was rendered still approves, for exactly
-// the grants the human read and no others.
+/// Whether the answer is about the record in hand.
+///
+/// Two echoes, two different jobs. The action digest is the link this
+/// series was missing: a spend-time check binds execution to what the
+/// record held at approval, and this binds the record at approval to
+/// what the human was shown. The diff is the older rule — a client may
+/// narrow an approval below what was asked for and never widen it past
+/// it — and it is a check on staleness for free, because a refreshed
+/// denial names magnitudes the rendered one did not.
+///
+/// The narrowing direction stays legal on purpose: a record that has
+/// come to want *more* than was rendered still approves, for exactly
+/// the grants the human read and no others.
 fn echo_matches(
   record: runtime_escalation.Escalation,
   seq: Int,
@@ -7505,6 +7818,8 @@ fn echo_matches(
       ))
     },
   )
+
+  // Evaluate control flow transition for echo matches.
   case grants.first_unwanted(echoed, wanted:) {
     None -> Ok(Nil)
     Some(_grant) ->
@@ -7516,10 +7831,10 @@ fn echo_matches(
   }
 }
 
-// The approval itself: written straight through the session's one
-// writer rather than through `api.approve_escalation`, which reads the
-// record again for itself and would leave the checks above standing on
-// a value the commit never saw.
+/// The approval itself: written straight through the session's one
+/// writer rather than through `api.approve_escalation`, which reads the
+/// record again for itself and would leave the checks above standing on
+/// a value the commit never saw.
 fn commit_approval(
   state: State,
   connection: Int,
@@ -7528,6 +7843,8 @@ fn commit_approval(
   lifetime: ApprovalLifetime,
 ) -> Result(Nil, WireEvent) {
   let author = connection_origin(state, connection)
+
+  // Evaluate operation result outcome.
   use change <- result.try(case lifetime {
     Once -> Ok(None)
     ForSession ->
@@ -7542,6 +7859,8 @@ fn commit_approval(
         refusal(protocol.code_bad_request, reason)
       })
   })
+
+  // Evaluate control flow transition for commit approval.
   let committed = case change {
     None ->
       api.approve_escalation_at(
@@ -7559,6 +7878,8 @@ fn commit_approval(
         change,
       )
   }
+
+  // Evaluate control flow transition for commit approval.
   case committed {
     Ok(_) -> {
       let _ =
@@ -7580,9 +7901,9 @@ fn refusal(code: String, message: String) -> WireEvent {
   protocol.ErrorEvent(code:, message:, details: None)
 }
 
-// A refusal that hands the record back, so the client re-renders the
-// prompt from the answer to its own command instead of waiting for a
-// pull to catch up.
+/// A refusal that hands the record back, so the client re-renders the
+/// prompt from the answer to its own command instead of waiting for a
+/// pull to catch up.
 fn stale_approval(
   record: runtime_escalation.Escalation,
   seq: Int,
@@ -7597,26 +7918,28 @@ fn stale_approval(
   )
 }
 
-// The same refusal after a lost compare-and-set, where the record in
-// hand is by definition the stale one and the fresh copy has to be
-// read again. A failed re-read leaves the client the code alone, which
-// still says the answer had no effect.
+/// The same refusal after a lost compare-and-set, where the record in
+/// hand is by definition the stale one and the fresh copy has to be
+/// read again. A failed re-read leaves the client the code alone, which
+/// still says the answer had no effect.
 fn moved_under_the_answer(state: State, escalation_id: String) -> WireEvent {
   let message =
     "the escalation record changed while this approval was being committed"
+
+  // Evaluate control flow transition for moved under the answer.
   case api.escalation_cell(state.runtime, escalation_id) {
     Ok(cell) -> stale_approval(cell.record, cell.seq, message)
     Error(_error) -> refusal(protocol.code_stale_approval, message)
   }
 }
 
-// `or_reply`'s sibling for the escalation door, where a refusal may
-// carry the record it is about: the error side is a whole event rather
-// than a code and a message.
-//
-// ```gleam
-// use cell <- or_refuse(pending_escalation_cell(..), state, conn, id)
-// ```
+/// `or_reply`'s sibling for the escalation door, where a refusal may
+/// carry the record it is about: the error side is a whole event rather
+/// than a code and a message.
+///
+/// ```gleam
+/// use cell <- or_refuse(pending_escalation_cell(..), state, conn, id)
+/// ```
 fn or_refuse(
   result: Result(a, WireEvent),
   state: State,
@@ -7624,6 +7947,7 @@ fn or_refuse(
   id: Int,
   then: fn(a) -> State,
 ) -> State {
+  // Evaluate operation result outcome.
   case result {
     Ok(value) -> then(value)
     Error(event) -> {
@@ -7633,6 +7957,7 @@ fn or_refuse(
   }
 }
 
+/// Records an explicit operator denial for a pending permission escalation.
 fn deny(
   state: State,
   connection: Int,
@@ -7662,6 +7987,8 @@ fn deny(
       cell,
       connection_origin(state, connection),
     )
+
+  // Preserve a moved-state race as a distinct refusal from other API failures.
   use _record <- or_refuse(
     case outcome {
       Ok(record) -> Ok(record)
@@ -7675,6 +8002,7 @@ fn deny(
     connection,
     id,
   )
+
   let _ = escalate.notify_decision(state.runtime, cell, escalate.Denied)
   reply_with_committed(state, connection, id, fn(emit) {
     escalation_emitted(emit, escalation_id, "rejected")
@@ -7683,12 +8011,12 @@ fn deny(
 
 // --- requests of children on other orchestrators (protocol-change/089) ---------
 
-// A request filed from another orchestrator has an identity of the form
-// `<orchestrator>/<id there>`, and a local one never contains a slash. A decision
-// about a filed request is not committed here: the question belongs to the box,
-// which judges the decision and commits it. Anything else falls through to the
-// session's own records, which answer `unknown_escalation` for an identity they
-// do not hold.
+/// A request filed from another orchestrator has an identity of the form
+/// `<orchestrator>/<id there>`, and a local one never contains a slash. A decision
+/// about a filed request is not committed here: the question belongs to the box,
+/// which judges the decision and commits it. Anything else falls through to the
+/// session's own records, which answer `unknown_escalation` for an identity they
+/// do not hold.
 fn from_elsewhere(
   state: State,
   escalation_id: String,
@@ -7705,17 +8033,17 @@ fn from_elsewhere(
   }
 }
 
-// A decision on a request that was filed from another orchestrator.
-//
-// Everything the laptop can know is checked before the network is used: the
-// question is still the one displayed, the echoed action and grants are the
-// record's, and the grants are ones the box said its ceiling admits. The box
-// checks all of it again against its own record, because the laptop's copy is
-// only the last thing it heard.
-//
-// The call to the box runs in a weft run that reports back, so this mailbox never
-// waits on the network. The socket's one reply capability is kept for it, as a
-// capture's is, and the answer leaves when the run reports.
+/// A decision on a request that was filed from another orchestrator.
+///
+/// Everything the laptop can know is checked before the network is used: the
+/// question is still the one displayed, the echoed action and grants are the
+/// record's, and the grants are ones the box said its ceiling admits. The box
+/// checks all of it again against its own record, because the laptop's copy is
+/// only the last thing it heard.
+///
+/// The call to the box runs in a weft run that reports back, so this mailbox never
+/// waits on the network. The socket's one reply capability is kept for it, as a
+/// capture's is, and the answer leaves when the run reports.
 fn start_resolve(
   state: State,
   connection: Int,
@@ -7741,6 +8069,8 @@ fn start_resolve(
     )
     state
   }
+
+  // Handle lifecycle status transition.
   case record.status, record.seq == expected_seq {
     "pending", True ->
       case echo_matches_remote(record, decision) {
@@ -7766,22 +8096,27 @@ type RemoteEcho {
   Outside
 }
 
-// The laptop's half of the echo checks. An approval names the record's action
-// and a subset of what was asked for, and every grant it carries is one the box
-// said its ceiling admits. A record the box sent without an `admitted` list
-// admits nothing.
+/// The laptop's half of the echo checks. An approval names the record's action
+/// and a subset of what was asked for, and every grant it carries is one the box
+/// said its ceiling admits. A record the box sent without an `admitted` list
+/// admits nothing.
 fn echo_matches_remote(
   record: protocol.EscalationRecord,
   decision: remote_escalation.Decision,
 ) -> Result(Nil, RemoteEcho) {
+  // Evaluate control flow transition for echo matches remote.
   case decision {
     remote_escalation.Deny | remote_escalation.Forget(..) -> Ok(Nil)
     remote_escalation.Approve(grants: echoed, action:, ..) -> {
+      // Evaluate control flow transition for echo matches remote.
       let wanted = case record.denial {
         Some(denial) -> denial.wanted
         None -> []
       }
+
       let admitted = option.unwrap(record.admitted, [])
+
+      // Evaluate control flow transition for echo matches remote.
       case
         record.action != action,
         grants.first_unwanted(echoed, wanted:),
@@ -7802,8 +8137,8 @@ fn echo_matches_remote(
   }
 }
 
-// Sends the decision to the box in a run of its own and keeps the socket's reply
-// capability until the run reports.
+/// Sends the decision to the box in a run of its own and keeps the socket's reply
+/// capability until the run reports.
 fn dispatch_resolve(
   state: State,
   connection: Int,
@@ -7846,15 +8181,19 @@ fn dispatch_resolve(
       agent_tools.Handle(strand: record.strand, operation:),
     )
   }
+
+  // Evaluate control flow transition for dispatch resolve.
   case target, dict.get(state.connections, connection) {
     Error(text), _ -> refuse(text)
     Ok(_), Error(Nil) -> state
     Ok(#(placement, reach, parent, child)), Ok(link) -> {
+      // Evaluate control flow transition for dispatch resolve.
       let decider = case link.origin {
         Some(message.Origin(principal:, name:)) ->
           remote_escalation.Decider(principal:, name:)
         _ -> remote_escalation.Decider(principal: "host", name: "host")
       }
+
       let reports = process.new_subject()
       let run =
         weft.new([
@@ -7871,6 +8210,8 @@ fn dispatch_resolve(
           },
         ])
         |> weft.deadline(resolve_deadline_ms)
+
+      // Evaluate control flow transition for dispatch resolve.
       let run = case link.consumer {
         Some(socket) -> weft.cancel_when_exits(run, socket)
         None -> run
@@ -7913,6 +8254,7 @@ type PendingResolve {
   )
 }
 
+/// Handles a completed remote escalation resolution response from Weft.
 fn resolve_reported(
   state: State,
   resolve: Int,
@@ -7936,17 +8278,20 @@ fn resolve_reported(
           answer_resolve(state, pending, resolve_result(outcome))
         }
         weft.AllDelivered | weft.RunLost(..) -> {
+          // Evaluate control flow transition for resolve reported.
           let state = case pending.progress {
             Answered -> state
             Awaiting ->
               answer_resolve(state, pending, Error(peer_mail.Unreachable))
           }
+
           State(..state, resolves: dict.delete(state.resolves, resolve))
         }
       }
   }
 }
 
+/// Extracts the answer result from a Weft remote escalation task outcome.
 fn resolve_result(
   outcome: weft.Outcome(remote_escalation.Answer, peer_mail.Failure),
 ) -> Result(remote_escalation.Answer, peer_mail.Failure) {
@@ -7961,9 +8306,9 @@ fn resolve_result(
   }
 }
 
-// Answers the request that sent the decision. What the box said becomes what the
-// operator is told, and the record it sent back is filed at once, so that the
-// card changes without waiting for the box's own push.
+/// Answers the request that sent the decision. What the box said becomes what the
+/// operator is told, and the record it sent back is filed at once, so that the
+/// card changes without waiting for the box's own push.
 fn answer_resolve(
   state: State,
   pending: PendingResolve,
@@ -7973,6 +8318,8 @@ fn answer_resolve(
     let say = fn(event) {
       reply(state, pending.connection, pending.request, event)
     }
+
+    // Evaluate operation result outcome.
     case result {
       Ok(remote_escalation.Decided(record:)) -> {
         file_remote(state, pending.placement, record)
@@ -8006,14 +8353,18 @@ fn answer_resolve(
           details: None,
         ))
     }
+
     state
   }
+
+  // Process response payload.
   case pending.response {
     Some(response) -> with_response(state, pending.connection, response, tell)
     None -> tell(state)
   }
 }
 
+/// Forwards an escalation record to a remote placement peer.
 fn file_remote(
   state: State,
   placement: String,
@@ -8024,8 +8375,8 @@ fn file_remote(
   }
 }
 
-// A spawner's operator's decision about a request in this delegate session. The
-// time is the session's own, for the provenance of a remembered grant.
+/// A spawner's operator's decision about a request in this delegate session. The
+/// time is the session's own, for the provenance of a remembered grant.
 fn decide_for_spawner(
   state: State,
   parent: remote_spawn.Parent,
@@ -8034,6 +8385,7 @@ fn decide_for_spawner(
   expected_seq: Int,
   decided_by: remote_escalation.Decider,
 ) -> remote_escalation.Answer {
+  // Evaluate control flow transition for decide for spawner.
   case state.spawner {
     None ->
       remote_escalation.Refused(
@@ -8055,6 +8407,7 @@ fn decide_for_spawner(
   }
 }
 
+/// Checks whether an escalation event matches a specific target ID and status.
 fn escalation_emitted(
   emit: Emit,
   escalation_id: String,
@@ -8067,9 +8420,10 @@ fn escalation_emitted(
   }
 }
 
-// A decision acknowledgement follows its exact-cell CAS, unlike a prompt's
-// admission acknowledgement. The credited cut carries the durable result.
+/// A decision acknowledgement follows its exact-cell CAS, unlike a prompt's
+/// admission acknowledgement. The credited cut carries the durable result.
 fn reply_with_committed(state: State, connection, id, matcher) {
+  // Decide whether delivery mode is restricted to host-only or network-enabled.
   case state.delivery {
     Network -> {
       reply(state, connection, id, mutation_outcome("committed"))
@@ -8079,6 +8433,7 @@ fn reply_with_committed(state: State, connection, id, matcher) {
   }
 }
 
+/// Creates a new conversation branch forking from the current session tree.
 fn fork(
   state: State,
   connection: Int,
@@ -8088,14 +8443,19 @@ fn fork(
 ) -> State {
   use <- known_strand(state, connection, id, strand)
   let store = state.runtime.session
+
+  // Evaluate control flow transition for fork.
   let configuration = case session.strand_configuration(store, strand) {
     Ok(Some(session.Cell(value:, ..))) -> Some(value)
     _ -> None
   }
+
+  // Evaluate control flow transition for fork.
   let leaf = case session.strand_leaf(store, strand) {
     Ok(Some(session.Cell(value:, ..))) -> value
     _ -> None
   }
+
   use configuration <- or_reply(
     option.to_result(configuration, #(
       protocol.code_internal,
@@ -8113,6 +8473,7 @@ fn fork(
   seed_and_reply(state, connection, id, new_name, configuration, leaf)
 }
 
+/// Creates and initializes a new strand in the resident session.
 fn create_strand(
   state: State,
   connection: Int,
@@ -8120,6 +8481,8 @@ fn create_strand(
   name: Option(String),
 ) -> State {
   let strands = strand_names(state)
+
+  // Evaluate control flow transition for create strand.
   let configuration = case
     session.strand_configuration(state.runtime.session, "main")
   {
@@ -8134,6 +8497,7 @@ fn create_strand(
         [] -> None
       }
   }
+
   use configuration <- or_reply(
     option.to_result(configuration, #(
       protocol.code_internal,
@@ -8151,27 +8515,33 @@ fn create_strand(
   seed_and_reply(state, connection, id, new_name, configuration, None)
 }
 
+/// Generates a non-conflicting unique strand name based on existing names.
 fn unique_name(state: State, wanted: String) -> String {
   let existing = strand_names(state)
+
+  // Evaluate control flow transition for unique name.
   case list.contains(existing, wanted) {
     False -> wanted
     True -> unique_name_loop(existing, wanted, 2)
   }
 }
 
+/// Recursively increments a numeric suffix to find an untaken strand name.
 fn unique_name_loop(existing: List(String), base: String, n: Int) -> String {
   let candidate = base <> "-" <> int.to_string(n)
+
+  // Evaluate control flow transition for unique name loop.
   case list.contains(existing, candidate) {
     False -> candidate
     True -> unique_name_loop(existing, base, n + 1)
   }
 }
 
-// Seeds a briefless strand (the api's `create_strand` always accepts a
-// task-brief run; protocol fork/create_strand make idle strands) through
-// `api.create_idle_strand`: the same three-register CAS-guarded commit
-// the api's own `create_strand` seeds with, then the driver via the
-// factory — just without a brief run accepted on top.
+/// Seeds a briefless strand (the api's `create_strand` always accepts a
+/// task-brief run; protocol fork/create_strand make idle strands) through
+/// `api.create_idle_strand`: the same three-register CAS-guarded commit
+/// the api's own `create_strand` seeds with, then the driver via the
+/// factory — just without a brief run accepted on top.
 fn seed_and_reply(
   state: State,
   connection: Int,
@@ -8181,6 +8551,8 @@ fn seed_and_reply(
   leaf: Option(EntryId),
 ) -> State {
   let configuration = seeded_thinking(state, copied)
+
+  // Evaluate control flow transition for seed and reply.
   case
     api.create_idle_strand(state.runtime, named: name, configuration:, at: leaf)
   {
@@ -8232,19 +8604,19 @@ fn seed_and_reply(
   }
 }
 
-// A seeded strand's per-turn thinking level comes from the catalogue
-// entry its identity names — the entry in force for the model it will
-// dispatch to — and not from the level the source strand happened to be
-// sitting at when it was copied.
-//
-// The two differ for a reason worth keeping: a strand's per-turn level is
-// a property of the conversation someone was having on it, raised or
-// lowered mid-run through `set_config`, while a *new* strand has had no
-// conversation yet. Seeding from the entry is the same rule `client/serve`
-// applies to `main` and `client/agency` applies to a spawned child, so all
-// three creation points agree. An identity the catalogue does not know —
-// or a hub serving no catalogue at all — keeps what was copied, because
-// there is nothing better to say.
+/// A seeded strand's per-turn thinking level comes from the catalogue
+/// entry its identity names — the entry in force for the model it will
+/// dispatch to — and not from the level the source strand happened to be
+/// sitting at when it was copied.
+///
+/// The two differ for a reason worth keeping: a strand's per-turn level is
+/// a property of the conversation someone was having on it, raised or
+/// lowered mid-run through `set_config`, while a *new* strand has had no
+/// conversation yet. Seeding from the entry is the same rule `client/serve`
+/// applies to `main` and `client/agency` applies to a spawned child, so all
+/// three creation points agree. An identity the catalogue does not know —
+/// or a hub serving no catalogue at all — keeps what was copied, because
+/// there is nothing better to say.
 fn seeded_thinking(
   state: State,
   configuration: machine_strand.StrandConfiguration,
@@ -8259,10 +8631,13 @@ fn seeded_thinking(
   }
 }
 
+/// Compiles a snapshot event listing all active strands in the session.
 fn strands_snapshot(state: State) -> WireEvent {
   use <- bool.lazy_guard(state.delivery == Network, fn() {
     mutation_outcome("committed")
   })
+
+  // Evaluate control flow transition for strands snapshot.
   case full_snapshot(state) {
     protocol.SnapshotEvent(protocol.FullSnapshot(strands:, ..)) ->
       protocol.SnapshotEvent(protocol.StrandsSnapshot(strands:))
@@ -8272,6 +8647,7 @@ fn strands_snapshot(state: State) -> WireEvent {
 
 // --- navigation and compaction ---------------------------------------------
 
+/// Moves the session transcript pointer to the specified historical entry.
 fn navigate(
   state: State,
   connection: Int,
@@ -8315,6 +8691,7 @@ fn navigate(
   state
 }
 
+/// Requests compaction of historical context entries on the specified strand.
 fn compact(
   state: State,
   connection: Int,
@@ -8345,12 +8722,12 @@ fn compact(
   })
 }
 
-// The compaction preparation a manual `compact` command summarizes
-// from: the strand's durable projection through the *same* builder the
-// threshold and overflow hooks use (`runtime/hooks.preparation`), so an
-// operator-requested compaction cuts where an automatic one cuts, keeps
-// what an automatic one keeps, and carries a previous summary forward
-// the same way. The run's own settings snapshot supplies the budget.
+/// The compaction preparation a manual `compact` command summarizes
+/// from: the strand's durable projection through the *same* builder the
+/// threshold and overflow hooks use (`runtime/hooks.preparation`), so an
+/// operator-requested compaction cuts where an automatic one cuts, keeps
+/// what an automatic one keeps, and carries a previous summary forward
+/// the same way. The run's own settings snapshot supplies the budget.
 fn compaction_preparation(
   state: State,
   strand: String,
@@ -8380,7 +8757,10 @@ fn compaction_preparation(
       }
     _, _, _ -> projected
   }
+
   let settings = state.runtime.settings.compaction
+
+  // Evaluate control flow transition for compaction preparation.
   case
     hooks.preparation(
       projected,
@@ -8394,9 +8774,9 @@ fn compaction_preparation(
   }
 }
 
-// Shared with `describe_api_error`: an `AcceptRejected` carries one of
-// these, whether it came from `api.compact`, `api.navigate`, or a run
-// acceptance.
+/// Shared with `describe_api_error`: an `AcceptRejected` carries one of
+/// these, whether it came from `api.compact`, `api.navigate`, or a run
+/// acceptance.
 fn describe_reject(reason: acceptance.RejectReason) -> #(String, String) {
   case reason {
     acceptance.StrandBusy -> #(
@@ -8425,14 +8805,16 @@ fn describe_reject(reason: acceptance.RejectReason) -> #(String, String) {
 
 // --- the model catalogue ---------------------------------------------------
 
-// `models`: the catalogue as a `models` snapshot. A hub without a
-// configured catalogue answers an empty listing — the honest shape for
-// "there is nothing to pick from", and the same reply a client gets
-// either way, so it needs no special case.
-// Notes have an independent bounded read. A large board can refuse this
-// auxiliary view without making the conversation itself unreadable.
+/// `models`: the catalogue as a `models` snapshot. A hub without a
+/// configured catalogue answers an empty listing — the honest shape for
+/// "there is nothing to pick from", and the same reply a client gets
+/// either way, so it needs no special case.
+/// Notes have an independent bounded read. A large board can refuse this
+/// auxiliary view without making the conversation itself unreadable.
 fn read_notes(state: State, connection: Int, id: Int, strand: String) -> State {
   use <- known_strand(state, connection, id, strand)
+
+  // Evaluate control flow transition for read notes.
   case notes_view.read(state.runtime.session, strand) {
     Ok(board) -> {
       reply(
@@ -8457,11 +8839,14 @@ fn read_notes(state: State, connection: Int, id: Int, strand: String) -> State {
   }
 }
 
+/// Queries available model configurations from the provider catalog.
 fn list_models(state: State, connection: Int, id: Int) -> State {
+  // Evaluate control flow transition for list models.
   let models = case state.catalog {
     None -> []
     Some(catalogue) -> catalog_listing(catalogue)
   }
+
   reply(
     state,
     connection,
@@ -8471,9 +8856,9 @@ fn list_models(state: State, connection: Int, id: Int) -> State {
   state
 }
 
-// One wire row per catalogue entry: its identity facts plus which role
-// chains list it and which it currently heads (and therefore resolves
-// for — every catalogue entry is a registered provider).
+/// One wire row per catalogue entry: its identity facts plus which role
+/// chains list it and which it currently heads (and therefore resolves
+/// for — every catalogue entry is a registered provider).
 fn catalog_listing(catalogue: catalog.Catalog) -> List(protocol.ModelInfo) {
   list.map(catalogue.models, fn(entry) {
     protocol.ModelInfo(
@@ -8488,10 +8873,10 @@ fn catalog_listing(catalogue: catalog.Catalog) -> List(protocol.ModelInfo) {
 
 // --- the model profile -----------------------------------------------------
 
-// `profile_get`: the profile this session routes its roles by, and the profile
-// names the configuration defines now, as a `profile` snapshot. The names are
-// read from the file at each request, so a profile added while the session runs
-// is offered at once.
+/// `profile_get`: the profile this session routes its roles by, and the profile
+/// names the configuration defines now, as a `profile` snapshot. The names are
+/// read from the file at each request, so a profile added while the session runs
+/// is offered at once.
 fn read_profile(state: State, connection: Int, id: Int) -> State {
   use desk <- or_reply(profile_desk(state), state, connection, id)
   use names <- or_reply(
@@ -8513,6 +8898,7 @@ fn read_profile(state: State, connection: Int, id: Int) -> State {
   state
 }
 
+/// Resolves the model switching profile desk from gateway state.
 fn profile_desk(
   state: State,
 ) -> Result(profile_switch.Desk, #(String, String)) {
@@ -8527,20 +8913,20 @@ fn internal_failure(reason: String) -> #(String, String) {
   #(protocol.code_internal, reason)
 }
 
-// `profile_set`: saves the profile, moves the strands that followed the old
-// profile's models to the new one's, answers, and only then starts the restart
-// that builds the new profile's gateway (`protocol-change/082`).
-//
-// The order is what keeps every failure harmless. Nothing is written until the
-// new catalogue has loaded and the strands to move are known. The registration
-// is saved before any strand moves, so a refused save changes nothing. A strand
-// that is moved but whose restart then fails keeps working: a model that heads
-// no role of the saved profile is dispatched as exactly that model
-// (`wiring.request_target`), and the next open resolves the saved profile.
-//
-// A running strand refuses the switch outright. The restart stops the session,
-// which would end the run and resume it, and a request in flight is not ours to
-// interrupt; the operator may wait for the run to settle or abort it.
+/// `profile_set`: saves the profile, moves the strands that followed the old
+/// profile's models to the new one's, answers, and only then starts the restart
+/// that builds the new profile's gateway (`protocol-change/082`).
+///
+/// The order is what keeps every failure harmless. Nothing is written until the
+/// new catalogue has loaded and the strands to move are known. The registration
+/// is saved before any strand moves, so a refused save changes nothing. A strand
+/// that is moved but whose restart then fails keeps working: a model that heads
+/// no role of the saved profile is dispatched as exactly that model
+/// (`wiring.request_target`), and the next open resolves the saved profile.
+///
+/// A running strand refuses the switch outright. The restart stops the session,
+/// which would end the run and resume it, and a request in flight is not ours to
+/// interrupt; the operator may wait for the run to settle or abort it.
 fn set_profile(
   state: State,
   connection: Int,
@@ -8605,6 +8991,8 @@ fn set_profile(
     connection,
     id,
   )
+
+  // Evaluate control flow transition for set profile.
   case apply_moves(state, moves, connection_origin(state, connection)) {
     Error(reason) -> {
       reply_error(
@@ -8638,11 +9026,11 @@ fn set_profile(
   }
 }
 
-// The strands a switch moves, each with the model it moves to. A strand follows
-// a role while its stored model is the head of that role's chain under the
-// profile being left (`catalog.retargets`); one chosen by hand with `/model` is
-// not any role's head and is left where it is. Both conclusions come from the
-// stored model alone, because that is the only record of which it was.
+/// The strands a switch moves, each with the model it moves to. A strand follows
+/// a role while its stored model is the head of that role's chain under the
+/// profile being left (`catalog.retargets`); one chosen by hand with `/model` is
+/// not any role's head and is left where it is. Both conclusions come from the
+/// stored model alone, because that is the only record of which it was.
 fn retarget_moves(
   state: State,
   retargets: List(catalog.Retarget),
@@ -8652,6 +9040,8 @@ fn retarget_moves(
       session.strand_configuration(state.runtime.session, strand)
       |> result.map_error(fn(_) { "configuration could not be read" }),
     )
+
+    // Evaluate control flow transition for retarget moves.
     case cell {
       None -> Ok(moves)
       Some(session.Cell(value:, ..)) ->
@@ -8664,9 +9054,9 @@ fn retarget_moves(
   |> result.map(list.reverse)
 }
 
-// The entry a strand holding `model` moves to, when `model` is a head that
-// moves. Retargets are in tie-break order, so a model that heads two roles
-// moves with the first.
+/// The entry a strand holding `model` moves to, when `model` is a head that
+/// moves. Retargets are in tie-break order, so a model that heads two roles
+/// moves with the first.
 fn followed_head(
   retargets: List(catalog.Retarget),
   model: machine_strand.ModelIdentity,
@@ -8678,9 +9068,9 @@ fn followed_head(
   |> result.map(fn(retarget) { retarget.to })
 }
 
-// Writes the moved strands' models in one commit, by the path `set_config`
-// uses, seeding the new entry's thinking level when a strand still holds its
-// previous entry's seed and leaving an operator-chosen level alone.
+/// Writes the moved strands' models in one commit, by the path `set_config`
+/// uses, seeding the new entry's thinking level when a strand still holds its
+/// previous entry's seed and leaving an operator-chosen level alone.
 fn apply_moves(
   state: State,
   moves: List(#(String, catalog.CatalogModel)),
@@ -8699,13 +9089,14 @@ fn apply_moves(
 
 // --- the schedule listing --------------------------------------------------
 
-// `schedules`: every schedule this session holds, as a `schedules`
-// snapshot. A hub with no scheduling plane answers an empty listing on
-// the `models` posture — "there is nothing here" is the honest shape and
-// the same reply either way, so a client needs no special case. A plane
-// that is present but cannot be read is a different answer: that is a
-// failure to report, not an absence.
+/// `schedules`: every schedule this session holds, as a `schedules`
+/// snapshot. A hub with no scheduling plane answers an empty listing on
+/// the `models` posture — "there is nothing here" is the honest shape and
+/// the same reply either way, so a client needs no special case. A plane
+/// that is present but cannot be read is a different answer: that is a
+/// failure to report, not an absence.
 fn list_schedules(state: State, connection: Int, id: Int) -> State {
+  // Evaluate control flow transition for list schedules.
   case state.schedules {
     None -> {
       reply(
@@ -8737,11 +9128,11 @@ fn list_schedules(state: State, connection: Int, id: Int) -> State {
   }
 }
 
-// `schedule_cancel`: retire one model-created schedule and answer with
-// the listing that remains, so a client re-renders from the one reply
-// rather than following a success with a second round trip. Unsupported
-// rather than an empty success when the host has no scheduling plane: a
-// cancellation that cancelled nothing must not read as one that worked.
+/// `schedule_cancel`: retire one model-created schedule and answer with
+/// the listing that remains, so a client re-renders from the one reply
+/// rather than following a success with a second round trip. Unsupported
+/// rather than an empty success when the host has no scheduling plane: a
+/// cancellation that cancelled nothing must not read as one that worked.
 fn cancel_schedule(
   state: State,
   connection: Int,
@@ -8749,6 +9140,7 @@ fn cancel_schedule(
   target: String,
   name: String,
 ) -> State {
+  // Evaluate control flow transition for cancel schedule.
   case state.schedules {
     None -> {
       reply_error(
@@ -8804,10 +9196,10 @@ fn cancel_schedule(
 
 // --- proposed rules (protocol-change/086) -----------------------------------
 
-// `proposals_get`: the queue's newest proposals and the pending count, as the
-// board `client/proposals` renders. An owner's read; a session on a host with
-// no queue answers unsupported rather than an empty list, because a person
-// asked to review proposals and there is nothing that could ever hold one.
+/// `proposals_get`: the queue's newest proposals and the pending count, as the
+/// board `client/proposals` renders. An owner's read; a session on a host with
+/// no queue answers unsupported rather than an empty list, because a person
+/// asked to review proposals and there is nothing that could ever hold one.
 fn list_proposals(state: State, connection: Int, id: Int) -> State {
   case state.proposals {
     None -> unsupported_proposals(state, connection, id)
@@ -8832,12 +9224,12 @@ fn list_proposals(state: State, connection: Int, id: Int) -> State {
   }
 }
 
-// `proposal_decide`: settle one pending proposal and answer with the queue as
-// it now stands. A proposal the file has moved away from is not an error: it
-// comes back `stale` in the board, with nothing written. A proposal that was
-// decided already is a conflict, so a second approval of one proposal applies
-// nothing twice, and so is a queue another writer holds right now: the answer
-// says to decide again, and nothing was read or written.
+/// `proposal_decide`: settle one pending proposal and answer with the queue as
+/// it now stands. A proposal the file has moved away from is not an error: it
+/// comes back `stale` in the board, with nothing written. A proposal that was
+/// decided already is a conflict, so a second approval of one proposal applies
+/// nothing twice, and so is a queue another writer holds right now: the answer
+/// says to decide again, and nothing was read or written.
 fn decide_proposal(
   state: State,
   connection: Int,
@@ -8902,6 +9294,7 @@ fn proposal_verdict(decision: protocol.ProposalDecision) -> proposals.Decision {
   }
 }
 
+/// Returns a standardized error reply for unsupported standing proposals.
 fn unsupported_proposals(state: State, connection: Int, id: Int) -> State {
   reply_error(
     state,
@@ -8915,12 +9308,13 @@ fn unsupported_proposals(state: State, connection: Int, id: Int) -> State {
 
 // --- the memory overview (protocol-change/087) ------------------------------
 
-// `memory_get`: the overview as `client/memory_overview` reads it, one
-// snapshot. An owner's read. A host with no overview answers unsupported
-// rather than an empty board, because an empty board would read as "no notes".
-// The read takes no lease and never waits on a writer, so answering it here
-// cannot hold up the strand.
+/// `memory_get`: the overview as `client/memory_overview` reads it, one
+/// snapshot. An owner's read. A host with no overview answers unsupported
+/// rather than an empty board, because an empty board would read as "no notes".
+/// The read takes no lease and never waits on a writer, so answering it here
+/// cannot hold up the strand.
 fn read_memory(state: State, connection: Int, id: Int) -> State {
+  // Evaluate control flow transition for read memory.
   case state.memory_overview {
     None -> {
       reply_error(
@@ -8948,11 +9342,12 @@ fn read_memory(state: State, connection: Int, id: Int) -> State {
 
 // --- remembered permissions (protocol-change/073) --------------------------
 
-// `permissions`: everything the session remembers, with who approved it. An
-// observer never reaches this (`read_only` counts it with the mutations), so
-// the listing of principals and credentials goes only to a connection that
-// may approve.
+/// `permissions`: everything the session remembers, with who approved it. An
+/// observer never reaches this (`read_only` counts it with the mutations), so
+/// the listing of principals and credentials goes only to a connection that
+/// may approve.
 fn list_permissions(state: State, connection: Int, id: Int) -> State {
+  // Evaluate control flow transition for list permissions.
   case permissions.listing(state.runtime) {
     Ok(listing) -> {
       reply(
@@ -8972,12 +9367,12 @@ fn list_permissions(state: State, connection: Int, id: Int) -> State {
   }
 }
 
-// `permission_forget`: remove remembered permissions through the session's one
-// writer, in a single transaction guarded by the sequences the listing
-// carried, and answer with the listing that remains. A guard that fails writes
-// nothing and answers a conflict, so a permission added by another operator
-// since the list was drawn is never forgotten unseen; the client reads again
-// and the operator decides again.
+/// `permission_forget`: remove remembered permissions through the session's one
+/// writer, in a single transaction guarded by the sequences the listing
+/// carried, and answer with the listing that remains. A guard that fails writes
+/// nothing and answers a conflict, so a permission added by another operator
+/// since the list was drawn is never forgotten unseen; the client reads again
+/// and the operator decides again.
 fn forget_permissions(
   state: State,
   connection: Int,
@@ -8999,6 +9394,8 @@ fn forget_permissions(
       }
     })
   }
+
+  // Evaluate control flow transition for forget permissions.
   case forgotten {
     Ok(Nil) -> list_permissions(state, connection, id)
     Error(permissions.Stale) -> {
@@ -9018,15 +9415,17 @@ fn forget_permissions(
   }
 }
 
-// Who is approving, as the fact will record it. The principal and the
-// credential's kind and fingerprint come from the connection's authenticated
-// binding and nothing a client sent, so a client cannot attribute a grant to
-// someone else. A connection with no binding (a host fixture) records none.
+/// Who is approving, as the fact will record it. The principal and the
+/// credential's kind and fingerprint come from the connection's authenticated
+/// binding and nothing a client sent, so a client cannot attribute a grant to
+/// someone else. A connection with no binding (a host fixture) records none.
 fn approval_provenance(
   state: State,
   connection: Int,
 ) -> permissions.Provenance {
   let #(now, _clock) = clock.read(state.runtime.effects.clock)
+
+  // Evaluate control flow transition for approval provenance.
   case dict.get(state.connections, connection) {
     Ok(Connection(
       authentication: Authenticated(binding, ..),
@@ -9037,15 +9436,18 @@ fn approval_provenance(
   }
 }
 
-// Which credential an approval is recorded under. A page that belongs to a
-// browser sign-in records that sign-in, because it is the thing the owner can
-// revoke and the thing the list names. Anything else records the credential it
-// was admitted under, a login's digest as a login and a bearer's as a device.
+/// Which credential an approval is recorded under. A page that belongs to a
+/// browser sign-in records that sign-in, because it is the thing the owner can
+/// revoke and the thing the list names. Anything else records the credential it
+/// was admitted under, a login's digest as a login and a bearer's as a device.
 fn approval_via(binding: Binding) -> permissions.Via {
+  // Inspect connection authentication credentials and binding authority.
   case binding.signin {
     Some(fingerprint) -> permissions.Login(fingerprint:)
     None -> {
       let fingerprint = access.fingerprint(binding.digest)
+
+      // Inspect connection authentication credentials and binding authority.
       case access.credential_kind(binding.digest) {
         access.Browser -> permissions.Login(fingerprint:)
         access.Bearer -> permissions.Device(fingerprint:)
@@ -9054,9 +9456,9 @@ fn approval_via(binding: Binding) -> permissions.Via {
   }
 }
 
-// One wire row per schedule. The wake question crosses here as the
-// protocol's own two variants; the boolean the wire carries is minted
-// inside `client/protocol`'s codec and nowhere else.
+/// One wire row per schedule. The wake question crosses here as the
+/// protocol's own two variants; the boolean the wire carries is minted
+/// inside `client/protocol`'s codec and nowhere else.
 fn schedule_row(row: scheduleadmin.Row) -> protocol.ScheduleInfo {
   protocol.ScheduleInfo(
     name: row.name,
@@ -9074,17 +9476,17 @@ fn schedule_row(row: scheduleadmin.Row) -> protocol.ScheduleInfo {
 
 // --- set_config ------------------------------------------------------------
 
-// The accepted key set (protocol.md open question 3, answered):
-// `queue_mode` ("consume_all" | "one_at_a_time"), `tool_execution`
-// ("sequential" | "parallel") — session-wide run settings captured into
-// subsequent acceptances — `model_name` (a catalogue name, resolved
-// server-side; with a `strand` it switches that strand, without one it
-// switches every strand) — and, with a `strand`, the durable
-// per-strand configuration keys `model` ({provider, model_id}),
-// `thinking_level`, and `active_tools` (validated against the
-// configured tool registry and stored canonically — see
-// `canonical_tool_names`). Unknown keys are refused (`bad_request`)
-// and nothing is applied.
+/// The accepted key set (protocol.md open question 3, answered):
+/// `queue_mode` ("consume_all" | "one_at_a_time"), `tool_execution`
+/// ("sequential" | "parallel") — session-wide run settings captured into
+/// subsequent acceptances — `model_name` (a catalogue name, resolved
+/// server-side; with a `strand` it switches that strand, without one it
+/// switches every strand) — and, with a `strand`, the durable
+/// per-strand configuration keys `model` ({provider, model_id}),
+/// `thinking_level`, and `active_tools` (validated against the
+/// configured tool registry and stored canonically — see
+/// `canonical_tool_names`). Unknown keys are refused (`bad_request`)
+/// and nothing is applied.
 fn set_config(
   state: State,
   connection: Int,
@@ -9121,12 +9523,14 @@ fn set_config(
   state
 }
 
+/// Validates and applies configuration changes submitted by an operator.
 fn apply_operator_config(
   state: State,
   connection: Int,
   strand: Option(String),
   fields: List(#(String, JsonValue)),
 ) -> Result(#(State, JsonValue), String) {
+  // Evaluate control flow transition for apply operator config.
   case list.key_find(fields, "add_directory") {
     Error(Nil) ->
       apply_config(state, strand, fields, connection_origin(state, connection))
@@ -9157,6 +9561,7 @@ fn apply_operator_config(
   }
 }
 
+/// Extracts structured key-value configuration fields from JSON input.
 fn config_fields(
   config: JsonValue,
 ) -> Result(List(#(String, JsonValue)), #(String, String)) {
@@ -9166,6 +9571,7 @@ fn config_fields(
   }
 }
 
+/// Applies validated configuration field updates to session or strand state.
 fn apply_config(
   state: State,
   strand: Option(String),
@@ -9188,10 +9594,10 @@ fn apply_config(
   apply_changes(state, strand, changes, author)
 }
 
-// Stages the validated changes and commits them in one compare-and-set. It is
-// the second half of `apply_config`, separate so a change the hub makes on its
-// own account, such as moving strands after a profile switch, commits through
-// exactly the path an operator's `set_config` does.
+/// Stages the validated changes and commits them in one compare-and-set. It is
+/// the second half of `apply_config`, separate so a change the hub makes on its
+/// own account, such as moving strands after a profile switch, commits through
+/// exactly the path an operator's `set_config` does.
 fn apply_changes(
   state: State,
   strand: Option(String),
@@ -9246,6 +9652,8 @@ fn apply_changes(
         ],
       )
     })
+
+  // Execute requested side query action.
   let transaction = case plan.settings {
     None -> transaction
     Some(settings) ->
@@ -9268,12 +9676,15 @@ fn apply_changes(
   // Commit transaction to durable storage and report changed fields.
   let settings = option.unwrap(plan.settings, defaults.settings)
   let updated = State(..state, runtime: api.Runtime(..state.runtime, settings:))
+
+  // Evaluate operation result outcome.
   use target <- result.try(case strand {
     None -> Ok([])
     Some(name) ->
       staged_configuration(plan, name)
       |> result.map(fn(cell) { strand_config_fields(updated, cell.value) })
   })
+
   use _ <- result.try(
     writer.commit(state.runtime.tree.writer, transaction)
     |> result.map_error(fn(_) { "the configuration commit was refused" }),
@@ -9292,10 +9703,13 @@ fn apply_changes(
         ]),
       )
     })
+
+  // Evaluate control flow transition for apply changes.
   let defaults_origin = case plan.settings {
     None -> defaults.origin
     Some(_) -> author
   }
+
   Ok(#(
     updated,
     json.Object(
@@ -9325,12 +9739,15 @@ type ConfigPlan {
 type ConfigChange =
   fn(ConfigPlan) -> Result(ConfigPlan, String)
 
+/// Validates and decodes a single configuration property update.
 fn validate_config_key(
   state: State,
   strand: Option(String),
   field: #(String, JsonValue),
 ) -> Result(ConfigChange, String) {
   let #(key, value) = field
+
+  // Evaluate control flow transition for validate config key.
   case key {
     "queue_mode" ->
       case value {
@@ -9385,6 +9802,7 @@ fn validate_config_key(
   }
 }
 
+/// Decodes and validates model selection configuration updates.
 fn model_change(
   strand: String,
   model_fields: List(#(String, JsonValue)),
@@ -9401,6 +9819,7 @@ fn model_change(
   )
 }
 
+/// Decodes and validates thinking budget level configuration updates.
 fn thinking_level_change(
   strand: String,
   level_text: String,
@@ -9413,6 +9832,7 @@ fn thinking_level_change(
   )
 }
 
+/// Decodes and validates active tool allowlist configuration updates.
 fn active_tools_change(
   state: State,
   strand: String,
@@ -9437,14 +9857,14 @@ fn json_string_item(item: JsonValue) -> Result(String, String) {
   }
 }
 
-// `model_name`'s change: the catalogue entry's identity, applied to one
-// strand's configuration when named, or to every strand's otherwise.
-//
-// When the strand's `thinking_level` still matches the previous entry's seed,
-// it moves to the new entry's declared `thinking` level; a level the operator
-// raised or lowered away from the previous seed is left alone so switching
-// model mid-run does not un-raise a budget somebody deliberately chose. A
-// client that sends both keys gets its explicit `thinking_level`.
+/// `model_name`'s change: the catalogue entry's identity, applied to one
+/// strand's configuration when named, or to every strand's otherwise.
+///
+/// When the strand's `thinking_level` still matches the previous entry's seed,
+/// it moves to the new entry's declared `thinking` level; a level the operator
+/// raised or lowered away from the previous seed is left alone so switching
+/// model mid-run does not un-raise a budget somebody deliberately chose. A
+/// client that sends both keys gets its explicit `thinking_level`.
 fn model_name_change(
   state: State,
   strand: Option(String),
@@ -9460,16 +9880,18 @@ fn model_name_change(
     }),
   )
   let change = switch_to_entry(state, _, entry)
+
+  // Evaluate control flow transition for model name change.
   case strand {
     Some(strand) -> Ok(update_configuration(_, strand, change))
     None -> Ok(update_all_configurations(_, change))
   }
 }
 
-// Switches a strand's model to `entry`, seeding `thinking_level` from `entry`
-// when the strand still holds its previous model's seeded level (or `off` when
-// the previous model is not in the catalogue) and leaving an operator-chosen
-// level untouched.
+/// Switches a strand's model to `entry`, seeding `thinking_level` from `entry`
+/// when the strand still holds its previous model's seeded level (or `off` when
+/// the previous model is not in the catalogue) and leaving an operator-chosen
+/// level untouched.
 fn switch_to_entry(
   state: State,
   configuration: machine_strand.StrandConfiguration,
@@ -9477,14 +9899,19 @@ fn switch_to_entry(
 ) -> machine_strand.StrandConfiguration {
   let identity =
     machine_strand.ModelIdentity(provider: entry.name, model_id: entry.model_id)
+
+  // Evaluate control flow transition for switch to entry.
   let previous_seed = case entry_in_force(state, configuration.model.provider) {
     Ok(previous) -> wiring.strand_thinking_level(previous.thinking)
     Error(Nil) -> machine_strand.ThinkingOff
   }
+
+  // Evaluate control flow transition for switch to entry.
   let thinking_level = case configuration.thinking_level == previous_seed {
     True -> wiring.strand_thinking_level(entry.thinking)
     False -> configuration.thinking_level
   }
+
   machine_strand.StrandConfiguration(
     ..configuration,
     model: identity,
@@ -9492,6 +9919,7 @@ fn switch_to_entry(
   )
 }
 
+/// Looks up the model catalog entry currently active for a provider.
 fn entry_in_force(
   state: State,
   provider: String,
@@ -9500,33 +9928,34 @@ fn entry_in_force(
   catalog.find(catalogue, provider)
 }
 
-// The durable form of an active-tools list: every name checked against
-// the live registry, then sorted with duplicates collapsed.
-//
-// The sort is load-bearing, not tidiness. This list is what
-// `client/wiring.tool_specs` renders into a request's tool array, which
-// sits ahead of the system prompt in the provider's render order; the
-// prompt cache matches on an exact byte prefix, and the Anthropic
-// adapter hangs one breakpoint on the last tool definition and another
-// on the system block. A client that re-sends the same set in a new
-// order would move those bytes and pay both cache writes again, every
-// turn. `tool_specs` sorts too — belt and braces, since a durable list
-// can be written by other paths — but a strand's stored configuration
-// is the honest place for the canonical form, and it is what the
-// `config` snapshot echoes back.
-//
-// Neither the sort nor the dedup moves the authorization line:
-// `wiring.clear` decides what may run by `list.contains` on this same
-// list, and set membership is blind to order and multiplicity.
-//
-// An unregistered name refuses the whole command, in band and by name,
-// the way an unknown `model_name` does — a tool that does not exist has
-// no business in durable configuration, and silently dropping it would
-// leave the client believing it had enabled something.
+/// The durable form of an active-tools list: every name checked against
+/// the live registry, then sorted with duplicates collapsed.
+///
+/// The sort is load-bearing, not tidiness. This list is what
+/// `client/wiring.tool_specs` renders into a request's tool array, which
+/// sits ahead of the system prompt in the provider's render order; the
+/// prompt cache matches on an exact byte prefix, and the Anthropic
+/// adapter hangs one breakpoint on the last tool definition and another
+/// on the system block. A client that re-sends the same set in a new
+/// order would move those bytes and pay both cache writes again, every
+/// turn. `tool_specs` sorts too — belt and braces, since a durable list
+/// can be written by other paths — but a strand's stored configuration
+/// is the honest place for the canonical form, and it is what the
+/// `config` snapshot echoes back.
+///
+/// Neither the sort nor the dedup moves the authorization line:
+/// `wiring.clear` decides what may run by `list.contains` on this same
+/// list, and set membership is blind to order and multiplicity.
+///
+/// An unregistered name refuses the whole command, in band and by name,
+/// the way an unknown `model_name` does — a tool that does not exist has
+/// no business in durable configuration, and silently dropping it would
+/// leave the client believing it had enabled something.
 fn canonical_tool_names(
   state: State,
   names: List(String),
 ) -> Result(List(String), String) {
+  // Project tool reference annotations into compaction prompt.
   case state.registered_tools {
     None -> Error("no tool registry is configured")
     Some(registry) -> {
@@ -9547,6 +9976,7 @@ fn canonical_tool_names(
   }
 }
 
+/// Extracts a required string property from configuration JSON fields.
 fn config_string(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -9557,6 +9987,7 @@ fn config_string(
   }
 }
 
+/// Sets the input queue mode in a pending configuration plan.
 fn set_queue_mode(
   plan: ConfigPlan,
   mode: operation.QueueMode,
@@ -9576,6 +10007,7 @@ fn set_queue_mode(
   )
 }
 
+/// Sets the tool execution policy mode in a pending configuration plan.
 fn set_tool_execution(
   plan: ConfigPlan,
   mode: operation.ToolExecution,
@@ -9589,6 +10021,7 @@ fn set_tool_execution(
   )
 }
 
+/// Applies a configuration transform to a single strand in the plan.
 fn update_configuration(
   plan: ConfigPlan,
   strand: String,
@@ -9608,12 +10041,13 @@ fn update_configuration(
   )
 }
 
-// A second field targeting the same strand sees the staged value, not a fresh
-// read which could discard the first field or replace its original expectation.
+/// A second field targeting the same strand sees the staged value, not a fresh
+/// read which could discard the first field or replace its original expectation.
 fn staged_configuration(
   plan: ConfigPlan,
   strand: String,
 ) -> Result(session.Cell(machine_strand.StrandConfiguration), String) {
+  // Evaluate control flow transition for staged configuration.
   case dict.get(plan.cells, strand) {
     Ok(cell) -> Ok(cell)
     Error(Nil) -> {
@@ -9626,6 +10060,7 @@ fn staged_configuration(
   }
 }
 
+/// Applies a configuration transform across all strands in the plan.
 fn update_all_configurations(
   plan: ConfigPlan,
   change: fn(machine_strand.StrandConfiguration) ->
@@ -9637,6 +10072,7 @@ fn update_all_configurations(
   })
 }
 
+/// Parses a thinking budget level string into its domain variant.
 fn parse_thinking_level(
   text: String,
 ) -> Result(machine_strand.ThinkingLevel, String) {
@@ -9652,7 +10088,9 @@ fn parse_thinking_level(
   }
 }
 
+/// Formats the effective configuration in force for session or strand as JSON.
 fn effective_config(state: State, strand: Option(String)) -> JsonValue {
+  // Evaluate control flow transition for effective config.
   let directories = case state.directories {
     None -> []
     Some(admin) ->
@@ -9661,7 +10099,10 @@ fn effective_config(state: State, strand: Option(String)) -> JsonValue {
         Error(reason) -> [#("directories_error", json.String(reason))]
       }
   }
+
   let base = list.append(base_config_fields(state), directories)
+
+  // Evaluate control flow transition for effective config.
   case strand {
     None -> json.Object(base)
     Some(strand) ->
@@ -9673,8 +10114,8 @@ fn effective_config(state: State, strand: Option(String)) -> JsonValue {
   }
 }
 
-// The session-wide fields: present in every `config` snapshot, strand or
-// none.
+/// The session-wide fields: present in every `config` snapshot, strand or
+/// none.
 fn base_config_fields(state: State) -> List(#(String, JsonValue)) {
   let settings = state.runtime.settings
   [
@@ -9700,7 +10141,7 @@ fn tool_execution_text(mode: operation.ToolExecution) -> String {
   }
 }
 
-// The per-strand fields, spliced onto the session-wide base.
+/// The per-strand fields, spliced onto the session-wide base.
 fn strand_config_fields(
   state: State,
   value: machine_strand.StrandConfiguration,
@@ -9732,9 +10173,9 @@ fn strand_config_fields(
   ])
 }
 
-// The catalogue name behind a durable identity, when there is one: the
-// entry whose name is the identity's provider and whose model id
-// matches. Zero or one field, spliced into the effective config.
+/// The catalogue name behind a durable identity, when there is one: the
+/// entry whose name is the identity's provider and whose model id
+/// matches. Zero or one field, spliced into the effective config.
 fn catalog_name_of(
   state: State,
   identity: machine_strand.ModelIdentity,
@@ -9751,6 +10192,7 @@ fn catalog_name_of(
   }
 }
 
+/// Renders a thinking budget level variant to its wire string name.
 fn thinking_level_text(level: machine_strand.ThinkingLevel) -> String {
   case level {
     machine_strand.ThinkingOff -> "off"
@@ -9765,6 +10207,7 @@ fn thinking_level_text(level: machine_strand.ThinkingLevel) -> String {
 
 // --- error mapping ---------------------------------------------------------
 
+/// Renders an API error into protocol error code and explanatory message.
 fn describe_api_error(
   error: api.ApiError,
   strand: String,
@@ -9850,13 +10293,13 @@ pub fn with_skills(options: Options, catalogue: skill.Catalogue) -> Options {
   Options(..options, skills: catalogue)
 }
 
-// The aggregate bills the request; the final attempt measures its context.
-// Malformed present details cannot silently turn a fallback total into context.
-//
-// An adjustment is not a request, and an auxiliary request (a glance or a
-// block summary) runs on its own model with its own small prompt. Both still
-// reach the cost total through `usage`, but neither may supply a context,
-// output-rate or cache reading for the live strand they were attributed to.
+/// The aggregate bills the request; the final attempt measures its context.
+/// Malformed present details cannot silently turn a fallback total into context.
+///
+/// An adjustment is not a request, and an auxiliary request (a glance or a
+/// block summary) runs on its own model with its own small prompt. Both still
+/// reach the cost total through `usage`, but neither may supply a context,
+/// output-rate or cache reading for the live strand they were attributed to.
 fn last_row_usage(row: UsageRow) -> Option(message.Usage) {
   use <- bool.guard(when: row.adjustment || is_auxiliary_row(row), return: None)
   accounting.decode_row(row)
@@ -9865,10 +10308,10 @@ fn last_row_usage(row: UsageRow) -> Option(message.Usage) {
   |> option.then(accounting.observed_usage)
 }
 
-// The auxiliary writers in `client/auxiliary` commit a row with no entry and
-// name the work in a top-level `phase` detail. The planner's own
-// summary-request rows also carry no entry, but they are the strand's
-// requests and name no phase, so they keep their observation.
+/// The auxiliary writers in `client/auxiliary` commit a row with no entry and
+/// name the work in a top-level `phase` detail. The planner's own
+/// summary-request rows also carry no entry, but they are the strand's
+/// requests and name no phase, so they keep their observation.
 fn is_auxiliary_row(row: UsageRow) -> Bool {
   case row.entry_id, row.details {
     None, Some(json.Object(fields)) ->

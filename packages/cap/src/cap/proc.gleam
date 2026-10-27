@@ -129,6 +129,7 @@ fn encode_optional_int(value: Option(Int)) -> MsgPackValue {
   }
 }
 
+/// Encodes environment variable pairs into a msgpack map.
 fn encode_env(env: List(#(String, String))) -> MsgPackValue {
   msgpack.MapValue(
     list.map(env, fn(pair) {
@@ -137,6 +138,7 @@ fn encode_env(env: List(#(String, String))) -> MsgPackValue {
   )
 }
 
+/// Decodes process execution output and exit flags from msgpack.
 fn decode_output(value: MsgPackValue) -> Result(Output, String) {
   use exit_code <- result.try(wire.int_field(value, "exit_code"))
   use stdout <- result.try(wire.string_field(value, "stdout"))
@@ -154,6 +156,7 @@ fn decode_output(value: MsgPackValue) -> Result(Output, String) {
   ))
 }
 
+/// Maps capability channel errors to typed process errors.
 fn map_error(error: CallError) -> ProcError {
   case error {
     Unreachable(reason:) -> ProcUnavailable(reason:)
@@ -263,15 +266,20 @@ pub fn stdout_from(
   }
 }
 
+/// Formats a command timeout error message with optional stderr tail.
 fn timeout_text(argv: List(String), stderr: String) -> String {
   let prefix = "`" <> argv_text(argv) <> "` timed out"
+
+  // Append non-empty stderr tail to the timeout prefix.
   case stderr_tail(stderr) {
     "" -> prefix
     tail -> prefix <> ": " <> tail
   }
 }
 
+/// Formats a command exit error message with return code and stderr.
 fn exit_text(argv: List(String), output: Output) -> String {
+  // Extract the trailing stderr lines or placeholder if empty.
   let reason = case stderr_tail(output.stderr) {
     "" -> "(no stderr)"
     tail -> tail
@@ -299,8 +307,11 @@ const ellipsis = "…"
 
 const ellipsis_bytes = 3
 
+/// Truncates a command line string to the configured byte limit.
 fn argv_text(argv: List(String)) -> String {
   let line = string.join(argv, " ")
+
+  // Check if command line byte size exceeds limit.
   case bit_array.byte_size(<<line:utf8>>) > argv_limit {
     True ->
       longest_prefix(<<line:utf8>>, argv_limit - ellipsis_bytes) <> ellipsis
@@ -308,10 +319,13 @@ fn argv_text(argv: List(String)) -> String {
   }
 }
 
+/// Extracts the trailing bytes of stderr up to the configured limit.
 fn stderr_tail(stderr: String) -> String {
   let text = string.trim(stderr)
   let bytes = <<text:utf8>>
   let size = bit_array.byte_size(bytes)
+
+  // Check if stderr exceeds the maximum tail limit.
   case size > stderr_limit {
     True ->
       ellipsis
@@ -320,11 +334,12 @@ fn stderr_tail(stderr: String) -> String {
   }
 }
 
-// The longest prefix of at most `length` bytes that decodes as UTF-8. A
-// character is at most four bytes, so this backs off at most three bytes.
+/// Returns the longest prefix of bytes that decodes as valid UTF-8.
 fn longest_prefix(bytes: BitArray, length: Int) -> String {
   let decoded =
     bit_array.slice(bytes, 0, length) |> result.try(bit_array.to_string)
+
+  // Check if the current slice decodes successfully as UTF-8.
   case decoded {
     Ok(text) -> text
     Error(Nil) if length > 0 -> longest_prefix(bytes, length - 1)
@@ -332,12 +347,13 @@ fn longest_prefix(bytes: BitArray, length: Int) -> String {
   }
 }
 
-// The suffix starting at `start`, moved forward to the first character
-// boundary.
+/// Returns the shortest valid UTF-8 suffix of bytes starting at an offset.
 fn shortest_suffix(bytes: BitArray, size: Int, start: Int) -> String {
   let decoded =
     bit_array.slice(bytes, start, size - start)
     |> result.try(bit_array.to_string)
+
+  // Check if the sliced suffix decodes successfully as UTF-8.
   case decoded {
     Ok(text) -> text
     Error(Nil) if start < size -> shortest_suffix(bytes, size, start + 1)

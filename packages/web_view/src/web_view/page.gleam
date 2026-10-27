@@ -325,11 +325,11 @@ pub fn relayed_waiting_notice() -> String {
   <> "If it stays like this, run loom ui for a fresh link."
 }
 
-// A shell holding one server component, titled `title` (escaped here) and
-// with `waiting` as the paragraph shown while the component has no socket.
-// The title is fixed words and never a session's identity or name: the home
-// and the admin page name themselves, and a session page says only the product
-// until `<loom-title>` (`web_client/title`) reads the name its bar draws.
+/// A shell holding one server component, titled `title` (escaped here) and
+/// with `waiting` as the paragraph shown while the component has no socket.
+/// The title is fixed words and never a session's identity or name: the home
+/// and the admin page name themselves, and a session page says only the product
+/// until `<loom-title>` (`web_client/title`) reads the name its bar draws.
 fn component_document(title: String, waiting: String) -> String {
   "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
   <> "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
@@ -406,11 +406,12 @@ pub fn refusal(reason: Ending, session_id: String) -> String {
     True -> advice
     False -> ending.Advice(..advice, command: None)
   }
+
   ended_document(ending.headline(reason), advice, way_for(reason))
 }
 
-// Whether `identity` has the shape `<loom-copy>` accepts in a `loom ui
-// --session` command: one to 64 hexadecimal digits and hyphens.
+/// Whether `identity` has the shape `<loom-copy>` accepts in a `loom ui
+/// --session` command: one to 64 hexadecimal digits and hyphens.
 fn copyable_identity(identity: String) -> Bool {
   let graphemes = string.to_graphemes(identity)
   graphemes != []
@@ -507,9 +508,9 @@ fn way_for(reason: Ending) -> Way {
 // The document a refused request is answered with: the brand, a headline, the
 // advice's lead, and the command that mints a fresh link as a `<loom-copy>`
 // box. The box's light content is the same command in a `code` element, which
-// shows until the client bundle registers the element and which is all a
-// browser without scripts sees. The only script is the page's own client
-// bundle, from this origin, so the policy is the one every `/ui` response has.
+/// Shows until the client bundle registers the element and which is all a
+/// browser without scripts sees. The only script is the page's own client
+/// bundle, from this origin, so the policy is the one every `/ui` response has.
 fn ended_document(headline: String, advice: ending.Advice, way: Way) -> String {
   "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
   <> "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
@@ -532,9 +533,9 @@ fn ended_document(headline: String, advice: ending.Advice, way: Way) -> String {
   <> "</section></main></body></html>\n"
 }
 
-// What `way` adds after the command's box, or nothing. The Back control's
-// light content is the word it shows until the client bundle registers it. The
-// claim link is a fixed same-origin address.
+/// What `way` adds after the command's box, or nothing. The Back control's
+/// light content is the word it shows until the client bundle registers it. The
+/// claim link is a fixed same-origin address.
 fn way_control(way: Way) -> String {
   case way {
     GoBack -> "<loom-back>Go back</loom-back>"
@@ -549,17 +550,21 @@ fn way_control(way: Way) -> String {
   }
 }
 
-// The command that mints a fresh link and a button that copies it, or nothing
-// for an ending a fresh link would not help.
+/// The command that mints a fresh link and a button that copies it, or nothing
+/// for an ending a fresh link would not help.
 fn fresh_link_box(command: Option(String), way: Way) -> String {
+  // Render copyable command box if command is present.
   case command {
     None -> ""
     Some(command) -> {
       let escaped = houdini.escape(command)
+
+      // Select explanation text depending on way navigation option.
       let words = case way {
         ClaimLink -> "If you use loom, run this in a terminal for a fresh link."
         GoBack | NoWay -> "Run this in a terminal for a fresh link."
       }
+
       "<p class=\"ended-advice\">"
       <> words
       <> "</p>"
@@ -754,6 +759,7 @@ pub type ClaimNotice {
 /// assert string.contains(page.claim_page(None), "name=\"token\"")
 /// ```
 pub fn claim_page(notice: Option(ClaimNotice)) -> String {
+  // Word the refusal alert box if an invitation claim error occurred.
   let refusal = case notice {
     Some(why) ->
       "<p class=\"claim-notice\" role=\"alert\">"
@@ -761,6 +767,7 @@ pub fn claim_page(notice: Option(ClaimNotice)) -> String {
       <> "</p>"
     None -> ""
   }
+
   "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
   <> "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
   <> "<title>Loom</title>"
@@ -946,7 +953,7 @@ pub fn exchange_confirmation(
   <> "</form></section></main></body></html>\n"
 }
 
-// What the button opens, in the words of the page it leads to.
+/// What the button opens, in the words of the page it leads to.
 fn opening_words(opening: Opening) -> String {
   case opening {
     OpensSession(_) -> "The link opens a page for one session in this browser."
@@ -955,7 +962,7 @@ fn opening_words(opening: Opening) -> String {
   }
 }
 
-// How long the browser stays signed in once the button is pressed.
+/// How long the browser stays signed in once the button is pressed.
 fn staying_words(staying: Staying) -> String {
   case staying {
     StaysSignedIn ->
@@ -1023,7 +1030,7 @@ pub fn enter_remembered(
   )
 }
 
-// The exchange's document, with `login` the login's two attributes, or nothing.
+/// The exchange's document, with `login` the login's two attributes, or nothing.
 fn enter_document(next: String, nonce: String, login: String) -> String {
   "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
   <> "<title>Loom</title>"
@@ -1102,10 +1109,12 @@ pub type Forms {
 /// )
 /// ```
 pub fn content_security_policy_for(socket: String, forms: Forms) -> String {
+  // Configure form action directive depending on whether origin forms are allowed.
   let action = case forms {
     NoForms -> "'none'"
     OwnForms -> "'self'"
   }
+
   "default-src 'none'; script-src 'self'; style-src 'self'; "
   <> "frame-src 'self'; style-src-attr 'unsafe-inline'; connect-src 'self' "
   <> socket

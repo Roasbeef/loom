@@ -1,6 +1,13 @@
 //// The child-operation capability router: `cap/strand` calls serviced by
 //// the Agency closures the `agent_*` tools already call.
 ////
+//// ## Flow
+////
+//// - `router` dispatches incoming capability requests
+//// - `refusal_code` maps an Agency refusal to an in-band denial code
+//// - `decode_spawn` decodes child spawn parameters
+////
+////
 //// # What this is, and what it deliberately is not
 ////
 //// Both default code-mode program modes can import `cap/strand` alongside
@@ -360,11 +367,12 @@ pub fn router(seam: Orchestration) -> CapRouter {
   }
 }
 
-// The caller every Agency call is judged against. Every field is
-// somebody else's: the strand and the source index are the dispatching
-// `Ctx`'s, the operation and step come off the threaded `PhaseIdentity`
-// — this module writes neither — and the only thing derived here is the
-// `Minter`, which is the module doc's subject.
+/// Derives the caller context record from the active orchestration seam.
+///
+/// Every field is somebody else's: the strand and the source index are the dispatching
+/// `Ctx`'s, the operation and step come off the threaded `PhaseIdentity`
+/// — this module writes neither — and the only thing derived here is the
+/// `Minter`, which is the module doc's subject.
 fn caller_of(seam: Orchestration, request: CapRequest) -> Caller {
   agent.Caller(
     strand: seam.strand,
@@ -377,6 +385,7 @@ fn caller_of(seam: Orchestration, request: CapRequest) -> Caller {
 
 // --- spawn -----------------------------------------------------------------
 
+/// Plans a strand.spawn capability call parsing assignment brief and bounds.
 fn spawn_plan(
   seam: Orchestration,
   request: CapRequest,
@@ -426,8 +435,11 @@ pub fn decode_spawn(
   ))
 }
 
+/// Decodes the child context provenance argument into a typed variant.
 fn provenance_arg(args: MsgPackValue) -> Result(agent.Provenance, CapDenial) {
   use context <- result.try(decode.string(args, "context"))
+
+  // Map context string to Fresh or MyConversation provenance.
   case context {
     "fresh" -> Ok(agent.Fresh)
     "my_conversation" -> Ok(agent.MyConversation)
@@ -443,15 +455,22 @@ fn provenance_arg(args: MsgPackValue) -> Result(agent.Provenance, CapDenial) {
 // field descriptors; `agent.parse_result_schema` decides whether they
 // amount to a schema this harness can actually enforce, and its refusal
 // text names the key it objected to.
+/// Decodes optional child result schema fields and parses them into a ResultSchema.
+///
+/// A program sends field descriptors; `agent.parse_result_schema` decides whether they
+/// amount to a schema this harness can actually enforce.
 fn schema_arg(
   args: MsgPackValue,
 ) -> Result(Option(agent.ResultSchema), CapDenial) {
+  // Extract result schema fields from capability arguments.
   use fields <- result.try(case decode.field(args, "result_schema") {
     Error(_) | Ok(msgpack.NilValue) -> Ok([])
     Ok(msgpack.ArrayValue(items:)) -> Ok(items)
     Ok(_other) ->
       Error(decode.invalid("`result_schema` must be a list of fields"))
   })
+
+  // Return None when empty, or validate length and decode properties.
   case fields {
     [] -> Ok(None)
     [_, ..] -> {
@@ -508,6 +527,7 @@ fn decode_field(value: MsgPackValue) -> Result(Declared, CapDenial) {
 // them on the far side, and a descriptor nested past
 // `agent.max_schema_depth` is refused on the way down instead of
 // materialized and refused afterwards.
+/// Converts a field descriptor's type definition into JSON schema format.
 fn field_type_json(
   value: MsgPackValue,
   depth: Int,
@@ -521,15 +541,19 @@ fn field_type_json(
   })
 
   use declared <- result.try(decode.string(value, "type"))
+
+  // Translate field type string into JSON schema representation.
   case declared {
     "any" -> Ok(json.Object([]))
     "string" | "integer" | "number" | "boolean" | "object" ->
       Ok(json.Object([#("type", json.String(declared))]))
     "array" -> {
+      // Decode items element schema recursively.
       use items <- result.try(case decode.field(value, "items") {
         Error(_) | Ok(msgpack.NilValue) -> Ok(json.Object([]))
         Ok(nested) -> field_type_json(nested, depth + 1)
       })
+
       Ok(json.Object([#("type", json.String("array")), #("items", items)]))
     }
     other ->
@@ -537,6 +561,7 @@ fn field_type_json(
   }
 }
 
+/// Converts declared schema fields into a JSON object schema.
 fn schema_json(declared: List(Declared)) -> JsonValue {
   json.Object([
     #("type", json.String("object")),
@@ -559,6 +584,7 @@ fn schema_json(declared: List(Declared)) -> JsonValue {
 
 // --- wait ------------------------------------------------------------------
 
+/// Plans a strand.wait capability call joining child execution handles.
 fn wait_plan(
   seam: Orchestration,
   request: CapRequest,
@@ -584,11 +610,14 @@ fn wait_plan(
   )
 }
 
+/// Decodes the handles array argument into a list of agent Handles.
 fn handles_arg(args: MsgPackValue) -> Result(List(agent.Handle), CapDenial) {
+  // Extract handles array from arguments map.
   use items <- result.try(case decode.field(args, "handles") {
     Ok(msgpack.ArrayValue(items:)) -> Ok(items)
     Ok(_other) | Error(_) -> Error(decode.invalid("`handles` must be a list"))
   })
+
   list.try_map(items, decode_handle)
 }
 
@@ -601,6 +630,7 @@ fn decode_handle(value: MsgPackValue) -> Result(agent.Handle, CapDenial) {
   |> result.map_error(refusal_denial)
 }
 
+/// Serializes a waited child status outcome into MsgPack format.
 fn waited_value(waited: agent.Waited) -> MsgPackValue {
   case waited {
     agent.Pending(handle:, waited_ms:, ..) ->
@@ -623,6 +653,7 @@ fn waited_value(waited: agent.Waited) -> MsgPackValue {
   }
 }
 
+/// Serializes a completed, failed, or aborted child outcome to MsgPack.
 fn outcome_value(outcome: agent.Outcome) -> MsgPackValue {
   case outcome {
     agent.Completed -> msgpack.MapValue([field("kind", text("completed"))])
@@ -640,10 +671,12 @@ fn outcome_value(outcome: agent.Outcome) -> MsgPackValue {
   }
 }
 
-// The verdict on the child's structured result. A schema is rendered to
-// its canonical text rather than sent as structure: a program branches on
-// *which* verdict it got and reports the schema, it does not re-derive
-// the shape from it.
+/// Serializes the terminal structured result verdict into MsgPack format.
+///
+/// A schema is rendered to
+/// its canonical text rather than sent as structure: a program branches on
+/// *which* verdict it got and reports the schema, it does not re-derive
+/// the shape from it.
 fn terminal_value(result: agent.TerminalResult) -> MsgPackValue {
   case result {
     agent.NoResultAsked -> msgpack.MapValue([field("kind", text("none"))])
@@ -673,6 +706,7 @@ fn schema_text(schema: agent.ResultSchema) -> String {
 
 // --- send, notes, roster ---------------------------------------------------
 
+/// Plans a strand.send capability call routing a message to peer or parent.
 fn send_plan(
   seam: Orchestration,
   request: CapRequest,
@@ -705,6 +739,7 @@ fn send_plan(
   )
 }
 
+/// Plans a strand.note capability call setting a blackboard key cell.
 fn note_plan(
   seam: Orchestration,
   request: CapRequest,
@@ -728,6 +763,7 @@ fn note_plan(
   )
 }
 
+/// Plans a strand.notes capability call reading cells from the blackboard.
 fn notes_plan(
   seam: Orchestration,
   request: CapRequest,
@@ -745,6 +781,7 @@ fn notes_plan(
   )
 }
 
+/// Plans a strand.roster capability call listing lineage peers and tools.
 fn roster_plan(
   seam: Orchestration,
   request: CapRequest,
@@ -765,6 +802,7 @@ fn roster_plan(
   )
 }
 
+/// Serializes a peer lineage record into MsgPack map fields.
 fn peer_value(peer: agent.Peer) -> MsgPackValue {
   msgpack.MapValue([
     field("strand", text(peer.strand)),
@@ -791,6 +829,7 @@ fn relation_text(relation: agent.Relation) -> String {
   }
 }
 
+/// Formats blackboard key-value cells into an array of MsgPack maps.
 fn notes_value(cells: List(#(String, JsonValue))) -> MsgPackValue {
   msgpack.ArrayValue(
     list.map(cells, fn(cell) {
@@ -831,8 +870,11 @@ fn operation_text(handle: agent.Handle) -> String {
 // `strand.*` alone speaks, all of it built on the same two primitives so
 // a refusal reads the same whichever call produced it.
 
+/// Decodes an integer argument field from MsgPack.
 fn int_arg(value: MsgPackValue, key: String) -> Result(Int, CapDenial) {
   use found <- result.try(decode.field(value, key))
+
+  // Verify extracted argument value is a whole integer.
   case found {
     msgpack.IntValue(number) -> Ok(number)
     msgpack.NilValue
@@ -846,8 +888,11 @@ fn int_arg(value: MsgPackValue, key: String) -> Result(Int, CapDenial) {
   }
 }
 
+/// Decodes a boolean argument field from MsgPack.
 fn bool_arg(value: MsgPackValue, key: String) -> Result(Bool, CapDenial) {
   use found <- result.try(decode.field(value, key))
+
+  // Verify extracted argument value is a boolean flag.
   case found {
     msgpack.BoolValue(flag) -> Ok(flag)
     msgpack.NilValue
@@ -861,6 +906,7 @@ fn bool_arg(value: MsgPackValue, key: String) -> Result(Bool, CapDenial) {
   }
 }
 
+/// Decodes an optional whole integer argument field from MsgPack.
 fn optional_int_arg(
   value: MsgPackValue,
   key: String,
@@ -873,6 +919,7 @@ fn optional_int_arg(
   }
 }
 
+/// Decodes an optional string argument field from MsgPack.
 fn optional_string_arg(
   value: MsgPackValue,
   key: String,
@@ -884,6 +931,7 @@ fn optional_string_arg(
   }
 }
 
+/// Decodes an optional list of string names from MsgPack.
 fn optional_names_arg(
   value: MsgPackValue,
   key: String,

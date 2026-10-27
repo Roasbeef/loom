@@ -119,6 +119,7 @@ pub fn shutdown(lifetime: Lifetime(instance)) -> Nil {
   weft.cancel_witnessed(lifetime.witness)
 }
 
+/// Starts and supervises the session manager registry under daemon custody.
 fn own_registry(
   catalogue: catalogue.Catalogue,
   assembly: manager.Assembly(instance),
@@ -130,6 +131,8 @@ fn own_registry(
   // A registry failure belongs to the outer transitive monitor. Its startup
   // link must not kill this worker before that monitor records the verdict.
   process.trap_exits(True)
+
+  // Start the manager registry and report early failures back to the caller.
   case manager.start(catalogue, assembly, epoch:, limit:) {
     Error(reason) -> {
       process.send(replies, Error(reason))
@@ -141,6 +144,8 @@ fn own_registry(
         weft.adopt(ledger, owner: manager.pid(registry), cancel: fn() {
           manager.shutdown(registry)
         })
+
+      // Decide whether custody accepted the registry or requires shutdown.
       case adoption {
         weft.Adopted -> process.send(replies, Ok(registry))
         weft.Refused -> {

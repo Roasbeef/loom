@@ -105,6 +105,7 @@ pub fn digest_hooks(
 }
 
 // The digest for whichever strand owns this operation, or nothing.
+/// Formats injected for bounded session-note presentation.
 fn injected(
   session: Session,
   clock: Clock,
@@ -116,11 +117,13 @@ fn injected(
   }
 }
 
+/// Handles message for in the bounded per-strand notes projection.
 fn message_for(
   session: Session,
   clock: Clock,
   strand: String,
 ) -> List(AgentMessage) {
+  // message for handles the digest(session, strand) outcomes before continuing the operation.
   case digest(session, strand) {
     None -> []
     Some(text) -> {
@@ -219,6 +222,7 @@ pub fn try_cells(
 
 // --- rendering -------------------------------------------------------------
 
+/// Formats render for bounded session-note presentation.
 fn render(strand: String, cells: List(#(String, JsonValue))) -> String {
   let #(lines, truncated) =
     take_bounded(list.map(cells, line), max_digest_bytes, [])
@@ -231,6 +235,7 @@ fn render(strand: String, cells: List(#(String, JsonValue))) -> String {
   <> "\n```"
 }
 
+/// Handles header in the bounded per-strand notes projection.
 fn header(strand: String) -> String {
   "Your own notes for strand `"
   <> strand
@@ -242,6 +247,7 @@ fn header(strand: String) -> String {
   <> "with agent_note; read the whole board with agent_notes."
 }
 
+/// Handles truncation in the bounded per-strand notes projection.
 fn truncation(truncated: Bool) -> String {
   case truncated {
     False -> ""
@@ -286,6 +292,7 @@ pub fn fence_safe(text: String) -> String {
 
 // Newest-first, taking whole lines while they fit. `remaining` counts
 // the newline each line costs when joined.
+/// Bounds take bounded through the memory store’s validated path.
 fn take_bounded(
   lines: List(String),
   remaining: Int,
@@ -297,6 +304,7 @@ fn take_bounded(
   }
 }
 
+/// Handles place in the bounded per-strand notes projection.
 fn place(
   line: String,
   rest: List(String),
@@ -304,6 +312,8 @@ fn place(
   taken: List(String),
 ) -> #(List(String), Bool) {
   let cost = byte_size(line) + 1
+
+  // place handles the cost <= remaining outcomes before continuing the operation.
   case cost <= remaining {
     True -> take_bounded(rest, remaining - cost, [line, ..taken])
     False -> stop(line, remaining, taken)
@@ -312,6 +322,7 @@ fn place(
 
 // One oversized cell must still say something: a digest that was nothing
 // but a truncation notice would be strictly worse than no digest at all.
+/// Bounds stop through the memory store’s validated path.
 fn stop(
   line: String,
   remaining: Int,
@@ -360,6 +371,7 @@ pub fn clip(text: String, limit: Int) -> String {
   }
 }
 
+/// Handles longest prefix in the bounded per-strand notes projection.
 fn longest_prefix(bytes: BitArray, limit: Int) -> String {
   case limit < 0 {
     True -> ""

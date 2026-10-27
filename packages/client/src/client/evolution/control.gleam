@@ -155,6 +155,8 @@ pub fn announcing(seam: Seam, announce: fn() -> Nil) -> Seam {
   let command = seam.command
   Seam(command: fn(authority, principal, via, action, args) {
     let outcome = command(authority, principal, via, action, args)
+
+    // Notify listeners when an evolution state mutation succeeds.
     case action, outcome {
       "approve", Ok(_)
       | "revoke", Ok(_)
@@ -163,10 +165,12 @@ pub fn announcing(seam: Seam, announce: fn() -> Nil) -> Seam {
       -> announce()
       _, _ -> Nil
     }
+
     outcome
   })
 }
 
+/// Maps client access authority into the corresponding evolution store authority scope.
 fn authority_for(
   authority: access.Authority,
   session_id: String,
@@ -181,12 +185,15 @@ fn authority_for(
   }
 }
 
+/// Dispatches incoming evolution control actions to queries or mutations.
 fn dispatch(
   bound: Bound,
   action: String,
   args: json.JsonValue,
 ) -> Result(json.JsonValue, String) {
   let Bound(catalogue:, owner:, transitions:, ..) = bound
+
+  // Dispatch the requested control command action.
   case action {
     "catalogue" -> {
       use items <- result.try(
@@ -237,8 +244,8 @@ fn dispatch(
 
 // The whole panel in one reply. The catalogue read is one lease, so the rows,
 // selections and journal agree with each other. The live generation and the
-// queue are read afterwards and can be a moment newer, which a page repairs on
-// the next push.
+/// Assembles the current evolution dashboard snapshot including catalog rows, active
+/// published selections, and pending queue transitions.
 fn board(bound: Bound) -> Result(json.JsonValue, String) {
   let Bound(catalogue:, owner:, transitions:, session_id:, ..) = bound
   use read <- result.try(
@@ -257,6 +264,7 @@ fn board(bound: Bound) -> Result(json.JsonValue, String) {
       ))
     Ok(None) | Error(_) -> None
   }
+
   Ok(
     board.value(board.Input(
       session_id:,
@@ -268,6 +276,7 @@ fn board(bound: Bound) -> Result(json.JsonValue, String) {
   )
 }
 
+/// Executes state-mutating actions such as approval, revocation, selection, or rollback.
 fn mutate(
   bound: Bound,
   action: String,
@@ -279,6 +288,8 @@ fn mutate(
     store.read_candidate(catalogue, id)
     |> result.map_error(retained(owner)),
   )
+
+  // Dispatch the mutation action on the verified candidate record.
   case action {
     "revoke" -> {
       use reason <- result.try(tool.required_string(args, "reason"))
@@ -301,6 +312,7 @@ fn mutate(
   }
 }
 
+/// Initiates candidate selection by validating evidence and checking generation concurrency.
 fn selecting(
   bound: Bound,
   candidate: record.Candidate,
@@ -365,13 +377,13 @@ type Request {
 // A selection with no durable receipt yet. The commit closures are built from
 // plain local values rather than from `bound`, so a queued transition keeps
 // only what it reads and not the whole door.
+/// Queues and commits a candidate selection, performing live reload transitions if needed.
 fn select_pending(
   bound: Bound,
   candidate: record.Candidate,
   args: json.JsonValue,
   request: Request,
 ) -> Result(json.JsonValue, String) {
-
   // Extract caller credentials and verify current selection generation.
   let Bound(catalogue:, owner:, transitions:, clock:, session_id:, principal:) =
     bound
@@ -380,10 +392,14 @@ fn select_pending(
     store.selected(catalogue, candidate.scope, candidate.name)
     |> result.map_error(retained(owner)),
   )
+
+  // Read current generation from selection or default to 0 for unselected candidates.
   let generation = case expected {
     None -> 0
     Some(selection) -> selection.generation
   }
+
+  // Ensure the caller's expected generation matches the current stored generation.
   use Nil <- result.try(case generation == expected_generation {
     True -> Ok(Nil)
     False -> Error(store.describe(store.Stale))
@@ -415,6 +431,8 @@ fn select_pending(
         tool.optional_int(args, "deadline_ms")
         |> result.map(option.unwrap(_, 60_000)),
       )
+
+      // Validate the transition timeout deadline bounds.
       use Nil <- result.try(case waiting > 0 && waiting <= 120_000 {
         True -> Ok(Nil)
         False -> Error("Bounds: deadline_ms must be 1..120000")
@@ -436,6 +454,8 @@ fn select_pending(
           request_id,
           fn() {
             let #(at, _) = clock.read(clock)
+
+            // Confirm that admission occurs before the transition deadline expires.
             case at < expires_at {
               True -> Ok(Nil)
               False -> Error(store.Busy)
@@ -501,6 +521,7 @@ fn evidence_arg(args: json.JsonValue) -> Result(record.EvidenceId, String) {
   record.evidence_id(text)
 }
 
+/// Formats candidate selection identity and generation metadata into JSON.
 fn selection_value(selection: record.Selection) -> json.JsonValue {
   json.Object([
     #("candidate_id", json.String(record.id_string(selection.candidate_id))),
@@ -510,6 +531,7 @@ fn selection_value(selection: record.Selection) -> json.JsonValue {
   ])
 }
 
+/// Queries the progress or outcome of a requested candidate transition.
 fn status(
   catalogue: store.Store,
   owner: live.Live,
@@ -517,10 +539,14 @@ fn status(
   args: json.JsonValue,
 ) -> Result(json.JsonValue, String) {
   use request_id <- result.try(tool.optional_string(args, "request_id"))
+
+  // Check status by specific request id or inspect current committed selection.
   case request_id {
     None -> status_committed(catalogue, owner, None, args)
     Some(id) -> {
       use queued <- result.try(queue.poll(transitions, id))
+
+      // Check whether transition is still in-flight or has settled into a terminal state.
       case queued {
         Some(queue.Queued(_) as status) | Some(queue.Running(_) as status) ->
           Ok(queue_value(status))
@@ -531,9 +557,7 @@ fn status(
   }
 }
 
-// An in-flight request returns its actor receipt before borrowing SQLite.
-// A terminal failure still checks the durable receipt first: a commit whose
-// acknowledgement was lost must remain observable after later selections.
+/// Resolves terminal status by cross-referencing durable receipts with queue status records.
 fn status_terminal(
   catalogue: store.Store,
   owner: live.Live,
@@ -544,6 +568,8 @@ fn status_terminal(
     store.receipt(catalogue, id)
     |> result.map_error(retained(owner)),
   )
+
+  // Correlate committed receipt with terminal queue status.
   case committed, queued {
     Some(selection), _ -> status_value(owner, Some(selection))
     None, Some(status) -> Ok(queue_value(status))
@@ -557,6 +583,7 @@ fn status_terminal(
   }
 }
 
+/// Looks up committed selection status for a candidate within its resolved scope.
 fn status_committed(
   catalogue: store.Store,
   owner: live.Live,
@@ -579,6 +606,7 @@ fn status_committed(
   status_value(owner, selection)
 }
 
+/// Formats the active or historical selection status into a detailed JSON response.
 fn status_value(
   owner: live.Live,
   selection: option.Option(record.Selection),
@@ -614,6 +642,7 @@ fn status_value(
   )
 }
 
+/// Formats queue status variants into JSON representation.
 fn queue_value(status: queue.Status) -> json.JsonValue {
   case status {
     queue.Queued(id) ->

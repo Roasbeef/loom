@@ -224,6 +224,7 @@ pub fn login_at(
   })
 }
 
+/// Runs the loopback authorization flow and exchanges its verified callback.
 fn browser_flow(
   server: String,
   stored: Option(Binding),
@@ -262,6 +263,8 @@ fn browser_flow(
       "Loom",
       mcp_services,
     )
+
+  // A client-resolution failure closes the listener; success proceeds to callback exchange.
   case resolved_client {
     Error(reason) -> {
       listener.close(owner)
@@ -292,6 +295,7 @@ fn browser_flow(
   }
 }
 
+/// Transfers listener shutdown responsibility to the operation ledger.
 fn adopt_listener(
   ledger: weft.Ledger,
   owner: listener.Listener,
@@ -306,6 +310,7 @@ fn adopt_listener(
   }
 }
 
+/// Verifies the callback host before dispatching a browser request.
 fn handle_browser(
   req: request.Request(mist.Connection),
   messages: Subject(BrowserMessage),
@@ -314,6 +319,8 @@ fn handle_browser(
 ) -> response.Response(mist.ResponseData) {
   let authority = process.new_subject()
   process.send(messages, CheckAuthority(req.headers, authority))
+
+  // A verified authority is the prerequisite for handling any route.
   case process.receive(authority, 1000) {
     Ok(Ok(Nil)) ->
       handle_verified_browser(
@@ -326,15 +333,19 @@ fn handle_browser(
   }
 }
 
+/// Serves only the start and callback routes after host verification.
 fn handle_verified_browser(
   req: request.Request(mist.Connection),
   messages: Subject(BrowserMessage),
   attempt: Attempt,
 ) -> response.Response(mist.ResponseData) {
+  // Route only the two OAuth endpoints; reject every other path.
   case req.method, req.path {
     gleam_http.Get, "/auth/start" -> {
       let reply = process.new_subject()
       process.send(messages, Start(reply))
+
+      // The start request redirects only while the flow is alive.
       case process.receive(reply, 1000) {
         Ok(url) ->
           response.new(302)
@@ -348,6 +359,8 @@ fn handle_verified_browser(
     }
     gleam_http.Get, "/auth/callback" -> {
       let result = callback(attempt, option.unwrap(req.query, ""))
+
+      // Return only a verified callback or explicit authorization denial.
       case result {
         Ok(_) | Error("authorization_denied") -> {
           process.send(messages, Returned(result))
@@ -371,6 +384,7 @@ fn page(status: Int, text: String) -> response.Response(mist.ResponseData) {
   |> response.set_body(mist.Bytes(bytes_tree.from_string(text)))
 }
 
+/// Waits for browser messages until callback, cancellation, or deadline.
 fn await_browser(
   messages: Subject(BrowserMessage),
   auth_url: String,
@@ -384,15 +398,20 @@ fn await_browser(
     )
     |> result.replace_error("login_cancelled"),
   )
+
+  // Browser messages advance the same flow without changing its deadline.
   case message {
     CheckAuthority(headers, reply) -> {
+      // Accept exactly one Host header matching the bound loopback authority.
       let checked = case
         list.filter(headers, fn(header) { string.lowercase(header.0) == "host" })
       {
         [#(_, received)] if received == authority -> Ok(Nil)
         _ -> Error(Nil)
       }
+
       process.send(reply, checked)
+
       await_browser(messages, auth_url, authority, deadline)
     }
     Start(reply) -> {
@@ -451,6 +470,8 @@ pub fn authorize_at(
     ))
     use grant <- result.try(option.to_result(binding.grant, "not_logged_in"))
     let now = services.now
+
+    // Keep a grant with a safety margin; otherwise refresh under the lock.
     case now() < grant.expires - 60_000 {
       True -> Ok(grant.access)
       False -> renew(path, binding, services)
@@ -487,6 +508,8 @@ pub fn refresh_unauthorized_at(
       "reauthorization_required",
     ))
     let now = services.now
+
+    // Reuse a valid token only when it is not the rejected credential.
     case grant.access != rejected_token && now() < grant.expires - 60_000 {
       True -> Ok(grant.access)
       False -> renew(path, binding, services)
@@ -494,11 +517,13 @@ pub fn refresh_unauthorized_at(
   })
 }
 
+/// Refreshes and saves the grant, clearing it when reauthorization is required.
 fn renew(
   path: String,
   binding: Binding,
   services: Services,
 ) -> Result(String, String) {
+  // Invalid-client responses invalidate the grant; other failures preserve it.
   case refresh(binding, services) {
     Ok(refreshed) -> {
       use Nil <- result.try(credentials.save(path, refreshed))
@@ -545,6 +570,8 @@ pub fn refresh(
 pub fn logout_at(directory: String, server: String) -> Result(Nil, String) {
   credentials.with_lock(directory, server, fn(path) {
     use stored <- result.try(credentials.load(path))
+
+    // Logout removes only the grant and preserves client registration.
     case stored {
       None -> Ok(Nil)
       Some(binding) -> credentials.save(path, Binding(..binding, grant: None))
@@ -568,9 +595,12 @@ pub fn status_at(
 ) -> Result(Option(Grant), String) {
   credentials.with_lock(directory, server, fn(path) {
     use stored <- result.try(credentials.load(path))
+
+    // A saved binding must still match server configuration to report its grant.
     case stored {
       None -> Ok(None)
       Some(binding) ->
+        // Return a grant only when its binding still matches configuration.
         case
           mcp_oauth.check_binding_config(
             to_mcp_binding(binding),
@@ -600,6 +630,7 @@ pub fn describe_auth_error(server: String, code: String) -> String {
   mcp_oauth.describe_auth_error(server, "loomd mcp login", code)
 }
 
+/// Adapts client service callbacks to the MCP OAuth service contract.
 fn to_mcp_services(services: Services) -> mcp_oauth.Services {
   let fetch = services.fetch
   let now = services.now
@@ -621,6 +652,7 @@ fn to_mcp_services(services: Services) -> mcp_oauth.Services {
   )
 }
 
+/// Converts the client-owned binding to the MCP OAuth representation.
 fn to_mcp_binding(binding: Binding) -> mcp_oauth.Binding {
   mcp_oauth.Binding(
     server: binding.server,
@@ -639,6 +671,7 @@ fn to_mcp_binding(binding: Binding) -> mcp_oauth.Binding {
   )
 }
 
+/// Converts an MCP OAuth binding into the client-owned representation.
 fn from_mcp_binding(binding: mcp_oauth.Binding) -> Binding {
   Binding(
     server: binding.server,
@@ -657,6 +690,7 @@ fn from_mcp_binding(binding: mcp_oauth.Binding) -> Binding {
   )
 }
 
+/// Converts discovered metadata to the MCP OAuth representation.
 fn to_mcp_metadata(metadata: Metadata) -> mcp_oauth.Metadata {
   mcp_oauth.Metadata(
     resource: metadata.resource,
@@ -668,6 +702,7 @@ fn to_mcp_metadata(metadata: Metadata) -> mcp_oauth.Metadata {
   )
 }
 
+/// Converts MCP OAuth metadata to the client-owned representation.
 fn from_mcp_metadata(metadata: mcp_oauth.Metadata) -> Metadata {
   Metadata(
     resource: metadata.resource,
@@ -679,6 +714,7 @@ fn from_mcp_metadata(metadata: mcp_oauth.Metadata) -> Metadata {
   )
 }
 
+/// Converts callback verification state to the MCP OAuth representation.
 fn to_mcp_attempt(attempt: Attempt) -> mcp_oauth.Attempt {
   mcp_oauth.Attempt(
     verifier: attempt.verifier,
@@ -687,6 +723,7 @@ fn to_mcp_attempt(attempt: Attempt) -> mcp_oauth.Attempt {
   )
 }
 
+/// Converts a verified MCP callback into the client-owned callback.
 fn from_mcp_callback(cb: mcp_oauth.Callback) -> Callback {
   Callback(code: cb.code)
 }

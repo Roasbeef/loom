@@ -77,16 +77,18 @@ pub fn target(value: String) -> Result(String, Nil) {
   }
 }
 
-// The relayed page's shape: the key, the orchestrator and the identity, with
-// nothing before, between as anything else, or after.
+/// Validates relayed session target format containing key, host, and session.
 fn relayed_target(value: String) -> Result(String, Nil) {
+  // Strip relayed navigation prefix from URL path.
   use rest <- result.try(case string.split_once(value, relayed_prefix) {
     Ok(#("", rest)) -> Ok(rest)
     Ok(#(_, _)) | Error(Nil) -> Error(Nil)
   })
+
   use #(key, rest) <- result.try(string.split_once(rest, relayed_orchestrators))
   use #(name, identity) <- result.try(string.split_once(rest, relayed_sessions))
 
+  // Ensure key, orchestrator name, and session identity conform to wire specs.
   case
     hexadecimal(key, key_digits)
     && orchestrator_name(name)
@@ -97,8 +99,7 @@ fn relayed_target(value: String) -> Result(String, Nil) {
   }
 }
 
-// An orchestrator's key: a letter, then letters, digits, `_` or `-`, within the
-// limit. It holds no separator, so it cannot swallow part of the path.
+/// Checks whether an orchestrator name contains only valid identifier characters.
 fn orchestrator_name(name: String) -> Bool {
   case string.to_graphemes(name) {
     [first, ..rest] ->
@@ -121,7 +122,7 @@ fn letter(grapheme: String) -> Bool {
   )
 }
 
-// An exchange that names no session: the prefix, then the ticket.
+/// Validates a ticket-only navigation target with no session identifier.
 fn bare_target(value: String, prefix: String) -> Result(String, Nil) {
   case string.split_once(value, prefix <> ticket_marker) {
     Ok(#("", ticket)) ->
@@ -133,7 +134,7 @@ fn bare_target(value: String, prefix: String) -> Result(String, Nil) {
   }
 }
 
-// The session exchange's shape: the identity, then the ticket.
+/// Validates a session exchange target containing identity and ticket.
 fn session_target(value: String) -> Result(String, Nil) {
   case string.split_once(value, prefix) {
     Ok(#("", rest)) ->
@@ -149,8 +150,7 @@ fn session_target(value: String) -> Result(String, Nil) {
   }
 }
 
-// A canonical session identity: five hyphen-separated groups of hexadecimal
-// digits of the fixed lengths.
+/// Checks whether a session ID matches canonical 8-4-4-4-12 UUID hex structure.
 fn canonical(identity: String) -> Bool {
   let groups = string.split(identity, "-")
   list.length(groups) == list.length(identity_groups)

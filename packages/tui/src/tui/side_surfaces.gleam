@@ -90,6 +90,8 @@ pub fn refresh_notes(model: Model) -> Model {
 @internal
 pub fn select_note(model: Model, direction: Int) -> Model {
   let target = notes_target(model)
+
+  // Advance selection if active board matches target strand.
   case model.shared.note_board {
     Some(board) if board.strand == target -> {
       let index =
@@ -149,10 +151,13 @@ pub fn open_summary(model: Model) -> Model {
 /// mode shows an illustrative observation instead.
 @internal
 pub fn request_goal_status(model: Model) -> Model {
+  // Reuse existing panel or allocate a new goal inspector.
   let panel = case model.view.overlay {
     GoalInspector(state) -> state
     _ -> focused_goal_panel.new(model.shared.goal, goal_observation(model))
   }
+
+  // Check whether running under preview or live peer.
   case model.shared.peer {
     Preview ->
       Model(
@@ -188,10 +193,12 @@ pub fn request_goal_status(model: Model) -> Model {
 /// ```
 @internal
 pub fn open_proposals(model: Model) -> Model {
+  // Reuse existing panel state or allocate a fresh proposal review panel.
   let state = case model.view.overlay {
     ProposalReview(state) -> state
     _ -> proposal_panel.new()
   }
+
   Model(
     shared: model.shared
       |> shared_set.proposals_refresh(worktree_view.Requested)
@@ -218,10 +225,12 @@ pub fn open_proposals(model: Model) -> Model {
 /// ```
 @internal
 pub fn open_evolution(model: Model) -> Model {
+  // Reuse existing panel state or allocate a fresh evolution review panel.
   let state = case model.view.overlay {
     EvolutionReview(state) -> state
     _ -> evolution_panel.new()
   }
+
   Model(
     shared: model.shared
       |> shared_set.evolution_refresh(worktree_view.Requested)
@@ -247,10 +256,12 @@ pub fn open_evolution(model: Model) -> Model {
 /// ```
 @internal
 pub fn open_memory(model: Model) -> Model {
+  // Reuse existing panel state or allocate a fresh memory overview panel.
   let state = case model.view.overlay {
     MemoryOverview(state) -> state
     _ -> memory_panel.new()
   }
+
   Model(
     shared: model.shared
       |> shared_set.memory_refresh(worktree_view.Requested)
@@ -261,6 +272,7 @@ pub fn open_memory(model: Model) -> Model {
   )
 }
 
+/// Derives an observation label describing the current goal status.
 fn goal_observation(model: Model) -> String {
   case model.shared.goal, model.shared.peer {
     Some(_), Attached -> "Last server observation · refreshing"

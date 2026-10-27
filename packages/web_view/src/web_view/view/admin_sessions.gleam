@@ -132,18 +132,20 @@ pub fn view(
   )
 }
 
-// One session's row, a button that chooses it. The chosen row says so with
-// `aria-current`, which the stylesheet tints.
+/// One session's row, a button that chooses it. The chosen row says so with
+/// `aria-current`, which the stylesheet tints.
 fn pick(
   entry: Entry,
   chosen: Option(String),
   summaries: List(Summary),
   presses: Presses(message),
 ) -> Element(message) {
+  // Indicate currently active selection with aria-current attribute.
   let current = case chosen {
     Some(id) if id == entry.id -> [attribute.aria_current("true")]
     Some(_) | None -> []
   }
+
   html.li([attribute.class("admin-row")], [
     html.button(
       [
@@ -168,9 +170,9 @@ fn pick(
   ])
 }
 
-// The words after a session's path for one being handed to another
-// orchestrator, which the registry will not open until the move ends. The
-// destination is the operator's own configuration, in a text node.
+/// The words after a session's path for one being handed to another
+/// orchestrator, which the registry will not open until the move ends. The
+/// destination is the operator's own configuration, in a text node.
 fn moving_words(entry: Entry) -> String {
   case entry.residency {
     sessions.Moving(to) -> " · moving to " <> to
@@ -190,8 +192,8 @@ fn summary(entry: Entry, summaries: List(Summary)) -> String {
   }
 }
 
-// The chosen session's members and its invitation form, or the line that says
-// to choose one, or that the one chosen is gone.
+/// The chosen session's members and its invitation form, or the line that says
+/// to choose one, or that the one chosen is gone.
 fn members(
   entries: List(Entry),
   chosen: Option(String),
@@ -203,6 +205,7 @@ fn members(
   presses: Presses(message),
   busy: Busy,
 ) -> Element(message) {
+  // Render placeholder text or chosen session details based on selection state.
   case chosen, selection {
     None, _ ->
       html.p([attribute.class("home-empty")], [
@@ -237,9 +240,9 @@ fn members(
   }
 }
 
-// The invitation form and the notice beside it for a session that may be shared,
-// and the sentence that says why there is none for one that may not. Both are
-// one child of the members' block, so the claim's slot after it never moves.
+/// The invitation form and the notice beside it for a session that may be shared,
+/// and the sentence that says why there is none for one that may not. Both are
+/// one child of the members' block, so the claim's slot after it never moves.
 fn sharing(
   selection: Selection,
   label: String,
@@ -281,12 +284,12 @@ fn sharing(
 pub const private_words =
   "Private session: it shares the workspace's notes and history, so it cannot be shared. Sessions created with Shareable can be."
 
-// What a private session offers. The owner's page makes a session shareable in
-// one task, so the control is a button that asks first; while the task runs the
-// button is the sentence that says so. A session nothing runs is isolated and
-// stays saved, which the question says, and a session the daemon will not open
-// from a page, whose creation was never reconciled or whose recovery stopped
-// it, is offered nothing, since the task would refuse it.
+/// What a private session offers. The owner's page makes a session shareable in
+/// one task, so the control is a button that asks first; while the task runs the
+/// button is the sentence that says so. A session nothing runs is isolated and
+/// stays saved, which the question says, and a session the daemon will not open
+/// from a page, whose creation was never reconciled or whose recovery stopped
+/// it, is offered nothing, since the task would refuse it.
 fn make_shareable(
   session: String,
   residency: Option(sessions.Residency),
@@ -296,6 +299,8 @@ fn make_shareable(
   busy: Busy,
 ) -> Element(message) {
   let action = grants.MakeShareable(session)
+
+  // Display status or guarded action based on residency and in-flight action state.
   case waiting, residency {
     Some(held), _ if held == action ->
       html.p([attribute.class("admin-lead"), attribute.role("status")], [
@@ -331,8 +336,8 @@ fn make_shareable(
   }
 }
 
-// Whether the session the members block is about runs, from the list the page
-// holds, or nothing for a session the list no longer holds.
+/// Whether the session the members block is about runs, from the list the page
+/// holds, or nothing for a session the list no longer holds.
 fn residency_of(
   entries: List(Entry),
   session: String,
@@ -343,8 +348,8 @@ fn residency_of(
   }
 }
 
-// The session's name for the page's words: the entry's label, or the identity's
-// first characters for a session the list no longer holds.
+/// The session's name for the page's words: the entry's label, or the identity's
+/// first characters for a session the list no longer holds.
 fn named(entries: List(Entry), session: String) -> String {
   case list.find(entries, fn(entry) { entry.id == session }) {
     Ok(entry) -> sessions.label(entry)
@@ -363,7 +368,7 @@ fn named(entries: List(Entry), session: String) -> String {
   }
 }
 
-// The members' list, or the line that says there are none.
+/// The members' list, or the line that says there are none.
 fn holders(
   selection: Selection,
   label: String,
@@ -386,8 +391,8 @@ fn holders(
   }
 }
 
-// One member: name, identity and role, and the buttons that change its role in
-// this session or remove it from it.
+/// One member: name, identity and role, and the buttons that change its role in
+/// this session or remove it from it.
 fn holder(
   session: String,
   label: String,
@@ -420,7 +425,7 @@ fn holder(
   ])
 }
 
-// The button that moves a member to the other role.
+/// The button that moves a member to the other role.
 fn role_button(
   session: String,
   row: Holder,
@@ -445,7 +450,7 @@ fn role_button(
   }
 }
 
-// The line that says the page lists the first members only, or nothing.
+/// The line that says the page lists the first members only, or nothing.
 fn truncation(more: grants.More) -> Element(message) {
   case more {
     grants.Whole -> element.none()
@@ -458,24 +463,28 @@ fn truncation(more: grants.More) -> Element(message) {
   }
 }
 
-// The form that invites someone into the chosen session. The two fields are
-// uncontrolled, the one submit sends both, and the handler is the component's,
-// built for this session. While a request is out the fields and the button are
-// disabled.
+/// The form that invites someone into the chosen session. The two fields are
+/// uncontrolled, the one submit sends both, and the handler is the component's,
+/// built for this session. While a request is out the fields and the button are
+/// disabled.
 fn invitation(
   session: String,
   label: String,
   presses: Presses(message),
   busy: Busy,
 ) -> Element(message) {
+  // Disable invite form inputs when an operation is occupied.
   let locked = case busy {
     admin_buttons.Free | admin_buttons.Spent(_) -> []
     admin_buttons.Occupied -> [attribute.disabled(True)]
   }
+
+  // Add spent refusal explanation to button title when appropriate.
   let granting = case busy {
     admin_buttons.Spent(words:) -> [attribute.title(words)]
     admin_buttons.Free | admin_buttons.Occupied -> []
   }
+
   html.form(
     [
       attribute.class("admin-invite"),
@@ -538,6 +547,8 @@ fn invitation(
 pub fn fields(listed: List(#(String, String))) -> Result(#(String, Role), Nil) {
   let names = list.filter(listed, fn(field) { field.0 == "name" })
   let roles = list.filter(listed, fn(field) { field.0 == "role" })
+
+  // Extract and validate name and role from submission field list.
   case names, roles, list.length(listed) {
     [#(_, name)], [#(_, "observer")], 2 -> Ok(#(name, invites.Observer))
     [#(_, name)], [#(_, "operator")], 2 -> Ok(#(name, invites.Operator))

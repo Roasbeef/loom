@@ -91,6 +91,8 @@ pub fn view(
   workspace: Option(String),
 ) -> Element(message) {
   use <- element.memo([element.ref(#(board, window, read, workspace))])
+
+  // Render appropriate view depending on workspace read status.
   case read {
     worktrees.Seen(observed) ->
       case observed.repository {
@@ -131,20 +133,22 @@ pub fn view(
   }
 }
 
-// The pane of the agent's own edit records, with `reason` under the heading
-// when the workspace's changes were looked for and are not shown.
+/// The pane of the agent's own edit records, with `reason` under the heading
+/// when the workspace's changes were looked for and are not shown.
 fn edits(
   board: Board,
   window: Window,
   workspace: Option(String),
   reason: Option(String),
 ) -> Element(message) {
+  // Render reason note if workspace changes could not be inspected.
   let why = case reason {
     Some(words) -> [
       #("reason", html.p([attribute.class("pane-empty")], [html.text(words)])),
     ]
     None -> []
   }
+
   keyed.element(
     "section",
     [
@@ -196,9 +200,7 @@ fn edits(
   )
 }
 
-// The `from this session's edits` label, for a board whose reason does not
-// already say so: a reason is one sentence that carries the same scope, and the
-// label under it would say it twice.
+/// Returns the changes label unless an explanation reason is already present.
 fn label(reason: Option(String)) -> List(#(String, Element(message))) {
   case reason {
     Some(_) -> []
@@ -213,9 +215,7 @@ fn label(reason: Option(String)) -> List(#(String, Element(message))) {
   }
 }
 
-// The line saying which edits the tab lists, for an empty board whose reason
-// does not already say so: a reason is one sentence that carries the same
-// scope, so the two are never drawn together.
+/// Returns the tool scope description note unless a reason note is present.
 fn scope(reason: Option(String)) -> List(#(String, Element(message))) {
   case reason {
     Some(_) -> []
@@ -233,8 +233,7 @@ fn scope(reason: Option(String)) -> List(#(String, Element(message))) {
   }
 }
 
-// The line an empty board draws, which says whether the whole session was
-// searched.
+/// Renders empty state message based on whether full transcript window is loaded.
 fn empty_line(window: Window) -> Element(message) {
   html.p([attribute.class("pane-empty")], [
     case window {
@@ -258,8 +257,8 @@ fn file_key(file: File) -> String {
   "file:" <> file.path
 }
 
-// One file: its path and counts on the line, its rows under it. `opened`
-// is the details' own attributes, which only the first file's `open` fills.
+/// One file: its path and counts on the line, its rows under it. `opened`
+/// is the details' own attributes, which only the first file's `open` fills.
 fn file(
   file: File,
   workspace: Option(String),
@@ -281,16 +280,20 @@ fn file(
   ])
 }
 
-// A path as the page shows it: relative to the workspace when it lies beneath
-// it, and otherwise as the edit named it. Only the display changes; the file's
-// key stays the whole path, so two files never share one.
+/// A path as the page shows it: relative to the workspace when it lies beneath
+/// it, and otherwise as the edit named it. Only the display changes; the file's
+/// key stays the whole path, so two files never share one.
 fn relative(path: String, workspace: Option(String)) -> String {
+  // Calculate relative path if path resides beneath workspace root.
   case workspace {
     Some(root) -> {
+      // Ensure trailing slash on workspace root directory path.
       let prefix = case string.ends_with(root, "/") {
         True -> root
         False -> root <> "/"
       }
+
+      // Strip matching workspace prefix if path starts with it.
       case string.starts_with(path, prefix) {
         True -> string.drop_start(path, string.length(prefix))
         False -> path
@@ -300,7 +303,7 @@ fn relative(path: String, workspace: Option(String)) -> String {
   }
 }
 
-// The line that says files were left out of the board, or nothing.
+/// The line that says files were left out of the board, or nothing.
 fn omitted_files(board: Board) -> Element(message) {
   case board.file_count - list.length(board.files) {
     0 -> element.none()

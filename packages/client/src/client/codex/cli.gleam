@@ -39,6 +39,8 @@ pub fn main(arguments: List(String)) -> Nil {
     use request <- result.try(parse(arguments))
     execute(request, io.println)
   }
+
+  // Match execution outcome and exit with status if failed.
   case outcome {
     Ok(Nil) -> Nil
     Error(reason) -> {
@@ -67,11 +69,13 @@ pub fn parse(arguments: List(String)) -> Result(Request, String) {
   }
 }
 
+/// Parses CLI flags into a Request record.
 fn parse_flags(
   flags: List(String),
   command: Command,
   profile: Option(String),
 ) -> Result(Request, String) {
+  // Process flags list recursively.
   case flags {
     [] -> {
       let profile = option.unwrap(profile, "default")
@@ -90,6 +94,7 @@ fn parse_flags(
   }
 }
 
+/// Prepares and executes the requested control command.
 fn execute(request: Request, emit: fn(String) -> Nil) -> Result(Nil, String) {
   let events = process.new_subject()
   use prepared <- result.try(transport.command(
@@ -118,6 +123,7 @@ fn execute(request: Request, emit: fn(String) -> Nil) -> Result(Nil, String) {
     Error(_) -> http.cancel(running)
     Ok(Nil) -> Nil
   }
+
   process.demonitor_process(monitor)
   answer
 }
@@ -135,15 +141,19 @@ const control_wait_ms = 30_000
 
 const drain_wait_ms = 30_000
 
+/// Awaits control events until a terminal state or timeout.
 fn await_event(
   selector,
   command: Command,
   emit: fn(String) -> Nil,
 ) -> Result(Nil, String) {
+  // Determine timeout window according to command type.
   let within = case command {
     control.LoginBrowser -> login_wait_ms
     control.Status | control.Logout | control.Models -> control_wait_ms
   }
+
+  // Receive event from selector within deadline.
   case process.selector_receive(selector, within) {
     Error(Nil) -> Error("subscription command timed out")
     Ok(OwnerGone(_)) ->
@@ -160,14 +170,17 @@ fn await_event(
   }
 }
 
-// A control result is complete only after the witnessed owner exits normally.
-// Its surviving ledger waits for credential work and every adopted HTTP or
-// listener owner to retire, even when the operation worker disappears.
+/// Waits for the request owner to exit after receiving a terminal event.
+///
+/// A control result is complete only after the witnessed owner exits normally.
+/// Its surviving ledger waits for credential work and every adopted HTTP or
+/// listener owner to retire, even when the operation worker disappears.
 fn await_owner(
   selector,
   terminal: Presentation,
   emit: fn(String) -> Nil,
 ) -> Result(Nil, String) {
+  // Await normal termination from monitored owner.
   case process.selector_receive(selector, drain_wait_ms) {
     Error(Nil) -> Error("subscription command timed out")
     Ok(OwnerGone(reason)) -> {
@@ -203,7 +216,9 @@ pub fn drained_result(
   }
 }
 
+/// Emits output lines sequentially.
 fn print_lines(lines: List(String), emit: fn(String) -> Nil) -> Nil {
+  // Recursively print all lines in the list.
   case lines {
     [] -> Nil
     [line, ..rest] -> {
@@ -253,10 +268,13 @@ pub fn presentation(event: ControlEvent) -> Presentation {
   }
 }
 
+/// Formats a login completion presentation with the granted permission.
 fn signed_in(permission: control.Permission) -> Presentation {
+  // Select label string for granted permission.
   let label = case permission {
     control.PlanEnabled -> "plan_enabled"
     control.IdentityOnly -> "identity_only"
   }
+
   Complete(["Signed in with ChatGPT (" <> label <> ")."])
 }

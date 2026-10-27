@@ -7,7 +7,6 @@ import client/evolution/record
 import client/evolution/record_test
 import client/evolution/retirement
 import client/evolution/rollout
-import client/evolution/rollout_host
 import client/evolution/store
 import client/evolution/trace
 import core/clock
@@ -20,14 +19,14 @@ import core/tx
 import core/usage_evidence
 import gleam/bit_array
 import gleam/erlang/process
+import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import gleeunit/should
 import provider/model
-import provider/pricing
-import provider/profile
+import provider/profile.{type Profile}
 import session/session
 import storage/storage
 
@@ -78,7 +77,11 @@ fn task() -> rollout.Task {
 }
 
 fn limits() -> rollout.Limits {
-  rollout.Limits(2, 8, 10_000, 1.0, 10_000, 10_000)
+  rollout.Limits(2, 8, 10_000, 1.0, 10_000, 10_000, 1)
+}
+
+fn graded(reward: Float) -> rollout.Grade {
+  rollout.Grade(reward, [], "", rollout.ExpectedFiles)
 }
 
 fn scripted(
@@ -113,7 +116,7 @@ fn scripted(
           },
           score: fn(criterion) {
             assert criterion == "fixture-test-v1"
-            Ok(trace.Succeeded)
+            Ok(graded(1.0))
           },
           close: retirement.repeat(fn() {
             process.send(closed, request.task.id)
@@ -223,7 +226,7 @@ pub fn budget_exhaustion_retains_partial_trials_and_teardown_test() {
       target(),
       "anthropic-messages",
       [task()],
-      rollout.Limits(..limits(), trials: 1),
+      rollout.Limits(..limits(), turns: 1),
       native,
     )
     as "partial evidence is durable"
@@ -443,7 +446,7 @@ pub fn independent_score_runs_only_after_witnessed_native_retirement_test() {
             score: fn(_) {
               process.receive(retired, 0) |> should.equal(Ok(Nil))
               process.send(scored, Nil)
-              Ok(trace.Succeeded)
+              Ok(graded(1.0))
             },
             cleanup: fn() {
               process.receive(scored, 0) |> should.equal(Ok(Nil))
@@ -568,64 +571,594 @@ pub fn unknown_attempt_spend_is_not_refunded_before_the_next_trial_arm_test() {
   )
 }
 
-pub fn unknown_native_attempts_retain_reservation_despite_foreign_or_synthetic_usage_test() {
-  let #(id, _) = ids.mint_entry(ids.generator(clock.fixed(1), seed: 123))
-  let answer =
-    message.AssistantMessage(
-      content: [message.AssistantText("settled", None)],
-      api: "anthropic-messages",
-      provider: "p",
-      model: "m",
-      response_model: None,
-      response_id: None,
-      diagnostics: None,
-      usage: message.Usage(
-        ..storage.empty_usage(),
-        input: 5,
-        output: 2,
-        total_tokens: 7,
-      ),
-      stop_reason: message.Stop,
-      deferred: None,
-      error_message: None,
-      raw_stop_reason: None,
-      end_turn: Some(True),
-      timestamp: 1,
-    )
-  let entries = [
-    entry.MessageEntry(id, None, 0, 0, answer, False),
-    entry.MessageEntry(
-      id,
-      None,
-      0,
-      0,
-      message.AssistantMessage(
-        ..answer,
-        api: "unknown",
-        usage: storage.empty_usage(),
-        stop_reason: message.Errored,
-      ),
-      False,
-    ),
-    entry.MessageEntry(
-      id,
-      None,
-      0,
-      0,
-      message.AssistantMessage(..answer, provider: "foreign"),
-      False,
-    ),
-  ]
-  let debit =
-    rollout_host.unreported_debit(
-      3,
+// The paired fold's one generalisation: K samples per task per arm through
+// the same budget. Both arms of every sample must appear, in budget order, and
+// every debit must scale with the sample count rather than with the task count.
+pub fn samples_double_the_trial_reports_and_the_budget_debits_test() {
+  let once = sampled(1)
+  let twice = sampled(2)
+  assert list.length(once.reports) == 2 && list.length(twice.reports) == 4
+    as "each sample adds one base and one candidate report"
+  assert twice.trials == 2 * once.trials
+    && twice.turns == 2 * once.turns
+    && twice.tokens == 2 * once.tokens
+    as "the budget debits double with the samples"
+  assert once.openings == [None, Some("a")]
+    as "one sample pairs base then candidate"
+  assert twice.openings == [None, Some("a"), None, Some("a")]
+    as "each sample pairs base then candidate in budget order"
+  assert list.map(once.reports, sample_of) == [1, 1]
+    && list.map(twice.reports, sample_of) == [1, 1, 2, 2]
+    as "every report names its sample index"
+}
+
+type Sampled {
+  Sampled(
+    reports: List(json.JsonValue),
+    trials: Int,
+    turns: Int,
+    tokens: Int,
+    openings: List(Option(String)),
+  )
+}
+
+fn sampled(samples: Int) -> Sampled {
+  let catalogue = opened()
+  let proposed = candidate("Sample twice.")
+  let assert Ok(_) = store.propose(catalogue, proposed) as "candidate retained"
+  let openings = process.new_subject()
+  let closings = process.new_subject()
+  let base = scripted(openings, closings)
+  let native =
+    rollout.Callbacks(..base, open: fn(request) {
+      let assert Ok(trial) = base.open(request) as "scripted trial opens"
+      Ok(
+        rollout.Trial(..trial, step: fn(allowance) {
+          trial.step(allowance)
+          |> result.map(fn(step) {
+            rollout.Step(
+              ..step,
+              usage: message.Usage(..storage.empty_usage(), input: 10),
+            )
+          })
+        }),
+      )
+    })
+  let assert Ok(evidence) =
+    rollout.evaluate(
+      catalogue,
+      proposed.id,
       target(),
       "anthropic-messages",
-      entries,
-      pricing.Pricing(1.0, 1.0, 1.0, 1.0),
+      [task()],
+      rollout.Limits(..limits(), trials: 4, samples:),
+      native,
     )
-  assert debit.tokens == 6200
-    && debit.dollars >=. 0.006
-    && debit.dollars <=. 0.0063
-    as "only exact complete native usage releases an uncertain attempt reservation"
+    as "sampled evidence is durable"
+  let assert Ok(observation) = json.parse(evidence.observation)
+    as "observation parses"
+  let assert json.Array(reports) = member(observation, "trials")
+    as "reports are an array"
+  let used = member(observation, "used")
+  let assert json.Int(trials) = member(used, "trials") as "trials counted"
+  let assert json.Int(turns) = member(used, "turns") as "turns counted"
+  let assert json.Int(tokens) = member(used, "tokens") as "tokens counted"
+  assert member(member(observation, "limits"), "samples") == json.Int(samples)
+    as "the observation records the sample count it ran under"
+  let opened_arms =
+    list.map(drain(openings, []), fn(request) {
+      option.map(request.profile, fn(p) { profile.fields(p).0 })
+    })
+    |> list.map(option.map(_, fn(_) { "a" }))
+  Sampled(reports:, trials:, turns:, tokens:, openings: opened_arms)
+}
+
+fn drain(subject: process.Subject(a), collected: List(a)) -> List(a) {
+  case process.receive(subject, 0) {
+    Ok(item) -> drain(subject, [item, ..collected])
+    Error(Nil) -> list.reverse(collected)
+  }
+}
+
+fn sample_of(report: json.JsonValue) -> Int {
+  let assert json.Int(sample) = member(report, "sample") as "sample is an int"
+  sample
+}
+
+fn member(value: json.JsonValue, name: String) -> json.JsonValue {
+  let assert json.Object(fields) = value as "observation member is an object"
+  let assert Ok(found) = list.key_find(fields, name) as name
+  found
+}
+
+// One task cannot decide under the paired rule whichever way its grade
+// falls: the statistic needs at least two tasks to see any spread, so the
+// verdict says it is underpowered. A grade the verifier could not have
+// produced is a defect that stops the comparison before the rule is asked.
+pub fn a_single_task_is_underpowered_and_an_out_of_range_grade_is_a_defect_test() {
+  let assert record.Inconclusive(reason) = graded_verdict(0.0).verdict
+    as "one failing candidate task cannot decide"
+  assert string.starts_with(reason, "underpowered: fewer than two tasks")
+    as reason
+  let assert record.Inconclusive(reason) = graded_verdict(1.0).verdict
+    as "one passing candidate task cannot decide"
+  assert string.starts_with(reason, "underpowered: fewer than two tasks")
+    as reason
+  let assert record.Inconclusive(reason) = graded_verdict(1.5).verdict
+    as "an out-of-range reward is a verifier defect"
+  assert string.contains(reason, "out of range")
+  let assert record.Inconclusive(reason) = graded_verdict(-0.5).verdict
+    as "a negative reward is a verifier defect"
+  assert string.contains(reason, "out of range")
+}
+
+// Every grade member is bounded before it is retained, and a defect ends the
+// comparison Inconclusive with its own reason while the partial observation
+// still commits: a duplicate score name would otherwise corrupt the canonical
+// JSON after the whole budget was spent.
+pub fn grade_members_outside_their_bounds_stop_the_comparison_with_a_named_reason_test() {
+  let program = rollout.ProgramRun(["bash", "verify.sh"], 0, 10)
+  let cases = [
+    #(
+      rollout.Grade(1.0, [#("tests", 1.0), #("tests", 0.5)], "", program),
+      "names repeat",
+    ),
+    #(rollout.Grade(1.0, [#("", 1.0)], "", program), "empty or over 32 bytes"),
+    #(
+      rollout.Grade(1.0, [#(string.repeat("n", 33), 1.0)], "", program),
+      "empty or over 32 bytes",
+    ),
+    #(
+      rollout.Grade(
+        1.0,
+        list.index_map(list.repeat(1.0, 9), fn(value, index) {
+          #("s" <> int.to_string(index), value)
+        }),
+        "",
+        program,
+      ),
+      "more than 8 scores",
+    ),
+    #(
+      rollout.Grade(1.0, [#("tests", 1.5)], "", program),
+      "score is out of range",
+    ),
+    #(
+      rollout.Grade(1.0, [], "", rollout.ProgramRun(list.repeat("x", 9), 0, 10)),
+      "more than 8 entries",
+    ),
+    #(
+      rollout.Grade(
+        1.0,
+        [],
+        "",
+        rollout.ProgramRun([string.repeat("x", 513)], 0, 10),
+      ),
+      "exceeds 512 bytes",
+    ),
+  ]
+  list.each(cases, fn(case_) {
+    let evidence = graded_with(case_.0)
+    let assert record.Inconclusive(reason) = evidence.verdict
+      as "a defective grade cannot decide"
+    assert string.contains(reason, case_.1) as reason
+    let assert Ok(observation) = json.parse(evidence.observation)
+      as "the partial observation still commits"
+    assert member(observation, "partial_reason") == json.String(reason)
+  })
+
+  // A grade at every bound is admitted and retained whole.
+  let full =
+    rollout.Grade(
+      1.0,
+      list.index_map(list.repeat(1.0, 8), fn(value, index) {
+        #(string.repeat("n", 31) <> int.to_string(index), value)
+      }),
+      "",
+      rollout.ProgramRun(list.repeat(string.repeat("x", 64), 8), 0, 10),
+    )
+  let evidence = graded_with(full)
+  let assert Ok(observation) = json.parse(evidence.observation)
+    as "observation parses"
+  assert member(observation, "partial_reason") == json.Null
+    as "a grade at its bounds is admitted and the fold runs to its end"
+}
+
+// Side information is kept in bytes, so a multibyte text cannot carry four
+// kilobytes under a grapheme count, and it is cut between graphemes.
+pub fn side_info_is_clipped_to_a_kibibyte_of_whole_graphemes_test() {
+  let text = string.repeat("é", 2000)
+  let evidence =
+    graded_with(rollout.Grade(0.0, [], text, rollout.ExpectedFiles))
+  let assert Ok(observation) = json.parse(evidence.observation)
+    as "observation parses"
+  let assert json.Array([_, changed]) = member(observation, "trials")
+    as "one pair"
+  let assert json.String(kept) = member(member(changed, "grade"), "side_info")
+    as "side_info is text"
+  let size = bit_array.byte_size(bit_array.from_string(kept))
+  assert size <= 1024 && size >= 1023 as "clipped to the byte bound"
+  assert kept == string.repeat("é", 512) as "cut between whole graphemes"
+}
+
+// Live mode with two samples: the plan is one task times two samples per
+// arm, every report pairs by its sample, and one task is still one cluster.
+// Neither two passing samples nor a candidate that fails one of them can
+// decide, and in particular the failed sample is no longer a `Failed` on its
+// own; a plan that paired incompletely would say so instead of underpowered.
+pub fn live_samples_pair_per_sample_and_one_task_never_decides_test() {
+  let assert record.Inconclusive(reason) = live_sampled([1.0, 1.0]).verdict
+    as "two passing samples of one task cannot decide"
+  assert string.starts_with(reason, "underpowered: fewer than two tasks")
+    as reason
+  let assert record.Inconclusive(reason) = live_sampled([1.0, 0.0]).verdict
+    as "one failing candidate sample no longer fails the comparison"
+  assert string.starts_with(reason, "underpowered: fewer than two tasks")
+    as reason
+}
+
+// Identical arms: every task passes on both sides, so there is no spread
+// between tasks and the rule cannot see any effect. The verdict is
+// Inconclusive as underpowered, never Passed and never Failed.
+pub fn aa_comparison_is_inconclusive_test() {
+  let evidence = live_over(tasks(3), fn(_, _) { 1.0 }, 1)
+  let assert record.Inconclusive(reason) = evidence.verdict
+    as "identical arms cannot demonstrate an improvement"
+  assert string.starts_with(reason, "underpowered: no spread between tasks")
+    as reason
+  let assert Ok(observation) = json.parse(evidence.observation)
+    as "observation parses"
+  assert member(observation, "partial_reason") == json.Null
+    as "the fold ran to its end; the rule, not a stop, was inconclusive"
+}
+
+// The base passes every task and the candidate fails all but one: nine
+// tasks move against it and one ties, which is the spread a clustered
+// interval needs. At ten tasks the governed path is powered to call that
+// a demonstrated harm, and a demonstrated harm is Failed.
+pub fn planted_harm_is_failed_test() {
+  let evidence =
+    live_over(tasks(10), fn(task, arm) { harm_reward(task, arm) }, 1)
+  assert evidence.verdict == record.Failed as "a demonstrated harm is refused"
+}
+
+// The mirror of the planted harm: the base fails nine tasks and ties one,
+// and the candidate passes them all. A demonstrated improvement is the one
+// verdict that reads Passed.
+pub fn baseline_fails_candidate_passes_is_passed_test() {
+  let evidence =
+    live_over(tasks(10), fn(task, arm) { improvement_reward(task, arm) }, 1)
+  assert evidence.verdict == record.Passed
+    as "a demonstrated improvement passes"
+}
+
+// The old rule failed a candidate for any one failed trial and ignored the
+// base. Four tasks where the base fails three and the candidate fails one
+// favour the candidate three tasks to one, which four tasks cannot make
+// significant: the single candidate failure decides nothing by itself.
+pub fn single_candidate_failure_no_longer_decides_test() {
+  let evidence =
+    live_over(
+      tasks(4),
+      fn(task, arm) {
+        case task, arm {
+          "task-4", Some(_) -> 0.0
+          "task-4", None -> 1.0
+          _, Some(_) -> 1.0
+          _, None -> 0.0
+        }
+      },
+      1,
+    )
+  let assert record.Inconclusive(reason) = evidence.verdict
+    as "one candidate failure against three base failures cannot decide"
+  assert string.starts_with(reason, "underpowered:") as reason
+  assert string.contains(reason, "tasks would have sufficed") as reason
+}
+
+// The plan, not the reports, is the denominator: rows for two of three
+// planned tasks are an incomplete comparison naming the missing row, never a
+// smaller comparison over the rows that exist.
+pub fn expected_rows_come_from_the_plan_test() {
+  let graded = fn(task, arm, reward) {
+    rollout.Row(task, 1, arm, Some(graded(reward)))
+  }
+  let rows = [
+    graded("a", rollout.Base, 0.0),
+    graded("a", rollout.Candidate, 1.0),
+    graded("b", rollout.Base, 0.0),
+    graded("b", rollout.Candidate, 1.0),
+  ]
+  assert rollout.decide(rows, ["a", "b", "c"], 1)
+    == record.Inconclusive(
+      "paired task set is incomplete: plan row (c, 0) has no trial on arm base",
+    )
+  assert rollout.decide(rows, ["a", "b"], 2)
+    == record.Inconclusive(
+      "paired task set is incomplete: plan row (a, 1) has no trial on arm base",
+    )
+
+  // A row the fold never graded is not evidence either way: it is reported
+  // missing rather than counted or excluded.
+  let ungraded = [rollout.Row("b", 1, rollout.Candidate, None), ..rows]
+  assert rollout.decide(list.take(ungraded, 4), ["a", "b"], 1)
+    == record.Inconclusive(
+      "paired task set is incomplete: plan row (b, 0) has no trial on arm candidate",
+    )
+}
+
+// A tie the design could have broken is Failed, not Passed: a hundred tasks
+// at three samples, the candidate dropping one sample on two of them, has a
+// minimum detectable effect under the ten-point target and no significant
+// direction. The governed door caps a comparison at ten tasks, so this
+// shape cannot reach `evaluate`; the rows are built directly for `decide`.
+pub fn powered_tie_is_failed_test() {
+  let names =
+    list.index_map(list.repeat(Nil, 100), fn(_, index) {
+      "task-" <> string.pad_start(int.to_string(index + 1), 3, "0")
+    })
+  let rows =
+    list.flat_map(names, fn(task) {
+      list.flat_map([1, 2, 3], fn(sample) {
+        let dropped =
+          { task == "task-001" || task == "task-002" } && sample == 1
+        [
+          rollout.Row(task, sample, rollout.Base, Some(graded(1.0))),
+          rollout.Row(
+            task,
+            sample,
+            rollout.Candidate,
+            Some(
+              graded(case dropped {
+                True -> 0.0
+                False -> 1.0
+              }),
+            ),
+          ),
+        ]
+      })
+    })
+  assert rollout.decide(rows, names, 3) == record.Failed
+    as "a powered tie earns no selection"
+}
+
+// The smallest plan the prompt acceptance fixture could run to a Passed:
+// seven tasks at one sample, the base failing six and tying one, the
+// candidate passing all. Six tasks in one direction is the smallest sign
+// test under alpha (p = 2 / 64), and the tie is the spread the interval
+// needs. The rows here are exactly the reports such a run retains, so the
+// fixture's arithmetic is proven without its jail.
+pub fn prompt_acceptance_plan_of_seven_tasks_is_a_demonstrated_improvement_test() {
+  assert rollout.decide(acceptance_rows(7, 1), acceptance_names(7), 1)
+    == record.Passed
+    as "six wins and one tie over seven tasks is Improved"
+}
+
+// Why the door's turn ceiling had to move (protocol-change/100): under its
+// old twenty turns a two-turn trial admitted at most five tasks, and no
+// five-task shape is powered. Five wins have no spread, and four wins with a
+// tie reach only p = 0.125, so a Passed was unreachable through the door.
+pub fn five_tasks_cannot_be_a_demonstrated_improvement_test() {
+  let assert record.Inconclusive(reason) =
+    rollout.decide(acceptance_rows(5, 0), acceptance_names(5), 1)
+    as "five wins with no tie have no spread"
+  assert string.starts_with(reason, "underpowered: no spread") as reason
+  let assert record.Inconclusive(reason) =
+    rollout.decide(acceptance_rows(5, 1), acceptance_names(5), 1)
+    as "four wins and a tie are not significant"
+  assert string.starts_with(reason, "underpowered: minimum detectable")
+    as reason
+}
+
+fn acceptance_names(count: Int) -> List(String) {
+  list.index_map(list.repeat(Nil, count), fn(_, index) {
+    "independent-file-" <> int.to_string(index + 1)
+  })
+}
+
+// The base fails every task but the last `ties`, which it passes as the
+// candidate does; the candidate passes every task.
+fn acceptance_rows(count: Int, ties: Int) -> List(rollout.Row) {
+  list.index_map(acceptance_names(count), fn(task, index) {
+    let base_reward = case index >= count - ties {
+      True -> 1.0
+      False -> 0.0
+    }
+    [
+      rollout.Row(task, 1, rollout.Base, Some(graded(base_reward))),
+      rollout.Row(task, 1, rollout.Candidate, Some(graded(1.0))),
+    ]
+  })
+  |> list.flatten
+}
+
+fn tasks(count: Int) -> List(rollout.Task) {
+  list.index_map(list.repeat(Nil, count), fn(_, index) {
+    rollout.Task(
+      ..task(),
+      id: "task-" <> int.to_string(index + 1),
+      fixture: "fixture-" <> int.to_string(index + 1),
+    )
+  })
+}
+
+// Nine tasks the candidate loses and one tie: the base passes everything.
+fn harm_reward(task: String, arm: Option(Profile)) -> Float {
+  case task, arm {
+    _, None -> 1.0
+    "task-10", Some(_) -> 1.0
+    _, Some(_) -> 0.0
+  }
+}
+
+// Nine tasks the candidate wins and one tie: the candidate passes everything.
+fn improvement_reward(task: String, arm: Option(Profile)) -> Float {
+  case task, arm {
+    _, Some(_) -> 1.0
+    "task-10", None -> 1.0
+    _, None -> 0.0
+  }
+}
+
+// Runs the governed fold in live mode over `tasks`, grading every
+// (task, arm) with `reward`, under a budget wide enough for twenty trials.
+fn live_over(
+  tasks: List(rollout.Task),
+  reward: fn(String, Option(Profile)) -> Float,
+  samples: Int,
+) -> record.Evidence {
+  let catalogue = opened()
+  let proposed = candidate("Compare over many tasks.")
+  let assert Ok(_) = store.propose(catalogue, proposed) as "candidate retained"
+  let openings = process.new_subject()
+  let closings = process.new_subject()
+  let base = scripted(openings, closings)
+  let native =
+    rollout.Callbacks(..base, mode: rollout.LiveProduction, open: fn(request) {
+      let assert Ok(trial) = base.open(request) as "scripted trial opens"
+      Ok(
+        rollout.Trial(..trial, score: fn(_) {
+          Ok(graded(reward(request.task.id, request.profile)))
+        }),
+      )
+    })
+  let assert Ok(evidence) =
+    rollout.evaluate(
+      catalogue,
+      proposed.id,
+      target(),
+      "anthropic-messages",
+      tasks,
+      rollout.Limits(..limits(), trials: 20, turns: 100, samples:),
+      native,
+    )
+    as "live evidence over many tasks is durable"
+  evidence
+}
+
+// A sample count the trial budget cannot pair is refused before any trial
+// opens, naming the product, instead of spending the budget on a comparison
+// that can only end Inconclusive.
+pub fn a_sample_count_the_trial_budget_cannot_pair_is_refused_before_any_trial_opens_test() {
+  let catalogue = opened()
+  let proposed = candidate("Pair me.")
+  let assert Ok(_) = store.propose(catalogue, proposed) as "candidate retained"
+  let openings = process.new_subject()
+  let closings = process.new_subject()
+  let assert Error(store.Bounds(reason)) =
+    rollout.evaluate(
+      catalogue,
+      proposed.id,
+      target(),
+      "anthropic-messages",
+      [task()],
+      rollout.Limits(..limits(), trials: 3, samples: 2),
+      scripted(openings, closings),
+    )
+    as "an unpairable sample count is refused"
+  assert string.contains(reason, "needs 4 trials")
+    && string.contains(reason, "admits 3")
+    as reason
+  assert process.receive(openings, 0) == Error(Nil) as "no trial opened"
+}
+
+fn live_sampled(candidate_rewards: List(Float)) -> record.Evidence {
+  let catalogue = opened()
+  let proposed = candidate("Sample live.")
+  let assert Ok(_) = store.propose(catalogue, proposed) as "candidate retained"
+  let openings = process.new_subject()
+  let closings = process.new_subject()
+  let rewards = process.new_subject()
+  list.each(candidate_rewards, process.send(rewards, _))
+  let base = scripted(openings, closings)
+  let native =
+    rollout.Callbacks(..base, mode: rollout.LiveProduction, open: fn(request) {
+      let assert Ok(trial) = base.open(request) as "scripted trial opens"
+      Ok(
+        rollout.Trial(..trial, score: fn(_) {
+          case request.profile {
+            None -> Ok(graded(1.0))
+            Some(_) -> {
+              let assert Ok(reward) = process.receive(rewards, 0)
+                as "one candidate reward per sample"
+              Ok(graded(reward))
+            }
+          }
+        }),
+      )
+    })
+  let assert Ok(evidence) =
+    rollout.evaluate(
+      catalogue,
+      proposed.id,
+      target(),
+      "anthropic-messages",
+      [task()],
+      rollout.Limits(..limits(), trials: 4, samples: 2),
+      native,
+    )
+    as "sampled live evidence is durable"
+  evidence
+}
+
+// Every retained report carries the grade and the sample beside the projected
+// outcome word, and the projection agrees with the grade.
+pub fn reports_carry_grade_and_sample_beside_the_outcome_projection_test() {
+  let evidence = graded_verdict(0.0)
+  let assert Ok(observation) = json.parse(evidence.observation)
+    as "observation parses"
+  let assert json.Array([base, changed]) = member(observation, "trials")
+    as "one task yields one pair"
+  assert member(base, "outcome") == json.String("succeeded")
+    && member(changed, "outcome") == json.String("failed")
+  assert member(member(changed, "grade"), "reward") == json.Float(0.0)
+    && member(member(base, "grade"), "reward") == json.Float(1.0)
+  assert member(member(changed, "grade"), "side_info")
+    == json.String("expected file differs: out/result.txt")
+  assert member(member(member(changed, "grade"), "verifier"), "kind")
+    == json.String("expected-files")
+  assert member(base, "sample") == json.Int(1)
+    && member(changed, "sample") == json.Int(1)
+}
+
+fn graded_verdict(candidate_reward: Float) -> record.Evidence {
+  graded_with(rollout.Grade(
+    candidate_reward,
+    [],
+    "expected file differs: out/result.txt",
+    rollout.ExpectedFiles,
+  ))
+}
+
+fn graded_with(candidate_grade: rollout.Grade) -> record.Evidence {
+  let catalogue = opened()
+  let proposed = candidate("Grade me.")
+  let assert Ok(_) = store.propose(catalogue, proposed) as "candidate retained"
+  let openings = process.new_subject()
+  let closings = process.new_subject()
+  let base = scripted(openings, closings)
+  let native =
+    rollout.Callbacks(..base, mode: rollout.LiveProduction, open: fn(request) {
+      let assert Ok(trial) = base.open(request) as "scripted trial opens"
+      Ok(
+        rollout.Trial(..trial, score: fn(_) {
+          case request.profile {
+            None -> Ok(graded(1.0))
+            Some(_) -> Ok(candidate_grade)
+          }
+        }),
+      )
+    })
+  let assert Ok(evidence) =
+    rollout.evaluate(
+      catalogue,
+      proposed.id,
+      target(),
+      "anthropic-messages",
+      [task()],
+      limits(),
+      native,
+    )
+    as "graded evidence is durable"
+  evidence
 }

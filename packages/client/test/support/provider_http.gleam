@@ -336,7 +336,10 @@ pub fn with_watched_server(
 }
 
 /// Runs a finite lifecycle script that includes several real jailed builds.
-/// The longer budget is fixed and only this explicit entry permits 32 steps.
+/// The longer budget is fixed and only this explicit entry permits 128 steps.
+/// The prompt acceptance needs about a hundred: a comparison powered enough
+/// for the paired verdict to call an improvement is seven tasks, two arms and
+/// three provider turns a trial, run once per authored version.
 ///
 /// ## Examples
 ///
@@ -346,9 +349,12 @@ pub fn with_extended_script(
   script: List(Exchange),
   run: fn(String) -> a,
 ) -> #(a, Result(List(ObservedRequest), String)) {
-  assert list.length(script) <= 32
-    as "the lifecycle script has at most 32 steps"
-  with_server_for(script, OnlySuccessful, 600_000, run)
+  assert list.length(script) <= 128
+    as "the lifecycle script has at most 128 steps"
+
+  // `watched` directly, as the upgrade script does: `with_server_for` holds
+  // every other caller to 64 steps, and this entry's bound is its own.
+  watched(script, OnlySuccessful, 600_000, fn(url, _watch) { run(url) })
 }
 
 /// Runs the bounded live-upgrade matrix with separately compiled refusals.
@@ -781,12 +787,14 @@ fn bounded(value: String) -> Bool {
 // A tool result is what the product produced, not what the script wrote, so it
 // gets room for a bounded model-visible document. The evolution trace brief is
 // one: eight excerpts, each carrying its usage and cost evidence, are about
-// 4.3 KiB. The 8192 below is a budget sized to the acceptance script's trace
-// brief, not the product ceiling: the product retains up to 32 KiB of text in
-// one brief (`model_door.gleam` and `trace.gleam` bound it). The fixture's
-// ceiling stays finite so a runaway result still fails the run.
+// 4.3 KiB. A governed comparison is the other, and the larger: the powered
+// prompt acceptance reports fourteen trials, each with its grade and usage,
+// which outgrew the 8 KiB this once was. The bound is now the product's own
+// ceiling for one model-visible brief, 32 KiB (`model_door.gleam` and
+// `trace.gleam` bound it), so the fixture refuses only what the product could
+// not have produced. It stays finite so a runaway result still fails the run.
 fn bounded_result(value: String) -> Bool {
-  string.byte_size(value) <= 8192
+  string.byte_size(value) <= 32_768
 }
 
 fn is_object(value: json.JsonValue) -> Bool {

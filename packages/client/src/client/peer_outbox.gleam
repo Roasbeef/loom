@@ -278,6 +278,8 @@ pub fn claim(
   source_session: String,
 ) -> Claim {
   let wanted_request = request(source_session, wanted)
+
+  // The durable claim result determines whether this outbox row is owned for delivery.
   case existing {
     None -> Insert
     Some(Row(state: Refused(..), ..)) -> Insert
@@ -319,6 +321,8 @@ pub fn room(rows: List(#(String, Row)), strand: String) -> Room {
       let finished =
         list.filter(mine, fn(pair) { !is_pending(pair.1) })
         |> list.sort(fn(a, b) { oldest_first(a, b) })
+
+      // The encoded row size determines whether it fits in the bounded outbox.
       case finished {
         [#(oldest, _), ..] -> Evict(oldest)
         [] -> Full
@@ -329,6 +333,7 @@ pub fn room(rows: List(#(String, Row)), strand: String) -> Room {
 
 // Orders by age, and by key between rows written in the same millisecond, so
 // the eviction choice does not depend on the order the store listed them in.
+/// Orders pending outbox rows from oldest to newest for delivery.
 fn oldest_first(a: #(String, Row), b: #(String, Row)) -> order.Order {
   case a.1.queued_at == b.1.queued_at {
     True -> string.compare(a.0, b.0)
@@ -434,6 +439,7 @@ pub fn expiry_reason(row: Row, on_owner: String, on_open: String) -> String {
 /// // peer_outbox.decode(peer_outbox.encode(row)) == Ok(row)
 /// ```
 pub fn encode(row: Row) -> JsonValue {
+  // The record variant determines the wire fields written to storage.
   let state = case row.state {
     Pending(text:, wait:) -> [
       #("state", json.String("pending")),
@@ -449,6 +455,7 @@ pub fn encode(row: Row) -> JsonValue {
       #("reason", json.String(reason)),
     ]
   }
+
   json.Object(list.append(
     [
       #("strand", json.String(row.strand)),
@@ -475,11 +482,16 @@ pub fn decode(value: JsonValue) -> Result(Row, String) {
   use session <- result.try(text(value, "session"))
   use target_strand <- result.try(text(value, "target_strand"))
   use message_id <- result.try(text(value, "message_id"))
+
+  // The stored shape determines whether the outbox record is valid.
   use queued_at <- result.try(case field(value, "queued_at") {
     Ok(json.Int(at)) -> Ok(at)
     _ -> Error("expected outbox queued_at")
   })
+
   use word <- result.try(text(value, "state"))
+
+  // The stored shape determines whether the outbox record is valid.
   use state <- result.try(case word {
     "pending" -> {
       use body <- result.try(text(value, "text"))
@@ -490,6 +502,7 @@ pub fn decode(value: JsonValue) -> Result(Row, String) {
     "refused" -> text(value, "reason") |> result.map(Refused)
     _ -> Error("unknown outbox state")
   })
+
   Ok(Row(strand:, session:, target_strand:, message_id:, queued_at:, state:))
 }
 
@@ -503,6 +516,7 @@ fn wait_word(wait: Wait) -> String {
 // A row written before a recipient could be waited for has no `wait` field, and
 // it was waiting for its owner, so a missing field reads as that. A field of
 // any other shape is an error, like every other field of a row.
+/// Decodes the stored retry delay for an outbox row.
 fn decode_wait(value: JsonValue) -> Result(Wait, String) {
   case field(value, "wait") {
     Error(_) -> Ok(OnOwner)
@@ -512,6 +526,7 @@ fn decode_wait(value: JsonValue) -> Result(Wait, String) {
   }
 }
 
+/// Reads a required field from a peer result value.
 fn field(value: JsonValue, name: String) -> Result(JsonValue, String) {
   case value {
     json.Object(fields) ->
@@ -521,8 +536,11 @@ fn field(value: JsonValue, name: String) -> Result(JsonValue, String) {
   }
 }
 
+/// Extracts text from a structured peer value.
 fn text(value: JsonValue, name: String) -> Result(String, String) {
   use found <- result.try(field(value, name))
+
+  // The value shape determines whether it can be represented as text.
   case found {
     json.String(text) -> Ok(text)
     _ -> Error("expected outbox text")

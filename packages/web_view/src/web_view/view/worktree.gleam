@@ -77,8 +77,8 @@ pub fn view(board: Board) -> Element(message) {
   )
 }
 
-// `Changes · 3 files`, counting every changed file the daemon found, held or
-// not.
+/// `Changes · 3 files`, counting every changed file the daemon found, held or
+/// not.
 fn title(board: Board) -> Element(message) {
   html.h2([attribute.class("panel-title")], [
     html.span([attribute.class("changes-title")], [html.text("Changes")]),
@@ -88,8 +88,8 @@ fn title(board: Board) -> Element(message) {
   ])
 }
 
-// What the files are compared against, so a reader does not take the list for
-// the session's own edits or for a pull request's diff.
+/// What the files are compared against, so a reader does not take the list for
+/// the session's own edits or for a pull request's diff.
 fn label(board: Board) -> Element(message) {
   html.p([attribute.class("changes-label")], [
     html.text(case board.repository {
@@ -106,7 +106,7 @@ fn file_key(file: File) -> String {
   "file:" <> file.path
 }
 
-// One file: its path and what happened to it on the line, its diff under it.
+/// One file: its path and what happened to it on the line, its diff under it.
 fn file(
   file: File,
   opened: List(attribute.Attribute(message)),
@@ -122,8 +122,8 @@ fn file(
   ])
 }
 
-// What the file's patch draws. A text patch is the shared diff drawer and a
-// cut one says so. A file with no text patch says why in one fixed phrase.
+/// What the file's patch draws. A text patch is the shared diff drawer and a
+/// cut one says so. A file with no text patch says why in one fixed phrase.
 fn body(file: File) -> Element(message) {
   case file.kind, file.extent {
     "text", "complete" -> diff.of_text(file.patch)
@@ -144,21 +144,26 @@ fn note(words: String) -> Element(message) {
   html.p([attribute.class("changes-cut")], [html.text(words)])
 }
 
-// The words on a file's line: what happened to it and the lines it added and
-// removed in the part of the patch held. A cut patch counts only what it
-// holds, which the line says with a plus sign.
+/// The words on a file's line: what happened to it and the lines it added and
+/// removed in the part of the patch held. A cut patch counts only what it
+/// holds, which the line says with a plus sign.
 fn counts(file: File) -> String {
   let status = status_words(file)
+
+  // Dispatch on counts state.
   case file.kind {
     "text" -> {
       let lines = diff_view.parse(file.patch).lines
       let added = list.count(lines, fn(line) { line.kind == diff_view.Added })
       let removed =
         list.count(lines, fn(line) { line.kind == diff_view.Removed })
+
+      // Dispatch on counts state.
       let more = case file.extent {
         "complete" -> ""
         _ -> "+"
       }
+
       status
       <> " · +"
       <> int.to_string(added)
@@ -171,7 +176,7 @@ fn counts(file: File) -> String {
   }
 }
 
-// The status as one of a few fixed words, from the two porcelain letters.
+/// The status as one of a few fixed words, from the two porcelain letters.
 fn status_words(file: File) -> String {
   case file.index_status, file.worktree_status {
     "?", _ -> "new"
@@ -181,7 +186,7 @@ fn status_words(file: File) -> String {
   }
 }
 
-// The line that says files were left out of the board.
+/// The line that says files were left out of the board.
 fn omitted(board: Board) -> Element(message) {
   case board.omitted {
     0 -> element.none()
@@ -198,10 +203,10 @@ fn omitted(board: Board) -> Element(message) {
   }
 }
 
-// The commits made since the session started: the daemon's words for what was
-// compared, and the commit patches when there are any. A host that records no
-// starting commit gives its reason here instead, which is the pane's way of
-// saying the commits cannot be listed.
+/// The commits made since the session started: the daemon's words for what was
+/// compared, and the commit patches when there are any. A host that records no
+/// starting commit gives its reason here instead, which is the pane's way of
+/// saying the commits cannot be listed.
 fn committed(board: Board) -> Element(message) {
   case string.trim(board.committed.message), board.committed.patch {
     "", "" -> element.none()
@@ -220,6 +225,7 @@ fn committed(board: Board) -> Element(message) {
   }
 }
 
+/// Count helper.
 fn count(number: Int, one: String, many: String) -> String {
   int.to_string(number)
   <> case number {

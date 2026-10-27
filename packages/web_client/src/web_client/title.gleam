@@ -63,8 +63,7 @@ fn init(_: Nil) -> #(Model, Effect(Msg)) {
   #(Model(observer: Error(Nil)), effect.none())
 }
 
-// Connecting starts one observer, which also writes the first title. The
-// observer is kept so leaving the page stops it.
+/// Updates title component observer state on connection and disconnection.
 fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   case message {
     Connected -> #(model, watch())
@@ -73,20 +72,19 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   }
 }
 
-// Writes the title now and again after every change to the heading's text or
-// the frame's count. The bar is drawn in the same tree as this element, so the
-// pieces are looked up from the root the element is attached under, after the
-// paint that put it there.
+/// Observes header text and frame needing count to update document title.
 fn watch() -> Effect(Msg) {
   use dispatch, root <- effect.after_paint
   let page = ffi_dom.root_node(ffi_dom.host(ffi_dom.as_element(root)))
   let observer = ffi_dom.mutation_observer(fn() { write(page) })
 
+  // Observe heading text changes when header element is present.
   case ffi_dom.query_selector(page, ".session-head h1") {
     Ok(heading) -> ffi_dom.observe_text(observer, heading)
     Error(Nil) -> Nil
   }
 
+  // Observe needing count attribute mutations on shell frame.
   case ffi_dom.query_selector(page, "loom-shell") {
     Ok(frame) -> ffi_dom.observe_attribute(observer, frame, "needing")
     Error(Nil) -> Nil
@@ -96,8 +94,7 @@ fn watch() -> Effect(Msg) {
   dispatch(Watching(observer))
 }
 
-// The title from what the page shows. A page whose bar has no heading yet
-// writes the product's name alone.
+/// Formats session title and updates document title property.
 fn write(page: ffi_dom.Element) -> Nil {
   let name =
     ffi_dom.query_selector(page, ".session-head h1")
@@ -112,7 +109,9 @@ fn write(page: ffi_dom.Element) -> Nil {
   ffi_dom.set_title(title_rule.session(name, needing))
 }
 
+/// Disconnects mutation observer watching document title elements.
 fn stop(observer: Result(Observer, Nil)) -> Effect(Msg) {
+  // Disconnect active title mutation observer.
   case observer {
     Ok(observer) -> {
       use _ <- effect.from

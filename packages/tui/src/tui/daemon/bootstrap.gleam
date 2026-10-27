@@ -104,18 +104,23 @@ pub fn reconnect(
     poll.until(within: within_ms, every: 25, attempt: fn() {
       reconnect_observation(paths, owner, deadline)
     })
+
+  // Check whether poll loop produced a connected instance or timed out.
   use connected <- result.try(case observed {
     poll.Answered(connected) -> Ok(connected)
     poll.Failed(reason) -> Error(reason)
     poll.Expired ->
       Error("daemon unavailable or still draining; no replacement started")
   })
+
+  // Return existing live connection or attempt to launch replacement.
   case connected {
     Some(connected) -> Ok(connected)
     None -> resolve_bounded(paths, owner, launch, deadline)
   }
 }
 
+/// Polls the daemon endpoint vacancy and status during reconnect.
 fn reconnect_observation(paths, owner, deadline) {
   case endpoint.availability(paths) {
     Error(reason) -> poll.Fail(reason)
@@ -126,16 +131,21 @@ fn reconnect_observation(paths, owner, deadline) {
   }
 }
 
+/// Probes an occupied endpoint and checks for an accepting daemon status.
 fn reconnect_probe(paths, record, owner, deadline) {
   // Neither a failed hello nor a draining response proves native retirement.
   // Each temporary owner is closed before polling again, so waiting cannot
   // accumulate authenticated sockets in the terminal's supervision tree.
   let within = int.min(500, int.max(0, deadline - host.monotonic_time_ms()))
+
+  // Probe endpoint connection and verify daemon is responding.
   case probe(paths, record, owner, within) {
     Error(_) -> poll.Retry
     Ok(connected) -> {
       let within = int.min(500, int.max(0, deadline - host.monotonic_time_ms()))
       let status = daemon.request(connected.control, protocol.Status, within)
+
+      // Confirm daemon status indicates active request readiness.
       case status {
         Ok(protocol.StatusReply(summary))
           if summary.readiness == protocol.Accepting
@@ -166,6 +176,7 @@ fn reconnect_probe(paths, record, owner, deadline) {
   }
 }
 
+/// Acquires launch lock, reserves an endpoint, and awaits daemon readiness.
 fn resolve_bounded(paths, owner, launch, deadline) {
   use lock <- result.try(acquire_lock(paths, deadline))
   let reserved = reserve(paths, launch, deadline)
@@ -176,13 +187,17 @@ fn resolve_bounded(paths, owner, launch, deadline) {
   // port drops only this bootstrap handle; it is not retirement evidence and
   // never permits erasing or replacing the published native fence.
   let outcome = await_ready(paths, reservation.record.fence, owner, deadline)
+
+  // Close intermediate spawn port if child process was started.
   case reservation.child {
     None -> Nil
     Some(child) -> host.close_server_process(child)
   }
+
   outcome
 }
 
+/// Polls until the launch lock is acquired or deadline expires.
 fn acquire_lock(paths: endpoint.Paths, deadline: Int) {
   case
     poll.until(
@@ -203,6 +218,7 @@ fn acquire_lock(paths: endpoint.Paths, deadline: Int) {
   }
 }
 
+/// Reserves an endpoint slot or spawns a new daemon if vacant.
 fn reserve(
   paths: endpoint.Paths,
   launch: fn() -> Result(Launch, String),
@@ -213,6 +229,8 @@ fn reserve(
     Error("daemon startup deadline expired before native launch"),
   )
   use available <- result.try(endpoint.availability(paths))
+
+  // Check if endpoint is already occupied or needs spawning.
   case available {
     endpoint.Occupied(record) -> Ok(Reservation(record, None))
     endpoint.Vacant -> {
@@ -228,6 +246,8 @@ fn reserve(
         paths.log,
       ))
       let reserved = publish_and_release(paths, child, pid, deadline)
+
+      // Handle publish success or cleanup child process on failure.
       case reserved {
         Ok(record) -> Ok(Reservation(record, Some(child)))
         Error(reason) -> {
@@ -239,6 +259,7 @@ fn reserve(
   }
 }
 
+/// Observes native pid fence, publishes starting record, and releases server process.
 fn publish_and_release(paths, child, pid, deadline) {
   use fence <- result.try(endpoint.observe(pid))
   let record = endpoint.Starting(fence)
@@ -254,6 +275,7 @@ fn publish_and_release(paths, child, pid, deadline) {
   Ok(record)
 }
 
+/// Waits for daemon to publish ready endpoint and completes authenticated probe.
 fn await_ready(paths, fence, owner, deadline) {
   let outcome =
     poll.until(
@@ -267,6 +289,8 @@ fn await_ready(paths, fence, owner, deadline) {
         }
       },
     )
+
+  // Extract ready record from poll outcome.
   use record <- result.try(case outcome {
     poll.Answered(record) -> Ok(record)
     poll.Failed(reason) -> Error(reason)
@@ -275,16 +299,23 @@ fn await_ready(paths, fence, owner, deadline) {
         "daemon VM is still alive or unconfirmed but did not publish readiness; its endpoint was preserved",
       )
   })
+
   probe(paths, record, owner, deadline - host.monotonic_time_ms())
 }
 
+/// Loads current endpoint and checks that the daemon VM is alive.
 fn readiness(paths, fence) {
   use current <- result.try(endpoint.load(paths))
+
+  // Verify published endpoint matches expected fence.
   use record <- result.try(case current {
     Some(record) if record.fence == fence -> Ok(record)
     _ -> Error("daemon endpoint changed while waiting for readiness")
   })
+
   use present <- result.try(endpoint.is_present(fence))
+
+  // Verify daemon process is running.
   case present {
     True -> Ok(record)
     False -> Error("daemon VM exited before authenticated readiness")
@@ -317,6 +348,8 @@ pub fn probe(
     ),
   )
   let protocol.Epoch(actual_epoch) = daemon.hello(control).epoch
+
+  // Verify advertised endpoint epoch matches connected control hello.
   case record {
     endpoint.Ready(_, _, _, epoch, _) if epoch == actual_epoch ->
       Ok(Connected(control, paths, record))
@@ -329,6 +362,7 @@ pub fn probe(
   }
 }
 
+/// Reads and validates the 256-bit hexadecimal owner credential token.
 fn read_token(path) {
   use bytes <- result.try(host.read_private_bounded(path, 65))
   use value <- result.try(
@@ -336,6 +370,8 @@ fn read_token(path) {
     |> result.replace_error("owner credential is not UTF-8"),
   )
   let value = string.trim(value)
+
+  // Validate token character length.
   case string.byte_size(value) == 64 {
     False -> Error("owner credential is not a 256-bit token")
     True -> {
@@ -343,6 +379,8 @@ fn read_token(path) {
         bit_array.base16_decode(value)
         |> result.replace_error("owner credential is not hexadecimal"),
       )
+
+      // Validate decoded token byte length.
       case bit_array.byte_size(decoded) == 32 {
         True -> Ok(value)
         False -> Error("owner credential is not a 256-bit token")

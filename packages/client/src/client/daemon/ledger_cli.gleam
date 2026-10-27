@@ -64,11 +64,13 @@
 //// daemon on another host, as `loom access` does. The passphrase comes from the
 //// terminal, which only `loomd` can ask on, or from `--passphrase-file`.
 
+import client/authority_home
 import client/authority_key
 import client/daemon/admin
 import client/distribution
 import client/distribution_attach
 import client/distribution_bundle.{type Bundle, Bundle}
+import client/distribution_install
 import client/distribution_plan.{type Workspace, Executor, Tool, Workspace}
 import client/distribution_provision.{
   type Overwrite, RefuseExisting, ReplaceExisting,
@@ -131,6 +133,25 @@ pub fn run(command: String, arguments: List(String)) -> Result(String, String) {
   run_with(command, arguments, socket_daemon)
 }
 
+/// The same, with the process environment given by the caller as well. A test
+/// passes the `HOME` and `PICKGLASS_ATTACH_HOME` of a scratch directory instead
+/// of changing the variables of the whole VM.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_cli.run_in("log", [], connect, fn(_) { Error(Nil) })
+/// ```
+pub fn run_in(
+  command: String,
+  arguments: List(String),
+  connect: Connect,
+  getenv: fn(String) -> Result(String, Nil),
+) -> Result(String, String) {
+  use parsed <- result.try(parse(command, arguments, getenv))
+  dispatch(command, parsed, connect)
+}
+
 /// The same, with the way a daemon is reached given by the caller. A test
 /// passes a daemon that is a ledger process in its own VM, so the commands run
 /// their production path against a real ledger without a socket.
@@ -145,7 +166,15 @@ pub fn run_with(
   arguments: List(String),
   connect: Connect,
 ) -> Result(String, String) {
-  use parsed <- result.try(parse(command, arguments))
+  run_in(command, arguments, connect, bootstrap.getenv)
+}
+
+/// Routes parsed arguments to the handler for the named ledger command.
+fn dispatch(
+  command: String,
+  parsed: Parsed,
+  connect: Connect,
+) -> Result(String, String) {
   case command {
     "enroll" -> enroll(parsed, connect)
     "revoke" -> revoke(parsed, connect)
@@ -169,6 +198,7 @@ type Parsed {
     positional: List(String),
     values: List(#(String, String)),
     switches: List(String),
+    getenv: fn(String) -> Result(String, Nil),
   )
 }
 
@@ -178,11 +208,14 @@ type Flags {
   Flags(valued: List(String), switches: List(String), repeatable: List(String))
 }
 
+/// Returns the allowed CLI flags and switches for the given ledger command.
 fn flags_of(command: String) -> Flags {
   let common = [
     "--home", "--deployment", "--passphrase-file", "--state-dir", "--addr",
     "--token-file",
   ]
+
+  // Choose the allowed options based on the ledger command verb.
   case command {
     "enroll" ->
       Flags(
@@ -195,7 +228,9 @@ fn flags_of(command: String) -> Flags {
       )
     "attach-file" ->
       Flags(
-        list.append(common, ["--node", "--host", "--links", "--out", "--wait"]),
+        list.append(common, [
+          "--node", "--host", "--links", "--out", "--wait", "--for",
+        ]),
         ["--force"],
         [],
       )
@@ -212,24 +247,33 @@ fn flags_of(command: String) -> Flags {
   }
 }
 
-fn parse(command: String, arguments: List(String)) -> Result(Parsed, String) {
+/// Parses raw arguments into a `Parsed` record using the supplied environment.
+fn parse(
+  command: String,
+  arguments: List(String),
+  getenv: fn(String) -> Result(String, Nil),
+) -> Result(Parsed, String) {
   use parsed <- result.try(parse_loop(
     arguments,
     flags_of(command),
-    Parsed([], [], []),
+    Parsed([], [], [], getenv),
   ))
-  Ok(Parsed(
-    positional: list.reverse(parsed.positional),
-    values: list.reverse(parsed.values),
-    switches: parsed.switches,
-  ))
+  Ok(
+    Parsed(
+      ..parsed,
+      positional: list.reverse(parsed.positional),
+      values: list.reverse(parsed.values),
+    ),
+  )
 }
 
+/// Recursively consumes arguments and updates the parsed flag accumulator.
 fn parse_loop(
   arguments: List(String),
   flags: Flags,
   parsed: Parsed,
 ) -> Result(Parsed, String) {
+  // Process each CLI argument token in turn.
   case arguments {
     [] -> Ok(parsed)
     [word, ..rest] -> {
@@ -239,8 +283,8 @@ fn parse_loop(
   }
 }
 
-// One word: an option that takes a value, a switch, an option nobody knows, or
-// a positional word. Returns what it consumed beyond the word.
+/// One word: an option that takes a value, a switch, an option nobody knows, or
+/// a positional word. Returns what it consumed beyond the word.
 fn take_word(
   word: String,
   rest: List(String),
@@ -261,6 +305,7 @@ fn take_word(
   }
 }
 
+/// Extracts a flag value from the current or subsequent argument token.
 fn take_value(
   word: String,
   rest: List(String),
@@ -291,6 +336,7 @@ fn value(parsed: Parsed, flag: String) -> Option(String) {
   }
 }
 
+/// Returns all values associated with repeated occurrences of a flag.
 fn values(parsed: Parsed, flag: String) -> List(String) {
   list.filter_map(parsed.values, fn(pair) {
     case pair.0 == flag {
@@ -311,8 +357,8 @@ fn one_name(parsed: Parsed, command: String) -> Result(String, String) {
   }
 }
 
-// Which daemon the command talks to. The two ways exclude each other, and a
-// remote daemon needs both halves.
+/// Which daemon the command talks to. The two ways exclude each other, and a
+/// remote daemon needs both halves.
 fn where_of(parsed: Parsed) -> Result(admin.Where, String) {
   case
     value(parsed, "--state-dir"),
@@ -329,6 +375,7 @@ fn where_of(parsed: Parsed) -> Result(admin.Where, String) {
   }
 }
 
+/// Formats a human-readable description of the daemon connection target.
 fn describe_where(where_: admin.Where) -> String {
   case where_ {
     admin.ThisHost("") -> "the daemon on this host"
@@ -337,8 +384,8 @@ fn describe_where(where_: admin.Where) -> String {
   }
 }
 
-// The seconds to wait for confirmations, in milliseconds. Zero is allowed, and
-// means to print the first status and return.
+/// The seconds to wait for confirmations, in milliseconds. Zero is allowed, and
+/// means to print the first status and return.
 fn wait_ms(parsed: Parsed) -> Result(Int, String) {
   case value(parsed, "--wait") {
     None -> Ok(10_000)
@@ -364,23 +411,93 @@ type Authority {
   )
 }
 
+/// Resolves the home directory path from CLI flags or system environment.
 fn home_of(parsed: Parsed) -> Result(String, String) {
   case value(parsed, "--home") {
     Some(home) -> bootstrap.absolute_path(home)
     None ->
-      bootstrap.getenv("HOME")
+      parsed.getenv("HOME")
       |> result.replace_error("HOME is unset; pass --home DIR")
   }
 }
 
-// The directory of the kept authority: the one named by `--deployment`, or the
-// only one under the home.
+/// Resolves the kept authority directory, preferring the requested deployment.
+///
+/// Without `--home`, it may use the provisioned home copied beside the installed
+/// ledger, but only when that directory holds the deployment’s sealed key. A
+/// failure names the installed deployment so the operator knows where the key
+/// belongs.
 fn authority_directory(parsed: Parsed) -> Result(String, String) {
   use home <- result.try(home_of(parsed))
+  let installed = installed_directory(parsed)
+  let id = authority_home.installed_deployment(installed)
+
+  // A requested home key wins; the installed hint is only a fallback.
+  case kept_under(parsed, home) {
+    Ok(directory) -> Ok(directory)
+    Error(reason) ->
+      hinted_directory(parsed, installed, id)
+      |> result.map_error(fn(_) { reason <> explanation(id, home) })
+  }
+}
+
+/// Uses the provision-recorded home only when `--home` was omitted and its
+/// directory contains the sealed key for this deployment.
+fn hinted_directory(
+  parsed: Parsed,
+  installed: String,
+  id: Result(String, Nil),
+) -> Result(String, Nil) {
+  // A command-line home suppresses the provisioned-home fallback.
+  use Nil <- result.try(case value(parsed, "--home") {
+    None -> Ok(Nil)
+    Some(_) -> Error(Nil)
+  })
+
+  use hinted <- result.try(authority_home.hinted_home(installed))
+  use deployment <- result.try(
+    result.lazy_or(id, fn() {
+      option.to_result(value(parsed, "--deployment"), Nil)
+    }),
+  )
+  let directory = authority_key.default_directory(hinted, deployment)
+
+  // The hint is accepted only when its sealed key is present.
+  case authority_key.is_kept(directory) {
+    True -> Ok(directory)
+    False -> Error(Nil)
+  }
+}
+
+fn explanation(id: Result(String, Nil), home: String) -> String {
+  case id {
+    Ok(deployment) -> authority_home.explain(deployment, home)
+    Error(Nil) -> ""
+  }
+}
+
+// Where the daemon on this host keeps its installed credentials and ledger:
+// below `--state-dir` when given, else below `$HOME/.loom`. It is not
+// `--home`, which says where the key was sealed.
+/// Locates the installed ledger state independently of the authority home.
+fn installed_directory(parsed: Parsed) -> String {
+  case value(parsed, "--state-dir"), parsed.getenv("HOME") {
+    Some(state), _ -> state <> "/distribution"
+    None, Ok(home) -> distribution_install.default_directory(home)
+    None, Error(_) -> ""
+  }
+}
+
+/// Finds the requested kept key, or requires exactly one key under the authority root.
+fn kept_under(parsed: Parsed, home: String) -> Result(String, String) {
   let root = home <> "/.loom/authority"
+
+  // Check whether a specific deployment was requested or use the authority root.
   case value(parsed, "--deployment") {
     Some(id) -> {
       let directory = authority_key.default_directory(home, id)
+
+      // Ensure the authority key actually exists in the target directory.
       case authority_key.is_kept(directory) {
         True -> Ok(directory)
         False -> Error("no authority key is kept in " <> directory)
@@ -393,7 +510,10 @@ fn authority_directory(parsed: Parsed) -> Result(String, String) {
             "no authority key is kept under "
             <> root
             <> ". It exists only for a deployment provisioned with a ledger "
-            <> "and without --drop-authority",
+            <> "and without --drop-authority, and only on the machine and "
+            <> "account that provisioned it. Run this there, or pass --home "
+            <> "with that account's home directory (and --passphrase-file "
+            <> "when there is no terminal). Do not copy the key elsewhere",
           )
         Ok(entries) ->
           case list.sort(entries, string.compare) {
@@ -411,9 +531,12 @@ fn authority_directory(parsed: Parsed) -> Result(String, String) {
   }
 }
 
+/// Unlocks the kept authority key pair using passphrase or key file.
 fn unlock(parsed: Parsed) -> Result(Authority, String) {
   use directory <- result.try(authority_directory(parsed))
   let deployment = last_segment(directory)
+
+  // Read the passphrase from the file if provided, otherwise prompt.
   use passphrase <- result.try(case value(parsed, "--passphrase-file") {
     Some(path) -> {
       use path <- result.try(bootstrap.absolute_path(path))
@@ -424,6 +547,7 @@ fn unlock(parsed: Parsed) -> Result(Authority, String) {
       authority_key.passphrase_from_terminal(authority_key.AskOnce)
       |> result.map_error(authority_key.describe)
   })
+
   use key <- result.try(
     authority_key.load(directory, deployment, passphrase)
     |> result.map_error(authority_key.describe),
@@ -480,10 +604,10 @@ type Decision(a) {
   Decision(entry: Entry, extra: a)
 }
 
-// Runs the steps every signing command shares. `decide` sees the ledger after
-// the copy has caught up with the daemon. `before_send` runs once the entry is
-// in the operator's copy and before the daemon is told, so a bundle that cannot
-// be written is found while the entry is still the operator's alone.
+/// Runs the steps every signing command shares. `decide` sees the ledger after
+/// the copy has caught up with the daemon. `before_send` runs once the entry is
+/// in the operator's copy and before the daemon is told, so a bundle that cannot
+/// be written is found while the entry is still the operator's alone.
 fn sign(
   authority: Authority,
   where_: admin.Where,
@@ -503,6 +627,7 @@ fn sign(
   done
 }
 
+/// Applies signed entries to the ledger under key lock and commits changes.
 fn signed_under_lock(
   authority: Authority,
   where_: admin.Where,
@@ -539,6 +664,7 @@ fn signed_under_lock(
     }
     Error(reason) -> Ok(#(opened.store, opened.ledger, Offline(reason)))
   })
+
   use Decision(entry:, extra:) <- result.try(decide(ledger))
   use signed <- result.try(
     membership_entry.seal(entry, authority.signer)
@@ -555,10 +681,13 @@ fn signed_under_lock(
     membership_ledger.apply(ledger, signed)
     |> result.map_error(fn(refusal) { ledger_operator.describe(refusal) }),
   )
+
+  // Ensure the signed entry was successfully applied to the ledger.
   use next <- result.try(case applied {
     membership_ledger.Applied(ledger: next, entry: _) -> Ok(next)
     _ -> Error("the entry did not extend the ledger")
   })
+
   use store <- result.try(
     membership_store.append(store, signed)
     |> result.map_error(fn(error) {
@@ -571,8 +700,8 @@ fn signed_under_lock(
   hand_over(result) |> result.map(fn(handed) { #(handed, extra) })
 }
 
-// Gives the daemon every line it lacks. A daemon that refuses leaves the entry
-// in the copy and the operator with the reason.
+/// Gives the daemon every line it lacks. A daemon that refuses leaves the entry
+/// in the copy and the operator with the reason.
 fn hand_over(signed: Signed) -> Result(Signed, String) {
   case signed.delivery {
     Offline(_) -> Ok(signed)
@@ -590,7 +719,7 @@ fn hand_over(signed: Signed) -> Result(Signed, String) {
   }
 }
 
-// The lines of the operator's copy, which a bundle carries.
+/// The lines of the operator's copy, which a bundle carries.
 fn lines_of(store: Store) -> List(String) {
   membership_store.lines_after(
     store,
@@ -607,13 +736,15 @@ fn now() -> String {
 
 // --- the report --------------------------------------------------------------
 
-// Waits for confirmations, bounded, and prints which members hold the entry.
+/// Waits for confirmations, bounded, and prints which members hold the entry.
 fn confirmations_text(
   signed: Signed,
   wait: Int,
   unreachable: List(String),
 ) -> List(String) {
   let seq = signed.entry.entry.seq
+
+  // Format delivery confirmations according to online or offline result.
   case signed.delivery {
     Offline(reason:) -> [
       "No daemon took the entry: " <> reason <> ".",
@@ -654,6 +785,7 @@ fn confirmations_text(
   }
 }
 
+/// Formats a single confirmation entry into human-readable text.
 fn confirmation_word(confirmation: ledger_operator.Confirmation) -> String {
   case confirmation {
     ledger_operator.Confirmed -> "confirmed"
@@ -665,6 +797,7 @@ fn confirmation_word(confirmation: ledger_operator.Confirmation) -> String {
 
 // --- enroll ------------------------------------------------------------------
 
+/// Executes the `enroll` command to add a new member node to the ledger.
 fn enroll(parsed: Parsed, connect: Connect) -> Result(String, String) {
   use name <- result.try(one_name(parsed, "enroll"))
   use request <- result.try(enrollment_of(parsed, name))
@@ -733,18 +866,18 @@ const distribution_provision_extension = ".loombundle"
 
 // --- attach-file -------------------------------------------------------------
 
-// Enrolls a tool as a member and writes the credentials a generic Erlang node
-// needs, in place of the bundle `enroll` writes. The files go in a directory
-// made before anything is signed, so a directory the operator cannot write is
-// refused while the ledger is still unchanged.
+/// Enrolls a tool as a member and writes the credentials a generic Erlang node
+/// needs, in place of the bundle `enroll` writes. The files go in a directory
+/// made before anything is signed, so a directory the operator cannot write is
+/// refused while the ledger is still unchanged.
 fn attach_file(parsed: Parsed, connect: Connect) -> Result(String, String) {
   use name <- result.try(one_name(parsed, "attach-file"))
   use request <- result.try(tool_enrollment_of(parsed, name))
   use Nil <- result.try(ledger_operator.check_enrollment(request))
   use where_ <- result.try(where_of(parsed))
   use wait <- result.try(wait_ms(parsed))
-  use out <- result.try(required(parsed, "--out"))
-  use out <- result.try(bootstrap.absolute_path(out))
+  use target <- result.try(attach_target(parsed, name))
+  let out = target.out
   let files = distribution_attach.files_in(out)
   use options <- result.try(distribution_attach.options(files))
   use Nil <- result.try(refuse_occupied(out, overwrite_of(parsed)))
@@ -814,16 +947,97 @@ fn attach_file(parsed: Parsed, connect: Connect) -> Result(String, String) {
         distribution_attach.instructions(files, request.node, daemons),
         "",
       ],
+      pickglass_text(target, daemons),
+      pickglass_text(target, daemons),
       confirmations_text(signed, wait, []),
     ]),
     "\n",
   ))
 }
 
-// The directory is made private, and six files are written into it, so a
-// directory that already holds anything is refused without `--force`. That
-// keeps `--out ~` from replacing `~/.erlang.cookie` or changing the mode of a
-// home directory, and a directory that does not exist yet is fine.
+// Where the files go. `--out` names the directory. `--for pickglass` makes it
+// optional and defaults it to `NAME` under pickglass's attach root, so the
+// directory is one pickglass finds by name. With both, `--out` wins and the
+// pickglass lines are printed only when it is that very directory.
+/// The output directory and optional pickglass registration destination.
+type Target {
+  Target(out: String, pickglass: Option(#(String, String)))
+}
+
+/// Resolves `--out` and optional `--for pickglass` into one target.
+fn attach_target(parsed: Parsed, name: String) -> Result(Target, String) {
+  // Interpret `--for` before resolving the destination directory.
+  use for_pickglass <- result.try(case value(parsed, "--for") {
+    None -> Ok(False)
+    Some("pickglass") -> Ok(True)
+    Some(other) -> Error("--for takes pickglass, not " <> other)
+  })
+
+  // Pickglass mode supplies a default destination; ordinary mode requires `--out`.
+  case for_pickglass {
+    False -> {
+      use out <- result.try(required(parsed, "--out"))
+      use out <- result.map(bootstrap.absolute_path(out))
+      Target(out:, pickglass: None)
+    }
+    True -> {
+      // Pickglass discovers attachments by a single directory-name component.
+      use Nil <- result.try(case distribution_attach.is_directory_name(name) {
+        True -> Ok(Nil)
+        False ->
+          Error(
+            "--for pickglass makes a directory named "
+            <> name
+            <> ", so the name must be one plain word",
+          )
+      })
+
+      use home <- result.try(
+        parsed.getenv("HOME")
+        |> result.replace_error("HOME is unset; pass --out DIR"),
+      )
+      let root =
+        distribution_attach.attach_root(
+          option.from_result(parsed.getenv("PICKGLASS_ATTACH_HOME")),
+          home,
+        )
+      use root <- result.try(bootstrap.absolute_path(root))
+      let default = root <> "/" <> name
+
+      // An explicit output disables pickglass setup unless it is the computed default.
+      use out <- result.map(case value(parsed, "--out") {
+        None -> Ok(default)
+        Some(out) -> bootstrap.absolute_path(out)
+      })
+
+      // Only the exact default directory can be advertised to pickglass.
+      case out == default {
+        True -> Target(out:, pickglass: Some(#(root, name)))
+        False -> Target(out:, pickglass: None)
+      }
+    }
+  }
+}
+
+/// Produces pickglass setup instructions when the output matches its attach root.
+fn pickglass_text(target: Target, daemons: List(String)) -> List(String) {
+  case target.pickglass, daemons {
+    Some(#(root, name)), [daemon] -> [
+      distribution_attach.pickglass_lines(root, name, daemon),
+      "",
+    ]
+    Some(#(root, name)), _ -> [
+      distribution_attach.pickglass_lines(root, name, "<daemon node>"),
+      "",
+    ]
+    None, _ -> []
+  }
+}
+
+/// Refuses a nonempty output directory unless `--force` allows it to be reused.
+///
+/// This protects existing home files and avoids changing a populated directory’s
+/// mode; a directory that does not exist yet is allowed.
 fn refuse_occupied(out: String, overwrite: Overwrite) -> Result(Nil, String) {
   case simplifile.read_directory(out), overwrite {
     Ok([_, ..]), RefuseExisting ->
@@ -838,6 +1052,7 @@ fn refuse_occupied(out: String, overwrite: Overwrite) -> Result(Nil, String) {
   }
 }
 
+/// Parses peer link specifications from command line flags.
 fn links_of(parsed: Parsed) -> List(String) {
   case value(parsed, "--links") {
     None -> []
@@ -848,6 +1063,7 @@ fn links_of(parsed: Parsed) -> List(String) {
   }
 }
 
+/// Constructs a tool enrollment entry from parsed arguments.
 fn tool_enrollment_of(
   parsed: Parsed,
   name: String,
@@ -866,8 +1082,8 @@ fn tool_enrollment_of(
   ))
 }
 
-// The key and the cookie are written mode 0600 and the options file last, so a
-// directory that holds an options file holds all the files it names.
+/// The key and the cookie are written mode 0600 and the options file last, so a
+/// directory that holds an options file holds all the files it names.
 fn write_attachment(
   files: distribution_attach.Files,
   options: String,
@@ -890,18 +1106,23 @@ fn write_attachment(
   })
 }
 
+/// Builds a node enrollment entry from parsed CLI options.
 fn enrollment_of(parsed: Parsed, name: String) -> Result(Enrollment, String) {
   use node <- result.try(required(parsed, "--node"))
   use role <- result.try(
     required(parsed, "--role")
     |> result.try(distribution_plan.role_from_word),
   )
+
+  // Parse directory membership role or default to none.
   use directory <- result.try(case value(parsed, "--directory") {
     None | Some("none") -> Ok(membership_entry.NotInDirectory)
     Some("voter") -> Ok(membership_entry.Voter)
     Some("learner") -> Ok(membership_entry.Learner)
     Some(_) -> Error("--directory takes voter, learner or none")
   })
+
+  // Parse the optional listen port integer if supplied.
   use listen_port <- result.try(case value(parsed, "--port") {
     None -> Ok(None)
     Some(text) ->
@@ -909,6 +1130,7 @@ fn enrollment_of(parsed: Parsed, name: String) -> Result(Enrollment, String) {
       |> result.map(Some)
       |> result.replace_error("--port takes a number")
   })
+
   use workspaces <- result.try(list.try_map(
     values(parsed, "--workspace"),
     workspace_of,
@@ -949,8 +1171,8 @@ fn overwrite_of(parsed: Parsed) -> Overwrite {
   }
 }
 
-// A bundle holds a private key, so one that is already there is not replaced
-// without `--force`.
+/// A bundle holds a private key, so one that is already there is not replaced
+/// without `--force`.
 fn refuse_existing(path: String, overwrite: Overwrite) -> Result(Nil, String) {
   case bootstrap.path_exists(path), overwrite {
     True, RefuseExisting ->
@@ -959,11 +1181,11 @@ fn refuse_existing(path: String, overwrite: Overwrite) -> Result(Nil, String) {
   }
 }
 
-// The entry is in the operator's copy by the time a bundle is written, so a
-// bundle that cannot be written leaves the member changed in the ledger with
-// no certificate that anyone holds. The sentence says so, and names the command
-// that mints a new certificate and writes the bundle again. That command also
-// hands the entry to a daemon, which the failed one stopped before doing.
+/// The entry is in the operator's copy by the time a bundle is written, so a
+/// bundle that cannot be written leaves the member changed in the ledger with
+/// no certificate that anyone holds. The sentence says so, and names the command
+/// that mints a new certificate and writes the bundle again. That command also
+/// hands the entry to a daemon, which the failed one stopped before doing.
 fn or_bundle_not_written(
   written: Result(Nil, String),
   name: String,
@@ -996,6 +1218,7 @@ fn mint(
   issue(authority, request.name, [request.node, ledger_operator.host(request)])
 }
 
+/// Issues a signed membership certificate for an enrolled node.
 fn issue(
   authority: Authority,
   name: String,
@@ -1010,8 +1233,8 @@ fn pin_of(certificate: String) -> Result(BitArray, String) {
   |> result.replace_error("the issued certificate cannot be pinned")
 }
 
-// Writes the bundle of an enrolled or renewed node, after checking that it
-// decodes as the installer will read it.
+/// Writes the bundle of an enrolled or renewed node, after checking that it
+/// decodes as the installer will read it.
 fn write_bundle(
   path: String,
   authority: Authority,
@@ -1051,6 +1274,7 @@ fn write_bundle(
   store_bundle(path, bundle)
 }
 
+/// Writes bundle contents to the designated file path with safe permissions.
 fn store_bundle(path: String, bundle: Bundle) -> Result(Nil, String) {
   let text = distribution_bundle.encode(bundle)
   use _checked <- result.try(
@@ -1078,6 +1302,7 @@ fn parent(path: String) -> String {
 
 // --- renew -------------------------------------------------------------------
 
+/// Executes the `renew` command to update node credentials in the ledger.
 fn renew(parsed: Parsed, connect: Connect) -> Result(String, String) {
   use name <- result.try(one_name(parsed, "renew"))
   use where_ <- result.try(where_of(parsed))
@@ -1160,6 +1385,7 @@ fn renew(parsed: Parsed, connect: Connect) -> Result(String, String) {
 
 // --- revoke ------------------------------------------------------------------
 
+/// Executes the `revoke` command to remove a member node from the ledger.
 fn revoke(parsed: Parsed, connect: Connect) -> Result(String, String) {
   use name <- result.try(one_name(parsed, "revoke"))
   use where_ <- result.try(where_of(parsed))
@@ -1168,31 +1394,27 @@ fn revoke(parsed: Parsed, connect: Connect) -> Result(String, String) {
   let reason = option.unwrap(value(parsed, "--reason"), "")
   let time = now()
   let daemon = connect(where_)
-  use #(signed, checked) <- result.try(
-    sign(
-      authority,
-      where_,
-      connect,
-      fn(ledger) {
-        use entry <- result.try(ledger_operator.revoke(
-          ledger,
-          name,
-          reason,
-          time,
-        ))
-        use after <- result.try(
-          membership_ledger.check(ledger, entry)
-          |> result.map_error(ledger_operator.describe),
-        )
-        use checked <- result.map(case has(parsed, "--force") {
-          True -> Ok(unchecked_text(name))
-          False -> checked_revoke(ledger, after, name, daemon)
-        })
-        Decision(entry:, extra: checked)
-      },
-      fn(_, _) { Ok(Nil) },
-    ),
-  )
+  use #(signed, checked) <- result.try(sign(
+    authority,
+    where_,
+    connect,
+    fn(ledger) {
+      use entry <- result.try(ledger_operator.revoke(ledger, name, reason, time))
+      use after <- result.try(
+        membership_ledger.check(ledger, entry)
+        |> result.map_error(ledger_operator.describe),
+      )
+
+      // Check revocation safety unless forced.
+      use checked <- result.map(case has(parsed, "--force") {
+        True -> Ok(unchecked_text(name))
+        False -> checked_revoke(ledger, after, name, daemon)
+      })
+
+      Decision(entry:, extra: checked)
+    },
+    fn(_, _) { Ok(Nil) },
+  ))
   Ok(string.join(
     list.flatten([
       [
@@ -1211,14 +1433,14 @@ fn revoke(parsed: Parsed, connect: Connect) -> Result(String, String) {
   ))
 }
 
-// What a `revoke` that was not forced checks before it signs, and the sentence
-// that says it passed. Three things are checked, and all are reported together
-// when more than one fails, so one refusal tells the operator everything to
-// decide on: the link graph after the revoke, the sessions the revoke would
-// leave unreachable, which the daemon learns by asking the orchestrators it is
-// linked to, and the session directory's voters, which must not fall below
-// three. A daemon that cannot be asked, or an orchestrator that does not answer,
-// is unknown and not empty, so it refuses too.
+/// What a `revoke` that was not forced checks before it signs, and the sentence
+/// that says it passed. Three things are checked, and all are reported together
+/// when more than one fails, so one refusal tells the operator everything to
+/// decide on: the link graph after the revoke, the sessions the revoke would
+/// leave unreachable, which the daemon learns by asking the orchestrators it is
+/// linked to, and the session directory's voters, which must not fall below
+/// three. A daemon that cannot be asked, or an orchestrator that does not answer,
+/// is unknown and not empty, so it refuses too.
 fn checked_revoke(
   ledger: Ledger,
   after: Ledger,
@@ -1229,18 +1451,25 @@ fn checked_revoke(
     list.map(ledger_operator.concerns(ledger, after), fn(concern) {
       ledger_operator.describe_concern(concern)
     })
+
+  // Query orchestrator holdings to evaluate stranded sessions.
   let strandings = case daemon.holdings() {
     Ok(answers) -> ledger_operator.strandings(ledger, name, answers)
     Error(reason) -> [ledger_operator.Unasked(reason)]
   }
+
   let stranded =
     list.map(strandings, fn(stranding) {
       ledger_operator.describe_stranding(name, stranding)
     })
+
+  // Check remaining voter count requirements after revocation.
   let voters = case ledger_operator.check_voters(ledger, after) {
     Ok(Nil) -> []
     Error(why) -> [why]
   }
+
+  // Refuse revocation if links, stranded sessions, or voter limits fail.
   case links, stranded, voters {
     [], [], [] ->
       case membership_ledger.member(ledger, name) {
@@ -1266,6 +1495,7 @@ fn checked_revoke(
   }
 }
 
+/// Formats a list of refusal reasons into bullet points for display.
 fn refusal_section(
   name: String,
   heading: String,
@@ -1296,11 +1526,12 @@ fn unchecked_text(name: String) -> String {
 
 // --- log ---------------------------------------------------------------------
 
-// Where the ledger to print is: the operator's copy, or the file that a node's
-// configuration names.
+/// Where the ledger to print is: the operator's copy, or the file that a node's
+/// configuration names.
 fn log_source(
   parsed: Parsed,
 ) -> Result(#(String, membership_entry.Verifier), String) {
+  // Determine whether to inspect configuration file or default authority ledger.
   case value(parsed, "--config") {
     Some(config) -> {
       use config <- result.try(bootstrap.absolute_path(config))
@@ -1340,6 +1571,7 @@ fn log_source(
   }
 }
 
+/// Executes the `log` command to inspect and display membership ledger history.
 fn log(parsed: Parsed, connect: Connect) -> Result(String, String) {
   use where_ <- result.try(where_of(parsed))
   use #(path, verifier) <- result.try(log_source(parsed))
@@ -1356,12 +1588,15 @@ fn log(parsed: Parsed, connect: Connect) -> Result(String, String) {
   )
   let daemon = connect(where_)
   let status = daemon.status()
+
+  // Format log output as JSON or human-readable text.
   case has(parsed, "--json") {
     True -> Ok(log_json(entries, status))
     False -> Ok(log_text(entries, status, describe_where(where_)))
   }
 }
 
+/// Formats the entry kind and summary description for ledger logging.
 fn kind_text(entry: SignedEntry) -> String {
   case entry.entry.kind {
     membership_entry.Genesis(deployment:, ..) ->
@@ -1391,6 +1626,7 @@ fn kind_text(entry: SignedEntry) -> String {
   }
 }
 
+/// Renders formatted human-readable text output for ledger log entries.
 fn log_text(
   entries: List(SignedEntry),
   status: Result(ledger_control.StatusView, String),
@@ -1406,6 +1642,8 @@ fn log_text(
       <> "  "
       <> kind_text(entry)
     })
+
+  // Render daemon status information if reachable.
   let daemon_rows = case status {
     Error(reason) -> [
       "",
@@ -1443,9 +1681,11 @@ fn log_text(
         },
       ])
   }
+
   string.join(list.append(rows, daemon_rows), "\n")
 }
 
+/// Renders structured JSON output for ledger log entries and daemon status.
 fn log_json(
   entries: List(SignedEntry),
   status: Result(ledger_control.StatusView, String),
@@ -1460,6 +1700,8 @@ fn log_json(
         #("body", json.String(bit_array_text(entry.body))),
       ])
     })
+
+  // Encode daemon status details into the JSON object.
   let reported = case status {
     Error(_) -> json.Null
     Ok(view) ->
@@ -1481,6 +1723,7 @@ fn log_json(
         ),
       ])
   }
+
   json.to_string(
     json.Object([#("entries", json.Array(listed)), #("daemon", reported)]),
   )
@@ -1492,11 +1735,14 @@ fn bit_array_text(bytes: BitArray) -> String {
 
 // --- import ------------------------------------------------------------------
 
+/// Imports external ledger entries from a file into the active daemon.
 fn import_file(parsed: Parsed, connect: Connect) -> Result(String, String) {
+  // Ensure the import file path was provided as a positional argument.
   use path <- result.try(case parsed.positional {
     [path] -> Ok(path)
     _ -> Error("usage: loomd distribution import FILE")
   })
+
   use where_ <- result.try(where_of(parsed))
   use path <- result.try(bootstrap.absolute_path(path))
   use text <- result.try(read_text(path))
@@ -1504,6 +1750,8 @@ fn import_file(parsed: Parsed, connect: Connect) -> Result(String, String) {
     string.split(text, "\n")
     |> list.map(string.trim)
     |> list.filter(fn(line) { line != "" })
+
+  // Verify the file holds at least one non-empty line.
   use Nil <- result.try(case lines {
     [] -> Error(path <> " holds no ledger lines")
     _ -> Ok(Nil)
@@ -1522,10 +1770,13 @@ fn import_file(parsed: Parsed, connect: Connect) -> Result(String, String) {
       #(state.0 + view.applied, Some(view.head))
     }),
   )
+
+  // Extract the latest applied sequence head from the import result.
   let head = case applied.1 {
     Some(head) -> head.seq
     None -> 0
   }
+
   Ok(
     "Applied "
     <> int.to_string(applied.0)
@@ -1541,7 +1792,7 @@ fn import_file(parsed: Parsed, connect: Connect) -> Result(String, String) {
 
 // --- the socket --------------------------------------------------------------
 
-// The four ledger commands of the daemon at `where_`, each decoded.
+/// The four ledger commands of the daemon at `where_`, each decoded.
 fn socket_daemon(where_: admin.Where) -> Daemon {
   Daemon(
     status: fn() {
@@ -1568,6 +1819,7 @@ fn socket_daemon(where_: admin.Where) -> Daemon {
   )
 }
 
+/// Invokes an RPC method on the daemon and decodes the response.
 fn call(
   where_: admin.Where,
   command: String,

@@ -164,10 +164,12 @@ pub fn builder(config: BuildConfig) -> compile.Builder {
   }
 }
 
-// The build's report is a return value, not a callback: a caller holding
-// the products holds what the kernel enforced on the jail that made them,
-// and a build that never ran says so rather than saying nothing
-// (`codemode/enforcement`, issue #5).
+/// Prepares hermetic workspace and runs the sandboxed compiler build.
+///
+/// The build's report is a return value, not a callback: a caller holding
+/// the products holds what the kernel enforced on the jail that made them,
+/// and a build that never ran says so rather than saying nothing
+/// (`codemode/enforcement`, issue #5).
 fn build(
   config: BuildConfig,
   phase: PhaseIdentity,
@@ -186,6 +188,7 @@ fn build(
   }
 }
 
+/// Verifies the seed directory, clones its contents into the build root, and writes generated facades.
 fn prepare(
   config: BuildConfig,
   root: String,
@@ -199,19 +202,21 @@ fn prepare(
   install_generated(root, generated)
 }
 
-// The generated `cap/mcp/<server>` façades, written into the vendored
-// prelude *after* the clone and before the compiler runs.
-//
-// The order is the whole of it. `clone_seed` deletes `vendor/` and copies
-// the seed's over it, so anything written there earlier — by the compile
-// service, by a previous execution — is gone by the time the build
-// starts. Writing here is what makes the modules part of the `cap`
-// package the program imports from, which is what lets a façade reach
-// `cap/internal/mcp` at all.
-//
-// The seed's dependency table is untouched, so `seed.verify` above still
-// holds: what changes is one package's *sources*, which Gleam recompiles
-// from the seeded cache without resolving anything.
+/// Writes generated MCP facade modules into the vendored cap tree.
+///
+/// The generated `cap/mcp/<server>` façades, written into the vendored
+/// prelude *after* the clone and before the compiler runs.
+///
+/// The order is the whole of it. `clone_seed` deletes `vendor/` and copies
+/// the seed's over it, so anything written there earlier — by the compile
+/// service, by a previous execution — is gone by the time the build
+/// starts. Writing here is what makes the modules part of the `cap`
+/// package the program imports from, which is what lets a façade reach
+/// `cap/internal/mcp` at all.
+///
+/// The seed's dependency table is untouched, so `seed.verify` above still
+/// holds: what changes is one package's *sources*, which Gleam recompiles
+/// from the seeded cache without resolving anything.
 fn install_generated(
   root: String,
   generated: List(#(String, String)),
@@ -266,21 +271,23 @@ pub fn clone_order(entries: List(String)) -> List(String) {
   list.append(sources, derived)
 }
 
-// Clones the seed's vendored prelude, resolved manifest, and package cache
-// into the build root the compile service already wrote sources into. The
-// seed's own compiled program is dropped: an artifact from the placeholder
-// has no business being in the set this build produces.
-//
-// Anything a previous build left in the root goes first. The build root is
-// meant to be fresh, but "meant to be" is not a guarantee, and a stale
-// `ebin` would silently join the artifact — and its content address.
-//
-// The sequence below is the ordering `clone_order` explains, and it runs
-// wider than that one directory: `vendor` holds the path dependencies'
-// sources, including `cap`'s own native `.erl`, so it too must land
-// before `build/dev` receives the copies made from it. Written this way,
-// no dependency is ever recompiled in a build root, and the compiled
-// bytes the address is taken over are the seed's own.
+/// Copies vendored prelude, manifest, and cached packages from the seed directory.
+///
+/// Clones the seed's vendored prelude, resolved manifest, and package cache
+/// into the build root the compile service already wrote sources into. The
+/// seed's own compiled program is dropped: an artifact from the placeholder
+/// has no business being in the set this build produces.
+///
+/// Anything a previous build left in the root goes first. The build root is
+/// meant to be fresh, but "meant to be" is not a guarantee, and a stale
+/// `ebin` would silently join the artifact — and its content address.
+///
+/// The sequence below is the ordering `clone_order` explains, and it runs
+/// wider than that one directory: `vendor` holds the path dependencies'
+/// sources, including `cap`'s own native `.erl`, so it too must land
+/// before `build/dev` receives the copies made from it. Written this way,
+/// no dependency is ever recompiled in a build root, and the compiled
+/// bytes the address is taken over are the seed's own.
 fn clone_seed(seed_root: String, root: String) -> Result(Nil, CompileError) {
   let _cleared =
     simplifile.delete_all([
@@ -300,13 +307,15 @@ fn clone_seed(seed_root: String, root: String) -> Result(Nil, CompileError) {
   Ok(Nil)
 }
 
-// Copies the seed's `build` directory one child at a time, in the order
-// `clone_order` gives, rather than as a single tree.
-//
-// The children are a mixture: `packages` and `dev` are directories, the
-// per-target lock files beside them are ordinary files, so each is
-// dispatched on what it is. A child the seed does not have cannot appear
-// here, since the list is read from the seed itself.
+/// Copies the build directory contents in the deterministic clone order.
+///
+/// Copies the seed's `build` directory one child at a time, in the order
+/// `clone_order` gives, rather than as a single tree.
+///
+/// The children are a mixture: `packages` and `dev` are directories, the
+/// per-target lock files beside them are ordinary files, so each is
+/// dispatched on what it is. A child the seed does not have cannot appear
+/// here, since the list is read from the seed itself.
 fn clone_build(
   source: String,
   destination: String,
@@ -324,6 +333,7 @@ fn clone_build(
   })
 }
 
+/// Recursively copies a directory or copies a file during seed replication.
 fn clone_child(
   source: String,
   destination: String,
@@ -336,8 +346,11 @@ fn clone_child(
 
 // --- running the build ----------------------------------------------------
 
+/// Requests build clearance from the broker and awaits compiler output.
 fn run_build(config: BuildConfig, phase: PhaseIdentity, root: String) -> Built {
   let events = process.new_subject()
+
+  // Clear the hermetic build execution call with the broker.
   case
     broker.clear_call(
       config.broker,
@@ -351,6 +364,7 @@ fn run_build(config: BuildConfig, phase: PhaseIdentity, root: String) -> Built {
   }
 }
 
+/// Wraps broker clearance refusal into an unexecuted build result.
 fn build_refused(refusal: broker.Refusal) -> Built {
   Built(
     result: Error(compile.BuildUnavailable(
@@ -360,6 +374,7 @@ fn build_refused(refusal: broker.Refusal) -> Built {
   )
 }
 
+/// Collects call events and exit status from a running sandboxed build.
 fn collect_build(
   config: BuildConfig,
   root: String,
@@ -381,6 +396,7 @@ fn collect_build(
   }
 }
 
+/// Constructs a build failure result for a process that never settled.
 fn build_unsettled() -> Built {
   Built(
     result: Error(compile.BuildUnavailable(
@@ -392,6 +408,7 @@ fn build_unsettled() -> Built {
   )
 }
 
+/// Checks execution exit code and returns compilation error diagnostics.
 fn settle(collected: Collected) -> Result(Nil, CompileError) {
   case collected.outcome {
     broker.CallFailed(failure:) ->
@@ -402,6 +419,7 @@ fn settle(collected: Collected) -> Result(Nil, CompileError) {
   }
 }
 
+/// Inspects process exit code and timeout status to classify build outcome.
 fn settle_exit(
   result: ExecResult,
   diagnostics: String,
@@ -420,6 +438,7 @@ fn settle_exit(
   }
 }
 
+/// Distinguishes offline seed resolution attempts from program compilation errors.
 fn diagnose_failure(diagnostics: String) -> Result(Nil, CompileError) {
   case reached_for_hex(diagnostics) {
     True ->
@@ -513,10 +532,12 @@ fn build_base_policy(config: BuildConfig) -> SandboxPolicy {
 
 // --- the products ---------------------------------------------------------
 
-// Flattens every package's compiled modules into one directory and hashes
-// the result. Flattening is safe because Gleam prefixes a module's beam
-// name with its package (`gleam@list`, `cap@fs`), so no two packages can
-// collide; and one directory is one `-pa` for the satellite's argv.
+/// Flattens compiled beam modules from packages into a single directory.
+///
+/// Flattens every package's compiled modules into one directory and hashes
+/// the result. Flattening is safe because Gleam prefixes a module's beam
+/// name with its package (`gleam@list`, `cap@fs`), so no two packages can
+/// collide; and one directory is one `-pa` for the satellite's argv.
 fn products(root: String) -> Result(BuildProducts, CompileError) {
   let beam_dir = root <> "/" <> beam_directory
   let erlang_root = root <> "/build/dev/erlang"
@@ -541,6 +562,8 @@ fn products(root: String) -> Result(BuildProducts, CompileError) {
     }),
   )
   let entry = compile.entry_module <> ".beam"
+
+  // Ensure entry module was generated and compute overall manifest digest.
   case list.contains(gathered, entry) {
     False ->
       Error(compile.ArtifactIncomplete(
@@ -553,9 +576,11 @@ fn products(root: String) -> Result(BuildProducts, CompileError) {
   }
 }
 
-// Rebar names the OTP application `esqlite`, while a local Gleam package
-// uses its Hex name. Both layouts carry the same fixed library; arbitrary
-// priv files never enter a program's artifact through this boundary.
+/// Copies the trusted SQLite native NIF shared object into the destination directory.
+///
+/// Rebar names the OTP application `esqlite`, while a local Gleam package
+/// uses its Hex name. Both layouts carry the same fixed library; arbitrary
+/// priv files never enter a program's artifact through this boundary.
 fn gather_sqlite(
   package: String,
   package_root: String,
@@ -575,18 +600,22 @@ fn gather_sqlite(
 
 const sqlite_library = "esqlite3_nif.so"
 
-// Copies one package's `ebin` into the flattened directory, returning the
-// names taken so far. A package directory without an `ebin` (Gleam keeps
-// bookkeeping directories alongside the real ones) contributes nothing.
+/// Copies compiled beam files from an ebin directory into the flattened target.
+///
+/// Copies one package's `ebin` into the flattened directory, returning the
+/// names taken so far. A package directory without an `ebin` (Gleam keeps
+/// bookkeeping directories alongside the real ones) contributes nothing.
 fn gather(
   ebin: String,
   destination: String,
   taken: List(String),
 ) -> Result(List(String), CompileError) {
+  // Read ebin directory entries if present.
   case simplifile.read_directory(ebin) {
     Error(_) -> Ok(taken)
     Ok(entries) ->
       list.try_fold(entries, taken, fn(acc, name) {
+        // Inspect each entry and copy beam/app files into destination.
         case compiled_module(name) {
           False -> Ok(acc)
           True -> {
@@ -652,6 +681,7 @@ fn compiled_module(name: String) -> Bool {
   string.ends_with(name, ".beam") || string.ends_with(name, ".app")
 }
 
+/// Computes deterministic content digest over sorted artifact file hashes.
 fn fingerprint(
   beam_dir: String,
   names: List(String),
@@ -682,6 +712,7 @@ fn copy_file(source: String, destination: String) -> Result(Nil, CompileError) {
   |> result.replace(Nil)
 }
 
+/// Maps simplifile errors to WorkspaceSetupFailed compile errors.
 fn file_error(
   outcome: Result(a, simplifile.FileError),
   what: String,
@@ -706,6 +737,7 @@ fn text_of(bytes: BitArray) -> String {
   }
 }
 
+/// Formats a broker clearance refusal into diagnostic description text.
 fn refusal_text(refusal: broker.Refusal) -> String {
   case refusal {
     broker.PolicyRefused(denial:) -> "policy refused: " <> denial.reason

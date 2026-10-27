@@ -153,6 +153,8 @@ pub fn classify(
   ctx: ClassifyCtx,
 ) -> Classification {
   let SettledAssistantMessage(message:) = settled
+
+  // Inspect the settled message envelope and classify by stop reason.
   case message {
     AssistantMessage(
       stop_reason:,
@@ -205,6 +207,7 @@ pub fn classify(
   }
 }
 
+/// Evaluates assistant stop reasons under running control into a classification.
 fn classify_running(
   stop_reason: message.StopReason,
   content: List(message.AssistantBlock),
@@ -257,6 +260,7 @@ const overflow_patterns = [
 /// overflow settlement itself; matches `overflow_patterns`.
 pub const overflow_message_prefix = "context window exceeded"
 
+/// Detects whether a provider error or length stop indicates context window overflow.
 fn is_overflow(
   stop_reason: message.StopReason,
   error_message: Option(String),
@@ -288,6 +292,7 @@ fn handle_valid(handle: DeferredHandle, ctx: ClassifyCtx) -> Bool {
   && handle.api == ctx.expected_api
 }
 
+/// Checks if any content block in an assistant response is a tool invocation.
 fn has_tool_calls(content: List(message.AssistantBlock)) -> Bool {
   list.any(content, fn(block) {
     case block {

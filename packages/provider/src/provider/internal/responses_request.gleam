@@ -114,6 +114,7 @@ pub fn subscription_body_with_options(
   encode_body(resolved, request, Subscription, access, tier)
 }
 
+/// Encodes a complete request payload into a JSON string according to API mode.
 fn encode_body(
   resolved: model.ResolvedModel,
   request: model.ProviderRequest,
@@ -121,15 +122,20 @@ fn encode_body(
   access: option.Option(model.CyberAccessProgram),
   tier: option.Option(model.ResponsesServiceTier),
 ) -> String {
+  // Encode system instructions if present.
   let system = case request.system {
     None -> []
     Some(text) -> [#("instructions", json.String(text))]
   }
+
+  // Map model thinking configuration into reasoning effort parameters.
   let reasoning = case resolved.thinking {
     model.ThinkingOff -> []
     model.ThinkingLow -> reasoning("low")
     model.ThinkingMedium -> reasoning("medium")
     model.ThinkingHigh -> reasoning("high")
+    model.ThinkingXHigh -> reasoning("xhigh")
+    model.ThinkingMax -> reasoning("max")
   }
 
   // Resolve token limits and output mode options.
@@ -137,6 +143,8 @@ fn encode_body(
     None -> resolved.max_output_tokens
     Some(count) -> count
   }
+
+  // Configure output mode options depending on PublicApi or Subscription mode.
   let output_options = case mode {
     PublicApi -> [
       #("tool_choice", json.String("auto")),
@@ -178,17 +186,21 @@ fn encode_body(
 
 // An omitted selection retains the server's entitlement-aware default. An
 // explicit selection is never inferred from a model name or replay metadata.
+/// Encodes optional cyber access program settings into payload fields.
 fn cyber_access(
   access: option.Option(model.CyberAccessProgram),
 ) -> List(#(String, JsonValue)) {
+  // Map access program option to its wire representation.
   case access {
     None -> []
     Some(program) -> {
+      // Translate program enum to access program identifier string.
       let value = case program {
         model.StandardCyberAccess -> "standard"
         model.DaybreakBlue -> "daybreak_blue"
         model.DaybreakRed -> "daybreak_red"
       }
+
       [#("access_programs", json.Object([#("cyber", json.String(value))]))]
     }
   }
@@ -197,6 +209,7 @@ fn cyber_access(
 // Only the typed operator selection reaches the wire. Omission preserves the
 // provider default and explicit default remains distinct from omission. Fast
 // uses the documented priority alias shared by public and subscription endpoints.
+/// Maps service tier selection to wire payload fields.
 fn service_tier(
   tier: option.Option(model.ResponsesServiceTier),
 ) -> List(#(String, JsonValue)) {
@@ -211,6 +224,7 @@ fn service_tier(
 
 // Subscription inference exposes one namespace of local functions. No provider
 // hosted tool or deferred tool discovery can expand the broker's authority.
+/// Encodes tool specifications into Responses function declarations.
 fn encode_tools(
   tools: List(model.ToolSpec),
   mode: RequestMode,
@@ -232,6 +246,8 @@ fn encode_tools(
         #("strict", json.Bool(False)),
       ])
     })
+
+  // Return flat functions for PublicApi or wrap in loom namespace for Subscription.
   case mode, functions {
     PublicApi, _ -> functions
     Subscription, [] -> []
@@ -249,6 +265,7 @@ fn encode_tools(
   }
 }
 
+/// Builds reasoning effort payload configuration.
 fn reasoning(effort: String) -> List(#(String, JsonValue)) {
   [
     #(
@@ -261,11 +278,13 @@ fn reasoning(effort: String) -> List(#(String, JsonValue)) {
   ]
 }
 
+/// Encodes an agent conversation message into Responses input items.
 fn encode_message(
   value: message.AgentMessage,
   mode: RequestMode,
   tools: List(model.ToolSpec),
 ) -> List(JsonValue) {
+  // Dispatch on message role to serialize appropriate wire representations.
   case value {
     message.UserMessage(content:, origin:, ..) -> [
       json.Object([
@@ -277,11 +296,14 @@ fn encode_message(
       ]),
     ]
     message.AssistantMessage(content:, api:, diagnostics:, ..) -> {
+      // Inspect diagnostics for recorded replay payloads.
       let replay = case api, diagnostics {
         "openai-responses", Some(diagnostics) -> replay(diagnostics, content)
         "codex-subscription", Some(diagnostics) -> replay(diagnostics, content)
         _, _ -> Error(Nil)
       }
+
+      // Replay recorded items with namespace adjustments or reconstruct from blocks.
       case replay {
         Ok(values) -> list.map(values, replay_namespace(_, mode, tools))
         Error(Nil) -> list.flat_map(content, assistant_block(_, mode, tools))
@@ -311,6 +333,7 @@ fn encode_message(
           ]),
         ]
       }
+
       [
         json.Object([
           #("type", json.String("function_call_output")),
@@ -323,6 +346,7 @@ fn encode_message(
   }
 }
 
+/// Validates and decodes diagnostic replay payload when size is bounded.
 fn replay(
   diagnostics: JsonValue,
   content: List(message.AssistantBlock),
@@ -384,6 +408,7 @@ fn image_part(data: String, mime: String) -> JsonValue {
   ])
 }
 
+/// Encodes a single assistant block into Responses wire items.
 fn assistant_block(
   value: message.AssistantBlock,
   mode: RequestMode,
@@ -429,6 +454,7 @@ fn assistant_block(
 // subscription route to an API-key route cannot leak "loom" onto its input
 // items. The subscription request does the opposite and fills in the namespace
 // that older records predate.
+/// Adjusts namespace fields on replayed function calls according to request mode.
 fn replay_namespace(
   value: JsonValue,
   mode: RequestMode,
@@ -440,6 +466,7 @@ fn replay_namespace(
   }
 }
 
+/// Strips namespace fields from function call objects for public API compatibility.
 fn without_namespace(value: JsonValue) -> JsonValue {
   case value {
     json.Object(fields) ->
@@ -460,13 +487,17 @@ fn without_namespace(value: JsonValue) -> JsonValue {
 // Older assistant records predate namespaces. Only a function explicitly
 // offered by this request receives Loom's namespace; foreign namespaces remain
 // opaque history and can never be relabelled as a local call.
+/// Attaches loom namespace to legacy unprefixed function calls.
 fn with_legacy_namespace(
   value: JsonValue,
   tools: List(model.ToolSpec),
 ) -> JsonValue {
+  // Match JSON object to check and attach missing loom namespace.
   case value {
     json.Object(fields) -> {
       let name = wire.string_field(value, "name")
+
+      // Verify call is a known function without namespace before injecting loom namespace.
       case
         wire.string_field(value, "type") == Ok("function_call")
         && wire.field(value, "namespace") == Error(Nil)

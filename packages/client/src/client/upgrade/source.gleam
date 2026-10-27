@@ -98,11 +98,14 @@ pub fn resolve_on(
     json.parse(text) |> result.replace_error("invalid reviewed manifest JSON"),
   )
   use artifact <- result.try(decode_manifest(document, release, manifest_digest))
+
+  // Decide how to handle let module =  artifact.identity.slot {.
   let module = case artifact.identity.slot {
     abi.SlotA -> "loom_scratch_a"
     abi.SlotB -> "loom_scratch_b"
     abi.Builtin -> "builtin"
   }
+
   use bytes <- result.try(fetch(base <> "/" <> module <> ".beam", artifact.size))
   use <- bool.guard(
     bit_array.byte_size(bytes) != artifact.size
@@ -129,11 +132,14 @@ type Decoded {
   Decoded(identity: abi.Identity, size: Int, accepts: List(String))
 }
 
+/// Establishes decode manifest for the caller, keeping its validation and result policy at this boundary.
 fn decode_manifest(document, release, _manifest_digest) {
+  // Decide how to handle use fields <- result.try( document {.
   use fields <- result.try(case document {
     json.Object(fields) -> Ok(fields)
     _ -> Error("reviewed manifest must be an object")
   })
+
   use <- bool.guard(
     list.any(fields, fn(field) {
       !list.contains(
@@ -166,6 +172,8 @@ fn decode_manifest(document, release, _manifest_digest) {
   use size <- result.try(number(fields, "size"))
   use sha256 <- result.try(text(fields, "sha256"))
   use declared <- result.try(field(fields, "accepts"))
+
+  // Decide how to handle use accepts <- result.try( declared {.
   use accepts <- result.try(case declared {
     json.Array(items) ->
       list.try_map(items, fn(item) {
@@ -176,6 +184,7 @@ fn decode_manifest(document, release, _manifest_digest) {
       })
     _ -> Error("reviewed migration source versions must be an array")
   })
+
   use <- bool.guard(
     schema != 1
       || repository != "Roasbeef/loom"
@@ -194,11 +203,14 @@ fn decode_manifest(document, release, _manifest_digest) {
     size <= 0 || size > 1_048_576 || !hexadecimal(sha256, 64),
     Error("reviewed BEAM bound or digest is invalid"),
   )
+
+  // Decide how to handle use slot <- result.try( module {.
   use slot <- result.try(case module {
     "loom_scratch_a" -> Ok(abi.SlotA)
     "loom_scratch_b" -> Ok(abi.SlotB)
     _ -> Error("reviewed module is outside the fixed component allowlist")
   })
+
   Ok(Decoded(
     abi.Identity(slot, version, sha256, state_version, boundary),
     size,
@@ -211,16 +223,22 @@ fn field(fields, key) {
   |> result.map_error(fn(_) { "reviewed manifest lacks " <> key })
 }
 
+/// Establishes text for the caller, keeping its validation and result policy at this boundary.
 fn text(fields, key) {
   use value <- result.try(field(fields, key))
+
+  // Decide how to handle value {.
   case value {
     json.String(value) -> Ok(value)
     _ -> Error("reviewed manifest field must be text: " <> key)
   }
 }
 
+/// Establishes number for the caller, keeping its validation and result policy at this boundary.
 fn number(fields, key) {
   use value <- result.try(field(fields, key))
+
+  // Decide how to handle value {.
   case value {
     json.Int(value) -> Ok(value)
     _ -> Error("reviewed manifest field must be an integer: " <> key)

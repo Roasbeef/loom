@@ -85,6 +85,7 @@ pub type Replacement {
 ///
 /// Capability: `fs.read`.
 pub fn read(path: String) -> Result(String, FsError) {
+  // Select capability name and arguments for virtual note vs filesystem path.
   let #(cap, args) = case string.starts_with(path, "note://") {
     True -> #(
       "notes.read",
@@ -92,6 +93,7 @@ pub fn read(path: String) -> Result(String, FsError) {
     )
     False -> #("fs.read", wire.args([#("path", wire.string(path))]))
   }
+
   use value <- result.try(
     dispatch.call(cap, args) |> result.map_error(map_error(_, path)),
   )
@@ -157,6 +159,7 @@ pub fn edit(
   |> result.map_error(map_error(_, path))
 }
 
+/// Encodes replacements into a msgpack array representation.
 fn encode_replacements(replacements: List(Replacement)) -> MsgPackValue {
   msgpack.ArrayValue(
     list.map(replacements, fn(replacement) {
@@ -174,6 +177,7 @@ fn decode_entry(value: MsgPackValue) -> Result(DirEntry, String) {
   Ok(DirEntry(name:, is_directory:))
 }
 
+/// Maps low-level channel errors into domain filesystem errors.
 fn map_error(error: CallError, path: String) -> FsError {
   case error {
     Unreachable(reason:) -> FsUnavailable(reason:)
@@ -191,8 +195,7 @@ fn map_error(error: CallError, path: String) -> FsError {
   }
 }
 
-// Virtual notes are readable values only; never reinterpret their names as
-// workspace paths when an operation has no note equivalent.
+/// Rejects note:// URIs for operations requiring regular filesystem paths.
 fn ordinary_path(path: String) -> Result(Nil, FsError) {
   case string.starts_with(path, "note://") {
     True ->

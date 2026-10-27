@@ -202,6 +202,8 @@ pub fn tool(advice: Advice) -> Tool {
   )
 }
 
+/// Executes the advise tool by decoding the verdict arguments, invoking the
+/// host advice judgment, and formatting the acknowledgement outcome.
 fn run(advice: Advice, ctx: Ctx, arguments: JsonValue) -> ToolOutcome {
   use verdict <- tool.with_arg(decode_verdict(arguments))
 
@@ -250,6 +252,7 @@ pub fn decode_verdict(arguments: JsonValue) -> Result(Verdict, String) {
     | json.Bool(..)
     | json.Null -> Error("the arguments must be a JSON object")
   })
+
   use word <- result.try(tool.required_string(arguments, "verdict"))
   use text <- result.try(tool.optional_string(arguments, "text"))
   verdict_of(word, option.unwrap(text, ""))
@@ -259,6 +262,7 @@ pub fn decode_verdict(arguments: JsonValue) -> Result(Verdict, String) {
 // `text: ""` with a nudge has said as little as one that omitted the
 // field, and giving the two different answers would only teach it that
 // the empty string is a way through.
+/// Decodes the verdict word and optional text payload into a structured `Verdict`.
 fn verdict_of(word: String, text: String) -> Result(Verdict, String) {
   case word, text {
     "quiet", "" -> Ok(Quiet)
@@ -297,6 +301,7 @@ fn verdict_of(word: String, text: String) -> Result(Verdict, String) {
 // was accepted. `Delivered` and `Downgraded` carry the host's own words
 // because only the host knows whether the primary had a run open and how
 // much of the cooldown is left.
+/// Formats the advisor acknowledgement into a human-readable confirmation string.
 fn ack_text(ack: Ack) -> String {
   case ack {
     Delivered(how:) -> "block delivered: " <> how

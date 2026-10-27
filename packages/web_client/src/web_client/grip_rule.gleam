@@ -208,11 +208,13 @@ pub fn contact(buttons: Int) -> Contact {
 /// assert grip_rule.adjustment("Tab", shell_rule.Free) == None
 /// ```
 pub fn adjustment(key: String, shift: Modifier) -> Option(Adjustment) {
+  // Choose coarse or fine adjustment based on shift modifier.
   let size = case shift {
     Held -> Coarse
     Free -> Fine
   }
 
+  // Map the navigation key to an adjustment direction.
   case key {
     "ArrowLeft" -> Some(Wider(size))
     "ArrowRight" -> Some(Narrower(size))
@@ -242,6 +244,7 @@ pub fn adjusted(width: Int, adjustment: Adjustment, room: Room) -> Int {
   let ceiling = ceiling(room)
   let width = clamp(width, ceiling)
 
+  // Apply the requested adjustment step clamped to the room boundary.
   case adjustment {
     Wider(size:) -> clamp(width + step(size), ceiling)
     Narrower(size:) -> clamp(width - step(size), ceiling)

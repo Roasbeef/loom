@@ -45,13 +45,17 @@ pub fn load_paste(text: String) -> Result(Option(Image), String) {
   }
 }
 
+/// Reads file info and loads an image if the path points to a valid image file.
 fn load_path(path: String) -> Result(Option(Image), String) {
+  // Stat the file to verify it exists and is accessible.
   use info <- result.try(case simplifile.file_info(path) {
     Ok(info) -> Ok(Some(info))
     Error(simplifile.Enoent) -> Ok(None)
     Error(error) ->
       Error("cannot inspect dropped file: " <> simplifile.describe_error(error))
   })
+
+  // When the path points to a regular file, inspect its image header.
   case info {
     None -> Ok(None)
     Some(info) ->
@@ -62,6 +66,7 @@ fn load_path(path: String) -> Result(Option(Image), String) {
   }
 }
 
+/// Inspects the file header bytes to determine if it is a supported media type.
 fn inspect_image(
   path: String,
   stated_size: Int,
@@ -70,12 +75,15 @@ fn inspect_image(
     ffi_file.read_prefix(path, 12)
     |> result.map_error(fn(reason) { "cannot read dropped file: " <> reason }),
   )
+
+  // Ensure the header magic bytes match a supported image type.
   case media_type(header) {
     None -> Ok(None)
     Some(_) -> read_image(path, stated_size)
   }
 }
 
+/// Reads the image payload up to the size limit and encodes it as base64.
 fn read_image(path: String, stated_size: Int) -> Result(Option(Image), String) {
   use _ <- result.try(admit_size(stated_size))
   use bytes <- result.try(
@@ -84,6 +92,8 @@ fn read_image(path: String, stated_size: Int) -> Result(Option(Image), String) {
   )
   let byte_size = bit_array.byte_size(bytes)
   use _ <- result.try(admit_size(byte_size))
+
+  // Confirm media type matches the full content and construct the Image record.
   case media_type(bytes) {
     None -> Ok(None)
     Some(mime_type) ->
@@ -143,6 +153,8 @@ pub fn media_type(bytes: BitArray) -> Option(String) {
 ///
 pub fn pasted_path(text: String) -> Option(String) {
   let text = string.trim(text)
+
+  // Parse quotation marks or unescape backslash-escaped spaces in path.
   case string.to_graphemes(text) {
     ["\"", ..rest] -> quoted_path(rest, "\"")
     ["'", ..rest] -> quoted_path(rest, "'")
@@ -151,6 +163,7 @@ pub fn pasted_path(text: String) -> Option(String) {
   }
 }
 
+/// Extracts the interior of a quote-wrapped path if balanced.
 fn quoted_path(graphemes: List(String), quote: String) -> Option(String) {
   case list.reverse(graphemes) {
     [last, ..rest] if last == quote ->
@@ -159,6 +172,7 @@ fn quoted_path(graphemes: List(String), quote: String) -> Option(String) {
   }
 }
 
+/// Unescapes backslash-escaped characters while rejecting unquoted whitespace.
 fn unescape_path(
   graphemes: List(String),
   reversed: List(String),
@@ -185,6 +199,7 @@ fn filename(path: String) -> String {
   |> last_non_empty(path)
 }
 
+/// Returns the trailing non-empty path component as the filename.
 fn last_non_empty(parts: List(String), fallback: String) -> String {
   case list.reverse(parts) {
     ["", ..rest] -> last_non_empty(list.reverse(rest), fallback)

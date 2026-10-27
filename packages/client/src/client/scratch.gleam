@@ -310,6 +310,8 @@ fn wedged() -> KvRefusal {
 // the same reason: `process.call` exits its *caller* on a timeout or a
 // dead callee, and this runs on a served-call process inside a live
 // execution, where a dead caller is a capability call that never settles.
+
+/// Establishes ask for the caller, keeping its validation and result policy at this boundary.
 fn ask(
   name: address.Address(Message),
   timeout_ms: Int,
@@ -324,6 +326,8 @@ fn ask(
 // Both the store's own requests and the upgrade controller's ABI calls reach
 // the actor through this one monitored call, so a dead or wedged store is the
 // same in-band refusal whichever door asked.
+
+/// Establishes ask subject for the caller, keeping its validation and result policy at this boundary.
 fn ask_subject(
   subject: Subject(Message),
   timeout_ms: Int,
@@ -354,6 +358,7 @@ pub fn handle_release(
   message: Message,
   reported_version: String,
 ) -> actor.Next(State, Message) {
+  // Decide how to handle message {.
   case message {
     abi.Get(key:, reply_with:) -> {
       process.send(reply_with, lookup(state.entries, key))
@@ -390,10 +395,12 @@ pub fn handle_release(
       actor.continue(result.unwrap(accepted, state))
     }
     abi.Disarm(token:, reply_with:) -> {
+      // Decide how to handle let permit =  state.permit {.
       let permit = case state.permit {
         Some(permit) if permit.token == token -> None
         other -> other
       }
+
       process.send(reply_with, Nil)
       actor.continue(abi.State(..state, permit:))
     }
@@ -414,12 +421,16 @@ fn lookup(entries: List(abi.Entry), key: String) -> Option(BitArray) {
 // value first is what makes the accounting right for an overwrite — the
 // old bytes are gone before the new ones are counted — and it is also
 // what makes a re-`set` refresh the entry's position in the write order.
+
+/// Establishes store for the caller, keeping its validation and result policy at this boundary.
 fn store(
   state: State,
   key: String,
   value: BitArray,
 ) -> #(State, Result(Nil, KvRefusal)) {
   let bytes = bit_array.byte_size(value)
+
+  // Decide how to handle bytes > state.max_entry_bytes {.
   case bytes > state.max_entry_bytes {
     True -> #(state, Error(EntryTooLarge(bytes:, limit: state.max_entry_bytes)))
     False -> {
@@ -436,6 +447,7 @@ fn store(
   }
 }
 
+/// Establishes remove for the caller, keeping its validation and result policy at this boundary.
 fn remove(state: State, key: String) -> State {
   case list.find(state.entries, fn(entry) { entry.key == key }) {
     Error(Nil) -> state
@@ -456,6 +468,8 @@ fn remove(state: State, key: String) -> State {
 // bounds (a value larger than `max_total_bytes` cannot get here — the
 // per-entry bound refuses it first, and `Bounds` requires the per-entry
 // bound to be the smaller of the two).
+
+/// Establishes evict for the caller, keeping its validation and result policy at this boundary.
 fn evict(state: State) -> State {
   case
     state.total_bytes > state.max_total_bytes || state.count > state.max_entries
@@ -532,22 +546,33 @@ pub fn disarm(
   |> result.replace_error("scratch permit retirement unavailable")
 }
 
+/// Establishes admit for the caller, keeping its validation and result policy at this boundary.
 fn admit(state: State, permit: abi.Permit) -> Result(State, String) {
+  // Decide how to handle use _ <- result.try( host.monotonic_time_ms() < permit.expires_at {.
   use _ <- result.try(case host.monotonic_time_ms() < permit.expires_at {
     True -> Ok(Nil)
     False -> Error("scratch admission expired before delivery")
   })
+
+  // Decide how to handle use _ <- result.try( state.permit {.
   use _ <- result.try(case state.permit {
     None -> Ok(Nil)
     Some(_) -> Error("scratch already has an admitted upgrade")
   })
 
   // Verify matching target boundary version before admitting upgrade.
+
+  // Resolve this protocol branch before advancing the surrounding operation.
+
+  // Validate this branch before continuing, preserving the owning operation’s failure boundary.
   use _ <- result.try(case permit.expected == state.identity {
     True -> Ok(Nil)
     False -> Error("scratch implementation differs from expected identity")
   })
+
+  // Resolve this branch before continuing the surrounding operation.
   use _ <- result.try(
+    // Decide how to handle the branch input.
     case
       permit.target.boundary == "loom.scratch.v1"
       && permit.target.state_version == "v1"
@@ -556,21 +581,29 @@ fn admit(state: State, permit: abi.Permit) -> Result(State, String) {
       False -> Error("scratch target uses an incompatible typed boundary")
     },
   )
+
   Ok(abi.State(..state, permit: Some(permit)))
 }
 
+/// Establishes migrate for the caller, keeping its validation and result policy at this boundary.
 fn migrate(
   request: upgrade.Request,
   state: State,
 ) -> Result(actor.Migration(State, Message), String) {
+  // Decide how to handle use permit <- result.try( state.permit {.
+
+  // Validate this branch before continuing, preserving the owning operation’s failure boundary.
   use permit <- result.try(case state.permit {
     Some(permit) -> Ok(permit)
     None -> Error("scratch has no admitted reviewed upgrade")
   })
+
   use token <- result.try(
     decode.run(request.extra, decode.string)
     |> result.replace_error("invalid scratch transaction token"),
   )
+
+  // Decide how to handle the branch input.
   use _ <- result.try(
     case
       token == permit.token
@@ -581,7 +614,10 @@ fn migrate(
       False -> Error("scratch migration is stale or expired")
     },
   )
+
+  // Check the reviewed migration token and target identity before loading the candidate.
   use _ <- result.try(
+    // Decide how to handle native.module_matches(request.module, permit.target.slot) {.
     case native.module_matches(request.module, permit.target.slot) {
       True -> Ok(Nil)
       False -> Error("scratch migration names a different implementation slot")
@@ -593,16 +629,23 @@ fn migrate(
     abi.Builtin -> Ok(state)
     abi.SlotA | abi.SlotB -> native.migrate(permit.target.slot, state)
   })
+
   use _ <- result.try(validate_candidate(state, candidate))
+
+  // Decide how to handle use _ <- result.try( host.monotonic_time_ms() < permit.expires_at {.
   use _ <- result.try(case host.monotonic_time_ms() < permit.expires_at {
     True -> Ok(Nil)
     False -> Error("scratch migration expired before candidate commit")
   })
+
   let candidate = abi.State(..candidate, identity: permit.target, permit: None)
+
+  // Decide how to handle let handler =  permit.target.slot {.
   let handler = case permit.target.slot {
     abi.Builtin -> handle
     abi.SlotA | abi.SlotB -> native.handler(permit.target.slot)
   }
+
   Ok(actor.Migration(
     state: candidate,
     on_message: handler,
@@ -612,6 +655,7 @@ fn migrate(
   ))
 }
 
+/// Establishes validate candidate for the caller, keeping its validation and result policy at this boundary.
 fn validate_candidate(before: State, after: State) -> Result(Nil, String) {
   // This component's migration changes implementation only, preserving every KV entry.
   case

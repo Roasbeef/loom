@@ -101,6 +101,8 @@ pub fn workspace(value: String) -> Workspace {
     && list.all(string.to_graphemes(value), fn(digit) {
       string.contains("0123456789abcdef", digit)
     })
+
+  // Tag 64-character hexadecimal hashes as identified workspaces.
   case digest {
     True -> Identified(value)
     False -> Anonymous
@@ -227,10 +229,7 @@ pub fn restore(stored: Result(String, Nil)) -> Layout {
 }
 
 // The stored object as a layout. A field that is missing takes the default,
-// and so does a word that names nothing, because a tab that a later release
-// removed must not discard the columns' state beside it. A field of the
-// wrong type, or a value that is not an object, fails the decoder, and
-// `restore` answers the whole default.
+/// Decodes persisted shell layout state with fallback defaults.
 fn layout_decoder() -> decode.Decoder(Layout) {
   let fallback = shell_rule.initial()
   use sidebar <- decode.optional_field(
@@ -266,6 +265,7 @@ fn state_word(state: State) -> String {
   }
 }
 
+/// Parses open or closed panel/sidebar state from string words.
 fn state_of(word: String) -> Result(State, Nil) {
   case word {
     "open" -> Ok(Open)
@@ -274,6 +274,7 @@ fn state_of(word: String) -> Result(State, Nil) {
   }
 }
 
+/// Converts panel tab identifier to serialized string word.
 fn tab_word(tab: Tab) -> String {
   case tab {
     Strands -> "strands"
@@ -285,6 +286,7 @@ fn tab_word(tab: Tab) -> String {
   }
 }
 
+/// Parses panel tab identifier from serialized string word.
 fn tab_of(word: String) -> Result(Tab, Nil) {
   case word {
     "strands" -> Ok(Strands)

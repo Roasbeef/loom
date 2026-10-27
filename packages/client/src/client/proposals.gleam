@@ -413,6 +413,7 @@ pub fn channel(wiring: Wiring) -> bus.SessionKey {
 // releases the lease whatever `run` answers, so no path leaves it held and
 // refuses every later caller. A lease someone else holds is a `MemoryHeld`
 // handed to `refused`, and nothing has been read or written.
+/// Records a proposal as held by its current owner.
 fn holding(
   wiring: Wiring,
   refused: fn(MemoryFault) -> failure,
@@ -465,6 +466,7 @@ pub fn submit(
   proposal.id
 }
 
+/// Persists a new proposal and its source metadata.
 fn filed(
   wiring: Wiring,
   submission: propose.Submission,
@@ -506,6 +508,7 @@ fn submit_refusal(fault: MemoryFault) -> propose.Refusal {
 // The kind, the stored target and the path to read for what a submission names:
 // the rules file, or the configuration this session loaded. The model chooses
 // between the two and never names a path.
+/// Resolves the target affected by a proposal.
 fn targeted(
   wiring: Wiring,
   target: propose.Target,
@@ -519,6 +522,7 @@ fn targeted(
   }
 }
 
+/// Decodes proposal details from the stored record.
 fn proposal_from(
   wiring: Wiring,
   submission: propose.Submission,
@@ -545,6 +549,7 @@ fn proposal_from(
 // writer and is reported rather than overwriting a proposal a person may be
 // reading. Forty bits of entropy make a collision a once-in-a-trillion event,
 // and a retry costs the model one sentence, so there is no retry loop here.
+/// Claims a pending proposal for one decision operation.
 fn claim(opened: Opened, proposal: Proposal) -> Result(Nil, propose.Refusal) {
   let key = key_of(proposal.id)
   storage.commit(
@@ -567,6 +572,7 @@ fn claim(opened: Opened, proposal: Proposal) -> Result(Nil, propose.Refusal) {
 }
 
 // Forty bits of the entropy source, as ten lowercase hexadecimal digits.
+/// Builds a stable proposal identifier from its source.
 fn mint_id(entropy: Int) -> String {
   let digits =
     int.bitwise_and(entropy, 0xFFFFFFFFFF)
@@ -633,11 +639,14 @@ pub fn listing(wiring: Wiring) -> Result(Listing, String) {
 // The store is read the way the memory overview reads it: through the
 // identity-checked, lease-free path, never opened. A store with no identity
 // yet has had no first write, so it holds no proposals.
+/// Reads the proposal and its adjacent source artifacts as one bounded view.
 fn read_beside(path: String) -> Result(Listing, String) {
   use #(identity, _parent) <- result.try(
     sqlite.identity(path:)
     |> result.map_error(fn(error) { unreadable(string.inspect(error)) }),
   )
+
+  // The proposal's sibling files determine whether its source context is complete.
   case identity {
     None -> Ok(listing_of([]))
     Some(text) -> {
@@ -661,6 +670,7 @@ fn read_beside(path: String) -> Result(Listing, String) {
 
 // The same read under the writer lease, for a caller that is about to write
 // on what it saw.
+/// Decodes the pending proposal queue from storage.
 fn queue_in(opened: Opened) -> Result(Listing, String) {
   storage.list_registers(
     opened.session.store,
@@ -675,6 +685,7 @@ fn unreadable(reason: String) -> String {
   "the proposal queue could not be read: " <> reason
 }
 
+/// Builds the caller-visible proposal listing.
 fn listing_of(cells: List(#(String, storage.Register))) -> Listing {
   let rows =
     cells
@@ -725,6 +736,7 @@ pub fn decide(
   settled
 }
 
+/// Resolves the stored proposal state after a decision.
 fn resolved(
   wiring: Wiring,
   id: String,
@@ -732,6 +744,8 @@ fn resolved(
 ) -> Result(Proposal, DecideRefusal) {
   use opened <- holding(wiring, decide_refusal)
   use proposal <- result.try(read_pending(opened, id))
+
+  // The proposal state determines whether a recorded decision is final.
   case decision {
     Reject -> settle(opened, proposal, Rejected)
     Approve -> approve(opened, wiring, proposal)
@@ -745,11 +759,14 @@ fn decide_refusal(fault: MemoryFault) -> DecideRefusal {
   }
 }
 
+/// Loads and validates a pending proposal before approval.
 fn read_pending(opened: Opened, id: String) -> Result(Proposal, DecideRefusal) {
   use cell <- result.try(
     memory.cell(opened, key_of(id))
     |> result.map_error(fn(fault) { Unavailable(fault_text(fault)) }),
   )
+
+  // The pending proposal record determines whether approval can proceed.
   case cell {
     None -> Error(NoSuchProposal)
     Some(#(value, _seq)) ->
@@ -769,6 +786,7 @@ fn read_pending(opened: Opened, id: String) -> Result(Proposal, DecideRefusal) {
 // order that gives the better reason: the digest says the file moved at all,
 // and a failed match says the moved file no longer holds the text to replace.
 // Either one settles the proposal as stale and writes nothing.
+/// Commits approval for a pending proposal under its claimed identity.
 fn approve(
   opened: Opened,
   wiring: Wiring,
@@ -781,6 +799,8 @@ fn approve(
     read_target(proposal.kind, path) |> result.map_error(CannotApply),
   )
   let #(now, _clock) = clock.read(wiring.clock)
+
+  // The current proposal and authorization determine whether approval is committed.
   case
     current.digest == proposal.base_digest,
     loadable(wiring, current, proposal, now)
@@ -804,6 +824,7 @@ fn approve(
 // configuration edit the deciding session's own configuration, which must be
 // the file the proposal names. A row naming any other file is refused here, so
 // the host only ever writes a file it already loads.
+/// Checks whether the proposal target is within the writable authority.
 fn writable(wiring: Wiring, proposal: Proposal) -> Result(String, String) {
   case proposal.kind, wiring.config {
     Rule, _ -> Ok(wiring.rules_path)
@@ -819,6 +840,7 @@ fn writable(wiring: Wiring, proposal: Proposal) -> Result(String, String) {
 
 // `edited`, and then, for a configuration, the session's own loader over the
 // result: the text a person approves must open the session it reloads.
+/// Checks whether the proposal source can be loaded safely.
 fn loadable(
   wiring: Wiring,
   current: Rules,
@@ -826,6 +848,8 @@ fn loadable(
   now: Int,
 ) -> Result(String, EditRefusal) {
   use text <- result.try(edited(current, proposal, now))
+
+  // The proposal source determines whether it can be loaded safely.
   case proposal.kind, wiring.config {
     Rule, _ -> Ok(text)
     Config, Some(config) ->
@@ -838,6 +862,7 @@ fn loadable(
 // The decision and the retirement of old rows are one commit, so the prefix
 // is never seen over its bound by a reader that comes between them, and a
 // failed commit leaves the proposal pending.
+/// Finalizes the proposal after its durable decision has been recorded.
 fn settle(
   opened: Opened,
   proposal: Proposal,
@@ -870,6 +895,7 @@ fn settle(
 // row just settled is never retired: approving an old pending proposal while
 // a full page of newer rows is decided would otherwise sort it past the cut
 // and delete the owner's decision in the call that recorded it.
+/// Lists proposal identifiers that have been retired from the queue.
 fn retired_ids(held: List(Proposal), settled: Proposal) -> List(String) {
   held
   |> list.map(fn(row) {
@@ -886,6 +912,7 @@ fn retired_ids(held: List(Proposal), settled: Proposal) -> List(String) {
 
 // One info line per committed transition. It names the decision, the kind
 // and the id, and nothing the model wrote.
+/// Encodes a proposal record for durable storage.
 fn record(wiring: Wiring, decision: String, proposal: Proposal) -> Nil {
   log.info(wiring.logger, "memory.proposal", [
     field.text(key: "decision", value: decision),
@@ -963,6 +990,7 @@ pub fn read_rules(path: String) -> Result(Rules, String) {
 
 // The file a proposal edits, read under its kind's bound. A configuration must
 // exist: the session loaded it, and an edit of a file that has gone is stale.
+/// Reads the file targeted by a proposal under its source scope.
 fn read_target(kind: Kind, path: String) -> Result(Rules, String) {
   case kind {
     Rule -> read_rules(path)
@@ -976,6 +1004,7 @@ fn read_target(kind: Kind, path: String) -> Result(Rules, String) {
   }
 }
 
+/// Reads and validates one proposal source file.
 fn read_file(
   path: String,
   bound: Int,
@@ -1017,6 +1046,7 @@ pub fn write_rules(path: String, text: String) -> Result(Nil, String) {
 // A configuration is replaced the same way, keeping the permission bits it had.
 // A symbolic link is refused rather than replaced: the rename would put a copy
 // where the operator's link was, and the link's target would not change.
+/// Writes the proposal to its authorized target path.
 fn write_target(kind: Kind, path: String, text: String) -> Result(Nil, String) {
   use <- bool.lazy_guard(when: kind == Rule, return: fn() {
     write_rules(path, text)
@@ -1039,6 +1069,7 @@ fn write_target(kind: Kind, path: String, text: String) -> Result(Nil, String) {
   |> result.map_error(failed)
 }
 
+/// Writes proposal bytes to the selected destination.
 fn write_file(
   path: String,
   text: String,
@@ -1049,10 +1080,13 @@ fn write_file(
     simplifile.create_directory_all(filepath.directory_name(path)),
   )
   use Nil <- result.try(simplifile.write(staged, text))
+
+  // The destination state determines whether the proposal file can be written.
   use Nil <- result.try(case mode {
     Some(bits) -> simplifile.set_permissions_octal(staged, bits)
     None -> Ok(Nil)
   })
+
   simplifile.rename(at: staged, to: path)
 }
 
@@ -1088,6 +1122,8 @@ pub fn edited(
     when: fenced(proposal.new) || fenced(proposal.old),
     return: Error(Fenced),
   )
+
+  // The edit result determines whether the proposal stays pending or is completed.
   use text <- result.try(case proposal.old {
     "" -> Ok(appended(current.text, proposal, approved_ms))
     old ->
@@ -1097,11 +1133,14 @@ pub fn edited(
         many -> Error(Ambiguous(count: list.length(many) - 1))
       }
   })
+
   use <- bool.guard(
     when: fenced(text) && !fenced(current.text),
     return: Error(Fenced),
   )
   let size = bit_array.byte_size(<<text:utf8>>)
+
+  // The edit result determines whether the proposal stays pending or is completed.
   case size > limit(proposal.kind) {
     True -> Error(TooLarge(bytes: size))
     False -> Ok(text)
@@ -1120,6 +1159,7 @@ fn limit(kind: Kind) -> Int {
 // A rule is appended under a header naming where it came from, which the prompt
 // shows. A configuration edit is TOML the prompt never carries, so it is
 // appended as written.
+/// Records the result of appending proposal content.
 fn appended(text: String, proposal: Proposal, approved_ms: Int) -> String {
   use <- bool.lazy_guard(when: proposal.kind == Config, return: fn() {
     case string.trim_end(text) {
@@ -1137,6 +1177,8 @@ fn appended(text: String, proposal: Proposal, approved_ms: Int) -> String {
     <> ")\n\n"
     <> string.trim(proposal.new)
     <> "\n"
+
+  // The append result determines whether the proposal record is durable.
   case text {
     "" -> rule
     _ -> string.trim_end(text) <> "\n\n" <> rule
@@ -1144,6 +1186,7 @@ fn appended(text: String, proposal: Proposal, approved_ms: Int) -> String {
 }
 
 // The UTC calendar date of a millisecond timestamp, as `YYYY-MM-DD`.
+/// Extracts the proposal date from its stored identity.
 fn date_of(ms: Int) -> String {
   let #(date, _time) =
     timestamp.from_unix_seconds(ms / 1000)
@@ -1187,6 +1230,7 @@ pub fn describe(refusal: EditRefusal) -> String {
 }
 
 // `describe`, worded for the file a proposal of this kind edits.
+/// Builds the user-facing description of a proposal.
 fn described(kind: Kind, refusal: EditRefusal) -> String {
   case kind, refusal {
     Config, NotFound ->
@@ -1279,6 +1323,7 @@ pub fn encode(proposal: Proposal) -> JsonValue {
   ])
 }
 
+/// Encodes the proposal source metadata.
 fn encode_source(source: Source) -> JsonValue {
   json.Object(
     list.append([#("session", json.String(source.session))], case source.entry {
@@ -1306,6 +1351,7 @@ pub fn decode(value: JsonValue) -> Result(Proposal, String) {
   }
 }
 
+/// Decodes proposal fields and rejects malformed or incomplete records.
 fn decode_fields(
   fields: List(#(String, JsonValue)),
 ) -> Result(Proposal, String) {
@@ -1330,10 +1376,13 @@ fn decode_fields(
     |> result.replace_error("`source` is missing")
     |> result.try(decode_source),
   )
+
+  // The field set determines whether a proposal record is structurally valid.
   use created_ms <- result.try(case list.key_find(fields, "created_ms") {
     Ok(json.Int(ms)) if ms >= 0 -> Ok(ms)
     _ -> Error("`created_ms` is not a non-negative integer")
   })
+
   use state <- result.try(text_field(fields, "state") |> result.try(state_of))
   Ok(Proposal(
     id:,
@@ -1349,10 +1398,14 @@ fn decode_fields(
   ))
 }
 
+/// Decodes the source variant recorded for a proposal.
 fn decode_source(value: JsonValue) -> Result(Source, String) {
+  // The source variant determines how proposal content is decoded.
   case value {
     json.Object(fields) -> {
       use session <- result.try(text_field(fields, "session"))
+
+      // The source variant determines how proposal content is decoded.
       case list.key_find(fields, "entry") {
         Error(Nil) -> Ok(Source(session:, entry: None))
         Ok(json.String(entry)) -> Ok(Source(session:, entry: Some(entry)))
@@ -1363,6 +1416,7 @@ fn decode_source(value: JsonValue) -> Result(Source, String) {
   }
 }
 
+/// Reads a required text field from a proposal value.
 fn text_field(
   fields: List(#(String, JsonValue)),
   name: String,
@@ -1381,6 +1435,7 @@ fn kind_name(kind: Kind) -> String {
   }
 }
 
+/// Decodes the proposal kind from its stored representation.
 fn kind_of(name: String) -> Result(Kind, String) {
   case name {
     "rule" -> Ok(Rule)
@@ -1406,6 +1461,7 @@ pub fn state_name(state: State) -> String {
   }
 }
 
+/// Decodes the proposal state from its stored representation.
 fn state_of(name: String) -> Result(State, String) {
   case name {
     "pending" -> Ok(Pending)
@@ -1464,11 +1520,14 @@ const board_overhead_bytes = 128
 // Drops the oldest decided row, or the oldest pending one when none is
 // decided, until the rows' encoded sizes fit the budget. The rows arrive
 // newest first, so the oldest is the last.
+/// Checks that the proposal representation fits within its output bound.
 fn fit(
   rows: List(#(Proposal, JsonValue, Int)),
   budget: Int,
 ) -> List(#(Proposal, JsonValue, Int)) {
   let total = list.fold(rows, 0, fn(sum, row) { sum + row.2 })
+
+  // The proposal contents determine whether its description fits the response bound.
   case total > budget, list.reverse(rows) {
     False, _ | True, [] -> rows
     True, oldest_first ->
@@ -1479,6 +1538,7 @@ fn fit(
   }
 }
 
+/// Removes the oldest decided proposal when the queue exceeds its bound.
 fn drop_first_decided(
   oldest_first: List(#(Proposal, JsonValue, Int)),
 ) -> List(#(Proposal, JsonValue, Int)) {
@@ -1493,6 +1553,7 @@ fn is_decided(row: #(Proposal, JsonValue, Int)) -> Bool {
   proposal.state != Pending
 }
 
+/// Removes the first matching proposal identifier from the list.
 fn remove_first(items: List(a), matches: fn(a) -> Bool) -> List(a) {
   case items {
     [] -> []

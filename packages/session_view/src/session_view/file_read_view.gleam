@@ -17,9 +17,13 @@ import gleam/string
 /// ```
 pub fn render(text: String) -> String {
   let lines = string.split(text, "\n")
+
+  // Strip the leading digest line if present.
   let lines = case lines {
     [first, ..rest] -> {
       let digest = string.drop_start(first, 8)
+
+      // Drop the line if it is a valid digest header.
       case string.starts_with(first, "digest: ") && valid_digest(digest) {
         True -> rest
         False -> lines
@@ -27,6 +31,7 @@ pub fn render(text: String) -> String {
     }
     [] -> []
   }
+
   lines
   |> list.map(fn(line) { result.unwrap(source_line(line), line) })
   |> string.join("\n")
@@ -65,8 +70,8 @@ pub fn without_fresh_anchors(text: String) -> String {
   }
 }
 
-// Split only the framing delimiters. Colons, pipes and whitespace after the
-// anchor belong to the file and must survive exactly as recorded.
+/// Split only the framing delimiters. Colons, pipes and whitespace after the
+/// anchor belong to the file and must survive exactly as recorded.
 fn source_line(line: String) -> Result(String, Nil) {
   use #(number, rest) <- result.try(string.split_once(line, ":"))
   use #(anchor, source) <- result.try(string.split_once(rest, "|"))
@@ -75,6 +80,7 @@ fn source_line(line: String) -> Result(String, Nil) {
   Ok(number <> " │ " <> source)
 }
 
+/// Validates the format of an edit digest string (hex hash and byte size).
 fn valid_digest(value: String) -> Bool {
   let parsed = {
     use #(hash, bytes) <- result.try(string.split_once(value, "-"))

@@ -1924,6 +1924,26 @@ fn field_of(
 
 // Switching model is not a request to un-raise a reasoning budget
 // somebody deliberately raised. A client that wants both sends both keys.
+pub fn set_config_extended_thinking_levels_test() {
+  let harness = start_harness_with(catalog: Some(test_catalog()))
+  subscribe(harness)
+  list.each([#(80, "xhigh"), #(81, "max")], fn(pair) {
+    send(
+      harness,
+      pair.0,
+      protocol.SetConfig(
+        strand: Some("main"),
+        config: json.Object([#("thinking_level", json.String(pair.1))]),
+      ),
+    )
+    let envelope = next(harness)
+    assert envelope.reply_to == Some(pair.0)
+    let assert protocol.SnapshotEvent(protocol.ConfigSnapshot(config:)) =
+      envelope.event
+    assert field_of(config, "thinking_level") == Ok(json.String(pair.1))
+  })
+}
+
 pub fn set_config_model_name_leaves_thinking_level_alone_test() {
   let harness = start_harness_with(catalog: Some(test_catalog()))
   subscribe(harness)
@@ -2952,7 +2972,19 @@ pub fn gateway_approve_wakes_strand_when_escalation_detached_async_test() {
   let assert protocol.EscalationEvent(record:) = reply.event
   assert record.status == "approved"
   assert stored(harness, "esc-async").status == durable.Approved
-  assert notice.activity(harness.runtime, "main") == Ok(notice.Busy)
+
+  // The wake is delivered before the reply is sent, but the run it opens is
+  // not a lasting state to read back: this harness's settling provider answers
+  // at once, so the strand is Busy only for an instant and Idle again by the
+  // time a loaded scheduler lets the test look. The durable witness is the
+  // notice's mark, which the runtime spends in the same transaction that
+  // admits the run, so it is present exactly when the wake happened and stays.
+  let assert Ok(Some(_)) =
+    api.fact(
+      harness.runtime,
+      notice.key(notice.Escalation(id: "esc-async", seq: displayed.seq)),
+    )
+    as "the approval must have woken the idle strand and spent its notice mark"
 }
 
 pub fn delayed_deny_cannot_answer_reopened_same_action_test() {

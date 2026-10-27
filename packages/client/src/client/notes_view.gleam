@@ -55,19 +55,23 @@ pub fn read(
 
 // Each row is charged by encoded bytes, including JSON escaping. The next
 // omitted row terminates the prefix, so ordering remains newest first.
+/// Routes bounded rows across the owner-backed code-mode capability boundary.
 fn bounded_rows(
   cells: List(snapshot.Cell),
   prefix: String,
   reversed: List(json.JsonValue),
   used: Int,
 ) -> List(json.JsonValue) {
+  // bounded rows handles the cells outcomes before continuing the operation.
   case cells {
     [] -> list.reverse(reversed)
     [cell, ..rest] -> {
+      // bounded rows handles the the selected value outcomes before continuing the operation.
       let raw = case cell.register.value.payload {
         json.String(text) -> text
         value -> json.to_string(value)
       }
+
       let bytes = bit_array.from_string(raw)
       let excerpt =
         utf8_prefix(bytes, int.min(bit_array.byte_size(bytes), 4096), 4)
@@ -87,6 +91,8 @@ fn bounded_rows(
             }),
           ),
         ])
+
+      // bounded rows handles the transfer.encoded_size(row, 48_000 - used) outcomes before continuing the operation.
       case transfer.encoded_size(row, 48_000 - used) {
         Error(_) -> list.reverse(reversed)
         Ok(size) ->
@@ -96,6 +102,7 @@ fn bounded_rows(
   }
 }
 
+/// Builds utf8 prefix for the client boundary without widening its stored state.
 fn utf8_prefix(bytes: BitArray, size: Int, attempts: Int) -> String {
   case attempts {
     0 -> ""

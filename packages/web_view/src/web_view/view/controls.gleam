@@ -103,8 +103,8 @@ pub fn dock(bar: Bar(message)) -> Element(message) {
   }
 }
 
-// The line itself: the goal's first row of words and its one steering
-// button, keyed by the status so a change of status arms the row afresh.
+/// The line itself: the goal's first row of words and its one steering
+/// button, keyed by the status so a change of status arms the row afresh.
 fn dock_line(
   pinned: goal_view.Board,
   status: goal_view.Status,
@@ -129,11 +129,11 @@ fn dock_line(
   ])
 }
 
-// The goal's buttons, beside the Session tab's Goal row, which words the goal;
-// they are the ones its status offers:
-// a goal that is running can be held, one that is held or stopped short can
-// continue, and any goal can be cleared. The row is keyed by the status, so
-// a change of status is a new row and arms again.
+/// The goal's buttons, beside the Session tab's Goal row, which words the goal;
+/// they are the ones its status offers:
+/// a goal that is running can be held, one that is held or stopped short can
+/// continue, and any goal can be cleared. The row is keyed by the status, so
+/// a change of status is a new row and arms again.
 fn goal(bar: Bar(message)) -> Element(message) {
   case bar.goal {
     None -> element.none()
@@ -157,7 +157,7 @@ fn goal(bar: Bar(message)) -> Element(message) {
   }
 }
 
-// The one button that steers the goal's loop, chosen by the status.
+/// The one button that steers the goal's loop, chosen by the status.
 fn steering(status: goal_view.Status, bar: Bar(message)) -> Element(message) {
   case status {
     goal_view.Active -> button("control-pause", "Pause goal", bar.pause)
@@ -167,6 +167,7 @@ fn steering(status: goal_view.Status, bar: Bar(message)) -> Element(message) {
   }
 }
 
+/// Button helper.
 fn button(class: String, label: String, message: message) -> Element(message) {
   html.button(
     [
@@ -178,9 +179,9 @@ fn button(class: String, label: String, message: message) -> Element(message) {
   )
 }
 
-// A disclosure holding one form. Whether it is open is the browser's, as a
-// fold's is, and the form is the operator's uncontrolled input, sent by its
-// own submit.
+/// A disclosure holding one form. Whether it is open is the browser's, as a
+/// fold's is, and the form is the operator's uncontrolled input, sent by its
+/// own submit.
 fn disclosure(
   summary: String,
   kind: Attribute(message),
@@ -203,6 +204,7 @@ fn disclosure(
   ])
 }
 
+/// Fork helper.
 fn fork(bar: Bar(message)) -> Element(message) {
   disclosure(
     "Fork",

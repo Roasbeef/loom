@@ -142,9 +142,7 @@ fn queue_push(queue: Queue(a), item: a) -> Queue(a) {
   Queue(..queue, back: [item, ..queue.back], len: queue.len + 1)
 }
 
-// Pops the oldest item, if any. Reversing `back` onto an empty `front` is
-// the one O(n) step this structure ever pays, and it is amortised: each
-// item is reversed at most once across its whole lifetime in the queue.
+/// Pops the oldest item, if any, reversing the queue back list when needed.
 fn queue_pop(queue: Queue(a)) -> Result(#(a, Queue(a)), Nil) {
   case queue.front {
     [item, ..rest] ->
@@ -176,10 +174,12 @@ pub fn spawn_bounded(
   mailbox_limit: Int,
   handler: fn(state, msg) -> Next(state),
 ) -> Result(Address(state, msg), ActorError) {
+  // Enforce a minimum mailbox capacity of at least one message.
   let bound = case mailbox_limit < 1 {
     True -> 1
     False -> mailbox_limit
   }
+
   actor.new_with_initialiser(init_timeout_ms, fn(subject) {
     let state =
       Runner(
@@ -220,6 +220,8 @@ pub fn call(
   let reply_subject = process.new_subject()
   let message = build(Reply(subject: reply_subject))
   use _ <- result.try(admit(address.subject, UserMsg(message)))
+
+  // Await reply from the actor within the specified timeout.
   case process.receive(reply_subject, timeout) {
     Ok(value) -> Ok(value)
     Error(Nil) -> Error(NoReply)
@@ -239,6 +241,8 @@ pub fn get(
 ) -> Result(state, ActorError) {
   let reply_subject = process.new_subject()
   use _ <- result.try(admit(address.subject, Query(reply: reply_subject)))
+
+  // Await current state reply from the actor within timeout.
   case process.receive(reply_subject, timeout) {
     Ok(state) -> Ok(state)
     Error(Nil) -> Error(NoReply)
@@ -250,20 +254,22 @@ pub fn shutdown(address: Address(state, msg)) -> Nil {
   process.send(address.subject, Halt)
 }
 
-// Admission: send an Admit and block on its ack. Returns Error when the
-// mailbox stays full past the timeout.
+/// Submits an item for admission and awaits acknowledgment under timeout.
 fn admit(
   subject: Subject(In(state, msg)),
   item: Item(state, msg),
 ) -> Result(Nil, ActorError) {
   let ack = process.new_subject()
   process.send(subject, Admit(item:, ack:))
+
+  // Await admission acknowledgment or report mailbox timeout.
   case process.receive(ack, admit_timeout_ms) {
     Ok(Nil) -> Ok(Nil)
     Error(Nil) -> Error(MailboxTimeout)
   }
 }
 
+/// Actor message loop dispatching incoming messages.
 fn run(
   state: Runner(state, msg),
   message: In(state, msg),
@@ -275,6 +281,7 @@ fn run(
   }
 }
 
+/// Handles an admission request, adding to the queue or parking the sender.
 fn handle_admit(
   state: Runner(state, msg),
   item: Item(state, msg),
@@ -295,6 +302,7 @@ fn handle_admit(
   }
 }
 
+/// Processes the next item from the queue, advancing or stopping the actor.
 fn handle_drain(
   state: Runner(state, msg),
 ) -> actor.Next(Runner(state, msg), In(state, msg)) {
@@ -308,9 +316,7 @@ fn handle_drain(
   }
 }
 
-// One item handled: promote the oldest parked sender (if any) into the
-// slot it freed, then either schedule another drain turn or, if the
-// queue is now empty, stop draining.
+/// Promotes waiting senders and continues draining or stops draining.
 fn continue_draining(
   state: Runner(state, msg),
   user: state,
@@ -318,6 +324,8 @@ fn continue_draining(
 ) -> actor.Next(Runner(state, msg), In(state, msg)) {
   let #(queue, waiting) = promote(rest, state.waiting, state.bound)
   let state = Runner(..state, user:, queue:, waiting:)
+
+  // Trigger another drain step if work remains queued.
   case state.queue.len {
     0 -> actor.continue(Runner(..state, draining: False))
     _ -> {
@@ -327,11 +335,12 @@ fn continue_draining(
   }
 }
 
-// Handle one item. `Error(Nil)` means the handler asked to stop.
+/// Executes an item handler and returns the updated state or error.
 fn handle_item(
   state: Runner(state, msg),
   item: Item(state, msg),
 ) -> Result(state, Nil) {
+  // Dispatch based on whether item is a state query or user message.
   case item {
     Query(reply:) -> {
       process.send(reply, state.user)
@@ -345,8 +354,9 @@ fn handle_item(
   }
 }
 
-// Schedule a drain turn if one is not already pending.
+/// Schedules a drain message if draining is not currently active.
 fn kick(state: Runner(state, msg)) -> Runner(state, msg) {
+  // Check whether draining is already in progress.
   case state.draining {
     True -> state
     False -> {
@@ -356,13 +366,13 @@ fn kick(state: Runner(state, msg)) -> Runner(state, msg) {
   }
 }
 
-// Move parked senders into the queue (FIFO) while there is room, acking
-// each as it is admitted.
+/// Promotes waiting senders into the queue while under the bound.
 fn promote(
   queue: Queue(Item(state, msg)),
   waiting: List(#(Item(state, msg), Subject(Nil))),
   bound: Int,
 ) -> #(Queue(Item(state, msg)), List(#(Item(state, msg), Subject(Nil)))) {
+  // Admit waiting senders in order while queue capacity allows.
   case waiting, queue.len < bound {
     [#(item, ack), ..rest], True -> {
       process.send(ack, Nil)

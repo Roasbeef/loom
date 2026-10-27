@@ -81,6 +81,7 @@ pub fn from_document(
   }
 }
 
+/// Parses configured daemon limits and validates known keys from the table.
 fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Limits, String) {
   use _ <- result.try(
     list.try_map(dict.keys(fields), fn(key) {
@@ -91,10 +92,14 @@ fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Limits, String) {
       }
     }),
   )
+
+  // Validate that the optional profile flag has boolean shape.
   use Nil <- result.try(case dict.get(fields, "profile") {
     Error(Nil) | Ok(tom.Bool(_)) -> Ok(Nil)
     Ok(_) -> Error("daemon.profile must be true or false")
   })
+
+  // Validate that the optional web-view UI flag has boolean shape.
   use Nil <- result.try(case dict.get(fields, "ui") {
     Error(Nil) | Ok(tom.Bool(_)) -> Ok(Nil)
     Ok(_) -> Error("daemon.ui must be true or false")
@@ -122,6 +127,7 @@ fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Limits, String) {
   Ok(Limits(connections:, reserved_message_bytes:))
 }
 
+/// Extracts a positive integer limit from TOML fields, falling back to default.
 fn positive(fields, key, default) {
   case dict.get(fields, key) {
     Error(Nil) -> Ok(default)

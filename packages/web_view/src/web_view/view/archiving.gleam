@@ -167,9 +167,11 @@ pub fn button(
   archiving: Archiving(message),
   entry: Entry,
 ) -> List(Element(message)) {
+  // Render archive button if supported and entry is not in the middle of moving.
   case archiving, entry.residency {
     Never, _ | Offered(..), Moving(_) -> []
     Offered(ask:, stage:, ..), residency -> {
+      // Select button label and icon based on whether session is currently live.
       let #(label, title, glyph) = case residency {
         Live -> #(
           "Stop and archive",
@@ -182,6 +184,8 @@ pub fn button(
           "×",
         )
       }
+
+      // Disable action button while an archive action is actively in progress.
       let working = case stage {
         actions.Working(session:, ..) if session == entry.id -> [
           attribute.disabled(True),
@@ -191,6 +195,7 @@ pub fn button(
         | actions.Confirming(..)
         | actions.Choosing(..) -> []
       }
+
       [
         html.button(
           [
@@ -255,6 +260,7 @@ pub fn current_title(
   }
 }
 
+/// Renders the confirmation dialog asking the user to confirm archiving a session.
 fn asking(
   entry: Entry,
   action: Action,
@@ -262,6 +268,7 @@ fn asking(
   confirm: message,
   cancel: message,
 ) -> Element(message) {
+  // Word the confirmation prompt according to whether a stop action precedes archive.
   let #(label, lead, go) = case action {
     actions.StopArchive -> #(
       "Stop and archive this session",
@@ -283,6 +290,7 @@ fn asking(
       "Archive",
     )
   }
+
   html.div(
     [
       attribute.class("session-confirm"),

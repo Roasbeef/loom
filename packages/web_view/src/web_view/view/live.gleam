@@ -149,6 +149,7 @@ pub fn with_queue(
   )
 }
 
+/// Row helper.
 fn row(item: Row, draw: fn(Line) -> Element(message)) -> Element(message) {
   case item {
     Pending(input) ->
@@ -212,8 +213,8 @@ fn elapsed(elapsed_ms: Option(Int)) -> List(Element(message)) {
   }
 }
 
-// The same clock as a figure of a reasoning row, set after its verb as a
-// settled row's time is.
+/// The same clock as a figure of a reasoning row, set after its verb as a
+/// settled row's time is.
 fn figure(elapsed_ms: Option(Int)) -> List(Element(message)) {
   case clock(elapsed_ms) {
     [] -> []
@@ -223,6 +224,7 @@ fn figure(elapsed_ms: Option(Int)) -> List(Element(message)) {
   }
 }
 
+/// Clock helper.
 fn clock(elapsed_ms: Option(Int)) -> List(Element(message)) {
   case elapsed_ms {
     None -> []
@@ -239,9 +241,9 @@ fn clock(elapsed_ms: Option(Int)) -> List(Element(message)) {
   }
 }
 
-// The last line the model has written, which is the one a reader glancing at
-// a row that is still growing wants: the earlier lines have not changed and
-// the preview moves as the block does.
+/// The last line the model has written, which is the one a reader glancing at
+/// a row that is still growing wants: the earlier lines have not changed and
+/// the preview moves as the block does.
 fn latest_line(text: String) -> String {
   text
   |> string.split("\n")
@@ -250,11 +252,11 @@ fn latest_line(text: String) -> String {
   |> result.unwrap("")
 }
 
-// The reasoning so far, one Markdown line per paragraph, each in the lane's
-// memoized line row (`fold_row.line_row`, whose one dependency is the line).
-// Fragments only extend the text, so a paragraph that a blank line has closed
-// is the same `Line` on the next render and its memo holds; only the last
-// paragraph, still being written, changes and is parsed again.
+/// The reasoning so far, one Markdown line per paragraph, each in the lane's
+/// memoized line row (`fold_row.line_row`, whose one dependency is the line).
+/// Fragments only extend the text, so a paragraph that a blank line has closed
+/// is the same `Line` on the next render and its memo holds; only the last
+/// paragraph, still being written, changes and is parsed again.
 fn so_far(
   text: String,
   draw: fn(Line) -> Element(message),

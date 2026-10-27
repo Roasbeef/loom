@@ -67,15 +67,17 @@ pub fn rows() -> List(command.Suggestion) {
   list.filter(list.append(words, arguments), runs)
 }
 
-// Whether pressing Send on the row's command would run it here. A row that
-// takes an argument is parsed with one, since the command alone is
-// incomplete and parses as the usage message, which is not the command it
-// names.
+/// Whether pressing Send on the row's command would run it here. A row that
+/// takes an argument is parsed with one, since the command alone is
+/// incomplete and parses as the usage message, which is not the command it
+/// names.
 fn runs(row: command.Suggestion) -> Bool {
+  // Provide a dummy argument when the suggested command expects one.
   let draft = case row.takes_argument {
     True -> row.command <> " x"
     False -> row.command
   }
+
   result.is_ok(component.page_command(command.parse(draft)))
 }
 

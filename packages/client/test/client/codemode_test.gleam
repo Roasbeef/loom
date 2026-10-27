@@ -2619,6 +2619,53 @@ fn peer_wiring() -> peers.Wiring {
   )
 }
 
+/// Workspace callbacks do not copy the host's unrelated toolchain mounts.
+pub fn workspace_reader_does_not_copy_host_configuration_test() {
+  let broker_actor = idle_broker()
+  let ordinary = config_for(broker_actor)
+  let padding =
+    list.repeat(
+      policy.Mount("/opt/fixture", policy.MountReadOnly, policy.MountOptional),
+      4096,
+    )
+  let padded =
+    codemode.Config(
+      ..ordinary,
+      host_mounts: list.append(ordinary.host_mounts, padding),
+    )
+  assert ffi_memory.flat_words(padded) > ffi_memory.flat_words(ordinary) + 8192
+    as "the host still owns the padded toolchain configuration"
+
+  // Measure the actual seam after its copy into a disposable capability holder.
+  let request = request_for("workspace-copy")
+  let small = copied_workspace_words(codemode.workspace_seam(ordinary, request))
+  let large = copied_workspace_words(codemode.workspace_seam(padded, request))
+  assert large.0 == small.0
+    as "the read callback retains no unrelated host mount table"
+  assert large.1 == small.1
+    as "the complete workspace has no other path to the host mount table"
+  let _ = broker.stop(broker_actor)
+}
+
+fn copied_workspace_words(seam: workspace.Workspace) -> #(Int, Int) {
+  let measured = process.new_subject()
+  let assert Ok(holder) =
+    actor.new(seam)
+    |> actor.on_message(fn(held, reply) {
+      process.send(reply, #(
+        ffi_memory.flat_words(held.fs_read),
+        ffi_memory.flat_words(held),
+      ))
+      actor.stop()
+    })
+    |> actor.start
+    as "the disposable workspace holder starts"
+  process.send(holder.data, measured)
+  let assert Ok(words) = process.receive(measured, 1000)
+    as "the copied workspace measurement arrives"
+  words
+}
+
 fn config_with_entropy_payload(
   base: codemode.Config,
   words: Int,

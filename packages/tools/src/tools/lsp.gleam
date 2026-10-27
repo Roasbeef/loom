@@ -132,6 +132,7 @@ pub fn land(
     phase(prepared, prepared_path, check_disk(filesystem, _))
   }
 
+  // Return pre-check rejection or proceed to write files.
   case checked {
     Error(files) -> query.RenameReport(files:, diagnostics: query.Unsettled([]))
     Ok(prepared) -> write_all(prepared, filesystem, after_write)
@@ -151,12 +152,15 @@ fn prepared_path(prepared: Prepared) -> String {
 // One pre-check over every file. All passing hands the next phase its
 // inputs; any failing ends the landing with the report it owes: the
 // failures `Rejected` with their reasons, everything else `NotAttempted`.
+/// Executes a pre-check phase over all files, returning an error summary on any failure.
 fn phase(
   items: List(a),
   path: fn(a) -> String,
   step: fn(a) -> Result(b, String),
 ) -> Result(List(b), List(Landing)) {
   let results = list.map(items, fn(item) { #(item, step(item)) })
+
+  // Require every item in the batch to pass the validation step.
   case list.all(results, fn(pair) { result.is_ok(pair.1) }) {
     True -> Ok(list.filter_map(results, fn(pair) { pair.1 }))
     False ->
@@ -174,6 +178,7 @@ fn phase(
 // Phase one. `plan_between` fails only when the two texts differ in their
 // final newline, which no line edit expresses, so the error arm is a
 // refusal of a server answer and never a model mistake.
+/// Plans line replacements between base and edited file text.
 fn plan_file(edit: FileEdit) -> Result(#(FileEdit, hashline.Plan), String) {
   hashline.plan_between(base: edit.base, edited: edit.edited)
   |> result.map(fn(plan) { #(edit, plan) })
@@ -187,6 +192,7 @@ fn plan_file(edit: FileEdit) -> Result(#(FileEdit, hashline.Plan), String) {
 // Phase two. Resolving the target admits each path under the caller's
 // write authority. It follows planning so an unrepresentable rename
 // cannot reach that authority boundary.
+/// Resolves target write authority for a planned file edit.
 fn target_file(
   target: fn(String) -> Result(fs.WriteTarget, String),
   pair: #(FileEdit, hashline.Plan),
@@ -201,6 +207,7 @@ fn target_file(
 // checks the same digest again when it writes, but only file by file —
 // this pass is what makes a stale file stop the whole rename rather than
 // half of it.
+/// Verifies that the file content on disk still matches the server plan digest.
 fn check_disk(
   filesystem: FileSystem,
   prepared: Prepared,
@@ -213,6 +220,8 @@ fn check_disk(
     }),
   )
   let on_disk = hashline.digest(current)
+
+  // Reject the edit if file digest has drifted on disk.
   case on_disk == prepared.plan.digest {
     True -> Ok(prepared)
     False ->
@@ -231,6 +240,7 @@ fn check_disk(
 // server about each landed one. The writes all happen before the first
 // notification so the server's last settlement is over the finished
 // rename, not a half-written one.
+/// Writes all prepared file edits to disk and collects post-write diagnostics.
 fn write_all(
   prepared: List(Prepared),
   filesystem: FileSystem,
@@ -247,8 +257,11 @@ fn write_all(
 // One write. `land_plan` re-checks the digest as it writes, so a change
 // between `check_disk` and here still rejects the file instead of
 // overwriting it.
+/// Applies a single planned edit to disk and returns the landing result.
 fn land_file(filesystem: FileSystem, prepared: Prepared) -> Landing {
   let path = prepared.edit.path
+
+  // Apply the anchored plan to the target file.
   case fs.land_plan(filesystem:, target: prepared.target, plan: prepared.plan) {
     Ok(_) -> query.Landed(path:, edits: prepared.edit.edits)
     Error(error) ->
@@ -266,6 +279,7 @@ fn landed_path(landing: Landing) -> Result(String, Nil) {
 // The last answer is the newest view of the whole rename. One unsettled
 // answer anywhere makes the whole block unsettled: the server did not
 // finish with some file, so the last view may be missing what it found.
+/// Merges diagnostics across multiple files into a unified Diagnostics result.
 fn combine(answers: List(Diagnostics)) -> Diagnostics {
   case list.last(answers) {
     Error(Nil) -> query.Unsettled([])
@@ -332,6 +346,7 @@ pub fn render_site(site: Site) -> String {
 
 // The `fs_read` form of a site's line, for answers that already name the
 // file above it.
+/// Formats a Site record into an anchored line representation.
 fn render_anchored(site: Site) -> String {
   hashline.render_line(hashline.AnchoredLine(
     line: site.line,
@@ -369,6 +384,8 @@ fn plural(count: Int, noun: String) -> String {
 ///
 pub fn clip(text: String, limit: Int) -> String {
   let size = string.byte_size(text)
+
+  // Return unclipped text when length is within limit.
   case size <= limit {
     True -> text
     False -> {
@@ -384,10 +401,13 @@ pub fn clip(text: String, limit: Int) -> String {
 // The longest prefix of `bytes` of at most `length` bytes that is valid
 // UTF-8. A cut inside a multi-byte character fails to decode, and backing
 // off one byte at a time reaches a boundary within three steps.
+/// Finds the longest valid UTF-8 prefix of `bytes` up to `length` bytes.
 fn utf8_prefix(bytes: BitArray, length: Int) -> String {
   let decoded =
     bit_array.slice(bytes, 0, length)
     |> result.try(bit_array.to_string)
+
+  // Back off byte-by-byte if cut landed on an incomplete UTF-8 character.
   case decoded, length > 0 {
     Ok(text), _ -> text
     Error(Nil), True -> utf8_prefix(bytes, length - 1)
@@ -398,6 +418,7 @@ fn utf8_prefix(bytes: BitArray, length: Int) -> String {
 // The text before its last line break, or the text whole
 // when it has none: a hover whose first line overruns the bound is still
 // shown up to the bound rather than not at all.
+/// Trims partial trailing lines up to the last complete newline.
 fn at_line_break(text: String) -> String {
   case list.reverse(string.split(text, "\n")) {
     [_partial, _, ..] as reversed ->
@@ -444,6 +465,7 @@ pub fn render_diagnostics(diagnostics: Diagnostics) -> String {
 
 // "3 (2 errors, 1 warning)": the total, then each severity that occurs,
 // most severe first.
+/// Summarizes counts of diagnostics grouped by severity.
 fn severity_summary(entries: List(Diagnostic)) -> String {
   let parts =
     [
@@ -461,28 +483,35 @@ fn severity_summary(entries: List(Diagnostic)) -> String {
   int.to_string(list.length(entries)) <> " (" <> string.join(parts, ", ") <> ")"
 }
 
+/// Renders diagnostic items up to the display limit with truncation notice.
 fn render_entries(entries: List(Diagnostic)) -> String {
   let shown =
     list.take(entries, max_rendered_diagnostics)
     |> list.map(render_diagnostic)
   let hidden = list.length(entries) - max_rendered_diagnostics
+
+  // Format omission trailer when diagnostics exceed max display threshold.
   let trailer = case int.compare(hidden, 0) {
     order.Gt -> ["… " <> int.to_string(hidden) <> " more not shown"]
     order.Eq | order.Lt -> []
   }
+
   string.join(list.append(shown, trailer), "\n")
 }
 
 // The site line first, so it reads like every other answer here; the
 // message under it, each of its lines indented, because compiler messages
 // are often several lines long.
+/// Formats a single diagnostic entry with severity and location.
 fn render_diagnostic(entry: Diagnostic) -> String {
+  // Map diagnostic severity to user-facing severity labels.
   let severity = case entry.severity {
     query.SeverityError -> "error"
     query.SeverityWarning -> "warning"
     query.SeverityInformation -> "info"
     query.SeverityHint -> "hint"
   }
+
   let message =
     string.trim_end(entry.message)
     |> string.split("\n")
@@ -517,6 +546,8 @@ fn render_diagnostic(entry: Diagnostic) -> String {
 pub fn changed_spans(base: String, edited: String) -> List(ChangedSpan) {
   let before = hashline.annotate(base)
   let after = hashline.annotate(edited)
+
+  // Compare line-by-line when line counts match, or isolate changed middle block.
   case list.length(before) == list.length(after) {
     True ->
       list.zip(before, after)
@@ -527,6 +558,8 @@ pub fn changed_spans(base: String, edited: String) -> List(ChangedSpan) {
       let #(before, after) = drop_common(before, after)
       let #(before, after) =
         drop_common(list.reverse(before), list.reverse(after))
+
+      // Construct changed span from the diff range after trimming common lines.
       case before, after {
         [], [] -> []
         _, _ -> [
@@ -538,6 +571,7 @@ pub fn changed_spans(base: String, edited: String) -> List(ChangedSpan) {
 }
 
 // Drops the leading lines two texts share, by text.
+/// Trims identical leading lines from both before and after lists.
 fn drop_common(
   before: List(hashline.AnchoredLine),
   after: List(hashline.AnchoredLine),
@@ -549,6 +583,7 @@ fn drop_common(
   }
 }
 
+/// Extracts concatenated text block content from a ToolOutcome.
 fn outcome_text(outcome: ToolOutcome) -> String {
   outcome.content
   |> list.filter_map(fn(block) {

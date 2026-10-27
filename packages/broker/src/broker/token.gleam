@@ -123,6 +123,8 @@ pub fn mint(
 ) -> Result(#(Vault, Token), MintError) {
   let bytes = vault.entropy(byte_count)
   let got_bytes = bit_array.byte_size(bytes)
+
+  // Verify that the entropy source generated the expected byte count.
   case got_bytes == byte_count {
     False -> Error(EntropyFailure(got_bytes:))
     True ->
@@ -278,9 +280,9 @@ pub fn size(vault: Vault) -> Int {
   list.length(vault.entries)
 }
 
-// Constant-time-per-entry scan without early exit: every entry is
-// compared even after a match, so timing reveals neither the matching
-// entry's position nor how close a guess came.
+/// Scans vault entries in constant time without early exit to prevent timing leaks.
+/// Every entry is compared even after a match, so timing reveals neither the
+/// matching entry's position nor how close a guess came.
 fn scan(entries: List(Entry), presented: BitArray) -> Option(Entry) {
   list.fold(entries, None, fn(found, entry) {
     case ffi_crypto.constant_time_equal(entry.bytes, presented), found {

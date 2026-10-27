@@ -56,15 +56,19 @@ pub fn height(board: Option(Board), budget: Int) -> Int {
 
 // One header row, the focused phase's tasks, and one summary row when any
 // other phase exists. A finished board is one row.
+/// Computes desired row count for the todo panel.
 fn wanted(board: Board) -> Int {
+  // Determine row budget based on active phases and completion.
   case board.phases, finished(board) {
     [], _ -> 0
     _, True -> 1
     [_, ..], False -> {
+      // Count tasks in focused phase.
       let tasks = case todo_list.focus(board) {
         Some(phase) -> list.length(phase.tasks)
         None -> 0
       }
+
       1 + tasks + others_rows(board)
     }
   }
@@ -92,14 +96,17 @@ fn finished(board: Board) -> Bool {
 /// // todo_panel.lines(board, 80, todo_panel.height(Some(board), 8))
 /// ```
 pub fn lines(board: Board, width: Int, rows: Int) -> List(span.Line) {
+  // Format todo lines according to available rows and board focus.
   case rows <= 0, todo_list.focus(board), finished(board) {
     True, _, _ | _, None, _ -> []
     False, Some(_), True -> [done_line(board, width)]
     False, Some(phase), False -> {
+      // Check whether summary line for other phases fits.
       let summary = case others_rows(board) > 0 && rows >= 3 {
         True -> [others_line(board, phase, width)]
         False -> []
       }
+
       let task_rows = rows - 1 - list.length(summary)
       [header(board, phase, width), ..task_lines(phase, width, task_rows)]
       |> list.append(summary)
@@ -109,6 +116,7 @@ pub fn lines(board: Board, width: Int, rows: Int) -> List(span.Line) {
 
 // --- rows --------------------------------------------------------------------
 
+/// Formats the top header line showing phase name and progress tally.
 fn header(board: Board, phase: Phase, width: Int) -> span.Line {
   let #(closed, total) = todo_list.count(board)
   let #(phase_closed, phase_total) = todo_list.tally(phase.tasks)
@@ -124,6 +132,7 @@ fn header(board: Board, phase: Phase, width: Int) -> span.Line {
   justify(left, [span.span_styled(right, theme.quiet_text())], width)
 }
 
+/// Formats single completion line when all tasks on board are closed.
 fn done_line(board: Board, width: Int) -> span.Line {
   let #(_, total) = todo_list.count(board)
   let phases = list.length(board.phases)
@@ -146,11 +155,12 @@ fn done_line(board: Board, width: Int) -> span.Line {
   )
 }
 
-// The window keeps the active task in view with one task of context above
-// it, and spends the last row on a count of what it left out on each side.
+/// Formats visible task lines within the available row window.
 fn task_lines(phase: Phase, width: Int, rows: Int) -> List(span.Line) {
   let tasks = phase.tasks
   let count = list.length(tasks)
+
+  // Determine windowing if tasks exceed available rows.
   case rows <= 0, count <= rows {
     True, _ -> []
     False, True -> list.map(tasks, task_line(_, width))
@@ -181,8 +191,7 @@ fn task_lines(phase: Phase, width: Int, rows: Int) -> List(span.Line) {
   }
 }
 
-// Says which side of the window the hidden tasks are on, since the ones
-// above are usually finished and the ones below are still ahead.
+/// Formats hidden task counts above and below visible window.
 fn hidden_label(above: Int, below: Int) -> String {
   case above, below {
     0, _ -> int.to_string(below) <> " more below"
@@ -192,12 +201,14 @@ fn hidden_label(above: Int, below: Int) -> String {
   }
 }
 
-// The active task if there is one, else the first open task, else the top.
+/// Finds index of active or first open task to anchor the viewport.
 fn anchor_index(tasks: List(Task)) -> Int {
   let indexed = list.index_map(tasks, fn(task, index) { #(index, task) })
   let find = fn(wanted: fn(Task) -> Bool) {
     list.find(indexed, fn(entry) { wanted(entry.1) })
   }
+
+  // Locate active task or fallback to first open task.
   case find(fn(task) { task.status == Active }) {
     Ok(#(index, _)) -> index
     Error(Nil) ->
@@ -208,8 +219,11 @@ fn anchor_index(tasks: List(Task)) -> Int {
   }
 }
 
+/// Formats a single styled task row.
 fn task_line(task: Task, width: Int) -> span.Line {
   let text = clean(task.text)
+
+  // Style task marker and text according to status.
   let spans = case task.status {
     Done -> [
       span.span_styled("  ✓ ", theme.success_text()),
@@ -238,12 +252,11 @@ fn task_line(task: Task, width: Int) -> span.Line {
       }
     ]
   }
+
   fit(spans, width)
 }
 
-// Every phase but the focused one, in order, on one row: a finished phase
-// is a check, anything else is its closed count, so the row reads as the
-// road behind and ahead of the phase being worked.
+/// Formats summary row showing progress across all other phases.
 fn others_line(board: Board, focus: Phase, width: Int) -> span.Line {
   let parts =
     board.phases
@@ -291,14 +304,15 @@ fn struck(color: style.Color) -> style.Style {
   style.add_modifier(plain(color), style.strikethrough())
 }
 
-// Truncates a row's spans to the width, cutting the span that crosses the
-// edge and dropping the rest, then pads so the row paints its whole width.
+/// Truncates and pads spans to fit exact line width.
 fn fit(spans: List(span.Span), width: Int) -> span.Line {
   let #(kept, used) =
     list.fold(spans, #([], 0), fn(acc, each) {
       let #(kept, used) = acc
       let room = width - used
       let size = text.cell_width(each.content)
+
+      // Truncate span if it overflows remaining width.
       case room <= 0, size <= room {
         True, _ -> acc
         False, True -> #([each, ..kept], used + size)
@@ -311,16 +325,17 @@ fn fit(spans: List(span.Span), width: Int) -> span.Line {
         }
       }
     })
+
+  // Pad remaining width with blank space.
   let pad = case width - used > 0 {
     True -> [span.span_plain(string.repeat(" ", width - used))]
     False -> []
   }
+
   span.line_new(list.append(list.reverse(kept), pad))
 }
 
-// Puts `right` flush against the right edge when both halves fit, and
-// drops it when they do not, since the left half names the phase and the
-// right half only repeats a count.
+/// Justifies left and right span groups across line width.
 fn justify(
   left: List(span.Span),
   right: List(span.Span),
@@ -330,6 +345,8 @@ fn justify(
     list.fold(left, 0, fn(sum, each) { sum + text.cell_width(each.content) })
   let right_width =
     list.fold(right, 0, fn(sum, each) { sum + text.cell_width(each.content) })
+
+  // Check whether both left and right groups fit.
   case left_width + 2 + right_width <= width {
     True ->
       fit(

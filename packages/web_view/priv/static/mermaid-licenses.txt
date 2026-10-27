@@ -9,8 +9,8 @@
    input ca3136415c607e3a055ae44a96d6139f06706fa5749b32abd4aba14df8b26195  packages/web_mermaid/bundle/package.json
    input 45eef2f5764ab100e712f2b88f961fe8c6a41b555aa4fc8f107d9cfa0a60ff81  packages/web_mermaid/bundle/package-lock.json
    input fccdd421915787fb7b745c13656b4e6d8e5593e1d47998b685a47f9e1c80e331  packages/web_mermaid/bundle/renderer.js
-   input c5a9ac3d421fb1579f2e9a7a5973b0742b0275dbdc88708f05fc61cee4e76ff9  packages/web_mermaid/src/web_mermaid.gleam
-   input 9d7c36ed77d9211879be4d23146beeedee45f0faeaea48a7c3028f8b82f9fa95  packages/web_mermaid/src/web_mermaid/controller.gleam
+   input 08c009c7a327c51862ba0ea4d4281dec49bb33710619dceedfd91894a38a1e76  packages/web_mermaid/src/web_mermaid.gleam
+   input 1dbbf83b383712a74f5f1dd5b0dc5f6c21f319a4982695619219826244e18e71  packages/web_mermaid/src/web_mermaid/controller.gleam
    input 0154370a1e972d4c2d48504309e5d6a92af47d347ef9c86faee384e3822b7b19  packages/web_mermaid/src/web_mermaid/internal/dom.mjs
    input 62af8ae9c5086f21a0a21590b9b5211dc7d0b24e24e192ca4829939531dabe18  packages/web_mermaid/src/web_mermaid/internal/ffi_dom.gleam
    body 566be6b70b42f390caeb17ff96a3459065708bd68de8d837d0e9528cd2200d02

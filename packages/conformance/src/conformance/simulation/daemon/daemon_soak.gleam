@@ -145,15 +145,15 @@ pub fn describe(outcome: Outcome, from from: Int) -> String {
   <> int.to_string(outcome.next)
 }
 
-// Walks the seed range until the deadline or the first failure. `seed` is
-// where the walk is; `from` is where it started, and is what the seed count
-// is measured against.
+/// Draws and executes soak scenarios sequentially across seed ranges until deadline.
 fn draw(seed: Int, from: Int, deadline: Int, now: fn() -> Int) -> Outcome {
+  // Check whether the soak wall-clock deadline has expired.
   case now() >= deadline {
     True -> Outcome(seeds: seed - from, next: seed, failure: None)
     False -> {
       let attempted = list.try_each(runners(), fn(one) { attempt(one, seed) })
 
+      // Check if any runner failed on the current seed.
       case attempted {
         Ok(Nil) -> draw(seed + 1, from, deadline, now)
 
@@ -167,12 +167,9 @@ fn draw(seed: Int, from: Int, deadline: Int, now: fn() -> Int) -> Outcome {
   }
 }
 
-// Runs one scenario against one seed, rendering a failure the way the
-// session soak renders one: the check and its detail, then the reproduction
-// line on its own, then what re-running the seed said about it, and, for a
-// reproducible failure, the simplest fault found that still fails the same
-// check.
+/// Runs one soak scenario against a seed, returning an error report on failure.
 fn attempt(one: Runner, seed: Int) -> Result(Nil, String) {
+  // Execute the scenario runner on the given seed.
   case one.run(seed) {
     Ok(Nil) -> Ok(Nil)
     Error(Reported(check:, text:)) -> {
@@ -191,8 +188,7 @@ fn attempt(one: Runner, seed: Int) -> Result(Nil, String) {
   }
 }
 
-// Corroborate first, shrink second, and only shrink what corroborated. An
-// unstable seed would answer "does this smaller fault still fail?" by chance.
+/// Attempts to shrink a failing schedule if corroboration succeeded.
 fn shrunk(
   one: Runner,
   seed: Int,
@@ -209,13 +205,7 @@ fn shrunk(
   }
 }
 
-// Re-runs a failed seed so an unreproducible red says so in its own output.
-//
-// A daemon run drives more real processes than a session run does and the
-// harness controls none of their interleavings, so the failure rate over a
-// range is the signal and a single red is not. The session runner pays for
-// this inside itself; the daemon runner does not, so the soak pays for it
-// here, over the same three runs and against the same reading.
+/// Re-runs a failed seed multiple times to verify reproducibility.
 fn corroborate(one: Runner, seed: Int, check: String) -> runner.Corroboration {
   runner.corroborate(check, fn() {
     case one.run(seed) {
@@ -225,9 +215,7 @@ fn corroborate(one: Runner, seed: Int, check: String) -> runner.Corroboration {
   })
 }
 
-// The creation-key scenario, adapted to the runner surface. The verdict's
-// detail names the script and the schedule the seed was drawn with, neither
-// of which is recoverable from the seed by eye, so the line carries both.
+/// Runner adapter for the creation-key daemon soak scenario.
 fn creation(seed: Int) -> Result(Nil, Reported) {
   case daemon_runner.run(seed:) {
     daemon_runner.Passed -> Ok(Nil)
@@ -245,9 +233,7 @@ fn creation(seed: Int) -> Result(Nil, Reported) {
   }
 }
 
-// Shrinks the creation schedule: drop the kill, or move it to an earlier step
-// or creation, under the same-check and corroboration rules of
-// `runner.minimize`.
+/// Shrinks a creation failure schedule by dropping or pulling faults.
 fn shrink_creation(seed: Int, check: String) -> Option(String) {
   let #(_script, drawn) = daemon_runner.plan(seed)
   let #(smallest, _failure) = daemon_runner.shrink(seed, check, shrink_budget)
@@ -258,9 +244,7 @@ fn shrink_creation(seed: Int, check: String) -> Option(String) {
   ))
 }
 
-// The lifecycle runner owns the two lifecycle scripts and reports its own
-// verdict. This adapter preserves the soak's common report and corroboration
-// path without widening either runner's verdict type.
+/// Runner adapter for the daemon lifecycle scenario.
 fn lifecycle(seed: Int) -> Result(Nil, Reported) {
   case lifecycle_runner.run(seed:) {
     lifecycle_runner.Passed -> Ok(Nil)
@@ -272,19 +256,20 @@ fn lifecycle(seed: Int) -> Result(Nil, Reported) {
   }
 }
 
-// A lifecycle schedule is one fault with no simpler sibling, so the only
-// candidate is the fault-free run (`lifecycle_faults.shrink`). A failure
-// outside both scripts has no fault to simplify and says nothing.
+/// Shrinks a lifecycle failure schedule against its drawn faults.
 fn shrink_lifecycle(seed: Int, check: String) -> Option(String) {
   use #(smallest, _failure) <- option.map(lifecycle_runner.shrink(
     seed,
     check,
     budget: shrink_budget,
   ))
+
+  // Recover the drawn fault for the failing lifecycle script.
   let drawn = case lifecycle_runner.script_of(check) {
     Some(script) -> lifecycle_runner.drawn_fault(seed, script)
     None -> smallest
   }
+
   describe_shrunk(
     lifecycle_faults.describe(drawn),
     lifecycle_faults.describe(smallest),
@@ -292,8 +277,7 @@ fn shrink_lifecycle(seed: Int, check: String) -> Option(String) {
   )
 }
 
-// Keep the domain scenario on the same budget, failure and corroboration path
-// as creation and lifecycle; a passing corpus alone would not exercise it in CI.
+/// Runner adapter for the domain retirement scenario.
 fn domain_retirement(seed: Int) -> Result(Nil, Reported) {
   domain_runner.run(seed:)
   |> result.map_error(fn(failure) {
@@ -320,9 +304,7 @@ fn shrink_domain(_seed: Int, _check: String) -> Option(String) {
   )
 }
 
-// How a shrink reads in a failure report. A schedule that did not shrink says
-// so, because "no smaller schedule reproduced it" is a result and silence
-// would look like the shrinker never ran.
+/// Formats a description of the shrunk schedule comparison.
 fn describe_shrunk(drawn: String, smallest: String, check: String) -> String {
   case drawn == smallest {
     True ->

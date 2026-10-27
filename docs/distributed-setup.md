@@ -415,10 +415,19 @@ loom distribution attach-file inspector --node inspector@127.0.0.1 --links hub \
 under. The directory then holds `ca.pem`, `tool.pem`, `tool.key`,
 `.erlang.cookie`, `node` (the tool's own node name) and a standard
 `ssl_dist.conf`, and the command prints `pickglass attach --node <daemon>
---attach-dir <dir>` first, then the `erl` flags that use the same files. [Profiling a distributed
+--attach-dir <dir>` first, then the `erl` flags that use the same files. With `--for
+pickglass` in place of `--out`, the directory is `NAME` under pickglass's attach
+root (`$PICKGLASS_ATTACH_HOME`, else `$HOME/.pickglass/attach`) and the report adds
+`pickglass attach --node <daemon> --attach NAME`. If the sealed authority key is
+not under `$HOME`, pass the `--home` that ran `provision`; the error names the
+deployment id and the flags. [Profiling a distributed
 daemon](distribution.md#profiling-a-distributed-daemon) has the commands for a
 remote shell, Observer and pickglass. `revoke` the tool when you are done; to
-replace its certificate, revoke it and attach again.
+replace its certificate, revoke it and attach again. [Attaching Pickglass or
+another tool to a TLS
+deployment](distribution.md#attaching-pickglass-or-another-tool-to-a-tls-deployment)
+says which account can run `attach-file`, what to hand a tool user, and what
+each error means.
 
 ### The test fixture
 

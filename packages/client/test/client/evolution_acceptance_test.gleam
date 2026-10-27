@@ -607,6 +607,7 @@ pub fn settings(root: String, url: String) -> serve.Settings {
     demand: exec.BestEffort,
     gateway:,
     evolution_role: serve.Source,
+    pack: None,
     catalog: catalogue,
     system: None,
     home: Some(root <> "/empty-home"),

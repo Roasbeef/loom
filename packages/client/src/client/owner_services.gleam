@@ -23,7 +23,7 @@
 //// - `escalate` decides a policy refusal: it raises the durable record,
 ////   waits for a human when one is attached, and answers with the grants to
 ////   re-run under or a settled refusal.
-//// - `facts` reads and writes two reserved namespaces of the session store
+//// - `facts` reads and writes three reserved namespaces of the session store
 ////   and nothing else. See `FactAccess`.
 //// - `output` is where a running tool's rolling output tail is shown. It is
 ////   a lossy cast: a dropped tail costs a terminal a frame.
@@ -41,14 +41,22 @@
 ////   reach it. A local workspace composes the owner's execution service into
 ////   its own tool and never calls either.
 ////
-//// ## Why facts are fenced to two prefixes
+//// ## Why facts are fenced to three prefixes
 ////
 //// Fact access is the one function group that could widen into a general
 //// store door, so it is fenced where it is built rather than where it is
-//// used. `client/working_directory/` holds a strand's remembered cwd and
-//// `job/` holds the background-job records. Every other key, reserved or
-//// not, is refused with `NotServed`, and the refusal is the same on both
-//// placements.
+//// used. `client/working_directory/` holds a strand's remembered cwd,
+//// `job/` holds the background-job records, and `ext/` holds the durable
+//// cells an installed extension's `remember` and `recall` write
+//// (`client/extension/memory`), so a promoted extension on an executor keeps
+//// its memory in the session's store. Every other key, reserved or not, is
+//// refused with `NotServed`, and the refusal is the same on both placements.
+////
+//// The `ext/` fence is per session, where the local dispatch binds the
+//// `ext/<name>/` subtree from the install record. An executor's door composes
+//// the key itself (`memory.over_facts`), so the narrower binding rests on the
+//// executor's code and not on this fence, which is acceptable between pinned
+//// peers (protocol-change/098).
 ////
 //// ## What the fence does not do
 ////
@@ -91,7 +99,7 @@ pub type OwnerServices {
     /// Decides one policy refusal. The workspace re-clears once when the
     /// answer is `Resume`.
     escalate: fn(escalate.Refused) -> escalate.Decision,
-    /// The two reserved fact namespaces the workspace may touch.
+    /// The three reserved fact namespaces the workspace may touch.
     facts: FactAccess,
     /// The observer for one run's output tail. Resolved once per run, then
     /// called after every chunk.
@@ -252,11 +260,11 @@ pub const working_directory_prefix = "client/working_directory/"
 ///
 /// ```gleam
 /// assert owner_services.served_prefixes()
-///   == ["client/working_directory/", "job/"]
+///   == ["client/working_directory/", "job/", "ext/"]
 /// ```
 ///
 pub fn served_prefixes() -> List(String) {
-  [working_directory_prefix, jobstate.key_prefix]
+  [working_directory_prefix, jobstate.key_prefix, api.ext_fact_prefix]
 }
 
 /// Takes the background-jobs slice of the owner's services.
@@ -330,6 +338,7 @@ pub fn local_facts(
 
 // A single-key operation behind the fence. The fence is a function of the
 // key alone, so every operation applies it before it reads anything.
+/// Adapts served to the owner service’s bounded local capability contract.
 fn served(
   operation: fn(String) -> Result(a, FactFault),
 ) -> fn(String) -> Result(a, FactFault) {
@@ -340,6 +349,7 @@ fn served(
 }
 
 // The fence itself: continue only when the key is under a served prefix.
+/// Formats fenced for bounded session-note presentation.
 fn fenced(
   key: String,
   continue: fn() -> Result(a, FactFault),
@@ -361,6 +371,7 @@ fn absent_unless(supplied: Result(a, Nil)) -> Result(a, FactFault) {
 // reads exactly as it did when the callers matched on `ApiError`. Every
 // variant is named so that a new one forces a decision here rather than
 // falling into `Failed`.
+/// Adapts fault to the owner service’s bounded local capability contract.
 fn fault(error: api.ApiError) -> FactFault {
   case error {
     api.FactConflict(..) -> Conflict
