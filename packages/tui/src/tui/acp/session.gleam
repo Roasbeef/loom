@@ -104,18 +104,12 @@ pub type Action {
   /// Perform one lane output: a frame to the daemon, or a socket close.
   Write(output: session_channel.Out(connection.Connection, Nil))
 
+  /// The turn has been answered, so any permission request it left open can
+  /// no longer be decided and the server should forget it.
+  TurnEnded
+
   /// The session can make no more progress and should be dropped.
   Ended(reason: String)
-}
-
-/// Whether a cancellation has been asked for the running turn.
-type Cancellation {
-  /// Nothing has asked the turn to stop.
-  NotAsked
-
-  /// The client sent `session/cancel`, so the turn ends `cancelled` however
-  /// the run itself ends.
-  Asked
 }
 
 /// Where a turn is between the prompt and its reply.
@@ -141,7 +135,7 @@ type Turn {
     /// The session's cumulative usage when the prompt was accepted.
     usage_before: message.Usage,
     /// Whether the client asked to stop.
-    cancellation: Cancellation,
+    cancellation: translate.Cancellation,
     /// How far the turn has got.
     stage: Stage,
   )
@@ -356,7 +350,7 @@ pub fn prompt(
           reply:,
           baseline: option.map(last_result(view), fn(found) { found.0 }),
           usage_before: view.usage,
-          cancellation: NotAsked,
+          cancellation: translate.NotAsked,
           stage: Sending,
         )
       Session(
@@ -410,7 +404,7 @@ fn cancel_sending(session: Session, turn: Turn, now: Int) -> Step {
     True -> {
       let queue = list.filter(session.queue, fn(q) { !is_prompt(q) })
       let reply = prompt_reply(turn, schema.Cancelled, None)
-      #(Session(..session, queue:, phase: Idle), [reply])
+      #(Session(..session, queue:, phase: Idle), [reply, TurnEnded])
     }
     False -> ask_abort(session, turn, now)
   }
@@ -418,7 +412,10 @@ fn cancel_sending(session: Session, turn: Turn, now: Int) -> Step {
 
 /// Queues the abort and marks the turn so it ends `cancelled`.
 fn ask_abort(session: Session, turn: Turn, now: Int) -> Step {
-  Session(..session, phase: Turning(Turn(..turn, cancellation: Asked)))
+  Session(
+    ..session,
+    phase: Turning(Turn(..turn, cancellation: translate.Asked)),
+  )
   |> enqueue(Queued(AbortTurn, None))
   |> settle_io(now, [])
 }
@@ -441,11 +438,18 @@ pub fn answer(
   choice: schema.PermissionChoice,
   now: Int,
 ) -> Step {
+  // A request that is no longer pending has nothing left to decide.
   case pending_review(session, review_id) {
-    Some(review) ->
+    Some(review) -> {
+      // The choice is read against what was offered for this very record.
+      let #(_, offered) = translate.permission(review)
       session
-      |> enqueue(Queued(Decide(review, translate.decision(choice)), None))
+      |> enqueue(Queued(
+        Decide(review, translate.decision(choice, offered)),
+        None,
+      ))
       |> settle_io(now, [])
+    }
     None -> #(session, [])
   }
 }
@@ -568,7 +572,7 @@ fn on_acknowledged(session: Session, now: Int) -> Step {
 
   // The acknowledgement means different things to different commands.
   case acknowledged {
-    Some(Queued(PromptTurn(..), _)) -> #(advance_to_running(session), [])
+    Some(Queued(PromptTurn(..), _)) -> settle(advance_to_running(session), now)
 
     // The switch is now the session's choice, so the reply names it current.
     Some(Queued(SwitchModel(name, answer), Some(reply))) -> {
@@ -892,6 +896,11 @@ fn settle(session: Session, now: Int) -> Step {
   case session.phase, session.cut {
     Turning(Turn(stage: Settling(..), ..)), _ -> #(session, [])
 
+    // A result seen before the daemon acknowledged our prompt may belong to a
+    // run someone else started on a shared session, so only a turn the daemon
+    // has accepted can be ended by one. The acknowledgement settles again.
+    Turning(Turn(stage: Sending, ..)), _ -> #(session, [])
+
     Turning(turn), Some(#(_, view)) ->
       case last_result(view) {
         Some(#(operation_id, result)) if Some(operation_id) != turn.baseline ->
@@ -913,14 +922,9 @@ fn conclude(
   outcome: translate.Outcome,
   now: Int,
 ) -> Step {
-  // A client that asked to stop is told the turn was cancelled even when the
-  // run finished before the abort landed: ACP defines the reply to a
-  // cancelled prompt, not a race between the two.
-  let outcome = case outcome, turn.cancellation {
-    translate.Stopped(schema.EndTurn), Asked ->
-      translate.Stopped(schema.Cancelled)
-    translate.Stopped(_), _ | translate.Errored(_), _ -> outcome
-  }
+  // A client that asked to stop is told the turn was cancelled however the
+  // run ended: ACP defines the reply to a cancelled prompt, not a race.
+  let outcome = translate.after_cancel(outcome, turn.cancellation)
 
   // A failed run is answered at once; a stopped one reads the context size so
   // the reply can be preceded by a usage update.
@@ -952,7 +956,7 @@ fn finish(
       queue:,
       streamed: translate.nothing_streamed,
     ),
-    list.append(usage_report(session, board), [reply]),
+    list.append(usage_report(session, board), [reply, TurnEnded]),
   )
 }
 
@@ -1016,7 +1020,10 @@ fn end_with_error(session: Session, turn: Turn, reason: String) -> Step {
       queue: without_turn_commands(session.queue),
       streamed: translate.nothing_streamed,
     )
-  #(ended, [Respond(turn.reply, Error(rpc.error(rpc.internal_error, reason)))])
+  #(ended, [
+    Respond(turn.reply, Error(rpc.error(rpc.internal_error, reason))),
+    TurnEnded,
+  ])
 }
 
 /// The `session/prompt` response.
@@ -1135,13 +1142,7 @@ fn frame(command: Command) -> Result(String, Nil) {
     SwitchModel(name, _) -> Ok(protocol.set_model(0, "main", name))
     ReadModels -> Ok(protocol.models(0))
     ReadContext -> Ok(protocol.context(0, "main"))
-    Decide(review, decision) ->
-      case decision {
-        translate.Approve -> approval.approve(0, review)
-        translate.ApproveForSession -> approval.approve_for_session(0, review)
-        translate.Deny -> approval.deny(0, review)
-      }
-      |> result.replace_error(Nil)
+    Decide(review, decision) -> translate.decision_frame(review, decision)
   }
 }
 

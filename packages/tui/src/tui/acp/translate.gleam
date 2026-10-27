@@ -61,6 +61,15 @@ pub type Decision {
   Deny
 }
 
+/// Whether the client has asked the running turn to stop.
+pub type Cancellation {
+  /// Nothing has asked the turn to stop.
+  NotAsked
+
+  /// The client sent `session/cancel`.
+  Asked
+}
+
 /// Provider text the live connection delivered that no durable entry has
 /// accounted for yet.
 ///
@@ -496,22 +505,87 @@ fn permission_input(review: approval.Review) -> JsonValue {
 
 /// What a client's answer to a permission request means.
 ///
-/// Anything other than a recognised allow option is a refusal, including a
-/// dismissal and an option id this server never offered, because an
-/// unrecognised answer must never widen authority.
+/// The answer is read against the options *offered for that request*, not
+/// against the vocabulary of every request: a session grant that was not
+/// offered (because the grant set cannot be remembered) is a refusal if a
+/// client sends it anyway. Anything else that is not an offered allow option
+/// is a refusal too, including a dismissal and an id this server never
+/// offered, because an unrecognised answer must never widen authority.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert translate.decision(schema.Selected("allow")) == translate.Approve
-/// assert translate.decision(schema.Dismissed) == translate.Deny
-/// assert translate.decision(schema.Selected("surprise")) == translate.Deny
+/// let offered = [schema.PermissionOption("allow", "Allow", schema.AllowOnce)]
+/// assert translate.decision(schema.Selected("allow"), offered)
+///   == translate.Approve
+/// assert translate.decision(schema.Selected("allow_session"), offered)
+///   == translate.Deny
+/// assert translate.decision(schema.Dismissed, offered) == translate.Deny
 /// ```
-pub fn decision(choice: schema.PermissionChoice) -> Decision {
+pub fn decision(
+  choice: schema.PermissionChoice,
+  offered: List(schema.PermissionOption),
+) -> Decision {
   case choice {
-    schema.Selected(option_id: "allow") -> Approve
-    schema.Selected(option_id: "allow_session") -> ApproveForSession
-    schema.Selected(..) | schema.Dismissed -> Deny
+    schema.Dismissed -> Deny
+    schema.Selected(option_id:) ->
+      case list.find(offered, fn(option) { option.id == option_id }) {
+        Ok(schema.PermissionOption(kind: schema.AllowOnce, ..)) -> Approve
+        Ok(schema.PermissionOption(kind: schema.AllowAlways, ..)) ->
+          ApproveForSession
+        Ok(schema.PermissionOption(kind: schema.RejectOnce, ..)) | Error(Nil) ->
+          Deny
+      }
+  }
+}
+
+/// The wire frame that carries a decision, falling back to a refusal.
+///
+/// A grant the record cannot encode (an approval whose exact authority is
+/// unavailable, or a session grant that is not rememberable) must not leave
+/// the escalation pending: the run is parked on it, and the prompt would hang.
+/// The frame is therefore a denial whenever the approval cannot be encoded.
+/// `Error` means even a denial is impossible, which only a record that is no
+/// longer pending can say.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // translate.decision_frame(review, translate.Approve) -> Ok(frame)
+/// ```
+pub fn decision_frame(
+  review: approval.Review,
+  decision: Decision,
+) -> Result(String, Nil) {
+  // Each decision has its own encoding; only the refusal always exists.
+  let encoded = case decision {
+    Approve -> approval.approve(0, review)
+    ApproveForSession -> approval.approve_for_session(0, review)
+    Deny -> approval.deny(0, review)
+  }
+
+  result.lazy_or(encoded, fn() { approval.deny(0, review) })
+  |> result.replace_error(Nil)
+}
+
+/// The outcome to report, given whether the client asked to stop.
+///
+/// A client that asked to stop is told the turn was cancelled however the run
+/// ended (finished, failed, or aborted): ACP requires the prompt response to
+/// be `cancelled`, and defines no race between the two.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let failed = translate.Errored("x")
+/// assert translate.after_cancel(failed, translate.Asked)
+///   == translate.Stopped(schema.Cancelled)
+/// assert translate.after_cancel(failed, translate.NotAsked) == failed
+/// ```
+pub fn after_cancel(outcome: Outcome, cancellation: Cancellation) -> Outcome {
+  case cancellation {
+    Asked -> Stopped(schema.Cancelled)
+    NotAsked -> outcome
   }
 }
 

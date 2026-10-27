@@ -334,14 +334,73 @@ pub fn an_escalation_that_cannot_be_encoded_can_only_be_denied_test() {
   assert string.contains(json.to_string(request.raw_input), "no action digest")
 }
 
-pub fn only_a_recognised_allow_option_widens_authority_test() {
-  assert translate.decision(schema.Selected("allow")) == translate.Approve
-  assert translate.decision(schema.Selected("allow_session"))
-    == translate.ApproveForSession
-  assert translate.decision(schema.Selected("reject")) == translate.Deny
-  assert translate.decision(schema.Selected("allow ")) == translate.Deny
-  assert translate.decision(schema.Selected("surprise")) == translate.Deny
-  assert translate.decision(schema.Dismissed) == translate.Deny
+fn offered_with_session() -> List(schema.PermissionOption) {
+  [
+    schema.PermissionOption("allow", "Allow once", schema.AllowOnce),
+    schema.PermissionOption("allow_session", "Always", schema.AllowAlways),
+    schema.PermissionOption("reject", "Deny", schema.RejectOnce),
+  ]
+}
+
+pub fn only_an_offered_allow_option_widens_authority_test() {
+  let offered = offered_with_session()
+  let decide = fn(choice) { translate.decision(choice, offered) }
+
+  assert decide(schema.Selected("allow")) == translate.Approve
+  assert decide(schema.Selected("allow_session")) == translate.ApproveForSession
+  assert decide(schema.Selected("reject")) == translate.Deny
+  assert decide(schema.Selected("allow ")) == translate.Deny
+  assert decide(schema.Selected("surprise")) == translate.Deny
+  assert decide(schema.Dismissed) == translate.Deny
+}
+
+pub fn a_session_grant_that_was_not_offered_is_a_refusal_test() {
+  let wall =
+    json.Object([
+      #("type", json.String("limit")),
+      #("field", json.String("wall_seconds")),
+      #("value", json.Int(60)),
+    ])
+  let #(_, offered) = translate.permission(review([wall, readable_root()]))
+
+  assert list.map(offered, fn(option) { option.id }) == ["allow", "reject"]
+  assert translate.decision(schema.Selected("allow_session"), offered)
+    == translate.Deny
+}
+
+pub fn a_decision_that_cannot_be_encoded_falls_back_to_a_denial_test() {
+  let wall =
+    json.Object([
+      #("type", json.String("limit")),
+      #("field", json.String("wall_seconds")),
+      #("value", json.Int(60)),
+    ])
+  let mixed = review([wall, readable_root()])
+  let unavailable =
+    approval.Review(
+      ..review([]),
+      permission: approval.Unavailable("no action digest"),
+    )
+  let assert Ok(denial) = approval.deny(0, mixed)
+  let assert Ok(denial_unavailable) = approval.deny(0, unavailable)
+
+  assert translate.decision_frame(mixed, translate.ApproveForSession)
+    == Ok(denial)
+  assert translate.decision_frame(unavailable, translate.Approve)
+    == Ok(denial_unavailable)
+  let assert Ok(approved) = translate.decision_frame(mixed, translate.Approve)
+  assert approved != denial
+}
+
+pub fn a_client_that_asked_to_stop_is_always_told_cancelled_test() {
+  let failed = translate.Errored("x")
+  let done = translate.Stopped(schema.EndTurn)
+  let cancelled = translate.Stopped(schema.Cancelled)
+
+  assert translate.after_cancel(failed, translate.Asked) == cancelled
+  assert translate.after_cancel(done, translate.Asked) == cancelled
+  assert translate.after_cancel(failed, translate.NotAsked) == failed
+  assert translate.after_cancel(done, translate.NotAsked) == done
 }
 
 fn run_result(outcome: operation.RunOutcome) -> operation.LastResult {
