@@ -62,6 +62,18 @@ pub fn read_console_reply(prompt: String) -> Result(String, String)
 @external(erlang, "tui_ffi", "read_standard_line")
 pub fn read_standard_line(prompt: String) -> Result(String, String)
 
+/// Reads one line of the Agent Client Protocol from standard input.
+///
+/// Uses OTP `io:setopts/2` to fix the device to Unicode and `io:get_line/1`
+/// to read, for the reason `read_standard_line` gives, and for a second one:
+/// that function trusts the device's locale-derived encoding, which in a
+/// container without a locale mangles every non-ASCII prompt. A line that
+/// cannot be decoded comes back as text that is not JSON, so the protocol
+/// layer refuses it with a parse error and the connection survives. Failure
+/// means end of input.
+@external(erlang, "tui_ffi", "read_protocol_line")
+pub fn read_protocol_line() -> Result(String, String)
+
 /// Exits the VM with a status.
 ///
 /// Uses OTP `erlang:halt/1`. Only the passthrough path calls it: the

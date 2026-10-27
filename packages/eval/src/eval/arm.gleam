@@ -378,6 +378,8 @@ fn level_name(level: model.ThinkingLevel) -> String {
     model.ThinkingLow -> "low"
     model.ThinkingMedium -> "medium"
     model.ThinkingHigh -> "high"
+    model.ThinkingXHigh -> "xhigh"
+    model.ThinkingMax -> "max"
   }
 }
 
@@ -388,6 +390,8 @@ fn decode_level(name: String) -> Result(model.ThinkingLevel, String) {
     "low" -> Ok(model.ThinkingLow)
     "medium" -> Ok(model.ThinkingMedium)
     "high" -> Ok(model.ThinkingHigh)
+    "xhigh" -> Ok(model.ThinkingXHigh)
+    "max" -> Ok(model.ThinkingMax)
     other -> Error("unknown thinking level \"" <> other <> "\"")
   }
 }

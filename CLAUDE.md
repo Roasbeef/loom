@@ -298,7 +298,7 @@ one.
   `executor`, the execution service over its helper pool). The
   process and its sessions: `daemon`, `sessions`, `distributed` (a
   session's runtime on an orchestrator and its tool calls on an
-  executor), `client`, `terminal`, `web-view`, `multiplayer`. What the model sees and does: `prompt`,
+  executor), `client`, `terminal`, `acp`, `web-view`, `multiplayer`. What the model sees and does: `prompt`,
   `tools`, `lsp`, `approvals`, `models`, `compaction`, `memory`.
   Programs and extensions: `code-mode`, `extensions`, `mcp`,
   `async-collaboration`. Strands and automation: `messaging`,
