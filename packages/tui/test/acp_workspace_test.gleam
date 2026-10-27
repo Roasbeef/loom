@@ -24,13 +24,20 @@ pub fn a_path_inside_a_root_is_admitted_as_a_local_workspace_test() {
       meta(None, None, None),
       "/work/app",
       ["/work"],
+      [],
       identity,
     )
     == Ok(workspace.Local("/work/app"))
 }
 
 pub fn the_root_itself_is_admitted_test() {
-  assert workspace.choose(meta(None, None, None), "/work", ["/work"], identity)
+  assert workspace.choose(
+      meta(None, None, None),
+      "/work",
+      ["/work"],
+      [],
+      identity,
+    )
     == Ok(workspace.Local("/work"))
 }
 
@@ -40,6 +47,7 @@ pub fn a_path_outside_every_root_is_refused_test() {
       meta(None, None, None),
       "/etc",
       ["/work", "/srv"],
+      [],
       identity,
     )
 
@@ -57,7 +65,7 @@ pub fn a_relative_cwd_is_refused_before_the_filesystem_is_asked_test() {
   let must_not_run = fn(_) { panic as "canonicalisation must not run" }
 
   let assert Error(reason) =
-    workspace.choose(meta(None, None, None), "app", ["/work"], must_not_run)
+    workspace.choose(meta(None, None, None), "app", ["/work"], [], must_not_run)
   assert string.contains(reason, "absolute")
 }
 
@@ -70,22 +78,37 @@ pub fn the_path_is_compared_after_resolution_so_a_link_cannot_escape_test() {
   }
 
   let assert Error(_) =
-    workspace.choose(meta(None, None, None), "/work/link", ["/work"], resolve)
+    workspace.choose(
+      meta(None, None, None),
+      "/work/link",
+      ["/work"],
+      [],
+      resolve,
+    )
 }
 
 pub fn a_cwd_that_does_not_exist_is_refused_with_the_reason_test() {
   let missing = fn(_) { Error("no such directory") }
 
   let assert Error(reason) =
-    workspace.choose(meta(None, None, None), "/work/gone", ["/work"], missing)
+    workspace.choose(
+      meta(None, None, None),
+      "/work/gone",
+      ["/work"],
+      [],
+      missing,
+    )
   assert string.contains(reason, "no such directory")
 }
 
-pub fn a_registered_workspace_needs_an_executor_or_a_pool_test() {
+pub fn a_listed_registered_workspace_needs_an_executor_or_a_pool_test() {
+  let listed = ["repo"]
+
   assert workspace.choose(
       meta(Some("repo"), Some("builder"), None),
       "/ignored",
       [],
+      listed,
       identity,
     )
     == Ok(workspace.Registered("repo", "builder", ""))
@@ -93,23 +116,60 @@ pub fn a_registered_workspace_needs_an_executor_or_a_pool_test() {
       meta(Some("repo"), None, Some("fleet")),
       "/ignored",
       [],
+      listed,
       identity,
     )
     == Ok(workspace.Registered("repo", "", "fleet"))
   let assert Error(_) =
-    workspace.choose(meta(Some("repo"), None, None), "/w", [], identity)
+    workspace.choose(meta(Some("repo"), None, None), "/w", [], listed, identity)
   let assert Error(_) =
     workspace.choose(
       meta(Some("repo"), Some("a"), Some("b")),
       "/w",
       [],
+      listed,
       identity,
     )
   let assert Error(_) =
-    workspace.choose(meta(Some("  "), Some("a"), None), "/w", [], identity)
+    workspace.choose(
+      meta(Some("  "), Some("a"), None),
+      "/w",
+      [],
+      listed,
+      identity,
+    )
+}
+
+pub fn a_registered_name_the_operator_did_not_list_is_refused_test() {
+  let unlisted =
+    workspace.choose(
+      meta(Some("secret"), Some("builder"), None),
+      "/w",
+      ["/w"],
+      ["repo"],
+      identity,
+    )
+  let none_listed =
+    workspace.choose(
+      meta(Some("repo"), Some("builder"), None),
+      "/w",
+      ["/w"],
+      [],
+      identity,
+    )
+
+  let assert Error(reason) = unlisted
+  assert string.contains(reason, "started with")
+  let assert Error(_) = none_listed
 }
 
 pub fn an_executor_without_a_workspace_name_is_refused_test() {
   let assert Error(_) =
-    workspace.choose(meta(None, Some("builder"), None), "/w", ["/w"], identity)
+    workspace.choose(
+      meta(None, Some("builder"), None),
+      "/w",
+      ["/w"],
+      ["repo"],
+      identity,
+    )
 }

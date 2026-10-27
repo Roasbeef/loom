@@ -43,31 +43,33 @@ pub type Choice {
 ///
 /// `canonical` resolves a path through the filesystem and fails when it does
 /// not exist or is not a directory; it is a parameter so the policy is
-/// testable without a disk. `roots` are canonical already.
+/// testable without a disk. `roots` are canonical already. `names` are the
+/// registered workspace names the operator allows.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// let canonical = fn(path) { Ok(path) }
 /// let meta = schema.Meta(None, None, None, None, None, schema.GuidanceLoaded)
-/// assert workspace.choose(meta, "/work/app", ["/work"], canonical)
+/// assert workspace.choose(meta, "/work/app", ["/work"], [], canonical)
 ///   == Ok(workspace.Local("/work/app"))
 /// ```
 ///
 /// ```gleam
 /// let canonical = fn(path) { Ok(path) }
 /// let meta = schema.Meta(None, None, None, None, None, schema.GuidanceLoaded)
-/// let assert Error(_) = workspace.choose(meta, "/etc", ["/work"], canonical)
+/// let assert Error(_) = workspace.choose(meta, "/etc", ["/work"], [], canonical)
 /// ```
 pub fn choose(
   meta: schema.Meta,
   cwd: String,
   roots: List(String),
+  names: List(String),
   canonical: fn(String) -> Result(String, String),
 ) -> Result(Choice, String) {
   // A named workspace is selected by the extension; otherwise `cwd` decides.
   case meta.workspace, meta.executor, meta.pool {
-    Some(name), executor, pool -> registered(name, executor, pool)
+    Some(name), executor, pool -> registered(name, executor, pool, names)
 
     None, None, None -> local(cwd, roots, canonical)
 
@@ -81,17 +83,30 @@ fn registered(
   name: String,
   executor: Option(String),
   pool: Option(String),
+  names: List(String),
 ) -> Result(Choice, String) {
-  case string.trim(name), executor, pool {
-    "", _, _ -> Error("_meta.loom.workspace must not be empty")
+  // A registered name reaches a machine the operator configured, so it is
+  // admitted only when the operator listed it, as a path is admitted only
+  // inside a listed root. An empty list admits none.
+  let name = string.trim(name)
 
-    name, Some(executor), None -> Ok(Registered(name, executor, ""))
+  // The name must be non-empty, listed, and paired with exactly one route.
+  case name, list.contains(names, name), executor, pool {
+    "", _, _, _ -> Error("_meta.loom.workspace must not be empty")
 
-    name, None, Some(pool) -> Ok(Registered(name, "", pool))
+    _, False, _, _ ->
+      Error(
+        "_meta.loom.workspace is not a workspace name this server was started with",
+      )
 
-    _, Some(_), Some(_) -> Error("_meta.loom.executor and pool are exclusive")
+    _, True, Some(executor), None -> Ok(Registered(name, executor, ""))
 
-    _, None, None ->
+    _, True, None, Some(pool) -> Ok(Registered(name, "", pool))
+
+    _, True, Some(_), Some(_) ->
+      Error("_meta.loom.executor and pool are exclusive")
+
+    _, True, None, None ->
       Error(
         "_meta.loom.workspace is a registered name and needs an executor or pool",
       )

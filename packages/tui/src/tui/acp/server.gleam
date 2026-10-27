@@ -62,6 +62,7 @@ import tui/daemon/selection
 import tui/internal/ffi_terminal
 import tui/placement
 import tui/run
+import weft
 
 /// What `loom acp` was asked to do.
 pub type Config {
@@ -72,6 +73,11 @@ pub type Config {
     /// line. When empty, the workspace option, or else the process directory,
     /// is the only root.
     roots: List(String),
+    /// Registered workspace names a client may select with
+    /// `_meta.loom.workspace`, as named on the command line. A registered
+    /// workspace reaches a machine the operator configured, so none is
+    /// admitted unless listed, just as no path is admitted outside a root.
+    names: List(String),
     /// The Loom build, reported to the client as the agent's version.
     version: String,
   )
@@ -154,6 +160,9 @@ type State {
   )
 }
 
+/// How long retirement may take in all, in milliseconds.
+const retire_deadline_ms = 15_000
+
 /// The longest the loop sleeps, so lane deadlines are re-read promptly.
 const longest_wait_ms = 250
 
@@ -168,7 +177,8 @@ pub const exit_bad_arguments = 2
 /// assert string.contains(server.usage(), "loom acp")
 /// ```
 pub fn usage() -> String {
-  "usage: loom acp [--workspace-root <dir>]... [--workspace <dir>]\n"
+  "usage: loom acp [--workspace-root <dir>]... [--workspace-name <name>]...\n"
+  <> "                [--workspace <dir>]\n"
   <> "                [--config <loom.toml>] [--model-profile <name>]\n"
   <> "                [--server <path>] [--state-dir <path>]\n\n"
   <> "Speaks the Agent Client Protocol (JSON-RPC 2.0, one frame per line) on\n"
@@ -176,7 +186,9 @@ pub fn usage() -> String {
   <> "sessions. It is a client of the daemon, which it starts if needed; it\n"
   <> "opens no listener. A session's cwd must lie within a --workspace-root\n"
   <> "(repeatable); with none given, the --workspace directory, or else the\n"
-  <> "current directory, is the only root. Sessions it creates are stopped\n"
+  <> "current directory, is the only root. A client may name a workspace\n"
+  <> "registered on an executor only if it is listed with --workspace-name\n"
+  <> "(repeatable). Sessions it creates are stopped\n"
   <> "when the client closes standard input. Diagnostics go to standard error;\n"
   <> "standard output carries only protocol frames.\n"
 }
@@ -201,6 +213,7 @@ pub fn parse(
     Config(
       options: bootstrap.Options("", "", "", "", "", "", placement.OnThisHost),
       roots: [],
+      names: [],
       version:,
     )
   parse_words(arguments, start)
@@ -234,6 +247,8 @@ fn apply_flag(
   case flag {
     "--workspace-root" ->
       Ok(Config(..config, roots: list.append(config.roots, [value])))
+    "--workspace-name" ->
+      Ok(Config(..config, names: list.append(config.names, [value])))
     "--workspace" ->
       Ok(
         Config(
@@ -449,6 +464,7 @@ fn drop_if_dead(state: State, id: String) -> State {
       case session.is_dead(live.session) {
         True -> {
           connection.close(live.socket)
+          let state = forget_asks(state, id)
 
           // A dead session this connection started is still the daemon's to
           // hold, so its id is kept to be stopped when the connection ends.
@@ -469,6 +485,18 @@ fn drop_if_dead(state: State, id: String) -> State {
 
 // --- performing actions ------------------------------------------------------
 
+/// Forgets the permission requests a session left open.
+///
+/// Once a turn is answered (or its session is gone) the escalation it was
+/// parked on cannot be decided from here, so a late reply must find nothing
+/// to act on rather than a stale entry that still names the session.
+fn forget_asks(state: State, id: String) -> State {
+  State(
+    ..state,
+    asked: dict.filter(state.asked, fn(_, owner) { owner.session != id }),
+  )
+}
+
 /// Carries out a session's actions, in the order the reducer decided them.
 fn perform(state: State, id: String, actions: List(session.Action)) -> State {
   list.fold(actions, state, fn(state, action) {
@@ -486,6 +514,8 @@ fn perform(state: State, id: String, actions: List(session.Action)) -> State {
         perform_output(output)
         state
       }
+
+      session.TurnEnded -> forget_asks(state, id)
 
       session.Ended(reason:) -> {
         io.println_error("loom acp: session " <> id <> " ended: " <> reason)
@@ -631,8 +661,8 @@ fn dispatch(
     schema.NewSession(cwd:, mcp_servers:, meta:) ->
       new_session(state, id, cwd, mcp_servers, meta, now)
 
-    schema.LoadSession(session_id:, cwd: _, mcp_servers:, meta:) ->
-      load_session(state, id, session_id, mcp_servers, meta, now)
+    schema.LoadSession(session_id:, cwd:, mcp_servers:, meta:) ->
+      load_session(state, id, session_id, cwd, mcp_servers, meta, now)
 
     schema.Prompt(session_id:, content:) ->
       existing(state, id, session_id, fn(live) {
@@ -746,6 +776,15 @@ fn reply(
 
 // --- making sessions ---------------------------------------------------------
 
+/// A refusal that carries the state its steps had already changed.
+///
+/// A step can reach the daemon before a later one fails, and what it reached
+/// (a cached control connection, a session it woke) must survive the failure
+/// so it is neither leaked nor lost.
+type Refused {
+  Refused(state: State, error: rpc.WireError)
+}
+
 /// Handles `session/new`.
 fn new_session(
   state: State,
@@ -756,21 +795,29 @@ fn new_session(
   now: Int,
 ) -> State {
   let made = {
-    use _ <- result.try(refuse_unsupported(mcp_servers, meta))
+    use _ <- result.try(
+      refuse_unsupported(mcp_servers, meta)
+      |> result.map_error(Refused(state, _)),
+    )
     use choice <- result.try(
       workspace.choose(
         meta,
         cwd,
         state.roots,
+        state.config.names,
         host_bootstrap.canonical_directory,
       )
-      |> result.map_error(invalid),
+      |> result.map_error(fn(reason) { Refused(state, invalid(reason)) }),
     )
-    use #(state, host) <- result.try(ensure_daemon(state))
-    use target <- result.try(create(state, host, choice, meta))
-    attach(state, target, session.Created, id, meta.model, Made, now)
+    use #(state, host) <- result.try(
+      ensure_daemon(state) |> result.map_error(Refused(state, _)),
+    )
+    use target <- result.try(
+      create(state, host, choice, meta) |> result.map_error(Refused(state, _)),
+    )
+    start_attached(state, target, session.Created, id, meta.model, Made, now)
   }
-  settle_attach(state, id, made)
+  settle_attach(id, made)
 }
 
 /// Handles `session/load`.
@@ -778,47 +825,80 @@ fn load_session(
   state: State,
   id: rpc.Id,
   session_id: String,
+  cwd: String,
   mcp_servers: List(String),
   meta: schema.Meta,
   now: Int,
 ) -> State {
   let opened = {
-    use _ <- result.try(refuse_unsupported(mcp_servers, meta))
-    use #(state, host) <- result.try(ensure_daemon(state))
+    use _ <- result.try(
+      refuse_unsupported(mcp_servers, meta)
+      |> result.map_error(Refused(state, _)),
+    )
+    use _ <- result.try(
+      refuse_duplicate(state, session_id) |> result.map_error(Refused(state, _)),
+    )
+    use #(state, host) <- result.try(
+      ensure_daemon(state) |> result.map_error(Refused(state, _)),
+    )
+
+    // Everything that can refuse a load is checked against the registration
+    // *before* the session is opened, because opening a parked session makes
+    // it resident, and a session woken and then refused would be left running
+    // with nothing tracking it.
+    use row <- result.try(
+      registration(host, session_id) |> result.map_error(Refused(state, _)),
+    )
+    use _ <- result.try(
+      require_inside_roots(state.roots, row.workspace)
+      |> result.map_error(Refused(state, _)),
+    )
+    use _ <- result.try(
+      require_matching_cwd(cwd, row.workspace)
+      |> result.map_error(Refused(state, _)),
+    )
 
     // A session found saved is made resident by this open, so it is this
     // connection's to stop again; one found resident belongs to someone else.
-    let origin = case residency(host, session_id) {
-      Saved -> Made
-      Resident -> Opened
+    let origin = case row.status {
+      protocol.Saved -> Made
+      _ -> Opened
     }
 
     use target <- result.try(
       selection.open(host, session_id)
       |> result.map_error(fn(reason) {
-        rpc.error(rpc.resource_not_found, reason)
+        Refused(
+          abandon(state, session_id, origin),
+          rpc.error(rpc.resource_not_found, reason),
+        )
       }),
     )
-    use _ <- result.try(require_inside_roots(state.roots, target.workspace.path))
-    attach(state, target, session.Loaded, id, None, origin, now)
+    start_attached(state, target, session.Loaded, id, None, origin, now)
   }
-  settle_attach(state, id, opened)
+  settle_attach(id, opened)
 }
 
-/// Whether a session is parked on disk or already held by the daemon.
-type Residency {
-  /// Parked: opening it makes it resident.
-  Saved
-
-  /// Already resident, or in a state this client does not own.
-  Resident
-}
-
-/// Reads the registration to learn which side of the open a session is on.
+/// Refuses to attach a session this connection already holds.
 ///
-/// Any answer other than "saved" counts as resident, so the cautious reading
-/// is the default: this connection stops only what it is sure it started.
-fn residency(host: selection.Host, session_id: String) -> Residency {
+/// A second attach would replace the first without closing its socket or
+/// forgetting its permission requests, and the second open would find the
+/// session resident and so lose track of who is to stop it.
+fn refuse_duplicate(
+  state: State,
+  session_id: String,
+) -> Result(Nil, rpc.WireError) {
+  case dict.has_key(state.sessions, session_id) {
+    True -> Error(invalid("session " <> session_id <> " is already loaded"))
+    False -> Ok(Nil)
+  }
+}
+
+/// Reads the daemon's registration for a session.
+fn registration(
+  host: selection.Host,
+  session_id: String,
+) -> Result(protocol.Session, rpc.WireError) {
   case
     daemon.request(
       selection.control(host),
@@ -826,21 +906,65 @@ fn residency(host: selection.Host, session_id: String) -> Residency {
       5000,
     )
   {
-    Ok(protocol.SessionReply(protocol.Session(status: protocol.Saved, ..))) ->
-      Saved
-    _ -> Resident
+    Ok(protocol.SessionReply(row)) -> Ok(row)
+    _ ->
+      Error(rpc.error(rpc.resource_not_found, "unknown session " <> session_id))
+  }
+}
+
+/// A loaded session's own workspace must be the `cwd` the client named.
+///
+/// The session is already bound to a workspace; a client that believes it is
+/// somewhere else is about to act on the wrong tree, so the mismatch is
+/// reported instead of ignored. A registered name is not a path and is not
+/// compared.
+fn require_matching_cwd(
+  cwd: String,
+  workspace: String,
+) -> Result(Nil, rpc.WireError) {
+  case string.starts_with(workspace, "/") {
+    False -> Ok(Nil)
+    True ->
+      case host_bootstrap.canonical_directory(cwd) {
+        Ok(resolved) if resolved == workspace -> Ok(Nil)
+        _ ->
+          Error(invalid(
+            "cwd is not the workspace this session is bound to: " <> workspace,
+          ))
+      }
+  }
+}
+
+/// Records that this connection started a session it no longer tracks, so it is still stopped.
+fn abandon(state: State, session_id: String, origin: Origin) -> State {
+  case origin {
+    Made -> State(..state, abandoned: [session_id, ..state.abandoned])
+    Opened -> state
+  }
+}
+
+/// Attaches a session, and on failure keeps the session in the abandoned list.
+fn start_attached(
+  state: State,
+  target: selection.Target,
+  intent: session.Attach,
+  reply: rpc.Id,
+  model: Option(String),
+  origin: Origin,
+  now: Int,
+) -> Result(State, Refused) {
+  case attach(state, target, intent, reply, model, origin, now) {
+    Ok(state) -> Ok(state)
+    Error(error) ->
+      Error(Refused(abandon(state, target.expected.session, origin), error))
   }
 }
 
 /// Turns an attach that failed into the error response, or keeps the new state.
-fn settle_attach(
-  state: State,
-  id: rpc.Id,
-  attached: Result(State, rpc.WireError),
-) -> State {
+fn settle_attach(id: rpc.Id, attached: Result(State, Refused)) -> State {
   case attached {
     Ok(state) -> state
-    Error(error) -> respond(state, id, Error(error))
+    Error(Refused(state:, error:)) -> respond(state, id, Error(error))
   }
 }
 
@@ -999,12 +1123,25 @@ fn invalid(reason: String) -> rpc.WireError {
 /// daemon's own report that it saved is waited for. A session this connection
 /// only opened is detached and left as it was found.
 fn retire(state: State) -> Nil {
-  dict.each(state.sessions, fn(id, live) {
-    connection.close(live.socket)
-    retire_session(state, id, live.origin)
-  })
+  dict.each(state.sessions, fn(_, live) { connection.close(live.socket) })
 
-  list.each(state.abandoned, retire_session(state, _, Made))
+  // Every session to stop is stopped at once under one deadline. A client's
+  // runtime closes our standard input and then terminates us after a short
+  // grace, so stopping them one after another would let the last wait out a
+  // deadline the first already spent. The shared deadline bounds the whole
+  // retirement; a session still stopping when it passes stays the daemon's.
+  let ids =
+    list.append(
+      state.abandoned,
+      dict.to_list(state.sessions)
+        |> list.filter_map(fn(entry) {
+          case entry.1.origin {
+            Made -> Ok(entry.0)
+            Opened -> Error(Nil)
+          }
+        }),
+    )
+  stop_together(state, ids)
 
   // The control connection closes last, once nothing needs it to stop a session.
   case state.daemon {
@@ -1013,17 +1150,43 @@ fn retire(state: State) -> Nil {
   }
 }
 
-/// Stops one session if this connection started it, and says so if that fails.
-fn retire_session(state: State, id: String, origin: Origin) -> Nil {
-  case origin, state.daemon {
-    Made, Some(Daemon(host)) ->
-      case run.stop(host, id) {
-        Ok(Nil) -> Nil
-        Error(reason) ->
-          io.println_error(
-            "loom acp: session " <> id <> " not stopped: " <> reason,
-          )
-      }
-    Opened, _ | Made, None -> Nil
+/// Stops the named sessions concurrently within `retire_deadline_ms`.
+fn stop_together(state: State, ids: List(String)) -> Nil {
+  case state.daemon {
+    None -> Nil
+    Some(Daemon(host)) ->
+      ids
+      |> list.map(fn(id) { fn() { stop_on_own_control(host, id) } })
+      |> weft.new
+      |> weft.limit(8)
+      |> weft.deadline(retire_deadline_ms)
+      |> weft.start
+      |> list.each(report_stop)
+  }
+}
+
+/// Stops one session over a control connection of its own.
+///
+/// The daemon's control connection answers one request at a time and refuses
+/// a second as busy, so concurrent stops cannot share the connection the
+/// loop used. Each worker mints its own, which it owns and closes.
+fn stop_on_own_control(
+  host: selection.Host,
+  id: String,
+) -> Result(Nil, String) {
+  use own <- result.try(selection.reconnect(host, process.self()))
+  let stopped = run.stop(own, id)
+  daemon.close(selection.control(own))
+  stopped
+}
+
+/// Says on standard error when a session was not stopped; success is silent.
+fn report_stop(outcome: weft.Outcome(Nil, String)) -> Nil {
+  case outcome {
+    weft.Completed(..) -> Nil
+    weft.Failed(error: reason, ..) ->
+      io.println_error("loom acp: a session was not stopped: " <> reason)
+    _ ->
+      io.println_error("loom acp: a session was still stopping at the deadline")
   }
 }

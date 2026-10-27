@@ -18,14 +18,16 @@ pub fn every_flag_lands_where_it_belongs_test() {
   let assert Ok(config) =
     server.parse(
       [
-        "--workspace-root", "/a", "--workspace-root", "/b", "--workspace", "/w",
-        "--config", "/c.toml", "--server", "/s", "--state-dir", "/st",
-        "--model-profile", "fast",
+        "--workspace-root", "/a", "--workspace-root", "/b", "--workspace-name",
+        "repo", "--workspace-name", "web", "--workspace", "/w", "--config",
+        "/c.toml", "--server", "/s", "--state-dir", "/st", "--model-profile",
+        "fast",
       ],
       "1",
     )
 
   assert config.roots == ["/a", "/b"]
+  assert config.names == ["repo", "web"]
   assert config.options.workspace == "/w"
   assert config.options.config == "/c.toml"
   assert config.options.server == "/s"

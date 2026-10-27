@@ -97,6 +97,7 @@ fn config_for(shipped: String, fixture: Fixture) -> server.Config {
       placement.OnThisHost,
     ),
     roots: [fixture.workspace],
+    names: [],
     version: "test",
   )
 }
@@ -392,6 +393,43 @@ fn saved(config: server.Config, session: String) -> Bool {
   }
 }
 
+/// Whether the daemon holds the session resident right now.
+fn resident(config: server.Config, session: String) -> Bool {
+  let assert Ok(connected) =
+    bootstrap.resolve_daemon(config.options, process.self(), 40_000)
+    as "the daemon is still reachable"
+  let reply =
+    daemon.request(connected.control, protocol.GetSession(session), 5000)
+  daemon.close(connected.control)
+
+  case reply {
+    Ok(protocol.SessionReply(protocol.Session(status: protocol.Resident(_), ..))) ->
+      True
+    _ -> False
+  }
+}
+
+/// A `session/load` request for `session`, naming `cwd`.
+fn load(client: Client, id: Int, session: String, cwd: String) -> Exchange {
+  call(
+    client,
+    id,
+    "session/load",
+    json.Object([
+      #("sessionId", json.String(session)),
+      #("cwd", json.String(cwd)),
+      #("mcpServers", json.Array([])),
+    ]),
+  )
+  await(client, id, refuse_everything)
+}
+
+fn error_code_of(done: Exchange) -> Int {
+  let assert json.Int(code) = member(member(done.response, "error"), "code")
+    as "the response is an error with a numeric code"
+  code
+}
+
 fn skip(reason: String) -> Nil {
   io.println_error("SKIP loom acp: " <> reason)
 }
@@ -619,7 +657,8 @@ pub fn a_cancel_during_a_stalled_response_ends_the_turn_cancelled_test_() -> Eun
       Error(Nil) -> skip("LOOM_BOOTSTRAP_E2E_SERVER is unset")
       Ok(shipped) -> {
         let port = process.new_subject()
-        let peer = process.spawn_unlinked(fn() { stall(port) })
+        let accepted = process.new_subject()
+        let peer = process.spawn_unlinked(fn() { stall(port, accepted) })
         let assert Ok(port) = process.receive(port, 5000)
           as "the stalling provider published its port"
         let fixture =
@@ -639,6 +678,12 @@ pub fn a_cancel_during_a_stalled_response_ends_the_turn_cancelled_test_() -> Eun
           json.Object([#("sessionId", json.String(session))]),
         )
         let turn = await(client, 3, refuse_everything)
+
+        // The provider accepted the request, so the run was in flight and the
+        // reply could only come from an abort that was actually sent: the
+        // stalled response never ends by itself.
+        let assert Ok(Nil) = process.receive(accepted, 1000)
+          as "the run reached the provider before the cancel"
         let status = hang_up(client)
         process.kill(peer)
 
@@ -686,12 +731,17 @@ pub fn a_saved_session_loads_and_replays_its_transcript_test_() -> EunitTest {
                 ]),
               )
               let loaded = await(second, 2, refuse_everything)
+
+              // Waking a parked session makes it resident; it is this
+              // connection's to stop again when the connection ends.
+              let held = resident(config, session)
               let status = hang_up(second)
-              #(session, loaded, status, config)
+              #(session, loaded, status, config, held)
             },
           )
         let assert Ok(_) = report as "the scripted provider answered once"
-        let #(session, loaded, status, config) = outcome
+        let #(session, loaded, status, config, held) = outcome
+        assert held
 
         assert status == 0
         assert !has(member(loaded.response, "result"), "sessionId")
@@ -798,6 +848,171 @@ pub fn a_session_reports_its_models_and_switches_by_catalogue_name_test_() -> Eu
   })
 }
 
+pub fn a_session_found_resident_is_left_resident_when_the_loader_hangs_up_test_() -> EunitTest {
+  Timeout(120, fn() {
+    case shipped_server.from_environment() {
+      Error(Nil) -> skip("LOOM_BOOTSTRAP_E2E_SERVER is unset")
+      Ok(shipped) -> {
+        let #(outcome, report) =
+          provider_http.with_server([], fn(url) {
+            let fixture = fixture("shared", url)
+            let config = config_for(shipped, fixture)
+
+            // The first connection makes the session and keeps it.
+            let owner = launch(config)
+            initialize(owner)
+            let session = new_session(owner, 2, fixture.workspace)
+
+            // A second connection loads it while it is resident, then leaves.
+            let visitor = launch(config)
+            initialize(visitor)
+            let loaded = load(visitor, 2, session, fixture.workspace)
+            let _ = hang_up(visitor)
+            let still_resident = resident(config, session)
+
+            let _ = hang_up(owner)
+            #(loaded, still_resident, saved(config, session))
+          })
+        let assert Ok(_) = report as "the provider was never asked"
+        let #(loaded, still_resident, saved_at_end) = outcome
+
+        assert has(loaded.response, "result")
+        assert still_resident
+        assert saved_at_end
+      }
+    }
+  })
+}
+
+pub fn a_load_outside_the_roots_is_refused_before_the_session_is_woken_test_() -> EunitTest {
+  Timeout(120, fn() {
+    case shipped_server.from_environment() {
+      Error(Nil) -> skip("LOOM_BOOTSTRAP_E2E_SERVER is unset")
+      Ok(shipped) -> {
+        let #(outcome, report) =
+          provider_http.with_server([], fn(url) {
+            let fixture = fixture("outside", url)
+            let config = config_for(shipped, fixture)
+            let first = launch(config)
+            initialize(first)
+            let session = new_session(first, 2, fixture.workspace)
+            let _ = hang_up(first)
+
+            // A server whose only root is elsewhere must refuse the load
+            // without ever opening the parked session.
+            let elsewhere =
+              offline_config(
+                "build/loom-acp-elsewhere-"
+                <> int.to_string(native.system_time_ms()),
+              )
+            let second = launch(server.Config(..config, roots: elsewhere.roots))
+            initialize(second)
+            let refused = load(second, 2, session, fixture.workspace)
+            let woken = resident(config, session)
+            let _ = hang_up(second)
+            #(refused, woken, saved(config, session))
+          })
+        let assert Ok(_) = report as "the provider was never asked"
+        let #(refused, woken, saved_at_end) = outcome
+
+        assert error_code_of(refused) == rpc.invalid_params
+        assert !woken
+        assert saved_at_end
+      }
+    }
+  })
+}
+
+pub fn a_load_naming_another_cwd_is_reported_not_ignored_test_() -> EunitTest {
+  Timeout(120, fn() {
+    case shipped_server.from_environment() {
+      Error(Nil) -> skip("LOOM_BOOTSTRAP_E2E_SERVER is unset")
+      Ok(shipped) -> {
+        let #(outcome, report) =
+          provider_http.with_server([], fn(url) {
+            let fixture = fixture("cwd", url)
+            let config =
+              server.Config(..config_for(shipped, fixture), roots: [
+                fixture.directory,
+              ])
+            let first = launch(config)
+            initialize(first)
+            let session = new_session(first, 2, fixture.workspace)
+            let _ = hang_up(first)
+
+            // The directory is inside a root but is not the session's own.
+            let second = launch(config)
+            initialize(second)
+            let refused = load(second, 2, session, fixture.directory)
+            let woken = resident(config, session)
+            let _ = hang_up(second)
+            #(refused, woken)
+          })
+        let assert Ok(_) = report as "the provider was never asked"
+        let #(refused, woken) = outcome
+
+        assert error_code_of(refused) == rpc.invalid_params
+        assert !woken
+      }
+    }
+  })
+}
+
+pub fn loading_a_session_this_connection_already_holds_is_refused_test_() -> EunitTest {
+  Timeout(120, fn() {
+    case shipped_server.from_environment() {
+      Error(Nil) -> skip("LOOM_BOOTSTRAP_E2E_SERVER is unset")
+      Ok(shipped) -> {
+        let #(outcome, report) =
+          provider_http.with_server([], fn(url) {
+            let fixture = fixture("twice", url)
+            let config = config_for(shipped, fixture)
+            let client = launch(config)
+            initialize(client)
+            let session = new_session(client, 2, fixture.workspace)
+            let again = load(client, 3, session, fixture.workspace)
+            let _ = hang_up(client)
+            #(again, saved(config, session))
+          })
+        let assert Ok(_) = report as "the provider was never asked"
+        let #(again, saved_at_end) = outcome
+
+        assert error_code_of(again) == rpc.invalid_params
+        // The first attach kept its custody, so ending the connection saved it.
+        assert saved_at_end
+      }
+    }
+  })
+}
+
+pub fn several_sessions_are_stopped_together_when_the_client_hangs_up_test_() -> EunitTest {
+  Timeout(120, fn() {
+    case shipped_server.from_environment() {
+      Error(Nil) -> skip("LOOM_BOOTSTRAP_E2E_SERVER is unset")
+      Ok(shipped) -> {
+        let #(outcome, report) =
+          provider_http.with_server([], fn(url) {
+            let fixture = fixture("many", url)
+            let config = config_for(shipped, fixture)
+            let client = launch(config)
+            initialize(client)
+            let one = new_session(client, 2, fixture.workspace)
+            let two = new_session(client, 3, fixture.workspace)
+            let while_attached = #(resident(config, one), resident(config, two))
+            let _ = hang_up(client)
+            #(while_attached, saved(config, one), saved(config, two))
+          })
+        let assert Ok(_) = report as "the provider was never asked"
+        let #(while_attached, first_saved, second_saved) = outcome
+
+        assert while_attached == #(True, True)
+        assert first_saved
+        assert second_saved
+      }
+    }
+  })
+}
+
 // --- frames the server must refuse without dying -----------------------------
 
 /// A config for tests that never reach the daemon: nothing here starts one.
@@ -817,6 +1032,7 @@ fn offline_config(directory: String) -> server.Config {
       placement.OnThisHost,
     ),
     roots: [directory],
+    names: [],
     version: "test",
   )
 }
@@ -1005,29 +1221,53 @@ pub fn the_workspace_gate_and_the_refused_extensions_stop_a_session_before_it_ex
     "project_instructions",
   )
 
+  // A registered workspace the operator did not list is refused, too.
+  call(
+    client,
+    7,
+    "session/new",
+    json.Object([
+      #("cwd", json.String(missing)),
+      #(
+        "_meta",
+        json.Object([
+          #(
+            "loom",
+            json.Object([
+              #("workspace", json.String("repo")),
+              #("executor", json.String("builder")),
+            ]),
+          ),
+        ]),
+      ),
+    ]),
+  )
+  assert error_code(next_frame(client)) == rpc.invalid_params
+
   assert hang_up(client) == 0
 }
 
 // A provider that begins a response and then never finishes it, for as long
 // as the client keeps the connection, so a run is provably in flight. It is
 // killed by the test, which closes its sockets with it.
-fn stall(port: Subject(Int)) -> Nil {
+fn stall(port: Subject(Int), accepted: Subject(Nil)) -> Nil {
   let assert Ok(listener) =
     socket.tcp_listen(0, [socket.Binary, socket.Active(False)])
     as "the stalling provider owns a listener"
   let assert Ok(bound) = socket.tcp_port(listener)
     as "the listener has a bound port"
   process.send(port, bound)
-  hold(listener)
+  hold(listener, accepted)
 }
 
-fn hold(listener: socket.Socket) -> Nil {
+fn hold(listener: socket.Socket, accepted: Subject(Nil)) -> Nil {
   let assert Ok(peer) = socket.tcp_accept(listener, 120_000)
     as "the run's provider request connects"
+  process.send(accepted, Nil)
   let head =
     "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
   let assert Ok(Nil) = tcp.send(peer, bit_array.from_string(head))
     as "the response head is written"
   let _ = socket.tcp_receive(peer, 0, 120_000)
-  hold(listener)
+  hold(listener, accepted)
 }
