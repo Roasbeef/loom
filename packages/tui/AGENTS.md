@@ -441,7 +441,7 @@ missing daemon) and, against the shipped daemon, `client/loom_run_test`
 
 ## Agent Client Protocol server (`loom acp`, issue #1026)
 
-`loom acp [--workspace-root DIR]... [--workspace DIR] [--config FILE]
+`loom acp [--workspace-root DIR]... [--workspace-name NAME]... [--workspace DIR] [--config FILE]
 [--model-profile NAME] [--server PATH] [--state-dir DIR]` is `tui/acp/server`,
 dispatched as `tui.Acp(config)` (refused arguments are `AcpRefused`, exit `2`;
 `acp` is a `hoisting_verbs` member and `tui.launch_acp` is the routing test
@@ -480,7 +480,19 @@ Invariants that break things when violated:
   Changing `entry_updates` to count blocks reintroduces duplicates when a
   stream is cut short or the next request starts before the entry is fetched.
 - **An unreadable or unrecognised permission answer is a denial.**
-  `translate.decision` approves only the exact option ids this server offered.
+  `translate.decision` reads the answer against the options offered for that
+  request, and `translate.decision_frame` sends a denial when an approval
+  cannot be encoded, so a parked run is never left waiting.
+- **A turn is ended only once acknowledged, and a cancelled turn is always
+  `cancelled`** (`session.settle` ignores `Sending`; `translate.after_cancel`).
+- **`session/load` checks the registration before it opens the session**
+  (roots, `cwd`, duplicate), because an open wakes a parked session and a
+  woken session nothing tracks is never stopped. Every error after an open
+  records the id in `State.abandoned`.
+- **Retirement is concurrent and bounded** (`stop_together`, weft, one control
+  connection per stop, 15 s).
+- **A registered workspace name is admitted only if listed with
+  `--workspace-name`.**
 - **`cwd` never becomes a workspace unless it resolves inside a root.**
   `workspace.choose` compares canonical paths by whole segments.
 - **Unsupported isolation options are refused, not ignored**:
@@ -489,11 +501,12 @@ Invariants that break things when violated:
 - **Only sessions this connection started are stopped** at end of input
   (`Origin`: `Made`, including a session `session/load` woke from disk, versus
   `Opened`).
-- `tui_ffi:read_protocol_line` sets standard input to Unicode before reading;
+- `tui_ffi:read_protocol_line` sets standard input to binary Unicode before
+  every read (once is not enough after a bad byte);
   do not replace it with `read_standard_line`, which trusts the locale.
 
 Tests: `acp_rpc_test`, `acp_schema_test`, `acp_translate_test`,
-`acp_workspace_test`, `acp_command_test`, and against the shipped daemon
+`acp_workspace_test`, `acp_command_test`, `acp_stdin_test`, and against the shipped daemon
 `client/loom_acp_test` (daemon-backed cases skip when
 `LOOM_BOOTSTRAP_E2E_SERVER` is unset).
 

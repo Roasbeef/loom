@@ -9,6 +9,7 @@ Open, in the order they matter:
 - **Per-session MCP servers** (`session/new.mcpServers`) are refused with `invalid_params`. They need a daemon command that registers direct tools for one session, cleared by the broker and torn down with it, and so a `protocol-change/NNN.md`. aegis's typed `submit_*` tools depend on this.
 - **The guidance opt-out** (`_meta.loom.project_instructions=false`) is refused for the same reason: the daemon assembles `AGENTS.md` and `CLAUDE.md` at session start with no per-session switch. The canary-`AGENTS.md` acceptance test cannot be written until the daemon can honour it; the refusal is tested instead.
 - **Loom as an ACP client** (a strand whose model is `codex-acp` or `claude-code-acp`, under the broker's clearance and budget) is the second direction in the issue and has no design note yet.
+- Sessions are not stopped on SIGKILL or an early SIGTERM (no signal handler); see the lifetime section of the architecture page.
 - `session/load` replays the retained window (the newest 100 records), not the whole history.
 - The stdio path was verified by hand against SDK 0.12.1; the automated end-to-end drives the same `server.serve` through a pair of subjects. A subprocess-level test belongs with the release smoke.
 

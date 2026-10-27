@@ -72,9 +72,15 @@ which already goes through `weft/poll`.
 
 `io:get_line` takes its encoding from the VM's locale, which in a container
 with no locale is latin1, and would turn every non-ASCII prompt into mojibake.
-`tui_ffi:read_protocol_line` sets the device to Unicode before reading and maps
-a line it cannot decode to text that is not JSON, so the protocol layer answers
-with a `-32700` and the connection survives one bad frame. No package in the
+`tui_ffi:read_protocol_line` sets the device to binary Unicode before every read
+(setting it once is not enough: a chunk that held an undecodable byte makes the
+console driver fall back to Latin-1, and only setting it again restores Unicode
+for later chunks), so a line comes back as a binary and never as a character
+list. A line with an undecodable byte arrives as Latin-1 text, which is not
+JSON, so the protocol layer answers with a `-32700` and the connection
+survives one bad frame. Valid text that shares a chunk with the bad line can
+arrive garbled; text in later chunks is unaffected. A read error ends the input
+rather than being retried, so a broken device cannot spin. No package in the
 tree reads a console line at all, which is why this is an external.
 
 The 4 MiB frame bound is enforced when the line is decoded, which is after the
@@ -144,7 +150,13 @@ durable `strand.last_result`. The turn remembers the operation id of the result
 present when the prompt was sent and ends on the first run result with a
 different one (the rule `loom run -p` uses for one turn, extended to many).
 `RunCompleted` is `end_turn`, `RunAborted` is `cancelled`, `RunFailed` is a
-JSON-RPC `-32603` carrying the error code. A compaction or navigation result
+JSON-RPC `-32603` carrying the error code, except that a turn the client
+asked to cancel is always answered `cancelled`, whichever way the run ended.
+Only a turn the daemon has acknowledged can be ended by a result: a result
+seen while the prompt is still unacknowledged may belong to a run someone else
+started on a shared session. (Binding to the exact operation id the daemon
+assigns to our prompt would be stricter still; the acknowledgement does not
+carry it.) A compaction or navigation result
 ends no turn.
 
 After the result, the turn reads the daemon's context figures once so the
@@ -181,8 +193,12 @@ for that record, by the terminal's own rules (`approval.rememberable`):
 | `allow_session` | `allow_always` | `approve` with `scope: session`, offered only when the whole grant set is rememberable |
 | `reject` | `reject_once` | `deny` |
 
-A record the daemon cannot encode an approval for offers `reject` alone. Any
-answer that is not exactly `allow` or `allow_session` is a refusal, including a
+A record the daemon cannot encode an approval for offers `reject` alone. The
+answer is read against the options offered for *that* request: `allow_session`
+sent for a request that did not offer it is a refusal, and a decision whose
+approval cannot be encoded is sent as a denial rather than dropped, so the
+parked run is never left waiting. Any answer that is not an offered allow
+option is a refusal, including a
 dismissal (`outcome: cancelled`), an option id the server never offered, a
 reply that does not decode and a JSON-RPC error. An unreadable answer never
 widens authority. The record is re-read from the latest cut when the answer
@@ -209,9 +225,16 @@ workspace the operator controls. `tui/acp/workspace` decides:
 - A workspace registered on an executor is selected by name with
   `_meta.loom.workspace` plus exactly one of `_meta.loom.executor` and
   `_meta.loom.pool`. It is a name, never a path, and `cwd` is then ignored.
-  The daemon validates the name against its configuration.
+  It reaches a machine the operator configured, so it is admitted only when
+  the operator listed it with `--workspace-name <name>` (repeatable); none is
+  admitted by default. The daemon then validates the name against its
+  configuration.
 - `session/load` applies the same gate to the loaded session's own workspace
-  when that is an absolute path.
+  when that is an absolute path, and requires the request's `cwd` to be that
+  workspace: a mismatch is `invalid_params`, not ignored. Both checks, and the
+  duplicate check below, run against the daemon's registration *before* the
+  session is opened, because opening a parked session makes it resident.
+- Loading a session this connection already holds is `invalid_params`.
 
 The server never synthesises a workspace from a client string.
 
@@ -260,10 +283,18 @@ outlives it. A session `session/load` found already resident is detached and
 left as it was found. `session/load` of a saved session therefore works across
 connections, which the end-to-end test exercises.
 
-Only an orderly end of input retires sessions. A client that kills the process
-(SIGKILL, or a SIGTERM that arrives before the pipe closes) gives it no chance
-to stop them, and they stay resident in the daemon until stopped with `loom
-sessions` or the daemon's own lifecycle.
+Retirement is concurrent and bounded: every session is stopped at once, each
+over a control connection of its own (the daemon answers one request per
+control connection), under one 15 second deadline, because a client's runtime
+closes standard input and then terminates the process after a short grace.
+A session still stopping at the deadline stays the daemon's.
+
+Only an orderly end of input retires sessions. SIGKILL, and a SIGTERM that
+lands before the pipe closes, give the process no chance to stop them, and
+they stay resident in the daemon until stopped with `loom sessions` or the
+daemon's own lifecycle. There is no signal handler or janitor: catching the
+signal would need another external, and the resident sessions are inert (the
+daemon accounts for them like any other) rather than running work.
 
 ## Not supported, and why
 
@@ -320,7 +351,7 @@ created were left `saved`.
 ## Tests
 
 - `tui/test/acp_rpc_test`, `acp_schema_test`, `acp_translate_test`,
-  `acp_workspace_test`, `acp_command_test`: codec round trips and refusals,
+  `acp_workspace_test`, `acp_command_test`, `acp_stdin_test`: codec round trips and refusals,
   every decoder and encoder, the stream reconciliation, the permission
   mapping, the workspace gate, the command line.
 - `client/test/client/loom_acp_test`: the real `acp/server.serve` loop against
