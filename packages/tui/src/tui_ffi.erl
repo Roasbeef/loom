@@ -88,23 +88,26 @@ read_standard_line(PromptBinary) ->
 %% locale guessed. `loom acp` receives JSON text from another program, and
 %% the standard input device's encoding defaults from the environment: in a
 %% container with no locale it is latin1, which would turn every multi-byte
-%% character of a prompt into mojibake. Setting the encoding explicitly
-%% makes the read independent of the environment. The same option governs
-%% the device's output, and a unicode device writes the UTF-8 the protocol
-%% needs. A line the device cannot decode is returned as the single byte
-%% `{`, which is not JSON, so the protocol layer answers it with a parse
-%% error instead of the connection ending on one bad frame.
+%% character of a prompt into mojibake. The device is set to binary Unicode
+%% before every read, so each read returns the line as a binary and never
+%% builds it as a character list first. It is set per read rather than once
+%% because a chunk holding an undecodable byte makes the console driver fall
+%% back to Latin-1, and only setting the option again restores Unicode for
+%% the lines that follow in a later chunk. The same option governs the device's output, and
+%% a unicode device writes the UTF-8 the protocol needs. A byte sequence the
+%% device cannot decode comes through as Latin-1 characters, which is not
+%% JSON, so the protocol layer answers it with a parse error and the
+%% connection survives one bad frame. An unexpected read error is treated as
+%% the end of input rather than retried, so a broken device cannot spin.
+%% Erlang's console reader cannot bound a line before it returns; the frame
+%% bound is enforced when the line is decoded.
 read_protocol_line() ->
-    _ = io:setopts(standard_io, [{encoding, unicode}]),
+    _ = io:setopts(standard_io, [binary, {encoding, unicode}]),
     case io:get_line("") of
         eof -> {error, <<"end of input">>};
-        {error, terminated} -> {error, <<"standard input closed">>};
-        {error, _} -> {ok, <<"{">>};
-        Line ->
-            case unicode:characters_to_binary(Line) of
-                Binary when is_binary(Binary) -> {ok, Binary};
-                _ -> {ok, <<"{">>}
-            end
+        {error, Reason} -> {error, describe(Reason)};
+        Line when is_binary(Line) -> {ok, Line};
+        Line -> {ok, unicode:characters_to_binary(Line)}
     end.
 
 %% Reject pipelines before any interactive launch effects. OTP's documented
