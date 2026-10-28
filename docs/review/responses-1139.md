@@ -118,6 +118,12 @@ framing test. Its header, brief, tool and footer assertions and all deadlines
 remain unchanged. Independent review confirmed this observation race; the
 fixture does not claim complete framing fits every smaller terminal.
 
+The PR's own macOS package checks disable the optional package caches. A
+537 MB restore took 12m49s and exhausted the job budget, while the same full
+check completed cold. The compiler binary remains content-addressed and
+verified. This setting belongs in the PR workflow: a manual head run does
+not replace the PR merge-commit checks. All tests and bounds remain in place.
+
 The exact final head's hosted checks and configured Linux signoff remain merge
 gates. The subscription endpoint was not called with a live OAuth grant; no
 provider entitlement claim is established by these deterministic fixtures.
