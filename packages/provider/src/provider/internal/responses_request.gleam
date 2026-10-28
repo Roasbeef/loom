@@ -83,7 +83,8 @@ pub fn body_with_options(
   encode_body(resolved, request, PublicApi, access, tier)
 }
 
-/// Builds a subscription body with the operator's explicit access program.
+/// Builds a subscription body while leaving access selection to the server.
+/// The access argument is retained for existing callers but is not transmitted.
 ///
 /// ## Examples
 ///
@@ -108,10 +109,12 @@ pub fn subscription_body_with_access(
 pub fn subscription_body_with_options(
   resolved: model.ResolvedModel,
   request: model.ProviderRequest,
-  access: option.Option(model.CyberAccessProgram),
+  _access: option.Option(model.CyberAccessProgram),
   tier: option.Option(model.ResponsesServiceTier),
 ) -> String {
-  encode_body(resolved, request, Subscription, access, tier)
+  // The private subscription endpoint can downgrade explicit access selections.
+  // Omission preserves its entitlement-aware default for every call path.
+  encode_body(resolved, request, Subscription, None, tier)
 }
 
 /// Encodes a complete request payload into a JSON string according to API mode.

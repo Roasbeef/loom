@@ -134,7 +134,8 @@ pub fn build_subscription_request(
   build_subscription_request_with_access(resolved, request, None)
 }
 
-/// Builds a subscription request with an explicit operator access selection.
+/// Builds a subscription request with server-selected access. The access
+/// argument is retained for existing callers but is not transmitted.
 ///
 /// ## Examples
 ///
@@ -149,7 +150,8 @@ pub fn build_subscription_request_with_access(
   build_subscription_request_with_options(resolved, request, access, None)
 }
 
-/// Builds a Responses request with explicit access and serving policy.
+/// Builds a subscription request with explicit serving policy. Access remains
+/// server-selected even when an existing caller supplies an access option.
 ///
 /// ## Examples
 ///
@@ -280,6 +282,8 @@ pub opaque type Accumulator {
     life: Life,
     /// Original response ID and remote model, checked at every witness.
     identity: Option(#(String, String)),
+    /// Optional served-model observation, independent of envelope identity.
+    server_model: Option(String),
     /// Last present sequence number; omission does not erase it.
     sequence: Option(Int),
     /// Bounded structural witness for the last complete event, never remote text.
@@ -347,6 +351,7 @@ fn machine_for(
       sse: stream.new_parser(),
       life: Streaming,
       identity: None,
+      server_model: None,
       sequence: None,
       event: "event=none",
       positions: "",
@@ -366,6 +371,15 @@ fn machine_for(
             request_id: request_id(headers),
             media_type: media_type(headers),
             retry_after: wire.retry_after_ms(headers),
+            server_model: option.from_result(
+              model_header(
+                json.Object(
+                  list.map(headers, fn(header) {
+                    #(header.0, json.String(header.1))
+                  }),
+                ),
+              ),
+            ),
           )
       }
     },
@@ -606,9 +620,60 @@ fn handle_sse(
         acc,
         "sequence",
       )
-      dispatch(Accumulator(..acc, sequence:), kind, value)
+      dispatch(
+        observe_server_model(Accumulator(..acc, sequence:), value),
+        kind,
+        value,
+      )
     }
   }
+}
+
+// Native subscription inference can name the served model in HTTP or event
+// headers while response.model repeats the requested alias. This observation
+// never changes the envelope identity that subsequent witnesses must match.
+/// Retains the latest bounded model header, preferring response-local headers.
+fn observe_server_model(acc: Accumulator, value: JsonValue) -> Accumulator {
+  let nested =
+    value
+    |> wire.field("response")
+    |> result.try(wire.field(_, "headers"))
+    |> result.try(model_header)
+  let selected =
+    result.lazy_or(nested, fn() {
+      value |> wire.field("headers") |> result.try(model_header)
+    })
+  Accumulator(
+    ..acc,
+    server_model: option.or(option.from_result(selected), acc.server_model),
+  )
+}
+
+// Event headers may use a string or an array of strings, with case-insensitive
+// names. Invalid optional observations cannot corrupt otherwise valid content.
+/// Reads one nonempty model header under a 256-byte retention bound.
+fn model_header(headers: JsonValue) -> Result(String, Nil) {
+  // Only object-shaped header maps contain named observations.
+  let fields = case headers {
+    json.Object(fields) -> fields
+    _ -> []
+  }
+
+  list.find_map(fields, fn(header) {
+    use <- bool.guard(string.lowercase(header.0) != "openai-model", Error(Nil))
+
+    // Arrays follow the native parser's first-value convention.
+    let model = case header.1 {
+      json.String(model) | json.Array([json.String(model), ..]) -> model
+      _ -> ""
+    }
+
+    use <- bool.guard(
+      string.is_empty(model) || string.byte_size(model) > 256,
+      Error(Nil),
+    )
+    Ok(model)
+  })
 }
 
 // Only protocol literals and bounded numbers cross into a failure report. An
@@ -1356,13 +1421,25 @@ fn arguments(
     acc,
     "arguments_field",
   )
-  use <- bool.lazy_guard(done && text != previous, fn() {
+  use <- bool.lazy_guard(done && !string.starts_with(text, previous), fn() {
     malformed(acc, "arguments_done_witness")
   })
 
-  // Update argument text and emit ToolCallDelta if not done.
+  // A done snapshot can supply the first payload or a batched final suffix.
+  // Preserve every emitted byte and publish only the missing suffix before
+  // closing; the canonical item and terminal must still match the full text.
   let #(arguments, closure, events) = case done {
-    True -> #(previous, TextDone, [])
+    True -> {
+      let suffix = string.remove_prefix(text, previous)
+
+      // An equal snapshot closes the text without duplicating its bytes.
+      let events = case suffix {
+        "" -> []
+        _ -> [stream.Delta(stream.ToolCallDelta(block, call_id, name, suffix))]
+      }
+
+      #(text, TextDone, events)
+    }
     False -> #(previous <> text, Open, [
       stream.Delta(stream.ToolCallDelta(block, call_id, name, text)),
     ])
@@ -1770,7 +1847,7 @@ fn settle(
   acc: Accumulator,
   identity: #(String, String),
   output: List(JsonValue),
-  _response: JsonValue,
+  response: JsonValue,
   stop: message.StopReason,
   raw: String,
   error: Option(String),
@@ -1799,10 +1876,13 @@ fn settle(
     json.Object([
       #(
         items.namespace,
-        json.Object([
-          #("output", json.Array(list.map(output, items.template))),
-          #("block_order", json.Array(list.map(order, json.Int))),
-        ]),
+        json.Object(list.append(
+          [
+            #("output", json.Array(list.map(output, items.template))),
+            #("block_order", json.Array(list.map(order, json.Int))),
+          ],
+          returned_access(response),
+        )),
       ),
     ])
 
@@ -1819,7 +1899,7 @@ fn settle(
       api: acc.api,
       provider: acc.resolved.provider,
       model: acc.resolved.model_id,
-      response_model: Some(identity.1),
+      response_model: Some(option.unwrap(acc.server_model, identity.1)),
       response_id: Some(identity.0),
       diagnostics: Some(diagnostics),
       usage:,
@@ -1834,6 +1914,39 @@ fn settle(
   #(Accumulator(..acc, life: Terminal), [
     stream.Settled(settled, accounting.from_usage(usage)),
   ])
+}
+
+// This terminal observation is advisory, never a request option or a grant.
+// Retain only a bounded program identifier; arbitrary response metadata must
+// not enter durable diagnostics or replay as provider instructions.
+/// Projects the terminal response's bounded cybersecurity access identifier.
+fn returned_access(response: JsonValue) -> List(#(String, JsonValue)) {
+  let program =
+    response
+    |> wire.field("access_programs")
+    |> result.try(wire.string_field(_, "cyber"))
+  let metadata = {
+    use program <- result.map(program)
+    use <- bool.guard(
+      string.is_empty(program) || string.byte_size(program) > 64,
+      [],
+    )
+
+    // Unknown future identifiers remain observable if they use the same token
+    // alphabet. Invalid optional metadata cannot invalidate verified content.
+    use <- bool.guard(
+      !list.all(string.to_utf_codepoints(program), fn(codepoint) {
+        let codepoint = string.utf_codepoint_to_int(codepoint)
+        { codepoint >= 97 && codepoint <= 122 }
+        || { codepoint >= 48 && codepoint <= 57 }
+        || codepoint == 95
+        || codepoint == 45
+      }),
+      [],
+    )
+    [#("access_programs", json.Object([#("cyber", json.String(program))]))]
+  }
+  result.unwrap(metadata, [])
 }
 
 // Wire output order and delta arrival order can differ under interleaving.

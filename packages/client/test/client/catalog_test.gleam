@@ -2116,8 +2116,8 @@ plan = [\"plain\"]
       ),
     )
 
-  // The program belongs to the named endpoint, so the same underlying model
-  // selects correctly through both role resolution and pinned identity dispatch.
+  // API-key endpoints send their selection; subscription endpoints omit the
+  // override through both role resolution and pinned identity dispatch.
   list.each(
     [#(model.Main, "daybreak_blue"), #(model.Plan, "standard")],
     fn(pair) {
@@ -2146,8 +2146,11 @@ plan = [\"plain\"]
           let assert Ok(body) = json.parse(sent.body)
             as "Requests must be valid JSON."
           assert wire.field(body, "model") == Ok(json.String("gpt-6-sol"))
-          assert wire.field(body, "access_programs")
-            == Ok(json.Object([#("cyber", json.String(program))]))
+          let expected = case role {
+            model.Main -> Error(Nil)
+            _ -> Ok(json.Object([#("cyber", json.String(program))]))
+          }
+          assert wire.field(body, "access_programs") == expected
         },
       )
     },
