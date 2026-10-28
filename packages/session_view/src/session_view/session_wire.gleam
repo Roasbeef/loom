@@ -193,14 +193,14 @@ pub fn decode(text: String, expected: Int) -> Result(Reply, String) {
   // before pushes existed, so a stale or forged correlation still fails
   // closed.
   case list.key_find(fields, "reply_to") {
-    Error(Nil) -> protocol.decode_v2_pushed(text) |> result.map(Pushed)
-    Ok(json.Int(id)) if id == expected -> correlated(fields, text)
+    Error(Nil) -> protocol.decode_v2_pushed_value(value) |> result.map(Pushed)
+    Ok(json.Int(id)) if id == expected -> correlated(fields, value)
     Ok(_) -> Error("conversation version or reply identity does not match")
   }
 }
 
 /// Decodes a correlated response payload according to its event name.
-fn correlated(fields, text) {
+fn correlated(fields, value) {
   use name <- result.try(field(fields, "event"))
   use body <- result.try(field(fields, "body"))
 
@@ -211,7 +211,7 @@ fn correlated(fields, text) {
     json.String("snapshot_end") -> Ok(End(body))
     json.String("mutation_outcome") -> mutation(body)
     json.String("snapshot") | json.String("error") ->
-      protocol.decode_v2_presentation(text) |> result.map(Presentation)
+      protocol.decode_v2_presentation_value(value) |> result.map(Presentation)
     json.String(_)
     | json.Int(_)
     | json.Float(_)

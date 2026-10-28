@@ -1,5 +1,15 @@
 # tui
 
+## Live wire decoding cost
+
+The stream holder still measures real wire text through the shipped reducer and
+renders every sixty-four frames. Its 2,000-delta/sec floor and retention bounds
+are unchanged. `session_wire_test` also uses the existing test-only reductions
+probe to bound live envelope work against the corresponding event decoder.
+This catches duplicate parsing without making host load part of that regression.
+Both pushed deltas and correlated presentations use the parsed-value dispatch
+in `session_view/protocol`; correlation, size and version checks stay in the lane.
+
 ## Local profiling at launch
 
 The developer shipment and bundled client carry `tom` for their launch-time

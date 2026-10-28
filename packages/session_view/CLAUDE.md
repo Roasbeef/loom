@@ -1,5 +1,18 @@
 # session_view
 
+## Live envelope decoding
+
+`session_wire.decode` parses each bounded frame once, then checks version and
+reply identity before calling the package-internal value decoders in `protocol`.
+Those helpers retain envelope and event validation; their values already passed
+`core/json.parse`, including duplicate-key rejection. Text decoder entry points
+remain wrappers around the same value decoders. Pushed traffic and correlated
+presentations share this path without changing credit or admission rules.
+
+The TUI's `session_wire_test` compares live decoding reductions with the event
+decoder alone, and checks malformed envelopes and forged correlations. Repeating
+the JSON parse used almost twice the work and reduced stream drain throughput.
+
 ## Operator diagnostic metadata
 
 Protocol 055 adds optional `tool_availability.extension_refusals` to credited

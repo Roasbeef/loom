@@ -1,10 +1,18 @@
 //// Reply identity and version are checked before a live body reaches the view.
 
 import core/json
+import gleam/erlang/process
+import gleam/int
+import gleam/io
 import gleam/list
 import gleam/string
 import session_view/protocol
 import session_view/session_wire
+
+// Scheduler accounting has no pure alternative. The existing test probe
+// measures decoding work without making host load part of the regression.
+@external(erlang, "tui_probe_ffi", "reductions")
+fn reductions(pid: process.Pid) -> Int
 
 fn reply(version, id, event, body) {
   json.to_string(
@@ -19,6 +27,93 @@ fn reply(version, id, event, body) {
 
 fn pushed(fields) {
   json.to_string(json.Object([#("v", json.Int(2)), ..fields]))
+}
+
+pub fn live_envelopes_do_not_repeat_the_body_decoders_json_work_test() {
+  let text = string.repeat("wire text ", 32)
+  let frames = [
+    #(
+      pushed([
+        #("event", json.String("stream_delta")),
+        #(
+          "body",
+          json.Object([
+            #("strand", json.String("main")),
+            #("op", json.String("op-1")),
+            #("generation", json.String("[\"generation\",\"step\",1,\"id\"]")),
+            #("kind", json.String("text")),
+            #("text", json.String(text)),
+          ]),
+        ),
+      ]),
+      protocol.decode_v2_pushed,
+    ),
+    #(
+      reply(
+        2,
+        4,
+        "error",
+        json.Object([
+          #("code", json.String("unavailable")),
+          #("message", json.String(text)),
+        ]),
+      ),
+      protocol.decode_v2_presentation,
+    ),
+  ]
+
+  // Correlation adds bounded field checks around the same event decoder.
+  // A second parse used almost twice the work of that decoder alone.
+  list.each(frames, fn(frame) {
+    let reference = decoding_work(frame.0, frame.1)
+    let live = decoding_work(frame.0, fn(text) { session_wire.decode(text, 4) })
+    io.println_error(
+      "live decoder reductions: "
+      <> int.to_string(live)
+      <> "/"
+      <> int.to_string(reference),
+    )
+    assert live * 4 <= reference * 5
+      as "live correlation must not parse the event's JSON a second time"
+  })
+}
+
+fn decoding_work(
+  frame: String,
+  decode: fn(String) -> Result(a, String),
+) -> Int {
+  let before = reductions(process.self())
+  list.each(list.repeat(Nil, 256), fn(_) {
+    let assert Ok(_) = decode(frame) as "the measured frame decodes"
+    Nil
+  })
+  reductions(process.self()) - before
+}
+
+pub fn parsed_live_events_still_refuse_ambiguous_and_forged_envelopes_test() {
+  let body =
+    json.Object([
+      #("code", json.String("unavailable")),
+      #("message", json.String("no service")),
+    ])
+  let invalid = [
+    "{",
+    "null",
+    "[]",
+    pushed([#("v", json.Int(2)), #("event", json.String("presence"))]),
+    pushed([#("event", json.String("presence")), #("reply_to", json.Null)]),
+    reply(2, 3, "error", body),
+    reply(1, 4, "error", body),
+    reply(2, 4, "presence", body),
+    reply(2, 4, "error", json.Object([#("message", json.String("no code"))])),
+  ]
+
+  // The shared value is reached only after the original JSON, size, version
+  // and correlation checks. Duplicate keys remain a parser refusal.
+  list.each(invalid, fn(frame) {
+    let assert Error(_) = session_wire.decode(frame, 4)
+      as "parsed dispatch cannot bypass live frame admission or body validation"
+  })
 }
 
 pub fn session_wire_correlates_every_response_and_never_falls_back_to_v1_test() {
