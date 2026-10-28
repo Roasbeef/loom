@@ -173,6 +173,27 @@ Unexpected scenario failures now print the existing full error stack to stderr
 before returning it, preserving every verdict and assertion while making a
 recurrence diagnosable. No timeout or retry was added to the scenario.
 
+The next shard-1 run passed every check, then reached the existing 50-minute
+job ceiling while saving its compiler cache. Its 538 MB compressed cache had
+taken over eleven minutes to extract. The cache selected entire package
+`build` roots, including test session databases, unique fixture directories and
+exported runtimes. Restoring those directories and archiving the root again
+accumulates prior test state alongside new fixtures.
+
+The cache now selects only Gleam's `build/dev`, `build/prod` and
+`build/packages` directories. An archive regression reads the real action
+configuration: the former policy includes all four transient fixture markers;
+the new policy excludes them while preserving Erlang, JavaScript, production
+and dependency artifacts. Changing the paths changes the cache action's
+version, preventing restoration of the former whole-build archives. The job
+deadline is unchanged. This removes a measured archive-selection defect; it
+does not establish cache growth as the cause of unrelated timing failures.
+
+Shard 2 independently missed an unchanged one-second WebSocket frame deadline
+in its virtual TUI test. Five targeted runs and five complete TUI end-to-end
+module runs passed locally with the original assertions and deadlines. Its
+cause remains unproven; exact-head hosted outcomes are recorded on the PR.
+
 ## Validation
 
 The marker and startup regressions pass, and all 185 focused evolution module

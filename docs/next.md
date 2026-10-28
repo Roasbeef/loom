@@ -83,6 +83,17 @@ regression and final hosted evidence are recorded with the other CI follow-up.
 Unexpected TLS spike failures print their full stack to stderr so a truncated
 EUnit error still identifies the failing scenario step.
 
+The compiled Gleam cache selects `build/dev`, `build/prod` and `build/packages`
+instead of whole package build roots. A macOS shard passed every test but hit
+the unchanged 50-minute job limit during cache save; its restored archive took
+over eleven minutes to extract. Whole roots include prior session databases,
+unique fixtures and exported runtimes. The archive regression preserves the
+compiler artifacts and rejects those transient paths. New cache paths also
+isolate the old archives through the cache action's version. A separate virtual
+TUI WebSocket timeout passed five targeted and five full-module local repeats;
+its cause is unproven. The PR retains these failed hosted outcomes and records
+the replacement head's full checks and executed censuses before readiness.
+
 ## Evolution callback memory
 
 `fix/evolution-captures` repairs a live profile that found fifteen evolution
