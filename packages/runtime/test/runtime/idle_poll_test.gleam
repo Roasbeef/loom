@@ -20,6 +20,7 @@
 
 import core/clock
 import gleam/erlang/process.{type Subject}
+import gleam/otp/system
 import runtime/api
 import runtime/effects
 import runtime/residency
@@ -28,6 +29,7 @@ import session/session.{type Session}
 import support/fake
 import support/harness
 import support/recorder
+import weft
 
 // The period an occupied strand ticks at in these tests.
 const short_poll_ms = 37
@@ -100,21 +102,22 @@ fn boot_with(
   #(sess, rt, rec)
 }
 
-// The real timer seam with a counter in front of it. Every arm still fires,
-// because these tests are about which period the strand chose and not about
-// withholding its wakes.
+// Start the real timer before recording its arm. The recorder is a synchronous
+// actor call: publishing the count first could start the observer's sampling
+// window while this caller still waits to create the timer it is counting.
 fn counted_timers(
   rec: Subject(recorder.Message),
   idle_poll_ms: Int,
 ) -> effects.Timers {
   let real = effects.real_timers()
   effects.Timers(after: fn(delay_ms, wake) {
+    real.after(delay_ms, wake)
     let _counted = case delay_ms {
       delay if delay == short_poll_ms -> recorder.bump(rec, "poll.short")
       delay if delay == idle_poll_ms -> recorder.bump(rec, "poll.long")
       _ -> 0
     }
-    real.after(delay_ms, wake)
+    Nil
   })
 }
 
@@ -123,6 +126,42 @@ fn answers_once(spec: effects.RequestSpec) -> fake.ProviderResult {
     0 -> fake.Reply(fake.answer("Done", 3))
     _ -> fake.Reply(fake.answer("Done again", 3))
   }
+}
+
+/// Observing an arm must not postpone the timer it claims to observe. A
+/// suspended recorder holds its acknowledgement while the real timer runs.
+pub fn recording_a_timer_does_not_delay_its_wake_test() {
+  let rec = recorder.start()
+  let assert Ok(recorder_pid) = process.subject_owner(rec)
+    as "the fixture recorder owns its subject"
+  let ready = process.new_subject()
+  let fired = process.new_subject()
+  system.suspend(recorder_pid)
+
+  // The bounded worker reaches the timer seam before the observation begins.
+  // Resuming the recorder before asserting also releases it on the old path.
+  let timer =
+    weft.new([
+      fn() {
+        process.send(ready, Nil)
+        counted_timers(rec, long_poll_ms).after(short_poll_ms, fn() {
+          process.send(fired, Nil)
+        })
+        Ok(Nil)
+      },
+    ])
+    |> weft.deadline(1000)
+    |> weft.start_detached
+  let started = process.receive(ready, within: 1000)
+  let observed = process.receive(fired, within: occupied_sample_ms)
+  system.resume(recorder_pid)
+  let completed = weft.pull(timer, within: 1000)
+  let drained = weft.pull(timer, within: 1000)
+
+  assert started == Ok(Nil)
+  assert observed == Ok(Nil)
+  assert completed == weft.PulledOutcome(weft.Completed(0, Nil))
+  assert drained == weft.AllDelivered
 }
 
 /// A strand that has finished its turn stops arming short ticks and arms the

@@ -1088,3 +1088,12 @@ summary adapter exists to translate those diagnostics automatically.
 No durable schema field or configuration option is added. Original assistant
 failures and usage commit on both retry and exhaustion; summary request usage
 settles before summary progress. See protocol-change/101.
+
+
+## Poll timer observations
+
+`idle_poll_test` starts each real timer before synchronously recording its arm.
+The observed count therefore cannot precede timer creation. A separate regression
+suspends its own recorder, observes the real wake within the existing sample
+window, then resumes recording and joins the bounded Weft worker. The occupied,
+idle, restart and single-chain assertions keep their original timing bounds.
