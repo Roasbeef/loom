@@ -1,3 +1,22 @@
+# Evolution callback ownership
+
+`serve.local_evolution_machine` projects the source snapshot capability before
+wrapping its path check. `serve.open_evolution` projects snapshot, evaluation,
+stage and program execution before constructing retained callbacks; recovery
+and invocation helpers accept only the operation they use. The local snapshot
+callback retains only its plane opener. `evolution/live.start` projects its clock
+before spawning the notification runner, whose initialiser must not copy the
+owner's stage or recovery closures.
+
+`evolution_retention_test` counts exact marker-store occurrences through the
+actual assembled door. Proposal, inspection, catalogue and trace retain none;
+evaluation retains its native configuration and source trial settings, and
+invocation retains one native configuration. `evolution/startup_capture_test`
+measures the notice runner before state inspection can collect startup garbage,
+using only new links of its own test process. Both regressions fail without
+the corresponding projection. The measured evidence and limits are in
+`docs/review/evolution-memory-2026-10-27.md`.
+
 # client
 
 ## Configuration parsing on session open

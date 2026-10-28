@@ -42,6 +42,20 @@ part of the PR workflow so its merge-commit checks exercise the setting.
 The earlier handoff sections below retain their previous work records. Their
 external CI and deployment claims were not revalidated for this scoped fix.
 
+## Evolution callback memory
+
+`fix/evolution-captures` repairs a live profile that found fifteen evolution
+actors holding 226.69 MiB of process allocation. Capability doors and generation
+owners captured sibling machine operations repeatedly; notification runners
+copied that configuration during startup to read only its clock.
+[The evidence record](review/evolution-memory-2026-10-27.md) distinguishes live
+measurements, isolated copy-cost regressions and unverified installed savings.
+
+The two new regressions failed before the repair and pass afterward; all 185
+focused evolution tests pass. The PR records the remaining local, independent
+review, hosted and Linux signoff results. No live update or restart occurred.
+
+
 ## Agent Client Protocol server (issue #1026)
 
 `loom acp` makes Loom an ACP agent on standard input and output, on branch `acp/agent-server`. It is a client of the daemon like `loom run -p`; the effect plane is untouched. [The architecture page](architecture/acp.md) is the reference: the method mapping, the `_meta.loom` keys, the workspace gate, and the compatibility table for Harbor's generic ACP runner, which was driven unmodified against it over a real pipe.
