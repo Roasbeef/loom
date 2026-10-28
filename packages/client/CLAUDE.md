@@ -17,6 +17,11 @@ using only new links of its own test process. Both regressions fail without
 the corresponding projection. The measured evidence and limits are in
 `docs/review/evolution-memory-2026-10-27.md`.
 
+The TLS spike fixtures synchronize their verdict collector with Erlang trace
+delivery before answering a read. `ledger_spike_pin_table_test` queues a read
+ahead of a return trace to check that the verdict is included and then cleared.
+Pin mutation, revocation and allow-list tests still use real TLS emulators.
+
 # client
 
 ## Configuration parsing on session open

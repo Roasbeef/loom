@@ -136,6 +136,14 @@ runs. Every matching test executes and passes under enforced Linux eval,
 including the gold/null/sabotage proof. The declaration records missing macOS
 coverage, and the census still rejects other refusals and stale declarations.
 
+A later macOS client run exposed a race in the test-only TLS verdict collector.
+The handshake result and its asynchronous return trace travel independently;
+a read could overtake a queued trace and report no verdict. The collector now
+waits for trace delivery, then queues its answer behind the delivered traces.
+A controlled mailbox regression fails the old collector and checks that the
+new read includes the pending verdict and clears it afterward. The real pin
+mutation, revocation and allow-list assertions remain unchanged.
+
 ## Validation
 
 The marker and startup regressions pass, and all 185 focused evolution module

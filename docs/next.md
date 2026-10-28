@@ -61,6 +61,10 @@ declaration matches their complete reason. Production refusal is preserved;
 Linux eval and signoff execute the matching tests. This records a macOS coverage
 gap rather than claiming those verifier experiments ran there.
 
+The test-only TLS verdict collector also waits for asynchronous trace delivery
+before answering a read. A queued-message regression reproduces the former
+empty-verdict result without weakening the real pin and allow-list assertions.
+
 ## Evolution callback memory
 
 `fix/evolution-captures` repairs a live profile that found fifteen evolution
