@@ -8620,6 +8620,10 @@ ADR-020 the choice of Khepri and its measurements, and
   `begin_delete`, `unmark_deleting`, `finish_delete`, `deleting_sessions`,
   `remote_registrations` and `local_sessions`. `prepare_slot` reads the deletion mark in the turn
   that reserves a slot and refuses `SessionDeleting` (code `busy`).
+  `local_sessions` refuses an incomplete census with `Unavailable` while an
+  unconfirmed local registration still has an active assembly slot. This
+  keeps the movers' coverage request pending until confirmation. Reserved
+  remote sessions and failed or inactive local reservations do not block it.
 - `daemon/server`: a remote `sessions.create` on a member reserves, then
   `ownership.create`, then creates (`recorded`); `no_quorum` keeps the
   reservation. A remote `sessions.delete` goes through `directory/deletion.finish`:

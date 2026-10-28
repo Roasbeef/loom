@@ -118,6 +118,22 @@ framing test. Its header, brief, tool and footer assertions and all deadlines
 remain unchanged. Independent review confirmed this observation race; the
 fixture does not claim complete framing fits every smaller terminal.
 
+A separate directory failure exposed a lost coverage request during local
+creation. The server requests lookup-hint coverage after receiving an opening
+operation; a sweep can run before assembly confirms the reserved registration.
+The old census omitted that row, reported success and consumed the request,
+so later ticks never published its hint. A barrier-controlled regression
+reproduced the missing hint on the old code and passed after the fix.
+
+The registry now refuses a complete local census while an unconfirmed local
+registration has an active waiting or building slot. The existing transient
+error keeps the coverage request pending for a later sweep. It still excludes
+reserved records from publication; remote reservations and failed or inactive
+local reservations do not block confirmed sessions. The regression observes
+publication after confirmation without issuing another coverage request.
+Boundary tests cover waiting assembly and nonblocking failed reservations.
+No interface shape, production deadline or skip declaration changes.
+
 The PR's own macOS package checks disable the optional package caches. A
 537 MB restore took 12m49s and exhausted the job budget, while the same full
 check completed cold. The compiler binary remains content-addressed and

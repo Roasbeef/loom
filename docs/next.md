@@ -29,6 +29,12 @@ rule was weakened. Before merge, require the
 exact final head's hosted checks and configured Linux signoff. Live OAuth
 endpoint behavior remains unverified by this patch's deterministic fixtures.
 
+The directory follow-up preserves a local lookup-hint coverage request while
+its creation is still assembling. The census returns its existing transient
+error until active local reservations confirm; failed, inactive and remote
+reservations do not block it. A barrier-controlled regression fails before
+the fix and proves publication after confirmation without a second request.
+
 The macOS package jobs run without optional package caches: the measured
 537 MB restore consumed 12m49s, while the full check finished cold. This is
 part of the PR workflow so its merge-commit checks exercise the setting.
