@@ -3,15 +3,15 @@
 //// the design was measured on.
 
 import client/secrets
+import client/workspace_policy
 import eval/eunit_ids
 import eval/mine.{FullMessage, Judged, Rejected, SubjectOnly}
 import eval/task.{GitTree, MinedCommit, Program}
 import gleam/io
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
-import simplifile
 
 fn report(results: List(#(String, eunit_ids.Outcome))) -> eunit_ids.TestReport {
   eunit_ids.TestReport(results:, summary: None)
@@ -114,10 +114,12 @@ pub fn eccdddad0_reproduces_probe_test() {
 }
 
 fn reproduce(repo: String) {
-  let assert Ok(home) =
-    simplifile.read("/proc/self/environ") |> result.replace_error(Nil)
-    as "the process environment is readable on linux"
-  let work = home_from(home) <> "/evalwt/mine-test"
+  // The historical verifier runs on both hosts, and its worktree must stay
+  // outside the jail's replacement /tmp. Read HOME through the same portable
+  // boundary used by the instrument's other real-worktree fixtures.
+  let assert Some(home) = workspace_policy.home_directory()
+    as "the mining fixture needs HOME for a worktree outside /tmp"
+  let work = home <> "/evalwt/mine-test"
   let config =
     mine.Config(
       name: "loom",
@@ -151,18 +153,6 @@ fn reproduce(repo: String) {
       parent: commit,
       subject: "machine: a summarizer being down should not end the run",
     )
-}
-
-fn home_from(environ: String) -> String {
-  environ
-  |> string.split("\u{0}")
-  |> list.find_map(fn(entry) {
-    case entry {
-      "HOME=" <> home -> Ok(home)
-      _ -> Error(Nil)
-    }
-  })
-  |> result.unwrap("/root")
 }
 
 // A task records its repository, which the task format requires to be an
