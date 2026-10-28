@@ -144,6 +144,16 @@ A controlled mailbox regression fails the old collector and checks that the
 new read includes the pending verdict and clears it afterward. The real pin
 mutation, revocation and allow-list assertions remain unchanged.
 
+
+The idle-poll fixture exposed an observer-ordering defect. Its synchronous
+recorder call published a timer count before creating the real timer, allowing
+the test to begin its 200 ms sample before that timer existed. A regression
+suspends only its own recorder and proves the real 37 ms wake must arrive while
+recording waits. The old ordering fails; creating the timer first passes. The
+original timing assertions and deadlines remain unchanged. Two hosted attempts
+missed the original sample, but their logs do not independently establish this
+ordering as the sole cause; final hosted results are recorded on the PR.
+
 ## Validation
 
 The marker and startup regressions pass, and all 185 focused evolution module

@@ -65,6 +65,14 @@ The test-only TLS verdict collector also waits for asynchronous trace delivery
 before answering a read. A queued-message regression reproduces the former
 empty-verdict result without weakening the real pin and allow-list assertions.
 
+
+The runtime idle-poll fixture creates its real timer before synchronously
+recording the arm. A regression suspends only its own recorder and requires the
+37 ms wake within the existing 200 ms window. Recording first fails this test
+because the observed timer does not yet exist. Existing polling assertions and
+deadlines are unchanged; the PR preserves the earlier hosted failures and final
+validation results without claiming their complete cause from partial logs.
+
 ## Evolution callback memory
 
 `fix/evolution-captures` repairs a live profile that found fifteen evolution
