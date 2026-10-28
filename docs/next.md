@@ -42,6 +42,19 @@ part of the PR workflow so its merge-commit checks exercise the setting.
 The earlier handoff sections below retain their previous work records. Their
 external CI and deployment claims were not revalidated for this scoped fix.
 
+## Memory profiling CI follow-up
+
+PR #1138 also fixes the macOS miner fixture's procfs assumption through the
+existing portable home lookup. The historical before/after mining experiment
+passes without a skip. A TUI stream profile found duplicate JSON parsing across
+`session_wire` and `protocol`; package-internal value dispatch removes it while
+preserving text APIs, frame admission, event checks and the 2,000/sec drain floor.
+A reductions regression fails the old double parse and passes the shared-value
+path. `docs/review/evolution-memory-2026-10-27.md` records the matched work and
+throughput measurements. Exact-head review, hosted results and signoff for these
+additions are recorded on the PR; earlier f1121f22c signoff covers only the memory
+capture changes.
+
 ## Evolution callback memory
 
 `fix/evolution-captures` repairs a live profile that found fifteen evolution

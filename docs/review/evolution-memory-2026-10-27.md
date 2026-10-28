@@ -105,6 +105,29 @@ predict the live daemon's absolute savings. The live fifteen-process figure
 includes unused capacity and garbage. A future authorized update needs fresh
 OS, OTP and Pickglass cuts over comparable session and workload states.
 
+## CI follow-up
+
+The macOS full checks exposed a miner fixture that read HOME through Linux
+procfs and a TUI stream throughput miss. The miner fixture now uses the same
+portable home lookup as neighboring eval tests; its actual historical mining
+experiment passes on macOS without adding a skip.
+
+An allocation and call-time profile of the exact stream fixture identified
+repeated JSON parsing. The live lane parsed each envelope to validate version
+and reply identity, then its event decoder parsed the same bytes again. The
+lane now passes its parsed value to package-internal event decoders. Text entry
+points, duplicate-key rejection, frame bounds, version checks and correlation
+rules are preserved.
+
+A new reductions regression fails the old implementation at 607,500 versus
+321,983 reductions for the event decoder alone. With one parse, pushed decoding
+uses 327,889 versus 320,121 reductions; correlated presentation decoding uses
+249,084 versus 233,479. The regression allows only 25% overhead for live checks.
+The original stream fixture still requires 2,000 deltas/sec and the same memory
+bounds. Matched one-scheduler untraced cuts improve from roughly 15,700 to
+16,000 deltas/sec to 18,500 to 20,100; profiled string-parser calls fall from
+806,758 to 404,358. These fixture measurements are not installed RSS claims.
+
 ## Validation
 
 The marker and startup regressions pass, and all 185 focused evolution module
