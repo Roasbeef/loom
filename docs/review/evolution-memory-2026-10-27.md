@@ -154,6 +154,25 @@ original timing assertions and deadlines remain unchanged. Two hosted attempts
 missed the original sample, but their logs do not independently establish this
 ordering as the sole cause; final hosted results are recorded on the PR.
 
+
+The next macOS check passed runtime and all 3,340 client tests, then exposed a
+separate stdin fixture race. Its writer paused one second while the reader VM
+started independently. Delaying that startup by two seconds reproduced the
+hosted exit 7: the console driver decoded the valid line as `Ã©` rather than
+`é`, because it shared a chunk with the invalid line. The writer now waits for
+an acknowledgement after the first read before sending the valid bytes. A
+private FIFO, a bounded acknowledgement wait and pipeline cleanup preserve the
+exact byte checks and existing EUnit deadlines. The delayed-start regression
+fails the old fixture and passes the synchronized one; production stdin code
+is unchanged.
+
+The same hosted run also returned `badmatch,false` from the unchanged allow-list
+scenario while its queued-verdict and live-pin tests passed. Five real local
+repetitions pass; the exact failing step is truncated in the hosted assertion.
+Unexpected scenario failures now print the existing full error stack to stderr
+before returning it, preserving every verdict and assertion while making a
+recurrence diagnosable. No timeout or retry was added to the scenario.
+
 ## Validation
 
 The marker and startup regressions pass, and all 185 focused evolution module

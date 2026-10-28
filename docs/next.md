@@ -73,6 +73,16 @@ because the observed timer does not yet exist. Existing polling assertions and
 deadlines are unchanged; the PR preserves the earlier hosted failures and final
 validation results without claiming their complete cause from partial logs.
 
+
+The protocol stdin fixture also acknowledges the first read before its writer
+sends valid UTF-8. The former fixed one-second pause let a slow-starting VM read
+both byte chunks together; delaying startup reproduces the hosted exit 7 and
+wrong bytes. A private FIFO and bounded wait synchronize the existing assertions.
+Production decoding and test deadlines are unchanged. The delayed-reader
+regression and final hosted evidence are recorded with the other CI follow-up.
+Unexpected TLS spike failures print their full stack to stderr so a truncated
+EUnit error still identifies the failing scenario step.
+
 ## Evolution callback memory
 
 `fix/evolution-captures` repairs a live profile that found fifteen evolution
