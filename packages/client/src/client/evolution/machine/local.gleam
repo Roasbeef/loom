@@ -158,10 +158,13 @@ pub type Config {
 ///
 pub fn new(config: Config) -> Machine {
   let host = config.host
+  let open = config.open
 
+  // Source capture needs a fresh plane, not the retained host, credential
+  // lookup or generation builder. The other operations still own those inputs.
   machine.Machine(
     identity: fn() { compile_identity.current(host) },
-    snapshot: fn(ctx, directory) { snapshot(config, ctx, directory) },
+    snapshot: fn(ctx, directory) { snapshot_using(open, ctx, directory) },
     evaluate: fn(catalogue, ctx, id) {
       evaluate_candidate(config, ctx, catalogue, id)
     },
@@ -840,7 +843,17 @@ pub fn snapshot(
   ctx: tool.Ctx,
   directory: String,
 ) -> Result(archive.Tree, store.Refusal) {
-  use plane <- result.try(config.open(ctx.base_policy))
+  snapshot_using(config.open, ctx, directory)
+}
+
+/// Captures under the caller's current policy and retains the plane's original
+/// retirement witness, without retaining unrelated generation inputs.
+fn snapshot_using(
+  open: fn(policy.SandboxPolicy) -> Result(Plane, store.Refusal),
+  ctx: tool.Ctx,
+  directory: String,
+) -> Result(archive.Tree, store.Refusal) {
+  use plane <- result.try(open(ctx.base_policy))
   candidate.snapshot_owned(ctx, directory, plane.broker, plane.close)
 }
 

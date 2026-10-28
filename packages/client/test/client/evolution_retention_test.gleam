@@ -15,6 +15,8 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{Some}
+import gleam/string
+import provider/secret
 import simplifile
 import support/internal/ffi_memory
 import telemetry/log
@@ -69,4 +71,49 @@ fn callback_markers(padding: Int) -> #(Int, Int) {
 
 fn startup_failures(count: Int) -> List(secrets.Failure) {
   list.repeat(secrets.Failure("fixture", "startup-only"), count)
+}
+
+/// Every operation keeps only its own machine capability. The dummy secret
+/// store makes repeated native configurations countable across closure copies.
+pub fn evolution_callbacks_do_not_multiply_machine_secrets_test() {
+  let small = secret_markers(0)
+  let large = secret_markers(128)
+  io.println(
+    "evolution secret capture counts: " <> string.inspect(#(small, large)),
+  )
+  assert small == [0, 0, 0, 0, 0, 0]
+  assert large == [0, 256, 0, 0, 128, 0]
+    as "only author evaluation, its source Settings, and program execution retain secrets"
+}
+
+/// Counts the real assembled doors after proving ordinary instance retirement.
+fn secret_markers(padding: Int) -> List(Int) {
+  let root =
+    filepath.directory_name(owned_assembly_test.settings().session_path)
+  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/work")
+    as "the disposable fixture owns its workspace"
+  let marker = #("UNUSED_EVOLUTION_CAPTURE", "fixture-only")
+  let settings = evolution_acceptance_test.settings(root, "http://127.0.0.1:1")
+  let settings =
+    serve.Settings(
+      ..settings,
+      secrets: secret.from_list(list.repeat(marker, padding)),
+    )
+  let assert Ok(instance) = serve.open_instance(settings, log.discard())
+    as "the real evolution assembly opens with the marker store"
+  let assert Some(cell) = instance.evolution_cell
+    as "the fixture must exercise the evolution plane"
+  let assert Ok(door) = capability.borrow(cell)
+    as "the actual capability cell publishes the measured door"
+  let counts = [
+    ffi_memory.captured_occurrences(door.propose, marker),
+    ffi_memory.captured_occurrences(door.test_candidate, marker),
+    ffi_memory.captured_occurrences(door.inspect, marker),
+    ffi_memory.captured_occurrences(door.catalogue, marker),
+    ffi_memory.captured_occurrences(door.invoke, marker),
+    ffi_memory.captured_occurrences(door.trace, marker),
+  ]
+  let assert Ok(Nil) = serve.retire_instance(instance)
+    as "the measured instance retires before an assertion can fail"
+  counts
 }
