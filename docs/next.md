@@ -55,6 +55,12 @@ throughput measurements. Exact-head review, hosted results and signoff for these
 additions are recorded on the PR; earlier f1121f22c signoff covers only the memory
 capture changes.
 
+The final macOS census exposed 22 existing eval-verifier refusals for missing
+address-space and process-lifecycle enforcement (ADR-006). The Darwin-only
+declaration matches their complete reason. Production refusal is preserved;
+Linux eval and signoff execute the matching tests. This records a macOS coverage
+gap rather than claiming those verifier experiments ran there.
+
 ## Evolution callback memory
 
 `fix/evolution-captures` repairs a live profile that found fifteen evolution

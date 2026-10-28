@@ -128,6 +128,14 @@ bounds. Matched one-scheduler untraced cuts improve from roughly 15,700 to
 16,000 deltas/sec to 18,500 to 20,100; profiled string-parser calls fall from
 806,758 to 404,358. These fixture measurements are not installed RSS claims.
 
+The completed macOS checks also expose 22 existing verifier refusals in the
+final skip census. Darwin lacks the required address-space and descendant
+lifecycle enforcement described in ADR-006. A Darwin-only declaration matches
+that complete refusal reason; production verification still refuses those
+runs. Every matching test executes and passes under enforced Linux eval,
+including the gold/null/sabotage proof. The declaration records missing macOS
+coverage, and the census still rejects other refusals and stale declarations.
+
 ## Validation
 
 The marker and startup regressions pass, and all 185 focused evolution module
