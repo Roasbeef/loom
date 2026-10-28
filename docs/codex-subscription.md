@@ -264,57 +264,35 @@ See [Codex speed](https://learn.chatgpt.com/docs/agent-configuration/speed) and
 [Responses Fast mode](https://developers.openai.com/api/docs/guides/fast-mode)
 for current availability and billing.
 
-## Select Daybreak on a specific model
+## Observe the served model and access program
 
-Model selection and cybersecurity access are separate. An exact model entry can
-select Daybreak Blue through the operator-owned `cyber_access` key:
+Subscription requests omit `access_programs`, including when an existing model
+entry sets `cyber_access`. The private endpoint has returned standard access
+when sent an explicit Daybreak selection; omitting the override preserves its
+entitlement-aware default. Model selection and cybersecurity approval remain
+separate, and omission does not grant access.
 
-```toml
-[models.codex-sol-6-blue]
-dialect = "codex-subscription"
-auth = "codex"
-profile = "personal"
-model_id = "gpt-6-sol"
-cyber_access = "daybreak_blue"
-context_window = 272000
-max_output_tokens = 32768
-thinking = "medium"
-```
+API-key `openai-responses` entries can still select `standard`, `daybreak_blue`
+or `daybreak_red` with `cyber_access`. Unsupported dialects and invalid values
+refuse configuration. A remote permission denial stays a failed request, and a
+retryable failure uses the fallback entry's own dialect and options.
 
-After loading the updated configuration, use `/model codex-sol-6-blue` in the
-terminal. The numeric limits are conservative local budgets. The entry sends
-`model = "gpt-6-sol"` and `access_programs.cyber = "daybreak_blue"`; it uses the
-saved ChatGPT login. The same key works with the API-key `openai-responses`
-dialect, whose billing remains separate.
-
-Omitting `cyber_access` leaves the server's default selection in place.
-`standard` explicitly selects standard safeguards. Unsupported dialects and
-invalid values refuse configuration; a remote permission denial stays a failed
-request. A retryable service failure can still use an operator-configured
-fallback, which sends its own entry's access selection.
+A settled stream exposes the configured alias as `AssistantMessage.model` and
+the served model as `AssistantMessage.response_model`. The adapter prefers
+`openai-model` from HTTP or event headers and falls back to the response
+envelope's model when no valid header is available. When the
+terminal response supplies a bounded program identifier, it is retained at
+`AssistantMessage.diagnostics["loom.openai-responses.v1"].access_programs.cyber`.
+Compare that returned value with the expected program to detect a downgrade.
+Missing or malformed access metadata is omitted, so absence cannot establish
+which program served the request. The response model can itself echo an alias;
+that value does not establish the underlying model in that case. These
+observations survive the message codec and never become replayed request options. Failed streams have no settled
+message carrying them.
 
 The [Daybreak guide](https://developers.openai.com/api/docs/guides/daybreak)
-documents eligible models and required approval. Sol 6.1 and Astra require
-Daybreak Red approval even when the request selects `daybreak_blue`. A model's
-self-description does not prove the selected model or program. Read provider
-response metadata for that evidence.
-
-An alias such as `gpt-daybreak-blue-latest` can echo the alias in response
-metadata without naming the underlying model, so it is distinct from
-explicitly selecting a model such as `gpt-6-sol`.
-
-To run a whole session on Daybreak, give the entry its own role profile and
-select it with `loom --model-profile codex-blue`. Roles the profile omits
-inherit `[roles]`, so this one keeps the native child, advisor and summary
-routes from the `codex` example above:
-
-```toml
-[profiles.codex-blue.roles]
-main = ["codex-sol-6-blue"]
-subagent = ["codex-worker"]
-advisor = ["codex-astra"]
-summarize = ["codex-worker"]
-```
+documents eligible models and required approval. A model's self-description
+does not prove the selected model or program.
 
 ## Test end to end
 

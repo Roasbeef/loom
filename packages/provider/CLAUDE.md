@@ -61,11 +61,36 @@ cybersecurity access. Operator pricing remains an estimate.
 Only `openai-responses` and `codex-subscription` accept the key. The catalogue
 attaches it through `provider/gateway.with_cyber_access`; the opaque gateway
 indexes selections by provider name, and each actual attempt passes that
-entry's option into the Responses request encoder. Missing options omit
-`access_programs`; explicit options send the bounded `cyber` value. Provider
-approval remains remote. A 403 denial is terminal, and retryable fallback uses
-its own entry's selection. The frozen resolved identity and request types keep
-their existing shape.
+entry's option into the Responses request encoder. API-key requests send an
+explicit bounded `access_programs.cyber` value or omit the field when unset.
+Subscription requests always omit it, including for existing configured entries:
+the private endpoint can downgrade explicit selections to standard access, so
+its entitlement-aware default owns selection. A 403 denial remains terminal;
+retryable fallback uses the target entry's dialect and options. The frozen
+resolved identity and request types keep their existing shape.
+
+## Responses argument snapshots and access observations
+
+`adapter/responses.arguments` accepts a function-argument done snapshot only
+when it extends the bytes already streamed. It emits the missing suffix once,
+including the full argument string when no deltas arrived, then records the
+text closure. Item identity, canonical item closure and terminal output still
+must agree before settlement. Conflicting or shortened snapshots still fail
+with `arguments_done_witness`.
+
+A settled message keeps the requested alias in `model` and the served model
+in `response_model`. Nonempty `openai-model` headers of at most 256 bytes take
+precedence over the response envelope's model, which remains the identity
+witness. HTTP headers seed the observation; subsequent event headers update it,
+with response-local headers preferred over top-level ones in the same event.
+
+Its existing diagnostics namespace,
+`loom.openai-responses.v1`, optionally includes terminal `access_programs.cyber`.
+Only nonempty identifiers of at most 64 ASCII lowercase letters, digits,
+underscores or hyphens are retained. Unknown identifiers in that alphabet are
+observable; absent or invalid optional metadata is omitted. These are remote
+observations, not access grants, and the request encoder never replays them.
+Failed streams have no settled-message observation. No frozen interface changes.
 
 ## Exact-model evolution profiles
 

@@ -29,11 +29,17 @@ registration name, never an operator-selected network host.
 
 The optional `cyber_access` catalogue setting is a typed operator selection of
 `access_programs.cyber`. The opaque gateway stores it under the provider name;
-each actual Responses attempt emits that entry's selection. Missing settings
-leave the server default in place. Approval and model compatibility remain
-remote, and an access denial cannot remove the selection and retry as standard.
-Whether an account may select a program for a model is decided by the
-provider; each account establishes its own access.
+API-key Responses attempts emit that entry's selection. Subscription requests
+always omit the override, even for existing configured entries, because the
+private endpoint can return standard access when sent a Daybreak selection.
+Omission preserves the server's entitlement-aware default. Approval and model
+compatibility remain remote; an access denial remains a failed request.
+
+The settled assistant keeps the served model in `response_model`
+and a bounded terminal `access_programs.cyber` observation in the existing
+`loom.openai-responses.v1` diagnostics. Missing metadata is not proof of a
+particular access level. Observations survive durable encoding and cannot
+become replayed request options.
 
 ## Authentication and profile ownership
 

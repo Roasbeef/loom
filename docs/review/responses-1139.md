@@ -1,0 +1,91 @@
+# Responses completion and returned identity
+
+Source: `6a2d8f4b4`, based on main `e4fb0b5e5`, October 27, 2026.
+Issue: [#1139](https://github.com/Roasbeef/loom/issues/1139).
+
+## What failed
+
+The old argument witness required `.done.arguments` to equal concatenated
+deltas. A complete snapshot at sequence 3, after created, in-progress and item
+addition, therefore failed when no argument delta had arrived. The new fold
+requires the snapshot to start with the previously emitted bytes, emits only
+the missing suffix, and records the text closure. Equal snapshots emit nothing.
+Shortened or conflicting snapshots still fail with `arguments_done_witness`.
+Item identity, canonical item closure and the terminal response remain required.
+
+Subscription request bodies also sent configured `access_programs` overrides.
+The issue reports repeated standard-access responses when an explicit Daybreak
+selection was supplied, and Daybreak responses when omitted. Subscription bodies
+now always omit the override. Existing configuration is accepted, while API-key
+Responses bodies retain their explicit selections.
+
+## Comparison with the native parser
+
+The comparison used [openai/codex at
+727283cea5ba30e8cf8bbac6b68a03a4d91cf1b7](https://github.com/openai/codex/blob/727283cea5ba30e8cf8bbac6b68a03a4d91cf1b7/codex-rs/codex-api/src/sse/responses.rs).
+The fetched file's blob is `7f076a139c2a9b1aaf6ea29649427d010d83439f`.
+
+The native parser ignores function-argument delta/done events and emits the
+parsed canonical item from `response.output_item.done`. It does not require an
+argument delta before completion. The [official streaming
+schema](https://developers.openai.com/api/reference/resources/responses/streaming-events#response.function_call_arguments.done)
+defines `.done.arguments` as the finalized argument string. Loom reconciles that
+snapshot while retaining its existing cross-event consistency checks.
+
+The native parser obtains the served model from `openai-model` HTTP or event
+headers, rather than the envelope's `model`, which can echo an alias. Loom now
+follows those header conventions: case-insensitive names, string or first
+array-string values, response-local headers before top-level event headers,
+and the latest valid event observation after HTTP headers. Observations must
+be nonempty and at most 256 bytes. With no valid header, Loom retains the
+envelope model. This observation cannot replace the envelope identity witness.
+
+The comparison does not justify adopting the native parser's broad tolerance
+for unhandled events or dropped item decodes. Loom still rejects unknown
+content-bearing events and conflicting completion witnesses.
+
+## Returned access observation
+
+`AssistantMessage.model` retains the configured identity, and `response_model`
+holds the served-model observation. The terminal response's
+`access_programs.cyber` is retained under
+`diagnostics["loom.openai-responses.v1"].access_programs.cyber` when it is a
+nonempty token of at most 64 lowercase ASCII letters, digits, underscores or
+hyphens. Future identifiers in this alphabet remain observable. Invalid or
+absent optional metadata is omitted without invalidating verified content.
+
+These fields survive the existing message codec. Replay restores only its
+allowlisted item projection and cannot turn observations into request options.
+Missing metadata cannot prove the served model behind an echoed alias or the
+access program. Failed streams have no settled message carrying observations.
+No frozen interface, retry bound or credential path changes.
+
+## Verification
+
+The original 56 Responses tests passed. The added no-delta and prefix tests
+failed under the old equality check, and the served-header test failed before
+header capture was added. The resulting 62-test Responses suite and the
+137-test client catalogue suite passed.
+
+Eight deliberate mutations failed under their intended semantic assertions:
+restoring equality-only completion, accepting conflicting prefixes, repeating
+the whole snapshot as a suffix, forwarding subscription access, dropping the
+access observation, exceeding its bound, ignoring served-model headers, and
+exceeding the model-header bound. The restored scratch source passed again.
+The mutants ran in a disposable copy, leaving the reviewed source unchanged.
+
+One independent adversarial review found no actionable invariant,
+simplification or nearby variant findings. The same reviewer rechecked the
+served-model addition and found none. Other text-completion witnesses remain
+strict; this issue supplies no evidence to relax them.
+
+The final standalone provider format/build/test gate passed all 343 tests.
+House-rule lint and the documentation gate passed. The broader local affected
+run hit `eval@mine_test.eccdddad0_reproduces_probe_test`: its unchanged
+`reproduce` reads `/proc/self/environ`, which is absent on macOS. The local
+checkout contains the historical probe commit, so the test enters that Linux
+path. No test assertion or skip condition was changed to bypass this failure.
+
+The exact final head's hosted checks and configured Linux signoff remain merge
+gates. The subscription endpoint was not called with a live OAuth grant; no
+provider entitlement claim is established by these deterministic fixtures.

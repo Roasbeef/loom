@@ -1,5 +1,30 @@
 # Current handoff
 
+## Responses completion and returned identity (issue #1139)
+
+Source baseline: `6a2d8f4b4` on `codex/responses-done-arguments`, over main
+`e4fb0b5e5` (October 27, 2026). The [validation record](review/responses-1139.md)
+documents the reproduction, native parser comparison and remaining gates.
+
+Function-argument done snapshots may supply the whole payload or extend the
+streamed prefix. Only the missing suffix is emitted; conflicts still fail and
+canonical item/terminal closure remains required. Subscription requests omit
+`access_programs`, including existing configured overrides. API-key Responses
+requests keep their explicit selection. Served-model headers and bounded
+terminal access observations use the existing message fields and diagnostics;
+neither can change replay options or the requested identity.
+
+The final provider gate passed all 343 tests, the Responses suite passed 62,
+and the catalogue suite passed 137. Eight semantic mutants were killed, and
+independent review found no actionable issues. The broader local affected run
+hit the unchanged eval mining test's `/proc/self/environ` assumption on macOS.
+No assertion was weakened and no test was removed. Before merge, require the
+exact final head's hosted checks and configured Linux signoff. Live OAuth
+endpoint behavior remains unverified by this patch's deterministic fixtures.
+
+The earlier handoff sections below retain their previous work records. Their
+external CI and deployment claims were not revalidated for this scoped fix.
+
 ## Agent Client Protocol server (issue #1026)
 
 `loom acp` makes Loom an ACP agent on standard input and output, on branch `acp/agent-server`. It is a client of the daemon like `loom run -p`; the effect plane is untouched. [The architecture page](architecture/acp.md) is the reference: the method mapping, the `_meta.loom` keys, the workspace gate, and the compatibility table for Harbor's generic ACP runner, which was driven unmodified against it over a real pipe.
