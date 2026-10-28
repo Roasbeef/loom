@@ -243,16 +243,13 @@ env:
   # different platform or don't share `deps`'s artifact, so a shared
   # namespace would buy them nothing and cost `deps` a noisier cache key.
   LINUX_CACHE_NAMESPACE: "linux-gate"
-  # Shared by all three macOS jobs for the same reason: `deps (macos)`'s
-  # cache save must be exactly what `check (macos, advisory)` and
-  # `e2e (macos)` restore. Kept distinct from the Linux namespace because
+  # Shared by the macOS dependency and end-to-end jobs, so the latter
+  # restores exactly what deps saved. Kept distinct from Linux because
   # the two platforms cache different compiled artifacts.
   MACOS_CACHE_NAMESPACE: "macos-gate"
-  # The advisory check compiles every package tree; it saves that under its
-  # own namespace so a later run restores a warm tree. Sharing deps's key
-  # meant deps saved first with only the shipment's trees and the check
-  # could never save, so every run compiled cold (19 core compiles versus
-  # 5 in the old single job).
+  # The advisory check keeps its own toolchain census label. Its optional
+  # package caches are disabled below after their measured restore cost
+  # exceeded the cold build's cost.
   MACOS_CHECK_CACHE_NAMESPACE: "macos-check"
 
 jobs:
@@ -955,7 +952,9 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache-namespace: ${{ env.MACOS_CHECK_CACHE_NAMESPACE }}
           cache-epoch: ${{ env.CACHE_EPOCH }}
-          cache: ${{ github.event.inputs.cache || 'true' }}
+          # Restoring the 537 MB package cache took 12m49s and exhausted the
+          # job budget. Cold checks finish sooner and retain every test bound.
+          cache: "false"
 
       # actions/download-artifact v7.0.0
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
