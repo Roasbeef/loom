@@ -1,5 +1,16 @@
 # tui
 
+
+## Protocol stdin fixture
+
+`acp_stdin_test` waits for the external reader to acknowledge its invalid first
+line before writing the valid UTF-8 chunk. A private FIFO and a bounded Bash read
+keep the chunk boundary independent of VM startup without changing the exact
+byte assertions. The writer opens both FIFO ends before its timed read, and a
+trap removes the fixture directory when the pipeline exits. A delayed-reader
+regression reproduces the former fixed-pause failure. Production stdin decoding
+and the existing EUnit deadlines are unchanged.
+
 ## Live wire decoding cost
 
 The stream holder still measures real wire text through the shipped reducer and
