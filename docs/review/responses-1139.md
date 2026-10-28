@@ -109,6 +109,15 @@ generator ran its refusal check. A same-reader review of the platform split
 found no actionable findings; Linux execution of all 22 proofs remains part
 of the final hosted and fresh-container gates.
 
+A cache-free hosted run exposed a separate remote-subagent fixture race. The
+80-by-24 terminal gives a peek half its transcript area; the renderer clips
+leading rows when the loaded page exceeds that area. The header fits while
+loading but can disappear before the test samples it. The fixture now resizes
+to 120 by 40 before opening the visible transcript, matching the existing TUI
+framing test. Its header, brief, tool and footer assertions and all deadlines
+remain unchanged. Independent review confirmed this observation race; the
+fixture does not claim complete framing fits every smaller terminal.
+
 The exact final head's hosted checks and configured Linux signoff remain merge
 gates. The subscription endpoint was not called with a live OAuth grant; no
 provider entitlement claim is established by these deterministic fixtures.

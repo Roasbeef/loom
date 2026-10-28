@@ -21,8 +21,11 @@ the historical mining fixture's `/proc/self/environ` lookup with the existing
 portable home-directory boundary. With owner approval, all 22 real eval
 verifier proofs remain on Linux; macOS runs explicit production-refusal
 checks because its lifecycle enforcement cannot admit a verifier jail.
-Pure checks still run on both hosts. No assertion, deadline or production
-enforcement rule was weakened. Before merge, require the
+Pure checks still run on both hosts. The shipped remote-subagent fixture
+also resizes its final transcript peek to 120 by 40 so the loaded page's
+header and footer fit together; at 80 by 24 its header assertion raced the
+transient loading frame. No assertion, deadline or production enforcement
+rule was weakened. Before merge, require the
 exact final head's hosted checks and configured Linux signoff. Live OAuth
 endpoint behavior remains unverified by this patch's deterministic fixtures.
 
