@@ -21,6 +21,8 @@ The TLS spike fixtures synchronize their verdict collector with Erlang trace
 delivery before answering a read. `ledger_spike_pin_table_test` queues a read
 ahead of a return trace to check that the verdict is included and then cleared.
 Pin mutation, revocation and allow-list tests still use real TLS emulators.
+Unexpected scenario failures also print their complete stack to stderr before
+returning the existing error, because EUnit truncates a failed binary pattern.
 
 # client
 

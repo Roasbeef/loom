@@ -36,8 +36,13 @@ scenario(Name) ->
         ok = run(Name, Root),
         {ok, nil}
     catch Class:Reason:Stack ->
-        {error, unicode:characters_to_binary(
-            io_lib:format("~p:~p~n~p", [Class, Reason, Stack]))}
+        Failure = unicode:characters_to_binary(
+            io_lib:format("~p:~p~n~p", [Class, Reason, Stack])),
+
+        %% EUnit truncates the returned binary in a failed pattern assertion.
+        %% Keep the complete scenario stack visible for hosted-only failures.
+        io:format(standard_error, "ledger spike ~ts failed: ~ts~n", [Name, Failure]),
+        {error, Failure}
     after
         file:del_dir_r(Root)
     end.
