@@ -144,7 +144,7 @@ selected adapter's authentication boundary. See
 | `max_images` | integer | `8` | positive | The most image blocks in one provider request, history included. The oldest historical images become placeholders to fit; stored images are never deleted. Each fallback entry uses its own limit. |
 | `pricing` | table | unpriced | see below | Turns the usage ledger's cost columns from zeros into amounts. |
 | `service_tier` | string | omitted, provider default | `fast`, `default`; Responses dialects only | Requests Fast mode or standard processing for this model entry. Fast mode can consume more subscription allowance or incur higher API charges; eligibility and the served tier are provider-controlled. |
-| `cyber_access` | string | omitted, server default | `standard`, `daybreak_blue`, `daybreak_red`; Responses dialects only | Selects `access_programs.cyber` per request. Approval and model compatibility are enforced by the provider; setting it does not grant access. |
+| `cyber_access` | string | omitted, server default | `standard`, `daybreak_blue`, `daybreak_red`; Responses dialects only | Selects `access_programs.cyber` for API-key Responses requests. Subscription requests always omit the override and use the server default; existing configured values are accepted but ignored. Approval remains remote. |
 | `profile` | string | required for `codex-subscription`, forbidden otherwise | 1–64 ASCII letters, digits, `_` or `-`, starting with a letter or digit | A native credential profile created by `loomd codex login --profile NAME`. Several entries can share it. This is separate from the named role profiles below. |
 
 ## `[models.<name>.pricing]`

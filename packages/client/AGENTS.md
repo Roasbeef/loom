@@ -38,11 +38,13 @@ cybersecurity access. Operator pricing remains an estimate.
 Only `openai-responses` and `codex-subscription` accept the key. The catalogue
 attaches it through `provider/gateway.with_cyber_access`; the opaque gateway
 indexes selections by provider name, and each actual attempt passes that
-entry's option into the Responses request encoder. Missing options omit
-`access_programs`; explicit options send the bounded `cyber` value. Provider
-approval remains remote. A 403 denial is terminal, and retryable fallback uses
-its own entry's selection. The frozen resolved identity and request types keep
-their existing shape.
+entry's option into the Responses request encoder. API-key requests send an
+explicit bounded `access_programs.cyber` value or omit the field when unset.
+Subscription requests always omit it, including for existing configured entries:
+the private endpoint can downgrade explicit selections to standard access, so
+its entitlement-aware default owns selection. A 403 denial remains terminal;
+retryable fallback uses the target entry's dialect and options. The frozen
+resolved identity and request types keep their existing shape.
 
 ## Per-strand shell directories
 
@@ -8618,6 +8620,10 @@ ADR-020 the choice of Khepri and its measurements, and
   `begin_delete`, `unmark_deleting`, `finish_delete`, `deleting_sessions`,
   `remote_registrations` and `local_sessions`. `prepare_slot` reads the deletion mark in the turn
   that reserves a slot and refuses `SessionDeleting` (code `busy`).
+  `local_sessions` refuses an incomplete census with `Unavailable` while an
+  unconfirmed local registration still has an active assembly slot. This
+  keeps the movers' coverage request pending until confirmation. Reserved
+  remote sessions and failed or inactive local reservations do not block it.
 - `daemon/server`: a remote `sessions.create` on a member reserves, then
   `ownership.create`, then creates (`recorded`); `no_quorum` keeps the
   reservation. A remote `sessions.delete` goes through `directory/deletion.finish`:

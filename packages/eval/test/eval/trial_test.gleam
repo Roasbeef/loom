@@ -1,4 +1,10 @@
+//// Real verifier proofs run on Linux; Darwin runs the production refusal.
+//// The generator prints assigned coverage and claims no Linux proof on Darwin.
+//// Pure and scripted checks retain their coverage on every platform.
+////
+
 import broker/exec
+import client/internal/ffi_os
 import client/secrets
 import client/serve
 import core/json
@@ -14,6 +20,7 @@ import eval/repos
 import eval/task
 import eval/trial
 import eval/verify
+import eval/verify_test
 import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
@@ -394,7 +401,46 @@ fn program_trial(
   })
 }
 
-pub fn a_gold_patched_mined_task_scores_passed_test_() -> scripted.EunitTest {
+/// Selects this module's Linux proofs or Darwin's production refusal.
+///
+/// ## Examples
+///
+/// `scripts/test.sh eval --match eval@trial_test:trial_verifier_proofs_test_`.
+pub fn trial_verifier_proofs_test_() -> List(#(String, scripted.EunitTest)) {
+  let #(platform, _) = ffi_os.platform()
+  case platform {
+    "linux" -> {
+      io.println_error("NOTE trial coverage: linux real proofs assigned=2")
+      [
+        #(
+          "a_gold_patched_mined_task_scores_passed_test_",
+          a_gold_patched_mined_task_scores_passed(),
+        ),
+        #(
+          "an_agent_that_changes_nothing_fails_the_mined_verifier_test_",
+          an_agent_that_changes_nothing_fails_the_mined_verifier(),
+        ),
+      ]
+    }
+    "darwin" -> {
+      io.println_error(
+        "NOTE trial coverage: darwin real proofs assigned=0; production refusal assigned=1; Linux proof coverage is not claimed",
+      )
+      [
+        #(
+          "darwin_refuses_unenforceable_verifier",
+          scripted.Timeout(
+            1500,
+            verify_test.darwin_refuses_unenforceable_verifier,
+          ),
+        ),
+      ]
+    }
+    other -> panic as { "unsupported trial proof platform: " <> other }
+  }
+}
+
+fn a_gold_patched_mined_task_scores_passed() -> scripted.EunitTest {
   scripted.Timeout(1500, fn() {
     program_trial("gold_patched_mined_task", True, fn(row) {
       assert row.outcome == Some(ledger.Passed)
@@ -404,7 +450,7 @@ pub fn a_gold_patched_mined_task_scores_passed_test_() -> scripted.EunitTest {
   })
 }
 
-pub fn an_agent_that_changes_nothing_fails_the_mined_verifier_test_() -> scripted.EunitTest {
+fn an_agent_that_changes_nothing_fails_the_mined_verifier() -> scripted.EunitTest {
   scripted.Timeout(1500, fn() {
     program_trial("unchanged_mined_task", False, fn(row) {
       assert row.outcome == Some(ledger.VerifierFailed)

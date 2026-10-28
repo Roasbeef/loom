@@ -2786,3 +2786,158 @@ pub fn a_delegate_session_never_moves_test() {
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }
+
+/// A local census stays incomplete while the creation's domain is assembling.
+///
+/// ## Examples
+///
+/// Confirmation makes the same identity available without another creation.
+pub fn local_census_waits_for_a_creation_assembling_its_domain_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let building = process.new_subject()
+  let assert Ok(registry) =
+    manager.start(
+      store,
+      manager.Assembly(
+        domain_build: fn(_, _, _) {
+          let release = process.new_subject()
+          process.send(building, release)
+          process.receive_forever(release)
+          Ok(domain_service.inert())
+        },
+        build: fn(record, _, _, _, _) { Ok(record.id) },
+        drain: fn(_, _) { Nil },
+        fatal: fn(_) { [] },
+      ),
+      epoch: "daemon-test",
+      limit: 2,
+    )
+    as "the registry holds its domain builder at a barrier"
+
+  // The session slot waits for this original domain before its builder starts.
+  let assert Ok(manager.View(record, manager.Opening(operation))) =
+    manager.create_scoped(
+      registry,
+      manager.Creation(
+        "domain-census",
+        "/workspace",
+        "local",
+        "",
+        option.None,
+        option.None,
+        "",
+        "",
+      ),
+      directory: "/private/sessions",
+      generator: ids.generator(clock.fixed(0), 1500),
+      scope: domain.SessionOnly,
+      configuration: "",
+    )
+    as "the local session reserves its domain"
+  let assert Ok(release) = process.receive(building, 1000)
+    as "the domain is held before any local confirmation"
+  let waiting = manager.local_sessions(registry)
+  process.send(release, Nil)
+  await_status(registry, record.id, manager.Resident(operation))
+  let confirmed = manager.local_sessions(registry)
+
+  // A reserved remote session uses the directory's remote publication path,
+  // so its domain builder cannot hold up the confirmed local census.
+  let assert Ok(manager.View(remote, manager.Opening(remote_operation))) =
+    manager.create_scoped(
+      registry,
+      manager.Creation(
+        "remote-census",
+        "repo",
+        "remote",
+        "",
+        option.None,
+        option.None,
+        "box",
+        "",
+      ),
+      directory: "/private/sessions",
+      generator: ids.generator(clock.fixed(0), 1504),
+      scope: domain.SessionOnly,
+      configuration: "",
+    )
+    as "a remote session holds a separate unconfirmed slot"
+  let assert Ok(remote_release) = process.receive(building, 1000)
+    as "the remote domain is held before confirmation"
+  let beside_remote = manager.local_sessions(registry)
+  process.send(remote_release, Nil)
+  await_status(registry, remote.id, manager.Resident(remote_operation))
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+
+  assert waiting == Error(manager.Unavailable)
+    as "an unfinished local domain cannot complete the coverage census"
+  assert confirmed == Ok([record.id])
+    as "the original confirmed session becomes discoverable"
+  assert beside_remote == Ok([record.id])
+    as "an actively assembling remote session does not block local coverage"
+}
+
+/// Failed and inactive reservations cannot starve confirmed local coverage.
+///
+/// ## Examples
+///
+/// A failed builder may still be draining when the census completes.
+pub fn failed_and_inactive_reservations_do_not_block_local_census_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let confirmed = saved(store, 1501)
+  let inactive = registration(1502)
+  let assert Ok(_) = catalogue.reserve(store, inactive)
+    as "an inactive creation retains its unconfirmed metadata"
+  let draining = process.new_subject()
+  let registry =
+    start(store, 1, fn(_, owner) {
+      let assert Ok(Nil) =
+        custody.publish(owner, custody.Services, fn() {
+          let release = process.new_subject()
+          process.send(draining, release)
+          process.receive_forever(release)
+          Ok(Nil)
+        })
+        as "the failed builder retains cleanup custody"
+      Error("fixture assembly refused")
+    })
+
+  // A failed creation remains Reserved and owns a Closing slot until its
+  // cleanup returns. Neither state promises a future confirmation to await.
+  let assert Ok(manager.View(failed, manager.Opening(operation))) =
+    manager.create_scoped(
+      registry,
+      manager.Creation(
+        "failed-census",
+        "/workspace",
+        "failed",
+        "",
+        option.None,
+        option.None,
+        "",
+        "",
+      ),
+      directory: "/private/sessions",
+      generator: ids.generator(clock.fixed(0), 1503),
+      scope: domain.SessionOnly,
+      configuration: "",
+    )
+    as "the failing creation has its own original operation"
+  let assert Ok(release) = process.receive(draining, 1000)
+    as "cleanup is held after the builder has failed"
+  let failure = manager.operation(registry, failed.id, operation)
+  let census = manager.local_sessions(registry)
+  let retained = catalogue.get(store, failed.id)
+  process.send(release, Nil)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+
+  assert failure == Error(manager.StartFailed("fixture assembly refused"))
+    as "the pending cleanup belongs to the failed builder"
+  let assert Ok(catalogue.Registration(state: catalogue.Reserved, ..)) =
+    retained
+    as "failure does not pretend the creation was confirmed"
+  assert census == Ok([confirmed.id])
+    as "confirmed locals remain coverable beside failed and inactive reservations"
+}

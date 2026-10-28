@@ -745,6 +745,11 @@ fn session(
   // the running child reads a page of its branch from the box, framed as a
   // remote transcript: the brief the parent gave it and the shell it called.
   await_frame(terminal, "fourth-child @ box")
+
+  // The complete page needs room for both framing lines. At 80 by 24 the
+  // lower pane clips the header once loading finishes, so observing it there
+  // depends on sampling the transient loading frame before the page arrives.
+  let _ = tui_driver.play(terminal, [backend.Resize(120, 40)])
   remote_daemons.say(terminal, "/peek fourth-child")
   await_frame(terminal, "[transcript of sub:^main/fourth-child-")
   await_frame(terminal, "asked: run the fourth child")

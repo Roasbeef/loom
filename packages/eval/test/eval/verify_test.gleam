@@ -3,12 +3,14 @@
 //// off, the wall is a zero grade, the reward file outranks the exit status,
 //// and the side information is bounded and scrubbed.
 ////
-//// Every jailed test opens a real helper pool under the operator's home.
-//// The production demand is asked for first; a host whose only shortfall is
-//// the cgroup v2 ceilings reruns under best-effort enforcement and says so
-//// on standard error, because the properties proved here are the mount,
-//// seccomp and namespace layers, which that host does enforce. Any other
-//// refusal is a `SKIP` naming it.
+//// Linux selects nineteen real jailed proofs. Darwin selects the production
+//// refusal instead: its missing process-lifecycle guarantee prevents a verifier
+//// from opening, so this suite claims no real verifier proof on that platform.
+//// Pure checks run everywhere. The generator prints the selected coverage.
+////
+//// Every Linux proof opens a real helper pool under the operator's home.
+//// Production demand is asked for first; only a cgroup v2 shortfall permits
+//// best-effort enforcement, retaining the required filesystem and network layers.
 
 import broker/exec
 import client/catalog
@@ -65,7 +67,99 @@ pub fn open_jail_refuses_a_relative_root_test() {
 
 // --- jailed ---------------------------------------------------------------
 
-pub fn verifier_files_absent_from_workspace_test() {
+/// Selects real verifier proofs on Linux and the production refusal on Darwin.
+///
+/// ## Examples
+///
+/// `scripts/test.sh eval --match eval@verify_test:jailed_verifier_proofs_test_`.
+pub fn jailed_verifier_proofs_test_() -> List(#(String, fn() -> Nil)) {
+  let #(platform, _) = ffi_os.platform()
+  case platform {
+    "linux" -> {
+      io.println_error("NOTE verifier coverage: linux real proofs assigned=19")
+      [
+        #(
+          "verifier_files_absent_from_workspace_test",
+          verifier_files_absent_from_workspace,
+        ),
+        #(
+          "verifier_cannot_write_outside_verify_dir_test",
+          verifier_cannot_write_outside_verify_dir,
+        ),
+        #("verifier_network_is_off_test", verifier_network_is_off),
+        #(
+          "verifier_timeout_is_zero_reward_test",
+          verifier_timeout_is_zero_reward,
+        ),
+        #("reward_json_gates_the_pass_test", reward_json_gates_the_pass),
+        #(
+          "exit_status_grades_when_no_reward_file_test",
+          exit_status_grades_when_no_reward_file,
+        ),
+        #(
+          "side_info_is_bounded_and_scrubbed_test",
+          side_info_is_bounded_and_scrubbed,
+        ),
+        #(
+          "failing_tests_are_named_in_side_info_test",
+          failing_tests_are_named_in_side_info,
+        ),
+        #(
+          "grade_refuses_an_out_dir_outside_the_root_test",
+          grade_refuses_an_out_dir_outside_the_root,
+        ),
+        #(
+          "planted_reward_json_is_discarded_test",
+          planted_reward_json_is_discarded,
+        ),
+        #(
+          "runner_from_the_workspace_is_refused_unless_staged_test",
+          runner_from_the_workspace_is_refused_unless_staged,
+        ),
+        #(
+          "agents_build_is_discarded_and_the_pristine_one_restored_test",
+          agents_build_is_discarded_and_the_pristine_one_restored,
+        ),
+        #(
+          "hidden_files_never_follow_the_agents_symlinks_test",
+          hidden_files_never_follow_the_agents_symlinks,
+        ),
+        #(
+          "symlinked_logs_disclose_nothing_test",
+          symlinked_logs_disclose_nothing,
+        ),
+        #("fifos_are_refused_not_read_test", fifos_are_refused_not_read),
+        #("dotdot_hidden_path_is_refused_test", dotdot_hidden_path_is_refused),
+        #(
+          "a_pass_needs_exit_ids_and_reward_map_test",
+          a_pass_needs_exit_ids_and_reward_map,
+        ),
+        #(
+          "oversize_files_are_dropped_within_the_caps_test",
+          oversize_files_are_dropped_within_the_caps,
+        ),
+        #(
+          "a_timeout_over_the_cap_is_a_zero_grade_not_infra_test",
+          a_timeout_over_the_cap_is_a_zero_grade_not_infra,
+        ),
+      ]
+    }
+    "darwin" -> {
+      io.println_error(
+        "NOTE verifier coverage: darwin real proofs assigned=0; production refusal assigned=1; Linux proof coverage is not claimed",
+      )
+      [
+        #(
+          "darwin_refuses_unenforceable_verifier",
+          darwin_refuses_unenforceable_verifier,
+        ),
+      ]
+    }
+    other -> panic as { "unsupported verifier proof platform: " <> other }
+  }
+}
+
+fn verifier_files_absent_from_workspace() {
   use jail, root <- with_jail("files-absent")
   let workspace = root <> "/frozen"
   write(workspace <> "/README.md", "agent's tree\n")
@@ -91,7 +185,7 @@ pub fn verifier_files_absent_from_workspace_test() {
   assert simplifile.is_file(root <> "/out/verify/README.md") == Ok(True)
 }
 
-pub fn verifier_cannot_write_outside_verify_dir_test() {
+fn verifier_cannot_write_outside_verify_dir() {
   use jail, root <- with_jail("no-escape")
   let workspace = root <> "/frozen"
   let home = root <> "/home"
@@ -129,7 +223,7 @@ pub fn verifier_cannot_write_outside_verify_dir_test() {
   assert string.contains(side_info, "inside=0")
 }
 
-pub fn verifier_network_is_off_test() {
+fn verifier_network_is_off() {
   use jail, root <- with_jail("network-off")
   let workspace = root <> "/frozen"
   write(workspace <> "/README.md", "agent's tree\n")
@@ -167,7 +261,7 @@ pub fn verifier_network_is_off_test() {
   assert !string.contains(side_info, "Connection refused")
 }
 
-pub fn verifier_timeout_is_zero_reward_test() {
+fn verifier_timeout_is_zero_reward() {
   use jail, root <- with_jail("timeout")
   let workspace = root <> "/frozen"
   write(workspace <> "/README.md", "agent's tree\n")
@@ -189,7 +283,7 @@ pub fn verifier_timeout_is_zero_reward_test() {
   assert wall_ms >= 1000 && wall_ms < 30_000
 }
 
-pub fn reward_json_gates_the_pass_test() {
+fn reward_json_gates_the_pass() {
   use jail, root <- with_jail("reward-json")
   let workspace = root <> "/frozen"
   write(workspace <> "/README.md", "agent's tree\n")
@@ -237,7 +331,7 @@ pub fn reward_json_gates_the_pass_test() {
   assert simplifile.is_file(root <> "/bad/verifier/stdout") == Ok(True)
 }
 
-pub fn exit_status_grades_when_no_reward_file_test() {
+fn exit_status_grades_when_no_reward_file() {
   use jail, root <- with_jail("exit-status")
   let workspace = root <> "/frozen"
   write(workspace <> "/README.md", "agent's tree\n")
@@ -262,7 +356,7 @@ pub fn exit_status_grades_when_no_reward_file_test() {
   assert string.contains(side_info, "exit status 7")
 }
 
-pub fn side_info_is_bounded_and_scrubbed_test() {
+fn side_info_is_bounded_and_scrubbed() {
   use jail, root <- with_jail("side-info")
   let workspace = root <> "/frozen"
   write(workspace <> "/README.md", "agent's tree\n")
@@ -295,7 +389,7 @@ pub fn side_info_is_bounded_and_scrubbed_test() {
   assert string.contains(side_info, "<redacted>")
 }
 
-pub fn failing_tests_are_named_in_side_info_test() {
+fn failing_tests_are_named_in_side_info() {
   use jail, root <- with_jail("test-names")
   let workspace = root <> "/frozen"
   write(workspace <> "/README.md", "agent's tree\n")
@@ -337,7 +431,7 @@ pub fn failing_tests_are_named_in_side_info_test() {
   )
 }
 
-pub fn grade_refuses_an_out_dir_outside_the_root_test() {
+fn grade_refuses_an_out_dir_outside_the_root() {
   use jail, root <- with_jail("outside-root")
   let workspace = root <> "/frozen"
   write(workspace <> "/README.md", "agent's tree\n")
@@ -354,7 +448,7 @@ pub fn grade_refuses_an_out_dir_outside_the_root_test() {
 
 // --- the agent's tree is adversarial -----------------------------------------
 
-pub fn planted_reward_json_is_discarded_test() {
+fn planted_reward_json_is_discarded() {
   use jail, root <- with_jail("planted-reward")
   let workspace = root <> "/frozen"
   write(workspace <> "/logs/verifier/reward.json", "{\"tests\": 1}\n")
@@ -382,7 +476,7 @@ pub fn planted_reward_json_is_discarded_test() {
     == Ok(True)
 }
 
-pub fn runner_from_the_workspace_is_refused_unless_staged_test() {
+fn runner_from_the_workspace_is_refused_unless_staged() {
   use jail, root <- with_jail("agent-runner")
   let workspace = root <> "/frozen"
   write(workspace <> "/scripts/test.sh", "echo '  m: beta_test...ok'; exit 0\n")
@@ -437,7 +531,7 @@ pub fn runner_from_the_workspace_is_refused_unless_staged_test() {
     == Ok("test \"$(cat marker)\" = task\n")
 }
 
-pub fn agents_build_is_discarded_and_the_pristine_one_restored_test() {
+fn agents_build_is_discarded_and_the_pristine_one_restored() {
   use jail, root <- with_jail("pristine-build")
   let workspace = root <> "/frozen"
   let pristine = root <> "/pristine"
@@ -471,7 +565,7 @@ pub fn agents_build_is_discarded_and_the_pristine_one_restored_test() {
   assert string.contains(side_info, "2 build/logs directories")
 }
 
-pub fn hidden_files_never_follow_the_agents_symlinks_test() {
+fn hidden_files_never_follow_the_agents_symlinks() {
   use jail, root <- with_jail("symlink-stage")
   let workspace = root <> "/frozen"
   let victim_dir = root <> "/sibling-live-tree"
@@ -512,7 +606,7 @@ pub fn hidden_files_never_follow_the_agents_symlinks_test() {
   assert string.contains(side_info, "2 symlinks")
 }
 
-pub fn symlinked_logs_disclose_nothing_test() {
+fn symlinked_logs_disclose_nothing() {
   use jail, root <- with_jail("symlink-logs")
   let workspace = root <> "/frozen"
   let secret = root <> "/host-secret"
@@ -548,7 +642,7 @@ pub fn symlinked_logs_disclose_nothing_test() {
   assert simplifile.is_symlink(root <> "/out/verify/logs/verifier") == Ok(False)
 }
 
-pub fn fifos_are_refused_not_read_test() {
+fn fifos_are_refused_not_read() {
   use jail, root <- with_jail("fifo")
   let workspace = root <> "/frozen"
   write(workspace <> "/README.md", "agent's tree\n")
@@ -583,7 +677,7 @@ pub fn fifos_are_refused_not_read_test() {
   assert string.contains(side_info, "1 special files")
 }
 
-pub fn dotdot_hidden_path_is_refused_test() {
+fn dotdot_hidden_path_is_refused() {
   use jail, root <- with_jail("dotdot")
   let workspace = root <> "/frozen"
   write(workspace <> "/README.md", "agent's tree\n")
@@ -609,7 +703,7 @@ pub fn dotdot_hidden_path_is_refused_test() {
   assert simplifile.is_file(root <> "/escape.txt") == Ok(False)
 }
 
-pub fn a_pass_needs_exit_ids_and_reward_map_test() {
+fn a_pass_needs_exit_ids_and_reward_map() {
   use jail, root <- with_jail("pass-rule")
   let workspace = root <> "/frozen"
   write(workspace <> "/README.md", "agent's tree\n")
@@ -662,7 +756,7 @@ pub fn a_pass_needs_exit_ids_and_reward_map_test() {
   assert string.contains(side_info, "reward.json fails all_rewards_one")
 }
 
-pub fn oversize_files_are_dropped_within_the_caps_test() {
+fn oversize_files_are_dropped_within_the_caps() {
   use jail, root <- with_jail("oversize")
   let workspace = root <> "/frozen"
   let bytes = fn(n) { string.repeat("x", n) }
@@ -698,7 +792,7 @@ pub fn oversize_files_are_dropped_within_the_caps_test() {
   assert simplifile.is_file(workspace <> "/big.txt") == Ok(True)
 }
 
-pub fn a_timeout_over_the_cap_is_a_zero_grade_not_infra_test() {
+fn a_timeout_over_the_cap_is_a_zero_grade_not_infra() {
   use jail, root <- with_jail("over-cap")
   let workspace = root <> "/frozen"
   write(workspace <> "/README.md", "agent's tree\n")
@@ -760,6 +854,37 @@ pub fn foreign_skips_tolerate_only_cgroup_test() {
 }
 
 // --- fixtures ---------------------------------------------------------------
+
+/// Checks that production enforcement refuses a Darwin verifier jail.
+///
+/// ## Examples
+///
+/// The platform generators retain this check in focused Darwin module runs.
+pub fn darwin_refuses_unenforceable_verifier() {
+  let root =
+    home()
+    <> "/evalwt/darwin-refusal-"
+    <> int.to_string(ffi_os.system_time_ms())
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+    as "the refusal fixture owns its root"
+  let opened = verify.open_jail(settings(root), root)
+  case opened {
+    Error(reason) -> {
+      let assert Ok(Nil) = simplifile.delete(root)
+        as "the refused jail leaves a removable fixture"
+      assert string.contains(reason, "skip:darwin-process-lifecycle")
+        as "production refuses the missing process-lifecycle guarantee"
+    }
+    Ok(jail) -> {
+      let retired = verify.close_jail(jail)
+      let removed = simplifile.delete(root)
+      assert retired == Ok(Nil)
+        as "an unexpected jail is retired before failure"
+      assert removed == Ok(Nil) as "an unexpected jail's fixture is removed"
+      panic as "Darwin unexpectedly admitted the production verifier jail"
+    }
+  }
+}
 
 /// Opens a jail under a fresh root, runs the test, closes the jail and
 /// removes the root. See the module doc for the demand ladder.

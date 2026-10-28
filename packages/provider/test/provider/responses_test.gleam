@@ -544,6 +544,125 @@ pub fn responses_tool_argument_witness_mismatch_test() {
   })
 }
 
+// The argument snapshot can be the first payload, or contain a final suffix.
+// Both dialects must emit each byte once and still require item/terminal proof.
+pub fn responses_arguments_done_completes_streamed_prefix_test() {
+  let arguments = "{\"text\":\"e\u{301}🧵\"}"
+  list.each(
+    [machine(), responses.subscription_response_machine(resolved(), 123)],
+    fn(adapter) {
+      list.each(
+        [
+          #(None, [arguments]),
+          #(Some(""), ["", arguments]),
+          #(Some("{\"text\":\"e"), ["{\"text\":\"e", "\u{301}🧵\"}"]),
+          #(Some(arguments), [arguments]),
+        ],
+        fn(example) {
+          let #(prefix, payloads) = example
+          let transcript = argument_snapshot_events(prefix, arguments)
+          let expected =
+            list.map(payloads, fn(text) {
+              stream.Delta(stream.ToolCallDelta(0, "call_fixture", "read", text))
+            })
+          let body = string.concat(transcript)
+          let events = fixture.drive_ok(adapter, body)
+          assert list.take(events, list.length(expected)) == expected
+          assert list.length(events) == list.length(expected) + 1
+          let assistant = settled(events)
+          let assert message.AssistantMessage(
+            content: [message.AssistantToolCall(call)],
+            stop_reason: message.ToolUse,
+            ..,
+          ) = assistant
+            as "The final snapshot settles one complete call."
+          assert call.arguments == wire.tool_arguments(arguments)
+          assert call.namespace == Some("loom")
+
+          // SSE chunk boundaries, including UTF-8 bytes, do not change completion.
+          assert fixture.drive(
+              adapter,
+              200,
+              [],
+              fixture.chunked(bit_array.from_string(body), 1),
+            )
+            == events
+          let assert Ok(restored) =
+            codec.decode_message(codec.encode_message(assistant))
+            as "Snapshot arguments survive durable encoding."
+          assert restored == assistant
+        },
+      )
+    },
+  )
+}
+
+pub fn responses_arguments_done_rejects_conflicts_and_missing_closures_test() {
+  list.each(
+    [machine(), responses.subscription_response_machine(resolved(), 123)],
+    fn(adapter) {
+      list.each(["{\"x\":2}", "{\"x\"", "different"], fn(snapshot) {
+        let report =
+          failure_report(fixture.drive_ok(
+            adapter,
+            string.concat(argument_snapshot_events(Some("{\"x\":1}"), snapshot)),
+          ))
+        assert string.contains(report.context, "reason=arguments_done_witness;")
+      })
+      let transcript = argument_snapshot_events(None, "{}")
+      let partial = list.take(transcript, 4)
+      let assert Ok(stream.Failed(stream.StreamDisconnected(_), _)) =
+        list.last(fixture.drive_ok(adapter, string.concat(partial)))
+        as "Arguments alone cannot settle a response."
+      malformed(fixture.drive_ok(
+        adapter,
+        string.concat(list.append(partial, [at(transcript, 5)])),
+      ))
+      malformed(fixture.drive_ok(
+        adapter,
+        string.concat(list.append(
+          list.take(transcript, 3),
+          list.drop(transcript, 4),
+        )),
+      ))
+    },
+  )
+}
+
+fn argument_snapshot_events(
+  prefix: option.Option(String),
+  arguments: String,
+) -> List(String) {
+  let events =
+    namespaced_call_events_with_arguments(json.String("loom"), arguments)
+  let deltas = case prefix {
+    None -> []
+    Some(previous) -> [
+      event("response.function_call_arguments.delta", [
+        #("output_index", json.Int(0)),
+        #("item_id", json.String("fc_fixture")),
+        #("delta", json.String(previous)),
+      ]),
+    ]
+  }
+  list.flatten([
+    [
+      created(),
+      event("response.in_progress", [#("response", response("in_progress", []))]),
+      at(events, 1),
+    ],
+    deltas,
+    list.drop(events, 3),
+  ])
+  |> list.index_map(fn(text, index) {
+    string.replace(
+      text,
+      "data: {",
+      "data: {\"sequence_number\":" <> int.to_string(index) <> ",",
+    )
+  })
+}
+
 pub fn responses_terminal_status_and_refusal_test() {
   let assert message.AssistantMessage(
     stop_reason: message.Errored,
@@ -1159,8 +1278,15 @@ pub fn responses_reasoning_cipher_is_stored_once_and_replays_losslessly_test() {
 }
 
 fn namespaced_call_events(namespace: JsonValue) -> List(String) {
-  let item = put(call_item("{}"), "namespace", namespace)
-  let events = call_events("{}")
+  namespaced_call_events_with_arguments(namespace, "{}")
+}
+
+fn namespaced_call_events_with_arguments(
+  namespace: JsonValue,
+  arguments: String,
+) -> List(String) {
+  let item = put(call_item(arguments), "namespace", namespace)
+  let events = call_events(arguments)
   list.index_map(events, fn(original, index) {
     case index {
       1 ->
@@ -1549,6 +1675,227 @@ pub fn responses_subscription_usage_has_plan_billing_identity_test() {
     == usage_evidence.reported(usage_evidence.ChatGptPlan)
 }
 
+pub fn responses_returned_model_and_access_survive_codec_without_replay_test() {
+  let alias = model.ResolvedModel(..resolved(), model_id: "fixture-latest")
+  list.each(
+    [
+      responses.response_machine(alias, 123),
+      responses.subscription_response_machine(alias, 123),
+    ],
+    fn(adapter) {
+      list.each(
+        ["standard", "daybreak_blue", "daybreak_red", "future_program"],
+        fn(program) {
+          let access =
+            json.Object([
+              #("cyber", json.String(program)),
+              #("ignored", json.String("private-canary")),
+            ])
+          let events =
+            fixture.drive_ok(
+              adapter,
+              string.concat([
+                created(),
+                event("response.completed", [
+                  #(
+                    "response",
+                    put(response("completed", []), "access_programs", access),
+                  ),
+                ]),
+              ]),
+            )
+          let assistant = settled(events)
+          let assert message.AssistantMessage(
+            model: requested,
+            response_model: Some(served),
+            diagnostics: Some(diagnostics),
+            ..,
+          ) = assistant
+            as "Requested aliases and returned identities remain distinct."
+          assert requested == "fixture-latest"
+          assert served == "fixture-model"
+          let assert Ok(metadata) =
+            wire.field(diagnostics, "loom.openai-responses.v1")
+            as "Responses diagnostics retain the terminal access observation."
+          assert wire.field(metadata, "access_programs")
+            == Ok(json.Object([#("cyber", json.String(program))]))
+          assert !string.contains(json.to_string(diagnostics), "private-canary")
+          let assert Ok(restored) =
+            codec.decode_message(codec.encode_message(assistant))
+            as "The caller can persist returned access and model observations."
+          assert restored == assistant
+
+          // Remote access observations never become a subsequent request override.
+          let request =
+            model.ProviderRequest(..fixture.request_for(alias), messages: [
+              restored,
+            ])
+          let assert Ok(body) =
+            json.parse(responses_request.body(alias, request))
+            as "The next request remains valid JSON."
+          assert wire.field(body, "access_programs") == Error(Nil)
+          assert !string.contains(json.to_string(body), "access_programs")
+        },
+      )
+    },
+  )
+}
+
+pub fn responses_returned_access_is_bounded_optional_observation_test() {
+  list.each(
+    [
+      json.Null,
+      json.String("standard"),
+      json.Object([#("cyber", json.Int(1))]),
+      json.Object([#("cyber", json.String(""))]),
+      json.Object([#("cyber", json.String("line\nbreak"))]),
+      json.Object([#("cyber", json.String(string.repeat("x", 65)))]),
+    ],
+    fn(access) {
+      let assistant =
+        settled(
+          run([
+            created(),
+            event("response.completed", [
+              #(
+                "response",
+                put(response("completed", []), "access_programs", access),
+              ),
+            ]),
+          ]),
+        )
+      let assert message.AssistantMessage(diagnostics: Some(diagnostics), ..) =
+        assistant
+        as "Invalid optional metadata does not corrupt content."
+      let assert Ok(metadata) =
+        wire.field(diagnostics, "loom.openai-responses.v1")
+        as "Replay metadata is still present."
+      assert wire.field(metadata, "access_programs") == Error(Nil)
+    },
+  )
+}
+
+pub fn responses_server_model_headers_resolve_aliases_test() {
+  let alias = model.ResolvedModel(..resolved(), model_id: "fixture-latest")
+  let nested = json.Object([#("OpenAI-Model", json.String("nested-model"))])
+  let top =
+    json.Object([#("openai-model", json.Array([json.String("metadata-model")]))])
+  let initial =
+    event("response.created", [
+      #("headers", top),
+      #("response", put(response("in_progress", []), "headers", nested)),
+    ])
+  let metadata =
+    event("response.metadata", [
+      #("response_id", json.String("resp_fixture")),
+      #("headers", top),
+    ])
+  list.each(
+    [
+      responses.response_machine(alias, 123),
+      responses.subscription_response_machine(alias, 123),
+    ],
+    fn(adapter) {
+      list.each(
+        [
+          #(
+            [#("OpenAI-Model", "http-model")],
+            [created(), completed([])],
+            "http-model",
+          ),
+          #(
+            [#("openai-model", "http-model")],
+            [initial, completed([])],
+            "nested-model",
+          ),
+          #([], [created(), metadata, completed([])], "metadata-model"),
+          #(
+            [],
+            [
+              created(),
+              event("response.completed", [
+                #("response", put(response("completed", []), "headers", nested)),
+              ]),
+            ],
+            "nested-model",
+          ),
+        ],
+        fn(example) {
+          let #(headers, transcript, expected) = example
+          let body = string.concat(transcript)
+          let events =
+            fixture.drive(adapter, 200, headers, [bit_array.from_string(body)])
+          let assistant = settled(events)
+          let assert message.AssistantMessage(
+            model: "fixture-latest",
+            response_model: Some(served),
+            ..,
+          ) = assistant
+            as "Server headers resolve the served model without rewriting the requested alias."
+          assert served == expected
+          assert fixture.drive(
+              adapter,
+              200,
+              headers,
+              fixture.chunked(bit_array.from_string(body), 1),
+            )
+            == events
+          let assert Ok(restored) =
+            codec.decode_message(codec.encode_message(assistant))
+            as "The served model survives persistence."
+          assert restored == assistant
+        },
+      )
+    },
+  )
+}
+
+pub fn responses_server_model_headers_are_optional_and_cannot_replace_identity_test() {
+  list.each(
+    [
+      json.Null,
+      json.Int(5),
+      json.String(""),
+      json.String(string.repeat("x", 257)),
+      json.Array([]),
+    ],
+    fn(value) {
+      let headers = json.Object([#("openai-model", value)])
+      let assistant =
+        settled(
+          run([
+            created(),
+            event("response.completed", [
+              #("response", put(response("completed", []), "headers", headers)),
+            ]),
+          ]),
+        )
+      let assert message.AssistantMessage(
+        response_model: Some("fixture-model"),
+        ..,
+      ) = assistant
+        as "Invalid optional model headers preserve the envelope model."
+    },
+  )
+  let report =
+    failure_report(
+      run([
+        created(),
+        event("response.completed", [
+          #(
+            "response",
+            put(
+              put(response("completed", []), "model", json.String("different")),
+              "headers",
+              json.Object([#("openai-model", json.String("served-model"))]),
+            ),
+          ),
+        ]),
+      ]),
+    )
+  assert string.contains(report.context, "reason=terminal_identity;")
+}
+
 pub fn responses_cyber_access_is_explicit_and_defaults_are_omitted_test() {
   let request = fixture.request_for(resolved())
   list.each(
@@ -1561,18 +1908,28 @@ pub fn responses_cyber_access_is_explicit_and_defaults_are_omitted_test() {
       let #(access, value) = pair
       list.each(
         [
-          responses_request.body_with_access(resolved(), request, Some(access)),
-          responses_request.subscription_body_with_access(
-            resolved(),
-            request,
-            Some(access),
+          #(
+            responses_request.body_with_access(
+              resolved(),
+              request,
+              Some(access),
+            ),
+            Ok(json.Object([#("cyber", json.String(value))])),
+          ),
+          #(
+            responses_request.subscription_body_with_access(
+              resolved(),
+              request,
+              Some(access),
+            ),
+            Error(Nil),
           ),
         ],
-        fn(text) {
+        fn(pair) {
+          let #(text, expected_access) = pair
           let assert Ok(body) = json.parse(text)
             as "Both dialect bodies must be valid JSON."
-          assert wire.field(body, "access_programs")
-            == Ok(json.Object([#("cyber", json.String(value))]))
+          assert wire.field(body, "access_programs") == expected_access
           assert wire.field(body, "model")
             == Ok(json.String(resolved().model_id))
         },
@@ -1843,27 +2200,33 @@ pub fn responses_service_tier_is_explicit_and_omission_is_preserved_test() {
       let #(tier, value) = pair
       list.each(
         [
-          responses.build_request_with_options(
-            "https://example.test/v1",
-            "key",
-            resolved(),
-            request,
-            Some(model.DaybreakBlue),
-            Some(tier),
+          #(
+            responses.build_request_with_options(
+              "https://example.test/v1",
+              "key",
+              resolved(),
+              request,
+              Some(model.DaybreakBlue),
+              Some(tier),
+            ),
+            Ok(json.Object([#("cyber", json.String("daybreak_blue"))])),
           ),
-          responses.build_subscription_request_with_options(
-            resolved(),
-            request,
-            Some(model.DaybreakBlue),
-            Some(tier),
+          #(
+            responses.build_subscription_request_with_options(
+              resolved(),
+              request,
+              Some(model.DaybreakBlue),
+              Some(tier),
+            ),
+            Error(Nil),
           ),
         ],
-        fn(sent) {
+        fn(pair) {
+          let #(sent, expected_access) = pair
           let assert Ok(body) = json.parse(sent.body)
             as "Both request builders must encode valid JSON."
           assert wire.field(body, "service_tier") == Ok(json.String(value))
-          assert wire.field(body, "access_programs")
-            == Ok(json.Object([#("cyber", json.String("daybreak_blue"))]))
+          assert wire.field(body, "access_programs") == expected_access
         },
       )
     },

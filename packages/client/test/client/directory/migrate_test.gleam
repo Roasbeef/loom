@@ -283,3 +283,115 @@ pub fn a_local_session_is_recorded_once_the_store_has_a_majority_test() {
     as "a session created later is recorded on request"
   store.stop()
 }
+
+/// A coverage pass cannot finish while a local creation is still assembling.
+///
+/// ## Examples
+///
+/// The next movers tick publishes the confirmed hint without another request.
+pub fn a_cover_during_local_assembly_is_retried_after_confirmation_test() {
+  let directory = absolute(remote_fixtures.scratch("migrate-local-building"))
+  let assert Ok(Nil) = store.start_system(directory <> "/directory")
+    as "the Ra system starts"
+  let assert Ok(Nil) = store.boot(10_000) as "a one-member store starts"
+  let assert Ok(catalog) = catalogue.open(":memory:") as "catalogue opens"
+  let building = process.new_subject()
+  let assert Ok(registry) =
+    manager.start(
+      catalog,
+      manager.Assembly(
+        domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
+        build: fn(registration, _, _, _, _) {
+          let release = process.new_subject()
+          process.send(building, release)
+          process.receive_forever(release)
+          Ok(registration.id)
+        },
+        drain: fn(_, _) { Nil },
+        fatal: fn(_) { [] },
+      ),
+      epoch: "migrate-test",
+      limit: 2,
+    )
+    as "the registry starts with a suspended session builder"
+
+  // Creation returns its durable reservation before the builder confirms it.
+  let assert Ok(manager.View(created, manager.Opening(operation))) =
+    manager.create_scoped(
+      registry,
+      manager.Creation(
+        "cover-building",
+        directory,
+        "local",
+        "",
+        None,
+        None,
+        "",
+        "",
+      ),
+      directory:,
+      generator: ids.generator(clock.fixed(1_700_000_000_000), 12),
+      scope: domain.SessionOnly,
+      configuration: "",
+    )
+    as "the local creation is admitted"
+  let assert Ok(release) = process.receive(building, 1000)
+    as "the real builder is held before confirmation"
+  let assert Ok(catalogue.Page(records: [reserved], ..)) =
+    catalogue.page(catalog, after: "")
+    as "the coverage census includes the pending registration"
+  assert reserved.state == catalogue.Reserved
+    as "a held builder has no confirmed session to advertise"
+
+  // The first pass attempts the creation's cover request while assembly is held.
+  let passes = process.new_subject()
+  let own = ownership.over_store(bravo)
+  let assert Ok(control) =
+    session_movers.start_with(
+      environment_for(registry),
+      50,
+      fn(_, _) { Error(Nil) },
+      session_movers.give_up_after_ms,
+      session_movers.Upkeep(..session_movers.no_upkeep(), cover: fn() {
+        let outcome = migrate.cover_local(registry, own, log.discard())
+        process.send(passes, outcome)
+        result.replace(outcome, Nil)
+      }),
+    )
+    as "the real movers own coverage retry"
+  control.cover()
+  let assert Ok(first_pass) = process.receive(passes, 1000)
+    as "a coverage pass runs before assembly is released"
+  let before = store.read(created.id)
+  process.send(release, Nil)
+
+  // Confirmation supplies no second cover request. Only the unpaid pass can
+  // make the newly confirmed session discoverable on a later movers tick.
+  let published =
+    poll.until(within: 2000, every: 20, attempt: fn() {
+      case store.read(created.id) {
+        Ok(Some(Record(owner: found, state: record.Local))) if found == bravo ->
+          poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+  let confirmed = manager.operation(registry, created.id, operation)
+  let watch = process.monitor(manager.pid(registry))
+  manager.shutdown(registry)
+  let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
+    process.new_selector()
+    |> process.select_specific_monitor(watch, fn(down) { down })
+    |> process.selector_receive(2000)
+    as "the registry retires before its catalogue closes"
+  assert catalogue.close(catalog) == Ok(Nil)
+  store.stop()
+
+  assert before == Ok(None) as "an unfinished session is never published"
+  assert published == poll.Answered(Nil)
+    as "the next sweep publishes the hint without another cover request"
+  assert result.is_error(first_pass)
+    as "an active local creation leaves the coverage pass unpaid"
+  assert result.map(confirmed, fn(view) { view.status })
+    == Ok(manager.Resident(operation))
+    as "the released assembly confirms its original operation"
+}
