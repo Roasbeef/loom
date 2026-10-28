@@ -1,8 +1,13 @@
+//// Real verifier proofs run on Linux; Darwin runs the production refusal.
+//// The generator prints assigned coverage and claims no Linux proof on Darwin.
+//// Pure and scripted checks retain their coverage on every platform.
+////
 //// The prover's proofs: the admission rule, the package a verifier names,
 //// the record line, and the real thing — `eccdddad0`'s task proved from
 //// this repository's history in a real jail.
 
 import client/evolution/rollout.{Grade, ProgramRun}
+import client/internal/ffi_os
 import client/secrets
 import core/json
 import eval/mine
@@ -145,7 +150,39 @@ const probe_commit = "eccdddad0c6f92b4bd8812246d36753477eae4b1"
 const probe_task =
   "95b6559abe8c308f12cf612a5c8497a8beb06739721287952b055f096a14897f.json"
 
-pub fn eccdddad0_proves_gold_one_null_zero_test() {
+/// Selects this module's Linux proofs or Darwin's production refusal.
+///
+/// ## Examples
+///
+/// `scripts/test.sh eval --match eval@prove_test:prove_verifier_proofs_test_`.
+pub fn prove_verifier_proofs_test_() -> List(#(String, fn() -> Nil)) {
+  let #(platform, _) = ffi_os.platform()
+  case platform {
+    "linux" -> {
+      io.println_error("NOTE prove coverage: linux real proofs assigned=1")
+      [
+        #(
+          "eccdddad0_proves_gold_one_null_zero_test",
+          eccdddad0_proves_gold_one_null_zero,
+        ),
+      ]
+    }
+    "darwin" -> {
+      io.println_error(
+        "NOTE prove coverage: darwin real proofs assigned=0; production refusal assigned=1; Linux proof coverage is not claimed",
+      )
+      [
+        #(
+          "darwin_refuses_unenforceable_verifier",
+          verify_test.darwin_refuses_unenforceable_verifier,
+        ),
+      ]
+    }
+    other -> panic as { "unsupported prove proof platform: " <> other }
+  }
+}
+
+fn eccdddad0_proves_gold_one_null_zero() {
   let repo = absolute_repo("../..")
   let file = "test/fixtures/" <> probe_task
   let present =
