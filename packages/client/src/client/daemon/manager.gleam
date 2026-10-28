@@ -2619,6 +2619,9 @@ pub fn remote_registrations(
 
 /// The identities of every confirmed local session, active or archived: one
 /// with no executor and no pool, whose checkout is a directory on this machine.
+/// An actively assembling local creation returns `Unavailable`: a coverage
+/// caller must retry after confirmation rather than treat an incomplete census
+/// as the completion of its creation request.
 ///
 /// ## Examples
 ///
@@ -3475,7 +3478,7 @@ fn handle(
       sm.keep(book)
     }
     LocalSessions(reply) -> {
-      process.send(reply, local_sessions_in(book.catalogue))
+      process.send(reply, local_sessions_in(book))
       sm.keep(book)
     }
     DeletingSessions(reply) -> {
@@ -4462,22 +4465,42 @@ fn remote_registrations_in(
   |> result.map_error(Catalogue)
 }
 
-// A reserved registration is a creation that has not finished, and has no
-// session yet to find.
+// A reserved registration has no session yet to find. While its builder still
+// owns an admission, omitting it would let the directory cover request finish
+// before confirmation, with no later request to publish the new local hint.
 /// Collects local sessions represented by the supplied session state.
-fn local_sessions_in(
-  store: catalogue.Catalogue,
-) -> Result(List(String), Error) {
-  use active <- result.try(all_pages(store, catalogue.page, "", []))
-  use archived <- result.try(all_pages(store, catalogue.archived_page, "", []))
-  list.append(active, archived)
-  |> list.filter(fn(record) {
-    record.executor == ""
-    && record.pool == ""
-    && record.state != catalogue.Reserved
-  })
-  |> list.map(fn(record) { record.id })
-  |> Ok
+fn local_sessions_in(book: Book(instance)) -> Result(List(String), Error) {
+  use active <- result.try(all_pages(book.catalogue, catalogue.page, "", []))
+  use archived <- result.try(
+    all_pages(book.catalogue, catalogue.archived_page, "", []),
+  )
+  let local =
+    list.append(active, archived)
+    |> list.filter(fn(record) { record.executor == "" && record.pool == "" })
+  let slots = book.slots
+  let assembling =
+    list.any(local, fn(record) {
+      record.state == catalogue.Reserved
+      && case dict.get(slots, record.id) {
+        Ok(Slot(phase: WaitingForDomain, ..)) | Ok(Slot(phase: Building, ..)) ->
+          True
+        Ok(Slot(phase: Closing, ..))
+        | Ok(Slot(phase: Blocked(_), ..))
+        | Ok(Slot(phase: Running(_), ..))
+        | Error(Nil) -> False
+      }
+    })
+
+  // Failed and inactive reservations have no pending confirmation, so they do
+  // not prevent confirmed sessions from receiving their lookup hints.
+  case assembling {
+    True -> Error(Unavailable)
+    False ->
+      local
+      |> list.filter(fn(record) { record.state != catalogue.Reserved })
+      |> list.map(fn(record) { record.id })
+      |> Ok
+  }
 }
 
 /// Reads all bounded pages needed to complete the session listing.
