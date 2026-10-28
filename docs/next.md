@@ -16,9 +16,13 @@ neither can change replay options or the requested identity.
 
 The final provider gate passed all 343 tests, the Responses suite passed 62,
 and the catalogue suite passed 137. Eight semantic mutants were killed, and
-independent review found no actionable issues. The broader local affected run
-hit the unchanged eval mining test's `/proc/self/environ` assumption on macOS.
-No assertion was weakened and no test was removed. Before merge, require the
+independent review found no actionable issues. The macOS follow-up replaces
+the historical mining fixture's `/proc/self/environ` lookup with the existing
+portable home-directory boundary. With owner approval, all 22 real eval
+verifier proofs remain on Linux; macOS runs explicit production-refusal
+checks because its lifecycle enforcement cannot admit a verifier jail.
+Pure checks still run on both hosts. No assertion, deadline or production
+enforcement rule was weakened. Before merge, require the
 exact final head's hosted checks and configured Linux signoff. Live OAuth
 endpoint behavior remains unverified by this patch's deterministic fixtures.
 

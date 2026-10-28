@@ -448,6 +448,18 @@ directory of tasks into `<out>/prove.jsonl`.
 
 ### Runner addenda
 
+The real verifier proofs have an explicit platform assignment. Named EUnit
+generators in `verify_test`, `prove_test` and `trial_test` select nineteen,
+one and two original proof bodies on Linux, with their original deadlines.
+Darwin instead runs the production jail-opening refusal in each group and
+requires `skip:darwin-process-lifecycle`; no Linux verifier proof is claimed
+there. Each group prints a coverage note, including in focused runs. Pure
+checks and the historical mining regression run on both hosts. The miner's
+fixture reads HOME through `workspace_policy.home_directory()` and keeps its
+worktree outside `/tmp`. Select the module or its generator for focused
+proof runs; the original case names remain in Linux EUnit output. Production
+enforcement and the strict skip census are unchanged.
+
 - `materialise` runs a git task's `prepare` argvs in the package the verifier
   names (`prove.package_of`, so `packages/<pkg>`) when the tree root is not a
   Gleam project, then a warm `gleam build` there when any step used `gleam`;

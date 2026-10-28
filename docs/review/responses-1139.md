@@ -81,10 +81,33 @@ strict; this issue supplies no evidence to relax them.
 
 The final standalone provider format/build/test gate passed all 343 tests.
 House-rule lint and the documentation gate passed. The broader local affected
-run hit `eval@mine_test.eccdddad0_reproduces_probe_test`: its unchanged
-`reproduce` reads `/proc/self/environ`, which is absent on macOS. The local
-checkout contains the historical probe commit, so the test enters that Linux
-path. No test assertion or skip condition was changed to bypass this failure.
+run exposed a separate macOS fixture defect: the historical miner read
+`/proc/self/environ`. The fixture now uses the existing portable home-directory
+lookup. It fails before the change and executes its unchanged before/after
+and provenance assertions after it. Its worktree remains outside `/tmp`.
+
+The original hosted macOS client shard reported a UI response-head deadline
+and an evolution acceptance deadline. Each test passed five isolated local
+runs and an independent rerun. The evolution fixture uses Anthropic rather
+than Responses. Neither deadline nor any assertion was changed.
+
+The owner approved assigning the real eval verifier proofs to Linux and
+checking production refusal on macOS. Three named EUnit generators retain
+all 22 original proof bodies: nineteen verifier cases, one gold/null admission
+proof and two mined trial cases. Their original deadlines remain in place.
+On Darwin, each group instead runs the real production jail-opening path
+and requires refusal of the missing process-lifecycle guarantee. Coverage
+notes state which proofs were selected; they do not claim Linux proofs ran
+on macOS. Pure checks and the portable historical mining regression still
+run on both platforms. Production enforcement and skip declarations are
+unchanged. Focused real-proof runs now select the module or its generator;
+the original case names remain in Linux EUnit output.
+
+The resulting macOS eval gate passed all 234 tests with zero skips in both
+the implementation run and an independent rerun. Each focused module and
+generator ran its refusal check. A same-reader review of the platform split
+found no actionable findings; Linux execution of all 22 proofs remains part
+of the final hosted and fresh-container gates.
 
 The exact final head's hosted checks and configured Linux signoff remain merge
 gates. The subscription endpoint was not called with a live OAuth grant; no
