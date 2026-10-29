@@ -20,10 +20,10 @@ import gleam/int
 import gleam/io
 import gleam/option.{None}
 import gleam/string
-import host/bootstrap as native
 import simplifile
 import support/internal/ffi_daemon_socket as tcp
 import support/internal/ffi_ws as socket
+import support/native_fixture
 import support/provider_http
 import support/shipped_server
 import tui/bootstrap
@@ -32,18 +32,7 @@ import tui/daemon/protocol
 import tui/placement
 import tui/run
 
-fn workspace(label: String, provider_url: String) -> #(String, String) {
-  let directory =
-    "build/loom-run-"
-    <> label
-    <> "-"
-    <> int.to_string(native.current_process_id())
-    <> "-"
-    <> int.to_string(native.system_time_ms())
-  let assert Ok(Nil) = native.ensure_private_directory(directory)
-    as "fixture state lives below a private directory"
-  let assert Ok(directory) = native.canonical_directory(directory)
-    as "the daemon receives absolute fixture paths"
+fn workspace(directory: String, provider_url: String) -> #(String, String) {
   let assert Ok(Nil) =
     simplifile.create_directory_all(directory <> "/workspace")
     as "the session workspace exists"
@@ -88,11 +77,12 @@ pub fn a_scripted_answer_completes_with_a_labelled_jail_test_() -> EunitTest {
       Error(Nil) ->
         io.println_error("SKIP loom run: LOOM_BOOTSTRAP_E2E_SERVER is unset")
       Ok(server) -> {
+        use directory <- native_fixture.with_directory("loom-run-done", 120_000)
         let #(conducted, report) =
           provider_http.with_server(
             [provider_http.Exchange("hello", "hi there")],
             fn(url) {
-              let #(directory, config) = workspace("done", url)
+              let #(directory, config) = workspace(directory, url)
               run.conduct(request(server, directory, config, 60_000, "hello"))
             },
           )
@@ -120,12 +110,16 @@ pub fn a_stalled_provider_times_out_and_the_session_is_stopped_test_() -> EunitT
       Error(Nil) ->
         io.println_error("SKIP loom run: LOOM_BOOTSTRAP_E2E_SERVER is unset")
       Ok(server) -> {
+        use directory <- native_fixture.with_directory(
+          "loom-run-stall",
+          120_000,
+        )
         let port = process.new_subject()
         let peer = process.spawn_unlinked(fn() { stall(port) })
         let assert Ok(port) = process.receive(port, 5000)
           as "the stalling provider published its port"
         let url = "http://127.0.0.1:" <> int.to_string(port)
-        let #(directory, config) = workspace("stall", url)
+        let #(directory, config) = workspace(directory, url)
         let asked = request(server, directory, config, 2000, "hello")
         let conducted = run.conduct(asked)
         process.kill(peer)

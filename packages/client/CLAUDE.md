@@ -5798,6 +5798,18 @@ environment is left alone: `git_identity_test` and other suites in the
 same VM read it, and `os:putenv` would change it for all of them. A new
 shipped fixture takes its server from `shipped_server.from_environment`.
 
+The headless `loom_run_test` and `loom_acp_test` fixtures also use
+`test/support/native_fixture.with_directory`. It allocates their private root
+and `state` endpoint before the managed body starts. The body keeps its own
+receive subjects and all session assertions. After success, assertion failure
+or its managed deadline, the fixture calls `remote_daemons.retire` outside that
+deadline and witnesses the recorded PID/birth identity's departure before
+reporting the body outcome. Session hangup alone intentionally leaves the
+per-user daemon running, so it cannot serve as native fixture teardown. The
+existing EUnit deadlines leave room for this retirement. A killed test VM
+cannot run this in-VM teardown. Native-process regressions exercise all three
+body outcomes and clean up their own children even under the negative control.
+
 ## Shipped recovery observations
 
 The reservation and identity recovery fixtures keep lifecycle mutations on
