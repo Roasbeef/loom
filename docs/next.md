@@ -1,5 +1,24 @@
 # Current handoff
 
+## Running-version profile and native fixture ownership
+
+PR #1138 was rebased on `fcbc7d9b` and merged at `da27f068` under the
+owner's explicit force-merge authorization. Its rebased checks were pending;
+the prior head's green checks do not cover that rebase. The installed daemon
+was preserved on `fcbc7d9b` for the requested repeat profile.
+
+The [repeat profile](review/running-memory-2026-10-28.md) distinguishes process
+allocation, OS footprint and sampled allocation. It establishes no further
+production retention bug beyond #1138. It does identify eighteen old native
+test daemons, totaling about 1.45 GiB RSS. The follow-up gives the headless
+and ACP fixtures explicit native ownership: a bounded managed body followed
+by birth-fenced retirement outside its deadline. Existing saved-session and
+shared-resident assertions remain inside the body. Existing orphaned daemons
+were left alone; only fresh reproduction children were retired.
+
+Validation for this follow-up is still in progress. Do not infer installed
+RSS savings or hosted readiness from the profiling baseline.
+
 ## Responses failure diagnostics and retry advice
 
 Follow-up to merged PR #1140, integrated onto main `da27f068d` (October 28, 2026).
