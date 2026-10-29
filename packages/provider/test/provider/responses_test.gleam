@@ -726,7 +726,7 @@ pub fn responses_incomplete_and_failure_mapping_test() {
       event("response.incomplete", [#("response", response("incomplete", []))]),
     ])
     as "unknown incomplete reasons fail"
-  let assert [stream.Failed(stream.StreamError(_, _), accounting: _)] =
+  let assert [stream.Failed(stream.StreamError(..), accounting: _)] =
     run([created(), event("response.failed", [])])
     as "provider failure is in-band"
 }

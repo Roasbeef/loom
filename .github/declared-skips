@@ -43,9 +43,3 @@ declared|darwin|no /proc on this host, so a stopped server's death cannot be obs
 # bucket installs the component, rust-src and std's dependencies
 # (.github/scripts/install_rust_analyzer.sh) and runs it for real.
 declared|darwin|SKIP lsp manager rust-analyzer: rust-analyzer does not run|macOS runners carry no rust-analyzer component; the Linux client bucket installs it and runs the fixture for real.
-
-# Owner-approved exception for existing eval verifier refusals.
-# Darwin cannot supply the verifier's required address-space and descendant
-# lifecycle enforcement (ADR-006). Keep production refusal and the Linux eval
-# and signoff runs; this is missing macOS coverage, not a verified pass.
-declared|darwin|the jail refused: this host cannot jail a verifier: the verifier ran without a required enforcement layer: skip:rlimit-address-space: invalid argument; mem_bytes was NOT applied; skip:darwin-process-lifecycle: macOS has no PID namespace, subreaper, or stable process handle; rapid reparenting can evade sampled cleanup and PID reuse remains racy while the Seatbelt profile persists|Darwin lacks the verifier's required address-space and process-lifecycle enforcement (ADR-006); all 22 matching tests execute under enforced Linux eval and signoff. This records existing macOS coverage gaps.

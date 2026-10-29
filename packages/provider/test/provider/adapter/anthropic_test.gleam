@@ -370,6 +370,7 @@ pub fn overloaded_stream_error_event_test() {
       stream.StreamError(
         api_error_type: "overloaded_error",
         message: "Overloaded",
+        retry_after_ms: None,
       ),
       accounting: _,
     ),

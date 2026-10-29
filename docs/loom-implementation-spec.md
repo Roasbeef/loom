@@ -268,6 +268,12 @@ part lacks its closing witness. The runtime carries its three-attempt ceiling
 in existing diagnostic fields, and the machine persists the narrower retry
 policy before another attempt. Other malformed streams remain terminal.
 
+[Protocol 104](../protocol-change/104-streamed-failure-retry-advice.md) extends
+`StreamError(api_error_type, message, retry_after_ms: Option(Int))` so HTTP
+and event retry advice reaches durable settlement. Unclassified Responses
+failures reuse the three-attempt ceiling; recognized permanent error labels
+take precedence over transient statuses and message heuristics.
+
 [Protocol 081](../protocol-change/081-request-usage-accounting.md) separates
 request accounting from final-response usage. Terminal reports retain every
 attempt's measured usage and uncertainty, priced under its actual target.

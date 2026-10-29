@@ -1353,7 +1353,7 @@ pub fn image_budget_protects_held_batch_and_recovers_next_run_test() {
   let assert Ok(#([], stream.Failed(error:, accounting: _))) =
     stream.await_terminal(handle, within: 2000)
     as "the held batch must fail locally instead of losing one current image"
-  let assert stream.StreamError(api_error_type: "image_limit", message:) =
+  let assert stream.StreamError(api_error_type: "image_limit", message:, ..) =
     stream.underlying_error(error)
     as "the refusal must come from the image budget"
   assert string.contains(message, "current turn contains 9 images")

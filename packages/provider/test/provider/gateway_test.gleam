@@ -1407,7 +1407,7 @@ pub fn oversized_active_image_turn_never_opens_transport_test() {
   let assert Ok(#([], stream.Failed(error:, accounting: _))) =
     stream.await_terminal(handle, within: 2000)
     as "the default eight-image limit must refuse nine active images locally"
-  let assert stream.StreamError(api_error_type: "image_limit", message:) =
+  let assert stream.StreamError(api_error_type: "image_limit", message:, ..) =
     stream.underlying_error(error)
     as "image limits are terminal local failures"
   assert string.contains(message, "current turn contains 9 images")
@@ -1511,6 +1511,40 @@ pub fn recoverable_corruption_does_not_walk_fallback_test() {
   let assert stream.RecoverableStreamCorruption(_) =
     stream.underlying_error(error)
   assert accounting.attempts(report) == 1
+  assert process.receive(requests, within: 0)
+    == Ok("https://primary.test/v1/responses")
+  assert process.receive(requests, within: 0) == Error(Nil)
+}
+
+pub fn unclassified_responses_failure_does_not_walk_fallback_test() {
+  let requests = process.new_subject()
+  let public =
+    fixture.routing_transport(fn(sent) {
+      process.send(requests, sent.url)
+      fixture.ok_response(string.replace(
+        measured_failure_transcript(),
+        each: "server_error",
+        with: "unclassified_backend_failure",
+      ))
+    })
+  let bridge =
+    gateway.CodexTransport(prepare_streaming: fn(profile, sent, events) {
+      process.send(requests, profile <> sent.url)
+      let http.Transport(prepare_streaming:) =
+        fixture.transport(fixture.ok_response(measured_success_transcript()))
+      prepare_streaming(sent, events)
+    })
+  let handle =
+    gateway.request(mixed_accounting_gateway(public, bridge), main_request())
+  let assert Ok(#([], stream.Failed(error, report))) =
+    stream.await_terminal(handle, within: 2000)
+    as "The machine, rather than a hidden fallback, owns bounded recovery."
+  let assert stream.StreamError("responses_error", description, _) =
+    stream.underlying_error(error)
+    as "The unclassified upstream failure survives gateway publication."
+  assert string.contains(description, "event=response.failed")
+  assert accounting.attempts(report) == 1
+  assert accounting.total(report).total_tokens == 17
   assert process.receive(requests, within: 0)
     == Ok("https://primary.test/v1/responses")
   assert process.receive(requests, within: 0) == Error(Nil)
@@ -1676,12 +1710,29 @@ pub fn cyber_access_fallback_uses_each_entry_and_denial_stops_test() {
       fixture.routing_transport(fn(sent) {
         process.send(observed, sent)
         case sent.url {
-          "https://blue.test/v1/responses" ->
+          "https://blue.test/v1/responses" -> {
+            // Each status represents the failure this branch is proving.
+            // An explicit permission denial remains permanent even on 5xx.
+            let error_type = case status {
+              403 -> "permission_error"
+              _ -> "server_error"
+            }
             fixture.error_response(
               status,
               [],
-              "{\"error\":{\"type\":\"permission_error\",\"code\":\"access_program_not_enabled\"}}",
+              json.to_string(
+                json.Object([
+                  #(
+                    "error",
+                    json.Object([
+                      #("type", json.String(error_type)),
+                      #("code", json.String("access_program_not_enabled")),
+                    ]),
+                  ),
+                ]),
+              ),
             )
+          }
           "https://plain.test/v1/responses" ->
             fixture.ok_response(responses_transcript())
           _other -> fixture.error_response(400, [], "{}")

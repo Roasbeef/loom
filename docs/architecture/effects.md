@@ -1318,6 +1318,16 @@ ceiling across later transport errors, orphans and serialize/reload. A stricter
 configured budget still wins. Only allowlisted structural part/status details
 enter the diagnostic; no text, arguments or ciphertext are recorded.
 
+[Protocol 104](../../protocol-change/104-streamed-failure-retry-advice.md)
+reuses that ceiling for unclassified Responses failures. The adapter normalizes
+nested and flat errors and keeps fixed descriptions, allowlisted error labels
+and checked stream context. Recognized permanent code/type evidence wins over
+transient statuses and throttle prose. `StreamError.retry_after_ms` carries the
+larger valid HTTP/event header delay through scrubbing and durable settlement;
+the machine takes the larger of that hint and local backoff. Named transient
+failures retain their configured retry policy. Strict witnesses, provisional
+partial output and confirmed transport drain remain authoritative.
+
 ### Secrets
 
 **Secrets live in exactly one place.** Provider configuration holds a
@@ -1441,6 +1451,7 @@ platform gaps.
 | `tools/job.gleam`, `cap/job.gleam` | The `job_*` tools a model calls, and the same four operations as typed Gleam for a vetted program. |
 | `provider/gateway.gleam`, `provider/secret.gleam` | The registry, role resolution, and the fallback walk; the secret-name lookup seam. |
 | `provider/stream.gleam` | Stream events, the pure server-sent-events parser, the transport pump. |
+| `provider/internal/error_code.gleam` | The permanent error vocabulary shared by Responses normalization and retry classification. |
 | `provider/adapter/anthropic.gleam`, `.../openai.gleam`, `.../gemini.gleam`, `.../responses.gleam` | Request construction, response accumulation, total stop-reason mapping, overflow. |
 | `client/wiring.gleam` | The production effect record: the seam between the pure planes and this one, built on `harness`. Its module doc is the list of mapping decisions. |
 | `harness.gleam`, `harness/provider.gleam`, `harness/routing.gleam`, `harness/admission.gleam`, `harness/tool_table.gleam` | The daemon-free provider half of `Effects`: the typed `Settings` and `harness.effects`, the provider surface, role and target routing, admission and the vision rule, and the registry-level tool surface. |

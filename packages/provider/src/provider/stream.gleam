@@ -195,7 +195,12 @@ pub type ProviderError {
   )
 
   /// The provider reported an error event inside the stream.
-  StreamError(api_error_type: String, message: String)
+  StreamError(
+    api_error_type: String,
+    message: String,
+    /// Validated provider advice, carried through durable retry settlement.
+    retry_after_ms: Option(Int),
+  )
 
   /// The stream ended before the response settled.
   StreamDisconnected(context: String)
@@ -498,7 +503,7 @@ pub fn describe_error(error: ProviderError) -> String {
       }
       <> ": "
       <> message
-    StreamError(api_error_type:, message:) ->
+    StreamError(api_error_type:, message:, retry_after_ms: _) ->
       "provider stream error (" <> api_error_type <> "): " <> message
     StreamDisconnected(context:) -> "provider stream disconnected: " <> context
     MalformedStream(report:) | RecoverableStreamCorruption(report:) ->

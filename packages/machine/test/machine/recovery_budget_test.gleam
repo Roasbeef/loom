@@ -106,6 +106,42 @@ pub fn corruption_transport_corruption_stops_at_three_test() {
   exhausted(failed(world, cap(json.Int(3))), 3)
 }
 
+pub fn server_retry_advice_and_recovery_cap_survive_the_same_reload_test() {
+  let initial = run(operation.Unbounded)
+  let settled_at = initial.now
+  let world =
+    failed(
+      initial,
+      Some(
+        json.Object([
+          #("retry_max_attempts", json.Int(3)),
+          #("retry_after_ms", json.Int(60_000)),
+        ]),
+      ),
+    )
+  let assert Ok(operation.RunState(
+    phase: operation.Assistant(operation.GenerationRetryWait(
+      context:,
+      not_before:,
+      ..,
+    )),
+    ..,
+  )) = scenario.read_op_state(world.store, world.op.id)
+    as "The production total codec preserves advice and the narrowed policy."
+  assert context.retry.attempts == operation.Bounded(3)
+  assert not_before == settled_at + 60_000
+
+  // Even with the retry budget remaining, the server's minimum delay keeps
+  // the next generation parked until its captured deadline.
+  let assert Ok(#(_, planner.Wait(..))) =
+    scenario.step(
+      World(..world, now: not_before - 1),
+      planner.NoObservation,
+      options(),
+    )
+    as "A retry cannot dispatch before the server-advised deadline."
+}
+
 pub fn stricter_configured_budgets_win_test() {
   exhausted(run(operation.Bounded(1)) |> failed(cap(json.Int(3))), 1)
   let world = run(operation.Bounded(2)) |> failed(cap(json.Int(3))) |> retry(2)

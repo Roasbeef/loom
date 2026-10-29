@@ -1,5 +1,29 @@
 # Current handoff
 
+## Responses failure diagnostics and retry advice
+
+Follow-up to merged PR #1140, integrated onto main `da27f068d` (October 28, 2026).
+The [comparison and proof record](review/responses-failure-recovery.md) traces
+Codex's error parser, HTTP bridge, retry loop, cleanup and tool settlement at
+a pinned source revision. Two recorded generic failures prevented automatic
+recovery, but their original upstream causes were not retained.
+
+Nested and flat errors now retain safe structural context. Unclassified
+Responses failures use the existing durable three-generation ceiling;
+recognized permanent labels win over transient evidence. Owner-approved
+[protocol 104](../protocol-change/104-streamed-failure-retry-advice.md) adds
+optional `StreamError.retry_after_ms`, preserving HTTP/event advice through
+scrubbing and durable backoff. Other named transient classes retain configured
+retry policy. Strict terminal validation and transport drain remain unchanged.
+
+Before integration, full provider/runtime/machine/harness/conformance gates
+and all 5,468 local client tests pass, with shipped-daemon fixtures left to
+hosted/signoff execution.
+Eight semantic mutation checks pass and independent review found no actionable
+findings. Require final-head hosted CI and Linux signoff before readiness;
+their current outcomes belong in the PR verification record.
+No deployment, restart or live model call was made.
+
 ## Responses completion and returned identity (issue #1139)
 
 Source baseline: `6a2d8f4b4` on `codex/responses-done-arguments`, over main

@@ -225,6 +225,7 @@ pub fn refused_trial_admission_keeps_reason_and_acquires_no_credentials_test() {
     == stream.StreamError(
       api_error_type: "request_admission",
       message: "aggregate token reservation exhausted",
+      retry_after_ms: None,
     )
   assert process.receive(effects, within: 0) == Error(Nil)
 }

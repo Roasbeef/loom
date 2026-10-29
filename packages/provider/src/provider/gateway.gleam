@@ -2155,6 +2155,7 @@ fn dispatch_admitted(
         stream.StreamError(
           api_error_type: "image_limit",
           message: target.provider <> "/" <> target.model_id <> ": " <> reason,
+          retry_after_ms: None,
         ),
         accounting.empty(),
       ))
@@ -2324,6 +2325,7 @@ fn subscription_attempt(
         stream.StreamError(
           api_error_type: "codex_profile_missing",
           message: "Codex subscription profile is empty",
+          retry_after_ms: None,
         ),
         accounting.empty(),
       ))
@@ -2332,6 +2334,7 @@ fn subscription_attempt(
         stream.StreamError(
           api_error_type: "codex_transport_unavailable",
           message: "Codex subscription transport is unavailable",
+          retry_after_ms: None,
         ),
         accounting.empty(),
       ))
@@ -2413,6 +2416,7 @@ fn or_profile_failure(
         stream.StreamError(
           api_error_type: "profile_provenance",
           message: "the resolved prompt profile could not be recorded",
+          retry_after_ms: None,
         ),
         accounting.empty(),
       ))
@@ -2431,7 +2435,11 @@ fn or_admission_failure(
     Ok(request) -> next(request)
     Error(reason) ->
       AttemptTerminal(Failed(
-        stream.StreamError(api_error_type: "request_admission", message: reason),
+        stream.StreamError(
+          api_error_type: "request_admission",
+          message: reason,
+          retry_after_ms: None,
+        ),
         accounting.empty(),
       ))
   }

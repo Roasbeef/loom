@@ -1028,7 +1028,7 @@ fn end_collection(
   finish_collection(
     handle,
     data,
-    stream.Failed(stream.StreamError("btw", reason), report),
+    stream.Failed(stream.StreamError("btw", reason, None), report),
   )
 }
 

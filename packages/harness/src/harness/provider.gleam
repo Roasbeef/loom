@@ -351,6 +351,7 @@ fn unsupported(reason: String) -> StreamHandle {
       error: stream.StreamError(
         api_error_type: "unsupported_request",
         message: reason,
+        retry_after_ms: None,
       ),
       accounting: accounting.empty(),
     ),
