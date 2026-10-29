@@ -1701,3 +1701,13 @@ server needs a table on the executor as well as the orchestrator's `runs_on`.
 
 Local sessions see no behavior change. A daemon without `[distribution]`
 never starts `net_kernel`, and its sessions never consult the ledger.
+
+
+## Addendum: negotiated page operations (2026-10-29)
+
+[Protocol 105](105-versioned-peer-exchange.md) moves 094 page operations to a
+separate stable endpoint. Its literal operation revision and serving epoch are
+checked through dispatch, permitting compatible revisions across builds without
+sending new constructors to the legacy actor. The same-build rule above remains
+for unmigrated legacy operations. A port's death still cannot identify its build
+or establish whether a prior request acted.

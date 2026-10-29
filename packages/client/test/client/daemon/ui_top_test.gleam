@@ -13,7 +13,8 @@ import broker/policy
 import client/daemon/ui_top
 import client/protocol
 import client/remote/address.{type Address}
-import client/remote/orchestrator_port.{type Message}
+import client/remote/orchestrator_port
+import client/remote/peer_service.{type Message}
 import client/remote/top_relay
 import client/remote_escalation
 import client/remote_mail
@@ -45,20 +46,8 @@ fn quick() -> top_relay.Timing {
 
 fn serving(top: orchestrator_port.TopHost) -> Address(Message) {
   let name = process.new_name("orchestrator_port")
-  let assert Ok(_) =
-    orchestrator_port.start_with_top(
-      name,
-      fn(_session) { Ok(orchestrator_port.NotOwned) },
-      fn(_session, _command) { Error(orchestrator_port.peer_unserved) },
-      fn(_session) { Error("not_found") },
-      orchestrator_port.declining(),
-      orchestrator_port.refusing_spawns(),
-      orchestrator_port.refusing_children(),
-      orchestrator_port.unheld,
-      orchestrator_port.unreported(),
-      top,
-    )
-    as "the port starts"
+  let assert Ok(_) = peer_service.start(name, "epoch-test", "build-test", top)
+    as "the peer service starts"
   address.Address(node: node.self(), name:)
 }
 

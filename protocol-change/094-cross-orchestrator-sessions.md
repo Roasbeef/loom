@@ -449,3 +449,13 @@ add no wait, retry or wire shape.
 A successful Stop acknowledgement means the hub accepted the stop request; the
 abort itself remains asynchronous. The page therefore says `Stop requested.`
 It does not claim the run has already ended.
+
+
+## Addendum: versioned transport (2026-10-29)
+
+[Protocol 105](105-versioned-peer-exchange.md) carries these eight operations
+through a stable JSON exchange after positive revision negotiation. The receiver
+checks its expected epoch and operation revision before the existing TopHost
+callback; discovery alone never grants access. The legacy named port receives no
+migrated request. The acknowledgement, authority, identity and retry semantics
+above remain, with explicit envelope byte limits recorded in 105.
