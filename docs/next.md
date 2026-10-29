@@ -1,5 +1,15 @@
 # Current handoff
 
+## Distributed runtime experience (issue #1137)
+
+The first slice fixes the signed-out page's rejected `loom ui --device`
+command. The [acceptance record](review/distributed-1137.md) gives the
+failing regression and browser proof; independent review found no actionable
+issues and affected checks are still in progress. The owner selected an
+always-on trusted brain or gateway for model
+access, with remote executors remaining keyless. Repository handoff, per-spawn
+workspace custody, movement and full page relay remain open.
+
 ## Running-version profile and native fixture ownership
 
 PR #1138 was rebased on `fcbc7d9b` and merged at `da27f068` under the

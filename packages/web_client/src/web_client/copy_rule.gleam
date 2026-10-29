@@ -16,9 +16,9 @@
 //// what came before it.
 ////
 //// The document an ended page gets offers a third text, the command that mints
-//// a fresh link: `loom ui`, alone or with `--session` and a session identity,
-//// which is hexadecimal digits and hyphens. It has the same rule: nothing else
-//// is copied.
+//// a fresh link: `loom ui`, `loom ui --device`, or `loom ui --session` and a
+//// session identity of hexadecimal digits and hyphens. It has the same rule:
+//// nothing else is copied.
 ////
 //// The home page's sign-ins offer a fourth: the link that signs in another
 //// device (protocol-change/065, PR 8), an address on this daemon's loopback host
@@ -76,8 +76,8 @@ pub type Subject {
   /// The claim token the invitee pastes at the command's prompt.
   Token
 
-  /// The command that mints a fresh page link, `loom ui` or
-  /// `loom ui --session <id>`, which the document an ended page gets offers
+  /// The command that mints a fresh page link: `loom ui`, `loom ui --device`,
+  /// or `loom ui --session <id>`, offered by the document an ended page gets
   /// (protocol-change/065, the addendum on the home list).
   Link
 
@@ -242,10 +242,10 @@ fn command(value: String) -> Bool {
   }
 }
 
-/// Validates UI launch command or session link CLI invocations.
+/// Accepts only the fixed UI commands or one bounded session identity.
 fn link(value: String) -> Bool {
   case value {
-    "loom ui" -> True
+    "loom ui" | "loom ui --device" -> True
     _ ->
       case string.split_once(value, link_prefix) {
         Ok(#("", identity)) ->
