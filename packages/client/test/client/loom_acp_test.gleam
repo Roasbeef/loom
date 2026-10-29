@@ -37,6 +37,7 @@ import host/bootstrap as native
 import simplifile
 import support/internal/ffi_daemon_socket as tcp
 import support/internal/ffi_ws as socket
+import support/native_fixture
 import support/provider_http
 import support/shipped_server
 import tui/acp/rpc
@@ -55,18 +56,7 @@ type Fixture {
   Fixture(directory: String, config: String, workspace: String)
 }
 
-fn fixture(label: String, provider_url: String) -> Fixture {
-  let directory =
-    "build/loom-acp-"
-    <> label
-    <> "-"
-    <> int.to_string(native.current_process_id())
-    <> "-"
-    <> int.to_string(native.system_time_ms())
-  let assert Ok(Nil) = native.ensure_private_directory(directory)
-    as "fixture state lives below a private directory"
-  let assert Ok(directory) = native.canonical_directory(directory)
-    as "the daemon receives absolute fixture paths"
+fn fixture(directory: String, provider_url: String) -> Fixture {
   let assert Ok(Nil) =
     simplifile.create_directory_all(directory <> "/workspace")
     as "the session workspace exists"
@@ -441,11 +431,12 @@ pub fn a_text_turn_answers_once_reports_usage_and_leaves_the_session_saved_test_
     case shipped_server.from_environment() {
       Error(Nil) -> skip("LOOM_BOOTSTRAP_E2E_SERVER is unset")
       Ok(shipped) -> {
+        use directory <- native_fixture.with_directory("loom-acp-text", 720_000)
         let #(outcome, report) =
           provider_http.with_server(
             [provider_http.Exchange("hello", "hi there")],
             fn(url) {
-              let fixture = fixture("text", url)
+              let fixture = fixture(directory, url)
               let config = config_for(shipped, fixture)
               let client = launch(config)
               initialize(client)
@@ -523,6 +514,10 @@ pub fn a_paced_answer_streams_in_pieces_and_is_not_repeated_when_it_commits_test
     case shipped_server.from_environment() {
       Error(Nil) -> skip("LOOM_BOOTSTRAP_E2E_SERVER is unset")
       Ok(shipped) -> {
+        use directory <- native_fixture.with_directory(
+          "loom-acp-paced",
+          720_000,
+        )
         let answer = "streamed in several pieces so fragments arrive live"
         let #(turn, report) =
           provider_http.with_server(
@@ -534,7 +529,7 @@ pub fn a_paced_answer_streams_in_pieces_and_is_not_repeated_when_it_commits_test
               ),
             ],
             fn(url) {
-              let fixture = fixture("paced", url)
+              let fixture = fixture(directory, url)
               let client = launch(config_for(shipped, fixture))
               initialize(client)
               let session = new_session(client, 2, fixture.workspace)
@@ -564,13 +559,17 @@ pub fn an_approved_tool_call_runs_through_a_permission_round_trip_test_() -> Eun
     case shipped_server.from_environment() {
       Error(Nil) -> skip("LOOM_BOOTSTRAP_E2E_SERVER is unset")
       Ok(shipped) -> {
+        use directory <- native_fixture.with_directory(
+          "loom-acp-allow",
+          960_000,
+        )
         let #(outcome, report) =
           provider_http.with_server_for(
             gated_script("allow"),
             provider_http.AlsoFailed,
             110_000,
             fn(url) {
-              let fixture = fixture("allow", url)
+              let fixture = fixture(directory, url)
               let client = launch(config_for(shipped, fixture))
               initialize(client)
               let session = new_session(client, 2, fixture.workspace)
@@ -621,13 +620,14 @@ pub fn a_denied_tool_call_fails_and_the_turn_still_ends_test_() -> EunitTest {
     case shipped_server.from_environment() {
       Error(Nil) -> skip("LOOM_BOOTSTRAP_E2E_SERVER is unset")
       Ok(shipped) -> {
+        use directory <- native_fixture.with_directory("loom-acp-deny", 960_000)
         let #(outcome, report) =
           provider_http.with_server_for(
             gated_script("deny"),
             provider_http.AlsoFailed,
             110_000,
             fn(url) {
-              let fixture = fixture("deny", url)
+              let fixture = fixture(directory, url)
               let client = launch(config_for(shipped, fixture))
               initialize(client)
               let session = new_session(client, 2, fixture.workspace)
@@ -656,13 +656,17 @@ pub fn a_cancel_during_a_stalled_response_ends_the_turn_cancelled_test_() -> Eun
     case shipped_server.from_environment() {
       Error(Nil) -> skip("LOOM_BOOTSTRAP_E2E_SERVER is unset")
       Ok(shipped) -> {
+        use directory <- native_fixture.with_directory(
+          "loom-acp-cancel",
+          960_000,
+        )
         let port = process.new_subject()
         let accepted = process.new_subject()
         let peer = process.spawn_unlinked(fn() { stall(port, accepted) })
         let assert Ok(port) = process.receive(port, 5000)
           as "the stalling provider published its port"
         let fixture =
-          fixture("cancel", "http://127.0.0.1:" <> int.to_string(port))
+          fixture(directory, "http://127.0.0.1:" <> int.to_string(port))
         let config = config_for(shipped, fixture)
         let client = launch(config)
         initialize(client)
@@ -701,11 +705,12 @@ pub fn a_saved_session_loads_and_replays_its_transcript_test_() -> EunitTest {
     case shipped_server.from_environment() {
       Error(Nil) -> skip("LOOM_BOOTSTRAP_E2E_SERVER is unset")
       Ok(shipped) -> {
+        use directory <- native_fixture.with_directory("loom-acp-load", 960_000)
         let #(outcome, report) =
           provider_http.with_server(
             [provider_http.Exchange("hello", "hi there")],
             fn(url) {
-              let fixture = fixture("load", url)
+              let fixture = fixture(directory, url)
               let config = config_for(shipped, fixture)
 
               // The first connection makes the session, runs a turn and hangs
@@ -759,9 +764,13 @@ pub fn a_session_reports_its_models_and_switches_by_catalogue_name_test_() -> Eu
     case shipped_server.from_environment() {
       Error(Nil) -> skip("LOOM_BOOTSTRAP_E2E_SERVER is unset")
       Ok(shipped) -> {
+        use directory <- native_fixture.with_directory(
+          "loom-acp-models",
+          720_000,
+        )
         let #(outcome, report) =
           provider_http.with_server([], fn(url) {
-            let fixture = fixture("models", url)
+            let fixture = fixture(directory, url)
             let client = launch(config_for(shipped, fixture))
             initialize(client)
             call(
@@ -853,9 +862,13 @@ pub fn a_session_found_resident_is_left_resident_when_the_loader_hangs_up_test_(
     case shipped_server.from_environment() {
       Error(Nil) -> skip("LOOM_BOOTSTRAP_E2E_SERVER is unset")
       Ok(shipped) -> {
+        use directory <- native_fixture.with_directory(
+          "loom-acp-shared",
+          960_000,
+        )
         let #(outcome, report) =
           provider_http.with_server([], fn(url) {
-            let fixture = fixture("shared", url)
+            let fixture = fixture(directory, url)
             let config = config_for(shipped, fixture)
 
             // The first connection makes the session and keeps it.
@@ -889,9 +902,13 @@ pub fn a_load_outside_the_roots_is_refused_before_the_session_is_woken_test_() -
     case shipped_server.from_environment() {
       Error(Nil) -> skip("LOOM_BOOTSTRAP_E2E_SERVER is unset")
       Ok(shipped) -> {
+        use directory <- native_fixture.with_directory(
+          "loom-acp-outside",
+          960_000,
+        )
         let #(outcome, report) =
           provider_http.with_server([], fn(url) {
-            let fixture = fixture("outside", url)
+            let fixture = fixture(directory, url)
             let config = config_for(shipped, fixture)
             let first = launch(config)
             initialize(first)
@@ -928,9 +945,10 @@ pub fn a_load_naming_another_cwd_is_reported_not_ignored_test_() -> EunitTest {
     case shipped_server.from_environment() {
       Error(Nil) -> skip("LOOM_BOOTSTRAP_E2E_SERVER is unset")
       Ok(shipped) -> {
+        use directory <- native_fixture.with_directory("loom-acp-cwd", 960_000)
         let #(outcome, report) =
           provider_http.with_server([], fn(url) {
-            let fixture = fixture("cwd", url)
+            let fixture = fixture(directory, url)
             let config =
               server.Config(..config_for(shipped, fixture), roots: [
                 fixture.directory,
@@ -963,9 +981,13 @@ pub fn loading_a_session_this_connection_already_holds_is_refused_test_() -> Eun
     case shipped_server.from_environment() {
       Error(Nil) -> skip("LOOM_BOOTSTRAP_E2E_SERVER is unset")
       Ok(shipped) -> {
+        use directory <- native_fixture.with_directory(
+          "loom-acp-twice",
+          960_000,
+        )
         let #(outcome, report) =
           provider_http.with_server([], fn(url) {
-            let fixture = fixture("twice", url)
+            let fixture = fixture(directory, url)
             let config = config_for(shipped, fixture)
             let client = launch(config)
             initialize(client)
@@ -990,9 +1012,10 @@ pub fn several_sessions_are_stopped_together_when_the_client_hangs_up_test_() ->
     case shipped_server.from_environment() {
       Error(Nil) -> skip("LOOM_BOOTSTRAP_E2E_SERVER is unset")
       Ok(shipped) -> {
+        use directory <- native_fixture.with_directory("loom-acp-many", 960_000)
         let #(outcome, report) =
           provider_http.with_server([], fn(url) {
-            let fixture = fixture("many", url)
+            let fixture = fixture(directory, url)
             let config = config_for(shipped, fixture)
             let client = launch(config)
             initialize(client)

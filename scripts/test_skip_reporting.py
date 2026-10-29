@@ -1,7 +1,8 @@
 """Keep prerequisite skips visible to the strict CI census under EUnit.
 
 The guard against stdout skip emitters in Gleam test sources is lint rule R19;
-this file proves the EUnit behaviour that rule protects against.
+this file proves the EUnit behaviour that rule protects against. The Darwin
+policy regression also rejects a return to silently waived verifier skips.
 """
 
 from pathlib import Path
@@ -71,6 +72,65 @@ class SkipReportingTest(unittest.TestCase):
             stale = census()
             self.assertEqual(stale.returncode, 1, stale.stderr)
             self.assertIn("Stale declaration", stale.stdout)
+
+    def test_darwin_refusal_coverage_needs_no_verifier_skip_waiver(self):
+        # Main's Darwin verifier tests execute refusal assertions. Reintroducing
+        # the old waiver both rejects those logs as stale and excuses a future
+        # verifier skip. Exercise the real configured census on either host.
+        historical_refusal = (
+            "the jail refused: this host cannot jail a verifier: the verifier ran "
+            "without a required enforcement layer: skip:rlimit-address-space: "
+            "invalid argument; mem_bytes was NOT applied; "
+            "skip:darwin-process-lifecycle: macOS has no PID namespace, subreaper, "
+            "or stable process handle; rapid reparenting can evade sampled cleanup "
+            "and PID reuse remains racy while the Seatbelt profile persists"
+        )
+        configured = ROOT / ".github/declared-skips"
+        prerequisites = []
+        for line in configured.read_text().splitlines():
+            if not line or line.startswith("#"):
+                continue
+            kind, platform, marker, _ = line.split("|", 3)
+            if (
+                kind == "declared"
+                and platform in ("any", "darwin")
+                and "this host cannot jail a verifier" not in marker
+            ):
+                prerequisites.append("SKIP existing_prerequisite: " + marker)
+
+        with tempfile.TemporaryDirectory(prefix="loom-darwin-census-") as root:
+            directory = Path(root)
+            shim = directory / "bin"
+            shim.mkdir()
+            uname = shim / "uname"
+            uname.write_text("#!/bin/sh\nprintf '%s\\n' Darwin\n")
+            uname.chmod(0o700)
+            log = directory / "gate.log"
+            baseline = "\n".join(prerequisites) + "\n"
+            environment = dict(
+                os.environ,
+                PATH=str(shim) + os.pathsep + os.environ["PATH"],
+                LOOM_DECLARED_SKIPS=str(configured),
+            )
+            environment.pop("GITHUB_STEP_SUMMARY", None)
+
+            def census(output):
+                log.write_text(output)
+                return subprocess.run(
+                    ["bash", str(CENSUS), "Darwin verifier coverage", str(log)],
+                    env=environment, capture_output=True, text=True, timeout=5,
+                )
+
+            refusal_coverage = census(baseline)
+            self.assertEqual(refusal_coverage.returncode, 0,
+                             refusal_coverage.stdout + refusal_coverage.stderr)
+            skipped_verifier = census(
+                baseline + "SKIP verifier: " + historical_refusal + "\n"
+            )
+            self.assertEqual(skipped_verifier.returncode, 1,
+                             skipped_verifier.stdout + skipped_verifier.stderr)
+            self.assertIn("1 undeclared skip", skipped_verifier.stdout)
+            self.assertNotIn("Stale declaration", skipped_verifier.stdout)
 
 
 if __name__ == "__main__":
