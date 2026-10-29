@@ -113,7 +113,7 @@ pub fn read(
 ) -> relayed.Read {
   // This branch resolves top_relay all_sessions relay orchestrator before the operation continues.
   case top_relay.all_sessions(relay, orchestrator) {
-    Error(failure) -> relayed.Unreached(top_relay.describe(failure))
+    Error(failure) -> relayed.Unreached(read_failure(failure))
     Ok(rows) ->
       // This branch resolves the input state before the operation continues.
 
@@ -127,6 +127,19 @@ pub fn read(
             history: history(relay, orchestrator, session),
           )
       }
+  }
+}
+
+/// Words a failed read without implying that an action may have run. Silence
+/// describes the missing answer; other failures retain the relay's detail.
+fn read_failure(failure: Failure) -> String {
+  case failure {
+    top_relay.Silent -> "the orchestrator did not answer"
+    top_relay.NotConfigured(..)
+    | top_relay.Unreachable
+    | top_relay.OlderBuild
+    | top_relay.Refused(..)
+    | top_relay.Unreadable(..) -> top_relay.describe(failure)
   }
 }
 
@@ -146,7 +159,7 @@ fn history(
     )
   {
     Ok(page) -> relayed.Shown(page:)
-    Error(failure) -> relayed.Unreadable(why: top_relay.describe(failure))
+    Error(failure) -> relayed.Unreadable(why: read_failure(failure))
   }
 }
 
@@ -424,7 +437,9 @@ fn pending(
 ) -> Result(EscalationRecord, relayed.Outcome) {
   use rows <- result.try(
     top_relay.all_sessions(relay, orchestrator)
-    |> result.map_error(outcome_of),
+    |> result.map_error(fn(failure) {
+      relayed.Refusal(why: read_failure(failure))
+    }),
   )
   let found = {
     use row <- result.try(
@@ -581,21 +596,40 @@ pub fn create(
   profile: Option(String),
   model: Option(String),
 ) -> Result(String, CreateRefusal) {
+  use profile <- result.try(prepare_create(
+    relay,
+    orchestrator,
+    placement,
+    profile,
+    model,
+  ))
+  top_relay.create(relay, orchestrator, request_id, placement, profile, model)
+  |> result.map_error(Failed)
+}
+
+/// Checks the requested placement and model against fresh offers and chooses a
+/// profile before any create dispatch, so a lost read cannot imply a create ran.
+fn prepare_create(
+  relay: Relay,
+  orchestrator: String,
+  placement: remote_top.Placement,
+  profile: Option(String),
+  model: Option(String),
+) -> Result(String, CreateRefusal) {
   use offers <- result.try(
     top_relay.placements(relay, orchestrator) |> result.map_error(Failed),
   )
 
-  // Resolve requested profile or fallback to the first offered profile.
-  use profile <- result.try(case profile, offers.profiles {
+  // An explicit choice must be judged as given; only an omitted profile takes
+  // the first offered one, and no offer means no create may be dispatched.
+  use selected <- result.try(case profile, offers.profiles {
     Some(chosen), _ -> Ok(chosen)
     None, [first, ..] -> Ok(first)
     None, [] -> Error(NoProfile)
   })
 
-  use Nil <- result.try(judge(offers, placement, profile, model))
-
-  top_relay.create(relay, orchestrator, request_id, placement, profile, model)
-  |> result.map_error(Failed)
+  use Nil <- result.try(judge(offers, placement, selected, model))
+  Ok(selected)
 }
 
 // --- what the composer and the sidebar read ----------------------------------------
@@ -613,7 +647,7 @@ pub fn offers(relay: Relay, orchestrator: String) -> orchestrators.OffersRead {
   // This branch resolves top_relay placements relay orchestrator before the operation continues.
   case top_relay.placements(relay, orchestrator) {
     Ok(offered) -> orchestrators.Offered(offers: offers_of(offered))
-    Error(failure) -> orchestrators.Withheld(why: top_relay.describe(failure))
+    Error(failure) -> orchestrators.Withheld(why: read_failure(failure))
   }
 }
 
@@ -694,7 +728,7 @@ pub fn listing(relay: Relay, orchestrator: String) -> orchestrators.ListRead {
   // This branch resolves top_relay sessions relay orchestrator remote_top max_rows before the operation continues.
   case top_relay.sessions(relay, orchestrator, "", remote_top.max_rows) {
     Ok(page) -> orchestrators.Heard(rows: list.filter_map(page.rows, listed_of))
-    Error(failure) -> orchestrators.Missed(why: top_relay.describe(failure))
+    Error(failure) -> orchestrators.Missed(why: read_failure(failure))
   }
 }
 
@@ -778,16 +812,25 @@ fn made(
       "A folder typed here cannot be used on another machine. Choose one it offers.",
     ),
   )
+  use profile <- result.try(
+    prepare_create(relay, orchestrator, placement, roles.profile, roles.model)
+    |> result.map_error(fn(refusal) {
+      case refusal {
+        Failed(failure) -> read_failure(failure)
+        NotOffered(..) | NoProfile -> refusal_words(refusal)
+      }
+    }),
+  )
   use session <- result.try(
-    create(
+    top_relay.create(
       relay,
       orchestrator,
       request_id,
       placement,
-      roles.profile,
+      profile,
       roles.model,
     )
-    |> result.map_error(refusal_words),
+    |> result.map_error(top_relay.describe),
   )
 
   // Validate that returned session identity complies with canonical syntax.

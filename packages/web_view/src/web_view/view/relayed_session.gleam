@@ -125,10 +125,11 @@ pub fn view(state: State, presses: Presses(message)) -> Element(message) {
       transcript(state),
       reply(state, presses),
     ]
-    relayed_session.Unread, _ | relayed_session.Listed, None -> [
-      waiting(state),
-      reach(state),
-    ]
+    relayed_session.Unread, _ | relayed_session.Listed, None ->
+      case state.reach {
+        relayed_session.Answering -> [waiting(state)]
+        relayed_session.Silent(..) -> [reach(state)]
+      }
     relayed_session.Unlisted, _ -> [absent(state), reach(state)]
   })
 }
@@ -157,7 +158,15 @@ fn reach(state: State) -> Element(message) {
     relayed_session.Answering -> element.none()
     relayed_session.Silent(why:, ..) ->
       html.p([attribute.class("relayed-stale")], [
-        html.text(state.orchestrator <> " is not reachable: " <> why),
+        html.text(
+          case state.seen_ms {
+            Some(_) -> "Could not refresh from "
+            None -> "Could not read from "
+          }
+          <> state.orchestrator
+          <> ": "
+          <> why,
+        ),
         html.text(case state.seen_ms {
           Some(seen) ->
             ". This is what it said "

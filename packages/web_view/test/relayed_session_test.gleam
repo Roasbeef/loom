@@ -148,6 +148,47 @@ pub fn a_failed_read_keeps_what_the_page_has_and_dates_the_failure_test() {
   assert back.seen_ms == Some(15_000)
 }
 
+// A partial refresh must not replace the last complete observation or reset
+// its age when the new transcript could not be read.
+pub fn a_failed_transcript_refresh_keeps_the_last_complete_page_test() {
+  let before = listed([])
+  let changed = relayed.Row(..row([]), name: "new row")
+  let after =
+    session.heard(
+      before,
+      relayed.Heard(row: Some(changed), history: relayed.Unreadable("timeout")),
+      5000,
+    )
+  assert after.row == before.row
+  assert after.history == before.history
+  assert after.seen_ms == Some(100)
+  assert after.clock_ms == 5000
+  assert after.reach == session.Silent(since_ms: 5000, why: "timeout")
+
+  // The first partial read can show its row and error without claiming a
+  // complete observation; the next successful read clears the stale mark.
+  let first =
+    session.heard(
+      session.open("box", identity),
+      relayed.Heard(row: Some(changed), history: relayed.Unreadable("timeout")),
+      5000,
+    )
+  assert first.row == Some(changed)
+  assert first.history == Some(relayed.Unreadable("timeout"))
+  assert first.seen_ms == None
+  assert first.reach == session.Silent(since_ms: 5000, why: "timeout")
+  let recovered =
+    session.heard(
+      after,
+      relayed.Heard(row: Some(changed), history: shown()),
+      9000,
+    )
+  assert recovered.row == Some(changed)
+  assert recovered.history == Some(shown())
+  assert recovered.seen_ms == Some(9000)
+  assert recovered.reach == session.Answering
+}
+
 pub fn a_reply_is_trimmed_and_asked_once_test() {
   let #(sending, intent) = session.update(plain(), session.Replied("  hi  \n"))
 

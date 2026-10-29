@@ -652,9 +652,9 @@ fn creation_refusal(error: manager.Error) -> Refusal {
 
 // One page of the spawner's sessions, newest first. The catalogue is asked for
 // the rows, and each resident session is asked, apart from the registry and
-// under one deadline, what it is doing and what it is waiting for. A session
-// that is not resident is listed idle with no requests, and one that does not
-// answer in time is listed the same way: the next poll of the page corrects it.
+// under one deadline, what it is doing and what it is waiting for. A saved or
+// unfinished creation has no runtime; a transitional or unanswered resident
+// session makes the page retry rather than falsely claiming that it is idle.
 
 /// Establishes sessions for the caller, keeping its validation and result policy at this boundary.
 fn sessions(
@@ -665,7 +665,7 @@ fn sessions(
   limit: Int,
 ) -> Result(JsonValue, Refusal) {
   let bound = int.max(1, int.min(limit, remote_top.max_rows))
-  use views <- result.map(
+  use views <- result.try(
     manager.relayed_sessions(
       context.registry,
       spawner.name,
@@ -676,7 +676,7 @@ fn sessions(
       remote_top.StoreFailure(reason: delegate_host.describe(error))
     }),
   )
-  let overviews = overviews_of(context, table, views)
+  use overviews <- result.try(overviews_of(context, table, views))
   let rows =
     list.map2(views, overviews, fn(view, overview) { row_of(view, overview) })
 
@@ -686,48 +686,67 @@ fn sessions(
     False -> remote_top.Last
   }
 
-  remote_top.encode_page(remote_top.page_of(rows, more))
+  Ok(remote_top.encode_page(remote_top.page_of(rows, more)))
 }
 
 // What each resident row says of itself, in the order of the rows. The asks run
-// together under one deadline, so a slow session costs its own row and no other.
+// together under one deadline. A failed answer refuses the page, preserving the
+// reader's last observation instead of inventing an idle row.
 
-/// Establishes overviews of for the caller, keeping its validation and result policy at this boundary.
+/// Reads every resident overview under one deadline. Saved and unfinished
+/// creation rows have no runtime; transitional or failed resident observations
+/// refuse the page so the reader can retain its previous observation.
 fn overviews_of(
   context: Context(instance),
   table: TopLevel,
   views: List(manager.RelayedView),
-) -> List(Option(relayed_session.Overview)) {
-  // Only a resident row has anything to ask. The others are idle by
-  // definition, and spawning a task for them would only fail.
-  let asks =
-    list.map(views, fn(view) {
-      // Decide how to handle manager.resolve(context.registry, view.listing.record.session_id) {.
-      case manager.resolve(context.registry, view.listing.record.session_id) {
-        Ok(instance) -> {
+) -> Result(List(Option(relayed_session.Overview)), Refusal) {
+  let unavailable = remote_top.StoreFailure("a session overview is unavailable")
+  use asks <- result.try(
+    list.try_map(views, fn(view) {
+      // Saved and unfinished creations have no runtime. A resident must still
+      // be the observed incarnation, and a transition cannot prove idleness.
+      case view.view.status {
+        manager.Saved | manager.Reserved | manager.FailedStart(..) -> Ok(None)
+        manager.Resident(incarnation) -> {
+          use instance <- result.try(
+            manager.resolve_incarnation(
+              context.registry,
+              view.listing.record.session_id,
+              incarnation,
+            )
+            |> result.replace_error(unavailable),
+          )
           let endpoint = context.endpoint(instance)
-          Some(fn() { endpoint.overview(table.approval_ceiling) })
+          Ok(Some(fn() { endpoint.overview(table.approval_ceiling) }))
         }
-        Error(_) -> None
+        manager.Opening(..)
+        | manager.Stopping(..)
+        | manager.RecoveryBlocked(..) -> Error(unavailable)
       }
-    })
-  let outcomes =
+    }),
+  )
+
+  // `weft.start` returns one outcome per ask, in input order. An absent or
+  // failed answer cannot stand in for an idle session.
+  use outcomes <- result.try(
     option.values(asks)
     |> weft.new
     |> weft.deadline(overview_budget_ms)
     |> weft.start
-    |> list.map(fn(outcome) {
+    |> list.try_map(fn(outcome) {
       case outcome {
-        weft.Completed(value: overview, ..) -> Some(overview)
+        weft.Completed(value: overview, ..) -> Ok(Some(overview))
         weft.Failed(..)
         | weft.Crashed(..)
         | weft.Abandoned(..)
         | weft.NeverStarted(..)
         | weft.DrainProofLost(..)
-        | weft.CancellationUnconfirmed(..) -> None
+        | weft.CancellationUnconfirmed(..) -> Error(unavailable)
       }
-    })
-  rejoin(asks, outcomes)
+    }),
+  )
+  Ok(rejoin(asks, outcomes))
 }
 
 // Puts each outcome back at the row that asked, in order, and leaves a row that

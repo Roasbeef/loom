@@ -212,6 +212,59 @@ pub fn a_visiting_page_opens_on_the_session_and_reads_nothing_yet_test() {
   assert asked(log) == []
 }
 
+// A failed first read is no longer in flight: show its failure without also
+// claiming the page is still reading.
+pub fn a_failed_first_read_does_not_say_it_is_still_reading_test() {
+  let #(model, _, _) = opened(relayed.Unreached("timed out"), relayed.Done)
+  let html = drawn(model)
+  assert string.contains(html, "Could not read from box: timed out")
+  assert !string.contains(html, "Reading the session from box")
+}
+
+// Both listing and transcript failures retain the same last complete page,
+// and the view reports its age rather than the failed refresh's time.
+pub fn failed_refreshes_draw_the_last_complete_page_and_its_age_test() {
+  let prior =
+    relayed_session.heard(
+      relayed_session.open("box", identity),
+      heard([]),
+      1000,
+    )
+  let presses =
+    relayed_view.Presses(
+      replied: fn(_) { Nil },
+      stopped: Nil,
+      archive_asked: Nil,
+      archive_confirmed: Nil,
+      archive_cancelled: Nil,
+      decided: fn(_, _, _) { Nil },
+    )
+  let lost =
+    relayed_session.heard(prior, relayed.Unreached("list timeout"), 121_000)
+  let listing = element.to_string(relayed_view.view(lost, presses))
+  assert string.contains(listing, "build the thing")
+  assert string.contains(listing, "No entries yet.")
+  assert string.contains(listing, "This is what it said 2m ago")
+  assert string.contains(listing, "list timeout")
+
+  let changed = relayed.Row(..row([]), name: "new incomplete row")
+  let partial =
+    relayed_session.heard(
+      lost,
+      relayed.Heard(
+        row: Some(changed),
+        history: relayed.Unreadable("history timeout"),
+      ),
+      181_000,
+    )
+  let history = element.to_string(relayed_view.view(partial, presses))
+  assert string.contains(history, "build the thing")
+  assert !string.contains(history, "new incomplete row")
+  assert string.contains(history, "No entries yet.")
+  assert string.contains(history, "This is what it said 3m ago")
+  assert string.contains(history, "history timeout")
+}
+
 pub fn a_page_with_no_visit_has_no_relayed_centre_test() {
   let model = home.new(start(None))
 
@@ -342,7 +395,7 @@ pub fn an_unreachable_box_keeps_the_last_page_and_says_so_test() {
     )
   let html = drawn(model)
 
-  assert string.contains(html, "box is not reachable: no route")
+  assert string.contains(html, "Could not refresh from box: no route")
   assert string.contains(html, "build the thing")
 }
 

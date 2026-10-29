@@ -322,11 +322,19 @@ fn rig(label: String) -> Rig {
 // A second port over the same registry, with its own clock, which is how a test
 // moves the rolling hour.
 fn port_at(rig: Rig, now: Int) -> Address(Message) {
+  port_at_with(rig, now, fn(endpoint) { endpoint })
+}
+
+fn port_at_with(
+  rig: Rig,
+  now: Int,
+  project: fn(Endpoint) -> Endpoint,
+) -> Address(Message) {
   let context =
     top_host.Context(
       spawners: [rig.spawner],
       registry: rig.registry,
-      endpoint: fn(endpoint) { endpoint },
+      endpoint: project,
       sessions_directory: rig.directory,
       domain_configuration: rig.configuration_path,
       generator: fn() {
@@ -1089,6 +1097,39 @@ max_per_hour = 100
     string.compare(row.session_id, last.session_id) == order.Lt
   })
   assert list.length(page.rows) + list.length(next) <= 20
+}
+
+// A resident that refuses its overview cannot be reported as idle. Its failure
+// leaves the entire page retryable rather than erasing that session's state.
+pub fn a_failed_resident_overview_refuses_the_listing_test() {
+  let rig = rig("overview-fails")
+  let session = made(rig, 1)
+  resident(rig, session)
+  let port =
+    port_at_with(rig, 1_700_000_000_000, fn(endpoint) {
+      Endpoint(..endpoint, overview: fn(_) {
+        Error(remote_top.StoreFailure("busy"))
+      })
+    })
+  let assert Ok(Error(remote_top.StoreFailure(_))) =
+    orchestrator_port.ask_top_sessions(port, "", 10, answers_within_ms)
+
+  // A crash and a deadline are also failed observations, not idle rows.
+  let crashed =
+    port_at_with(rig, 1_700_000_000_000, fn(endpoint) {
+      Endpoint(..endpoint, overview: fn(_) { panic as "overview failed" })
+    })
+  let assert Ok(Error(remote_top.StoreFailure(_))) =
+    orchestrator_port.ask_top_sessions(crashed, "", 10, answers_within_ms)
+  let delayed =
+    port_at_with(rig, 1_700_000_000_000, fn(endpoint) {
+      Endpoint(..endpoint, overview: fn(_) {
+        process.sleep(3000)
+        Ok(resting())
+      })
+    })
+  let assert Ok(Error(remote_top.StoreFailure(_))) =
+    orchestrator_port.ask_top_sessions(delayed, "", 10, answers_within_ms)
 }
 
 pub fn a_saved_session_is_listed_idle_with_no_requests_and_is_not_opened_test() {

@@ -135,7 +135,7 @@ pub type State {
     row: Option(relayed.Row),
     /// The transcript page the box last gave.
     history: Option(relayed.History),
-    /// When the last read that answered was made, in Unix milliseconds.
+    /// When the last complete read was made, in Unix milliseconds.
     seen_ms: Option(Int),
     /// When the last read of any outcome finished, in Unix milliseconds, which
     /// is the instant the page counts the age of what it shows from.
@@ -247,9 +247,9 @@ pub fn open(orchestrator: String, session: String) -> State {
   )
 }
 
-/// Applies a read of the box. A list that answered replaces the row and the
-/// transcript whole, and a session the list does not hold clears both. A read that
-/// failed keeps what the page has and remembers when the failures began; the
+/// Applies a read of the box. A complete read replaces the row and transcript,
+/// and a session the list does not hold clears both. A failed list or transcript
+/// keeps the last complete page and remembers when the failures began; the
 /// failures that follow keep that time, so the age shown is the age of the data.
 /// `now_ms` is this daemon's clock.
 ///
@@ -265,6 +265,25 @@ pub fn heard(state: State, read: relayed.Read, now_ms: Int) -> State {
 
   // Update presence, history, and answering status depending on read outcome.
   case read {
+    // A transcript failure cannot make an older complete page fresh. On the
+    // first partial read the row and its error are still useful to show.
+    relayed.Heard(
+      row: Some(_) as row,
+      history: relayed.Unreadable(why:) as history,
+    ) ->
+      case state.history {
+        Some(relayed.Shown(_)) ->
+          State(..state, reach: silent(state.reach, why, now_ms))
+        Some(relayed.Unreadable(_)) | None ->
+          State(
+            ..state,
+            presence: Listed,
+            row:,
+            history: Some(history),
+            reach: silent(state.reach, why, now_ms),
+          )
+      }
+
     relayed.Heard(row: Some(_) as row, history:) ->
       State(
         ..state,
