@@ -34,6 +34,7 @@ import client/peer_mail
 import client/peers
 import client/remote/address
 import client/remote/orchestrator_port
+import client/remote/peer_service
 import client/remote/top_relay
 import client/remote_mail
 import client/remote_top
@@ -10301,16 +10302,10 @@ fn box_relay(created: process.Subject(String)) -> top_relay.Relay {
       models: [],
     )
   let assert Ok(_) =
-    orchestrator_port.start_with_top(
+    peer_service.start(
       name,
-      fn(_session) { Ok(orchestrator_port.NotOwned) },
-      fn(_session, _command) { Error(orchestrator_port.peer_unserved) },
-      fn(_session) { Error("not_found") },
-      orchestrator_port.declining(),
-      orchestrator_port.refusing_spawns(),
-      orchestrator_port.refusing_children(),
-      orchestrator_port.unheld,
-      orchestrator_port.unreported(),
+      "epoch-test",
+      "build-test",
       orchestrator_port.TopHost(
         ..orchestrator_port.refusing_top(),
         placements: fn(_node) { Ok(remote_top.encode_offers(offers)) },
@@ -10323,7 +10318,7 @@ fn box_relay(created: process.Subject(String)) -> top_relay.Relay {
         },
       ),
     )
-    as "the port starts"
+    as "the peer service starts"
   let port = address.Address(node: node.self(), name:)
 
   top_relay.through(

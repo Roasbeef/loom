@@ -138,6 +138,10 @@ fn read_failure(failure: Failure) -> String {
     top_relay.NotConfigured(..)
     | top_relay.Unreachable
     | top_relay.OlderBuild
+    | top_relay.Unsupported
+    | top_relay.PeerChanged
+    | top_relay.InvalidPeer
+    | top_relay.RequestTooLarge
     | top_relay.Refused(..)
     | top_relay.Unreadable(..) -> top_relay.describe(failure)
   }

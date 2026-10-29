@@ -1656,8 +1656,16 @@ last list is kept, marked stale with the time the failures began
 (`remote/top_view`). A port that does not know these messages can stop on them,
 but a port death does not identify its build or establish that a forwarded action
 did not run. The caller retains an unknown mutation outcome through later failed
-dials or refusals; an unreadable send landing is unknown as well. Both ends still
-assume the same wire contract: this correction adds no feature negotiation.
+dials or refusals; an unreadable send landing is unknown as well.
+
+Protocol 105 carries these page operations through the stable `loom_peer_v1`
+exchange. A correlated features answer advertises exact implemented revisions;
+the operation stays in that envelope with the observed serving epoch. The
+receiver checks epoch, revision and body before the existing TopHost callback.
+A missing endpoint is unsupported, not evidence of an older release, and
+negotiation does not grant policy authority. Discovery and dispatch share the
+original call deadline. An older installation needs an initial upgrade before
+serving migrated page calls; unmigrated legacy traffic keeps its same-build rule.
 
 The relayed page retains its last complete row and transcript when either read
 fails, and reports their age. Read failures use read-specific words; an initial
@@ -1670,7 +1678,8 @@ precede dispatch and do not become unknown mutations.
 | --- | --- |
 | `client/spawners` | The `top_level` table |
 | `client/remote_top` | Placements, refusals, offers, rows and pages, and their total decoders |
-| `client/remote/orchestrator_port` | The eight messages, `TopHost`, the `ask_top_*` sending ends |
+| `client/remote/orchestrator_port` | Legacy messages and the shared `TopHost` callbacks |
+| `client/remote/peer_service`, `peer_codec`, `peer_client`, `peer_top` | Stable bounded exchange, negotiation and fenced dispatch for 094 |
 | `client/top_host`; `daemon/main.start_orchestrator_port` | The judging and serving on the box |
 | `daemon/manager.reserve_relayed`, `relayed_sessions`, `archive_relayed`; `storage/catalogue.claim_relayed`; `storage/domain.reserve_relayed` | The reservation and the listing |
 | `client/relayed_session`; `Resident.relay` | What a resident session answers |
@@ -1792,8 +1801,10 @@ The directory holds no state of its own, so it has no model.
 - **Mixed builds across orchestrators.** The orchestrator port's message type is
   closed and matched without a catch-all, as the executor host's is, so a newer
   peer that sends a constructor an older port lacks (`Describe`, in this
-  release) halts the older port until that daemon restarts. Upgrade both
-  orchestrators together, or the one that owns the sessions first.
+  release) halts the older port until that daemon restarts. Unmigrated legacy
+  operations retain coordinated upgrades. Protocol 105's migrated 094 page
+  operations use a separate stable endpoint and require compatible revisions;
+  installations without that endpoint report unsupported until upgraded.
 - **Peer mail across orchestrators** has no push when a session opens: the
   sender finds out on its next attempt, at most five minutes after the owner
   opens it. A message queued while the drainer is backed off for older messages

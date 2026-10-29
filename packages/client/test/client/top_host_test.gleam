@@ -22,6 +22,8 @@ import client/protocol
 import client/relayed_session.{type Endpoint, Endpoint, Overview}
 import client/remote/address.{type Address}
 import client/remote/orchestrator_port.{type Message}
+import client/remote/peer_client
+import client/remote/peer_service
 import client/remote/top_relay
 import client/remote_escalation
 import client/remote_top
@@ -339,57 +341,64 @@ fn port_at(rig: Rig, now: Int) -> Address(Message) {
   port_at_with(rig, now, fn(endpoint) { endpoint })
 }
 
+fn context_at(
+  rig: Rig,
+  now: Int,
+  project: fn(Endpoint) -> Endpoint,
+) -> top_host.Context(Endpoint) {
+  top_host.Context(
+    spawners: [rig.spawner],
+    registry: rig.registry,
+    endpoint: project,
+    sessions_directory: rig.directory,
+    domain_configuration: rig.configuration_path,
+    generator: fn() {
+      ids.generator(clock.fixed(at: now), ffi_os.unique_positive_integer())
+    },
+    now_ms: fn() { now },
+    has_executor: fn(name) { name == "exec" },
+    has_pool: fn(name) { name == "linux" },
+    survey: fn() {
+      deployment.Placements(
+        executors: [
+          deployment.ExecutorEntry(
+            executor: executors.plain("exec", "runner@100.64.0.7"),
+            health: deployment.Reachable,
+            report: None,
+          ),
+        ],
+        pools: [
+          deployment.PoolEntry(name: "linux", executors: ["exec"], eligible: [
+            "exec",
+          ]),
+        ],
+      )
+    },
+    check_folder: fn(path) {
+      case path {
+        "/srv/work" -> Ok("/srv/work")
+        "/srv/old" -> Ok("/srv/old")
+        other ->
+          case string.starts_with(other, "/long/") {
+            True -> Ok(other)
+            False -> Error("That is not a folder you can use.")
+          }
+      }
+    },
+    record: fn(session) {
+      process.send(rig.world, Note("record " <> session))
+      Ok(Nil)
+    },
+    covered: fn() { process.send(rig.world, Note("covered")) },
+  )
+}
+
 fn port_at_with(
   rig: Rig,
   now: Int,
   project: fn(Endpoint) -> Endpoint,
 ) -> Address(Message) {
-  let context =
-    top_host.Context(
-      spawners: [rig.spawner],
-      registry: rig.registry,
-      endpoint: project,
-      sessions_directory: rig.directory,
-      domain_configuration: rig.configuration_path,
-      generator: fn() {
-        ids.generator(clock.fixed(at: now), ffi_os.unique_positive_integer())
-      },
-      now_ms: fn() { now },
-      has_executor: fn(name) { name == "exec" },
-      has_pool: fn(name) { name == "linux" },
-      survey: fn() {
-        deployment.Placements(
-          executors: [
-            deployment.ExecutorEntry(
-              executor: executors.plain("exec", "runner@100.64.0.7"),
-              health: deployment.Reachable,
-              report: None,
-            ),
-          ],
-          pools: [
-            deployment.PoolEntry(name: "linux", executors: ["exec"], eligible: [
-              "exec",
-            ]),
-          ],
-        )
-      },
-      check_folder: fn(path) {
-        case path {
-          "/srv/work" -> Ok("/srv/work")
-          "/srv/old" -> Ok("/srv/old")
-          other ->
-            case string.starts_with(other, "/long/") {
-              True -> Ok(other)
-              False -> Error("That is not a folder you can use.")
-            }
-        }
-      },
-      record: fn(session) {
-        process.send(rig.world, Note("record " <> session))
-        Ok(Nil)
-      },
-      covered: fn() { process.send(rig.world, Note("covered")) },
-    )
+  let context = context_at(rig, now, project)
   let name = process.new_name("orchestrator_port")
   let assert Ok(_) =
     orchestrator_port.start_with_top(
@@ -1541,9 +1550,20 @@ pub fn an_archive_that_times_out_while_the_real_registry_is_stopping_is_unknown_
   let #(rig, gate, entered) = blocked_rig("archive-blocked")
   let session = made(rig, 1)
   resident(rig, session)
+  let peer_name = process.new_name("peer_service")
+  let assert Ok(_) =
+    peer_service.start(
+      peer_name,
+      "epoch-test",
+      "build-test",
+      top_host.host(
+        context_at(rig, 1_700_000_000_000, fn(endpoint) { endpoint }),
+      ),
+    )
+  let peer = address.Address(node: node.self(), name: peer_name)
   let relay =
     top_relay.through(
-      fn(_) { Ok(rig.port) },
+      fn(_) { Ok(peer) },
       top_relay.Timing(
         retry_window_ms: 600,
         create_ms: 150,
@@ -1572,4 +1592,25 @@ pub fn a_stop_during_real_registry_retirement_is_not_reported_as_done_test() {
     orchestrator_port.ask_top_stop(rig.port, session, answers_within_ms)
   process.send(gate, ReleaseDrain)
   let assert Ok(Error(remote_top.NotYetOpen(_))) = answer
+}
+
+// Negotiation grants no authority: the host judges the caller's node again.
+pub fn a_negotiated_stop_still_refuses_an_unconfigured_spawner_test() {
+  let rig = rig("peer-authority")
+  let session = made(rig, 1)
+  let context = context_at(rig, 1_700_000_000_000, fn(endpoint) { endpoint })
+  let context =
+    top_host.Context(..context, spawners: [
+      spawners.Spawner(..rig.spawner, node: "somebody@else"),
+    ])
+  let name = process.new_name("peer_service")
+  let assert Ok(_) =
+    peer_service.start(name, "epoch-test", "build-test", top_host.host(context))
+  let at = address.Address(node: node.self(), name:)
+  let assert Ok(Error(remote_top.UnknownSpawner(node))) =
+    peer_client.call(at, "094.stop.1", json.Array([json.String(session)]), 1000)
+  assert node == own_node()
+  assert !list.any(lines(rig.world), fn(line) {
+    string.starts_with(line, "stop ")
+  })
 }

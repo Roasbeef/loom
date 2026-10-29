@@ -14,6 +14,8 @@
 ////   dial A B        have the already-connected node A connect to node B
 ////   hidden NODE     list the hidden nodes the connected node NODE sees
 ////   drop A B        have the already-connected node A disconnect from node B
+////   placements NODE ask through the production negotiated relay
+////   legacy NODE     ask the still-supported legacy placements port
 ////
 //// Each step prints one `RESULT` line that the parent reads back, and the
 //// emulator ends with `PROBE_COMPLETE` and status zero only after every step
@@ -25,6 +27,12 @@
 //// daemon's configuration lists it only in a fixture's temporary directory.
 
 import client/distribution
+import client/orchestrators
+import client/remote/address.{Address}
+import client/remote/orchestrator_port
+import client/remote/top_relay
+import client/remote_top
+import client/roster
 import gleam/erlang/atom
 import gleam/erlang/node.{type Node}
 import gleam/erlang/process
@@ -124,6 +132,46 @@ fn step(membership: distribution.Membership, line: String) -> Nil {
       )
     }
 
+    ["placements", name] -> {
+      let relay =
+        top_relay.over(
+          membership,
+          roster.fixed([orchestrators.plain("target", name)]),
+        )
+      let outcome = case top_relay.placements(relay, "target") {
+        Ok(offers) -> offer_words(offers)
+        Error(top_relay.Refused(remote_top.UnknownSpawner(node: origin))) ->
+          case origin == atom.to_string(node.name(node.self())) {
+            True -> "unknown-spawner"
+            False -> "wrong-spawner"
+          }
+        Error(failure) -> "error: " <> top_relay.describe(failure)
+      }
+      io.println("RESULT placements " <> name <> " " <> outcome)
+    }
+
+    ["legacy", name] -> {
+      let assert Ok(Nil) =
+        distribution.connect(configured(membership, name), step_ms)
+        as "the legacy peer is connected"
+      let at =
+        Address(
+          node: node_of(membership, name),
+          name: orchestrator_port.default(),
+        )
+      let answer = orchestrator_port.ask_placements(at, step_ms)
+      let outcome = case answer {
+        Ok(Ok(value)) ->
+          case remote_top.decode_offers(value) {
+            Ok(offers) -> offer_words(offers)
+            Error(reason) -> "unreadable: " <> reason
+          }
+        Ok(Error(reason)) -> "refused: " <> remote_top.describe_refusal(reason)
+        Error(_) -> "silent"
+      }
+      io.println("RESULT legacy " <> name <> " " <> outcome)
+    }
+
     ["hidden", name] -> {
       let seen =
         ffi_probe.hidden_nodes(node_of(membership, name), step_ms)
@@ -147,4 +195,12 @@ fn configured(
 
 fn node_of(membership: distribution.Membership, name: String) -> Node {
   distribution.node(configured(membership, name))
+}
+
+// The configured profile and model make an empty or substituted reply visible.
+fn offer_words(offers: remote_top.Offers) -> String {
+  "profiles="
+  <> string.join(offers.profiles, ",")
+  <> " models="
+  <> string.join(offers.models, ",")
 }

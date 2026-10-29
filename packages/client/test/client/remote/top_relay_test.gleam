@@ -11,7 +11,8 @@
 //// distribution is, in `distribution_test`.
 
 import client/remote/address.{type Address}
-import client/remote/orchestrator_port.{type Message}
+import client/remote/orchestrator_port
+import client/remote/peer_service.{type Message}
 import client/remote/top_relay.{
   type Failure, NotConfigured, OlderBuild, Refused, Silent, Unreachable,
   Unreadable,
@@ -86,20 +87,8 @@ fn drain(entries: Subject(String), found: List(String)) -> List(String) {
 
 fn serving(top: orchestrator_port.TopHost) -> Address(Message) {
   let name = process.new_name("orchestrator_port")
-  let assert Ok(_) =
-    orchestrator_port.start_with_top(
-      name,
-      fn(_session) { Ok(orchestrator_port.NotOwned) },
-      fn(_session, _command) { Error(orchestrator_port.peer_unserved) },
-      fn(_session) { Error("not_found") },
-      orchestrator_port.declining(),
-      orchestrator_port.refusing_spawns(),
-      orchestrator_port.refusing_children(),
-      orchestrator_port.unheld,
-      orchestrator_port.unreported(),
-      top,
-    )
-    as "the port starts"
+  let assert Ok(_) = peer_service.start(name, "epoch-test", "build-test", top)
+    as "the peer service starts"
   address.Address(node: node.self(), name:)
 }
 
@@ -468,10 +457,10 @@ pub fn an_absent_port_does_not_prove_an_older_build_test() {
       name: process.new_name("orchestrator_port_absent"),
     )
   let relay = top_relay.through(fn(_name) { Ok(gone) }, quick())
-  assert top_relay.placements(relay, "box") == Error(Silent)
-  assert top_relay.stop(relay, "box", "s") == Error(Silent)
+  assert top_relay.placements(relay, "box") == Error(top_relay.Unsupported)
+  assert top_relay.stop(relay, "box", "s") == Error(top_relay.Unsupported)
   assert top_relay.create(relay, "box", request(), on_box(), "alt", None)
-    == Error(Silent)
+    == Error(top_relay.Unsupported)
 }
 
 // A forwarded stop may reach an independent session before the port dies. The
@@ -504,18 +493,7 @@ pub fn a_port_death_after_forwarding_a_stop_leaves_its_outcome_unknown_test() {
         },
       )
     let assert Ok(started) =
-      orchestrator_port.start_with_top(
-        name,
-        fn(_session) { Ok(orchestrator_port.NotOwned) },
-        fn(_session, _command) { Error(orchestrator_port.peer_unserved) },
-        fn(_session) { Error("not_found") },
-        orchestrator_port.declining(),
-        orchestrator_port.refusing_spawns(),
-        orchestrator_port.refusing_children(),
-        orchestrator_port.unheld,
-        orchestrator_port.unreported(),
-        top,
-      )
+      peer_service.start(name, "epoch-test", "build-test", top)
     process.send(ready, #(
       address.Address(node: node.self(), name:),
       started.pid,

@@ -1,19 +1,18 @@
 //// The sending end of a page that starts and drives sessions on another
 //// orchestrator (protocol-change/094).
 ////
-//// The receiving end is the orchestrator port's `Placements`, `TopCreate`,
-//// `TopSessions`, `TopHistory`, `TopSend`, `TopStop`, `TopArchive` and
-//// `TopResolve` (`client/remote/orchestrator_port`, served by
-//// `client/top_host`). This module is how the laptop's daemon asks them for a
-//// page of its web view. It has no screen in it: the web view calls these
-//// functions and draws what they return.
+//// The receiving end serves the placements and top-level session operations
+//// from `client/top_host` through `client/remote/peer_service`. This module is
+//// how the laptop's daemon asks for a page of its web view. It has no screen
+//// in it: the web view calls these functions and draws what they return.
 ////
 //// ## Dial on demand, and nothing kept
 ////
 //// Each call connects to the orchestrator's pinned peer if it is not connected
-//// and asks that peer's port, as `client/remote/remote_spawner` does, so no
-//// connection is held between calls and a laptop that sleeps costs the next
-//// call one reconnect. The orchestrator is a configured `[orchestrators.<name>]`
+//// and asks that peer's stable endpoint, so no connection is held between
+//// calls and a laptop that sleeps costs the next call one reconnect. Each
+//// attempt discovers the supported revision and serving epoch, then fences
+//// dispatch to that epoch within the original call deadline. The orchestrator is a configured `[orchestrators.<name>]`
 //// key and a name that is not configured is a definitive failure, so nothing
 //// the page sends is turned into a node. `Placements` is asked on every call,
 //// because the composer must show what the box allows now, and nothing here
@@ -47,10 +46,10 @@
 ////
 //// ## A port that disappears
 ////
-//// Both ends must run the same build (protocol-change/078), but a port's death
-//// does not identify its build. The port may have forwarded a request before it
-//// died, and that independent recipient can still complete it. A monitor firing
-//// therefore means `Silent`, just as a lost answer does.
+//// A missing stable endpoint means unsupported, not a particular old build.
+//// After dispatch, the endpoint may have forwarded a request before it died,
+//// and that independent recipient can still complete it. A monitor firing at
+//// that point therefore means `Silent`, just as a lost answer does.
 ////
 //// ## Flow
 ////
@@ -69,14 +68,17 @@
 import client/distribution.{type Membership}
 import client/orchestrators.{type Orchestrator}
 import client/remote/address
-import client/remote/orchestrator_port.{type Silence, AskTimedOut, PortGone}
+import client/remote/peer_client
+import client/remote/peer_service
+import client/remote/peer_top
 import client/remote_escalation.{type Answer, type Decider, type Decision}
 import client/remote_mail
 import client/remote_top.{type Offers, type Placement, type SessionsPage}
 import client/roster.{type Roster}
+import core/json
 import gleam/int
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import session_view/remote_transcript
 import weft/poll
@@ -141,7 +143,7 @@ pub fn production() -> Timing {
 /// answer connects to the orchestrator's pinned peer (`over`), and a test
 /// supplies its own.
 pub type Dial =
-  fn(String) -> Result(address.Address(orchestrator_port.Message), Failure)
+  fn(String) -> Result(address.Address(peer_service.Message), Failure)
 
 /// A daemon's way of reaching the orchestrators it lists.
 pub opaque type Relay {
@@ -174,6 +176,18 @@ pub type Failure {
     refusal: remote_top.Refusal,
   )
 
+  /// The peer does not advertise the required operation.
+  Unsupported
+
+  /// The peer changed incarnation before dispatch.
+  PeerChanged
+
+  /// Feature negotiation returned malformed or mismatched data.
+  InvalidPeer
+
+  /// The request exceeds the operation envelope before dispatch.
+  RequestTooLarge
+
   /// The orchestrator answered and the answer would not read. Nothing of it is
   /// used.
   Unreadable(
@@ -199,6 +213,10 @@ pub fn describe(failure: Failure) -> String {
     Silent ->
       "the orchestrator did not answer, so it is not known whether it happened"
     OlderBuild -> "the orchestrator runs an older Loom"
+    Unsupported -> "the orchestrator does not support this operation"
+    PeerChanged -> "the orchestrator changed while negotiating; try again"
+    InvalidPeer -> "the orchestrator's feature response could not be read"
+    RequestTooLarge -> "the request exceeds the peer operation size limit"
     Refused(refusal:) -> remote_top.describe_refusal(refusal)
     Unreadable(reason:) ->
       "the orchestrator's answer could not be read: " <> reason
@@ -241,9 +259,7 @@ pub fn through(dial: Dial, timing: Timing) -> Relay {
 /// // top_relay.placements(relay, "box")
 /// ```
 pub fn placements(relay: Relay, name: String) -> Result(Offers, Failure) {
-  use json <- result.try(
-    once(relay, name, orchestrator_port.ask_placements(_, relay.timing.call_ms)),
-  )
+  use json <- result.try(once(relay, name, "094.placements.1", json.Array([])))
   remote_top.decode_offers(json) |> result.map_error(Unreadable)
 }
 
@@ -264,16 +280,34 @@ pub fn create(
   profile: String,
   model: Option(String),
 ) -> Result(String, Failure) {
-  resending(relay, name, fn(at, wait_ms) {
-    orchestrator_port.ask_top_create(
-      at,
-      request_id,
-      placement,
-      profile,
-      model,
-      int.min(relay.timing.create_ms, wait_ms),
-    )
-  })
+  let body =
+    json.Array([
+      json.String(request_id),
+      remote_top.encode_placement(placement),
+      json.String(profile),
+      case model {
+        Some(value) -> json.String(value)
+        None -> json.Null
+      },
+    ])
+  use value <- result.try(resending(
+    relay,
+    name,
+    "094.create.1",
+    body,
+    relay.timing.create_ms,
+  ))
+
+  // A successful create must return the session's identity.
+  case value {
+    json.String(session) -> Ok(session)
+    json.Object(_)
+    | json.Array(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Bool(_)
+    | json.Null -> Error(Unreadable("invalid create reply"))
+  }
 }
 
 /// One page of the sessions this daemon's page started on the orchestrator,
@@ -291,14 +325,12 @@ pub fn sessions(
   after: String,
   limit: Int,
 ) -> Result(SessionsPage, Failure) {
-  use json <- result.try(
-    once(relay, name, orchestrator_port.ask_top_sessions(
-      _,
-      after,
-      limit,
-      relay.timing.call_ms,
-    )),
-  )
+  use json <- result.try(once(
+    relay,
+    name,
+    "094.sessions.1",
+    json.Array([json.String(after), json.Int(limit)]),
+  ))
   remote_top.decode_page(json) |> result.map_error(Unreadable)
 }
 
@@ -361,15 +393,12 @@ pub fn history(
   cursor: Int,
   limit: Int,
 ) -> Result(remote_transcript.Page, Failure) {
-  use json <- result.try(
-    once(relay, name, orchestrator_port.ask_top_history(
-      _,
-      session,
-      cursor,
-      limit,
-      relay.timing.call_ms,
-    )),
-  )
+  use json <- result.try(once(
+    relay,
+    name,
+    "094.history.1",
+    json.Array([json.String(session), json.Int(cursor), json.Int(limit)]),
+  ))
   remote_transcript.decode(json) |> result.map_error(Unreadable)
 }
 
@@ -389,17 +418,17 @@ pub fn send(
   message_id: String,
   text: String,
 ) -> Result(remote_mail.Landing, Failure) {
-  use json <- result.try(
-    resending(relay, name, fn(at, wait_ms) {
-      orchestrator_port.ask_top_send(
-        at,
-        session,
-        message_id,
-        text,
-        int.min(relay.timing.call_ms, wait_ms),
-      )
-    }),
-  )
+  use json <- result.try(resending(
+    relay,
+    name,
+    "094.send.1",
+    json.Array([
+      json.String(session),
+      json.String(message_id),
+      json.String(text),
+    ]),
+    relay.timing.call_ms,
+  ))
   remote_mail.decode_landing(json) |> result.map_error(Unreadable)
 }
 
@@ -415,11 +444,23 @@ pub fn stop(
   name: String,
   session: String,
 ) -> Result(Nil, Failure) {
-  once(relay, name, orchestrator_port.ask_top_stop(
-    _,
-    session,
-    relay.timing.call_ms,
+  use value <- result.try(once(
+    relay,
+    name,
+    "094.stop.1",
+    json.Array([json.String(session)]),
   ))
+
+  // A stop acknowledgement has no additional payload.
+  case value {
+    json.Null -> Ok(Nil)
+    json.Object(_)
+    | json.Array(_)
+    | json.String(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Bool(_) -> Error(Unreadable("invalid stop reply"))
+  }
 }
 
 /// Archives a session. There is no delete: deleting is done on the
@@ -435,11 +476,23 @@ pub fn archive(
   name: String,
   session: String,
 ) -> Result(Nil, Failure) {
-  once(relay, name, orchestrator_port.ask_top_archive(
-    _,
-    session,
-    relay.timing.call_ms,
+  use value <- result.try(once(
+    relay,
+    name,
+    "094.archive.1",
+    json.Array([json.String(session)]),
   ))
+
+  // An archive acknowledgement has no additional payload.
+  case value {
+    json.Null -> Ok(Nil)
+    json.Object(_)
+    | json.Array(_)
+    | json.String(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Bool(_) -> Error(Unreadable("invalid archive reply"))
+  }
 }
 
 /// Sends the person's decision about a session's request. It is asked once: a
@@ -462,15 +515,17 @@ pub fn resolve(
   expected_seq: Int,
   decided_by: Decider,
 ) -> Result(Answer, Failure) {
-  once(relay, name, orchestrator_port.ask_top_resolve(
-    _,
-    session,
-    escalation_id,
-    decision,
-    expected_seq,
-    decided_by,
-    relay.timing.call_ms,
-  ))
+  let body =
+    json.Array([
+      json.String(session),
+      json.String(escalation_id),
+      peer_top.encode_decision(decision),
+      json.Int(expected_seq),
+      json.String(decided_by.principal),
+      json.String(decided_by.name),
+    ])
+  use value <- result.try(once(relay, name, "094.resolve.1", body))
+  peer_top.decode_answer(value) |> result.map_error(Unreadable)
 }
 
 /// The session a create made, found in a page of the orchestrator's sessions by
@@ -503,7 +558,7 @@ fn dial(
   membership: Membership,
   configured: Roster(Orchestrator),
   name: String,
-) -> Result(address.Address(orchestrator_port.Message), Failure) {
+) -> Result(address.Address(peer_service.Message), Failure) {
   use orchestrator <- result.try(
     orchestrators.find(roster.rows(configured), name)
     |> result.replace_error(NotConfigured(name:)),
@@ -517,26 +572,35 @@ fn dial(
   )
   Ok(address.Address(
     node: distribution.node(peer),
-    name: orchestrator_port.default(),
+    name: peer_service.default(),
   ))
 }
 
-// One question, asked once.
-/// Once keeps this client operation’s decoding or state decision in one place.
+/// Uses one budget for feature discovery and the fenced operation.
 fn once(
   relay: Relay,
   name: String,
-  ask: fn(address.Address(orchestrator_port.Message)) ->
-    Result(Result(a, remote_top.Refusal), Silence),
-) -> Result(a, Failure) {
+  revision: String,
+  body: json.JsonValue,
+) -> Result(json.JsonValue, Failure) {
   use at <- result.try(relay.dial(name))
+  peer_client.call(at, revision, body, relay.timing.call_ms)
+  |> result.map_error(peer_failure)
+  |> result.try(fn(answer) { answer |> result.map_error(Refused) })
+}
 
-  // This match resolves ask(at) before the surrounding protocol step continues.
-  // This match resolves ask(at) before the enclosing validation continues.
-  case ask(at) {
-    Ok(Ok(answer)) -> Ok(answer)
-    Ok(Error(refusal)) -> Error(Refused(refusal:))
-    Error(PortGone) | Error(AskTimedOut) -> Error(Silent)
+/// Converts negotiation outcomes without implying an unsupported peer's age.
+fn peer_failure(failure: peer_client.Failure) -> Failure {
+  case failure {
+    peer_client.Unsupported -> Unsupported
+    peer_client.Unavailable -> Unreachable
+    peer_client.Stale -> PeerChanged
+    peer_client.InvalidFeatures -> InvalidPeer
+    peer_client.RequestTooLarge -> RequestTooLarge
+    peer_client.ReplyLost -> Silent
+    peer_client.ReplyTooLarge ->
+      Unreadable("the peer response exceeds the size limit")
+    peer_client.Unreadable -> Unreadable("the peer reply could not be read")
   }
 }
 
@@ -556,9 +620,10 @@ type Tries {
 fn resending(
   relay: Relay,
   name: String,
-  ask: fn(address.Address(orchestrator_port.Message), Int) ->
-    Result(Result(a, remote_top.Refusal), Silence),
-) -> Result(a, Failure) {
+  revision: String,
+  body: json.JsonValue,
+  call_ms: Int,
+) -> Result(json.JsonValue, Failure) {
   let clock = poll.monotonic()
   let started = clock.now()
   let folded =
@@ -572,39 +637,43 @@ fn resending(
       from: Fresh,
       attempt: fn(tries) {
         let left =
-          int.max(
-            relay.timing.call_ms,
-            relay.timing.retry_window_ms - { clock.now() - started },
-          )
+          int.max(0, relay.timing.retry_window_ms - { clock.now() - started })
 
-        // A failed first dial sent nothing. After a possible effect, a missing
-        // configuration ends the retry but cannot settle the earlier attempt.
+        // A later dial cannot settle the effect of an unanswered attempt.
         case relay.dial(name), tries {
           Error(failure), Fresh -> poll.Broken(failure)
           Error(NotConfigured(_)), After -> poll.Broken(Silent)
           Error(_), After -> poll.Pending(After)
           Ok(at), _ ->
-            case ask(at, left) {
+            case peer_client.call(at, revision, body, int.min(call_ms, left)) {
               Ok(Ok(answer)) -> poll.Settled(answer)
               Ok(Error(refusal)) ->
                 case remote_top.retryable(refusal), tries {
                   True, _ -> poll.Pending(After)
-                  False, Fresh -> poll.Broken(Refused(refusal:))
+                  False, Fresh -> poll.Broken(Refused(refusal))
                   False, After -> poll.Broken(Silent)
                 }
-              Error(PortGone) | Error(AskTimedOut) -> poll.Pending(After)
+              Error(peer_client.ReplyLost) -> poll.Pending(After)
+              Error(peer_client.Unreadable) ->
+                poll.Broken(Unreadable("the peer reply could not be read"))
+              Error(peer_client.ReplyTooLarge) ->
+                poll.Broken(Unreadable(
+                  "the peer response exceeds the size limit",
+                ))
+              Error(failure) ->
+                case tries {
+                  Fresh -> poll.Broken(peer_failure(failure))
+                  After -> poll.Broken(Silent)
+                }
             }
         }
       },
     )
 
-  // This match resolves folded before the surrounding protocol step continues.
-  // This match resolves folded before the enclosing validation continues.
+  // Expiry after any uncertain attempt retains that uncertainty.
   case folded {
     poll.Answer(value:) -> Ok(value)
     poll.Failure(error:) -> Error(error)
-
-    // Neither a timeout nor a retryable refusal proves the effect absent.
     poll.RanOut(state: After) | poll.RanOut(state: Fresh) -> Error(Silent)
   }
 }
@@ -625,6 +694,13 @@ pub fn outcome_unknown(failure: Failure) -> Bool {
   // This match resolves failure before the enclosing validation continues.
   case failure {
     Silent | Unreadable(_) | Refused(remote_top.StoreFailure(_)) -> True
-    NotConfigured(_) | Unreachable | OlderBuild | Refused(_) -> False
+    NotConfigured(_)
+    | Unreachable
+    | OlderBuild
+    | Unsupported
+    | PeerChanged
+    | InvalidPeer
+    | RequestTooLarge
+    | Refused(_) -> False
   }
 }

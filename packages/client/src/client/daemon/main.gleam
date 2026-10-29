@@ -106,6 +106,7 @@ import client/remote/address
 import client/remote/host as executor_host
 import client/remote/link_keeper
 import client/remote/orchestrator_port
+import client/remote/peer_service
 import client/remote/remote_peer
 import client/remote/remote_spawner
 import client/remote/top_relay
@@ -1162,6 +1163,21 @@ pub fn start_orchestrator_port(
         )
         |> result.map_error(fn(error) {
           "the orchestrator port did not start: " <> string.inspect(error)
+        }),
+      )
+
+      // The stable peer service shares this daemon's epoch and the same host
+      // callbacks, so a negotiated operation is authorized at dispatch time.
+      let build = build_identity.current()
+      use _peer <- result.try(
+        peer_service.start(
+          peer_service.default(),
+          ready.epoch,
+          build.version <> "/" <> build.commit,
+          top,
+        )
+        |> result.map_error(fn(error) {
+          "the peer service did not start: " <> string.inspect(error)
         }),
       )
       log.info(logger, "daemon.orchestrator_port", [
