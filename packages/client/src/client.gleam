@@ -25,6 +25,7 @@ import client/daemon/admin
 import client/daemon/directory_cli
 import client/daemon/distribution_cli
 import client/daemon/executor_cli
+import client/daemon/launch_preflight
 import client/daemon/main as daemon
 import client/daemon/peer_cli
 import client/evolution/cli as evolution_cli
@@ -59,6 +60,7 @@ pub fn main() -> Nil {
     Some(text) -> io.println(text)
     None ->
       case arguments {
+        ["__launch_preflight", ..rest] -> launch_preflight.main(rest)
         ["access", ..rest] -> admin.main(rest)
         ["peer", ..rest] -> peer_cli.main(rest)
         ["codex", ..rest] -> codex_cli.main(rest)

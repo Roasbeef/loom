@@ -172,9 +172,13 @@ pub fn the_catalogue_parser_refuses_a_bad_table_too_test() {
 pub fn a_vm_without_the_boot_flags_is_refused_untouched_test() {
   let assert Ok(Some(config)) =
     distribution.parse(document("", peer("executor@10.0.0.2", pin)))
-  let assert Error(distribution.UnsafeBoot(_)) =
+  let assert Error(distribution.UnsafeBoot(refusal)) =
+    distribution.validate(config, distribution.NotMember)
+    as "Preflight must refuse a VM booted without the TLS flags."
+  let assert Error(distribution.UnsafeBoot(start_refusal)) =
     distribution.start(config, distribution.NotMember)
     as "A VM booted without the TLS flags must not start distribution."
+  assert refusal == start_refusal
 
   // The operator is told how to boot it, not only that it was refused.
   let message =
@@ -248,6 +252,24 @@ pub fn tls_options_preserve_every_pin_byte_test() {
   )
 }
 
+pub fn launch_capture_and_startup_revalidation_test() {
+  proves(
+    "launch_capture",
+    "Preflight captures the emulator options and startup refuses a later mutation.",
+  )
+  proves(
+    "launch_capture_environment",
+    "Flags inherited through ERL_FLAGS are captured from the emulator.",
+  )
+}
+
+pub fn startup_alias_switch_does_not_publish_stale_launch_metadata_test() {
+  proves(
+    "launch_symlink_switch",
+    "A real TLS daemon must not publish metadata after its options alias changes.",
+  )
+}
+
 pub fn pinned_peers_connect_and_exchange_a_message_test() {
   proves(
     "connect",
@@ -297,6 +319,13 @@ pub fn start_refuses_wrong_boots_and_credentials_test() {
     "start_refusals",
     "Conflicting flags, a mismatched or writable options file, and bad "
       <> "credential files must each be refused with distribution off.",
+  )
+}
+
+pub fn malformed_and_wrong_private_keys_are_refused_test() {
+  proves(
+    "credential_key_refusals",
+    "Preflight and startup must reject malformed and mismatched private keys.",
   )
 }
 

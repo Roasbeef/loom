@@ -44,6 +44,95 @@ scenario(Name) ->
 
 %% ---------------------------------------------------------------- scenarios
 
+%% A valid preflight observes the actual TLS boot and does not start a node.
+%% A later options mutation must be caught again by ordinary startup.
+run(<<"launch_capture">>, Root) ->
+    {Node, Config} = lone_node(Root, none),
+    Path = write_options(Node, Config),
+    Port = open_vm(Node, Config, capture, #{options => bin(Path)},
+                   ["-kernel", "connect_all", "false"]),
+    try await_complete(Port, <<>>) after close_port(Port) end,
+    ok;
+
+%% The emulator merges ERL_FLAGS into init arguments before Gleam starts.
+%% Capture must see that source exactly as it sees direct launcher arguments.
+run(<<"launch_capture_environment">>, Root) ->
+    {Node, Config} = lone_node(Root, none),
+    Path = write_options(Node, Config),
+    #{home := Home} = Node,
+    Paths = [filename:absname(P) || P <- code:get_path()],
+    Encoded = binary_to_list(base64:encode(term_to_binary(
+        {Config, #{options => bin(Path)}}))),
+    Eval = lists:flatten(io_lib:format("~s:child(~p, capture).", [?MODULE, Encoded])),
+    Flags = "-proto_dist inet_tls -ssl_dist_optfile " ++ str(Path) ++
+            " -kernel connect_all false",
+    Port = open_port({spawn_executable, os:find_executable("erl")},
+        [binary, exit_status, stderr_to_stdout,
+         {env, [{"HOME", str(Home)}, {"ERL_FLAGS", Flags},
+                {"ERL_AFLAGS", false}, {"ERL_ZFLAGS", false}]},
+         {args, ["+S", "2", "-pa"] ++ Paths ++ ["-noshell", "-eval", Eval]}]),
+    try await_complete(Port, <<>>) after close_port(Port) end,
+    ok;
+
+%% Malformed and unrelated keys must be rejected by preflight and startup.
+run(<<"credential_key_refusals">>, Root) ->
+    Ca = root_cert("fixture ca"),
+    Cookie = cookie("shared"),
+    A = provision(Root, "owner", Ca, name("owner"), same, Cookie),
+    B = provision(Root, "executor", Ca, name("executor"), same, Cookie),
+    Config = config(A, B, cert_of(B), none),
+    #{files := {credential_files, CaPath, _, KeyA, _}} = A,
+    #{files := {credential_files, _, _, KeyB, _}} = B,
+    {ok, GoodKey} = file:read_file(KeyA),
+    {ok, OtherKey} = file:read_file(KeyB),
+    ok = file:write_file(KeyA, <<"invalid private key">>),
+    expect(A, Config, {error, invalid_credentials}, []),
+    ok = file:write_file(KeyA, OtherKey),
+    expect(A, Config, {error, invalid_credentials}, []),
+    ok = file:write_file(KeyA, GoodKey),
+    ok = file:write_file(CaPath, <<"invalid authority">>),
+    expect(A, Config, {error, invalid_credentials}, []),
+    %% The peer trust anchor need not issue this node's own certificate.
+    OtherCa = root_cert("independent peer authority"),
+    ok = file:write_file(CaPath, public_key:pem_encode(
+        [{'Certificate', maps:get(cert, OtherCa), not_encrypted}])),
+    write_options(A, Config),
+    Port = open_vm(A, Config, validate_only, #{}, []),
+    try await_complete(Port, <<>>) after close_port(Port) end,
+    ok;
+
+%% Switch both configuration and TLS option aliases after real startup read
+%% them, before Ready publication. The new options target contains valid
+%% options too, so only the captured identity distinguishes the two files.
+run(<<"launch_symlink_switch">>, Root) ->
+    {Node0, Config} = lone_node(Root, none),
+    OriginalOptions = write_options(Node0, Config),
+    Alternate = filename:join(Root, "replacement-dir"),
+    ok = file:make_dir(Alternate),
+    AlternateOptions = filename:join(Alternate, "dist.options"),
+    {ok, OptionsBytes} = file:read_file(OriginalOptions),
+    ok = file:write_file(AlternateOptions, OptionsBytes),
+    ok = file:change_mode(AlternateOptions, 8#600),
+    OptionsAlias = filename:join(Root, "options-dir.alias"),
+    ok = file:make_symlink(filename:dirname(OriginalOptions), OptionsAlias),
+    #{name := Name, files := {credential_files, Ca, Cert, Key, Cookie}} = Node0,
+    {config, _, {pinned, [{peer_pin, Peer, Pin}]}, _, _} = Config,
+    HexPin = string:lowercase(binary_to_list(binary:encode_hex(Pin))),
+    Text = io_lib:format("[distribution]~nnode = ~tp~nca = ~tp~ncertificate = ~tp~nkey = ~tp~ncookie = ~tp~n[[distribution.peers]]~nnode = ~tp~nsha256 = \"~s\"~n", [str(Name), str(Ca), str(Cert), str(Key), str(Cookie), str(Peer), HexPin]),
+    ConfigTarget = filename:join(Root, "original.toml"),
+    ok = file:write_file(ConfigTarget, Text),
+    ConfigAlias = filename:join(Root, "config.alias"),
+    ok = file:make_symlink(ConfigTarget, ConfigAlias),
+    State = filename:join(Root, "state"),
+    Node = Node0#{options := filename:join(OptionsAlias, "dist.options")},
+    Aux = #{state => bin(State), config_alias => bin(ConfigAlias),
+            config_target => bin(ConfigTarget), options_alias => bin(OptionsAlias),
+            options_target => bin(OriginalOptions), replacement => bin(Alternate)},
+    Port = open_vm(Node, Config, launch_symlink_switch, Aux,
+                   ["-kernel", "connect_all", "false"]),
+    try await_complete(Port, <<>>) after close_port(Port) end,
+    ok;
+
 %% The options writer returns UTF-8, while OTP defaults an unmarked file to
 %% Latin-1. Repeated-byte pins cover both quoted and numeric binary rendering;
 %% the actual distribution reader must preserve each byte in both directions.
@@ -863,7 +952,28 @@ child_for(Handler, Encoded, Role) ->
         halt(2)
     end.
 
+role(validate_only, Config, _) ->
+    {ok, nil} = ?DIST:validate(Config, not_member),
+    false = erlang:is_alive();
+role(launch_symlink_switch, _Config, Aux) ->
+    {ok, _} = application:ensure_all_started(client),
+    #{state := State, config_alias := ConfigAlias, config_target := ConfigTarget,
+      options_alias := OptionsAlias, options_target := OptionsTarget,
+      replacement := Replacement} = Aux,
+    nil = 'support@launch_symlink_witness':run(
+        State, ConfigAlias, ConfigTarget, OptionsAlias, OptionsTarget, Replacement);
+role(capture, Config, #{options := Path}) ->
+    {ok, {some, Path}} = ?DIST:launch_setting(),
+    {ok, nil} = ?DIST:validate(Config, not_member),
+    false = erlang:is_alive(),
+    ok = file:write_file(Path, <<"[].\n">>),
+    {error, {unsafe_boot, options_mismatch}} = ?DIST:start(Config, not_member),
+    false = erlang:is_alive();
 role(connect, Config, #{peer := PeerName} = Aux) ->
+    Before = application:get_env(kernel, dist_auto_connect),
+    {ok, nil} = ?DIST:validate(Config, not_member),
+    false = erlang:is_alive(),
+    Before = application:get_env(kernel, dist_auto_connect),
     {ok, Membership} = ?DIST:start(Config, not_member),
     {error, {unsafe_boot, already_distributed}} = ?DIST:start(Config, not_member),
     {error, invalid_configuration} =
@@ -1001,6 +1111,15 @@ role(epmd_registered, Config, _Aux) ->
     {ok, Names} = erl_epmd:names({127,0,0,1}),
     {Short, _} = lists:keyfind(Short, 1, Names);
 role(expect, Config, #{expected := Expected}) ->
+    %% Preflight cannot reserve runtime ports or start epmd. Those failures
+    %% belong to startup; their boot and credentials remain valid here.
+    Validation = case Expected of
+        {error, {epmd_unavailable, _}} -> {ok, nil};
+        {error, start_failed} -> {ok, nil};
+        Other -> Other
+    end,
+    Validation = ?DIST:validate(Config, not_member),
+    false = erlang:is_alive(),
     Expected = ?DIST:start(Config, not_member),
     false = erlang:is_alive();
 %% The executor of a remote tool call: the real host over a fake plane. It

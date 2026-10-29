@@ -24,6 +24,22 @@ Pin mutation, revocation and allow-list tests still use real TLS emulators.
 Unexpected scenario failures also print their complete stack to stderr before
 returning the existing error, because EUnit truncates a failed binary pattern.
 
+# Launch preflight
+
+`daemon/main` captures the canonical config and actual VM distribution options
+before reading them. It publishes `host/launch_metadata.Record` under the
+launch lock against the matching reservation before Ready. Unsupported CLI
+choices or a changed options alias leave the daemon serving without usable
+metadata. The canonical installed adjacent helper is reproducible.
+
+`daemon/launch_preflight` is an exit-only staged validation command. It shares
+startup's daemon decoders and distribution validation, including credential,
+identity and cookie-home checks. `ledger_reference.inspect` replays and audits
+ledger authority, membership and references without repair; only the owning
+`membership_store.open` repairs a torn tail. Validation starts no daemon
+listener, catalogue or ledger actor. It observes the files at one point in time;
+actual startup repeats validation and can still fail on runtime resources.
+
 # client
 
 ## Configuration parsing on session open

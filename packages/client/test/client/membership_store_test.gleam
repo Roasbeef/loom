@@ -84,6 +84,10 @@ pub fn a_torn_last_line_is_dropped_and_cut_from_the_file_test() {
   let whole = text_of(history.lines(log))
   let fragment = "eyJmb3JtYXQiOiJsb29tLW1lbWJlcnNoaXAtbGVkZ2Vy"
   let path = write(remote_fixtures.scratch("store-torn"), whole <> fragment)
+  let assert Ok(observed) = membership_store.inspect(path, fixture.verifier())
+  assert observed.ledger == log.ledger
+  assert observed.tail == Repaired(bytes: string.byte_size(fragment))
+  assert read(path) == whole <> fragment
   let assert Ok(opened) = membership_store.open(path, fixture.verifier())
   assert opened.ledger == log.ledger
   assert opened.tail == Repaired(bytes: string.byte_size(fragment))
