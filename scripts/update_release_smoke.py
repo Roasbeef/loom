@@ -232,6 +232,7 @@ def preflight_effects(root, prefix, environment, mode="local", configuration=Non
                                                pid, '-i'], text=True,
                                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     assert observed.returncode in (0, 1), observed.stderr
+                    assert not observed.stderr.strip(), observed.stderr
                     assert not observed.stdout.strip(), observed.stdout
             assert filesystem() == before_files, 'preflight changed private state or HOME'
             assert {row[0] for row in rows if Path(row[2]).name == 'epmd'} <= before_epmd
