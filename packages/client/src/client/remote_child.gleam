@@ -431,9 +431,11 @@ fn add_usage(total: ChildUsage, more: ChildUsage) -> ChildUsage {
 /// The standing is the stub's state, with a `Spawned` stub past its deadline
 /// shown as expired, since `is_live` no longer counts it and no join has said
 /// how it ended. The title is the newest glance's when there is one, and the
-/// purpose the spawn asked for before it. A glance's age is measured on this
-/// session's clock from when it arrived (`Stub.glance_seen_ms`), never from the
-/// other orchestrator's `at`, so `now` is this session's clock. Nothing here
+/// purpose the spawn asked for before it. A refusal replaces the glance summary
+/// with its reason, even if the glance arrived first. A glance's age is
+/// measured on this session's clock from when it arrived (`Stub.glance_seen_ms`),
+/// never from the other orchestrator's `at`, so `now` is this session's clock.
+/// Nothing here
 /// asks the other orchestrator: the strip shows what the stubs hold, however
 /// long ago it arrived.
 ///
@@ -484,10 +486,11 @@ fn agent_of(stub: Stub, now: Int) -> RemoteAgent {
     orchestrator: stub.orchestrator,
     standing:,
     title: glance.clip(title, remote_agent.max_text_bytes),
-    // This match resolves stub.glance before the enclosing validation continues.
-    summary: case stub.glance {
-      Some(seen) -> glance.clip(seen.summary, remote_agent.max_text_bytes)
-      None -> ""
+    // A late refusal is the outcome, even if a glance reached the pending stub.
+    summary: case stub.state, stub.glance {
+      Refused(reason), _ -> glance.clip(reason, remote_agent.max_text_bytes)
+      _, Some(seen) -> glance.clip(seen.summary, remote_agent.max_text_bytes)
+      _, None -> ""
     },
     // This match resolves stub.glance before the enclosing validation continues.
     tokens: case stub.glance {

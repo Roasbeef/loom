@@ -209,8 +209,9 @@ pub type Landing {
     remaining_ms: Option(Int),
   )
 
-  /// The message was delivered by an earlier attempt, and the receipt kept only
-  /// that it was admitted. The first attempt's answer was the one that said how.
+  /// The message was admitted, but this answer carries no run details. A repeat
+  /// reads only the receipt; the first answer also uses this when the run's
+  /// metadata cannot be read after admission.
   Admitted
 }
 

@@ -153,6 +153,7 @@ import telemetry/field
 import telemetry/handler
 import telemetry/log.{type Logger}
 import tom
+import tools/agent
 import web_view/creations
 import weft/actor
 import weft/poll
@@ -1149,6 +1150,7 @@ pub fn start_orchestrator_port(
             delegate_host.resolver(delegates),
             delegate_host.releaser(delegates),
             delegate_host.existing_endpoint(delegates),
+            logger,
           ),
           child_host(orchestrator_roster(config), ready.registry, child_inbox),
           ledger_holdings.from_catalogue(
@@ -1517,7 +1519,7 @@ pub fn peer_command(
 /// ## Examples
 ///
 /// ```gleam
-/// // main.spawn_host([], delegates, releasing, existing).run_ended(origin, operation)
+/// // main.spawn_host([], delegates, releasing, existing, logger).run_ended(origin, operation)
 /// // -> Error(remote_spawn.UnknownSpawner(origin.node))
 /// ```
 @internal
@@ -1529,6 +1531,7 @@ pub fn spawn_host(
     Result(Int, remote_spawn.SpawnRefusal),
   existing: fn(spawners.Spawner, remote_spawn.Parent) ->
     Result(Option(agency.DelegateEndpoint), remote_spawn.SpawnRefusal),
+  logger: Logger,
 ) -> orchestrator_port.SpawnHost {
   let spawner_of = fn(origin: remote_spawn.Origin) {
     spawners.by_node(configured, origin.node)
@@ -1558,17 +1561,49 @@ pub fn spawn_host(
   }
   orchestrator_port.SpawnHost(
     spawn: fn(origin, call_site, depth, parent_tools, request) {
-      use #(spawner, endpoint) <- result.try(serving(origin))
-      endpoint.spawn(
-        remote_spawn.Delegation(
-          parent: origin.parent,
-          depth:,
-          parent_tools:,
-          terms: delegate_host.terms_of(spawner),
-        ),
-        call_site,
-        request,
-      )
+      let outcome = {
+        use #(spawner, endpoint) <- result.try(serving(origin))
+        endpoint.spawn(
+          remote_spawn.Delegation(
+            parent: origin.parent,
+            depth:,
+            parent_tools:,
+            terms: delegate_host.terms_of(spawner),
+          ),
+          call_site,
+          request,
+        )
+      }
+
+      // Include admission refusals before a session is found; the minter and
+      // its ordinal identify which spawn within the call was refused.
+      case outcome {
+        Error(refusal) ->
+          case remote_spawn.refusal_class(refusal) {
+            Some(class) ->
+              log.warn(logger, "remote_spawn.receiver_refused", [
+                field.text("class", class),
+                field.ident(
+                  "operation",
+                  ids.op_id_to_string(call_site.operation),
+                ),
+                field.text("peer", origin.node),
+                field.text("step", call_site.step_id),
+                field.count("source_index", call_site.source_index),
+                ..case call_site.minter {
+                  agent.ToolCall -> [field.text("minter", "tool")]
+                  agent.Program(ordinal) -> [
+                    field.text("minter", "program"),
+                    field.count("program_ordinal", ordinal),
+                  ]
+                }
+              ])
+            None -> Nil
+          }
+        Ok(_) -> Nil
+      }
+
+      outcome
     },
     join: fn(origin, handles, within_ms) {
       use #(_spawner, endpoint) <- result.try(serving(origin))
@@ -1736,19 +1771,19 @@ fn reach_of(
   config: Config,
   registry: manager.Manager(instance),
   session: String,
+  logger: Logger,
 ) -> Option(remote_reach.Reach) {
   case config.membership, manager.delegate_of(registry, session) {
     None, _ -> None
     Some(membership), Ok(None) ->
-      Some(
-        remote_spawner.over_distribution(
-          membership,
-          orchestrator_roster(config),
-          config.keepers,
-          session,
-          fn() { list.contains(manager.unshared_sessions(registry), session) },
-        ),
-      )
+      Some(remote_spawner.over_distribution(
+        membership,
+        orchestrator_roster(config),
+        config.keepers,
+        session,
+        fn() { list.contains(manager.unshared_sessions(registry), session) },
+        logger,
+      ))
     Some(membership), Ok(Some(marker)) ->
       spawners.find(config.spawners, marker.spawner)
       |> option.from_result
@@ -1759,6 +1794,7 @@ fn reach_of(
           config.keepers,
           session,
           fn() { True },
+          logger,
         )
         |> remote_reach.restricted(spawner.spawn_on)
       })
@@ -2373,7 +2409,7 @@ pub fn prepare_startup(
                 manager.unshared_sessions(directory)
               }),
             ),
-            remote_reach: reach_of(config, directory, registration.id),
+            remote_reach: reach_of(config, directory, registration.id, logger),
             deadline_tick_ms: tick,
             depth_cap: depth_cap_of(directory, config.spawners, registration.id),
             metering: metering_of(

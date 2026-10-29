@@ -8206,7 +8206,7 @@ pub fn a_session_that_serves_no_spawner_takes_no_decision_test() {
       current_question_seq(harness, "esc-1"),
       the_decider(),
     )
-  let assert remote_escalation.Refused(..) = answer
+  let assert Ok(remote_escalation.Refused(..)) = answer
   assert stored(harness, "esc-1").status == durable.Pending
 }
 
@@ -8277,7 +8277,7 @@ pub fn a_delegate_hub_commits_a_decision_inside_the_ceiling_test() {
       seq,
       the_decider(),
     )
-  let assert remote_escalation.Stale(..) = beyond
+  let assert Ok(remote_escalation.Stale(..)) = beyond
   assert stored(harness, "esc-1").status == durable.Pending
 
   let answer =
@@ -8293,7 +8293,7 @@ pub fn a_delegate_hub_commits_a_decision_inside_the_ceiling_test() {
       seq,
       the_decider(),
     )
-  let assert remote_escalation.Decided(record) = answer
+  let assert Ok(remote_escalation.Decided(record)) = answer
   assert record.status == "approved"
   assert stored(harness, "esc-1").status == durable.Approved
 }
@@ -8424,7 +8424,7 @@ pub fn a_relayed_hub_commits_a_decision_inside_the_ceiling_and_once_test() {
       seq,
       the_decider(),
     )
-  let assert remote_escalation.Stale(..) = beyond
+  let assert Ok(remote_escalation.Stale(..)) = beyond
   assert stored(harness, "esc-1").status == durable.Pending
 
   let inside = [policy.GrantEnv("TOKEN")]
@@ -8442,7 +8442,7 @@ pub fn a_relayed_hub_commits_a_decision_inside_the_ceiling_and_once_test() {
       seq,
       the_decider(),
     )
-  let assert remote_escalation.Decided(record) = answer
+  let assert Ok(remote_escalation.Decided(record)) = answer
   assert record.status == "approved"
   assert stored(harness, "esc-1").status == durable.Approved
 
@@ -8458,7 +8458,7 @@ pub fn a_relayed_hub_commits_a_decision_inside_the_ceiling_and_once_test() {
       seq,
       the_decider(),
     )
-  let assert remote_escalation.Stale(record: closed, ..) = again
+  let assert Ok(remote_escalation.Stale(record: closed, ..)) = again
   assert closed.status == "approved"
 }
 
@@ -8483,7 +8483,9 @@ pub fn a_relayed_hub_with_no_ceiling_decides_nothing_test() {
       the_decider(),
     )
   assert answer
-    == remote_escalation.Refused(reason: remote_escalation.outside_the_ceiling)
+    == Ok(remote_escalation.Refused(
+      reason: remote_escalation.outside_the_ceiling,
+    ))
   assert stored(harness, "esc-1").status == durable.Pending
 }
 
@@ -8499,8 +8501,7 @@ pub fn a_hub_that_is_gone_refuses_a_relayed_decision_and_a_stop_test() {
       1,
       the_decider(),
     )
-  assert answer
-    == remote_escalation.Refused(reason: "the session's hub did not answer")
+  assert answer == Error(gateway.HubUnavailable)
   assert gateway.stop_relayed(gone) == Error(Nil)
 }
 
@@ -8858,4 +8859,116 @@ pub fn a_network_hub_pushes_evolution_changed_from_the_bus_test() {
   assert envelope.seq == None
   assert envelope.event == protocol.EvolutionChanged
   assert process.receive(inbox, within: 100) == Error(Nil)
+}
+
+// A queued decision can be committed after the asking port's hub deadline.
+pub fn a_relayed_decision_processed_after_its_hub_deadline_is_not_a_refusal_test() {
+  let gate = start_gate()
+  let entered = process.new_subject()
+  let blocked_hub = start_gate()
+  let harness =
+    start_harness_adjusted(
+      None,
+      None,
+      None,
+      Some(network_fixture_id()),
+      ScriptedProvider(parked_provider(gate)),
+      None,
+      None,
+      fn(options) {
+        gateway.with_effect_abort(options, fn(_) {
+          process.send(entered, Nil)
+          process.call(blocked_hub, waiting: 8000, sending: ParkGate)
+        })
+      },
+    )
+  claim(
+    harness,
+    "late",
+    scope_on("main", op_id(5)),
+    durable.Action(tool: "bash", digest: "d1", preview: "{}"),
+    [],
+  )
+  let seq = current_question_seq(harness, "late")
+  let #(socket, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      process.new_subject(),
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let assert Ok(_) =
+    gateway.connection_request(socket, prompt_frame(902, "main", "open"))
+  let assert poll.Answered(_) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case session.strand_state(harness.runtime.session, "main") {
+        Ok(Some(session.Cell(value:, ..))) if value.current_operation != None ->
+          poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+  let stop_answer = process.new_subject()
+  process.spawn(fn() {
+    process.send(stop_answer, gateway.stop_relayed(harness.hub))
+  })
+  let assert Ok(Nil) = process.receive(entered, 1000)
+  let answer =
+    gateway.decide_relayed(
+      harness.hub,
+      "laptop",
+      Some(approval_ceiling.nothing()),
+      "late",
+      remote_escalation.Deny,
+      seq,
+      the_decider(),
+    )
+  release_gate(blocked_hub)
+  let assert poll.Answered(_) =
+    poll.until(within: 1000, every: 10, attempt: fn() {
+      case stored(harness, "late").status {
+        durable.Rejected -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+  release_gate(gate)
+  assert answer
+    == Error(gateway.DecisionUnknown("the session's hub did not answer"))
+}
+
+// A failed strand read cannot prove that the main run is already idle.
+pub fn a_relayed_stop_with_an_unreadable_strand_is_not_acknowledged_test() {
+  let harness =
+    start_harness_adjusted(
+      None,
+      None,
+      None,
+      None,
+      SettlingProvider,
+      None,
+      None,
+      fn(options) {
+        let original = options.runtime.session.store
+        let unavailable =
+          storage.Storage(..original, get_register: fn(handle, ns, key) {
+            case ns, key {
+              register.StrandState, "main" ->
+                Error(storage.BackendFault("test read failure"))
+              _, _ -> original.get_register(handle, ns, key)
+            }
+          })
+        gateway.Options(
+          ..options,
+          runtime: api.Runtime(
+            ..options.runtime,
+            session: session.Session(
+              ..options.runtime.session,
+              store: unavailable,
+            ),
+          ),
+        )
+      },
+    )
+  assert gateway.stop_relayed(harness.hub) == Error(Nil)
+  let assert Ok(Nil) = api.close(harness.runtime)
 }

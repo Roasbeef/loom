@@ -38,7 +38,9 @@ import session_view/text_hygiene
 /// tool's activity names the tool and drops its command, and an activity that
 /// already starts with the state word (`Waiting for x` under `Waiting`) is the
 /// line by itself. A finished strand adds how long its last operation ran,
-/// when the roster knows. The other states are their state words.
+/// when the roster knows. A failed remote child adds its activity text, while a
+/// local failure and a remote failure without text keep the fixed state word.
+/// The other states are their state words.
 ///
 /// ## Examples
 ///
@@ -70,10 +72,13 @@ pub fn status_line(line: agent_roster.Line) -> String {
           agent_view.label(line.status) <> " " <> agent_roster.duration(seconds)
         None -> agent_view.label(line.status)
       }
-    agent_view.Failed
-    | agent_view.Halted
-    | agent_view.Idle
-    | agent_view.Unavailable -> agent_view.label(line.status)
+    agent_view.Failed ->
+      case line.placement, line.text {
+        Some(_), "" | Some(_), "Failed" | None, _ -> "Failed"
+        Some(_), reason -> "Failed · " <> reason
+      }
+    agent_view.Halted | agent_view.Idle | agent_view.Unavailable ->
+      agent_view.label(line.status)
   }
 }
 
@@ -92,6 +97,7 @@ pub fn status_title(line: agent_roster.Line) -> String {
   // Format tooltip title text based on status and activity details.
   case line.status, line.text {
     _, "" -> status_line(line)
+    agent_view.Failed, _ -> string.slice(status_line(line), 0, title_limit)
     agent_view.Working, text | agent_view.Waiting, text -> {
       let word = agent_view.label(line.status)
 

@@ -34,6 +34,7 @@ import client/peers
 import client/protocol
 import client/remote/address
 import client/remote/orchestrator_port
+import client/remote/remote_spawner
 import client/remote_child
 import client/remote_drain
 import client/remote_escalation_store
@@ -5946,6 +5947,7 @@ fn serving_table(
         fn(_spawner, _parent) {
           Ok(Some(agency.delegate_endpoint(harness.config)))
         },
+        log.discard(),
       ),
       orchestrator_port.refusing_children(),
       orchestrator_port.unheld,
@@ -8219,6 +8221,212 @@ pub fn a_send_into_an_idle_child_starts_a_detached_run_within_its_budget_test() 
       "one more thing",
     ))
     == remote_mail.Admitted
+  close(harness)
+}
+
+// The writer commits message and receipt before the optional run metadata read.
+pub fn a_post_admission_run_read_failure_still_reports_the_committed_message_test() {
+  let shared = counting_clock(1_756_000_000_000, 3)
+  let harness =
+    start_harness_on(
+      Settles("done"),
+      fn(config) { config },
+      shared,
+      shared,
+      fn(sess) {
+        let original = sess.store
+        session.Session(
+          ..sess,
+          store: storage.Storage(..original, get_register: fn(handle, ns, key) {
+            let received =
+              original.get_register(
+                handle,
+                register.FactCustom,
+                "delegate/receipt/metadata-failure",
+              )
+            case
+              ns == register.FactCustom
+              && string.starts_with(key, child_run.key_prefix),
+              received
+            {
+              True, Ok(Some(_)) ->
+                Error(storage.BackendFault("run metadata unavailable"))
+              True, Ok(None) | False, _ | True, Error(_) ->
+                original.get_register(handle, ns, key)
+            }
+          }),
+        )
+      },
+    )
+  let spawned = remote_spawned(harness, "turn-1:tools", "review auth")
+  assert settled(harness, spawned.handle)
+  let send = fn() {
+    agency.delegate_send(
+      harness.config,
+      remote_parent(),
+      spawned.handle,
+      "metadata-failure",
+      "one more thing",
+    )
+  }
+  let first = send()
+
+  // Check the committed evidence before judging the reply.
+  let assert Ok(Some(_)) =
+    api.fact(harness.runtime, "delegate/receipt/metadata-failure")
+  let messages = fn() {
+    strand_attributed(harness)
+    |> list.filter(fn(stored) {
+      string.contains(text_of(stored), "one more thing")
+    })
+  }
+  assert list.length(messages()) == 1
+  assert landing_of(first) == remote_mail.Admitted
+  assert landing_of(send()) == remote_mail.Admitted
+  assert list.length(messages()) == 1
+  close(harness)
+}
+
+type SendClock {
+  SendClock(Subject(Int))
+}
+
+type ClockBarrier {
+  Waiting(Option(Subject(Int)))
+  Released
+}
+
+type ReceiptFault {
+  ArmReceiptFault(Subject(Nil))
+  TakeReceiptFault(Subject(Bool))
+}
+
+// Two callers pass the receipt lookup before either can write the marked send.
+pub fn a_conflicting_send_with_an_unreadable_receipt_keeps_its_outcome_unknown_test() {
+  let failed = process.new_subject()
+  let assert Ok(fault) =
+    actor.new(False)
+    |> actor.on_message(fn(armed, command: ReceiptFault) {
+      case command {
+        ArmReceiptFault(reply) -> {
+          process.send(reply, Nil)
+          actor.continue(True)
+        }
+        TakeReceiptFault(reply) -> {
+          process.send(reply, armed)
+          actor.continue(False)
+        }
+      }
+    })
+    |> actor.start
+  let shared = counting_clock(1_756_000_000_000, 3)
+  let key = "delegate/receipt/conflict-read"
+  let harness =
+    start_harness_on(Hangs, fn(config) { config }, shared, shared, fn(sess) {
+      let original = sess.store
+      session.Session(
+        ..sess,
+        store: storage.Storage(
+          ..original,
+          commit: fn(handle, plan) {
+            let outcome = original.commit(handle, plan)
+            case outcome {
+              Error(tx.StaleExpectation(failed: tx.Expect(key: failed_key, ..)))
+                if failed_key == key
+              ->
+                process.call(
+                  fault.data,
+                  waiting: 1000,
+                  sending: ArmReceiptFault,
+                )
+              Ok(_) | Error(_) -> Nil
+            }
+            outcome
+          },
+          get_register: fn(handle, ns, found_key) {
+            case ns == register.FactCustom && found_key == key {
+              True ->
+                case
+                  process.call(
+                    fault.data,
+                    waiting: 1000,
+                    sending: TakeReceiptFault,
+                  )
+                {
+                  True -> {
+                    process.send(failed, Nil)
+                    Error(storage.BackendFault("receipt read unavailable"))
+                  }
+                  False -> original.get_register(handle, ns, found_key)
+                }
+              False -> original.get_register(handle, ns, found_key)
+            }
+          },
+        ),
+      )
+    })
+  let spawned = remote_spawned(harness, "turn-1:tools", "review auth")
+  let assert Ok(barrier) =
+    actor.new(Waiting(None))
+    |> actor.on_message(fn(state, command: SendClock) {
+      let SendClock(reply) = command
+      case state {
+        Waiting(None) -> actor.continue(Waiting(Some(reply)))
+        Waiting(Some(first)) -> {
+          process.send(first, 1_756_000_000_100)
+          process.send(reply, 1_756_000_000_100)
+          actor.continue(Released)
+        }
+        Released -> {
+          process.send(reply, 1_756_000_000_100)
+          actor.continue(Released)
+        }
+      }
+    })
+    |> actor.start
+  let held_clock =
+    clock.from_function(fn() {
+      process.call(barrier.data, waiting: 5000, sending: SendClock)
+    })
+  let port =
+    serving(
+      Harness(
+        ..harness,
+        config: agency.Config(..harness.config, clock: held_clock),
+      ),
+    )
+  let send = fn(text) {
+    orchestrator_port.ask_send(
+      port,
+      remote_parent(),
+      spawned.handle,
+      "conflict-read",
+      text,
+      5000,
+    )
+    |> remote_spawner.send_answer
+  }
+  let answers = process.new_subject()
+  process.spawn(fn() { process.send(answers, send("one message")) })
+  process.spawn(fn() { process.send(answers, send("one message")) })
+  let assert Ok(first) = process.receive(answers, 6000)
+  let assert Ok(second) = process.receive(answers, 6000)
+  assert process.receive(failed, 1000) == Ok(Nil)
+  let assert Ok(Some(_)) = api.fact(harness.runtime, key)
+  let messages = fn() {
+    strand_attributed(harness)
+    |> list.filter(fn(stored) {
+      string.contains(text_of(stored), "one message")
+    })
+  }
+  assert list.length(messages()) == 1
+  assert list.contains([first, second], Error(peer_mail.Unreachable))
+  assert list.any([first, second], result.is_ok)
+  let assert Ok(landing) = send("one message")
+  assert remote_mail.decode_landing(landing) == Ok(remote_mail.Admitted)
+  assert list.length(messages()) == 1
+  let assert Error(peer_mail.Refused(reason)) = send("different content")
+  assert string.contains(reason, "different content")
   close(harness)
 }
 

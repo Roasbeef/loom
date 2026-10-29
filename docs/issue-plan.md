@@ -15,6 +15,41 @@ column and §5.1 of `docs/loom-implementation-spec.md`,
 
 ---
 
+## Distributed runtime experience (#1137)
+
+The [distributed runtime epic](https://github.com/Roasbeef/loom/issues/1137)
+closes on four live cases: delegation while the laptop is offline, moving the
+same local session and its workspace, eight children on eight machines with
+returned commits merged by the parent, and symmetric session pages through a
+dropped link. Gates are part of acceptance. Eight processes on one machine do
+not establish the eight-machine case.
+
+On October 29, 2026, the owner selected the full Depth workflow and an always-on
+trusted brain or gateway holding provider access; remote executors remain
+keyless. Git objects travel over the pinned link. Only the owner publishes,
+children inherit the parent's workspace in isolated worktrees, and placement
+stays within spawner policy. No failover or session replication is added.
+
+| Group | Scope and acceptance |
+| --- | --- |
+| 1. Device sign-in | Exact command grammar, rendered copy component and generated assets. Draft PR #1143 carries the proof and unresolved validation receipts. |
+| 2. Honest observations | Bounded spawn reasons and diagnostics, honest read/stale state, known admission and uncertain mutation replies. Real writer, hub, registry and component witnesses are recorded in [the acceptance record](review/distributed-1137.md). |
+| 3. Peer compatibility and updates | Stable versioned dispatch, positive feature support and launch preflight before retirement. The public contract requires the owner's decision before implementation. |
+| 4. Repository capture and identity | Preserve the source index/branch, define dirty/staged/submodule/filter semantics, import a fresh worktree and transfer only deliberate Git identity. Content and export contracts precede code. |
+| 5. One complete handoff | A call-site-bound child owns a scope; snapshot goes out, authored commits return, and the owner imports a durable ref and acknowledges custody. Preserve aggregate caps, parent fences, legacy routing and result retention. |
+| 6. Placement and fan-out | Authorized per-spawn executor/pool/workspace, default inheritance and advisory load ranking. One snapshot, eight isolated trees, returned ranges and a parent-driven merge. No new target after ambiguous admission. |
+| 7. Local session movement | Fence and drain local effects, verify copied workspace state, then move conversation and authoritative executor binding with one writer. A child WIP snapshot alone does not preserve staging for a moved session. |
+| 8. Models | Authorized access to the always-on gateway with streaming, cancellation, accounting, revocation and drain. Gateway and publishing credentials stay with their owner; the lending interface does not forward them. |
+| 9. Page parity | Reuse the full component through a bounded relay, with explicit owner-session opt-in, unchanged approval ceilings, recoverable waiting state and no blind mutation replay. |
+| 10. Setup and fleet | Explicit pairing directions, status/capability/load/child location, measured link-loss cause and driven update/setup documentation. Finish the four live acceptance cases. |
+
+These groups cover the issue's seventeen work items; later public contracts are
+proposals until accepted. Workspace custody and movement must include a bridge
+from lifecycle models to production fault cuts. Child transcripts remain hidden
+unless the receiving owner opts in. A live link-loss cause is measured before a
+timeout changes. Hosted checks run while the next independent group proceeds,
+with raw failures and strict skip census retained in each PR's record.
+
 ## The milestone
 
 **Name: `v0.1 — claimed, true, and self-extending`.**

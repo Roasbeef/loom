@@ -8347,7 +8347,10 @@ The box's deadline and retention (slice S4):
   that resends `remote_send` rows (`remote-send/{id}`) and removes a row on any
   answer. `orchestrator_port.Message` gains `ChildSend` (served by
   `SpawnHost.send`, then `DelegateEndpoint.send`, then `agency.delegate_send`,
-  which stores `delegate/receipt/{id}` in the delivering commit) and the box to
+  which stores `delegate/receipt/{id}` in the delivering commit). A failed
+  post-commit run-metadata read returns `Admitted`; a receipt read failure after
+  a conflicting delivery remains uncertain through `remote_spawner.send_answer`.
+  A healthy receipt still rejects different content for the same ID. The box to
   laptop `ChildMail` and `ChildProgress`, served by `ChildHost`
   (`main.child_host`, `refusing_children()`), each `detached` with an `Origin`
   the host judges. The Agency side is `agency.ChildInbox` (`child_inbox`,
@@ -8400,7 +8403,12 @@ The box's deadline and retention (slice S4):
   `remote-escalation/{orchestrator}/{id}`, reserved by
   `api.remote_escalation_fact_prefix`). `Resolve` is served by `SpawnHost.resolve`
   into `DelegateEndpoint.resolve` (filled by `serve` with `gateway.decide`) and
-  judged on the hub's turn by `remote_decision.admit`; a session approval commits
+  judged on the hub's turn by `remote_decision.admit`. The internal result keeps
+  validation answers separate from a committed record that cannot be read back;
+  gateway `DecisionFailure` distinguishes pre-send `HubUnavailable` from
+  post-send `DecisionUnknown`. `serve` maps them to existing `NotYetOpen` and
+  `StoreFailure` envelopes. Child resolve keeps the latter uncertain through its
+  operation-specific conversion; no wire or grant type changes. A session approval commits
   with `permissions.Spawner` provenance, `permissions.withdraw_spawner_grants`
   runs from `serve.withdraw_outside_the_ceiling` at open, and
   `permissions.forgetting_for_spawner` backs `Forget`. On the laptop the gateway
@@ -8433,7 +8441,11 @@ The box's deadline and retention (slice S4):
   (`glanceSeenMs`, absent reads 0) is the parent's clock when
   `remote_child.progressed` kept the glance; every stub write publishes
   `bus.RemoteChildrenChanged` (`remote_child.changed`). `remote_child.agents`
-  projects the stubs into `session_view/remote_agent` rows; the gateway pushes
+  projects the stubs into `session_view/remote_agent` rows, placing a refused
+  stub's bounded reason in summary ahead of an older glance. The sender and
+  receiver log fixed refusal classes with call-site coordinates through the
+  supplied logger; free-form reasons and requests are not logged, and
+  `NotYetOpen` is not a final-refusal diagnostic. The gateway pushes
   them as `protocol.RemoteChildrenSnapshot` on subscribe (`push_remote_children`)
   and on the bus event. `orchestrator_port.Message.ChildHistory` (`ask_history`),
   `SpawnHost.history`, `DelegateEndpoint.history` and `Reach.history` read a
@@ -9851,7 +9863,11 @@ and `gateway_test`, and `orchestrator_port_test`.
   `judge`, so the ceiling, the echoed action, the wanted subset, the canonical
   paths and the compare-and-set are shared; the hub's turn is what makes the
   first of two decisions at one seq win. `abort_run` is the body of the
-  operator's abort, shared with the stop.
+  operator's abort, shared with the stop. Stop's internal reply now reports an
+  unreadable strand as an error, and the host resolves only the observed resident
+  incarnation. A transition or failed lookup cannot become successful idle Stop.
+  StoreFailure after a dispatched action is uncertain; Archive's NotYetOpen can
+  follow an admitted stop. Stop/Resolve pre-send NotYetOpen remains conclusive.
 - **The registry** gained `reserve_relayed`, `relayed_of`, `relayed_sessions`
   (a page with each row's live status) and `archive_relayed` (the slot check and
   the archive in one turn; the host stops the session and retries until it has
@@ -9866,10 +9882,14 @@ and `gateway_test`, and `orchestrator_port_test`.
   that cannot connect fails at once as `Unreachable`; one that was sent and then
   lost the link ends `Silent`, and `session_for_request` finds the session in the
   next page by its request id. A connected node whose port is gone is
-  `OlderBuild`. `all_sessions` reads up to `max_pages` pages.
+  `Silent`: port death neither identifies the build nor retracts an admitted
+  request. After an uncertain attempt, a later dial failure or refusal keeps
+  that uncertainty; a successful answer resolves it. An unreadable send landing
+  also leaves delivery unknown. `all_sessions` reads up to `max_pages` pages.
   `client/remote/top_view` keeps the last good rows and when they were read,
   marks them stale through a failure and keeps the time the failures began.
-- **Invariants.** A refusal reserves nothing and charges no cap. A create is
+- **Invariants.** Policy refusals before reservation charge no cap; a retryable
+  creation refusal can follow a durable reservation. A create is
   idempotent by request id and a send by message id. No sweep drops a reserved
   relayed registration. A listing opens nothing. `TopHistory`, `TopSend` and
   `TopResolve` open a saved relayed session; `TopStop` does not. The box never
@@ -9907,6 +9927,11 @@ and the id round-trips through `ids.parse_session_id`; anything else is `Unknown
   sidebar (an archived row and a row whose identity is not canonical are dropped), and
   `found` creates and then delivers the first message (`Founded`, `Unsent` when the
   message did not arrive, `Refused` in words, and a typed folder is refused here).
+  Read failures use read-specific words; failed creation or decision preflight
+  sends no action. Failed resident overviews and transitional sessions refuse
+  the listing with `StoreFailure`; saved and unfinished creation records remain
+  listable without opening a runtime. Resident resolution uses the observed
+  incarnation, so a replacement is not read as the earlier instance.
 - `ui_socket.orchestrating_for` builds the page's `home.Orchestrators`: the reads need
   `open()`, a create passes `owner_operating` again, spends the credential's creation
   allowance (`ui_sessions.reserve_creation`, shared with a local creation) and draws a

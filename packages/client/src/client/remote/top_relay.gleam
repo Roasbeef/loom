@@ -39,16 +39,18 @@
 ////   not resent, because the person decides again from the next page, and the
 ////   box judges the sequence they were shown, so the first decision wins.
 ////
-//// A refusal the box makes is definitive except `NotYetOpen` and
-//// `StoreFailure`, which say it could not do the thing now, and which a create
-//// or a message treats as silence.
+//// A first refusal is definitive except `NotYetOpen` and `StoreFailure`, which
+//// a create or a message retries. A create may already have reserved its
+//// identity before either refusal, so neither proves that nothing changed. Once
+//// an attempt has no conclusive answer, a later refusal or failed dial cannot
+//// prove what happened to it; the relay keeps the outcome unknown.
 ////
-//// ## Older builds
+//// ## A port that disappears
 ////
-//// Both ends must run the same build (protocol-change/078). A port that does not
-//// know these messages stops on them, which a connected caller sees as the port
-//// being gone. That is reported as `OlderBuild`, and when it is the answer to
-//// the last try of a resend window it is what the call fails with.
+//// Both ends must run the same build (protocol-change/078), but a port's death
+//// does not identify its build. The port may have forwarded a request before it
+//// died, and that independent recipient can still complete it. A monitor firing
+//// therefore means `Silent`, just as a lost answer does.
 ////
 //// ## Flow
 ////
@@ -162,8 +164,8 @@ pub type Failure {
   /// silence for the whole resend window. The thing may have happened.
   Silent
 
-  /// The orchestrator's port was gone once the connection was made, which is
-  /// what a build that does not know these messages looks like.
+  /// A legacy build mismatch report. A port's disappearance alone cannot
+  /// establish this, so the production relay does not infer it from a monitor.
   OlderBuild
 
   /// The orchestrator refused, and said why.
@@ -534,16 +536,14 @@ fn once(
   case ask(at) {
     Ok(Ok(answer)) -> Ok(answer)
     Ok(Error(refusal)) -> Error(Refused(refusal:))
-    Error(PortGone) -> Error(OlderBuild)
-    Error(AskTimedOut) -> Error(Silent)
+    Error(PortGone) | Error(AskTimedOut) -> Error(Silent)
   }
 }
 
-// What a resend remembers between tries: whether anything has been sent yet, and
-// how the last try failed.
+// A resend remembers whether an earlier attempt may have changed remote state.
 type Tries {
   Fresh
-  After(last: Failure)
+  After
 }
 
 // One question, asked until the box answers or the window ends. `ask` is given
@@ -577,24 +577,22 @@ fn resending(
             relay.timing.retry_window_ms - { clock.now() - started },
           )
 
-        // This match resolves relay.dial(name), tries before the surrounding protocol step continues.
-        // This match resolves relay.dial(name), tries before the enclosing validation continues.
+        // A failed first dial sent nothing. After a possible effect, a missing
+        // configuration ends the retry but cannot settle the earlier attempt.
         case relay.dial(name), tries {
-          Error(NotConfigured(_) as failure), _ -> poll.Broken(failure)
           Error(failure), Fresh -> poll.Broken(failure)
-          Error(failure), After(_) -> poll.Pending(After(failure))
+          Error(NotConfigured(_)), After -> poll.Broken(Silent)
+          Error(_), After -> poll.Pending(After)
           Ok(at), _ ->
-            // This match resolves ask(at, left) before the surrounding protocol step continues.
             case ask(at, left) {
               Ok(Ok(answer)) -> poll.Settled(answer)
               Ok(Error(refusal)) ->
-                // This match resolves remote_top.retryable(refusal) before the surrounding protocol step continues.
-                case remote_top.retryable(refusal) {
-                  True -> poll.Pending(After(Refused(refusal:)))
-                  False -> poll.Broken(Refused(refusal:))
+                case remote_top.retryable(refusal), tries {
+                  True, _ -> poll.Pending(After)
+                  False, Fresh -> poll.Broken(Refused(refusal:))
+                  False, After -> poll.Broken(Silent)
                 }
-              Error(PortGone) -> poll.Pending(After(OlderBuild))
-              Error(AskTimedOut) -> poll.Pending(After(Silent))
+              Error(PortGone) | Error(AskTimedOut) -> poll.Pending(After)
             }
         }
       },
@@ -606,21 +604,15 @@ fn resending(
     poll.Answer(value:) -> Ok(value)
     poll.Failure(error:) -> Error(error)
 
-    // The window ended on a try that failed. A refusal the box made, such as
-    // "not yet open", is what it said last and is what the page is told; every
-    // other failure is a lost answer and the outcome is not known.
-    poll.RanOut(state: After(Refused(refusal:))) -> Error(Refused(refusal:))
-    poll.RanOut(state: After(OlderBuild)) -> Error(OlderBuild)
-    poll.RanOut(state: After(Unreachable))
-    | poll.RanOut(state: After(Silent))
-    | poll.RanOut(state: After(NotConfigured(_)))
-    | poll.RanOut(state: After(Unreadable(_)))
-    | poll.RanOut(state: Fresh) -> Error(Silent)
+    // Neither a timeout nor a retryable refusal proves the effect absent.
+    poll.RanOut(state: After) | poll.RanOut(state: Fresh) -> Error(Silent)
   }
 }
 
-/// Whether a failure leaves the thing possibly done, as `Silent` does, so that
-/// a page keeps what it sent and reconciles instead of asking again blindly.
+/// Whether a failure leaves a dispatched change possibly done, so that a page
+/// keeps what it sent and reconciles instead of asking again blindly. An
+/// unreadable send landing may follow delivery; the same failure on a read
+/// means only that the returned data could not be used.
 ///
 /// ## Examples
 ///
@@ -632,8 +624,7 @@ pub fn outcome_unknown(failure: Failure) -> Bool {
   // This match resolves failure before the surrounding protocol step continues.
   // This match resolves failure before the enclosing validation continues.
   case failure {
-    Silent -> True
-    NotConfigured(_) | Unreachable | OlderBuild | Refused(_) | Unreadable(_) ->
-      False
+    Silent | Unreadable(_) | Refused(remote_top.StoreFailure(_)) -> True
+    NotConfigured(_) | Unreachable | OlderBuild | Refused(_) -> False
   }
 }

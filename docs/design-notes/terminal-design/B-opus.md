@@ -199,7 +199,7 @@ fewer columns.
 - Elapsed time and tokens: `Line` at `session_view/agent_roster.gleam:103`,
   which the strip already draws.
 - The status words: `status_line` at `session_view/strand_card.gleam:45`; the
-  Needs you count: `needing` at `session_view/strand_card.gleam:240`.
+  Needs you count: `needing` at `session_view/strand_card.gleam:250`.
 - Messages: `for_strand` at `session_view/agent_messages.gleam:167`, the
   verified sends the captures have seen. The heading says "seen in captures"
   because a message sent by a strand whose branch the client has not
@@ -405,7 +405,7 @@ record would need a new control command.
 | Activity line | the active operation | `tui/layout` labels today (`active_status_label`) |
 | Status rule: ctx | context estimate | `footer` at `session_view/context_view.gleam:432` |
 | Status rule: cost | session total | `usage` at `session_view/model.gleam:437` |
-| Status rule: needs you | approvals per strand | `needing` at `session_view/strand_card.gleam:240` |
+| Status rule: needs you | approvals per strand | `needing` at `session_view/strand_card.gleam:250` |
 | Strands tab: cache | outlook per strand | `outlook` at `session_view/cache_watch.gleam:120` |
 | Changes tab | session edits | `fold` at `session_view/changes_view.gleam:210` |
 | Session tab: jobs, viewers | jobs board, presence | `jobs` at `session_view/session_summary.gleam:99`, `viewers` at `session_view/session_summary.gleam:122` |

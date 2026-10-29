@@ -68,7 +68,9 @@ for a host with no surfaces.
   and what the strand is doing after ` · ` for a working one, where the
   engine's phase `assistant` reads `thinking`, a tool is named without its
   command and a state word the activity already says is not said twice;
-  `Finished` and how long it ran), the whole activity text for a tooltip
+  `Finished` and how long it ran; a failed remote row includes its nonempty
+  activity, while local failure labels are unchanged), the whole activity text
+  for a tooltip
   (`status_title`, cut to `title_limit`), the state's one-character glyph,
   a model's last path segment, how many strands wait on a decision (the count
   on the web view's Strands tab), and the words for a strand's context size

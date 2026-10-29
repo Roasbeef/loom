@@ -394,17 +394,148 @@ pub fn a_window_that_ends_on_a_downed_link_is_silence_not_unreachable_test() {
     == Error(Silent)
 }
 
-pub fn a_port_that_is_gone_once_connected_is_an_older_build_test() {
+// A later configuration change cannot prove the first sent create did not
+// take effect, even though no second request can be sent.
+pub fn a_missing_destination_after_a_lost_answer_keeps_the_outcome_unknown_test() {
+  let dials = counter()
+  let port =
+    serving(
+      orchestrator_port.TopHost(
+        ..orchestrator_port.refusing_top(),
+        create: fn(_node, _id, _placement, _profile, _model) {
+          process.sleep(600)
+          Ok("0198c0de-0000-7000-8000-00000000000a")
+        },
+      ),
+    )
+  let relay =
+    top_relay.through(
+      fn(_name) {
+        case tick(dials) {
+          0 -> Ok(port)
+          _ -> Error(NotConfigured("box"))
+        }
+      },
+      quick(),
+    )
+  assert top_relay.create(relay, "box", request(), on_box(), "alt", None)
+    == Error(Silent)
+}
+
+// A later refusal describes that attempt; it cannot undo an earlier attempt
+// whose answer was lost.
+pub fn a_refusal_after_a_lost_answer_keeps_the_outcome_unknown_test() {
+  let tries = counter()
+  let relay =
+    relay_to(
+      orchestrator_port.TopHost(
+        ..orchestrator_port.refusing_top(),
+        create: fn(_node, _id, _placement, _profile, _model) {
+          case tick(tries) {
+            0 -> {
+              process.sleep(600)
+              Ok("0198c0de-0000-7000-8000-00000000000a")
+            }
+            _ -> Error(remote_top.CapReached(remote_top.MaxSessions, 3))
+          }
+        },
+      ),
+    )
+  assert top_relay.create(relay, "box", request(), on_box(), "alt", None)
+    == Error(Silent)
+}
+
+// A create may have reserved its identity before reporting that it is not yet
+// open, so repeated retryable replies do not prove nothing was written.
+pub fn a_create_that_stays_not_yet_open_has_an_unknown_outcome_test() {
+  let relay =
+    relay_to(
+      orchestrator_port.TopHost(
+        ..orchestrator_port.refusing_top(),
+        create: fn(_node, _id, _placement, _profile, _model) {
+          Error(remote_top.NotYetOpen("reserved"))
+        },
+      ),
+    )
+  assert top_relay.create(relay, "box", request(), on_box(), "alt", None)
+    == Error(Silent)
+}
+
+pub fn an_absent_port_does_not_prove_an_older_build_test() {
   let gone =
     address.Address(
       node: node.self(),
       name: process.new_name("orchestrator_port_absent"),
     )
   let relay = top_relay.through(fn(_name) { Ok(gone) }, quick())
-  assert top_relay.placements(relay, "box") == Error(OlderBuild)
-  assert top_relay.stop(relay, "box", "s") == Error(OlderBuild)
+  assert top_relay.placements(relay, "box") == Error(Silent)
+  assert top_relay.stop(relay, "box", "s") == Error(Silent)
   assert top_relay.create(relay, "box", request(), on_box(), "alt", None)
-    == Error(OlderBuild)
+    == Error(Silent)
+}
+
+// A forwarded stop may reach an independent session before the port dies. The
+// port-owned worker dies with it, but the session still owns the accepted stop.
+pub fn a_port_death_after_forwarding_a_stop_leaves_its_outcome_unknown_test() {
+  let received = process.new_subject()
+  let recipient_ready = process.new_subject()
+  let effects = process.new_subject()
+  process.spawn_unlinked(fn() {
+    let recipient = process.new_subject()
+    let release = process.new_subject()
+    process.send(recipient_ready, #(recipient, release))
+    let assert Ok(reply) = process.receive(recipient, 2000)
+    process.send(received, Nil)
+    let assert Ok(Nil) = process.receive(release, 2000)
+    process.send(effects, "stopped")
+    process.send(reply, Ok(Nil))
+  })
+  let assert Ok(#(recipient, release)) = process.receive(recipient_ready, 2000)
+
+  // The guardian owns the port link, so killing the port cannot kill the test.
+  let ready = process.new_subject()
+  process.spawn_unlinked(fn() {
+    let name = process.new_name("orchestrator_port")
+    let top =
+      orchestrator_port.TopHost(
+        ..orchestrator_port.refusing_top(),
+        stop: fn(_node, _session) {
+          process.call(recipient, waiting: 5000, sending: fn(reply) { reply })
+        },
+      )
+    let assert Ok(started) =
+      orchestrator_port.start_with_top(
+        name,
+        fn(_session) { Ok(orchestrator_port.NotOwned) },
+        fn(_session, _command) { Error(orchestrator_port.peer_unserved) },
+        fn(_session) { Error("not_found") },
+        orchestrator_port.declining(),
+        orchestrator_port.refusing_spawns(),
+        orchestrator_port.refusing_children(),
+        orchestrator_port.unheld,
+        orchestrator_port.unreported(),
+        top,
+      )
+    process.send(ready, #(
+      address.Address(node: node.self(), name:),
+      started.pid,
+    ))
+    process.sleep(5000)
+  })
+  let assert Ok(#(port, port_pid)) = process.receive(ready, 2000)
+  let relay =
+    top_relay.through(dial_to(port), top_relay.Timing(..quick(), call_ms: 2000))
+  let answer = process.new_subject()
+  process.spawn(fn() { process.send(answer, top_relay.stop(relay, "box", "s")) })
+  let assert Ok(Nil) = process.receive(received, 2000)
+  process.kill(port_pid)
+  let heard = process.receive(answer, 2000)
+
+  // The admitted session effect still commits once after the port has gone.
+  process.send(release, Nil)
+  assert process.receive(effects, 2000) == Ok("stopped")
+  assert process.receive(effects, 0) == Error(Nil)
+  assert heard == Ok(Error(Silent))
 }
 
 // --- a message ---------------------------------------------------------------------------------
@@ -433,6 +564,26 @@ pub fn a_message_is_sent_again_with_the_same_id_and_lands_once_test() {
   let sent = seen(entries)
   assert list.length(sent) >= 2
   assert list.all(sent, fn(line) { line == "s1 m1 build it" })
+}
+
+// An unreadable landing arrives after the recipient accepted the message. It
+// cannot establish that the message was not delivered.
+pub fn an_unreadable_send_landing_keeps_the_outcome_unknown_test() {
+  let effects = log()
+  let relay =
+    relay_to(
+      orchestrator_port.TopHost(
+        ..orchestrator_port.refusing_top(),
+        send: fn(_node, _session, id, _text) {
+          process.send(effects, id)
+          Ok(json.String("unsupported landing"))
+        },
+      ),
+    )
+  let assert Error(Unreadable(_) as failure) =
+    top_relay.send(relay, "box", "s1", "m1", "build it")
+  assert seen(effects) == ["m1"]
+  assert top_relay.outcome_unknown(failure)
 }
 
 // --- the single-try calls --------------------------------------------------------------------------

@@ -12,14 +12,17 @@
 
 import client/daemon/domain as domain_service
 import client/daemon/manager
+import client/daemon/ui_top
 import client/deployment
 import client/executors
 import client/internal/ffi_os
+import client/internal/instance_owner
 import client/peer_mail
 import client/protocol
 import client/relayed_session.{type Endpoint, Endpoint, Overview}
 import client/remote/address.{type Address}
 import client/remote/orchestrator_port.{type Message}
+import client/remote/top_relay
 import client/remote_escalation
 import client/remote_top
 import client/spawners
@@ -39,6 +42,7 @@ import gleam/string
 import simplifile
 import storage/catalogue
 import storage/domain
+import web_view/relayed
 import weft/actor
 import weft/poll
 
@@ -276,6 +280,15 @@ fn scratch(label: String) -> String {
 
 // A rig with this `top_level` table text, starting from now `now`.
 fn rig_with(label: String, spawner_text: String, now: Int) -> Rig {
+  rig_with_custody(label, spawner_text, now, fn(_) { Nil })
+}
+
+fn rig_with_custody(
+  label: String,
+  spawner_text: String,
+  now: Int,
+  publish: fn(instance_owner.Owner) -> Nil,
+) -> Rig {
   let directory = scratch(label)
   let text = configuration <> spawner_text
   let configuration_path = directory <> "/loom.toml"
@@ -292,7 +305,8 @@ fn rig_with(label: String, spawner_text: String, now: Int) -> Rig {
       store,
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
-        build: fn(record, _domain, _services, _owner, _registry) {
+        build: fn(record, _domain, _services, owner, _registry) {
+          publish(owner)
           Ok(endpoint_for(world, record.id))
         },
         drain: fn(_, _) { Nil },
@@ -322,11 +336,19 @@ fn rig(label: String) -> Rig {
 // A second port over the same registry, with its own clock, which is how a test
 // moves the rolling hour.
 fn port_at(rig: Rig, now: Int) -> Address(Message) {
+  port_at_with(rig, now, fn(endpoint) { endpoint })
+}
+
+fn port_at_with(
+  rig: Rig,
+  now: Int,
+  project: fn(Endpoint) -> Endpoint,
+) -> Address(Message) {
   let context =
     top_host.Context(
       spawners: [rig.spawner],
       registry: rig.registry,
-      endpoint: fn(endpoint) { endpoint },
+      endpoint: project,
       sessions_directory: rig.directory,
       domain_configuration: rig.configuration_path,
       generator: fn() {
@@ -1091,6 +1113,39 @@ max_per_hour = 100
   assert list.length(page.rows) + list.length(next) <= 20
 }
 
+// A resident that refuses its overview cannot be reported as idle. Its failure
+// leaves the entire page retryable rather than erasing that session's state.
+pub fn a_failed_resident_overview_refuses_the_listing_test() {
+  let rig = rig("overview-fails")
+  let session = made(rig, 1)
+  resident(rig, session)
+  let port =
+    port_at_with(rig, 1_700_000_000_000, fn(endpoint) {
+      Endpoint(..endpoint, overview: fn(_) {
+        Error(remote_top.StoreFailure("busy"))
+      })
+    })
+  let assert Ok(Error(remote_top.StoreFailure(_))) =
+    orchestrator_port.ask_top_sessions(port, "", 10, answers_within_ms)
+
+  // A crash and a deadline are also failed observations, not idle rows.
+  let crashed =
+    port_at_with(rig, 1_700_000_000_000, fn(endpoint) {
+      Endpoint(..endpoint, overview: fn(_) { panic as "overview failed" })
+    })
+  let assert Ok(Error(remote_top.StoreFailure(_))) =
+    orchestrator_port.ask_top_sessions(crashed, "", 10, answers_within_ms)
+  let delayed =
+    port_at_with(rig, 1_700_000_000_000, fn(endpoint) {
+      Endpoint(..endpoint, overview: fn(_) {
+        process.sleep(3000)
+        Ok(resting())
+      })
+    })
+  let assert Ok(Error(remote_top.StoreFailure(_))) =
+    orchestrator_port.ask_top_sessions(delayed, "", 10, answers_within_ms)
+}
+
 pub fn a_saved_session_is_listed_idle_with_no_requests_and_is_not_opened_test() {
   let rig = rig("saved")
   let session = made(rig, 1)
@@ -1444,4 +1499,77 @@ max_per_hour = 100
   })
   let listed = rows(rig, "", 64)
   assert list.map(listed, fn(row) { row.session_id }) == [oldest]
+}
+
+type DrainGate {
+  WaitDrain(Subject(Nil))
+  ReleaseDrain
+}
+
+fn blocked_rig(label: String) -> #(Rig, Subject(DrainGate), Subject(Nil)) {
+  let entered = process.new_subject()
+  let assert Ok(gate) =
+    actor.new(None)
+    |> actor.on_message(fn(waiting, message: DrainGate) {
+      case message {
+        WaitDrain(reply) -> actor.continue(Some(reply))
+        ReleaseDrain -> {
+          case waiting {
+            Some(reply) -> process.send(reply, Nil)
+            None -> Nil
+          }
+          actor.continue(None)
+        }
+      }
+    })
+    |> actor.start
+  let rig =
+    rig_with_custody(label, table, 1_700_000_000_000, fn(owner) {
+      let assert Ok(Nil) =
+        instance_owner.publish(owner, instance_owner.Runtime, fn() {
+          process.send(entered, Nil)
+          process.call(gate.data, waiting: 10_000, sending: WaitDrain)
+          Ok(Nil)
+        })
+      Nil
+    })
+  #(rig, gate.data, entered)
+}
+
+// The real registry starts stopping before it can finish the archive.
+pub fn an_archive_that_times_out_while_the_real_registry_is_stopping_is_unknown_test() {
+  let #(rig, gate, entered) = blocked_rig("archive-blocked")
+  let session = made(rig, 1)
+  resident(rig, session)
+  let relay =
+    top_relay.through(
+      fn(_) { Ok(rig.port) },
+      top_relay.Timing(
+        retry_window_ms: 600,
+        create_ms: 150,
+        call_ms: 7000,
+        first_pause_ms: 10,
+        longest_pause_ms: 40,
+      ),
+    )
+  let outcome = ui_top.archive(relay, "box", session)
+  assert process.receive(entered, 1000) == Ok(Nil)
+  let assert Ok(manager.View(status: manager.Stopping(_), ..)) =
+    manager.get(rig.registry, session)
+  process.send(gate, ReleaseDrain)
+  let assert relayed.Unknown(why) = outcome
+  assert string.contains(why, "stop")
+}
+
+// A changing slot is not evidence that its run is already stopped.
+pub fn a_stop_during_real_registry_retirement_is_not_reported_as_done_test() {
+  let #(rig, gate, entered) = blocked_rig("stop-retiring")
+  let session = made(rig, 1)
+  resident(rig, session)
+  let assert Ok(_) = manager.stop_session(rig.registry, session)
+  assert process.receive(entered, 1000) == Ok(Nil)
+  let answer =
+    orchestrator_port.ask_top_stop(rig.port, session, answers_within_ms)
+  process.send(gate, ReleaseDrain)
+  let assert Ok(Error(remote_top.NotYetOpen(_))) = answer
 }

@@ -98,6 +98,8 @@ const lineage_limit = 32
 /// Judges and commits a decision. See the module doc for the order of the checks.
 ///
 /// `now_ms` stamps the provenance of a remembered grant, on the session's clock.
+/// `Error` means the decision committed but its current record could not be
+/// read back; validation and rejected commits remain answers in `Ok`.
 ///
 /// ## Examples
 ///
@@ -113,7 +115,7 @@ pub fn admit(
   expected_seq: Int,
   decider: Decider,
   now_ms: Int,
-) -> Answer {
+) -> Result(Answer, String) {
   judge(
     runtime,
     link.spawner,
@@ -132,7 +134,8 @@ pub fn admit(
 /// session (protocol-change/094). It is `admit` with the descendant test taken
 /// out: the caller has already checked that the registry's relayed row names
 /// this session for `spawner`, and the record needs no ancestry because every
-/// request of the session is the spawner's to answer.
+/// request of the session is the spawner's to answer. A committed decision
+/// whose record cannot be read back returns `Error` for the transport to report.
 ///
 /// ## Examples
 ///
@@ -148,7 +151,7 @@ pub fn admit_relayed(
   expected_seq: Int,
   decider: Decider,
   now_ms: Int,
-) -> Answer {
+) -> Result(Answer, String) {
   judge(
     runtime,
     spawner,
@@ -177,15 +180,15 @@ fn judge(
   expected_seq: Int,
   decider: Decider,
   now_ms: Int,
-) -> Answer {
+) -> Result(Answer, String) {
   // This match resolves ceiling before the surrounding protocol step continues.
   // This match resolves ceiling before the enclosing validation continues.
   case ceiling {
-    None -> Refused(reason: remote_escalation.outside_the_ceiling)
+    None -> Ok(Refused(reason: remote_escalation.outside_the_ceiling))
     Some(ceiling) ->
       // This match resolves decision before the surrounding protocol step continues.
       case decision {
-        Forget(grant:) -> forget(runtime, spawner, grant)
+        Forget(grant:) -> Ok(forget(runtime, spawner, grant))
         Deny ->
           decide(
             runtime,
@@ -253,26 +256,26 @@ fn decide(
   outside: String,
   escalation_id: String,
   expected_seq: Int,
-  commit: fn(api.EscalationCell) -> Answer,
-) -> Answer {
+  commit: fn(api.EscalationCell) -> Result(Answer, String),
+) -> Result(Answer, String) {
   // This match resolves api.escalation_cell(runtime, escalation_id) before the surrounding protocol step continues.
   // This match resolves api.escalation_cell(runtime, escalation_id) before the enclosing validation continues.
   case api.escalation_cell(runtime, escalation_id) {
-    Error(_) -> Refused(reason: "unknown escalation: " <> escalation_id)
+    Error(_) -> Ok(Refused(reason: "unknown escalation: " <> escalation_id))
     Ok(cell) -> {
       use <- bool.lazy_guard(when: !within(cell.record), return: fn() {
-        Refused(reason: outside)
+        Ok(Refused(reason: outside))
       })
       use <- bool.lazy_guard(when: cell.seq != expected_seq, return: fn() {
-        stale(cell, "the displayed question has changed")
+        Ok(stale(cell, "the displayed question has changed"))
       })
       use <- bool.lazy_guard(
         when: cell.record.status != durable.Pending,
         return: fn() {
-          stale(
+          Ok(stale(
             cell,
             "the request is " <> escalation_view.status_name(cell.record.status),
-          )
+          ))
         },
       )
       commit(cell)
@@ -318,7 +321,7 @@ fn deny(
   runtime: api.Runtime,
   cell: api.EscalationCell,
   decider: Decider,
-) -> Answer {
+) -> Result(Answer, String) {
   api.deny_escalation_at(
     runtime,
     cell,
@@ -342,30 +345,33 @@ fn approve(
   scope: remote_escalation.Scope,
   decider: Decider,
   now_ms: Int,
-) -> Answer {
+) -> Result(Answer, String) {
   let record = cell.record
   use wanted <- or_refuse(wanted_of(record))
   use <- bool.lazy_guard(
     when: option.unwrap(record.action, "") != action,
     return: fn() {
-      stale(
+      Ok(stale(
         cell,
         "the action this approval names is not the one the request now "
           <> "carries",
-      )
+      ))
     },
   )
   use <- bool.lazy_guard(
     when: option.is_some(grants.first_unwanted(approved, wanted:)),
     return: fn() {
-      stale(cell, "the approved grants are not a subset of what was asked for")
+      Ok(stale(
+        cell,
+        "the approved grants are not a subset of what was asked for",
+      ))
     },
   )
   use <- bool.lazy_guard(
     when: approved == []
       || !canonical(approved)
       || !approval_ceiling.admits_all(ceiling, approved),
-    return: fn() { Refused(reason: remote_escalation.outside_the_ceiling) },
+    return: fn() { Ok(Refused(reason: remote_escalation.outside_the_ceiling)) },
   )
   let origin = Some(remote_escalation.origin_of(decider))
   let payloads = list.map(approved, grants.encode)
@@ -436,26 +442,30 @@ fn wanted_of(record: durable.Escalation) -> Result(List(Grant), String) {
   |> result.map_error(fn(_) { "the stored denial is unreadable" })
 }
 
-/// Or refuse keeps this client operation’s decoding or state decision in one place.
-fn or_refuse(found: Result(a, String), then: fn(a) -> Answer) -> Answer {
+/// Keeps validation refusals conclusive while a committed read-back can fail.
+fn or_refuse(
+  found: Result(a, String),
+  then: fn(a) -> Result(Answer, String),
+) -> Result(Answer, String) {
   // This match resolves found before the surrounding protocol step continues.
   // This match resolves found before the enclosing validation continues.
   case found {
     Ok(value) -> then(value)
-    Error(reason) -> Refused(reason:)
+    Error(reason) -> Ok(Refused(reason:))
   }
 }
 
 // The answer to a commit. A lost compare-and-set is the question having moved,
-// and the operator is shown it as it now is. Any other failure is a refusal that
-// the box may be asked again about.
-/// Answered keeps this client operation’s decoding or state decision in one place.
+// and the operator is shown it as it now is. The storage contract guarantees
+// a returned commit error applied nothing; a successful commit whose record
+// cannot be read back is carried separately to the transport.
+/// Distinguishes rejected commits from unavailable post-commit records.
 fn answered(
   committed: Result(durable.Escalation, api.ApiError),
   runtime: api.Runtime,
   cell: api.EscalationCell,
   decision: escalate.OperatorDecision,
-) -> Answer {
+) -> Result(Answer, String) {
   // This match resolves committed before the surrounding protocol step continues.
   // This match resolves committed before the enclosing validation continues.
   case committed {
@@ -473,21 +483,26 @@ fn answered(
     Error(api.RaceLost) ->
       // This match resolves api.escalation_cell(runtime, cell.record.id) before the surrounding protocol step continues.
       case api.escalation_cell(runtime, cell.record.id) {
-        Ok(fresh) -> stale(fresh, "the request changed while it was decided")
-        Error(_) -> Refused(reason: "the request changed while it was decided")
+        Ok(fresh) ->
+          Ok(stale(fresh, "the request changed while it was decided"))
+        Error(_) ->
+          Ok(Refused(reason: "the request changed while it was decided"))
       }
-    Error(_) -> Refused(reason: "the decision could not be committed")
+    Error(_) -> Ok(Refused(reason: "the decision could not be committed"))
   }
 }
 
 // The record after the commit, as the box has it.
-/// Read back keeps this client operation’s decoding or state decision in one place.
-fn read_back(runtime: api.Runtime, cell: api.EscalationCell) -> Answer {
+/// Reads the committed record without treating a failed read as a rejection.
+fn read_back(
+  runtime: api.Runtime,
+  cell: api.EscalationCell,
+) -> Result(Answer, String) {
   // This match resolves api.escalation_cell(runtime, cell.record.id) before the surrounding protocol step continues.
   // This match resolves api.escalation_cell(runtime, cell.record.id) before the enclosing validation continues.
   case api.escalation_cell(runtime, cell.record.id) {
-    Ok(fresh) -> Decided(record: escalation_view.view(fresh.record, fresh.seq))
-    Error(_) ->
-      Refused(reason: "the decision committed but the record is unreadable")
+    Ok(fresh) ->
+      Ok(Decided(record: escalation_view.view(fresh.record, fresh.seq)))
+    Error(_) -> Error("the decision committed but the record is unreadable")
   }
 }

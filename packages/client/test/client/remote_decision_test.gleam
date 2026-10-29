@@ -22,13 +22,17 @@ import client/remote_escalation.{
 import client/remote_spawn
 import core/clock
 import core/ids
+import core/register
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import machine/strand as machine_strand
 import runtime/api
 import runtime/escalation as durable
 import runtime/lineage
+import session/session as session_store
 import simplifile
+import storage/storage
 import support/notes_session
 
 const spawner_name = "laptop"
@@ -164,16 +168,18 @@ fn admit(
   decision: remote_escalation.Decision,
   seq: Int,
 ) -> remote_escalation.Answer {
-  remote_decision.admit(
-    runtime,
-    link(ceiling),
-    parent(),
-    id,
-    decision,
-    seq,
-    decider(),
-    1000,
-  )
+  let assert Ok(answer) =
+    remote_decision.admit(
+      runtime,
+      link(ceiling),
+      parent(),
+      id,
+      decision,
+      seq,
+      decider(),
+      1000,
+    )
+  answer
 }
 
 pub fn an_approval_inside_the_ceiling_commits_once_test() {
@@ -521,16 +527,18 @@ fn admit_relayed(
   decision: remote_escalation.Decision,
   seq: Int,
 ) -> remote_escalation.Answer {
-  remote_decision.admit_relayed(
-    runtime,
-    spawner_name,
-    ceiling,
-    id,
-    decision,
-    seq,
-    decider(),
-    1000,
-  )
+  let assert Ok(answer) =
+    remote_decision.admit_relayed(
+      runtime,
+      spawner_name,
+      ceiling,
+      id,
+      decision,
+      seq,
+      decider(),
+      1000,
+    )
+  answer
 }
 
 pub fn a_page_decides_a_request_of_its_session_with_no_parent_in_sight_test() {
@@ -642,4 +650,91 @@ pub fn an_unknown_request_of_a_relayed_session_is_refused_test() {
     admit_relayed(runtime, Some(ceiling_over(root)), "policy-9", Deny, 1)
   assert reason == "unknown escalation: policy-9"
   let assert Ok(Nil) = api.close(runtime)
+}
+
+// A real writer commits before the backend refuses its subsequent read.
+pub fn a_committed_relayed_decision_with_an_unreadable_record_is_not_a_refusal_test() {
+  let root = workspace("readback")
+  let seed = session(root)
+  let assert Ok(backing) =
+    session_store.open_sqlite(
+      root <> "/decision.db",
+      "readback-test",
+      30_000,
+      clock.fixed(1000),
+    )
+  let store = backing.store
+  let guarded =
+    storage.Storage(..store, get_register: fn(handle, ns, key) {
+      let found = store.get_register(handle, ns, key)
+      case found {
+        Ok(Some(storage.Register(value:, ..))) ->
+          case durable.decode(value.payload) {
+            Ok(durable.Escalation(status: durable.Rejected, ..)) ->
+              Error(storage.BackendFault("readback unavailable"))
+            Ok(_) | Error(_) -> found
+          }
+        Ok(None) | Error(_) -> found
+      }
+    })
+  let configuration =
+    machine_strand.StrandConfiguration(
+      model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
+      thinking_level: machine_strand.ThinkingOff,
+      active_tool_names: [],
+    )
+  let assert Ok(runtime) =
+    api.open(
+      session_store.Session(..backing, store: guarded),
+      seed.effects,
+      api.default_options(configuration),
+    )
+  let seq = raise(runtime, "readback", [])
+  let answer =
+    remote_decision.admit_relayed(
+      runtime,
+      spawner_name,
+      Some(ceiling_over(root)),
+      "readback",
+      Deny,
+      seq,
+      decider(),
+      1000,
+    )
+  let assert Ok(Some(stored)) =
+    store.get_register(
+      store.handle,
+      register.FactCustom,
+      durable.register_key("readback"),
+    )
+  let assert Ok(record) = durable.decode(stored.value.payload)
+  assert record.status == durable.Rejected
+  assert answer == Error("the decision committed but the record is unreadable")
+
+  // The same committed-readback failure must survive the descendant door.
+  child_of(runtime, "^main")
+  let child_seq = raise(runtime, "child-readback", [])
+  let child_answer =
+    remote_decision.admit(
+      runtime,
+      link(Some(ceiling_over(root))),
+      parent(),
+      "child-readback",
+      Deny,
+      child_seq,
+      decider(),
+      1000,
+    )
+  let assert Ok(Some(child_stored)) =
+    store.get_register(
+      store.handle,
+      register.FactCustom,
+      durable.register_key("child-readback"),
+    )
+  let assert Ok(child_record) = durable.decode(child_stored.value.payload)
+  assert child_record.status == durable.Rejected
+  assert child_answer
+    == Error("the decision committed but the record is unreadable")
+  let assert Ok(Nil) = api.close(runtime)
+  let assert Ok(Nil) = api.close(seed)
 }

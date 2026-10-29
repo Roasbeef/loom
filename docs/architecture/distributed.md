@@ -1622,6 +1622,8 @@ Every other message names a session, which must have a row for this spawner
 unreachable by this door. A message about a saved session opens it first, within a
 budget inside the laptop's seven seconds. A listing opens nothing: a saved session
 is listed idle with no requests, and its requests are read when the page opens it.
+A failed resident overview or a transitional instance refuses the listing rather
+than claiming idle; an unfinished creation remains discoverable by request ID.
 
 ### A row and a page
 
@@ -1651,8 +1653,16 @@ request id, for 30 seconds, pausing 500 ms and doubling to 4 s; if the window en
 the outcome is unknown and the next page names the session if it was made. A
 message is resent the same way with its message id. A decision is asked once. The
 last list is kept, marked stale with the time the failures began
-(`remote/top_view`). A port that does not know these messages stops on them, which
-a connected laptop reports as an older build; both ends run the same build.
+(`remote/top_view`). A port that does not know these messages can stop on them,
+but a port death does not identify its build or establish that a forwarded action
+did not run. The caller retains an unknown mutation outcome through later failed
+dials or refusals; an unreadable send landing is unknown as well. Both ends still
+assume the same wire contract: this correction adds no feature negotiation.
+
+The relayed page retains its last complete row and transcript when either read
+fails, and reports their age. Read failures use read-specific words; an initial
+failed read does not also claim loading. Creation and decision preflight failures
+precede dispatch and do not become unknown mutations.
 
 ### Where the code lives
 

@@ -23,10 +23,11 @@
 ////
 //// ## Refusals
 ////
-//// `SpawnRefusal` is a definitive answer: the receiver looked and said no, and
-//// the sender reads it as an ordinary in-band refusal. Silence is the other
-//// failure, which the port's asker reports as unreachable and which this module
-//// has no value for, because it is the absence of an answer.
+//// A `SpawnRefusal` is an in-band response, whose meaning depends on the
+//// operation. Admission and validation refusals say no; `NotYetOpen` can be
+//// retried. A `StoreFailure` can follow an admitted decision, release, or send,
+//// so those callers cannot assume the action did not happen. Silence is the
+//// absence of an answer, reported as unreachable by the port's asker.
 ////
 //// ## The spawner's terms
 ////
@@ -234,8 +235,10 @@ pub type Cap {
   SpawnsPerDay
 }
 
-/// Why the receiver declined a message. Every variant is a definitive answer,
-/// and none is retried against another orchestrator.
+/// The receiver's in-band result when it cannot answer normally. Admission and
+/// validation refusals are definitive, while `NotYetOpen` permits a later retry.
+/// `StoreFailure` may follow an admitted action, so its interpretation depends
+/// on the operation that returned it.
 pub type SpawnRefusal {
   /// No `[spawners.<name>]` names the node the message came from. A daemon with
   /// no `[spawners]` table at all gives this to every message.
@@ -507,6 +510,29 @@ pub fn describe_refusal(refusal: SpawnRefusal) -> String {
       "it keeps the transcripts of this spawner's children to itself"
     NotYetOpen(reason:) ->
       "its session for this parent is not open yet: " <> reason
+  }
+}
+
+/// A fixed diagnostic class for a definitive refusal. Free-form peer text is
+/// never a log field; `NotYetOpen` is retryable and has no final class.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_spawn.refusal_class(ParentRunEnded) == Some("parent_run_ended")
+/// ```
+@internal
+pub fn refusal_class(refusal: SpawnRefusal) -> Option(String) {
+  case refusal {
+    UnknownSpawner(..) -> Some("unknown_spawner")
+    ParentRunEnded -> Some("parent_run_ended")
+    CapReached(cap:, ..) -> Some("cap_" <> cap_name(cap))
+    ToolOutsideCeiling(..) -> Some("tool_outside_ceiling")
+    InvalidArgument(..) -> Some("invalid_argument")
+    NameAlreadyMinted -> Some("name_already_minted")
+    StoreFailure(..) -> Some("store_failure")
+    NotYetOpen(..) -> None
+    TranscriptHidden -> Some("transcript_hidden")
   }
 }
 

@@ -358,3 +358,29 @@ laptop's filing is a monotonic register (the newest `seq` wins), and the one
 message the model would add, a decision, is judged by that same machine on the
 box: a decision at a stale `seq`, or after a consume, is refused by the same
 compare-and-set that refuses a second local operator.
+
+
+## Addendum: a decision whose answer is unavailable (2026-10-29)
+
+A decision can commit before the gateway's caller receives its answer. It can
+also commit successfully and then fail to read back the record and its new
+sequence. Neither case is a definite refusal. Internally, `remote_decision.admit`
+and `admit_relayed` now return an answer in `Ok` or an unavailable committed
+record in `Error`. Validation, authority checks, stale compare-and-set and
+returned commit errors remain conclusive answers. The storage contract states
+that a returned commit error applies nothing; no returned timeout is invented
+for the writer's existing unbounded call.
+
+The gateway distinguishes `HubUnavailable` before dispatch from
+`DecisionUnknown` after dispatch. Both child and relayed callbacks carry that
+distinction into the existing outer error envelope: `NotYetOpen` for a hub with
+no recipient, `StoreFailure` for an answer that cannot establish the decision.
+No `Answer` constructor, distribution field, grant, ceiling or approval sequence
+changes. A missing recipient is established before sending, not inferred from a
+monitor firing after sending.
+
+For a child decision, the sender maps `StoreFailure` to the existing unreachable
+outcome, whose page says the decision may not have been applied. Resolve-specific
+`NotYetOpen` remains a refusal that says the decision was not sent and can be
+tried after the session opens. This changes no automatic retry: a decision is
+still asked once, and the existing sequence check prevents applying it twice.

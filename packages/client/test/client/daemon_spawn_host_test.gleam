@@ -10,13 +10,20 @@
 
 import client/agency
 import client/daemon/main
+import client/peer_mail
+import client/remote/remote_spawner
 import client/remote_spawn.{Attached, CallSite, Origin, Parent, Request}
 import client/spawners.{type Spawner}
 import core/clock
 import core/ids
 import core/json
 import gleam/erlang/process.{type Subject}
-import gleam/option.{None}
+import gleam/list
+import gleam/option.{None, Some}
+import gleam/string
+import telemetry/field
+import telemetry/level
+import telemetry/log
 import tools/agent
 
 const distribution =
@@ -129,6 +136,7 @@ pub fn a_node_no_spawner_names_is_an_unknown_spawner_for_all_five_test() {
       fn(_, _) { panic as "an unknown node must not reach a session" },
       fn(_, _) { panic as "an unknown node must not release a session" },
       fn(_, _) { panic as "an unknown node must not look for a session" },
+      log.discard(),
     )
   let stranger = origin("stranger@10.0.0.9")
   let refusal = remote_spawn.UnknownSpawner(node: "stranger@10.0.0.9")
@@ -147,6 +155,7 @@ pub fn a_daemon_with_no_spawners_refuses_every_node_test() {
       fn(_, _) { panic as "a daemon with no spawners must not reach a session" },
       fn(_, _) { panic as "a daemon with no spawners must not release one" },
       fn(_, _) { panic as "a daemon with no spawners must not look for one" },
+      log.discard(),
     )
   let laptop = origin("laptop@100.64.0.5")
   let refusal = remote_spawn.UnknownSpawner(node: "laptop@100.64.0.5")
@@ -180,6 +189,7 @@ pub fn a_configured_spawner_is_served_by_its_delegate_agency_test() {
         process.send(asked, #(spawner.name, parent))
         Ok(option.Some(recording(heard)))
       },
+      log.discard(),
     )
   let laptop = origin("laptop@100.64.0.5")
 
@@ -241,10 +251,182 @@ pub fn a_refusal_to_find_the_session_is_the_answer_to_each_message_test() {
       fn(_, _) { Error(refusal) },
       fn(_, _) { Error(refusal) },
       fn(_, _) { Error(refusal) },
+      log.discard(),
     )
   let laptop = origin("laptop@100.64.0.5")
   assert host.spawn(laptop, call_site(), 0, [], request()) == Error(refusal)
   assert host.join(laptop, [], 1000) == Error(refusal)
   assert host.run_ended(laptop, operation()) == Error(refusal)
   assert host.release(laptop) == Error(refusal)
+}
+
+// The receiver records admission and delegate refusals without copying any
+// peer-controlled reason or request content into the diagnostic.
+pub fn spawn_receiver_logs_only_fixed_refusal_classes_test() {
+  let records = process.new_subject()
+  let logger = log.new(sink: log.to_subject(records), threshold: level.Warning)
+  let canary = "sensitive-canary-in-reason"
+  let host =
+    main.spawn_host(
+      configured(),
+      fn(_, _) { Error(remote_spawn.InvalidArgument(canary)) },
+      fn(_, _) { Ok(0) },
+      fn(_, _) { Ok(None) },
+      logger,
+    )
+  let stranger = origin("untrusted-canary-node")
+  let sensitive_request =
+    Request(
+      ..request(),
+      brief: canary,
+      model: Some(canary),
+      tools: Some([canary]),
+    )
+  assert host.spawn(stranger, call_site(), 0, [], sensitive_request)
+    == Error(remote_spawn.UnknownSpawner("untrusted-canary-node"))
+  let assert Ok(first) = process.receive(records, 0)
+  assert first.event == "remote_spawn.receiver_refused"
+  assert list.contains(first.fields, field.text("class", "unknown_spawner"))
+  assert list.contains(
+    first.fields,
+    field.text("peer", "untrusted-canary-node"),
+  )
+  assert list.contains(first.fields, field.text("step", "step-1"))
+  assert list.contains(first.fields, field.text("minter", "tool"))
+  assert !list.any(first.fields, fn(item) { item.key == "program_ordinal" })
+  assert !string.contains(string.inspect(first.fields), canary)
+
+  assert host.spawn(origin("laptop@100.64.0.5"), call_site(), 0, [], request())
+    == Error(remote_spawn.InvalidArgument(canary))
+  let assert Ok(second) = process.receive(records, 0)
+  assert second.event == "remote_spawn.receiver_refused"
+  assert list.contains(second.fields, field.text("class", "invalid_argument"))
+  assert !string.contains(string.inspect(second.fields), canary)
+  assert !string.contains(string.inspect(second.fields), "Run make e2e.")
+
+  let cap = remote_spawn.CapReached(remote_spawn.MaxSessions, 4)
+  let capped =
+    main.spawn_host(
+      configured(),
+      fn(_, _) { Error(cap) },
+      fn(_, _) { Ok(0) },
+      fn(_, _) { Ok(None) },
+      logger,
+    )
+  assert capped.spawn(
+      origin("laptop@100.64.0.5"),
+      CallSite(..call_site(), minter: agent.Program(3)),
+      0,
+      [],
+      request(),
+    )
+    == Error(cap)
+  let assert Ok(third) = process.receive(records, 0)
+  assert third.event == "remote_spawn.receiver_refused"
+  assert list.contains(third.fields, field.text("class", "cap_max_sessions"))
+  assert list.contains(third.fields, field.text("peer", "laptop@100.64.0.5"))
+  assert list.contains(third.fields, field.text("minter", "program"))
+  assert list.contains(third.fields, field.count("program_ordinal", 3))
+
+  let waiting =
+    main.spawn_host(
+      configured(),
+      fn(_, _) { Error(remote_spawn.NotYetOpen(canary)) },
+      fn(_, _) { Ok(0) },
+      fn(_, _) { Ok(None) },
+      logger,
+    )
+  assert waiting.spawn(
+      origin("laptop@100.64.0.5"),
+      call_site(),
+      0,
+      [],
+      request(),
+    )
+    == Error(remote_spawn.NotYetOpen(canary))
+  assert process.receive(records, 0) == Error(Nil)
+}
+
+// The sending call records the typed answer before it becomes model-facing
+// prose, while retryable answers continue to mean unreachable.
+pub fn spawn_sender_logs_only_fixed_refusal_classes_test() {
+  let records = process.new_subject()
+  let logger = log.new(sink: log.to_subject(records), threshold: level.Warning)
+  let refusal = remote_spawn.CapReached(remote_spawn.MaxSessions, 4)
+  assert remote_spawner.spawn_answer(
+      Ok(Error(refusal)),
+      logger,
+      call_site(),
+      Some("box@100.64.0.9"),
+    )
+    == Error(peer_mail.Refused(remote_spawn.describe_refusal(refusal)))
+  let assert Ok(first) = process.receive(records, 0)
+  assert first.event == "remote_spawn.sender_refused"
+  assert list.contains(first.fields, field.text("class", "cap_max_sessions"))
+  assert list.contains(first.fields, field.count("source_index", 0))
+  assert list.contains(first.fields, field.text("peer", "box@100.64.0.9"))
+  assert list.contains(first.fields, field.text("step", "step-1"))
+  assert list.contains(first.fields, field.text("minter", "tool"))
+  assert !list.any(first.fields, fn(item) { item.key == "program_ordinal" })
+
+  let canary = "sensitive-canary-in-store-failure"
+  let failure = remote_spawn.StoreFailure(canary)
+  assert remote_spawner.spawn_answer(
+      Ok(Error(failure)),
+      logger,
+      call_site(),
+      Some("box@100.64.0.9"),
+    )
+    == Error(peer_mail.Refused(remote_spawn.describe_refusal(failure)))
+  let assert Ok(second) = process.receive(records, 0)
+  assert second.event == "remote_spawn.sender_refused"
+  assert list.contains(second.fields, field.text("class", "store_failure"))
+  assert !string.contains(string.inspect(second.fields), canary)
+
+  let tool = remote_spawn.ToolOutsideCeiling(canary)
+  assert remote_spawner.spawn_answer(
+      Ok(Error(tool)),
+      logger,
+      call_site(),
+      Some("box@100.64.0.9"),
+    )
+    == Error(peer_mail.Refused(remote_spawn.describe_refusal(tool)))
+  let assert Ok(third) = process.receive(records, 0)
+  assert list.contains(
+    third.fields,
+    field.text("class", "tool_outside_ceiling"),
+  )
+  assert !string.contains(string.inspect(third.fields), canary)
+  assert remote_spawner.spawn_answer(
+      Ok(Error(remote_spawn.NotYetOpen(canary))),
+      logger,
+      call_site(),
+      Some("box@100.64.0.9"),
+    )
+    == Error(peer_mail.Unreachable)
+  assert process.receive(records, 0) == Error(Nil)
+
+  let destination = peer_mail.Refused("unconfigured-canary")
+  assert remote_spawner.spawn_answer(
+      Error(destination),
+      logger,
+      call_site(),
+      Some("unconfigured-canary"),
+    )
+    == Error(destination)
+  let assert Ok(fourth) = process.receive(records, 0)
+  assert list.contains(fourth.fields, field.text("class", "not_configured"))
+  assert !string.contains(string.inspect(fourth.fields), "unconfigured-canary")
+
+  let program_site = CallSite(..call_site(), minter: agent.Program(7))
+  assert remote_spawner.spawn_answer(
+      Ok(Error(refusal)),
+      logger,
+      program_site,
+      Some("box@100.64.0.9"),
+    )
+    == Error(peer_mail.Refused(remote_spawn.describe_refusal(refusal)))
+  let assert Ok(fifth) = process.receive(records, 0)
+  assert list.contains(fifth.fields, field.text("minter", "program"))
+  assert list.contains(fifth.fields, field.count("program_ordinal", 7))
 }

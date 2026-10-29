@@ -53,14 +53,23 @@ import client/peer_mail.{type Failure}
 import client/remote/address
 import client/remote/link_keeper.{type Keepers}
 import client/remote/orchestrator_port
+import client/remote_escalation
 import client/remote_mail
 import client/remote_reach.{type Reach}
 import client/remote_spawn.{type Parent, type SpawnRefusal}
 import client/roster.{type Roster}
+import core/ids
+import core/json.{type JsonValue}
 import gleam/dict
+import gleam/erlang/atom
+import gleam/erlang/node
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import session_view/remote_transcript
+import telemetry/field
+import telemetry/log.{type Logger}
+import tools/agent
 
 // How much longer than the window it asks the receiver to wait a join's own
 // deadline is, so the receiver's answer for a window that ran out is not itself
@@ -117,7 +126,7 @@ const connect_ms = 1500
 /// ## Examples
 ///
 /// ```gleam
-/// // remote_spawner.over_distribution(membership, orchestrators, keepers, session_id, fn() { True })
+/// // remote_spawner.over_distribution(membership, orchestrators, keepers, session_id, fn() { True }, logger)
 /// ```
 pub fn over_distribution(
   membership: Membership,
@@ -125,6 +134,7 @@ pub fn over_distribution(
   keepers: Keepers,
   session: String,
   offered: fn() -> Bool,
+  logger: Logger,
 ) -> Reach {
   remote_reach.Reach(
     session:,
@@ -133,17 +143,25 @@ pub fn over_distribution(
     }),
     offered:,
     spawn: fn(name, parent, site, depth, tools, request, within_ms) {
-      use at <- result.try(reached(membership, configured, name))
-      orchestrator_port.ask_spawn(
-        at,
-        parent,
-        site,
-        depth,
-        tools,
-        request,
-        within_ms,
-      )
-      |> answer
+      // Only a resolved destination supplies a peer to the diagnostic; a
+      // refused name remains untrusted and is never copied into that field.
+      case reached(membership, configured, name) {
+        Error(failure) -> spawn_answer(Error(failure), logger, site, None)
+        Ok(at) -> {
+          let peer = atom.to_string(node.name(at.node))
+          orchestrator_port.ask_spawn(
+            at,
+            parent,
+            site,
+            depth,
+            tools,
+            request,
+            within_ms,
+          )
+          |> result.replace_error(peer_mail.Unreachable)
+          |> spawn_answer(logger, site, Some(peer))
+        }
+      }
     },
     join: fn(name, parent, handles, window_ms) {
       use at <- result.try(reached(membership, configured, name))
@@ -161,7 +179,7 @@ pub fn over_distribution(
       use at <- result.try(reached(membership, configured, name))
       use landing <- result.try(
         orchestrator_port.ask_send(at, parent, child, message_id, text, send_ms)
-        |> answer,
+        |> send_answer,
       )
       remote_mail.decode_landing(landing)
       |> result.map_error(fn(reason) {
@@ -180,7 +198,7 @@ pub fn over_distribution(
         decided_by,
         resolve_ms,
       )
-      |> answer
+      |> resolve_answer
     },
     history: fn(name, parent, child, cursor, limit) {
       use at <- result.try(reached(membership, configured, name))
@@ -370,6 +388,124 @@ fn reached(
     node: distribution.node(peer),
     name: orchestrator_port.default(),
   ))
+}
+
+/// Records a definitive spawn refusal before `answer` turns it into prose.
+/// The call site and resolved node identify the attempt without copying request
+/// or refusal text. A retryable answer has no final diagnostic, and an unknown
+/// destination never puts the model-supplied name in the log.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_spawner.spawn_answer(reply, logger, site, peer)
+/// ```
+@internal
+pub fn spawn_answer(
+  heard: Result(Result(a, SpawnRefusal), Failure),
+  logger: Logger,
+  site: remote_spawn.CallSite,
+  peer: Option(String),
+) -> Result(a, Failure) {
+  // Only definitive admission or remote refusals get a diagnostic; a
+  // retryable reply and a lost connection still leave work unsettled.
+  let class = case heard {
+    Ok(Error(refusal)) -> remote_spawn.refusal_class(refusal)
+    Error(peer_mail.Refused(_)) -> Some("not_configured")
+    Ok(Ok(_)) | Error(peer_mail.Unreachable) | Error(peer_mail.NotOpen) -> None
+  }
+
+  // The minter and its ordinal identify which spawn within the call was refused.
+  case class {
+    Some(class) ->
+      log.warn(logger, "remote_spawn.sender_refused", [
+        field.text("class", class),
+        field.ident("operation", ids.op_id_to_string(site.operation)),
+        field.text("step", site.step_id),
+        field.count("source_index", site.source_index),
+        ..list.append(
+          case site.minter {
+            agent.ToolCall -> [field.text("minter", "tool")]
+            agent.Program(ordinal) -> [
+              field.text("minter", "program"),
+              field.count("program_ordinal", ordinal),
+            ]
+          },
+          case heard, peer {
+            Ok(_), Some(peer) -> [field.text("peer", peer)]
+            Ok(_), None | Error(_), _ -> []
+          },
+        )
+      ])
+    None -> Nil
+  }
+
+  // Logging precedes conversion of the typed remote refusal into peer prose;
+  // a failure before reaching the port keeps its original meaning.
+  case heard {
+    Ok(reply) -> answer(Ok(reply))
+    Error(failure) -> Error(failure)
+  }
+}
+
+/// Keeps an unreadable post-admission receipt unsettled so the same message
+/// identity can be checked again; definite content and authority refusals stay
+/// refusals. The message is never retried here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_spawner.send_answer(Ok(Error(remote_spawn.StoreFailure("busy"))))
+///   == Error(peer_mail.Unreachable)
+/// ```
+@internal
+pub fn send_answer(
+  heard: Result(Result(JsonValue, SpawnRefusal), Nil),
+) -> Result(JsonValue, Failure) {
+  case heard {
+    Ok(Error(remote_spawn.StoreFailure(..))) -> Error(peer_mail.Unreachable)
+    Ok(Ok(_))
+    | Error(Nil)
+    | Ok(Error(remote_spawn.UnknownSpawner(_)))
+    | Ok(Error(remote_spawn.ParentRunEnded))
+    | Ok(Error(remote_spawn.CapReached(..)))
+    | Ok(Error(remote_spawn.ToolOutsideCeiling(_)))
+    | Ok(Error(remote_spawn.InvalidArgument(_)))
+    | Ok(Error(remote_spawn.NameAlreadyMinted))
+    | Ok(Error(remote_spawn.NotYetOpen(_)))
+    | Ok(Error(remote_spawn.TranscriptHidden)) -> answer(heard)
+  }
+}
+
+/// Retains uncertainty when a child decision's store reply may follow a commit.
+/// Authority and validation refusals keep their original definitive meaning.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_spawner.resolve_answer(Ok(Error(remote_spawn.StoreFailure("busy"))))
+///   == Error(peer_mail.Unreachable)
+/// ```
+@internal
+pub fn resolve_answer(
+  heard: Result(Result(remote_escalation.Answer, SpawnRefusal), Nil),
+) -> Result(remote_escalation.Answer, Failure) {
+  case heard {
+    Ok(Error(remote_spawn.StoreFailure(..))) -> Error(peer_mail.Unreachable)
+    Ok(Error(remote_spawn.NotYetOpen(reason))) ->
+      Error(peer_mail.Refused(
+        "the session is not open; the decision was not sent: " <> reason,
+      ))
+    Ok(Ok(_))
+    | Error(Nil)
+    | Ok(Error(remote_spawn.UnknownSpawner(_)))
+    | Ok(Error(remote_spawn.ParentRunEnded))
+    | Ok(Error(remote_spawn.CapReached(..)))
+    | Ok(Error(remote_spawn.ToolOutsideCeiling(_)))
+    | Ok(Error(remote_spawn.InvalidArgument(_)))
+    | Ok(Error(remote_spawn.NameAlreadyMinted))
+    | Ok(Error(remote_spawn.TranscriptHidden)) -> answer(heard)
+  }
 }
 
 /// The port's reply as the two failures. Silence from the asking functions is

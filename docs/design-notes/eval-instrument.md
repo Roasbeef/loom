@@ -544,7 +544,7 @@ digest of the message list with these normalised: absolute paths under
 the trial root → `<root>`, ISO dates → `<date>`, tool-use ids kept (they
 come from the tape, so they recur). Determinism needs: `Settings` with a
 `clock.stepping` clock, a fixed trial tag (today minted from
-`token.production_entropy()` at `serve.gleam:7884`, so `trial_settings`
+`token.production_entropy()` at `serve.gleam:7901`, so `trial_settings`
 takes the tag as a parameter — part of the §2 extraction), and the agent's
 tools running against a workspace prepared identically (the tree id
 guarantees it). What the lane may claim: *the harness produced the same
