@@ -140,6 +140,14 @@ not split the batch. These are transient wire projections.
   response-budget refusal retain their bounded cancellation paths.
 
 - `ProviderError.WithContext` carries the protocol 028 diagnostic envelope.
+- `StreamError` carries optional structured `retry_after_ms` advice through
+  scrubbing and retry classification (protocol 104). Responses reads nested
+  direct errors and failed-response errors, retaining flat compatibility.
+  Unclassified `responses_error` uses the existing three-generation ceiling
+  and immediate gateway forwarding. Known permanent labels beat conflicting
+  transient labels, statuses and throttle prose. Error messages and arbitrary
+  remote labels never enter Responses diagnostics; only fixed descriptions,
+  allowlisted labels and checked stream context survive.
 - Responses unclosed-part corruption uses `RecoverableStreamCorruption` and
   `RetryableWithin` with three total attempts; the gateway forwards it without
   fallback. Other malformed witnesses remain terminal. Structural diagnostics
@@ -227,14 +235,15 @@ not split the batch. These are transient wire projections.
   operator exported are indistinguishable here — by design, since this
   package must not learn where a value came from.
 - `provider/retry.{RetryClass, RetryPolicy}` — `classify`, `backoff_ms`,
-  `is_overflow_message`, `overflow_message`. Two rules keep a rate limit
-  out of the terminal set, since the overflow matcher reads free text and
-  a throttled provider often mentions tokens: an HTTP 429 is never
-  overflow (the status is checked ahead of the overflow patterns, and
-  every other status stays behind them), and a mid-stream `StreamError`
-  whose message says throttling is retryable whatever its error type,
-  which is how an OpenAI-compatible proxy's untyped error chunk reaches
-  the retry ladder.
+  `is_overflow_message`, `overflow_message`. Permanent labels are checked
+  before status and prose heuristics. An ordinary HTTP 429 bypasses overflow
+  text matching because throttle prose can mention tokens; other statuses
+  retain the overflow check. Streamed throttling prose is retryable only
+  after excluding known permanent labels. Generic Responses failures use
+  `RetryableWithin`; named transient failures keep the configured policy.
+- `provider/internal/error_code` shares the fixed permanent-code vocabulary
+  between Responses normalization and retry policy, so safe diagnostic labels
+  cannot accidentally override an identified denial.
 - `provider/internal/diagnostic` — the pure resource and redaction boundary for
   remote failures after transport delivery: a 64 KiB retained body budget,
   byte-bounded diagnostic fields, and exact scrubbing of the request key before

@@ -43,6 +43,7 @@ import gleam/result
 import gleam/string
 import provider/http
 import provider/internal/diagnostic
+import provider/internal/error_code
 import provider/internal/responses_items as items
 import provider/internal/responses_request
 import provider/internal/usage_witness
@@ -56,6 +57,14 @@ pub const api_name = "openai-responses"
 
 /// The durable dialect identity of a Codex subscription settlement.
 pub const subscription_api_name = "codex-subscription"
+
+// Error labels are remote input too. Only this fixed vocabulary may appear
+// in diagnostics; unfamiliar codes and types become local markers.
+const transient_error_codes = [
+  "overloaded_error", "rate_limit_error", "api_error", "timeout_error",
+  "server_error", "internal_server_error", "rate_limit_exceeded", "slow_down",
+  "server_is_overloaded", "policy_capacity_unavailable",
+]
 
 /// Builds a stateless streaming Responses request. The base includes the API
 /// root; the gateway normalizes its trailing slash before dispatch.
@@ -845,12 +854,13 @@ fn dispatch(
         "failed_usage",
       )
       let error = result.unwrap(wire.field(response, "error"), json.Null)
-      let #(code, description) = error_fields(error)
-      fail(acc, stream.StreamError(code, description))
+      stream_failure(acc, error)
     }
     "error" -> {
-      let #(code, description) = error_fields(value)
-      fail(acc, stream.StreamError(code, description))
+      // Native Responses errors carry an inner error object. Compatible
+      // endpoints can still use the older flat code/message envelope.
+      let error = result.unwrap(wire.field(value, "error"), value)
+      stream_failure(acc, error)
     }
     _ -> malformed(acc, "event_unsupported")
   }
@@ -872,12 +882,81 @@ fn identity(
   }
 }
 
-// Known error codes retain retry and overflow semantics without copying the
-// remote message, which may contain request headers or credentials.
+/// Preserves only known error labels and the checked stream position. Failure
+/// messages may reflect credentials, so remote prose never enters this record.
+fn stream_failure(
+  acc: Accumulator,
+  error: JsonValue,
+) -> #(Accumulator, List(StreamEvent)) {
+  let #(code, description) = error_fields(error)
+
+  // Both sources describe this attempt; neither can shorten the other's wait.
+  let retry_after_ms = case acc.retry_after, error_retry_after(error) {
+    Some(left), Some(right) -> Some(int.max(left, right))
+    Some(_), None -> acc.retry_after
+    None, hint -> hint
+  }
+
+  fail(
+    acc,
+    stream.StreamError(
+      code,
+      description
+        <> "; error_code="
+        <> error_label(error, "code")
+        <> "; error_type="
+        <> error_label(error, "type")
+        <> "; "
+        <> disconnect_context(acc),
+      retry_after_ms,
+    ),
+  )
+}
+
+/// Only the two retry headers can influence policy. A malformed present
+/// millisecond field remains present so the parser cannot use a weaker fallback.
+fn error_retry_after(error: JsonValue) -> Option(Int) {
+  let headers = result.unwrap(wire.field(error, "headers"), json.Null)
+
+  // Missing or malformed header containers cannot supply retry policy.
+  let fields = case headers {
+    json.Object(fields) -> fields
+    _ -> []
+  }
+
+  list.filter_map(fields, fn(header) {
+    use <- bool.guard(string.byte_size(header.0) > 32, Error(Nil))
+    let name = string.lowercase(header.0)
+    use <- bool.guard(
+      name != "retry-after" && name != "retry-after-ms",
+      Error(Nil),
+    )
+
+    // Array-valued headers follow the native first-value convention. Invalid
+    // values are local markers, never reflected remote objects or prose.
+    let value = case header.1 {
+      json.String(value) | json.Array([json.String(value), ..]) -> value
+      _ -> "invalid"
+    }
+
+    Ok(#(name, value))
+  })
+  |> wire.retry_after_ms
+}
+
+// Permanent evidence wins even when a second field claims a transient error.
+// Missing or unfamiliar codes can otherwise inherit a recognized error type.
 /// Maps raw error object to sanitized error code and safe description.
 fn error_fields(value: JsonValue) -> #(String, String) {
+  let labels = [error_label(value, "code"), error_label(value, "type")]
   let code =
-    wire.string_field_or(value, "code", wire.string_field_or(value, "type", ""))
+    list.find(labels, error_code.is_permanent)
+    |> result.lazy_unwrap(fn() {
+      list.find(labels, fn(label) {
+        list.contains(transient_error_codes, label)
+      })
+      |> result.unwrap("responses_error")
+    })
 
   // Classify error code into standard provider error category.
   case code {
@@ -890,7 +969,7 @@ fn error_fields(value: JsonValue) -> #(String, String) {
       code,
       "Responses provider reported a transient failure",
     )
-    "rate_limit_exceeded" -> #(
+    "rate_limit_exceeded" | "slow_down" -> #(
       "rate_limit_error",
       "Responses provider rate limit exceeded",
     )
@@ -898,7 +977,32 @@ fn error_fields(value: JsonValue) -> #(String, String) {
       "context_length_exceeded",
       "maximum context length exceeded",
     )
-    _ -> #("responses_error", "Responses provider reported failure")
+    "server_is_overloaded" | "policy_capacity_unavailable" -> #(
+      "overloaded_error",
+      "Responses provider reported a transient failure",
+    )
+    "responses_error" -> #(
+      "responses_error",
+      "Responses provider reported failure",
+    )
+    _ -> #(code, "Responses provider rejected the request")
+  }
+}
+
+/// Distinguishes absent, malformed and unfamiliar labels without reflecting
+/// arbitrary strings. Both the vocabulary and every fallback are local text.
+fn error_label(value: JsonValue, field: String) -> String {
+  case wire.field(value, field) {
+    Error(Nil) | Ok(json.Null) -> "absent"
+    Ok(json.String(label)) ->
+      case
+        error_code.is_permanent(label)
+        || list.contains(transient_error_codes, label)
+      {
+        True -> label
+        False -> "unrecognized"
+      }
+    Ok(_) -> "invalid"
   }
 }
 

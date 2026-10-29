@@ -33,3 +33,11 @@ The cost is a provider error/classification extension and a structured retry-cap
 ## Review and proof
 
 Independent design review selected machine-owned sticky policy narrowing and immediate gateway forwarding. Tests must cover the three-attempt cap under an initially unbounded policy, a stricter one- or two-attempt policy, serialize/reload between unlike failures, summary behavior, preserved failures and usage, no fallback on eligible corruption, confirmed drain before retry, and no execution of partial tool calls. Diagnostics tests must inspect the final scrubbed error and reject content leakage.
+
+## Addendum: Unclassified Responses failures
+
+[Protocol 104](104-streamed-failure-retry-advice.md) reuses this existing
+three-attempt classification and durable narrowing for unclassified
+`responses_error`. It also extends `StreamError` with structured retry advice.
+The missing-part witness rule and every other malformed-stream classification
+remain unchanged.

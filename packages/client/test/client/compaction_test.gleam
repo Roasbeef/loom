@@ -704,6 +704,7 @@ fn scripted_provider(
             error: stream.StreamError(
               api_error_type: "invalid_request_error",
               message: "this endpoint does not summarize",
+              retry_after_ms: None,
             ),
             accounting: accounting.empty(),
           ),

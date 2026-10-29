@@ -829,6 +829,7 @@ fn handle_message(
         StreamError(
           api_error_type: wire.string_field_or(error, "type", or: ""),
           message: wire.string_field_or(error, "message", or: ""),
+          retry_after_ms: None,
         ),
       )
     }

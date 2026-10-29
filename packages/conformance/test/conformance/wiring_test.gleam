@@ -415,7 +415,7 @@ pub fn poll_requests_settle_in_band_as_unsupported_test() {
     ))
   let assert Ok(#([], stream.Failed(error, _))) =
     stream.await_terminal(handle, within: 1000)
-  let assert stream.StreamError(api_error_type: _, message: reason) = error
+  let assert stream.StreamError(api_error_type: _, message: reason, ..) = error
   assert string.contains(reason, "deferred polls")
   // Terminally classified: the machine must not burn its retry ladder
   // on a surface that can never succeed.

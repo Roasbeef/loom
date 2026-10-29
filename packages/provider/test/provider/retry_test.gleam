@@ -1,4 +1,5 @@
 import core/corruption
+import gleam/list
 import gleam/option.{None, Some}
 import provider/retry
 import provider/stream
@@ -28,6 +29,38 @@ pub fn rate_limit_carries_backoff_hint_test() {
   assert retry.classify(error) == retry.Retryable(backoff_hint_ms: Some(7000))
 }
 
+pub fn explicit_permanent_codes_override_throttling_status_and_prose_test() {
+  list.each([429, 500], fn(status) {
+    list.each(
+      ["insufficient_quota", "usage_limit_reached", "invalid_api_key"],
+      fn(code) {
+        assert retry.classify(stream.HttpError(
+            status,
+            code,
+            "rate limit exceeded",
+            Some(5000),
+          ))
+          == retry.Terminal
+        assert retry.classify(stream.StreamError(
+            code,
+            "error_type=rate_limit_error",
+            None,
+          ))
+          == retry.Terminal
+      },
+    )
+  })
+}
+
+pub fn generic_responses_recovery_preserves_overflow_classification_test() {
+  assert retry.classify(stream.StreamError(
+      "responses_error",
+      "maximum context length exceeded",
+      None,
+    ))
+    == retry.Terminal
+}
+
 pub fn overloaded_and_server_errors_are_retryable_test() {
   let overloaded =
     stream.HttpError(
@@ -48,6 +81,7 @@ pub fn overloaded_and_server_errors_are_retryable_test() {
   assert retry.classify(stream.StreamError(
       api_error_type: "overloaded_error",
       message: "Overloaded",
+      retry_after_ms: None,
     ))
     == retry.Retryable(backoff_hint_ms: None)
 }
@@ -91,11 +125,13 @@ pub fn throttling_stream_error_without_a_type_is_retryable_test() {
   assert retry.classify(stream.StreamError(
       api_error_type: "",
       message: "rate limit exceeded, please retry",
+      retry_after_ms: None,
     ))
     == retry.Retryable(backoff_hint_ms: None)
   assert retry.classify(stream.StreamError(
       api_error_type: "",
       message: "429 Too Many Requests",
+      retry_after_ms: None,
     ))
     == retry.Retryable(backoff_hint_ms: None)
 }
@@ -104,6 +140,7 @@ pub fn unrelated_stream_error_without_a_type_is_terminal_test() {
   assert retry.classify(stream.StreamError(
       api_error_type: "",
       message: "tool call arguments failed schema validation",
+      retry_after_ms: None,
     ))
     == retry.Terminal
 }

@@ -349,6 +349,7 @@ pub fn in_stream_error_document_fails_in_band_test() {
       stream.StreamError(
         api_error_type: "RESOURCE_EXHAUSTED",
         message: "Quota exceeded",
+        retry_after_ms: None,
       ),
       accounting: _,
     ),

@@ -104,10 +104,11 @@ pub fn scrub_error(
         message: scrub_message(message, secret),
         retry_after_ms:,
       )
-    StreamError(api_error_type:, message:) ->
+    StreamError(api_error_type:, message:, retry_after_ms:) ->
       StreamError(
         api_error_type: scrub_label(api_error_type, secret),
         message: scrub_message(message, secret),
+        retry_after_ms:,
       )
     StreamDisconnected(context:) ->
       StreamDisconnected(context: scrub_message(context, secret))

@@ -11,6 +11,7 @@
 import gleam/int
 import gleam/option.{type Option, None}
 import gleam/string
+import provider/internal/error_code
 import provider/stream.{
   type ProviderError, CancellationUnconfirmed, DrainProofLost, HttpError,
   MalformedStream, NoIdentity, NoSecret, ProviderCancelled, StreamDisconnected,
@@ -45,28 +46,20 @@ pub type RetryPolicy {
 
 /// Classifies a provider error as retryable or terminal.
 ///
-/// Retryable: transport failures and disconnects (the network may
-/// recover), HTTP 408/429/5xx, and provider error types that signal
-/// transient load (`overloaded_error`, `rate_limit_error`, `api_error`,
-/// `timeout_error`). Terminal: every other HTTP 4xx (including overflow's
-/// 400/413 — the machine compacts those instead), unmapped stop reasons,
-/// malformed streams, and configuration errors (missing identity,
-/// unknown provider, missing secret). An error whose message matches the
-/// overflow patterns is always terminal, so a context-limit failure
-/// dressed as a retryable status still reaches the machine's overflow
-/// classification. Status 429 is the one exception, and it is checked
-/// *before* the overflow patterns: the overflow matcher is a message
-/// heuristic, and a throttling body such as "token limit exceeded for
-/// this minute" matches it by accident. An oversized request must
-/// compact rather than retry unchanged, so every other status stays
-/// behind the overflow check; only a 429 says unambiguously that the
-/// request was rejected for its rate rather than for its size.
+/// Recognized permanent request, access, quota, policy and context codes
+/// take precedence over transient statuses and message heuristics. Other
+/// HTTP 408/429/5xx, named transient errors, transport failures and disconnects
+/// use the configured retry policy. Unknown Responses stream failures use
+/// three total generation attempts through `RetryableWithin`.
 ///
-/// A `StreamError` — the mid-stream failure chunk an OpenAI-compatible
-/// proxy emits after it has already answered 200 — is retryable when
-/// its message says throttling, whatever its error type. Proxies differ
-/// in what they put in the error object's `type` field and some omit it,
-/// so the type alone cannot decide a 429 reported this way.
+/// An ordinary HTTP 429 bypasses the overflow text heuristic: throttling
+/// prose can mention a token limit without describing an oversized request.
+/// Other statuses check overflow before retry. Streamed throttling prose is
+/// retryable only after excluding recognized permanent codes, so appended
+/// diagnostics cannot turn a denial into a retry. HTTP and streamed errors
+/// retain their structured retry advice; callers take the larger of the
+/// provider delay and their local backoff. Malformed streams remain terminal
+/// except for the explicitly recoverable missing-part closure variant.
 ///
 /// ## Examples
 ///
@@ -88,8 +81,11 @@ pub fn classify(error: ProviderError) -> RetryClass {
     DrainProofLost -> Terminal
     TransportFailed(reason: _) -> Retryable(backoff_hint_ms: None)
     StreamDisconnected(context: _) -> Retryable(backoff_hint_ms: None)
-    HttpError(status: 429, api_error_type: _, message: _, retry_after_ms:) ->
-      Retryable(backoff_hint_ms: retry_after_ms)
+    HttpError(status: 429, api_error_type:, message: _, retry_after_ms:) ->
+      case error_code.is_permanent(api_error_type) {
+        True -> Terminal
+        False -> Retryable(backoff_hint_ms: retry_after_ms)
+      }
     HttpError(status:, api_error_type:, message:, retry_after_ms:) -> {
       let transient_status =
         status == 408
@@ -97,21 +93,34 @@ pub fn classify(error: ProviderError) -> RetryClass {
         || is_transient_error_type(api_error_type)
 
       // Check whether error is an overflow or permanent failure before retrying.
-      case is_overflow_message(message) || !transient_status {
+      case
+        error_code.is_permanent(api_error_type)
+        || is_overflow_message(message)
+        || !transient_status
+      {
         True -> Terminal
         False -> Retryable(backoff_hint_ms: retry_after_ms)
       }
     }
-    StreamError(api_error_type:, message:) ->
+    StreamError(api_error_type: "responses_error", message:, retry_after_ms:) ->
+      case is_overflow_message(message) {
+        True -> Terminal
+        False ->
+          RetryableWithin(backoff_hint_ms: retry_after_ms, max_attempts: 3)
+      }
+    StreamError(api_error_type:, message:, retry_after_ms:) ->
       case
-        is_throttle_message(message)
-        || is_throttle_message(api_error_type)
-        || {
-          !is_overflow_message(message)
-          && is_transient_error_type(api_error_type)
+        !error_code.is_permanent(api_error_type)
+        && {
+          is_throttle_message(message)
+          || is_throttle_message(api_error_type)
+          || {
+            !is_overflow_message(message)
+            && is_transient_error_type(api_error_type)
+          }
         }
       {
-        True -> Retryable(backoff_hint_ms: None)
+        True -> Retryable(backoff_hint_ms: retry_after_ms)
         False -> Terminal
       }
     stream.RecoverableStreamCorruption(_) ->

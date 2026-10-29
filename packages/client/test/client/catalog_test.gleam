@@ -1705,7 +1705,7 @@ pub fn configured_image_limit_reaches_gateway_before_secret_lookup_test() {
   let assert Ok(#([], stream.Failed(error:, accounting: _))) =
     stream.await_terminal(handle, within: 2000)
     as "the configured image limit must fail before missing credentials"
-  let assert stream.StreamError(api_error_type: "image_limit", message:) =
+  let assert stream.StreamError(api_error_type: "image_limit", message:, ..) =
     stream.underlying_error(error)
     as "this must be an image-budget error, not a missing-key error"
   assert string.contains(message, "at most 1")

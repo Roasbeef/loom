@@ -863,6 +863,7 @@ fn handle_document(
         StreamError(
           api_error_type: wire.string_field_or(error, "status", or: ""),
           message: wire.string_field_or(error, "message", or: ""),
+          retry_after_ms: None,
         ),
       )
     Error(Nil) -> handle_response_document(acc, document)
