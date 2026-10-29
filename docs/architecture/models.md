@@ -799,6 +799,7 @@ the hub's fork/create_strand, and an Agency's child.
 | `provider/model.gleam` | `Role`, `ResolvedModel`, `RequestTarget` (whose `ForRole` carries the thinking overlay — `protocol-change/009`), `ThinkingLevel`, `ProviderRequest`. |
 | `provider/adapter/anthropic.gleam`, `.../openai.gleam`, `.../gemini.gleam`, `.../responses.gleam` | The four dialects: URLs, headers, body shapes, reasoning fields, stream folds. |
 | `provider/retry.gleam` | `classify` — which provider failures count as retryable, for the chain walk and for the runtime's retry ladder alike. |
+| `provider/internal/error_code.gleam` | Shared permanent error labels, checked before transient status and message heuristics. |
 | `provider/secret.gleam` | The `fn(name) -> Result(String, Nil)` lookup and its environment backend. |
 | `packages/tui/src/tui/model_selector.gleam` | The `/model` picker: the modal, search ranking, cursor, role tags, and selected catalogue name. |
 | `docs/examples/loom.toml` | The worked example, and a parse fixture in `client/test/client/catalog_test.gleam`. |
