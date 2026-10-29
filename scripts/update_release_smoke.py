@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import tempfile
 import threading
@@ -191,6 +192,39 @@ def preflight_effects(root, prefix, environment, mode="local", configuration=Non
         output = subprocess.check_output(['ps', '-axo', 'pid=,ppid=,comm='], text=True)
         return [line.split(None, 2) for line in output.splitlines() if line.strip()]
 
+    def has_internet_socket(pid):
+        pid = str(pid)
+        if Path('/proc/self/fd').is_dir():
+            sockets = set()
+            for descriptor in Path('/proc', pid, 'fd').iterdir():
+                try:
+                    target = os.readlink(descriptor)
+                except FileNotFoundError:
+                    continue
+                if target.startswith('socket:['):
+                    sockets.add(target[8:-1])
+            for protocol in ('tcp', 'tcp6', 'udp', 'udp6'):
+                table = Path('/proc', pid, 'net', protocol)
+                if table.exists():
+                    if any(line.split()[9] in sockets for line in
+                           table.read_text().splitlines()[1:]):
+                        return True
+            return False
+        else:
+            observed = subprocess.run(['/usr/sbin/lsof', '-b', '-w', '-nP', '-a', '-p',
+                                       pid, '-i'], text=True,
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            assert observed.returncode in (0, 1), observed.stderr
+            assert not observed.stderr.strip(), observed.stderr
+            return bool(observed.stdout.strip())
+
+    # A known listener validates the socket sensor before absence is accepted.
+    # lsof's network-only query avoids unrelated mounted-filesystem inspection.
+    with socket.socket() as control:
+        control.bind(('127.0.0.1', 0))
+        control.listen()
+        assert has_internet_socket(os.getpid()), 'socket sensor missed its control'
+
     before_files = filesystem()
     before_epmd = {row[0] for row in processes() if Path(row[2]).name == 'epmd'}
     child_environment = environment | {'HOME': str(home), 'LOOM_STATE_DIR': str(state)}
@@ -213,27 +247,7 @@ def preflight_effects(root, prefix, environment, mode="local", configuration=Non
                     break
                 owned |= descendants
             for pid in owned:
-                if Path('/proc/self/fd').is_dir():
-                    sockets = set()
-                    for descriptor in Path('/proc', pid, 'fd').iterdir():
-                        try:
-                            target = os.readlink(descriptor)
-                        except FileNotFoundError:
-                            continue
-                        if target.startswith('socket:['):
-                            sockets.add(target[8:-1])
-                    for protocol in ('tcp', 'tcp6', 'udp', 'udp6'):
-                        table = Path('/proc', pid, 'net', protocol)
-                        if table.exists():
-                            assert not any(line.split()[9] in sockets for line in
-                                           table.read_text().splitlines()[1:]), protocol
-                else:
-                    observed = subprocess.run(['/usr/sbin/lsof', '-nP', '-a', '-p',
-                                               pid, '-i'], text=True,
-                                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    assert observed.returncode in (0, 1), observed.stderr
-                    assert not observed.stderr.strip(), observed.stderr
-                    assert not observed.stdout.strip(), observed.stdout
+                assert not has_internet_socket(pid), 'preflight opened an Internet socket'
             assert filesystem() == before_files, 'preflight changed private state or HOME'
             assert {row[0] for row in rows if Path(row[2]).name == 'epmd'} <= before_epmd
             resume.set()
