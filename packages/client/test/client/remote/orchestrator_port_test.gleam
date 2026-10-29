@@ -38,6 +38,7 @@ import gleam/string
 import host/bootstrap
 import storage/catalogue
 import support/held_catalogue
+import telemetry/log
 import tools/agent
 
 const answers_within_ms = 1000
@@ -1160,6 +1161,7 @@ pub fn a_history_is_refused_when_the_spawner_keeps_transcripts_test() {
       fn(_, _) { panic as "a read must not make a session" },
       fn(_, _) { panic as "a read must not release a session" },
       fn(_, _) { panic as "a hidden transcript must not be looked for" },
+      log.discard(),
     )
   let port = spawning(host)
   assert orchestrator_port.ask_history(port, parent(), handle(), 0, 50, 1000)
@@ -1172,6 +1174,7 @@ pub fn a_history_is_refused_when_the_spawner_keeps_transcripts_test() {
       fn(_, _) { panic as "a read must not make a session" },
       fn(_, _) { panic as "a read must not release a session" },
       fn(_, _) { panic as "a hidden transcript must not be looked for" },
+      log.discard(),
     )
   assert orchestrator_port.ask_history(
       spawning(explicit),
@@ -1198,6 +1201,7 @@ pub fn a_history_never_creates_a_session_test() {
         process.send(looked, #(spawner.name, asked))
         Ok(None)
       },
+      log.discard(),
     )
   let port = spawning(host)
   let assert Ok(Error(remote_spawn.InvalidArgument(reason:))) =

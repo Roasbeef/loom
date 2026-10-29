@@ -23,8 +23,8 @@
 ////
 //// ## Refusals
 ////
-//// `SpawnRefusal` is a definitive answer: the receiver looked and said no, and
-//// the sender reads it as an ordinary in-band refusal. Silence is the other
+//// A `SpawnRefusal` is an in-band answer that the receiver looked and said no,
+//// except `NotYetOpen`, which may succeed on retry. Silence is the other
 //// failure, which the port's asker reports as unreachable and which this module
 //// has no value for, because it is the absence of an answer.
 ////
@@ -234,8 +234,8 @@ pub type Cap {
   SpawnsPerDay
 }
 
-/// Why the receiver declined a message. Every variant is a definitive answer,
-/// and none is retried against another orchestrator.
+/// Why the receiver declined a message. `NotYetOpen` is retryable; the other
+/// variants are definitive and are not retried against another orchestrator.
 pub type SpawnRefusal {
   /// No `[spawners.<name>]` names the node the message came from. A daemon with
   /// no `[spawners]` table at all gives this to every message.
@@ -507,6 +507,29 @@ pub fn describe_refusal(refusal: SpawnRefusal) -> String {
       "it keeps the transcripts of this spawner's children to itself"
     NotYetOpen(reason:) ->
       "its session for this parent is not open yet: " <> reason
+  }
+}
+
+/// A fixed diagnostic class for a definitive refusal. Free-form peer text is
+/// never a log field; `NotYetOpen` is retryable and has no final class.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_spawn.refusal_class(ParentRunEnded) == Some("parent_run_ended")
+/// ```
+@internal
+pub fn refusal_class(refusal: SpawnRefusal) -> Option(String) {
+  case refusal {
+    UnknownSpawner(..) -> Some("unknown_spawner")
+    ParentRunEnded -> Some("parent_run_ended")
+    CapReached(cap:, ..) -> Some("cap_" <> cap_name(cap))
+    ToolOutsideCeiling(..) -> Some("tool_outside_ceiling")
+    InvalidArgument(..) -> Some("invalid_argument")
+    NameAlreadyMinted -> Some("name_already_minted")
+    StoreFailure(..) -> Some("store_failure")
+    NotYetOpen(..) -> None
+    TranscriptHidden -> Some("transcript_hidden")
   }
 }
 

@@ -5946,6 +5946,7 @@ fn serving_table(
         fn(_spawner, _parent) {
           Ok(Some(agency.delegate_endpoint(harness.config)))
         },
+        log.discard(),
       ),
       orchestrator_port.refusing_children(),
       orchestrator_port.unheld,

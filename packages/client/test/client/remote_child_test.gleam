@@ -17,6 +17,8 @@ import core/json
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
+import session_view/agent_roster
 import session_view/remote_agent
 import tools/agent
 
@@ -401,6 +403,52 @@ pub fn the_strip_rows_come_from_the_stubs_test() {
   assert asked.standing == remote_agent.Starting
   assert asked.title == "run the suite"
   assert asked.age_ms == None
+}
+
+// A refusal settles the spawn even when a progress glance arrived first.
+pub fn a_refusal_replaces_an_older_glance_in_the_strip_test() {
+  let seen =
+    glance.Glance(
+      operation: ids.op_id_to_string(an_op(4)),
+      title: "old title",
+      summary: "old progress",
+      at: 1,
+      tokens: 42,
+    )
+  let stub =
+    Stub(
+      ..a_stub(remote_child.Refused("the cap `max_sessions` is 4")),
+      glance: Some(seen),
+      glance_seen_ms: 100,
+    )
+  let assert [row] = remote_child.agents([remote_child.Kept("k", stub)], 200)
+  assert row.standing == remote_agent.Refused
+  assert row.summary == "the cap `max_sessions` is 4"
+  assert row.title == "old title"
+  assert row.tokens == 42
+  assert row.age_ms == Some(100)
+}
+
+// The refusal travels through the existing bounded wire and roster path. It
+// stays literal text and cannot inject a terminal control or a second line.
+pub fn a_refusal_is_clipped_and_survives_the_roster_wire_test() {
+  let reason = "<script>\n\u{1b}[31m " <> string.repeat("é", 200)
+  let stub = a_stub(remote_child.Refused(reason))
+  let rows = remote_child.agents([remote_child.Kept("k", stub)], 0)
+  let assert [row] = rows
+  assert row.summary == glance.clip(reason, remote_agent.max_text_bytes)
+  assert string.byte_size(row.summary) <= remote_agent.max_text_bytes
+  let encoded = json.Array(list.map(rows, remote_agent.encode))
+  assert string.byte_size(json.to_string(encoded))
+    <= remote_agent.list_bytes_limit
+  let assert Ok(decoded) =
+    remote_agent.decode_all([#("remote_children", encoded)])
+  assert decoded == rows
+  let roster = agent_roster.observe_remote(agent_roster.new(), decoded, 0)
+  let assert [rendered] = agent_roster.remote_rows(roster)
+  assert string.starts_with(rendered.activity, "<script>")
+  assert !string.contains(rendered.activity, "\n")
+  assert !string.contains(rendered.activity, "\u{1b}")
 }
 
 // A stub written before glances existed has no `glance` member and reads as one

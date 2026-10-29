@@ -57,10 +57,17 @@ import client/remote_mail
 import client/remote_reach.{type Reach}
 import client/remote_spawn.{type Parent, type SpawnRefusal}
 import client/roster.{type Roster}
+import core/ids
 import gleam/dict
+import gleam/erlang/atom
+import gleam/erlang/node
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import session_view/remote_transcript
+import telemetry/field
+import telemetry/log.{type Logger}
+import tools/agent
 
 // How much longer than the window it asks the receiver to wait a join's own
 // deadline is, so the receiver's answer for a window that ran out is not itself
@@ -117,7 +124,7 @@ const connect_ms = 1500
 /// ## Examples
 ///
 /// ```gleam
-/// // remote_spawner.over_distribution(membership, orchestrators, keepers, session_id, fn() { True })
+/// // remote_spawner.over_distribution(membership, orchestrators, keepers, session_id, fn() { True }, logger)
 /// ```
 pub fn over_distribution(
   membership: Membership,
@@ -125,6 +132,7 @@ pub fn over_distribution(
   keepers: Keepers,
   session: String,
   offered: fn() -> Bool,
+  logger: Logger,
 ) -> Reach {
   remote_reach.Reach(
     session:,
@@ -133,17 +141,25 @@ pub fn over_distribution(
     }),
     offered:,
     spawn: fn(name, parent, site, depth, tools, request, within_ms) {
-      use at <- result.try(reached(membership, configured, name))
-      orchestrator_port.ask_spawn(
-        at,
-        parent,
-        site,
-        depth,
-        tools,
-        request,
-        within_ms,
-      )
-      |> answer
+      // Only a resolved destination supplies a peer to the diagnostic; a
+      // refused name remains untrusted and is never copied into that field.
+      case reached(membership, configured, name) {
+        Error(failure) -> spawn_answer(Error(failure), logger, site, None)
+        Ok(at) -> {
+          let peer = atom.to_string(node.name(at.node))
+          orchestrator_port.ask_spawn(
+            at,
+            parent,
+            site,
+            depth,
+            tools,
+            request,
+            within_ms,
+          )
+          |> result.replace_error(peer_mail.Unreachable)
+          |> spawn_answer(logger, site, Some(peer))
+        }
+      }
     },
     join: fn(name, parent, handles, window_ms) {
       use at <- result.try(reached(membership, configured, name))
@@ -370,6 +386,64 @@ fn reached(
     node: distribution.node(peer),
     name: orchestrator_port.default(),
   ))
+}
+
+/// Records a definitive spawn refusal before `answer` turns it into prose.
+/// The call site and resolved node identify the attempt without copying request
+/// or refusal text. A retryable answer has no final diagnostic, and an unknown
+/// destination never puts the model-supplied name in the log.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_spawner.spawn_answer(reply, logger, site, peer)
+/// ```
+@internal
+pub fn spawn_answer(
+  heard: Result(Result(a, SpawnRefusal), Failure),
+  logger: Logger,
+  site: remote_spawn.CallSite,
+  peer: Option(String),
+) -> Result(a, Failure) {
+  // Only definitive admission or remote refusals get a diagnostic; a
+  // retryable reply and a lost connection still leave work unsettled.
+  let class = case heard {
+    Ok(Error(refusal)) -> remote_spawn.refusal_class(refusal)
+    Error(peer_mail.Refused(_)) -> Some("not_configured")
+    Ok(Ok(_)) | Error(peer_mail.Unreachable) | Error(peer_mail.NotOpen) -> None
+  }
+
+  // The minter and its ordinal identify which spawn within the call was refused.
+  case class {
+    Some(class) ->
+      log.warn(logger, "remote_spawn.sender_refused", [
+        field.text("class", class),
+        field.ident("operation", ids.op_id_to_string(site.operation)),
+        field.text("step", site.step_id),
+        field.count("source_index", site.source_index),
+        ..list.append(
+          case site.minter {
+            agent.ToolCall -> [field.text("minter", "tool")]
+            agent.Program(ordinal) -> [
+              field.text("minter", "program"),
+              field.count("program_ordinal", ordinal),
+            ]
+          },
+          case heard, peer {
+            Ok(_), Some(peer) -> [field.text("peer", peer)]
+            Ok(_), None | Error(_), _ -> []
+          },
+        )
+      ])
+    None -> Nil
+  }
+
+  // Logging precedes conversion of the typed remote refusal into peer prose;
+  // a failure before reaching the port keeps its original meaning.
+  case heard {
+    Ok(reply) -> answer(Ok(reply))
+    Error(failure) -> Error(failure)
+  }
 }
 
 /// The port's reply as the two failures. Silence from the asking functions is

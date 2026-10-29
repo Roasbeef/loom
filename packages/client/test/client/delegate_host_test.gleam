@@ -1219,6 +1219,7 @@ pub fn a_send_or_a_decision_for_a_pair_with_no_session_creates_none_test() {
       delegate_host.resolver(here),
       delegate_host.releaser(here),
       delegate_host.existing_endpoint(here),
+      log.discard(),
     )
   let origin = remote_spawn.Origin(node: "laptop@100.64.0.5", parent: remote)
   let child =
