@@ -118,7 +118,7 @@ pub fn the_words_are_fixed_and_say_what_happened_test() {
 }
 
 // The ended page's box copies the command that mints a fresh link, and only
-// that: `loom ui`, alone or for one session's canonical identity.
+// that: `loom ui`, for one session's identity, or for device sign-in.
 pub fn the_link_subject_copies_only_the_ui_command_test() {
   assert copy_rule.subject("link") == Ok(copy_rule.Link)
   let session = "loom ui --session 0198a2f4-7c3b-7d11-9e6a-5b0c2d4e8f10"
@@ -149,6 +149,33 @@ pub fn the_link_subject_copies_only_the_ui_command_test() {
   assert copy_rule.text(copy_rule.Command, "loom ui") == Error(Nil)
   assert copy_rule.text(copy_rule.Token, "loom ui") == Error(Nil)
   assert copy_rule.words(copy_rule.Link, copy_rule.Idle) == "Copy command"
+}
+
+// A remote origin needs the device flow to mint its fresh sign-in link.
+pub fn the_link_subject_copies_the_device_sign_in_command_test() {
+  let device = "loom ui --device"
+  assert copy_rule.text(copy_rule.Link, device) == Ok(device)
+}
+
+// The device command has no arguments: altered whitespace, extra flags and
+// shell syntax must not turn the copied text into a different command.
+pub fn the_device_sign_in_command_rejects_additions_test() {
+  list.each(
+    [
+      " loom ui --device",
+      "loom ui --device ",
+      "loom ui  --device",
+      "loom ui --device\n",
+      "loom ui --device --session abc",
+      "loom ui --device=true",
+      "loom ui --device; id",
+      "loom ui --device && id",
+      "loom ui --device $(id)",
+    ],
+    fn(value) {
+      assert copy_rule.text(copy_rule.Link, value) == Error(Nil)
+    },
+  )
 }
 
 // The home's device-link box copies the exchange address a fresh home's ticket
