@@ -493,7 +493,7 @@ pub fn replied(state: State, outcome: relayed.Outcome) -> State {
 pub fn stopped(state: State, outcome: relayed.Outcome) -> State {
   case outcome {
     relayed.Done ->
-      State(..state, acting: Calm, notice: Some(Said("The run was stopped.")))
+      State(..state, acting: Calm, notice: Some(Said("Stop requested.")))
     relayed.Refusal(why:) | relayed.Unknown(why:) ->
       State(..state, acting: Calm, notice: Some(Failed(why)))
   }

@@ -252,7 +252,7 @@ pub fn a_stop_asks_once_and_the_answer_clears_it_test() {
 
   let done = session.stopped(stopping, relayed.Done)
   assert done.acting == session.Calm
-  assert done.notice == Some(session.Said("The run was stopped."))
+  assert done.notice == Some(session.Said("Stop requested."))
 
   let refused = session.stopped(stopping, relayed.Refusal("not relayed"))
   assert refused.acting == session.Calm
