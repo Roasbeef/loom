@@ -42,6 +42,72 @@ part of the PR workflow so its merge-commit checks exercise the setting.
 The earlier handoff sections below retain their previous work records. Their
 external CI and deployment claims were not revalidated for this scoped fix.
 
+## Memory profiling CI follow-up
+
+PR #1138 also fixes the macOS miner fixture's procfs assumption through the
+existing portable home lookup. The historical before/after mining experiment
+passes without a skip. A TUI stream profile found duplicate JSON parsing across
+`session_wire` and `protocol`; package-internal value dispatch removes it while
+preserving text APIs, frame admission, event checks and the 2,000/sec drain floor.
+A reductions regression fails the old double parse and passes the shared-value
+path. `docs/review/evolution-memory-2026-10-27.md` records the matched work and
+throughput measurements. Exact-head review, hosted results and signoff for these
+additions are recorded on the PR; earlier f1121f22c signoff covers only the memory
+capture changes.
+
+The final macOS census exposed 22 existing eval-verifier refusals for missing
+address-space and process-lifecycle enforcement (ADR-006). The Darwin-only
+declaration matches their complete reason. Production refusal is preserved;
+Linux eval and signoff execute the matching tests. This records a macOS coverage
+gap rather than claiming those verifier experiments ran there.
+
+The test-only TLS verdict collector also waits for asynchronous trace delivery
+before answering a read. A queued-message regression reproduces the former
+empty-verdict result without weakening the real pin and allow-list assertions.
+
+
+The runtime idle-poll fixture creates its real timer before synchronously
+recording the arm. A regression suspends only its own recorder and requires the
+37 ms wake within the existing 200 ms window. Recording first fails this test
+because the observed timer does not yet exist. Existing polling assertions and
+deadlines are unchanged; the PR preserves the earlier hosted failures and final
+validation results without claiming their complete cause from partial logs.
+
+
+The protocol stdin fixture also acknowledges the first read before its writer
+sends valid UTF-8. The former fixed one-second pause let a slow-starting VM read
+both byte chunks together; delaying startup reproduces the hosted exit 7 and
+wrong bytes. A private FIFO and bounded wait synchronize the existing assertions.
+Production decoding and test deadlines are unchanged. The delayed-reader
+regression and final hosted evidence are recorded with the other CI follow-up.
+Unexpected TLS spike failures print their full stack to stderr so a truncated
+EUnit error still identifies the failing scenario step.
+
+The compiled Gleam cache selects `build/dev`, `build/prod` and `build/packages`
+instead of whole package build roots. A macOS shard passed every test but hit
+the unchanged 50-minute job limit during cache save; its restored archive took
+over eleven minutes to extract. Whole roots include prior session databases,
+unique fixtures and exported runtimes. The archive regression preserves the
+compiler artifacts and rejects those transient paths. New cache paths also
+isolate the old archives through the cache action's version. A separate virtual
+TUI WebSocket timeout passed five targeted and five full-module local repeats;
+its cause is unproven. The PR retains these failed hosted outcomes and records
+the replacement head's full checks and executed censuses before readiness.
+
+## Evolution callback memory
+
+`fix/evolution-captures` repairs a live profile that found fifteen evolution
+actors holding 226.69 MiB of process allocation. Capability doors and generation
+owners captured sibling machine operations repeatedly; notification runners
+copied that configuration during startup to read only its clock.
+[The evidence record](review/evolution-memory-2026-10-27.md) distinguishes live
+measurements, isolated copy-cost regressions and unverified installed savings.
+
+The two new regressions failed before the repair and pass afterward; all 185
+focused evolution tests pass. The PR records the remaining local, independent
+review, hosted and Linux signoff results. No live update or restart occurred.
+
+
 ## Agent Client Protocol server (issue #1026)
 
 `loom acp` makes Loom an ACP agent on standard input and output, on branch `acp/agent-server`. It is a client of the daemon like `loom run -p`; the effect plane is untouched. [The architecture page](architecture/acp.md) is the reference: the method mapping, the `_meta.loom` keys, the workspace gate, and the compatibility table for Harbor's generic ACP runner, which was driven unmodified against it over a real pipe.

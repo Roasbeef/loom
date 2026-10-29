@@ -245,12 +245,21 @@ runs:
     # run with `gleam-patches` set and a run without it could hand each
     # other artifacts built by two different compilers under one
     # identical-looking key.
+    # Select the compiler directories instead of the whole build root.
+    # Sibling directories hold unique test workspaces, session databases
+    # and exported runtimes; caching the root restores old fixtures and
+    # accumulates them in every new archive.
+    # Changing these paths changes actions/cache's version, so the old
+    # whole-build archives cannot match even through restore-keys.
     - name: Cache compiled Gleam artifacts
       if: inputs.cache == 'true'
       # actions/cache v6.1.0
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
       with:
-        path: packages/*/build
+        path: |
+          packages/*/build/dev
+          packages/*/build/prod
+          packages/*/build/packages
         key: >-
           gleambuild-${{ inputs.cache-namespace }}-${{ runner.os }}-${{ runner.arch
           }}-g${{ inputs.gleam-version }}-p${{ inputs.gleam-patches }}-l${{

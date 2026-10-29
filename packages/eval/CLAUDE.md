@@ -1,5 +1,14 @@
 # eval
 
+## Miner fixture portability
+
+The historical `eccdddad0` reproduction uses the existing
+`client/workspace_policy.home_directory` lookup for its worktree root. It runs
+on macOS as well as Linux without reading procfs or dropping the real historical
+before/after experiment. Worktrees remain under the operator's `evalwt` directory,
+outside the jail's replacement `/tmp`. The miner already feature-detects Linux
+network namespace availability and retains its existing fallback and proof rules.
+
 ## Purpose
 
 The evaluation instrument (ADR-021, issue #236): a developer tool that runs

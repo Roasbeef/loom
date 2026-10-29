@@ -16,8 +16,9 @@
 //// 2. The second half decodes what the daemon sends. `decode_v2_presentation`
 ////    takes a correlated reply and accepts only the presentation events a read
 ////    can answer; `decode_v2_pushed` takes a frame the daemon volunteered.
-//// 3. Both go through `decode_version` or `envelope`, which parse the text and
-////    refuse the wrong protocol version, then `body_of` takes the body.
+//// 3. Text entry points parse once, then the shared value decoders refuse the
+////    wrong protocol version before `body_of` takes the body. The live lane
+////    passes its parsed value after checking reply identity and frame size.
 //// 4. `decode_v2_pushed` handles the shapes that exist only as pushes (a
 ////    `decode_committed` notice, a usage observation, the metadata events) and
 ////    passes the rest on to `decode_body`.
@@ -835,7 +836,8 @@ fn command(id: Int, name: String, body: List(#(String, JsonValue))) -> String {
 /// let assert Error(_) = protocol.decode_event("not json")
 /// ```
 pub fn decode_event(text: String) -> Result(Event, String) {
-  decode_version(text, 1)
+  use value <- result.try(parse_envelope_text(text))
+  decode_value(value, 1)
 }
 
 /// Decodes a bounded auxiliary response after live v2 correlation checks.
@@ -847,7 +849,22 @@ pub fn decode_event(text: String) -> Result(Event, String) {
 /// ```
 @internal
 pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
-  use event <- result.try(decode_version(text, 2))
+  use value <- result.try(parse_envelope_text(text))
+  decode_v2_presentation_value(value)
+}
+
+/// Decodes a parsed auxiliary response without reparsing its wire text.
+///
+/// The live lane owns the frame-size and reply-identity checks. Its value
+/// already passed the total JSON parser, including duplicate-key rejection;
+/// this boundary still validates the envelope version and event vocabulary.
+///
+/// ## Examples
+///
+/// `decode_v2_presentation_value(value)` follows live correlation checks.
+@internal
+pub fn decode_v2_presentation_value(value: JsonValue) -> Result(Event, String) {
+  use event <- result.try(decode_value(value, 2))
 
   // Filter for presentation snapshot events supported in correlated responses.
   case event {
@@ -909,7 +926,21 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
 /// ```
 @internal
 pub fn decode_v2_pushed(text: String) -> Result(Event, String) {
-  use fields <- result.try(envelope(text, 2))
+  use value <- result.try(parse_envelope_text(text))
+  decode_v2_pushed_value(value)
+}
+
+/// Decodes a parsed pushed event without repeating the live lane's JSON work.
+///
+/// The value comes from the total JSON parser. The lane has established that
+/// no reply identity is present; version, event and body validation stay here.
+///
+/// ## Examples
+///
+/// `decode_v2_pushed_value(value)` follows live frame admission.
+@internal
+pub fn decode_v2_pushed_value(value: JsonValue) -> Result(Event, String) {
+  use fields <- result.try(envelope(value, 2))
   use name <- result.try(required_string(fields, "event"))
 
   // Decode pushed event by event name.
@@ -925,21 +956,23 @@ pub fn decode_v2_pushed(text: String) -> Result(Event, String) {
   }
 }
 
-fn decode_version(text: String, version: Int) -> Result(Event, String) {
-  use fields <- result.try(envelope(text, version))
+/// Preserves the text boundary's corruption reason for every protocol version.
+fn parse_envelope_text(text: String) -> Result(JsonValue, String) {
+  json.parse(text)
+  |> result.map_error(fn(report) { report.expected })
+}
+
+fn decode_value(value: JsonValue, version: Int) -> Result(Event, String) {
+  use fields <- result.try(envelope(value, version))
   use name <- result.try(required_string(fields, "event"))
   decode_body(name, body_of(fields))
 }
 
-/// Parses the JSON envelope and validates protocol version.
+/// Validates the parsed JSON envelope and protocol version.
 fn envelope(
-  text: String,
+  value: JsonValue,
   version: Int,
 ) -> Result(List(#(String, JsonValue)), String) {
-  use value <- result.try(
-    json.parse(text)
-    |> result.map_error(fn(report) { report.expected }),
-  )
   use fields <- result.try(object_fields(value, "event envelope"))
 
   // Verify protocol version matches expected integer.

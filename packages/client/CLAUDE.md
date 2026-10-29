@@ -1,3 +1,29 @@
+# Evolution callback ownership
+
+`serve.local_evolution_machine` projects the source snapshot capability before
+wrapping its path check. `serve.open_evolution` projects snapshot, evaluation,
+stage and program execution before constructing retained callbacks; recovery
+and invocation helpers accept only the operation they use. The local snapshot
+callback retains only its plane opener. `evolution/live.start` projects its clock
+before spawning the notification runner, whose initialiser must not copy the
+owner's stage or recovery closures.
+
+`evolution_retention_test` counts exact marker-store occurrences through the
+actual assembled door. Proposal, inspection, catalogue and trace retain none;
+evaluation retains its native configuration and source trial settings, and
+invocation retains one native configuration. `evolution/startup_capture_test`
+measures the notice runner before state inspection can collect startup garbage,
+using only new links of its own test process. Both regressions fail without
+the corresponding projection. The measured evidence and limits are in
+`docs/review/evolution-memory-2026-10-27.md`.
+
+The TLS spike fixtures synchronize their verdict collector with Erlang trace
+delivery before answering a read. `ledger_spike_pin_table_test` queues a read
+ahead of a return trace to check that the verdict is included and then cleared.
+Pin mutation, revocation and allow-list tests still use real TLS emulators.
+Unexpected scenario failures also print their complete stack to stderr before
+returning the existing error, because EUnit truncates a failed binary pattern.
+
 # client
 
 ## Configuration parsing on session open

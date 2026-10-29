@@ -279,10 +279,13 @@ pub fn start(config: Config) -> Result(Live, actor.StartError) {
 
   // The runner is a peer of the owner rather than part of it, so a slow
   // tracer never occupies the owner's mailbox. It holds a handle on the owner
-  // only to ask for leases.
+  // only to ask for leases. Project before spawning: reading config.clock in
+  // the initialiser would copy the owner's stage and recovery closures too,
+  // leaving their startup allocation in an otherwise idle notice runner.
+  let clock = config.clock
   use runner <- result.map(
     actor.new_with_initialiser(1000, fn(self) {
-      actor.initialised(Live(owner.data, config.clock, self))
+      actor.initialised(Live(owner.data, clock, self))
       |> actor.returning(self)
       |> Ok
     })

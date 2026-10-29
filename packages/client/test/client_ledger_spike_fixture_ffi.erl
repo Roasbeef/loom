@@ -36,13 +36,42 @@ scenario(Name) ->
         ok = run(Name, Root),
         {ok, nil}
     catch Class:Reason:Stack ->
-        {error, unicode:characters_to_binary(
-            io_lib:format("~p:~p~n~p", [Class, Reason, Stack]))}
+        Failure = unicode:characters_to_binary(
+            io_lib:format("~p:~p~n~p", [Class, Reason, Stack])),
+
+        %% EUnit truncates the returned binary in a failed pattern assertion.
+        %% Keep the complete scenario stack visible for hosted-only failures.
+        io:format(standard_error, "ledger spike ~ts failed: ~ts~n", [Name, Failure]),
+        {error, Failure}
     after
         file:del_dir_r(Root)
     end.
 
 %% ---------------------------------------------------------------- scenarios
+
+%% A read can reach the collector before an asynchronous return trace, even
+%% after the caller has observed the handshake's result. Queue that exact
+%% ordering before the collector runs, and require the read to include the
+%% pending verdict without replaying it on the next read.
+run(<<"queued_verdicts">>, _Root) ->
+    Collector = spawn(fun() -> collect([]) end),
+    try
+        true = erlang:suspend_process(Collector),
+        Collector ! {take, self()},
+        Collector ! {trace, self(), return_from, {?FFI, verify, 4}, {valid, live}},
+        true = erlang:resume_process(Collector),
+        receive
+            {verdicts, Seen} -> [{valid, live}] = Seen
+        after 5000 -> error(collector_timeout)
+        end,
+        Collector ! {take, self()},
+        receive
+            {verdicts, Rest} -> [] = Rest
+        after 5000 -> error(collector_timeout)
+        end,
+        ok
+    after exit(Collector, kill)
+    end;
 
 %% The verify callback reads a table that changes while both emulators run.
 %% The orchestrator A dials the executor B, and each step changes one table and
@@ -483,6 +512,15 @@ collect(Seen) ->
         {trace, _Pid, return_from, {?FFI, verify, 4}, Verdict} ->
             collect([Verdict | Seen]);
         {take, From} ->
+            %% A completed handshake does not imply delivery of its return
+            %% traces. The barrier guarantees delivery; the self-sent answer
+            %% then follows those queued traces through this collector. The
+            %% child command loop admits only one verdict read at a time.
+            Ref = erlang:trace_delivered(all),
+            receive {trace_delivered, all, Ref} -> ok end,
+            self() ! {answer, From},
+            collect(Seen);
+        {answer, From} ->
             From ! {verdicts, lists:reverse(Seen)},
             collect([]);
         _Other -> collect(Seen)

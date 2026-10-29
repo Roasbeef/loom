@@ -7226,13 +7226,14 @@ fn local_evolution_machine(
 
   // The source is resolved here, in this VM's own terms, and may not overlap
   // the catalogue. A machine on an executor resolves under its own workspace.
+  let snapshot = machine.snapshot
   evolution_machine.Machine(..machine, snapshot: fn(ctx, directory) {
     use path <- result.try(
       evolution_candidate.source_path(ctx, directory, [
         over,
       ]),
     )
-    machine.snapshot(ctx, path)
+    snapshot(ctx, path)
   })
 }
 
@@ -7313,15 +7314,21 @@ fn open_evolution(
   })
 
   // Start live evolution runtime and initialize transition queue.
+  // Each retained callback owns one operation, not the machine's sibling
+  // capabilities. BEAM process copies unfold shared closure environments.
+  let stage = machine.stage
+  let snapshot = machine.snapshot
+  let evaluate = machine.evaluate
+  let run_program = machine.run_program
   let adopt = fn(selection) { evolution_adopt(agency_config, selection) }
   use live <- result.try(
     evolution_live.start(
       evolution_live.Config(
         clock:,
-        stage: fn(selection) { machine.stage(catalogue, selection) },
+        stage: fn(selection) { stage(catalogue, selection) },
         adopt:,
         recover: fn() {
-          evolution_recover(machine, catalogue, source_session, adopt)
+          evolution_recover(stage, catalogue, source_session, adopt)
         },
       ),
     )
@@ -7385,7 +7392,7 @@ fn open_evolution(
       },
       fn(ctx) { actual(ctx) |> result.map_error(evolution_store.Unavailable) },
       fn(ctx, directory) {
-        evolution_live.snapshot(live, fn() { machine.snapshot(ctx, directory) })
+        evolution_live.snapshot(live, fn() { snapshot(ctx, directory) })
         |> result.map_error(evolution_owned_refusal)
       },
       fn(ctx, catalogue, id, args) {
@@ -7398,7 +7405,7 @@ fn open_evolution(
           // Decide how to handle candidate.kind {.
           case candidate.kind {
             evolution_record.Extension | evolution_record.Program ->
-              machine.evaluate(catalogue, ctx, id)
+              evaluate(catalogue, ctx, id)
               |> result.try(evolution_evaluate.record(catalogue, id, _))
             evolution_record.Prompt ->
               evolution_compare(
@@ -7417,7 +7424,7 @@ fn open_evolution(
         case lookup(ctx) {
           Error(error) -> failed(error)
           Ok(visible) ->
-            evolution_invoked(live, visible, machine, ctx, args, failed)
+            evolution_invoked(live, visible, run_program, ctx, args, failed)
         }
       },
       failed,
@@ -7547,7 +7554,8 @@ fn evolution_adopt(
 
 /// Establishes evolution recover for the caller, keeping its validation and result policy at this boundary.
 fn evolution_recover(
-  machine: evolution_machine.Machine,
+  stage: fn(evolution_store.Store, evolution_record.Selection) ->
+    Result(evolution_live.Generation, evolution_store.Refusal),
   catalogue: evolution_store.Store,
   session_id: String,
   adopt: fn(evolution_record.Selection) -> Result(Nil, evolution_store.Refusal),
@@ -7574,7 +7582,7 @@ fn evolution_recover(
   case selections {
     [] -> Ok(None)
     [selection] -> {
-      use active <- result.try(machine.stage(catalogue, selection))
+      use active <- result.try(stage(catalogue, selection))
 
       // Decide how to handle adopt(selection) {.
       case adopt(selection) {
@@ -7605,7 +7613,12 @@ fn evolution_recover(
 fn evolution_invoked(
   live: evolution_live.Live,
   catalogue: evolution_store.Store,
-  machine: evolution_machine.Machine,
+  run_program: fn(
+    evolution_store.Store,
+    evolution_record.Selection,
+    tool.Ctx,
+    json.JsonValue,
+  ) -> Result(tool.ToolOutcome, evolution_store.Refusal),
   ctx: tool.Ctx,
   args: json.JsonValue,
   failed: fn(evolution_store.Refusal) -> tool.ToolOutcome,
@@ -7671,7 +7684,7 @@ fn evolution_invoked(
               && name == candidate.name
             ->
               evolution_live.execute(live, name, ctx, arguments, fn() {
-                machine.run_program(catalogue, selected, ctx, arguments)
+                run_program(catalogue, selected, ctx, arguments)
               })
             Ok(None) | Ok(Some(_)) -> failed(evolution_store.Stale)
             Error(error) -> failed(error)
