@@ -62,7 +62,9 @@ fn page() -> remote_transcript.Page {
 }
 
 // The daemon's push of the session's remote children, as the wire carries it.
-fn remote_children() -> connection_event.Message {
+fn remote_children(
+  child: remote_agent.RemoteAgent,
+) -> connection_event.Message {
   connection_event.Incoming(
     json.to_string(
       json.Object([
@@ -72,7 +74,7 @@ fn remote_children() -> connection_event.Message {
           "body",
           json.Object([
             #("mode", json.String("remote_children")),
-            #("remote_children", json.Array([remote_agent.encode(agent())])),
+            #("remote_children", json.Array([remote_agent.encode(child)])),
           ]),
         ),
       ]),
@@ -177,7 +179,7 @@ pub fn focusing_a_remote_card_opens_its_transcript_test() {
   let model =
     page_fixture.ready(wire, "observer")
     |> page_fixture.run(component.update, [
-      component.Arrived([remote_children()]),
+      component.Arrived([remote_children(agent())]),
       component.Ticked,
     ])
   assert string.contains(
@@ -216,4 +218,32 @@ pub fn focusing_a_remote_card_opens_its_transcript_test() {
     element.to_string(component.view(back)),
     "[transcript of",
   )
+}
+
+// A refusal replaces an older progress snapshot. Its reason must be visible
+// as escaped, single-line text in the real component's card.
+pub fn a_refused_remote_card_shows_its_reason_as_text_test() {
+  let wire = process.new_subject()
+  let refused =
+    remote_agent.RemoteAgent(
+      ..agent(),
+      standing: remote_agent.Refused,
+      summary: "denied <script>alert(1)</script>\u{1b}[31m",
+    )
+  let model =
+    page_fixture.ready(wire, "observer")
+    |> page_fixture.run(component.update, [
+      component.Arrived([remote_children(agent())]),
+      component.Ticked,
+      component.Arrived([remote_children(refused)]),
+      component.Ticked,
+    ])
+  let drawn = element.to_string(component.view(model))
+  assert string.contains(
+    drawn,
+    "Failed · denied &lt;script&gt;alert(1)&lt;/script&gt;",
+  )
+  assert !string.contains(drawn, "compiling the tests")
+  assert !string.contains(drawn, "<script>")
+  assert !string.contains(drawn, "\u{1b}")
 }

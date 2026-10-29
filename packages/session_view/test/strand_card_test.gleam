@@ -129,6 +129,23 @@ pub fn a_finished_strand_adds_how_long_it_ran_when_known_test() {
     == "Finished"
 }
 
+// Remote refusals carry the reason in the existing roster text. A local
+// failure keeps its established label, and a missing reason adds nothing.
+pub fn a_failed_remote_card_shows_its_reason_test() {
+  let remote =
+    Line(..line(agent_view.Failed, "cap reached", None), placement: Some("box"))
+  assert strand_card.status_line(remote) == "Failed · cap reached"
+  assert strand_card.status_title(remote) == "Failed · cap reached"
+  assert strand_card.status_line(Line(..remote, text: "")) == "Failed"
+  assert strand_card.status_line(Line(..remote, text: "Failed")) == "Failed"
+  assert strand_card.status_line(line(agent_view.Failed, "boom", None))
+    == "Failed"
+
+  let long = Line(..remote, text: string.repeat("x", 400))
+  assert string.length(strand_card.status_title(long))
+    == strand_card.title_limit
+}
+
 pub fn the_other_states_are_their_words_test() {
   assert strand_card.status_line(line(agent_view.Failed, "boom", Some(3)))
     == "Failed"
