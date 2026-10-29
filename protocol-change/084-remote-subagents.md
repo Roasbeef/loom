@@ -1088,3 +1088,28 @@ is written then. Three mutants are caught: a spawn retried against a second
 orchestrator, which the model could not state with one port; a deletion that
 does not cascade; and a cascade written when the release is handled, before the
 slot drains.
+
+
+## Addendum: known admission and unavailable receipts (2026-10-29)
+
+The delivery commit stores the message and its receipt together. Once that
+commit succeeds, failure to read the new run's metadata cannot make the message
+undelivered. The receiver returns the existing `Admitted` landing when that read
+fails, without inventing a remaining deadline. A healthy metadata read still
+returns `Started` with the run's original budget.
+
+Two senders can both read an absent receipt before one commits it. The loser
+rereads the receipt after its marked commit conflicts; if that read fails, the
+existing `StoreFailure` cannot establish whether the matching message landed.
+The send adapter treats it as unreachable, leaving the same message identity
+available to the existing drainer. That error class also covers some earlier
+read failures, so its meaning is conservatively uncertain. A readable receipt
+still compares content and refuses reuse of the ID with different content.
+There is no new wire shape, retry loop or retry window.
+
+The agency regressions use the real runtime writer with its memory backend.
+They assert one persisted message and receipt before inspecting the landing,
+then check that the same-ID resend returns `Admitted` without duplication. The
+concurrent case arms its receipt read fault only after the actual receipt CAS
+loses, and checks that different content remains refused. These tests do not
+prove SQLite or VM-restart durability.

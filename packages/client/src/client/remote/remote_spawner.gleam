@@ -59,6 +59,7 @@ import client/remote_reach.{type Reach}
 import client/remote_spawn.{type Parent, type SpawnRefusal}
 import client/roster.{type Roster}
 import core/ids
+import core/json.{type JsonValue}
 import gleam/dict
 import gleam/erlang/atom
 import gleam/erlang/node
@@ -178,7 +179,7 @@ pub fn over_distribution(
       use at <- result.try(reached(membership, configured, name))
       use landing <- result.try(
         orchestrator_port.ask_send(at, parent, child, message_id, text, send_ms)
-        |> answer,
+        |> send_answer,
       )
       remote_mail.decode_landing(landing)
       |> result.map_error(fn(reason) {
@@ -444,6 +445,35 @@ pub fn spawn_answer(
   case heard {
     Ok(reply) -> answer(Ok(reply))
     Error(failure) -> Error(failure)
+  }
+}
+
+/// Keeps an unreadable post-admission receipt unsettled so the same message
+/// identity can be checked again; definite content and authority refusals stay
+/// refusals. The message is never retried here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_spawner.send_answer(Ok(Error(remote_spawn.StoreFailure("busy"))))
+///   == Error(peer_mail.Unreachable)
+/// ```
+@internal
+pub fn send_answer(
+  heard: Result(Result(JsonValue, SpawnRefusal), Nil),
+) -> Result(JsonValue, Failure) {
+  case heard {
+    Ok(Error(remote_spawn.StoreFailure(..))) -> Error(peer_mail.Unreachable)
+    Ok(Ok(_))
+    | Error(Nil)
+    | Ok(Error(remote_spawn.UnknownSpawner(_)))
+    | Ok(Error(remote_spawn.ParentRunEnded))
+    | Ok(Error(remote_spawn.CapReached(..)))
+    | Ok(Error(remote_spawn.ToolOutsideCeiling(_)))
+    | Ok(Error(remote_spawn.InvalidArgument(_)))
+    | Ok(Error(remote_spawn.NameAlreadyMinted))
+    | Ok(Error(remote_spawn.NotYetOpen(_)))
+    | Ok(Error(remote_spawn.TranscriptHidden)) -> answer(heard)
   }
 }
 

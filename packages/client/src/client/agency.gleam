@@ -5355,18 +5355,21 @@ fn delivered(
       {
         Ok(api.Steered(entry:)) -> Ok(remote_mail.Steered(entry:))
         Ok(api.Started(operation:)) -> {
-          use deadline <- result.map(run_deadline(
-            runtime,
-            Handle(strand: child.strand, operation:),
-          ))
-
-          // The time left is read after the admission, so it can only be less
-          // than the budget the run was given, never more.
-          let #(later, _clock) = clock.read(config.clock)
-          remote_mail.Started(
-            operation:,
-            remaining_ms: option.map(deadline, fn(at) { int.max(0, at - later) }),
-          )
+          // The receipt and message have already committed. A failed metadata
+          // read cannot undo admission or establish the run's remaining budget.
+          case run_deadline(runtime, Handle(strand: child.strand, operation:)) {
+            Error(_) -> Ok(remote_mail.Admitted)
+            Ok(deadline) -> {
+              // Reading after admission cannot extend the run's original budget.
+              let #(later, _clock) = clock.read(config.clock)
+              Ok(remote_mail.Started(
+                operation:,
+                remaining_ms: option.map(deadline, fn(at) {
+                  int.max(0, at - later)
+                }),
+              ))
+            }
+          }
         }
 
         // A twin of this message committed between the read and the write. Its
