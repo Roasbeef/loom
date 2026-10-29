@@ -11,9 +11,11 @@ import client/daemon/manager
 import client/executors
 import client/listed_sessions.{Further, Last}
 import client/node_report
+import client/peer_mail
 import client/protocol
 import client/remote/address.{type Address}
 import client/remote/orchestrator_port.{type Message, NotOwned, Owned}
+import client/remote/remote_spawner
 import client/remote_escalation
 import client/remote_mail
 import client/remote_spawn.{
@@ -1724,4 +1726,76 @@ pub fn a_node_with_no_port_is_a_port_gone_and_not_a_late_answer_test() {
     )
   assert orchestrator_port.ask_placements(gone, answers_within_ms)
     == Error(orchestrator_port.PortGone)
+}
+
+// A real resolve reply can report a store failure after the child committed.
+pub fn a_child_resolve_store_failure_is_not_a_definitive_refusal_test() {
+  let seen = process.new_subject()
+  let port =
+    spawning(
+      orchestrator_port.SpawnHost(
+        ..hosting(seen, 0),
+        resolve: fn(_, _, _, _, _, _) {
+          process.send(seen, "committed")
+          Error(remote_spawn.StoreFailure("record is unreadable"))
+        },
+      ),
+    )
+  let answer =
+    orchestrator_port.ask_resolve(
+      port,
+      parent(),
+      handle(),
+      "policy-ab",
+      remote_escalation.Deny,
+      3,
+      remote_escalation.Decider(principal: "ab12", name: "Ola"),
+      1000,
+    )
+    |> remote_spawner.resolve_answer
+  assert process.receive(seen, 1000) == Ok("committed")
+  assert answer == Error(peer_mail.Unreachable)
+}
+
+pub fn a_child_resolve_authority_refusal_stays_definitive_test() {
+  let port = started()
+  let assert Error(peer_mail.Refused(_)) =
+    orchestrator_port.ask_resolve(
+      port,
+      parent(),
+      handle(),
+      "policy-ab",
+      remote_escalation.Deny,
+      3,
+      remote_escalation.Decider(principal: "ab12", name: "Ola"),
+      1000,
+    )
+    |> remote_spawner.resolve_answer
+}
+
+pub fn a_child_resolve_before_open_says_the_decision_was_not_sent_test() {
+  let seen = process.new_subject()
+  let port =
+    spawning(
+      orchestrator_port.SpawnHost(
+        ..hosting(seen, 0),
+        resolve: fn(_, _, _, _, _, _) {
+          Error(remote_spawn.NotYetOpen("opening"))
+        },
+      ),
+    )
+  let answer =
+    orchestrator_port.ask_resolve(
+      port,
+      parent(),
+      handle(),
+      "policy-ab",
+      remote_escalation.Deny,
+      3,
+      remote_escalation.Decider(principal: "ab12", name: "Ola"),
+      1000,
+    )
+    |> remote_spawner.resolve_answer
+  let assert Error(peer_mail.Refused(reason)) = answer
+  assert string.contains(reason, "decision was not sent")
 }

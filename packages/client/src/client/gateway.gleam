@@ -291,6 +291,20 @@ pub type Gateway {
   Gateway(name: address.Address(Message))
 }
 
+/// The hub either could not be reached before dispatch, or did not establish
+/// the decision's outcome after dispatch. These are internal transport facts.
+@internal
+pub type DecisionFailure {
+  /// The hub had no recipient before the decision was sent.
+  HubUnavailable
+
+  /// The hub may have committed the decision without returning its record.
+  DecisionUnknown(
+    /// What the hub could establish about the decision.
+    reason: String,
+  )
+}
+
 /// Immutable server-resolved identity of one authenticated session attachment.
 pub type Binding {
   Binding(
@@ -517,7 +531,7 @@ pub opaque type Message {
     decision: remote_escalation.Decision,
     expected_seq: Int,
     decided_by: remote_escalation.Decider,
-    reply: Subject(remote_escalation.Answer),
+    reply: Subject(Result(remote_escalation.Answer, String)),
   )
 
   /// The decision of the page of the spawner that started this session, about
@@ -532,12 +546,12 @@ pub opaque type Message {
     decision: remote_escalation.Decision,
     expected_seq: Int,
     decided_by: remote_escalation.Decider,
-    reply: Subject(remote_escalation.Answer),
+    reply: Subject(Result(remote_escalation.Answer, String)),
   )
 
   /// A stop of the main strand's run from the page of the spawner that started
   /// this session (protocol-change/094). The reply says it was taken.
-  StopForRelayed(reply: Subject(Nil))
+  StopForRelayed(reply: Subject(Result(Nil, Nil)))
 
   /// What a decision this hub sent to another orchestrator came to, or that its
   /// run ended without saying.
@@ -1706,7 +1720,7 @@ pub fn attached(gateway: Gateway) -> Int {
 /// The hub judges the decision on its own turn, so it is serialized with the
 /// session's other approvals and commits on the session's one writer. The caller
 /// is the orchestrator port's task for the message, which may wait, and a hub
-/// that does not answer within the bound is a refusal the spawner may try again.
+/// that does not answer within the bound leaves the decision outcome unknown.
 ///
 /// ## Examples
 ///
@@ -1720,10 +1734,12 @@ pub fn decide(
   decision: remote_escalation.Decision,
   expected_seq: Int,
   decided_by: remote_escalation.Decider,
-) -> remote_escalation.Answer {
-  let asked = {
-    use subject <- result.try(address.lookup(gateway.name))
-    call.try_call(subject, waiting: 4000, sending: fn(reply) {
+) -> Result(remote_escalation.Answer, DecisionFailure) {
+  use subject <- result.try(
+    address.lookup(gateway.name) |> result.replace_error(HubUnavailable),
+  )
+  use answer <- result.try(
+    call.try_call_watching(subject, waiting: 4000, sending: fn(reply) {
       DecideForSpawner(
         parent:,
         escalation_id:,
@@ -1733,23 +1749,21 @@ pub fn decide(
         reply:,
       )
     })
-    |> result.replace_error(Nil)
-  }
-
-  // Evaluate the synchronous call outcome and unwrap the response.
-  case asked {
-    Ok(answer) -> answer
-    Error(Nil) ->
-      remote_escalation.Refused(
-        reason: "the delegate session's hub did not answer",
-      )
-  }
+    |> result.map_error(fn(failure) {
+      case failure {
+        call.NoCallee -> HubUnavailable
+        call.TimedOut | call.CalleeDown(_) ->
+          DecisionUnknown("the delegate session's hub did not answer")
+      }
+    }),
+  )
+  answer |> result.map_error(DecisionUnknown)
 }
 
 /// Asks a relayed session's hub to judge and commit the decision of the
 /// spawner's page about one of its requests (protocol-change/094). The answer is
 /// the box's own, as `decide` answers a delegate session's. A hub that does not
-/// answer in four seconds is a refusal the page may try again.
+/// answer in four seconds leaves the decision outcome unknown.
 ///
 /// ## Examples
 ///
@@ -1764,10 +1778,12 @@ pub fn decide_relayed(
   decision: remote_escalation.Decision,
   expected_seq: Int,
   decided_by: remote_escalation.Decider,
-) -> remote_escalation.Answer {
-  let asked = {
-    use subject <- result.try(address.lookup(gateway.name))
-    call.try_call(subject, waiting: 4000, sending: fn(reply) {
+) -> Result(remote_escalation.Answer, DecisionFailure) {
+  use subject <- result.try(
+    address.lookup(gateway.name) |> result.replace_error(HubUnavailable),
+  )
+  use answer <- result.try(
+    call.try_call_watching(subject, waiting: 4000, sending: fn(reply) {
       DecideForRelayed(
         spawner:,
         ceiling:,
@@ -1778,20 +1794,20 @@ pub fn decide_relayed(
         reply:,
       )
     })
-    |> result.replace_error(Nil)
-  }
-
-  // Evaluate the synchronous call outcome and unwrap the response.
-  case asked {
-    Ok(answer) -> answer
-    Error(Nil) ->
-      remote_escalation.Refused(reason: "the session's hub did not answer")
-  }
+    |> result.map_error(fn(failure) {
+      case failure {
+        call.NoCallee -> HubUnavailable
+        call.TimedOut | call.CalleeDown(_) ->
+          DecisionUnknown("the session's hub did not answer")
+      }
+    }),
+  )
+  answer |> result.map_error(DecisionUnknown)
 }
 
 /// Asks a relayed session's hub to stop the main strand's run, and says whether
 /// the hub took it (protocol-change/094). A session with no run is a stop that
-/// succeeded.
+/// succeeded; a failed strand read cannot establish that the run is idle.
 ///
 /// ## Examples
 ///
@@ -1800,8 +1816,11 @@ pub fn decide_relayed(
 /// ```
 pub fn stop_relayed(gateway: Gateway) -> Result(Nil, Nil) {
   use subject <- result.try(address.lookup(gateway.name))
-  call.try_call(subject, waiting: 4000, sending: StopForRelayed)
-  |> result.replace_error(Nil)
+  use answer <- result.try(
+    call.try_call(subject, waiting: 4000, sending: StopForRelayed)
+    |> result.replace_error(Nil),
+  )
+  answer
 }
 
 /// Removes a connection; a no-op for unknown ids.
@@ -2340,8 +2359,8 @@ fn dispatch_message(state: State, message: Message) -> State {
       state
     }
     StopForRelayed(reply:) -> {
-      let state = stop_for_relayed(state)
-      process.send(reply, Nil)
+      let #(state, answer) = stop_for_relayed(state)
+      process.send(reply, answer)
       state
     }
     LeasePreview(pid, expires, reply) ->
@@ -7638,13 +7657,14 @@ fn abort_run(state: State, strand: String, op: OpId) -> State {
 /// Stops the main strand's run for a spawner's page, if it has one. A strand
 /// with no run is a stop that has nothing to do, not a conflict, because the
 /// page cannot know that the run ended a moment ago.
-fn stop_for_relayed(state: State) -> State {
+fn stop_for_relayed(state: State) -> #(State, Result(Nil, Nil)) {
   case session.strand_state(state.runtime.session, advisor.primary) {
     Ok(Some(session.Cell(
       value: machine_strand.StrandState(current_operation: Some(op), ..),
       ..,
-    ))) -> abort_run(state, advisor.primary, op)
-    _ -> state
+    ))) -> #(abort_run(state, advisor.primary, op), Ok(Nil))
+    Ok(Some(_)) | Ok(None) -> #(state, Ok(Nil))
+    Error(_) -> #(state, Error(Nil))
   }
 }
 
@@ -8384,13 +8404,13 @@ fn decide_for_spawner(
   decision: remote_escalation.Decision,
   expected_seq: Int,
   decided_by: remote_escalation.Decider,
-) -> remote_escalation.Answer {
+) -> Result(remote_escalation.Answer, String) {
   // Evaluate control flow transition for decide for spawner.
   case state.spawner {
     None ->
-      remote_escalation.Refused(
+      Ok(remote_escalation.Refused(
         reason: "this session takes no decision from a spawner",
-      )
+      ))
     Some(link) -> {
       let #(now, _clock) = clock.read(state.runtime.effects.clock)
       remote_decision.admit(

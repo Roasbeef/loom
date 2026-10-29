@@ -307,9 +307,13 @@ pub fn need_of(orchestrator: String, record: EscalationRecord) -> relayed.Need {
 // unknown outcome when the box may have done it.
 /// Outcome of keeps this client decision explicit for its callers.
 fn outcome_of(failure: Failure) -> relayed.Outcome {
-  // This branch resolves top_relay outcome_unknown failure before the operation continues.
+  // An unavailable mutation answer needs reconciliation before another press.
   case top_relay.outcome_unknown(failure) {
-    True -> relayed.Unknown(why: top_relay.describe(failure))
+    True ->
+      relayed.Unknown(
+        why: top_relay.describe(failure)
+        <> "; check the session before trying again",
+      )
     False -> relayed.Refusal(why: top_relay.describe(failure))
   }
 }
@@ -371,6 +375,11 @@ pub fn archive(
   // This branch resolves top_relay archive relay orchestrator session before the operation continues.
   case top_relay.archive(relay, orchestrator, session) {
     Ok(Nil) -> relayed.Done
+    Error(top_relay.Refused(remote_top.NotYetOpen(reason))) ->
+      relayed.Unknown(
+        why: reason
+        <> "; the stop may have happened, but the archive is not confirmed",
+      )
     Error(failure) -> outcome_of(failure)
   }
 }

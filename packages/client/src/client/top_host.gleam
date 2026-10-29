@@ -175,12 +175,32 @@ pub fn host(context: Context(instance)) -> orchestrator_port.TopHost {
       use #(spawner, _table) <- result.try(judged(context, node))
       use Nil <- result.try(relayed(context, spawner, session))
 
-      // Decide how to handle manager.resolve(context.registry, session) {.
-      case manager.resolve(context.registry, session) {
-        Ok(instance) -> context.endpoint(instance).stop()
+      // A saved or unfinished creation has no run. A resident must still be
+      // the incarnation observed here; a transition or failed lookup cannot
+      // prove that the requested stop has already happened.
+      use view <- result.try(
+        manager.get(context.registry, session)
+        |> result.map_error(fn(error) {
+          remote_top.StoreFailure(reason: delegate_host.describe(error))
+        }),
+      )
 
-        // A session that is not running has no run to stop.
-        Error(_) -> Ok(Nil)
+      // Only a confirmed resident incarnation can receive this stop.
+      case view.status {
+        manager.Saved | manager.Reserved | manager.FailedStart(..) -> Ok(Nil)
+        manager.Resident(incarnation) -> {
+          use instance <- result.try(
+            manager.resolve_incarnation(context.registry, session, incarnation)
+            |> result.map_error(fn(error) {
+              remote_top.StoreFailure(reason: delegate_host.describe(error))
+            }),
+          )
+          context.endpoint(instance).stop()
+        }
+        manager.Opening(..)
+        | manager.Stopping(..)
+        | manager.RecoveryBlocked(..) ->
+          Error(remote_top.NotYetOpen("the session is changing state"))
       }
     },
     archive: fn(node, session) {

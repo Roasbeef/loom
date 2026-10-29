@@ -904,3 +904,77 @@ pub fn a_box_with_no_profile_cannot_be_started_on_by_default_test() {
   assert ui_top.refusal_words(ui_top.NoProfile)
     == "The orchestrator offers no profile to start a session with."
 }
+
+// A receiver may have admitted the action before its internal acknowledgement
+// failed, so the page must not present these replies as definite refusals.
+pub fn a_stop_store_failure_after_the_effect_is_unknown_test() {
+  let effect = process.new_subject()
+  let relay =
+    relay_to(
+      orchestrator_port.TopHost(
+        ..orchestrator_port.refusing_top(),
+        stop: fn(_, _) {
+          process.send(effect, "stop admitted")
+          Error(remote_top.StoreFailure("hub did not answer"))
+        },
+      ),
+    )
+  let outcome = ui_top.stop(relay, "box", session)
+  assert process.receive(effect, 100) == Ok("stop admitted")
+  let assert relayed.Unknown(why) = outcome
+  assert string.contains(why, "check the session before trying again")
+}
+
+pub fn an_archive_wait_after_the_stop_is_unknown_test() {
+  let effect = process.new_subject()
+  let relay =
+    relay_to(
+      orchestrator_port.TopHost(
+        ..orchestrator_port.refusing_top(),
+        archive: fn(_, _) {
+          process.send(effect, "stop admitted")
+          Error(remote_top.NotYetOpen("session is still stopping"))
+        },
+      ),
+    )
+  let outcome = ui_top.archive(relay, "box", session)
+  assert process.receive(effect, 100) == Ok("stop admitted")
+  let assert relayed.Unknown(why) = outcome
+  assert string.contains(why, "stop")
+}
+
+pub fn a_decision_store_failure_after_the_effect_is_unknown_test() {
+  let effect = process.new_subject()
+  let relay =
+    relay_to(
+      orchestrator_port.TopHost(
+        ..listing_of([row([record(4, [root_grant()], Some([root_grant()]))])]),
+        resolve: fn(_, _, _, _, _, _) {
+          process.send(effect, "decision admitted")
+          Error(remote_top.StoreFailure("hub did not answer"))
+        },
+      ),
+    )
+  let outcome =
+    ui_top.decide(relay, "box", session, decider(), "ask-1", 4, relayed.Deny)
+  assert process.receive(effect, 100) == Ok("decision admitted")
+  let assert relayed.Unknown(why) = outcome
+  assert string.contains(why, "check the session before trying again")
+}
+
+// NotYetOpen from these actions means their hub could not receive them.
+pub fn a_stop_or_decision_before_the_hub_opens_is_a_known_refusal_test() {
+  let relay =
+    relay_to(
+      orchestrator_port.TopHost(
+        ..listing_of([row([record(4, [root_grant()], Some([root_grant()]))])]),
+        stop: fn(_, _) { Error(remote_top.NotYetOpen("opening")) },
+        resolve: fn(_, _, _, _, _, _) {
+          Error(remote_top.NotYetOpen("opening"))
+        },
+      ),
+    )
+  let assert relayed.Refusal(_) = ui_top.stop(relay, "box", session)
+  let assert relayed.Refusal(_) =
+    ui_top.decide(relay, "box", session, decider(), "ask-1", 4, relayed.Deny)
+}

@@ -153,6 +153,7 @@ import client/remote/workspace as remote_workspace
 import client/remote_child
 import client/remote_drain
 import client/remote_reach
+import client/remote_spawn
 import client/remote_top
 import client/retryconf
 import client/rules
@@ -5236,14 +5237,23 @@ fn assemble_in(
         expected_seq,
         decider,
       ) {
-        Ok(hub.decide(
+        hub.decide(
           hub.Gateway(name:),
           parent,
           escalation_id,
           decision,
           expected_seq,
           decider,
-        ))
+        )
+        |> result.map_error(fn(failure) {
+          case failure {
+            hub.HubUnavailable ->
+              remote_spawn.NotYetOpen(
+                "the delegate session's hub is unavailable",
+              )
+            hub.DecisionUnknown(reason) -> remote_spawn.StoreFailure(reason:)
+          }
+        })
       },
     ),
     inbox: agency.child_inbox(agency_config),
@@ -5252,11 +5262,11 @@ fn assemble_in(
       fn() {
         hub.stop_relayed(hub.Gateway(name:))
         |> result.replace_error(remote_top.StoreFailure(
-          reason: "the session's hub did not answer",
+          reason: "the session's hub could not confirm the stop",
         ))
       },
       fn(terms, escalation_id, decision, expected_seq, decider) {
-        Ok(hub.decide_relayed(
+        hub.decide_relayed(
           hub.Gateway(name:),
           terms.spawner,
           terms.ceiling,
@@ -5264,7 +5274,14 @@ fn assemble_in(
           decision,
           expected_seq,
           decider,
-        ))
+        )
+        |> result.map_error(fn(failure) {
+          case failure {
+            hub.HubUnavailable ->
+              remote_top.NotYetOpen("the session's hub is unavailable")
+            hub.DecisionUnknown(reason) -> remote_top.StoreFailure(reason:)
+          }
+        })
       },
     ),
     runtime:,

@@ -624,7 +624,7 @@ pub fn outcome_unknown(failure: Failure) -> Bool {
   // This match resolves failure before the surrounding protocol step continues.
   // This match resolves failure before the enclosing validation continues.
   case failure {
-    Silent | Unreadable(_) -> True
+    Silent | Unreadable(_) | Refused(remote_top.StoreFailure(_)) -> True
     NotConfigured(_) | Unreachable | OlderBuild | Refused(_) -> False
   }
 }

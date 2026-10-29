@@ -2099,19 +2099,21 @@ fn spawner_decides(
   seq: Int,
   decision: remote_escalation.Decision,
 ) -> remote_escalation.Answer {
-  remote_decision.admit(
-    runtime,
-    spawner_link(),
-    remote_spawn.Parent(
-      session: "0198c0de-0000-7000-8000-000000000001",
-      strand: "main",
-    ),
-    id,
-    decision,
-    seq,
-    remote_escalation.Decider(principal: "ab12cd", name: "Ola"),
-    1000,
-  )
+  let assert Ok(answer) =
+    remote_decision.admit(
+      runtime,
+      spawner_link(),
+      remote_spawn.Parent(
+        session: "0198c0de-0000-7000-8000-000000000001",
+        strand: "main",
+      ),
+      id,
+      decision,
+      seq,
+      remote_escalation.Decider(principal: "ab12cd", name: "Ola"),
+      1000,
+    )
+  answer
 }
 
 fn approval_of(record: escalation.Escalation) -> remote_escalation.Decision {

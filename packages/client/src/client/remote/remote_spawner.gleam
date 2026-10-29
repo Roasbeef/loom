@@ -53,6 +53,7 @@ import client/peer_mail.{type Failure}
 import client/remote/address
 import client/remote/link_keeper.{type Keepers}
 import client/remote/orchestrator_port
+import client/remote_escalation
 import client/remote_mail
 import client/remote_reach.{type Reach}
 import client/remote_spawn.{type Parent, type SpawnRefusal}
@@ -196,7 +197,7 @@ pub fn over_distribution(
         decided_by,
         resolve_ms,
       )
-      |> answer
+      |> resolve_answer
     },
     history: fn(name, parent, child, cursor, limit) {
       use at <- result.try(reached(membership, configured, name))
@@ -443,6 +444,37 @@ pub fn spawn_answer(
   case heard {
     Ok(reply) -> answer(Ok(reply))
     Error(failure) -> Error(failure)
+  }
+}
+
+/// Retains uncertainty when a child decision's store reply may follow a commit.
+/// Authority and validation refusals keep their original definitive meaning.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_spawner.resolve_answer(Ok(Error(remote_spawn.StoreFailure("busy"))))
+///   == Error(peer_mail.Unreachable)
+/// ```
+@internal
+pub fn resolve_answer(
+  heard: Result(Result(remote_escalation.Answer, SpawnRefusal), Nil),
+) -> Result(remote_escalation.Answer, Failure) {
+  case heard {
+    Ok(Error(remote_spawn.StoreFailure(..))) -> Error(peer_mail.Unreachable)
+    Ok(Error(remote_spawn.NotYetOpen(reason))) ->
+      Error(peer_mail.Refused(
+        "the session is not open; the decision was not sent: " <> reason,
+      ))
+    Ok(Ok(_))
+    | Error(Nil)
+    | Ok(Error(remote_spawn.UnknownSpawner(_)))
+    | Ok(Error(remote_spawn.ParentRunEnded))
+    | Ok(Error(remote_spawn.CapReached(..)))
+    | Ok(Error(remote_spawn.ToolOutsideCeiling(_)))
+    | Ok(Error(remote_spawn.InvalidArgument(_)))
+    | Ok(Error(remote_spawn.NameAlreadyMinted))
+    | Ok(Error(remote_spawn.TranscriptHidden)) -> answer(heard)
   }
 }
 
