@@ -397,3 +397,55 @@ do what.
   same ids for 30 seconds, and the call ends `Silent` if the window passes. A
   first try that cannot connect fails at once.
 
+
+
+## Addendum: honest outcomes and refreshes (2026-10-29)
+
+A disappearing port does not prove an older build or the absence of an effect.
+A request can have reached an independent session before the port died. The
+relay therefore treats `PortGone` as silence. Once a resend has an uncertain
+attempt, a later dial failure or refusal cannot settle that earlier attempt.
+A matching successful answer can settle it. A first failed dial or definitive
+refusal retains its specific outcome. Existing retry windows, deadlines and stable
+request/message identities are unchanged.
+
+A retryable refusal is not a promise that nothing changed: creation can reserve
+its durable identity before returning `NotYetOpen` or `StoreFailure`. An
+unreadable send landing can likewise follow delivery and leaves the mutation's
+outcome unknown. These corrections supersede the earlier inference of
+`OlderBuild` from port death; no feature negotiation is implemented here.
+
+Read failures describe an unavailable answer, without wording about whether an
+action happened. The page's creation and approval preflight reads run before
+dispatch, so their failure does not imply an uncertain action. A failed listing
+or transcript refresh retains the last complete row and transcript, preserving
+their observation time. Before any successful read, a failed read shows its
+refresh error without also claiming that a read is in progress.
+
+A failed, crashed or timed-out resident overview refuses `TopSessions` with the
+existing retryable `StoreFailure`. Opening, stopping and recovery-blocked rows
+also refuse that read. Saved sessions and structurally nonresident unfinished
+creation rows retain their existing idle listing, including the request ID
+needed to recover a reserved creation. No activity variant, authority, schema or
+page bound changes.
+
+
+Stop, Archive and Resolve have the same acknowledgement boundary. A typed
+`StoreFailure` after dispatch leaves the action unknown; an archive's
+`NotYetOpen` can follow an admitted stop and leaves the archive unconfirmed.
+The page says to check the session before trying again. Stop and Resolve
+pre-dispatch `NotYetOpen` retain their known refusal meaning. A post-commit
+approval read failure travels through the existing error envelope, as the 089
+addendum records, rather than an `Ok(Refused)` answer.
+
+A Stop succeeds without dispatch only for an observed saved or unfinished
+creation with no runtime. A resident must resolve its observed incarnation;
+lookup failure or a transitional instance cannot stand in for an idle run.
+The hub also returns an error when it cannot read the primary strand's state.
+That failed read is not evidence that no run needs stopping. These corrections
+add no wait, retry or wire shape.
+
+
+A successful Stop acknowledgement means the hub accepted the stop request; the
+abort itself remains asynchronous. The page therefore says `Stop requested.`
+It does not claim the run has already ended.

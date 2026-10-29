@@ -23,10 +23,11 @@
 ////
 //// ## Refusals
 ////
-//// A `SpawnRefusal` is an in-band answer that the receiver looked and said no,
-//// except `NotYetOpen`, which may succeed on retry. Silence is the other
-//// failure, which the port's asker reports as unreachable and which this module
-//// has no value for, because it is the absence of an answer.
+//// A `SpawnRefusal` is an in-band response, whose meaning depends on the
+//// operation. Admission and validation refusals say no; `NotYetOpen` can be
+//// retried. A `StoreFailure` can follow an admitted decision, release, or send,
+//// so those callers cannot assume the action did not happen. Silence is the
+//// absence of an answer, reported as unreachable by the port's asker.
 ////
 //// ## The spawner's terms
 ////
@@ -234,8 +235,10 @@ pub type Cap {
   SpawnsPerDay
 }
 
-/// Why the receiver declined a message. `NotYetOpen` is retryable; the other
-/// variants are definitive and are not retried against another orchestrator.
+/// The receiver's in-band result when it cannot answer normally. Admission and
+/// validation refusals are definitive, while `NotYetOpen` permits a later retry.
+/// `StoreFailure` may follow an admitted action, so its interpretation depends
+/// on the operation that returned it.
 pub type SpawnRefusal {
   /// No `[spawners.<name>]` names the node the message came from. A daemon with
   /// no `[spawners]` table at all gives this to every message.

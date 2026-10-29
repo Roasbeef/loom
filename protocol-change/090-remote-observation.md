@@ -240,3 +240,27 @@ event on the bus.** Old stubs decode with no age. A port of an older build has n
 clause for `ChildHistory` and stops, as for the other constructors 084 added
 (protocol-change/078, "Mixed builds"), so the two orchestrators are assumed to be
 of the same build.
+
+
+## Addendum: refusal details (2026-10-29)
+
+Issue #1137 found that a refused stub lost its reason when projected into the
+strip. For standing `refused`, `RemoteAgent.summary` now carries the refusal
+reason ahead of any older glance. It keeps the existing 256-byte UTF-8 bound,
+list bound and total decoder. Other standings keep their existing summaries;
+title, tokens, model and glance age keep their existing meaning. No wire field,
+constructor, transcript permission or retry policy is added.
+
+The roster treats the summary as plain, single-line text. The web card now
+includes nonempty activity on a failed remote row; local failure labels keep
+their existing wording. Remote `stopped` and `refused` already share the roster's
+failed status, so a stopped card can also show its last activity. Settled cards
+remain in the existing collapsed group. This does not grant transcript access.
+
+The sender and receiver log definitive spawn refusals at warning level, using
+fixed classes from `remote_spawn.refusal_class`. Operation and call-site
+coordinates correlate the attempt; peer text uses ordinary scrubbed fields and
+is diagnostic attribution, not a new authority check. An unconfigured sender
+omits the model-supplied destination name. Briefs, model choices, tool lists and
+free-form refusal text are absent from these diagnostics. `NotYetOpen` remains
+retryable and produces no final-refusal diagnostic.

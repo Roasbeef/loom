@@ -98,7 +98,8 @@ pub type RemoteAgent {
     standing: Standing,
     /// The newest glance's title, or the purpose the spawn asked for.
     title: String,
-    /// The newest glance's one-line summary, empty before the first.
+    /// The refusal reason when refused; otherwise the newest glance's one-line
+    /// summary, empty before the first.
     summary: String,
     /// The child's context size from the newest glance, zero when unknown.
     tokens: Int,
