@@ -189,13 +189,22 @@ fn restart_install(
   use state <- result.try(state_directory(choices.state))
   use paths <- result.try(endpoint.paths(state))
   use previous <- result.try(lifecycle.capture(paths))
-  let installed = files.publish(stage, prefix, client)
+  let prepared =
+    lifecycle.prepare(
+      previous,
+      choices.config,
+      stage <> "/build/release/loom/bin/loomd",
+    )
+  let installed =
+    result.try(prepared, fn(settings) {
+      files.publish(stage, prefix, client) |> result.map(fn(_) { settings })
+    })
 
   // Check publish outcome and trigger restart.
   case installed {
-    Ok(Nil) -> {
+    Ok(settings) -> {
       io.println("Release installed; gracefully restarting the shared daemon.")
-      lifecycle.restart(previous, daemon_options, commit)
+      lifecycle.restart(previous, daemon_options, settings, commit)
     }
     Error(reason) -> {
       // Clean up previous control connection on failure.
