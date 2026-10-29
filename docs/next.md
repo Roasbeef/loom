@@ -1,5 +1,16 @@
 # Current handoff
 
+## TLS launch preflight (issue #1137)
+
+The owner approved this slice for code and isolated tests, not a live upgrade.
+[Protocol 106](../protocol-change/106-launch-preflight.md) records the private
+launch witness, read-only staged validation and fenced replacement. The
+[review record](review/launch-preflight-1137.md) separates focused evidence,
+the preliminary shipped smoke and the remaining final artifact and CI gates.
+Full verification is in progress; do not treat this slice as release-ready.
+Repository handoff, isolated child custody, movement, gateway, page relay and
+fleet work remain open under #1137.
+
 ## Versioned peer compatibility (issue #1137)
 
 The owner approved the stable peer exchange and TLS launch preflight for code
@@ -12,8 +23,8 @@ The [verification record](review/peer-compatibility-1137.md) gives 107 primary
 focused checks plus the shipped TLS regression, both manual mixed-version
 directions and their precise limits. One independent pass and its native-test
 delta check found no actionable issues. Full static gates pass; broad and
-exact-head hosted/Linux validation remain required. TLS launch preflight is the
-following slice; no live upgrade is authorized.
+exact-head hosted/Linux validation remain required. TLS launch preflight is
+the current slice above; no live upgrade is authorized.
 
 ## Distributed runtime experience (issue #1137)
 
