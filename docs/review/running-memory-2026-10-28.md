@@ -120,3 +120,29 @@ A narrow check of neighboring shipped fixtures found explicit native
 retirement in their existing wrappers. We reused their managed-body and
 birth-fenced cleanup pattern here, rather than changing production client
 shutdown semantics or adding a second process-management mechanism.
+
+## Rebase integration and final validation
+
+The rebase of #1138 restored its historical Darwin verifier-skip waiver,
+although main `fcbc7d9b` had already replaced those skips with explicit
+production-refusal tests. The current Darwin eval log has no corresponding
+skip. The unchanged census therefore rejects the restored waiver as stale.
+We restore main's declaration policy without changing any eval test or
+production enforcement. A portable policy regression runs the configured
+census as Darwin: current refusal coverage passes, while a historical verifier
+skip is undeclared. With the obsolete waiver it fails at the stale-declaration
+assertion. A separate temporary four-way control also confirms that the old
+waiver accepts that historical skip and the restored policy rejects it.
+
+At initial head `ede8bf31e`, all selected local gates passed: 5,474 client,
+115 conformance and 234 Darwin eval tests. The local eval tests explicitly
+check production refusal, rather than claiming Linux proof coverage. A
+read-only census after the full client gate found all thirty recorded
+baseline, targeted and full-run native identities absent. All hosted Linux
+jobs and their executed combined census passed; client shards ran 2,722 and
+2,752 tests, while enforced eval ran 253 including gold/null/sabotage proof.
+Exact-head containerized Linux signoff passed in 2,263 seconds. Independent
+review of the fixture change found no actionable issues. These results cover
+that initial head. Final-head review, hosted CI, raw macOS results and signoff
+for the integration repair are recorded on PR #1141 before merge; earlier
+results do not transfer to a new head.

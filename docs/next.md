@@ -16,6 +16,13 @@ by birth-fenced retirement outside its deadline. Existing saved-session and
 shared-resident assertions remain inside the body. Existing orphaned daemons
 were left alone; only fresh reproduction children were retired.
 
+The rebase also restored an obsolete Darwin verifier-skip declaration after
+main had replaced those skips with explicit production-refusal checks. The
+follow-up restores main's declaration policy. A portable census regression
+accepts refusal coverage and rejects the historical verifier skip; it fails
+with the obsolete waiver. Linux still executes the enforced verifier proofs.
+The earlier waiver record below describes the pre-rebase test arrangement.
+
 Validation for this follow-up is still in progress. Do not infer installed
 RSS savings or hosted readiness from the profiling baseline.
 
