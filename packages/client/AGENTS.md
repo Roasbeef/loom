@@ -9827,13 +9827,25 @@ and `gateway_test`, and `orchestrator_port_test`.
   a row's oldest pending requests by seq that fit under the row bound and counts
   the rest, so a row is always whole or absent and always small enough to be a
   page.
-- **The port** has eight more constructors (`Placements`, `TopCreate`,
+- **The legacy port** retains eight constructors (`Placements`, `TopCreate`,
   `TopSessions`, `TopHistory`, `TopSend`, `TopStop`, `TopArchive`, `TopResolve`)
-  served by a `TopHost` of eight functions each handed the sender's node, each in
-  a task of its own. `refusing_top` answers `UnknownSpawner(node)` and is what
+  served by a `TopHost` of eight functions with the reply owner's node attribution,
+  each in a task of its own. `refusing_top` answers `UnknownSpawner(node)` and is what
   `start_with` uses; `start_with_top` takes the host. The `ask_top_*` functions
   answer `Result(Result(a, Refusal), Silence)`, so the laptop can tell a port that
   is gone from one that is slow.
+- **The versioned peer service** is `remote/peer_service`, registered as
+  `loom_peer_v1` alongside the legacy port with the same ready epoch and TopHost.
+  Its permanent `Exchange(String, Subject(String))` carries `peer_codec`'s total
+  bounded JSON. `peer_client.call` requires a correlated positive feature reply,
+  then sends only through this service; `peer_top.dispatch` decodes the exact
+  operation body after the service checks epoch and revision. Features and
+  dispatch share the original deadline. Discovery uses 4 KiB requests, 16 KiB
+  replies and at most 64 revisions; operation envelopes are at most 1 MiB.
+  Oversized output becomes a bounded error, not a partial successful page.
+  Existing host policy still judges every call. Reply ownership supplies the
+  existing trusted-VM attribution, not a new transport authentication proof.
+  See protocol-change/105 and `peer_compat_test`.
 - **The box's host** is `client/top_host`. `judged` resolves the node to its
   spawner and table. `create` judges the placement against the table (a folder
   must be listed, remembered and pass `new_folder.check`), the profile against
@@ -9874,8 +9886,12 @@ and `gateway_test`, and `orchestrator_port_test`.
   drained). `new_registration` is the minting both `reserve_creation` and the
   relayed reservation use.
 - **The laptop's relay** is `client/remote/top_relay`: `over` (the production
-  dial through the membership and the roster) or `through` (an injected dial and
-  `Timing`, for tests). `placements`, `sessions`, `history`, `stop`, `archive` and
+  dial through the membership and the roster) or `through` (an injected stable
+  peer address and `Timing`, for tests). Both use the versioned service, never a
+  probe followed by a legacy named send. Missing endpoint or revision is
+  Unsupported; a stale epoch is PeerChanged and invalid features are InvalidPeer.
+  Those facts precede dispatch on this attempt; none retracts an earlier
+  unanswered mutation. `placements`, `sessions`, `history`, `stop`, `archive` and
   `resolve` are asked once; `create` and `send` are resent with the same request
   or message id for `retry_window_ms` (30 s, pausing 500 ms doubling to 4 s) when
   the answer was lost or the box said `NotYetOpen` or `StoreFailure`. A first try

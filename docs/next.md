@@ -1,5 +1,20 @@
 # Current handoff
 
+## Versioned peer compatibility (issue #1137)
+
+The owner approved the stable peer exchange and TLS launch preflight for code
+and isolated tests. The compatibility slice implements [protocol 105](../protocol-change/105-versioned-peer-exchange.md): page calls negotiate exact revisions
+and serving epoch, then dispatch through the same stable endpoint. Missing
+support, replacement and unavailable replies retain their distinct meanings.
+The existing receiver still enforces spawner policy and approval ceilings.
+
+The [verification record](review/peer-compatibility-1137.md) gives 107 primary
+focused checks plus the shipped TLS regression, both manual mixed-version
+directions and their precise limits. One independent pass and its native-test
+delta check found no actionable issues. Full static gates pass; broad and
+exact-head hosted/Linux validation remain required. TLS launch preflight is the
+following slice; no live upgrade is authorized.
+
 ## Distributed runtime experience (issue #1137)
 
 The first slice fixes the signed-out page's rejected `loom ui --device`
@@ -22,8 +37,9 @@ error channels retain those facts. Independent review found and verified the
 remaining child-send admission and asynchronous stop wording fixes. The primary
 also ran all 211 agency tests and 17 web state tests with no skips after helper
 preparation; the agency additions use the memory backend. Formatting, lint,
-documentation and generated-artifact gates pass. Broad affected validation,
-hosted CI and applicable Linux signoff remain pending.
+documentation and generated-artifact gates pass. At head 1dcb19505, both affected
+client shards pass all 5,500 tests and their selected lanes/strict skip censuses.
+Exact-head hosted and Linux signoff readiness is recorded with PR #1144.
 
 ## Running-version profile and native fixture ownership
 
