@@ -241,6 +241,12 @@ was asked.
   the next one does not restate. `ignore_output()` is the default seam.
   `bash` and `grep` hand `ctx.observe_output` over; production wires it to
   the event bus (`client/gateway.tool_output_observer`).
+- `tools/tool.collect_before` is an internal absolute-deadline collector for
+  repository capture. It shares the existing output fold, reevaluates the
+  caller's injected clock before each event and never extends the deadline on
+  output. Existing `collect_events` and `collect_observed` retain their idle
+  receive windows, including queued events with a zero timeout. A caller using
+  settlement grace must separately refuse work completed after its own budget.
 - `tools/tail.{Tail, Since, new, push, since, received}` — a pure, bounded
   rolling window over one output stream with a monotone byte cursor,
   shared by the foreground collector above and the background job runner

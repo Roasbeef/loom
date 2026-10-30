@@ -1118,6 +1118,33 @@ the `loomd` entry point (`client/daemon/main`). Startup restores the private
 catalogue without opening runtimes. Explicit admission invokes
 `serve.resolve_managed` and `serve.assemble_in_domain` for one saved registration.
 
+## Private repository snapshot prerequisites
+
+`repository_snapshot.capture` is an internal local operation. It uses
+`worktree_git.Capture` for bounded binary Git calls through the broker/helper,
+with network off and writes confined to one private stage. The parent supplies
+a quiescent workspace and serialized execution. A private index, object store
+and WIP ref preserve its real HEAD, index, refs and working files; a bundle is
+verified in a fresh repository before the private child is returned. This does
+not yet connect snapshots to spawning, peer transfer, result custody or movement.
+
+`Source`, `Inventory` and `WorkingEntries` retain canonical metadata, the
+HEAD/index/untracked union and admitted current entries. `Snapshot` returns the
+private stage, child and WIP OID. Ignore discovery uses the parent's server-owned
+tool HOME and identity configuration. Unreadable ignore rules refuse capture.
+Private Git retains no source global configuration, and effective content
+transformations are refused before staging. Gitlink/LFS, conflicting, unborn,
+shallow, partial or sparse states and grafted history are explicit refusals.
+The ordinary daemon creates and masks `repository-snapshots` before admission;
+a dedicated narrow capture scope can reach its own stage, retaining every other
+mask. Failed stages stay private until native custody is known to have drained.
+Space preflight is an observation, not a reservation or aggregate quota.
+
+`git_identity.resolve` reads the source's effective name/email, while `publish`
+projects only those two values through the existing descriptor-confined helper.
+Ordinary session `prepare` still queries global defaults and permits repository
+overrides. Missing identity is never replaced with a generated host identity.
+
 ## Key Types
 
 - Daemon archive and restore requests enter `manager.set_visibility`, whose
