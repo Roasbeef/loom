@@ -1,5 +1,17 @@
 # Current handoff
 
+## Mermaid failure diagnostics
+
+`codex/mermaid-error-details` adds a bounded exception message above the open
+source fallback. The [verification record](review/mermaid-error-details-2026-10-30.md)
+records the screenshot reproducer, failing-before regression, 1,678 focused
+Gleam tests, five FFI checks, all 28 real-browser checks and independent review.
+The [protocol 091 addendum](../protocol-change/091-isolated-mermaid-diagrams.md#addendum-failure-diagnostics-2026-10-30)
+keeps the diagnostic as bounded text under the existing frame identity,
+revision, sandbox and content-policy checks. Full affected validation is still
+running; exact-head hosted and Linux signoff remain separate gates. No live
+update or merge was performed.
+
 ## Versioned peer compatibility (issue #1137)
 
 The owner approved the stable peer exchange and TLS launch preflight for code
