@@ -515,6 +515,47 @@ pub fn get(catalogue: Catalogue, id: String) -> Result(Registration, Error) {
   }
 }
 
+/// Reads one bounded domain source page with each registration validated once.
+///
+/// The joined display layers preserve the decoding contract of `get`; neither
+/// names nor subtitles authorize a source. The caller still validates current
+/// domain membership before projecting canonical identities and database paths.
+/// No conversation database is opened and no authorization result is cached.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.domain_source_records(store, domain_id, after: "")
+/// ```
+@internal
+pub fn domain_source_records(
+  catalogue: Catalogue,
+  domain_id: String,
+  after after: String,
+) -> Result(List(Registration), Error) {
+  use rows <- result.try(query(catalogue, sql.domain_sources(domain_id, after)))
+  list.try_map(rows, fn(row) {
+    decoded(
+      Registration(
+        id: row.session_id,
+        path: row.path,
+        workspace: row.workspace,
+        name: option.unwrap(row.display_name, row.name),
+        configuration: row.configuration,
+        created_at: row.created_at,
+        request_key: row.request_key,
+        state: Reserved,
+        profile: stored_profile(row.profile),
+        model: stored_model(row.model),
+        executor: row.executor,
+        pool: row.pool,
+        subtitle: option.then(row.subtitle, stored_subtitle),
+      ),
+      row.state,
+    )
+  })
+}
+
 /// Saves a display override without changing the original creation request.
 ///
 /// The label and revision commit atomically. An unchanged label writes nothing.

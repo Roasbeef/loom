@@ -24,6 +24,7 @@ import simplifile
 import storage/access
 import storage/catalogue
 import storage/domain
+import storage/sql
 import support/internal/ffi_memory
 import support/remote_stubs
 import tools/agent
@@ -2940,4 +2941,48 @@ pub fn failed_and_inactive_reservations_do_not_block_local_census_test() {
     as "failure does not pretend the creation was confirmed"
   assert census == Ok([confirmed.id])
     as "confirmed locals remain coverable beside failed and inactive reservations"
+}
+
+/// A bad later source refuses the whole enumeration through the real registry.
+pub fn domain_source_corruption_never_returns_an_authorized_prefix_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let records =
+    shared_domain_sessions(store, 3)
+    |> list.sort(fn(left, right) { string.compare(left.id, right.id) })
+  let assert [first, corrupt, ..] = records as "there are several sources"
+  assert catalogue.statement(
+      store,
+      sql.set_registration_profile("INVALID", corrupt.id),
+    )
+    == Ok(Nil)
+  let enumerated = process.new_subject()
+  let assert Ok(registry) =
+    manager.start(
+      store,
+      manager.Assembly(
+        domain_build: fn(_, sources, _) {
+          process.send(enumerated, sources())
+          Ok(domain_service.inert())
+        },
+        build: fn(record, _domain, _services, _, _directory) { Ok(record.id) },
+        drain: fn(_, _) { Nil },
+        fatal: fn(_) { [] },
+      ),
+      epoch: "corrupt-domain-sources",
+      limit: 2,
+    )
+    as "the registry starts with valid opening metadata"
+  let assert Ok(manager.Opening(operation)) = manager.open(registry, first.id)
+    as "a valid session starts the domain builder"
+  assert process.receive(enumerated, 5000)
+    == Ok(
+      Error(
+        string.inspect(catalogue.Invalid(
+          "registration profile is not a profile name",
+        )),
+      ),
+    )
+  await_status(registry, first.id, manager.Resident(operation))
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
 }
