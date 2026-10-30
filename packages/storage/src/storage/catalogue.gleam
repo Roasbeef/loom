@@ -3258,17 +3258,32 @@ pub const profile_name_limit = 32
 /// assert !catalogue.is_profile_name("Deep Seek")
 /// ```
 pub fn is_profile_name(text: String) -> Bool {
-  case string.to_graphemes(text) {
-    [first, ..rest] ->
-      string.length(text) <= profile_name_limit
-      && is_letter(first)
-      && list.all(rest, fn(grapheme) {
-        is_letter(grapheme)
-        || grapheme == "_"
-        || grapheme == "-"
-        || list.contains(string.to_graphemes("0123456789"), grapheme)
-      })
-    [] -> False
+  let bytes = bit_array.from_string(text)
+  let size = bit_array.byte_size(bytes)
+
+  // Accepted names are ASCII, so byte and grapheme bounds are identical.
+  // Reject the size before walking; even an enormous invalid name costs O(1).
+  case bytes {
+    <<first, rest:bits>>
+      if first >= 97 && first <= 122 && size <= profile_name_limit
+    -> profile_name_tail(rest)
+    _ -> False
+  }
+}
+
+/// Checks the remaining ASCII bytes after the required lowercase first letter.
+fn profile_name_tail(bytes: BitArray) -> Bool {
+  case bytes {
+    <<>> -> True
+    <<byte, rest:bits>>
+      if byte >= 97
+      && byte <= 122
+      || byte >= 48
+      && byte <= 57
+      || byte == 95
+      || byte == 45
+    -> profile_name_tail(rest)
+    _ -> False
   }
 }
 
