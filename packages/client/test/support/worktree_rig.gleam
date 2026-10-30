@@ -107,12 +107,22 @@ pub fn establish(state: String) -> Nil {
       as "a state root entry is created"
     Nil
   })
-  list.each(["sessions", "run", "workspaces", "domains", "worktrees"], fn(name) {
-    let assert Ok(Nil) =
-      bootstrap.ensure_private_directory(state <> "/" <> name)
-      as "a state root directory is created"
-    Nil
-  })
+  list.each(
+    [
+      "sessions",
+      "run",
+      "workspaces",
+      "domains",
+      "worktrees",
+      "repository-snapshots",
+    ],
+    fn(name) {
+      let assert Ok(Nil) =
+        bootstrap.ensure_private_directory(state <> "/" <> name)
+        as "a state root directory is created"
+      Nil
+    },
+  )
 }
 
 /// A repository with one commit, `README` on `main`. Its top directory.
