@@ -64,6 +64,7 @@ pub fn another_failure_is_the_tool_layers_words_test() {
 // Capture uses the real broker and helper, including their binary wire path.
 fn capture_fixture(name: String) {
   let rig = worktree_rig.rig(name)
+  worktree_rig.write(rig.root <> "/canary", "protected fixture data\n")
   let staging = rig.state <> "/capture"
   let assert Ok(Nil) = simplifile.create_directory_all(staging)
   let assert Ok(here) = simplifile.current_directory()
