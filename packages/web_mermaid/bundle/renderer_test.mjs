@@ -77,13 +77,15 @@ await check('vendor promise reports SVG exactly once without invoking callbacks'
   assert.equal(bound, false);
 });
 
-await check('sync throws, rejection and malformed vendor output do not leak diagnostics', async () => {
+await check('sync throws and rejections retain only their message', async () => {
   const {bridge} = fixture();
-  for (const vendor of [
-    {render() { throw new Error('private diagnostic'); }},
-    {render() { return Promise.reject(new Error('private diagnostic')); }},
-    {render() { return Promise.resolve(null); }},
-    {render() { return Promise.resolve({svg: false}); }},
+  for (const [vendor, expected] of [
+    [{render() { throw new Error('Parse error on line 8:\nExpected ACTOR'); }}, 'Parse error on line 8:\nExpected ACTOR'],
+    [{render() { return Promise.reject(Object.assign(new Error('Expected ACTOR'), {stack: 'private stack', svg: '<svg/>'})); }}, 'Expected ACTOR'],
+    [{render() { return Promise.resolve(null); }}, ''],
+    [{render() { return Promise.resolve({svg: false}); }}, ''],
+    [{render() { return Promise.reject('not an exception message'); }}, ''],
+    [{render() { return Promise.reject({message: 42, stack: 'private'}); }}, ''],
   ]) {
     let calls = 0;
     const outcome = await new Promise(resolve => bridge.render(vendor, 'id', 'source', {}, result => {
@@ -91,7 +93,7 @@ await check('sync throws, rejection and malformed vendor output do not leak diag
       resolve(result);
     }));
     assert.ok(outcome instanceof ErrorResult);
-    assert.equal(outcome.value, undefined);
+    assert.equal(outcome.value, expected);
     assert.equal(calls, 1);
   }
 });

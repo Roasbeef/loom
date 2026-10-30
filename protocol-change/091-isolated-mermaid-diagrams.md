@@ -89,3 +89,29 @@ rendering source; its PNG graphics path is not changed by this proposal.
 dependency and source fallback. Keeping vendor DOM generation in an opaque,
 network-disabled frame preserves the session page's text-only boundary without
 relaxing its script or stylesheet policy.
+
+## Addendum: failure diagnostics (2026-10-30)
+
+The source fallback now includes the renderer exception's `message` when one
+is available. A parser failure previously lost its line, caret and expected
+token list, so readers could not tell invalid syntax from a renderer failure.
+The owner requested this diagnostic in the fallback.
+
+The internal failed reply gains an optional `diagnostic: String` field. The
+child copies only a string `message`, never the exception object or stack,
+and limits it to 2,000 Unicode code points before JSON encoding. The parent
+limits replies to 12,512 UTF-8 bytes and independently truncates the decoded
+diagnostic to 2,000 code points. This accommodates the JSON escape expansion
+of every allowed code point. Missing diagnostics retain the generic fallback.
+
+The parent accepts the diagnostic only from its exact frame window and for
+the active rendering revision. It renders the diagnostic through a text node
+above the source disclosure, preserving line breaks and wrapping long lines.
+A new source or theme drops the old error; a timeout cannot accept a late
+error or success. The diagnostic may quote the submitted diagram text. It
+is display data, never HTML, an action, a URL or a storage value.
+
+The existing sandbox, CSP, SVG filter and source bounds are unchanged. This
+extends the internal frame contract only; the daemon and durable protocols
+are unchanged. Acceptance requires boundary regressions and a real browser
+parser-error, text-escaping and recovery check.
