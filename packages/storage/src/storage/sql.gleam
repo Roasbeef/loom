@@ -1840,7 +1840,22 @@ ON CONFLICT(session_id) DO UPDATE SET domain_id = excluded.domain_id"
 }
 
 pub type DomainSources {
-  DomainSources(session_id: String)
+  DomainSources(
+    session_id: String,
+    path: String,
+    workspace: String,
+    name: String,
+    display_name: Option(String),
+    configuration: String,
+    created_at: Int,
+    request_key: String,
+    state: String,
+    profile: String,
+    model: String,
+    executor: String,
+    pool: String,
+    subtitle: Option(String),
+  )
 }
 
 pub fn domain_sources(
@@ -1848,8 +1863,13 @@ pub fn domain_sources(
   session_id session_id: String,
 ) {
   let sql =
-    "SELECT s.session_id FROM catalogue_domain_sessions AS s
+    "SELECT r.session_id, r.path, r.workspace, r.name, n.name AS display_name,
+       r.configuration, r.created_at, r.request_key, r.state, r.profile, r.model,
+       r.executor, r.pool, t.subtitle
+FROM catalogue_domain_sessions AS s
 JOIN catalogue_sessions AS r ON r.session_id = s.session_id
+LEFT JOIN catalogue_session_names AS n ON n.session_id = r.session_id
+LEFT JOIN catalogue_session_subtitles AS t ON t.session_id = r.session_id
 WHERE s.domain_id = ? AND s.session_id > ? AND r.state = 'saved'
 ORDER BY s.session_id LIMIT 100"
   #(
@@ -1861,7 +1881,35 @@ ORDER BY s.session_id LIMIT 100"
 
 pub fn domain_sources_decoder() -> decode.Decoder(DomainSources) {
   use session_id <- decode.field(0, decode.string)
-  decode.success(DomainSources(session_id:))
+  use path <- decode.field(1, decode.string)
+  use workspace <- decode.field(2, decode.string)
+  use name <- decode.field(3, decode.string)
+  use display_name <- decode.field(4, decode.optional(decode.string))
+  use configuration <- decode.field(5, decode.string)
+  use created_at <- decode.field(6, decode.int)
+  use request_key <- decode.field(7, decode.string)
+  use state <- decode.field(8, decode.string)
+  use profile <- decode.field(9, decode.string)
+  use model <- decode.field(10, decode.string)
+  use executor <- decode.field(11, decode.string)
+  use pool <- decode.field(12, decode.string)
+  use subtitle <- decode.field(13, decode.optional(decode.string))
+  decode.success(DomainSources(
+    session_id:,
+    path:,
+    workspace:,
+    name:,
+    display_name:,
+    configuration:,
+    created_at:,
+    request_key:,
+    state:,
+    profile:,
+    model:,
+    executor:,
+    pool:,
+    subtitle:,
+  ))
 }
 
 pub type DomainPage {

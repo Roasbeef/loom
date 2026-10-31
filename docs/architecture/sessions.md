@@ -487,6 +487,13 @@ forwarders notify that owner with the committing session's ID. History
 checks the current domain source list before returning ranked results or
 reading an exact entry; stored index locators do not authorize reads.
 
+Source enumeration reads one joined catalogue page per registry turn. The page
+returns up to 100 saved registrations, with their complete row validation and
+workspace/scope checks, and projects their canonical identities and paths before
+that turn ends. The caller advances by the last identity and refuses more than
+511 sources. This keeps catalogue authorization fresh while avoiding separate
+identity and path reads for the same registration.
+
 The domain book (the manager's bounded table of domains) has the same
 capacity as the session book. Preparing, closing, and blocked
 domains remain counted, so repeatedly opening distinct session-only
