@@ -42,6 +42,17 @@ actual startup repeats validation and can still fail on runtime resources.
 
 # client
 
+## Fresh history source pages
+
+`daemon/manager.collect_sources` asks the catalogue owner for `DomainSources`,
+one page at a time. The handler calls `storage/domain.source_records` and
+projects canonical session identities and paths in the same turn, so a second
+lookup cannot observe a different registration after membership was checked.
+Each turn validates at most 100 saved records; the caller walks pages and
+refuses totals over 511 rather than returning a prefix. The existing
+cross-page and oversized-domain registry fixtures remain, and corrupt source
+metadata refuses the entire enumeration through the same error channel.
+
 ## Configuration parsing on session open
 
 `catalog.parse_with_document` validates the catalogue and returns its TOML

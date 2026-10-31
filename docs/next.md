@@ -4,12 +4,43 @@
 
 The owner approved this slice for code and isolated tests, not a live upgrade.
 [Protocol 106](../protocol-change/106-launch-preflight.md) records the private
-launch witness, read-only staged validation and fenced replacement. The
-[review record](review/launch-preflight-1137.md) separates focused evidence,
-the preliminary shipped smoke and the remaining final artifact and CI gates.
-Full verification is in progress; do not treat this slice as release-ready.
+launch witness, read-only staged validation and fenced replacement.
+The [review record](review/launch-preflight-1137.md) and
+[PR #1146](https://github.com/Roasbeef/loom/pull/1146) separate the focused,
+installed-update and full-gate evidence. At `074b22c6c`, both affected shards,
+raw hosted checks, strict skip censuses and Linux signoff passed. The current
+integration also includes merged #1148; that combined head requires fresh
+validation before merge. No live upgrade is authorized.
 Repository handoff, isolated child custody, movement, gateway, page relay and
 fleet work remain open under #1137.
+
+## Catalogue source-read performance
+
+The [catalogue hot-path record](review/catalogue-hot-paths-2026-10-29.md) tracks
+the bounded joined source read and ASCII profile validation follow-up to the
+live profile. Fresh registration and domain validation remain on each page;
+the manager projects paths in the same owner turn. Preliminary matched results
+show fewer queries, CPU work and caller allocation. Candidate storage and all
+53 daemon-manager tests pass, with eight runtime mutation controls rejected.
+Independent review found no actionable issues. [PR #1148](https://github.com/Roasbeef/loom/pull/1148)
+carries full-gate, later benchmark and exact-head hosted/Linux receipts; use
+those current receipts for readiness. No live process was upgraded or retired.
+
+## Fresh local CPU and memory profile
+
+The [October 29 profile](review/live-profile-2026-10-29.md) captures the unchanged
+running daemon at `fcbc7d9b`, the older native client, and native descendants.
+The largest RSS owner is `gopls` (about 2.04 GiB), while the daemon is about
+1.06 GiB and six MCP servers add about 409 MiB. Eighteen old test daemons
+remain a separate 1.45 GiB summed-RSS cleanup opportunity. No process was
+restarted, collected or retired.
+
+The active CPU sample and focused counters identify repeated history-source
+catalogue lookups and session register/JSON reads. The catalogue follow-up
+above supplies the fixed offline benchmark and implementation while preserving
+fresh membership and path checks. A separately authorized installed update is
+needed to measure #1138 under a matched workload; the current process still
+predates it. These captures establish no installed savings.
 
 ## Versioned peer compatibility (issue #1137)
 

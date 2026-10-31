@@ -24,8 +24,13 @@ INSERT INTO catalogue_domain_sessions(session_id, domain_id) VALUES (?, ?)
 ON CONFLICT(session_id) DO UPDATE SET domain_id = excluded.domain_id;
 
 -- name: DomainSources :many
-SELECT s.session_id FROM catalogue_domain_sessions AS s
+SELECT r.session_id, r.path, r.workspace, r.name, n.name AS display_name,
+       r.configuration, r.created_at, r.request_key, r.state, r.profile, r.model,
+       r.executor, r.pool, t.subtitle
+FROM catalogue_domain_sessions AS s
 JOIN catalogue_sessions AS r ON r.session_id = s.session_id
+LEFT JOIN catalogue_session_names AS n ON n.session_id = r.session_id
+LEFT JOIN catalogue_session_subtitles AS t ON t.session_id = r.session_id
 WHERE s.domain_id = ? AND s.session_id > ? AND r.state = 'saved'
 ORDER BY s.session_id LIMIT 100;
 
