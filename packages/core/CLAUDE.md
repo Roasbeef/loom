@@ -152,7 +152,14 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   Nonempty runs validate their matched slice directly and consume a successful
   delimiter in the same cursor update; errors retain their original offsets
   and contexts. Reversed chunks and final concatenation retain the previous
-  output ownership. `scripts/json_decode_perf.sh` measures root-only parse
+  output ownership. Simple escapes keep a fixed origin and advance the raw
+  unread suffix; `json.string_cursor` reconstructs the document-relative cursor
+  only for a closing quote, Unicode escape or refusal. Validating an ordinary
+  run creates no cursor-capturing error callback. Mixed-fragment qcheck oracles
+  check decoded values and complete reports after earlier document content.
+  `scripts/json_decode_compare.sh` compares a saved baseline in one VM, including
+  raw invalid UTF-8, truncations, output-binary ownership and allocation guards.
+  `scripts/json_decode_perf.sh` measures root-only parse
   allocation and untraced timing, and its `equivalence` mode compares complete
   results and corruption reports against a built baseline.
 - **msgpack encoding is canonical** — smallest encoding that fits — so
