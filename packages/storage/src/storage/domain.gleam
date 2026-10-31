@@ -322,13 +322,35 @@ pub fn sources(
   id: String,
   after after: String,
 ) -> Result(List(String), Error) {
+  use records <- result.map(source_records(store, id, after:))
+  list.map(records, fn(record) { record.id })
+}
+
+/// Reads a bounded page of fresh, fully validated source registrations.
+///
+/// The daemon projects paths from this same read in its catalogue-owner turn,
+/// so no second lookup or inter-turn mutation can separate membership checking
+/// from the path it authorizes. The existing identity-only `sources` interface
+/// delegates here and retains its ordering, saved-state filter and errors.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // domain.source_records(store, domain_id, after: "")
+/// ```
+@internal
+pub fn source_records(
+  store: Catalogue,
+  id: String,
+  after after: String,
+) -> Result(List(catalogue.Registration), Error) {
   use domain <- result.try(get(store, id))
-  use rows <- result.try(catalogue.query(store, sql.domain_sources(id, after)))
-  list.try_map(rows, fn(row) {
-    use record <- result.try(catalogue.get(store, row.session_id))
-    use Nil <- result.try(matches(record, domain))
-    Ok(record.id)
-  })
+  use records <- result.try(catalogue.domain_source_records(store, id, after:))
+
+  // `get` validated this immutable domain once. Each registration must still
+  // match its scope, but rechecking the same domain paths per row adds no fence.
+  use Nil <- result.map(list.try_each(records, matches_scope(_, domain)))
+  records
 }
 
 /// Lists a bounded page of durable domain records for lazy restoration.
@@ -423,8 +445,15 @@ fn matches(
   domain: Domain,
 ) -> Result(Nil, Error) {
   use Nil <- result.try(validate(domain))
+  matches_scope(record, domain)
+}
 
-  // Verify that registration workspace and derived domain identity match.
+/// Checks a registration against a domain whose paths and scope are validated.
+fn matches_scope(
+  record: catalogue.Registration,
+  domain: Domain,
+) -> Result(Nil, Error) {
+  // Every row must match, even when a stored binding points across workspaces.
   case
     record.workspace == domain.workspace
     && domain.id == key(domain.scope, record.workspace, record.id)
