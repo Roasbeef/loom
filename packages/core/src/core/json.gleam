@@ -31,7 +31,8 @@
 //// ## Flow
 ////
 //// Main parsing and serialization operations:
-//// - `parse`: decodes JSON text into a typed `JsonValue`
+//// - `parse`: decodes JSON text into a typed `JsonValue`; `parse_string_body`
+////   walks escaped strings, and `decode_string_run` validates ordinary runs.
 //// - `to_string`: formats a `JsonValue` to compact JSON text
 //// - `canonical`: normalises a `JsonValue` with recursively sorted object keys
 
@@ -495,9 +496,7 @@ fn parse_value(
       )
     }
     <<0x22, rest:bits>> -> {
-      use #(text, cursor) <- result.try(
-        parse_string_body(advance(cursor, rest, by: 1), []),
-      )
+      use #(text, cursor) <- result.try(parse_string_body(rest, cursor, []))
       Ok(#(String(text), cursor))
     }
     <<"true":utf8, rest:bits>> ->
@@ -576,9 +575,7 @@ fn parse_member(
   // Expect string literal as member key.
   case cursor.rest {
     <<0x22, rest:bits>> -> {
-      use #(name, cursor) <- result.try(
-        parse_string_body(advance(cursor, rest, by: 1), []),
-      )
+      use #(name, cursor) <- result.try(parse_string_body(rest, cursor, []))
       let cursor = skip_whitespace(cursor)
 
       // Expect colon separator following object member key.
@@ -647,58 +644,90 @@ fn check_depth(cursor: Cursor, depth: Int) -> Result(Nil, CorruptionReport) {
 
 // --- strings ------------------------------------------------------------
 
-/// Parses the body of a string literal after the opening quote.
+/// Scans string bytes while retaining one cursor for their starting position.
 ///
-/// A string body is runs of bytes that need no attention, cut out as
-/// slices, separated by the three things that do: the closing quote, an
-/// escape, and a control character that should have been escaped.
+/// Ordinary runs and single-character escapes advance the unread suffix.
+/// Constructing the next cursor once at the closing quote avoids rebuilding
+/// its record for every escape. Refusals and Unicode escapes still
+/// receive the exact current position through `string_cursor`.
 fn parse_string_body(
-  cursor: Cursor,
+  input: BitArray,
+  origin: Cursor,
   chunks: List(String),
 ) -> Result(#(String, Cursor), CorruptionReport) {
-  let length = clean_run(cursor.rest, 0)
+  let length = clean_run(input, 0)
 
   // Delimiters and adjacent escapes have no ordinary run to cut or validate.
-  case cursor.rest {
+  case input {
     <<0x22, rest:bits>> ->
-      Ok(#(string.concat(list.reverse(chunks)), advance(cursor, rest, by: 1)))
-    <<0x5C, rest:bits>> -> parse_escape(advance(cursor, rest, by: 1), chunks)
+      Ok(#(string.concat(list.reverse(chunks)), string_cursor(origin, rest)))
+    <<0x5C, rest:bits>> -> parse_escape(rest, origin, chunks)
     <<byte, _:bits>> if byte < 0x20 ->
-      Error(fail(cursor, "control characters to be escaped in a string"))
-    <<>> -> Error(fail(cursor, "a closing \" before end of input"))
+      Error(fail(
+        string_cursor(origin, input),
+        "control characters to be escaped in a string",
+      ))
+    <<>> ->
+      Error(fail(
+        string_cursor(origin, input),
+        "a closing \" before end of input",
+      ))
     <<run:bytes-size(length), after:bits>> -> {
-      // A nonempty run is validated before joining. Matching it here avoids
-      // the cut helper's intermediate Result pair and continuation.
-      use chunk <- result.try(
-        bit_array.to_string(run)
-        |> result.map_error(fn(_) { fail(cursor, "a valid utf-8 string") }),
-      )
+      // Validate only the run. Its error cursor is built lazily so a valid
+      // run does not allocate a record or an error-mapping callback.
+      use chunk <- result.try(decode_string_run(run, input, origin))
       let chunks = [chunk, ..chunks]
 
-      // Success consumes the run and delimiter in one update. Refusals stop
-      // before the offending byte, preserving the original codepoint offset.
+      // Refusals stop before the offending byte, preserving the original
+      // codepoint offset even though successful scans have no interim cursor.
       case after {
         <<0x22, rest:bits>> ->
-          Ok(#(
-            string.concat(list.reverse(chunks)),
-            advance(cursor, rest, by: length + 1),
-          ))
-        <<0x5C, rest:bits>> ->
-          parse_escape(advance(cursor, rest, by: length + 1), chunks)
+          Ok(#(string.concat(list.reverse(chunks)), string_cursor(origin, rest)))
+        <<0x5C, rest:bits>> -> parse_escape(rest, origin, chunks)
         <<_, _:bits>> ->
           Error(fail(
-            advance(cursor, after, by: length),
+            string_cursor(origin, after),
             "control characters to be escaped in a string",
           ))
         _ ->
           Error(fail(
-            advance(cursor, after, by: length),
+            string_cursor(origin, after),
             "a closing \" before end of input",
           ))
       }
     }
-    _shorter -> Error(fail(cursor, "a valid utf-8 string"))
+    _shorter ->
+      Error(fail(string_cursor(origin, input), "a valid utf-8 string"))
   }
+}
+
+/// Validates one string run and constructs a report only on invalid UTF-8.
+///
+/// The origin stays fixed while the input is a suffix of its unread bytes.
+/// Failed validation reports the start of this run, matching the parser's
+/// original refusal position rather than the byte the UTF-8 walk rejected.
+fn decode_string_run(
+  run: BitArray,
+  input: BitArray,
+  origin: Cursor,
+) -> Result(String, CorruptionReport) {
+  case bit_array.to_string(run) {
+    Ok(text) -> Ok(text)
+    Error(Nil) ->
+      Error(fail(string_cursor(origin, input), "a valid utf-8 string"))
+  }
+}
+
+/// Reconstructs the cursor at a suffix of the original document.
+///
+/// The document and unread suffix determine the byte offset exactly, including
+/// every escape byte. No intermediate cursor or accumulated count is needed.
+fn string_cursor(origin: Cursor, rest: BitArray) -> Cursor {
+  Cursor(
+    rest,
+    origin.source,
+    bit_array.byte_size(origin.source) - bit_array.byte_size(rest),
+  )
 }
 
 /// Counts how many leading bytes require no escape or special handling.
@@ -783,29 +812,24 @@ fn cut(
 
 /// Parses an escape sequence following a backslash character.
 fn parse_escape(
-  cursor: Cursor,
+  input: BitArray,
+  origin: Cursor,
   chunks: List(String),
 ) -> Result(#(String, Cursor), CorruptionReport) {
-  case cursor.rest {
-    <<0x22, rest:bits>> ->
-      parse_string_body(advance(cursor, rest, by: 1), ["\"", ..chunks])
-    <<0x5C, rest:bits>> ->
-      parse_string_body(advance(cursor, rest, by: 1), ["\\", ..chunks])
-    <<0x2F, rest:bits>> ->
-      parse_string_body(advance(cursor, rest, by: 1), ["/", ..chunks])
+  case input {
+    <<0x22, rest:bits>> -> parse_string_body(rest, origin, ["\"", ..chunks])
+    <<0x5C, rest:bits>> -> parse_string_body(rest, origin, ["\\", ..chunks])
+    <<0x2F, rest:bits>> -> parse_string_body(rest, origin, ["/", ..chunks])
     <<0x62, rest:bits>> ->
-      parse_string_body(advance(cursor, rest, by: 1), ["\u{0008}", ..chunks])
+      parse_string_body(rest, origin, ["\u{0008}", ..chunks])
     <<0x66, rest:bits>> ->
-      parse_string_body(advance(cursor, rest, by: 1), ["\u{000C}", ..chunks])
-    <<0x6E, rest:bits>> ->
-      parse_string_body(advance(cursor, rest, by: 1), ["\n", ..chunks])
-    <<0x72, rest:bits>> ->
-      parse_string_body(advance(cursor, rest, by: 1), ["\r", ..chunks])
-    <<0x74, rest:bits>> ->
-      parse_string_body(advance(cursor, rest, by: 1), ["\t", ..chunks])
+      parse_string_body(rest, origin, ["\u{000C}", ..chunks])
+    <<0x6E, rest:bits>> -> parse_string_body(rest, origin, ["\n", ..chunks])
+    <<0x72, rest:bits>> -> parse_string_body(rest, origin, ["\r", ..chunks])
+    <<0x74, rest:bits>> -> parse_string_body(rest, origin, ["\t", ..chunks])
     <<0x75, rest:bits>> ->
-      parse_unicode_escape(advance(cursor, rest, by: 1), chunks)
-    _ -> Error(fail(cursor, "a valid escape character"))
+      parse_unicode_escape(string_cursor(origin, rest), chunks)
+    _ -> Error(fail(string_cursor(origin, input), "a valid escape character"))
   }
 }
 
@@ -844,7 +868,7 @@ fn append_codepoint(
 ) -> Result(#(String, Cursor), CorruptionReport) {
   case string.utf_codepoint(code) {
     Ok(codepoint) ->
-      parse_string_body(cursor, [
+      parse_string_body(cursor.rest, cursor, [
         string.from_utf_codepoints([codepoint]),
         ..chunks
       ])

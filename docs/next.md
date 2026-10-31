@@ -1,5 +1,24 @@
 # Current handoff
 
+## JSON string cursor allocation
+
+The [profile follow-up](review/json-cursor-2026-10-30.md) keeps one origin cursor
+through simple JSON escapes and reconstructs exact source positions only at a
+closing quote, Unicode escape or refusal. Against main `c06d33430`, the fixed
+transcript fixture uses 28.6% fewer heap words and 20.1% less median VM CPU;
+dense escapes use about 51% fewer words. Grammar, full corruption reports,
+portable source and output-binary ownership remain unchanged. No installed
+memory or whole-daemon CPU savings are claimed.
+
+All 169 native core tests and 23,004 complete baseline/candidate comparisons
+pass. Four semantic mutants are rejected and the unchanged-candidate control
+fails the allocation guard. Independent Astra review found no actionable
+issues. The branch PR records broad native/E2E, hosted and exact-head Linux
+readiness; focused measurements alone do not complete those gates. The full
+supplemental JavaScript core suite retains the same nine baseline failures,
+with all new cursor properties passing on both implementations. No assertion,
+test, dependency, public interface or live process policy changed.
+
 ## Mermaid failure diagnostics
 
 `codex/mermaid-error-details` adds a bounded exception message above the open
@@ -11,6 +30,26 @@ keeps the diagnostic as bounded text under the existing frame identity,
 revision, sandbox and content-policy checks. Integration with main preserved
 the catalogue/profile handoff below; exact-head hosted and Linux validation
 are being repeated on that integration. No live update was performed.
+
+## Current local CPU and memory profile
+
+Baseline `ccb795759` on October 30, 2026. The [current profile](review/live-profile-2026-10-30.md)
+confirms the installed daemon includes the evolution and catalogue repairs,
+superseding the older installed-version observations below. The quiet OS window
+used 6.54% of one core at about 345 to 360 MiB RSS; a later uninstrumented active
+window used 63.51% at about 413 to 441 MiB RSS. Pickglass's active sample ranks
+register/snapshot SQLite work first, with web rendering secondary. The active
+allocation trace counts 356.28 MiB over 17.165 seconds, at least 65.6% in JSON;
+2,311 register-cache reads required only 104 decode calls. The closing VM census
+is 348.28 MiB allocated across 503 processes. These are changing workloads,
+not matched savings or proof of a leak.
+
+Next, reproduce register/snapshot polling and subscribed-view work in a fixed
+replay before changing caching or serialization. Captures and the validator
+are in this worktree's `.notes/profiles/2026-10-30/`. No production process was
+upgraded, restarted, collected or retired during this round. The historical
+sections below retain their recorded scope; unrelated CI readiness was not
+revalidated for this observation-only work.
 
 ## Catalogue source-read performance
 
@@ -24,7 +63,7 @@ Independent review found no actionable issues. [PR #1148](https://github.com/Roa
 carries full-gate, later benchmark and exact-head hosted/Linux receipts; use
 those current receipts for readiness. No live process was upgraded or retired.
 
-## Fresh local CPU and memory profile
+## October 29 CPU and memory baseline
 
 The [October 29 profile](review/live-profile-2026-10-29.md) captures the unchanged
 running daemon at `fcbc7d9b`, the older native client, and native descendants.
@@ -36,9 +75,9 @@ restarted, collected or retired.
 The active CPU sample and focused counters identify repeated history-source
 catalogue lookups and session register/JSON reads. The catalogue follow-up
 above supplies the fixed offline benchmark and implementation while preserving
-fresh membership and path checks. A separately authorized installed update is
-needed to measure #1138 under a matched workload; the current process still
-predates it. These captures establish no installed savings.
+fresh membership and path checks. That historical process predates #1138. The
+October 30 profile above now measures a newer installed daemon, while a matched
+replay is still needed to isolate the repairs from changes in process age and workload.
 
 ## Versioned peer compatibility (issue #1137)
 
