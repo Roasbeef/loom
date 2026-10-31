@@ -1,5 +1,24 @@
 # Current handoff
 
+## JSON string cursor allocation
+
+The [profile follow-up](review/json-cursor-2026-10-30.md) keeps one origin cursor
+through simple JSON escapes and reconstructs exact source positions only at a
+closing quote, Unicode escape or refusal. Against main `c06d33430`, the fixed
+transcript fixture uses 28.6% fewer heap words and 20.1% less median VM CPU;
+dense escapes use about 51% fewer words. Grammar, full corruption reports,
+portable source and output-binary ownership remain unchanged. No installed
+memory or whole-daemon CPU savings are claimed.
+
+All 169 native core tests and 23,004 complete baseline/candidate comparisons
+pass. Four semantic mutants are rejected and the unchanged-candidate control
+fails the allocation guard. Independent Astra review found no actionable
+issues. The branch PR records broad native/E2E, hosted and exact-head Linux
+readiness; focused measurements alone do not complete those gates. The full
+supplemental JavaScript core suite retains the same nine baseline failures,
+with all new cursor properties passing on both implementations. No assertion,
+test, dependency, public interface or live process policy changed.
+
 ## Mermaid failure diagnostics
 
 `codex/mermaid-error-details` adds a bounded exception message above the open
