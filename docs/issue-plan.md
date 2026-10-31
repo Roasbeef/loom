@@ -15,6 +15,27 @@ column and §5.1 of `docs/loom-implementation-spec.md`,
 
 ---
 
+## Session hot-path performance (#1150, #1151, #1152)
+
+These three debt issues separate a targeted runtime change from two measurement
+tracks. [#1150](https://github.com/Roasbeef/loom/issues/1150) narrows pending-entry
+loads to referenced IDs, including staged tool results. Its acceptance requires
+queue and corruption regressions, matched baseline/candidate measurements and
+independent gates. [#1151](https://github.com/Roasbeef/loom/issues/1151) measures
+register queries and actor crossings without claiming full-turn CPU attribution.
+[#1152](https://github.com/Roasbeef/loom/issues/1152) evaluates local SQLite commit
+costs before a decision on group commit. It authorizes no production batching
+or frozen-interface change.
+
+The review records `pending-entry-performance.md`, `register-read-performance.md`
+and `group-commit-evaluation.md` under `docs/review/` carry commands, raw samples
+and limitations. Independent runtime, lint, formatting, documentation and
+prelude gates pass, with 221 runtime tests; the first primary runtime attempt
+and unchanged clean rerun are both retained in the pending-entry record.
+Corrected benchmark smokes pass, but quiet-host full timing comparisons remain
+open. Upstream Pi Durable results do not establish Loom speedups or installed
+savings.
+
 ## Distributed runtime experience (#1137)
 
 The [distributed runtime epic](https://github.com/Roasbeef/loom/issues/1137)

@@ -360,6 +360,31 @@ upgraded, restarted, collected or retired during this round. The historical
 sections below retain their recorded scope; unrelated CI readiness was not
 revalidated for this observation-only work.
 
+## Session hot-path reads and measurements
+
+The local branch `perf/session-hot-paths`, based on `ccb795759`, contains
+`6c986a8c2` (referenced pending reads) and `b863d1b4e` (measurement workloads).
+No push, hosted CI run or installed update is established by this work.
+
+Run admission reads only captured next-run payloads; the driver reads its
+inbox and staged tool-result IDs. The [pending-entry record](review/pending-entry-performance.md)
+contains the counted production-path witness, five rejected semantic controls,
+and normal, failure-drain and abort placement tests. The primary full runtime
+rerun passes all 221 tests; lint, formatting, documentation and prelude gates
+also pass. Its first full run had two timeout observations in existing tests;
+unchanged focused reruns and the unchanged complete rerun pass. No timeout or
+assertion was weakened, and the failed receipt is retained. Independent review
+found no actionable correctness findings.
+
+The [register-read record](review/register-read-performance.md) separates
+typed control reads, cache-pressure cases and source-derived SQL counts. The
+[group-commit evaluation](review/group-commit-evaluation.md) supplies a corrected
+per-strand append workload and defers implementation. Shared benchmark smokes
+pass, including file-backed SQLite append validation. Quiet-host full timing
+comparisons remain open in #1150, #1151 and #1152; loaded-host, fresh-root and
+failed-teardown samples do not establish performance gains. No cache, frozen
+storage interface, dependency or durability policy was changed.
+
 ## Catalogue source-read performance
 
 The [catalogue hot-path record](review/catalogue-hot-paths-2026-10-29.md) tracks
