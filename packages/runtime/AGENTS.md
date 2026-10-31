@@ -1061,6 +1061,26 @@ requests open to prove skipped preparation loads and quiet invalidation before
 provider completion. The existing doorbell, deferred, retry and recovery tests
 remain part of the runtime gate.
 
+## Referenced pending-entry reads
+
+Run admission reads only the IDs captured in `StrandState.pending_next_run`.
+The driver reads the run inbox's steer, follow-up and write IDs, together with
+the `CallOutcomeReady` result IDs staged by a tool batch. Those staged results
+are essential: the planner places them in source order after concurrent tool
+effects finish. Structural requests do not dereference pending payloads.
+
+Each payload is selected by its existing register key and decoded normally.
+An absent referenced payload remains absent in the planner input so the
+machine retains its corruption diagnosis; an unrelated queued payload is not
+read or decoded. No pending-payload cache or new storage interface is added.
+Payloads are immutable while live, and placement transactions still expect
+the captured operation or strand state. Point reads are not an atomic snapshot
+of those separate control-register reads.
+
+The pending-entry benchmark and correctness record is at
+`docs/review/pending-entry-performance.md`; the register-read and group-commit
+measurements are separate from a full runtime-turn benchmark.
+
 ## Structural preparation reads
 
 `strand_runtime.load_preparation` lists the operation's preparation registers

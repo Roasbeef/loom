@@ -4,9 +4,8 @@
 //// since moved past, and the two blackboard write doors — including
 //// `steer_marking`, which is a queue admission and a write-once claim in
 //// one transaction. The last section is about what an admission reads
-//// rather than what it writes: the pending queue is scanned only for
-//// the admission that consumes it, so a corrupt queue payload refuses a
-//// run and leaves every other strand's structural admission alone.
+//// rather than what it writes: each run reads only its captured pending
+//// IDs, and structural admissions leave all pending payloads untouched.
 
 import core/clock
 import core/ids
@@ -18,8 +17,11 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/system
+import machine/acceptance
+import machine/codec
 import machine/operation
 import machine/queue
+import machine/strand
 import runtime/api
 import runtime/effects
 import runtime/hooks
@@ -1258,13 +1260,9 @@ pub fn delete_reserved_fact_removes_the_cell_test() {
 
 // --- the queue read's blast radius -----------------------------------------
 
-// `pending.entry` registers are keyed by entry id alone, with no strand
-// in the key, so the admission path's queue read is a session-wide scan
-// and one undecodable payload spoils the whole of it. Only a run
-// consumes the queue — `accept_run` places the captured next-run items
-// from those payloads — so a compaction or a navigation that read it
-// would refuse on another strand's corruption over a value it never
-// looks at (issue #70).
+// An admission consumes only the IDs captured by its strand. An unrelated
+// corrupt payload must not stop it, but a captured corrupt or missing
+// payload must still be reported instead of being silently dropped.
 pub fn a_corrupt_queue_payload_only_refuses_a_run_admission_test() {
   let rt = answering_runtime()
 
@@ -1305,11 +1303,113 @@ pub fn a_corrupt_queue_payload_only_refuses_a_run_admission_test() {
     )
     as "the corrupt queue payload must land"
 
-  // The run admission is the one that consumes the queue, so it must
-  // still refuse rather than place a next-run item it cannot read.
+  // An unrelated corrupt payload does not belong to this admission.
+  let assert Ok(isolated) = api.prompt(rt, [fake.user("Again")])
+    as "an unrelated corrupt payload must not refuse a run"
+  let assert Ok(outcome) = api.await_result(rt, isolated, within_ms: 5000)
+    as "the isolated run must complete"
+  harness.assert_completed(outcome)
+
+  // A valid captured next-run item is placed once before the new prompt.
+  let #(valid, _) = ids.mint_entry(ids.generator(clock.fixed(at: 1), seed: 766))
+  let assert Ok(_) =
+    writer.commit(
+      rt.tree.writer,
+      Tx(
+        writes: [
+          SetRegister(
+            register.PendingEntry,
+            ids.entry_id_to_string(valid),
+            register.value(
+              codec.encode_pending_entry(
+                operation.PendingMessage(fake.user("captured")),
+              ),
+            ),
+          ),
+          SetRegister(
+            register.StrandState,
+            "main",
+            register.value(
+              codec.encode_strand_state(
+                strand.StrandState(current_operation: None, pending_next_run: [
+                  valid,
+                ]),
+              ),
+            ),
+          ),
+        ],
+        expected: [],
+      ),
+    )
+    as "the captured input is queued"
+  let assert Ok(captured_op) = api.prompt(rt, [fake.user("next")])
+    as "the run accepts the captured input"
+  let assert Ok(captured_outcome) =
+    api.await_result(rt, captured_op, within_ms: 5000)
+    as "the run with captured input completes"
+  harness.assert_completed(captured_outcome)
+  assert list.length(
+      list.filter(harness.final_projection(rt.session), fn(line) {
+        line == "user:captured"
+      }),
+    )
+    == 1
+  let assert Ok(None) =
+    writer.get_register(
+      rt.tree.writer,
+      register.PendingEntry,
+      ids.entry_id_to_string(valid),
+    )
+    as "the captured pending payload is consumed"
+
+  // A genuinely referenced corrupt next-run payload must still fail.
+  let #(queued, _) =
+    ids.mint_entry(ids.generator(clock.fixed(at: 1), seed: 765))
+  let assert Ok(_) =
+    writer.commit(
+      rt.tree.writer,
+      Tx(
+        writes: [
+          SetRegister(
+            register.PendingEntry,
+            ids.entry_id_to_string(queued),
+            register.value(json.String("not a pending entry")),
+          ),
+          SetRegister(
+            register.StrandState,
+            "main",
+            register.value(
+              codec.encode_strand_state(
+                strand.StrandState(current_operation: None, pending_next_run: [
+                  queued,
+                ]),
+              ),
+            ),
+          ),
+        ],
+        expected: [],
+      ),
+    )
+    as "the referenced corruption must land"
   let assert Error(api.ReadFailed(reason: _)) =
     api.accept_quietly(rt, [fake.user("Again")])
-    as "a run admission must still report the corrupt payload"
+    as "a run admission must report its corrupt payload"
+
+  // Absence is distinct from an undecodable cell and remains corruption.
+  let assert Ok(_) =
+    writer.commit(
+      rt.tree.writer,
+      Tx(
+        writes: [
+          DeleteRegister(register.PendingEntry, ids.entry_id_to_string(queued)),
+        ],
+        expected: [],
+      ),
+    )
+    as "the referenced payload must be removed"
+  let assert Error(api.AcceptRejected(reason: acceptance.QueueCorruption(..))) =
+    api.accept_quietly(rt, [fake.user("Again")])
+    as "a missing referenced payload must be reported"
 
   // The sibling's navigation never reads the queue, and so is not the
   // corruption's business. Before the read was scoped this returned

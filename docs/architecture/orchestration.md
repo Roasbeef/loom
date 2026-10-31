@@ -232,8 +232,10 @@ load registers  →  build PlannerInputs  →  next_action  →  act  →  repea
 `strand.config`, and `strand.leaf` on *every* pass. It then fetches exactly
 what the loaded state names: the assistant entry behind a tool batch, the
 deferred handle behind a suspended poll, the pending payloads for every
-queued id, the structural preparation, and the operation's tool-args and
-preparation keys. The driver holds no process-local copy of the durable
+queued id in that run's inbox and every staged `CallOutcomeReady` tool-result
+ID, the structural preparation, and the operation's tool-args and preparation
+keys. Pending payloads are point reads by these referenced IDs, not a listing
+of every queued payload in the session. The driver holds no process-local copy of the durable
 state that could go stale, so a pass after a restart runs the same code as
 a pass mid-run.
 
