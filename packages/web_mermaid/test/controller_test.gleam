@@ -69,7 +69,7 @@ pub fn stale_refusal_test() {
   effects
   |> should.equal([
     controller.Clear,
-    controller.ReplyToParent(controller.FailedReply(2)),
+    controller.ReplyToParent(controller.FailedReply(2, "")),
   ])
   let #(model, effects) =
     controller.update(model, controller.Rendered(1, Ok("secret")))

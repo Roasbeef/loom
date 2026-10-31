@@ -2335,6 +2335,11 @@ The generated renderer has its own offline source/lock/body digest gate in
 
 The renderer intentionally refuses configuration and navigation directives.
 A native source disclosure and explicit Copy source action remain available
-for unsupported or malformed diagrams. The TUI still shows source; future
+for unsupported or malformed diagrams. Renderer failures with a string exception
+message show up to 2,000 Unicode code points of diagnostic text above that
+disclosure. The parent bounds and decodes the JSON reply, checks frame identity
+and current revision, and renders it as a text node; stacks, exception objects
+and SVG stay inside the frame. Failures without diagnostics and timeouts keep
+the generic fallback. The TUI still shows source; future
 terminal graphics work is scoped separately in the
 [terminal graphics note](../design-notes/mermaid-terminal-graphics.md).
