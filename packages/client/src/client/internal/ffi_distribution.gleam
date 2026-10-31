@@ -100,6 +100,50 @@ pub fn options(peers: List(#(String, BitArray)), files: files) -> String
 @external(erlang, "client_distribution_ffi", "options")
 pub fn live_options(trust: Live, files: files) -> String
 
+/// Captures only a reproducible local or TLS distribution launch setting.
+/// `init:get_argument` reads the actual emulator arguments, including flags
+/// injected by the shell environment. Unsupported combinations are refused.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_distribution.launch_setting()
+/// ```
+@external(erlang, "client_distribution_ffi", "launch_setting")
+pub fn launch_setting() -> Result(Option(String), Nil)
+
+/// Checks the actual emulator boot arguments and bounded credential files without
+/// starting distribution or changing kernel settings. This shares the startup
+/// checks, which run again when the replacement starts.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_distribution.validate(local, peers, files, option.None)
+/// ```
+@external(erlang, "client_distribution_ffi", "validate")
+pub fn validate(
+  local: String,
+  peers: List(#(String, BitArray)),
+  files: files,
+  members: Option(List(String)),
+) -> Result(Nil, Failure)
+
+/// Checks live-ledger distribution using the same validation as startup.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_distribution.validate_live(local, Live, files, option.None)
+/// ```
+@external(erlang, "client_distribution_ffi", "validate")
+pub fn validate_live(
+  local: String,
+  trust: Live,
+  files: files,
+  members: Option(List(String)),
+) -> Result(Nil, Failure)
+
 /// Checks the boot preconditions, reads the credentials, makes sure an epmd
 /// answers, and starts TLS distribution under `dist_auto_connect = never`:
 /// hidden, or visible when `members` names the directory's members

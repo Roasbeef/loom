@@ -43,6 +43,7 @@ fn config(
       8,
       "Owner",
       [],
+      None,
       main.ViewOff,
       peer_defaults.off,
       [],

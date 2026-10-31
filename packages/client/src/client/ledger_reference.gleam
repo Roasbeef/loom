@@ -53,7 +53,9 @@
 //// Opening the ledger also cuts a final line with no newline from the file
 //// (`membership_store.open`). That is the repair the ledger process makes at
 //// its own start, and `load` is called only from that start, so the repair
-//// never races a second reader.
+//// never races a second reader. The staged launch preflight uses `inspect`,
+//// which replays the same complete lines and performs the same authority and
+//// local-member checks without repairing the file or starting a process.
 
 import client/distribution.{type Config}
 import client/distribution_plan
@@ -70,7 +72,7 @@ import simplifile
 /// A ledger file opened and checked against the node that reads it.
 pub type Loaded {
   Loaded(
-    /// The file, ready to append to.
+    /// The backing file; only owning `load` repairs it for append.
     store: Store,
     /// The fold of every line in the file.
     ledger: Ledger,
@@ -96,6 +98,32 @@ pub type Loaded {
 /// // -> Ok(Loaded(store:, ledger:, verifier:, tail: Clean))
 /// ```
 pub fn load(path: String, ca: String, local: String) -> Result(Loaded, String) {
+  load_with(path, ca, local, membership_store.open)
+}
+
+/// Validates the ledger and its authority without repairing or starting it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ledger_reference.inspect(path, ca, local)
+/// ```
+pub fn inspect(
+  path: String,
+  ca: String,
+  local: String,
+) -> Result(Loaded, String) {
+  load_with(path, ca, local, membership_store.inspect)
+}
+
+/// Shares authority and member validation across read-only and owning opens.
+fn load_with(
+  path: String,
+  ca: String,
+  local: String,
+  open: fn(String, Verifier) ->
+    Result(membership_store.Opened, membership_store.OpenError),
+) -> Result(Loaded, String) {
   use pem <- result.try(
     simplifile.read(ca)
     |> result.map_error(fn(_) { "distribution.ca could not be read: " <> ca }),
@@ -105,7 +133,7 @@ pub fn load(path: String, ca: String, local: String) -> Result(Loaded, String) {
     |> result.replace_error("distribution.ca does not hold a certificate"),
   )
   use opened <- result.try(
-    membership_store.open(path, verifier)
+    open(path, verifier)
     |> result.map_error(describe_open(path, _)),
   )
   use pin <- result.try(

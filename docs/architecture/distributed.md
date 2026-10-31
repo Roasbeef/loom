@@ -203,6 +203,17 @@ executor therefore needs two inbound ports (`epmd` and its fixed
 and can run without a reachable listener; in a deployment with two, each is
 dialled by the other.
 
+### Staged launch validation
+
+Before retiring a running daemon, the updater can invoke the staged server's
+internal exit-only launch preflight with the captured config and options. The
+same native validation used at startup checks the private key against the leaf,
+leaf node identity, CA decoding and cookie home. The peer trust CA need not
+issue the local leaf. Validation reads and replays a ledger and checks authority,
+member and reference relationships without starting its owner or repairing the
+file. Only the owning startup repairs a torn tail. Runtime distribution startup
+can still fail after these read-only checks, for example when epmd is unavailable.
+
 ### Ledger mode
 
 `[distribution] ledger` replaces `[[distribution.peers]]`

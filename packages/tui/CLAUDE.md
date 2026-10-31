@@ -1,6 +1,21 @@
 # tui
 
 
+## Launch preflight and replacement
+
+`update/lifecycle` authenticates the captured endpoint and matches its native
+fence and epoch to `host/launch_metadata.Record` before running the staged
+server's exit-only preflight. It supplies literal child arguments and clears
+inherited distribution and profiling flag sources for each child, without
+changing the terminal's environment. An absent config is passed as
+`--config ""`, preserving absence through the profile launcher. A local config
+that now enables profiling is refused before retirement.
+
+The updater rechecks the native identity and authenticated epoch before
+shutdown, waits for the old fence to depart, and requires a new authenticated
+epoch and expected build. Missing, stale or unreproducible launch metadata
+refuses automatic replacement rather than guessing the daemon's settings.
+
 ## Protocol stdin fixture
 
 `acp_stdin_test` waits for the external reader to acknowledge its invalid first

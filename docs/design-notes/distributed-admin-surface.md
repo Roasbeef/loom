@@ -179,9 +179,9 @@ serves both through `detached` (`client/remote/orchestrator_port.gleam:655`), th
 path `Activate` uses: the computation runs in a run that dies with the requester and
 with the port, so a read never keeps an `Owns` question waiting. The port does not
 know the catalogue, the ledger or the movers. `start_with` takes one more closure
-record, and `start_orchestrator_port` (`client/daemon/main.gleam:1051`) builds it
+record, and `start_orchestrator_port` (`client/daemon/main.gleam:1179`) builds it
 from the registry, the movers and the executor host, the way it builds
-`catalogue_holds` (`client/daemon/main.gleam:1143`) and `peer_command`
+`catalogue_holds` (`client/daemon/main.gleam:1271`) and `peer_command`
 (`client/daemon/main.gleam:651`). The function runs on every daemon that has a
 `[distribution]` table, executors included, so a pure executor answers `Report`
 too. It answers with no orchestrator facts when it has no catalogue to describe.
@@ -440,7 +440,7 @@ For each item in the owner's list: what exists, where it lives, and the proposal
 
 | Item | State today | Proposal |
 |---|---|---|
-| Orchestrator and executor reachable | Internal: `distribution.connect` results, and a link keeper for directory members only (`connect`, `client/distribution.gleam:506`) | `state` on each node in `deployment.status`, from the asker's own connect attempt |
+| Orchestrator and executor reachable | Internal: `distribution.connect` results, and a link keeper for directory members only (`connect`, `client/distribution.gleam:554`) | `state` on each node in `deployment.status`, from the asker's own connect attempt |
 | Executor census (platform, enforcement, toolchains) | Returned at attach and kept in the live plane | Executor facts, from the last attach; absent before the first |
 | Capacity and live scopes | Ledger rows and the limit (`default_limits`, `storage/exec_ledger.gleam:577`; `LOOM_EXECUTOR_MAX_SCOPES`) | Executor facts: counts by state and the limit, as numbers |
 | Helper pool | `pool_census` per plane, no node total | Deferred (section 10) |

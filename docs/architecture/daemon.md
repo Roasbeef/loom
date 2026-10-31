@@ -135,6 +135,13 @@ the wrapper execs the VM, and `client/daemon/main` runs these steps:
    host, the actual port, the epoch, and the build identity. A launcher
    waiting on the record treats the daemon as ready only after an
    authenticated control hello names that epoch.
+   Before Ready, the same lock protects a private bounded `launch.json` tied
+   to the matching native fence and the new epoch. It records only the captured
+   canonical config source and local or TLS options path. An unsupported CLI
+   launch, switched options alias, or unrepresentable record may serve without
+   current metadata; a real metadata write failure still fails publication.
+   The updater authenticates the endpoint independently before trusting the
+   record as a consistency check.
 7. **Wait.** `main.run` prints the control URL (and, with `--ui`, a line
    saying the web view is on), relays SIGTERM into a subject, and blocks
    until either a signal arrives or the root exits.

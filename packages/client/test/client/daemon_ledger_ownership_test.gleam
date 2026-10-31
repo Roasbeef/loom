@@ -36,6 +36,7 @@ fn config(handle: ledger_control.Handle) -> main.Config {
       8,
       "Owner",
       [],
+      None,
       main.ViewOff,
       peer_defaults.off,
       [],

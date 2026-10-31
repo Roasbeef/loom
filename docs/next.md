@@ -1,5 +1,19 @@
 # Current handoff
 
+## TLS launch preflight (issue #1137)
+
+The owner approved this slice for code and isolated tests, not a live upgrade.
+[Protocol 106](../protocol-change/106-launch-preflight.md) records the private
+launch witness, read-only staged validation and fenced replacement.
+The [review record](review/launch-preflight-1137.md) and
+[PR #1146](https://github.com/Roasbeef/loom/pull/1146) separate the focused,
+installed-update and full-gate evidence. At `074b22c6c`, both affected shards,
+raw hosted checks, strict skip censuses and Linux signoff passed. The current
+integration also includes merged #1148; that combined head requires fresh
+validation before merge. No live upgrade is authorized.
+Repository handoff, isolated child custody, movement, gateway, page relay and
+fleet work remain open under #1137.
+
 ## Catalogue source-read performance
 
 The [catalogue hot-path record](review/catalogue-hot-paths-2026-10-29.md) tracks
@@ -40,8 +54,8 @@ The [verification record](review/peer-compatibility-1137.md) gives 107 primary
 focused checks plus the shipped TLS regression, both manual mixed-version
 directions and their precise limits. One independent pass and its native-test
 delta check found no actionable issues. Full static gates pass; broad and
-exact-head hosted/Linux validation remain required. TLS launch preflight is the
-following slice; no live upgrade is authorized.
+exact-head hosted/Linux validation remain required. TLS launch preflight is
+the current slice above; no live upgrade is authorized.
 
 ## Distributed runtime experience (issue #1137)
 

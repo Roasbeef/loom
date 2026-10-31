@@ -457,6 +457,49 @@ pub fn start(config: Config, cluster: Cluster) -> Result(Membership, Fault) {
   |> result.map_error(fault)
 }
 
+/// Captures the reproducible emulator distribution setting, including flags
+/// supplied by the environment before the VM started.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // distribution.launch_setting()
+/// ```
+@internal
+pub fn launch_setting() -> Result(Option(String), Nil) {
+  ffi_distribution.launch_setting()
+}
+
+/// Checks the same boot and credential conditions as startup without opening
+/// distribution or starting epmd. Startup checks them again before acting.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // distribution.validate(config, distribution.NotMember)
+/// ```
+pub fn validate(config: Config, cluster: Cluster) -> Result(Nil, Fault) {
+  // The visible directory membership determines the boot isolation check.
+  let members = case cluster {
+    NotMember -> None
+    Member(members:) -> Some(members)
+  }
+
+  // The options file is checked against the configured trust mode.
+  case config.trust {
+    Pinned(peers:) ->
+      ffi_distribution.validate(
+        config.local,
+        pairs(peers),
+        config.files,
+        members,
+      )
+    Ledgered(..) ->
+      ffi_distribution.validate_live(config.local, Live, config.files, members)
+  }
+  |> result.map_error(fault)
+}
+
 /// Resolves a configured peer name to the node made for it at boot. A name
 /// that was not configured is refused, so network input never reaches the
 /// atom table. Success is identity only, not connectivity.
