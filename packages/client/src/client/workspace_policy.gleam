@@ -1500,6 +1500,10 @@ fn established_masks(state_root: String) -> List(String) {
     // the root: a session admitted before the first session-only domain
     // exists would otherwise run without this mask for its whole life.
     state_root <> "/domains",
+
+    // Captured repositories hold private workspace content and history.
+    // The daemon creates this before admitting any session.
+    state_root <> "/repository-snapshots",
   ]
 }
 

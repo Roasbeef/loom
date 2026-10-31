@@ -57,6 +57,7 @@ import gleam/time/timestamp
 import simplifile
 import telemetry/log
 import tools/tool
+import weft/poll
 
 /// What the sandboxed Git is started from.
 pub type Config {
@@ -97,6 +98,56 @@ pub type Run {
     writable: List(String),
     /// Git's arguments after the binary, such as `["worktree", "prune"]`.
     arguments: List(String),
+  )
+}
+
+/// Git metadata used by a capture call.
+pub type CaptureContext {
+  /// Discover metadata using the source repository's own context.
+  SourceContext
+
+  /// Use only the capture's private Git metadata and object store.
+  PrivateContext(
+    /// The private Git directory.
+    git_dir: String,
+    /// The private index.
+    index_file: String,
+    /// The private object directory.
+    object_directory: String,
+    /// Additional object directories, each encoded as one Git alternate.
+    alternate_object_directories: List(String),
+  )
+}
+
+/// A server-owned capture invocation with an inherited sandbox boundary.
+pub type Capture {
+  Capture(
+    /// The working directory inside the inherited read scope.
+    directory: String,
+    /// Git arguments chosen by the capture implementation.
+    arguments: List(String),
+    /// The composed internal authority, including every required protected mask.
+    scope: policy.SandboxPolicy,
+    /// The private staging directory granted for this operation.
+    staging: String,
+    /// The source or fully private Git metadata context.
+    context: CaptureContext,
+    /// Input bytes to send before closing stdin, at most one MiB.
+    stdin: BitArray,
+    /// Positive finite memory, file, output, process and wall limits.
+    limits: policy.Limits,
+  )
+}
+
+/// A complete binary result from a capture Git invocation.
+pub type BinaryOutput {
+  BinaryOutput(
+    /// Git's exit status.
+    code: Int,
+    /// Complete standard output bytes.
+    stdout: BitArray,
+    /// Complete standard error bytes.
+    stderr: BitArray,
   )
 }
 
@@ -251,6 +302,194 @@ pub fn run(git: Git, call: Run, within_ms: Int) -> Result(Output, String) {
     }),
   )
   settled(collected)
+}
+
+/// Runs a bounded Git call with the supplied scope and private staging.
+///
+/// Both helper and collector truncation are failures, so binary output cannot
+/// be mistaken for a complete object or path list. Staging and the Git paths
+/// must be chosen by the trusted capture caller, never by a model or peer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // worktree_git.run_capture(git, capture, 60_000)
+/// ```
+pub fn run_capture(
+  git: Git,
+  call: Capture,
+  within_ms: Int,
+) -> Result(BinaryOutput, String) {
+  let time = poll.monotonic()
+  let deadline = time.now() + within_ms
+  let limits = call.limits
+
+  // Refuse unbounded input or resource ceilings before dispatch.
+  use Nil <- result.try(
+    case
+      within_ms > 0
+      && bit_array.byte_size(call.stdin) <= 1_048_576
+      && limits.wall_s > 0
+      && limits.mem_bytes > 0
+      && limits.pids > 0
+      && limits.fsize_bytes > 0
+      && limits.output_bytes > 0
+    {
+      True -> Ok(Nil)
+      False -> Error("invalid capture resource bounds")
+    },
+  )
+
+  // Git's alternate list has its own separator and quoting syntax.
+  use Nil <- result.try(case valid_context(call.context) {
+    True -> Ok(Nil)
+    False -> Error("invalid Git alternate path")
+  })
+
+  // The composed scope supplies reads and masks; staging is the only host write grant.
+  let environment = capture_environment(call)
+  let allowed = list.map(environment, fn(pair) { pair.0 })
+  let scope = call.scope
+  let requested =
+    policy.SandboxPolicy(
+      ..scope,
+      writable_roots: [],
+      mounts: list.map(scope.mounts, fn(mount) {
+        policy.Mount(..mount, access: policy.MountReadOnly)
+      }),
+      scratch: policy.ScratchTmpfs,
+      network: policy.NetworkOff,
+      limits: policy.Limits(
+        ..limits,
+        wall_s: int.min(limits.wall_s, { within_ms + 999 } / 1000),
+      ),
+      env_allow: allowed,
+    )
+  let authority = policy.SandboxPolicy(..scope, env_allow: allowed)
+  let #(scoped, _) =
+    policy.compose(authority, requested, [
+      policy.GrantReadableRoot(call.staging),
+      policy.GrantWritableRoot(call.staging),
+    ])
+
+  // Dispatch through the same broker and enforcement demand as worktree Git.
+  let #(op_id, _) =
+    ids.mint_op(ids.generator(wall_clock(), seed: random_seed()))
+  let events = process.new_subject()
+  let #(now, _) = clock.read(wall_clock())
+  use handle <- result.try(
+    broker.clear_call(
+      git.broker,
+      broker.CallSpec(
+        op_id:,
+        step_id: "repository-capture",
+        base_policy: scoped,
+        requirements: scoped,
+        grants: [],
+        response: broker.RefuseNarrowed,
+        demand: git.demand,
+        argv: [
+          git.program,
+          "--no-pager",
+          "--no-optional-locks",
+          ..call.arguments
+        ],
+        env: environment,
+        cwd: call.directory,
+        budget: budget.Budget(
+          max_outstanding: 1,
+          deadline_ms: now + int.max(0, deadline - time.now()),
+        ),
+      ),
+      events:,
+      waiting: int.max(0, deadline - time.now()),
+    )
+    |> result.map_error(fn(refusal) {
+      "the sandbox refused the Git call: " <> string.inspect(refusal)
+    }),
+  )
+
+  // One bounded frame closes stdin after all input has been queued.
+  broker.stdin(git.broker, handle, data: call.stdin, eof: True)
+  use collected <- result.try(
+    tool.collect_before(events, deadline + settlement_grace_ms, time.now)
+    |> result.map_error(fn(_) {
+      broker.cancel(git.broker, handle)
+      "the Git call did not settle in time"
+    }),
+  )
+
+  // Grace observes custody; it cannot turn a late exit into successful work.
+  use Nil <- result.try(case time.now() < deadline {
+    True -> Ok(Nil)
+    False -> Error("Git did not complete before the capture deadline")
+  })
+
+  // A partial stream cannot be used as a complete Git result.
+  case collected.outcome {
+    broker.CallFailed(failure) -> Error(failure_words(failure))
+    broker.CallExited(report) ->
+      case
+        report.cancelled
+        || report.timed_out
+        || report.stdout_truncated
+        || report.stderr_truncated
+        || collected.stdout_truncated
+        || collected.stderr_truncated
+      {
+        True -> Error("Git did not complete with whole output")
+        False ->
+          Ok(BinaryOutput(report.code, collected.stdout, collected.stderr))
+      }
+  }
+}
+
+/// Refuses alternate paths Git would parse as multiple directories.
+fn valid_context(context: CaptureContext) -> Bool {
+  case context {
+    SourceContext -> True
+    PrivateContext(alternate_object_directories:, ..) ->
+      list.all(alternate_object_directories, fn(path) {
+        path != ""
+        && !string.contains(path, ":")
+        && !string.contains(path, "\n")
+        && !string.contains(path, "\r")
+        && !string.starts_with(path, "\"")
+      })
+  }
+}
+
+/// Builds only the fixed Git environment and the selected metadata context.
+fn capture_environment(call: Capture) -> List(#(String, String)) {
+  // Source reads retain only the tool context; private writes inherit none.
+  let context = case call.context {
+    SourceContext -> {
+      let home = workspace_policy.tool_home_directory(call.directory)
+
+      // Ignore paths resolve exactly as the parent's jailed Git resolves them.
+      // Only the server-owned tool home is selected, never the operator's HOME.
+      environment()
+      |> list.key_set("HOME", home)
+      |> list.key_set("GIT_CONFIG_GLOBAL", home <> "/gitconfig")
+    }
+    PrivateContext(
+      git_dir:,
+      index_file:,
+      object_directory:,
+      alternate_object_directories:,
+    ) -> [
+      #("GIT_DIR", git_dir),
+      #("GIT_INDEX_FILE", index_file),
+      #("GIT_OBJECT_DIRECTORY", object_directory),
+      #(
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        string.join(alternate_object_directories, ":"),
+      ),
+      ..environment()
+    ]
+  }
+
+  [#("GIT_NO_LAZY_FETCH", "1"), ..context]
 }
 
 /// Stops the broker and the service, which closes the helper pool. The answer

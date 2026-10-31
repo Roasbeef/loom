@@ -123,6 +123,15 @@ pub fn global_defaults_preserve_local_identity_and_original_authors_test() {
   assert git(wiring, ["show", "-s", "--format=%an <%ae>|%cn <%ce>"])
     == "Repository Owner <repository@example.invalid>|Repository Owner <repository@example.invalid>\n"
 
+  // Removing the repository override reveals the original global defaults.
+  git(wiring, ["config", "--unset", "user.name"])
+  git(wiring, ["config", "--unset", "user.email"])
+  git(wiring, ["commit", "--allow-empty", "--quiet", "-m", "fallback"])
+  assert git(wiring, ["show", "-s", "--format=%an <%ae>"])
+    == "Operator <operator@example.invalid>\n"
+  git(wiring, ["config", "user.name", "Repository Owner"])
+  git(wiring, ["config", "user.email", "repository@example.invalid"])
+
   // Preserve somebody else's author when creating the equivalent commit.
   git(wiring, ["checkout", "--quiet", "-b", "source"])
   write(wiring.workspace <> "/change", "a real cherry-pick change\n")
@@ -150,7 +159,9 @@ pub fn absent_identity_refuses_a_commit_until_repository_configuration_test() {
       helper: helper_path(),
       reading: absent,
     )
-    == Ok(None)
+    == Ok(Some(
+      "Git identity is incomplete; configure user.name and user.email in the repository",
+    ))
   let failed =
     invoke(wiring, ["git", "commit", "--allow-empty", "-m", "must fail"])
   let assert broker.CallExited(report) = failed.outcome
@@ -162,6 +173,72 @@ pub fn absent_identity_refuses_a_commit_until_repository_configuration_test() {
   git(wiring, ["commit", "--allow-empty", "--quiet", "-m", "configured"])
   assert git(wiring, ["show", "-s", "--format=%ae"])
     == "explicit@example.invalid\n"
+}
+
+pub fn effective_identity_projects_only_identity_into_fresh_home_test() {
+  use wiring, home <- with_fixture()
+  write(
+    home <> "/.gitconfig",
+    "[user]\nname = Global\nemail = global@example.invalid\n[include]\npath = secret-include\n[credential]\nhelper = secret-helper\n[token]\nvalue = secret-token\n",
+  )
+  write(home <> "/secret-include", "[core]\nhooksPath = secret-hooks\n")
+  git(wiring, ["init", "--quiet"])
+  git(wiring, ["config", "--add", "user.name", "First"])
+  git(wiring, ["config", "--add", "user.name", "Repository Owner"])
+  git(wiring, ["config", "user.email", "repository@example.invalid"])
+  let original = read(wiring.workspace <> "/.git/config")
+  let assert Ok(identity) =
+    git_identity.resolve(wiring, Some(home), reading: absent)
+    as "the effective identity resolves through the broker"
+  assert identity
+    == git_identity.Identity(
+      Some("Repository Owner"),
+      Some("repository@example.invalid"),
+    )
+  let child_path = wiring.workspace <> "/child"
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(workspace_policy.tool_home_directory(
+      child_path,
+    ))
+    as "the child's isolated tool home exists"
+  let #(environment, _) =
+    workspace_policy.tool_environment(
+      child_path,
+      None,
+      None,
+      catalog.default_tools(),
+      reading: absent,
+    )
+  let child =
+    worktree_diff.Wiring(..wiring, workspace: child_path, env: environment)
+  assert git_identity.publish(child, identity, helper: helper_path())
+    == Ok(None)
+  git(child, ["init", "--quiet"])
+  git(child, ["commit", "--allow-empty", "--quiet", "-m", "child"])
+  assert git(child, ["show", "-s", "--format=%an <%ae>"])
+    == "Repository Owner <repository@example.invalid>\n"
+  let projected =
+    read(workspace_policy.tool_home_directory(child_path) <> "/gitconfig")
+  assert !string.contains(projected, "secret")
+  assert !string.contains(projected, "credential")
+  assert !string.contains(projected, "include")
+  assert read(wiring.workspace <> "/.git/config") == original
+
+  // An incomplete source projects only what was provided and warns.
+  write(home <> "/.gitconfig", "[user]\nname = Global\n")
+  git(wiring, ["config", "--unset", "user.email"])
+  let assert Ok(incomplete) =
+    git_identity.resolve(wiring, Some(home), reading: absent)
+    as "the incomplete source identity resolves"
+  assert incomplete == git_identity.Identity(Some("Repository Owner"), None)
+  let assert Ok(Some(_)) =
+    git_identity.publish(child, incomplete, helper: helper_path())
+    as "an incomplete identity warns"
+  let failed =
+    invoke(child, ["git", "commit", "--allow-empty", "-m", "no guess"])
+  let assert broker.CallExited(report) = failed.outcome
+    as "Git refuses the commit"
+  assert report.code != 0
 }
 
 pub fn conditional_global_identity_resolves_for_linked_worktrees_test() {
@@ -320,7 +397,9 @@ pub fn workspace_under_tmp_publishes_identity_on_macos_test() {
           helper: helper_path(),
           reading: absent,
         )
-        == Ok(None)
+        == Ok(Some(
+          "Git identity is incomplete; configure user.name and user.email in the repository",
+        ))
       assert string.contains(
         read(
           workspace_policy.tool_home_directory(wiring.workspace) <> "/gitconfig",
