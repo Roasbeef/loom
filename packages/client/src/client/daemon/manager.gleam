@@ -604,9 +604,11 @@ type Message(instance) {
   /// Replace the model profile a registration names, for the session's own
   /// hub (protocol-change/082).
   SetProfile(String, Option(String), Subject(Result(Nil, Error)))
-  DomainSourceIds(String, String, Subject(Result(List(String), String)))
-  DomainSourcePaths(
-    List(String),
+
+  /// One fresh page carries membership-validated paths in the same turn.
+  DomainSources(
+    String,
+    String,
     Subject(Result(List(shared_history.Source), String)),
   )
   FrameAuthority(
@@ -3191,16 +3193,8 @@ fn handle(
   message: Message(instance),
 ) -> sm.Step(Phase, Book(instance), Message(instance), sm.Postponable) {
   case message {
-    DomainSourceIds(id, after, reply) -> {
-      process.send(
-        reply,
-        domain.sources(book.catalogue, id, after:)
-          |> result.map_error(string.inspect),
-      )
-      sm.keep(book)
-    }
-    DomainSourcePaths(identities, reply) -> {
-      process.send(reply, source_paths(book.catalogue, identities))
+    DomainSources(id, after, reply) -> {
+      process.send(reply, source_paths(book.catalogue, id, after))
       sm.keep(book)
     }
     FrameAuthority(epoch, id, incarnation, digest, reply) -> {
@@ -6171,9 +6165,8 @@ fn close_unused_domain(book: Book(instance), id, slot: DomainSlot) {
   }
 }
 
-// `storage/domain.sources` answers at most this many identities per call, and
-// the registry resolves at most that many registrations in one turn. Both
-// halves of a page therefore cost one bounded handler turn each.
+// `storage/domain.source_records` answers at most this many rows per call, and
+// the registry validates at most that many joined registrations in one turn.
 const source_page = 100
 
 // The bounded total of conversation sessions a domain may contribute to
@@ -6182,10 +6175,7 @@ const source_page = 100
 // oversized domain is refused rather than silently truncated.
 const source_limit = 511
 
-// The page walk runs on the caller's process, one registry call per half-page,
-// so the cap is enforced here rather than inside a handler turn. SQL filters
-// Saved state before pagination; this only bounds how much of it is admitted.
-/// Coordinates collect sources with the daemon manager’s session state and effects.
+/// Walks bounded source pages in the caller while the registry stays responsive.
 fn collect_sources(
   commands: Subject(Message(instance)),
   id: String,
@@ -6193,60 +6183,49 @@ fn collect_sources(
   accumulated: List(shared_history.Source),
   count: Int,
 ) -> Result(List(shared_history.Source), String) {
-  use identities <- result.try(
-    call.try_call(commands, waiting: 5000, sending: DomainSourceIds(
-      id,
-      after,
-      _,
-    ))
+  use sources <- result.try(
+    call.try_call(commands, waiting: 5000, sending: DomainSources(id, after, _))
     |> result.unwrap(Error("domain source registry is unavailable")),
   )
-  let total = count + list.length(identities)
+  let total = count + list.length(sources)
   use <- bool.guard(
     when: total > source_limit,
     return: Error("domain exceeds the bounded source limit"),
   )
-  use sources <- result.try(
-    call.try_call(commands, waiting: 5000, sending: DomainSourcePaths(
-      identities,
-      _,
-    ))
-    |> result.unwrap(Error("domain source registry is unavailable")),
-  )
 
-  // A short page is the last one, and so is a page the walk cannot advance
-  // past: both end the enumeration rather than asking the same page again.
+  // The identity and its path came from the same fresh catalogue read. A
+  // full page advances by its last identity; a short page finishes the walk.
   let accumulated = list.append(accumulated, sources)
 
-  // collect_sources distinguishes the list.drop(identities, source_page - 1) == [], list.last(identities) outcomes before continuing the transition.
-  case list.drop(identities, source_page - 1) == [], list.last(identities) {
-    True, _ | _, Error(Nil) -> Ok(accumulated)
-    False, Ok(last) -> collect_sources(commands, id, last, accumulated, total)
+  // A short or empty page finishes; a full page continues after its last ID.
+  case list.drop(sources, source_page - 1), list.last(sources) {
+    [], _ | _, Error(Nil) -> Ok(accumulated)
+    [_, ..], Ok(last) ->
+      collect_sources(
+        commands,
+        id,
+        ids.session_id_to_string(last.session),
+        accumulated,
+        total,
+      )
   }
 }
 
-// A caller may only hand back a page this registry itself produced, and the
-// guard states that rather than trusting it: an oversized list would put the
-// unbounded catalogue walk back inside the handler this split exists to keep
-// short.
-/// Coordinates source paths with the daemon manager’s session state and effects.
+/// Projects one validated source page before the catalogue owner's turn ends.
 fn source_paths(
   store: catalogue.Catalogue,
-  identities: List(String),
+  id: String,
+  after: String,
 ) -> Result(List(shared_history.Source), String) {
-  use <- bool.guard(
-    when: list.drop(identities, source_page) != [],
-    return: Error("domain source page exceeds the bounded read limit"),
+  use records <- result.try(
+    domain.source_records(store, id, after:) |> result.map_error(string.inspect),
   )
-  list.try_map(identities, fn(id) {
-    use record <- result.try(
-      catalogue.get(store, id) |> result.map_error(string.inspect),
-    )
-    use session <- result.try(
-      ids.parse_session_id(id)
+  list.try_map(records, fn(record) {
+    use session <- result.map(
+      ids.parse_session_id(record.id)
       |> result.replace_error("invalid domain source identity"),
     )
-    Ok(shared_history.Source(session, record.path))
+    shared_history.Source(session, record.path)
   })
 }
 

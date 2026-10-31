@@ -26,6 +26,16 @@ close (including failed close), and bypasses larger values. Those limits bound
 encoded inventory, not decoded heap bytes. Old values can remain until overflow
 or close; there is no transaction, lease or authorization cache.
 
+`domain.source_records` reads one fresh page of at most 100 saved registrations.
+`catalogue.domain_source_records` joins the base rows and display layers in one
+statement and applies the same complete registration validation as point reads.
+The domain itself is decoded and validated once per page; every returned row
+still proves its workspace and derived scope identity. `domain.sources` retains
+its identity-list contract by projecting this internal read. There is no source
+membership cache. `catalogue.is_profile_name` checks at most 32 ASCII bytes;
+executor and pool names share that grammar. The original grapheme grammar is an
+independent test oracle, including Unicode rejection and length boundaries.
+
 ## Key Types
 
 - The catalogue is at `user_version` 19. Each later version has its own embedded

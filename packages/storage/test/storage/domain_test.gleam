@@ -3,9 +3,12 @@
 
 import core/clock
 import core/ids
+import gleam/dynamic/decode
 import gleam/list
 import gleam/option
+import gleam/result
 import gleam/string
+import parrot/dev
 import simplifile
 import storage/catalogue
 import storage/domain
@@ -347,4 +350,134 @@ pub fn a_session_that_comes_back_keeps_its_registration_and_mapping_test() {
   let assert Ok(kept) = catalogue.get(store, record.id)
   assert kept.name == record.name
   assert catalogue.custody(store, record.id) == Ok(imported)
+}
+
+/// Source projection returns the same validated metadata as fresh point reads.
+pub fn source_records_preserve_validation_display_and_fresh_paths_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let first = registration(90)
+  let second = registration(91)
+  let shared = aggregate()
+  assert domain.reserve_session(store, first, shared) == Ok(first)
+  assert domain.reserve_session(store, second, shared) == Ok(second)
+  let assert Ok(_) = catalogue.confirm(store, first.id)
+    as "first source is saved"
+  assert domain.source_records(store, shared.id, after: "")
+    == catalogue.get(store, first.id) |> result.map(fn(record) { [record] })
+  let assert Ok(_) = catalogue.rename(store, first.id, "Current display")
+    as "the display layer changes independently of creation metadata"
+  let assert Ok(_) =
+    catalogue.seed_subtitle(store, first.id, "Current subtitle")
+    as "the subtitle layer is seeded independently"
+  assert domain.source_records(store, shared.id, after: "")
+    == catalogue.get(store, first.id) |> result.map(fn(record) { [record] })
+
+  // A following read must observe a changed path without reopening the domain.
+  assert replace_field(store, first.id, "path", "/changed-source.db") == Ok(Nil)
+  let assert Ok([changed]) = domain.source_records(store, shared.id, after: "")
+    as "one saved source remains"
+  assert changed.path == "/changed-source.db"
+  assert changed.name == "Current display"
+  assert changed.subtitle == option.Some("Current subtitle")
+  assert domain.sources(store, shared.id, after: "") == Ok([first.id])
+
+  // Unconfirmed sources remain excluded even when their metadata is corrupt.
+  assert replace_field(store, second.id, "profile", "INVALID") == Ok(Nil)
+  assert domain.source_records(store, shared.id, after: "") == Ok([changed])
+  assert catalogue.delete(store, first.id) == Ok(changed)
+  assert domain.source_records(store, shared.id, after: "") == Ok([])
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+/// Joined source rows still cross the complete registration and domain checks.
+pub fn source_records_refuse_corrupt_registration_and_wrong_domain_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let record = registration(92)
+  let shared = aggregate()
+  assert domain.reserve_session(store, record, shared) == Ok(record)
+  let assert Ok(_) = catalogue.confirm(store, record.id)
+    as "the source is saved"
+
+  list.each(
+    [
+      #("profile", "INVALID", ""),
+      #("path", "relative.db", record.path),
+      #("executor", "INVALID", ""),
+    ],
+    fn(change) {
+      let #(field, corrupt, restore) = change
+      assert replace_field(store, record.id, field, corrupt) == Ok(Nil)
+      let assert Error(expected) = catalogue.get(store, record.id)
+        as "the ordinary registration boundary refuses corruption"
+      assert domain.source_records(store, shared.id, after: "")
+        == Error(expected)
+      assert replace_field(store, record.id, field, restore) == Ok(Nil)
+    },
+  )
+
+  // A valid registration for another workspace cannot become this domain's
+  // source merely because a stored mapping points at it.
+  assert replace_field(store, record.id, "workspace", "/other-workspace")
+    == Ok(Nil)
+  assert domain.source_records(store, shared.id, after: "")
+    == Error(catalogue.Invalid("domain scope does not match registration"))
+  assert domain.source_records(store, "workspace:/missing", after: "")
+    == Error(catalogue.Missing)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+/// Full pages advance in identity order, without treating a page as a total cap.
+pub fn source_records_keep_the_hundred_row_page_boundary_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let shared = aggregate()
+  let expected =
+    list.index_map(list.repeat(Nil, 101), fn(_, index) {
+      let record = registration(10_000 + index)
+      assert domain.reserve_session(store, record, shared) == Ok(record)
+      let assert Ok(saved) = catalogue.confirm(store, record.id)
+        as "every source is explicitly initialized"
+      saved
+    })
+    |> list.sort(fn(left, right) { string.compare(left.id, right.id) })
+  let assert Ok(first) = domain.source_records(store, shared.id, after: "")
+    as "the first page succeeds"
+  assert first == list.take(expected, 100)
+  let assert Ok(last) = list.last(first) as "the first page is full"
+  assert domain.source_records(store, shared.id, after: last.id)
+    == Ok(list.drop(expected, 100))
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+/// Changes fixture metadata through the existing catalogue connection only.
+fn replace_field(
+  store: catalogue.Catalogue,
+  id: String,
+  field: String,
+  value: String,
+) -> Result(Nil, catalogue.Error) {
+  catalogue.query(store, #(
+    "UPDATE catalogue_sessions SET " <> field <> " = ? WHERE session_id = ?",
+    [dev.ParamString(value), dev.ParamString(id)],
+    decode.success(Nil),
+  ))
+  |> result.replace(Nil)
+}
+
+/// A malformed domain is refused before even an empty source page is returned.
+pub fn source_records_validate_the_domain_once_even_without_saved_sources_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let record = registration(93)
+  let shared = aggregate()
+  assert domain.reserve_session(store, record, shared) == Ok(record)
+  let assert Ok(_) =
+    catalogue.query(store, #(
+      "UPDATE catalogue_domains SET memory_path = ? WHERE domain_id = ?",
+      [dev.ParamString("relative.db"), dev.ParamString(shared.id)],
+      decode.success(Nil),
+    ))
+    as "the fixture corrupts stored domain metadata"
+  let assert Error(expected) = domain.get(store, shared.id)
+    as "the persisted domain is invalid"
+  assert domain.source_records(store, shared.id, after: "") == Error(expected)
+  assert catalogue.close(store) == Ok(Nil)
 }
