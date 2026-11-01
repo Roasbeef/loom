@@ -415,6 +415,7 @@ pub fn main() {
         | ["distribution", ..]
         | ["dist", ..]
         | ["executor", ..]
+        | ["vm", ..]
         | ["replay", ..]
         | ["sessions", ..]
         | ["deployment", ..]
@@ -545,6 +546,7 @@ fn help_topic(arguments: List(String)) -> Option(String) {
     Ok("evolution") -> Some(evolution_usage())
     Ok("distribution") | Ok("dist") -> Some(distribution_usage())
     Ok("executor") -> Some(executor_usage())
+    Ok("vm") -> Some(vm_usage())
     Ok("update") -> Some(update_options.usage())
     Ok("version") -> Some(version_usage())
     Ok("ui") | Ok("--ui") -> Some(ui_usage())
@@ -566,6 +568,7 @@ fn is_topic(word: String) -> Bool {
     | "distribution"
     | "dist"
     | "executor"
+    | "vm"
     | "update"
     | "version"
     | "claim"
@@ -1214,12 +1217,14 @@ fn parse_words(arguments: List(String)) -> Launch {
     ["evolution", ..rest] -> Forward(verb: "evolution", arguments: rest)
     ["distribution", ..rest] | ["dist", ..rest] -> forward_distribution(rest)
     ["executor", ..rest] -> Forward(verb: "executor", arguments: rest)
+    ["vm", ..rest] -> Forward(verb: "vm", arguments: rest)
     ["update", ..rest] -> Update(arguments: rest)
     ["help", "ext"] -> Forward(verb: "ext", arguments: ["--help"])
     ["help", "evolution"] -> Forward(verb: "evolution", arguments: ["--help"])
     ["help", "distribution"] | ["help", "dist"] ->
       Forward(verb: "distribution", arguments: ["--help"])
     ["help", "executor"] -> Forward(verb: "executor", arguments: ["--help"])
+    ["help", "vm"] -> Forward(verb: "vm", arguments: ["--help"])
     ["replay", ..rest] -> parse_replay(rest)
     ["ui", ..rest] -> view_launch(rest)
     ["sessions", ..rest] -> parse_sessions(rest)
@@ -2885,7 +2890,8 @@ fn launch_usage() -> String {
   <> "                      Provision trusted distribution between daemons\n"
   <> "                      (init, provision, install, show). `dist` is short.\n"
   <> "  executor release SESSION\n"
-  <> "                      Release a scope an executor will not reopen itself.\n\n"
+  <> "                      Release a scope an executor will not reopen itself.\n"
+  <> "  vm up|down|status   Run a standing microVM executor.\n\n"
   <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
   <> "  --model-profile names a [profiles.<name>] table of that file whose\n"
   <> "       roles a newly created session uses; a resumed session keeps its own\n"
@@ -3106,6 +3112,40 @@ Example:
   loom dist enroll laptop2 --node loom@laptop2.example --role orchestrator --links devbox --passphrase-file ~/.loom-passphrase"
 }
 
+/// The `loom vm` help, the same text `loomd vm --help` prints.
+fn vm_usage() -> String {
+  "usage: loom vm up [--name NAME] [--workspace DIR] [--mem MIB] [--cpus N]
+                  [--config PATH]
+       loom vm down [--name NAME]
+       loom vm status [--name NAME]
+
+Run one standing executor in a microVM and use it from `loom --executor`.
+
+  up        Provision a two-node deployment, enroll the orchestrator in your
+            loom.toml as [executors.NAME], clone the guest root, copy the
+            workspace into it, boot the guest with `loom-vm run` and wait until
+            its executor serves. The guest keeps running after this command
+            exits. NAME defaults to vm. DIR defaults to the current directory;
+            its copy, .git included, is registered in the guest under the
+            directory's own name. --mem is the guest's memory in MiB (default
+            2048) and --cpus its virtual CPUs (default 4). --config is the
+            loom.toml to enroll in (default ~/.loom/loom.toml).
+            A loom.toml that already holds a different [distribution] table is
+            refused, not replaced. The guest's checkout is replaced by every
+            `up`.
+  down      Stop the guest. Its root, and the checkout inside it, stay on disk.
+  status    Say whether the guest runs, where it is registered and what it
+            holds.
+
+The artifacts come from `~/.loom/vm/manifest.json` ($LOOM_VM_HOME overrides
+~/.loom/vm), which `loom vm setup` writes. They must be built from the release
+this loom is.
+
+Example:
+  loom vm up --workspace ~/src/proj
+  loom --executor vm --workspace proj"
+}
+
 /// Establishes and coordinates executor usage operations for the TUI runtime.
 fn executor_usage() -> String {
   "usage: loom executor release SESSION [--state-dir PATH]   (also: loomd executor release)
@@ -3154,8 +3194,8 @@ Example:
 
 /// The arguments `loom` would hand to the server for a passthrough command,
 /// or `None` when the command is the launcher's own. `loom ext` and
-/// `loom distribution` (with its `dist` shorthand) and `loom executor` are
-/// passthroughs, and the
+/// `loom distribution` (with its `dist` shorthand), `loom executor` and
+/// `loom vm` are passthroughs, and the
 /// server sees the subcommand spelled the way it spells it.
 ///
 /// ## Examples
