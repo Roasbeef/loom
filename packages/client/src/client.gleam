@@ -13,7 +13,8 @@
 //// (`serve.start_build_plane`), so `client/extension/cli` imports
 //// `client/serve`, and Gleam has no cyclic imports. The two-line
 //// dispatch therefore lives one module out, where both are importable.
-//// `loomd ext install …` reaches the installer, `loomd access …` reaches
+//// `loomd ext install …` reaches the installer, `loomd vm up …` boots the
+//// standing microVM executor, `loomd access …` reaches
 //// the one-shot owner control client, `loomd codex …` reaches the
 //// subscription helper, and other arguments reach the daemon.
 //// This note
@@ -30,6 +31,7 @@ import client/daemon/peer_cli
 import client/evolution/cli as evolution_cli
 import client/extension/cli
 import client/mcp/cli as mcp_cli
+import client/vm_cli
 import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -67,6 +69,7 @@ pub fn main() -> Nil {
         ["distribution", ..rest] | ["dist", ..rest] ->
           distribution_cli.main(rest)
         ["executor", ..rest] -> executor_cli.main(rest)
+        ["vm", ..rest] -> vm_cli.main(rest)
         ["directory", ..rest] -> directory_cli.main(rest)
         ["evolution", ..rest] -> evolution_cli.main(rest)
         _other -> daemon.main()
@@ -111,6 +114,7 @@ pub fn help_for(arguments: List(String)) -> Option(String) {
         Ok("ext") -> Some(cli.usage)
         Ok("distribution") | Ok("dist") -> Some(distribution_cli.usage)
         Ok("executor") -> Some(executor_cli.usage)
+        Ok("vm") -> Some(vm_cli.usage)
         Ok("directory") -> Some(directory_cli.usage)
         Ok("evolution") -> Some(evolution_cli.usage)
         Ok(_other) | Error(Nil) -> Some(usage)
@@ -130,10 +134,11 @@ fn is_topic(word: String) -> Bool {
     | "distribution"
     | "dist"
     | "executor"
+    | "vm"
     | "directory" -> True
     _ -> False
   }
 }
 
 const usage =
-  "usage: loomd [--state-dir PATH] [--bind ADDRESS] [--capacity N]\n       [--owner-name NAME] [--read-scope SCOPE] [--network NETWORK]\n       [--helper PATH] [--config PATH] [--codemode-seed PATH]\n       [--codemode-seams PATH] [--best-effort | --full-enforcement]\n       loomd <command> [options]\n\ncommands:\n  access <command>    Manage session access.\n  peer <command>      Inspect links, grant, revoke, or send.\n  codex <command>     Manage Codex subscription profiles.\n  mcp <command>       Manage remote MCP server OAuth credentials.\n  ext <command>       Manage extensions.\n  evolution <action>  Govern resident-session candidates.\n  distribution <command>\n                      Provision trusted distribution: init, provision,\n                      install, show, options. `dist` is short for it.\n  executor <command>  Release a scope an executor will not reopen itself.\n  directory bootstrap\n                      Create the session directory's cluster, once.\n\nRun `loomd help <command>` for command usage."
+  "usage: loomd [--state-dir PATH] [--bind ADDRESS] [--capacity N]\n       [--owner-name NAME] [--read-scope SCOPE] [--network NETWORK]\n       [--helper PATH] [--config PATH] [--codemode-seed PATH]\n       [--codemode-seams PATH] [--best-effort | --full-enforcement]\n       loomd <command> [options]\n\ncommands:\n  access <command>    Manage session access.\n  peer <command>      Inspect links, grant, revoke, or send.\n  codex <command>     Manage Codex subscription profiles.\n  mcp <command>       Manage remote MCP server OAuth credentials.\n  ext <command>       Manage extensions.\n  evolution <action>  Govern resident-session candidates.\n  distribution <command>\n                      Provision trusted distribution: init, provision,\n                      install, show, options. `dist` is short for it.\n  executor <command>  Release a scope an executor will not reopen itself.\n  vm <command>        Run a standing microVM executor: up, down, status.\n  directory bootstrap\n                      Create the session directory's cluster, once.\n\nRun `loomd help <command>` for command usage."
