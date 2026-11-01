@@ -1,27 +1,41 @@
-//// The microVM executor tier end to end (issue #85, ADR-022): an orchestrator
-//// on the host and an executor daemon inside a libkrun guest, joined by TLS
-//// distribution, with a scripted model driving a real `bash` call.
+//// The microVM executor tier end to end through the product path (issue #85,
+//// ADR-022): `loom vm up` boots a standing guest and enrolls it in an
+//// orchestrator's configuration, a scripted model drives a real `bash` call in
+//// the guest, and `loom vm down` followed by `loom vm up` resumes the same
+//// guest.
 ////
 //// ## What it proves
 ////
-//// - The guest executor boots from a copied root and registers as a TLS
-////   distribution member; `loom-vm run --publish` makes its unchanged node
-////   name resolvable from the host.
-//// - `sessions.create` with `executor: "box", workspace: "repo"` settles
+//// - `loom vm up` provisions the two-node deployment, installs the
+////   orchestrator's half into a `loom.toml`, clones the guest root, boots
+////   `loom-vm run` and reports that the executor serves, with nothing in the
+////   fixture standing in for any of those steps.
+//// - `sessions.create` with `executor: <name>, workspace: "repo"` settles
 ////   `resident`, so the orchestrator dialled the guest, passed the pinned
 ////   handshake both ways, and attached a scope there.
 //// - The model's `bash` call runs on the guest's Linux kernel, not the host's
 ////   (the host is macOS), under `loom-exec` (no-new-privileges is set), and
-////   writes into the guest's copy of the checkout, which the host can read
-////   only through the root directory it staged.
-//// - Model code in the guest cannot read the executor node's own cookie,
-////   which ADR-022 D2 rests on: the jail keeps model code out of the node's
-////   secrets inside the same guest.
+////   writes into the guest's copy of the checkout.
+//// - Model code in the guest cannot read the executor node's own cookie, which
+////   ADR-022 D2 rests on: the jail keeps model code out of the node's secrets
+////   inside the same guest.
+//// - GitHub access goes through the credential proxy. The jailed shell holds
+////   only the placeholder `GH_TOKEN`; the fake token the test gave `loom vm up`
+////   appears nowhere in the tool result and nowhere under the guest's files on
+////   the host. With `LOOM_VM_GITHUB_LIVE=1` the test also reaches
+////   `api.github.com` from the jail: an unauthenticated `/zen` answers 200, and
+////   `/user` with the placeholder answers 401, which shows the proxy replaced
+////   the placeholder with the (fake, so rejected) token before GitHub saw it.
+//// - A guest resumes. After `loom vm down` the guest process is gone and its
+////   epmd name is withdrawn; the next `loom vm up` without `--fresh` keeps the
+////   root, so the marker written by the first turn is still in the checkout and
+////   the state disk is still there, and a new session on the resumed guest reads
+////   the marker back.
 ////
 //// ## Running it
 ////
 //// ```sh
-//// make server-shipment sandbox vmm vmm-runner vmm-firmware vmm-guest-root
+//// make server-shipment tui-shipment sandbox vmm vmm-runner vmm-firmware vmm-guest-root
 //// install -m 0755 packages/sandbox/loom-exec bin/loom-exec
 //// export LOOM_BOOTSTRAP_E2E_SERVER=$PWD/bin/loomd
 //// export LOOM_TEST_PROVIDER_KEY=loom-provider-fixture-key
@@ -30,60 +44,140 @@
 //// export LOOM_VM_LIB_DIR=/opt/homebrew/lib
 //// export LOOM_VM_FIRMWARE_DIR=$PWD/packages/vmm/build/firmware
 //// export LOOM_VM_GUEST_ROOT=$PWD/packages/vmm/build/guest-root
+//// export LOOM_VM_GITHUB_LIVE=1   # optional: reach api.github.com
 //// bash scripts/test.sh client --match 'client@daemon_shipped_microvm_test:'
 //// ```
 ////
 //// Without those variables, or on a host whose `loom-vm probe` fails, the
-//// test prints a skip line and passes.
+//// test prints a skip line and passes. The token is always a fake one made up
+//// by the test; the test never runs `gh auth token`.
+////
+//// ## Flow
+////
+//// - `daemon_shipped_microvm_test_` gates and calls `fixture`.
+//// - `fixture` lays out the private directory, runs `drive` under a deadline,
+////   then tears down outside it (`vm down`, retire the orchestrator, delete
+////   the directory only when the body completed).
+//// - `drive` installs the artifact manifest (`install_artifacts`), runs `vm up`
+////   (`up`), starts the orchestrator on the configuration `vm up` wrote, takes
+////   the first scripted turn, then `vm down`, `vm up` again and the second turn.
+//// - `assert_first_turn`, `assert_never_on_host` and `assert_resumed` hold the
+////   assertions.
 
 import broker/token
 import client/tui_e2e_test.{type EunitTest, Timeout}
 import core/json
 import gleam/bit_array
-import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/list
+import gleam/result
 import gleam/string
 import host/bootstrap as native
 import simplifile
-import support/microvm_executor
+import support/internal/ffi_proc
 import support/provider_http as provider
-import support/remote_daemons.{Trust}
+import support/remote_daemons
 import support/remote_pair
 import weft
 
 const label = "shipped microvm executor"
 
-const prompt = "run it in the guest"
+// The guest's name. It becomes part of the executor's node name and of the
+// epmd entry `loom vm up` publishes in the host's shared epmd, so a suffix
+// keeps two runs on one host from sharing it.
+const guest_prefix = "e2e"
 
-const answer = "ran in the guest"
+const first_prompt = "run it in the guest"
 
-const note = "note.txt"
+const first_answer = "ran in the guest"
 
-// One command, so one tool result carries every observation. Each line is
-// labelled, and the cookie read reports its own status, so a refusal is
-// still a successful tool result the script can match.
-fn command() -> String {
-  "uname -sr; grep -E '^NoNewPrivs:' /proc/self/status; "
-  <> "echo placed-in-guest > "
-  <> note
-  <> "; cat "
-  <> microvm_executor.node_dir
-  <> "/home/.erlang.cookie; echo cookie_status=$?"
+const second_prompt = "read it back on the resumed guest"
+
+const second_answer = "read it back"
+
+const marker = "marker.txt"
+
+const marker_content = "placed-in-guest\n"
+
+// Where `loom vm up` puts the executor node inside the guest.
+const node_dir = "/srv/loom-node"
+
+// Where the guest's checkouts are, relative to its root.
+const workspaces_dir = "/srv/workspaces"
+
+// The artifacts the host provides, named by the environment.
+type Artifacts {
+  Artifacts(
+    /// The `loom-vm` binary.
+    launcher: String,
+    /// The signed `go-microvm-runner`.
+    runner: String,
+    /// The directory holding libkrun.
+    lib_dir: String,
+    /// The directory holding the Landlock `libkrunfw`.
+    firmware_dir: String,
+    /// The exported guest root.
+    guest_root: String,
+  )
 }
 
-/// Boots an orchestrator on the host and an executor in a microVM and runs
-/// one scripted `bash` call through a registered session.
+// Everything the commands of one run share.
+type Run {
+  Run(
+    directory: String,
+    artifacts: Artifacts,
+    orchestrator: remote_daemons.Layout,
+    /// `LOOM_VM_HOME` of this run, private to the fixture.
+    vm_home: String,
+    /// The guest's name.
+    name: String,
+    /// The throwaway repository `vm up` copies into the guest.
+    repository: String,
+    /// The made-up token `vm up` reads from `LOOM_VM_GITHUB_TOKEN`.
+    token: String,
+  )
+}
+
+// A tool result carries every observation of one command, each line labelled.
+// The cookie read reports its own status, so a refusal is still a successful
+// tool result the script can match. The two `curl` lines run only when the
+// operator allows this test to reach GitHub.
+fn first_command(reach: Reach) -> String {
+  let local =
+    "echo \"kernel=$(uname -r)\"; grep -E '^NoNewPrivs:' /proc/self/status; "
+    <> "echo placed-in-guest > "
+    <> marker
+    <> "; cat "
+    <> node_dir
+    <> "/home/.erlang.cookie; echo cookie_status=$?; "
+    <> "echo \"gh_token=$GH_TOKEN\""
+  case reach {
+    OffHost -> local
+    GitHub ->
+      local
+      <> "; curl -sS --max-time 30 -o /dev/null -w 'zen=%{http_code}\\n' "
+      <> "https://api.github.com/zen"
+      <> "; curl -sS --max-time 30 -o /dev/null -w 'user=%{http_code}\\n' "
+      <> "-H \"Authorization: token $GH_TOKEN\" https://api.github.com/user"
+  }
+}
+
+fn second_command() -> String {
+  "cat " <> marker <> "; echo \"kernel=$(uname -r)\""
+}
+
+/// Boots a standing guest with `loom vm up`, runs scripted `bash` calls through
+/// registered sessions, and resumes the guest across `loom vm down` and `up`.
 ///
 /// ## Examples
 ///
 /// `bash scripts/test.sh client --match 'client@daemon_shipped_microvm_test:'`.
 pub fn daemon_shipped_microvm_test_() -> EunitTest {
-  // The runner scales EUnit timeouts by ten: 600 seconds around a body of
-  // 540, which copies a guest root, boots a VM and two daemons, and runs a
-  // turn.
-  Timeout(60, fn() {
+  // The runner scales EUnit timeouts by ten: 1100 seconds around a body of
+  // 900, which clones a guest root and boots a VM twice, starts an
+  // orchestrator, and runs two turns.
+  Timeout(110, fn() {
     case native.getenv("LOOM_BOOTSTRAP_E2E_SERVER") {
       Error(Nil) ->
         io.println_error(
@@ -91,15 +185,64 @@ pub fn daemon_shipped_microvm_test_() -> EunitTest {
         )
 
       Ok(_server) ->
-        case microvm_executor.prerequisites() {
+        case artifacts() {
           Error(reason) -> io.println_error("SKIP " <> label <> ": " <> reason)
-          Ok(prerequisites) -> fixture(prerequisites)
+          Ok(artifacts) -> fixture(artifacts)
         }
     }
   })
 }
 
-fn fixture(prerequisites: microvm_executor.Prerequisites) -> Nil {
+// The artifacts this host provides, or the first reason to skip.
+fn artifacts() -> Result(Artifacts, String) {
+  use launcher <- result.try(
+    native.getenv("LOOM_VM") |> result.replace_error("LOOM_VM is unset"),
+  )
+  use runner <- result.try(
+    native.getenv("LOOM_VM_RUNNER")
+    |> result.replace_error("LOOM_VM_RUNNER is unset"),
+  )
+  use lib_dir <- result.try(
+    native.getenv("LOOM_VM_LIB_DIR")
+    |> result.replace_error("LOOM_VM_LIB_DIR is unset"),
+  )
+  use guest_root <- result.try(
+    native.getenv("LOOM_VM_GUEST_ROOT")
+    |> result.replace_error("LOOM_VM_GUEST_ROOT is unset"),
+  )
+
+  // The broker demands the landlock layer on Linux, which the stock
+  // libkrunfw kernel lacks, so a guest on it refuses every jailed call
+  // (ADR-022 D3). A host without the tier's kernel skips instead of failing.
+  use firmware_dir <- result.try(
+    native.getenv("LOOM_VM_FIRMWARE_DIR")
+    |> result.replace_error(
+      "LOOM_VM_FIRMWARE_DIR is unset (the tier needs `make vmm-firmware`)",
+    ),
+  )
+
+  // The links the build directory holds must name absolute targets, and the
+  // tests run from packages/client.
+  use launcher <- result.try(absolute(launcher))
+  use runner <- result.try(absolute(runner))
+  use lib_dir <- result.try(absolute(lib_dir))
+  use firmware_dir <- result.try(absolute(firmware_dir))
+  use guest_root <- result.try(absolute(guest_root))
+
+  // A probe that fails names what this host lacks: a hypervisor, the runner.
+  case ffi_proc.run(launcher, ["probe"], in: ".") {
+    Ok(#(0, _)) ->
+      Ok(Artifacts(launcher:, runner:, lib_dir:, firmware_dir:, guest_root:))
+    Ok(#(_, output)) -> Error("loom-vm probe: " <> string.trim(output))
+    Error(_) -> Error("loom-vm could not be run")
+  }
+}
+
+fn absolute(path: String) -> Result(String, String) {
+  native.absolute_path(path)
+}
+
+fn fixture(artifacts: Artifacts) -> Nil {
   let directory = "/var/tmp/loom-vm-" <> hex(4)
   let assert Ok(Nil) = native.ensure_private_directory(directory)
     as "the fixture's state stays private"
@@ -107,120 +250,86 @@ fn fixture(prerequisites: microvm_executor.Prerequisites) -> Nil {
     as "the daemons receive absolute paths"
   io.println_error(label <> " fixture: " <> directory)
 
-  let orchestrator = remote_daemons.layout(directory, "orchestrator")
-  let guests = weft_cell()
+  let vm_home = directory <> "/vmh"
+  let assert Ok(Nil) = native.ensure_private_directory(vm_home)
+    as "the guest's home is private"
+  let run =
+    Run(
+      directory:,
+      artifacts:,
+      orchestrator: remote_daemons.layout(directory, "orchestrator"),
+      vm_home:,
+      name: guest_prefix <> hex(3),
+      repository: directory <> "/" <> remote_pair.workspace_name,
+      token: "ghp_loomvm" <> hex(18),
+    )
+
   let outcomes =
     weft.new([
       fn() {
-        drive(prerequisites, directory, orchestrator, guests)
+        drive(run)
         Ok(Nil)
       },
     ])
-    |> weft.deadline(540_000)
+    |> weft.deadline(900_000)
     |> weft.start
 
   // Teardown runs outside the body's deadline, so a body that failed midway
-  // still retires the orchestrator and the guest it started.
-  remote_daemons.retire(orchestrator.paths)
-  list.each(read_cell(guests), microvm_executor.retire)
+  // still stops the guest it started and retires the orchestrator.
+  let _stopped = vm(run, ["down", "--name", run.name])
+  remote_daemons.retire(run.orchestrator.paths)
   let assert [weft.Completed(0, Nil)] = outcomes
     as "the microvm body completes before native teardown"
   let _removed = simplifile.delete_all([directory])
   Nil
 }
 
-fn drive(
-  prerequisites: microvm_executor.Prerequisites,
-  directory: String,
-  orchestrator: remote_daemons.Layout,
-  guests: Cell,
-) -> Nil {
-  // Credentials: one authority, a leaf per node, one cookie. The executor's
-  // home is a host staging directory; its files are copied into the guest.
-  let secrets = directory <> "/credentials"
-  let assert Ok(Nil) = native.ensure_private_directory(secrets)
-    as "the credentials directory is private"
-  let executor_home = directory <> "/executor-home"
-  let assert Ok(Nil) = native.ensure_private_directory(executor_home)
-    as "the executor's staging home is private"
-  let authority = remote_daemons.mint_authority(secrets)
-  let suffix = hex(4)
-  let orchestrator_identity =
-    remote_daemons.issue(
-      authority,
-      secrets,
-      "orchestrator",
-      "loom_e2e_vmorch_" <> suffix <> "@127.0.0.1",
-      orchestrator.home,
-    )
-  let executor_identity =
-    remote_daemons.issue(
-      authority,
-      secrets,
-      "executor",
-      "loom_e2e_vmexec_" <> suffix <> "@127.0.0.1",
-      executor_home,
-    )
-  let cookie = "loom-e2e-cookie-" <> hex(16)
-  remote_daemons.write_cookie(orchestrator_identity, cookie)
-  remote_daemons.write_cookie(executor_identity, cookie)
-
-  let root =
-    microvm_executor.stage(
-      prerequisites,
-      directory,
-      authority,
-      executor_identity,
-      orchestrator_identity,
-      remote_pair.workspace_name,
-      [#("README.md", "the guest's copy of the checkout\n")],
-    )
+fn drive(run: Run) -> Nil {
+  make_repository(run)
+  install_artifacts(run)
 
   let script = [
     provider.ToolUseExchange(
-      prompt,
+      first_prompt,
       "guest-call",
       "bash",
-      json.Object([#("command", json.String(command()))]),
+      json.Object([#("command", json.String(first_command(reach())))]),
     ),
     provider.ComputedExchange(provider.AwaitToolResult("guest-call"), fn(_seen) {
-      provider.ReplyText(answer)
+      provider.ReplyText(first_answer)
     }),
+    provider.ToolUseExchange(
+      second_prompt,
+      "resume-call",
+      "bash",
+      json.Object([#("command", json.String(second_command()))]),
+    ),
+    provider.ComputedExchange(
+      provider.AwaitToolResult("resume-call"),
+      fn(_seen) { provider.ReplyText(second_answer) },
+    ),
   ]
 
   let #(Nil, report) =
-    provider.with_server_for(script, provider.OnlySuccessful, 480_000, fn(url) {
+    provider.with_server_for(script, provider.OnlySuccessful, 840_000, fn(url) {
+      let first_up = up(run)
+      assert string.contains(
+        first_up,
+        "serves " <> executor_node(run) <> " on host port",
+      )
+
+      // `vm up` wrote `[distribution]` and `[executors.<name>]`; the
+      // orchestrator also needs a model, which the scripted provider serves.
+      let orchestrator = run.orchestrator
+      let assert Ok(installed) = simplifile.read(orchestrator.config)
+        as "vm up installed the orchestrator's configuration"
       let assert Ok(Nil) =
         simplifile.write(
           orchestrator.config,
-          string.join(
-            [
-              remote_daemons.model_table(url),
-              remote_daemons.distribution_table(
-                orchestrator_identity,
-                authority,
-                [Trust(executor_identity.node, executor_identity.pin)],
-              ),
-              remote_daemons.executor_table(
-                remote_pair.executor_name,
-                executor_identity.node,
-              ),
-            ],
-            "\n",
-          ),
+          installed <> "\n" <> remote_daemons.model_table(url),
         )
-        as "the orchestrator configuration is written"
+        as "the model table is appended to the installed configuration"
       remote_daemons.write_options(orchestrator)
-
-      let guest =
-        microvm_executor.boot(
-          prerequisites,
-          directory,
-          root,
-          executor_identity.node,
-          41_000 + int.random(8000),
-        )
-      write_cell(guests, guest)
 
       let running = remote_daemons.start(orchestrator)
       let control = remote_daemons.open_control(running)
@@ -229,22 +338,239 @@ fn drive(
           control,
           1,
           "e2e-microvm",
-          remote_pair.executor_name,
+          run.name,
           remote_pair.workspace_name,
         )
       assert remote_daemons.settled_state(settled) == "resident"
-
-      let opened = remote_pair.Opened(orchestrator: running, control:, session:)
-      remote_pair.converse_for(opened, prompt, [answer])
+      remote_pair.converse_for(
+        remote_pair.Opened(orchestrator: running, control:, session:),
+        first_prompt,
+        [first_answer],
+      )
       remote_daemons.stop_session(running, control, 100, session)
+
+      // Stop the guest, check that it is gone, and bring it back with the same
+      // flags and no `--fresh`.
+      let down = vm(run, ["down", "--name", run.name])
+      assert string.contains(down.output, "Stopped the guest " <> run.name)
+      let status = vm(run, ["status", "--name", run.name])
+      assert string.contains(status.output, "process:    not running")
+      assert string.contains(status.output, "epmd:       not registered")
+
+      let second_up = up(run)
+      assert string.contains(
+        second_up,
+        "serves " <> executor_node(run) <> " on host port",
+      )
+      assert_resumed(run)
+
+      let #(resumed, settled) =
+        remote_daemons.create_and_settle(
+          control,
+          200,
+          "e2e-microvm-resumed",
+          run.name,
+          remote_pair.workspace_name,
+        )
+      assert remote_daemons.settled_state(settled) == "resident"
+      remote_pair.converse_for(
+        remote_pair.Opened(orchestrator: running, control:, session: resumed),
+        second_prompt,
+        [second_answer],
+      )
+      remote_daemons.stop_session(running, control, 300, resumed)
       remote_pair.close_daemons([running])
     })
 
   let assert Ok(requests) = report
-    as "the scripted turn completed with a successful tool result"
-  let result = remote_daemons.result_text(requests, "guest-call")
-  io.println_error(label <> " tool result:\n" <> result)
+    as "both scripted turns completed with a successful tool result"
+  let first = remote_daemons.result_text(requests, "guest-call")
+  io.println_error(label <> " tool result:\n" <> first)
+  assert_first_turn(run, first)
+  assert_never_on_host(run)
 
+  let second = remote_daemons.result_text(requests, "resume-call")
+  io.println_error(label <> " resumed tool result:\n" <> second)
+  assert string.contains(second, marker_content)
+}
+
+// Whether the guest's jailed shell calls api.github.com.
+type Reach {
+  // Nothing leaves the host; the guest's two curl calls are left out.
+  OffHost
+  // `LOOM_VM_GITHUB_LIVE=1`: the calls run.
+  GitHub
+}
+
+fn reach() -> Reach {
+  case native.getenv("LOOM_VM_GITHUB_LIVE") {
+    Ok("1") -> GitHub
+    _ -> OffHost
+  }
+}
+
+fn executor_node(run: Run) -> String {
+  "loom_vm_" <> run.name <> "_exec@127.0.0.1"
+}
+
+// --- the fixture's inputs ----------------------------------------------------
+
+// A repository with one commit, which is what a developer's checkout is.
+fn make_repository(run: Run) -> Nil {
+  let assert Ok(Nil) = simplifile.create_directory_all(run.repository)
+    as "the repository directory is created"
+  let assert Ok(Nil) =
+    simplifile.write(
+      run.repository <> "/README.md",
+      "the host's checkout of the repository\n",
+    )
+    as "the repository has a file"
+  git(run, ["init", "-q", "-b", "main"])
+  git(run, ["add", "README.md"])
+  git(run, [
+    "-c",
+    "user.name=Loom Fixture",
+    "-c",
+    "user.email=fixture@loom.invalid",
+    "commit",
+    "-q",
+    "-m",
+    "initial",
+  ])
+}
+
+fn git(run: Run, arguments: List(String)) -> Nil {
+  let assert Ok(git) = ffi_proc.which("git") as "git is on PATH"
+  let assert Ok(#(0, _)) = ffi_proc.run(git, arguments, in: run.repository)
+    as "git prepares the throwaway repository"
+  Nil
+}
+
+// Writes the artifact manifest the way a developer's `make vmm-install-dev`
+// does: `loom-vm setup --from-build` over a build tree. The tree is a
+// directory of links to the artifacts the environment names, so the test needs
+// no layout from the host beyond those paths. The guest root is deliberately a
+// link: `loom vm up` must clone what it names and never boot the export.
+fn install_artifacts(run: Run) -> Nil {
+  let build = run.directory <> "/build"
+  let assert Ok(Nil) = simplifile.create_directory_all(build)
+    as "the build tree directory is created"
+  link(run.artifacts.runner, build <> "/go-microvm-runner")
+  link(run.artifacts.firmware_dir, build <> "/firmware")
+  link(run.artifacts.guest_root, build <> "/guest-root")
+
+  let output =
+    expect_ok(
+      vm_launcher(run, [
+        "setup",
+        "--from-build",
+        build,
+        "--lib-dir",
+        run.artifacts.lib_dir,
+      ]),
+      "loom-vm setup --from-build",
+    )
+  io.println_error(label <> " manifest:\n" <> output)
+}
+
+fn link(target: String, path: String) -> Nil {
+  let assert Ok(Nil) = simplifile.create_symlink(to: target, from: path)
+    as { "the build tree links " <> path }
+  Nil
+}
+
+// --- the commands ------------------------------------------------------------
+
+// What a command printed, and how it ended.
+type Outcome {
+  Outcome(status: Int, output: String)
+}
+
+// Runs `program` with the run's `LOOM_VM_HOME` and its made-up token.
+fn with_environment(
+  run: Run,
+  program: String,
+  arguments: List(String),
+) -> Outcome {
+  let assert Ok(env) = ffi_proc.which("env") as "env is on PATH"
+  let assert Ok(#(status, output)) =
+    ffi_proc.run(
+      env,
+      list.append(
+        [
+          "LOOM_VM_HOME=" <> run.vm_home,
+          "LOOM_VM_GITHUB_TOKEN=" <> run.token,
+          program,
+        ],
+        arguments,
+      ),
+      in: run.directory,
+    )
+    as "the command runs"
+  Outcome(status:, output:)
+}
+
+// `loom-vm`'s own commands, which `setup` is.
+fn vm_launcher(run: Run, arguments: List(String)) -> Outcome {
+  with_environment(run, run.artifacts.launcher, arguments)
+}
+
+// `loom vm`, through the shipped server beside LOOM_BOOTSTRAP_E2E_SERVER. The
+// launcher script gives it the orchestrator's isolated home, which is where
+// `up` installs the cookie the orchestrator reads.
+fn vm(run: Run, arguments: List(String)) -> Outcome {
+  with_environment(
+    run,
+    run.orchestrator.launcher,
+    list.prepend(arguments, "vm"),
+  )
+}
+
+fn expect_ok(outcome: Outcome, what: String) -> String {
+  case outcome.status {
+    0 -> outcome.output
+    status ->
+      panic as {
+        what <> " exited " <> int.to_string(status) <> ":\n" <> outcome.output
+      }
+  }
+}
+
+// Runs `loom vm up` for the run's guest, with GitHub through the environment's
+// token, and answers what it printed.
+fn up(run: Run) -> String {
+  let started = native.monotonic_time_ms()
+  let output =
+    expect_ok(
+      vm(run, [
+        "up",
+        "--name",
+        run.name,
+        "--workspace",
+        run.repository,
+        "--config",
+        run.orchestrator.config,
+        "--github",
+        "env",
+      ]),
+      "loom vm up",
+    )
+
+  // The time from the command to a serving executor is the tier's cold start
+  // (or its resume), which an operator weighs against a host executor.
+  io.println_error(
+    label
+    <> " vm up took "
+    <> int.to_string(native.monotonic_time_ms() - started)
+    <> " ms:\n"
+    <> output,
+  )
+  output
+}
+
+// --- the assertions ----------------------------------------------------------
+
+fn assert_first_turn(run: Run, result: String) -> Nil {
   // No-new-privileges is set by loom-exec's stage 2 for every jailed call.
   assert string.contains(result, "NoNewPrivs:\t1")
 
@@ -253,45 +579,81 @@ fn drive(
   // that it ran where the broker's landlock demand holds.
   assert string.contains(result, "-loom-landlock")
 
-  // The node's cookie stays out of model code's reach inside the guest.
+  // The node's cookie stays out of model code's reach inside the guest. The
+  // orchestrator's installed cookie is the deployment's, so it is the value
+  // the guest's own cookie file holds.
+  let assert Ok(cookie) =
+    simplifile.read(run.orchestrator.home <> "/.erlang.cookie")
+    as "vm up installed the deployment's cookie"
+  let cookie = string.trim(cookie)
+  assert cookie != ""
   assert !string.contains(result, cookie)
   assert !string.contains(result, "cookie_status=0")
 
+  // The jailed shell holds the proxy's placeholder, never the token.
+  assert string.contains(result, "gh_token=loomvm_")
+  assert !string.contains(result, run.token)
+
+  // With GitHub reachable: an unauthenticated read succeeds, and the proxy
+  // replaced the placeholder with the made-up token, which GitHub refuses.
+  case reach() {
+    OffHost -> Nil
+    GitHub -> {
+      assert string.contains(result, "zen=200")
+      assert string.contains(result, "user=401")
+    }
+  }
+
   // The write landed in the guest's copy of the checkout.
-  let written =
-    remote_pair.read_file(
-      root
-        <> microvm_executor.workspaces_dir
-        <> "/"
-        <> remote_pair.workspace_name,
-      note,
-    )
-  assert written == "placed-in-guest\n"
+  let written = read_marker(run)
+  assert written == marker_content
+}
+
+// The made-up token is a secret of the host. It must be nowhere in the files
+// the guest could read or write: its root, its state disk and its log. `grep`
+// exits 1 when nothing matches, and prints a name for each file that does.
+fn assert_never_on_host(run: Run) -> Nil {
+  let guest = run.vm_home <> "/" <> run.name
+  let assert Ok(grep) = ffi_proc.which("grep") as "grep is on PATH"
+  let assert Ok(#(status, output)) =
+    ffi_proc.run(grep, ["-rFl", run.token, guest], in: run.directory)
+    as "grep runs over the guest's files"
+  assert output == ""
+  assert status == 1
+  Nil
+}
+
+// What a second `up` without `--fresh` leaves: the guest's own root, not a
+// link to the export, the checkout the first turn wrote into, and the state
+// disk.
+fn assert_resumed(run: Run) -> Nil {
+  let guest = run.vm_home <> "/" <> run.name
+  let assert Ok(info) = simplifile.link_info(guest <> "/root")
+    as "the guest has a root"
+  assert simplifile.file_info_type(info) == simplifile.Directory
+  assert read_marker(run) == marker_content
+  assert simplifile.is_file(guest <> "/state.img") == Ok(True)
+  Nil
+}
+
+fn read_marker(run: Run) -> String {
+  let path =
+    run.vm_home
+    <> "/"
+    <> run.name
+    <> "/root"
+    <> workspaces_dir
+    <> "/"
+    <> remote_pair.workspace_name
+    <> "/"
+    <> marker
+  let assert Ok(text) = simplifile.read(path)
+    as "the first turn wrote the marker into the guest's checkout"
+  text
 }
 
 fn hex(bytes: Int) -> String {
   token.production_entropy()(bytes)
   |> bit_array.base16_encode
   |> string.lowercase
-}
-
-// The guest started inside the deadline-bounded body must be retired outside
-// it, so the body sends its handle to the test process, which drains it at
-// teardown whether the body finished or not.
-type Cell =
-  process.Subject(microvm_executor.Guest)
-
-fn weft_cell() -> Cell {
-  process.new_subject()
-}
-
-fn write_cell(cell: Cell, guest: microvm_executor.Guest) -> Nil {
-  process.send(cell, guest)
-}
-
-fn read_cell(cell: Cell) -> List(microvm_executor.Guest) {
-  case process.receive(cell, 0) {
-    Ok(guest) -> [guest, ..read_cell(cell)]
-    Error(Nil) -> []
-  }
 }
