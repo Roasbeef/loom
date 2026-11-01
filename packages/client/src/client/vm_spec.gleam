@@ -18,6 +18,16 @@
 ////   later: its pid file (`encode_pid`, `decode_pid`) and the host epmd's
 ////   listing (`registered_port`).
 ////
+//// ## Flow
+////
+//// - `parse` turns `loom vm`'s words into a `Command`.
+//// - `decode_manifest` reads the artifact manifest and `check_revision`
+////   compares it with the running build.
+//// - `names` derives the node names, `deployment_plan` the two-node plan, and
+////   `guest_config` the executor's configuration file, with the tools table that
+////   GitHub access needs.
+//// - `launch_arguments` builds the `loom-vm run` command line.
+////
 //// ## The deployment
 ////
 //// One standing guest is two daemons that trust each other. The orchestrator
@@ -60,6 +70,19 @@ pub const workspaces_dir = "/srv/workspaces"
 /// on the node directory and prints the console markers `up` waits for.
 pub const guest_entry = "/usr/local/sbin/loom-guest-executor"
 
+/// The guest device the state disk appears as: the first virtio-blk device.
+pub const state_device = "/dev/vda"
+
+/// The GitHub hosts a guest with GitHub access may reach, through the
+/// launcher's credential proxy. git pushes to `github.com`; `gh` speaks to
+/// `api.github.com` and uploads release assets to `uploads.github.com`.
+pub const github_hosts = ["github.com", "api.github.com", "uploads.github.com"]
+
+/// The environment names a jailed tool call needs to use the credential
+/// proxy: the proxy itself, the hosts that bypass it, and the placeholder
+/// token `gh` and git present. The real token never enters the guest.
+pub const github_env = ["HTTPS_PROXY", "NO_PROXY", "GH_TOKEN", "GITHUB_TOKEN"]
+
 /// The console line that says the executor serves.
 pub const ready_marker = "LOOM-EXECUTOR-READY"
 
@@ -91,7 +114,37 @@ pub type UpOptions {
     /// The `loom.toml` the orchestrator is installed into, or `None` for
     /// `$HOME/.loom/loom.toml`.
     config: Option(String),
+    /// Where the guest's GitHub token comes from, or that it has none.
+    github: GitHubAccess,
+    /// Whether `up` keeps the guest's root and state disk or starts both
+    /// again.
+    freshness: Freshness,
   )
+}
+
+/// How a standing guest reaches GitHub. The token is read on the host by
+/// `loom-vm` and injected by its credential proxy in flight; the guest only
+/// ever holds a placeholder (ADR-022, the dev-experience addendum).
+pub type GitHubAccess {
+  /// The token `gh auth token` prints on the host.
+  GitHubFromGh
+
+  /// The token in the host's `LOOM_VM_GITHUB_TOKEN`.
+  GitHubFromEnv
+
+  /// No GitHub access: the guest's egress allowlist is empty and its jailed
+  /// tools have no network.
+  GitHubOff
+}
+
+/// Whether `up` resumes a guest's earlier root and state or starts again.
+pub type Freshness {
+  /// Keep the guest's root, its workspace copies and its state disk when
+  /// they exist, so edits and sessions survive `down` and `up`.
+  Resume
+
+  /// Replace the root from the export and the state disk with a new one.
+  Fresh
 }
 
 /// One of the three commands.
@@ -137,6 +190,8 @@ fn default_up() -> UpOptions {
     memory_mib: 2048,
     cpus: 4,
     config: None,
+    github: GitHubFromGh,
+    freshness: Resume,
   )
 }
 
@@ -157,6 +212,14 @@ fn up_flags(
       up_flags(rest, UpOptions(..options, workspace: Some(value)))
     ["--config", value, ..rest] ->
       up_flags(rest, UpOptions(..options, config: Some(value)))
+    ["--github", value, ..rest] -> {
+      use github <- result.try(github_access(value))
+      up_flags(rest, UpOptions(..options, github:))
+    }
+
+    // The one flag with no value: starting again is a choice, not a setting.
+    ["--fresh", ..rest] ->
+      up_flags(rest, UpOptions(..options, freshness: Fresh))
     ["--mem", value, ..rest] -> {
       use memory <- result.try(bounded("--mem", value, 256, 1_048_576))
       up_flags(rest, UpOptions(..options, memory_mib: memory))
@@ -175,6 +238,18 @@ fn up_flags(
         True -> Error("unknown option " <> word)
         False -> Error("unexpected argument " <> word)
       }
+  }
+}
+
+/// Reads `--github`'s value.
+fn github_access(value: String) -> Result(GitHubAccess, String) {
+  // The three sources are spelled as `loom-vm run --github-token-from` spells
+  // the two it takes, plus `off`.
+  case value {
+    "gh" -> Ok(GitHubFromGh)
+    "env" -> Ok(GitHubFromEnv)
+    "off" -> Ok(GitHubOff)
+    _ -> Error("--github must be gh, env or off, got " <> value)
   }
 }
 
@@ -555,10 +630,14 @@ pub fn guest_files() -> CredentialFiles {
 /// ## Examples
 ///
 /// ```gleam
-/// let text = vm_spec.guest_config(executor_bundle, "proj")
+/// let text = vm_spec.guest_config(executor_bundle, "proj", vm_spec.GitHubOff)
 /// assert string.contains(text, "[workspaces.proj]")
 /// ```
-pub fn guest_config(bundle: Bundle, workspace: String) -> String {
+pub fn guest_config(
+  bundle: Bundle,
+  workspace: String,
+  github: GitHubAccess,
+) -> String {
   let tables =
     distribution_bundle.config_tables(bundle, guest_files())
     |> list.map(fn(table) { table.text })
@@ -577,9 +656,31 @@ pub fn guest_config(bundle: Bundle, workspace: String) -> String {
         <> distribution_bundle.toml_string(workspaces_dir <> "/" <> workspace)
         <> "\n",
       ],
+      tools_table(github),
     ]),
     "\n",
   )
+}
+
+/// The executor's `[tools]` table. With GitHub access the jail's network is
+/// on, because the guest's egress allowlist, enforced by the launcher's host
+/// side stack, is now the boundary, and the proxy's names pass the
+/// environment allowlist. Without it the table is absent and the jail keeps
+/// the network off.
+fn tools_table(github: GitHubAccess) -> List(String) {
+  // Only the off case changes nothing; both token sources need the same
+  // guest-side configuration.
+  case github {
+    GitHubOff -> []
+    GitHubFromGh | GitHubFromEnv -> [
+      "[tools]\nnetwork = \"full\"\nenv = ["
+      <> string.join(
+        list.map(github_env, distribution_bundle.toml_string),
+        ", ",
+      )
+      <> "]\n",
+    ]
+  }
 }
 
 const unused_model =
@@ -608,14 +709,19 @@ pub type Launch {
     cpus: Int,
     /// The host loopback port forwarded to the guest's distribution port.
     host_port: Int,
+    /// The raw image `loom-vm` attaches as the guest's state device.
+    state_disk: String,
+    /// Where the guest's GitHub token comes from, or that it has none.
+    github: GitHubAccess,
   )
 }
 
 /// The `loom-vm` arguments that boot the guest and run its executor.
 ///
-/// The timeout is a year: `loom-vm run` stops the guest after `--timeout`, and
-/// its default of ten minutes would end a standing guest in the middle of a
-/// session.
+/// The timeout is zero, which `loom-vm run` reads as "until stopped": its
+/// default of ten minutes would end a standing guest in the middle of a
+/// session. The state disk becomes the guest's first block device, which the
+/// guest script mounts as the executor's state root.
 ///
 /// ## Examples
 ///
@@ -628,6 +734,14 @@ pub fn launch_arguments(launch: Launch) -> List(String) {
   let firmware = case launch.manifest.firmware_dir {
     Some(directory) -> ["--firmware-dir", directory]
     None -> []
+  }
+
+  // With GitHub access the proxy's hosts form the egress allowlist and
+  // `loom-vm` starts the credential proxy; without it the allowlist is empty.
+  let github = case launch.github {
+    GitHubOff -> []
+    GitHubFromGh -> ["--github-token-from", "gh", ..github_allow()]
+    GitHubFromEnv -> ["--github-token-from", "env", ..github_allow()]
   }
 
   list.flatten([
@@ -649,18 +763,24 @@ pub fn launch_arguments(launch: Launch) -> List(String) {
       "--mem",
       int.to_string(launch.memory_mib),
       "--timeout",
-      "8760h",
+      "0",
+      "--state-disk",
+      launch.state_disk,
       "--publish",
       launch.names.executor_short
         <> ":"
         <> int.to_string(launch.host_port)
         <> ":"
         <> int.to_string(guest_port),
-      "--",
-      guest_entry,
-      node_dir,
     ],
+    github,
+    ["--", guest_entry, node_dir, "--state-device", state_device],
   ])
+}
+
+/// `--allow` for each GitHub host.
+fn github_allow() -> List(String) {
+  list.flat_map(github_hosts, fn(host) { ["--allow", host] })
 }
 
 /// The host systems `cp` clones on.

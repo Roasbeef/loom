@@ -59,6 +59,7 @@ import client/vm_spec.{
   PidRecord, Status, Up,
 }
 import filepath
+import gleam/bool
 import gleam/int
 import gleam/io
 import gleam/list
@@ -158,6 +159,7 @@ type Instance {
     deploy: String,
     orchestrator_credentials: String,
     root: String,
+    state_disk: String,
     pid_file: String,
     log: String,
   )
@@ -187,6 +189,7 @@ fn instance(vm_home: String, name: String) -> Instance {
     deploy: directory <> "/deploy",
     orchestrator_credentials: directory <> "/orch",
     root: directory <> "/root",
+    state_disk: directory <> "/state.img",
     pid_file: directory <> "/loom-vm.pid",
     log: directory <> "/loom-vm.log",
   )
@@ -267,7 +270,7 @@ fn up(options: UpOptions) -> Result(String, String) {
   // several hundred megabytes is cloned.
   use #(orchestrator, executor) <- result.try(deployment(guest, names))
   use enrolled <- result.try(enroll(orchestrator, options))
-  use Nil <- result.try(stage(manifest, guest, executor, workspace))
+  use Nil <- result.try(stage(manifest, guest, executor, workspace, options))
   use port <- result.try(boot(manifest, guest, names, options))
   report(options, workspace, port, enrolled)
 }
@@ -483,12 +486,56 @@ fn stage(
   guest: Instance,
   executor: Bundle,
   workspace: Workspace,
+  options: UpOptions,
 ) -> Result(Nil, String) {
   use uname <- result.try(tool("uname", ["-s"], within: quick_ms))
   use platform <- result.try(vm_spec.platform_of(uname))
-  use Nil <- result.try(replace_root(manifest, guest, platform))
-  use Nil <- result.try(stage_node(guest.root, executor, workspace.name))
+  use Nil <- result.try(prepare_root(manifest, guest, platform, options))
+  use Nil <- result.try(stage_node(
+    guest.root,
+    executor,
+    workspace.name,
+    options.github,
+  ))
   copy_workspace(guest.root, workspace, platform)
+}
+
+/// The root and state disk `up` boots with. A guest that ran before keeps
+/// both unless `--fresh` was given: its root holds the workspace copies the
+/// agent edited and its state disk the executor's ledger and scopes, so a
+/// `down` and `up` resumes where the guest stopped. A first `up`, or a fresh
+/// one, clones the export and leaves `loom-vm` to create a new disk.
+fn prepare_root(
+  manifest: Manifest,
+  guest: Instance,
+  platform: vm_spec.Platform,
+  options: UpOptions,
+) -> Result(Nil, String) {
+  // Resuming needs a root to resume; without one it is a first boot.
+  case options.freshness, bootstrap.path_exists(guest.root) {
+    vm_spec.Resume, True -> Ok(Nil)
+    vm_spec.Resume, False -> replace_root(manifest, guest, platform)
+    vm_spec.Fresh, _ -> {
+      use Nil <- result.try(remove_state_disk(guest))
+      replace_root(manifest, guest, platform)
+    }
+  }
+}
+
+/// Removes the guest's state disk so `loom-vm` creates and the guest formats
+/// a new one.
+fn remove_state_disk(guest: Instance) -> Result(Nil, String) {
+  // A guest that never ran has no disk to remove.
+  case simplifile.delete(guest.state_disk) {
+    Ok(Nil) -> Ok(Nil)
+    Error(simplifile.Enoent) -> Ok(Nil)
+    Error(error) ->
+      Error(
+        guest.state_disk
+        <> " cannot be removed: "
+        <> simplifile.describe_error(error),
+      )
+  }
 }
 
 /// The guest boots a clone of the export and writes into it, so each guest has
@@ -540,6 +587,7 @@ fn stage_node(
   root: String,
   executor: Bundle,
   workspace: String,
+  github: vm_spec.GitHubAccess,
 ) -> Result(Nil, String) {
   let node = root <> vm_spec.node_dir
   use Nil <- result.try(
@@ -555,7 +603,10 @@ fn stage_node(
     node <> "/home/.erlang.cookie",
     executor.cookie,
   ))
-  write_private(node <> "/loom.toml", vm_spec.guest_config(executor, workspace))
+  write_private(
+    node <> "/loom.toml",
+    vm_spec.guest_config(executor, workspace, github),
+  )
 }
 
 /// Creates each directory, and its parents, or names the one that failed.
@@ -592,6 +643,10 @@ fn copy_workspace(
   let parent = root <> vm_spec.workspaces_dir
   let copy = parent <> "/" <> workspace.name
   use Nil <- result.try(make_directories([parent]))
+
+  // A resumed guest's copy is the one the agent has been editing; copying
+  // the host's checkout over it would discard that work.
+  use <- bool.guard(bootstrap.path_exists(copy), Ok(Nil))
   use _ <- result.try(tool(
     "cp",
     vm_spec.copy_arguments(platform, workspace.path, copy),
@@ -640,6 +695,8 @@ fn boot(
       memory_mib: options.memory_mib,
       cpus: options.cpus,
       host_port: port,
+      state_disk: guest.state_disk,
+      github: options.github,
     )
 
   // The log is appended to, and the console of an earlier run says READY.

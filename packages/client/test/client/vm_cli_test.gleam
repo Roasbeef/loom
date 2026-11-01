@@ -25,6 +25,22 @@ pub fn up_takes_its_defaults_test() {
   assert options.memory_mib == 2048
   assert options.cpus == 4
   assert options.config == None
+  assert options.github == vm_spec.GitHubFromGh
+  assert options.freshness == vm_spec.Resume
+}
+
+pub fn up_reads_github_access_and_fresh_test() {
+  let assert Ok(vm_spec.Up(options)) =
+    vm_spec.parse(["up", "--github", "off", "--fresh", "--name", "dev"])
+  assert options.github == vm_spec.GitHubOff
+  assert options.freshness == vm_spec.Fresh
+  assert options.name == "dev"
+
+  let assert Ok(vm_spec.Up(options)) = vm_spec.parse(["up", "--github", "env"])
+  assert options.github == vm_spec.GitHubFromEnv
+
+  let assert Error(reason) = vm_spec.parse(["up", "--github", "ssh"])
+  assert string.contains(reason, "gh, env or off")
 }
 
 pub fn up_reads_every_flag_in_any_order_test() {
@@ -254,7 +270,7 @@ pub fn each_node_trusts_the_other_and_the_orchestrator_names_the_row_test() {
 
 pub fn the_guest_configuration_names_guest_paths_only_test() {
   let #(_, executor) = bundles("dev")
-  let text = vm_spec.guest_config(executor, "proj")
+  let text = vm_spec.guest_config(executor, "proj", vm_spec.GitHubOff)
   let assert Ok(document) = tom.parse(text)
 
   let assert Ok(distribution) = tom.get_table(document, ["distribution"])
@@ -275,6 +291,22 @@ pub fn the_guest_configuration_names_guest_paths_only_test() {
   assert !string.contains(text, "PRIVATE KEY")
 }
 
+pub fn github_access_opens_the_jail_to_the_proxy_test() {
+  // With GitHub access the executor's jail has the network, bounded by the
+  // guest's egress allowlist, and passes the proxy's names through; without
+  // it there is no [tools] table and the jail keeps the network off.
+  let #(_, executor) = bundles("dev")
+  let text = vm_spec.guest_config(executor, "proj", vm_spec.GitHubFromGh)
+  let assert Ok(document) = tom.parse(text)
+  assert tom.get_string(document, ["tools", "network"]) == Ok("full")
+  let assert Ok(names) = tom.get_array(document, ["tools", "env"])
+  assert list.length(names) == 4
+
+  let text = vm_spec.guest_config(executor, "proj", vm_spec.GitHubOff)
+  let assert Ok(document) = tom.parse(text)
+  assert result.is_error(tom.get_table(document, ["tools"]))
+}
+
 pub fn the_guest_node_line_is_the_first_one_the_guest_script_reads_test() {
   // `loom-guest-executor` takes the node's short name from the first line
   // that starts `node = "`. The peer rows below `[distribution]` have such
@@ -282,7 +314,10 @@ pub fn the_guest_node_line_is_the_first_one_the_guest_script_reads_test() {
   // table before it must have none.
   let #(_, executor) = bundles("dev")
   let lines =
-    string.split(vm_spec.guest_config(executor, "proj"), "\n")
+    string.split(
+      vm_spec.guest_config(executor, "proj", vm_spec.GitHubFromGh),
+      "\n",
+    )
     |> list.filter(string.starts_with(_, "node = \""))
   assert list.first(lines) == Ok("node = \"loom_vm_dev_exec@127.0.0.1\"")
 }
@@ -297,19 +332,26 @@ fn launch(firmware: option.Option(String)) -> vm_spec.Launch {
     memory_mib: 3072,
     cpus: 2,
     host_port: 47_011,
+    state_disk: "/vm/dev/state.img",
+    github: vm_spec.GitHubOff,
   )
 }
 
 pub fn the_launch_runs_the_guest_script_on_the_node_directory_test() {
   let arguments = vm_spec.launch_arguments(launch(Some("/o/firmware")))
   assert list.take(arguments, 3) == ["run", "--name", "dev"]
-  assert list.drop(arguments, list.length(arguments) - 3)
-    == ["--", "/usr/local/sbin/loom-guest-executor", "/srv/loom-node"]
+  assert list.drop(arguments, list.length(arguments) - 5)
+    == [
+      "--", "/usr/local/sbin/loom-guest-executor", "/srv/loom-node",
+      "--state-device", "/dev/vda",
+    ]
   assert string.join(arguments, " ")
     == "run --name dev --root-dir /vm/dev/root --runner /o/runner "
     <> "--lib-dir /o/lib --firmware-dir /o/firmware --cpus 2 --mem 3072 "
-    <> "--timeout 8760h --publish loom_vm_dev_exec:47011:4370 -- "
-    <> "/usr/local/sbin/loom-guest-executor /srv/loom-node"
+    <> "--timeout 0 --state-disk /vm/dev/state.img "
+    <> "--publish loom_vm_dev_exec:47011:4370 -- "
+    <> "/usr/local/sbin/loom-guest-executor /srv/loom-node "
+    <> "--state-device /dev/vda"
 }
 
 pub fn no_firmware_directory_means_no_flag_test() {
@@ -318,10 +360,27 @@ pub fn no_firmware_directory_means_no_flag_test() {
 }
 
 pub fn a_standing_guest_is_not_left_to_the_default_timeout_test() {
-  // `loom-vm run` stops the guest after ten minutes unless told otherwise.
+  // `loom-vm run` stops the guest after ten minutes unless told otherwise;
+  // zero runs it until `loom vm down` stops it.
   let arguments = vm_spec.launch_arguments(launch(None))
-  assert list.contains(arguments, "--timeout")
-  assert list.contains(arguments, "8760h")
+  assert string.contains(string.join(arguments, " "), "--timeout 0 ")
+}
+
+pub fn github_access_starts_the_proxy_on_the_github_hosts_test() {
+  let arguments =
+    vm_spec.launch_arguments(
+      vm_spec.Launch(..launch(None), github: vm_spec.GitHubFromGh),
+    )
+  let line = string.join(arguments, " ")
+  assert string.contains(line, "--github-token-from gh")
+  assert string.contains(line, "--allow github.com")
+  assert string.contains(line, "--allow api.github.com")
+  assert string.contains(line, "--allow uploads.github.com")
+
+  // Without GitHub access the guest has no allowlisted host at all.
+  let line = string.join(vm_spec.launch_arguments(launch(None)), " ")
+  assert !string.contains(line, "--allow")
+  assert !string.contains(line, "--github-token-from")
 }
 
 pub fn the_clone_is_copy_on_write_on_both_hosts_test() {
