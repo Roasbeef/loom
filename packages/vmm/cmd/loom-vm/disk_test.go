@@ -8,7 +8,7 @@ import (
 )
 
 // TestEnsureDiskCreatesSparseImageOnce checks that a missing state disk is
-// created at the requested size and that an existing one is reused as it is,
+// created at the requested size and that an existing one keeps its contents,
 // which is what keeps a standing guest's state across restarts.
 func TestEnsureDiskCreatesSparseImageOnce(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.img")
@@ -26,16 +26,47 @@ func TestEnsureDiskCreatesSparseImageOnce(t *testing.T) {
 		t.Fatalf("created disk = %v, %v", info, err)
 	}
 
-	// Data the guest wrote must survive a second call with another size.
+	// Data the guest wrote must survive a second call, and a smaller size
+	// must not shrink the disk.
 	if err := os.WriteFile(path, []byte("ext4 data"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ensureDisk(path, 16<<20); err != nil {
+	if err := os.Truncate(path, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ensureDisk(path, 4<<20); err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := os.ReadFile(path)
-	if string(raw) != "ext4 data" {
-		t.Fatalf("existing disk rewritten: %q", raw)
+	if len(raw) != 8<<20 || string(raw[:9]) != "ext4 data" {
+		t.Fatalf("existing disk rewritten or shrunk: %d bytes", len(raw))
+	}
+}
+
+// TestEnsureDiskRestoresAShortenedImage checks that a disk the guest's mkfs
+// left 64 KiB short is extended to the requested size, keeping what it holds.
+// A filesystem made on the full device does not mount on a shorter one.
+func TestEnsureDiskRestoresAShortenedImage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.img")
+	const size, shortened = 8 << 20, 8<<20 - 64<<10
+
+	if err := os.WriteFile(path, []byte("ext4 data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, shortened); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ensureDisk(path, size); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil || len(raw) != size || string(raw[:9]) != "ext4 data" {
+		t.Fatalf("restored disk: %d bytes, %v", len(raw), err)
+	}
+	if raw[size-1] != 0 {
+		t.Fatal("the restored tail is not zeroed")
 	}
 }
 

@@ -404,8 +404,17 @@ func runContext(timeout time.Duration) (context.Context, context.CancelFunc) {
 }
 
 // ensureDisk returns path made absolute, creating a sparse raw image of
-// size bytes there if no file exists. An existing file is used as it is,
-// which is what keeps a standing guest's state across restarts.
+// size bytes there if no file exists. An existing file keeps its contents,
+// which is what keeps a standing guest's state across restarts, and is
+// extended with zeros when it is shorter than size.
+//
+// The extension repairs what a guest's first boot does to the image. mke2fs
+// zeroes the last 64 KiB of the device it formats, and libkrun shortens the
+// backing file by that much when the guest does. The filesystem still counts
+// the full device, so the next boot's kernel refuses to mount it with "block
+// count exceeds size of device". The shortened tail was zeroed already, so
+// restoring the length restores the device the filesystem was made on. A file
+// that is longer than size is left alone: a disk is never shrunk.
 func ensureDisk(path string, size int64) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -416,6 +425,13 @@ func ensureDisk(path string, size int64) (string, error) {
 	switch {
 	case err == nil && !info.Mode().IsRegular():
 		return "", fmt.Errorf("--state-disk %q is not a regular file", abs)
+
+	case err == nil && info.Size() < size:
+		if err := os.Truncate(abs, size); err != nil {
+			return "", fmt.Errorf("--state-disk %q: %w", abs, err)
+		}
+
+		return abs, nil
 
 	case err == nil:
 		return abs, nil

@@ -165,6 +165,12 @@ credential.
 - **Stop is unconditional.** It runs under its own 30 s context so a
   cancelled caller still releases the VMM, the network stack and the data
   directory.
+- **A state disk is extended, never shrunk.** `--state-disk FILE` attaches a
+  raw image as `/dev/vda`, created sparse at `--state-disk-size` MiB. The
+  guest's first `mke2fs` zeroes the device's last 64 KiB and libkrun shortens
+  the backing file by that much, so the filesystem would count a larger device
+  than the next boot sees and the kernel would refuse to mount it. `ensureDisk`
+  extends a shorter file back to the requested size and keeps its contents.
 - **Staged files replace, never follow.** `stageFile` removes the target
   before writing, so a symlink in the image cannot redirect the write out of
   the root.
