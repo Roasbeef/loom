@@ -1,0 +1,285 @@
+# Publish the microVM tier's prebuilt artifacts for a release tag.
+#
+# `loom-vm setup --release TAG` installs what this workflow publishes, so that
+# a developer never runs the 11-minute guest-root build or the 7-minute kernel
+# build (docs/distribution.md, "The microVM artifacts"). It publishes:
+#
+#   ghcr.io/<owner>/loom-guest:<tag>   the guest root, a multi-arch image
+#                                      (linux/arm64 and linux/amd64)
+#   go-microvm-runner-darwin-arm64     the libkrun runner, ad-hoc signed
+#   libkrunfw-landlock-darwin-arm64.5.dylib
+#                                      libkrunfw with Landlock (ADR-022, D3)
+#   vmm-SHA256SUMS                     the digests of the two files above
+#
+# The three files are attached to the release's GitHub release. They are not
+# the server archives and they are not covered by the release workflow's
+# reproduction check or its SHA256SUMS; release.yml owns those, and a release
+# cannot hold two assets named SHA256SUMS, which is why this file is
+# vmm-SHA256SUMS. Nothing here is signed with a Developer ID. The runner's
+# signature is ad hoc, and `loom-vm setup` re-signs it anyway, so the digest in
+# vmm-SHA256SUMS is the integrity check.
+#
+# The release workflow creates the release as a draft after its builds
+# succeed, which takes tens of minutes, and this workflow runs beside it from
+# the same tag. The last job therefore waits for the draft to exist and
+# attaches the assets to it. Both must finish before the draft is published:
+# a published release cannot take assets when immutable releases are enabled.
+#
+# The guest image is the one thing that must be made public by hand, once.
+# GHCR creates a package private on its first push; `loom-vm setup` pulls it
+# anonymously, so set `loom-guest` to public in the package settings. The
+# image's org.opencontainers.image.source label links the package to this
+# repository, which is what lets the workflow's token push it.
+name: Publish microVM artifacts
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish artifacts for (never a branch or commit).
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: vmm-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.identity.outputs.tag }}
+      commit: ${{ steps.identity.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ format('refs/tags/{0}', inputs.tag || github.ref_name) }}
+          persist-credentials: false
+      - name: Bind the run to the tag's commit
+        id: identity
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          # The same syntax and version check release.yml applies, so that a
+          # tag this workflow accepts is one the release workflow builds.
+          python3 scripts/release-tag.py "$RELEASE_TAG" --check
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  # One native build per architecture. Each pushes its image by digest only,
+  # with no tag, so that the tag never points at half a release; the job after
+  # this one joins the digests into the manifest list that carries the tag.
+  guest-image:
+    needs: prepare
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+          - arch: amd64
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - name: Build and push the image by digest
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/loom-guest"
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          # Pushing by digest needs the docker-container driver; the default
+          # driver cannot export an image without tagging it.
+          docker buildx create --name loom-guest-builder --driver docker-container --use
+          # Provenance and SBOM attestations are separate manifests in the
+          # image index, which `loom-vm setup` does not read and a manifest
+          # list over these digests would have to carry as extra platforms.
+          docker buildx build \
+            --platform "linux/$ARCH" \
+            --file packages/vmm/guest/Dockerfile \
+            --target runtime \
+            --build-arg "LOOM_REVISION=$SOURCE_COMMIT" \
+            --build-arg "LOOM_VERSION=$RELEASE_TAG" \
+            --provenance=false --sbom=false \
+            --output "type=image,name=$image,push-by-digest=true,name-canonical=true,push=true" \
+            --metadata-file metadata.json \
+            .
+          digest=$(jq -er '."containerimage.digest"' metadata.json)
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          mkdir -p digests
+          printf '%s\n' "$digest" > "digests/$ARCH"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: guest-digest-${{ matrix.arch }}
+          path: digests/*
+          if-no-files-found: error
+
+  guest-manifest:
+    needs: [prepare, guest-image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: guest-digest-*
+          path: digests
+          merge-multiple: true
+      - name: Join the per-architecture images under the release tag
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/loom-guest"
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          arm64=$(cat digests/arm64)
+          amd64=$(cat digests/amd64)
+          docker buildx imagetools create -t "$image:$RELEASE_TAG" \
+            "$image@$arm64" "$image@$amd64"
+          # The tag must now resolve to a list with both platforms; setup
+          # selects the host's by architecture and would fail on a missing one.
+          inspected=$(docker buildx imagetools inspect "$image:$RELEASE_TAG")
+          printf '%s\n' "$inspected"
+          grep -E 'Platform:[[:space:]]+linux/arm64' <<<"$inspected"
+          grep -E 'Platform:[[:space:]]+linux/amd64' <<<"$inspected"
+
+  # The Landlock kernel is built on Linux, because the kernel build needs a
+  # Linux userland, and linked into a dylib on macOS, because the dylib is a
+  # Mach-O. kernel.c is the hand-off between them (build-libkrunfw.sh).
+  firmware-kernel:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - name: Build kernel.c with Landlock
+        run: packages/vmm/guest/build-libkrunfw.sh --kernel "$RUNNER_TEMP/kernel"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: libkrunfw-kernel
+          path: ${{ runner.temp }}/kernel/kernel.c
+          if-no-files-found: error
+          retention-days: 3
+
+  # The runner links libkrun with cgo, so it is built against Homebrew's
+  # libkrun, which is also where `loom-vm setup` expects the user's copy: the
+  # runner records /opt/homebrew/opt/libkrun/lib/libkrun.1.dylib as its install
+  # name.
+  macos-assets:
+    needs: [prepare, firmware-kernel]
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.3'
+          cache-dependency-path: packages/vmm/go.sum
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: libkrunfw-kernel
+          path: kernel
+      - name: Link the firmware dylib
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          packages/vmm/guest/build-libkrunfw.sh --link kernel/kernel.c "$RUNNER_TEMP/firmware"
+          cp "$RUNNER_TEMP/firmware/libkrunfw.5.dylib" assets/libkrunfw-landlock-darwin-arm64.5.dylib
+      - name: Install libkrun
+        run: |
+          set -euo pipefail
+          # libkrun is not in homebrew-core; it comes from its own tap.
+          brew tap libkrun/krun
+          brew trust libkrun/krun 2>/dev/null || true
+          brew install libkrun/krun/libkrun
+          brew list --versions libkrun
+      - name: Build and sign the runner
+        run: |
+          set -euo pipefail
+          make vmm-runner
+          cp packages/vmm/build/go-microvm-runner assets/go-microvm-runner-darwin-arm64
+          # The build must have produced a runner that holds the entitlement
+          # and links Homebrew's libkrun, or setup would install a dud.
+          # codesign prints the entitlements as a dump on current macOS and
+          # as an XML property list on older releases; accept either.
+          codesign -d --entitlements - assets/go-microvm-runner-darwin-arm64 2>&1 \
+            | tr -d '\n\t ' \
+            | grep -E 'com\.apple\.security\.hypervisor(\[Value\]\[Bool\]true|</key><true/>)'
+          otool -L assets/go-microvm-runner-darwin-arm64 | grep -F '/opt/homebrew/opt/libkrun/lib/libkrun.1.dylib'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vmm-assets
+          path: assets/*
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, guest-manifest, macos-assets]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: vmm-assets
+          path: assets
+      - name: Attach the assets to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cd assets
+          sha256sum go-microvm-runner-darwin-arm64 libkrunfw-landlock-darwin-arm64.5.dylib \
+            > vmm-SHA256SUMS
+          cat vmm-SHA256SUMS
+
+          # release.yml creates the draft once both platforms have built and
+          # been compared. Wait for it rather than create a second release
+          # for the tag: a release it then refuses to create would stop the
+          # server archives from publishing.
+          id=""
+          for _ in $(seq 1 220); do
+            id=$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+              --jq '.[] | select(.tag_name == env.RELEASE_TAG) | .id' | head -n 1)
+            [ -n "$id" ] && break
+            echo "waiting for the $RELEASE_TAG release to be created"
+            sleep 60
+          done
+          [ -n "$id" ] || { echo "no release for $RELEASE_TAG appeared" >&2; exit 1; }
+
+          # No overwrite path: an existing asset of the same name fails the
+          # upload (HTTP 422) instead of replacing bytes someone may have
+          # installed from.
+          for asset in go-microvm-runner-darwin-arm64 \
+                       libkrunfw-landlock-darwin-arm64.5.dylib \
+                       vmm-SHA256SUMS; do
+            gh api --method POST \
+              "https://uploads.github.com/repos/$GH_REPO/releases/$id/assets?name=$asset" \
+              -H 'Content-Type: application/octet-stream' \
+              --input "$asset" > /dev/null
+            echo "attached $asset"
+          done
