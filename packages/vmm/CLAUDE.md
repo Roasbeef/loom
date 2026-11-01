@@ -125,10 +125,11 @@ publishes the guest image, runner and firmware that `loom-vm setup --release`
 installs. No Loom package imports
 this module and it imports none; `loom-exec` and `loomd` reach a guest as
 part of the guest image. The client package's
-`daemon_shipped_microvm_test` (with `test/support/microvm_executor`) drives
-the `loom-vm` binary as a process: it stages a node directory and checkout
-into a cloned root, boots it with `--publish`, and runs an orchestrator on
-the host against it.
+`daemon_shipped_microvm_test` drives the `loom-vm` binary as a process, through
+the product path: `loom-vm setup --from-build` writes a manifest in a private
+`LOOM_VM_HOME`, `loomd vm up` boots the guest and enrolls it in an
+orchestrator's configuration, and the test runs that orchestrator against the
+guest, then `vm down` and `vm up` again.
 
 ## Traffic
 

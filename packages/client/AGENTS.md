@@ -39,12 +39,20 @@ reader. `client/vm_cli` performs them with `distribution_provision`,
 `distribution_install`, `host/bootstrap` (`spawn_server`, `process_identity`,
 `reserve_loopback_port`), `ffi_os.run_capture` for `cp`, `chmod`, `kill`, `ps`,
 `uname` and `epmd`, and `weft/poll`. It adds no FFI. Tests: `client/vm_cli_test`,
-which covers the pure decisions; the live boot needs the built artifacts.
+which covers the pure decisions, and `daemon_shipped_microvm_test`, the live
+boot, which needs the built artifacts. The latter assembles a build tree of
+links, runs `loom-vm setup --from-build` into a private `LOOM_VM_HOME`, and
+drives `vm up`, a scripted turn through an orchestrator on the configuration
+`up` wrote, `vm down`, `vm status`, `vm up` again and a second turn. It checks
+the GitHub placeholder, that a fake token given as `LOOM_VM_GITHUB_TOKEN` is
+nowhere under the guest's files, that the guest's root is a directory and not a
+link to the export, and, with `LOOM_VM_GITHUB_LIVE=1`, that `api.github.com`
+answers `/zen` 200 and `/user` 401 through the proxy.
 
 Invariants that break things when violated:
 
 - A guest's files all live under `<vm home>/<name>/`: `deploy/`, `orch/`,
-  `root/`, `loom-vm.pid` and `loom-vm.log`. `LOOM_VM_HOME` overrides
+  `root/`, `state.img`, `loom-vm.pid` and `loom-vm.log`. `LOOM_VM_HOME` overrides
   `~/.loom/vm`.
 - `up` reads the bundles in `deploy/` again instead of minting new ones, so the
   orchestrator's installed pins keep matching the executor's certificate.
@@ -55,8 +63,12 @@ Invariants that break things when violated:
   while it still has that marker.
 - The console log is truncated before each launch. It is appended to, and the
   `LOOM-EXECUTOR-READY` of an earlier run would satisfy the wait.
-- `--timeout 8760h` is passed because `loom-vm run` stops a guest after ten
-  minutes by default.
+- `--timeout 0` is passed because `loom-vm run` stops a guest after ten
+  minutes by default, and zero means until stopped.
+- A guest that ran before keeps `root/`, its workspace copies and `state.img`
+  unless `--fresh`. `up` clones the export from the manifest's path resolved
+  through symbolic links, because `cp -R` copies a link as a link and the guest
+  would otherwise boot the export itself.
 - The workspace copy is made owner-writable. The guest's init cannot give a
   file to the `loom` user when the host user cannot write it, and Git's object
   files are read-only.
@@ -74,9 +86,9 @@ result (ADR-022 D2 and its 2026-11-01 addendum). `worktrees.Config` and
 repository's hooks during `git worktree add` masks them too. Both live outside the state
 root, which is why the state-root masks never covered them. An absent path is
 skipped, as for every conditional mask. Sessions local to an orchestrator are
-not yet masked this way. `daemon_shipped_microvm_test` (with
-`support/microvm_executor`) proves the mask from inside a libkrun guest; it
-needs `LOOM_VM`, `LOOM_VM_GUEST_ROOT`, `LOOM_VM_RUNNER`, `LOOM_VM_LIB_DIR` and
+not yet masked this way. `daemon_shipped_microvm_test` proves the mask from
+inside a libkrun guest it boots with `loom vm up` (see "Standing microVM guest");
+it needs `LOOM_VM`, `LOOM_VM_GUEST_ROOT`, `LOOM_VM_RUNNER`, `LOOM_VM_LIB_DIR` and
 `LOOM_VM_FIRMWARE_DIR`, and skips without them.
 
 ## Fresh history source pages

@@ -182,7 +182,7 @@ and the last three are the ordinary distributed path.
    a peer whose name differs from the atom dialled.
 
 The guest's own epmd is never reached from the host. The fixed guest listen
-port is 4370 (`packages/client/test/support/microvm_executor.gleam:51`).
+port is 4370 (`vm_spec.guest_port`, `packages/client/src/client/vm_spec.gleam:61`).
 
 ## Isolation around a tool call
 
@@ -339,9 +339,9 @@ env = ["HTTPS_PROXY", "NO_PROXY", "GH_TOKEN", "GITHUB_TOKEN"]
 `network = "full"` opens the jail's network to the guest's `eth0`, whose only
 host-side peer is the launcher's stack with its egress allowlist. The uppercase
 names are enough: `env` accepts only `[A-Z_][A-Z0-9_]*`, git reads
-`/etc/gitconfig` regardless, and curl and Go read `HTTPS_PROXY`. `gh` itself is
-not in the guest image yet. This change does not edit the client package, so
-nothing renders these lines automatically.
+`/etc/gitconfig` regardless, and curl and Go read `HTTPS_PROXY`. `loom vm up`
+renders these lines into the guest's configuration when `--github` is `gh` or
+`env` (`vm_spec.guest_config`), and renders none for `--github off`.
 
 **What is logged.** One line per CONNECT (host, decision and mode, bytes each
 way, duration) and one per injected request (host, method, path without its
@@ -515,17 +515,19 @@ Four rules follow from that table:
 - **Readiness is read from the console, never from the port.** A forward
   accepts a connection on the host side even when nothing listens in the
   guest; the hosted provider then closes it.
-- **The test retires from outside its deadline.** `daemon_shipped_microvm_test`
-  sends the guest handle from its deadline-bounded body to the test process,
-  which sends SIGTERM to `loom-vm` and waits up to 60 s for it to exit
-  (`packages/client/test/support/microvm_executor.gleam:340`), whether the
-  body passed or not.
+- **The test stops the guest from outside its deadline.**
+  `daemon_shipped_microvm_test` boots its guest with `loom vm up` inside a
+  deadline-bounded body, and runs `loom vm down` after that body, whether it
+  passed or not. `down` sends SIGTERM to the recorded `loom-vm` and waits up to
+  60 s for it to exit.
 
 ## A standing guest: `loom vm`
 
 `loom vm up | down | status` (`client/vm_cli`, with its decisions in
-`client/vm_spec`) productizes the hand-built path of `support/microvm_executor`.
-It runs one standing guest executor, called `vm` unless `--name` says another,
+`client/vm_spec`) is the product path that `daemon_shipped_microvm_test` drives:
+the test installs a manifest with `loom-vm setup --from-build`, runs `loom vm
+up`, `down` and `up` again through the shipped `loomd`, and composes nothing by
+hand. It runs one standing guest executor, called `vm` unless `--name` says another,
 and enrolls it as an ordinary `[executors.<name>]` row, so `loom --executor
 <name> --workspace <directory name>` places a session's tools in the guest
 through the same remote placement every executor has. The guest is a separate
@@ -546,17 +548,24 @@ It then:
    `distribution_install.install`, which merges `[distribution]` and
    `[executors.<name>]` and refuses a file that holds a different deployment;
 3. clones the guest root to `~/.loom/vm/<name>/root` (`cp -cRp` on macOS,
-   `cp -a --reflink=auto` on Linux), replacing an old one, stages the executor
-   node into `<root>/srv/loom-node/`, and copies the workspace, with its `.git`
-   directory, to `<root>/srv/workspaces/<directory name>`. The copy's
+   `cp -a --reflink=auto` on Linux) unless the guest ran before and `--fresh`
+   was not given, in which case the root and `state.img` are kept. It resolves
+   the manifest's `guest_root` first, because `cp -R` copies a symbolic link
+   named on its command line as a link. It then stages the executor node into
+   `<root>/srv/loom-node/`, rewriting its configuration and credentials, and
+   copies the workspace, with its `.git` directory, to
+   `<root>/srv/workspaces/<directory name>` unless that copy exists. The copy's
    `.git/config` loses its `[credential]` sections and its `insteadOf`,
    `pushInsteadOf` and `extraheader` keys, because the guest's default read
    scope can read it;
-4. starts `loom-vm run --publish <short name>:<free host port>:4370` detached
-   through `host/bootstrap.spawn_server`, which records the process's birth
-   marker in `loom-vm.pid` before the wrapper becomes `loom-vm`, and waits on
-   `weft/poll` for `LOOM-EXECUTOR-READY` in `loom-vm.log`. A guest that does
-   not report is stopped, and the tail of its log is the error.
+4. starts `loom-vm run --publish <short name>:<free host port>:4370 --state-disk
+   state.img` detached through `host/bootstrap.spawn_server`, which records the
+   process's birth marker in `loom-vm.pid` before the wrapper becomes
+   `loom-vm`, and waits on `weft/poll` for `LOOM-EXECUTOR-READY` in
+   `loom-vm.log`. A guest that does not report is stopped, and the tail of its
+   log is the error. With `--github gh|env` (the default is `gh`) `loom-vm`
+   also starts the credential proxy and the guest's `[tools]` table turns the
+   jail's network on; `--github off` gives the guest no egress.
 
 `down` sends SIGTERM to the recorded process while the pid still has the
 recorded birth marker, and waits for it to exit. It leaves the root and the
@@ -569,8 +578,13 @@ table.
 Two properties of the guest root came out of the first live run. A clone keeps
 Git's read-only object files, and the guest's init cannot give a file to the
 `loom` user when the host user cannot write it, so `up` makes the workspace
-copy owner-writable. And every `up` replaces the root, so work the guest wrote
-into its checkout does not survive the next `up`.
+copy owner-writable. And a guest's state disk is shorter after its first boot:
+the guest's `mke2fs` zeroes the last 64 KiB of the device, libkrun shortens the
+backing file by that much, and the next boot's kernel refuses the filesystem
+with "block count exceeds size of device". `loom-vm run` extends an existing
+`--state-disk` file to the requested size, so `down` and `up` resume. A resumed
+guest keeps the checkout its agent edited and the sessions its executor holds;
+`--fresh` replaces the root and the state disk.
 
 ## Known gaps
 
@@ -594,11 +608,14 @@ into its checkout does not survive the next `up`.
 - The host epmd entry assumes the node name's host part is `127.0.0.1`. A
   guest executor reached from another machine would need a different
   transport.
-- The guest image has no `gh` and no `curl`, so the credential proxy was
-  checked with `git ls-remote` and `openssl s_client`, which use the same
-  proxy, CA and placeholder. A real push needs a real token, which the check
-  did not use. Nothing renders the executor's `[tools]` lines for the proxy,
-  and the jailed path through them was not driven.
+- The credential proxy is driven end to end only with a made-up token.
+  `daemon_shipped_microvm_test` boots a guest with `loom vm up --github env`
+  and a fake `LOOM_VM_GITHUB_TOKEN`, and a jailed `bash` call shows the
+  placeholder in `GH_TOKEN`, the fake token nowhere under the guest's files, and
+  (with `LOOM_VM_GITHUB_LIVE=1`) `api.github.com/zen` answering 200 and
+  `/user` answering 401 through the proxy. A real push, which needs a real
+  token with write access, has not been run. The test needs a guest root with
+  `curl`; the one it was run with also has `gh`.
 - Firecracker, the second backend ADR-022 names, has no implementation.
 - This document was written from the code directly rather than from
   per-subsystem reader summaries; go-microvm's internals (`microvm.Run`, the

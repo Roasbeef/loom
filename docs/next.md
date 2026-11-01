@@ -5,10 +5,12 @@
 The local branch `microvm/libkrun-launcher`, based on `394b98d4f`, carries the
 first end-to-end slice of [ADR-022](adr/022-microvm-tier-runs-the-executor-in-a-libkrun-guest.md).
 It has not been pushed and has no hosted CI run. `daemon_shipped_microvm_test`
-passes on an Apple Silicon Mac. It runs an orchestrator on the host and the
-executor daemon inside a libkrun guest, drives one scripted `bash` call, and
-requires the call to have run on the Landlock guest kernel under `loom-exec`
-and to have been unable to read the node's cookie. Linux/KVM has not been
+passes on an Apple Silicon Mac. It boots the guest with `loom vm up`, runs an
+orchestrator on the host against it, drives scripted `bash` calls, and
+requires a call to have run on the Landlock guest kernel under `loom-exec`,
+to have been unable to read the node's cookie, and to have seen only the
+GitHub proxy's placeholder token. It then runs `loom vm down` and `up` and
+requires the guest to resume with its checkout. Linux/KVM has not been
 booted. `make fmt-check`, `make lint`, `make doc-check` and `make vmm-test`
 pass, as do the touched client test files. The earlier full `make check` failed only on one
 lint error, which is now fixed.
@@ -27,7 +29,8 @@ lint error, which is now fixed.
   reference only, and the stock libkrunfw is not used.
 - **Open:** orchestrator-local sessions still lack the credential mask. A
   broker or pool driver that places executors into guests does not exist yet;
-  the test composes `loom-vm` by hand. Copy-in of a real checkout and
+  `loom vm up` places one standing guest from the command line. Copy-in of a
+  real checkout and
   bundles (#1137) are not done. There is no Linux host half of the firmware
   build and no Firecracker backend. The host epmd registration assumes the
   node name's host part is `127.0.0.1`.
