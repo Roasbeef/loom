@@ -510,6 +510,14 @@ vmm-guest-root: ## Build the linux/arm64 guest root into packages/vmm/build/gues
 	podman --connection $(VMM_BUILD_CONNECTION) export "$$ctr" | tar -xp -C $(VMM_GUEST_ROOT); \
 	echo "exported $(VMM_GUEST_ROOT)"
 
+# The developer path to a manifest: `loom-vm setup --from-build` records where
+# the three targets above put their output, under $LOOM_VM_HOME (default
+# ~/.loom/vm), without copying anything. A user who builds nothing runs
+# `loom-vm setup --release TAG` instead (docs/distribution.md).
+.PHONY: vmm-install-dev
+vmm-install-dev: vmm ## Write loom-vm's manifest for the packages/vmm/build tree (LOOM_VM_HOME)
+	@$(VMM_PKG)/build/loom-vm setup --from-build $(VMM_PKG)/build
+
 .PHONY: vmm-test
 vmm-test: ## Vet, build, and test the Go microVM launcher
 	@cd $(VMM_PKG) && go vet ./... && go build ./... && go test ./...

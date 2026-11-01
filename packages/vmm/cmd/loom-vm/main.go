@@ -6,11 +6,17 @@
 //
 //	loom-vm probe
 //	loom-vm run [flags] -- INIT [ARGS...]
+//	loom-vm setup (--release TAG | --from-build DIR)
+//	loom-vm doctor
 //
 // probe reports whether this host can boot a guest. run boots one, copies
 // the guest console to standard output until the guest exits, and then
 // releases the machine. Native paths come from flags, or from LOOM_VM_RUNNER,
 // LOOM_VM_LIB_DIR and LOOM_VM_FIRMWARE_DIR.
+//
+// setup installs a release's artifacts, or points at a build tree, and writes
+// the manifest under $LOOM_VM_HOME (default ~/.loom/vm) that names every
+// path a guest boots from. doctor checks what the manifest names.
 package main
 
 import (
@@ -35,6 +41,8 @@ import (
 const usage = `usage:
   loom-vm probe [native flags]
   loom-vm run [native flags] [run flags] -- INIT [ARGS...]
+  loom-vm setup (--release TAG | --from-build DIR) [--repo OWNER/NAME] [--revision REV] [--lib-dir DIR]
+  loom-vm doctor [--home DIR]
 `
 
 func main() {
@@ -50,6 +58,12 @@ func main() {
 
 	case "run":
 		err = run(os.Args[2:])
+
+	case "setup":
+		err = setupCmd(os.Args[2:])
+
+	case "doctor":
+		err = doctorCmd(os.Args[2:])
 
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stdout, usage)
