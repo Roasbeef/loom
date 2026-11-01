@@ -142,6 +142,10 @@ func run(args []string) error {
 	fs.Var(&pubs, "publish", "NAME:HOST:GUEST forward GUEST to HOST and register NAME "+
 		"at HOST in the host's epmd (repeatable)")
 	fs.DurationVar(&timeout, "timeout", 10*time.Minute, "stop the guest after this long")
+
+	var gh githubFlags
+	gh.register(fs)
+
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -179,6 +183,14 @@ func run(args []string) error {
 	if err := spec.Validate(); err != nil {
 		return err
 	}
+
+	// The proxy goes up before the guest and, because defers run in reverse,
+	// comes down after it.
+	stopProxy, err := gh.apply(&spec, timeout)
+	if err != nil {
+		return err
+	}
+	defer stopProxy()
 
 	// An interrupt ends the run the same way a timeout does: through the
 	// context, so the deferred Stop still releases the machine.
