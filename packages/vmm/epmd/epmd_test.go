@@ -3,7 +3,9 @@ package epmd
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -102,7 +104,10 @@ func TestRegisterWithRealEpmd(t *testing.T) {
 	}
 	_ = names
 
-	reg, err := Register(DefaultAddress, "loom_vmm_epmd_test", 47999)
+	// The name carries this process's pid, so two runs on one host, which
+	// share the host's epmd, never collide on a registration.
+	name := fmt.Sprintf("loom_vmm_epmd_test_%d", os.Getpid())
+	reg, err := Register(DefaultAddress, name, 47999)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +117,7 @@ func TestRegisterWithRealEpmd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(out), "name loom_vmm_epmd_test at port 47999") {
+	if !strings.Contains(string(out), "name "+name+" at port 47999") {
 		t.Fatalf("epmd -names:\n%s", out)
 	}
 }

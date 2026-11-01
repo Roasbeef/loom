@@ -204,7 +204,15 @@ func run(args []string) error {
 		defer reg.Close()
 	}
 
-	return follow(ctx, m, os.Stdout)
+	// An interrupt or SIGTERM is how a caller asks for the guest to stop, so
+	// the cancellation it causes is a clean end of the run, not a failure.
+	// A timeout is still reported.
+	err = follow(ctx, m, os.Stdout)
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+
+	return err
 }
 
 // publication is one --publish flag: a node name and the forward it is

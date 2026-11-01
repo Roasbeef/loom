@@ -179,9 +179,11 @@ func checkTarget(target string) error {
 }
 
 // checkHost refuses an allowlist entry that is empty, carries a scheme or
-// port, or uses a wildcard anywhere but a leading "*.". The allowlist names
-// hosts; a URL in it would never match, and a silently dead entry is how an
-// operator ends up widening a list that was never the problem.
+// port, uses a wildcard anywhere but a leading "*.", or puts a wildcard over a
+// single label such as "*.com". The allowlist names hosts; a URL in it would
+// never match, and a silently dead entry is how an operator ends up widening a
+// list that was never the problem. go-microvm refuses a single-label wildcard
+// at boot, so refusing it here keeps the refusal ahead of the image pull.
 func checkHost(h string) error {
 	name := strings.TrimPrefix(h, "*.")
 
@@ -191,6 +193,10 @@ func checkHost(h string) error {
 
 	case strings.ContainsAny(name, "*/:@ "):
 		return fmt.Errorf("machine: egress host %q is not a bare hostname", h)
+
+	case name != h && !strings.Contains(name, "."):
+		return fmt.Errorf("machine: egress wildcard %q covers a whole top-level "+
+			"domain; name at least two labels after \"*.\"", h)
 	}
 
 	return nil

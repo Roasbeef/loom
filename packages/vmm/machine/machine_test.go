@@ -46,6 +46,9 @@ func TestValidateRefusesBadSpecs(t *testing.T) {
 		{"port host", func(s *Spec) {
 			s.Egress.Hosts = []string{"example.com:443"}
 		}, "bare hostname"},
+		{"top-level wildcard", func(s *Spec) {
+			s.Egress.Hosts = []string{"*.com"}
+		}, "top-level"},
 		{"inner wildcard", func(s *Spec) {
 			s.Egress.Hosts = []string{"a.*.com"}
 		}, "bare hostname"},

@@ -127,7 +127,13 @@ podman --connection "${conn}" run --rm \
 	-e JOBS="${jobs}" -e KERNEL_VERSION="${KERNEL_VERSION}" \
 	"${BUILD_IMAGE}" bash /guest/build-libkrunfw.sh --in-container
 
-# The host half: upstream's Darwin link line for the bundle.
+# The host half: upstream's Darwin link line for the bundle. A Linux host loads
+# libkrunfw.so.5 rather than a dylib, and that half is not written yet, so it
+# is refused here rather than producing a library libkrun would never load.
+if [ "$(uname -s)" != Darwin ]; then
+	echo "build-libkrunfw.sh: only the macOS dylib is built so far" >&2
+	exit 1
+fi
 cc -fPIC -DABI_VERSION="${ABI_VERSION}" -shared \
 	-o "${out}/libkrunfw.${ABI_VERSION}.dylib" "${work}/out/kernel.c"
 
