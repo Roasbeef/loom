@@ -150,3 +150,45 @@ evidence for copy-in over sharing.
   pids probe `FAILED` with `release cgroup start gate: write |1: broken
   pipe`. The executor does not run as root, but the failure is real and is
   tracked separately.
+
+## Addendum, 2026-11-01: the first end-to-end run
+
+`daemon_shipped_microvm_test` now drives the tier end to end on an Apple
+Silicon Mac. An orchestrator runs on the host. The executor is the same
+`loomd` release, booted inside a libkrun guest from a copied linux/arm64 root
+(`make vmm-guest-root`) on the Landlock kernel (`make vmm-firmware`). A
+scripted model issues one `bash` call through a session registered on the
+guest executor. The call ran on `6.12.91-loom-landlock` under `loom-exec`
+(no-new-privileges set) and wrote into the guest's copy of the checkout. The
+whole test, boot included, takes about ten seconds.
+
+**The link (settles how D1's executor is reached).** The orchestrator dials
+the executor by its unchanged node name, `<name>@127.0.0.1`. `loom-vm run
+--publish NAME:HOST:GUEST` forwards the guest's `listen_port` to a host
+loopback port and holds NAME at that port in the host's epmd with an ALIVE2
+registration for the guest's life. The dial path asks the epmd at the name's
+host for the port and then connects there, so the pinned TLS handshake, the
+certificate's node-name SAN and the distribution handshake's exact-name check
+all run unchanged. No daemon or boot-flag change was needed. An epmd-less
+distribution and a vsock carrier were considered and rejected as more
+machinery for the same property.
+
+**D2 did not hold until it was fixed.** In the first run, model code in the
+guest read the executor node's Erlang cookie. Nothing masked a distributed
+daemon's `[distribution]` key or cookie: both live outside the state root,
+and the default read scope is `host`. The same exposure held for an executor
+on a host. Commit 73126ab14 adds the node's key and cookie to the protected
+paths of every jailed child an executor runs, and the test now requires that
+the cookie read fails. Sessions local to an orchestrator still lack the mask;
+that is tracked as follow-up work.
+
+**D3 measured.** With the stock libkrunfw the turn does not complete. The
+test therefore requires the Landlock kernel and skips without it, rather than
+relabelling a layer.
+
+**Details a future driver inherits.** go-microvm v0.0.43 serves no DHCP, so
+the guest configures 192.168.127.2/24 statically. The guest root is a
+virtio-fs share that the guest writes into, so each boot uses a `cp -cRp`
+clone. The executor's state root is a tmpfs inside the guest, for SQLite and
+the code-mode socket. The node's secrets are staged under `/srv`, outside the
+jail's base view.

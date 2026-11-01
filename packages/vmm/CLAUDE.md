@@ -13,9 +13,12 @@ registry client, gVisor's netstack) never enters the jail helper's module.
 
 - `machine.Spec` — everything about one guest: root (`Root.Image` OCI ref
   or `Root.Dir`), vCPUs, memory, `Init` argv, `Files` copied into the root
-  before boot, `Egress` allowlist, data directory. `Validate` refuses a spec
-  with no or two roots, no init, a file target that is not a clean absolute
-  path below `/`, or an egress entry that is not a bare hostname.
+  before boot, `Egress` allowlist, `Forwards`, data directory. `Validate`
+  refuses a spec with no or two roots, no init, a file target that is not a
+  clean absolute path below `/`, an egress entry that is not a bare hostname,
+  or a forward with a zero port or a host port used twice.
+- `machine.Forward` — a host loopback port carried into a guest port. The only
+  inbound path into a guest; it never listens beyond `127.0.0.1`.
 - `machine.Egress` — the complete outbound allowlist. The zero value allows
   nothing; it never means "the hypervisor's default".
 - `machine.Backend` / `machine.Machine` — the hypervisor-independent
@@ -23,10 +26,15 @@ registry client, gVisor's netstack) never enters the jail helper's module.
 - `machine/libkrun.Backend` — the go-microvm implementation. `Config` names
   the runner binary, the libkrun directory, and an optional `FirmwareDir`
   for a custom libkrunfw searched before the stock one.
+- `epmd.Register` — an ALIVE2 registration of a node name in an epmd, held
+  open as a `Registration` because epmd withdraws a name when the registering
+  connection closes.
 - `cmd/loom-vm` — `probe` and `run [flags] -- INIT ARGS`. Native paths come
   from `--runner`, `--lib-dir`, `--firmware-dir` or `LOOM_VM_RUNNER`,
-  `LOOM_VM_LIB_DIR`, `LOOM_VM_FIRMWARE_DIR`.
-
+  `LOOM_VM_LIB_DIR`, `LOOM_VM_FIRMWARE_DIR`. `run` takes `--file`,
+  `--allow`, `--forward HOST:GUEST` and `--publish NAME:HOST:GUEST`, which
+  forwards the port and registers NAME at HOST in the host's epmd (starting
+  one with `epmd -daemon` when none answers) for the guest's life.
 - `guest/build-libkrunfw.sh` and `guest/libkrunfw-landlock.config` — build a
   libkrunfw v5.5.0 whose guest kernel has Landlock and securityfs (ADR-022,
   D3), which the stock Homebrew libkrunfw lacks. `make vmm-firmware` runs the
@@ -43,16 +51,32 @@ registry client, gVisor's netstack) never enters the jail helper's module.
   network statically, chowns the loom user's directories, builds the delegated
   cgroup v2 subtree under `/sys/fs/cgroup/loom`, and runs its arguments as
   `loom` with `LOOM_CGROUP_BASE` set.
+- `guest/loom-guest-executor NODE_DIR` — the guest side of an executor. As
+  root it mounts a tmpfs on `NODE_DIR/state` and gives `NODE_DIR` and
+  `/srv/workspaces/*` to loom; then, through `loom-guest-init`, it renders the
+  distribution options inside the guest, starts `loomd`, and prints
+  `LOOM-EXECUTOR-READY <name>` once the node is registered with the guest's
+  epmd (or `LOOM-EXECUTOR-FAILED` and the daemon log).
 
 ## Relationships
 
 Depends on `github.com/stacklok/go-microvm` only. No Loom package imports
-this module and it imports none; `loom-exec` reaches a guest as a staged file
-or as part of the guest image.
+this module and it imports none; `loom-exec` and `loomd` reach a guest as
+part of the guest image. The client package's
+`daemon_shipped_microvm_test` (with `test/support/microvm_executor`) drives
+the `loom-vm` binary as a process: it stages a node directory and checkout
+into a cloned root, boots it with `--publish`, and runs an orchestrator on
+the host against it.
 
 ## Traffic
 
-None on Loom's wires yet. The guest's console is a host file
+An executor in a guest speaks Loom's ordinary TLS distribution. The
+orchestrator on the host resolves the executor's unchanged node name
+(`<name>@127.0.0.1`) through the host epmd entry `--publish` holds, connects
+to the forwarded host port, and the hosted stack carries the connection to
+the guest's `listen_port`; the pinned handshake, the certificate's node-name
+SAN and the distribution name check run as between two host nodes. The
+guest's own epmd is never reached from the host. The guest's console is a host file
 (`<data dir>/console.log`) the runner writes. The guest's network is a
 virtio-net device whose other end is go-microvm's hosted gVisor stack in the
 launcher process: guest 192.168.127.2/24, gateway and DNS 192.168.127.1. The
@@ -78,7 +102,11 @@ guest configures that statically; go-microvm v0.0.43 serves no DHCP lease.
 - **The runner is version-locked.** Build it from this module's go-microvm
   version (`make vmm-runner`) and, on macOS, codesign it with
   `runner.entitlements`; an older runner fails at boot, not at probe.
-
+- **An executor node's secrets live under `/srv`.** The jail's base view
+  exposes the system roots (`/etc`, `/opt`, `/usr`, `/var/lib` and others) to
+  model code running as the same user, so the node's key, cookie and
+  configuration are staged under `/srv/loom-node`, and the daemon masks the
+  key and cookie from every jailed child (`protecting_node_credentials`).
 - **Boot a clone of the guest root, never the export.** The root is a
   virtio-fs share the guest writes into. Clone it with `cp -cRp`: without `-p`
   macOS `cp` applies the umask to directory modes and `/tmp` loses its

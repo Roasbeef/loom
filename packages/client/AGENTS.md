@@ -26,6 +26,20 @@ returning the existing error, because EUnit truncates a failed binary pattern.
 
 # client
 
+## Node credential masks on an executor
+
+`executor_plane.machine` parses its own `[distribution]` table and keeps the
+node's TLS key and cookie in `Machine.credentials`. The executor's base policy
+adds them through `workspace_policy.protecting_node_credentials`, beside the
+state-root and blob masks, so a jailed child cannot print them into a tool
+result (ADR-022 D2 and its 2026-11-01 addendum). Both live outside the state
+root, which is why the state-root masks never covered them. An absent path is
+skipped, as for every conditional mask. Sessions local to an orchestrator are
+not yet masked this way. `daemon_shipped_microvm_test` (with
+`support/microvm_executor`) proves the mask from inside a libkrun guest; it
+needs `LOOM_VM`, `LOOM_VM_GUEST_ROOT`, `LOOM_VM_RUNNER`, `LOOM_VM_LIB_DIR` and
+`LOOM_VM_FIRMWARE_DIR`, and skips without them.
+
 ## Fresh history source pages
 
 `daemon/manager.collect_sources` asks the catalogue owner for `DomainSources`,
