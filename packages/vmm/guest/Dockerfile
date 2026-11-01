@@ -151,3 +151,16 @@ COPY packages/vmm/guest/loom-guest-executor /usr/local/sbin/loom-guest-executor
 RUN chmod 0755 /usr/local/sbin/loom-guest-init /usr/local/sbin/loom-guest-executor
 
 WORKDIR /work
+
+# The identity of the image, read back by `loom-vm setup`. The guest holds an
+# exact-revision executor, and the orchestrator that talks to it must be the
+# same build (docs/distribution.md), so setup reads `revision` to record which
+# loom commit these bytes came from and `version` to refuse an image pulled
+# under a tag it was not built for. The labels sit at the end of the stage
+# because the arguments change on every commit and would otherwise invalidate
+# the layers above them.
+ARG LOOM_REVISION=unknown
+ARG LOOM_VERSION=dev
+LABEL org.opencontainers.image.source="https://github.com/roasbeef/loom" \
+	org.opencontainers.image.revision="${LOOM_REVISION}" \
+	org.opencontainers.image.version="${LOOM_VERSION}"

@@ -491,11 +491,17 @@ vmm-firmware: ## Build libkrunfw with Landlock into packages/vmm/build/firmware
 VMM_BUILD_CONNECTION ?= loom-build
 VMM_GUEST_IMAGE      ?= localhost/loom-vmm-guest-root:dev
 VMM_GUEST_ROOT       := $(VMM_PKG)/build/guest-root
+# The image labels `loom-vm setup` reads. A developer build is version "dev"
+# at the checkout's commit; the release workflow passes the tag.
+VMM_GUEST_REVISION   ?= $(shell git rev-parse HEAD)
+VMM_GUEST_VERSION    ?= dev
 
 .PHONY: vmm-guest-root
 vmm-guest-root: ## Build the linux/arm64 guest root into packages/vmm/build/guest-root (podman)
 	podman --connection $(VMM_BUILD_CONNECTION) build --platform linux/arm64 \
 		--target runtime -t $(VMM_GUEST_IMAGE) \
+		--build-arg LOOM_REVISION=$(VMM_GUEST_REVISION) \
+		--build-arg LOOM_VERSION=$(VMM_GUEST_VERSION) \
 		-f $(VMM_PKG)/guest/Dockerfile .
 	@set -e; \
 	ctr=$$(podman --connection $(VMM_BUILD_CONNECTION) create $(VMM_GUEST_IMAGE) /bin/true); \
