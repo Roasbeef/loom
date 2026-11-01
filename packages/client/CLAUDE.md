@@ -85,8 +85,16 @@ result (ADR-022 D2 and its 2026-11-01 addendum). `worktrees.Config` and
 `worktree_git.Config` carry the same list, so the sandboxed Git that runs a
 repository's hooks during `git worktree add` masks them too. Both live outside the state
 root, which is why the state-root masks never covered them. An absent path is
-skipped, as for every conditional mask. Sessions local to an orchestrator are
-not yet masked this way. `daemon_shipped_microvm_test` proves the mask from
+skipped, as for every conditional mask. Every jail, a host session's
+included, also masks the state root's `vm` directory, the home's `.loom/vm`
+and the home's `.erlang.cookie` (`workspace_policy.lazy_masks`,
+`node_home_masks`): `loom vm up` keeps each guest's bundles and its
+executor's key and cookie there, and the cookie is every distributed
+daemon's. A node key `loom distribution install` places outside the state
+root is still unmasked for host sessions. `loom vm up` installs a newly
+minted deployment with `listen_address = "127.0.0.1"`
+(`vm_spec.with_loopback_listener`) and, on resume, does not reinstall it.
+`daemon_shipped_microvm_test` proves the mask from
 inside a libkrun guest it boots with `loom vm up` (see "Standing microVM guest");
 it needs `LOOM_VM`, `LOOM_VM_GUEST_ROOT`, `LOOM_VM_RUNNER`, `LOOM_VM_LIB_DIR` and
 `LOOM_VM_FIRMWARE_DIR`, and skips without them.

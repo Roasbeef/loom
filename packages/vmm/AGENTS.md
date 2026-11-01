@@ -73,6 +73,7 @@ registry client, gVisor's netstack) never enters the jail helper's module.
   one with `epmd -daemon` when none answers) for the guest's life. An
   interrupt or SIGTERM stops the guest and exits 0; a timeout exits 1, and
   `--timeout 0` runs until stopped, as a standing guest does.
+  `run` validates the spec after the credential proxy adds its host service.
   `--state-disk PATH` attaches a raw image as `/dev/vda` (`Spec.Disks`),
   creating a sparse one of `--state-disk-size` MiB on first use and reusing
   it after; `loom-guest-executor --state-device /dev/vda` formats it once and

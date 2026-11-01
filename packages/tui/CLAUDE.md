@@ -1068,7 +1068,8 @@ boundaries and the split's measurements under Invariants.
   passphrase, and only `loomd distribution` can. `loom vm …` (`up`, `down`,
   `status`, implemented in `client/vm_cli`) is forwarded the same way with
   no refusals of its own, and `vm_usage` is its local help copy, compared
-  with `loomd vm --help` by `scripts/cli_help_test.sh`. `main`
+  with `loomd vm --help` by `scripts/cli_help_test.sh`; both name `loom-vm setup`,
+the launcher's own command, for fetching the artifacts. `main`
   answers it before it builds a model, so nothing draws a frame and no
   terminal state is installed on the way past. Its three help forms are
   local instead: the client-only shipment can print extension usage without

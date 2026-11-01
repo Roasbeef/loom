@@ -2,38 +2,52 @@
 
 ## MicroVM executor tier (issue #85)
 
-The local branch `microvm/libkrun-launcher`, based on `394b98d4f`, carries the
-first end-to-end slice of [ADR-022](adr/022-microvm-tier-runs-the-executor-in-a-libkrun-guest.md).
-It has not been pushed and has no hosted CI run. `daemon_shipped_microvm_test`
-passes on an Apple Silicon Mac. It boots the guest with `loom vm up`, runs an
-orchestrator on the host against it, drives scripted `bash` calls, and
-requires a call to have run on the Landlock guest kernel under `loom-exec`,
-to have been unable to read the node's cookie, and to have seen only the
-GitHub proxy's placeholder token. It then runs `loom vm down` and `up` and
-requires the guest to resume with its checkout. Linux/KVM has not been
-booted. `make fmt-check`, `make lint`, `make doc-check` and `make vmm-test`
-pass, as do the touched client test files. The earlier full `make check` failed only on one
-lint error, which is now fixed.
+Two branches carry the tier. `microvm/libkrun-launcher` (PR #1154) is the
+first slice: the `loom-vm` launcher, the Landlock libkrunfw, the guest root,
+the executor-in-a-guest link and the node credential mask.
+`microvm/dev-experience`, cut from its tip, is the developer path recorded in
+ADR-022's "developer path" addendum. Neither has a hosted CI run.
 
-- **Built:** `packages/vmm` (`loom-vm`: go-microvm, default-deny egress,
-  host-loopback forwards, `--publish` into the host epmd), `make vmm-runner`,
-  `make vmm-firmware` (libkrunfw v5.5.0 with Landlock), `make vmm-guest-root`
-  (a linux/arm64 root built in the `loom-build` podman machine), and the
-  guest's init and executor scripts.
-- **Fixed on the way:** an executor's distribution key and cookie were
-  readable by jailed model code under the default host read scope. They are
-  now masked from session jails and from worktree Git.
-- **Ruled:** the orchestrator reaches a guest executor by its unchanged node
-  name through a forwarded port and a host epmd registration. No daemon
-  change was needed (ADR-022 addendum). `lightninglabs/hazmat` is a
-  reference only, and the stock libkrunfw is not used.
-- **Open:** orchestrator-local sessions still lack the credential mask. A
-  broker or pool driver that places executors into guests does not exist yet;
-  `loom vm up` places one standing guest from the command line. Copy-in of a
-  real checkout and
-  bundles (#1137) are not done. There is no Linux host half of the firmware
-  build and no Firecracker backend. The host epmd registration assumes the
-  node name's host part is `127.0.0.1`.
+- **What a developer runs:** `loom-vm setup --release TAG` (or `make
+  vmm-install-dev` from a checkout), then `loom vm up --workspace DIR`, then
+  `loom --executor vm --workspace NAME`. `loom vm down` stops the guest and
+  `loom vm status` reports it. A second `up` resumes the guest's checkout and
+  its state disk; `--fresh` starts both again. `--github gh|env|off` (default
+  `gh`) chooses the token the credential proxy injects; the guest only ever
+  holds a placeholder.
+- **Verified on an Apple Silicon Mac:** `daemon_shipped_microvm_test` drives
+  `loom vm up`. An orchestrator on the host runs a scripted turn whose
+  jailed `bash` call shows the Landlock guest kernel and loom-exec, cannot
+  read the node's cookie, and sees only the placeholder token. With
+  `LOOM_VM_GITHUB_LIVE=1`, GitHub answers `/zen` with 200 and the injected
+  fake token with 401 on `/user`. A host-side grep finds the fake token
+  nowhere under the guest's directory. After `down` and `up`, a new session
+  reads a file the first one wrote. A cold `up` takes about 7 s and a resume
+  about 4 s.
+- **Fixed on the way:** an executor's distribution key and cookie, and then
+  the standing guest's deployment and the home's `.erlang.cookie`, were
+  readable from host jails; all are masked now. Formatting the state disk in
+  the guest shortened its image by 64 KiB, which refused the next boot;
+  `loom-vm` restores the size. A symlinked guest root was booted in place of
+  a private copy.
+- **Ruled (owner, 2026-11-01):** a standing guest run by `loom vm`, separate
+  from the daemon; the local daemon as a loopback-bound distribution member
+  (protocol-change/106); prebuilt artifacts on GHCR and the release; the
+  agent pushes from the guest through the credential proxy, superseding
+  #214's no-injection line and #1137's owner-pushes ruling for this tier; a
+  persistent state disk per guest. `loom vm sync` is #1155.
+- **Unverified:** `.github/workflows/vmm-release.yml` has never run; the GHCR
+  package must be made public once by hand after the first publish;
+  `setup --release` has never downloaded a real release; Linux/KVM has not
+  booted; no real push with a real token has been made.
+- **Open:** a pool driver and a guest per session; the remaining #214 pieces
+  (proxy as the only egress path, per-call allowlists, an enforcement-report
+  entry, a self-test probe) before `narrow_unenforceable` stops downgrading
+  for guests; whether the proxy should refuse private address ranges, which
+  would break a GitHub Enterprise allowlist; a node key installed by `loom
+  distribution install` outside the state root is still unmasked for host
+  sessions (the cookie is masked); the Linux half of the firmware build and a
+  Linux runner download; Firecracker.
 
 ## JSON string cursor allocation
 
