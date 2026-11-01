@@ -26,6 +26,43 @@ returning the existing error, because EUnit truncates a failed binary pattern.
 
 # client
 
+## Standing microVM guest (`loom vm`)
+
+`client.gleam` dispatches `loomd vm up | down | status` to `client/vm_cli`,
+and `loom vm …` forwards there (`tui.gleam`, `Forward(verb: "vm", …)`, with a
+private copy of the usage text that `scripts/cli_help_test.sh` compares).
+`client/vm_spec` holds every decision that needs no effect: argument parsing,
+the artifact manifest decoder and revision check, the two-node
+`distribution_plan.Plan`, the guest's `loom.toml`, the `loom-vm run` and `cp`
+argument lists, `scrub_git_config`, the pid-file codec and the `epmd -names`
+reader. `client/vm_cli` performs them with `distribution_provision`,
+`distribution_install`, `host/bootstrap` (`spawn_server`, `process_identity`,
+`reserve_loopback_port`), `ffi_os.run_capture` for `cp`, `chmod`, `kill`, `ps`,
+`uname` and `epmd`, and `weft/poll`. It adds no FFI. Tests: `client/vm_cli_test`,
+which covers the pure decisions; the live boot needs the built artifacts.
+
+Invariants that break things when violated:
+
+- A guest's files all live under `<vm home>/<name>/`: `deploy/`, `orch/`,
+  `root/`, `loom-vm.pid` and `loom-vm.log`. `LOOM_VM_HOME` overrides
+  `~/.loom/vm`.
+- `up` reads the bundles in `deploy/` again instead of minting new ones, so the
+  orchestrator's installed pins keep matching the executor's certificate.
+- The install is `RefuseExisting`: a `loom.toml` that holds another
+  deployment, or a cookie that differs, is refused and never replaced.
+- The manifest's revision must be `dev` or the running build's commit.
+- The pid file holds the process's birth marker, and `down` signals a pid only
+  while it still has that marker.
+- The console log is truncated before each launch. It is appended to, and the
+  `LOOM-EXECUTOR-READY` of an earlier run would satisfy the wait.
+- `--timeout 8760h` is passed because `loom-vm run` stops a guest after ten
+  minutes by default.
+- The workspace copy is made owner-writable. The guest's init cannot give a
+  file to the `loom` user when the host user cannot write it, and Git's object
+  files are read-only.
+
+See `docs/architecture/microvm.md`, "A standing guest".
+
 ## Node credential masks on an executor
 
 `executor_plane.machine` parses its own `[distribution]` table and keeps the

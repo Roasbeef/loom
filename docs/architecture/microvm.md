@@ -521,12 +521,63 @@ Four rules follow from that table:
   (`packages/client/test/support/microvm_executor.gleam:340`), whether the
   body passed or not.
 
+## A standing guest: `loom vm`
+
+`loom vm up | down | status` (`client/vm_cli`, with its decisions in
+`client/vm_spec`) productizes the hand-built path of `support/microvm_executor`.
+It runs one standing guest executor, called `vm` unless `--name` says another,
+and enrolls it as an ordinary `[executors.<name>]` row, so `loom --executor
+<name> --workspace <directory name>` places a session's tools in the guest
+through the same remote placement every executor has. The guest is a separate
+`loom-vm run` process. The daemon does not start it and does not own it.
+
+`up` reads `~/.loom/vm/manifest.json` (`$LOOM_VM_HOME` overrides the
+directory), which names the built `loom-vm`, the runner, the libkrun and
+firmware directories and the exported guest root. It refuses a manifest whose
+revision is neither `dev` nor the running build's commit, because a guest
+daemon from another release crashes the host on its first unmatched message.
+It then:
+
+1. provisions a two-node static deployment in process into
+   `~/.loom/vm/<name>/deploy/`, with the nodes `loom_vm_<name>_orch@127.0.0.1`
+   and `loom_vm_<name>_exec@127.0.0.1` and the guest's fixed port 4370. A
+   second `up` reads the bundles back instead of minting new certificates;
+2. installs the orchestrator bundle into the user's `loom.toml` with
+   `distribution_install.install`, which merges `[distribution]` and
+   `[executors.<name>]` and refuses a file that holds a different deployment;
+3. clones the guest root to `~/.loom/vm/<name>/root` (`cp -cRp` on macOS,
+   `cp -a --reflink=auto` on Linux), replacing an old one, stages the executor
+   node into `<root>/srv/loom-node/`, and copies the workspace, with its `.git`
+   directory, to `<root>/srv/workspaces/<directory name>`. The copy's
+   `.git/config` loses its `[credential]` sections and its `insteadOf`,
+   `pushInsteadOf` and `extraheader` keys, because the guest's default read
+   scope can read it;
+4. starts `loom-vm run --publish <short name>:<free host port>:4370` detached
+   through `host/bootstrap.spawn_server`, which records the process's birth
+   marker in `loom-vm.pid` before the wrapper becomes `loom-vm`, and waits on
+   `weft/poll` for `LOOM-EXECUTOR-READY` in `loom-vm.log`. A guest that does
+   not report is stopped, and the tail of its log is the error.
+
+`down` sends SIGTERM to the recorded process while the pid still has the
+recorded birth marker, and waits for it to exit. It leaves the root and the
+deployment, so the guest's checkout can be read afterwards. `status` reports
+the process, the host port the host epmd lists for the executor's node name,
+the manifest's revision, the root and the guest's workspaces. A daemon that
+was running before `up` must be restarted to read the new `[distribution]`
+table.
+
+Two properties of the guest root came out of the first live run. A clone keeps
+Git's read-only object files, and the guest's init cannot give a file to the
+`loom` user when the host user cannot write it, so `up` makes the workspace
+copy owner-writable. And every `up` replaces the root, so work the guest wrote
+into its checkout does not survive the next `up`.
+
 ## Known gaps
 
-- Nothing in the daemon places an executor into a guest. The end-to-end test
-  stages configuration, credentials and the checkout into a cloned root and
-  runs `loom-vm` itself; a broker or pool driver, copy-in of a real checkout
-  and the bundle transport of #1137 do not exist yet.
+- Nothing in the daemon places an executor into a guest. `loom vm up` does it
+  for one standing guest from the command line; a broker or pool driver and
+  the bundle transport of #1137 do not exist yet, and `loom vm` cannot copy a
+  guest's work back to the host.
 - Only macOS with Hypervisor.framework has booted a guest. The Linux/KVM path
   compiles and is untested, and `build-libkrunfw.sh` links only the macOS
   dylib.
