@@ -275,6 +275,7 @@ pub fn boot(
       ],
       " ",
     )
+  let launched = native.monotonic_time_ms()
   let assert Ok(sh) = ffi_proc.which("sh") as "sh is on PATH"
   let assert Ok(#(0, pid)) = ffi_proc.run(sh, ["-c", command], in: directory)
     as "loom-vm is launched"
@@ -300,7 +301,16 @@ pub fn boot(
       }
     })
   case ready {
-    poll.Answered(Nil) -> guest
+    poll.Answered(Nil) -> {
+      // The time from launching loom-vm to an executor that serves is the
+      // tier's cold start, which an operator weighs against a host executor.
+      io.println_error(
+        "microvm executor: ready "
+        <> int.to_string(native.monotonic_time_ms() - launched)
+        <> " ms after launch",
+      )
+      guest
+    }
     other -> {
       retire(guest)
       panic as { "the guest executor did not start: " <> string.inspect(other) }
