@@ -798,7 +798,10 @@ before any Gleam code runs, so both launchers add `-proto_dist inet_tls
 file, and add nothing when it is unset. The `bin/loomd` that `make
 server-shipment` writes does this through `ERL_FLAGS`; the release launcher
 `scripts/release.sh` writes does it with arguments to `erl`, so a path with a
-space survives. `loomd distribution options CONFIG OUTPUT` renders the file. The
+space survives. `loomd distribution options CONFIG OUTPUT` renders the file, and
+the `loom` client runs it and sets the variable itself for a daemon it starts
+(`<state>/distribution-launch.options`, rendered again at each start). A variable
+already set in the environment of `loom` is used as it is. The
 release itself is unchanged and a deployment needs no second build:
 [the distributed setup guide](distributed-setup.md) covers the credentials, the
 networking and the container example.

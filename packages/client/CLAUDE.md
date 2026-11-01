@@ -6840,7 +6840,19 @@ booted without the flags fails before any state is touched. The launcher
 -ssl_dist_optfile "$LOOM_DISTRIBUTION_OPTFILE"` to `ERL_FLAGS` when that
 variable is set and is otherwise unchanged. `daemon/distribution_cli` is
 `loomd distribution options CONFIG OUTPUT`, which writes the options file with
-mode 0600 from the same table.
+mode 0600 from the same table. The `loom` client runs that command itself and
+sets the variable when it starts a daemon (`tui/distribution_launch`), so a
+change to this command's arguments or output is a change to the client's
+launcher; its stand-in test and the shipped-daemon fixtures both depend on it.
+
+`[distribution] listen_address` (protocol-change/106) is an IPv4 loopback
+address, parsed by `distribution.parse_loopback` into four octets and held in
+`Config.listen_address`. `start` passes it with `listen_port` as one
+`ffi_distribution.Listen` and the FFI's `set_listen` applies it as the kernel
+parameter `inet_dist_use_interface` before `net_kernel:start/2`. It is not in the
+options file or the boot-argument comparison, which stay exact. The
+`listen_loopback` and `listen_all` scenarios read a table through the production
+reader and inspect the address the listener socket is bound to.
 
 `test/client/distribution_test.gleam` covers configuration refusals in process
 and drives `test/client_distribution_fixture_ffi.erl`, which mints certificates

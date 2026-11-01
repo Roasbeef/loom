@@ -126,6 +126,29 @@ delta check found no actionable issues. Full static gates pass; broad and
 exact-head hosted/Linux validation remain required. TLS launch preflight is the
 following slice; no live upgrade is authorized.
 
+## TLS launch and loopback listener (issue #1137, branch `dist/launcher-optfile`)
+
+Two edges of distributed startup are closed by
+[protocol 106](../protocol-change/106-distribution-launch-and-listen-address.md).
+A daemon that `loom` starts no longer needs `LOOM_DISTRIBUTION_OPTFILE`: when its
+configuration has a `[distribution]` table the client renders the options file into
+the state root at every start and sets the variable for the child, and an
+explicit variable still wins (`tui/distribution_launch`). A daemon started by hand
+through `bin/loomd` still needs the variable; that was a ruling, not an omission,
+and the reasons are in the architecture document ("Booting a distributed VM").
+`[distribution] listen_address` binds the listener to an IPv4 loopback address,
+for an orchestrator nobody dials; it is not in the options file, so the boot
+comparison is unchanged. The live check (isolated home, static two-node plan, a
+daemon started by `loom sessions list`) showed the node in `epmd -names` and its
+listener on `*:14471`, then on `127.0.0.1:14471` with the key set.
+
+Left open: `loom distribution install` treats a table with an extra
+`listen_address` as a different table and refuses without `--force`, which drops
+the key; plans and bundles do not carry it. In the client suite on macOS,
+`start_without_an_epmd_reports_the_port_not_credentials_test` fails when the whole
+`client@distribution_test` module runs and passes alone, with or without this
+branch.
+
 ## Distributed runtime experience (issue #1137)
 
 The first slice fixes the signed-out page's rejected `loom ui --device`

@@ -562,10 +562,20 @@ daemon's environment. When no `epmd` can be had the daemon exits naming the port
 and it does not report a credential problem. See
 [distributed-setup](distributed-setup.md#check-that-both-are-tls-nodes).
 
-The VM has to be booted for distribution before any Gleam code runs, so starting
-the daemon takes two steps. (`loom distribution install` does both for a
-provisioned node; see [Provisioning a deployment](#provisioning-a-deployment).)
-First write the options file from the same configuration:
+The VM has to be booted for distribution before any Gleam code runs. A daemon
+that `loom` starts (`loom`, `loom ui`, `loom run -p`, `loom acp`, a reconnect)
+gets this done for it: when the configuration it will load has a `[distribution]`
+table, the client runs `loomd distribution options` into
+`<state>/distribution-launch.options` and starts the daemon with
+`LOOM_DISTRIBUTION_OPTFILE` set to that file for the child only. It renders the
+file again on every start, so the file always matches the table, and a table that
+the renderer refuses stops the start with its message. A non-empty
+`LOOM_DISTRIBUTION_OPTFILE` in the environment of `loom` is used as given and
+nothing is rendered. A daemon you start yourself through `bin/loomd` takes two
+steps, because the shell launcher cannot read the table. (`loom distribution
+install` does both for a provisioned node; see [Provisioning a
+deployment](#provisioning-a-deployment).) First write the options file from the
+same configuration:
 
 ```sh
 loomd distribution options ~/.loom/loom.toml ~/.loom/distribution.options
