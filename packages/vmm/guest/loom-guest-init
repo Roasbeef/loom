@@ -37,6 +37,24 @@ ip addr add "$GUEST_ADDR" dev eth0
 ip route add default via "$GATEWAY"
 printf 'nameserver %s\n' "$GATEWAY" > /etc/resolv.conf
 
+# --- 1b. Host-side credential proxy ---------------------------------------
+#
+# When loom-vm runs with --github-token-from it stages a CA certificate for
+# its credential proxy and an environment file that points git, gh and curl at
+# the proxy. Trusting the CA is what lets a TLS connection to github.com end at
+# the proxy, which replaces the placeholder in the file with a real token on
+# the host. The file holds the placeholder only; the real token is never in
+# the guest. Absent the CA file, none of this runs.
+
+if [ -f /usr/local/share/ca-certificates/loom-vm-proxy.crt ]; then
+	update-ca-certificates > /dev/null
+	if [ -f /etc/loom-vm/github.env ]; then
+		set -a
+		. /etc/loom-vm/github.env
+		set +a
+	fi
+fi
+
 # --- 2. Ownership of the loom user's directories --------------------------
 #
 # The root filesystem is a virtio-fs share of a host directory. The export
