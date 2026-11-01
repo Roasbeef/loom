@@ -126,5 +126,7 @@ guest configures that statically; go-microvm v0.0.43 serves no DHCP lease.
 
 ## Deep Docs
 
+- `docs/architecture/microvm.md` — components, startup, the orchestrator link,
+  the isolation layers, the machine lifecycle and the concurrency rules
 - `docs/adr/022-microvm-tier-runs-the-executor-in-a-libkrun-guest.md`
 - `docs/design-notes/microvm-executor-tier.md` and its 2026-11-01 addendum

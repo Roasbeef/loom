@@ -295,7 +295,8 @@ one.
   `docs/loom-implementation-spec.md`, `docs/spec-gaps.md`.
 - **Architecture, per plane and subsystem** — `docs/architecture/`.
   The three planes: `durability`, `orchestration`, `effects` (with
-  `executor`, the execution service over its helper pool). The
+  `executor`, the execution service over its helper pool, and `microvm`, an
+  executor inside a libkrun guest). The
   process and its sessions: `daemon`, `sessions`, `distributed` (a
   session's runtime on an orchestrator and its tool calls on an
   executor), `client`, `terminal`, `acp`, `web-view`, `multiplayer`. What the model sees and does: `prompt`,
