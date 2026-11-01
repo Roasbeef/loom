@@ -20,6 +20,19 @@ registry client, gVisor's netstack) never enters the jail helper's module.
   host port used twice.
 - `machine.Forward` — a host loopback port carried into a guest port. The only
   inbound path into a guest; it never listens beyond `127.0.0.1`.
+- `machine.HostService` — an `http.Handler` served on the gateway,
+  192.168.127.1, at a fixed port. The libkrun backend registers each one with
+  `hosted.Provider.AddService` before the provider starts; no host socket is
+  bound, so only the guest connects. `Validate` refuses a zero port, a nil
+  handler, or a port used twice.
+- `ghproxy.Proxy` — the credential-injecting HTTPS proxy (stdlib only). A
+  CONNECT-only handler: the target must be a hostname on port 443 that the
+  allowlist admits and the deny list does not (host globs, exact or leading
+  `*.`). Hosts on the separate injection list are intercepted with leaves from
+  a per-VM in-memory ECDSA P-256 CA, and the placeholder in an `Authorization`
+  header (`Basic`, `token`, `Bearer`) becomes the real token; other admitted
+  hosts are tunnelled untouched; the rest get 403. `GuestFiles` renders the CA,
+  `/etc/loom-vm/github.env` and `/etc/gitconfig`, none holding the token.
 - `machine.Egress` — the complete outbound allowlist. The zero value allows
   nothing; it never means "the hypervisor's default".
 - `machine.Backend` / `machine.Machine` — the hypervisor-independent
@@ -37,6 +50,10 @@ registry client, gVisor's netstack) never enters the jail helper's module.
   forwards the port and registers NAME at HOST in the host's epmd (starting
   one with `epmd -daemon` when none answers) for the guest's life. An
   interrupt or SIGTERM stops the guest and exits 0; a timeout exits 1.
+  `--github-token-from gh|env` (`gh auth token`, or `LOOM_VM_GITHUB_TOKEN`) and
+  `--inject-host` (repeatable) start the proxy on gateway port 3128 and stage
+  its guest files (`cmd/loom-vm/github.go`); the proxy admits exactly the
+  `--allow` hosts.
 - `guest/build-libkrunfw.sh` and `guest/libkrunfw-landlock.config` — build a
   libkrunfw v5.5.0 whose guest kernel has Landlock and securityfs (ADR-022,
   D3), which the stock Homebrew libkrunfw lacks. `make vmm-firmware` runs the
@@ -50,7 +67,9 @@ registry client, gVisor's netstack) never enters the jail helper's module.
   (`loomd`, bundled ERTS, `loom-exec` inside the release tree), bubblewrap,
   git, ripgrep, sqlite3, iproute2, and the `loom` user (uid 10000).
   `loom-guest-init` is the payload libkrun runs as root: it configures the
-  network statically, chowns the loom user's directories, builds the delegated
+  network statically, trusts the proxy CA (`update-ca-certificates`) and
+  exports `/etc/loom-vm/github.env` when the CA file exists, chowns the loom
+  user's directories, builds the delegated
   cgroup v2 subtree under `/sys/fs/cgroup/loom`, and runs its arguments as
   `loom` with `LOOM_CGROUP_BASE` set.
 - `guest/loom-guest-executor NODE_DIR` — the guest side of an executor. As
@@ -85,6 +104,13 @@ virtio-net device whose other end is go-microvm's hosted gVisor stack in the
 launcher process: guest 192.168.127.2/24, gateway and DNS 192.168.127.1. The
 guest configures that statically; go-microvm v0.0.43 serves no DHCP lease.
 
+With `--github-token-from`, git, gh and curl in the guest send `CONNECT
+host:443` to the hosted service at 192.168.127.1:3128, which the provider's
+firewall admits for that port. The proxy dials the real host from the launcher
+process, outside the guest's egress firewall, so it enforces the allowlist
+itself. A direct connection to an allowlisted host still works and carries no
+credential.
+
 ## Invariants
 
 - **Never boot on TSI.** libkrun's default networking runs guest sockets in
@@ -102,6 +128,15 @@ guest configures that statically; go-microvm v0.0.43 serves no DHCP lease.
 - **Staged files replace, never follow.** `stageFile` removes the target
   before writing, so a symlink in the image cannot redirect the write out of
   the root.
+- **The real token never leaves the launcher process.** It is held by
+  `ghproxy.Proxy`, substituted only into an `Authorization` header whose whole
+  credential is the placeholder, never put in a URL, body, other header, log
+  line or staged file. `TestGuestFilesHoldNoToken` and
+  `TestLogsNeverCarryTheTokenOrPlaceholderOrHeaders` pin it. Do not log a
+  header value in `ghproxy`, and do not add a way to export the CA key.
+- **Injection never widens egress.** The injection list says who gets a
+  credential; the allowlist says who is reachable, and an injection host the
+  allowlist omits is refused.
 - **The runner is version-locked.** Build it from this module's go-microvm
   version (`make vmm-runner`) and, on macOS, codesign it with
   `runner.entitlements`; an older runner fails at boot, not at probe.

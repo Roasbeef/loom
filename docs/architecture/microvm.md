@@ -61,10 +61,11 @@ same provider.
 | --- | --- | --- |
 | `machine.Spec`, `machine.Backend`, `machine.Machine` (`packages/vmm/machine/machine.go`) | The description of one guest: root, size, init argv, staged files, egress allowlist, forwards. `Spec.Validate` refuses a bad spec before any image pull. | Any hypervisor code. The package compiles and tests on a host with no `/dev/kvm`. |
 | `libkrun.Backend` and its `guest` (`packages/vmm/machine/libkrun/libkrun.go`) | The go-microvm options for a spec, the `hosted.Provider` it creates for every guest, the data directory, and the decision whether `Stop` may delete the root. | The VMM process, which go-microvm's runner owns, and anything inside the guest. |
+| `ghproxy.Proxy` (`packages/vmm/ghproxy/proxy.go`) | The per-VM CA, the placeholder, the real GitHub token, CONNECT admission, and the Authorization rewrite for the injection hosts. | Where it is served (`Spec.HostServices` and the backend) and what the guest does with it (the staged files and `loom-guest-init`). |
 | `epmd.Registration` (`packages/vmm/epmd/epmd.go`) | One TCP connection to an epmd that holds one node name at one port. | The node it names. A registration says nothing about whether a listener is up behind the port. |
 | `cmd/loom-vm` | Flag parsing, the lifetime of one guest, the epmd registrations of `--publish`, and copying the console to standard output. | Placement. Nothing in the daemon calls `loom-vm` yet; the end-to-end test runs it as a process. |
 | `go-microvm-runner` | The libkrun VMM, in its own session (`setsid`), and the guest's devices. | The network stack: with a hosted provider the runner only forwards Ethernet frames over a socket. |
-| `loom-guest-init` (`packages/vmm/guest/loom-guest-init`) | Guest networking, ownership of the `loom` user's directories, the delegated cgroup v2 subtree, and the privilege drop. | Which program runs. It runs its arguments. |
+| `loom-guest-init` (`packages/vmm/guest/loom-guest-init`) | Guest networking, trusting the proxy CA and exporting its environment when staged, ownership of the `loom` user's directories, the delegated cgroup v2 subtree, and the privilege drop. | Which program runs. It runs its arguments. |
 | `loom-guest-executor` (`packages/vmm/guest/loom-guest-executor`) | The tmpfs state root, the distribution options file rendered in the guest, the daemon's process, and the readiness markers on the console. | The daemon's configuration and credentials, which the caller stages into the root before boot. |
 | executor `loomd` (`packages/client/src/client/executor_plane.gleam`) | Sessions' scopes, the broker and helper pool, and the policy every jailed child gets, including the node credential mask. | The VM. It runs as on any host and does not know it is in a guest. |
 
@@ -121,11 +122,11 @@ The steps that need root run before the drop, in this order:
    v0.0.43 serves no DHCP lease, so the address is static.
 4. **Cgroups.** It builds `/sys/fs/cgroup/loom/{init,work,exec}`, enables
    `+pids +memory` from the top down
-   (`packages/vmm/guest/loom-guest-init:73`), and hands the subtree to `loom`.
+   (`packages/vmm/guest/loom-guest-init:91`), and hands the subtree to `loom`.
    The workload runs in `loom/work` and `LOOM_CGROUP_BASE` names `loom/exec`,
    which holds no process.
 5. **Drop.** `setpriv` runs the second phase as uid 10000
-   (`packages/vmm/guest/loom-guest-init:104`).
+   (`packages/vmm/guest/loom-guest-init:122`).
 6. **Options.** The second phase renders the TLS options file with the guest's
    own `loomd distribution options`
    (`packages/vmm/guest/loom-guest-executor:47`). `distribution.start` compares
@@ -160,14 +161,14 @@ and the last three are the ordinary distributed path.
 
 1. **Resolve.** The dial path asks the epmd at the name's host part
    (`127.0.0.1`) for the name's port. `loom-vm run --publish` holds that entry:
-   `register` (`packages/vmm/cmd/loom-vm/main.go:244`) calls `epmd.Register`
+   `register` (`packages/vmm/cmd/loom-vm/main.go:256`) calls `epmd.Register`
    (`packages/vmm/epmd/epmd.go:60`), which sends an ALIVE2 request with node
    type 77 and protocol version 6 (`packages/vmm/epmd/epmd.go:35`). When no
    epmd answers, `register` runs `epmd -daemon` and retries for 3 s. epmd keeps
    the entry while the registering connection stays open, so the entry lives
    exactly as long as `loom-vm`.
 2. **Forward.** `Spec.Forwards` becomes `microvm.WithPorts`
-   (`packages/vmm/machine/libkrun/libkrun.go:247`). The hosted provider listens
+   (`packages/vmm/machine/libkrun/libkrun.go:255`). The hosted provider listens
    on host `127.0.0.1:HOST` only and opens a connection to the guest port,
    admitting it through the guest firewall's ingress rules.
 3. **Listen.** The guest daemon's listener binds every interface, because the
@@ -231,9 +232,165 @@ filesystem layout is not.
    end is the hosted provider in `loom-vm`. `libkrun.Backend.Start` always
    creates that provider (`packages/vmm/machine/libkrun/libkrun.go:156`) and
    always passes a non-nil egress policy
-   (`packages/vmm/machine/libkrun/libkrun.go:231`), which makes the firewall
+   (`packages/vmm/machine/libkrun/libkrun.go:239`), which makes the firewall
    deny by default. A virtio-net device also turns off libkrun's TSI mode,
    under which guest sockets run on the host and reach host loopback.
+
+## GitHub access through the credential proxy
+
+An agent in a guest delivers its edits by pushing a branch or opening a pull
+request with `git` and `gh`, which needs the developer's GitHub token. The
+guest runs model-influenced code, and anything it can read it can send to any
+host its egress allows, so the token must never be written into the guest: not
+its disk, not its environment, not a file a jailed call can read. The token
+therefore stays in the `loom-vm` process on the host. The guest holds a
+placeholder, and a proxy in the launcher replaces the placeholder with the token
+in flight. The code is in `packages/vmm/ghproxy`; `loom-vm run
+--github-token-from gh|env` turns it on.
+
+```mermaid
+flowchart LR
+    subgraph Guest
+        tools["git, gh, curl<br/>HTTPS_PROXY, placeholder"]
+    end
+    subgraph Launcher["loom-vm (host)"]
+        svc["hosted service<br/>192.168.127.1:3128"]
+        proxy["ghproxy.Proxy<br/>CONNECT only"]
+        ca["per-VM CA<br/>in memory"]
+    end
+    gh["GitHub<br/>real token"]
+    other["other allowlisted host"]
+
+    tools -- "CONNECT host:443" --> svc --> proxy
+    proxy -- "not allowed, denied,<br/>or port not 443" --> refuse["403"]
+    proxy -- "injection host:<br/>TLS ends here" --> ca
+    ca -- "request with token<br/>over TLS, system roots" --> gh
+    proxy -- "other allowed host:<br/>bytes tunnelled" --> other
+```
+
+**How the guest reaches it.** `ghproxy.Proxy` is an `http.Handler`.
+`machine.Spec.HostServices` carries it to the libkrun backend, which registers it
+with `hosted.Provider.AddService` before the provider starts
+(`packages/vmm/machine/libkrun/libkrun.go:156`). go-microvm serves a hosted
+service with an `http.Server` listening on the gateway, 192.168.127.1, inside
+the launcher's own gVisor stack, and it adds a firewall rule that admits the
+guest's egress to that port. No host socket is bound, so nothing but this guest
+can connect. A CONNECT arrives as an ordinary request; the handler hijacks the
+connection, which clears the server's read and write deadlines, and runs the
+tunnel itself. No forward from a host loopback port was needed.
+
+**What the proxy accepts.** It accepts CONNECT only. The target must be a
+hostname (not an address) on port 443, admitted by the allowlist and not matched
+by the deny list; both are host globs, exact names and a leading `*.`, the
+vocabulary of `machine.Egress`. `loom-vm` passes the guest's `--allow` list as
+the allowlist, so the guest's egress list stays the one statement of what it may
+reach. The injection list is separate and explicit: `github.com`,
+`api.github.com` and `uploads.github.com` plus each `--inject-host`. A host on
+the injection list that the allowlist omits is refused, because injection
+decides who gets a credential and never what is reachable. Any other admitted
+host is tunnelled without interception, and the guest sees its own certificate.
+
+**What is injected.** For an injection host the proxy ends TLS with a leaf
+certificate minted for the CONNECT target, reads HTTP/1.1 requests (keep-alive
+included), and rewrites the `Authorization` header when its whole credential is
+the placeholder: `Basic` with the placeholder as the password (git, username
+`x-access-token`) or as the username, `token X`, and `Bearer X` (gh). The
+request then goes to the real host over TLS with the system roots. The URL,
+the body and every other header are never touched, a header that merely
+contains the placeholder is not rewritten, and a request whose `Host` differs
+from the CONNECT target, or a handshake whose SNI does, is refused. The
+placeholder is `loomvm_` and 32 random hex characters, new for each `loom-vm`
+run, so a copy taken from one guest is worthless against another proxy and
+against GitHub.
+
+**The CA.** `newCA` generates an ECDSA P-256 authority in memory when
+`loom-vm run` starts. The private key is a field of an unexported type with no
+accessor and is never written. The certificate expires one hour after the run's
+`--timeout`, and carries a critical name constraint that permits only the
+injection hosts' domains, so the copy in the guest's trust store cannot vouch for
+any other site, whatever the key could sign. Leaves are minted per host on first
+use and cached.
+
+**What the guest is given.** `ghproxy.GuestFiles` renders three files, which
+`loom-vm` stages through `Spec.Files`. None holds the token.
+
+| Guest path | Holds | Used by |
+| --- | --- | --- |
+| `/usr/local/share/ca-certificates/loom-vm-proxy.crt` | the CA certificate | `loom-guest-init` runs `update-ca-certificates` when this file exists, before it drops privileges |
+| `/etc/loom-vm/github.env` | `HTTPS_PROXY`, `https_proxy`, `NO_PROXY`, `no_proxy`, and `GH_TOKEN` and `GITHUB_TOKEN` set to the placeholder | `loom-guest-init` exports it (`set -a`) into the workload, so `loomd` inherits it |
+| `/etc/gitconfig` | `http.proxy`, and for each injection host a credential helper answering `username=x-access-token` and `password=${GH_TOKEN:-<placeholder>}` | git, as the system configuration, in any shell |
+
+The credential helper falls back to the placeholder so a jailed call whose
+environment omits `GH_TOKEN` still authenticates through the proxy.
+
+**What the executor's loom.toml needs.** The guest's init exports the
+environment into `loomd`, but a jailed tool shell receives only what
+`[tools]` admits and only if its network is on
+([configuration.md](../configuration.md#tools)). The guest's `loom.toml` needs
+these lines:
+
+```toml
+[tools]
+network = "full"
+env = ["HTTPS_PROXY", "NO_PROXY", "GH_TOKEN", "GITHUB_TOKEN"]
+```
+
+`network = "full"` opens the jail's network to the guest's `eth0`, whose only
+host-side peer is the launcher's stack with its egress allowlist. The uppercase
+names are enough: `env` accepts only `[A-Z_][A-Z0-9_]*`, git reads
+`/etc/gitconfig` regardless, and curl and Go read `HTTPS_PROXY`. `gh` itself is
+not in the guest image yet. This change does not edit the client package, so
+nothing renders these lines automatically.
+
+**What is logged.** One line per CONNECT (host, decision and mode, bytes each
+way, duration) and one per injected request (host, method, path without its
+query, status, bytes, `injected` true or false), through `slog`. The handlers are
+given no header values, and `scrub` removes the token and placeholder from error
+text as a backstop. A test sends the token, the placeholder and an Authorization
+header through the proxy and checks the log for each.
+
+**What it does not do.** It speaks HTTP/1.1 to the guest and to GitHub, accepts
+port 443 only, and cannot carry `git` over SSH. While the VM runs, the guest can
+spend the token's authority against any injection host through the proxy, so
+the token should be a fine-grained one scoped to the repositories the agent
+needs. The default dialer refuses loopback, link-local, unspecified and
+multicast addresses after name resolution, so an allowlisted name that resolves
+to the host is still not a path to it.
+
+### Relation to the egress proxy (#214)
+
+[Issue #214](https://github.com/roasbeef/loom/issues/214) specifies the proxy
+that `Proxy(allowlist)` has lacked: CONNECT-only, a host-glob allowlist and deny
+list, every other destination refused, and per-execution request logs without
+secrets. `narrow_unenforceable` in `packages/broker/src/broker/policy.gleam`
+still downgrades `NetworkProxy` to `NetworkOff` because nothing enforces it.
+`ghproxy` matches that specification on four points: it is CONNECT-only, it
+takes an allowlist and a deny list as globs, it logs one structured line per
+CONNECT and per injected request with no secret, and its injection list is
+separate from its allowlist. It departs from #214 in one line, "the proxy never
+sees or injects credentials", which the owner has set aside for GitHub in the
+microVM tier only.
+
+It is not yet the enforcement of `Proxy(allowlist)`. For `narrow_unenforceable`
+to stop downgrading for an executor in a guest, these remain, none in `ghproxy`:
+
+1. **The proxy must be the only path.** The guest's `--allow` list still lets a
+   process connect straight to an allowlisted host, bypassing the proxy and its
+   deny list and logs. A proxy-only mode would give the backend an empty egress
+   list, so the firewall admits only the gateway's service ports, and give the
+   allowlist to the proxy alone. DNS then stops mattering to the guest.
+2. **The allowlist is per guest, not per call.** The proxy sees the guest's
+   address, not which execution is connecting. A narrower allowlist for one
+   `bash` call needs a listener or a credential per execution, or the
+   downgrade stays for calls that narrow below the guest's list.
+3. **Configuration.** `loom-vm` has no deny flag, and the executor's `[tools]`
+   table has no `allow` and `deny` keys; both are in the client package.
+4. **A report the broker can read.** The executor's enforcement report needs a
+   `network-proxy` entry that says enforced when the launcher registered the
+   proxy and proxy-only mode is on, and `narrow_unenforceable` has to consult
+   it. That is a change in `packages/broker`.
+5. **A probe.** The self-test needs a case that shows a denied host refused and an
+   allowed one reached from inside a guest.
 
 ## The machine lifecycle
 
@@ -253,17 +410,17 @@ stateDiagram-v2
     Stopped --> [*]
 ```
 
-`guest.Stop` (`packages/vmm/machine/libkrun/libkrun.go:409`) is the one exit
+`guest.Stop` (`packages/vmm/machine/libkrun/libkrun.go:417`) is the one exit
 and it is idempotent. It stops the hosted provider first, so no packet leaves
 the guest while the VMM shuts down, then branches on who owns the root. An
 `extractedRoot`, which go-microvm unpacked from an image for this guest, goes
 through `VM.Remove`. A `callerRoot`, given as `Spec.Root.Dir`, goes through
 `VM.Stop` only, because `VM.Remove` deletes any rootfs outside go-microvm's
 image cache and would delete the caller's directory
-(`packages/vmm/machine/libkrun/libkrun.go:349`). Teardown runs under its own
+(`packages/vmm/machine/libkrun/libkrun.go:359`). Teardown runs under its own
 30 s context, so a cancelled caller still releases the VMM.
 
-The launcher defers its teardown (`packages/vmm/cmd/loom-vm/main.go:194`), and
+The launcher defers its teardown (`packages/vmm/cmd/loom-vm/main.go:206`), and
 deferred calls run in reverse order, so the epmd names are withdrawn before the
 guest stops and no
 name points at a dead port for longer than the stop takes. A cancellation from
@@ -282,7 +439,7 @@ carries yet.
 
 `--firmware-dir` puts the custom libkrunfw ahead of the stock one on the
 runner's library path (`libraryPath`,
-`packages/vmm/machine/libkrun/libkrun.go:277`). The firmware script pins the
+`packages/vmm/machine/libkrun/libkrun.go:285`). The firmware script pins the
 libkrunfw tag to a commit and the kernel tarball to a SHA-256
 (`packages/vmm/guest/build-libkrunfw.sh:25`).
 
@@ -309,6 +466,7 @@ communicate only through files, sockets and signals.
 | `loom-vm run` main goroutine | the `Spec`, the epmd `Registration`s, the deferred teardown order |
 | `loom-vm` follow goroutine and its `Wait` | copying `console.log` to standard output; polling the runner's pid every 100 ms |
 | `hosted.Provider` goroutines in `loom-vm` | the gVisor network stack, the egress firewall and DNS, the host loopback listeners of each forward |
+| `ghproxy` handler goroutines in `loom-vm` | one goroutine per CONNECT, which owns the hijacked guest connection and its upstream; `Proxy.Close` closes them all when the run ends |
 | `go-microvm-runner` (own session) | the VMM, guest memory and devices |
 | guest `loom-guest-init` | stays the parent of the workload and exits with its status |
 | executor `loomd` | everything a session does: scopes, broker, helper pool, ledger on the tmpfs |
@@ -349,6 +507,11 @@ Four rules follow from that table:
 - The host epmd entry assumes the node name's host part is `127.0.0.1`. A
   guest executor reached from another machine would need a different
   transport.
+- The guest image has no `gh` and no `curl`, so the credential proxy was
+  checked with `git ls-remote` and `openssl s_client`, which use the same
+  proxy, CA and placeholder. A real push needs a real token, which the check
+  did not use. Nothing renders the executor's `[tools]` lines for the proxy,
+  and the jailed path through them was not driven.
 - Firecracker, the second backend ADR-022 names, has no implementation.
 - This document was written from the code directly rather than from
   per-subsystem reader summaries; go-microvm's internals (`microvm.Run`, the
