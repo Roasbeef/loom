@@ -147,6 +147,7 @@ RUN ln -s /opt/loom/lib/loom/server/bin/loom-exec /opt/loom/bin/loom-exec
 RUN mkdir -p /var/lib/loom /work && chown loom:loom /var/lib/loom /work
 
 COPY packages/vmm/guest/loom-guest-init /usr/local/sbin/loom-guest-init
-RUN chmod 0755 /usr/local/sbin/loom-guest-init
+COPY packages/vmm/guest/loom-guest-executor /usr/local/sbin/loom-guest-executor
+RUN chmod 0755 /usr/local/sbin/loom-guest-init /usr/local/sbin/loom-guest-executor
 
 WORKDIR /work
