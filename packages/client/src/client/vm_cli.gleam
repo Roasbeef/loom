@@ -543,15 +543,27 @@ fn remove_state_disk(guest: Instance) -> Result(Nil, String) {
 /// removed first: `cp` into an existing directory would copy beside its
 /// contents. The clone keeps the export's modes, which can leave a directory
 /// the owner cannot delete, so the old root is made writable before removal.
+///
+/// The manifest's path is resolved first. `cp -R` copies a symbolic link
+/// named on its command line as a link, so a manifest whose `guest_root` is a
+/// link (a build tree assembled from links, as `setup --from-build` allows)
+/// would make the guest's root a link to the export, and the guest would boot
+/// and write into the export itself.
 fn replace_root(
   manifest: Manifest,
   guest: Instance,
   platform: vm_spec.Platform,
 ) -> Result(Nil, String) {
+  use export <- result.try(
+    bootstrap.canonical_directory(manifest.guest_root)
+    |> result.map_error(fn(reason) {
+      manifest.guest_root <> " is not a directory: " <> reason
+    }),
+  )
   use Nil <- result.try(remove_root(guest))
   tool(
     "cp",
-    vm_spec.copy_arguments(platform, manifest.guest_root, guest.root),
+    vm_spec.copy_arguments(platform, export, guest.root),
     within: copy_budget_ms,
   )
   |> result.replace(Nil)
