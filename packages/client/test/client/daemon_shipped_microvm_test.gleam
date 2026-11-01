@@ -280,6 +280,11 @@ fn fixture(artifacts: Artifacts) -> Nil {
   remote_daemons.retire(run.orchestrator.paths)
   let assert [weft.Completed(0, Nil)] = outcomes
     as "the microvm body completes before native teardown"
+
+  // The guest root clone keeps the export's read-only directories, which
+  // would make the removal fail silently and leave the fixture behind.
+  let assert Ok(chmod) = ffi_proc.which("chmod") as "chmod is on PATH"
+  let _writable = ffi_proc.run(chmod, ["-R", "u+w", directory], in: ".")
   let _removed = simplifile.delete_all([directory])
   Nil
 }
@@ -587,8 +592,23 @@ fn assert_first_turn(run: Run, result: String) -> Nil {
     as "vm up installed the deployment's cookie"
   let cookie = string.trim(cookie)
   assert cookie != ""
+
+  // The cookie must be where the bash call looked, or its absence from the
+  // result would prove nothing: the host can read the guest root directly.
+  let assert Ok(staged) =
+    simplifile.read(
+      run.vm_home
+      <> "/"
+      <> run.name
+      <> "/root/srv/loom-node/home/.erlang.cookie",
+    )
+    as "the guest's cookie is at the path the bash call read"
+  assert string.trim(staged) == cookie
+
+  // The property is that the value never reaches the model. The read's exit
+  // status is not asserted: a masked file on Linux is bound to /dev/null,
+  // which `cat` reads successfully as empty.
   assert !string.contains(result, cookie)
-  assert !string.contains(result, "cookie_status=0")
 
   // The jailed shell holds the proxy's placeholder, never the token.
   assert string.contains(result, "gh_token=loomvm_")
