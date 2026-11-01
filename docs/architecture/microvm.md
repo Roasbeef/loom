@@ -162,7 +162,7 @@ and the last three are the ordinary distributed path.
 
 1. **Resolve.** The dial path asks the epmd at the name's host part
    (`127.0.0.1`) for the name's port. `loom-vm run --publish` holds that entry:
-   `register` (`packages/vmm/cmd/loom-vm/main.go:256`) calls `epmd.Register`
+   `register` (`packages/vmm/cmd/loom-vm/main.go:270`) calls `epmd.Register`
    (`packages/vmm/epmd/epmd.go:60`), which sends an ALIVE2 request with node
    type 77 and protocol version 6 (`packages/vmm/epmd/epmd.go:35`). When no
    epmd answers, `register` runs `epmd -daemon` and retries for 3 s. epmd keeps
@@ -421,7 +421,7 @@ image cache and would delete the caller's directory
 (`packages/vmm/machine/libkrun/libkrun.go:359`). Teardown runs under its own
 30 s context, so a cancelled caller still releases the VMM.
 
-The launcher defers its teardown (`packages/vmm/cmd/loom-vm/main.go:206`), and
+The launcher defers its teardown (`packages/vmm/cmd/loom-vm/main.go:220`), and
 deferred calls run in reverse order, so the epmd names are withdrawn before the
 guest stops and no
 name points at a dead port for longer than the stop takes. A cancellation from
