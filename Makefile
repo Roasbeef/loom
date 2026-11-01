@@ -10,6 +10,7 @@ PACKAGES := host core storage session machine prompt statem statem_parallel eval
 JS_PACKAGES := web_client web_mermaid
 GO_PKG   := packages/sandbox
 HELPER   := $(GO_PKG)/loom-exec
+VMM_PKG  := packages/vmm
 PREFIX   ?= $(HOME)/.local
 
 .DEFAULT_GOAL := help
@@ -120,6 +121,7 @@ fmt: ## Format all Gleam and Go sources in place
 	done
 	@test -z "$(LOOSE_GLEAM)" || gleam format $(LOOSE_GLEAM)
 	@cd $(GO_PKG) && gofmt -w .
+	@cd $(VMM_PKG) && gofmt -w .
 	@echo "formatted"
 
 .PHONY: fmt-check
@@ -133,6 +135,8 @@ fmt-check: ## Verify formatting without writing (what CI enforces)
 	@test -z "$(LOOSE_GLEAM)" || gleam format --check $(LOOSE_GLEAM)
 	@test -z "$$(cd $(GO_PKG) && gofmt -l .)" || { \
 		echo "unformatted Go files:"; (cd $(GO_PKG) && gofmt -l .); exit 1; }
+	@test -z "$$(cd $(VMM_PKG) && gofmt -l .)" || { \
+		echo "unformatted Go files:"; (cd $(VMM_PKG) && gofmt -l .); exit 1; }
 	@echo "formatting clean"
 
 # ----------------------------------------------------------------- binaries
@@ -446,6 +450,30 @@ sandbox: ## Build the loom-exec sandbox helper binary
 sandbox-test: ## Vet, build, and test the Go sandbox package
 	@cd $(GO_PKG) && go vet ./... && go build ./... && \
 		python3 ../../scripts/with_timeout.py 1200 -- go test -timeout 10m ./...
+
+# The microVM launcher (ADR-022). loom-vm is CGO-free and builds anywhere;
+# the go-microvm runner links libkrun with cgo, so it is built from the same
+# module version loom-vm imports and, on macOS, codesigned with the
+# Hypervisor.framework entitlement or HVF refuses it. KRUN_PREFIX locates
+# libkrun's headers and libraries (Homebrew's prefix on macOS).
+KRUN_PREFIX ?= $(shell brew --prefix 2>/dev/null || echo /usr/local)
+
+.PHONY: vmm
+vmm: ## Build the loom-vm microVM launcher into packages/vmm/build
+	@scripts/go-build.sh $(VMM_PKG) ./cmd/loom-vm $(VMM_PKG)/build/loom-vm
+
+.PHONY: vmm-runner
+vmm-runner: ## Build (and on macOS codesign) the go-microvm runner loom-vm boots with
+	@cd $(VMM_PKG) && CGO_ENABLED=1 CGO_CFLAGS="-I$(KRUN_PREFIX)/include" \
+		CGO_LDFLAGS="-L$(KRUN_PREFIX)/lib" go build -trimpath \
+		-o build/go-microvm-runner github.com/stacklok/go-microvm/runner/cmd/go-microvm-runner
+	@if [ "$$(uname -s)" = Darwin ]; then \
+		codesign --entitlements $(VMM_PKG)/runner.entitlements -s - --force \
+			$(VMM_PKG)/build/go-microvm-runner; fi
+
+.PHONY: vmm-test
+vmm-test: ## Vet, build, and test the Go microVM launcher
+	@cd $(VMM_PKG) && go vet ./... && go build ./... && go test ./...
 
 .PHONY: selftest
 selftest: sandbox ## Probe this kernel's enforcement layers (ENFORCED/SKIPPED per probe)
