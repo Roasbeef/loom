@@ -207,10 +207,6 @@ func run(args []string) error {
 		spec.Disks = append(spec.Disks, machine.Disk{ID: "state", Path: disk})
 	}
 
-	if err := spec.Validate(); err != nil {
-		return err
-	}
-
 	// The proxy goes up before the guest and, because defers run in reverse,
 	// comes down after it.
 	stopProxy, err := gh.apply(&spec, timeout)
@@ -218,6 +214,12 @@ func run(args []string) error {
 		return err
 	}
 	defer stopProxy()
+
+	// Validation runs after the proxy has added its host service, so the
+	// service's port is checked with every other entry of the spec.
+	if err := spec.Validate(); err != nil {
+		return err
+	}
 
 	// An interrupt ends the run the same way a timeout does: through the
 	// context, so the deferred Stop still releases the machine.

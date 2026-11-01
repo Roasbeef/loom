@@ -264,7 +264,7 @@ jobs:
           id=""
           for _ in $(seq 1 220); do
             id=$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
-              --jq '.[] | select(.tag_name == env.RELEASE_TAG) | .id' | head -n 1)
+              --jq '.[] | select(.tag_name == env.RELEASE_TAG) | .id' | head -n 1 || true)
             [ -n "$id" ] && break
             echo "waiting for the $RELEASE_TAG release to be created"
             sleep 60
