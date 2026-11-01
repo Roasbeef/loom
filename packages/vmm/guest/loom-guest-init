@@ -1,0 +1,110 @@
+#!/bin/sh
+# loom-guest-init: prepare the guest, then run a command as the loom user.
+#
+# libkrun runs this as the payload of its own PID 1, as root, with the
+# command to run as arguments:
+#
+#   /usr/local/sbin/loom-guest-init loomd --state-dir /var/lib/loom ...
+#
+# It does four things before the command starts. They run in this order
+# because each later step depends on the earlier one.
+#
+#   1. Configure the network. go-microvm v0.0.43 serves no DHCP lease, so
+#      the address, route and resolver that the host-side stack expects are
+#      set statically (guest 192.168.127.2/24, gateway and DNS
+#      192.168.127.1).
+#   2. Give the loom user ownership of its home, state and work directories.
+#   3. Build a delegated cgroup v2 subtree, so that loom-exec's pids and
+#      memory ceilings take effect for a process that is not root.
+#   4. Drop to the loom user and run the command inside that subtree.
+#
+# The init stays alive as the parent of the command and exits with its
+# status, so the host sees the workload's exit code.
+
+set -eu
+
+GUEST_ADDR=192.168.127.2/24
+GATEWAY=192.168.127.1
+CGROOT=/sys/fs/cgroup
+LOOM_UID=10000
+LOOM_GID=10000
+
+# --- 1. Network -----------------------------------------------------------
+
+ip link set lo up
+ip link set eth0 up
+ip addr add "$GUEST_ADDR" dev eth0
+ip route add default via "$GATEWAY"
+printf 'nameserver %s\n' "$GATEWAY" > /etc/resolv.conf
+
+# --- 2. Ownership of the loom user's directories --------------------------
+#
+# The root filesystem is a virtio-fs share of a host directory. The export
+# that populated it ran as an unprivileged host user, so every file belongs
+# to that user and the image's own `chown loom` did not survive. root in the
+# guest can chown on the share, so the directories the loom user writes to
+# are handed over here, before anything runs as loom.
+
+chown -R "$LOOM_UID:$LOOM_GID" /home/loom /var/lib/loom /work
+
+# --- 3. Delegated cgroup v2 subtree ---------------------------------------
+#
+# cgroup v2 allows a cgroup to hold processes or to distribute controllers
+# to its children, but not both. loom-exec needs a base cgroup that holds no
+# processes. It also needs to live inside the delegated subtree itself,
+# because moving a process between cgroups requires write access to the
+# cgroup.procs of their common ancestor. The layout that satisfies all of
+# this is:
+#
+#   /sys/fs/cgroup/loom/        owned by loom; holds no processes
+#   /sys/fs/cgroup/loom/init/   this script, which stays root-owned
+#   /sys/fs/cgroup/loom/work/   the workload, which is loom-exec's parent
+#   /sys/fs/cgroup/loom/exec/   the process-empty base, LOOM_CGROUP_BASE
+#
+# Controllers are enabled from the top down, and only after the processes
+# that would violate the rule have moved out of the cgroup being configured.
+
+if ! mountpoint -q "$CGROOT"; then
+	mount -t cgroup2 none "$CGROOT"
+fi
+
+mkdir -p "$CGROOT/loom/init" "$CGROOT/loom/work" "$CGROOT/loom/exec"
+echo $$ > "$CGROOT/loom/init/cgroup.procs"
+echo "+pids +memory" > "$CGROOT/cgroup.subtree_control"
+echo "+pids +memory" > "$CGROOT/loom/cgroup.subtree_control"
+
+# The loom user must create children of the base and migrate processes
+# between work and exec, which means owning the common ancestor's
+# cgroup.procs. The chown is not recursive, so loom/init stays root's.
+chown "$LOOM_UID:$LOOM_GID" \
+	"$CGROOT/loom" \
+	"$CGROOT/loom/cgroup.procs" \
+	"$CGROOT/loom/cgroup.subtree_control" \
+	"$CGROOT/loom/work" \
+	"$CGROOT/loom/work/cgroup.procs" \
+	"$CGROOT/loom/exec" \
+	"$CGROOT/loom/exec/cgroup.procs" \
+	"$CGROOT/loom/exec/cgroup.subtree_control"
+
+# --- 4. The workload ------------------------------------------------------
+#
+# setpriv drops privileges without a login shell, so the command's argv
+# reaches it unchanged. The inner shell then moves itself into loom/work,
+# which loom now owns, and execs the command; exec keeps cgroup membership,
+# so the command and everything it spawns start inside the delegated
+# subtree. The environment is set explicitly because libkrun's init passes
+# none of the image's.
+
+export LOOM_CGROUP_BASE="$CGROOT/loom/exec"
+export HOME=/home/loom
+export USER=loom
+export LOGNAME=loom
+export PATH=/opt/loom/bin:/usr/local/bin:/usr/bin:/bin
+
+setpriv --reuid="$LOOM_UID" --regid="$LOOM_GID" --init-groups \
+	sh -c '
+		echo $$ > /sys/fs/cgroup/loom/work/cgroup.procs
+		cd "$HOME"
+		exec "$@"
+	' loom-guest-workload "$@" &
+wait $!
