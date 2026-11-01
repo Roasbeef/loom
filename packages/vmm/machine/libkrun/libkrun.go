@@ -155,6 +155,14 @@ func (b *Backend) Start(ctx context.Context, spec machine.Spec) (machine.Machine
 	// before the VMM goes away.
 	netProv := hosted.NewProvider()
 
+	// A hosted service listens on the gateway inside the launcher's own
+	// network stack, and the provider admits the guest's connections to its
+	// port through the egress firewall. It must be registered before the
+	// provider starts, which microvm.Run does.
+	for _, svc := range spec.HostServices {
+		netProv.AddService(hosted.Service{Port: svc.Port, Handler: svc.Handler})
+	}
+
 	opts := b.options(spec, dataDir, netProv)
 
 	vm, err := microvm.Run(ctx, spec.Root.Image, opts...)

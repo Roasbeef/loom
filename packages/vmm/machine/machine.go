@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"path"
 	"strings"
 )
@@ -54,6 +55,12 @@ type Spec struct {
 	// Forwards are the only inbound paths into the guest: each listens on
 	// the host's loopback and connects to a guest port.
 	Forwards []Forward
+
+	// HostServices are services the launcher runs on the guest's gateway
+	// address, the one host-side address the guest can reach. They are the
+	// only way a guest talks to a launcher-side program: nothing binds a
+	// host socket for them, so only this guest can connect.
+	HostServices []HostService
 
 	// DataDir is the directory the backend keeps the guest's state and
 	// console log in. The backend creates it if it is missing, and Stop
@@ -101,6 +108,15 @@ type Egress struct {
 type Forward struct {
 	Host  uint16
 	Guest uint16
+}
+
+// HostService is an HTTP handler served on the gateway at Port. The handler
+// receives every connection the guest makes to that port, and may take over
+// the connection (a CONNECT proxy does), so the hypervisor-independent
+// contract is the standard library's handler, not a socket.
+type HostService struct {
+	Port    uint16
+	Handler http.Handler
 }
 
 // Default guest sizes, used when a Spec leaves them zero so a backend never
@@ -163,6 +179,19 @@ func (s Spec) Validate() error {
 			return fmt.Errorf("machine: host port %d forwarded twice", f.Host)
 		}
 		seen[f.Host] = true
+	}
+
+	servicePorts := make(map[uint16]bool, len(s.HostServices))
+	for _, svc := range s.HostServices {
+		switch {
+		case svc.Port == 0 || svc.Handler == nil:
+			return fmt.Errorf("machine: host service on port %d needs a port and a handler",
+				svc.Port)
+
+		case servicePorts[svc.Port]:
+			return fmt.Errorf("machine: host service port %d used twice", svc.Port)
+		}
+		servicePorts[svc.Port] = true
 	}
 
 	return nil

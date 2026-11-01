@@ -1,6 +1,7 @@
 package machine
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -58,6 +59,16 @@ func TestValidateRefusesBadSpecs(t *testing.T) {
 		{"duplicate forward", func(s *Spec) {
 			s.Forwards = []Forward{{Host: 4000, Guest: 1}, {Host: 4000, Guest: 2}}
 		}, "twice"},
+		{"service without handler", func(s *Spec) {
+			s.HostServices = []HostService{{Port: 3128}}
+		}, "needs a port and a handler"},
+		{"service without port", func(s *Spec) {
+			s.HostServices = []HostService{{Handler: http.NotFoundHandler()}}
+		}, "needs a port and a handler"},
+		{"duplicate service", func(s *Spec) {
+			h := http.NotFoundHandler()
+			s.HostServices = []HostService{{Port: 3128, Handler: h}, {Port: 3128, Handler: h}}
+		}, "used twice"},
 	}
 
 	for _, tc := range cases {
