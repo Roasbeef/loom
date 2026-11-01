@@ -86,8 +86,11 @@ RUN set -eux; \
 	python3 /opt/loom-gleam-patches/check_native_git.py
 
 # --- Go ------------------------------------------------------------------
+# TARGETARCH is the platform BuildKit builds for (arm64 or amd64), so the
+# release workflow's amd64 image gets an amd64 toolchain.
+ARG TARGETARCH
 RUN curl -fsSL -o /tmp/go.tar.gz \
-		"https://go.dev/dl/go${GO_VERSION}.linux-arm64.tar.gz" \
+		"https://go.dev/dl/go${GO_VERSION}.linux-${TARGETARCH}.tar.gz" \
 	&& tar -C /usr/local -xzf /tmp/go.tar.gz \
 	&& rm /tmp/go.tar.gz
 ENV PATH="/usr/local/go/bin:${PATH}"
