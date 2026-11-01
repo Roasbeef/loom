@@ -43,7 +43,29 @@ registry client, gVisor's netstack) never enters the jail helper's module.
 - `epmd.Register` — an ALIVE2 registration of a node name in an epmd, held
   open as a `Registration` because epmd withdraws a name when the registering
   connection closes.
-- `cmd/loom-vm` — `probe` and `run [flags] -- INIT ARGS`. Native paths come
+- `setup.Manifest` — the contract a launcher reads: `{"version": 1,
+  "revision", "loom_vm", "runner", "lib_dir", "firmware_dir", "guest_root"}`,
+  absolute paths, written to `$LOOM_VM_HOME/manifest.json` (default
+  `~/.loom/vm`) by `setup.WriteManifest`, which replaces it atomically.
+  `firmware_dir` is `""` for the stock libkrunfw; `revision` is a commit, or
+  `dev` for a build tree. Changing a key or its meaning needs a new
+  `ManifestVersion`, because another program reads it.
+- `setup.Release` / `setup.FromBuild` / `setup.Doctor` — the two ways to
+  produce a manifest and the check on one. `Release` downloads the runner and
+  firmware from a GitHub release, verifies them against `vmm-SHA256SUMS`, on
+  macOS removes `com.apple.quarantine` and re-signs the runner ad hoc with
+  `vmm.RunnerEntitlements`, pulls `ghcr.io/<owner>/loom-guest:TAG` for the host
+  architecture, checks its revision and version labels, and unpacks it with
+  `setup.ExtractRoot` into `cache/TAG/guest-root`. `FromBuild` records an
+  existing build tree and copies nothing. `Doctor` checks each entry, the
+  digests recorded at install (`installed.sums`, taken after the re-signing),
+  the entitlement, and `/tmp`'s mode, and lists runners with no `loom-vm`
+  parent without killing them. Downloads exist for darwin/arm64 only.
+- `vmm.RunnerEntitlements` — `runner.entitlements`, embedded from the module
+  root because `go:embed` cannot reach a parent directory. `make vmm-runner`
+  signs with the same file.
+- `cmd/loom-vm` — `probe`, `setup (--release TAG | --from-build DIR)`,
+  `doctor` and `run [flags] -- INIT ARGS`. Native paths come
   from `--runner`, `--lib-dir`, `--firmware-dir` or `LOOM_VM_RUNNER`,
   `LOOM_VM_LIB_DIR`, `LOOM_VM_FIRMWARE_DIR`. `run` takes `--file`,
   `--allow`, `--forward HOST:GUEST` and `--publish NAME:HOST:GUEST`, which
@@ -58,14 +80,22 @@ registry client, gVisor's netstack) never enters the jail helper's module.
   libkrunfw v5.5.0 whose guest kernel has Landlock and securityfs (ADR-022,
   D3), which the stock Homebrew libkrunfw lacks. `make vmm-firmware` runs the
   kernel build in a podman container and writes
-  `build/firmware/libkrunfw.5.dylib`, which `--firmware-dir` selects.
+  `build/firmware/libkrunfw.5.dylib`, which `--firmware-dir` selects. The
+  script has a mode per half: `--kernel OUTPUT_DIR` runs the Linux half
+  natively (CI's `firmware-kernel` job) and leaves `kernel.c`, and `--link
+  KERNEL_C OUTPUT_DIR` links the dylib on macOS (CI's `macos-assets` job).
 - `guest/Dockerfile` and `guest/loom-guest-init` — the linux/arm64 guest root.
   `make vmm-guest-root` builds the image natively in the arm64 podman machine
   named by `VMM_BUILD_CONNECTION` (default `loom-build`), because `make release`
   cannot cross-compile, and exports its runtime stage to
   `packages/vmm/build/guest-root`. The root holds the installed server release
   (`loomd`, bundled ERTS, `loom-exec` inside the release tree), bubblewrap,
-  git, ripgrep, sqlite3, iproute2, and the `loom` user (uid 10000).
+  git, ripgrep, sqlite3, iproute2, and the `loom` user (uid 10000). The
+  image carries `org.opencontainers.image.revision` and `.version` labels
+  from the `LOOM_REVISION` and `LOOM_VERSION` build arguments (the make
+  target passes the checkout's commit and `dev`; the release workflow passes
+  the tag), which `setup.Release` reads. The release workflow builds it on
+  both architectures and publishes `ghcr.io/<owner>/loom-guest:<tag>`.
   `loom-guest-init` is the payload libkrun runs as root: it configures the
   network statically, trusts the proxy CA (`update-ca-certificates`) and
   exports `/etc/loom-vm/github.env` when the CA file exists, chowns the loom
@@ -82,7 +112,12 @@ registry client, gVisor's netstack) never enters the jail helper's module.
 
 ## Relationships
 
-Depends on `github.com/stacklok/go-microvm` only. No Loom package imports
+Depends on `github.com/stacklok/go-microvm`, and on
+`github.com/google/go-containerregistry` (already in go-microvm's tree) for
+`setup`'s image pull. The server release carries the `loom-vm` binary
+(`scripts/release.sh`, `DIST_VM=0` omits it), and `.github/workflows/vmm-release.yml`
+publishes the guest image, runner and firmware that `loom-vm setup --release`
+installs. No Loom package imports
 this module and it imports none; `loom-exec` and `loomd` reach a guest as
 part of the guest image. The client package's
 `daemon_shipped_microvm_test` (with `test/support/microvm_executor`) drives
@@ -140,6 +175,26 @@ credential.
 - **The runner is version-locked.** Build it from this module's go-microvm
   version (`make vmm-runner`) and, on macOS, codesign it with
   `runner.entitlements`; an older runner fails at boot, not at probe.
+- **Nothing downloaded is used before it is verified, and nothing partial is
+  visible.** `Release` locates libkrun first, checks each asset's SHA-256
+  against `vmm-SHA256SUMS`, builds the whole install under
+  `cache/.staging-TAG`, renames it into `cache/TAG`, and replaces the manifest
+  last. A refusal leaves no manifest and no cache directory, and a failed
+  re-install leaves the previous manifest pointing at intact files. The
+  checksum asset is `vmm-SHA256SUMS`, not `SHA256SUMS`, which the server
+  release already publishes.
+- **Extraction never writes outside the root.** `ExtractRoot` refuses a `..`
+  element and any entry whose parent path holds a symlink, creates symlinks
+  without following them, and links only to regular files. Modes are applied
+  by chmod, never left to the umask, and directory modes last and deepest
+  first.
+- **There is no Developer ID.** The runner's ad-hoc signature identifies no
+  one; it carries the hypervisor entitlement, and the checksum is the
+  integrity check. `Doctor` verifies the digests recorded after the
+  re-signing, not the downloaded ones.
+- **The guest image is tied to the loom release.** The executor protocol is
+  exact-revision, so setup refuses an image whose version label is not the tag
+  and records the revision label in the manifest.
 - **The mask, not `/srv`, keeps an executor node's secrets.** The node's
   key, cookie and configuration are staged under `/srv/loom-node`, which lies
   outside the jail's minimal base view; under the default host read scope the

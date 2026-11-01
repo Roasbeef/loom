@@ -1225,6 +1225,105 @@ for private GHCR pulls is confined to the Linux runner, outside the build
 container. Bump the workflow's Linux image digest when its committed toolchain
 recipe changes, and keep the macOS version inputs aligned with regular CI.
 
+## The microVM artifacts
+
+The microVM tier ([ADR-022](adr/022-microvm-tier-runs-the-executor-in-a-libkrun-guest.md),
+[microvm.md](architecture/microvm.md)) boots an executor inside a libkrun guest.
+Building what that needs from source takes 11 minutes for the guest root and 7
+for the Landlock kernel, so a release publishes it, and `loom-vm setup`
+installs it.
+
+### What a release carries
+
+The server archive holds `bin/loom-vm`, the launcher, beside `loomd` and
+`loom-exec`. It is a Go program built with cgo off, so it adds no native
+dependency to the per-host build model and is byte-identical across builders;
+`DIST_VM=0` leaves it out, as the guest image's own build does. The installer
+does not put it on `PATH`: it is at `$PREFIX/lib/loom/server/bin/loom-vm`.
+
+`.github/workflows/vmm-release.yml` runs beside `release.yml` on every `v*` tag
+(or by dispatch with an existing tag) and publishes the rest:
+
+| Artifact | Where | Built on |
+| --- | --- | --- |
+| `ghcr.io/roasbeef/loom-guest:<tag>`, a manifest list for `linux/arm64` and `linux/amd64` | GHCR | a native runner for each architecture |
+| `go-microvm-runner-darwin-arm64` | the release's assets | `macos-15`, against Homebrew's libkrun, ad-hoc signed |
+| `libkrunfw-landlock-darwin-arm64.5.dylib` | the release's assets | the kernel on `ubuntu-24.04`, the dylib on `macos-15` |
+| `vmm-SHA256SUMS` | the release's assets | the digests of the two files above |
+
+The checksum file is not named `SHA256SUMS` because `release.yml` already
+publishes an asset by that name for the server archives, and a release cannot
+hold two. The assets are not covered by the release's reproduction check. They
+are attached to the draft release, which `release.yml` creates only after its
+builds pass, so the workflow's last job waits for the draft; publish the draft
+after both workflows have finished, because an immutable release takes no
+assets once it is published. GHCR creates the `loom-guest` package private on
+its first push. Make it public once in the package settings, since `loom-vm
+setup` pulls it without a token.
+
+There is no Linux download. Ubuntu ships no libkrun for the runner to link, so a
+Linux host builds the artifacts (`make vmm vmm-runner vmm-guest-root`, and
+`vmm-firmware` for Landlock) and runs `loom-vm setup --from-build
+packages/vmm/build`. The Linux half of the firmware build does run in CI, to
+produce the macOS dylib.
+
+### Installing
+
+libkrun must be installed first, because the runner loads it from Homebrew's
+prefix and release builds cannot ship it: `brew tap libkrun/krun && brew install
+libkrun`. Then:
+
+```sh
+loom-vm setup --release v0.3.0
+loom-vm doctor
+```
+
+Setup finds libkrun before it downloads anything, and names `brew install
+libkrun` when it is missing. It installs under `$LOOM_VM_HOME` (default
+`~/.loom/vm`), in `cache/<tag>/`, and writes `manifest.json` there, replacing
+it only after the new files are in place. `--repo OWNER/NAME` selects another
+repository's release and its `ghcr.io/OWNER/loom-guest` image. A developer who
+built the artifacts runs `make vmm-install-dev`, which records the paths of
+`packages/vmm/build` without copying them and sets the revision to `dev`.
+
+### Verification, re-signing and quarantine
+
+Setup compares the SHA-256 of the runner and the firmware with
+`vmm-SHA256SUMS` and refuses a mismatch, a missing entry or a missing asset.
+That file comes from the same GitHub release over HTTPS, so it detects a
+corrupt or substituted download but is not a signature: nothing in the release
+is signed with a Developer ID, and the project has none. The guest image is
+checked by its labels instead. The release workflow sets
+`org.opencontainers.image.revision` to the tagged commit and
+`org.opencontainers.image.version` to the tag; setup refuses an image with no
+revision or with another version, and records the revision in the manifest. The
+image digest is not recorded in `vmm-SHA256SUMS`, so the image's integrity
+rests on GHCR and the tag.
+
+On macOS setup then removes `com.apple.quarantine` from the runner and the
+dylib, treating "no such xattr" as success, and re-signs the runner with
+`codesign --entitlements <runner.entitlements> -s - --force`. The signature is
+ad hoc, so it identifies no one. What it carries is the
+`com.apple.security.hypervisor` entitlement, without which Hypervisor.framework
+refuses to start a guest, and the signature is made on the user's own machine
+so that no attribute added in transit can leave the runner unusable. Setup
+records the digests of the files as installed, after the re-signing, and
+`loom-vm doctor` checks them, and checks the entitlement with `codesign -d
+--entitlements -`.
+
+### Version pinning
+
+Install the guest of the release whose `loomd` you run. The guest holds an
+executor, and an orchestrator talks to an executor over a protocol that
+negotiates exact revisions, so the two must come from the same release. The tag
+in `--release` is that pairing: the
+guest image, the runner and the firmware of one tag were built from one commit,
+and `revision` in the manifest says which. The runner is also locked to the
+go-microvm version `loom-vm` imports, which a release fixes. The runner links
+Homebrew's libkrun, so the libkrun installed on the user's machine must be at
+least as new as the one the release was built against; the workflow log prints
+that version.
+
 ## Opt-in profiling at launch
 
 `[daemon] profile = true` in the selected `loom.toml` enables local profiling

@@ -64,6 +64,7 @@ same provider.
 | `ghproxy.Proxy` (`packages/vmm/ghproxy/proxy.go`) | The per-VM CA, the placeholder, the real GitHub token, CONNECT admission, and the Authorization rewrite for the injection hosts. | Where it is served (`Spec.HostServices` and the backend) and what the guest does with it (the staged files and `loom-guest-init`). |
 | `epmd.Registration` (`packages/vmm/epmd/epmd.go`) | One TCP connection to an epmd that holds one node name at one port. | The node it names. A registration says nothing about whether a listener is up behind the port. |
 | `cmd/loom-vm` | Flag parsing, the lifetime of one guest, the epmd registrations of `--publish`, and copying the console to standard output. | Placement. Nothing in the daemon calls `loom-vm` yet; the end-to-end test runs it as a process. |
+| `setup` (`packages/vmm/setup`) | The manifest under `$LOOM_VM_HOME`, the install of a release or a build tree into it, the unprivileged extraction of the guest image, and the doctor report. | Booting. Nothing in `setup` starts a guest; the manifest is read by whatever launches one. |
 | `go-microvm-runner` | The libkrun VMM, in its own session (`setsid`), and the guest's devices. | The network stack: with a hosted provider the runner only forwards Ethernet frames over a socket. |
 | `loom-guest-init` (`packages/vmm/guest/loom-guest-init`) | Guest networking, trusting the proxy CA and exporting its environment when staged, ownership of the `loom` user's directories, the delegated cgroup v2 subtree, and the privilege drop. | Which program runs. It runs its arguments. |
 | `loom-guest-executor` (`packages/vmm/guest/loom-guest-executor`) | The tmpfs state root, the distribution options file rendered in the guest, the daemon's process, and the readiness markers on the console. | The daemon's configuration and credentials, which the caller stages into the root before boot. |
@@ -428,8 +429,9 @@ SIGTERM is a clean exit; a timeout (default 10 minutes) exits 1.
 
 ## The guest image and firmware
 
-The guest needs three artifacts built on the host, none of which a release
-carries yet.
+The guest needs three artifacts besides `loom-vm` itself. A developer builds
+them with make targets; a release publishes them, and `loom-vm setup` installs
+either kind (see "Installing the artifacts" below).
 
 | Make target | Produces | Built where | Why it is separate |
 | --- | --- | --- | --- |
@@ -441,7 +443,34 @@ carries yet.
 runner's library path (`libraryPath`,
 `packages/vmm/machine/libkrun/libkrun.go:285`). The firmware script pins the
 libkrunfw tag to a commit and the kernel tarball to a SHA-256
-(`packages/vmm/guest/build-libkrunfw.sh:25`).
+(`packages/vmm/guest/build-libkrunfw.sh:37`). It has a mode for each half of
+the build, so that the release workflow can run the kernel on a Linux runner
+(`--kernel`) and the link on a macOS one (`--link`); with neither flag it runs
+both through podman, as `make vmm-firmware` does.
+
+### Installing the artifacts
+
+`loom-vm setup` writes `$LOOM_VM_HOME/manifest.json` (default `~/.loom/vm`),
+the one file a consumer reads to learn where every artifact is. It has seven
+keys: `version` (1), `revision` (the loom commit the guest root was built from,
+or `dev`), and the absolute paths `loom_vm`, `runner`, `lib_dir`,
+`firmware_dir` (empty for the stock libkrunfw) and `guest_root`.
+
+| Command | Does | For |
+| --- | --- | --- |
+| `loom-vm setup --release TAG` | Downloads the runner and firmware from the release and checks their SHA-256 against `vmm-SHA256SUMS`; on macOS re-signs the runner ad hoc and removes the quarantine attribute; pulls `ghcr.io/<owner>/loom-guest:TAG`, checks its labels, and unpacks it into `cache/TAG/guest-root`. | A user who builds nothing. macOS on Apple Silicon only. |
+| `loom-vm setup --from-build DIR` | Records the paths of a build tree and copies nothing. | A developer who ran the make targets (`make vmm-install-dev`), and any Linux host. |
+| `loom-vm doctor` | Checks each manifest entry, the runner's entitlement, the digests recorded at install, the guest root's `/tmp` mode and the hypervisor probe, and lists `go-microvm-runner` processes that have no `loom-vm` parent. It kills nothing. | Diagnosis. |
+
+The install is assembled in a staging directory and renamed into
+`cache/TAG` only when complete, and the manifest is replaced last and
+atomically, so an interrupted setup leaves the earlier manifest pointing at the
+earlier, intact files. The guest root is extracted without privileges: the
+files belong to the caller, the permission, setuid and sticky bits are applied
+as the image records them whatever the umask (so `/tmp` stays 1777), symlinks
+are never followed, and an entry that would write outside the root is refused.
+`docs/distribution.md`, "The microVM artifacts", covers what a release
+publishes and how it is verified.
 
 The guest root is booted in place and written to, so every boot uses a fresh
 clone: `cp -cRp` on APFS, where `-p` keeps directory modes. Inside a booted
@@ -476,8 +505,9 @@ Four rules follow from that table:
 
 - **The runner is not `loom-vm`'s child.** go-microvm starts it with `setsid`,
   so `guest.Wait` can only poll its pid with a zero signal. A `loom-vm` killed
-  with SIGKILL leaves the runner and its data directory behind; SIGTERM or an
-  interrupt runs the full teardown.
+  with SIGKILL leaves the runner and its data directory behind (`loom-vm
+  doctor` lists such runners and never kills them); SIGTERM or an interrupt
+  runs the full teardown.
 - **A registration is a connection.** The epmd entry vanishes when
   `loom-vm` exits for any reason, including a crash. It never outlives the
   guest, but it can precede the daemon, which is why readiness is the console
@@ -498,8 +528,14 @@ Four rules follow from that table:
   runs `loom-vm` itself; a broker or pool driver, copy-in of a real checkout
   and the bundle transport of #1137 do not exist yet.
 - Only macOS with Hypervisor.framework has booted a guest. The Linux/KVM path
-  compiles and is untested, and `build-libkrunfw.sh` produces only the macOS
+  compiles and is untested, and `build-libkrunfw.sh` links only the macOS
   dylib.
+- `loom-vm setup --release` has never run against a published release: none
+  exists yet. Its download, checksum, signing and extraction steps are covered
+  by tests against a local HTTP server and registry, and the extraction was
+  compared with a real guest root. `.github/workflows/vmm-release.yml` has not
+  run on a hosted runner either. A Linux host has no download, because Ubuntu
+  ships no libkrun for the runner to link; it uses `--from-build`.
 - Sessions local to an orchestrator do not yet mask the node's key and cookie.
 - The behaviour on the stock kernel is inferred: a turn does not complete,
   which matches the broker's `landlock` demand, but the exact refusal was not

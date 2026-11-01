@@ -193,3 +193,37 @@ clone. The executor's state root is a tmpfs inside the guest, for SQLite and
 the code-mode socket. The node's secrets are staged under `/srv`, which lies
 outside the jail's minimal base view but not outside the default host read
 scope. The credential mask, not the location, is what protects them.
+
+## Addendum, 2026-11-01: prebuilt artifacts
+
+The tier needs a runner, a Landlock libkrunfw and a guest root, which take
+about 11 minutes (guest root) and 7 minutes (kernel) to build. Making every
+developer build them would stop most from trying the tier, so a release now
+publishes them.
+
+**Decisions.**
+
+- The guest image is `ghcr.io/roasbeef/loom-guest:<release tag>`, a manifest
+  list for linux/arm64 and linux/amd64, built only on release tag pushes and
+  workflow dispatch. It carries `org.opencontainers.image.revision` (the loom
+  commit) and `org.opencontainers.image.version` (the tag).
+- The runner, the Landlock libkrunfw and a checksum file are assets of the
+  release's GitHub release. The checksum file is `vmm-SHA256SUMS` because the
+  server release already holds a `SHA256SUMS`.
+- `loom-vm setup --release TAG` verifies the SHA-256 of each asset, then on
+  macOS ad-hoc re-signs the runner with the Hypervisor.framework entitlements
+  and removes `com.apple.quarantine`. There is no Developer ID, so nothing is
+  signed in a way that identifies the project; the digest is the integrity
+  check, and it travels with the assets rather than separately from them.
+- Setup writes a manifest, not a search path. Consumers read
+  `$LOOM_VM_HOME/manifest.json`, which a developer's `setup --from-build`
+  produces in the same form.
+- Prebuilt downloads exist for macOS on Apple Silicon only. Ubuntu ships no
+  libkrun for the runner to link, so a Linux host builds and uses
+  `--from-build`.
+
+**Cost.** The guest and the orchestrator must come from the same release,
+because the executor protocol checks exact revisions; setup records the
+revision so a mismatch is visible. The image's integrity rests on GHCR and the
+tag, since the checksum file does not name its digest. A runner built against
+a newer Homebrew libkrun than the user has may fail to load it.
