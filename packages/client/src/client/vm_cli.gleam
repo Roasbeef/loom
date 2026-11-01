@@ -30,9 +30,11 @@
 ////   again rather than minting new certificates, so the orchestrator's
 ////   installed configuration keeps matching the executor it trusts.
 //// - `orch/` holds the orchestrator's installed credentials.
-//// - `root/` is the guest's own clone of the exported guest root. `up` replaces
-////   it, so whatever the guest wrote into its checkout is gone after the next
-////   `up`; `down` leaves it for the user to read.
+//// - `root/` is the guest's own clone of the exported guest root, and
+////   `state.img` is the disk its executor keeps its ledger and scopes on. A
+////   second `up` boots both again, so whatever the guest wrote into its
+////   checkout and the sessions its executor holds survive `down`; `--fresh`
+////   replaces both. `down` leaves them for the user to read.
 //// - `loom-vm.pid` names the process and its birth marker, and `loom-vm.log`
 ////   holds the guest's console.
 ////
@@ -75,7 +77,7 @@ import weft/poll
 /// Complete help for the vm operator command.
 pub const usage =
   "usage: loom vm up [--name NAME] [--workspace DIR] [--mem MIB] [--cpus N]
-                  [--config PATH]
+                  [--config PATH] [--github gh|env|off] [--fresh]
        loom vm down [--name NAME]
        loom vm status [--name NAME]
 
@@ -91,8 +93,14 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             2048) and --cpus its virtual CPUs (default 4). --config is the
             loom.toml to enroll in (default ~/.loom/loom.toml).
             A loom.toml that already holds a different [distribution] table is
-            refused, not replaced. The guest's checkout is replaced by every
-            `up`.
+            refused, not replaced.
+            A guest that ran before keeps its root, the checkouts in it and its
+            state disk, so `down` and `up` resume where it stopped. --fresh
+            replaces all three.
+            --github chooses where loom-vm reads the token its credential proxy
+            injects: gh (the default) runs `gh auth token`, env reads
+            LOOM_VM_GITHUB_TOKEN, and off gives the guest no network. The guest
+            holds only a placeholder, never the token.
   down      Stop the guest. Its root, and the checkout inside it, stay on disk.
   status    Say whether the guest runs, where it is registered and what it
             holds.
