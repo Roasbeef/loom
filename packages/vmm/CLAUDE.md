@@ -32,6 +32,17 @@ registry client, gVisor's netstack) never enters the jail helper's module.
   D3), which the stock Homebrew libkrunfw lacks. `make vmm-firmware` runs the
   kernel build in a podman container and writes
   `build/firmware/libkrunfw.5.dylib`, which `--firmware-dir` selects.
+- `guest/Dockerfile` and `guest/loom-guest-init` — the linux/arm64 guest root.
+  `make vmm-guest-root` builds the image natively in the arm64 podman machine
+  named by `VMM_BUILD_CONNECTION` (default `loom-build`), because `make release`
+  cannot cross-compile, and exports its runtime stage to
+  `packages/vmm/build/guest-root`. The root holds the installed server release
+  (`loomd`, bundled ERTS, `loom-exec` inside the release tree), bubblewrap,
+  git, ripgrep, sqlite3, iproute2, and the `loom` user (uid 10000).
+  `loom-guest-init` is the payload libkrun runs as root: it configures the
+  network statically, chowns the loom user's directories, builds the delegated
+  cgroup v2 subtree under `/sys/fs/cgroup/loom`, and runs its arguments as
+  `loom` with `LOOM_CGROUP_BASE` set.
 
 ## Relationships
 
@@ -67,6 +78,19 @@ guest configures that statically; go-microvm v0.0.43 serves no DHCP lease.
 - **The runner is version-locked.** Build it from this module's go-microvm
   version (`make vmm-runner`) and, on macOS, codesign it with
   `runner.entitlements`; an older runner fails at boot, not at probe.
+
+- **Boot a clone of the guest root, never the export.** The root is a
+  virtio-fs share the guest writes into. Clone it with `cp -cRp`: without `-p`
+  macOS `cp` applies the umask to directory modes and `/tmp` loses its
+  world-write bit.
+- **The export is owned by the host user.** The guest sees every file as the
+  host uid, and root in the guest can `chown` on the share, so the init chowns
+  the loom user's home, state and work directories at every boot instead of
+  relying on the image's ownership.
+- **The init keeps the cgroup layout the helper's checks need.** `loom/` holds
+  no processes and is owned by loom, `loom/init` holds the init, `loom/work`
+  holds the workload and `loom/exec` is the process-empty base. A helper
+  outside the delegated subtree cannot migrate processes into the base.
 
 ## Deep Docs
 
