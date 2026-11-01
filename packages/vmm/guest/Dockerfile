@@ -100,10 +100,13 @@ COPY . .
 # BuildKit cache mounts so that resolving them from cold, which trips Hex's
 # rate limit on a tree with this many path dependencies (issue #248), happens
 # once per builder rather than once per build.
+#
+# DIST_VM=0 keeps `loom-vm`, the host-side launcher the release otherwise
+# carries, out of the guest, which holds an executor and boots nothing.
 RUN --mount=type=cache,target=/root/.cache/gleam \
 	--mount=type=cache,target=/root/go/pkg/mod \
 	--mount=type=cache,target=/root/.cache/go-build \
-	PREFIX=/opt/loom make install
+	DIST_VM=0 PREFIX=/opt/loom make install
 
 # ----------------------------------------------------------- runtime stage
 FROM docker.io/library/debian:trixie-slim AS runtime
