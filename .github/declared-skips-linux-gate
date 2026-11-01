@@ -15,3 +15,8 @@ declared|linux|SKIP git worktree: helper has no filesystem enforcement|The ordin
 # the toolchain every runner has, so the manager's door, its jail and its
 # probe are still exercised against a real server without this waiver.
 declared|linux|SKIP lsp manager gopls: gopls or go is not installed|The ordinary runner installs no gopls; the gleam lsp fixture in the same file runs the whole door against a real jailed server, and a host with gopls on PATH or at ~/go/bin runs this one.
+
+# The microVM executor fixture needs a hypervisor, the go-microvm runner, the
+# Landlock guest kernel and an exported guest root (ADR-022); the hosted Linux
+# runner carries none of them.
+declared|linux|SKIP shipped microvm executor: LOOM_VM is unset|The microVM fixture needs a hypervisor and a built guest root; the hosted runner has neither, and it runs on a developer machine.
