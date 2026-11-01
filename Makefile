@@ -480,6 +480,30 @@ vmm-runner: ## Build (and on macOS codesign) the go-microvm runner loom-vm boots
 vmm-firmware: ## Build libkrunfw with Landlock into packages/vmm/build/firmware
 	@$(VMM_PKG)/guest/build-libkrunfw.sh $(VMM_PKG)/build/firmware
 
+# The linux/arm64 guest root (packages/vmm/guest/Dockerfile). `make release`
+# cannot cross-compile, so the image builds natively inside the arm64 podman
+# machine named by VMM_BUILD_CONNECTION. The runtime stage's filesystem is
+# exported to packages/vmm/build/guest-root, which `loom-vm run --root-dir`
+# boots. The old root is removed first so that a rebuild never layers new
+# files over stale ones. Boot a copy, not this directory, because the guest
+# writes into its root in place. Clone with `cp -cRp` on macOS: without -p,
+# cp applies the umask to directory modes and /tmp loses its world-write bit.
+VMM_BUILD_CONNECTION ?= loom-build
+VMM_GUEST_IMAGE      ?= localhost/loom-vmm-guest-root:dev
+VMM_GUEST_ROOT       := $(VMM_PKG)/build/guest-root
+
+.PHONY: vmm-guest-root
+vmm-guest-root: ## Build the linux/arm64 guest root into packages/vmm/build/guest-root (podman)
+	podman --connection $(VMM_BUILD_CONNECTION) build --platform linux/arm64 \
+		--target runtime -t $(VMM_GUEST_IMAGE) \
+		-f $(VMM_PKG)/guest/Dockerfile .
+	@set -e; \
+	ctr=$$(podman --connection $(VMM_BUILD_CONNECTION) create $(VMM_GUEST_IMAGE) /bin/true); \
+	trap 'podman --connection $(VMM_BUILD_CONNECTION) rm -f '"$$ctr"' >/dev/null' EXIT; \
+	rm -rf $(VMM_GUEST_ROOT); mkdir -p $(VMM_GUEST_ROOT); \
+	podman --connection $(VMM_BUILD_CONNECTION) export "$$ctr" | tar -xp -C $(VMM_GUEST_ROOT); \
+	echo "exported $(VMM_GUEST_ROOT)"
+
 .PHONY: vmm-test
 vmm-test: ## Vet, build, and test the Go microVM launcher
 	@cd $(VMM_PKG) && go vet ./... && go build ./... && go test ./...
