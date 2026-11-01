@@ -1569,8 +1569,30 @@ fn lazy_masks(state_root: String) -> List(String) {
 
       // The launcher's startup lock, on `daemon.lock`'s argument.
       state_root <> "/launch.lock",
+
+      // Each standing microVM guest's directory (`loom vm up`, ADR-022):
+      // its two deployment bundles, the orchestrator's credentials, and the
+      // guest root, whose node directory holds the executor's TLS key and
+      // cookie. Either pair lets a process join this daemon's distribution
+      // as a pinned node, which is Erlang RPC on the host daemon.
+      state_root <> "/vm",
     ],
+    node_home_masks(),
   ])
+}
+
+// The node secrets a distributed daemon keeps under the user's home rather
+// than its state root. The cookie must be the VM's `$HOME/.erlang.cookie`
+// (the emulator reads it from nowhere else), and `loom vm up` keeps its
+// guests in `$HOME/.loom/vm` whatever `--state-dir` the daemon runs with.
+// A jailed process that read the cookie and a key could connect to this
+// daemon's distribution listener as a pinned peer.
+fn node_home_masks() -> List(String) {
+  // A daemon with no `HOME` has neither file to mask.
+  case home_directory() {
+    Some(home) -> [home <> "/.erlang.cookie", home <> "/.loom/vm"]
+    None -> []
+  }
 }
 
 // The whole SQLite file family beside a database: it runs in WAL mode,

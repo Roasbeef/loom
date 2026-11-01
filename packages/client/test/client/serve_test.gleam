@@ -1713,6 +1713,24 @@ pub fn a_workspace_on_the_state_root_is_a_policy_the_server_boots_on_test() {
   assert list.contains(base.protected, "/home/o/.loom/sessions")
 }
 
+pub fn standing_guest_secrets_are_state_root_masks_test() {
+  // `loom vm up` keeps each guest's bundles, the orchestrator's credentials
+  // and a guest root holding the executor's key and cookie under the state
+  // root's `vm` directory, and every distributed daemon's cookie is the
+  // home's `.erlang.cookie`. Either pair would let a jailed process join this
+  // daemon's distribution as a pinned node, so both are mask candidates.
+  let masks = workspace_policy.state_root_mask_candidates("/home/o/.loom")
+  assert list.contains(masks, "/home/o/.loom/vm")
+
+  case workspace_policy.home_directory() {
+    Some(home) -> {
+      assert list.contains(masks, home <> "/.erlang.cookie")
+      assert list.contains(masks, home <> "/.loom/vm")
+    }
+    None -> Nil
+  }
+}
+
 pub fn a_node_credential_is_masked_and_a_missing_one_is_skipped_test() {
   // ADR-022 D2: a distributed node's TLS key and cookie live outside its
   // state root, so only this protector keeps them from a jailed child. The
