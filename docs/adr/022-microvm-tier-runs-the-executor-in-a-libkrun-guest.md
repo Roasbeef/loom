@@ -227,3 +227,66 @@ because the executor protocol checks exact revisions; setup records the
 revision so a mismatch is visible. The image's integrity rests on GHCR and the
 tag, since the checksum file does not name its digest. A runner built against
 a newer Homebrew libkrun than the user has may fail to load it.
+
+## Addendum, 2026-11-01: the developer path
+
+The owner asked for a first-class developer experience. A design review
+proposed the shape below, and the owner made the four decisions marked as
+theirs. Each one changes or extends a ruling made elsewhere, so the rulings
+are recorded here, where the tier's next reader will look.
+
+**A standing guest, run by `loom vm`, not by the daemon.** `loom vm up`
+provisions a two-node static deployment, installs the orchestrator's bundle
+into the developer's `loom.toml` as `[distribution]` and `[executors.<name>]`,
+stages the executor's bundle and a copy of the workspace into the guest's
+root, and boots it with `loom-vm run --publish`. Existing remote placement
+then serves the guest (`loom --executor vm`): pools, worktree mode and the
+census apply unchanged. The guest is a separate `loom-vm` process rather than
+a child of the daemon. A daemon restart is then not an executor restart, and
+the distributed runtime already treats an executor as a machine that outlives
+its orchestrator. A guest per session needs a pool driver and is deferred.
+
+**The local daemon becomes a distribution member (owner's decision).** The
+alternative was a second link over vsock, a custom distribution carrier that
+would have discarded the property the first addendum relies on: the pinned
+handshake, the SAN and the name check run unchanged. The cost is bounded
+two ways. The `loom` client renders the TLS options file whenever the config
+has `[distribution]`, which also closes the #1137 gap where a restart without
+`LOOM_DISTRIBUTION_OPTFILE` refused to boot. And the optional
+`[distribution] listen_address` binds an orchestrator's listener to loopback
+([protocol-change/106](../../protocol-change/106-distribution-launch-and-listen-address.md)).
+
+**Work leaves by the agent pushing from the guest (owner's decision).** The
+guest gets GitHub access through `loom-vm`'s credential proxy. The proxy is a
+CONNECT-only HTTPS proxy on the guest's gateway, with a per-VM CA whose name
+constraint covers only the GitHub hosts. It replaces a per-VM placeholder
+with the developer's token, read once on the host, and does so only in the
+`Authorization` header of requests to those hosts. The token never enters the
+guest, its disk or its environment. With access on, the executor's jail has
+the network, and the guest's egress allowlist (the three GitHub hosts) is the
+boundary. This supersedes, for the microVM tier only, two earlier rulings:
+#214's "the proxy never sees or injects credentials" and #1137's "only the
+machine that owns the session pushes" (also recorded on #1136). A local
+`loom vm sync`, a `git fetch` from the guest's root with no token, was judged
+too clunky as the default and is kept as #1155 for push-free cases. The proxy
+is shaped to become #214's enforcement of `Proxy(allowlist)` for executors in
+a guest. Making the proxy the only egress path, per-call allowlists, an
+enforcement-report entry and a self-test probe remain before
+`narrow_unenforceable` can stop downgrading there.
+
+**State persists (owner's decision).** The executor's state root moves from a
+tmpfs to a raw disk image per guest (`--state-disk`, mounted from
+`/dev/vda`), formatted on first boot and reused after. `loom vm up` also keeps
+the guest's root and workspace copies when they exist, so the agent's edits,
+the executor's ledger and its scopes survive `down` and `up`; `--fresh` starts
+both again. The workspace copy stays on the virtio-fs root, which the host can
+read; only the executor's own state is on the block device.
+
+**Prebuilt artifacts (owner's decision).** As the previous addendum records,
+CI publishes the guest image to `ghcr.io/roasbeef/loom-guest:<tag>` and the
+runner, the Landlock libkrunfw and `vmm-SHA256SUMS` as release assets.
+`loom-vm setup` verifies them, re-signs the runner ad hoc with the hypervisor
+entitlement and clears quarantine, since the project has no Developer ID.
+`loom vm up` refuses a manifest whose revision differs from the running build,
+because the executor protocol is exact-revision and a mismatched guest daemon
+crashes the host on its first unmatched message.
