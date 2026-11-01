@@ -71,7 +71,12 @@ registry client, gVisor's netstack) never enters the jail helper's module.
   `--allow`, `--forward HOST:GUEST` and `--publish NAME:HOST:GUEST`, which
   forwards the port and registers NAME at HOST in the host's epmd (starting
   one with `epmd -daemon` when none answers) for the guest's life. An
-  interrupt or SIGTERM stops the guest and exits 0; a timeout exits 1.
+  interrupt or SIGTERM stops the guest and exits 0; a timeout exits 1, and
+  `--timeout 0` runs until stopped, as a standing guest does.
+  `--state-disk PATH` attaches a raw image as `/dev/vda` (`Spec.Disks`),
+  creating a sparse one of `--state-disk-size` MiB on first use and reusing
+  it after; `loom-guest-executor --state-device /dev/vda` formats it once and
+  mounts it as the executor's state root.
   `--github-token-from gh|env` (`gh auth token`, or `LOOM_VM_GITHUB_TOKEN`) and
   `--inject-host` (repeatable) start the proxy on gateway port 3128 and stage
   its guest files (`cmd/loom-vm/github.go`); the proxy admits exactly the
