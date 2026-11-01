@@ -190,5 +190,6 @@ relabelling a layer.
 the guest configures 192.168.127.2/24 statically. The guest root is a
 virtio-fs share that the guest writes into, so each boot uses a `cp -cRp`
 clone. The executor's state root is a tmpfs inside the guest, for SQLite and
-the code-mode socket. The node's secrets are staged under `/srv`, outside the
-jail's base view.
+the code-mode socket. The node's secrets are staged under `/srv`, which lies
+outside the jail's minimal base view but not outside the default host read
+scope. The credential mask, not the location, is what protects them.

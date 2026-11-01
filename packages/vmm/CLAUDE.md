@@ -56,7 +56,8 @@ registry client, gVisor's netstack) never enters the jail helper's module.
   `/srv/workspaces/*` to loom; then, through `loom-guest-init`, it renders the
   distribution options inside the guest, starts `loomd`, and prints
   `LOOM-EXECUTOR-READY <name>` once the node is registered with the guest's
-  epmd (or `LOOM-EXECUTOR-FAILED` and the daemon log).
+  epmd and the daemon has logged `daemon.executor_serving` (or
+  `LOOM-EXECUTOR-FAILED` and the daemon log).
 
 ## Relationships
 
@@ -102,11 +103,12 @@ guest configures that statically; go-microvm v0.0.43 serves no DHCP lease.
 - **The runner is version-locked.** Build it from this module's go-microvm
   version (`make vmm-runner`) and, on macOS, codesign it with
   `runner.entitlements`; an older runner fails at boot, not at probe.
-- **An executor node's secrets live under `/srv`.** The jail's base view
-  exposes the system roots (`/etc`, `/opt`, `/usr`, `/var/lib` and others) to
-  model code running as the same user, so the node's key, cookie and
-  configuration are staged under `/srv/loom-node`, and the daemon masks the
-  key and cookie from every jailed child (`protecting_node_credentials`).
+- **The mask, not `/srv`, keeps an executor node's secrets.** The node's
+  key, cookie and configuration are staged under `/srv/loom-node`, which lies
+  outside the jail's minimal base view; under the default host read scope the
+  jail sees the whole guest, `/srv` included, and only the daemon's
+  `protecting_node_credentials` mask keeps the key and cookie from model code.
+  Do not stage another secret there expecting the location to protect it.
 - **Boot a clone of the guest root, never the export.** The root is a
   virtio-fs share the guest writes into. Clone it with `cp -cRp`: without `-p`
   macOS `cp` applies the umask to directory modes and `/tmp` loses its

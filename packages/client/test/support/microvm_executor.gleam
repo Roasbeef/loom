@@ -23,8 +23,9 @@
 //// Everything the executor needs is copied into the guest root before boot,
 //// never shared (ADR-022 D1): `/srv/loom-node` holds its configuration, its
 //// HOME with the cookie, and its key; `/srv/workspaces/<name>` is the
-//// checkout. `/srv` lies outside the jail's base view, so model code running
-//// as the same user inside the guest cannot read the node's secrets.
+//// checkout. Under the default host read scope the jail sees the whole guest,
+//// `/srv` included, so what keeps the node's key and cookie from model code
+//// is the executor's own credential mask, which the test proves.
 //// `packages/vmm/guest/loom-guest-executor` is the guest side.
 ////
 //// ## Prerequisites

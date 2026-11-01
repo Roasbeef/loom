@@ -22,11 +22,16 @@
 # what its own configuration renders, guest paths included, and refuses to
 # boot on any difference. It then starts the daemon and prints
 # LOOM-EXECUTOR-READY on the console once the node has registered with the
-# guest's epmd, which is the moment its distribution listener accepts.
+# guest's epmd, so its distribution listener accepts, and the daemon has
+# logged daemon.executor_serving, so its executor host can take an attach.
 #
-# NODE_DIR must not be under a path the jail's base view exposes (/etc, /opt,
-# /usr, /var/lib and the other system roots), because the node's key and
-# cookie live there and model code runs as the same user. /srv is outside it.
+# What keeps the node's key and cookie from model code, which runs as the
+# same user, is the daemon's own mask (protecting_node_credentials), not the
+# location. /srv lies outside the jail's minimal base view, but under the
+# default host read scope the jail sees the whole guest, /srv included. The
+# other files here are readable to model code and hold no secret: loom.toml
+# names paths and models, state/dist.options names the credential paths, and
+# state/loomd.log is the daemon's standard output.
 set -eu
 
 loom_home=${LOOM_HOME:-/opt/loom}
@@ -53,8 +58,10 @@ case "${1:-}" in
 	short=$(sed -n 's/^node = "\([^@"]*\)@.*/\1/p' "$node/loom.toml" | head -n 1)
 	epmd=$(find "$loom_home" -type f -name epmd -perm -u+x | head -n 1)
 
-	# Wait for the daemon's node to register, or for the daemon to die, in
-	# which case its log is the only account of why.
+	# Wait for the daemon's node to register and its executor host to serve,
+	# or for the daemon to die, in which case its log is the only account of
+	# why. The node registers during configuration load, well before the
+	# executor host starts, so the registration alone is not readiness.
 	while :; do
 		if ! kill -0 "$daemon" 2>/dev/null; then
 			echo "LOOM-EXECUTOR-FAILED"
@@ -62,7 +69,9 @@ case "${1:-}" in
 			exit 1
 		fi
 
-		if "$epmd" -names 2>/dev/null | grep -q "^name $short "; then
+		if "$epmd" -names 2>/dev/null | grep -q "^name $short " &&
+			grep -qs 'daemon.executor_serving' "$node/state/loomd.log" \
+				"$node/state/root/daemon.log"; then
 			echo "LOOM-EXECUTOR-READY $short"
 			break
 		fi

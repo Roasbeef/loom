@@ -245,12 +245,12 @@ fn drive(
   let result = remote_daemons.result_text(requests, "guest-call")
   io.println_error(label <> " tool result:\n" <> result)
 
-  // The host is macOS, so a Linux kernel line can only come from the guest.
-  assert string.contains(result, "Linux 6.")
+  // No-new-privileges is set by loom-exec's stage 2 for every jailed call.
   assert string.contains(result, "NoNewPrivs:\t1")
 
-  // The tier's own kernel (ADR-022 D3) names itself in the release, so the
-  // call is known to have run where the broker's landlock demand holds.
+  // The tier's own kernel (ADR-022 D3) names itself in the release, which no
+  // host kernel does, so this proves both that the call ran in the guest and
+  // that it ran where the broker's landlock demand holds.
   assert string.contains(result, "-loom-landlock")
 
   // The node's cookie stays out of model code's reach inside the guest.
