@@ -27,7 +27,9 @@ const maxRootBytes int64 = 8 << 30
 // records them, whatever the umask. That matters for directories such as
 // /tmp (1777), which the guest's own programs need world-writable. The
 // guest sees every file as the host user regardless, because the root is a
-// virtio-fs share, and its init chowns what it needs at every boot.
+// virtio-fs share, and its init chowns what it needs at every boot. A
+// symlink's own permission bits are whatever the umask leaves, where
+// `tar -xp` sets 0777; Linux never consults them.
 //
 // Symlinks are created and never followed. An entry whose parent path
 // contains a symlink is refused, so no archive can write outside dir by
