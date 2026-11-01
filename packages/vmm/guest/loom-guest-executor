@@ -24,6 +24,8 @@
 # LOOM-EXECUTOR-READY on the console once the node has registered with the
 # guest's epmd, so its distribution listener accepts, and the daemon has
 # logged daemon.executor_serving, so its executor host can take an attach.
+# The daemon logs to its standard output, which is state/loomd.log here; a
+# LOOM_LOG_LEVEL above info would hide that line, and the guest sets none.
 #
 # What keeps the node's key and cookie from model code, which runs as the
 # same user, is the daemon's own mask (protecting_node_credentials), not the
@@ -70,8 +72,7 @@ case "${1:-}" in
 		fi
 
 		if "$epmd" -names 2>/dev/null | grep -q "^name $short " &&
-			grep -qs 'daemon.executor_serving' "$node/state/loomd.log" \
-				"$node/state/root/daemon.log"; then
+			grep -qs 'daemon.executor_serving' "$node/state/loomd.log"; then
 			echo "LOOM-EXECUTOR-READY $short"
 			break
 		fi
