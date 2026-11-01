@@ -1,5 +1,37 @@
 # Current handoff
 
+## MicroVM executor tier (issue #85)
+
+The local branch `microvm/libkrun-launcher`, based on `394b98d4f`, carries the
+first end-to-end slice of [ADR-022](adr/022-microvm-tier-runs-the-executor-in-a-libkrun-guest.md).
+It has not been pushed and has no hosted CI run. `daemon_shipped_microvm_test`
+passes on an Apple Silicon Mac. It runs an orchestrator on the host and the
+executor daemon inside a libkrun guest, drives one scripted `bash` call, and
+requires the call to have run on the Landlock guest kernel under `loom-exec`
+and to have been unable to read the node's cookie. Linux/KVM has not been
+booted. `make fmt-check`, `make lint`, `make doc-check` and `make vmm-test`
+pass, as do the touched client test files. The earlier full `make check` failed only on one
+lint error, which is now fixed.
+
+- **Built:** `packages/vmm` (`loom-vm`: go-microvm, default-deny egress,
+  host-loopback forwards, `--publish` into the host epmd), `make vmm-runner`,
+  `make vmm-firmware` (libkrunfw v5.5.0 with Landlock), `make vmm-guest-root`
+  (a linux/arm64 root built in the `loom-build` podman machine), and the
+  guest's init and executor scripts.
+- **Fixed on the way:** an executor's distribution key and cookie were
+  readable by jailed model code under the default host read scope. They are
+  now masked from session jails and from worktree Git.
+- **Ruled:** the orchestrator reaches a guest executor by its unchanged node
+  name through a forwarded port and a host epmd registration. No daemon
+  change was needed (ADR-022 addendum). `lightninglabs/hazmat` is a
+  reference only, and the stock libkrunfw is not used.
+- **Open:** orchestrator-local sessions still lack the credential mask. A
+  broker or pool driver that places executors into guests does not exist yet;
+  the test composes `loom-vm` by hand. Copy-in of a real checkout and
+  bundles (#1137) are not done. There is no Linux host half of the firmware
+  build and no Firecracker backend. The host epmd registration assumes the
+  node name's host part is `127.0.0.1`.
+
 ## JSON string cursor allocation
 
 The [profile follow-up](review/json-cursor-2026-10-30.md) keeps one origin cursor
