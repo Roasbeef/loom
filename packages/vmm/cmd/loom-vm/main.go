@@ -125,6 +125,7 @@ func run(args []string) error {
 		spec    machine.Spec
 		allow   listFlag
 		files   listFlag
+		fwds    listFlag
 		timeout time.Duration
 	)
 	fs.StringVar(&spec.Name, "name", "loom-vm", "guest name")
@@ -134,6 +135,7 @@ func run(args []string) error {
 	mem := fs.Uint("mem", 0, "memory in MiB (0 = default)")
 	fs.Var(&allow, "allow", "allowlisted egress host (repeatable)")
 	fs.Var(&files, "file", "SRC:DST[:MODE] copied into the guest (repeatable)")
+	fs.Var(&fwds, "forward", "HOST:GUEST port forwarded from host loopback (repeatable)")
 	fs.DurationVar(&timeout, "timeout", 10*time.Minute, "stop the guest after this long")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -149,6 +151,14 @@ func run(args []string) error {
 			return err
 		}
 		spec.Files = append(spec.Files, parsed)
+	}
+
+	for _, f := range fwds {
+		parsed, err := parseForward(f)
+		if err != nil {
+			return err
+		}
+		spec.Forwards = append(spec.Forwards, parsed)
 	}
 
 	if err := spec.Validate(); err != nil {
@@ -189,6 +199,22 @@ func parseFile(v string) (machine.File, error) {
 	}
 
 	return f, nil
+}
+
+// parseForward reads a HOST:GUEST flag.
+func parseForward(v string) (machine.Forward, error) {
+	host, guest, ok := strings.Cut(v, ":")
+	if !ok {
+		return machine.Forward{}, fmt.Errorf("--forward %q: want HOST:GUEST", v)
+	}
+
+	h, herr := strconv.ParseUint(host, 10, 16)
+	g, gerr := strconv.ParseUint(guest, 10, 16)
+	if herr != nil || gerr != nil {
+		return machine.Forward{}, fmt.Errorf("--forward %q: ports must be 1-65535", v)
+	}
+
+	return machine.Forward{Host: uint16(h), Guest: uint16(g)}, nil
 }
 
 // follow copies the console file to w until the guest exits or ctx ends.

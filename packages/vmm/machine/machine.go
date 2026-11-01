@@ -51,6 +51,10 @@ type Spec struct {
 	// Egress is the complete set of hosts the guest may reach.
 	Egress Egress
 
+	// Forwards are the only inbound paths into the guest: each listens on
+	// the host's loopback and connects to a guest port.
+	Forwards []Forward
+
 	// DataDir is the directory the backend keeps the guest's state and
 	// console log in. The backend creates it if it is missing, and Stop
 	// removes it. Empty asks the backend for a fresh temporary directory.
@@ -89,6 +93,14 @@ type Egress struct {
 	// Hosts are hostnames the guest may resolve and connect to, on any
 	// port. A leading "*." matches one or more subdomain labels.
 	Hosts []string
+}
+
+// Forward carries TCP connections made to Host on 127.0.0.1 into the guest's
+// Guest port. A forward never listens beyond loopback, so a guest port is
+// reachable from this machine only.
+type Forward struct {
+	Host  uint16
+	Guest uint16
 }
 
 // Default guest sizes, used when a Spec leaves them zero so a backend never
@@ -137,6 +149,20 @@ func (s Spec) Validate() error {
 		if err := checkHost(h); err != nil {
 			return err
 		}
+	}
+
+	// Two forwards on one host port would leave which guest port answers to
+	// the order the provider happens to bind them in.
+	seen := make(map[uint16]bool, len(s.Forwards))
+	for _, f := range s.Forwards {
+		if f.Host == 0 || f.Guest == 0 {
+			return fmt.Errorf("machine: forward %d->%d has a zero port", f.Host, f.Guest)
+		}
+
+		if seen[f.Host] {
+			return fmt.Errorf("machine: host port %d forwarded twice", f.Host)
+		}
+		seen[f.Host] = true
 	}
 
 	return nil

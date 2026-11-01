@@ -49,6 +49,12 @@ func TestValidateRefusesBadSpecs(t *testing.T) {
 		{"inner wildcard", func(s *Spec) {
 			s.Egress.Hosts = []string{"a.*.com"}
 		}, "bare hostname"},
+		{"zero forward", func(s *Spec) {
+			s.Forwards = []Forward{{Host: 0, Guest: 22}}
+		}, "zero port"},
+		{"duplicate forward", func(s *Spec) {
+			s.Forwards = []Forward{{Host: 4000, Guest: 1}, {Host: 4000, Guest: 2}}
+		}, "twice"},
 	}
 
 	for _, tc := range cases {

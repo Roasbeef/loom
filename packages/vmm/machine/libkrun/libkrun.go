@@ -237,6 +237,16 @@ func (b *Backend) options(spec machine.Spec, dataDir string,
 		opts = append(opts, microvm.WithRootFSPath(spec.Root.Dir))
 	}
 
+	// The hosted provider binds each forward on the host's 127.0.0.1 and
+	// admits the forwarded port through the guest firewall's ingress.
+	if len(spec.Forwards) > 0 {
+		ports := make([]microvm.PortForward, 0, len(spec.Forwards))
+		for _, f := range spec.Forwards {
+			ports = append(ports, microvm.PortForward{Host: f.Host, Guest: f.Guest})
+		}
+		opts = append(opts, microvm.WithPorts(ports...))
+	}
+
 	if bk := b.hypervisor(); bk != nil {
 		opts = append(opts, microvm.WithBackend(bk))
 	}
