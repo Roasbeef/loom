@@ -471,6 +471,15 @@ vmm-runner: ## Build (and on macOS codesign) the go-microvm runner loom-vm boots
 		codesign --entitlements $(VMM_PKG)/runner.entitlements -s - --force \
 			$(VMM_PKG)/build/go-microvm-runner; fi
 
+# The stock libkrunfw has no Landlock (ADR-022, D3). This builds the guest
+# kernel with it in a podman container and bundles it into a macOS dylib that
+# loom-vm loads through --firmware-dir. It takes tens of minutes, needs a
+# running podman machine (PODMAN_CONNECTION, default loom-build), and caches
+# its downloads in packages/vmm/build/firmware-work.
+.PHONY: vmm-firmware
+vmm-firmware: ## Build libkrunfw with Landlock into packages/vmm/build/firmware
+	@$(VMM_PKG)/guest/build-libkrunfw.sh $(VMM_PKG)/build/firmware
+
 .PHONY: vmm-test
 vmm-test: ## Vet, build, and test the Go microVM launcher
 	@cd $(VMM_PKG) && go vet ./... && go build ./... && go test ./...

@@ -27,6 +27,12 @@ registry client, gVisor's netstack) never enters the jail helper's module.
   from `--runner`, `--lib-dir`, `--firmware-dir` or `LOOM_VM_RUNNER`,
   `LOOM_VM_LIB_DIR`, `LOOM_VM_FIRMWARE_DIR`.
 
+- `guest/build-libkrunfw.sh` and `guest/libkrunfw-landlock.config` — build a
+  libkrunfw v5.5.0 whose guest kernel has Landlock and securityfs (ADR-022,
+  D3), which the stock Homebrew libkrunfw lacks. `make vmm-firmware` runs the
+  kernel build in a podman container and writes
+  `build/firmware/libkrunfw.5.dylib`, which `--firmware-dir` selects.
+
 ## Relationships
 
 Depends on `github.com/stacklok/go-microvm` only. No Loom package imports
