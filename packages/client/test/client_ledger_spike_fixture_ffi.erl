@@ -393,7 +393,7 @@ child(Encoded, Role) ->
 %% A node under test: the production start in live mode, a probe to message,
 %% a trace on the callback, and a loop that answers the parent.
 role(live_node, #{local := Local, files := Files}, Aux) ->
-    {ok, _Membership} = ?FFI:start(Local, live, Files, none, none),
+    {ok, _Membership} = ?FFI:start(Local, live, Files, {listen, none, none}, none),
     true = register(loom_dist_probe, spawn(fun probe/0)),
     Collector = trace_verdicts(),
     Ledger = case maps:get(ledger, Aux, none) of
@@ -404,7 +404,7 @@ role(live_node, #{local := Local, files := Files}, Aux) ->
     serve(fun handle/2, #{ledger => Ledger, collector => Collector});
 role(boot_check, #{local := Local, files := Files}, #{peers := Peers,
                                                        expected := Expected}) ->
-    case {Expected, ?FFI:start(Local, Peers, Files, none, none)} of
+    case {Expected, ?FFI:start(Local, Peers, Files, {listen, none, none}, none)} of
         {ok, {ok, _}} -> true = erlang:is_alive();
         {{error, Reason}, {error, Reason}} -> false = erlang:is_alive()
     end.
