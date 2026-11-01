@@ -308,6 +308,7 @@ pub fn machine(
 /// The files of this node's distribution identity a jailed child must not
 /// read: the private key and the cookie. The certificates are public.
 fn node_credentials(config: Option(distribution.Config)) -> List(String) {
+  // A daemon with no [distribution] table holds no node identity to mask.
   case config {
     Some(config) -> {
       let files = distribution.credential_files(config)
@@ -340,6 +341,7 @@ pub fn worktrees_of(
       ledger_path: ledger_path(machine.state_root),
       helper_path: machine.helper_path,
       demand: machine.demand,
+      credentials: machine.credentials,
       logger: machine.logger,
     ),
     configured,

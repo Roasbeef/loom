@@ -68,6 +68,10 @@ pub type Config {
     scratch: String,
     /// The daemon's state root, whose secrets every call masks.
     state_root: String,
+    /// The node's distribution key and cookie, which every call also masks.
+    /// They live outside the state root, and Git runs the repository's hooks
+    /// under this policy, so a hook the model wrote would otherwise read them.
+    credentials: List(String),
     /// Enforcement strictness for every call.
     demand: EnforcementDemand,
   )
@@ -82,6 +86,7 @@ pub opaque type Git {
     program: String,
     scratch: String,
     state_root: String,
+    credentials: List(String),
     demand: EnforcementDemand,
     incarnation: Int,
   )
@@ -129,7 +134,7 @@ pub const query_within_ms = 60_000
 /// ## Examples
 ///
 /// ```gleam
-/// // worktree_git.start(Config(helper, state <> "/git", state, exec.PlatformEnforcement))
+/// // worktree_git.start(Config(helper, state <> "/git", state, [], exec.PlatformEnforcement))
 /// ```
 pub fn start(config: Config) -> Result(Git, String) {
   use Nil <- result.try(
@@ -188,6 +193,7 @@ pub fn start(config: Config) -> Result(Git, String) {
     program: host_git.program(),
     scratch: config.scratch,
     state_root: config.state_root,
+    credentials: config.credentials,
     demand: config.demand,
     incarnation:,
   )
@@ -420,6 +426,7 @@ fn policy_of(
     env_allow: allowed,
   )
   |> workspace_policy.protecting_state_root(git.state_root)
+  |> workspace_policy.protecting_node_credentials(git.credentials)
 }
 
 // Nothing here comes from a peer. Git reads no user or system configuration:
