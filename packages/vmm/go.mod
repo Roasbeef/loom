@@ -2,7 +2,10 @@ module github.com/roasbeef/loom/vmm
 
 go 1.26.0
 
-require github.com/stacklok/go-microvm v0.0.43
+require (
+	github.com/google/go-containerregistry v0.22.1
+	github.com/stacklok/go-microvm v0.0.43
+)
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
@@ -20,7 +23,6 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gofrs/flock v0.13.1 // indirect
 	github.com/google/btree v1.1.2 // indirect
-	github.com/google/go-containerregistry v0.22.1 // indirect
 	github.com/google/gopacket v1.1.19 // indirect
 	github.com/inetaf/tcpproxy v0.0.0-20260515195445-c159a6051109 // indirect
 	github.com/insomniacslk/dhcp v0.0.0-20240710054256-ddd8a41251c9 // indirect
