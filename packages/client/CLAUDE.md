@@ -32,7 +32,9 @@ returning the existing error, because EUnit truncates a failed binary pattern.
 node's TLS key and cookie in `Machine.credentials`. The executor's base policy
 adds them through `workspace_policy.protecting_node_credentials`, beside the
 state-root and blob masks, so a jailed child cannot print them into a tool
-result (ADR-022 D2 and its 2026-11-01 addendum). Both live outside the state
+result (ADR-022 D2 and its 2026-11-01 addendum). `worktrees.Config` and
+`worktree_git.Config` carry the same list, so the sandboxed Git that runs a
+repository's hooks during `git worktree add` masks them too. Both live outside the state
 root, which is why the state-root masks never covered them. An absent path is
 skipped, as for every conditional mask. Sessions local to an orchestrator are
 not yet masked this way. `daemon_shipped_microvm_test` (with

@@ -15,8 +15,9 @@ registry client, gVisor's netstack) never enters the jail helper's module.
   or `Root.Dir`), vCPUs, memory, `Init` argv, `Files` copied into the root
   before boot, `Egress` allowlist, `Forwards`, data directory. `Validate`
   refuses a spec with no or two roots, no init, a file target that is not a
-  clean absolute path below `/`, an egress entry that is not a bare hostname,
-  or a forward with a zero port or a host port used twice.
+  clean absolute path below `/`, an egress entry that is not a bare hostname
+  or is a wildcard over one label (`*.com`), or a forward with a zero port or a
+  host port used twice.
 - `machine.Forward` — a host loopback port carried into a guest port. The only
   inbound path into a guest; it never listens beyond `127.0.0.1`.
 - `machine.Egress` — the complete outbound allowlist. The zero value allows
@@ -34,7 +35,8 @@ registry client, gVisor's netstack) never enters the jail helper's module.
   `LOOM_VM_LIB_DIR`, `LOOM_VM_FIRMWARE_DIR`. `run` takes `--file`,
   `--allow`, `--forward HOST:GUEST` and `--publish NAME:HOST:GUEST`, which
   forwards the port and registers NAME at HOST in the host's epmd (starting
-  one with `epmd -daemon` when none answers) for the guest's life.
+  one with `epmd -daemon` when none answers) for the guest's life. An
+  interrupt or SIGTERM stops the guest and exits 0; a timeout exits 1.
 - `guest/build-libkrunfw.sh` and `guest/libkrunfw-landlock.config` — build a
   libkrunfw v5.5.0 whose guest kernel has Landlock and securityfs (ADR-022,
   D3), which the stock Homebrew libkrunfw lacks. `make vmm-firmware` runs the
