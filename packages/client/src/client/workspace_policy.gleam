@@ -1419,6 +1419,30 @@ pub fn state_root_mask_candidates(state_root: String) -> List(String) {
   list.append(established_masks(state_root), lazy_masks(state_root))
 }
 
+/// The base policy with this node's own distribution secrets protected: the
+/// private key of its TLS leaf and its Erlang cookie (ADR-022 D2).
+///
+/// A distributed daemon keeps both outside its state root, at the paths its
+/// `[distribution]` table names, so the state-root masks do not reach them.
+/// Under the default host read scope a jailed `bash` could print either into
+/// a tool result, which the model provider then receives, and either one is
+/// enough to speak to this node's peers as this node. A path that does not
+/// exist is skipped, as `protecting` skips any absent conditional mask,
+/// because the jail refuses to mask a missing path and a distributed daemon
+/// has already read both files before any session boots.
+///
+/// ## Examples
+///
+/// ```gleam
+/// workspace_policy.protecting_node_credentials(base, ["/srv/node/key.pem"])
+/// ```
+pub fn protecting_node_credentials(
+  base: policy.SandboxPolicy,
+  paths: List(String),
+) -> policy.SandboxPolicy {
+  protecting(base, always: [], where_maskable: paths)
+}
+
 /// The base policy with the daemon's state-root secrets masked, in place
 /// of the state root itself.
 ///

@@ -60,6 +60,7 @@ fn machine(rig: Rig) -> executor_plane.Machine {
     home: None,
     logger: log.discard(),
     mcp_servers: [],
+    credentials: [],
   )
 }
 

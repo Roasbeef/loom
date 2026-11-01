@@ -1713,6 +1713,33 @@ pub fn a_workspace_on_the_state_root_is_a_policy_the_server_boots_on_test() {
   assert list.contains(base.protected, "/home/o/.loom/sessions")
 }
 
+pub fn a_node_credential_is_masked_and_a_missing_one_is_skipped_test() {
+  // ADR-022 D2: a distributed node's TLS key and cookie live outside its
+  // state root, so only this protector keeps them from a jailed child. The
+  // key exists and is masked; the cookie path is absent and is skipped,
+  // because the jail refuses to mask a missing path and would refuse the
+  // whole session rather than one entry.
+  let directory =
+    "build/node-credentials-"
+    <> string.lowercase(bit_array.base16_encode(token.production_entropy()(4)))
+  let assert Ok(Nil) = simplifile.create_directory_all(directory)
+    as "the test directory is created"
+  let key = directory <> "/key.pem"
+  let cookie = directory <> "/.erlang.cookie"
+  let assert Ok(Nil) = simplifile.write(key, "not a real key")
+    as "the key is written"
+
+  let base =
+    workspace_policy.protecting_node_credentials(
+      workspace_policy.base_policy("/work"),
+      [key, cookie],
+    )
+  let _ = simplifile.delete_all([directory])
+
+  assert list.contains(base.protected, key)
+  assert !list.contains(base.protected, cookie)
+}
+
 pub fn a_workspace_equal_to_a_masked_entry_refuses_the_boot_test() {
   let base =
     workspace_policy.protecting_state_root(
