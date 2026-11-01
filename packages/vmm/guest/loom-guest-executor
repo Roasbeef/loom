@@ -1,7 +1,7 @@
 #!/bin/sh
 # loom-guest-executor: start a Loom executor daemon inside a microVM guest.
 #
-#   loom-guest-executor NODE_DIR
+#   loom-guest-executor NODE_DIR [--state-device DEV]
 #
 # The launcher stages one directory per executor node into the guest root
 # before boot (ADR-022 D1: copied in, never shared). NODE_DIR holds:
@@ -12,8 +12,10 @@
 #   state/             an empty directory the state root is mounted on
 #
 # The script runs in two phases. The first runs as root, as libkrun starts the
-# guest's init: it mounts a tmpfs on the state root, because the executor's
-# SQLite ledger and code mode's AF_UNIX socket need a real local filesystem
+# guest's init: it mounts the state root on DEV, formatting it as ext4 on
+# its first boot, or on a tmpfs when no device is given. Either way the
+# executor's SQLite ledger and code mode's AF_UNIX socket get a real local
+# filesystem
 # and the guest root is a virtio-fs share; it gives NODE_DIR to the `loom`
 # user, since staged files arrive owned by root; and it hands over to
 # loom-guest-init, which configures networking and the delegated cgroup and
@@ -84,9 +86,26 @@ case "${1:-}" in
 	;;
 
 *)
-	node=${1:?usage: loom-guest-executor NODE_DIR}
+	node=${1:?usage: loom-guest-executor NODE_DIR [--state-device DEV]}
+	device=
+	if [ "${2:-}" = --state-device ]; then
+		device=${3:?--state-device needs a device}
+	fi
 
-	mount -t tmpfs -o mode=0700,size=512m tmpfs "$node/state"
+	# A state device keeps the executor's ledger, scopes and logs across
+	# guest restarts, so a standing executor comes back with the sessions
+	# it held. A device with no filesystem is new and is formatted once;
+	# one that has a filesystem is never formatted again. Without a device
+	# the state lives on a tmpfs and a restart starts the executor empty.
+	if [ -n "$device" ]; then
+		if ! blkid "$device" >/dev/null 2>&1; then
+			mkfs.ext4 -q -L loom-state "$device"
+		fi
+		mount -t ext4 "$device" "$node/state"
+		chmod 0700 "$node/state"
+	else
+		mount -t tmpfs -o mode=0700,size=512m tmpfs "$node/state"
+	fi
 	mkdir -p "$node/state/root"
 
 	chown -R loom:loom "$node"

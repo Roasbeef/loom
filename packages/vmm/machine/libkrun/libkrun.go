@@ -245,6 +245,19 @@ func (b *Backend) options(spec machine.Spec, dataDir string,
 		opts = append(opts, microvm.WithRootFSPath(spec.Root.Dir))
 	}
 
+	// Disks keep their order, which fixes their device names in the guest.
+	if len(spec.Disks) > 0 {
+		disks := make([]microvm.Disk, 0, len(spec.Disks))
+		for _, d := range spec.Disks {
+			disks = append(disks, microvm.Disk{
+				ID:       d.ID,
+				HostPath: d.Path,
+				Format:   microvm.DiskFormatRaw,
+			})
+		}
+		opts = append(opts, microvm.WithDisks(disks...))
+	}
+
 	// The hosted provider binds each forward on the host's 127.0.0.1 and
 	// admits the forwarded port through the guest firewall's ingress.
 	if len(spec.Forwards) > 0 {

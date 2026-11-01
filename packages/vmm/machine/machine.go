@@ -62,6 +62,14 @@ type Spec struct {
 	// host socket for them, so only this guest can connect.
 	HostServices []HostService
 
+	// Disks are host image files attached as virtio-blk devices, in order:
+	// the first is /dev/vda in the guest, the second /dev/vdb. A disk keeps
+	// its filesystem inside the guest and outlives the guest, which is what
+	// a standing executor's state needs: SQLite and AF_UNIX sockets work on
+	// it as on any local disk, and a stopped guest's state is there when it
+	// boots again.
+	Disks []Disk
+
 	// DataDir is the directory the backend keeps the guest's state and
 	// console log in. The backend creates it if it is missing, and Stop
 	// removes it. Empty asks the backend for a fresh temporary directory.
@@ -117,6 +125,16 @@ type Forward struct {
 type HostService struct {
 	Port    uint16
 	Handler http.Handler
+}
+
+// Disk is one raw image file attached read-write. The guest formats and
+// mounts it; the host never reads the filesystem inside.
+type Disk struct {
+	// ID names the device to the hypervisor and must be unique in a Spec.
+	ID string
+
+	// Path is the absolute path of an existing raw image file.
+	Path string
 }
 
 // Default guest sizes, used when a Spec leaves them zero so a backend never
@@ -192,6 +210,20 @@ func (s Spec) Validate() error {
 			return fmt.Errorf("machine: host service port %d used twice", svc.Port)
 		}
 		servicePorts[svc.Port] = true
+	}
+
+	// The image must be a file the hypervisor can open as given. A relative
+	// path would resolve against whatever directory the launcher ran in.
+	diskIDs := make(map[string]bool, len(s.Disks))
+	for _, d := range s.Disks {
+		switch {
+		case d.ID == "" || diskIDs[d.ID]:
+			return fmt.Errorf("machine: disk id %q is empty or used twice", d.ID)
+
+		case !path.IsAbs(d.Path):
+			return fmt.Errorf("machine: disk %q path %q is not absolute", d.ID, d.Path)
+		}
+		diskIDs[d.ID] = true
 	}
 
 	return nil

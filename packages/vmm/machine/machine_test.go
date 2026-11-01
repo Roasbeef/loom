@@ -56,6 +56,12 @@ func TestValidateRefusesBadSpecs(t *testing.T) {
 		{"zero forward", func(s *Spec) {
 			s.Forwards = []Forward{{Host: 0, Guest: 22}}
 		}, "zero port"},
+		{"relative disk", func(s *Spec) {
+			s.Disks = []Disk{{ID: "state", Path: "state.img"}}
+		}, "not absolute"},
+		{"duplicate disk", func(s *Spec) {
+			s.Disks = []Disk{{ID: "state", Path: "/a"}, {ID: "state", Path: "/b"}}
+		}, "used twice"},
 		{"duplicate forward", func(s *Spec) {
 			s.Forwards = []Forward{{Host: 4000, Guest: 1}, {Host: 4000, Guest: 2}}
 		}, "twice"},

@@ -21,6 +21,12 @@ const githubTokenEnv = "LOOM_VM_GITHUB_TOKEN"
 // proxyLifetimeMargin is how long the proxy's CA outlives the run's timeout.
 const proxyLifetimeMargin = time.Hour
 
+// standingProxyLifetime bounds the CA of a run with no timeout, a standing
+// guest. The key never leaves this process and dies with it, so the bound
+// only limits how long a stolen copy of the guest's CA certificate could
+// matter; a guest that outlives it is restarted to mint a new one.
+const standingProxyLifetime = 30 * 24 * time.Hour
+
 // githubFlags are the flags that give a guest GitHub access through the
 // credential-injecting proxy in package ghproxy. With --github-token-from
 // unset they do nothing, and the guest has no route to GitHub except what
@@ -64,7 +70,7 @@ func (g *githubFlags) apply(spec *machine.Spec, timeout time.Duration) (func(), 
 		Token:    token,
 		Allow:    spec.Egress.Hosts,
 		Inject:   inject,
-		Lifetime: timeout + proxyLifetimeMargin,
+		Lifetime: proxyLifetime(timeout),
 		Logger:   logger,
 	})
 	if err != nil {
@@ -124,4 +130,14 @@ func readGitHubToken(from string) (string, error) {
 	}
 
 	return token, nil
+}
+
+// proxyLifetime is the CA's validity for a run of the given timeout, where
+// zero means the run lasts until it is stopped.
+func proxyLifetime(timeout time.Duration) time.Duration {
+	if timeout == 0 {
+		return standingProxyLifetime
+	}
+
+	return timeout + proxyLifetimeMargin
 }

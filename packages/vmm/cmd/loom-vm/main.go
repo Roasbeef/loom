@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -155,7 +156,11 @@ func run(args []string) error {
 	fs.Var(&fwds, "forward", "HOST:GUEST port forwarded from host loopback (repeatable)")
 	fs.Var(&pubs, "publish", "NAME:HOST:GUEST forward GUEST to HOST and register NAME "+
 		"at HOST in the host's epmd (repeatable)")
-	fs.DurationVar(&timeout, "timeout", 10*time.Minute, "stop the guest after this long")
+	fs.DurationVar(&timeout, "timeout", 10*time.Minute,
+		"stop the guest after this long (0 runs until stopped)")
+	stateDisk := fs.String("state-disk", "", "raw image attached as /dev/vda, "+
+		"created sparse if missing")
+	stateDiskMiB := fs.Uint("state-disk-size", 4096, "size in MiB of a newly created state disk")
 
 	var gh githubFlags
 	gh.register(fs)
@@ -194,6 +199,14 @@ func run(args []string) error {
 		spec.Forwards = append(spec.Forwards, parsed.forward)
 	}
 
+	if *stateDisk != "" {
+		disk, err := ensureDisk(*stateDisk, int64(*stateDiskMiB)<<20)
+		if err != nil {
+			return err
+		}
+		spec.Disks = append(spec.Disks, machine.Disk{ID: "state", Path: disk})
+	}
+
 	if err := spec.Validate(); err != nil {
 		return err
 	}
@@ -208,7 +221,7 @@ func run(args []string) error {
 
 	// An interrupt ends the run the same way a timeout does: through the
 	// context, so the deferred Stop still releases the machine.
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := runContext(timeout)
 	defer cancel()
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -378,4 +391,48 @@ func sleep(ctx context.Context, d time.Duration) error {
 	case <-time.After(d):
 		return nil
 	}
+}
+
+// runContext bounds a run by timeout, or not at all when timeout is zero,
+// which is how a standing guest runs until `loom vm down` stops it.
+func runContext(timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout == 0 {
+		return context.WithCancel(context.Background())
+	}
+
+	return context.WithTimeout(context.Background(), timeout)
+}
+
+// ensureDisk returns path made absolute, creating a sparse raw image of
+// size bytes there if no file exists. An existing file is used as it is,
+// which is what keeps a standing guest's state across restarts.
+func ensureDisk(path string, size int64) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("--state-disk %q: %w", path, err)
+	}
+
+	info, err := os.Stat(abs)
+	switch {
+	case err == nil && !info.Mode().IsRegular():
+		return "", fmt.Errorf("--state-disk %q is not a regular file", abs)
+
+	case err == nil:
+		return abs, nil
+
+	case !errors.Is(err, os.ErrNotExist):
+		return "", fmt.Errorf("--state-disk %q: %w", abs, err)
+	}
+
+	f, err := os.OpenFile(abs, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("--state-disk %q: %w", abs, err)
+	}
+	defer f.Close()
+
+	if err := f.Truncate(size); err != nil {
+		return "", fmt.Errorf("--state-disk %q: %w", abs, err)
+	}
+
+	return abs, nil
 }
