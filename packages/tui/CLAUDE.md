@@ -30,6 +30,38 @@ loopback node and an owner-only, exit-cleaned cookie. This reads only the typed
 profiling setting, while the daemon keeps whole-catalogue validation. No profiler
 sampling or call tracing starts merely because a client is named.
 
+## Starting a distributed daemon
+
+`bootstrap.daemon_launch` is the one place the launch callback builds the
+daemon's program and arguments. When the configuration the daemon will load
+(`--config`, else `<state>/loom.toml`) has a `[distribution]` table, it first
+runs `<server> distribution options CONFIG <state>/distribution-launch.options`
+through `host.run_captured` (`tui/distribution_launch.prepare`) and starts the
+daemon with `LOOM_DISTRIBUTION_OPTFILE` set to that file, so `bin/loomd` boots the VM
+for TLS distribution without an operator rendering the file by hand. The render
+runs only inside the launch callback, which is reached for a vacant endpoint
+under the launch lock, so a daemon that is already running is never touched.
+
+- **The file is never stale.** Each launch deletes the previous file and renders
+  anew; a failed render fails the launch with the renderer's own sentence and
+  leaves no file.
+- **An explicit variable wins.** An environment that already sets a non-empty
+  `LOOM_DISTRIBUTION_OPTFILE` is passed through and nothing is rendered.
+- **The decision is the daemon's.** A table is present when the key
+  `distribution` is, as `client/distribution.from_document` reads it. A document
+  that is not TOML is left to the daemon, which reports the parse error.
+- **The daemon's command renders it.** The text names `client_distribution_ffi`'s
+  verify function, which this package cannot depend on, so the launcher shells
+  out rather than rendering in process.
+- **Environment without new FFI.** The paused wrapper that `host.spawn_server`
+  starts passes no environment of its own, so a launch with assignments spawns
+  `/usr/bin/env VAR=value <server> ...` (`distribution_launch.command`). `env`
+  executes the daemon in place, so the fenced pid is still the daemon's.
+
+A daemon an operator starts directly through `bin/loomd` is not covered:
+the shell launcher cannot read TOML and runs before any Gleam does. See
+[the distributed architecture](../../docs/architecture/distributed.md#booting-a-distributed-vm).
+
 ## Activity and image-discovery cost
 
 Geometry reads the active phase when it only needs liveness; it formats the

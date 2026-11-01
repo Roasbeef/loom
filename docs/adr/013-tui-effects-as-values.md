@@ -388,7 +388,7 @@ The survey of mailbox reads, at the commit this slice started from:
   no mailbox, and the attachment job's cancel drains the job's messages
   instead (`tui/job_runner.gleam:426` (`drain`)). `sessions.discard`, now `buffered.discard`, is the
   `Discard` effect. The bootstrap snapshot wait
-  (`tui/bootstrap.gleam:1355` (`await_snapshot`)) runs before the loop, the
+  (`tui/bootstrap.gleam:1399` (`await_snapshot`)) runs before the loop, the
   daemon control handshake in `tui/daemon.gleam` runs in its own process, and
   the virtual backend's frame collection (`tui/virtual_backend.gleam:315`
   (`drain`)) is test infrastructure outside the model.
