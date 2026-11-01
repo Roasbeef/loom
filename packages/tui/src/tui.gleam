@@ -3144,7 +3144,7 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             holds.
 
 The artifacts come from `~/.loom/vm/manifest.json` ($LOOM_VM_HOME overrides
-~/.loom/vm), which `loom vm setup` writes. They must be built from the release
+~/.loom/vm), which `loom-vm setup` writes. They must be built from the release
 this loom is.
 
 Example:

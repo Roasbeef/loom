@@ -511,7 +511,7 @@ pub fn check_revision(
         <> running
         <> ". A guest daemon from another release crashes the host on its "
         <> "first unmatched message, so `loom vm up` will not start one. "
-        <> "Rebuild the artifacts for this release with `loom vm setup`, or "
+        <> "Fetch the artifacts for this release with `loom-vm setup --release TAG`, or "
         <> "`make vmm vmm-runner vmm-firmware vmm-guest-root` in a checkout "
         <> "of it.",
       )
@@ -716,6 +716,30 @@ pub type Launch {
   )
 }
 
+/// `text`, a `loom.toml` just enrolled for a standing guest, with its
+/// distribution listener bound to loopback (protocol-change/106). A table that
+/// already names a listen address is left as the user wrote it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.with_loopback_listener("[distribution]\nnode = \"a@127.0.0.1\"\n")
+///   == "[distribution]\nlisten_address = \"127.0.0.1\"\nnode = \"a@127.0.0.1\"\n"
+/// ```
+pub fn with_loopback_listener(text: String) -> String {
+  // The install writes the table header on a line of its own; anything else
+  // is a file this function does not recognise and leaves alone.
+  let header = "[distribution]\n"
+  case
+    string.contains(text, "listen_address"),
+    string.split_once(text, header)
+  {
+    False, Ok(#(before, after)) ->
+      before <> header <> "listen_address = \"127.0.0.1\"\n" <> after
+    _, _ -> text
+  }
+}
+
 /// The `loom-vm` arguments that boot the guest and run its executor.
 ///
 /// The timeout is zero, which `loom-vm run` reads as "until stopped": its
@@ -918,10 +942,49 @@ fn scrub_setting(
     Section(_) ->
       case drops_key(position, line) {
         True -> #(lines, position)
-        False -> #([line, ..lines], position)
+        False -> #([without_userinfo(line), ..lines], position)
       }
     Keeping -> #([line, ..lines], Keeping)
   }
+}
+
+/// A `url = ...` line with any `user:password@` removed from the URL's
+/// authority. A remote written as `https://x:ghp_...@github.com/o/r` carries
+/// a token, and under the guest's default read scope model code could read
+/// it; the guest reaches GitHub through the credential proxy instead. Every
+/// other line is returned as it is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.without_userinfo("\turl = https://x:t@github.com/o/r")
+///   == "\turl = https://github.com/o/r"
+/// ```
+pub fn without_userinfo(line: String) -> String {
+  // Only a `url` key whose value has a scheme and an `@` before the path is
+  // rewritten; anything else, scp-style `git@host:path` included, is not a
+  // URL with userinfo and stays.
+  let rewritten = {
+    use #(key, value) <- result.try(string.split_once(line, "="))
+    use Nil <- result.try(case string.lowercase(string.trim(key)) {
+      "url" -> Ok(Nil)
+      _ -> Error(Nil)
+    })
+    use #(scheme, rest) <- result.try(string.split_once(
+      string.trim(value),
+      "://",
+    ))
+    let #(authority, path) = case string.split_once(rest, "/") {
+      Ok(#(authority, path)) -> #(authority, "/" <> path)
+      Error(Nil) -> #(rest, "")
+    }
+    use host <- result.try(string.split(authority, "@") |> list.last)
+    case string.contains(authority, "@") {
+      True -> Ok(key <> "= " <> scheme <> "://" <> host <> path)
+      False -> Error(Nil)
+    }
+  }
+  result.unwrap(rewritten, line)
 }
 
 /// A section header's lowercased name, up to the first space or quote, and what

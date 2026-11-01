@@ -106,7 +106,7 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             holds.
 
 The artifacts come from `~/.loom/vm/manifest.json` ($LOOM_VM_HOME overrides
-~/.loom/vm), which `loom vm setup` writes. They must be built from the release
+~/.loom/vm), which `loom-vm setup` writes. They must be built from the release
 this loom is.
 
 Example:
@@ -216,7 +216,7 @@ fn read_manifest(vm_home: String) -> Result(Manifest, String) {
       Error(
         path
         <> " does not exist, so the microVM artifacts are not installed. Run "
-        <> "`loom vm setup`, or build them in a checkout with `make vmm "
+        <> "`loom-vm setup --release TAG`, or build them in a checkout with `make vmm "
         <> "vmm-runner vmm-firmware vmm-guest-root`.",
       )
     Error(error) ->
@@ -276,8 +276,11 @@ fn up(options: UpOptions) -> Result(String, String) {
   // The deployment and the enrollment come before the guest root, so a
   // loom.toml that holds another deployment is refused before a root of
   // several hundred megabytes is cloned.
-  use #(orchestrator, executor) <- result.try(deployment(guest, names))
-  use enrolled <- result.try(enroll(orchestrator, options))
+  use #(orchestrator, executor, provisioned) <- result.try(deployment(
+    guest,
+    names,
+  ))
+  use enrolled <- result.try(enroll(orchestrator, options, provisioned))
   use Nil <- result.try(stage(manifest, guest, executor, workspace, options))
   use port <- result.try(boot(manifest, guest, names, options))
   report(options, workspace, port, enrolled)
@@ -349,7 +352,7 @@ fn refuse_running(guest: Instance, name: String) -> Result(Nil, String) {
 fn deployment(
   guest: Instance,
   names: vm_spec.Names,
-) -> Result(#(Bundle, Bundle), String) {
+) -> Result(#(Bundle, Bundle, Provisioned), String) {
   let orchestrator_file = bundle_file(guest, names.orchestrator)
   let executor_file = bundle_file(guest, names.name)
   let made =
@@ -365,10 +368,20 @@ fn deployment(
         names.orchestrator_node,
       ))
       use executor <- result.try(read_bundle(executor_file, names.executor_node))
-      Ok(#(orchestrator, executor))
+      Ok(#(orchestrator, executor, Reused))
     }
-    False -> provision(guest, names)
+    False ->
+      provision(guest, names)
+      |> result.map(fn(pair) { #(pair.0, pair.1, Minted) })
   }
+}
+
+// Whether `deployment` minted this guest's bundles now or read the ones an
+// earlier `up` wrote. Only new bundles are installed: the earlier install is
+// already in the user's `loom.toml`, possibly with keys the user added since.
+type Provisioned {
+  Minted
+  Reused
 }
 
 /// Where a plan node's bundle is in `deploy/`.
@@ -441,7 +454,7 @@ fn bundle_named(
 
 // What installing the orchestrator did to the user's configuration.
 type Enrolled {
-  Enrolled(config: String, start: String)
+  Enrolled(config: String)
 }
 
 /// Installs the orchestrator's bundle into the user's `loom.toml` the way
@@ -449,6 +462,7 @@ type Enrolled {
 fn enroll(
   orchestrator: Bundle,
   options: UpOptions,
+  provisioned: Provisioned,
 ) -> Result(Enrolled, String) {
   use home <- result.try(home())
   let config =
@@ -456,7 +470,51 @@ fn enroll(
       distribution_install.default_config(home)
     })
   use config <- result.try(bootstrap.absolute_path(config))
-  use installed <- result.try(
+
+  // A resumed guest's deployment is already installed. Installing it again
+  // compares the whole [distribution] table, so a key the user added since,
+  // such as `listen_address`, would refuse the resume; the executor row is
+  // what has to still be there.
+  case provisioned {
+    Reused -> still_enrolled(orchestrator, config)
+    Minted -> install(orchestrator, config, home)
+  }
+}
+
+/// Checks that a resumed guest's executor row is still in `config`.
+fn still_enrolled(
+  orchestrator: Bundle,
+  config: String,
+) -> Result(Enrolled, String) {
+  let row = "[executors." <> orchestrator_executor(orchestrator) <> "]"
+  use text <- result.try(
+    simplifile.read(config)
+    |> result.map_error(fn(error) {
+      config <> " is unreadable: " <> simplifile.describe_error(error)
+    }),
+  )
+  case string.contains(text, row) {
+    True -> Ok(Enrolled(config:))
+    False ->
+      Error(
+        config
+        <> " no longer has "
+        <> row
+        <> ". Run `loom vm up --fresh` to provision and enroll the guest again.",
+      )
+  }
+}
+
+/// Installs a newly minted orchestrator bundle into `config`, then binds the
+/// daemon's distribution listener to loopback (protocol-change/106): the
+/// orchestrator of a standing guest is never dialled, since the guest's
+/// executor only accepts connections.
+fn install(
+  orchestrator: Bundle,
+  config: String,
+  home: String,
+) -> Result(Enrolled, String) {
+  use _installed <- result.try(
     distribution_install.install(
       distribution_bundle.encode(orchestrator),
       Options(home:, config:, overwrite: RefuseExisting),
@@ -474,7 +532,17 @@ fn enroll(
       <> "/.erlang.cookie), or give `--config` another file."
     }),
   )
-  Ok(Enrolled(config:, start: installed.start))
+  use text <- result.try(
+    simplifile.read(config)
+    |> result.map_error(fn(error) {
+      config <> " is unreadable: " <> simplifile.describe_error(error)
+    }),
+  )
+  use Nil <- result.try(write_private(
+    config,
+    vm_spec.with_loopback_listener(text),
+  ))
+  Ok(Enrolled(config:))
 }
 
 /// The executor row the orchestrator's bundle names, for the refusal's words.
@@ -519,8 +587,13 @@ fn prepare_root(
   platform: vm_spec.Platform,
   options: UpOptions,
 ) -> Result(Nil, String) {
-  // Resuming needs a root to resume; without one it is a first boot.
-  case options.freshness, bootstrap.path_exists(guest.root) {
+  // Resuming needs a root of its own to resume. A missing one is a first
+  // boot, and a symbolic link is a root an older `up` left pointing at the
+  // shared export, which a boot would write into, so it is replaced.
+  let resumable =
+    bootstrap.path_exists(guest.root)
+    && !result.unwrap(simplifile.is_symlink(guest.root), False)
+  case options.freshness, resumable {
     vm_spec.Resume, True -> Ok(Nil)
     vm_spec.Resume, False -> replace_root(manifest, guest, platform)
     vm_spec.Fresh, _ -> {
@@ -892,7 +965,7 @@ fn report(
           <> workspace.name,
         "",
       ],
-      daemon_note(enrolled),
+      daemon_note(),
       ["Stop it with: loom vm down --name " <> options.name],
     ]),
     "\n",
@@ -901,12 +974,14 @@ fn report(
 
 /// A running daemon read its configuration before the `[distribution]` table
 /// existed, and the VM must be booted with the TLS flags, so only a restart
-/// reaches the guest. Whether a daemon runs is the endpoint record's answer for
-/// the default state directory.
-fn daemon_note(enrolled: Enrolled) -> List(String) {
-  // A daemon that is not running needs the command that starts it with the
-  // options file; one that is running needs a restart, which the same command
-  // does after it stops.
+/// reaches the guest. The `loom` client renders the TLS options file whenever
+/// it starts a daemon whose configuration has `[distribution]`
+/// (protocol-change/106), so starting `loom` is all a stopped daemon needs.
+/// Whether a daemon runs is the endpoint record's answer for the default
+/// state directory.
+fn daemon_note() -> List(String) {
+  // A running daemon must be restarted to read the new table; a stopped one
+  // picks it up the next time `loom` starts it.
   case daemon_running() {
     True -> [
       "Your daemon is running, and it read its configuration before this "
@@ -915,8 +990,7 @@ fn daemon_note(enrolled: Enrolled) -> List(String) {
       "",
     ]
     False -> [
-      "Start the daemon with the distribution options:",
-      "  " <> enrolled.start,
+      "The next `loom` command starts the daemon with the table in effect.",
       "",
     ]
   }

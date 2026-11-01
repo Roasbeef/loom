@@ -498,3 +498,44 @@ pub fn a_log_tail_keeps_the_end_test() {
   assert vm_spec.tail("abcdef\n", 3) == "...def"
   assert vm_spec.tail("abc", 3) == "abc"
 }
+
+// --- review follow-ups -------------------------------------------------------
+
+pub fn a_remote_url_loses_its_userinfo_test() {
+  // A token embedded in a remote URL would otherwise reach the guest's copy,
+  // which model code can read under the default read scope.
+  let text =
+    "[remote \"origin\"]\n\turl = https://x:ghp_secret@github.com/o/r.git\n"
+    <> "\tfetch = +refs/heads/*:refs/remotes/origin/*\n"
+    <> "[remote \"mirror\"]\n\turl = git@github.com:o/r.git\n"
+  let scrubbed = vm_spec.scrub_git_config(text)
+  assert !string.contains(scrubbed, "ghp_secret")
+  assert string.contains(scrubbed, "\turl = https://github.com/o/r.git")
+  assert string.contains(scrubbed, "\turl = git@github.com:o/r.git")
+  assert string.contains(scrubbed, "fetch = +refs/heads/*")
+}
+
+pub fn a_url_without_userinfo_is_left_alone_test() {
+  assert vm_spec.without_userinfo("\turl = https://github.com/o/r")
+    == "\turl = https://github.com/o/r"
+  assert vm_spec.without_userinfo("\tpushurl = https://a@b.example/x")
+    == "\tpushurl = https://a@b.example/x"
+}
+
+pub fn the_orchestrator_listener_is_bound_to_loopback_test() {
+  // A newly enrolled orchestrator is never dialled, so its distribution
+  // listener need not face the network (protocol-change/106).
+  let text =
+    "[models.x]\nmodel_id = \"m\"\n\n[distribution]\nnode = \"a@127.0.0.1\"\n"
+  let bound = vm_spec.with_loopback_listener(text)
+  assert string.contains(
+    bound,
+    "[distribution]\nlisten_address = \"127.0.0.1\"\nnode = \"a@127.0.0.1\"\n",
+  )
+
+  // An address the user chose stays, and a file without the table is left as
+  // it is.
+  let chosen = "[distribution]\nlisten_address = \"127.0.0.2\"\n"
+  assert vm_spec.with_loopback_listener(chosen) == chosen
+  assert vm_spec.with_loopback_listener("[models.x]\n") == "[models.x]\n"
+}
