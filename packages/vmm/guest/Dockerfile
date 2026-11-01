@@ -103,10 +103,14 @@ COPY . .
 #
 # DIST_VM=0 keeps `loom-vm`, the host-side launcher the release otherwise
 # carries, out of the guest, which holds an executor and boots nothing.
+# BUILD_COMMIT names the commit the image is built from: the build context
+# excludes .git, so scripts/build-commit.sh would otherwise report `unknown`
+# and the guest daemon could not say which release it is.
+ARG LOOM_REVISION=unknown
 RUN --mount=type=cache,target=/root/.cache/gleam \
 	--mount=type=cache,target=/root/go/pkg/mod \
 	--mount=type=cache,target=/root/.cache/go-build \
-	DIST_VM=0 PREFIX=/opt/loom make install
+	DIST_VM=0 PREFIX=/opt/loom make install BUILD_COMMIT="${LOOM_REVISION}"
 
 # ----------------------------------------------------------- runtime stage
 FROM docker.io/library/debian:trixie-slim AS runtime
@@ -119,8 +123,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 # network, because the hosted network stack serves no DHCP. libssl3t64 is
 # the libcrypto the bundled ERTS's crypto NIF links against. util-linux, in
 # the base image, provides setpriv and mountpoint, which the init uses.
+# curl and gh let an agent reach GitHub through the launcher's credential
+# proxy, and e2fsprogs formats the persistent per-VM state disk on first boot.
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 		bubblewrap \
+		curl \
+		gh \
+		e2fsprogs \
 		sqlite3 \
 		ripgrep \
 		git \
