@@ -89,3 +89,35 @@ pub fn a_log_tail_cut_inside_a_codepoint_still_reports_test() {
   assert bootstrap.current_log_tail(path, started + 60_000, 9) == Error(Nil)
   assert simplifile.delete(root) == Ok(Nil)
 }
+
+pub fn a_captured_run_reports_status_and_both_streams_in_order_test() {
+  // The child writes to stdout and then stderr and exits 3. Both arrive in one
+  // string, and nothing reaches this test's own standard output.
+  let assert Ok(bootstrap.Captured(status:, output:)) =
+    bootstrap.run_captured(
+      "/bin/sh",
+      ["-c", "printf 'out '; printf 'err é' >&2; exit 3"],
+      5000,
+    )
+    as "a short child ends within its bound"
+  assert status == 3
+  assert output == "out err é"
+}
+
+pub fn a_captured_run_of_a_missing_executable_is_an_error_test() {
+  let assert Error(_reason) =
+    bootstrap.run_captured("/nonexistent/loom-helper", [], 1000)
+    as "an executable that does not exist is not a status"
+}
+
+pub fn a_captured_run_that_outlasts_its_bound_is_an_error_test() {
+  let assert Error(_reason) = bootstrap.run_captured("/bin/sleep", ["2"], 100)
+    as "a child that is still running at the bound is reported, not awaited"
+}
+
+pub fn captured_output_that_is_not_text_is_named_not_decoded_test() {
+  let assert Ok(bootstrap.Captured(status: 0, output:)) =
+    bootstrap.run_captured("/usr/bin/printf", ["\\377\\376"], 5000)
+    as "printf writes two bytes that are not UTF-8"
+  assert output == "(the output was not text)"
+}
