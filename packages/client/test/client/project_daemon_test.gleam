@@ -522,27 +522,35 @@ fn respond(body: String, seen: Subject(Seen)) -> String {
 }
 
 fn route_turn(request: Request) -> String {
-  case request.last_was_result {
-    True -> text_turn("routed.")
-    False -> {
-      let items =
-        ["a", "b"]
-        |> list.filter(fn(letter) {
-          string.contains(request.last_text, "fix " <> letter)
-        })
-        |> list.map(fn(letter) {
-          json.Object([
-            #("trigger", json.String(letter)),
-            #("action", json.String("accept")),
-            #("title", json.String("fix " <> letter)),
-          ])
-        })
+  let items =
+    ["a", "b"]
+    |> list.filter(fn(letter) {
+      string.contains(request.last_text, "fix " <> letter)
+    })
+    |> list.map(fn(letter) {
+      json.Object([
+        #("trigger", json.String(letter)),
+        #("action", json.String("accept")),
+        #("title", json.String("fix " <> letter)),
+      ])
+    })
+
+  // The last message can be a tool result and a new candidate together. The
+  // second post may be admitted while the router is between its `route` call
+  // and the result, and the session then folds the trigger into the message
+  // that carries the result. Deciding by "the last message is a result" alone
+  // answered "routed." to that message and never routed the second candidate:
+  // the engine kept it offered, the board stayed at one ticket, and the test
+  // waited out its deadline. A message that shows a candidate is routed
+  // whether or not it also carries a result.
+  case items, request.last_was_result {
+    [], True -> text_turn("routed.")
+    _, _ ->
       tool_turn(
         "route-" <> string.inspect(request.results),
         "route",
         json.Object([#("items", json.Array(items))]),
       )
-    }
   }
 }
 
