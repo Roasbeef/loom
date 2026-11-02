@@ -12,6 +12,7 @@
 
 import client/project_repo
 import client/worktrees
+import gleam/io
 import gleam/list
 import gleam/string
 import host/bootstrap
@@ -89,6 +90,19 @@ pub fn digest(repository: String) -> String {
   let head = worktree_rig.git(repository, ["rev-parse", "HEAD"])
   let objects = worktree_rig.git(repository, ["count-objects", "-v"])
   string.join([config, hooks, refs, head, objects], "\n--\n")
+}
+
+/// The parts of two records of a repository that differ, in words, and an empty
+/// string when they agree. A test runner cuts a long value short, so a failure
+/// prints the whole of what moved to stderr, where the log keeps it.
+pub fn moved(before: String, after: String) -> String {
+  let found =
+    list.zip(string.split(before, "\n--\n"), string.split(after, "\n--\n"))
+    |> list.filter(fn(pair) { pair.0 != pair.1 })
+    |> list.map(fn(pair) { "was: " <> pair.0 <> " now: " <> pair.1 })
+    |> string.join("\n")
+  io.println_error(found)
+  found
 }
 
 /// The host repository's ref for a commit taken in for a ticket, or an empty

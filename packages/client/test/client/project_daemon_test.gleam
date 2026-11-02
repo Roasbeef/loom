@@ -162,7 +162,7 @@ pub fn a_project_runs_two_tickets_and_survives_a_restart_test() {
     == "loom/t-a-1"
   assert worktree_rig.git(second_tree, ["rev-parse", "--abbrev-ref", "HEAD"])
     == "loom/t-b-1"
-  assert project_rig.digest(repository) == owners
+  assert project_rig.moved(owners, project_rig.digest(repository)) == ""
 
   // The router offers exactly its three tools, and a worker was never given
   // them. The worker that tried to route was told so.
@@ -260,7 +260,7 @@ pub fn a_project_runs_two_tickets_and_survives_a_restart_test() {
     })
   assert ticket_titles(settled) == ["fix a", "fix b"]
   stop(third)
-  assert project_rig.digest(repository) == owners
+  assert project_rig.moved(owners, project_rig.digest(repository)) == ""
   process.trap_exits(False)
 }
 
