@@ -569,6 +569,7 @@ fn ticket_json(ticket: Ticket) -> Json {
     #("failed_inputs", json.array(ticket.failed_inputs, trigger_name)),
     #("question", json.nullable(question_number(ticket.question), json.int)),
     #("latest", json.nullable(ticket.latest, codec.report_json)),
+    #("failure", json.nullable(ticket.failure, json.string)),
     #("heard", word(heards, ticket.heard)),
     #("head", json.nullable(ticket.head, commit_name)),
     #("last_checked", json.nullable(ticket.last_checked, commit_name)),
@@ -607,6 +608,7 @@ fn ticket_decoder() -> Decoder(Ticket) {
   )
   use question <- decode.field("question", decode.optional(decode.int))
   use latest <- decode.field("latest", decode.optional(codec.report_decoder()))
+  use failure <- decode.field("failure", decode.optional(decode.string))
   use heard <- decode.field(
     "heard",
     word_decoder(heards, model.Silent, "Heard"),
@@ -643,6 +645,7 @@ fn ticket_decoder() -> Decoder(Ticket) {
       None -> model.NoQuestion
     },
     latest:,
+    failure:,
     heard:,
     head:,
     last_checked:,
@@ -803,6 +806,7 @@ fn status_json(status: state.AssignmentStatus) -> Json {
     state.AssignmentRunning -> json.string("running")
     state.AssignmentDone(model.SessionExited) -> json.string("exited")
     state.AssignmentDone(model.SessionCrashed) -> json.string("crashed")
+    state.AssignmentDone(model.SessionRested) -> json.string("rested")
   }
 }
 
@@ -810,12 +814,13 @@ fn status_json(status: state.AssignmentStatus) -> Json {
 fn status_decoder() -> Decoder(state.AssignmentStatus) {
   use text <- decode.then(decode.string)
 
-  // The word is one of four, and two of them say how the session ended.
+  // The word is one of five, and three of them say how the session ended.
   case text {
     "pending" -> decode.success(state.AssignmentPending)
     "running" -> decode.success(state.AssignmentRunning)
     "exited" -> decode.success(state.AssignmentDone(model.SessionExited))
     "crashed" -> decode.success(state.AssignmentDone(model.SessionCrashed))
+    "rested" -> decode.success(state.AssignmentDone(model.SessionRested))
     _ -> decode.failure(state.AssignmentPending, "AssignmentStatus")
   }
 }

@@ -844,6 +844,7 @@ fn boot(config: Config, inbox: Subject(Message)) -> Result(Host, String) {
       compacted_ms: 0,
       compacted_seq: 0,
     )
+
   // A compacted ledger starts from its snapshot and replays what follows.
   use restored <- result.try(restore_snapshot(fresh))
   use replayed <- result.try(replay(restored, restored.last_seq))
