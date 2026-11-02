@@ -999,3 +999,75 @@ pub fn replaying_the_log_rebuilds_the_state_test() {
   assert engine.replay(world.config(), broken)
     == Error(engine.ReplayFailure(5, event.UnknownTrigger(TriggerId("zz"))))
 }
+
+// --- an actor's rate and a pull request's thread -------------------------------------
+
+// A project whose queue is long enough that only the actor's rate cap can shed.
+fn roomy() -> state.State {
+  run(state.start(state.Config(..world.config(), queue_limit: 100)), [
+    event.ModeSet(world.source, world.rule, model.Observe),
+    arrival(owner("c0")),
+  ])
+}
+
+fn comments_from(actor: String, count: Int) -> List(event.Event) {
+  counted(count)
+  |> list.map(fn(n) {
+    let id = actor <> int_text(n)
+    arrival(world.trigger(
+      id,
+      "th-" <> id,
+      actor,
+      model.Person,
+      model.Unaddressed,
+      world.matched(),
+      0,
+    ))
+  })
+}
+
+pub fn an_actor_past_the_rate_cap_is_shed_and_others_are_not_test() {
+  let busy = run(roomy(), comments_from("pat", queue.actor_cap))
+  assert fate_of(busy, "pat01") == state.Awaiting
+
+  // The next comment from the same actor is shed and recorded as shed, and a
+  // different actor's comment is queued as usual.
+  let next = run(busy, [last_of("pat", queue.actor_cap + 1)])
+  assert fate_of(next, "pat" <> int_text(queue.actor_cap + 1))
+    == state.Decided(state.Shed)
+  let other = run(next, comments_from("quinn", 1))
+  assert fate_of(other, "quinn01") == state.Awaiting
+}
+
+fn last_of(actor: String, position: Int) -> event.Event {
+  let id = actor <> int_text(position)
+  arrival(world.trigger(
+    id,
+    "th-" <> id,
+    actor,
+    model.Person,
+    model.Unaddressed,
+    world.matched(),
+    0,
+  ))
+}
+
+pub fn a_pull_request_opens_a_thread_the_ticket_follows_test() {
+  let ready =
+    run(working(), [
+      waiting_report(head_at("abc", ProtectedPathsUntouched), NoQuestion),
+      passed("abc"),
+    ])
+  let #(opened, _) =
+    step(
+      ready,
+      event.PullRequestOpened(
+        ticket_of("c1"),
+        model.PullRequestRef("https://github.com/o/r/pull/7"),
+      ),
+    )
+  assert list.contains(
+    opened.subscriptions,
+    model.Subscription(ticket_of("c1"), model.ThreadId("gh-7")),
+  )
+}

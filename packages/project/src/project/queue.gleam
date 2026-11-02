@@ -38,6 +38,14 @@ pub const max_offer: Int = 20
 /// becomes `Unrouted` and waits for a person.
 pub const max_offers: Int = 3
 
+/// The most inferred triggers one actor of a source may put in front of the
+/// router within `actor_window_ms`. The next is shed and recorded as shed, and
+/// a person can queue it again. Explicit triggers have no cap.
+pub const actor_cap: Int = 20
+
+/// The window `actor_cap` is counted over, in milliseconds.
+pub const actor_window_ms: Int = 3_600_000
+
 /// Put an admitted, undelivered trigger in front of the router, or hold or
 /// shed it. Returns the offer effect when a batch goes out.
 ///
@@ -96,11 +104,45 @@ fn consider_load(
     > current.config.attention_limit
 
   // Attention and the token ceiling hold inferred candidates back before they
-  // cost a model call.
+  // cost a model call. An actor past its rate cap is shed, which keeps one
+  // account from filling the source's queue however many comments it writes.
   case attended, current.ceiling {
     True, _ -> hold(current, trigger.id, HeldByAttention)
     False, CeilingReached -> hold(current, trigger.id, HeldByCeiling)
-    False, model.CeilingClear -> enqueue(current, stored)
+    False, model.CeilingClear ->
+      case over_rate_cap(current, trigger) {
+        True -> #(state.set_fate(current, trigger.id, Decided(state.Shed)), [])
+        False -> enqueue(current, stored)
+      }
+  }
+}
+
+/// Whether the trigger's actor already has `actor_cap` inferred triggers on
+/// this source within `actor_window_ms` before it. Held triggers do not count,
+/// because they cost the router nothing. The count reads the stored triggers,
+/// whose number the ledger's retention bounds.
+fn over_rate_cap(current: State, trigger: model.Trigger) -> Bool {
+  let earliest = trigger.at_ms - actor_window_ms
+  let recent =
+    dict.values(current.triggers)
+    |> list.count(fn(other) {
+      let same_actor =
+        other.trigger.source == trigger.source
+        && other.trigger.actor == trigger.actor
+        && other.trigger.id != trigger.id
+      same_actor
+      && other.trigger.at_ms >= earliest
+      && is_inferred(other)
+      && !is_held(other)
+    })
+  recent >= actor_cap
+}
+
+/// Whether a hold kept the trigger from the router.
+fn is_held(stored: TriggerRecord) -> Bool {
+  case stored.fate {
+    Decided(state.Held(_)) -> True
+    Decided(_) | Awaiting | Offered -> False
   }
 }
 

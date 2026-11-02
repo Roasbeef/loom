@@ -274,6 +274,49 @@ pub fn branch_name(ticket: TicketId) -> String {
   "project/" <> slug(ticket.value)
 }
 
+/// The thread of a GitHub issue or pull request. GitHub numbers issues and
+/// pull requests from one sequence, so the number names the conversation
+/// whichever of the two it is. The `gh-` prefix keeps the name apart from a
+/// composer request id, which is a thread of its own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert model.github_thread(12) == model.ThreadId("gh-12")
+/// ```
+pub fn github_thread(number: Int) -> ThreadId {
+  ThreadId("gh-" <> int.to_string(number))
+}
+
+/// The thread of the pull request a host opened, read from the last path
+/// segment of its URL (`.../pull/7`). A URL that does not end in a number
+/// names no thread, and the ticket then follows nothing new.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert model.pull_request_thread(model.PullRequestRef("https://github.com/o/r/pull/7"))
+///   == option.Some(model.ThreadId("gh-7"))
+/// ```
+///
+/// ```gleam
+/// assert model.pull_request_thread(model.PullRequestRef("https://example.test/x"))
+///   == option.None
+/// ```
+pub fn pull_request_thread(reference: PullRequestRef) -> Option(ThreadId) {
+  let segments = string.split(reference.url, "/")
+
+  // Only a `pull/<number>` ending names a thread.
+  case list.reverse(segments) {
+    [last, "pull", ..] ->
+      case int.parse(last) {
+        Ok(number) if number > 0 -> option.Some(github_thread(number))
+        Ok(_) | Error(Nil) -> option.None
+      }
+    _ -> option.None
+  }
+}
+
 /// Rewrite `text` so that it is safe in a git ref and in a session id. ASCII
 /// letters, digits and `-` stay; every other code point becomes `_`, its hex
 /// value and `_`. The mapping is injective, so two ids never share a name.

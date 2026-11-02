@@ -817,16 +817,29 @@ pub fn pull_request_opened(
   // Only a ticket that vouches for a commit has a pull request.
   case readiness.vouches_for(ticket.readiness) {
     None -> Error(event.NotPublishable(id))
-    Some(_) ->
-      Ok(
-        #(
-          state.put_ticket(
-            current,
-            state.Ticket(..ticket, pull_request: Some(pull_request)),
-          ),
-          [],
-        ),
-      )
+    Some(_) -> Ok(#(follow_pull_request(current, ticket, pull_request), []))
+  }
+}
+
+/// Record the pull request and subscribe the ticket to its thread, so a
+/// person's comment on the pull request reaches the worker that wrote it. A
+/// source reads the same subscription to count a failure on that thread as one
+/// more hop from the project's own output.
+fn follow_pull_request(
+  current: State,
+  ticket: Ticket,
+  pull_request: PullRequestRef,
+) -> State {
+  let recorded =
+    state.put_ticket(
+      current,
+      state.Ticket(..ticket, pull_request: Some(pull_request)),
+    )
+
+  // A URL that names no thread leaves the subscriptions as they were.
+  case model.pull_request_thread(pull_request) {
+    Some(thread) -> subscribe(recorded, ticket.id, thread)
+    None -> recorded
   }
 }
 
