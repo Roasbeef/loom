@@ -212,8 +212,7 @@ fn project_controls(current: State) -> Generator(Event) {
         state.verdict_of(current, source, world.rule) == gate.VerdictCurrent
       let lean = case ready {
         True -> event.ModeSet(source, world.rule, model.Auto)
-        False ->
-          event.VerdictRecorded(source, world.rule, "v1", model.VerdictPassed)
+        False -> world.verdict(source, world.rule, "v1", model.VerdictPassed)
       }
       qcheck.from_weighted_generators(#(8, qcheck.return(lean)), [
         #(
@@ -229,7 +228,7 @@ fn project_controls(current: State) -> Generator(Event) {
             gen.one_of(["v1", "v2"]),
             gen.one_of([model.VerdictPassed, model.VerdictFailed]),
             fn(version, outcome) {
-              event.VerdictRecorded(source, world.rule, version, outcome)
+              world.verdict(source, world.rule, version, outcome)
             },
           ),
         ),

@@ -23,6 +23,7 @@
 
 import gleam/dict
 import gleam/list
+import gleam/option
 import gleam/result
 import project/event.{type Event, type Refusal}
 import project/gate
@@ -62,9 +63,12 @@ pub fn apply(current: State, incoming: Event) -> Step {
     event.RouterTurnEnded -> Ok(queue.turn_ended(current))
     event.Requeued(trigger, _) -> queue.requeue(current, trigger)
     event.ModeSet(source, rule, mode) -> set_mode(current, source, rule, mode)
-    event.VerdictRecorded(source, rule, version, outcome) ->
-      Ok(record_verdict(current, source, rule, Verdict(version, outcome)))
+    event.VerdictRecorded(source, rule, pin, outcome, covers) ->
+      Ok(record_verdict(current, source, rule, Verdict(pin, outcome, covers)))
     event.PolicyVersionSet(version) -> Ok(set_policy_version(current, version))
+    event.RouterPinSet(prompt_revision, router_model) ->
+      Ok(set_router_pin(current, prompt_revision, router_model))
+    event.Labelled(trigger, label, _) -> label_trigger(current, trigger, label)
     event.CeilingChanged(ceiling) -> Ok(set_ceiling(current, ceiling))
 
     // The events about a ticket's working life.
@@ -173,6 +177,47 @@ fn set_policy_version(
   version: String,
 ) -> #(State, List(event.Effect)) {
   #(demote_stale(state.State(..current, policy_version: version)), [])
+}
+
+/// Remember the router's prompt revision and model. Setting the values already
+/// held changes nothing, so a host may announce them at every start. Setting
+/// different ones makes every verdict measured under the old ones stale, and
+/// the pairs that relied on them return to `Observe` in the same step, which
+/// is what keeps the demotion in the ledger and not in a host's memory.
+fn set_router_pin(
+  current: State,
+  prompt_revision: String,
+  router_model: String,
+) -> #(State, List(event.Effect)) {
+  #(demote_stale(state.State(..current, prompt_revision:, router_model:)), [])
+}
+
+/// Record a person's label for a stored trigger. Only a trigger a rule matched
+/// can be labelled, because the label counts toward that rule's verdict.
+fn label_trigger(
+  current: State,
+  trigger: model.TriggerId,
+  label: model.Label,
+) -> Step {
+  use stored <- result.try(
+    state.record(current, trigger)
+    |> result.replace_error(event.NotLabellable(trigger)),
+  )
+
+  // A trigger no rule matched belongs to no source and rule pair.
+  case stored.trigger.inputs.rule {
+    option.None -> Error(event.NotLabellable(trigger))
+    option.Some(_) ->
+      Ok(
+        #(
+          state.State(
+            ..current,
+            labels: dict.insert(current.labels, trigger, label),
+          ),
+          [],
+        ),
+      )
+  }
 }
 
 /// A pair in `Auto` without a current passing verdict returns to `Observe`,

@@ -144,8 +144,20 @@ pub fn encode(current: State) -> String {
         json.object([
           #("source", json.string(entry.0.0.value)),
           #("rule", json.string(entry.0.1.value)),
-          #("version", json.string({ entry.1 }.version)),
+          #("pin", codec.pin_json({ entry.1 }.pin)),
           #("outcome", word(verdict_outcomes, { entry.1 }.outcome)),
+          #("covers", codec.covers_json({ entry.1 }.covers)),
+        ])
+      }),
+    ),
+    #("prompt_revision", json.string(current.prompt_revision)),
+    #("router_model", json.string(current.router_model)),
+    #(
+      "labels",
+      json.array(sorted(dict.to_list(current.labels)), fn(entry) {
+        json.object([
+          #("trigger", json.string({ entry.0 }.value)),
+          #("label", codec.label_json(entry.1)),
         ])
       }),
     ),
@@ -201,6 +213,20 @@ fn state_decoder(config: state.Config) -> Decoder(State) {
     "verdicts",
     decode.list(verdict_entry_decoder()),
   )
+  // A document written before verdicts carried a pin and before labels
+  // existed has none of these fields. The router's pin then reads as unset and
+  // the labels as empty, which is the state such a ledger was in.
+  use prompt_revision <- decode.optional_field(
+    "prompt_revision",
+    "",
+    decode.string,
+  )
+  use router_model <- decode.optional_field("router_model", "", decode.string)
+  use labels_list <- decode.optional_field(
+    "labels",
+    [],
+    decode.list(label_entry_decoder()),
+  )
   use ceiling <- decode.field(
     "ceiling",
     word_decoder(ceilings, model.CeilingClear, "Ceiling"),
@@ -225,6 +251,9 @@ fn state_decoder(config: state.Config) -> Decoder(State) {
     router:,
     modes: dict.from_list(modes_list),
     verdicts: dict.from_list(verdicts_list),
+    prompt_revision:,
+    router_model:,
+    labels: dict.from_list(labels_list),
     ceiling:,
   ))
 }
@@ -544,12 +573,20 @@ fn verdict_entry_decoder() -> Decoder(
 ) {
   use source <- decode.field("source", decode.map(decode.string, SourceId))
   use rule <- decode.field("rule", rule_name())
-  use version <- decode.field("version", decode.string)
+  use pin <- decode.field("pin", codec.pin_decoder())
   use outcome <- decode.field(
     "outcome",
     word_decoder(verdict_outcomes, model.VerdictFailed, "VerdictOutcome"),
   )
-  decode.success(#(#(source, rule), state.Verdict(version:, outcome:)))
+  use covers <- decode.field("covers", codec.covers_decoder())
+  decode.success(#(#(source, rule), state.Verdict(pin:, outcome:, covers:)))
+}
+
+/// Reads one label of a trigger.
+fn label_entry_decoder() -> Decoder(#(TriggerId, model.Label)) {
+  use trigger <- decode.field("trigger", decode.map(decode.string, TriggerId))
+  use label <- decode.field("label", codec.label_decoder())
+  decode.success(#(trigger, label))
 }
 
 // --- tickets ------------------------------------------------------------------
@@ -983,8 +1020,12 @@ fn droppable(
     state.Awaiting | state.Offered -> False
   }
 
+  // A labelled trigger stays whatever its age. The label is a person's effort
+  // and the tape that a verdict is measured on is built from the trigger, so
+  // dropping it would silently shrink the labelled count.
   settled
   && stored.trigger.at_ms < horizon_ms
+  && !dict.has_key(current.labels, id)
   && !list.contains(named, id)
   && !list.contains(current.queue, id)
   && !list.contains(current.offered, id)

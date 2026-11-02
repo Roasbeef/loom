@@ -297,10 +297,12 @@ pub type RouterPhase {
 /// A verdict as the state remembers it.
 pub type Verdict {
   Verdict(
-    /// The policy version it was measured under.
-    version: String,
+    /// What it was measured against.
+    pin: model.Pin,
     /// What it found.
     outcome: VerdictOutcome,
+    /// What it covers.
+    covers: model.Covers,
   )
 }
 
@@ -334,6 +336,13 @@ pub type State {
     modes: Dict(#(SourceId, RuleId), Mode),
     /// The latest verdict of each pair.
     verdicts: Dict(#(SourceId, RuleId), Verdict),
+    /// The digest of the router's prompt and tool descriptions in force, or
+    /// empty before the host has read it.
+    prompt_revision: String,
+    /// The model the router runs, or empty before the host has read it.
+    router_model: String,
+    /// A person's judgement of each labelled trigger.
+    labels: Dict(TriggerId, model.Label),
     /// Whether the token ceiling is reached.
     ceiling: Ceiling,
   )
@@ -374,6 +383,9 @@ pub fn start(config: Config) -> State {
     router: RouterIdle,
     modes: dict.new(),
     verdicts: dict.new(),
+    prompt_revision: "",
+    router_model: "",
+    labels: dict.new(),
     ceiling: CeilingClear,
   )
 }
@@ -655,13 +667,55 @@ pub fn verdict_of(
   source: SourceId,
   rule: RuleId,
 ) -> gate.VerdictState {
+  let in_force = pin_of(state)
+
+  // A pass counts only under exactly the pin in force. A pass measured under
+  // any other pin is a record of the past and gates nothing.
   case dict.get(state.verdicts, #(source, rule)) {
-    Ok(Verdict(version, model.VerdictPassed))
-      if version == state.policy_version
-    -> gate.VerdictCurrent
+    Ok(Verdict(pin, model.VerdictPassed, _)) if pin == in_force ->
+      gate.VerdictCurrent
     Ok(_) -> gate.VerdictMissing
     Error(Nil) -> gate.VerdictMissing
   }
+}
+
+/// The policy version, prompt revision and model in force. A verdict is
+/// current only when it was measured under exactly this.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert state.pin_of(state.start(config)).policy_version == "v1"
+/// ```
+pub fn pin_of(state: State) -> model.Pin {
+  model.Pin(
+    policy_version: state.policy_version,
+    prompt_revision: state.prompt_revision,
+    model: state.router_model,
+  )
+}
+
+/// How many triggers of a source carry a label, per rule. A label counts
+/// toward the rule its trigger matched, so a trigger no rule matched counts
+/// toward none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert state.labelled(state.start(config), model.SourceId("s"), model.RuleId("r")) == 0
+/// ```
+pub fn labelled(state: State, source: SourceId, rule: RuleId) -> Int {
+  state.labels
+  |> dict.keys
+  |> list.count(fn(id) {
+    case dict.get(state.triggers, id) {
+      Ok(stored) ->
+        stored.trigger.source == source
+        && option.map(stored.trigger.inputs.rule, fn(matched) { matched.rule })
+        == Some(rule)
+      Error(Nil) -> False
+    }
+  })
 }
 
 /// How many open tickets of a source wait on a person.

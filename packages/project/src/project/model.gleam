@@ -798,6 +798,62 @@ pub type VerdictOutcome {
   VerdictFailed
 }
 
+/// What a verdict was measured against. Any one of the three changing makes
+/// the verdict stale, because each of them can change what the project does
+/// with the same trigger.
+pub type Pin {
+  Pin(
+    /// The policy version: the gate, the admission table and the engine.
+    policy_version: String,
+    /// A digest of the router's prompt and tool descriptions.
+    prompt_revision: String,
+    /// The model the router session runs, as the host names it.
+    model: String,
+  )
+}
+
+/// A person's judgement of one recorded trigger of a source.
+pub type Label {
+  /// The project should have taken this trigger on as work.
+  ShouldAccept
+
+  /// The project should not have.
+  ShouldNotAccept
+}
+
+/// Which kind of measurement produced a verdict. The lane decides what the
+/// verdict may claim.
+pub type Lane {
+  /// Recorded triggers run through the current gate with the router's
+  /// recorded answers served from the tape. It says the same inputs give
+  /// these decisions, and nothing about a prompt or a model.
+  Replay
+
+  /// Recorded triggers put to the real router, several times each. It says
+  /// how this model judged these triggers, to within the minimum detectable
+  /// effect.
+  Live
+}
+
+/// What a recorded verdict covers, in whole numbers so that the ledger holds
+/// no floating point.
+pub type Covers {
+  Covers(
+    /// The lane that produced it.
+    lane: Lane,
+    /// The labelled triggers it was measured on.
+    triggers: Int,
+    /// The trials of each trigger on the candidate side.
+    trials: Int,
+    /// The triggers on which the candidate's decisions differed from the
+    /// recorded ones in any trial.
+    changed: Int,
+    /// The minimum detectable effect in whole percentage points, rounded up,
+    /// or a hundred when the instrument could not size it.
+    mde_points: Int,
+  )
+}
+
 /// Whether the project's token ceiling has been reached.
 pub type Ceiling {
   /// New assignments may start.

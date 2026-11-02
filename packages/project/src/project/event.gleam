@@ -11,11 +11,11 @@
 import project/gate
 import project/host.{type CheckPassed}
 import project/model.{
-  type ActorId, type Ceiling, type CommandDigest, type CommitId, type Head,
-  type Mandate, type Mode, type Outcome, type PrincipalId, type PullRequestRef,
-  type Report, type ReviewReason, type Routing, type RuleId, type SessionEnd,
-  type SessionId, type SourceId, type TicketId, type Trigger, type TriggerId,
-  type VerdictOutcome,
+  type ActorId, type Ceiling, type CommandDigest, type CommitId, type Covers,
+  type Head, type Label, type Mandate, type Mode, type Outcome, type Pin,
+  type PrincipalId, type PullRequestRef, type Report, type ReviewReason,
+  type Routing, type RuleId, type SessionEnd, type SessionId, type SourceId,
+  type TicketId, type Trigger, type TriggerId, type VerdictOutcome,
 }
 
 /// The result of the host's check command.
@@ -93,10 +93,12 @@ pub type Event {
     source: SourceId,
     /// The rule.
     rule: RuleId,
-    /// The policy version the verdict was measured under.
-    version: String,
+    /// The policy version, prompt revision and model it was measured under.
+    pin: Pin,
     /// What it found.
     outcome: VerdictOutcome,
+    /// What it covers, kept so a person can read what a pass claims.
+    covers: Covers,
   )
 
   /// The policy version changed. Pairs whose verdict is no longer current
@@ -104,6 +106,26 @@ pub type Event {
   PolicyVersionSet(
     /// The new version.
     version: String,
+  )
+
+  /// The host read the router's prompt revision and model. Pairs whose
+  /// verdict was measured under others return to `Observe`.
+  RouterPinSet(
+    /// A digest of the router's prompt and tool descriptions.
+    prompt_revision: String,
+    /// The model the router runs.
+    model: String,
+  )
+
+  /// A person judged a recorded trigger. A later label of the same trigger
+  /// replaces the earlier one.
+  Labelled(
+    /// The trigger.
+    trigger: TriggerId,
+    /// The judgement.
+    label: Label,
+    /// Who judged. Only the owner reaches this, through the host.
+    by: PrincipalId,
   )
 
   /// The project's token ceiling was reached or lifted.
@@ -393,6 +415,10 @@ pub type Refusal {
 
   /// `Auto` was set for a pair with no current passing verdict.
   VerdictRequired(source: SourceId, rule: RuleId)
+
+  /// The trigger cannot be labelled: it is unknown, or no rule matched it, so
+  /// there is no source and rule pair for the label to count toward.
+  NotLabellable(trigger: TriggerId)
 
   /// The stored trigger cannot be requeued in its present state.
   NotRequeueable(trigger: TriggerId)

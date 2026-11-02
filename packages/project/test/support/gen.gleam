@@ -74,6 +74,28 @@ pub fn principal() -> Generator(model.PrincipalId) {
   qcheck.map(text(), PrincipalId)
 }
 
+pub fn label() -> Generator(model.Label) {
+  one_of([model.ShouldAccept, model.ShouldNotAccept])
+}
+
+pub fn pin() -> Generator(model.Pin) {
+  qcheck.map3(text(), text(), text(), fn(version, prompt, router_model) {
+    model.Pin(version, prompt, router_model)
+  })
+}
+
+pub fn covers() -> Generator(model.Covers) {
+  qcheck.map4(
+    one_of([model.Replay, model.Live]),
+    qcheck.bounded_int(0, 200),
+    qcheck.bounded_int(1, 9),
+    qcheck.bounded_int(0, 200),
+    fn(lane, triggers, trials, changed) {
+      model.Covers(lane, triggers, trials, changed, 100)
+    },
+  )
+}
+
 pub fn sender() -> Generator(model.Sender) {
   one_of([
     model.Owner,
@@ -225,14 +247,26 @@ pub fn event() -> Generator(Event) {
       mode,
       event.ModeSet,
     ),
-    qcheck.map4(
-      qcheck.map(text(), SourceId),
-      qcheck.map(text(), RuleId),
-      text(),
-      one_of([model.VerdictPassed, model.VerdictFailed]),
-      event.VerdictRecorded,
+    qcheck.bind(
+      qcheck.map2(
+        qcheck.map(text(), SourceId),
+        qcheck.map(text(), RuleId),
+        fn(source, rule) { #(source, rule) },
+      ),
+      fn(pair) {
+        qcheck.map3(
+          pin(),
+          one_of([model.VerdictPassed, model.VerdictFailed]),
+          covers(),
+          fn(pinned, outcome, covered) {
+            event.VerdictRecorded(pair.0, pair.1, pinned, outcome, covered)
+          },
+        )
+      },
     ),
     qcheck.map(text(), event.PolicyVersionSet),
+    qcheck.map2(text(), text(), event.RouterPinSet),
+    qcheck.map3(trigger_id(), label(), principal(), event.Labelled),
     qcheck.map(
       one_of([model.CeilingClear, model.CeilingReached]),
       event.CeilingChanged,

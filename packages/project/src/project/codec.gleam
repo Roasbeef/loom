@@ -102,12 +102,24 @@ fn to_json(incoming: Event) -> Json {
         #("rule", json.string(rule.value)),
         #("mode", word(modes, mode)),
       ])
-    event.VerdictRecorded(source, rule, version, outcome) ->
+    event.VerdictRecorded(source, rule, pin, outcome, covers) ->
       tagged("verdict_recorded", [
         #("source", json.string(source.value)),
         #("rule", json.string(rule.value)),
-        #("version", json.string(version)),
+        #("pin", pin_json(pin)),
         #("outcome", word(verdicts, outcome)),
+        #("covers", covers_json(covers)),
+      ])
+    event.RouterPinSet(prompt_revision, router_model) ->
+      tagged("router_pin_set", [
+        #("prompt_revision", json.string(prompt_revision)),
+        #("model", json.string(router_model)),
+      ])
+    event.Labelled(trigger, label, by) ->
+      tagged("labelled", [
+        #("trigger", json.string(trigger.value)),
+        #("label", word(labels, label)),
+        #("by", json.string(by.value)),
       ])
     event.PolicyVersionSet(version) ->
       tagged("policy_version_set", [#("version", json.string(version))])
@@ -258,12 +270,24 @@ fn control_decoder(tag: String) -> Decoder(Event) {
     "verdict_recorded" -> {
       use source <- decode.field("source", source_id())
       use rule <- decode.field("rule", rule_id())
-      use version <- decode.field("version", decode.string)
+      use pin <- decode.field("pin", pin_decoder())
       use outcome <- decode.field(
         "outcome",
         word_decoder(verdicts, model.VerdictFailed, "Verdict"),
       )
-      decode.success(event.VerdictRecorded(source, rule, version, outcome))
+      use covers <- decode.field("covers", covers_decoder())
+      decode.success(event.VerdictRecorded(source, rule, pin, outcome, covers))
+    }
+    "router_pin_set" -> {
+      use prompt_revision <- decode.field("prompt_revision", decode.string)
+      use router_model <- decode.field("model", decode.string)
+      decode.success(event.RouterPinSet(prompt_revision, router_model))
+    }
+    "labelled" -> {
+      use trigger <- decode.field("trigger", trigger_id())
+      use label <- decode.field("label", label_decoder())
+      use by <- decode.field("by", principal())
+      decode.success(event.Labelled(trigger, label, by))
     }
     "policy_version_set" -> {
       use version <- decode.field("version", decode.string)
@@ -785,6 +809,83 @@ fn rule_id() -> Decoder(model.RuleId) {
 
 // --- enumerations ------------------------------------------------------------
 
+/// The wire form of a verdict's pin, shared with the snapshot.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let pin = model.Pin("v1", "p", "m")
+/// assert json.parse(json.to_string(codec.pin_json(pin)), codec.pin_decoder())
+///   == Ok(pin)
+/// ```
+pub fn pin_json(pin: model.Pin) -> Json {
+  json.object([
+    #("policy_version", json.string(pin.policy_version)),
+    #("prompt_revision", json.string(pin.prompt_revision)),
+    #("model", json.string(pin.model)),
+  ])
+}
+
+/// Reads a pin back. Total.
+pub fn pin_decoder() -> Decoder(model.Pin) {
+  use policy_version <- decode.field("policy_version", decode.string)
+  use prompt_revision <- decode.field("prompt_revision", decode.string)
+  use router_model <- decode.field("model", decode.string)
+  decode.success(model.Pin(
+    policy_version:,
+    prompt_revision:,
+    model: router_model,
+  ))
+}
+
+/// The wire form of what a verdict covers, shared with the snapshot.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let covers = model.Covers(model.Replay, 30, 1, 0, 100)
+/// assert json.parse(
+///   json.to_string(codec.covers_json(covers)),
+///   codec.covers_decoder(),
+/// ) == Ok(covers)
+/// ```
+pub fn covers_json(covers: model.Covers) -> Json {
+  json.object([
+    #("lane", word(lanes, covers.lane)),
+    #("triggers", json.int(covers.triggers)),
+    #("trials", json.int(covers.trials)),
+    #("changed", json.int(covers.changed)),
+    #("mde_points", json.int(covers.mde_points)),
+  ])
+}
+
+/// Reads what a verdict covers. Total.
+pub fn covers_decoder() -> Decoder(model.Covers) {
+  use lane <- decode.field("lane", word_decoder(lanes, model.Replay, "Lane"))
+  use triggers <- decode.field("triggers", decode.int)
+  use trials <- decode.field("trials", decode.int)
+  use changed <- decode.field("changed", decode.int)
+  use mde_points <- decode.field("mde_points", decode.int)
+  decode.success(model.Covers(lane:, triggers:, trials:, changed:, mde_points:))
+}
+
+/// The wire word of a label, shared with the snapshot and the tape.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert json.to_string(codec.label_json(model.ShouldAccept))
+///   == "\"should_accept\""
+/// ```
+pub fn label_json(label: model.Label) -> Json {
+  word(labels, label)
+}
+
+/// Reads a label word. Total: any other word is an error.
+pub fn label_decoder() -> Decoder(model.Label) {
+  word_decoder(labels, model.ShouldNotAccept, "Label")
+}
+
 // One table per enumeration serves both directions.
 fn word(table: List(#(String, a)), value: a) -> Json {
   case list.find(table, fn(row) { row.1 == value }) {
@@ -843,6 +944,16 @@ const modes: List(#(String, model.Mode)) = [
 const verdicts: List(#(String, model.VerdictOutcome)) = [
   #("passed", model.VerdictPassed),
   #("failed", model.VerdictFailed),
+]
+
+const labels: List(#(String, model.Label)) = [
+  #("should_accept", model.ShouldAccept),
+  #("should_not_accept", model.ShouldNotAccept),
+]
+
+const lanes: List(#(String, model.Lane)) = [
+  #("replay", model.Replay),
+  #("live", model.Live),
 ]
 
 const ceilings: List(#(String, model.Ceiling)) = [

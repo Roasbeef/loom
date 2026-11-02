@@ -128,10 +128,37 @@ pub fn fresh() -> State {
   state.start(config())
 }
 
+/// What a replay verdict over thirty triggers covers, for fixtures that care
+/// only that a verdict has some coverage.
+pub const covers =
+  model.Covers(
+    lane: model.Replay,
+    triggers: 30,
+    trials: 1,
+    changed: 0,
+    mde_points: 20,
+  )
+
+/// The pin of a state that has had no router announced: the policy version
+/// alone, with the prompt revision and model unset.
+pub fn pin(version: String) -> model.Pin {
+  model.Pin(policy_version: version, prompt_revision: "", model: "")
+}
+
+/// A verdict event measured under the policy version `version`.
+pub fn verdict(
+  pair_source: model.SourceId,
+  pair_rule: model.RuleId,
+  version: String,
+  outcome: model.VerdictOutcome,
+) -> Event {
+  event.VerdictRecorded(pair_source, pair_rule, pin(version), outcome, covers)
+}
+
 /// A state in which the rule's pair is in `Auto` with a current verdict.
 pub fn automated() -> State {
   run(fresh(), [
-    event.VerdictRecorded(source, rule, "v1", model.VerdictPassed),
+    verdict(source, rule, "v1", model.VerdictPassed),
     event.ModeSet(source, rule, model.Auto),
   ])
 }

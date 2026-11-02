@@ -157,7 +157,7 @@ pub fn a_changed_policy_returns_auto_to_observe_test() {
   assert state.mode_of(changed, world.source, world.rule) == model.Observe
   let failed =
     run(automated(), [
-      event.VerdictRecorded(world.source, world.rule, "v1", model.VerdictFailed),
+      world.verdict(world.source, world.rule, "v1", model.VerdictFailed),
     ])
   assert state.mode_of(failed, world.source, world.rule) == model.Observe
 }
@@ -223,7 +223,7 @@ pub fn an_inferred_comment_on_a_followed_thread_reaches_the_worker_only_when_the
 
   let armed =
     run(working(), [
-      event.VerdictRecorded(world.source, world.rule, "v1", model.VerdictPassed),
+      world.verdict(world.source, world.rule, "v1", model.VerdictPassed),
       event.ModeSet(world.source, world.rule, model.Auto),
     ])
   let #(_, delivered) = step(armed, arrival(comment))
