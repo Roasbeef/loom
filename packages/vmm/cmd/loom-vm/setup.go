@@ -22,8 +22,9 @@ func setupCmd(args []string) error {
 		release   = fs.String("release", "", "install this release `TAG` (macOS on Apple Silicon)")
 		fromBuild = fs.String("from-build", "", "write a manifest for the build tree `DIR` (packages/vmm/build)")
 		repo      = fs.String("repo", setup.DefaultRepo, "GitHub `OWNER/NAME` that published the release")
-		revision  = fs.String("revision", "", "revision to record with --from-build (default \"dev\")")
-		libDir    = fs.String("lib-dir", os.Getenv("LOOM_VM_LIB_DIR"),
+		revision  = fs.String("revision", "", "with --from-build, the revision to record (default \"dev\"); "+
+			"with --release, the commit the guest image must have been built from")
+		libDir = fs.String("lib-dir", os.Getenv("LOOM_VM_LIB_DIR"),
 			"directory holding libkrun (LOOM_VM_LIB_DIR; default: Homebrew's)")
 		home = fs.String("home", "", "loom-vm home directory (LOOM_VM_HOME; default ~/.loom/vm)")
 	)
@@ -34,11 +35,6 @@ func setupCmd(args []string) error {
 	if (*release == "") == (*fromBuild == "") {
 		return errors.New("setup needs exactly one of --release TAG or --from-build DIR")
 	}
-	if *revision != "" && *fromBuild == "" {
-		return errors.New("--revision applies only to --from-build; a release records the " +
-			"revision its guest image was built from")
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -48,7 +44,7 @@ func setupCmd(args []string) error {
 	)
 	if *release != "" {
 		m, err = setup.Release(ctx, setup.Options{
-			Home: *home, Tag: *release, Repo: *repo, LibDir: *libDir, Log: os.Stderr,
+			Home: *home, Tag: *release, Repo: *repo, LibDir: *libDir, Revision: *revision, Log: os.Stderr,
 		})
 	} else {
 		m, err = setup.FromBuild(ctx, setup.BuildOptions{

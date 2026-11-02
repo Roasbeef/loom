@@ -174,8 +174,17 @@ func sha(s string) string {
 type releaseServer struct {
 	*httptest.Server
 
-	mu    sync.Mutex
-	files map[string]string
+	mu       sync.Mutex
+	files    map[string]string
+	requests int
+}
+
+// count is the number of asset requests served so far.
+func (rs *releaseServer) count() int {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	return rs.requests
 }
 
 // newReleaseServer serves the asset names and bodies in files, under
@@ -187,6 +196,8 @@ func newReleaseServer(t *testing.T, files map[string]string) *releaseServer {
 	rs.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rs.mu.Lock()
 		defer rs.mu.Unlock()
+
+		rs.requests++
 
 		asset := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 		body, ok := rs.files[asset]

@@ -277,6 +277,65 @@ func TestReleaseRefusesAnUnlabelledImage(t *testing.T) {
 	}
 }
 
+// TestReleaseRefusesAnotherRevisionBeforeWritingAnything checks that a
+// requested revision the image was not built from refuses the install after
+// the image's labels are read, and so before any download: no asset is
+// requested, the earlier install's cache and manifest are untouched, and a
+// matching full or abbreviated revision installs.
+func TestReleaseRefusesAnotherRevisionBeforeWritingAnything(t *testing.T) {
+	f := newFixture(t)
+
+	first, err := Release(context.Background(), f.opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	before, _ := os.ReadFile(ManifestPath(f.opts.Home))
+	requests := f.srv.count()
+
+	f.opts.Revision = "fedcba9876543210fedcba9876543210fedcba98"
+	_, err = Release(context.Background(), f.opts)
+	if err == nil || !strings.Contains(err.Error(), "not the requested fedcba98") {
+		t.Fatalf("err = %v", err)
+	}
+
+	if got := f.srv.count(); got != requests {
+		t.Errorf("a mismatched revision still made %d asset requests", got-requests)
+	}
+
+	after, _ := os.ReadFile(ManifestPath(f.opts.Home))
+	if string(after) != string(before) {
+		t.Errorf("manifest changed:\n%s\nwas\n%s", after, before)
+	}
+	if ents, _ := os.ReadDir(filepath.Join(f.opts.Home, "cache")); len(ents) != 1 || ents[0].Name() != testTag {
+		t.Errorf("cache = %v, want only %s", ents, testTag)
+	}
+	if b, _ := os.ReadFile(first.Runner); string(b) != "runner-bytes" {
+		t.Errorf("installed runner changed: %q", b)
+	}
+
+	// With nothing installed before, a mismatch leaves no manifest or cache.
+	g := newFixture(t)
+	g.opts.Revision = "fedcba9876543210"
+	if _, err := Release(context.Background(), g.opts); err == nil {
+		t.Fatal("mismatch accepted")
+	}
+	if _, err := os.Stat(ManifestPath(g.opts.Home)); !os.IsNotExist(err) {
+		t.Errorf("a manifest was written: %v", err)
+	}
+	if ents, _ := os.ReadDir(filepath.Join(g.opts.Home, "cache")); len(ents) != 0 {
+		t.Errorf("cache is not empty: %v", ents)
+	}
+
+	// The commit the image holds, whole or abbreviated, installs.
+	for _, ok := range []string{"0123456789abcdef0123456789abcdef01234567", "0123456"} {
+		g.opts.Revision = ok
+		if _, err := Release(context.Background(), g.opts); err != nil {
+			t.Errorf("revision %q refused: %v", ok, err)
+		}
+	}
+}
+
 // TestReleaseKeepsThePreviousManifestOnFailure checks that a failed install
 // leaves an earlier install intact, which is what makes the manifest swap the
 // last step.

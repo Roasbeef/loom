@@ -69,6 +69,12 @@ type Options struct {
 	// BASE/OWNER/NAME/releases/download/TAG/ASSET. Default: DefaultBaseURL.
 	BaseURL string
 
+	// Revision, when set, is the commit the guest image must have been built
+	// from: the image's revision label must equal it, or share a prefix of at
+	// least seven characters with it. A mismatch refuses the install before
+	// anything is downloaded or written. Default: any revision.
+	Revision string
+
 	// ImageRef is the guest image to pull. Default: GuestImageRef for the
 	// repository's owner and Tag.
 	ImageRef string
@@ -174,7 +180,9 @@ func releaseAssets(goos, goarch string) (assets, error) {
 // missing entry or a missing asset ends the install. On macOS the runner is
 // ad-hoc re-signed with the Hypervisor.framework entitlement and the
 // quarantine attribute is removed from both files. The guest image is pulled
-// for the host architecture and its labels checked. Everything is assembled
+// for the host architecture and its labels checked first of all, after only
+// libkrun is located, so a wrong version or revision downloads nothing.
+// Everything is assembled
 // under a staging directory next to the final one and renamed into
 // cache/TAG only when complete, and the manifest is replaced last, so an
 // interrupted install leaves the previous manifest pointing at the previous,
@@ -204,6 +212,19 @@ func Release(ctx context.Context, opts Options) (Manifest, error) {
 		if loomVM, err = selfPath(); err != nil {
 			return Manifest{}, err
 		}
+	}
+
+	// The image's labels are read before anything is downloaded or written, so
+	// an image of the wrong version or revision costs a manifest fetch and
+	// leaves the cache and the manifest as they were. Its layers are fetched
+	// lazily, at extraction.
+	img, revision, err := pullGuest(ctx, o.ImageRef, o.Tag, o.GOARCH)
+	if err != nil {
+		return Manifest{}, err
+	}
+	if o.Revision != "" && !sameRevision(o.Revision, revision) {
+		return Manifest{}, fmt.Errorf("%s was built from revision %s, not the requested %s",
+			o.ImageRef, revision, o.Revision)
 	}
 
 	cache := filepath.Join(o.Home, "cache")
@@ -249,11 +270,6 @@ func Release(ctx context.Context, opts Options) (Manifest, error) {
 		return Manifest{}, err
 	}
 
-	img, revision, err := pullGuest(ctx, o.ImageRef, o.Tag, o.GOARCH)
-	if err != nil {
-		return Manifest{}, err
-	}
-
 	fmt.Fprintf(o.Log, "extracting the guest root (revision %s)\n", revision)
 	if err := extractGuest(img, filepath.Join(staging, "guest-root")); err != nil {
 		return Manifest{}, fmt.Errorf("extract %s: %w", o.ImageRef, err)
@@ -284,6 +300,18 @@ func Release(ctx context.Context, opts Options) (Manifest, error) {
 	fmt.Fprintf(o.Log, "installed %s; manifest %s\n", o.Tag, ManifestPath(o.Home))
 
 	return m, nil
+}
+
+// sameRevision reports whether two commit names are the same commit. Either may
+// be abbreviated, down to seven characters, as Loom's own revision check allows.
+func sameRevision(want, got string) bool {
+	const shortest = 7
+
+	if len(want) < shortest || len(got) < shortest {
+		return false
+	}
+
+	return strings.HasPrefix(got, want) || strings.HasPrefix(want, got)
 }
 
 // url is where one asset of the release is served.

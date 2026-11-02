@@ -15,7 +15,6 @@ func TestSetupRefusesBadFlagCombinations(t *testing.T) {
 	}{
 		{"neither", nil, "exactly one of"},
 		{"both", []string{"--release", "v1", "--from-build", "/x"}, "exactly one of"},
-		{"revision with a release", []string{"--release", "v1", "--revision", "abc"}, "--from-build"},
 		{"unknown flag", []string{"--nope"}, "flag provided but not defined"},
 	}
 
