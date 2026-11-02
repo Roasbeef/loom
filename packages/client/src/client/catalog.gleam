@@ -576,14 +576,18 @@ pub fn parse_with_document(
   // `client/directory/settings`': the members of the session directory's
   // Khepri cluster, when this daemon is one of them. `spawners` is
   // `client/spawners`': which other orchestrators may start subagents on this
-  // one, and on what terms.
+  // one, and on what terms. `project` is `client/project_settings`': the
+  // limits and finishing keys of project mode, read once when the daemon
+  // starts. A key missing from this list is refused for every reader of the
+  // file, so a file that set `[project]` was rejected before the table was
+  // ever read.
   use Nil <- result.try(known_keys(
     dict.keys(document),
     [
       "models", "roles", "mcp", "rule", "schedule", "schedules", "memory",
       "tools", "jobs", "secrets", "workspace", "advisor", "daemon", "lsp",
       "profiles", "peers", "retry", "distribution", "executors", "pools",
-      "workspaces", "orchestrators", "directory", "spawners",
+      "workspaces", "orchestrators", "directory", "spawners", "project",
     ],
     "the top level",
   ))

@@ -1,6 +1,7 @@
 //// The typed project standing, the router's fixed tool list, the packs and the
 //// `[project]` table.
 
+import client/catalog
 import client/project_packs
 import client/project_settings
 import client/project_standing
@@ -71,6 +72,14 @@ pub fn the_project_table_defaults_and_refuses_unknown_keys_test() {
   let assert Error(_) = project_settings.from_document(unknown)
   let assert Ok(too_many) = tom.parse("[project]\nmax_workers = 99\n")
   let assert Error(_) = project_settings.from_document(too_many)
+}
+
+// The catalogue parser checks the top-level keys of the file for every reader,
+// so a table it does not list is refused before `project_settings` sees it.
+pub fn the_catalogue_accepts_the_project_table_test() {
+  let text =
+    "[models.m]\ndialect = \"openai\"\nbase_url = \"http://127.0.0.1:1/v1\"\napi_key_env = \"K\"\nmodel_id = \"x\"\ncontext_window = 1000\nmax_output_tokens = 100\n\n[roles]\nmain = [\"m\"]\n\n[project]\ncheck = \"make check\"\nmax_workers = 2\n"
+  let assert Ok(_) = catalog.parse(text)
 }
 
 // A project with no table does nothing outward and checks nothing, and the
