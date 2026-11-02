@@ -546,7 +546,9 @@ the running build may be published under (`vm_spec.release_candidates`, from
 `build_identity.current()`): `commit-<commit>` when the commit is 40 lowercase
 hex digits, then `v<version>`. A nightly build reports its release's version
 and its own commit, so `v<version>` alone would name a different commit.
-`vmm-release.yml` does not yet publish for `commit-*` tags. Each candidate runs
+A nightly publishes its artifacts under `commit-<commit>` from the first nightly
+that carries `vmm-release.yml`'s `workflow_call`; an older nightly has none, and
+a nightly whose run failed has none either. Each candidate runs
 `loom-vm setup --release TAG --revision <commit>`: `setup.Release` reads the
 guest image's labels first, straight after locating libkrun, and refuses an
 image built from another commit (`setup.Options.Revision`, a full commit or an
@@ -1008,7 +1010,12 @@ the host are not in it.
   exists yet. Its download, checksum, signing and extraction steps are covered
   by tests against a local HTTP server and registry, and the extraction was
   compared with a real guest root. `.github/workflows/vmm-release.yml` has not
-  run on a hosted runner either. A Linux host has no download, because Ubuntu
+  run on a hosted runner either, and neither has its nightly path: the
+  `workflow_call` from `nightly-release.yml`, the `vmm_assets` hand-off into
+  `release.yml`'s `gh release create`, and the permissions the called jobs
+  receive are checked by `actionlint` and by reading only. A nightly whose
+  `vmm-release.yml` run failed is published without artifacts and stays
+  without them. A Linux host has no download, because Ubuntu
   ships no libkrun for the runner to link; it uses `--from-build`.
 - Sessions local to an orchestrator do not yet mask the node's key and cookie.
 - The behaviour on the stock kernel is inferred: a turn does not complete,
