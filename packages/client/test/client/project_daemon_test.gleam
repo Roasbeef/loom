@@ -166,7 +166,7 @@ pub fn a_project_runs_two_tickets_and_survives_a_restart_test() {
 
   // The router offers exactly its three tools, and a worker was never given
   // them. The worker that tried to route was told so.
-  let evidence = drain(seen)
+  let evidence = until_refused(seen, drain(seen))
   assert advertised(evidence, router_model)
     == [["project_read", "reply", "route"]]
   let offered = advertised(evidence, worker_model)
@@ -1129,6 +1129,19 @@ fn refusals(evidence: List(Seen)) -> List(String) {
       Advertised(..) | Recovered(_) -> Error(Nil)
     }
   })
+}
+
+// A worker's refused route comes back from its own run, and nothing here waits
+// for that run, so under load the refusal can arrive after the tickets settle.
+fn until_refused(seen: Subject(Seen), found: List(Seen)) -> List(Seen) {
+  case refusals(found) {
+    [] ->
+      case process.receive(seen, 30_000) {
+        Ok(next) -> until_refused(seen, [next, ..found])
+        Error(Nil) -> found
+      }
+    _ -> found
+  }
 }
 
 // The tickets whose workers were told of the restart. Workers answer the note

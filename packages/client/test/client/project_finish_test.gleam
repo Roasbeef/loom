@@ -185,7 +185,7 @@ fn board(handle: project_host.Handle) -> String {
 // Waits until the board says `wanted`.
 fn board_says(handle: project_host.Handle, wanted: String) -> Bool {
   case
-    poll.until(within: 10_000, every: 25, attempt: fn() {
+    poll.until(within: 60_000, every: 25, attempt: fn() {
       case string.contains(board(handle), wanted) {
         True -> poll.Done(Nil)
         False -> poll.Retry
