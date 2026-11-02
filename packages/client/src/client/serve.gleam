@@ -4712,6 +4712,10 @@ fn assemble_in(
         // A host that shut the scheduling door has no wiring and adds
         // no hook at all.
         |> schedule_reaping(schedule_wiring)
+        // A project's router tells the project each time a run ends, which
+        // ends the router's turn without waiting for its deadline. Any
+        // other session adds nothing.
+        |> project_run_end(settings.project)
         |> notes.digest_hooks(opened, clock)
         // The notes index is read at every run start rather than once here,
         // because a `remember` call in any session rewrites it, and an index
@@ -7153,6 +7157,28 @@ fn schedule_reaping(
   case wiring {
     None -> hooks
     Some(wiring) -> scheduleseam.reaping_hooks(hooks, wiring)
+  }
+}
+
+/// A router seat's run-end signal on a hook record. The signal is a cast to
+/// the project actor, so the driver's loop waits for nothing. A worker, an
+/// ordinary session and a boot without project mode add no hook.
+fn project_run_end(
+  hooks: effects.Hooks,
+  seat: Option(project_standing.Seat),
+) -> effects.Hooks {
+  // Only a seat that carries the signal, which is a router's, adds the hook.
+  case seat {
+    Some(project_standing.Seat(run_ended: Some(ended), ..)) -> {
+      // The slot is captured and not the record, as the other run-end wrappers
+      // do, so each layer adds one closure and not a copy of the record.
+      let inner = hooks.run_end
+      effects.Hooks(..hooks, run_end: fn(operation) {
+        ended()
+        inner(operation)
+      })
+    }
+    Some(project_standing.Seat(run_ended: None, ..)) | None -> hooks
   }
 }
 

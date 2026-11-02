@@ -52,6 +52,11 @@ pub type Seat {
     /// Where a worker's commit scanner sends what it finds. A router has no
     /// log for the project to read, so it has none.
     feed: Option(project_scan.Feed),
+    /// What a router tells its project each time one of its runs ends, so the
+    /// project can end the router's turn at once instead of at the deadline.
+    /// A worker's runs say nothing to the project this way: its reports and the
+    /// scan of its log do.
+    run_ended: Option(fn() -> Nil),
   )
 }
 

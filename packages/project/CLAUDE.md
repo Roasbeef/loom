@@ -134,6 +134,11 @@ is `gleam_json`, which has both targets.
 - **The router's offers are bounded.** `queue.max_offers` (3): a candidate
   still unrouted when its third turn ends becomes `Decided(Unrouted)`, explicit
   or not, and `Requeued` starts its count again. `State.offers` is the count.
+  The host ends a router turn from the router session's run-end hook
+  (`project_host.router_run_ended`, stamped with the run's end time and
+  ignored if it predates the batch's delivery), with the turn deadline as the
+  fallback. Each offer is delivered under its own receipt, so a re-offer wakes
+  the router.
 - **Session ids are not derived.** The catalogue mints them. An assignment
   carries `model.request_key(project, ticket, seq)` for idempotent creation,
   and `SessionBound` records the id once the host has one.

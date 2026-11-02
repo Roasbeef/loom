@@ -809,6 +809,56 @@ pub fn a_restart_does_not_strand_the_batch_the_router_held_test() {
     })
 }
 
+// A router that answers a batch and routes nothing ends its turn by finishing
+// its run. The project hears it and offers again at once, three times in all,
+// and then lists the candidate for a person. The turn deadline here is an hour,
+// so only the run-end signal can be what moved it.
+pub fn a_router_run_that_routes_nothing_ends_its_turn_without_the_deadline_test() {
+  let rig = rig("run-end")
+  let handle = start(rig)
+  let began = ffi_os.system_time_ms()
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+
+  // Each offer is answered by a run that ends with no decision.
+  let answered = fn(round: Int) {
+    let assert Ok(Sent("router-1", peer_mail.Trigger(message_id:, ..))) =
+      process.receive(rig.seen, 2000)
+    assert message_id == "a~" <> int.to_string(round)
+    project_host.router_run_ended(handle, ffi_os.system_time_ms())
+  }
+  answered(1)
+  answered(2)
+  answered(3)
+
+  let assert Ok(Nil) =
+    poll_until(fn() {
+      let assert Ok(shown) = project_host.board(handle, 0)
+      shown.unrouted != []
+    })
+  assert ffi_os.system_time_ms() - began < 5000
+
+  // The third offer was the last, so nothing offers it again and a late run
+  // end changes nothing.
+  project_host.router_run_ended(handle, ffi_os.system_time_ms())
+  assert receipts(drain(rig.seen), "a") == []
+}
+
+// The end of an earlier run, which reaches the project after the next batch
+// was delivered, says nothing about that batch.
+pub fn a_run_that_ended_before_the_batch_was_delivered_does_not_end_its_turn_test() {
+  let rig = rig("late-end")
+  let handle = start(rig)
+  let long_ago = ffi_os.system_time_ms() - 60_000
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+  let assert Ok(Sent("router-1", _)) = process.receive(rig.seen, 2000)
+  project_host.router_run_ended(handle, long_ago)
+
+  // The candidate is still on the router's table and nothing was offered again.
+  let assert Error(Nil) = process.receive(rig.seen, 300)
+  let assert Ok(table) = project_host.read(handle, tools.Candidates)
+  assert string.contains(json.to_string(table), "\"id\":\"a\"")
+}
+
 // --- a worker at rest ----------------------------------------------------------------
 
 // The ports with a worktree that has one commit, touching a protected path so

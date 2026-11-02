@@ -392,6 +392,7 @@ pub opaque type Message {
   ReadLive(reply: Subject(List(String)))
   StopTicket(ticket: String, by: String, reply: Subject(Result(Nil, String)))
   CloseTicket(ticket: String, by: String, reply: Subject(Result(Nil, String)))
+  RouterRunEnded(at_ms: Int)
   ReadTicket(ticket: String, reply: Subject(Result(JsonValue, Nil)))
   AnswerQuestion(
     ticket: String,
@@ -705,6 +706,21 @@ pub fn close_ticket(
   |> result.flatten
 }
 
+/// Tells the actor that one of its router's runs ended at `at_ms`, in Unix
+/// milliseconds. It is a cast, sent from the router session's run-end hook. A
+/// router answers a batch with one run, so the end of a run after the batch was
+/// delivered ends the batch's turn at once; the turn deadline stays as the
+/// fallback for a run that never ends or never started.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_host.router_run_ended(handle, now_ms)
+/// ```
+pub fn router_run_ended(handle: Handle, at_ms: Int) -> Nil {
+  process.send(handle.commands, RouterRunEnded(at_ms))
+}
+
 /// Hands the actor a person's turn typed into a worker. It is a cast: the
 /// scanner that reads the worker's log does not wait on the ledger, and the
 /// entry id keeps a repeat from recording a second turn.
@@ -948,6 +964,8 @@ fn handle(host: Host, message: Message) -> actor.Next(Host, Message) {
       process.send(reply, answer)
       actor.continue(perform_due(next))
     }
+    RouterRunEnded(at_ms) ->
+      actor.continue(perform_due(router_ran_out(host, at_ms)))
     CloseTicket(ticket, by, reply) -> {
       let #(next, answer) = close_now(host, ticket, by)
       process.send(reply, answer)
@@ -1040,6 +1058,23 @@ fn tick(host: Host) -> Host {
   }
 
   perform_due(poll_when_due(compact_when_due(relieved)))
+}
+
+/// A router's run ended. The turn ends only if a batch is out, it was delivered
+/// (the clock is set once the router has been told) and the run ended no
+/// earlier than the delivery began. The earlier run that answered the previous
+/// batch may end after this batch was delivered, and its end says nothing about
+/// this one, which is why the signal carries its own time. A run that ends with
+/// candidates still unrouted leaves them to the engine, which offers each again
+/// until its offers are spent.
+fn router_ran_out(host: Host, at_ms: Int) -> Host {
+  case
+    host.engine.router,
+    host.offered_at_ms > 0 && at_ms >= host.offered_at_ms
+  {
+    state.RouterBusy, True -> committed_or_same(host, event.RouterTurnEnded)
+    state.RouterBusy, False | state.RouterIdle, _ -> host
+  }
 }
 
 fn committed_or_same(host: Host, incoming: Event) -> Host {

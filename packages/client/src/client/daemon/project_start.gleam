@@ -48,6 +48,7 @@ import client/daemon/project_book.{type Book}
 import client/daemon/project_host
 import client/goalcheck
 import client/goalstate
+import client/internal/ffi_os
 import client/peer_mail
 import client/project_poller
 import client/project_publish
@@ -739,6 +740,7 @@ pub fn seat(
               standing:,
               seam: projectseam.seam(handle, session),
               feed: scan_feed(standing, handle, session),
+              run_ended: router_signal(standing, handle),
             )),
           )
         Error(Nil) -> Error("project " <> project <> " is not running")
@@ -770,6 +772,22 @@ fn sound_workspace(
       project_repo.sound_clone(view.registration.workspace)
     }
     project_standing.Router(..) | project_standing.Ordinary -> Ok(Nil)
+  }
+}
+
+/// What a router's run end tells its project, stamped with the time it
+/// happened so that the project can tell the end of the run that answered its
+/// current batch from the late end of an earlier one.
+fn router_signal(
+  standing: project_standing.Standing,
+  handle: project_host.Handle,
+) -> Option(fn() -> Nil) {
+  case standing {
+    project_standing.Router(..) ->
+      Some(fn() {
+        project_host.router_run_ended(handle, ffi_os.system_time_ms())
+      })
+    project_standing.Worker(..) | project_standing.Ordinary -> None
   }
 }
 
