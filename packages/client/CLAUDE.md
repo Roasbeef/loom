@@ -28,14 +28,16 @@ returning the existing error, because EUnit truncates a failed binary pattern.
 
 ## Standing microVM guest (`loom vm`)
 
-`client.gleam` dispatches `loomd vm setup | up | down | status` to
-`client/vm_cli`, and `loom vm …` forwards there (`tui.gleam`, `Forward(verb: "vm", …)`, with a
+`client.gleam` dispatches `loomd vm setup | up | down | status | logs | list | rm |
+sync` to `client/vm_cli`, and `loom vm …` forwards there (`tui.gleam`, `Forward(verb: "vm", …)`, with a
 private copy of the usage text that `scripts/cli_help_test.sh` compares).
 `client/vm_spec` holds every decision that needs no effect: argument parsing,
 the artifact manifest decoder and revision check, the two-node
 `distribution_plan.Plan`, the guest's `loom.toml`, the `loom-vm run` and `cp`
-argument lists, `scrub_git_config`, the pid-file codec and the `epmd -names`
-reader. `client/vm_cli` performs them with `distribution_provision`,
+argument lists, `scrub_git_config`, the pid-file codec, the `epmd -names`
+reader and the daily verbs' decisions (`printable`, the checkouts record,
+`fetch_arguments`, `bundle_arguments`, `unpushed_branches`, `read_enrolment`,
+`plan_teardown`). `client/vm_cli` performs them with `distribution_provision`,
 `distribution_install`, `host/bootstrap` (`spawn_server`, `process_identity`,
 `reserve_loopback_port`), `ffi_os.run_capture` for `cp`, `chmod`, `kill`, `ps`,
 `uname`, `git` and `epmd`, `host/access` (`raw_request`, `execute`) for the
@@ -53,6 +55,28 @@ answers `/zen` 200 and `/user` 401 through the proxy. The first `up` also gives
 file in the guest root: a jailed call reads it, reaches the host and is refused
 another, `up --provision` on the provisioned guest is refused naming `--fresh`,
 and the resume (no flags) keeps the allowed host and leaves one line in the file.
+The same run then drives `vm list`, `vm logs`, a commit made by a jailed call
+that arrives through `vm sync` as `refs/remotes/vm/*` (in the checkout `up`
+recorded and in a `--checkout` scratch one), a hostile `.git/config` and hook
+planted by a jailed call whose marker never appears on the host after `vm sync`
+(with a control repository showing the marker would be writable), `vm sync
+--to-guest` read back by a jailed `git fetch`, a refused second guest, and `vm rm`
+of the idle and failing guests under the isolated home.
+
+`logs`, `list`, `rm` and `sync` read the guest's root, which model-influenced code
+writes, so they treat it as untrusted: no `git` with a working directory in the
+root (`sync` fetches into the developer's checkout with the copy as remote,
+`vm_spec.fetch_arguments`), reads through `plain_chain` (each component a real
+directory, no link), refs read as bounded plain files (`read_inventory`), writes
+through `make_inside` and a rename, and guest text printed through
+`vm_spec.printable`. `up` records each copy's developer checkout in
+`<vm home>/<name>/checkouts` (`vm_spec.decode_checkouts`), outside the root, for
+`sync`; `--checkout PATH` overrides it and is required for a guest with no record.
+`rm` removes `[executors.<name>]`, and `[distribution]` and the home's cookie only
+when they are this guest's and no other executor remains
+(`distribution_install.without_tables`, `vm_spec.plan_teardown`), refuses a
+running guest, and without `--yes` only lists the workspaces and the branches
+origin lacks.
 
 `--allow HOST` and `--provision SCRIPT` are decided in `vm_spec`: `valid_host`
 (the `machine.Spec` rule, refused in `parse`), `encode_allow`/`decode_allow` for
@@ -87,7 +111,7 @@ proves the idle stop on its isolated home.
 Invariants that break things when violated:
 
 - A guest's files all live under `<vm home>/<name>/`: `deploy/`, `orch/`,
-  `root/`, `state.img`, `allow`, `loom-vm.pid` and `loom-vm.log`. `LOOM_VM_HOME` overrides
+  `root/`, `state.img`, `allow`, `checkouts`, `loom-vm.pid` and `loom-vm.log`. `LOOM_VM_HOME` overrides
   `~/.loom/vm`.
 - `up` reads the bundles in `deploy/` again instead of minting new ones, so the
   orchestrator's installed pins keep matching the executor's certificate.
@@ -115,6 +139,11 @@ Invariants that break things when violated:
   guest left (naming `--fresh`). Never `create_directory_all` under the root.
 - Only `--provision` supplies a script. The workspace is never searched, and a
   script on a provisioned resume is refused rather than run again.
+- Nothing the host runs after a guest has booted uses a directory inside `root/`
+  as Git's working directory, and nothing reads `root/` through a link or prints
+  its text without `vm_spec.printable`.
+- A `checkouts` record names a copy made in the current root: replacing the root
+  removes it, and a kept copy is not re-recorded.
 - The workspace copy is made owner-writable. The guest's init cannot give a
   file to the `loom` user when the host user cannot write it, and Git's object
   files are read-only.

@@ -182,7 +182,7 @@ and the last three are the ordinary distributed path.
    a peer whose name differs from the atom dialled.
 
 The guest's own epmd is never reached from the host. The fixed guest listen
-port is 4370 (`vm_spec.guest_port`, `packages/client/src/client/vm_spec.gleam:80`).
+port is 4370 (`vm_spec.guest_port`, `packages/client/src/client/vm_spec.gleam:92`).
 
 ## Isolation around a tool call
 
@@ -523,15 +523,20 @@ Four rules follow from that table:
 
 ## A standing guest: `loom vm`
 
-`loom vm setup | up | down | status` (`client/vm_cli`, with its decisions in
-`client/vm_spec`) is the product path that `daemon_shipped_microvm_test` drives:
+`loom vm setup | up | down | status | logs | list | rm | sync` (`client/vm_cli`,
+with its decisions in `client/vm_spec`) is the product path that
+`daemon_shipped_microvm_test` drives; `logs`, `list`, `rm` and `sync` are
+described under "Living with a guest" below:
 the test installs a manifest with `loom-vm setup --from-build`, runs `loom vm
 up`, `down` and `up` again through the shipped `loomd`, and composes nothing by
 hand. It runs one standing guest executor, called `vm` unless `--name` says another,
 and enrolls it as an ordinary `[executors.<name>]` row, so `loom --executor
 <name> --workspace <directory name>` places a session's tools in the guest
 through the same remote placement every executor has. The guest is a separate
-`loom-vm run` process. The daemon does not start it and does not own it.
+`loom-vm run` process. The daemon does not start it and does not own it. One
+guest per home is supported today: each deployment mints its own cookie and
+`[distribution]` table, and the install refuses a home that holds another
+(see "Known gaps").
 
 `loom vm setup [--release TAG | --from-build DIR]` runs the `loom-vm` that ships
 beside `loomd` (`install.launcher()`, `bin/loom-vm` in the server tree, which is
@@ -617,6 +622,16 @@ the refusal names `loom vm setup`. It then:
    also starts the credential proxy and the guest's `[tools]` table turns the
    jail's network on; `--github off` gives the guest no egress beyond the hosts
    `--allow` names (see "Package registries and toolchains").
+
+A second `up` with another `--workspace` while the guest is stopped adds that
+directory's copy to the root, but `stage_node` rewrites the guest's `loom.toml`
+with one `[workspaces.<name>]` row, the latest `up`'s. The earlier copy stays on
+disk and `loom --executor <name> --workspace <earlier>` no longer finds it
+until an `up` names that directory again. While the guest runs, `up` of any
+directory is refused (`refuse_running`). `up` also records, for each copy it
+makes, which directory it came from in `<vm home>/<name>/checkouts`, one
+`NAME<TAB>PATH` line per copy (`vm_spec.encode_checkouts`), outside the root
+because the guest writes the root; `sync` reads it.
 
 `down` sends SIGTERM to the recorded process while the pid still has the
 recorded birth marker, and waits for it to exit. It leaves the root and the
@@ -739,12 +754,150 @@ The proxy is not the only egress path. A direct connection to an allowlisted
 host works and carries no credential, as before; making the proxy the only path
 is #214.
 
+## Living with a guest: `logs`, `list`, `rm` and `sync`
+
+A guest root is written by model-influenced code and is untrusted input to the
+host once a guest has booted. These four commands read it, so they share three
+rules. None runs `git` with its working directory inside the root, because a
+planted `.git/config` can run commands through `core.fsmonitor`,
+`core.sshCommand`, `core.hooksPath` and more. Every read of the root goes
+through directories checked one component at a time to be real directories and
+not links (`plain_chain`), the same check `make_inside` makes for writes. And
+every line of guest text printed to a terminal goes through `vm_spec.printable`,
+which drops control characters (a tab becomes a space, a newline stays), the C1
+range, DEL and the bidirectional overrides.
+
+`loom vm logs [--name NAME] [--lines N]` prints the last `N` lines (default 100,
+at most 100000) of `<vm home>/<name>/loom-vm.log`, the console, which includes
+the executor daemon's log. It runs `tail` and `iconv -c` through `sh` with the
+arguments as positional parameters, so what is not UTF-8 is dropped before the
+text reaches the BEAM. There is no follow mode.
+
+`loom vm list` prints one line for each directory of the vm home that has a
+valid guest name and a `deploy/` directory: the name, `running` or `stopped`,
+and the workspace copies in its root. A guest directory with no pid file, or
+whose recorded process is gone, is stopped. The manifest and any other file in
+the home are not guests.
+
+`loom vm rm [--name NAME] [--config PATH] [--yes]` deletes a stopped guest and
+undoes its enrolment. A running guest is refused, naming `loom vm down`. Without
+`--yes` it changes nothing: it refuses with each workspace copy and the local
+branches the copy holds that `refs/remotes/origin/*` does not hold at the same
+commit, then what `--yes` would do to `loom.toml`. The branches are read as
+plain files (`read_inventory`): `.git/packed-refs` (at most 4 MiB), then
+`.git/refs/heads` and `.git/refs/remotes/origin` (at most 5000 entries, 8 deep,
+each file at most 512 bytes). A link, a special file or a tree past a limit makes
+that copy "unreadable" in the listing, never partly read, and a loose ref
+replaces a packed one of the same name as in Git. A branch whose origin ref names
+another commit is listed, since it may be ahead. With `--yes`:
+
+- `[executors.<name>]` is removed when its `node` is this guest's executor node,
+  and left, with a line saying so, when it names another.
+- `[distribution]` (and the `[[distribution.peers]]` rows below it) and the home's
+  `.erlang.cookie` are removed only when they are this guest's deployment's and
+  no other `[executors.*]` table remains. The table is this guest's when its
+  `node` is the guest's orchestrator node; the cookie is when it equals the one
+  in `deploy/`. Otherwise both stay and the report says why. Both are shared by
+  every executor of the daemon.
+- The file is edited by `distribution_install.without_tables`, which parses the
+  text first, removes the named sections line by line with every other line kept
+  byte for byte, and parses the result again to prove each table is gone, so a
+  file that cannot be parsed or a table the line edit cannot reach (a dotted key,
+  an inline table) is refused with one line and nothing is removed. The file is
+  written atomically before the cookie and the guest's directory are removed.
+- `<vm home>/<name>/` is removed after `chmod -R u+rwX`, with a removal that does
+  not follow links (`file:del_dir_r`, which removes a link itself).
+
+Deleting a guest loses work that was not pushed, so a person who wants it first
+runs `loom vm sync`; uncommitted edits cannot be fetched and are lost.
+
+`loom vm sync [--name NAME] [--workspace NAME] [--checkout PATH]` fetches a copy's
+committed work, `loom/*` worktree branches included, into the developer's
+checkout as `refs/remotes/vm/*` (issue #1155). The guest's root is a directory
+on the host, so it needs no network, no token and no daemon round trip. The
+copy to sync is `--workspace`, or the guest's only one. The checkout is the one
+`up` recorded for that copy (`<vm home>/<name>/checkouts`, decoded by
+`vm_spec.decode_checkouts`, which refuses a damaged file by line), or
+`--checkout PATH`; a guest from before the record refuses naming `--checkout`.
+A checkout inside the guest's directory is refused. The command is
+`vm_spec.fetch_arguments`:
+
+```
+git -C <checkout> -c transfer.fsckObjects=true -c fetch.fsckObjects=true \
+    -c core.hooksPath=/dev/null -c maintenance.auto=false \
+    fetch --no-tags --no-recurse-submodules <copy> '+refs/heads/*:refs/remotes/vm/*'
+```
+
+The repository is the developer's checkout and the guest's copy is only the
+remote, so Git's own process has the developer's configuration. Git's local
+transport still starts `git-upload-pack` (and the `pack-objects` and `rev-list`
+it spawns) with the copy as its directory, and those read the copy's
+`.git/config`. `uploadpack.packObjectsHook` is honoured only from protected
+configuration (system, global, command line), never from a repository's. The
+rest was tried: a copy whose `.git/config` set `core.fsmonitor`,
+`core.hooksPath` (with `reference-transaction`, `post-update`,
+`pre-upload-pack`, `post-upload-pack` and `pre-auto-gc` hooks in both
+`.git/hooks` and the named directory), `core.sshCommand`, `core.pager`,
+`core.editor`, `core.askpass`, `core.alternateRefsCommand` (with
+`objects/info/alternates` naming a real object directory), `core.gitProxy`,
+`uploadpack.packObjectsHook`, `remote.origin.uploadpack`, `filter.x.process`,
+`credential.helper` and `diff.external`, each a command that touches a
+marker, was fetched from with Git 2.54.0 (Apple), for protocol versions 0, 1
+and 2. `GIT_TRACE` showed `git-upload-pack` and `pack-objects` on the copy, and
+`index-pack`, `rev-list` and `maintenance` in the developer's checkout, and no
+marker appeared. The same configuration did fire when Git ran inside the copy (a plain
+`git commit` there touched the `fsmonitor` and `reference-transaction` markers),
+which is the case the rule exists for, and the live test repeats this with a
+control repository. `-c protocol.file.allow=always` is not given: a plain fetch
+from a path is allowed under the default `user` setting, and the override would
+also open the file transport to a submodule. `core.hooksPath=/dev/null` keeps
+the developer's own hooks (`reference-transaction`) from running on the refs the
+fetch writes. `maintenance.auto=false` stops `git maintenance run --auto
+--detach` from leaving a background process in the developer's checkout.
+`--no-tags` and `--no-recurse-submodules` keep the fetch to branch heads. A copy
+whose `.git` is a link or a file is refused before Git runs, because a link would
+send `git-upload-pack` to a repository outside the root. A guest that is running
+can be synced; commits made while the fetch runs may be missing from it, and the
+objects are checked by `fsckObjects` as they arrive. Nothing arrives in a local
+branch: refs land only under `refs/remotes/vm/*`, to be merged or checked out
+with `git merge vm/<branch>`.
+
+`loom vm sync --to-guest` goes the other way for a resumed copy, which `up`
+never refreshes. It runs `git -C <checkout> bundle create --quiet <file> --all`
+into `<vm home>/<name>/to-guest-<workspace>.bundle`, beside the root where the
+guest cannot reach it, then creates `/srv/host-refs` with `make_inside` and
+renames the bundle to `/srv/host-refs/<workspace>.bundle` in the root (a rename
+replaces a link the guest left at that name and never writes through it). It
+prints the jailed command to run in the copy:
+
+```
+git fetch /srv/host-refs/<workspace>.bundle '+refs/heads/*:refs/remotes/host/*'
+```
+
+The jail reads that path under its default read scope with no configuration:
+in the live run a jailed `git fetch /srv/host-refs/repo.bundle ...` exited 0 and
+`refs/remotes/host/main` in the copy equalled the host's commit, which
+`daemon_shipped_microvm_test` asserts. The bundle holds every ref of the
+checkout, `refs/remotes/vm/*` included, and a later `--to-guest` replaces it.
+Uncommitted edits on the host are not in it.
+
 ## Known gaps
 
 - Nothing in the daemon places an executor into a guest. `loom vm up` does it
   for one standing guest from the command line; a broker or pool driver and
-  the bundle transport of #1137 do not exist yet, and `loom vm` cannot copy a
-  guest's work back to the host.
+  the bundle transport of #1137 do not exist yet.
+- One guest per home. A second `loom vm up --name` is refused because each
+  deployment mints its own cookie and `[distribution]` table, and the install
+  never replaces another's (the refusal names `loom vm rm` and says only one
+  guest per home is supported). The refused `up` has already written the new
+  guest's `deploy/` and `orch/`, so it leaves a directory that `loom vm list`
+  shows; `loom vm rm --name NAME --yes` clears it and leaves the other
+  deployment's tables and cookie.
+- One registered workspace per guest. Only the latest `up`'s directory is in the
+  guest's `loom.toml`; see "A standing guest".
+- There is no `loom vm shell`. A guest has no exec channel: its executor serves
+  the orchestrator over the distribution link and nothing else, so a command in
+  the guest runs only through a session's tools.
 - Only macOS with Hypervisor.framework has booted a guest. The Linux/KVM path
   compiles and is untested, and `build-libkrunfw.sh` links only the macOS
   dylib.
