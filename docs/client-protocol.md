@@ -3391,7 +3391,7 @@ Source: (`core/codec.gleam:249-260`).
 |---|---|---|---|
 | `content` | array | required | User content blocks: `text` or `image`. |
 | `timestamp` | integer | required | Milliseconds. |
-| `origin` | object or null | required | Human `{principal, name}`, peer `{kind: "peer", session, strand}`, or `null`. |
+| `origin` | object or null | required | Human `{principal, name}`, peer `{kind: "peer", session, strand}`, same-session strand `{kind: "strand", strand}`, external trigger `{kind: "trigger", source, trigger, actor}`, or `null`. |
 
 Source: (`core/codec.gleam:152-158`).
 
@@ -3408,6 +3408,19 @@ Source: (`core/origin.gleam:98-153`).
 
 ```json
 {"role":"user","content":[{"type":"text","text":"Review found a missing cancellation check."}],"timestamp":1756000010000,"origin":{"kind":"peer","session":"sess-review","strand":"security"}}
+```
+
+A trigger message carries text that arrived from outside any session through a
+stored trigger of a project ([protocol-change/106](../protocol-change/106-project-mode.md)).
+`source` is at most 128 bytes, `trigger` and `actor` at most 256, and each is
+non-empty with no control characters, no surrounding whitespace, and none of
+`"`, `\` or `·`. A trigger origin that breaks any bound fails decoding like a
+malformed peer. The `actor` is the name the source reported and nothing more.
+A client that draws the message MUST build its heading from these three fields
+and never from the text, and MUST present the text as untrusted data.
+
+```json
+{"role":"user","content":[{"type":"text","text":"Issue 7 was opened."}],"timestamp":1756000010000,"origin":{"kind":"trigger","source":"github","trigger":"trg-1","actor":"octocat"}}
 ```
 
 `origin` is durable attribution, and a client MUST NOT derive any

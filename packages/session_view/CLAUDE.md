@@ -331,6 +331,10 @@ for a host with no surfaces.
   the same session sent (stored origin `StrandOrigin`, framing removed by
   `strand_framing.strip`, a brief's result-contract trailer kept apart; `Peer`
   and `Sibling` keep the whole text and the host shortens it when it draws),
+  `Trigger` for outside text delivered through a stored project trigger (stored
+  origin `TriggerOrigin`; its fields come from the origin and its text is
+  untrusted data; the line is `TriggerMessage`, headed `⚑ from <source> ·
+  <actor> · trigger <id>` with no daemon check),
   `Missed` for a cache notice and `Commentary` for the advisor's board (reviews that
   stand next to each other are one piece with a `reviews` count). A feed or goal
   feed sent to the advisor is an input, since the advisor's strand has no other:
