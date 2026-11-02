@@ -62,11 +62,12 @@ import tui/model.{
   type Model, AccessManager, ActivityAsking, ActivityDue, ActivityResting,
   AgentInspector, ApprovalInspector, ControlRequest, DaemonSelector,
   EvolutionReview, GoalInspector, MemoryOverview, Model, ModelSelector,
-  NoOverlay, PeerLinkManager, ProposalReview, ReconnectAttempting, ReconnectIdle,
-  ReconnectSpent, View,
+  NoOverlay, PeerLinkManager, ProjectScreen, ProposalReview, ReconnectAttempting,
+  ReconnectIdle, ReconnectSpent, View,
 } as tui_model
 import tui/peer_links
 import tui/placement
+import tui/project_control
 import tui/recording
 import tui/session_selector
 import tui/view_set
@@ -526,6 +527,7 @@ fn finish_control(model: Model, result) {
           | ProposalReview(_)
           | EvolutionReview(_)
           | MemoryOverview(_)
+          | ProjectScreen(_)
           | AccessManager(_) -> model.view.overlay
         }),
       )
@@ -546,6 +548,10 @@ fn finish_control(model: Model, result) {
     Some(Ok(MembershipsListed(document, principal, after))) ->
       finish_memberships(model, document, principal, after)
     Some(Ok(AccessChanged(document))) -> finish_access_change(model, document)
+    Some(Ok(job.ProjectBoardLoaded(..) as outcome))
+    | Some(Ok(job.ProjectTicketLoaded(..) as outcome))
+    | Some(Ok(job.ProjectChanged(..) as outcome)) ->
+      project_control.finish(model, outcome)
     Some(Ok(SessionDeleted(id))) ->
       catalogue_removed(model, id, "deleted session ")
     Some(Ok(SessionArchived(id))) ->
@@ -574,6 +580,7 @@ fn catalogue_removed(model: Model, id: String, description: String) -> Model {
       | ProposalReview(_)
       | EvolutionReview(_)
       | MemoryOverview(_)
+      | ProjectScreen(_)
       | AccessManager(_) -> model.view.overlay
     }),
   )
@@ -1125,6 +1132,7 @@ fn finish_peer_workspace(
     | ProposalReview(_)
     | EvolutionReview(_)
     | MemoryOverview(_)
+    | ProjectScreen(_)
     | AccessManager(_) -> model
   }
 }
@@ -1201,6 +1209,7 @@ fn finish_peer_inspection(
     | ProposalReview(_)
     | EvolutionReview(_)
     | MemoryOverview(_)
+    | ProjectScreen(_)
     | AccessManager(_) -> model
   }
 }
@@ -1230,6 +1239,7 @@ fn finish_peer_operation(model: Model, document: json.JsonValue) {
     | ProposalReview(_)
     | EvolutionReview(_)
     | MemoryOverview(_)
+    | ProjectScreen(_)
     | AccessManager(_) -> model
   }
 }
@@ -1264,6 +1274,7 @@ fn finish_control_failure(model: Model, reason: String) {
     | EvolutionReview(_)
     | MemoryOverview(_)
     | ApprovalInspector(_) -> tui_model.append_error(model, reason)
+    ProjectScreen(_) -> project_control.failed(model, reason)
   }
 }
 
@@ -1402,6 +1413,7 @@ fn finish_access_listing(
     | ProposalReview(_)
     | EvolutionReview(_)
     | MemoryOverview(_)
+    | ProjectScreen(_)
     | ApprovalInspector(_) -> model
   }
 }
@@ -1433,6 +1445,7 @@ fn finish_memberships(
     | ProposalReview(_)
     | EvolutionReview(_)
     | MemoryOverview(_)
+    | ProjectScreen(_)
     | ApprovalInspector(_) -> model
   }
 }
@@ -1469,6 +1482,7 @@ fn finish_access_change(model: Model, document: json.JsonValue) -> Model {
     | ProposalReview(_)
     | EvolutionReview(_)
     | MemoryOverview(_)
+    | ProjectScreen(_)
     | ApprovalInspector(_) ->
       tui_model.append_system(model, "access change acknowledged")
   }
@@ -1504,6 +1518,10 @@ pub fn service_activity(model: Model) -> Model {
         True, [_, ..] as ids -> start_activity(model, host, ids)
         _, _ -> model
       }
+
+    // The project board is polled from the same tick, so the tick's chain of
+    // services does not grow a step for it.
+    ProjectScreen(_), _ -> project_control.service(model)
     _, _ -> model
   }
 }

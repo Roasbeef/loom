@@ -66,6 +66,7 @@ import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/image_open
 import tui/job.{type Arrival, type ControlKey, type Key}
+import tui/project_jobs
 import tui/view_link
 import weft
 
@@ -690,7 +691,10 @@ fn control_deadline(request: job.ControlJob) -> Int {
     | job.LoadPeerSessions(..)
     | job.MutatePeers(..)
     | job.ReadAccess(..)
-    | job.ChangeAccess(..) -> 12_000
+    | job.ChangeAccess(..)
+    | job.ReadProjectBoard(..)
+    | job.ReadProjectTicket(..)
+    | job.ChangeProject(..) -> 12_000
   }
 }
 
@@ -717,6 +721,10 @@ fn control_work(
       job.MutatePeers(command:) -> mutate_peers(host, command)
       job.ReadAccess(command:) -> read_access(host, command)
       job.ChangeAccess(command:) -> change_access(host, command)
+      job.ReadProjectBoard(target:) -> project_jobs.read_board(host, target)
+      job.ReadProjectTicket(project:, ticket:) ->
+        project_jobs.read_ticket(host, project, ticket)
+      job.ChangeProject(change:) -> project_jobs.change(host, change)
     }
   }
 }

@@ -114,7 +114,7 @@ import tui/message_rows
 import tui/model.{
   type Model, AccessManager, AgentInspector, ApprovalInspector, DaemonSelector,
   EvolutionReview, FrameCache, GoalInspector, MemoryOverview, Model,
-  ModelSelector, NoOverlay, PeerLinkManager, ProposalReview,
+  ModelSelector, NoOverlay, PeerLinkManager, ProjectScreen, ProposalReview,
 } as tui_model
 
 import tui/evolution_panel
@@ -123,6 +123,7 @@ import tui/model_selector
 import tui/note_panel
 import tui/peer_links
 import tui/program_rows
+import tui/project_screen
 import tui/proposal_panel
 import tui/queue_editor
 import tui/queue_panel
@@ -314,6 +315,8 @@ pub fn render_frame(
         model.shared.memory,
         model.shared.memory_notice,
       )
+    ProjectScreen(state) ->
+      project_screen.render(base, screen, state, model.view.wall_ms)
     ApprovalInspector(panel) ->
       approval_panel.render(
         base,
@@ -389,6 +392,7 @@ pub fn render_frame(
     | ProposalReview(_), _
     | EvolutionReview(_), _
     | MemoryOverview(_), _
+    | ProjectScreen(_), _
     | ApprovalInspector(_), _
     -> Error(Nil)
   }
@@ -1590,6 +1594,7 @@ fn note_context(model: Model, target: String) -> List(String) {
             | ProposalReview(_)
             | EvolutionReview(_)
             | MemoryOverview(_)
+            | ProjectScreen(_)
             | ApprovalInspector(_) -> ["No observed notes for " <> target]
           }
       }
@@ -1611,6 +1616,7 @@ fn missing_note_context(model: Model, target: String) -> List(String) {
     | ProposalReview(_)
     | EvolutionReview(_)
     | MemoryOverview(_)
+    | ProjectScreen(_)
     | ApprovalInspector(_) -> ["No observed notes for " <> target]
   }
 }
@@ -2261,6 +2267,7 @@ fn render_command_palette(
     | _, ProposalReview(_)
     | _, EvolutionReview(_)
     | _, MemoryOverview(_)
+    | _, ProjectScreen(_)
     | _, ApprovalInspector(_)
     -> buf
     _, NoOverlay -> {

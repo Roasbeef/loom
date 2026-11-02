@@ -2894,6 +2894,41 @@ its old board with the failed refresh label. The
 [delivery reading guide](../../docs/architecture/delivery.md#reading-the-held-input-and-goal-paths-in-gleam)
 shows the source paths, actual state constructors and request-ID traces.
 
+## Project board (protocol-change/106)
+
+`/project` and `loom project board --watch` open the owner's board for the
+project of the working directory: what needs a person, and a way to settle it.
+`tui/project_screen` is a pure state machine in the picker's shape: `update` maps
+a key to an `Action`, `observe`, `observed_ticket`, `answered` and
+`answer_refused` file what the daemon said, and `render` draws it as the
+`ProjectScreen` overlay. `tui/project_control` is the shell around it: `open`,
+`service` (the poll, reached from `session_control.service_activity` so the tick
+chain does not grow), `finish` and `act`. The reads and the answer run as
+`job.ReadProjectBoard`, `job.ReadProjectTicket` and `job.ChangeProject` in the
+terminal's one control-job slot (`tui/project_jobs` runs them). The board's
+ordering, stage words, ages and the mandate sentence come from
+`session_view/project_board`, which the web view uses too.
+
+Four things break if changed carelessly.
+
+- The poll reads `projects.board` and compares `revision`. `observe` keeps the
+  held board when the revision is unchanged, `same_picture` ignores the poll
+  state, and `project_control.finish` then skips `invalidate_frame`, so an
+  unchanged board causes no repaint. The poll state is `Poll` (`PollDue` or
+  `PollResting`) and not a time of zero, because the terminal's monotonic clock
+  is negative on the BEAM.
+- An answer echoes the question's `seq` as the ticket displayed it. The daemon
+  refuses a stale one with `conflict`; the job reports that as an outcome
+  (`ProjectChanged(change, Some("conflict"))`), `answer_refused` says so in
+  words and keeps the draft.
+- Ticket text is external. `project_board` makes each string safe when it
+  decodes, and the screen draws it as text only. A stage this client does not
+  know is drawn as its own word, and it counts as needing a person when it is
+  spelled `person/...`.
+- An age comes only from the ticket's `opened_ms`. A ticket without one shows
+  `?`. `set_mode` and `publish` controls are not built; the ticket page has no
+  button for them.
+
 ## Deep Docs
 
 - [`docs/architecture/terminal.md`](../../docs/architecture/terminal.md)

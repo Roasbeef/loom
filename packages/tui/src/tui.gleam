@@ -151,6 +151,7 @@ import tui/msg
 import tui/note_panel
 import tui/pacing
 import tui/placement
+import tui/project_control
 import tui/projection
 import tui/queue_editor
 import tui/recording
@@ -176,6 +177,11 @@ type Launch {
 
   Demo
   Local(bootstrap.Options, selected: String)
+
+  // `loom project board --watch` keeps the project board open in the terminal
+  // (protocol-change/106). It is a local launch that lands on the board in
+  // place of the session catalogue.
+  ProjectWatch(options: bootstrap.Options)
 
   // `loom ui --session <id>` prints a link that opens the session's web
   // view (protocol-change/051), an observer's page unless `--operate` asks
@@ -480,7 +486,8 @@ pub fn main() {
         Access(arguments:) -> access_command.main(arguments)
         View(request:) -> run_view(request)
         Invalid(reason) -> rejected_launch(reason)
-        Demo | Local(..) | Remote(..) -> interactive_terminal(launch, record)
+        Demo | Local(..) | Remote(..) | ProjectWatch(..) ->
+          interactive_terminal(launch, record)
       }
     }
   }
@@ -965,48 +972,9 @@ fn interactive(launch: Launch, record: String) -> Nil {
     // The demo has no session, so the one image it shows is seeded into its
     // entries (`demo_image`), where a box finds the data to draw.
     Demo -> demo_image.seed(base)
-    Local(options, selected) -> {
-      // The footer names the workspace the session was launched for, which
-      // is only the current directory when no `--workspace` was given; a
-      // later `/sessions` switch derives it the same way from its choice.
-      let local =
-        Model(
-          ..base,
-          view: base.view
-            |> view_set.local_options(Some(options))
-            |> view_set.workspace(case options.placement, options.workspace {
-              // A registered name is no directory here, so it is never probed
-              // for a repository: the footer shows the name as given.
-              placement.OnExecutor(workspace: name, ..), _
-              | placement.InPool(workspace: name, ..), _
-              -> workspace.Context(path: name, branch: None)
-              placement.OnThisHost, "" -> base.view.workspace
-              placement.OnThisHost, path -> workspace.discover_from(path)
-            }),
-        )
-
-      // Handle interactive branch dispatch.
-      case bootstrap.resolve_daemon(options, process.self(), 90_000) {
-        Error(reason) ->
-          tui_model.append_error(
-            Model(
-              ..local,
-              shared: local.shared
-                |> shared_set.peer(Disconnected)
-                |> shared_set.notice("daemon startup failed"),
-            ),
-            reason,
-          )
-        Ok(connected) ->
-          attach_daemon(
-            local,
-            connected.control,
-            endpoint.address(connected.record),
-            connected.paths.token,
-            selected,
-          )
-      }
-    }
+    Local(options, selected) ->
+      local_launch(base, options, ToCatalogue(selected))
+    ProjectWatch(options) -> local_launch(base, options, ToProjectBoard)
     Invalid(reason) ->
       tui_model.append_error(
         Model(..base, shared: shared_set.notice(base.shared, "invalid launch")),
@@ -1040,7 +1008,7 @@ fn interactive(launch: Launch, record: String) -> Nil {
   // Only a launch that is a real session remembers its layout. The rest
   // print and exit, replay, or show the demo, and read and write no file.
   let initial = case launch {
-    Local(options, _) ->
+    Local(options, _) | ProjectWatch(options) ->
       layout_save.remember_launch(initial, options.state_directory)
     Remote(..) -> layout_save.remember_launch(initial, "")
     Version
@@ -1384,6 +1352,47 @@ pub fn launch_sessions_command(
     Sessions(options:, command:) -> Ok(#(command, options))
     Invalid(reason) -> Error(reason)
     _other -> Error("not a sessions launch")
+  }
+}
+
+/// Classifies a whole argument vector, answering the daemon options of a
+/// `loom project board --watch` launch and a refusal for every other launch. It
+/// is the test seam for `--watch`, which keeps the board open instead of
+/// printing it once.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(options) =
+///   tui.launch_project_watch(["project", "board", "--watch", "--state-dir", "/s"])
+/// assert options.state_directory == "/s"
+/// ```
+@internal
+pub fn launch_project_watch(
+  arguments: List(String),
+) -> Result(bootstrap.Options, String) {
+  case parse_launch(arguments) {
+    ProjectWatch(options:) -> Ok(options)
+    Invalid(reason) -> Error(reason)
+    Version
+    | Demo
+    | Local(..)
+    | View(..)
+    | Remote(..)
+    | Forward(..)
+    | Update(..)
+    | Replay(..)
+    | ClaimAccess(..)
+    | Enroll(..)
+    | Access(..)
+    | Deployment(..)
+    | Directory(..)
+    | Run(..)
+    | RunRefused(..)
+    | Acp(..)
+    | AcpRefused(..)
+    | Project(..)
+    | Sessions(..) -> Error("not a project board watch")
   }
 }
 
@@ -1736,12 +1745,13 @@ fn parse_directory(arguments: List(String)) -> Launch {
 
 /// Establishes and coordinates directory usage operations for the TUI runtime.
 fn project_usage() -> String {
-  "usage: loom project init | post <text> | board [--state-dir <path>] "
-  <> "[--config <loom.toml>] [--server <path>]\n"
+  "usage: loom project init | post <text> | board [--watch] "
+  <> "[--state-dir <path>] [--config <loom.toml>] [--server <path>]\n"
   <> "  init makes a project for the repository in the working directory, with\n"
   <> "  a router session that decides what each message becomes. post sends\n"
   <> "  your text to the router as an explicit request, and board lists the\n"
-  <> "  project's tickets with what needs you first. A project needs no\n"
+  <> "  project's tickets with what needs you first; --watch keeps the board\n"
+  <> "  open, answers a worker's question and opens its session. A project needs no\n"
   <> "  configuration: inferred work stays off and you are its only source."
 }
 
@@ -1751,9 +1761,21 @@ fn project_usage() -> String {
 fn parse_project(arguments: List(String)) -> Launch {
   case arguments {
     ["init", ..flags] -> project_launch(flags, ProjectInit)
-    ["board", ..flags] -> project_launch(flags, ProjectBoard)
+    ["board", ..flags] ->
+      case list.contains(flags, "--watch") {
+        True -> watch_launch(list.filter(flags, fn(each) { each != "--watch" }))
+        False -> project_launch(flags, ProjectBoard)
+      }
     ["post", text, ..flags] -> project_launch(flags, ProjectPost(text))
     _unknown -> Invalid(project_usage())
+  }
+}
+
+/// `loom project board --watch`: the board kept open in the terminal.
+fn watch_launch(flags: List(String)) -> Launch {
+  case parse_local_options(flags, default_bootstrap_options()) {
+    Ok(options) -> ProjectWatch(options)
+    Error(reason) -> Invalid(reason <> "\n" <> project_usage())
   }
 }
 
@@ -1797,6 +1819,7 @@ pub fn launch_deployment(
     Version
     | Demo
     | Local(..)
+    | ProjectWatch(..)
     | View(..)
     | Remote(..)
     | Forward(..)
@@ -1871,6 +1894,7 @@ pub fn launch_directory(arguments: List(String)) -> Result(Output, String) {
     Version
     | Demo
     | Local(..)
+    | ProjectWatch(..)
     | View(..)
     | Remote(..)
     | Forward(..)
@@ -3913,6 +3937,65 @@ fn live_base(base: Model) -> Model {
   )
 }
 
+/// Where a local launch lands once the daemon is attached.
+type Landing {
+  /// The session catalogue, or the named session when `selected` is not empty.
+  ToCatalogue(selected: String)
+
+  /// The project board of the working directory.
+  ToProjectBoard
+}
+
+/// Starts or finds the daemon for a local launch and attaches to it, landing
+/// on `landing`. A daemon that cannot be started leaves the transcript with
+/// the reason.
+fn local_launch(
+  base: Model,
+  options: bootstrap.Options,
+  landing: Landing,
+) -> Model {
+  // The footer names the workspace the session was launched for, which
+  // is only the current directory when no `--workspace` was given; a
+  // later `/sessions` switch derives it the same way from its choice.
+  let local =
+    Model(
+      ..base,
+      view: base.view
+        |> view_set.local_options(Some(options))
+        |> view_set.workspace(case options.placement, options.workspace {
+          // A registered name is no directory here, so it is never probed
+          // for a repository: the footer shows the name as given.
+          placement.OnExecutor(workspace: name, ..), _
+          | placement.InPool(workspace: name, ..), _
+          -> workspace.Context(path: name, branch: None)
+          placement.OnThisHost, "" -> base.view.workspace
+          placement.OnThisHost, path -> workspace.discover_from(path)
+        }),
+    )
+
+  // Handle interactive branch dispatch.
+  case bootstrap.resolve_daemon(options, process.self(), 90_000) {
+    Error(reason) ->
+      tui_model.append_error(
+        Model(
+          ..local,
+          shared: local.shared
+            |> shared_set.peer(Disconnected)
+            |> shared_set.notice("daemon startup failed"),
+        ),
+        reason,
+      )
+    Ok(connected) ->
+      attach_landing(
+        local,
+        connected.control,
+        endpoint.address(connected.record),
+        connected.paths.token,
+        landing,
+      )
+  }
+}
+
 /// Attaches a local launch to the daemon it resolved, opening `selected` when
 /// one was named and the picker otherwise.
 ///
@@ -3933,6 +4016,17 @@ pub fn attach_daemon(
   address: Result(String, String),
   token_path: String,
   selected: String,
+) -> Model {
+  attach_landing(base, control, address, token_path, ToCatalogue(selected))
+}
+
+/// Adopts the daemon's control connection and lands on `landing`.
+fn attach_landing(
+  base: Model,
+  control: daemon.Connection,
+  address: Result(String, String),
+  token_path: String,
+  landing: Landing,
 ) -> Model {
   let host = {
     use address <- result.try(address)
@@ -3961,9 +4055,10 @@ pub fn attach_daemon(
 
       // Flushed for the reason `connect_remote` gives: the first request
       // starts at launch rather than at the loop's first event.
-      case selected {
-        "" -> session_control.load_catalogue(model, "", None)
-        id -> session_control.open_chosen(model, id)
+      case landing {
+        ToCatalogue("") -> session_control.load_catalogue(model, "", None)
+        ToCatalogue(id) -> session_control.open_chosen(model, id)
+        ToProjectBoard -> project_control.open(model)
       }
       |> runtime.flush
     }

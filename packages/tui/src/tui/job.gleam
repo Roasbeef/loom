@@ -255,6 +255,38 @@ pub type ControlOutcome {
 
   /// The daemon acknowledged one access change.
   AccessChanged(document: json.JsonValue)
+
+  /// One `projects.board` body, with the id of the project it belongs to.
+  ProjectBoardLoaded(document: json.JsonValue)
+
+  /// One `projects.ticket` body.
+  ProjectTicketLoaded(document: json.JsonValue)
+
+  /// What the daemon said to a person's change on a ticket. `refusal` is the
+  /// error code when the daemon refused it, such as `conflict` for an answer
+  /// to a question that has since changed, and none when it was accepted. A
+  /// refusal is an outcome here and not a failed job, because the screen
+  /// shows it in words and keeps the person's draft.
+  ProjectChanged(change: ProjectChange, refusal: Option(String))
+}
+
+/// Which project a board read is for.
+pub type ProjectTarget {
+  /// The project whose workspace is this directory, found with
+  /// `projects.list` in the same job.
+  InWorkspace(path: String)
+
+  /// A project already named by an earlier read.
+  ProjectId(id: String)
+}
+
+/// A change a person asked for on one ticket.
+pub type ProjectChange {
+  /// An answer to the ticket's open question, echoing its sequence number.
+  AnswerTicket(project: String, ticket: String, seq: Int, text: String)
+
+  /// A request for a new assignment on a stalled ticket.
+  RetryTicket(project: String, ticket: String)
 }
 
 /// The ADT keeps a confirmed permanent deletion distinct from reversible
@@ -313,6 +345,16 @@ pub type ControlJob {
   /// Sends one access change: `SetMemberRole`, `RevokeMembership` or
   /// `RevokeCredentials`.
   ChangeAccess(command: control_protocol.Command)
+
+  /// Reads a project's board, finding the project first when the target is a
+  /// workspace.
+  ReadProjectBoard(target: ProjectTarget)
+
+  /// Reads one ticket of a project.
+  ReadProjectTicket(project: String, ticket: String)
+
+  /// Sends a person's change on a ticket.
+  ChangeProject(change: ProjectChange)
 }
 
 /// Which job to start. The runtime turns each variant into a weft task.
