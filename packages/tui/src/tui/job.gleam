@@ -272,6 +272,22 @@ pub type ControlOutcome {
   /// refusal is an outcome here and not a failed job, because the screen
   /// shows it in words and keeps the person's draft.
   ProjectChanged(change: ProjectChange, refusal: Option(String))
+
+  /// What the daemon said to a change on a rule. An accepted change carries
+  /// the reply body. A refusal carries the daemon's own sentence, because the
+  /// reason a rule cannot go to `auto` is a sentence and the generic code says
+  /// nothing about it; the screen shows it as sent.
+  ProjectRuled(change: RuleChange, reply: Result(json.JsonValue, String))
+}
+
+/// A change a person asked for on one rule of a project.
+pub type RuleChange {
+  /// Sets the rule's mode. The daemon decides whether `auto` is allowed.
+  SetRuleMode(project: String, rule: String, mode: project_board.RuleMode)
+
+  /// Measures the rule's labelled triggers. A live run replies at once with
+  /// `state: running`.
+  RunVerdict(project: String, rule: String, lane: project_board.Lane)
 }
 
 /// Which project a board read is for.
@@ -374,6 +390,9 @@ pub type ControlJob {
 
   /// Sends a person's change on a ticket.
   ChangeProject(change: ProjectChange)
+
+  /// Sends a person's change on a rule: its mode, or a verdict run.
+  ChangeRule(change: RuleChange)
 }
 
 /// Which job to start. The runtime turns each variant into a weft task.

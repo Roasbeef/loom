@@ -348,6 +348,15 @@ pub fn what_observe_would_have_done_is_listed_for_the_owner_test() {
 }
 
 fn rule_document(labelled: Int, state: String) -> json.JsonValue {
+  rule_document_with(labelled, state, [])
+}
+
+// The same board with extra fields on its one rule, such as a `run`.
+fn rule_document_with(
+  labelled: Int,
+  state: String,
+  extra: List(#(String, json.JsonValue)),
+) -> json.JsonValue {
   json.Object([
     #("project", json.String("p1")),
     #("revision", json.Int(5)),
@@ -378,6 +387,7 @@ fn rule_document(labelled: Int, state: String) -> json.JsonValue {
                     #("needed", json.Int(30)),
                   ]),
                 ),
+                ..extra
               ]),
             ]),
           ),
@@ -464,6 +474,333 @@ pub fn a_board_with_no_rule_has_nothing_to_label_test() {
     project_screen.update(keys.Char("l"), screen(model))
   assert project_screen.labelling_rule(same) == None
   assert string.contains(same.notice, "no rule to label")
+}
+
+// --- rule modes and verdicts ---------------------------------------------------
+
+fn labelling_on(document: json.JsonValue) -> project_screen.State {
+  let assert project_screen.Label(opened, "deps") =
+    project_screen.update(keys.Char("l"), screen(showing(document)))
+  opened
+}
+
+// The terminal on the labelling page of `deps`, with its candidates read, so
+// the control slot is free for a change.
+fn on_labelling(document: json.JsonValue) -> tui_model.Model {
+  let asked = press(showing(document), "l")
+  deliver(
+    asked,
+    job.ProjectLabelsLoaded(
+      json.Object([
+        #("rule", json.String("deps")),
+        #("labelled", json.Int(30)),
+        #("needed", json.Int(30)),
+        #("triggers", json.Array([])),
+      ]),
+    ),
+  )
+}
+
+fn running_run() -> #(String, json.JsonValue) {
+  #(
+    "run",
+    json.Object([
+      #("state", json.String("running")),
+      #("done", json.Int(12)),
+      #("of", json.Int(90)),
+      #("calls", json.Int(12)),
+      #("tokens", json.Int(5100)),
+      #("started_ms", json.Int(1)),
+    ]),
+  )
+}
+
+fn ended_run(state: String) -> #(String, json.JsonValue) {
+  #(
+    "run",
+    json.Object([
+      #("state", json.String(state)),
+      #("words", json.String("The daemon says " <> state <> ".")),
+      #("calls", json.Int(90)),
+      #("tokens", json.Int(41_000)),
+      #("ended_ms", json.Int(2)),
+    ]),
+  )
+}
+
+pub fn the_mode_keys_set_off_observe_and_auto_test() {
+  let opened = labelling_on(rule_document(30, "none"))
+
+  let assert project_screen.SetMode(_, "deps", board.ModeOff) =
+    project_screen.update(keys.Char("0"), opened)
+  let assert project_screen.SetMode(_, "deps", board.ModeObserve) =
+    project_screen.update(keys.Char("1"), opened)
+
+  // `auto` is sent like the others: the client does not decide whether the
+  // verdict allows it, so a rule with no verdict still sends the request.
+  let assert project_screen.SetMode(_, "deps", board.ModeAuto) =
+    project_screen.update(keys.Char("2"), opened)
+}
+
+pub fn r_runs_a_replay_verdict_at_once_test() {
+  let opened = labelling_on(rule_document(30, "none"))
+
+  let assert project_screen.RunVerdict(_, "deps", board.Replay) =
+    project_screen.update(keys.Char("r"), opened)
+}
+
+// A live run spends model calls, so the live key only opens a confirmation
+// that states the count, and nothing but Enter on it starts the run.
+pub fn the_live_key_asks_before_it_runs_and_only_enter_confirms_test() {
+  let opened = labelling_on(rule_document(30, "none"))
+  let assert project_screen.Continue(asking) =
+    project_screen.update(keys.Char("L"), opened)
+
+  assert asking.page == project_screen.Confirming("deps", 30)
+
+  // Every key but Enter and Escape leaves the confirmation as it was,
+  // including the keys that act on the labelling page and a paste.
+  list.each(
+    [
+      keys.Char("L"),
+      keys.Char("r"),
+      keys.Char("y"),
+      keys.Char("n"),
+      keys.Char("0"),
+      keys.Char("2"),
+      keys.Char("l"),
+      keys.Tab,
+    ],
+    fn(key) {
+      let assert project_screen.Continue(same) =
+        project_screen.update(key, asking)
+      assert same == asking
+    },
+  )
+  let assert project_screen.Continue(pasted) =
+    project_screen.update_pasted("\n", asking)
+  assert pasted == asking
+
+  // Escape cancels with nothing sent, and Enter is the one way to a live run.
+  let assert project_screen.Continue(cancelled) =
+    project_screen.update(keys.Escape, asking)
+  assert cancelled.page == project_screen.Labelling("deps", 0)
+  assert string.contains(cancelled.notice, "not started")
+
+  let assert project_screen.RunVerdict(started, "deps", board.Live) =
+    project_screen.update(keys.Enter, asking)
+  assert started.page == project_screen.Labelling("deps", 0)
+}
+
+pub fn the_confirmation_states_the_labelled_count_and_the_calls_test() {
+  let confirming = press(on_labelling(rule_document(30, "none")), "L")
+  let text = painted(confirming)
+
+  assert string.contains(text, "30 labelled triggers")
+  assert string.contains(text, "about 90 calls")
+  assert string.contains(text, "Enter starts it")
+
+  // The count is the board's, so a rule with fewer labels says so.
+  let few = painted(press(on_labelling(rule_document(12, "none")), "L"))
+  assert string.contains(few, "12 labelled triggers")
+  assert string.contains(few, "about 36 calls")
+}
+
+pub fn the_shipped_loop_sends_a_replay_and_a_mode_without_asking_test() {
+  let labelling = on_labelling(rule_document(30, "none"))
+  let assert Some(daemon) = labelling.view.daemon_host
+
+  let #(_, replay) = stepping.step(backend.KeyPress("r"), labelling)
+  assert control_jobs(replay)
+    == [
+      job.Control(
+        daemon.control,
+        job.ChangeRule(job.RunVerdict("p1", "deps", board.Replay)),
+      ),
+    ]
+
+  let #(_, automatic) = stepping.step(backend.KeyPress("2"), labelling)
+  assert control_jobs(automatic)
+    == [
+      job.Control(
+        daemon.control,
+        job.ChangeRule(job.SetRuleMode("p1", "deps", board.ModeAuto)),
+      ),
+    ]
+}
+
+pub fn the_shipped_loop_sends_a_live_run_only_after_enter_test() {
+  let labelling = on_labelling(rule_document(30, "none"))
+  let assert Some(daemon) = labelling.view.daemon_host
+
+  // The live key sends nothing, and neither does Escape out of it.
+  let #(asking, asked) = stepping.step(backend.KeyPress("L"), labelling)
+  assert control_jobs(asked) == []
+  let #(_, cancelled) = stepping.step(backend.KeyPress("esc"), asking)
+  assert control_jobs(cancelled) == []
+
+  let #(_, confirmed) = stepping.step(backend.KeyPress("enter"), asking)
+  assert control_jobs(confirmed)
+    == [
+      job.Control(
+        daemon.control,
+        job.ChangeRule(job.RunVerdict("p1", "deps", board.Live)),
+      ),
+    ]
+}
+
+pub fn an_accepted_mode_and_verdict_are_said_in_words_test() {
+  let labelling = on_labelling(rule_document(30, "none"))
+  let #(sent, _) = stepping.step(backend.KeyPress("1"), labelling)
+  let moded =
+    deliver(
+      sent,
+      job.ProjectRuled(
+        job.SetRuleMode("p1", "deps", board.ModeObserve),
+        Ok(json.Object([])),
+      ),
+    )
+  assert string.contains(painted(moded), "Rule deps is now observe.")
+
+  // A live reply is `state: running`, and is not worded as a finding.
+  let #(replaying, _) = stepping.step(backend.KeyPress("r"), labelling)
+  let reply =
+    json.Object([
+      #("state", json.String("running")),
+      #("words", json.String("90 trials started.")),
+    ])
+  let live =
+    deliver(
+      replaying,
+      job.ProjectRuled(job.RunVerdict("p1", "deps", board.Live), Ok(reply)),
+    )
+  assert string.contains(
+    painted(live),
+    "Live verdict on deps running. 90 trials started.",
+  )
+
+  let replayed =
+    deliver(
+      replaying,
+      job.ProjectRuled(
+        job.RunVerdict("p1", "deps", board.Replay),
+        Ok(json.Object([#("words", json.String("Replay read 30 labels."))])),
+      ),
+    )
+  assert string.contains(
+    painted(replayed),
+    "Replay verdict on deps recorded. Replay read 30 labels.",
+  )
+}
+
+// The daemon's refusal is its own sentence, and the screen shows it as sent.
+pub fn a_refusal_shows_the_daemons_sentence_as_sent_test() {
+  let labelling = on_labelling(rule_document(30, "none"))
+  let #(sent, _) = stepping.step(backend.KeyPress("2"), labelling)
+  let sentence = "No verdict is recorded for deps, so it cannot run on auto."
+  let refused =
+    deliver(
+      sent,
+      job.ProjectRuled(
+        job.SetRuleMode("p1", "deps", board.ModeAuto),
+        Error(sentence),
+      ),
+    )
+
+  assert string.contains(painted(refused), sentence)
+  assert !string.contains(painted(refused), "Rule deps is now")
+
+  // The same for a verdict the daemon refuses, such as one under thirty labels.
+  let #(running, _) = stepping.step(backend.KeyPress("r"), labelling)
+  let few = "A verdict needs 30 labels and deps has 12."
+  let short =
+    deliver(
+      running,
+      job.ProjectRuled(job.RunVerdict("p1", "deps", board.Replay), Error(few)),
+    )
+  assert string.contains(painted(short), few)
+}
+
+pub fn a_busy_control_slot_sends_no_verdict_and_says_so_test() {
+  let labelling = on_labelling(rule_document(30, "none"))
+  let #(busy, _) = stepping.step(backend.KeyPress("r"), labelling)
+
+  // The first request still holds the slot, so a second key sends nothing.
+  let #(held, effects) = stepping.step(backend.KeyPress("r"), busy)
+  assert control_jobs(effects) == []
+  assert string.contains(painted(held), "Try again in a moment.")
+}
+
+pub fn a_running_run_is_drawn_with_its_progress_on_the_list_and_the_page_test() {
+  let document = rule_document_with(30, "none", [running_run()])
+  let list_text = painted(showing(document))
+  let page_text = painted(on_labelling(document))
+
+  assert string.contains(
+    list_text,
+    "live run: 12 of 90 trials, 12 calls, 5100 tokens",
+  )
+  assert string.contains(
+    page_text,
+    "live run: 12 of 90 trials, 12 calls, 5100 tokens",
+  )
+  assert string.contains(page_text, "Mode: 0 off")
+}
+
+pub fn each_ended_run_is_drawn_with_the_daemons_words_test() {
+  list.each(["passed", "failed", "incomplete"], fn(state) {
+    let document = rule_document_with(30, "none", [ended_run(state)])
+    let expected =
+      "live run "
+      <> state
+      <> ", 90 calls, 41000 tokens: The daemon says "
+      <> state
+      <> "."
+
+    assert string.contains(painted(showing(document)), expected)
+    assert string.contains(painted(on_labelling(document)), expected)
+  })
+}
+
+pub fn a_rule_with_no_run_draws_no_run_line_test() {
+  assert !string.contains(
+    painted(showing(rule_document(30, "none"))),
+    "live run",
+  )
+}
+
+// A run moves no ledger sequence, so the board's revision stays the same while
+// it progresses. The screen takes the rules from every read all the same.
+pub fn a_progressing_run_shows_though_the_revision_is_unchanged_test() {
+  let read = fn(document) {
+    let assert Ok(decoded) = board.decode_board(document)
+    decoded
+  }
+  let first =
+    project_screen.observe(
+      project_screen.new("/w"),
+      read(rule_document_with(30, "none", [running_run()])),
+      0,
+    )
+  let later =
+    json.Object([
+      #("state", json.String("running")),
+      #("done", json.Int(24)),
+      #("of", json.Int(90)),
+      #("calls", json.Int(24)),
+      #("tokens", json.Int(9000)),
+    ])
+  let next =
+    project_screen.observe(
+      first,
+      read(rule_document_with(30, "none", [#("run", later)])),
+      10,
+    )
+  let assert Some(held) = next.board
+  let assert [rule] = held.rules
+
+  assert rule.run == Some(board.RunGoing(24, 90, 24, 9000))
+  assert !project_screen.same_picture(first, next)
 }
 
 pub fn a_widens_the_list_to_every_ticket_and_back_test() {

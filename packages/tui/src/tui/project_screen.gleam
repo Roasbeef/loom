@@ -25,6 +25,16 @@
 //// changed, `answer_refused` says so in words, and the screen keeps the
 //// person's draft so that the text is not lost.
 ////
+//// The labelling page is also where a rule is controlled. `0`, `1` and `2` set
+//// its mode to off, observe or auto, and the daemon alone decides whether
+//// `auto` is allowed: its refusal sentence is shown as sent. `r` runs a replay
+//// verdict, which costs nothing. `L` moves to a confirmation page that states
+//// the labelled count and the model calls a live run will make, and Enter on
+//// that page is the only way to a live request. A live run replies that it
+//// started, and its progress and outcome are read from the board's `run`
+//// object, which the screen takes from every read because a run moves no
+//// ledger revision.
+////
 //// All ticket text is external. `session_view/project_board` makes each string
 //// safe when it decodes, and this module draws it as text only.
 ////
@@ -110,6 +120,16 @@ pub type Page {
     /// How many candidates the owner passed over, so the next one is shown.
     skipped: Int,
   )
+
+  /// Waiting for the owner to confirm a live verdict. A live run spends about
+  /// three model calls per labelled trigger, so no key on the labelling page
+  /// starts one: the only way to a live request is Enter on this page.
+  Confirming(
+    /// The rule the run would measure.
+    rule: String,
+    /// The labelled triggers the run would measure.
+    labelled: Int,
+  )
 }
 
 /// Everything the screen knows. It holds what the daemon last said and what the
@@ -184,6 +204,13 @@ pub type Action {
 
   /// Record the owner's judgement of a recorded trigger.
   Judge(state: State, trigger: String, judgement: board.Judgement)
+
+  /// Set the rule's mode. The daemon decides whether `auto` is allowed.
+  SetMode(state: State, rule: String, mode: board.RuleMode)
+
+  /// Run a verdict for the rule. A live run is produced only after the
+  /// owner confirmed it.
+  RunVerdict(state: State, rule: String, lane: board.Lane)
 }
 
 /// The screen for a workspace, before any read has answered.
@@ -225,9 +252,16 @@ pub fn observe(state: State, fresh: board.Board, now_ms: Int) -> State {
   // A board with the revision already held replaces nothing, so the picture
   // stays as it was and the shell does not repaint. A new revision replaces the
   // board and keeps the highlight on the same ticket when it is still there.
+  // The one exception is the rules: a live verdict run is held in the daemon's
+  // memory and moves no ledger sequence, so the revision does not change while
+  // a run progresses, and the rules are taken from every read.
   case state.board {
     Some(held) if held.revision == fresh.revision ->
-      State(..rested, project: Some(fresh.project))
+      State(
+        ..rested,
+        project: Some(fresh.project),
+        board: Some(board.Board(..held, rules: fresh.rules)),
+      )
     Some(_) | None -> {
       let highlighted = option.map(selected_ticket(state), fn(each) { each.id })
       let next =
@@ -249,7 +283,7 @@ pub fn observed_ticket(state: State, detail: board.Detail) -> State {
   case state.page {
     Reading(ticket:, ..) if ticket == detail.ticket.id ->
       State(..state, detail: Some(detail))
-    Reading(..) | Listing | Labelling(..) -> state
+    Reading(..) | Listing | Labelling(..) | Confirming(..) -> state
   }
 }
 
@@ -266,7 +300,7 @@ pub fn observed_labels(state: State, found: board.Labels) -> State {
   case state.page {
     Labelling(rule:, ..) if rule == found.rule ->
       State(..state, labels: Some(found))
-    Labelling(..) | Reading(..) | Listing -> state
+    Labelling(..) | Reading(..) | Listing | Confirming(..) -> state
   }
 }
 
@@ -288,8 +322,22 @@ pub fn labelled(state: State) -> State {
         notice: "Labelled.",
         poll: PollDue,
       )
-    Reading(..) | Listing -> state
+    Reading(..) | Listing | Confirming(..) -> state
   }
+}
+
+/// Records that the daemon accepted a change on a rule. The notice says what
+/// happened, and the board is due at once so the rule's mode, verdict and run
+/// are read as the daemon now has them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_screen.settled(project_screen.new("/w"), "Done.").notice
+///   == "Done."
+/// ```
+pub fn settled(state: State, words: String) -> State {
+  State(..state, notice: text_hygiene.single_line(words), poll: PollDue)
 }
 
 /// The rule the labelling page is on, when it is on one.
@@ -302,7 +350,7 @@ pub fn labelled(state: State) -> State {
 pub fn labelling_rule(state: State) -> Option(String) {
   case state.page {
     Labelling(rule:, ..) -> Some(rule)
-    Reading(..) | Listing -> None
+    Reading(..) | Listing | Confirming(..) -> None
   }
 }
 
@@ -323,7 +371,7 @@ pub fn answered(state: State) -> State {
         notice: "Answer queued for the worker.",
         poll: PollDue,
       )
-    Listing | Labelling(..) -> state
+    Listing | Labelling(..) | Confirming(..) -> state
   }
 }
 
@@ -433,7 +481,7 @@ pub fn selected_ticket(state: State) -> Option(board.Ticket) {
 pub fn open_ticket(state: State) -> Option(String) {
   case state.page {
     Reading(ticket:, ..) -> Some(ticket)
-    Listing | Labelling(..) -> None
+    Listing | Labelling(..) | Confirming(..) -> None
   }
 }
 
@@ -451,6 +499,7 @@ pub fn update(key: keys.Key, state: State) -> Action {
     Reading(ticket:, focus:, draft:) ->
       reading(key, state, ticket, focus, draft)
     Labelling(rule:, skipped:) -> labelling(key, state, rule, skipped)
+    Confirming(rule:, ..) -> confirming(key, state, rule)
   }
 }
 
@@ -468,7 +517,8 @@ pub fn update_pasted(pasted: String, state: State) -> Action {
   case state.page {
     Reading(ticket:, focus: Answering, draft:) ->
       answering(keys.Char(pasted), state, ticket, draft)
-    Reading(focus: Acting, ..) | Listing | Labelling(..) -> Continue(state)
+    Reading(focus: Acting, ..) | Listing | Labelling(..) | Confirming(..) ->
+      Continue(state)
   }
 }
 
@@ -551,7 +601,59 @@ fn labelling(
       Judge(state, found.trigger, board.ShouldNotTake)
     keys.Char("s"), Some(_) ->
       Continue(State(..state, page: Labelling(rule:, skipped: skipped + 1)))
+
+    // The mode keys always send the request. Whether `auto` is allowed is the
+    // daemon's decision, and its refusal is shown as it was sent.
+    keys.Char("0"), _ -> SetMode(state, rule, board.ModeOff)
+    keys.Char("1"), _ -> SetMode(state, rule, board.ModeObserve)
+    keys.Char("2"), _ -> SetMode(state, rule, board.ModeAuto)
+
+    // A replay costs nothing and runs at once. A live run spends model calls,
+    // so its key only moves to the confirmation page.
+    keys.Char("r"), _ -> RunVerdict(state, rule, board.Replay)
+    keys.Char("L"), _ ->
+      Continue(
+        State(
+          ..state,
+          page: Confirming(rule:, labelled: labelled_of(state, rule)),
+          notice: "",
+        ),
+      )
     _, _ -> Continue(state)
+  }
+}
+
+/// Keys on the live verdict confirmation: Enter starts the run, and anything
+/// else that leaves the page does so without starting one. Every other key is
+/// ignored, so a stray key cannot confirm.
+fn confirming(key: keys.Key, state: State, rule: String) -> Action {
+  let back = State(..state, page: Labelling(rule:, skipped: 0))
+
+  // Enter is the confirmation and Escape the refusal. Both return to the
+  // labelling page, and only Enter carries a request.
+  case key {
+    keys.Enter -> RunVerdict(State(..back, notice: ""), rule, board.Live)
+    keys.Escape ->
+      Continue(State(..back, notice: "The live verdict was not started."))
+    _ -> Continue(state)
+  }
+}
+
+/// The labelled triggers the board counts for a rule, or none when the rule is
+/// not on the board.
+fn labelled_of(state: State, rule: String) -> Int {
+  rule_named(state, rule)
+  |> option.map(fn(each) { each.labelled })
+  |> option.unwrap(0)
+}
+
+/// The rule of the board with this name, if the board has been read.
+fn rule_named(state: State, rule: String) -> Option(board.Rule) {
+  case state.board {
+    None -> None
+    Some(held) ->
+      list.find(held.rules, fn(each) { each.name == rule })
+      |> option.from_result
   }
 }
 
@@ -803,6 +905,7 @@ fn title(state: State) -> String {
     Listing -> " PROJECT · Esc back "
     Reading(..) -> " PROJECT · ticket · Esc back "
     Labelling(..) -> " PROJECT · label · Esc back "
+    Confirming(..) -> " PROJECT · live verdict · Esc cancel "
   }
 }
 
@@ -813,6 +916,76 @@ fn body_lines(state: State, width: Int, now_ms: Int) -> List(Drawn) {
     Reading(ticket:, focus:, draft:) ->
       ticket_lines(state, ticket, focus, draft, width, now_ms)
     Labelling(rule:, skipped:) -> labelling_lines(state, rule, skipped, width)
+    Confirming(rule:, labelled:) ->
+      confirming_lines(state, rule, labelled, width)
+  }
+}
+
+/// The confirmation page for a live verdict. It states the labelled count and
+/// the number of model calls the run will make, and names the one key that
+/// starts it.
+fn confirming_lines(
+  state: State,
+  rule: String,
+  labelled: Int,
+  width: Int,
+) -> List(Drawn) {
+  list.flatten([
+    notice_lines(state, width),
+    wrapped(board.live_warning_words(rule), theme.overlay_signal(), width),
+    wrapped(board.live_count_words(labelled), theme.overlay_signal(), width),
+    [plain("", theme.overlay_plain())],
+    wrapped(
+      "The run is bounded to twenty minutes. Enter starts it. Esc cancels.",
+      theme.overlay_plain(),
+      width,
+    ),
+  ])
+}
+
+/// The rule's mode, verdict and live run as the board last read them, then the
+/// keys that change them. A rule not on the board draws nothing.
+fn rule_status_lines(state: State, rule: String, width: Int) -> List(Drawn) {
+  // The status is drawn from the board, so a page opened before the first read
+  // has none to show.
+  let status = case rule_named(state, rule) {
+    None -> []
+    Some(found) ->
+      list.flatten([
+        [
+          plain(
+            text.truncate(board.rule_words(found), width, "…"),
+            theme.overlay_plain(),
+          ),
+        ],
+        wrapped("  " <> found.words, theme.overlay_quiet(), width),
+        run_lines(found, width),
+      ])
+  }
+
+  list.flatten([
+    status,
+    [
+      plain(
+        text.truncate(
+          "Mode: 0 off · 1 observe · 2 auto. Verdict: r replay · L live.",
+          width,
+          "…",
+        ),
+        theme.overlay_quiet(),
+      ),
+      plain("", theme.overlay_plain()),
+    ],
+  ])
+}
+
+/// A rule's live run, when the daemon holds one: progress while it goes, then
+/// the outcome in the daemon's words.
+fn run_lines(each: board.Rule, width: Int) -> List(Drawn) {
+  case each.run {
+    None -> []
+    Some(found) ->
+      wrapped("  " <> board.run_words(found), theme.overlay_quiet(), width)
   }
 }
 
@@ -877,7 +1050,7 @@ fn labelling_lines(
       ])
   }
 
-  list.flatten([notice, heading, body])
+  list.flatten([notice, heading, rule_status_lines(state, rule, width), body])
 }
 
 /// What the project did with a recorded trigger, in words.
@@ -933,14 +1106,17 @@ fn rule_lines(held: board.Board, width: Int) -> List(Drawn) {
     [] -> []
     rows -> [
       plain("", theme.overlay_plain()),
-      plain("RULES (l label)", theme.overlay_quiet()),
+      plain("RULES (l label, set a mode, run a verdict)", theme.overlay_quiet()),
       ..list.flat_map(rows, fn(each) {
         [
           plain(
             text.truncate(board.rule_words(each), width, "…"),
             theme.overlay_plain(),
           ),
-          ..wrapped("  " <> each.words, theme.overlay_quiet(), width)
+          ..list.append(
+            wrapped("  " <> each.words, theme.overlay_quiet(), width),
+            run_lines(each, width),
+          )
         ]
       })
     ]
@@ -1351,7 +1527,9 @@ fn help_line(state: State, width: Int) -> span.Line {
         Everything -> "needs you only"
       }
       <> " · r refresh · Esc back"
-    Labelling(..) -> "y take it on · n not · s pass over · Esc back"
+    Labelling(..) ->
+      "y take it on · n not · s pass · 0/1/2 mode · r/L verdict · Esc back"
+    Confirming(..) -> "Enter start the live run · Esc cancel"
     Reading(focus: Answering, ..) ->
       "type an answer · Enter send · Tab actions · Esc clear or back"
     Reading(focus: Acting, ..) ->

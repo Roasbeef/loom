@@ -551,7 +551,8 @@ fn finish_control(model: Model, result) {
     Some(Ok(job.ProjectBoardLoaded(..) as outcome))
     | Some(Ok(job.ProjectTicketLoaded(..) as outcome))
     | Some(Ok(job.ProjectLabelsLoaded(..) as outcome))
-    | Some(Ok(job.ProjectChanged(..) as outcome)) ->
+    | Some(Ok(job.ProjectChanged(..) as outcome))
+    | Some(Ok(job.ProjectRuled(..) as outcome)) ->
       project_control.finish(model, outcome)
     Some(Ok(SessionDeleted(id))) ->
       catalogue_removed(model, id, "deleted session ")

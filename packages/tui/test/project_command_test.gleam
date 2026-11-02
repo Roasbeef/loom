@@ -6,6 +6,7 @@
 import core/json
 import gleam/list
 import gleam/string
+import session_view/project_board as board
 import tui
 
 fn reply(fields: List(#(String, String))) -> json.JsonValue {
@@ -92,6 +93,59 @@ pub fn board_flattens_a_title_the_router_wrote_test() {
   let printed = tui.project_reply_text(tui.ProjectBoard, board)
   assert !string.contains(printed, "\n")
   assert !string.contains(printed, "\u{1b}")
+}
+
+pub fn mode_parses_the_three_modes_and_refuses_any_other_word_test() {
+  assert tui.launch_project(["mode", "ci", "off"])
+    == Ok(tui.ProjectMode("ci", board.ModeOff))
+  assert tui.launch_project(["mode", "ci", "observe", "--config", "loom.toml"])
+    == Ok(tui.ProjectMode("ci", board.ModeObserve))
+  assert tui.launch_project(["mode", "ci", "auto"])
+    == Ok(tui.ProjectMode("ci", board.ModeAuto))
+
+  let assert Error(unknown) = tui.launch_project(["mode", "ci", "on"])
+  assert string.contains(unknown, "off, observe or auto")
+  let assert Error(missing) = tui.launch_project(["mode", "ci"])
+  assert string.contains(missing, "usage: loom project")
+}
+
+// A verdict is a replay unless `--live` is on the command line, because a live
+// run spends model calls.
+pub fn verdict_is_a_replay_unless_live_is_asked_for_test() {
+  assert tui.launch_project(["verdict", "ci"])
+    == Ok(tui.ProjectVerdict("ci", board.Replay))
+  assert tui.launch_project(["verdict", "ci", "--live"])
+    == Ok(tui.ProjectVerdict("ci", board.Live))
+  assert tui.launch_project(["verdict", "ci", "--config", "x.toml", "--live"])
+    == Ok(tui.ProjectVerdict("ci", board.Live))
+
+  let assert Error(missing) = tui.launch_project(["verdict"])
+  assert string.contains(missing, "usage: loom project")
+}
+
+pub fn mode_and_verdict_print_what_happened_test() {
+  assert tui.project_reply_text(
+      tui.ProjectMode("ci", board.ModeObserve),
+      json.Object([]),
+    )
+    == "rule ci is now observe"
+
+  let finding = json.Object([#("words", json.String("Replay read 30 labels."))])
+  assert tui.project_reply_text(tui.ProjectVerdict("ci", board.Replay), finding)
+    == "Replay verdict on ci recorded. Replay read 30 labels."
+
+  // A live run says it started and how to watch it, and is not worded as a
+  // finding.
+  let started =
+    json.Object([
+      #("state", json.String("running")),
+      #("words", json.String("90 trials started.")),
+    ])
+  let printed =
+    tui.project_reply_text(tui.ProjectVerdict("ci", board.Live), started)
+  assert string.contains(printed, "Live verdict on ci running.")
+  assert string.contains(printed, "90 trials started.")
+  assert string.contains(printed, "loom project board --watch")
 }
 
 pub fn an_empty_board_says_so_test() {

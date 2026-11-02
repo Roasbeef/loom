@@ -13,13 +13,15 @@
 ////
 //// ## Flow
 ////
-//// `read_board` → `read_ticket` → `change`
+//// `read_board` → `read_ticket` → `change` → `change_rule`
 ////
 //// 1. `read_board` finds the project of a workspace through the daemon's
 ////    project list when it was not named, then reads its first board page.
 //// 2. `read_ticket` reads one ticket with its assignments and inputs.
 //// 3. `change` sends an answer or a retry and reports the daemon's refusal as
 ////    data.
+//// 4. `change_rule` sends a rule's mode or a verdict run and reports the
+////    daemon's refusal as its sentence.
 
 import core/json
 import gleam/option.{None, Some}
@@ -145,6 +147,43 @@ pub fn change(
   case send(host, name, fields) {
     Ok(_) -> Ok(job.ProjectChanged(change, None))
     Error(daemon.Refused(code, _)) -> Ok(job.ProjectChanged(change, Some(code)))
+    Error(other) -> Error(daemon_selection.failure(other))
+  }
+}
+
+/// Sends a change on a rule: a mode or a verdict run. The daemon's refusal
+/// comes back as its own sentence, which the screen shows as sent. Only a
+/// request that did not complete is an error.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_jobs.change_rule(host, job.RunVerdict("p1", "ci", project_board.Replay))
+/// ```
+pub fn change_rule(
+  host: daemon_selection.Host,
+  change: job.RuleChange,
+) -> Result(job.ControlOutcome, String) {
+  // Each change names its wire command and carries the body that command takes.
+  let #(name, fields) = case change {
+    job.SetRuleMode(project:, rule:, mode:) -> #("projects.set_mode", [
+      #("project", json.String(project)),
+      #("rule", json.String(rule)),
+      #("mode", json.String(project_board.mode_word(mode))),
+    ])
+    job.RunVerdict(project:, rule:, lane:) -> #("projects.verdict", [
+      #("project", json.String(project)),
+      #("rule", json.String(rule)),
+      #("lane", json.String(project_board.lane_word(lane))),
+    ])
+  }
+
+  // A refusal is the daemon's decision, with a sentence that says why. It is
+  // an outcome, and the client derives nothing from it.
+  case send(host, name, fields) {
+    Ok(reply) -> Ok(job.ProjectRuled(change, Ok(reply)))
+    Error(daemon.Refused(_, message)) ->
+      Ok(job.ProjectRuled(change, Error(message)))
     Error(other) -> Error(daemon_selection.failure(other))
   }
 }

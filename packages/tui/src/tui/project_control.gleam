@@ -171,6 +171,10 @@ pub fn act(
     project_screen.Label(state, _) -> shown(model, state) |> service
     project_screen.Judge(state, trigger, judgement) ->
       change(model, state, judged(state, trigger, judgement))
+    project_screen.SetMode(state, rule, mode) ->
+      change_rule(model, state, moded(state, rule, mode))
+    project_screen.RunVerdict(state, rule, lane) ->
+      change_rule(model, state, measured(state, rule, lane))
   }
 }
 
@@ -292,6 +296,51 @@ fn change(
   }
 }
 
+/// Sends a change on a rule when the control slot is free. A busy slot says to
+/// try again and sends nothing, so a live verdict is never queued behind
+/// another request and started later than the owner confirmed.
+fn change_rule(
+  model: Model,
+  state: project_screen.State,
+  request: Option(job.RuleChange),
+) -> Model {
+  case model.view.control_request, model.view.daemon_host, request {
+    Some(_), _, _ ->
+      shown(
+        model,
+        project_screen.failed(
+          state,
+          "Another daemon request is running. Try again in a moment.",
+        ),
+      )
+    None, Some(host), Some(sent) ->
+      start(model, host, state, job.ChangeRule(sent))
+    None, None, _ | None, Some(_), None -> shown(model, state)
+  }
+}
+
+/// The mode change a key sent, when the screen knows the project.
+fn moded(
+  state: project_screen.State,
+  rule: String,
+  mode: project_board.RuleMode,
+) -> Option(job.RuleChange) {
+  option.map(state.project, fn(project) {
+    job.SetRuleMode(project:, rule:, mode:)
+  })
+}
+
+/// The verdict run a key sent, when the screen knows the project.
+fn measured(
+  state: project_screen.State,
+  rule: String,
+  lane: project_board.Lane,
+) -> Option(job.RuleChange) {
+  option.map(state.project, fn(project) {
+    job.RunVerdict(project:, rule:, lane:)
+  })
+}
+
 /// The answer a key sent, in the daemon's terms, when the screen knows the
 /// project.
 fn answer(
@@ -364,6 +413,21 @@ fn filed(
         state,
         "The daemon refused the label (" <> code <> ").",
       )
+    job.ProjectRuled(job.SetRuleMode(rule:, mode:, ..), Ok(_)) ->
+      project_screen.settled(
+        state,
+        "Rule " <> rule <> " is now " <> project_board.mode_word(mode) <> ".",
+      )
+    job.ProjectRuled(job.RunVerdict(rule:, lane:, ..), Ok(reply)) ->
+      project_screen.settled(
+        state,
+        project_board.verdict_reply_words(lane, rule, reply),
+      )
+
+    // The daemon's sentence is shown as sent. Which of the three reasons keeps
+    // a rule out of `auto` is its to say, and the client adds nothing to it.
+    job.ProjectRuled(_, Error(sentence)) ->
+      project_screen.failed(state, sentence)
     job.ProjectChanged(job.AnswerTicket(..), None) ->
       project_screen.answered(state)
     job.ProjectChanged(job.AnswerTicket(..), Some(code)) ->

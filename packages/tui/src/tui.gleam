@@ -102,6 +102,7 @@ import session_view/model.{
 } as session_model
 import session_view/move_candidates
 import session_view/msg as session_msg
+import session_view/project_board
 import session_view/queue_request
 import session_view/remote_transcript
 import session_view/session_channel
@@ -296,6 +297,23 @@ pub type ProjectCommand {
 
   /// Show the board, with what needs a person first.
   ProjectBoard
+
+  /// Set a rule's mode. The daemon refuses `auto` without a passing verdict.
+  ProjectMode(
+    /// The rule's name.
+    rule: String,
+    /// The mode to set.
+    mode: project_board.RuleMode,
+  )
+
+  /// Run a verdict for a rule. The live lane spends model calls and is asked
+  /// for by name with `--live`; it replies that the run started.
+  ProjectVerdict(
+    /// The rule's name.
+    rule: String,
+    /// The lane to measure in.
+    lane: project_board.Lane,
+  )
 }
 
 /// The `loom sessions` subcommands.
@@ -1746,19 +1764,26 @@ fn parse_directory(arguments: List(String)) -> Launch {
 /// Establishes and coordinates directory usage operations for the TUI runtime.
 fn project_usage() -> String {
   "usage: loom project init | post <text> | board [--watch] "
+  <> "| mode <rule> off|observe|auto | verdict <rule> [--live] "
   <> "[--state-dir <path>] [--config <loom.toml>] [--server <path>]\n"
   <> "  init makes a project for the repository in the working directory, with\n"
   <> "  a router session that decides what each message becomes. post sends\n"
   <> "  your text to the router as an explicit request, and board lists the\n"
   <> "  project's tickets with what needs you first; --watch keeps the board\n"
   <> "  open, answers a worker's question and opens its session. A project needs no\n"
-  <> "  configuration: inferred work stays off and you are its only source."
+  <> "  configuration: inferred work stays off and you are its only source.\n"
+  <> "  mode sets a rule to off, observe or auto; the daemon refuses auto without\n"
+  <> "  a current passing verdict. verdict measures a rule's labelled triggers: a\n"
+  <> "  replay is free, and --live spends about three model calls per labelled\n"
+  <> "  trigger, starts the run and returns; watch it with board --watch."
 }
 
 /// Parses the words after `loom project`. `post` takes its text as the first
 /// word after the verb, and the other flags are the ones every local command
 /// accepts.
 fn parse_project(arguments: List(String)) -> Launch {
+  // The verb names the subcommand, and what follows it is that subcommand's
+  // arguments and then the local flags.
   case arguments {
     ["init", ..flags] -> project_launch(flags, ProjectInit)
     ["board", ..flags] ->
@@ -1767,6 +1792,30 @@ fn parse_project(arguments: List(String)) -> Launch {
         False -> project_launch(flags, ProjectBoard)
       }
     ["post", text, ..flags] -> project_launch(flags, ProjectPost(text))
+    ["mode", rule, word, ..flags] ->
+      case project_board.parse_mode(word) {
+        Ok(mode) -> project_launch(flags, ProjectMode(rule, mode))
+        Error(Nil) ->
+          Invalid(
+            "the mode must be off, observe or auto, not "
+            <> word
+            <> "\n"
+            <> project_usage(),
+          )
+      }
+    ["verdict", rule, ..flags] -> {
+      // The live lane spends model calls, so it runs only when `--live` is on
+      // the command line. Without it the verdict is a replay, which is free.
+      let lane = case list.contains(flags, "--live") {
+        True -> project_board.Live
+        False -> project_board.Replay
+      }
+
+      project_launch(
+        list.filter(flags, fn(each) { each != "--live" }),
+        ProjectVerdict(rule, lane),
+      )
+    }
     _unknown -> Invalid(project_usage())
   }
 }
@@ -1999,6 +2048,28 @@ fn project_outcome(
       )
       project_reply_text(command, board)
     }
+    ProjectMode(rule, mode) -> {
+      use id <- result.try(project_here(host, here))
+      use set <- result.map(
+        project_request(host, "projects.set_mode", [
+          #("project", json.String(id)),
+          #("rule", json.String(rule)),
+          #("mode", json.String(project_board.mode_word(mode))),
+        ]),
+      )
+      project_reply_text(command, set)
+    }
+    ProjectVerdict(rule, lane) -> {
+      use id <- result.try(project_here(host, here))
+      use measured <- result.map(
+        project_request(host, "projects.verdict", [
+          #("project", json.String(id)),
+          #("rule", json.String(rule)),
+          #("lane", json.String(project_board.lane_word(lane))),
+        ]),
+      )
+      project_reply_text(command, measured)
+    }
   }
 }
 
@@ -2015,6 +2086,7 @@ pub fn project_reply_text(
   command: ProjectCommand,
   reply: json.JsonValue,
 ) -> String {
+  // Each subcommand prints one text built from its reply alone.
   case command {
     ProjectInit ->
       "project "
@@ -2025,6 +2097,22 @@ pub fn project_reply_text(
       <> project_text(reply, "router_session")
     ProjectPost(_) -> "posted " <> project_text(reply, "trigger")
     ProjectBoard -> board_text(reply)
+    ProjectMode(rule, mode) ->
+      "rule "
+      <> text_hygiene.single_line(rule)
+      <> " is now "
+      <> project_board.mode_word(mode)
+    ProjectVerdict(rule, lane) -> {
+      let words = project_board.verdict_reply_words(lane, rule, reply)
+
+      // A live run replies at once and finishes later, so the line says where
+      // to watch it. A replay's reply is its finding.
+      case lane {
+        project_board.Live ->
+          words <> " Watch it with `loom project board --watch`."
+        project_board.Replay -> words
+      }
+    }
   }
 }
 
