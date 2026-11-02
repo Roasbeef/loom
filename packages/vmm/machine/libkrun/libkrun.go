@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -343,6 +344,13 @@ func stageFile(rootfs string, f machine.File) error {
 	}
 
 	dst := filepath.Join(rootfs, filepath.FromSlash(f.Target))
+
+	// A link in the root, left by an earlier boot of this guest, must not
+	// carry the write or the directory creation outside it.
+	if err := resolvedWithin(rootfs, filepath.Dir(dst)); err != nil {
+		return fmt.Errorf("libkrun: stage %s: %w", f.Target, err)
+	}
+
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return fmt.Errorf("libkrun: stage %s: %w", f.Target, err)
 	}
@@ -355,6 +363,44 @@ func stageFile(rootfs string, f machine.File) error {
 
 	if err := os.WriteFile(dst, raw, f.Mode.Perm()); err != nil {
 		return fmt.Errorf("libkrun: stage %s: %w", f.Target, err)
+	}
+
+	return nil
+}
+
+// resolvedWithin refuses a directory whose deepest existing ancestor resolves,
+// through every link, to a place outside the resolved root. Components that do
+// not exist yet are created later as real directories, so only the existing
+// part can lead out. A dangling link counts as existing and cannot be
+// resolved, which is refused too.
+func resolvedWithin(root, dir string) error {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return err
+	}
+
+	existing := dir
+	for {
+		if _, err := os.Lstat(existing); err == nil {
+			break
+		}
+
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			break
+		}
+		existing = parent
+	}
+
+	real, err := filepath.EvalSymlinks(existing)
+	if err != nil {
+		return fmt.Errorf("%s does not resolve: %w", existing, err)
+	}
+
+	rel, err := filepath.Rel(realRoot, real)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%s resolves to %s, outside the guest root; "+
+			"replace the guest's root", existing, real)
 	}
 
 	return nil

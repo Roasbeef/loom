@@ -82,6 +82,54 @@ func TestStageFileReplacesSymlink(t *testing.T) {
 	}
 }
 
+// TestStageFileRefusesLinkedParent plants real symlinks, to a directory
+// outside the root, at a middle and at a last directory component, and checks
+// that staging is refused and the outside directory is left empty.
+func TestStageFileRefusesLinkedParent(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	if err := os.WriteFile(src, []byte("guest"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name, link, target string
+	}{
+		{"middle", "etc", "/etc/loom-vm/x"},
+		{"last", "etc/loom-vm", "/etc/loom-vm/x"},
+		{"dangling", "etc/loom-vm", "/etc/loom-vm/x"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			outside := t.TempDir()
+
+			linkPath := filepath.Join(root, filepath.FromSlash(tc.link))
+			if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			dest := outside
+			if tc.name == "dangling" {
+				dest = filepath.Join(outside, "absent")
+			}
+			if err := os.Symlink(dest, linkPath); err != nil {
+				t.Fatal(err)
+			}
+
+			f := machine.File{Source: src, Target: tc.target, Mode: 0o600}
+			if err := stageFile(root, f); err == nil {
+				t.Fatal("stageFile followed a link out of the root")
+			}
+
+			entries, err := os.ReadDir(outside)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("outside directory touched: %v, %v", entries, err)
+			}
+		})
+	}
+}
+
 // TestProbeNeedsRunner checks that a backend with no runner never claims
 // to be usable, whatever the hypervisor says.
 func TestProbeNeedsRunner(t *testing.T) {
