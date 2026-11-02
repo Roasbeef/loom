@@ -106,6 +106,7 @@ import host/build_identity
 import host/claim
 import host/login
 import mist
+import project/model as project_model
 import session_view/move_candidates
 import session_view/transcript_image
 import storage/access
@@ -3005,6 +3006,7 @@ fn control(
             | protocol.AnswerQuestion(..)
             | protocol.RetryTicket(..)
             | protocol.RequeueTrigger(..)
+            | protocol.SetProjectMode(..)
             | protocol.PublishTicket(..)
             | protocol.SessionActivity(..)
             | protocol.ListArchivedSessions(..)
@@ -3090,6 +3092,7 @@ fn control_use(command: protocol.Command) {
     | protocol.AnswerQuestion(..)
     | protocol.RetryTicket(..)
     | protocol.RequeueTrigger(..)
+    | protocol.SetProjectMode(..)
     | protocol.PublishTicket(..)
     | protocol.OpenSession(..)
     | protocol.StopSession(..)
@@ -3266,6 +3269,10 @@ fn dispatch(
     protocol.RequeueTrigger(project, trigger) ->
       project_command(config, principal, fn(control) {
         project_requeue(control, project, trigger)
+      })
+    protocol.SetProjectMode(project, rule, mode) ->
+      project_command_in_words(config, principal, fn(control) {
+        project_set_mode(control, project, rule, mode)
       })
     _ ->
       dispatch_class(config, state, digest, principal, reply_to, command)
@@ -3507,6 +3514,54 @@ fn project_requeue(
     |> result.replace_error("bad_request"),
   )
   #("projects.requeue", json.Object([#("trigger", json.String(trigger))]))
+}
+
+/// Like `project_command`, for a step whose refusal carries the project's own
+/// words. A mode refused for want of a verdict says so in a sentence the
+/// owner can act on, and the generic "request refused" would hide it.
+fn project_command_in_words(
+  config: Config(instance),
+  principal: access.Principal,
+  run: fn(project_start.Control) -> Result(#(String, JsonValue), Refused),
+) -> Result(#(String, JsonValue), Refused) {
+  use Nil <- result.try(owner(principal) |> result.map_error(control_refusal))
+  use control <- result.try(
+    option.to_result(config.projects, Nil)
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
+  )
+  run(control)
+}
+
+/// The `projects.set_mode` step: the owner sets one rule's mode. An unknown
+/// mode word, an unknown rule, and `auto` without a verdict are `bad_request`,
+/// and the message is the actor's sentence.
+fn project_set_mode(
+  control: project_start.Control,
+  project: String,
+  rule: String,
+  mode: String,
+) -> Result(#(String, JsonValue), Refused) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.replace_error(control_refusal("not_found")),
+  )
+  use parsed <- result.try(case mode {
+    "off" -> Ok(project_model.Off)
+    "observe" -> Ok(project_model.Observe)
+    "auto" -> Ok(project_model.Auto)
+    _ -> Error(Refused("bad_request", "a mode is off, observe or auto", []))
+  })
+  use Nil <- result.map(
+    project_host.set_mode(handle, rule, parsed, "owner")
+    |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
+  )
+  #(
+    "projects.set_mode",
+    json.Object([
+      #("rule", json.String(rule)),
+      #("mode", json.String(mode)),
+    ]),
+  )
 }
 
 /// The `ledger.*` owner commands (protocol-change/086). A member principal is
@@ -4529,6 +4584,7 @@ fn dispatch_class(
     | protocol.AnswerQuestion(..)
     | protocol.RetryTicket(..)
     | protocol.RequeueTrigger(..)
+    | protocol.SetProjectMode(..)
     | protocol.PublishTicket(..) -> Error("unavailable")
     protocol.Shutdown(supplied) -> {
       use Nil <- result.try(owner(principal))

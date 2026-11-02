@@ -231,6 +231,10 @@ pub type Command {
   /// A person's request that a stored trigger be evaluated afresh. Owner-only.
   RequeueTrigger(project: String, trigger: String)
 
+  /// A person's mode for one configured rule: `off`, `observe` or `auto`.
+  /// `auto` is refused until a rule has a passing verdict. Owner-only.
+  SetProjectMode(project: String, rule: String, mode: String)
+
   /// A person's publish of a ticket's current commit past a failing or missing
   /// check, recorded with the principal. Owner-only, and refused while the
   /// project keeps `publish` off.
@@ -724,6 +728,12 @@ fn decode_fields(
       use project <- result.try(text_field(fields, "project", 64))
       use trigger <- result.map(text_field(fields, "trigger", 128))
       RequeueTrigger(project, trigger)
+    }
+    "projects.set_mode" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use rule <- result.try(text_field(fields, "rule", 64))
+      use mode <- result.map(text_field(fields, "mode", 16))
+      SetProjectMode(project, rule, mode)
     }
     "sessions.list" -> {
       use after <- result.try(cursor(fields))

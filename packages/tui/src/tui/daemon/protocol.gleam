@@ -1446,7 +1446,8 @@ fn decode_reply(event: String, body: json.JsonValue) {
     | "projects.answer"
     | "projects.retry"
     | "projects.publish"
-    | "projects.requeue" -> Ok(ProjectsReply(body))
+    | "projects.requeue"
+    | "projects.set_mode" -> Ok(ProjectsReply(body))
     "status" -> result.map(summary(body), StatusReply)
     "ui.link" -> {
       use path <- result.try(text_at(body, "path", 1024))
