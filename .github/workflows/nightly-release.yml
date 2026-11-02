@@ -35,11 +35,30 @@ jobs:
           commit=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
           [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
-  publish:
+  # The microVM artifacts come first. release.yml publishes a nightly in one
+  # command, with its assets, and an immutable release takes no asset after
+  # that, so these files must exist when it runs. The job's permissions are the
+  # most the called workflow's jobs can hold: packages: write pushes the guest
+  # image, and contents: write is declared by the attach job, which a
+  # `commit-*` tag skips.
+  vmm:
     needs: resolve
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/vmm-release.yml
+    with:
+      tag: commit-${{ needs.resolve.outputs.commit }}
+  # The server release is the main product, so a failed vmm run does not stop
+  # it: the release is published without the microVM files, and `loom vm
+  # setup` reports that they are not published for the build.
+  publish:
+    needs: [resolve, vmm]
+    if: ${{ !cancelled() && needs.resolve.result == 'success' }}
     permissions:
       contents: write
       packages: read
     uses: ./.github/workflows/release.yml
     with:
       source_commit: ${{ needs.resolve.outputs.commit }}
+      vmm_assets: ${{ needs.vmm.result == 'success' }}
