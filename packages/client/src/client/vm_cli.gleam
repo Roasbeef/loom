@@ -270,6 +270,9 @@ type Instance {
     log: String,
     allow_file: String,
     checkouts_file: String,
+    root_revision_file: String,
+    provision_file: String,
+    next_root: String,
   )
 }
 
@@ -302,6 +305,9 @@ fn instance(vm_home: String, name: String) -> Instance {
     log: directory <> "/loom-vm.log",
     allow_file: directory <> "/" <> vm_spec.allow_file,
     checkouts_file: directory <> "/" <> vm_spec.checkouts_file,
+    root_revision_file: directory <> "/" <> vm_spec.root_revision_file,
+    provision_file: directory <> "/" <> vm_spec.provision_copy_file,
+    next_root: directory <> "/" <> vm_spec.next_root_dir,
   )
 }
 
@@ -546,10 +552,16 @@ fn up(options: UpOptions) -> Result(String, String) {
   let names = vm_spec.names(options.name)
   let guest = instance(vm_home, options.name)
   use Nil <- result.try(refuse_running(guest, options.name))
+  use Nil <- result.try(refuse_stranded(guest, options.name))
+
+  // What the root needs is read before anything is written, because the
+  // provisioning plan depends on whether the root is replaced.
+  use step <- result.try(root_step_of(guest, manifest, options))
+  announce_upgrade(step, options.name, manifest)
 
   // What the script and the allowlist ask for is settled before anything is
   // written, so a refused `--provision` or a bad allow file changes nothing.
-  use plan <- result.try(provisioning(guest, options))
+  use plan <- result.try(provisioning(guest, options, step))
   use allow <- result.try(allowed_hosts(guest, options))
   let options = UpOptions(..options, allow:)
 
@@ -568,6 +580,7 @@ fn up(options: UpOptions) -> Result(String, String) {
     workspace,
     options,
     plan,
+    step,
   ))
   use port <- result.try(boot(manifest, guest, names, options, plan))
   report(options, workspace, port, enrolled)
@@ -637,6 +650,7 @@ fn record_allow(guest: Instance, hosts: List(String)) -> Result(Nil, String) {
 fn provisioning(
   guest: Instance,
   options: UpOptions,
+  step: vm_spec.RootStep,
 ) -> Result(vm_spec.ProvisionPlan, String) {
   // Without the flag there is no script to check. With it, the path must name
   // a file now, so a typo is refused before the guest is touched.
@@ -653,13 +667,26 @@ fn provisioning(
     }
   })
 
-  // `--fresh` replaces the root, so it has no history to consult.
-  let seen = case options.freshness {
-    vm_spec.Fresh -> vm_spec.NeverProvisioned
-    vm_spec.Resume -> root_provisioning(guest)
+  // The host's own copy of an earlier script. `--fresh` clears it, so it is
+  // not offered to a root that `--fresh` replaces.
+  let kept = case
+    options.freshness,
+    bootstrap.path_exists(guest.provision_file)
+  {
+    vm_spec.Resume, True -> Some(guest.provision_file)
+    _, _ -> None
   }
 
-  vm_spec.provision_plan(requested, seen)
+  // A kept root has history to consult. A new root has no marker, whatever
+  // the old one had, so it is provisioned again from the host's copy.
+  case step {
+    vm_spec.KeepRoot ->
+      vm_spec.provision_plan(requested, root_provisioning(guest))
+    vm_spec.CloneRoot ->
+      vm_spec.new_root_provision(requested, kept, vm_spec.NeverProvisioned)
+    vm_spec.UpgradeRoot(..) | vm_spec.FinishUpgrade ->
+      vm_spec.new_root_provision(requested, kept, root_provisioning(guest))
+  }
 }
 
 /// What the guest's existing root says about an earlier provisioning.
@@ -1007,10 +1034,12 @@ fn stage(
   workspace: Workspace,
   options: UpOptions,
   plan: vm_spec.ProvisionPlan,
+  step: vm_spec.RootStep,
 ) -> Result(Nil, String) {
   use uname <- result.try(tool("uname", ["-s"], within: quick_ms))
   use platform <- result.try(vm_spec.platform_of(uname))
-  use Nil <- result.try(prepare_root(manifest, guest, platform, options))
+  use Nil <- result.try(record_provision_copy(guest, options))
+  use Nil <- result.try(prepare_root(manifest, guest, platform, options, step))
   use Nil <- result.try(record_allow(guest, options.allow))
   let registered = registered_workspaces(guest, workspace)
   use Nil <- result.try(stage_node(
@@ -1085,29 +1114,236 @@ fn stage_script(
 /// both unless `--fresh` was given: its root holds the workspace copies the
 /// agent edited and its state disk the executor's ledger and scopes, so a
 /// `down` and `up` resumes where the guest stopped. A first `up`, or a fresh
-/// one, clones the export and leaves `loom-vm` to create a new disk.
+/// one, clones the export and leaves `loom-vm` to create a new disk. A kept
+/// root cloned from other artifacts than the manifest names is upgraded in
+/// place and keeps the disk.
 fn prepare_root(
   manifest: Manifest,
   guest: Instance,
   platform: vm_spec.Platform,
   options: UpOptions,
+  step: vm_spec.RootStep,
 ) -> Result(Nil, String) {
-  // Resuming needs a root of its own to resume. A missing one is a first
-  // boot, and a symbolic link is a root an older `up` left pointing at the
-  // shared export, which a boot would write into, so it is replaced.
-  let resumable =
-    bootstrap.path_exists(guest.root)
-    && !result.unwrap(simplifile.is_symlink(guest.root), False)
+  case step {
+    vm_spec.KeepRoot -> Ok(Nil)
 
-  // `--fresh` discards the state disk as well as the root, since the disk
-  // holds the guest's writes against that root.
-  case options.freshness, resumable {
-    vm_spec.Resume, True -> Ok(Nil)
-    vm_spec.Resume, False -> replace_root(manifest, guest, platform)
-    vm_spec.Fresh, _ -> {
-      use Nil <- result.try(remove_state_disk(guest))
-      replace_root(manifest, guest, platform)
+    // `--fresh` discards the state disk as well as the root, since the disk
+    // holds the guest's writes against that root. A root that is missing, or
+    // a link an older `up` left pointing at the shared export, is replaced
+    // too; the disk of a guest that never ran does not exist.
+    vm_spec.CloneRoot -> {
+      // Only `--fresh` discards the disk; a resume's missing root has none
+      // to discard, or keeps the one it has.
+      use Nil <- result.try(case options.freshness {
+        vm_spec.Fresh -> remove_state_disk(guest)
+        vm_spec.Resume -> Ok(Nil)
+      })
+
+      use Nil <- result.try(replace_root(manifest, guest, platform))
+      record_root_revision(guest, manifest)
     }
+
+    vm_spec.UpgradeRoot(..) -> {
+      use Nil <- result.try(build_next_root(manifest, guest, platform))
+      use Nil <- result.try(swap_roots(guest))
+      record_root_revision(guest, manifest)
+    }
+
+    vm_spec.FinishUpgrade -> {
+      use Nil <- result.try(swap_roots(guest))
+      record_root_revision(guest, manifest)
+    }
+  }
+}
+
+/// What the guest's directory holds, and so what `up` does about the root.
+fn root_step_of(
+  guest: Instance,
+  manifest: Manifest,
+  options: UpOptions,
+) -> Result(vm_spec.RootStep, String) {
+  use recorded <- result.try(recorded_root_revision(guest))
+
+  // A root that is a link counts as absent: an older `up` left it pointing at
+  // the shared export, which a boot would write into, so it is replaced.
+  let root = case
+    bootstrap.path_exists(guest.root),
+    simplifile.is_symlink(guest.root)
+  {
+    True, Ok(False) -> vm_spec.Present
+    _, _ -> vm_spec.Absent
+  }
+
+  let layout =
+    vm_spec.RootLayout(
+      root:,
+      next: presence_of(guest.next_root),
+      workspaces: presence_of(guest.root <> vm_spec.workspaces_dir),
+    )
+  Ok(vm_spec.root_step(options.freshness, layout, recorded, manifest.revision))
+}
+
+/// Whether anything is at `path`, a link counting whatever it points at.
+fn presence_of(path: String) -> vm_spec.Presence {
+  case simplifile.link_info(path) {
+    Ok(_) -> vm_spec.Present
+    Error(_) -> vm_spec.Absent
+  }
+}
+
+/// The revision the host recorded for the guest's root, or `None` for a root
+/// from before the record.
+fn recorded_root_revision(
+  guest: Instance,
+) -> Result(option.Option(String), String) {
+  case simplifile.read(guest.root_revision_file) {
+    Error(simplifile.Enoent) -> Ok(None)
+    Error(error) ->
+      Error(
+        guest.root_revision_file
+        <> " is unreadable: "
+        <> simplifile.describe_error(error),
+      )
+    Ok(text) -> Ok(vm_spec.decode_root_revision(text))
+  }
+}
+
+/// Records which manifest revision the root now in place was cloned from.
+fn record_root_revision(
+  guest: Instance,
+  manifest: Manifest,
+) -> Result(Nil, String) {
+  write_private(
+    guest.root_revision_file,
+    vm_spec.encode_root_revision(manifest.revision),
+  )
+}
+
+/// Says on one line that the guest's root is being replaced, and why.
+fn announce_upgrade(
+  step: vm_spec.RootStep,
+  name: String,
+  manifest: Manifest,
+) -> Nil {
+  case step {
+    vm_spec.UpgradeRoot(recorded) ->
+      io.println_error(vm_spec.upgrade_line(name, recorded, manifest.revision))
+    _ -> Nil
+  }
+}
+
+/// Keeps the host's own copy of the `--provision` script, so a root cloned
+/// again is provisioned from it and the script is never read back out of the
+/// untrusted root. `--fresh` with no script clears it.
+fn record_provision_copy(
+  guest: Instance,
+  options: UpOptions,
+) -> Result(Nil, String) {
+  // A given script is copied, `--fresh` without one drops the copy, and a
+  // resume without one keeps what is there.
+  case options.provision, options.freshness {
+    Some(path), _ -> {
+      use bytes <- result.try(
+        simplifile.read_bits(path)
+        |> result.map_error(fn(error) {
+          path <> " is unreadable: " <> simplifile.describe_error(error)
+        }),
+      )
+      let _ = simplifile.delete(guest.provision_file)
+      {
+        use Nil <- result.try(simplifile.write_bits(guest.provision_file, bytes))
+        simplifile.set_permissions_octal(guest.provision_file, 0o600)
+      }
+      |> result.map_error(fn(error) {
+        guest.provision_file
+        <> " is unwritable: "
+        <> simplifile.describe_error(error)
+      })
+    }
+    None, vm_spec.Fresh ->
+      case simplifile.delete(guest.provision_file) {
+        Ok(Nil) | Error(simplifile.Enoent) -> Ok(Nil)
+        Error(error) ->
+          Error(
+            guest.provision_file
+            <> " cannot be removed: "
+            <> simplifile.describe_error(error),
+          )
+      }
+    None, vm_spec.Resume -> Ok(Nil)
+  }
+}
+
+/// Builds the upgraded root beside the old one, moving the workspaces last.
+///
+/// The order is what lets an interrupted `up` finish. Every step before the
+/// rename leaves the old root whole, so `up` runs the whole upgrade again from
+/// a clean `root.next`. The rename of `srv/workspaces` is the last fallible
+/// step: once it has happened the new root is complete, and what remains is
+/// `swap_roots`, which `up` finds by a `root.next` beside a root with no
+/// workspaces (`vm_spec.root_step`, `FinishUpgrade`). The directory moves as
+/// one `rename`, so a link inside it stays a link and nothing is followed.
+fn build_next_root(
+  manifest: Manifest,
+  guest: Instance,
+  platform: vm_spec.Platform,
+) -> Result(Nil, String) {
+  // The directory and every parent of it must be real directories, or the
+  // rename would carry a link the guest left into the new root.
+  use workspaces <- result.try(
+    plain_chain(guest.root, ["srv", "workspaces"])
+    |> result.map_error(vm_spec.upgrade_refusal),
+  )
+  use export <- result.try(
+    bootstrap.canonical_directory(manifest.guest_root)
+    |> result.map_error(fn(reason) {
+      manifest.guest_root <> " is not a directory: " <> reason
+    }),
+  )
+
+  // A `root.next` here is the leftover of an attempt that stopped before it
+  // moved the workspaces.
+  use Nil <- result.try(remove_tree_if_present(guest.next_root))
+  use _ <- result.try(tool(
+    "cp",
+    vm_spec.copy_arguments(platform, export, guest.next_root),
+    within: copy_budget_ms,
+  ))
+  use Nil <- result.try(make_inside(guest.next_root, "/srv"))
+  simplifile.rename(workspaces, guest.next_root <> vm_spec.workspaces_dir)
+  |> result.map_error(fn(error) {
+    "the workspaces cannot be moved into the new root: "
+    <> simplifile.describe_error(error)
+  })
+}
+
+/// Replaces the root with the new one that holds the workspaces. It is safe to
+/// run again after any failure: the old root holds nothing of value once the
+/// workspaces have left it.
+fn swap_roots(guest: Instance) -> Result(Nil, String) {
+  use Nil <- result.try(remove_tree_if_present(guest.root))
+  simplifile.rename(guest.next_root, guest.root)
+  |> result.map_error(fn(error) {
+    guest.root <> " cannot be replaced: " <> simplifile.describe_error(error)
+  })
+}
+
+/// Refuses `up` when a runner of this guest survives. `loom-vm` runs the
+/// virtual machine monitor as a separate process, which outlives a launcher
+/// killed by SIGKILL, so the pid file can say the guest is stopped while its
+/// runner holds the root and the state disk. A second guest on the same
+/// ext4 disk would corrupt it. Nothing is stopped here: the refusal names the
+/// pids and the way to stop them. A host whose `ps` cannot be run is treated as
+/// having none, as `down` has no other way to see them either.
+fn refuse_stranded(guest: Instance, name: String) -> Result(Nil, String) {
+  let listing =
+    tool("ps", ["-axww", "-o", "pid=,ppid=,command="], within: quick_ms)
+    |> result.unwrap("")
+
+  // Any runner found is a refusal; none means the guest is really stopped.
+  case vm_spec.stranded_runners(listing, guest.root, guest.state_disk) {
+    [] -> Ok(Nil)
+    pids -> Error(vm_spec.stranded_refusal(name, pids))
   }
 }
 
@@ -1150,6 +1386,7 @@ fn replace_root(
     }),
   )
   use Nil <- result.try(remove_root(guest))
+  use Nil <- result.try(remove_tree_if_present(guest.next_root))
 
   // A record names a copy in this root, and the new root has none.
   use Nil <- result.try(remove_checkouts(guest))
@@ -1494,6 +1731,14 @@ fn remove_tree(path: String) -> Result(Nil, String) {
   |> result.map_error(fn(error) {
     path <> " cannot be removed: " <> simplifile.describe_error(error)
   })
+}
+
+/// Removes a tree when something is there, a link counting as something.
+fn remove_tree_if_present(path: String) -> Result(Nil, String) {
+  case presence_of(path) {
+    vm_spec.Absent -> Ok(Nil)
+    vm_spec.Present -> remove_tree(path)
+  }
 }
 
 /// Rewrites a copied `.git/config` without its credentials. A workspace that
@@ -2048,6 +2293,7 @@ fn status(name: String) -> Result(String, String) {
       "epmd:       " <> epmd_line(names),
       "revision:   " <> revision_line(vm_home),
       "root:       " <> root_line(guest),
+      "root from:  " <> root_origin_line(guest),
       "workspaces: " <> workspace_line(guest),
       "allowed:    " <> allow_line(guest),
       "provision:  " <> provision_line(guest),
@@ -2095,6 +2341,16 @@ fn root_line(guest: Instance) -> String {
   case bootstrap.path_exists(guest.root) {
     True -> guest.root
     False -> "none yet"
+  }
+}
+
+/// The manifest revision the guest's root was cloned from, as `up` recorded
+/// it. A root from before the record, or a development one, says so.
+fn root_origin_line(guest: Instance) -> String {
+  case recorded_root_revision(guest) {
+    Ok(Some(revision)) -> vm_spec.printable(revision)
+    Ok(None) -> "unknown (no record)"
+    Error(reason) -> "unknown (" <> reason <> ")"
   }
 }
 

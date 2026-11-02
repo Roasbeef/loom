@@ -834,6 +834,299 @@ fn bounded(
   }
 }
 
+// --- the root's revision and the upgrade in place ----------------------------
+
+/// The file in a guest's directory that records the manifest revision its root
+/// was cloned from. It lives beside the root and never inside it, because the
+/// guest writes the root and a record there could say anything.
+pub const root_revision_file = "root-revision"
+
+/// The file in a guest's directory that holds the host's own copy of the
+/// `--provision` script. The script staged inside the root is not read back,
+/// since the root is untrusted, so a root cloned again is provisioned from
+/// this copy.
+pub const provision_copy_file = "provision"
+
+/// The name of the directory beside `root` where an upgrade builds the new
+/// root before it takes the old one's place.
+pub const next_root_dir = "root.next"
+
+/// The revision a manifest has when it describes a build tree.
+const dev_revision = "dev"
+
+/// The text of a root-revision record.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.encode_root_revision("abc1234") == "abc1234\n"
+/// ```
+pub fn encode_root_revision(revision: String) -> String {
+  revision <> "\n"
+}
+
+/// Reads a root-revision record: its first line, when that is not empty and
+/// holds no control character. Anything else is no record, which makes the
+/// root's origin unknown and never an error, because a guest from before the
+/// record has none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.decode_root_revision("abc1234\n") == Some("abc1234")
+/// assert vm_spec.decode_root_revision("") == None
+/// ```
+pub fn decode_root_revision(text: String) -> Option(String) {
+  let first = string.split(text, "\n") |> list.first |> result.unwrap("")
+  let line = string.trim(first)
+  let clean =
+    string.to_utf_codepoints(line)
+    |> list.all(fn(point) {
+      let code = string.utf_codepoint_to_int(point)
+      code >= 0x20 && code != 0x7F
+    })
+
+  // An empty line or one with a control character is no record.
+  case line, clean {
+    "", _ | _, False -> None
+    _, True -> Some(line)
+  }
+}
+
+/// Whether something exists at a path, as `lstat` sees it: a link is present
+/// whatever it points at.
+pub type Presence {
+  Present
+  Absent
+}
+
+/// What the guest's directory holds of a root and of an upgrade's work.
+pub type RootLayout {
+  RootLayout(
+    /// The guest's `root`.
+    root: Presence,
+    /// The `root.next` an interrupted upgrade may have left.
+    next: Presence,
+    /// `srv/workspaces` inside the `root`.
+    workspaces: Presence,
+  )
+}
+
+/// What `up` does about the guest's root.
+pub type RootStep {
+  /// Clone the manifest's guest root as the guest's root: a first `up`, a
+  /// root that is gone, or `--fresh`.
+  CloneRoot
+
+  /// Boot the root as it is.
+  KeepRoot
+
+  /// Build a new root from the manifest, move the workspaces into it, and
+  /// take the old root's place. The record says what the old root came from.
+  UpgradeRoot(recorded: Option(String))
+
+  /// An earlier upgrade got as far as moving the workspaces, so the new root
+  /// holds them: only the swap is left.
+  FinishUpgrade
+}
+
+/// Decides what `up` does with the guest's root.
+///
+/// A kept root holds the `loomd` of the build that cloned it, and the
+/// executor protocol negotiates exact revisions, so a root cloned from other
+/// artifacts than the manifest names must be replaced. It is upgraded in place
+/// when neither the manifest nor the record is `dev`, a root with no record
+/// counting as another revision, because a development tree rebuilds too
+/// often to replace the root each time. `layout` is read first, because an
+/// upgrade that stopped after moving the workspaces left a hollow root that
+/// only `FinishUpgrade` can finish.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let layout = vm_spec.RootLayout(vm_spec.Present, vm_spec.Absent, vm_spec.Present)
+/// assert vm_spec.root_step(vm_spec.Resume, layout, Some("abc1234"), "abc1234")
+///   == vm_spec.KeepRoot
+/// ```
+pub fn root_step(
+  freshness: Freshness,
+  layout: RootLayout,
+  recorded: Option(String),
+  revision: String,
+) -> RootStep {
+  case freshness, layout {
+    Fresh, _ -> CloneRoot
+    Resume, RootLayout(root: Absent, next: Absent, ..) -> CloneRoot
+    Resume, RootLayout(root: Absent, next: Present, ..) -> FinishUpgrade
+    Resume, RootLayout(root: Present, next: Present, workspaces: Absent) ->
+      FinishUpgrade
+    Resume, _ ->
+      case stale_root(recorded, revision) {
+        True -> UpgradeRoot(recorded)
+        False -> KeepRoot
+      }
+  }
+}
+
+/// Whether a root came from other artifacts than the manifest names, or from
+/// none the host recorded, with neither side a development tree.
+fn stale_root(recorded: Option(String), revision: String) -> Bool {
+  case revision == dev_revision, recorded {
+    True, _ -> False
+    False, Some(origin) ->
+      origin != dev_revision && !same_commit(origin, revision)
+    False, None -> True
+  }
+}
+
+/// The one line `up` prints before it upgrades a guest's root.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(
+///   vm_spec.upgrade_line("vm", Some("abc1234"), "def5678"),
+///   "Upgrading the guest vm in place",
+/// )
+/// ```
+pub fn upgrade_line(
+  name: String,
+  recorded: Option(String),
+  revision: String,
+) -> String {
+  // A root from before the record has no revision to name.
+  let origin = case recorded {
+    Some(origin) -> "revision " <> printable(origin)
+    None -> "an earlier loom that recorded none"
+  }
+
+  "Upgrading the guest "
+  <> name
+  <> " in place: its root came from "
+  <> origin
+  <> " and the artifacts are revision "
+  <> printable(revision)
+  <> ". Its workspaces and state disk are kept."
+}
+
+/// The refusal for a root whose `srv/workspaces` cannot be moved safely. It
+/// always names `--fresh`, the way out, and says what that costs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(vm_spec.upgrade_refusal("x is not a directory"), "--fresh")
+/// ```
+pub fn upgrade_refusal(reason: String) -> String {
+  "cannot upgrade the guest in place: "
+  <> reason
+  <> ". `loom vm up --fresh` replaces the guest, and its workspaces are lost "
+  <> "with the old root."
+}
+
+/// What provisioning does when `up` makes a new root: a first clone, `--fresh`
+/// or an upgrade. A script given now is staged. Without one, the host's own
+/// copy of an earlier script is staged, because the new root has no marker and
+/// would otherwise lack what the script installed. A root that was
+/// provisioned by an earlier loom, which kept no copy, cannot be provisioned
+/// again, and the refusal says to give the script. `seen` is what the root
+/// being replaced showed, and `NeverProvisioned` when nothing is carried over.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.new_root_provision(None, Some("/vm/provision"), vm_spec.AlreadyProvisioned)
+///   == Ok(vm_spec.StageScript("/vm/provision"))
+/// ```
+pub fn new_root_provision(
+  requested: Option(String),
+  kept: Option(String),
+  seen: RootProvisioning,
+) -> Result(ProvisionPlan, String) {
+  case requested, kept, seen {
+    Some(path), _, _ -> Ok(StageScript(path))
+    None, Some(path), _ -> Ok(StageScript(path))
+    None, None, NeverProvisioned -> Ok(NoScript)
+    None, None, AlreadyProvisioned | None, None, FailedBefore ->
+      Error(
+        "the guest was provisioned by a loom that kept no copy of the "
+        <> "script, so a new root cannot be provisioned. Give "
+        <> "--provision SCRIPT again, or use --fresh.",
+      )
+  }
+}
+
+/// The processes in a `ps -axww -o pid=,ppid=,command=` listing that are
+/// runners holding this guest: the runner's command line is a JSON
+/// specification naming its root and its state disk. A runner outlives a
+/// launcher that was killed, so one found after the pid file says the guest is
+/// not running is a second guest waiting to share the root and the disk.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let listing = "  42     1 runner {\"root_path\":\"/vm/root\"}\n"
+/// assert vm_spec.stranded_runners(listing, "/vm/root", "/vm/state.img") == [42]
+/// ```
+pub fn stranded_runners(
+  listing: String,
+  root: String,
+  state_disk: String,
+) -> List(Int) {
+  let names_root = "\"root_path\":\"" <> root <> "\""
+  let names_disk = "\"path\":\"" <> state_disk <> "\""
+
+  string.split(listing, "\n")
+  |> list.filter_map(fn(line) {
+    use #(pid_text, rest) <- result.try(string.split_once(
+      string.trim_start(line),
+      " ",
+    ))
+    use pid <- result.try(int.parse(pid_text))
+    use #(_parent, command) <- result.try(string.split_once(
+      string.trim_start(rest),
+      " ",
+    ))
+
+    // The runner's specification names its root and its disk; no other
+    // process's command line holds either as a JSON field.
+    case
+      string.contains(command, names_root)
+      || string.contains(command, names_disk)
+    {
+      True -> Ok(pid)
+      False -> Error(Nil)
+    }
+  })
+}
+
+/// The refusal `up` gives when runners of a guest survive. It names each pid
+/// and how to stop it, and stops nothing itself.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(vm_spec.stranded_refusal("vm", [42]), "kill 42")
+/// ```
+pub fn stranded_refusal(name: String, pids: List(Int)) -> String {
+  let stop =
+    list.map(pids, fn(pid) { "kill " <> int.to_string(pid) })
+    |> string.join(" and ")
+
+  // The sentence agrees with the count.
+  let which = case pids {
+    [_] -> "a runner of the guest " <> name <> " is"
+    _ -> "runners of the guest " <> name <> " are"
+  }
+
+  which
+  <> " still running and hold its root and state disk, because its launcher "
+  <> "was killed without stopping it, so `loom vm down` cannot see "
+  <> "them. Stop with `"
+  <> stop
+  <> "` and run `loom vm up` again."
+}
+
 /// `down` and `status` take the guest's name and nothing else.
 fn name_flag(arguments: List(String)) -> Result(String, String) {
   // Anything but the one flag is refused, so `down --mem 512` does not look

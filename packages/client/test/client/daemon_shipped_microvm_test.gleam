@@ -65,6 +65,18 @@
 ////   the daemon, and the daemon's process is gone. The step runs only when the
 ////   launcher's home is the fixture's own (`isolated_home`), and skips with a
 ////   line otherwise.
+//// - A kept root from another revision is upgraded in place. The step rewrites
+////   the fixture's manifest to name the running build's commit and its
+////   `root-revision` record to name an older one, which simulates the revision
+////   change a new loom brings (the fixture has one build, not two). `up` then
+////   prints the upgrade line, replaces the root, keeps the workspace copy with
+////   the guest's earlier commit and a link inside it, keeps the state disk
+////   file, runs the provisioning script again from the host's copy, and a
+////   session on the guest still works.
+//// - A killed launcher is survivable. The step sends SIGKILL to the pid the
+////   pid file records, `status` says `not running`, and `up` either resumes or,
+////   when the VM monitor outlived its launcher, refuses naming that runner's
+////   pid; stopping it lets `up` resume, and a session works.
 //// - A guest resumes. After `loom vm down` the guest process is gone and its
 ////   epmd name is withdrawn; the next `loom vm up` without `--fresh` keeps the
 ////   root, so the marker written by the first turn is still in the checkout and
@@ -413,7 +425,7 @@ fn drive(run: Run) -> Nil {
       provider.AwaitToolResult("resume-call"),
       fn(_seen) { provider.ReplyText(second_answer) },
     ),
-    ..daily_exchanges(run)
+    ..list.append(daily_exchanges(run), upgrade_exchanges())
   ]
 
   let #(Nil, report) =
@@ -512,6 +524,8 @@ fn drive(run: Run) -> Nil {
       remote_daemons.stop_session(running, control, 300, resumed)
 
       daily_verbs(run, running, control)
+      upgrade_in_place(run, running, control)
+      killed_launcher(run, running, control)
       remote_pair.close_daemons([running])
     })
 
@@ -538,6 +552,7 @@ fn drive(run: Run) -> Nil {
   assert_script_ran_once(run)
 
   assert_daily_results(run, requests)
+  assert_upgrade_results(requests)
 
   // Last, because it replaces the cookie the assertions above compare with.
   idle_daemon_is_stopped(run)
@@ -703,6 +718,287 @@ fn jailed_turn(
     [answer],
   )
   remote_daemons.stop_session(running, control, id + 100, session)
+}
+
+// --- upgrading a kept root, and a killed launcher ----------------------------
+
+const upgrade_prompt = "read the workspace on the upgraded guest"
+
+const upgrade_answer = "read on the upgraded guest"
+
+const killed_prompt = "read the workspace after the launcher was killed"
+
+const killed_answer = "read after the launcher was killed"
+
+// An older revision than any real build, in the form a manifest records.
+const old_revision = "0123456789abcdef0123456789abcdef01234567"
+
+// The two scripted calls the steps below drive, appended to the script. Each
+// prints what the guest holds and ends with `true`.
+fn upgrade_exchanges() -> List(provider.Exchange) {
+  let read =
+    "cat guest.txt; cat "
+    <> marker
+    <> "; echo \"runs=$(wc -l < "
+    <> runs_file
+    <> " | tr -d ' ')\"; true"
+  [
+    bash_exchange(upgrade_prompt, "upgrade-call", read),
+    reply_after("upgrade-call", upgrade_answer),
+    bash_exchange(killed_prompt, "killed-call", read),
+    reply_after("killed-call", killed_answer),
+  ]
+}
+
+fn assert_upgrade_results(requests: List(provider.ObservedRequest)) -> Nil {
+  let upgraded = remote_daemons.result_text(requests, "upgrade-call")
+  assert string.contains(upgraded, "guest-work")
+  assert string.contains(upgraded, marker_content)
+  assert string.contains(upgraded, "runs=1")
+  let killed = remote_daemons.result_text(requests, "killed-call")
+  assert string.contains(killed, "guest-work")
+  assert string.contains(killed, marker_content)
+  Nil
+}
+
+// The commit of the build the shipped server was made from, which is what
+// `up` compares the manifest's revision with. The shipment's launcher script
+// records it, and so does nothing else the test can read without running Git.
+fn build_commit() -> Result(String, String) {
+  use server <- result.try(
+    native.getenv("LOOM_BOOTSTRAP_E2E_SERVER")
+    |> result.replace_error("LOOM_BOOTSTRAP_E2E_SERVER is unset"),
+  )
+  use text <- result.try(
+    simplifile.read(server)
+    |> result.replace_error(server <> " is unreadable"),
+  )
+  case string.split(text, "LOOM_BUILD_COMMIT=\"") {
+    [_, rest, ..] ->
+      case string.split(rest, "\"") {
+        [commit, ..] ->
+          case string.length(commit) == 40 {
+            True -> Ok(commit)
+            False -> Error("the build commit is " <> commit)
+          }
+        _ -> Error("the build commit is unterminated")
+      }
+    _ -> Error("the launcher records no build commit")
+  }
+}
+
+fn guest_directory(run: Run) -> String {
+  run.vm_home <> "/" <> run.name
+}
+
+fn workspace_copy(run: Run) -> String {
+  guest_directory(run)
+  <> "/root"
+  <> workspaces_dir
+  <> "/"
+  <> remote_pair.workspace_name
+}
+
+// A new loom is simulated, because the fixture has one build and not two. The
+// manifest is rewritten to name the running build's commit, so `check_revision`
+// passes, and the root-revision record is rewritten to name an older one, which
+// is what a root cloned by the previous release would hold. `up` must then
+// replace the root in place: the old root's marker is gone, the workspace copy
+// with the guest's earlier commit and a link inside it survives, the state disk
+// is the same file, the provisioning script ran again on the new root, and a
+// session on the guest still works.
+fn upgrade_in_place(
+  run: Run,
+  running: remote_daemons.Running,
+  control: remote_daemons.Control,
+) -> Nil {
+  case build_commit() {
+    Error(reason) ->
+      io.println_error("SKIP " <> label <> " upgrade in place: " <> reason)
+    Ok(commit) -> {
+      let down = vm(run, ["down", "--name", run.name])
+      assert string.contains(down.output, "Stopped the guest " <> run.name)
+
+      // What the upgrade must keep or replace, observed before it runs.
+      let copy = workspace_copy(run)
+      let branch_ref = copy <> "/.git/refs/heads/" <> commit_branch
+      let assert Ok(sha) = simplifile.read(branch_ref)
+        as "the guest's commit is a loose ref in its copy"
+      let assert Ok(Nil) =
+        simplifile.create_symlink(
+          to: "../nowhere",
+          from: copy <> "/inside-link",
+        )
+        as "a link inside the workspace copy"
+      let old_marker = guest_directory(run) <> "/root/old-root-marker"
+      let assert Ok(Nil) = simplifile.write(old_marker, "old\n")
+        as "a file only the old root holds"
+      let disk = guest_directory(run) <> "/state.img"
+      let assert Ok(disk_before) = simplifile.file_info(disk)
+        as "the state disk is there"
+
+      let manifest = run.vm_home <> "/manifest.json"
+      let assert Ok(text) = simplifile.read(manifest)
+        as "the manifest is readable"
+      let revised =
+        string.replace(
+          text,
+          "\"revision\": \"dev\"",
+          "\"revision\": \"" <> commit <> "\"",
+        )
+      assert revised != text
+      let assert Ok(Nil) = simplifile.write(manifest, revised)
+        as "the manifest names the running build's commit"
+      let assert Ok(Nil) =
+        simplifile.write(
+          guest_directory(run) <> "/root-revision",
+          old_revision <> "\n",
+        )
+        as "the root-revision record names an older build"
+
+      let output = up(run, [])
+      assert string.contains(
+        output,
+        "Upgrading the guest " <> run.name <> " in place",
+      )
+
+      // The old root is gone, the new one is recorded, and nothing of the
+      // upgrade is left beside it.
+      assert simplifile.is_file(old_marker) == Ok(False)
+      let assert Ok(recorded) =
+        simplifile.read(guest_directory(run) <> "/root-revision")
+        as "up recorded the new root's revision"
+      assert recorded == commit <> "\n"
+      assert simplifile.is_directory(guest_directory(run) <> "/root.next")
+        == Ok(False)
+
+      // The workspace copy moved whole: the committed file and ref, and a link
+      // inside it still a link.
+      assert simplifile.read(branch_ref) == Ok(sha)
+      assert simplifile.read(copy <> "/guest.txt") == Ok("guest-work\n")
+      let assert Ok(link) = simplifile.link_info(copy <> "/inside-link")
+        as "the link is still there"
+      assert simplifile.file_info_type(link) == simplifile.Symlink
+      assert read_marker(run) == marker_content
+
+      // The disk is kept, and the script ran on the new root.
+      let assert Ok(disk_after) = simplifile.file_info(disk)
+        as "the state disk is still there"
+      assert disk_after.inode == disk_before.inode
+      assert simplifile.is_file(
+          guest_directory(run) <> "/root/etc/loom-vm/provisioned",
+        )
+        == Ok(True)
+      assert_script_ran_once(run)
+
+      jailed_turn(
+        run,
+        running,
+        control,
+        1400,
+        remote_pair.workspace_name,
+        "e2e-upgrade",
+        upgrade_prompt,
+        upgrade_answer,
+      )
+    }
+  }
+}
+
+// A launcher killed by SIGKILL leaves a pid file for a process that is gone.
+// `status` must say the guest is not running. The VM monitor is a separate
+// process and may outlive its launcher; when it does, `up` must refuse with
+// its pid and how to stop it, and once it is stopped `up` resumes the guest.
+fn killed_launcher(
+  run: Run,
+  running: remote_daemons.Running,
+  control: remote_daemons.Control,
+) -> Nil {
+  let assert Ok(record) =
+    simplifile.read(guest_directory(run) <> "/loom-vm.pid")
+    as "the running guest has a pid file"
+  let assert [pid, ..] = string.split(record, "\n")
+  signal(["-KILL", pid])
+
+  // The kill is immediate, but the process table is read, not assumed.
+  let assert poll.Answered(Nil) =
+    poll.until(within: 30_000, every: 100, attempt: fn() {
+      let status = vm(run, ["status", "--name", run.name])
+      case string.contains(status.output, "process:    not running") {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "status reports the guest with a killed launcher as not running"
+
+  // The runner of the killed launcher is the guest's second process.
+  let first = vm(run, up_arguments(run))
+  case first.status {
+    0 -> io.println_error(label <> " the runner did not outlive its launcher")
+    _ -> {
+      assert string.contains(first.output, "still running and hold its root")
+      let assert [_, after_kill] =
+        string.split(first.output, "Stop with `kill ")
+      let assert [runner, ..] = string.split(after_kill, "`")
+      io.println_error(label <> " stranded runner " <> runner <> " refused up")
+
+      // The runner belongs to this fixture's guest, and its pid came from the
+      // refusal `up` built from the process table.
+      signal([runner])
+      let assert poll.Answered(Nil) =
+        poll.until(within: 30_000, every: 100, attempt: fn() {
+          let assert Ok(kill) = ffi_proc.which("kill")
+          case ffi_proc.run(kill, ["-0", runner], in: ".") {
+            Ok(#(0, _)) -> poll.Retry
+            _ -> poll.Done(Nil)
+          }
+        })
+        as "the stranded runner exits"
+      Nil
+    }
+  }
+
+  let resumed = case first.status {
+    0 -> first.output
+    _ -> up(run, [])
+  }
+  assert string.contains(
+    resumed,
+    "serves " <> executor_node(run) <> " on host port",
+  )
+  jailed_turn(
+    run,
+    running,
+    control,
+    1600,
+    remote_pair.workspace_name,
+    "e2e-killed",
+    killed_prompt,
+    killed_answer,
+  )
+}
+
+fn signal(arguments: List(String)) -> Nil {
+  let assert Ok(kill) = ffi_proc.which("kill") as "kill is on PATH"
+  let assert Ok(#(0, _)) = ffi_proc.run(kill, arguments, in: ".")
+    as "the signal is delivered"
+  Nil
+}
+
+// The arguments `up` takes in the fixture's own guest, which `up` composes
+// with a status check of its own.
+fn up_arguments(run: Run) -> List(String) {
+  [
+    "up",
+    "--name",
+    run.name,
+    "--workspace",
+    run.repository,
+    "--config",
+    run.orchestrator.config,
+    "--github",
+    "env",
+  ]
 }
 
 // `list`, `logs` and a refused `rm` on the guest that is up; then the commit, the

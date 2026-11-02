@@ -1417,3 +1417,160 @@ pub fn sync_needs_a_git_with_the_lazy_fetch_fix_test() {
   assert string.contains(unknown, "garbage")
   assert string.contains(unknown, "2.45.1")
 }
+
+// --- the root's revision and the upgrade in place ----------------------------
+
+pub fn root_revision_record_round_trips_test() {
+  assert vm_spec.encode_root_revision("abc1234") == "abc1234\n"
+  assert vm_spec.decode_root_revision("abc1234\n") == Some("abc1234")
+  assert vm_spec.decode_root_revision("abc1234\nextra\n") == Some("abc1234")
+}
+
+pub fn damaged_root_revision_record_is_unknown_test() {
+  assert vm_spec.decode_root_revision("") == None
+  assert vm_spec.decode_root_revision("\n") == None
+  assert vm_spec.decode_root_revision("a\u{1b}[31mb\n") == None
+}
+
+fn layout(
+  root: vm_spec.Presence,
+  next: vm_spec.Presence,
+  workspaces: vm_spec.Presence,
+) -> vm_spec.RootLayout {
+  vm_spec.RootLayout(root:, next:, workspaces:)
+}
+
+pub fn matching_root_is_kept_test() {
+  let whole = layout(vm_spec.Present, vm_spec.Absent, vm_spec.Present)
+  assert vm_spec.root_step(vm_spec.Resume, whole, Some("abc1234"), "abc1234")
+    == vm_spec.KeepRoot
+
+  // Either commit may be abbreviated, as `check_revision` allows.
+  assert vm_spec.root_step(vm_spec.Resume, whole, Some("abc1234ff"), "abc1234")
+    == vm_spec.KeepRoot
+}
+
+pub fn root_of_another_revision_is_upgraded_test() {
+  let whole = layout(vm_spec.Present, vm_spec.Absent, vm_spec.Present)
+  assert vm_spec.root_step(vm_spec.Resume, whole, Some("abc1234"), "def5678")
+    == vm_spec.UpgradeRoot(Some("abc1234"))
+}
+
+pub fn root_with_no_record_is_upgraded_test() {
+  let whole = layout(vm_spec.Present, vm_spec.Absent, vm_spec.Present)
+  assert vm_spec.root_step(vm_spec.Resume, whole, None, "def5678")
+    == vm_spec.UpgradeRoot(None)
+}
+
+pub fn development_on_either_side_keeps_the_root_test() {
+  let whole = layout(vm_spec.Present, vm_spec.Absent, vm_spec.Present)
+  assert vm_spec.root_step(vm_spec.Resume, whole, Some("abc1234"), "dev")
+    == vm_spec.KeepRoot
+  assert vm_spec.root_step(vm_spec.Resume, whole, Some("dev"), "def5678")
+    == vm_spec.KeepRoot
+  assert vm_spec.root_step(vm_spec.Resume, whole, None, "dev")
+    == vm_spec.KeepRoot
+}
+
+pub fn fresh_and_missing_roots_are_cloned_test() {
+  let whole = layout(vm_spec.Present, vm_spec.Absent, vm_spec.Present)
+  let gone = layout(vm_spec.Absent, vm_spec.Absent, vm_spec.Absent)
+  assert vm_spec.root_step(vm_spec.Fresh, whole, Some("abc1234"), "def5678")
+    == vm_spec.CloneRoot
+  assert vm_spec.root_step(vm_spec.Resume, gone, None, "def5678")
+    == vm_spec.CloneRoot
+}
+
+pub fn interrupted_upgrade_is_finished_not_repeated_test() {
+  // The workspaces have left the old root, so only the swap remains, whether
+  // the old root is hollow or already gone.
+  let hollow = layout(vm_spec.Present, vm_spec.Present, vm_spec.Absent)
+  let swapping = layout(vm_spec.Absent, vm_spec.Present, vm_spec.Absent)
+  assert vm_spec.root_step(vm_spec.Resume, hollow, Some("abc1234"), "def5678")
+    == vm_spec.FinishUpgrade
+  assert vm_spec.root_step(vm_spec.Resume, swapping, Some("abc1234"), "def5678")
+    == vm_spec.FinishUpgrade
+
+  // An upgrade that stopped before the move left the workspaces in the old
+  // root, so it runs again from a clean `root.next`.
+  let early = layout(vm_spec.Present, vm_spec.Present, vm_spec.Present)
+  assert vm_spec.root_step(vm_spec.Resume, early, Some("abc1234"), "def5678")
+    == vm_spec.UpgradeRoot(Some("abc1234"))
+}
+
+pub fn upgrade_line_is_one_line_naming_both_revisions_test() {
+  let line = vm_spec.upgrade_line("vm", Some("abc1234"), "def5678")
+  assert !string.contains(line, "\n")
+  assert string.contains(line, "Upgrading the guest vm in place")
+  assert string.contains(line, "abc1234")
+  assert string.contains(line, "def5678")
+  assert string.contains(vm_spec.upgrade_line("vm", None, "def5678"), "none")
+}
+
+pub fn upgrade_refusal_names_fresh_test() {
+  let reason = vm_spec.upgrade_refusal("/vm/root/srv is not a directory")
+  assert string.contains(reason, "--fresh")
+  assert string.contains(reason, "/vm/root/srv is not a directory")
+}
+
+pub fn new_root_is_provisioned_from_the_host_copy_test() {
+  assert vm_spec.new_root_provision(
+      None,
+      Some("/vm/provision"),
+      vm_spec.AlreadyProvisioned,
+    )
+    == Ok(vm_spec.StageScript("/vm/provision"))
+  assert vm_spec.new_root_provision(
+      Some("/s.sh"),
+      Some("/vm/provision"),
+      vm_spec.AlreadyProvisioned,
+    )
+    == Ok(vm_spec.StageScript("/s.sh"))
+  assert vm_spec.new_root_provision(None, None, vm_spec.NeverProvisioned)
+    == Ok(vm_spec.NoScript)
+}
+
+pub fn provisioned_root_with_no_copy_cannot_be_upgraded_test() {
+  let refused =
+    vm_spec.new_root_provision(None, None, vm_spec.AlreadyProvisioned)
+  let assert Error(reason) = refused
+  assert string.contains(reason, "--provision")
+  assert string.contains(reason, "--fresh")
+  assert result.is_error(vm_spec.new_root_provision(
+    None,
+    None,
+    vm_spec.FailedBefore,
+  ))
+}
+
+pub fn stranded_runner_is_found_by_its_root_or_disk_test() {
+  let runner =
+    "{\"root_path\":\"/vm/m/root\",\"disks\":[{\"block_id\":\"state\","
+    <> "\"path\":\"/vm/m/state.img\"}]}"
+  let listing =
+    "16329     1 /bin/loom-vm run --root-dir /vm/m/root --state-disk /vm/m/state.img\n"
+    <> "16333     1 /build/go-microvm-runner "
+    <> runner
+    <> "\n"
+    <> "  200     1 /build/go-microvm-runner {\"root_path\":\"/vm/other/root\"}\n"
+    <> "  300     1 tail -f /vm/m/root/log\n"
+
+  // Only the runner names the root in its JSON specification: the launcher's
+  // own flags and an unrelated reader of a file under the root are not it.
+  assert vm_spec.stranded_runners(listing, "/vm/m/root", "/vm/m/state.img")
+    == [16_333]
+  assert vm_spec.stranded_runners("", "/vm/m/root", "/vm/m/state.img") == []
+  assert vm_spec.stranded_runners(
+      "garbage line\n",
+      "/vm/m/root",
+      "/vm/m/state.img",
+    )
+    == []
+}
+
+pub fn stranded_refusal_names_the_pid_and_how_to_stop_it_test() {
+  let one = vm_spec.stranded_refusal("vm", [42])
+  assert string.contains(one, "kill 42")
+  assert string.contains(one, "loom vm up")
+  assert string.contains(vm_spec.stranded_refusal("vm", [4, 5]), "kill 4")
+}
