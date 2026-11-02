@@ -187,7 +187,47 @@ attribute, key or address is built from one. The feed hands the page the daemon'
 untouched (`client/daemon/ui_projects`), so the page and the control command read one
 body.
 
-**Not built.** The change doorbell, `set_mode` and `publish` controls, the host check,
-pull requests and the verdict view stay out; the ticket page has no control for them.
-Relaying an answer's text to the worker is still the `answer` effect row the host logs
-and settles without serving.
+**Not built.** The change doorbell, `set_mode` and `publish` controls and the verdict view
+stay out of the page; the ticket page has no control for them. (The host check, the pull
+requests and the answer's relay were built later; see the addendum below.)
+
+## Addendum: done means verified (2026-11-01)
+
+**Affects**: `docs/client-protocol.md` section 3.32 by one command, three ticket fields and
+one board field; `[project]` by three keys; the project ledger by two engine events and the
+host records they need. No change to the jail, to any worker tool, or to the session wire.
+
+**The commands and records.** `projects.publish` (owner only, recorded with the principal)
+publishes a ticket's current commit past a failing or missing check, and is refused while
+`publish` is off. A ticket gains `check` (`{commit, outcome}` once the host's check has judged
+the head) and `review` (the host's sentence for why a ticket waits for a person). The board
+gains `unrouted` on page zero: messages the router was offered three times and decided nothing
+about, each with the text a person needs and a `projects.requeue` to offer it again. Nothing is
+dropped on the way: an explicit message that ends there is that record.
+
+**The configuration.** `check`, `protected_paths` and `publish` join `[project]` (see
+`docs/configuration.md`). All three default to doing nothing outward.
+
+**The events.** `HeadObserved` carries the host's reading of an idle worker's branch, with its
+verdict on the protected paths, and `ReviewRequested` carries the host's reason for asking a
+person. Both are written by the host and neither can be built from a model's output. The
+engine asks for the first with the `ObserveHead` effect when a worker reports idle with no
+open question; protected paths are decided before the check, so a head that touches one has
+no check requested. `OpenPullRequest` is renamed `PublishBranch`, and a later commit asks for
+it again so the branch and the pull request show the new head. `RelayAnswer` is gone: an
+answer is delivered as a trigger by the same path as any input.
+
+**What reaches the outside.** The host pushes `<commit>:refs/heads/project/<ticket>` to the
+`origin` remote with the daemon's own credentials, without force and without the repository's
+hooks, and speaks to GitHub only through `gh api` on the REST interface. A ticket's title is
+the one model text in a pull request, and it is capped, stripped of anything that could
+mention, link or reorder text, and prefixed with the ticket's id. The body is built from ledger
+facts: the ticket, the commit, the check command's digest and the ledger entry of the run. The
+host looks for an open pull request from the branch before it creates one.
+
+**What it costs.** The repository's `.git/config` is a file a worker's sandbox may be able to
+write, because a worktree shares its repository's configuration. The remote's URL, a credential
+helper or an SSH command set there would be trusted by the host's push. Hooks are turned off for
+the push; pinning the remote when the project is created would close the rest and is left for
+the slice that gives workers other machines. A check runs with the network off, and a toolchain
+that needs the network to build fails its check until that is given a reason to be otherwise.

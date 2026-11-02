@@ -1817,7 +1817,7 @@ prints it, as text or, with `--json`, as the daemon sent it.
 ### 3.32 `projects.*`
 
 Project mode's control commands (protocol-change/106, design note
-`docs/design-notes/project-mode.md`). All nine are owner-only, and a daemon that
+`docs/design-notes/project-mode.md`). All ten are owner-only, and a daemon that
 started no project table answers every one `not_found`. A reply carries the
 engine's own spelling of a stage, and a client displays it and never derives it.
 
@@ -1832,6 +1832,7 @@ engine's own spelling of a stage, and a client displays it and never derives it.
 | `projects.answer` | no | `project`, `ticket` (strings), `seq` (integer, required), `text` (string, required, at most 32768 bytes) | `projects.answer` |
 | `projects.retry` | no | `project`, `ticket` (strings, required) | `projects.retry` |
 | `projects.requeue` | no | `project`, `trigger` (strings, required) | `projects.requeue` |
+| `projects.publish` | no | `project`, `ticket` (strings, required) | `projects.publish` |
 
 ```json
 {"v":2,"id":9,"cmd":"projects.create","body":{"workspace":"/src/loom","name":"loom"}}
@@ -1841,20 +1842,28 @@ engine's own spelling of a stage, and a client displays it and never derives it.
 id is a function of the canonical workspace, so creating twice answers the first
 project. `projects.list` replies `{"projects":[{"id","workspace","router_session",
 "counts":{"<stage>":n}}]}`. `projects.board` replies `{"project","revision","page",
-"total","tickets":[...],"replies":[...]}` with at most 20 tickets a page,
+"total","tickets":[...],"replies":[...],"unrouted":[...]}` with at most 20 tickets a page,
 needs-a-person first, and `revision` is the project ledger's newest sequence number.
 A ticket is the record of protocol-change/106, `{id, project, title, stage, session,
-mandate, check, opened_ms, question, kept_worktrees, pull_request, ended}`, where `opened_ms` is when
+mandate, check, review, opened_ms, question, kept_worktrees, pull_request, ended}`, where `opened_ms` is when
 the ticket's opening message arrived in Unix milliseconds, or `null` when the engine no
 longer holds that message (a client shows an age from it and never from when it first
 saw the ticket), where `stage` is one of
 `person/delivery`, `person/answer`, `person/review`, `person/blocked`,
-`person/failed`, `queued`, `idle`, `working` or `ended/<outcome>`, `check` is always
-`null` in this slice, and `question` is `null` or `{seq, text, options}`.
+`person/failed`, `queued`, `idle`, `working` or `ended/<outcome>`, `check` is `null` until the
+host's check has judged the head and then `{commit, outcome}` with `outcome` one of `passed`,
+`failed` or `overridden` (a person published past the check), `review` is `null` or the host's
+sentence for why a ticket waits for a person although its work may be done (no check is
+configured, the check gave no result, publishing is off, the branch could not be published, or the
+change touched a protected path), and `question` is `null` or `{seq, text, options}`.
 `kept_worktrees` is a list, empty unless a worker's worktree stayed after its ticket
 ended because it held commits its base lacks, and then each entry is
 `{seq, path, reason}`. `replies`
-holds the router's queued replies on page zero. `projects.post` replies
+holds the router's queued replies on page zero. `unrouted` holds, on page zero, the messages the
+router was offered three times and decided nothing about, each `{trigger, source, actor, text,
+reason, at_ms}` with `text` cut at 2000 characters; they are never offered again until a person
+sends `projects.requeue` for the `trigger`. An explicit message that ends here is not lost: it is
+this record. `projects.post` replies
 `{"trigger","repeated"}`; posting a `request_id` again changes nothing and answers
 `repeated: true`. Errors: `not_found` (no such project), `bad_request` (a refused
 post or stop), `forbidden` (a member principal), `unavailable`.
@@ -1890,12 +1899,22 @@ a session), `failed` (never reached the worker) or `recorded` (the gate did not 
 is the ledger's newest sequence number, as on the board. `projects.answer` echoes the question's
 `seq` from the ticket's `question`; an answer whose `seq` is not the ticket's open question is
 refused `conflict` and records nothing, and a client says the question changed. The answer's
-text is stored in the project ledger beside the `Answered` event. Relaying that text to the
-worker is the `answer` effect row, which this slice logs and settles without serving (see
-`client/daemon/project_host`). `projects.retry` and `projects.requeue` reply an echo, and the
-engine's refusal of either (a ticket that has a live worker, a message that is not waiting) is
-`bad_request`. `projects.ticket` is a read; the other three are not. An unknown project or
-ticket is `not_found` for all four.
+text is stored in the project ledger beside the `Answered` event, and it is delivered to the
+ticket's worker as a trigger keyed by the ticket and the question, with the source `owner` and
+the principal as the actor, waking the worker if it is idle. A ticket with no live session keeps
+the answer pending, and it goes to the next assignment's worker first. The reply means the answer
+was accepted and queued, not that the worker has read it. `projects.retry` and `projects.requeue`
+reply an echo, and the engine's refusal of either (a ticket that has a live worker, a message that
+is not waiting) is `bad_request`. `projects.ticket` is a read; the other three are not. An unknown
+project or ticket is `not_found` for all four.
+
+`projects.publish` publishes a ticket's current commit past a failing or missing check. It is
+recorded with the principal, it is the owner's alone, and no tool a model holds reaches it. It
+replies `{ticket, commit}`. It is refused `bad_request` while `[project].publish` is `off`, for a
+ticket with no commit, and when the engine refuses the commit as out of date. The push and the
+pull request it asks for are the host's: `git push` to `refs/heads/project/<ticket>` of the
+`origin` remote, and `gh api` (REST only) to look for an open pull request from that branch and
+open one when there is none. The ticket's `pull_request` carries the URL once it is recorded.
 
 ## 4. The session endpoint
 

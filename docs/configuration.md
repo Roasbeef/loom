@@ -517,13 +517,24 @@ for explicit links.
 (From protocol-change 106.) Optional, read once when the daemon starts, like
 `[peers]`. Bounds the workers of every project the daemon runs. A project is made
 with `loom project init` and needs no table; the keys below only change its
-limits. A key from a later slice (the check command, protected paths, sources) is
-refused until that slice lands.
+limits and what the host does with a worker's finished work. A key from a later slice
+(sources) is refused until that slice lands.
+
+The three keys that govern finished work default to doing nothing outward. A worker that
+reports itself idle has its branch's head read. A head that changes a protected path goes to
+a person and the check never runs. Any other head is checked by `check`, in a fresh worktree
+of that commit, in the sandbox, with the network off, the state root's secrets masked and
+only that worktree writable. A passing check makes the ticket ready, and with `publish =
+"pull_request"` the host then pushes the commit to `project/<ticket>` of the `origin` remote
+and opens a pull request through `gh api`. It never merges.
 
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |
 | `max_workers` | integer | `4` | 1 to 16 | General worker sessions a project runs at once. One more slot is kept for a ticket a person is waiting on. |
 | `token_ceiling` | integer | `5000000` | 1 or more | The token ceiling above which a project starts no new inferred work. Recorded in this slice; inferred work is off. |
+| `check` | string | none | a command of at most 4096 bytes | The command run against a worker's head, as `bash -c`. Unset, there is no check, and a ticket whose work is done waits for a person. A blank command is refused. The words of the command are protected paths too, so a worker cannot rewrite the script the check runs. |
+| `protected_paths` | array of strings | `["Makefile", "GNUmakefile", "makefile", ".github/**"]` | literal paths, or a directory followed by `/**` | Files whose change keeps the check from running. There is no other pattern syntax. Matching ignores case. An empty array protects only the files `check` names. |
+| `publish` | string | `off` | `off`, `pull_request` | `pull_request` lets the host push a verified commit and open a pull request with the owning machine's credentials and `gh`. `off` sends nothing outward: the ticket waits for a person with the reason shown. |
 
 ## `[distribution]`
 
