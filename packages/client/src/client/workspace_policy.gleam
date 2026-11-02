@@ -1502,25 +1502,64 @@ pub fn protecting_projects(
   base: policy.SandboxPolicy,
   state_root: String,
 ) -> policy.SandboxPolicy {
-  let projects = state_root <> "/projects"
   let masks =
-    simplifile.read_directory(projects)
-    |> result.unwrap([])
-    |> list.sort(string.compare)
-    |> list.flat_map(fn(id) { project_masks(projects <> "/" <> id) })
+    project_directories(state_root)
+    |> list.flat_map(fn(directory) {
+      list.append(private_masks(directory), existing([directory <> "/checks"]))
+    })
   protecting(base, always: masks, where_maskable: [])
 }
 
-/// The entries of one project's directory that a session must not reach, as
-/// they are on disk now: the host repository, the check trees, and the ledger
-/// with its SQLite side files.
-fn project_masks(directory: String) -> List(String) {
+/// The base policy with each project's host repository and ledger masked, and
+/// its check trees left alone.
+///
+/// A check is worker-authored code, and it reads the host as a session's tools
+/// do. Without this mask it could read every project's `host.git`, which holds
+/// each commit the host took in, and its `ledger.db`, which holds every ticket's
+/// inbound text, and the failing output that goes back to the worker could
+/// carry what it read. `protecting_projects` is not the policy for it, because
+/// it also masks `<project>/checks`, which holds the tree the check is running
+/// in. Only entries on disk are masked, as there.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace_policy.protecting_project_files(base, "/home/o/.loom")
+/// ```
+pub fn protecting_project_files(
+  base: policy.SandboxPolicy,
+  state_root: String,
+) -> policy.SandboxPolicy {
+  let masks =
+    project_directories(state_root)
+    |> list.flat_map(private_masks)
+  protecting(base, always: masks, where_maskable: [])
+}
+
+/// The directory of each project under the state root, in a stable order.
+fn project_directories(state_root: String) -> List(String) {
+  let projects = state_root <> "/projects"
+  simplifile.read_directory(projects)
+  |> result.unwrap([])
+  |> list.sort(string.compare)
+  |> list.map(fn(id) { projects <> "/" <> id })
+}
+
+/// The files of one project's directory that neither a session nor a check has
+/// a use for, as they are on disk now: the host repository, and the ledger with
+/// its SQLite side files.
+fn private_masks(directory: String) -> List(String) {
   let ledger = directory <> "/ledger.db"
-  list.flatten([
-    [directory <> "/host.git", directory <> "/checks", ledger],
-    sqlite_side_files(ledger),
-  ])
-  |> list.filter(exists)
+  existing(
+    list.flatten([
+      [directory <> "/host.git", ledger],
+      sqlite_side_files(ledger),
+    ]),
+  )
+}
+
+fn existing(paths: List(String)) -> List(String) {
+  list.filter(paths, exists)
 }
 
 // The masked entries `client/daemon/root.directories` and the startup

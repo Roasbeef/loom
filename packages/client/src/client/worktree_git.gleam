@@ -268,7 +268,11 @@ pub fn run(git: Git, call: Run, within_ms: Int) -> Result(Output, String) {
 /// The policy is the check's own and not a session's. The host is readable, as
 /// it is for a session's tools, and the state root's secrets are masked
 /// (`workspace_policy.protecting_state_root`), so a check cannot read a
-/// session's store, the owner's token or the catalogue. The network is off. The
+/// session's store, the owner's token or the catalogue. Each project's host
+/// repository and ledger are masked as well (`protecting_project_files`),
+/// because a check is worker-authored code and part of its output goes back to
+/// the worker. The check trees are not, since the tree it runs in is one of
+/// them. The network is off. The
 /// only writable root is the tree, because a build writes its output there, and
 /// `HOME` is a directory inside it so a toolchain's cache has somewhere to go
 /// that is discarded with the tree. The environment is built here and carries
@@ -299,6 +303,7 @@ pub fn check_runner(git: Git, directory: String) -> goalcheck.Runner {
       env_allow: list.map(environment, fn(pair) { pair.0 }),
     )
     |> workspace_policy.protecting_state_root(git.state_root)
+    |> workspace_policy.protecting_project_files(git.state_root)
 
   goalcheck.Runner(
     clear_call: tool.broker_runner(

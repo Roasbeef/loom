@@ -880,6 +880,29 @@ pub fn the_policy_masks_each_projects_host_repository_ledger_and_checks_test() {
   assert !list.contains(masked.protected, directory <> "/ledger.db-wal")
 }
 
+// A check is worker-authored code and runs in a tree under `checks`, so its
+// policy masks what the host keeps for every project and leaves that directory
+// readable and writable.
+pub fn the_check_policy_masks_the_host_files_and_not_the_check_trees_test() {
+  let rig = worktree_rig.rig("masks-check")
+  let layout = project_rig.started(rig)
+  let directory = project_repo.project_directory(layout)
+  worktree_rig.write(directory <> "/ledger.db", "")
+  worktree_rig.write(directory <> "/ledger.db-wal", "")
+  let checks = project_repo.checks_path(layout)
+  let assert Ok(Nil) = simplifile.create_directory_all(checks)
+  let masked =
+    workspace_policy.protecting_project_files(
+      workspace_policy.base_policy(rig.root),
+      rig.state,
+    )
+  assert list.contains(masked.protected, project_repo.host_path(layout))
+  assert list.contains(masked.protected, directory <> "/ledger.db")
+  assert list.contains(masked.protected, directory <> "/ledger.db-wal")
+  assert !list.contains(masked.protected, checks)
+  assert !list.contains(masked.protected, directory <> "/ledger.db-shm")
+}
+
 // A worker's clone is made for one assignment, so a list of folders to start a
 // session in leaves it out and keeps the owner's own folders.
 pub fn a_workers_clone_is_not_a_folder_to_start_again_in_test() {

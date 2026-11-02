@@ -151,6 +151,42 @@ pub fn a_check_cannot_read_the_session_store_or_a_credential_or_write_beside_the
   }
 }
 
+// A check is code the worker wrote, and what it prints on failure goes back to
+// the worker. It must not read the host repository or the ledger of any
+// project, its own included, and it must still read and write its own tree.
+pub fn a_check_cannot_read_any_projects_host_repository_or_ledger_test() {
+  let rig = worktree_rig.rig_at("check-masks", "main")
+  let scene = scene(rig)
+  let own = project_repo.project_directory(scene.layout)
+  let other = rig.state <> "/projects/p-other"
+  worktree_rig.write(own <> "/ledger.db", "OWN-LEDGER")
+  worktree_rig.write(other <> "/ledger.db", "OTHER-LEDGER")
+  worktree_rig.write(other <> "/host.git/HEAD", "OTHER-HEAD")
+  let host = project_repo.host_path(scene.layout)
+
+  // Exit 9 says the tree could not be written, which would make the other
+  // lines pass for a reason that has nothing to do with the masks. Exits 5 to 8
+  // say a masked file was read.
+  let command =
+    string.join(
+      [
+        "touch written-in-tree || exit 9",
+        "grep -q OWN-LEDGER " <> own <> "/ledger.db && exit 5",
+        "grep -q OTHER-LEDGER " <> other <> "/ledger.db && exit 6",
+        "grep -q OTHER-HEAD " <> other <> "/host.git/HEAD && exit 7",
+        "cat " <> host <> "/HEAD > /dev/null && exit 8",
+        "exit 0",
+      ],
+      "\n",
+    )
+  case run(rig, scene, command) {
+    Error(why) -> skip(why)
+    Ok(result) -> {
+      assert result.ending == goalstate.Exited(status: 0)
+    }
+  }
+}
+
 pub fn a_failing_check_reports_its_status_and_its_output_test() {
   let rig = worktree_rig.rig_at("check-fails", "main")
   let scene = scene(rig)
