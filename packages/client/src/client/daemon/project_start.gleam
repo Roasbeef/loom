@@ -298,6 +298,9 @@ fn pin_router(
     crypto.hash(crypto.Sha256, bit_array.from_string(project_packs.router()))
     |> bit_array.base16_encode
     |> string.lowercase
+
+  // A router the registry cannot name is pinned as unknown, which differs
+  // from any named model, so a verdict never carries over to it.
   let router_model = case manager.get(env.registry, project.router_session) {
     Ok(found) ->
       "profile:"
@@ -306,6 +309,7 @@ fn pin_router(
       <> option.unwrap(found.registration.model, "default")
     Error(_) -> "unknown"
   }
+
   project_host.pin_router(started, "sha256:" <> revision, router_model)
 }
 

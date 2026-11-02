@@ -27,12 +27,15 @@
 ////
 //// ## Flow
 ////
-//// `run` → `project_host.commit`
+//// `standing_json` → `to_label_json` → `run`
 ////
-//// 1. `run` records the rule's tape from the state, with each trigger's
-////    text.
-//// 2. It takes the lane's samples and asks `project/judge` for a finding.
-//// 3. It returns the event that records the finding, pinned to the policy
+//// 1. `standing_json` is what the board shows for a rule: the standing word,
+////    a sentence, and the labelled count against what a verdict needs.
+//// 2. `to_label_json` lists the recorded triggers of a rule that a person has
+////    not yet judged, so labelling has something to read.
+//// 3. `run` records the rule's tape from the state with each trigger's text,
+////    takes the lane's samples and asks `project/judge` for a finding. It
+////    returns the event that records the finding, pinned to the policy
 ////    version, router prompt and model in force, and the reply body.
 
 import core/json.{type JsonValue}
@@ -138,6 +141,8 @@ pub fn to_label_json(
   ])
 }
 
+/// One trigger awaiting a label, with its text cut. The text is external and
+/// is passed on untouched for the client to make safe.
 fn frame_json(frame: tape.Frame) -> JsonValue {
   json.Object([
     #("trigger", json.String(frame.trigger.id.value)),
@@ -148,6 +153,7 @@ fn frame_json(frame: tape.Frame) -> JsonValue {
   ])
 }
 
+/// The wire word for what the project did with a recorded trigger.
 fn recorded_word(recorded: tape.Recorded) -> String {
   case recorded {
     tape.Took -> "took"
@@ -173,16 +179,22 @@ pub fn run(
   text_of: fn(TriggerId) -> String,
 ) -> Result(#(Event, JsonValue), String) {
   let found = tape.record(current, source, rule, text_of)
+
+  // The lane picks where the candidate's decisions come from: the current gate
+  // with recorded router answers, or the caller's router.
   let samples = case lane {
     ReplayLane -> judge.replay_samples(found, current.labels, gate.classify)
     LiveLane(decide) ->
       judge.live_samples(found, current.labels, judge.live_trials, decide)
   }
+
+  // The finding records its lane, because the lane decides what it claims.
   let which = case lane {
     ReplayLane -> model.Replay
     LiveLane(_) -> model.Live
   }
 
+  // Too few labels is a sentence for the owner and records nothing.
   case judge.judge(samples, which) {
     Error(judge.NotEnoughLabels(have, need)) ->
       Error(
@@ -210,6 +222,9 @@ pub fn run(
   }
 }
 
+/// The owner's reply to a verdict run: the outcome, the lane, what was
+/// covered, and the sentence saying what a pass claims. It carries no trigger
+/// text.
 fn report_json(rule: RuleId, finding: judge.Finding) -> JsonValue {
   let covers = finding.covers
   json.Object([

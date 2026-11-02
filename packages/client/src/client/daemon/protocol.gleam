@@ -1144,18 +1144,22 @@ fn name_field(fields: List(#(String, JsonValue))) -> Result(String, String) {
   }
 }
 
-/// Extracts an optional pagination cursor from payload fields.
+/// Extracts an optional nonempty text field within a byte limit. An absent key
+/// is none, and a present key must satisfy `text_field`, so a field that is
+/// sent is never silently read as absent.
 fn optional_text_field(
   fields: List(#(String, JsonValue)),
   key: String,
   limit: Int,
 ) -> Result(Option(String), String) {
+  // Absence is the only way to send no value.
   case list.key_find(fields, key) {
     Error(Nil) -> Ok(None)
     Ok(_) -> text_field(fields, key, limit) |> result.map(Some)
   }
 }
 
+/// Extracts an optional pagination cursor from payload fields.
 fn optional_after(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(String), String) {

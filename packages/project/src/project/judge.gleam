@@ -43,8 +43,8 @@
 ////
 //// 1. A sampler pairs each labelled frame of the tape with the decisions of
 ////    the candidate.
-//// 2. `judge` refuses fewer than `needed_labels` samples, builds the
-////    instrument's rows, and asks it for a verdict.
+//// 2. `judge` refuses fewer samples than the instrument's test size, builds
+////    its rows, and asks it for a verdict.
 //// 3. `outcome_of` turns the instrument's verdict into a pass or a fail, and
 ////    the finding keeps what the run covered.
 
@@ -164,6 +164,8 @@ fn answer_of(frame: Frame) -> Choice {
 /// // -> judge.Pass for a frame the gate does not admit
 /// ```
 pub fn replay_choice(frame: Frame, classify: Classify) -> Choice {
+  // The gate's admission comes first: a trigger it withholds is never taken,
+  // whatever the router once said about it.
   case classify(frame.trigger, frame.relation) {
     gate.NotAdmitted(_) -> Pass
     gate.Admitted(strength, _, _) -> {
@@ -246,6 +248,9 @@ fn indexes(count: Int) -> List(Int) {
   list.repeat(Nil, count) |> list.index_map(fn(_, index) { index })
 }
 
+/// The labelled frames of a tape as samples, each paired with the candidate
+/// decisions `decisions` gives for it. Both lanes share this, so what a lane
+/// decides is the only thing that differs between them.
 fn sampled(
   found: Tape,
   labels: Dict(TriggerId, Label),
@@ -282,6 +287,10 @@ pub fn judge(samples: List(Sample), lane: Lane) -> Result(Finding, Refusal) {
   }
 }
 
+/// The finding for enough samples: the instrument's verdict over the paired
+/// rows, what the run covered, and whether the pair may go to `auto`. The
+/// candidate's trials per trigger set the plan's width, so a sample with fewer
+/// trials than the rest is an incomplete plan and fails.
 fn measure(samples: List(Sample), lane: Lane) -> Finding {
   let trials =
     samples
@@ -326,6 +335,9 @@ fn rows_of(each: Sample, trials: Int) -> List(Trial) {
   list.append(recorded, candidate)
 }
 
+/// One instrument row: a trial passes when the decision is the one the label
+/// asks for. No row is an infrastructure fault or a timeout, so every row is
+/// counted, and the cost is zero because neither lane spends here.
 fn row(each: Sample, arm: String, index: Int, choice: Choice) -> Trial {
   let passed = agrees(choice, each.label)
   Trial(
@@ -367,10 +379,14 @@ fn agrees(choice: Choice, label: Label) -> Bool {
 /// triggers leave no variance. The interval is `paired.interval`, the same
 /// one the verdict's `Improved` and `Harmed` clauses read.
 fn bound_points(rows: List(Trial), plan: List(#(String, Int))) -> Int {
+  // Pairing fails on an incomplete plan, and the standard error fails below
+  // two triggers; neither leaves an interval to read.
   let lower = case pairing.pair(rows, recorded_arm, candidate_arm, plan) {
     Error(_) -> option.None
     Ok(paired) -> {
       let differences = paired.differences(paired)
+
+      // The standard error is undefined below two triggers.
       case paired.clustered_se(differences) {
         Error(Nil) -> option.None
         Ok(se) -> option.Some(paired.interval(paired.mean(differences), se).0)
@@ -378,6 +394,8 @@ fn bound_points(rows: List(Trial), plan: List(#(String, Int))) -> Int {
     }
   }
 
+  // An interval that stays at or above zero rules out any drop, and one that
+  // cannot be formed rules out none.
   case lower {
     option.None -> 100
     option.Some(bound) if bound >=. 0.0 -> 0

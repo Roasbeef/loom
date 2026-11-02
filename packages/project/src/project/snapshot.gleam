@@ -213,6 +213,7 @@ fn state_decoder(config: state.Config) -> Decoder(State) {
     "verdicts",
     decode.list(verdict_entry_decoder()),
   )
+
   // A document written before verdicts carried a pin and before labels
   // existed has none of these fields. The router's pin then reads as unset and
   // the labels as empty, which is the state such a ledger was in.

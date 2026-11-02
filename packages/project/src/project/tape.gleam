@@ -257,6 +257,8 @@ pub fn decode(text: String) -> Result(Tape, TapeError) {
   |> result.replace_error(Malformed)
 }
 
+/// One frame as a JSON object. The thread keeps its order, newest first, and
+/// records for each entry only whether the gate let it through.
 fn frame_json(frame: Frame) -> Json {
   json.object([
     #("trigger", codec.trigger_json(frame.trigger)),
@@ -275,6 +277,7 @@ fn frame_json(frame: Frame) -> Json {
   ])
 }
 
+/// Reads a whole tape. A missing field fails the document.
 fn tape_decoder() -> Decoder(Tape) {
   use source <- decode.field(
     "source",
@@ -285,6 +288,8 @@ fn tape_decoder() -> Decoder(Tape) {
   decode.success(Tape(source:, rule:, frames:))
 }
 
+/// Reads one frame. The trigger goes through the codec's own decoder, so a
+/// trigger in a tape is read exactly as one in the ledger is.
 fn frame_decoder() -> Decoder(Frame) {
   use trigger <- decode.field("trigger", codec.trigger_decoder())
   use text <- decode.field("text", decode.string)
@@ -294,6 +299,7 @@ fn frame_decoder() -> Decoder(Frame) {
   decode.success(Frame(trigger:, text:, relation:, thread:, recorded:))
 }
 
+/// Reads one entry of a frame's thread, in the order it was written.
 fn entry_decoder() -> Decoder(ThreadEntry) {
   use trigger <- decode.field("trigger", decode.map(decode.string, TriggerId))
   use received <- decode.field("received", decode.bool)
@@ -305,6 +311,7 @@ fn entry_decoder() -> Decoder(ThreadEntry) {
   )
 }
 
+/// The word a frame's thread relation is written as.
 fn relation_word(relation: gate.ThreadRelation) -> String {
   case relation {
     gate.OwnTicketThread -> "own"
@@ -312,8 +319,11 @@ fn relation_word(relation: gate.ThreadRelation) -> String {
   }
 }
 
+/// Reads a thread relation from its word. Any other word fails the decode.
 fn relation_decoder() -> Decoder(gate.ThreadRelation) {
   use word <- decode.then(decode.string)
+
+  // The fallback value only types the failure; the decode still fails.
   case word {
     "own" -> decode.success(gate.OwnTicketThread)
     "unrelated" -> decode.success(gate.UnrelatedThread)
@@ -321,6 +331,7 @@ fn relation_decoder() -> Decoder(gate.ThreadRelation) {
   }
 }
 
+/// The word a recorded answer is written as.
 fn recorded_word(recorded: Recorded) -> String {
   case recorded {
     Took -> "took"
@@ -329,8 +340,11 @@ fn recorded_word(recorded: Recorded) -> String {
   }
 }
 
+/// Reads a recorded answer from its word. Any other word fails the decode.
 fn recorded_decoder() -> Decoder(Recorded) {
   use word <- decode.then(decode.string)
+
+  // The fallback value only types the failure; the decode still fails.
   case word {
     "took" -> decode.success(Took)
     "declined" -> decode.success(Declined)

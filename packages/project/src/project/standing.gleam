@@ -74,12 +74,16 @@ fn changed(was: model.Pin, now: model.Pin) -> String {
     differs(was.prompt_revision != now.prompt_revision, "the router prompt"),
     differs(was.model != now.model, "the router model"),
   ]
+
+  // A pin that differs in no part cannot reach here from the engine, but the
+  // words stay true if it does.
   case list_join(parts) {
     "" -> "the pin changed"
     named -> named <> " changed since it was measured"
   }
 }
 
+/// The name of a part of the pin when it changed, and nothing when it did not.
 fn differs(did: Bool, name: String) -> String {
   case did {
     True -> name
@@ -87,16 +91,20 @@ fn differs(did: Bool, name: String) -> String {
   }
 }
 
-// The names that changed, separated by commas, skipping the empty ones.
+/// The names that changed, separated by commas, skipping the empty ones.
 fn list_join(parts: List(String)) -> String {
   case parts {
     [] -> ""
-    [first, ..rest] ->
-      case first, list_join(rest) {
-        "", tail -> tail
-        head, "" -> head
-        head, tail -> head <> ", " <> tail
-      }
+    [first, ..rest] -> join_pair(first, list_join(rest))
+  }
+}
+
+/// Two lists of names joined by a comma, with either side allowed to be empty.
+fn join_pair(head: String, tail: String) -> String {
+  case head, tail {
+    "", _ -> tail
+    _, "" -> head
+    _, _ -> head <> ", " <> tail
   }
 }
 
@@ -128,6 +136,8 @@ pub fn claim(covers: Covers) -> String {
   let triggers = int.to_string(covers.triggers) <> " labelled triggers"
   let size = int.to_string(covers.bound_points) <> " points"
 
+  // The lane decides what a pass may be taken to say, so each states its own
+  // claim and its own limit.
   case covers.lane {
     model.Replay ->
       "Replay over "
@@ -198,6 +208,8 @@ pub fn refusal(current: State, source: SourceId, rule: RuleId) -> String {
   let count =
     int.to_string(labelled) <> " of " <> int.to_string(judge.needed_labels)
 
+  // With enough labels the next step is the verdict itself, and otherwise it
+  // is the labels still missing.
   let next = case missing {
     0 -> "Run the verdict for this rule."
     _ ->
@@ -206,10 +218,9 @@ pub fn refusal(current: State, source: SourceId, rule: RuleId) -> String {
       <> " more triggers, then run the verdict."
   }
 
-  "auto is refused for rule "
-  <> rule.value
-  <> " because "
-  <> case of(current, source, rule) {
+  // The reason follows the pair's standing: nothing recorded, a failure, or a
+  // pass that no longer holds.
+  let reason = case of(current, source, rule) {
     Unmeasured ->
       "no verdict has been recorded. "
       <> count
@@ -221,6 +232,8 @@ pub fn refusal(current: State, source: SourceId, rule: RuleId) -> String {
       <> " triggers are labelled. Change what the rule admits or label more triggers, and run the verdict again."
     Stale(_, why) ->
       "its verdict is stale: " <> why <> ". Run the verdict again."
-    Current(_) -> "of a state the engine did not expect."
+    Current(_) -> "it already holds a current passing verdict."
   }
+
+  "auto is refused for rule " <> rule.value <> " because " <> reason
 }

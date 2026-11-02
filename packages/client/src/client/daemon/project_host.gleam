@@ -4122,6 +4122,8 @@ fn label_now(
   let incoming =
     event.Labelled(model.TriggerId(trigger), label, model.PrincipalId(by))
 
+  // The engine judges the label first. Only an accepted one is written, so a
+  // refused label leaves the ledger and the state as they were.
   case commit(host, incoming) {
     Ok(next) -> #(next, Ok(Nil))
     Error(failure) -> #(host, Error(not_committed_text(failure)))
@@ -4160,6 +4162,9 @@ fn verdict_now(
     })
   }
 
+  // A finding is recorded only after the engine accepts the event. The
+  // engine's acceptance is also what demotes a pair left without a current
+  // passing verdict, so recording and demotion are one ledger line.
   case judged {
     Error(words) -> #(host, Error(words))
     Ok(#(recorded, body)) ->
@@ -4185,7 +4190,7 @@ fn configured_rule(
   |> result.map(fn(found) {
     #(model.SourceId(found.source), model.RuleId(found.name))
   })
-  |> result.replace_error("there is no rule " <> rule)
+  |> result.map_error(fn(_) { "there is no rule " <> rule })
 }
 
 /// The stored text of a trigger, or empty when the host holds none.

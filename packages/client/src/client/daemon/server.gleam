@@ -3625,6 +3625,8 @@ fn project_label(
     project_book.get(control.book, project)
     |> result.map_error(fn(_) { control_refusal("not_found") }),
   )
+
+  // The two words of a label are the only ones there are.
   use parsed <- result.try(case label {
     "accept" -> Ok(project_model.ShouldAccept)
     "reject" -> Ok(project_model.ShouldNotAccept)
