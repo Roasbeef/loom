@@ -98,11 +98,8 @@ fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Settings, String) {
   use _ <- result.try(
     list.try_map(dict.keys(fields), fn(key) {
       case key {
-        "max_workers"
-        | "token_ceiling"
-        | "check"
-        | "protected_paths"
-        | "publish" -> Ok(Nil)
+        "max_workers" | "token_ceiling" -> Ok(Nil)
+        "check" | "protected_paths" | "publish" -> Ok(Nil)
         _ -> Error("unknown key `" <> key <> "` in [project]")
       }
     }),
