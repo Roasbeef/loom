@@ -493,6 +493,10 @@ fn still_enrolled(
       config <> " is unreadable: " <> simplifile.describe_error(error)
     }),
   )
+
+  // A resumed guest's deployment was installed by the `up` that minted it;
+  // only the row it needs is checked, and a missing one is the operator's to
+  // restore, since reinstalling would be refused as an existing deployment.
   case string.contains(text, row) {
     True -> Ok(Enrolled(config:))
     False ->
@@ -500,7 +504,9 @@ fn still_enrolled(
         config
         <> " no longer has "
         <> row
-        <> ". Run `loom vm up --fresh` to provision and enroll the guest again.",
+        <> ". The guest's deployment is still installed there, so add the row "
+        <> "back:\n\n"
+        <> enrolled_row(orchestrator),
       )
   }
 }
@@ -543,6 +549,18 @@ fn install(
     vm_spec.with_loopback_listener(text),
   ))
   Ok(Enrolled(config:))
+}
+
+/// The `[executors.<name>]` table the orchestrator's bundle installed, as
+/// text to add back.
+fn enrolled_row(orchestrator: Bundle) -> String {
+  // A bundle with no row names nothing to restore; the refusal then shows
+  // the shape with placeholders.
+  case orchestrator.executors {
+    [row, ..] ->
+      "[executors." <> row.name <> "]\nnode = \"" <> row.node <> "\"\n"
+    [] -> "[executors.NAME]\nnode = \"NODE\"\n"
+  }
 }
 
 /// The executor row the orchestrator's bundle names, for the refusal's words.
@@ -593,6 +611,9 @@ fn prepare_root(
   let resumable =
     bootstrap.path_exists(guest.root)
     && !result.unwrap(simplifile.is_symlink(guest.root), False)
+
+  // `--fresh` discards the state disk as well as the root, since the disk
+  // holds the guest's writes against that root.
   case options.freshness, resumable {
     vm_spec.Resume, True -> Ok(Nil)
     vm_spec.Resume, False -> replace_root(manifest, guest, platform)

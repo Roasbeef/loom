@@ -41,6 +41,7 @@
 import client/distribution.{type CredentialFiles, CredentialFiles}
 import client/distribution_bundle.{type Bundle}
 import client/distribution_plan.{type Plan, Executor, Node, Orchestrator, Plan}
+import gleam/bool
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
@@ -729,11 +730,20 @@ pub type Launch {
 pub fn with_loopback_listener(text: String) -> String {
   // The install writes the table header on a line of its own; anything else
   // is a file this function does not recognise and leaves alone.
+  // The header must start a line, so a commented `#[distribution]` does not
+  // take the key.
   let header = "[distribution]\n"
-  case
-    string.contains(text, "listen_address"),
-    string.split_once(text, header)
-  {
+
+  // The header either opens the file or follows a newline.
+  let anchored = case string.starts_with(text, header) {
+    True -> Ok(#("", string.drop_start(text, string.length(header))))
+    False ->
+      string.split_once(text, "\n" <> header)
+      |> result.map(fn(parts) { #(parts.0 <> "\n", parts.1) })
+  }
+
+  // A file that already names a listener keeps the operator's choice.
+  case string.contains(text, "listen_address"), anchored {
     False, Ok(#(before, after)) ->
       before <> header <> "listen_address = \"127.0.0.1\"\n" <> after
     _, _ -> text
@@ -919,12 +929,54 @@ fn scrub_header(
   // other header is kept as written.
   case name, rest {
     "credential", _ -> #(lines, Dropping)
-    "url", Inline(setting) ->
+
+    // A `[url "https://user:token@host/"]` header holds the credential in
+    // its subsection name; its keys are the rewrite keys the scrub drops
+    // anyway, so the whole section goes.
+    "url", _ ->
+      case has_userinfo(line) {
+        True -> #(lines, Dropping)
+        False -> scrub_url_header(lines, line, section, rest)
+      }
+    _, _ -> #([line, ..lines], section)
+  }
+}
+
+/// A `[url]` header without userinfo: kept, losing an inline setting the
+/// scrub removes.
+fn scrub_url_header(
+  lines: List(String),
+  line: String,
+  section: Position,
+  rest: Remainder,
+) -> #(List(String), Position) {
+  // Only an inline `insteadOf` changes the line; a bare header is kept.
+  case rest {
+    Inline(setting) ->
       case drops_key(section, setting) {
         True -> #([header_only(line), ..lines], section)
         False -> #([line, ..lines], section)
       }
-    _, _ -> #([line, ..lines], section)
+    Nothing -> #([line, ..lines], section)
+  }
+}
+
+/// Whether a line holds a URL with userinfo: an `@` after `://` and before
+/// the next `/`.
+fn has_userinfo(line: String) -> Bool {
+  // Without a scheme there is no URL authority to hold userinfo.
+  string.split_once(line, "://")
+  |> result.map(fn(parts) { string.contains(split_authority(parts.1).0, "@") })
+  |> result.unwrap(False)
+}
+
+/// Splits what follows a URL's `://` into its authority and its path, the
+/// path keeping its leading `/` and empty when there is none.
+fn split_authority(rest: String) -> #(String, String) {
+  // An authority with no path runs to the end of the text.
+  case string.split_once(rest, "/") {
+    Ok(#(authority, path)) -> #(authority, "/" <> path)
+    Error(Nil) -> #(rest, "")
   }
 }
 
@@ -966,23 +1018,16 @@ pub fn without_userinfo(line: String) -> String {
   // URL with userinfo and stays.
   let rewritten = {
     use #(key, value) <- result.try(string.split_once(line, "="))
-    use Nil <- result.try(case string.lowercase(string.trim(key)) {
-      "url" -> Ok(Nil)
-      _ -> Error(Nil)
-    })
+    let name = string.lowercase(string.trim(key))
+    use <- bool.guard(name != "url" && name != "pushurl", Error(Nil))
     use #(scheme, rest) <- result.try(string.split_once(
       string.trim(value),
       "://",
     ))
-    let #(authority, path) = case string.split_once(rest, "/") {
-      Ok(#(authority, path)) -> #(authority, "/" <> path)
-      Error(Nil) -> #(rest, "")
-    }
+    let #(authority, path) = split_authority(rest)
+    use <- bool.guard(!string.contains(authority, "@"), Error(Nil))
     use host <- result.try(string.split(authority, "@") |> list.last)
-    case string.contains(authority, "@") {
-      True -> Ok(key <> "= " <> scheme <> "://" <> host <> path)
-      False -> Error(Nil)
-    }
+    Ok(key <> "= " <> scheme <> "://" <> host <> path)
   }
   result.unwrap(rewritten, line)
 }

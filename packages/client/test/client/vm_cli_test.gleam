@@ -197,7 +197,7 @@ pub fn another_release_is_refused_with_the_way_out_test() {
     vm_spec.check_revision(manifest("4c266dd"), "0123456789ab")
   assert string.contains(reason, "4c266dd")
   assert string.contains(reason, "crashes the host")
-  assert string.contains(reason, "loom vm setup")
+  assert string.contains(reason, "loom-vm setup")
 }
 
 pub fn an_unknown_running_build_matches_no_commit_test() {
@@ -518,8 +518,34 @@ pub fn a_remote_url_loses_its_userinfo_test() {
 pub fn a_url_without_userinfo_is_left_alone_test() {
   assert vm_spec.without_userinfo("\turl = https://github.com/o/r")
     == "\turl = https://github.com/o/r"
-  assert vm_spec.without_userinfo("\tpushurl = https://a@b.example/x")
-    == "\tpushurl = https://a@b.example/x"
+  assert vm_spec.without_userinfo("\tname = https://a@b.example/x")
+    == "\tname = https://a@b.example/x"
+}
+
+pub fn a_push_url_and_a_url_header_lose_their_tokens_test() {
+  // An authenticated push URL and a rewrite header are the two other places
+  // a token is commonly written in a Git configuration.
+  let text =
+    "[remote \"origin\"]\n\tpushurl = https://x:ghp_push@github.com/o/r\n"
+    <> "[url \"https://x:ghp_header@github.com/\"]\n"
+    <> "\tinsteadOf = https://github.com/\n"
+    <> "[core]\n\tbare = false\n"
+  let scrubbed = vm_spec.scrub_git_config(text)
+  assert !string.contains(scrubbed, "ghp_push")
+  assert !string.contains(scrubbed, "ghp_header")
+  assert string.contains(scrubbed, "\tpushurl = https://github.com/o/r")
+  assert string.contains(scrubbed, "[core]\n\tbare = false")
+}
+
+pub fn a_commented_header_does_not_take_the_listener_test() {
+  let text =
+    "[models.x]\n#[distribution]\nmodel_id = \"m\"\n\n[distribution]\nnode = \"a\"\n"
+  let bound = vm_spec.with_loopback_listener(text)
+  assert string.contains(bound, "#[distribution]\nmodel_id = \"m\"\n")
+  assert string.contains(
+    bound,
+    "\n[distribution]\nlisten_address = \"127.0.0.1\"\nnode = \"a\"\n",
+  )
 }
 
 pub fn the_orchestrator_listener_is_bound_to_loopback_test() {
