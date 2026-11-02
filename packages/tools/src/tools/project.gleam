@@ -277,6 +277,24 @@ pub fn router_tools(seam: Projects) -> List(Tool) {
   [route_tool(seam.route), read_tool(seam.read), reply_tool(seam.reply)]
 }
 
+/// The one tool of a scratch judgement session: the router's `route`, with the
+/// same name, schema and wording, over a `route` closure that the caller
+/// supplies. A verdict asks the router's model what it would route, and it
+/// must ask in the router's words; the closure is what keeps the answer from
+/// reaching the project, so the caller passes one that records the items and
+/// applies nothing. `project_read` and `reply` are not offered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tool.registry(project.judge_tools(fn(_ctx, items) { Ok(list.map(items, fn(_) { project.Applied })) }))
+/// ```
+pub fn judge_tools(
+  route: fn(Ctx, List(Item)) -> Result(List(ItemOutcome), Refusal),
+) -> List(Tool) {
+  [route_tool(route)]
+}
+
 /// A worker's two tools over one seam.
 ///
 /// ## Examples
