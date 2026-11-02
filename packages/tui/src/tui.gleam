@@ -1872,6 +1872,7 @@ pub fn launch_project(
     | RunRefused(..)
     | Acp(..)
     | AcpRefused(..)
+    | ProjectWatch(..)
     | Sessions(..) -> Error("not a project launch")
   }
 }
