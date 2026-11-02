@@ -213,6 +213,7 @@ fn waiting(
         health,
       ])
   }
+
   html.div([], list.append(waiting, would(held.would)))
 }
 

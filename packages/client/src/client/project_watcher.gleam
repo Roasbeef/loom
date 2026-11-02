@@ -129,10 +129,15 @@ pub fn settled(
   interval_s: Int,
 ) -> Watcher {
   let interval_ms = interval_s * 1000
+
+  // The login is remembered once GitHub has said it.
   let account = case polled.account {
     "" -> watcher.account
     found -> Some(found)
   }
+
+  // A clean pass waits the interval, a limited one waits until the time the
+  // limit named, and a broken one waits longer for every failure in a row.
   let #(failures, due_ms) = case polled.health {
     Healthy -> #(0, now_ms + interval_ms)
     Limited(until_ms) -> #(0, int.max(until_ms, now_ms + 1000))
@@ -141,6 +146,7 @@ pub fn settled(
       now_ms + backoff_ms(interval_ms, watcher.failures),
     )
   }
+
   Watcher(..watcher, phase: Idle, due_ms:, failures:, account:, last_ms: now_ms)
 }
 
@@ -250,10 +256,13 @@ pub fn generations(engine: State) -> Dict(String, Int) {
       Nil,
     ))
     let origin = dict.get(engine.triggers, ticket.origin)
+
+    // A ticket whose opening trigger retention dropped counts from zero.
     let base = case origin {
       Ok(stored) -> stored.trigger.generation
       Error(Nil) -> 0
     }
+
     Ok(#(thread, base + 1))
   })
   |> dict.from_list
@@ -306,6 +315,7 @@ pub fn open_conclusions(
 /// assert project_watcher.note_text(clean) == ""
 /// ```
 pub fn note_text(polled: Polled) -> String {
+  // A clean pass has no health line of its own.
   let health = case polled.health {
     Healthy -> []
     Limited(until_ms) -> [
@@ -313,6 +323,7 @@ pub fn note_text(polled: Polled) -> String {
     ]
     Broken(reason) -> [reason]
   }
+
   let all = list.append(health, polled.notes)
   string.join(list.unique(all), "; ")
   |> string.to_utf_codepoints

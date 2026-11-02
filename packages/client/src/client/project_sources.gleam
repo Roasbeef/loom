@@ -193,10 +193,13 @@ fn parse_source(fields: Dict(String, tom.Toml)) -> Result(Github, String) {
     ["kind", "allow", "bots", "account", "interval_s"],
     place,
   ))
+
+  // The only kind of source there is.
   use Nil <- result.try(case dict.get(fields, "kind") {
     Ok(tom.String("github")) -> Ok(Nil)
     Ok(_) | Error(Nil) -> Error(place <> ".kind must be \"github\"")
   })
+
   use allow <- result.try(logins(fields, "allow", place))
   use bots <- result.try(logins(fields, "bots", place))
   use account <- result.try(account(fields, place))
@@ -299,10 +302,13 @@ fn parse_rule(fields: Dict(String, tom.Toml)) -> Result(Rule, String) {
     place,
   ))
   use name <- result.try(rule_name(fields, place))
+
+  // A rule belongs to a source, and there is one kind.
   use source <- result.try(case dict.get(fields, "source") {
     Ok(tom.String("github")) -> Ok("github")
     Ok(_) | Error(Nil) -> Error(place <> ".source must be \"github\"")
   })
+
   use mode <- result.try(mode_of(fields, place))
   use matches <- result.try(literals(fields, place))
   use approvals <- result.map(approvals_of(fields, place))
@@ -341,24 +347,27 @@ fn literals(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(List(String), String) {
+  // The key is required, and it is an array of one to sixteen strings.
   case dict.get(fields, "match") {
     Ok(tom.Array(items)) ->
       case items != [] && list.length(items) <= max_matches {
-        True ->
-          list.try_map(items, fn(item) {
-            case item {
-              tom.String(text) ->
-                case text != "" && string.byte_size(text) <= max_match_bytes {
-                  True -> Ok(text)
-                  False ->
-                    Error(place <> ".match holds a string of 1 to 200 bytes")
-                }
-              _ -> Error(place <> ".match must hold strings")
-            }
-          })
+        True -> list.try_map(items, literal(_, place))
         False -> Error(place <> ".match holds 1 to 16 strings")
       }
     Ok(_) | Error(Nil) -> Error(place <> ".match is required, an array")
+  }
+}
+
+/// One literal of a rule: a string of one to `max_match_bytes` bytes.
+fn literal(item: tom.Toml, place: String) -> Result(String, String) {
+  // Anything but a string of the right size is refused by name.
+  case item {
+    tom.String(text) ->
+      case text != "" && string.byte_size(text) <= max_match_bytes {
+        True -> Ok(text)
+        False -> Error(place <> ".match holds a string of 1 to 200 bytes")
+      }
+    _ -> Error(place <> ".match must hold strings")
   }
 }
 

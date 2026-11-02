@@ -302,6 +302,8 @@ fn send(
   let arguments =
     list.flatten([["api", "--include", "--method", method, path], parameters])
 
+  // A command that did not run is a failure, and one that did is read for its
+  // status line, whatever its exit status was.
   case run(arguments) {
     Error(reason) -> Error(Failed("gh did not run: " <> reason))
     Ok(#(status, output)) -> classify(now_ms, status, output)
@@ -429,6 +431,8 @@ fn waited(now_ms: Int, until_ms: Int) -> Int {
 /// // project_poller.poll(request)
 /// ```
 pub fn poll(request: Request) -> Polled {
+  // Without the agent's login nothing can be told apart, so a pass that cannot
+  // learn it ends there.
   case resolve_account(request) {
     Error(refusal) -> unresolved(refusal)
     Ok(account) -> {
@@ -448,10 +452,12 @@ pub fn poll(request: Request) -> Polled {
 
 /// The answer of a pass that could not learn who the agent is.
 fn unresolved(refusal: Refusal) -> Polled {
+  // A limit defers the next pass; any other refusal breaks this one.
   let health = case refusal {
     Rate(until_ms) -> Limited(until_ms)
     Failed(reason) -> Broken(reason)
   }
+
   Polled(
     arrivals: [],
     conclusions: [],
@@ -464,6 +470,7 @@ fn unresolved(refusal: Refusal) -> Polled {
 
 /// The agent's login: the configured one, or whoever the credentials are.
 fn resolve_account(request: Request) -> Result(String, Refusal) {
+  // The owner's word wins; otherwise GitHub says who the credentials are.
   case request.account {
     Some(configured) -> Ok(configured)
     None -> {
@@ -512,6 +519,7 @@ fn base_path(request: Request) -> String {
   "repos/" <> request.repository.owner <> "/" <> request.repository.name
 }
 
+/// A pass that has read nothing and succeeded at nothing yet.
 fn empty_pass() -> Pass {
   Pass(
     arrivals: [],
@@ -547,7 +555,9 @@ fn health_of(now_ms: Int, total: Pass) -> Health {
   }
 }
 
+/// An allowance at or below `low_remaining` defers the next pass to its reset.
 fn allowance(now_ms: Int, total: Pass) -> Health {
+  // The headers of the last reply that carried them decide.
   case total.remaining, total.reset_s {
     Some(left), Some(reset) if left <= low_remaining ->
       Limited(waited(now_ms, reset * 1000))
@@ -572,6 +582,7 @@ fn read_stream(
   }
 }
 
+/// Asks for a stream's items from its cursor on, oldest first, one page.
 fn fetch_stream(
   request: Request,
   context: Context,
@@ -606,6 +617,7 @@ fn taken(
   since: String,
   page: project_github.Page,
 ) -> Pass {
+  // Items that did not decode are counted in a note and never dropped silently.
   let reported = case page.skipped {
     0 -> total
     skipped ->
@@ -614,10 +626,13 @@ fn taken(
         key <> ": skipped " <> int.to_string(skipped) <> " unreadable items",
       )
   }
+
+  // The cursor moves to the page's newest item, never backwards.
   let moved = case page.newest {
     Some(newest) -> store(reported, key, later(since, newest))
     None -> reported
   }
+
   Pass(
     ..moved,
     arrivals: list.append(list.reverse(page.arrivals), moved.arrivals),
@@ -649,12 +664,15 @@ fn ci_on_default_branch(
   }
 }
 
+/// Learns the default branch's name, then reads its failed check runs.
 fn default_failures(
   request: Request,
   context: Context,
   total: Pass,
   cursor: String,
 ) -> Pass {
+  // The repository's description names the branch; a refusal or an answer
+  // that names none is a note.
   case get(request, base_path(request), []) {
     Error(refusal) -> refused(total, default_ci_key, refusal)
     Ok(described) ->
@@ -706,6 +724,8 @@ fn failures_on(
   }
 }
 
+/// Adds the failures as triggers on the target's thread and moves the target's
+/// cursor to the newest completion time seen.
 fn failed(
   total: Pass,
   context: Context,
@@ -726,6 +746,7 @@ fn failed(
     "" -> total
     _ -> store(total, target.key, newest)
   }
+
   Pass(..moved, arrivals: list.append(list.reverse(arrivals), moved.arrivals))
 }
 
@@ -739,14 +760,28 @@ fn one_pull_request(
   total: Pass,
   watched: Watched,
 ) -> Pass {
+  // A rate limit already ended the pass; nothing more is asked.
+  case total.limited {
+    Some(_) -> total
+    None -> fetch_pull_request(request, context, total, watched)
+  }
+}
+
+/// Asks for the pull request's state and acts on what it says.
+fn fetch_pull_request(
+  request: Request,
+  context: Context,
+  total: Pass,
+  watched: Watched,
+) -> Pass {
   let key = pull_key(watched.number)
   let path = base_path(request) <> "/pulls/" <> int.to_string(watched.number)
 
-  // A rate limit already ended the pass; nothing more is asked.
-  case total.limited, get(request, path, []) {
-    Some(_), _ -> total
-    None, Error(refusal) -> refused(total, key, refusal)
-    None, Ok(reply) ->
+  // A refused or unreadable answer is a note, and the pull request is read
+  // again at the next pass.
+  case get(request, path, []) {
+    Error(refusal) -> refused(total, key, refusal)
+    Ok(reply) ->
       case project_github.pull_state(reply.body) {
         Error(reason) -> noted(total, key <> ": " <> reason)
         Ok(state) ->
@@ -761,6 +796,8 @@ fn one_pull_request(
   }
 }
 
+/// A pull request that is no longer open concludes its ticket, and one that is
+/// still open has its head's failed checks read.
 fn pull_request_read(
   request: Request,
   context: Context,
@@ -769,6 +806,8 @@ fn pull_request_read(
   state: project_github.PullState,
 ) -> Pass {
   let key = pull_key(watched.number)
+
+  // Merged and closed are the two ways a ticket's pull request ends.
   case state.open {
     project_github.WasMerged -> ended(total, watched, model.Merged)
     project_github.WasClosed -> ended(total, watched, model.Closed)
@@ -892,12 +931,14 @@ pub fn post_reply(
   }
 }
 
+/// Posts the comment. Any 2xx answer means GitHub took it.
 fn create_comment(
   run: Runner,
   now_ms: Int,
   path: String,
   body: String,
 ) -> Posting {
+  // A refusal is a rate limit to wait out or a failure to try again.
   case send(run, now_ms, "POST", path, [#("body", body)]) {
     Ok(_) -> Posted
     Error(refusal) -> posting_refused(refusal)
@@ -918,6 +959,9 @@ fn holds_marker(listing: String, marker: String) -> Bool {
     use text <- decode.field("body", decode.optional(decode.string))
     decode.success(option.unwrap(text, ""))
   }
+
+  // A listing that is not an array holds nothing, and a comment that does not
+  // decode does not hold the marker.
   case json.parse(listing, decode.list(decode.dynamic)) {
     Error(_) -> False
     Ok(items) ->
@@ -946,10 +990,27 @@ fn holds_marker(listing: String, marker: String) -> Bool {
 /// ```
 pub fn iso_from_ms(ms: Int) -> String {
   let seconds = int.max(ms, 0) / 1000
-  let days = seconds / 86_400
   let of_day = seconds % 86_400
+  let #(year, month, day) = civil_date(seconds / 86_400)
 
-  // Howard Hinnant's days-to-civil algorithm, for dates from 1970 on.
+  pad(year, 4)
+  <> "-"
+  <> pad(month, 2)
+  <> "-"
+  <> pad(day, 2)
+  <> "T"
+  <> pad(of_day / 3600, 2)
+  <> ":"
+  <> pad(of_day % 3600 / 60, 2)
+  <> ":"
+  <> pad(of_day % 60, 2)
+  <> "Z"
+}
+
+/// The year, month and day of a count of days since 1970-01-01, by Howard
+/// Hinnant's days-to-civil algorithm for dates from 1970 on. The algorithm
+/// counts a year from March, so January and February belong to the next year.
+fn civil_date(days: Int) -> #(Int, Int, Int) {
   let shifted = days + 719_468
   let era = shifted / 146_097
   let day_of_era = shifted - era * 146_097
@@ -966,30 +1027,24 @@ pub fn iso_from_ms(ms: Int) -> String {
     / 365
   let day_of_year =
     day_of_era - { 365 * year_of_era + year_of_era / 4 - year_of_era / 100 }
+
   let shifted_month = { 5 * day_of_year + 2 } / 153
-  let day = day_of_year - { 153 * shifted_month + 2 } / 5 + 1
+
+  // The month counts from March, and is mapped back to the calendar's.
   let month = case shifted_month < 10 {
     True -> shifted_month + 3
     False -> shifted_month - 9
   }
-  let year = year_of_era + era * 400 + january_or_february(month)
 
-  pad(year, 4)
-  <> "-"
-  <> pad(month, 2)
-  <> "-"
-  <> pad(day, 2)
-  <> "T"
-  <> pad(of_day / 3600, 2)
-  <> ":"
-  <> pad(of_day % 3600 / 60, 2)
-  <> ":"
-  <> pad(of_day % 60, 2)
-  <> "Z"
+  #(
+    year_of_era + era * 400 + january_or_february(month),
+    month,
+    day_of_year - { 153 * shifted_month + 2 } / 5 + 1,
+  )
 }
 
-/// The calendar year starts in March in the algorithm above, so January and
-/// February belong to the next year.
+/// One for January and February, which the March-based year puts in the next
+/// year, and none for the other months.
 fn january_or_february(month: Int) -> Int {
   case month <= 2 {
     True -> 1

@@ -118,6 +118,7 @@ pub type Kind {
 
   /// A comment on an issue or a pull request.
   IssueComment
+
   /// A comment on a line of a pull request's diff.
   ReviewComment
 }
@@ -150,8 +151,10 @@ pub type PullState {
 pub type PullOpen {
   /// Still open.
   StillOpen
+
   /// Closed by merging.
   WasMerged
+
   /// Closed without merging.
   WasClosed
 }
@@ -271,10 +274,12 @@ fn at_or_after(created_at: String, since: Option(String)) -> Bool {
   }
 }
 
-// The newest of the items' creation times. ISO 8601 times in one zone sort as
-// text, which is why `plain_time` requires that exact shape.
+/// The newest of the items' creation times. ISO 8601 times in one zone sort as
+/// text, which is why `plain_time` requires that exact shape.
 fn newest_of(notes: List(Note)) -> Option(String) {
   list.fold(notes, None, fn(best, note) {
+    // The first time seen is the best so far; a later one replaces it only
+    // when it sorts after it.
     case best {
       None -> Some(note.created_at)
       Some(held) ->
@@ -288,6 +293,8 @@ fn newest_of(notes: List(Note)) -> Option(String) {
 
 // --- decoding one item --------------------------------------------------------
 
+/// Reads one entry of the issues listing. A pull request in the listing is
+/// kept as `PullListed`, so its time moves the cursor and it makes no trigger.
 fn issue_decoder() -> decode.Decoder(Note) {
   use id <- decode.field("id", decode.int)
   use number <- decode.field("number", decode.int)
@@ -311,13 +318,18 @@ fn issue_decoder() -> decode.Decoder(Note) {
     <> shortened(title)
     <> "\n\n"
     <> option.unwrap(body, "")
+
+  // A listing entry with a `pull_request` field is a pull request.
   let kind = case pull {
     Some(_) -> PullListed
     None -> IssueOpened
   }
+
   well_formed(kind, id, number, login, created_at, text)
 }
 
+/// Reads one comment. `link` names the field that holds the address of the
+/// issue or pull request it belongs to, whose trailing number is its thread.
 fn comment_decoder(kind: Kind, link: String) -> decode.Decoder(Note) {
   use id <- decode.field("id", decode.int)
   use login <- decode.subfield(["user", "login"], decode.string)
@@ -329,11 +341,14 @@ fn comment_decoder(kind: Kind, link: String) -> decode.Decoder(Note) {
     decode.optional(decode.string),
   )
   let number = last_number(url)
+
+  // The heading says which kind of conversation the text came from.
   let heading = case kind {
     IssueComment -> "Comment on #"
     ReviewComment -> "Review comment on pull request #"
     IssueOpened | PullListed -> "Issue #"
   }
+
   let text =
     heading <> int.to_string(number) <> ":\n\n" <> option.unwrap(body, "")
   well_formed(kind, id, number, login, created_at, text)
@@ -355,6 +370,8 @@ fn well_formed(
     && plain_time(created_at)
     && result.is_ok(project_sources.plain_login(login, "login"))
 
+  // An item with an id that is not positive, a time or a login that is not
+  // plain fails here, and the page counts it as skipped.
   case usable {
     True ->
       decode.success(Note(kind:, id:, number:, login:, created_at:, text:))
@@ -379,6 +396,8 @@ fn last_number(url: String) -> Int {
 /// Turns a note into an arrival, or says there is none: the agent's own
 /// message is dropped here.
 fn arrival(context: Context, note: Note) -> Result(Arrival, Nil) {
+  // A pull request in the issues listing and the agent's own words make no
+  // trigger; every other note does.
   case note.kind, same_login(note.login, context.account) {
     PullListed, _ -> Error(Nil)
     _, True -> Error(Nil)
@@ -387,15 +406,22 @@ fn arrival(context: Context, note: Note) -> Result(Arrival, Nil) {
   }
 }
 
+/// The arrival for a note: its id from GitHub's, its thread from the issue or
+/// pull request number, the sender's class from the owner's lists, whether the
+/// text names the agent, the first rule it matches, and the generation of the
+/// thread. None of it is strength, which only the gate sets.
 fn build(context: Context, note: Note) -> Arrival {
   let thread = model.github_thread(note.number)
   let body = bounded(note.text)
   let matched = project_sources.matching(context.rules, "github", body)
   let generation = result.unwrap(dict.get(context.generations, thread.value), 0)
+
+  // A text addresses the agent when it holds the exact `@account` token.
   let addressing = case mentions(body, context.account) {
     True -> Addressed
     False -> Unaddressed
   }
+
   let trigger =
     model.Trigger(
       id: model.TriggerId(trigger_id(note.kind, note.id)),
@@ -504,6 +530,8 @@ fn word_character(last: Result(String, Nil)) -> Bool {
   }
 }
 
+/// Whether a character may be part of a GitHub login in a mention: a letter, a
+/// digit, a hyphen or an underscore.
 fn login_character(character: String) -> Bool {
   character != ""
   && string.contains(
@@ -526,12 +554,15 @@ pub fn bounded(text: String) -> String {
     |> string.to_utf_codepoints
     |> list.map(fn(point) {
       let code = string.utf_codepoint_to_int(point)
+
+      // A control other than the newline and the tab becomes a space.
       case code < 0x20 && code != 0x0a && code != 0x09, code == 0x7f {
         True, _ | _, True -> " "
         False, False -> string.from_utf_codepoints([point])
       }
     })
     |> string.concat
+
   cut(plain, stored_chars, "\n[the text was cut at the ledger's limit]")
 }
 
@@ -638,6 +669,10 @@ fn neutered(text: String) -> String {
   |> string.to_utf_codepoints
   |> list.filter_map(fn(point) {
     let code = string.utf_codepoint_to_int(point)
+
+    // The four characters that notify, tag or reference become look-alikes
+    // GitHub does not act on. Controls become spaces and invisible code points
+    // are removed. Everything else stays.
     case code {
       0x40 -> Ok("\u{ff20}")
       0x3c -> Ok("\u{2039}")
@@ -686,6 +721,9 @@ pub fn failures(
   |> list.filter(fn(failure) { at_or_after(failure.completed_at, since) })
 }
 
+/// Reads one check run and succeeds only for a failed one whose id, time and
+/// commit are plain. Anything else, a pass or a run still going, fails the
+/// decoder, and `failures` leaves it out.
 fn failure_decoder() -> decode.Decoder(Failure) {
   use id <- decode.field("id", decode.int)
   use name <- decode.field("name", decode.string)
@@ -868,6 +906,7 @@ pub fn plain_time(text: String) -> Bool {
   |> list.all(fn(ok) { ok })
 }
 
+/// Whether a text is a commit id: hexadecimal digits, at most 64 bytes.
 fn plain_hex(text: String) -> Bool {
   text != ""
   && string.byte_size(text) <= 64
@@ -876,6 +915,8 @@ fn plain_hex(text: String) -> Bool {
   })
 }
 
+/// Whether a text is a branch name this module will put in a request path:
+/// letters, digits and `-_./`, at most 100 bytes.
 fn plain_ref(text: String) -> Bool {
   text != ""
   && string.byte_size(text) <= 100

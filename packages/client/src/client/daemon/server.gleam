@@ -3543,14 +3543,17 @@ fn project_set_mode(
 ) -> Result(#(String, JsonValue), Refused) {
   use handle <- result.try(
     project_book.get(control.book, project)
-    |> result.replace_error(control_refusal("not_found")),
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
   )
+
+  // The three words of a mode are the only ones there are.
   use parsed <- result.try(case mode {
     "off" -> Ok(project_model.Off)
     "observe" -> Ok(project_model.Observe)
     "auto" -> Ok(project_model.Auto)
     _ -> Error(Refused("bad_request", "a mode is off, observe or auto", []))
   })
+
   use Nil <- result.map(
     project_host.set_mode(handle, rule, parsed, "owner")
     |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
