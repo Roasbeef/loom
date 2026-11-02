@@ -38,6 +38,9 @@
 ////   router holds is on its table, so no candidate, explicit or inferred,
 ////   falls out of both.
 //// - `replay`: replaying the accepted events rebuilds the final state.
+//// - `snapshot`: the final state reads back from its snapshot, as the state
+////   that retention keeps, which never drops an open ticket or an unsettled
+////   trigger (`retire`).
 ////
 //// A command names no identity by value that it could not find again: tickets
 //// and offered triggers are drawn from the model, so deleting a command while
@@ -58,6 +61,7 @@ import project/model.{
 }
 import project/queue
 import project/readiness
+import project/snapshot
 import project/state.{type State}
 import qcheck.{type Generator}
 import statem
@@ -480,11 +484,51 @@ fn execute(
 }
 
 fn finish(sut: Sut, _model: State) -> Result(Nil, statem.Violation) {
-  holds(
+  use _ <- result.try(holds(
     ok: engine.replay(project_config(), list.reverse(sut.log)) == Ok(sut.state),
     tag: "replay",
     detail: "replaying the accepted events did not rebuild the state",
+  ))
+  use _ <- result.try(holds(
+    ok: snapshot.decode(project_config(), snapshot.encode(sut.state))
+      == Ok(sut.state),
+    tag: "snapshot",
+    detail: "the state did not read back from its snapshot",
+  ))
+
+  // Retention keeps a state that itself reads back, and keeps every ticket
+  // that has not ended and every trigger that is not settled.
+  let #(kept, _) = snapshot.retire(sut.state, 1_000_000_000)
+  use _ <- result.try(holds(
+    ok: snapshot.decode(project_config(), snapshot.encode(kept)) == Ok(kept),
+    tag: "retire",
+    detail: "a retired state did not read back from its snapshot",
+  ))
+  holds(
+    ok: unsettled_kept(sut.state, kept),
+    tag: "retire",
+    detail: "retention dropped a ticket still open or a trigger still waiting",
   )
+}
+
+// Whether every open ticket and every unsettled trigger of `before` is in
+// `after`.
+fn unsettled_kept(before: State, after: State) -> Bool {
+  let tickets =
+    dict.values(before.tickets)
+    |> list.all(fn(ticket) {
+      ticket.outcome != None || dict.has_key(after.tickets, ticket.id)
+    })
+  let triggers =
+    dict.values(before.triggers)
+    |> list.all(fn(stored) {
+      case stored.fate {
+        state.Decided(state.Unrouted(_)) | state.Awaiting | state.Offered ->
+          dict.has_key(after.triggers, stored.trigger.id)
+        state.Decided(_) -> True
+      }
+    })
+  tickets && triggers
 }
 
 // What the shadow learns from an accepted event.

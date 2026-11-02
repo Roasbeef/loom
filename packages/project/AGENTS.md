@@ -56,6 +56,11 @@ is `gleam_json`, which has both targets.
   `project/schedule` (worker slots) and `project/work` (a ticket from
   assignment to conclusion).
 - `project/codec` is the ledger's JSON form of an event, with total decoders.
+- `project/snapshot` is the engine's whole state as one JSON document, with total
+  decoders, and `retire`, the retention rule: it drops tickets that ended and
+  triggers that were settled before a horizon and that nothing remaining names, and
+  says what became of each trigger it dropped. `decode(config, encode(s)) == Ok(s)`
+  is a property the model-based test checks on every state it reaches.
 
 ## Invariants that break things when violated
 
@@ -79,6 +84,17 @@ is `gleam_json`, which has both targets.
   queues past the bound when nothing inferred is left to shed. A source
   stops inferring while its open tickets that need a person exceed
   `attention_limit`, and the token ceiling holds inferred work.
+- **An actor's rate is capped.** `queue.actor_cap` (20) inferred triggers from one
+  actor of a source within an hour reach the router; the next is `Decided(Shed)`.
+  Held triggers do not count. Explicit triggers have no cap.
+- **A pull request is a thread the ticket follows.** `PullRequestOpened` subscribes
+  the ticket to `model.pull_request_thread` of the URL (`gh-<n>`), so a comment on
+  the pull request reaches the worker that wrote it, and a source can count a
+  failure on it as one more hop (`Trigger.generation`).
+- **Retention keeps what can still be named.** `snapshot.retire` never drops an open
+  ticket, a trigger that is queued, offered, awaiting or unrouted, or one a
+  remaining ticket names. A dropped trigger's id is unknown to later events, which
+  refuse it as `UnknownTrigger`.
 - **Slots.** `max_workers` general slots plus one reserved for a ticket whose
   demand is `ByPerson`. `schedule.run` is the only place an assignment is
   made, and it skips withdrawn and ended tickets.

@@ -385,8 +385,10 @@ fn closing_decoder(tag: String) -> Decoder(Event) {
 
 // --- shared shapes -----------------------------------------------------------
 
-/// Write a trigger with its gate inputs spelled out.
-fn trigger_json(trigger: Trigger) -> Json {
+/// Write a trigger with its gate inputs spelled out. The state snapshot
+/// (`project/snapshot`) writes triggers the same way events do.
+@internal
+pub fn trigger_json(trigger: Trigger) -> Json {
   json.object([
     #("id", json.string(trigger.id.value)),
     #("source", json.string(trigger.source.value)),
@@ -399,7 +401,8 @@ fn trigger_json(trigger: Trigger) -> Json {
 }
 
 /// Read a trigger; every field is required.
-fn trigger_decoder() -> Decoder(Trigger) {
+@internal
+pub fn trigger_decoder() -> Decoder(Trigger) {
   use id <- decode.field("id", trigger_id())
   use source <- decode.field("source", source_id())
   use thread <- decode.field("thread", text_decoder(ThreadId))
@@ -460,7 +463,8 @@ fn rule_match_decoder() -> Decoder(RuleMatch) {
 
 /// Write a routing decision as references only, with no free text for a
 /// worker.
-fn routing_json(routing: Routing) -> Json {
+@internal
+pub fn routing_json(routing: Routing) -> Json {
   json.object([
     #("trigger", json.string(routing.trigger.value)),
     #("kind", route_kind_json(routing.kind)),
@@ -481,7 +485,8 @@ fn related_json(link: #(model.TicketId, model.Relation)) -> Json {
 }
 
 /// Read a routing decision.
-fn routing_decoder() -> Decoder(Routing) {
+@internal
+pub fn routing_decoder() -> Decoder(Routing) {
   use trigger <- decode.field("trigger", trigger_id())
   use kind <- decode.field("kind", route_kind_decoder())
   use holds <- decode.field("holds", decode.list(trigger_id()))
@@ -547,7 +552,8 @@ fn route_kind_decoder() -> Decoder(RouteKind) {
 }
 
 /// Write a worker report under its `kind` word.
-fn report_json(report: Report) -> Json {
+@internal
+pub fn report_json(report: Report) -> Json {
   case report {
     model.Progress -> json.object([#("kind", json.string("progress"))])
     model.Waiting(question) ->
@@ -570,7 +576,8 @@ fn question_number(question: Question) -> Option(Int) {
 
 /// Read a worker report; any word but the five statuses fails, so there is no
 /// `ready` to read.
-fn report_decoder() -> Decoder(Report) {
+@internal
+pub fn report_decoder() -> Decoder(Report) {
   use kind <- decode.field("kind", decode.string)
 
   // The `kind` word picks the report, and only `waiting` carries a question.
@@ -629,7 +636,8 @@ fn head_fields() -> Decoder(Head) {
 
 /// Write a review reason under its `k` tag. Only the host's own words reach
 /// it, and the decoder caps them again.
-fn reason_json(reason: model.ReviewReason) -> Json {
+@internal
+pub fn reason_json(reason: model.ReviewReason) -> Json {
   case reason {
     model.NoCheckConfigured -> json.object([#("k", json.string("no_check"))])
     model.CheckUnfinished(why) ->
@@ -653,7 +661,8 @@ fn reason_json(reason: model.ReviewReason) -> Json {
 
 /// Read a review reason. A stored reason longer than the cap is cut on the
 /// way in, so a ledger line cannot carry more words than the host may write.
-fn reason_decoder() -> Decoder(model.ReviewReason) {
+@internal
+pub fn reason_decoder() -> Decoder(model.ReviewReason) {
   use tag <- decode.field("k", decode.string)
 
   // The `k` tag picks the reason; an unknown tag fails the decode.
