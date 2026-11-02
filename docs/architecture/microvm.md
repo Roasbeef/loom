@@ -182,7 +182,7 @@ and the last three are the ordinary distributed path.
    a peer whose name differs from the atom dialled.
 
 The guest's own epmd is never reached from the host. The fixed guest listen
-port is 4370 (`vm_spec.guest_port`, `packages/client/src/client/vm_spec.gleam:61`).
+port is 4370 (`vm_spec.guest_port`, `packages/client/src/client/vm_spec.gleam:71`).
 
 ## Isolation around a tool call
 
@@ -523,7 +523,7 @@ Four rules follow from that table:
 
 ## A standing guest: `loom vm`
 
-`loom vm up | down | status` (`client/vm_cli`, with its decisions in
+`loom vm setup | up | down | status` (`client/vm_cli`, with its decisions in
 `client/vm_spec`) is the product path that `daemon_shipped_microvm_test` drives:
 the test installs a manifest with `loom-vm setup --from-build`, runs `loom vm
 up`, `down` and `up` again through the shipped `loomd`, and composes nothing by
@@ -533,12 +533,36 @@ and enrolls it as an ordinary `[executors.<name>]` row, so `loom --executor
 through the same remote placement every executor has. The guest is a separate
 `loom-vm run` process. The daemon does not start it and does not own it.
 
+`loom vm setup [--release TAG | --from-build DIR]` runs the `loom-vm` that ships
+beside `loomd` (`install.launcher()`, `bin/loom-vm` in the server tree, which is
+`$PREFIX/lib/loom/server/bin/loom-vm` once installed and is not on `PATH`) as
+`loom-vm setup --home <vm home> ...`. With no flag it tries, in order, the tags the running
+build may be published under (`vm_spec.release_candidates`, from
+`build_identity.current()`): `commit-<commit>` when the commit is 40 lowercase
+hex digits, which is how a nightly is published (its version is its release's
+version, so `v<version>` would be a different commit), then `v<version>`. Each
+candidate runs `loom-vm setup --release`, and the manifest it wrote must pass
+`check_revision` for the running commit, or that candidate failed and the next
+is tried. `loom-vm` replaces the manifest after each success, so a candidate
+that installed another commit has already replaced the manifest; when every
+candidate fails, `setup` puts the earlier manifest back (or removes the one
+written, when there was none) and reports one line naming each tag with its
+reason, that the artifacts may not be published for this build yet, and that
+`--release TAG` picks another release of the same commit. `--release TAG` tries
+only that tag and `--from-build DIR` only the tree, and neither is checked
+against the running commit. A development build reports version `dev`, has no
+release, and is refused with a message that names `make vmm-install-dev`; the
+same refusal applies to a tree with no `bin/loom-vm`.
+
 `up` reads `~/.loom/vm/manifest.json` (`$LOOM_VM_HOME` overrides the
-directory), which names the built `loom-vm`, the runner, the libkrun and
+directory). When there is none and the build has a release, `up` prints one line
+saying it is running `loom vm setup` for this build, runs it, and continues; a
+development build keeps a refusal that names `make vmm-install-dev`. The
+manifest names the built `loom-vm`, the runner, the libkrun and
 firmware directories and the exported guest root. It refuses a manifest whose
 revision is neither `dev` nor the running build's commit, because a guest
-daemon from another release crashes the host on its first unmatched message.
-It then:
+daemon from another release crashes the host on its first unmatched message;
+the refusal names `loom vm setup`. It then:
 
 1. provisions a two-node static deployment in process into
    `~/.loom/vm/<name>/deploy/`, with the nodes `loom_vm_<name>_orch@127.0.0.1`
@@ -562,7 +586,18 @@ It then:
    named on its command line as a link. It then stages the executor node into
    `<root>/srv/loom-node/`, rewriting its configuration and credentials, and
    copies the workspace, with its `.git` directory, to
-   `<root>/srv/workspaces/<directory name>` unless that copy exists. The copy's
+   `<root>/srv/workspaces/<directory name>` unless that copy exists. A linked
+   worktree, whose `.git` is a file that points outside the directory, is copied
+   the same way and then given a repository of its own. `git clone --no-checkout
+   --no-hardlinks <worktree>` runs into `<root>/srv/loom-node/git-staging`, and
+   its `.git` is moved over the copy's `.git` file. `HEAD` is set to the
+   worktree's branch (the ref is updated to the worktree's commit) or its
+   detached commit, `origin` is set to the worktree's own `origin` URL (or
+   removed when it has none, since the clone's `origin` is the host path), and
+   `git reset` makes the index match `HEAD`, so uncommitted edits show as edits.
+   The remote-tracking refs are the source repository's local branches, not
+   fetched state. A failed Git step removes the copy and refuses with one line,
+   so the next `up` copies again. The copy's
    `.git/config` loses its `[credential]` sections, its `insteadOf`,
    `pushInsteadOf` and `extraheader` keys, any `[url "..."]` section whose
    header carries userinfo, and the userinfo of every `url` and `pushurl`
@@ -582,7 +617,15 @@ deployment, so the guest's checkout can be read afterwards. `status` reports
 the process, the host port the host epmd lists for the executor's node name,
 the manifest's revision, the root and the guest's workspaces. A daemon that
 was running before `up` must be restarted to read the new `[distribution]`
-table.
+table. `up` asks that daemon, through the owner control connection
+(`host/access`, command `status`), how many sessions it holds (`occupied`:
+resident, opening, stopping and blocked). With none, it sends `daemon.shutdown`,
+waits for the process (pid and birth marker) to go, and says the next `loom`
+command starts it again with the table in effect; it does not start the daemon
+itself, because `loom` renders the TLS options file when it launches one
+(protocol-change/106). With any session, or when the daemon does not answer, it
+leaves the daemon running and prints `kill -TERM <pid>` for the pid and birth
+marker it checked.
 
 Two properties of the guest root came out of the first live run. A clone keeps
 Git's read-only object files, and the guest's init cannot give a file to the

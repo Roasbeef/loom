@@ -28,8 +28,8 @@ returning the existing error, because EUnit truncates a failed binary pattern.
 
 ## Standing microVM guest (`loom vm`)
 
-`client.gleam` dispatches `loomd vm up | down | status` to `client/vm_cli`,
-and `loom vm …` forwards there (`tui.gleam`, `Forward(verb: "vm", …)`, with a
+`client.gleam` dispatches `loomd vm setup | up | down | status` to
+`client/vm_cli`, and `loom vm …` forwards there (`tui.gleam`, `Forward(verb: "vm", …)`, with a
 private copy of the usage text that `scripts/cli_help_test.sh` compares).
 `client/vm_spec` holds every decision that needs no effect: argument parsing,
 the artifact manifest decoder and revision check, the two-node
@@ -38,7 +38,8 @@ argument lists, `scrub_git_config`, the pid-file codec and the `epmd -names`
 reader. `client/vm_cli` performs them with `distribution_provision`,
 `distribution_install`, `host/bootstrap` (`spawn_server`, `process_identity`,
 `reserve_loopback_port`), `ffi_os.run_capture` for `cp`, `chmod`, `kill`, `ps`,
-`uname` and `epmd`, and `weft/poll`. It adds no FFI. Tests: `client/vm_cli_test`,
+`uname`, `git` and `epmd`, `host/access` (`raw_request`, `execute`) for the
+daemon's `status` and `daemon.shutdown`, and `weft/poll`. It adds no FFI. Tests: `client/vm_cli_test`,
 which covers the pure decisions, and `daemon_shipped_microvm_test`, the live
 boot, which needs the built artifacts. The latter assembles a build tree of
 links, runs `loom-vm setup --from-build` into a private `LOOM_VM_HOME`, and
@@ -48,6 +49,22 @@ the GitHub placeholder, that a fake token given as `LOOM_VM_GITHUB_TOKEN` is
 nowhere under the guest's files, that the guest's root is a directory and not a
 link to the export, and, with `LOOM_VM_GITHUB_LIVE=1`, that `api.github.com`
 answers `/zen` 200 and `/user` 401 through the proxy.
+
+`setup` runs `install.bundled_launcher()` (`bin/loom-vm` in the server tree)
+with `setup --home <vm home> --release TAG` (or `--from-build`), where with no
+flag the tags are `vm_spec.release_candidates`: `commit-<commit>` for a 40-hex
+commit (a nightly), then `v<version>`, each kept only if the manifest it wrote
+passes `check_revision`; when all fail the earlier manifest is restored. A
+development build (`build_identity` version `dev`) has no release and is
+refused naming `make vmm-install-dev`; `up` with no manifest runs the same
+setup first for a release build. A linked worktree (`.git` a file) is copied as
+a plain tree, then `own_repository` clones it `--no-checkout --no-hardlinks`
+into `<root>/srv/loom-node/git-staging`, moves that `.git` over the copy's,
+restores `HEAD` and `origin` from the worktree (`vm_spec.head_target`,
+`head_arguments`, `origin_arguments`), resets the index, and removes the copy if
+any step fails. At the end `up` asks the user's daemon how many sessions it
+holds: none means `daemon.shutdown` and a note that the next `loom` starts it;
+any means no stop and a `kill -TERM <pid>` line.
 
 Invariants that break things when violated:
 
@@ -59,6 +76,10 @@ Invariants that break things when violated:
 - The install is `RefuseExisting`: a `loom.toml` that holds another
   deployment, or a cookie that differs, is refused and never replaced.
 - The manifest's revision must be `dev` or the running build's commit.
+- `up` never stops a daemon that holds a session, and never starts one.
+- A linked worktree's copy never keeps a `.git` file or an `origin` that names
+  a host path; a failed conversion removes the copy, because a resumed `up`
+  keeps a copy that exists.
 - The pid file holds the process's birth marker, and `down` signals a pid only
   while it still has that marker.
 - The console log is truncated before each launch. It is appended to, and the

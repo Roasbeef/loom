@@ -1289,6 +1289,17 @@ repository's release and its `ghcr.io/OWNER/loom-guest` image. A developer who
 built the artifacts runs `make vmm-install-dev`, which records the paths of
 `packages/vmm/build` without copying them and sets the revision to `dev`.
 
+`loom vm setup` runs this command for you with the `loom-vm` that ships beside
+`loomd`, so a user never types the long path: with no flag it installs the
+artifacts published for the running build. A nightly reports its release's
+version and its own commit and is published as `commit-<full commit>`, so setup
+tries that tag first when the commit is 40 hex digits, then `v<version>`, and
+keeps the first whose manifest revision is the running commit; if none is, it
+restores the earlier manifest and names every tag it tried. `--release TAG`
+tries only that tag and `--from-build DIR` passes through. `loom vm up` runs the same
+setup first when no manifest exists. A development build reports version `dev`,
+has no release and is refused with a message that names `make vmm-install-dev`.
+
 ### Verification, re-signing and quarantine
 
 Setup compares the SHA-256 of the runner and the firmware with
