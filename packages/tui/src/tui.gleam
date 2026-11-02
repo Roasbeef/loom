@@ -77,6 +77,7 @@ import gleam/set
 import gleam/string
 import gleam/time/calendar
 import gleam/time/duration
+import gleam/time/timestamp
 import host/bootstrap as host_bootstrap
 import host/build_identity
 import host/claim as claim_token
@@ -111,6 +112,7 @@ import session_view/transcript_line.{
   Assistant, Line, Reasoning, System, ToolResult,
 }
 import session_view/worktree_view
+import simplifile
 import tui/access as access_command
 import tui/acp/server as acp_server
 import tui/admission
@@ -245,6 +247,10 @@ type Launch {
   // answer or one failure with an exit status.
   Directory(options: bootstrap.Options, output: Output)
 
+  /// `loom project init | post | board`: project mode for the repository in
+  /// the working directory (`protocol-change/106`).
+  Project(options: bootstrap.Options, command: ProjectCommand)
+
   // `loom run -p …` is the headless one-shot client (issue #492): it creates a
   // session, sends one prompt, waits for the run to end, prints one JSON line
   // and exits with the verdict. It installs no terminal state.
@@ -270,7 +276,23 @@ type Launch {
 // `list` carries its own `Showing` for the same reason: the parser is the
 // one place `--all` is read, so the runner never re-derives the question
 // from flags either.
+/// What `loom project` was asked to do.
 @internal
+pub type ProjectCommand {
+  /// Make a project for the working directory and show its router session.
+  ProjectInit
+
+  /// Post the owner's text as an explicit trigger.
+  ProjectPost(
+    /// The text.
+    text: String,
+  )
+
+  /// Show the board, with what needs a person first.
+  ProjectBoard
+}
+
+/// The `loom sessions` subcommands.
 pub type SessionsCommand {
   ListRegistrations(showing: Showing, reach: Reach)
   RemoveRegistration(session_id: String, consent: Consent)
@@ -420,6 +442,7 @@ pub fn main() {
         | ["sessions", ..]
         | ["deployment", ..]
         | ["directory", ..]
+        | ["project", ..]
         | ["run", ..]
         | ["acp", ..]
         | ["claim", ..]
@@ -447,6 +470,7 @@ pub fn main() {
         Sessions(options:, command:) -> run_sessions(options, command)
         Deployment(options:, command:) -> run_deployment(options, command)
         Directory(options:, output:) -> run_directory(options, output)
+        Project(options:, command:) -> run_project(options, command)
         Run(request:) -> finish_run(request)
         RunRefused(reason:) -> refuse_run(reason)
         Acp(config:) -> finish_acp(config)
@@ -539,6 +563,7 @@ fn help_topic(arguments: List(String)) -> Option(String) {
     Ok("sessions") -> Some(sessions_usage())
     Ok("deployment") -> Some(deployment_usage())
     Ok("directory") -> Some(directory_usage())
+    Ok("project") -> Some(project_usage())
     Ok("run") -> Some(run_usage())
     Ok("acp") -> Some(acp_server.usage())
     Ok("claim") | Ok("enroll") -> Some(claim.usage)
@@ -561,6 +586,7 @@ fn is_topic(word: String) -> Bool {
     | "sessions"
     | "deployment"
     | "directory"
+    | "project"
     | "run"
     | "acp"
     | "ext"
@@ -926,6 +952,7 @@ fn interactive(launch: Launch, record: String) -> Nil {
     | Sessions(..)
     | Deployment(..)
     | Directory(..)
+    | Project(..)
     | Run(..)
     | RunRefused(..)
     | Acp(..)
@@ -1023,6 +1050,7 @@ fn interactive(launch: Launch, record: String) -> Nil {
     | Sessions(..)
     | Deployment(..)
     | Directory(..)
+    | Project(..)
     | Run(..)
     | RunRefused(..)
     | Acp(..)
@@ -1170,7 +1198,7 @@ fn parse_launch(arguments: List(String)) -> Launch {
 // reports it the way it does for the trailing spelling.
 // The subcommands whose usage lists the daemon options.
 const hoisting_verbs = [
-  "sessions", "deployment", "directory", "ui", "run", "acp",
+  "sessions", "deployment", "directory", "project", "ui", "run", "acp",
 ]
 
 /// Establishes and coordinates hoist daemon options operations for the TUI runtime.
@@ -1230,6 +1258,7 @@ fn parse_words(arguments: List(String)) -> Launch {
     ["sessions", ..rest] -> parse_sessions(rest)
     ["deployment", ..rest] -> parse_deployment(rest)
     ["directory", ..rest] -> parse_directory(rest)
+    ["project", ..rest] -> parse_project(rest)
     ["run", ..rest] ->
       case run.parse(rest) {
         Ok(request) -> Run(request:)
@@ -1376,7 +1405,8 @@ pub fn launch_daemon_options(
   case parse_launch(arguments) {
     Sessions(options:, ..)
     | Deployment(options:, ..)
-    | Directory(options:, ..) -> Ok(options)
+    | Directory(options:, ..)
+    | Project(options:, ..) -> Ok(options)
     Invalid(reason) -> Error(reason)
     _other -> Error("not a daemon command launch")
   }
@@ -1705,6 +1735,32 @@ fn parse_directory(arguments: List(String)) -> Launch {
 }
 
 /// Establishes and coordinates directory usage operations for the TUI runtime.
+fn project_usage() -> String {
+  "usage: loom project init | post <text> | board [--state-dir <path>] "
+  <> "[--config <loom.toml>] [--server <path>]\n"
+  <> "  init makes a project for the repository in the working directory, with\n"
+  <> "  a router session that decides what each message becomes. post sends\n"
+  <> "  your text to the router as an explicit request, and board lists the\n"
+  <> "  project's tickets with what needs you first. A project needs no\n"
+  <> "  configuration: inferred work stays off and you are its only source."
+}
+
+fn parse_project(arguments: List(String)) -> Launch {
+  case arguments {
+    ["init", ..flags] -> project_launch(flags, ProjectInit)
+    ["board", ..flags] -> project_launch(flags, ProjectBoard)
+    ["post", text, ..flags] -> project_launch(flags, ProjectPost(text))
+    _unknown -> Invalid(project_usage())
+  }
+}
+
+fn project_launch(flags: List(String), command: ProjectCommand) -> Launch {
+  case parse_local_options(flags, default_bootstrap_options()) {
+    Ok(options) -> Project(options:, command:)
+    Error(reason) -> Invalid(reason <> "\n" <> project_usage())
+  }
+}
+
 fn directory_usage() -> String {
   "usage: loom directory status [--json] [--state-dir <path>] [--server <path>]\n"
   <> "  status shows the session directory's cluster as the daemon you are\n"
@@ -1746,6 +1802,7 @@ pub fn launch_deployment(
     | Enroll(..)
     | Access(..)
     | Directory(..)
+    | Project(..)
     | Run(..)
     | RunRefused(..)
     | Acp(..)
@@ -1785,6 +1842,7 @@ pub fn launch_directory(arguments: List(String)) -> Result(Output, String) {
     | RunRefused(..)
     | Acp(..)
     | AcpRefused(..)
+    | Project(..)
     | Sessions(..) -> Error("not a directory launch")
   }
 }
@@ -1814,6 +1872,146 @@ fn run_deployment(
 }
 
 /// Establishes and coordinates run directory operations for the TUI runtime.
+fn run_project(options: bootstrap.Options, command: ProjectCommand) -> Nil {
+  case sessions_host(options) {
+    Error(reason) -> command_failed("project", reason)
+    Ok(#(control, host)) -> {
+      let outcome = project_outcome(host, command)
+      daemon.close(control)
+      print_outcome("project", outcome)
+    }
+  }
+}
+
+// One round trip per subcommand, except that `post` and `board` first find the
+// project of the working directory in `projects.list`.
+fn project_outcome(
+  host: daemon_selection.Host,
+  command: ProjectCommand,
+) -> Result(String, String) {
+  use here <- result.try(
+    simplifile.current_directory()
+    |> result.replace_error("the working directory cannot be read"),
+  )
+  case command {
+    ProjectInit -> {
+      let name = case list.last(string.split(here, "/")) {
+        Ok(last) if last != "" -> last
+        _ -> "project"
+      }
+      use made <- result.map(
+        project_request(host, "projects.create", [
+          #("workspace", json.String(here)),
+          #("name", json.String(name)),
+        ]),
+      )
+      "project "
+      <> project_text(made, "project")
+      <> " ready for "
+      <> project_text(made, "workspace")
+      <> "; router session "
+      <> project_text(made, "router_session")
+    }
+    ProjectPost(text) -> {
+      use id <- result.try(project_here(host, here))
+      use posted <- result.map(
+        project_request(host, "projects.post", [
+          #("project", json.String(id)),
+          #("request_id", json.String(fresh_request_id())),
+          #("text", json.String(text)),
+        ]),
+      )
+      "posted " <> project_text(posted, "trigger")
+    }
+    ProjectBoard -> {
+      use id <- result.try(project_here(host, here))
+      use board <- result.map(
+        project_request(host, "projects.board", [#("project", json.String(id))]),
+      )
+      board_text(board)
+    }
+  }
+}
+
+fn project_request(
+  host: daemon_selection.Host,
+  name: String,
+  fields: List(#(String, json.JsonValue)),
+) -> Result(json.JsonValue, String) {
+  daemon_selection.projects(host, name, fields)
+}
+
+// The project whose workspace is the working directory, from the list.
+fn project_here(
+  host: daemon_selection.Host,
+  here: String,
+) -> Result(String, String) {
+  use listed <- result.try(project_request(host, "projects.list", []))
+  case listed {
+    json.Object(fields) ->
+      case list.key_find(fields, "projects") {
+        Ok(json.Array(rows)) ->
+          list.find_map(rows, fn(row) {
+            case project_text(row, "workspace") == here {
+              True -> Ok(project_text(row, "id"))
+              False -> Error(Nil)
+            }
+          })
+          |> result.replace_error(
+            "no project for this directory; run `loom project init` here",
+          )
+        _ -> Error("the project list was not understood")
+      }
+    _ -> Error("the project list was not understood")
+  }
+}
+
+fn project_text(document: json.JsonValue, key: String) -> String {
+  case document {
+    json.Object(fields) ->
+      case list.key_find(fields, key) {
+        Ok(json.String(text)) -> text_hygiene.single_line(text)
+        _ -> ""
+      }
+    _ -> ""
+  }
+}
+
+// Each ticket is one line: its stage as the engine spells it, its id and its
+// title. The daemon sends needs-a-person tickets first, and the order is kept.
+fn board_text(board: json.JsonValue) -> String {
+  let tickets = case board {
+    json.Object(fields) ->
+      case list.key_find(fields, "tickets") {
+        Ok(json.Array(rows)) -> rows
+        _ -> []
+      }
+    _ -> []
+  }
+  case tickets {
+    [] -> "no tickets"
+    _ ->
+      tickets
+      |> list.map(fn(row) {
+        project_text(row, "stage")
+        <> "  "
+        <> project_text(row, "id")
+        <> "  "
+        <> project_text(row, "title")
+      })
+      |> string.join("\n")
+  }
+}
+
+// A request id for one `post`. Posting is keyed by it, so a resend of the same
+// command line would need the same id; a command line is one post, and the time
+// to the nanosecond is distinct for each.
+fn fresh_request_id() -> String {
+  let #(seconds, nanoseconds) =
+    timestamp.to_unix_seconds_and_nanoseconds(timestamp.system_time())
+  "cli-" <> int.to_string(seconds) <> "-" <> int.to_string(nanoseconds)
+}
+
 fn run_directory(options: bootstrap.Options, output: Output) -> Nil {
   // Handle run directory branch dispatch.
   case sessions_host(options) {

@@ -398,6 +398,18 @@ pub type Command {
     /// The identity the page follows. Present only with an `orchestrator`.
     after: Option(String),
   )
+
+  /// One of the `projects.*` commands (`protocol-change/106`). Owner-only. The
+  /// name is the wire command (`projects.create`, `projects.board`,
+  /// `projects.post`) and the fields are its body, so the launcher's
+  /// subcommands share one variant, and the daemon's reply is read where it is
+  /// drawn.
+  ProjectsCommand(
+    /// The wire command.
+    name: String,
+    /// The command's body fields.
+    fields: List(#(String, json.JsonValue)),
+  )
 }
 
 /// The most sessions one `SessionActivity` request may name.
@@ -719,6 +731,13 @@ pub type Reply {
     /// The daemon's reply body, unread.
     document: json.JsonValue,
   )
+
+  /// The answer to a `projects.*` command. The body is kept whole, and the
+  /// launcher's `project` subcommands read the fields they print.
+  ProjectsReply(
+    /// The daemon's reply body, unread.
+    document: json.JsonValue,
+  )
 }
 
 /// One validated server envelope; uncorrelated hello is the only handshake.
@@ -815,6 +834,7 @@ pub fn name(command: Command) -> String {
     DeploymentStatus(..) -> "deployment.status"
     DirectoryStatus -> "directory.status"
     SessionsElsewhere(..) -> "sessions.elsewhere"
+    ProjectsCommand(name:, ..) -> name
     Shutdown -> "daemon.shutdown"
   }
 }
@@ -842,7 +862,10 @@ pub fn mutates(command: Command) -> Bool {
     | DeploymentStatus(..)
     | DirectoryStatus
     | SessionsElsewhere(..)
+    | ProjectsCommand("projects.board", _)
+    | ProjectsCommand("projects.list", _)
     | SessionActivity(..) -> False
+    ProjectsCommand(..) -> True
     SetDefault(..)
     | RenameSession(..)
     | CreateSession(..)
@@ -944,6 +967,7 @@ fn command_fields(command: Command, epoch: Epoch) {
       }
     SessionsElsewhere(orchestrator, after) ->
       elsewhere_fields(orchestrator, after)
+    ProjectsCommand(_, fields) -> Ok(fields)
     ListSessions(after, revision) | ListArchivedSessions(after, revision) -> {
       // Validate continuation token.
       use Nil <- result.try(case after {
@@ -1412,6 +1436,11 @@ fn redirect_at(code: String, body: json.JsonValue) -> Result(Redirect, Nil) {
 fn decode_reply(event: String, body: json.JsonValue) {
   // Dispatch on reply event name to decode structured payload.
   case event {
+    "projects.create"
+    | "projects.list"
+    | "projects.board"
+    | "projects.post"
+    | "projects.stop" -> Ok(ProjectsReply(body))
     "status" -> result.map(summary(body), StatusReply)
     "ui.link" -> {
       use path <- result.try(text_at(body, "path", 1024))
