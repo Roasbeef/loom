@@ -1509,6 +1509,174 @@ pub fn the_ledger_is_staged_once_beside_the_credentials_test() {
   let assert Ok(Nil) = simplifile.delete_all([scratch])
 }
 
+// --- joining a deployment ----------------------------------------------------
+
+pub fn the_daemon_is_found_in_the_installed_ledger_test() {
+  let made = minted_ledger("dev")
+  let assert Ok(membership) =
+    vm_spec.orchestrator_membership(
+      made.authority.certificate,
+      made.ledger,
+      "loom_vm_dev_orch@127.0.0.1",
+    )
+  assert membership.deployment == made.authority.deployment
+  assert membership.member == "dev-host"
+
+  // The executor is a member too, but a guest links to an orchestrator.
+  let assert Error(reason) =
+    vm_spec.orchestrator_membership(
+      made.authority.certificate,
+      made.ledger,
+      "loom_vm_dev_exec@127.0.0.1",
+    )
+  assert string.contains(reason, "only an orchestrator")
+  assert result.is_error(vm_spec.orchestrator_membership(
+    made.authority.certificate,
+    made.ledger,
+    "nobody@127.0.0.1",
+  ))
+
+  // A ledger of another authority does not replay.
+  let other = minted_ledger("dev")
+  assert result.is_error(vm_spec.orchestrator_membership(
+    other.authority.certificate,
+    made.ledger,
+    "loom_vm_dev_orch@127.0.0.1",
+  ))
+}
+
+pub fn a_joined_guest_takes_nothing_from_the_configuration_test() {
+  let teardown = vm_spec.joined_teardown()
+  assert teardown.tables == []
+  assert teardown.cookie == vm_spec.KeepCookie
+  let assert [line] = teardown.left
+  assert string.contains(line, "[distribution] and the cookie")
+}
+
+// A deployment with two executors, `dev` (which also minted it) and `other`,
+// both written under the vm home the way a mint and a join leave them.
+fn two_guest_deployment() -> distribution_provision.Provisioned {
+  let dev = vm_spec.names("dev")
+  let other = vm_spec.names("other")
+  let node = fn(name, role, erlang_node, port, uses) {
+    distribution_plan.Node(
+      name:,
+      role:,
+      erlang_node:,
+      host: "127.0.0.1",
+      listen_port: port,
+      bundle_dir: None,
+      executors: uses,
+      workspaces: [],
+    )
+  }
+  let assert Ok(plan) =
+    distribution_plan.validate(
+      distribution_plan.Plan(
+        nodes: [
+          node(
+            dev.orchestrator,
+            distribution_plan.Orchestrator,
+            dev.orchestrator_node,
+            None,
+            ["dev", "other"],
+          ),
+          node(
+            "dev",
+            distribution_plan.Executor,
+            dev.executor_node,
+            Some(4370),
+            [],
+          ),
+          node(
+            "other",
+            distribution_plan.Executor,
+            other.executor_node,
+            Some(4371),
+            [],
+          ),
+        ],
+        directory: [],
+      ),
+    )
+  let assert Ok(made) =
+    distribution_provision.provision_ledger(plan, timestamp.system_time())
+  made
+}
+
+pub fn the_key_stays_while_a_guest_of_its_deployment_remains_test() {
+  let home = scratch_home()
+  let made = two_guest_deployment()
+  let directory = vm_spec.authority_directory(home, made.authority.deployment)
+  write_guest(home, "dev", made.deployment)
+  write_guest(home, "other", made.deployment)
+  assert vm_cli.seal_authority(directory, made) == Ok(Nil)
+
+  // Each guest's executor bundle names the same deployment, so neither takes
+  // the key with it while the other is there.
+  assert vm_cli.removable_authority(home, "dev") == None
+  assert vm_cli.removable_authority(home, "other") == None
+
+  // The last one takes it.
+  let assert Ok(Nil) = simplifile.delete_all([home <> "/dev"])
+  assert vm_cli.removable_authority(home, "other") == Some(directory)
+  let assert Ok(Nil) = simplifile.delete_all([home])
+}
+
+pub fn an_upgrade_names_its_root_only_after_the_workspaces_moved_test() {
+  let #(scratch, root, _) = scratch_root()
+  let building = scratch <> "/root.building"
+  let next = scratch <> "/root.next"
+
+  // The old root holds the real workspace; the clone of an export that ships
+  // a workspaces directory holds a shipped one.
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(root <> "/srv/workspaces/real")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(building <> "/srv/workspaces/shipped")
+
+  // Before the move, `root.next` does not exist, so a stop after the clone
+  // cannot look like a finished rename.
+  assert simplifile.is_directory(next) == Ok(False)
+  assert vm_cli.move_into_place(root <> "/srv/workspaces", building, next)
+    == Ok(Nil)
+  assert simplifile.is_directory(next <> "/srv/workspaces/real") == Ok(True)
+  assert simplifile.is_directory(next <> "/srv/workspaces/shipped") == Ok(False)
+  assert simplifile.is_directory(building) == Ok(False)
+  assert simplifile.is_directory(root <> "/srv/workspaces") == Ok(False)
+  let assert Ok(Nil) = simplifile.delete_all([scratch])
+}
+
+pub fn a_stop_after_the_clone_is_an_upgrade_again_not_a_finish_test() {
+  // `root.next` is absent while the clone is `root.building`, so the layout
+  // is the one of a root that has not moved its workspaces.
+  let layout = vm_spec.RootLayout(vm_spec.Present, vm_spec.Absent)
+  assert vm_spec.root_step(vm_spec.Resume, layout, Some("aaaaaaa"), "bbbbbbb")
+    == vm_spec.UpgradeRoot(Some("aaaaaaa"))
+  let moved = vm_spec.RootLayout(vm_spec.Present, vm_spec.Present)
+  assert vm_spec.root_step(vm_spec.Resume, moved, Some("aaaaaaa"), "bbbbbbb")
+    == vm_spec.FinishUpgrade
+}
+
+pub fn a_host_copy_with_no_staged_script_is_staged_again_test() {
+  // The root has neither marker nor script but the host keeps a copy: `up`
+  // stopped between the clone and the staging.
+  assert vm_spec.provision_plan(
+      None,
+      vm_spec.NeverProvisioned,
+      Some("/vm/provision"),
+    )
+    == Ok(vm_spec.StageScript("/vm/provision"))
+  assert vm_spec.provision_plan(None, vm_spec.NeverProvisioned, None)
+    == Ok(vm_spec.NoScript)
+  assert vm_spec.provision_plan(
+      None,
+      vm_spec.AlreadyProvisioned,
+      Some("/vm/provision"),
+    )
+    == Ok(vm_spec.NoScript)
+}
+
 // --- undoing an enrolment ----------------------------------------------------
 
 const orch_node = "loom_vm_dev_orch@127.0.0.1"

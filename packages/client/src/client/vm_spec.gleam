@@ -822,7 +822,16 @@ pub fn provision_plan(
         Some(path) -> Ok(StageScript(path))
         None -> Ok(RetryStaged)
       }
-    None, AlreadyProvisioned | None, NeverProvisioned -> Ok(NoScript)
+    None, AlreadyProvisioned -> Ok(NoScript)
+
+    // The host keeps its copy of a script before it touches the root, so a
+    // copy with neither marker nor staged script in the root means an earlier
+    // `up` stopped between the clone and the staging.
+    None, NeverProvisioned ->
+      case kept {
+        Some(path) -> Ok(StageScript(path))
+        None -> Ok(NoScript)
+      }
   }
 }
 
@@ -880,6 +889,12 @@ pub const provision_copy_file = "provision"
 /// The name of the directory beside `root` where an upgrade builds the new
 /// root before it takes the old one's place.
 pub const next_root_dir = "root.next"
+
+/// Where an upgrade clones the new root before it is `root.next`. `up` reads a
+/// `root.next` with `srv/workspaces` in it as an upgrade whose workspaces have
+/// moved, so the clone, which may ship that directory, is never given the name:
+/// the rename to `root.next` is the last step of the build.
+pub const building_root_dir = "root.building"
 
 /// The revision a manifest has when it describes a build tree.
 const dev_revision = "dev"
@@ -1761,14 +1776,84 @@ pub fn bundle_deployment(bundle: Bundle) -> Result(String, Nil) {
   // A static bundle lists peers and has no ledger to carry an id.
   case bundle.trust {
     distribution_bundle.StaticPeers(_) -> Error(Nil)
-    distribution_bundle.SignedLedger(lines) -> {
-      use verifier <- result.try(
-        membership_signing.verifier(bundle.ca) |> result.replace_error(Nil),
-      )
-      membership_ledger.replay(list.map(lines, bit_array.from_string), verifier)
+    distribution_bundle.SignedLedger(lines) ->
+      replayed(bundle.ca, lines)
       |> result.map(membership_ledger.deployment)
-      |> result.replace_error(Nil)
-    }
+  }
+}
+
+/// The ledger a list of lines replays to against a certificate authority, or
+/// `Nil` when the authority is not a certificate or a line does not verify.
+fn replayed(
+  ca: String,
+  lines: List(String),
+) -> Result(membership_ledger.Ledger, Nil) {
+  use verifier <- result.try(
+    membership_signing.verifier(ca) |> result.replace_error(Nil),
+  )
+  membership_ledger.replay(list.map(lines, bit_array.from_string), verifier)
+  |> result.replace_error(Nil)
+}
+
+/// Who the daemon whose configuration is being joined is, in the deployment
+/// its installed ledger records.
+pub type Membership {
+  Membership(
+    /// The deployment id of the ledger's genesis entry.
+    deployment: String,
+    /// The ledger's name for the daemon, which a guest's enrolment links to.
+    member: String,
+  )
+}
+
+/// Reads the installed ledger (`ledger_text`, the file the configuration
+/// names) against its certificate authority `ca` and finds the member whose
+/// node is `node`, the `[distribution] node` of the same configuration. A
+/// ledger that does not replay, a node the ledger has no active member for,
+/// and a member that is not an orchestrator are each an error, because a
+/// guest can only be linked to an orchestrator that uses it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(vm_spec.Membership(member: "laptop", ..)) =
+///   vm_spec.orchestrator_membership(ca, ledger_text, "laptop@127.0.0.1")
+/// ```
+pub fn orchestrator_membership(
+  ca: String,
+  ledger_text: String,
+  node: String,
+) -> Result(Membership, String) {
+  let lines =
+    string.split(ledger_text, "\n")
+    |> list.filter(fn(line) { string.trim(line) != "" })
+  use ledger <- result.try(
+    replayed(ca, lines)
+    |> result.map_error(fn(_) {
+      "the installed ledger does not replay against the configuration's ca"
+    }),
+  )
+  use member <- result.try(
+    membership_ledger.member_at(ledger, node)
+    |> result.map_error(fn(_) {
+      node <> " is not an active member of the installed ledger"
+    }),
+  )
+
+  // Only an orchestrator uses an executor.
+  case member.role {
+    Orchestrator ->
+      Ok(Membership(
+        deployment: membership_ledger.deployment(ledger),
+        member: member.name,
+      ))
+    _ ->
+      Error(
+        node
+        <> " is a "
+        <> distribution_plan.role_word(member.role)
+        <> " in the installed ledger, and only an orchestrator uses a guest",
+      )
   }
 }
 
@@ -3289,6 +3374,23 @@ pub fn plan_teardown(
     _, [line] if shared_present -> Teardown(rows, KeepCookie, [line, ..row_left])
     _, _ -> own_shared(found, rows, row_left, cookie)
   }
+}
+
+/// What `rm` takes out of the configuration for a guest that joined its
+/// daemon's deployment: nothing. The guest has no `[executors.<name>]` row,
+/// since the daemon derives it from the ledger, and the `[distribution]` table
+/// and the cookie are the deployment's, shared with every member.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.joined_teardown().tables == []
+/// ```
+pub fn joined_teardown() -> Teardown {
+  Teardown(tables: [], cookie: KeepCookie, left: [
+    "[distribution] and the cookie belong to the deployment the guest joined, "
+    <> "so they stay",
+  ])
 }
 
 /// What goes of the shared tables when no executor needs them and they are not
