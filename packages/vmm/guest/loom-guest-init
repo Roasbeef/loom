@@ -6,13 +6,16 @@
 #
 #   /usr/local/sbin/loom-guest-init loomd --state-dir /var/lib/loom ...
 #
-# It does four things before the command starts. They run in this order
+# It does four things before the command starts, and two optional ones. They run in this order
 # because each later step depends on the earlier one.
 #
 #   1. Configure the network. go-microvm v0.0.43 serves no DHCP lease, so
 #      the address, route and resolver that the host-side stack expects are
 #      set statically (guest 192.168.127.2/24, gateway and DNS
 #      192.168.127.1).
+#   1b. Trust the host-side credential proxy, when there is one.
+#   1c. Run the developer's provisioning script as root, once, when one was
+#       staged and has not succeeded yet.
 #   2. Give the loom user ownership of its home, state and work directories.
 #   3. Build a delegated cgroup v2 subtree, so that loom-exec's pids and
 #      memory ceilings take effect for a process that is not root.
@@ -53,6 +56,38 @@ if [ -f /usr/local/share/ca-certificates/loom-vm-proxy.crt ]; then
 		. /etc/loom-vm/github.env
 		set +a
 	fi
+fi
+
+# --- 1c. Provisioning script -----------------------------------------------
+#
+# `loom vm up --provision SCRIPT` copies a script the developer wrote to
+# /etc/loom-vm/provision. It runs here, as root, once: after the network and
+# the proxy environment exist, so it can install a toolchain from the hosts the
+# guest's egress allowlist names, and before the executor starts and before
+# anything drops to the loom user. Its output goes to the console, which the
+# launcher writes to loom-vm.log.
+#
+# The marker is created only when the script exits zero, so a resume skips a
+# script that succeeded and a failed one runs again on the next `up`. A failure
+# prints a console line that `up` waits for, then stops the guest rather than
+# starting an executor on a half-built image. PATH is set explicitly because
+# libkrun's init passes none of the image's.
+
+provision=/etc/loom-vm/provision
+provisioned=/etc/loom-vm/provisioned
+
+if [ -f "$provision" ] && [ ! -f "$provisioned" ]; then
+	echo "loom-guest-init: running the provisioning script"
+	status=0
+	env HOME=/root DEBIAN_FRONTEND=noninteractive \
+		PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+		"$provision" || status=$?
+	if [ "$status" -ne 0 ]; then
+		echo "LOOM-PROVISION-FAILED status=$status"
+		exit 1
+	fi
+	: > "$provisioned"
+	echo "loom-guest-init: the provisioning script succeeded"
 fi
 
 # --- 2. Ownership of the loom user's directories --------------------------

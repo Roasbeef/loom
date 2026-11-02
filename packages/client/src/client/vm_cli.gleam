@@ -71,7 +71,7 @@ import client/install
 import client/internal/ffi_os
 import client/vm_spec.{
   type Command, type Manifest, type PidRecord, type UpOptions, Down, Launch,
-  PidRecord, Setup, Status, Up,
+  PidRecord, Setup, Status, Up, UpOptions,
 }
 import core/json as core_json
 import filepath
@@ -94,6 +94,7 @@ pub const usage =
   "usage: loom vm setup [--release TAG | --from-build DIR]
        loom vm up [--name NAME] [--workspace DIR] [--mem MIB] [--cpus N]
                   [--config PATH] [--github gh|env|off] [--fresh]
+                  [--allow HOST]... [--provision SCRIPT]
        loom vm down [--name NAME]
        loom vm status [--name NAME]
 
@@ -126,8 +127,21 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             replaces all three.
             --github chooses where loom-vm reads the token its credential proxy
             injects: gh (the default) runs `gh auth token`, env reads
-            LOOM_VM_GITHUB_TOKEN, and off gives the guest no network. The guest
-            holds only a placeholder, never the token.
+            LOOM_VM_GITHUB_TOKEN, and off gives the guest no network beyond
+            the --allow hosts. The guest holds only a placeholder, never the
+            token.
+            --allow HOST adds a host to the guest's egress allowlist, on top
+            of the GitHub hosts, so a build can reach a package registry. HOST
+            is a hostname or *.domain.tld; repeat the flag for more. The list
+            is recorded and a later up with no --allow keeps it; --allow
+            replaces it and --fresh clears it. An allowed host can receive
+            anything a jailed call sends, and it is never given the GitHub
+            token.
+            --provision SCRIPT copies a script you wrote into the guest, which
+            runs it once as root before the executor starts, with its output
+            in loom-vm.log. A failing script fails up, and the next up runs it
+            again. A resume skips a script that succeeded, and refuses a new
+            one: add --fresh. Use --allow for the hosts it needs.
   down      Stop the guest. Its root, and the checkout inside it, stay on disk.
   status    Say whether the guest runs, where it is registered and what it
             holds.
@@ -198,6 +212,7 @@ type Instance {
     state_disk: String,
     pid_file: String,
     log: String,
+    allow_file: String,
   )
 }
 
@@ -228,6 +243,7 @@ fn instance(vm_home: String, name: String) -> Instance {
     state_disk: directory <> "/state.img",
     pid_file: directory <> "/loom-vm.pid",
     log: directory <> "/loom-vm.log",
+    allow_file: directory <> "/" <> vm_spec.allow_file,
   )
 }
 
@@ -473,6 +489,12 @@ fn up(options: UpOptions) -> Result(String, String) {
   let guest = instance(vm_home, options.name)
   use Nil <- result.try(refuse_running(guest, options.name))
 
+  // What the script and the allowlist ask for is settled before anything is
+  // written, so a refused `--provision` or a bad allow file changes nothing.
+  use plan <- result.try(provisioning(guest, options))
+  use allow <- result.try(allowed_hosts(guest, options))
+  let options = UpOptions(..options, allow:)
+
   // The deployment and the enrollment come before the guest root, so a
   // loom.toml that holds another deployment is refused before a root of
   // several hundred megabytes is cloned.
@@ -481,9 +503,117 @@ fn up(options: UpOptions) -> Result(String, String) {
     names,
   ))
   use enrolled <- result.try(enroll(orchestrator, options, provisioned))
-  use Nil <- result.try(stage(manifest, guest, executor, workspace, options))
-  use port <- result.try(boot(manifest, guest, names, options))
+  use Nil <- result.try(stage(
+    manifest,
+    guest,
+    executor,
+    workspace,
+    options,
+    plan,
+  ))
+  use port <- result.try(boot(manifest, guest, names, options, plan))
   report(options, workspace, port, enrolled)
+}
+
+// --- the allowlist and the provisioning script --------------------------------
+
+/// The hosts this `up` launches the guest with beyond GitHub's: the ones given,
+/// or the ones an earlier `up` recorded in the guest's directory, or none for
+/// `--fresh`.
+fn allowed_hosts(
+  guest: Instance,
+  options: UpOptions,
+) -> Result(List(String), String) {
+  // The recorded file is read only when it decides the answer, so a damaged
+  // one is replaced by `--allow` and ignored by `--fresh`.
+  use recorded <- result.try(case options.allow, options.freshness {
+    [], vm_spec.Resume -> recorded_allow(guest)
+    _, _ -> Ok([])
+  })
+
+  Ok(vm_spec.effective_allow(options.allow, recorded, options.freshness))
+}
+
+/// The hosts the guest's allow file records, or none when it has no file.
+fn recorded_allow(guest: Instance) -> Result(List(String), String) {
+  case simplifile.read(guest.allow_file) {
+    Error(simplifile.Enoent) -> Ok([])
+    Error(error) ->
+      Error(
+        guest.allow_file
+        <> " is unreadable: "
+        <> simplifile.describe_error(error),
+      )
+    Ok(text) ->
+      vm_spec.decode_allow(text)
+      |> result.map_error(fn(reason) {
+        guest.allow_file
+        <> ", "
+        <> reason
+        <> ". Fix or remove the file, or give --allow to replace it."
+      })
+  }
+}
+
+/// Records the hosts the guest launches with, so `down` and `up` keep them.
+/// An empty list removes the record.
+fn record_allow(guest: Instance, hosts: List(String)) -> Result(Nil, String) {
+  case hosts {
+    [] ->
+      case simplifile.delete(guest.allow_file) {
+        Ok(Nil) | Error(simplifile.Enoent) -> Ok(Nil)
+        Error(error) ->
+          Error(
+            guest.allow_file
+            <> " cannot be removed: "
+            <> simplifile.describe_error(error),
+          )
+      }
+    _ -> write_private(guest.allow_file, vm_spec.encode_allow(hosts))
+  }
+}
+
+/// What `--provision` and the guest root's history decide. The script must be
+/// a file the developer named, and only this flag can name one: the workspace
+/// is untrusted input and is never searched for a script.
+fn provisioning(
+  guest: Instance,
+  options: UpOptions,
+) -> Result(vm_spec.ProvisionPlan, String) {
+  // Without the flag there is no script to check. With it, the path must name
+  // a file now, so a typo is refused before the guest is touched.
+  use requested <- result.try(case options.provision {
+    None -> Ok(None)
+    Some(path) -> {
+      use absolute <- result.try(bootstrap.absolute_path(path))
+
+      // A directory, a missing path and an unreadable one are the same refusal.
+      case simplifile.is_file(absolute) {
+        Ok(True) -> Ok(Some(absolute))
+        _ -> Error("--provision " <> path <> " is not a file")
+      }
+    }
+  })
+
+  // `--fresh` replaces the root, so it has no history to consult.
+  let seen = case options.freshness {
+    vm_spec.Fresh -> vm_spec.NeverProvisioned
+    vm_spec.Resume -> root_provisioning(guest)
+  }
+
+  vm_spec.provision_plan(requested, seen)
+}
+
+/// What the guest's existing root says about an earlier provisioning.
+fn root_provisioning(guest: Instance) -> vm_spec.RootProvisioning {
+  case
+    bootstrap.path_exists(guest.root <> vm_spec.provision_marker),
+    bootstrap.path_exists(guest.root <> vm_spec.provision_script)
+  {
+    True, _ -> vm_spec.AlreadyProvisioned
+    False, True -> vm_spec.FailedBefore
+    False, False -> vm_spec.NeverProvisioned
+  }
 }
 
 // The directory to copy, canonical, the name its copy has in the guest, and
@@ -813,17 +943,55 @@ fn stage(
   executor: Bundle,
   workspace: Workspace,
   options: UpOptions,
+  plan: vm_spec.ProvisionPlan,
 ) -> Result(Nil, String) {
   use uname <- result.try(tool("uname", ["-s"], within: quick_ms))
   use platform <- result.try(vm_spec.platform_of(uname))
   use Nil <- result.try(prepare_root(manifest, guest, platform, options))
+  use Nil <- result.try(record_allow(guest, options.allow))
   use Nil <- result.try(stage_node(
     guest.root,
     executor,
     workspace.name,
     options.github,
+    options.allow,
   ))
+  use Nil <- result.try(stage_script(guest.root, plan))
   copy_workspace(guest.root, workspace, platform)
+}
+
+/// Copies the developer's script into the guest root, where the init runs it
+/// as root before the executor starts. The target is removed first so a link
+/// in the root cannot redirect the write, and the mode keeps the script
+/// private to root, which is who runs it.
+fn stage_script(
+  root: String,
+  plan: vm_spec.ProvisionPlan,
+) -> Result(Nil, String) {
+  // Only a script `up` was given this time is copied; a retried one is already
+  // in the root and a plan with none stages nothing.
+  case plan {
+    vm_spec.NoScript | vm_spec.RetryStaged -> Ok(Nil)
+    vm_spec.StageScript(source) -> {
+      let target = root <> vm_spec.provision_script
+      use Nil <- result.try(make_directories([filepath.directory_name(target)]))
+      use bytes <- result.try(
+        simplifile.read_bits(source)
+        |> result.map_error(fn(error) {
+          source <> " is unreadable: " <> simplifile.describe_error(error)
+        }),
+      )
+      let _ = simplifile.delete(target)
+      let written = {
+        use Nil <- result.try(simplifile.write_bits(target, bytes))
+        simplifile.set_permissions_octal(target, 0o700)
+      }
+      written
+      |> result.map_error(fn(error) {
+        target <> " is unwritable: " <> simplifile.describe_error(error)
+      })
+    }
+  }
 }
 
 /// The root and state disk `up` boots with. A guest that ran before keeps
@@ -934,6 +1102,7 @@ fn stage_node(
   executor: Bundle,
   workspace: String,
   github: vm_spec.GitHubAccess,
+  allow: List(String),
 ) -> Result(Nil, String) {
   let node = root <> vm_spec.node_dir
   use Nil <- result.try(
@@ -951,7 +1120,7 @@ fn stage_node(
   ))
   write_private(
     node <> "/loom.toml",
-    vm_spec.guest_config(executor, workspace, github),
+    vm_spec.guest_config(executor, workspace, github, allow),
   )
 }
 
@@ -1136,16 +1305,13 @@ fn scrub_config(path: String) -> Result(Nil, String) {
 
 // --- booting -----------------------------------------------------------------
 
-// How long `up` waits for the executor's console marker. A cold boot takes
-// well under a minute; the rest is for a first run on a loaded machine.
-const ready_within_ms = 120_000
-
 /// Boots the guest and answers the host port its executor is forwarded to.
 fn boot(
   manifest: Manifest,
   guest: Instance,
   names: vm_spec.Names,
   options: UpOptions,
+  plan: vm_spec.ProvisionPlan,
 ) -> Result(Int, String) {
   use port <- result.try(bootstrap.reserve_loopback_port())
   let launch =
@@ -1158,6 +1324,7 @@ fn boot(
       host_port: port,
       state_disk: guest.state_disk,
       github: options.github,
+      allow: options.allow,
     )
 
   // The log is appended to, and the console of an earlier run says READY.
@@ -1172,7 +1339,7 @@ fn boot(
     guest,
     vm_spec.launch_arguments(launch),
   ))
-  use Nil <- result.try(await_ready(guest, record))
+  use Nil <- result.try(await_ready(guest, record, vm_spec.boot_budget_ms(plan)))
   Ok(port)
 }
 
@@ -1237,10 +1404,17 @@ fn birth_of(identity: bootstrap.ProcessIdentity) -> Result(String, String) {
 /// one marker when it does and another, followed by the daemon's log, when it
 /// died, and that log is the only account of why. A `loom-vm` that exits first
 /// has the same log. Whatever the reason, a guest that did not come up is
-/// stopped, so a failed `up` leaves nothing running.
-fn await_ready(guest: Instance, record: PidRecord) -> Result(Nil, String) {
+/// stopped, so a failed `up` leaves nothing running. A cold boot takes well
+/// under a minute, so the default budget is for a first run on a loaded
+/// machine; a provisioning script gets the longer one, because the executor
+/// starts only after it exits.
+fn await_ready(
+  guest: Instance,
+  record: PidRecord,
+  within within: Int,
+) -> Result(Nil, String) {
   let outcome =
-    poll.until(within: ready_within_ms, every: 250, attempt: fn() {
+    poll.until(within:, every: 250, attempt: fn() {
       console_verdict(guest, record)
     })
 
@@ -1254,7 +1428,7 @@ fn await_ready(guest: Instance, record: PidRecord) -> Result(Nil, String) {
         guest,
         record,
         "the guest's executor did not report within "
-          <> int.to_string(ready_within_ms / 1000)
+          <> int.to_string(within / 1000)
           <> " s. Its console is in "
           <> guest.log
           <> ":\n"
@@ -1271,14 +1445,25 @@ fn console_verdict(
   let console = result.unwrap(simplifile.read(guest.log), "")
   let ready = string.contains(console, vm_spec.ready_marker)
   let failed = string.contains(console, vm_spec.failed_marker)
+  let provisioning_failed =
+    string.contains(console, vm_spec.provision_failed_marker)
 
   // The ready marker wins over a failure marker in the same read: the guest
-  // prints it only once the executor serves.
-  case ready, failed {
-    True, _ -> poll.Done(Nil)
-    _, True ->
+  // prints it only once the executor serves. The script's own output is the
+  // account of a failed provisioning, so the tail of the console is the error.
+  case ready, failed, provisioning_failed {
+    True, _, _ -> poll.Done(Nil)
+    _, _, True ->
+      poll.Fail(
+        "the guest's provisioning script failed. The end of its console, "
+        <> "which is in "
+        <> guest.log
+        <> ":\n"
+        <> vm_spec.tail(console, 4000),
+      )
+    _, True, _ ->
       poll.Fail("the guest's executor failed:\n" <> vm_spec.tail(console, 4000))
-    False, False -> {
+    False, False, False -> {
       // No marker yet. A launcher that is gone will print none, so waiting on
       // would only run out the clock.
       case alive(record) {
@@ -1654,6 +1839,8 @@ fn status(name: String) -> Result(String, String) {
       "revision:   " <> revision_line(vm_home),
       "root:       " <> root_line(guest),
       "workspaces: " <> workspace_line(guest),
+      "allowed:    " <> allow_line(guest),
+      "provision:  " <> provision_line(guest),
     ],
     "\n",
   ))
@@ -1707,5 +1894,24 @@ fn workspace_line(guest: Instance) -> String {
   case simplifile.read_directory(guest.root <> vm_spec.workspaces_dir) {
     Ok([]) | Error(_) -> "none"
     Ok(names) -> string.join(list.sort(names, string.compare), ", ")
+  }
+}
+
+/// The hosts the guest may reach besides GitHub's, from its allow file.
+fn allow_line(guest: Instance) -> String {
+  case recorded_allow(guest) {
+    Ok([]) -> "none"
+    Ok(hosts) -> string.join(hosts, ", ")
+    Error(reason) -> "unknown (" <> reason <> ")"
+  }
+}
+
+/// Whether the guest's provisioning script ran, is waiting to run, or was never
+/// given.
+fn provision_line(guest: Instance) -> String {
+  case root_provisioning(guest) {
+    vm_spec.AlreadyProvisioned -> "done"
+    vm_spec.FailedBefore -> "pending, the next up runs it again"
+    vm_spec.NeverProvisioned -> "none"
   }
 }

@@ -26,6 +26,18 @@
 ////   `api.github.com` from the jail: an unauthenticated `/zen` answers 200, and
 ////   `/user` with the placeholder answers 401, which shows the proxy replaced
 ////   the placeholder with the (fake, so rejected) token before GitHub saw it.
+//// - `--allow` and `--provision` work together. The first `up` allows one public
+////   host (`deb.debian.org`, whose addresses are stable; example.com
+////   rotates its own and was unreachable) and runs a script that appends a line to a file in
+////   the guest root as root. A jailed `bash` call reads that file, so the
+////   script ran before the executor served. With `LOOM_VM_GITHUB_LIVE=1` the
+////   script itself reaches the host over HTTP (direct, port 80) and HTTPS (the
+////   credential proxy), and the jailed call reaches it over HTTPS and is
+////   refused another host. The host records the allowed host in
+////   `<vm home>/<name>/allow`, `status` lists it, `up --provision` on the
+////   guest the script already provisioned is refused naming `--fresh`, and the
+////   `up` that resumes with neither flag keeps the allowed host and does not
+////   run the script again: the file still holds one line.
 //// - An idle daemon is stopped. With a daemon running on the isolated home's
 ////   own `.loom` and holding no session, `vm up` for a second guest with no
 ////   `--config` installs into that home's default `loom.toml`, says it stopped
@@ -108,6 +120,15 @@ const marker = "marker.txt"
 
 const marker_content = "placed-in-guest\n"
 
+// The one host the guest is allowed to reach, and a public one it is not.
+const allowed_host = "deb.debian.org"
+
+const denied_host = "example.com"
+
+// Where the provisioning script writes inside the guest. The file gains a
+// line each time the script runs, so its length counts the runs.
+const runs_file = "/etc/loom-e2e-runs"
+
 // Where `loom vm up` puts the executor node inside the guest.
 const node_dir = "/srv/loom-node"
 
@@ -144,6 +165,8 @@ type Run {
     repository: String,
     /// The made-up token `vm up` reads from `LOOM_VM_GITHUB_TOKEN`.
     token: String,
+    /// The host path of the provisioning script `vm up --provision` copies.
+    script: String,
     /// The name of the second guest the idle-daemon step boots.
     idle_name: String,
   )
@@ -161,11 +184,24 @@ fn first_command(reach: Reach) -> String {
     <> "; cat "
     <> node_dir
     <> "/home/.erlang.cookie; echo cookie_status=$?; "
-    <> "echo \"gh_token=$GH_TOKEN\""
+    <> "echo \"gh_token=$GH_TOKEN\"; "
+    <> "echo \"provisioned=$(cat "
+    <> runs_file
+    <> ")\"; echo \"runs=$(wc -l < "
+    <> runs_file
+    <> " | tr -d ' ')\""
   case reach {
     OffHost -> local
     GitHub ->
       local
+      <> "; curl -sS --max-time 30 -o /dev/null -w 'allowed=%{http_code}\\n' "
+      <> "https://"
+      <> allowed_host
+      <> "/debian/"
+      <> "; curl -sS --max-time 30 -o /dev/null -w 'denied=%{http_code}\\n' "
+      <> "https://"
+      <> denied_host
+      <> " || true"
       <> "; curl -sS --max-time 30 -o /dev/null -w 'zen=%{http_code}\\n' "
       <> "https://api.github.com/zen"
       <> "; curl -sS --max-time 30 -o /dev/null -w 'user=%{http_code}\\n' "
@@ -173,8 +209,24 @@ fn first_command(reach: Reach) -> String {
   }
 }
 
-fn second_command() -> String {
-  "cat " <> marker <> "; echo \"kernel=$(uname -r)\""
+// The resumed call also reaches the allowed host when the operator allows
+// network assertions, which shows the recorded list was launched again.
+fn second_command(reach: Reach) -> String {
+  let local =
+    "cat "
+    <> marker
+    <> "; echo \"kernel=$(uname -r)\"; echo \"runs=$(wc -l < "
+    <> runs_file
+    <> " | tr -d ' ')\""
+  case reach {
+    OffHost -> local
+    GitHub ->
+      local
+      <> "; curl -sS --max-time 30 -o /dev/null -w 'allowed=%{http_code}\\n' "
+      <> "https://"
+      <> allowed_host
+      <> "/debian/"
+  }
 }
 
 /// Boots a standing guest with `loom vm up`, runs scripted `bash` calls through
@@ -272,6 +324,7 @@ fn fixture(artifacts: Artifacts) -> Nil {
       name: guest_prefix <> hex(3),
       repository: directory <> "/" <> remote_pair.workspace_name,
       token: "ghp_loomvm" <> hex(18),
+      script: directory <> "/provision.sh",
       idle_name: guest_prefix <> hex(3),
     )
 
@@ -305,6 +358,7 @@ fn fixture(artifacts: Artifacts) -> Nil {
 fn drive(run: Run) -> Nil {
   make_repository(run)
   install_artifacts(run)
+  write_provision_script(run)
 
   let script = [
     provider.ToolUseExchange(
@@ -320,7 +374,7 @@ fn drive(run: Run) -> Nil {
       second_prompt,
       "resume-call",
       "bash",
-      json.Object([#("command", json.String(second_command()))]),
+      json.Object([#("command", json.String(second_command(reach())))]),
     ),
     provider.ComputedExchange(
       provider.AwaitToolResult("resume-call"),
@@ -330,7 +384,8 @@ fn drive(run: Run) -> Nil {
 
   let #(Nil, report) =
     provider.with_server_for(script, provider.OnlySuccessful, 840_000, fn(url) {
-      let first_up = up(run)
+      let first_up =
+        up(run, ["--allow", allowed_host, "--provision", run.script])
       assert string.contains(
         first_up,
         "serves " <> executor_node(run) <> " on host port",
@@ -375,7 +430,21 @@ fn drive(run: Run) -> Nil {
       assert string.contains(status.output, "process:    not running")
       assert string.contains(status.output, "epmd:       not registered")
 
-      let second_up = up(run)
+      // The guest was provisioned, so a script given now is refused before
+      // anything changes, and the refusal names the way to run a new one.
+      let refused =
+        vm(run, ["up", "--name", run.name, "--provision", run.script])
+      assert refused.status != 0
+      assert string.contains(refused.output, "--fresh")
+
+      // The allowed host is recorded and `status` lists it, with the script's
+      // state.
+      assert read_allow(run) == allowed_host <> "\n"
+      assert string.contains(status.output, "allowed:    " <> allowed_host)
+      assert string.contains(status.output, "provision:  done")
+
+      // Neither flag: the resume keeps the allowed host and skips the script.
+      let second_up = up(run, [])
       assert string.contains(
         second_up,
         "serves " <> executor_node(run) <> " on host port",
@@ -410,6 +479,17 @@ fn drive(run: Run) -> Nil {
   let second = remote_daemons.result_text(requests, "resume-call")
   io.println_error(label <> " resumed tool result:\n" <> second)
   assert string.contains(second, marker_content)
+
+  // The script ran once, on the first boot, and not on the resume.
+  assert string.contains(second, "runs=1")
+  case reach() {
+    OffHost -> Nil
+    GitHub -> {
+      assert string.contains(second, "allowed=200")
+    }
+  }
+  assert read_allow(run) == allowed_host <> "\n"
+  assert_script_ran_once(run)
 
   // Last, because it replaces the cookie the assertions above compare with.
   idle_daemon_is_stopped(run)
@@ -672,22 +752,28 @@ fn expect_ok(outcome: Outcome, what: String) -> String {
 }
 
 // Runs `loom vm up` for the run's guest, with GitHub through the environment's
-// token, and answers what it printed.
-fn up(run: Run) -> String {
+// token and the given further flags, and answers what it printed.
+fn up(run: Run, flags: List(String)) -> String {
   let started = native.monotonic_time_ms()
   let output =
     expect_ok(
-      vm(run, [
-        "up",
-        "--name",
-        run.name,
-        "--workspace",
-        run.repository,
-        "--config",
-        run.orchestrator.config,
-        "--github",
-        "env",
-      ]),
+      vm(
+        run,
+        list.append(
+          [
+            "up",
+            "--name",
+            run.name,
+            "--workspace",
+            run.repository,
+            "--config",
+            run.orchestrator.config,
+            "--github",
+            "env",
+          ],
+          flags,
+        ),
+      ),
       "loom vm up",
     )
 
@@ -740,6 +826,11 @@ fn assert_first_turn(run: Run, result: String) -> Nil {
   // which `cat` reads successfully as empty.
   assert !string.contains(result, cookie)
 
+  // The provisioning script ran as root before the executor served, so the
+  // jailed call reads the line it appended, once.
+  assert string.contains(result, "provisioned=run")
+  assert string.contains(result, "runs=1")
+
   // The jailed shell holds the proxy's placeholder, never the token.
   assert string.contains(result, "gh_token=loomvm_")
   assert !string.contains(result, run.token)
@@ -749,6 +840,8 @@ fn assert_first_turn(run: Run, result: String) -> Nil {
   case reach() {
     OffHost -> Nil
     GitHub -> {
+      assert string.contains(result, "allowed=200")
+      assert string.contains(result, "denied=000")
       assert string.contains(result, "zen=200")
       assert string.contains(result, "user=401")
     }
@@ -783,6 +876,49 @@ fn assert_resumed(run: Run) -> Nil {
   assert simplifile.file_info_type(info) == simplifile.Directory
   assert read_marker(run) == marker_content
   assert simplifile.is_file(guest <> "/state.img") == Ok(True)
+  Nil
+}
+
+// The script the developer would write. It appends one line per run, and with
+// network access it reaches the allowed host as root two ways: over HTTP,
+// directly, as `apt` does, and over HTTPS through the credential proxy, whose
+// address root's environment holds because the init sources the proxy's file.
+fn write_provision_script(run: Run) -> Nil {
+  let reach = case reach() {
+    OffHost -> ""
+    GitHub ->
+      "curl -fsS --max-time 30 -o /dev/null http://"
+      <> allowed_host
+      <> "/debian/"
+      <> "\ncurl -fsS --max-time 30 -o /dev/null https://"
+      <> allowed_host
+      <> "/debian/"
+      <> "\n"
+  }
+  let assert Ok(Nil) =
+    simplifile.write(
+      run.script,
+      "#!/bin/sh\nset -eu\n" <> reach <> "echo run >> " <> runs_file <> "\n",
+    )
+    as "the provisioning script is written"
+  Nil
+}
+
+// The text of the guest's allow file on the host.
+fn read_allow(run: Run) -> String {
+  let assert Ok(text) =
+    simplifile.read(run.vm_home <> "/" <> run.name <> "/allow")
+    as "vm up recorded the allowed hosts"
+  text
+}
+
+// The script's own file, read from the guest root on the host, holds one line
+// after the resume: the init did not run the script again.
+fn assert_script_ran_once(run: Run) -> Nil {
+  let runs = run.vm_home <> "/" <> run.name <> "/root" <> runs_file
+  let assert Ok(text) = simplifile.read(runs)
+    as "the script's file is in the guest root"
+  assert text == "run\n"
   Nil
 }
 

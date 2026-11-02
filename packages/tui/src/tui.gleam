@@ -3118,6 +3118,7 @@ fn vm_usage() -> String {
   "usage: loom vm setup [--release TAG | --from-build DIR]
        loom vm up [--name NAME] [--workspace DIR] [--mem MIB] [--cpus N]
                   [--config PATH] [--github gh|env|off] [--fresh]
+                  [--allow HOST]... [--provision SCRIPT]
        loom vm down [--name NAME]
        loom vm status [--name NAME]
 
@@ -3150,8 +3151,21 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             replaces all three.
             --github chooses where loom-vm reads the token its credential proxy
             injects: gh (the default) runs `gh auth token`, env reads
-            LOOM_VM_GITHUB_TOKEN, and off gives the guest no network. The guest
-            holds only a placeholder, never the token.
+            LOOM_VM_GITHUB_TOKEN, and off gives the guest no network beyond
+            the --allow hosts. The guest holds only a placeholder, never the
+            token.
+            --allow HOST adds a host to the guest's egress allowlist, on top
+            of the GitHub hosts, so a build can reach a package registry. HOST
+            is a hostname or *.domain.tld; repeat the flag for more. The list
+            is recorded and a later up with no --allow keeps it; --allow
+            replaces it and --fresh clears it. An allowed host can receive
+            anything a jailed call sends, and it is never given the GitHub
+            token.
+            --provision SCRIPT copies a script you wrote into the guest, which
+            runs it once as root before the executor starts, with its output
+            in loom-vm.log. A failing script fails up, and the next up runs it
+            again. A resume skips a script that succeeded, and refuses a new
+            one: add --fresh. Use --allow for the hosts it needs.
   down      Stop the guest. Its root, and the checkout inside it, stay on disk.
   status    Say whether the guest runs, where it is registered and what it
             holds.

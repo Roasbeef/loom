@@ -13,6 +13,11 @@
 ////   (`deployment_plan`, `guest_config`);
 //// - the `loom-vm run` command line (`launch_arguments`) and the shell
 ////   command that clones a tree (`copy_arguments`);
+//// - the extra egress hosts a guest may reach and the file that records them
+////   (`valid_host`, `encode_allow`, `decode_allow`, `effective_allow`);
+//// - whether a provisioning script is staged, retried or refused
+////   (`provision_plan`) and how long the guest may take to report
+////   (`boot_budget_ms`);
 //// - which release `setup` installs and with what arguments (`release_candidates`,
 ////   `setup_attempts`, `setup_failure`);
 //// - how a linked worktree's copy gets a repository of its own (`head_target`,
@@ -36,6 +41,9 @@
 ////   `guest_config` the executor's configuration file, with the tools table that
 ////   GitHub access needs.
 //// - `launch_arguments` builds the `loom-vm run` command line.
+//// - `valid_host`, `encode_allow`, `decode_allow` and `effective_allow` keep
+////   the `--allow` list, and `provision_plan` and `boot_budget_ms` decide what
+////   `--provision` does.
 ////
 //// ## The deployment
 ////
@@ -94,11 +102,34 @@ pub const github_hosts = ["github.com", "api.github.com", "uploads.github.com"]
 /// token `gh` and git present. The real token never enters the guest.
 pub const github_env = ["HTTPS_PROXY", "NO_PROXY", "GH_TOKEN", "GITHUB_TOKEN"]
 
+/// Where `up` copies the provisioning script inside the guest root. The guest
+/// init runs it as root, once, before the executor starts.
+pub const provision_script = "/etc/loom-vm/provision"
+
+/// The file the guest init creates when the provisioning script exits zero.
+/// While it exists, a resumed guest does not run the script again.
+pub const provision_marker = "/etc/loom-vm/provisioned"
+
+/// The name of the file in a guest's directory that records its `--allow`
+/// hosts, one per line.
+pub const allow_file = "allow"
+
+/// How long `up` waits for a guest that runs no provisioning script.
+pub const ready_budget_ms = 120_000
+
+/// How long `up` waits for a guest that runs a provisioning script, which may
+/// install a toolchain over the network.
+pub const provision_budget_ms = 1_800_000
+
 /// The console line that says the executor serves.
 pub const ready_marker = "LOOM-EXECUTOR-READY"
 
 /// The console line that says the executor died, followed by its log.
 pub const failed_marker = "LOOM-EXECUTOR-FAILED"
+
+/// The console line that says the provisioning script failed, followed by its
+/// exit status. The script's own output precedes it on the console.
+pub const provision_failed_marker = "LOOM-PROVISION-FAILED"
 
 /// The longest `--name`. The orchestrator's plan name adds `-host`, and a plan
 /// name is at most 32 bytes.
@@ -130,6 +161,12 @@ pub type UpOptions {
     /// Whether `up` keeps the guest's root and state disk or starts both
     /// again.
     freshness: Freshness,
+    /// Hosts the guest may reach besides GitHub's, in the order given. Empty
+    /// means `--allow` was not given, which is not the same as an empty
+    /// recorded list on a resume (`effective_allow`).
+    allow: List(String),
+    /// The host path of the script `--provision` names.
+    provision: Option(String),
   )
 }
 
@@ -421,6 +458,8 @@ fn default_up() -> UpOptions {
     config: None,
     github: GitHubFromGh,
     freshness: Resume,
+    allow: [],
+    provision: None,
   )
 }
 
@@ -441,6 +480,26 @@ fn up_flags(
       up_flags(rest, UpOptions(..options, workspace: Some(value)))
     ["--config", value, ..rest] ->
       up_flags(rest, UpOptions(..options, config: Some(value)))
+    ["--allow", value, ..rest] -> {
+      use Nil <- result.try(
+        valid_host(value)
+        |> result.map_error(fn(reason) { "--allow " <> reason }),
+      )
+
+      // A host named twice is one host, so the recorded file and the
+      // launcher's argument list never repeat it.
+      let allow = case list.contains(options.allow, value) {
+        True -> options.allow
+        False -> list.append(options.allow, [value])
+      }
+
+      up_flags(rest, UpOptions(..options, allow:))
+    }
+    ["--provision", value, ..rest] ->
+      case value {
+        "" -> Error("--provision needs the path of a script")
+        _ -> up_flags(rest, UpOptions(..options, provision: Some(value)))
+      }
     ["--github", value, ..rest] -> {
       use github <- result.try(github_access(value))
       up_flags(rest, UpOptions(..options, github:))
@@ -479,6 +538,202 @@ fn github_access(value: String) -> Result(GitHubAccess, String) {
     "env" -> Ok(GitHubFromEnv)
     "off" -> Ok(GitHubOff)
     _ -> Error("--github must be gh, env or off, got " <> value)
+  }
+}
+
+// --- the egress allowlist ----------------------------------------------------
+
+/// Whether text can be a host the guest's egress allowlist names: a bare
+/// hostname, or a leading `*.` over a name of at least two labels. This is the
+/// rule `machine.Spec.Validate` applies to the same entries, so `up` refuses
+/// here what `loom-vm` would refuse after the root was cloned. Whitespace of
+/// any kind is refused as well, because the recorded file holds one host per
+/// line. The refusal is a clause that starts with the offending text, so a
+/// caller can put a flag name before it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.valid_host("deb.debian.org") == Ok(Nil)
+/// assert vm_spec.valid_host("*.golang.org") == Ok(Nil)
+/// assert result.is_error(vm_spec.valid_host("*.com"))
+/// ```
+pub fn valid_host(host: String) -> Result(Nil, String) {
+  // The wildcard prefix is not part of the name the other checks judge.
+  let name = case string.starts_with(host, "*.") {
+    True -> string.drop_start(host, 2)
+    False -> host
+  }
+
+  let wildcard = name != host
+  let spaced =
+    string.contains(name, " ")
+    || string.contains(name, "\t")
+    || string.contains(name, "\n")
+    || string.contains(name, "\r")
+
+  // The same three questions `checkHost` asks, in its order.
+  case name == "", spaced || contains_any(name, ["*", "/", ":", "@"]) {
+    True, _ -> Error("\"" <> host <> "\" is not a hostname")
+    _, True -> Error("\"" <> host <> "\" is not a bare hostname")
+    _, _ ->
+      case wildcard && !string.contains(name, ".") {
+        True ->
+          Error(
+            "\""
+            <> host
+            <> "\" covers a whole top-level domain; name at least two labels "
+            <> "after \"*.\"",
+          )
+        False -> Ok(Nil)
+      }
+  }
+}
+
+/// Whether `text` holds any of the fragments.
+fn contains_any(text: String, fragments: List(String)) -> Bool {
+  list.any(fragments, string.contains(text, _))
+}
+
+/// The text of a guest's allow file: one host per line.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.encode_allow(["a.example.com", "b.example.com"])
+///   == "a.example.com\nb.example.com\n"
+/// ```
+pub fn encode_allow(hosts: List(String)) -> String {
+  list.map(hosts, fn(host) { host <> "\n" }) |> string.concat
+}
+
+/// Reads an allow file. Blank lines are skipped, and every other line must be
+/// a host `valid_host` accepts; the first that is not is the error, with its
+/// line number, so a hand-edited file is refused and never half-read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.decode_allow("a.example.com\n\n") == Ok(["a.example.com"])
+/// assert result.is_error(vm_spec.decode_allow("*.com\n"))
+/// ```
+pub fn decode_allow(text: String) -> Result(List(String), String) {
+  let lines =
+    string.split(text, "\n")
+    |> list.index_map(fn(line, n) { #(n + 1, string.trim(line)) })
+
+  // Each line is judged alone, and the hosts keep their order.
+  list.try_fold(lines, [], fn(hosts, numbered) {
+    let #(number, line) = numbered
+
+    // A blank line and a repeated host add nothing; any other line is judged.
+    case line, list.contains(hosts, line) {
+      "", _ -> Ok(hosts)
+      _, True -> Ok(hosts)
+      _, False ->
+        case valid_host(line) {
+          Ok(Nil) -> Ok(list.append(hosts, [line]))
+          Error(reason) ->
+            Error("line " <> int.to_string(number) <> ": " <> reason)
+        }
+    }
+  })
+}
+
+/// The hosts a guest is launched with beyond GitHub's. Hosts given on the
+/// command line replace the recorded ones. With none given, a resume keeps the
+/// recorded list and `--fresh` starts from none, as it does for the root.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.effective_allow([], ["a.example.com"], vm_spec.Resume)
+///   == ["a.example.com"]
+/// assert vm_spec.effective_allow([], ["a.example.com"], vm_spec.Fresh) == []
+/// ```
+pub fn effective_allow(
+  given: List(String),
+  recorded: List(String),
+  freshness: Freshness,
+) -> List(String) {
+  case given, freshness {
+    [_, ..], _ -> given
+    [], Resume -> recorded
+    [], Fresh -> []
+  }
+}
+
+// --- the provisioning script -------------------------------------------------
+
+/// What `up` finds in a guest root about an earlier provisioning, read from
+/// the root before it is replaced or resumed.
+pub type RootProvisioning {
+  /// The marker is there: a script ran and exited zero.
+  AlreadyProvisioned
+
+  /// A script is staged and the marker is not: an earlier run failed or was
+  /// interrupted, so the guest init runs it again.
+  FailedBefore
+
+  /// No script was ever staged in this root.
+  NeverProvisioned
+}
+
+/// What `up` does about the provisioning script.
+pub type ProvisionPlan {
+  /// Nothing runs: no script, or one the marker says already succeeded.
+  NoScript
+
+  /// Copy the script at this host path into the root; the init runs it.
+  StageScript(host_path: String)
+
+  /// The root holds a script an earlier `up` staged and did not finish.
+  RetryStaged
+}
+
+/// Decides what `--provision` and the root's history mean together. A script
+/// given for a guest that already succeeded is refused, because a resume must
+/// not run it again; `--fresh` is the way to run a new one, and it replaces the
+/// root, so the caller passes `NeverProvisioned` for it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.provision_plan(None, vm_spec.AlreadyProvisioned)
+///   == Ok(vm_spec.NoScript)
+/// assert result.is_error(
+///   vm_spec.provision_plan(Some("/s.sh"), vm_spec.AlreadyProvisioned),
+/// )
+/// ```
+pub fn provision_plan(
+  requested: Option(String),
+  seen: RootProvisioning,
+) -> Result(ProvisionPlan, String) {
+  case requested, seen {
+    Some(_), AlreadyProvisioned ->
+      Error(
+        "--provision: this guest was provisioned already and a resume does "
+        <> "not run a script again. Add --fresh to replace the guest and run "
+        <> "the script on the new one.",
+      )
+    Some(path), _ -> Ok(StageScript(path))
+    None, FailedBefore -> Ok(RetryStaged)
+    None, AlreadyProvisioned | None, NeverProvisioned -> Ok(NoScript)
+  }
+}
+
+/// How long `up` waits for the guest's console to report. A script that runs
+/// delays the executor's start by as long as it takes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.boot_budget_ms(vm_spec.NoScript) == vm_spec.ready_budget_ms
+/// ```
+pub fn boot_budget_ms(plan: ProvisionPlan) -> Int {
+  case plan {
+    NoScript -> ready_budget_ms
+    StageScript(_) | RetryStaged -> provision_budget_ms
   }
 }
 
@@ -858,13 +1113,14 @@ pub fn guest_files() -> CredentialFiles {
 /// ## Examples
 ///
 /// ```gleam
-/// let text = vm_spec.guest_config(executor_bundle, "proj", vm_spec.GitHubOff)
+/// let text = vm_spec.guest_config(executor_bundle, "proj", vm_spec.GitHubOff, [])
 /// assert string.contains(text, "[workspaces.proj]")
 /// ```
 pub fn guest_config(
   bundle: Bundle,
   workspace: String,
   github: GitHubAccess,
+  allow: List(String),
 ) -> String {
   let tables =
     distribution_bundle.config_tables(bundle, guest_files())
@@ -884,23 +1140,24 @@ pub fn guest_config(
         <> distribution_bundle.toml_string(workspaces_dir <> "/" <> workspace)
         <> "\n",
       ],
-      tools_table(github),
+      tools_table(github, allow),
     ]),
     "\n",
   )
 }
 
-/// The executor's `[tools]` table. With GitHub access the jail's network is
-/// on, because the guest's egress allowlist, enforced by the launcher's host
-/// side stack, is now the boundary, and the proxy's names pass the
-/// environment allowlist. Without it the table is absent and the jail keeps
+/// The executor's `[tools]` table. With GitHub access or an allowed host the
+/// jail's network is on, because the guest's egress allowlist, enforced by the
+/// launcher's host side stack, is now the boundary. With GitHub access the
+/// proxy's names also pass the environment allowlist; allowed hosts alone have
+/// no proxy and need none. With neither the table is absent and the jail keeps
 /// the network off.
-fn tools_table(github: GitHubAccess) -> List(String) {
-  // Only the off case changes nothing; both token sources need the same
-  // guest-side configuration.
-  case github {
-    GitHubOff -> []
-    GitHubFromGh | GitHubFromEnv -> [
+fn tools_table(github: GitHubAccess, allow: List(String)) -> List(String) {
+  // Both token sources need the same guest-side configuration.
+  case github, allow {
+    GitHubOff, [] -> []
+    GitHubOff, [_, ..] -> ["[tools]\nnetwork = \"full\"\n"]
+    GitHubFromGh, _ | GitHubFromEnv, _ -> [
       "[tools]\nnetwork = \"full\"\nenv = ["
       <> string.join(
         list.map(github_env, distribution_bundle.toml_string),
@@ -941,6 +1198,9 @@ pub type Launch {
     state_disk: String,
     /// Where the guest's GitHub token comes from, or that it has none.
     github: GitHubAccess,
+    /// The hosts the guest may reach besides GitHub's. They are allowed and
+    /// never injection hosts: nothing here reaches `--inject-host`.
+    allow: List(String),
   )
 }
 
@@ -998,7 +1258,10 @@ pub fn launch_arguments(launch: Launch) -> List(String) {
   }
 
   // With GitHub access the proxy's hosts form the egress allowlist and
-  // `loom-vm` starts the credential proxy; without it the allowlist is empty.
+  // `loom-vm` starts the credential proxy; without it the allowlist holds only
+  // what `--allow` named. The proxy admits exactly the allowlist, so an allowed
+  // host is tunnelled for a client that honours `HTTPS_PROXY` and is reachable
+  // directly for one that does not.
   let github = case launch.github {
     GitHubOff -> []
     GitHubFromGh -> ["--github-token-from", "gh", ..github_allow()]
@@ -1035,6 +1298,7 @@ pub fn launch_arguments(launch: Launch) -> List(String) {
         <> int.to_string(guest_port),
     ],
     github,
+    list.flat_map(launch.allow, fn(host) { ["--allow", host] }),
     ["--", guest_entry, node_dir, "--state-device", state_device],
   ])
 }

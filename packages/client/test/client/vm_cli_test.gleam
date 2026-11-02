@@ -28,6 +28,8 @@ pub fn up_takes_its_defaults_test() {
   assert options.config == None
   assert options.github == vm_spec.GitHubFromGh
   assert options.freshness == vm_spec.Resume
+  assert options.allow == []
+  assert options.provision == None
 }
 
 pub fn up_reads_github_access_and_fresh_test() {
@@ -272,7 +274,7 @@ pub fn each_node_trusts_the_other_and_the_orchestrator_names_the_row_test() {
 
 pub fn the_guest_configuration_names_guest_paths_only_test() {
   let #(_, executor) = bundles("dev")
-  let text = vm_spec.guest_config(executor, "proj", vm_spec.GitHubOff)
+  let text = vm_spec.guest_config(executor, "proj", vm_spec.GitHubOff, [])
   let assert Ok(document) = tom.parse(text)
 
   let assert Ok(distribution) = tom.get_table(document, ["distribution"])
@@ -298,15 +300,34 @@ pub fn github_access_opens_the_jail_to_the_proxy_test() {
   // guest's egress allowlist, and passes the proxy's names through; without
   // it there is no [tools] table and the jail keeps the network off.
   let #(_, executor) = bundles("dev")
-  let text = vm_spec.guest_config(executor, "proj", vm_spec.GitHubFromGh)
+  let text = vm_spec.guest_config(executor, "proj", vm_spec.GitHubFromGh, [])
   let assert Ok(document) = tom.parse(text)
   assert tom.get_string(document, ["tools", "network"]) == Ok("full")
   let assert Ok(names) = tom.get_array(document, ["tools", "env"])
   assert list.length(names) == 4
 
-  let text = vm_spec.guest_config(executor, "proj", vm_spec.GitHubOff)
+  let text = vm_spec.guest_config(executor, "proj", vm_spec.GitHubOff, [])
   let assert Ok(document) = tom.parse(text)
   assert result.is_error(tom.get_table(document, ["tools"]))
+}
+
+pub fn allowed_hosts_open_the_jail_without_the_proxy_names_test() {
+  // `--github off --allow HOST` has no proxy, so the jail needs the network
+  // and no environment names; with neither there is still no [tools] table.
+  let #(_, executor) = bundles("dev")
+  let text =
+    vm_spec.guest_config(executor, "proj", vm_spec.GitHubOff, ["example.com"])
+  let assert Ok(document) = tom.parse(text)
+  assert tom.get_string(document, ["tools", "network"]) == Ok("full")
+  assert result.is_error(tom.get_array(document, ["tools", "env"]))
+
+  // With GitHub access the table is the same whatever `--allow` adds.
+  let with_github =
+    vm_spec.guest_config(executor, "proj", vm_spec.GitHubFromEnv, [
+      "example.com",
+    ])
+  assert with_github
+    == vm_spec.guest_config(executor, "proj", vm_spec.GitHubFromEnv, [])
 }
 
 pub fn the_guest_node_line_is_the_first_one_the_guest_script_reads_test() {
@@ -317,7 +338,7 @@ pub fn the_guest_node_line_is_the_first_one_the_guest_script_reads_test() {
   let #(_, executor) = bundles("dev")
   let lines =
     string.split(
-      vm_spec.guest_config(executor, "proj", vm_spec.GitHubFromGh),
+      vm_spec.guest_config(executor, "proj", vm_spec.GitHubFromGh, []),
       "\n",
     )
     |> list.filter(string.starts_with(_, "node = \""))
@@ -336,6 +357,7 @@ fn launch(firmware: option.Option(String)) -> vm_spec.Launch {
     host_port: 47_011,
     state_disk: "/vm/dev/state.img",
     github: vm_spec.GitHubOff,
+    allow: [],
   )
 }
 
@@ -385,6 +407,38 @@ pub fn github_access_starts_the_proxy_on_the_github_hosts_test() {
   assert !string.contains(line, "--github-token-from")
 }
 
+pub fn allowed_hosts_follow_the_github_ones_and_are_never_injected_test() {
+  // The hosts are `--allow` entries after GitHub's own, in the order given.
+  let arguments =
+    vm_spec.launch_arguments(
+      vm_spec.Launch(..launch(None), github: vm_spec.GitHubFromEnv, allow: [
+        "deb.debian.org",
+        "*.golang.org",
+      ]),
+    )
+  let line = string.join(arguments, " ")
+  assert string.contains(
+    line,
+    "--allow uploads.github.com --allow deb.debian.org --allow *.golang.org -- ",
+  )
+
+  // `--allow` widens reachability only: no injection host is ever named, so
+  // the proxy's built-in three stay the only hosts that get a credential.
+  assert !list.contains(arguments, "--inject-host")
+}
+
+pub fn allowed_hosts_are_the_whole_list_without_github_test() {
+  let arguments =
+    vm_spec.launch_arguments(
+      vm_spec.Launch(..launch(None), allow: ["example.com"]),
+    )
+  let line = string.join(arguments, " ")
+  assert string.contains(line, "--allow example.com -- ")
+  assert !string.contains(line, "github")
+  assert !list.contains(arguments, "--github-token-from")
+  assert !list.contains(arguments, "--inject-host")
+}
+
 pub fn the_clone_is_copy_on_write_on_both_hosts_test() {
   assert vm_spec.copy_arguments(vm_spec.Macos, "/a", "/b")
     == ["-cRp", "/a", "/b"]
@@ -396,6 +450,109 @@ pub fn only_macos_and_linux_are_hosts_test() {
   assert vm_spec.platform_of("Darwin\n") == Ok(vm_spec.Macos)
   assert vm_spec.platform_of("Linux") == Ok(vm_spec.Linux)
   assert result.is_error(vm_spec.platform_of("FreeBSD"))
+}
+
+// --- the egress allowlist ----------------------------------------------------
+
+pub fn up_reads_each_allowed_host_in_order_without_repeats_test() {
+  let assert Ok(vm_spec.Up(options)) =
+    vm_spec.parse([
+      "up", "--allow", "deb.debian.org", "--allow", "*.golang.org", "--allow",
+      "deb.debian.org", "--github", "off",
+    ])
+  assert options.allow == ["deb.debian.org", "*.golang.org"]
+  assert options.github == vm_spec.GitHubOff
+}
+
+pub fn an_allowed_host_follows_the_rule_machine_spec_applies_test() {
+  // Bare hostnames and `*.` over two labels or more.
+  assert vm_spec.valid_host("example.com") == Ok(Nil)
+  assert vm_spec.valid_host("localhost") == Ok(Nil)
+  assert vm_spec.valid_host("*.example.com") == Ok(Nil)
+
+  // Each refusal names the entry, and `up` puts the flag before it.
+  let assert Error(reason) = vm_spec.parse(["up", "--allow", "*.com"])
+  assert string.starts_with(
+    reason,
+    "--allow \"*.com\" covers a whole top-level",
+  )
+  assert !string.contains(reason, "\n")
+
+  list.each(
+    ["", "*.", "https://example.com", "a@b.com", "a b.com", "a:443", "a*b.com"],
+    fn(host) {
+      let assert Error(_) = vm_spec.parse(["up", "--allow", host])
+    },
+  )
+}
+
+pub fn the_allow_file_round_trips_and_refuses_a_bad_line_test() {
+  let hosts = ["deb.debian.org", "*.golang.org"]
+  assert vm_spec.decode_allow(vm_spec.encode_allow(hosts)) == Ok(hosts)
+  assert vm_spec.decode_allow("") == Ok([])
+  assert vm_spec.decode_allow("\n a.example.com \n\na.example.com\n")
+    == Ok(["a.example.com"])
+
+  let assert Error(reason) = vm_spec.decode_allow("a.example.com\n*.com\n")
+  assert string.starts_with(reason, "line 2: ")
+}
+
+pub fn given_hosts_replace_the_recorded_ones_and_fresh_clears_them_test() {
+  let recorded = ["old.example.com"]
+  let given = ["new.example.com"]
+  assert vm_spec.effective_allow(given, recorded, vm_spec.Resume) == given
+  assert vm_spec.effective_allow(given, recorded, vm_spec.Fresh) == given
+  assert vm_spec.effective_allow([], recorded, vm_spec.Resume) == recorded
+  assert vm_spec.effective_allow([], recorded, vm_spec.Fresh) == []
+}
+
+// --- the provisioning script -------------------------------------------------
+
+pub fn up_reads_the_provisioning_script_test() {
+  let assert Ok(vm_spec.Up(options)) =
+    vm_spec.parse(["up", "--provision", "setup.sh"])
+  assert options.provision == Some("setup.sh")
+
+  let assert Error(reason) = vm_spec.parse(["up", "--provision"])
+  assert string.contains(reason, "needs a value")
+  assert result.is_error(vm_spec.parse(["up", "--provision", ""]))
+}
+
+pub fn a_script_runs_on_a_new_guest_and_a_failed_one_runs_again_test() {
+  let script = Some("/host/setup.sh")
+  assert vm_spec.provision_plan(script, vm_spec.NeverProvisioned)
+    == Ok(vm_spec.StageScript("/host/setup.sh"))
+
+  // A failed run left a script and no marker, so a new one replaces it.
+  assert vm_spec.provision_plan(script, vm_spec.FailedBefore)
+    == Ok(vm_spec.StageScript("/host/setup.sh"))
+  assert vm_spec.provision_plan(None, vm_spec.FailedBefore)
+    == Ok(vm_spec.RetryStaged)
+}
+
+pub fn a_resume_skips_a_script_that_succeeded_and_refuses_a_new_one_test() {
+  assert vm_spec.provision_plan(None, vm_spec.AlreadyProvisioned)
+    == Ok(vm_spec.NoScript)
+  assert vm_spec.provision_plan(None, vm_spec.NeverProvisioned)
+    == Ok(vm_spec.NoScript)
+
+  let assert Error(reason) =
+    vm_spec.provision_plan(Some("/host/setup.sh"), vm_spec.AlreadyProvisioned)
+  assert string.contains(reason, "--fresh")
+}
+
+pub fn a_script_gets_the_long_boot_budget_test() {
+  assert vm_spec.boot_budget_ms(vm_spec.NoScript) == vm_spec.ready_budget_ms
+  assert vm_spec.boot_budget_ms(vm_spec.RetryStaged)
+    == vm_spec.provision_budget_ms
+  assert vm_spec.boot_budget_ms(vm_spec.StageScript("/s"))
+    == vm_spec.provision_budget_ms
+  assert vm_spec.provision_budget_ms > vm_spec.ready_budget_ms
+}
+
+pub fn the_usage_documents_both_flags_test() {
+  assert string.contains(vm_cli.usage, "[--allow HOST]... [--provision SCRIPT]")
+  assert string.contains(vm_cli.usage, "--fresh")
 }
 
 // --- the copied Git configuration --------------------------------------------
