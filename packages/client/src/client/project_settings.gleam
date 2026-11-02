@@ -16,11 +16,16 @@
 ////   pull request. Unset it is `off`, and nothing leaves the machine unless
 ////   the owner wrote `pull_request`.
 ////
+//// `source`, `rule`, `queue_limit` and `attention_limit` describe the event
+//// sources of a project and are read by `client/project_sources`. With no
+//// source the composer is the only way work starts.
+////
 //// The table is the owner's alone; no session's configuration can change
 //// them for the daemon it runs under. A key this slice does not serve is
 //// refused instead of accepted and ignored, so a file that sets one fails at
 //// startup and not silently.
 
+import client/project_sources.{type Sources}
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -56,6 +61,8 @@ pub type Settings {
     protected_paths: List(String),
     /// Whether the host may push and open pull requests.
     publish: PublishMode,
+    /// The event sources and the rules over them (`client/project_sources`).
+    sources: Sources,
   )
 }
 
@@ -73,6 +80,7 @@ pub const defaults =
     check: None,
     protected_paths: protect.default_paths,
     publish: PublishOff,
+    sources: project_sources.none,
   )
 
 /// Validates the `[project]` table of a parsed configuration document.
@@ -100,6 +108,7 @@ fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Settings, String) {
       case key {
         "max_workers" | "token_ceiling" -> Ok(Nil)
         "check" | "protected_paths" | "publish" -> Ok(Nil)
+        "source" | "rule" | "queue_limit" | "attention_limit" -> Ok(Nil)
         _ -> Error("unknown key `" <> key <> "` in [project]")
       }
     }),
@@ -120,8 +129,16 @@ fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Settings, String) {
   ))
   use check <- result.try(check_command(fields))
   use protected_paths <- result.try(paths(fields))
-  use publish <- result.map(publish_mode(fields))
-  Settings(max_workers:, token_ceiling:, check:, protected_paths:, publish:)
+  use publish <- result.try(publish_mode(fields))
+  use sources <- result.map(project_sources.from_fields(fields))
+  Settings(
+    max_workers:,
+    token_ceiling:,
+    check:,
+    protected_paths:,
+    publish:,
+    sources:,
+  )
 }
 
 /// An integer in `low` to `high`, or the default when the key is absent.
