@@ -337,8 +337,15 @@ pub fn an_absent_age_is_a_question_mark_and_not_zero_test() {
 pub fn a_hostile_title_is_inert_on_the_board_test() {
   let hostile =
     "<img src=x onerror=alert(1)>\u{1b}[2J\u{1b}]0;owned\u{7}\u{1b}[31mred"
-  let text =
-    painted(showing(body(2, [ticket("t-evil", "person/answer", 1, hostile)])))
+  let model = showing(body(2, [ticket("t-evil", "person/answer", 1, hostile)]))
+  let text = painted(model)
+
+  // The string the screen hands to a span is already clean. The frame's own
+  // conversion to text would hide a title that was not, so the state is checked
+  // as well as the frame.
+  let assert [held] = project_screen.visible(screen(model))
+  assert !string.contains(board.title_words(held), "\u{1b}")
+  assert !string.contains(board.title_words(held), "\u{7}")
 
   // No escape or control byte reaches the frame, and the markup is on screen
   // as the characters it is.
@@ -370,6 +377,15 @@ pub fn a_hostile_question_and_input_are_inert_on_the_ticket_page_test() {
   let opened = press(showing(body(2, [asking("t-ask", 3, evil)])), "enter")
   let read = deliver(opened, job.ProjectTicketLoaded(document))
   let text = painted(read)
+
+  // The question and the message are clean in the state the screen draws from.
+  let assert Some(detail) = screen(read).detail
+  let assert Some(question) = detail.ticket.question
+  assert !string.contains(question.text, "\u{1b}")
+  assert !string.contains(question.text, "\u{7}")
+  let assert [input] = detail.inputs
+  assert !string.contains(option.unwrap(input.text, ""), "\u{1b}")
+  assert !string.contains(option.unwrap(input.actor, ""), "\u{1b}")
 
   assert !string.contains(text, "\u{1b}")
   assert !string.contains(text, "\u{7}")
