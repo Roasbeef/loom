@@ -217,7 +217,25 @@ fn waiting(
       ])
   }
 
-  html.div([], list.flatten([waiting, would(held.would), rules(held.rules)]))
+  html.div(
+    [],
+    list.flatten([
+      waiting,
+      notes(held.notes),
+      would(held.would),
+      rules(held.rules),
+    ]),
+  )
+}
+
+/// What each source said about itself, one paragraph each, under the health
+/// line. A source that cannot be read leaves nothing to count, so without this
+/// the page would say only that nothing needs the owner. Every note is
+/// external text drawn as a text node.
+fn notes(rows: List(String)) -> List(Element(message)) {
+  list.map(rows, fn(each) {
+    html.p([attribute.class("home-empty home-source-note")], [html.text(each)])
+  })
 }
 
 /// The configured rules, each with its mode, where its verdict stands and the

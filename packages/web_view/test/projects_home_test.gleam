@@ -419,6 +419,48 @@ pub fn the_rule_list_shows_each_verdict_state_as_escaped_text_test() {
   assert string.contains(html, "<li class=\"home-folder home-detail\">")
 }
 
+// A source's note is drawn above the rules as a text node, so a board whose
+// source is not working says why instead of only that nothing needs the owner.
+pub fn a_sources_note_is_drawn_escaped_above_the_rules_test() {
+  let document =
+    json.Object([
+      #("project", json.String("p1")),
+      #("revision", json.Int(3)),
+      #("total", json.Int(1)),
+      #("tickets", json.Array([ticket("t-1", "working", 1, "quiet")])),
+      #(
+        "sources",
+        json.Array([
+          json.Object([
+            #("source", json.String("github")),
+            #(
+              "note",
+              json.String("not read: origin is <script>alert(1)</script>"),
+            ),
+            #(
+              "rules",
+              json.Array([
+                json.Object([
+                  #("name", json.String("deps")),
+                  #("mode", json.String("observe")),
+                ]),
+              ]),
+            ),
+          ]),
+        ]),
+      ),
+    ])
+  let html = drawn(opened(serving(document).0))
+
+  assert string.contains(html, "not read: origin is &lt;script&gt;")
+  assert !string.contains(html, "<script>alert(1)")
+  assert at(html, "not read: origin") < at(html, "RULES")
+
+  // A board whose sources have no note draws no such paragraph.
+  let quiet = drawn(opened(serving(mixed()).0))
+  assert !string.contains(quiet, "home-source-note")
+}
+
 // The web view only displays a run. Each state the daemon reports is drawn as
 // text on the rule's row, with the daemon's words escaped.
 pub fn the_rule_row_draws_each_run_state_as_escaped_text_test() {

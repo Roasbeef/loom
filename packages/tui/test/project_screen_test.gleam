@@ -347,6 +347,41 @@ pub fn what_observe_would_have_done_is_listed_for_the_owner_test() {
   assert !string.contains(painted(showing(healthy())), "WOULD HAVE DONE")
 }
 
+// A source that cannot be read says so in its note, and the board draws it
+// under the health line so a person is not told only that nothing needs them.
+pub fn a_sources_note_is_drawn_under_the_health_line_test() {
+  let document =
+    json.Object([
+      #("project", json.String("p1")),
+      #("revision", json.Int(4)),
+      #("total", json.Int(0)),
+      #("tickets", json.Array([])),
+      #(
+        "sources",
+        json.Array([
+          json.Object([
+            #("source", json.String("github")),
+            #(
+              "note",
+              json.String(
+                "the project's origin is not a URL, so its source is not read \u{1b}[31m",
+              ),
+            ),
+          ]),
+        ]),
+      ),
+    ])
+  let text = painted(showing(document))
+
+  assert string.contains(text, "Nothing needs you.")
+  assert string.contains(text, "origin is not a URL")
+  assert !string.contains(text, "\u{1b}[31m")
+  assert at(text, "Nothing needs you.") < at(text, "origin is not a URL")
+
+  // A board whose sources have nothing to say draws no such line.
+  assert !string.contains(painted(showing(healthy())), "origin is not")
+}
+
 fn rule_document(labelled: Int, state: String) -> json.JsonValue {
   rule_document_with(labelled, state, [])
 }

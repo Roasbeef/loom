@@ -448,6 +448,54 @@ pub fn the_rule_list_carries_each_rules_mode_and_verdict_test() {
   assert only.needed == 0
 }
 
+// A source's note says why it is not reading, so the board keeps it. A source
+// with no note, an empty one, a blank one or one that is not text adds nothing,
+// and a newline or escape in a note never reaches a drawn line.
+pub fn a_sources_note_is_kept_and_made_safe_to_draw_test() {
+  let source = fn(note: List(#(String, json.JsonValue))) {
+    json.Object([#("source", json.String("github")), ..note])
+  }
+  let with =
+    json.Object([
+      #("project", json.String("p1")),
+      #("revision", json.Int(1)),
+      #(
+        "sources",
+        json.Array([
+          source([
+            #(
+              "note",
+              json.String("the origin is not a URL,\nso it is not read"),
+            ),
+          ]),
+          source([#("note", json.String(""))]),
+          source([#("note", json.String("   "))]),
+          source([#("note", json.Int(3))]),
+          source([]),
+          json.String("not a source"),
+          source([#("note", json.String("rate limited until 10:05\u{1b}[31m"))]),
+        ]),
+      ),
+    ])
+  let assert Ok(decoded) = board.decode_board(with)
+
+  assert decoded.notes
+    == [
+      "the origin is not a URL, so it is not read",
+      "rate limited until 10:05",
+    ]
+
+  // A daemon that sends no sources, or no notes, has none to show.
+  let assert Ok(without) =
+    board.decode_board(
+      json.Object([
+        #("project", json.String("p1")),
+        #("revision", json.Int(1)),
+      ]),
+    )
+  assert without.notes == []
+}
+
 pub fn the_labels_reply_decodes_totally_and_cuts_its_text_test() {
   let long = string.repeat("y", 500)
   let reply =

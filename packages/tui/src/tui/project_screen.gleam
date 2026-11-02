@@ -254,13 +254,14 @@ pub fn observe(state: State, fresh: board.Board, now_ms: Int) -> State {
   // board and keeps the highlight on the same ticket when it is still there.
   // The one exception is the rules: a live verdict run is held in the daemon's
   // memory and moves no ledger sequence, so the revision does not change while
-  // a run progresses, and the rules are taken from every read.
+  // a run progresses, and the rules are taken from every read. A source's note
+  // is held the same way, because a rate limit ends with no ledger sequence.
   case state.board {
     Some(held) if held.revision == fresh.revision ->
       State(
         ..rested,
         project: Some(fresh.project),
-        board: Some(board.Board(..held, rules: fresh.rules)),
+        board: Some(board.Board(..held, rules: fresh.rules, notes: fresh.notes)),
       )
     Some(_) | None -> {
       let highlighted = option.map(selected_ticket(state), fn(each) { each.id })
@@ -1089,11 +1090,27 @@ fn list_lines(state: State, width: Int, now_ms: Int) -> List(Drawn) {
         notice,
         rows,
         health,
+        note_lines(held, width),
         unreadable_lines(held, width),
         would_lines(held, width),
         rule_lines(held, width),
       ])
     }
+  }
+}
+
+/// What each source said about itself, wrapped under the health line. A source
+/// that cannot be read leaves the board with nothing to count, and without
+/// this the line above would say only that nothing needs the owner.
+fn note_lines(held: board.Board, width: Int) -> List(Drawn) {
+  case held.notes {
+    [] -> []
+    notes -> [
+      plain("", theme.overlay_plain()),
+      ..list.flat_map(notes, fn(each) {
+        wrapped(each, theme.overlay_signal(), width)
+      })
+    ]
   }
 }
 

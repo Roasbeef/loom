@@ -207,6 +207,10 @@ pub type Board {
     /// The configured rules with their modes and where each stands on its
     /// verdict, in the order the owner wrote them.
     rules: List(Rule),
+    /// What each source said about itself, such as why it is not being read or
+    /// when a rate limit ends, in the order sent. A source with nothing to say
+    /// adds none, so an empty list means every source is reading normally.
+    notes: List(String),
   )
 }
 
@@ -982,6 +986,7 @@ fn board_of(fields: List(#(String, JsonValue))) -> Result(Board, String) {
         unreadable: list.length(rows) - list.length(tickets),
         would: rows_in(fields, "would_have_done", would_row),
         rules: rules_in(fields),
+        notes: notes_in(fields),
       ))
     }
     None, _ -> Error("the board named no project")
@@ -1247,6 +1252,22 @@ fn would_row(value: JsonValue) -> Result(Would, Nil) {
 fn rules_in(fields: List(#(String, JsonValue))) -> List(Rule) {
   rows_in(fields, "sources", source_rules)
   |> list.flatten
+}
+
+/// The note of every source on the board, in the order sent. A source with no
+/// note, an empty one or one that is not text adds nothing, so the board never
+/// draws a blank line for a source that is working.
+fn notes_in(fields: List(#(String, JsonValue))) -> List(String) {
+  rows_in(fields, "sources", fn(value) {
+    use source <- result.try(fields_of(value))
+
+    // A note that is only whitespace says nothing, so it is dropped with the
+    // missing ones rather than drawn as a blank paragraph.
+    case string.trim(safe_in(source, "note")) {
+      "" -> Error(Nil)
+      note -> Ok(note)
+    }
+  })
 }
 
 fn source_rules(value: JsonValue) -> Result(List(Rule), Nil) {
