@@ -63,7 +63,10 @@ const worker_text =
 request, fenced and labelled with who sent it. Read the trigger, do the
 work in your worktree, and report with `project_report`: `progress` while
 you work, and `waiting` when you have stopped, with a question if you need
-an answer. There is no ready status; the host checks your work itself.
+an answer. Commit your finished work on your branch before you report
+`waiting`: the host reads and checks the branch's head and cannot see
+changes you have not committed. There is no ready status; the host checks
+your work itself.
 Report `blocked` when you cannot continue and `failed` when your attempt did
 not work. A message that is not yours goes back with `project_handback`.
 

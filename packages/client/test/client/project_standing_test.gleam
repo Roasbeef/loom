@@ -8,6 +8,7 @@ import client/project_standing
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import prompt/pack
 import storage/catalogue
 import tom
@@ -58,6 +59,13 @@ pub fn the_packs_decode_without_problems_test() {
   assert pack.problems(router) == []
   let assert Ok(worker) = pack.decode(project_packs.worker())
   assert pack.problems(worker) == []
+}
+
+// The host checks a worker's branch head and cannot see uncommitted changes, so
+// the worker's pack has to say to commit. Without the sentence a worker left
+// its change uncommitted and the check ran against the base commit.
+pub fn the_worker_is_told_to_commit_before_it_reports_test() {
+  assert string.contains(project_packs.worker(), "Commit your finished work")
 }
 
 pub fn the_project_table_defaults_and_refuses_unknown_keys_test() {
