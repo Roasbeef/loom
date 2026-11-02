@@ -101,13 +101,13 @@ Run one standing executor in a microVM and use it from `loom --executor`.
 
   setup     Install the microVM artifacts the guest boots from and write their
             manifest, with the `loom-vm` that ships beside loomd. With no flag
-            it installs the artifacts published for this build: the nightly
-            release commit-<sha> of its own commit when it is a nightly, then
-            v<version>, the first whose revision is this build's. --release
-            TAG installs only that release and --from-build DIR records a
-            build tree
-            (packages/vmm/build). A development build has no release: build
-            the artifacts in a checkout and run `make vmm-install-dev`.
+            it tries the tag commit-<sha> of this build's own commit, when it
+            has one, then v<version>, and keeps the first whose guest image
+            was built from this commit. vmm-release.yml does not publish for
+            commit-* tags yet. --release TAG installs only that tag and
+            --from-build DIR records a build tree (packages/vmm/build). A
+            development build has no release: build the artifacts in a
+            checkout and run `make vmm-install-dev`.
   up        Provision a two-node deployment, enroll the orchestrator in your
             loom.toml as [executors.NAME], clone the guest root, copy the
             workspace into it, boot the guest with `loom-vm run` and wait until
@@ -324,15 +324,13 @@ fn setup(source: vm_spec.SetupSource) -> Result(String, String) {
 }
 
 /// Runs `loom-vm setup` for each attempt the source allows, in order, until
-/// one installs artifacts that are acceptable. A launcher run that fails, or
-/// one that installs another commit than the running build's when the tag was
-/// only a guess, counts as that attempt's failure and the next is tried.
+/// one installs. A run that fails counts as that attempt's failure and the next
+/// is tried.
 ///
-/// `loom-vm setup` replaces the manifest after each success, so a guess that
-/// installed the wrong commit has replaced a good manifest by the time it is
-/// found out. When every attempt fails, the manifest that was there before is
-/// put back, or removed when there was none, so a failed setup changes nothing
-/// that `up` reads.
+/// A tag guessed from the running build is run with `--revision`, so
+/// `loom-vm` refuses an image of another commit after reading its labels and
+/// before it downloads or writes anything. A failed attempt therefore leaves
+/// the cache and the manifest as they were, and no restore is needed.
 fn install_artifacts(
   vm_home: String,
   source: vm_spec.SetupSource,
@@ -344,17 +342,9 @@ fn install_artifacts(
     identity.commit,
     vm_home,
   ))
-  let before = simplifile.read(manifest_path(vm_home))
 
-  // One success ends it. Every failure restores the earlier manifest first,
-  // because attempts that installed another commit replaced it.
-  case try_attempts(vm_home, attempts, identity.commit, []) {
-    Ok(manifest) -> Ok(manifest)
-    Error(failures) -> {
-      use Nil <- result.try(restore_manifest(vm_home, before))
-      Error(vm_spec.setup_failure(source, failures))
-    }
-  }
+  try_attempts(vm_home, attempts, [])
+  |> result.map_error(vm_spec.setup_failure(source, _))
 }
 
 /// Tries the attempts in order. The error is the failure of each, in the order
@@ -362,7 +352,6 @@ fn install_artifacts(
 fn try_attempts(
   vm_home: String,
   attempts: List(vm_spec.Attempt),
-  commit: String,
   failures: List(#(String, String)),
 ) -> Result(Manifest, List(#(String, String))) {
   // The list is the order to try; an empty one is the end of the search.
@@ -374,69 +363,23 @@ fn try_attempts(
       )
 
       // A failed attempt is recorded and the next one tried; the first that
-      // installs acceptable artifacts ends the search.
-      case run_attempt(vm_home, attempt, commit) {
+      // installs ends the search.
+      case run_attempt(vm_home, attempt) {
         Ok(manifest) -> Ok(manifest)
         Error(reason) ->
-          try_attempts(vm_home, rest, commit, [
-            #(attempt.name, reason),
-            ..failures
-          ])
+          try_attempts(vm_home, rest, [#(attempt.name, reason), ..failures])
       }
     }
   }
 }
 
-/// One `loom-vm setup` run and the check of the manifest it wrote.
+/// One `loom-vm setup` run and the manifest it wrote.
 fn run_attempt(
   vm_home: String,
   attempt: vm_spec.Attempt,
-  commit: String,
 ) -> Result(Manifest, String) {
   use Nil <- result.try(run_launcher(attempt.arguments))
-  use manifest <- result.try(installed_after_setup(vm_home))
-
-  // A tag guessed from the running build must hold the running build's
-  // commit, or `up` would refuse it for the same reason.
-  case attempt.revision {
-    vm_spec.AsInstalled -> Ok(manifest)
-    vm_spec.MatchesRunningBuild ->
-      vm_spec.check_revision(manifest, commit)
-      |> result.map(fn(_) { manifest })
-      |> result.map_error(fn(_) {
-        "it holds revision "
-        <> manifest.revision
-        <> ", not this build's "
-        <> commit
-      })
-  }
-}
-
-/// Puts the manifest read before a failed setup back, or removes the one a
-/// failed attempt wrote when there was none.
-fn restore_manifest(
-  vm_home: String,
-  before: Result(String, simplifile.FileError),
-) -> Result(Nil, String) {
-  let path = manifest_path(vm_home)
-
-  // A manifest that could not be read has nothing to put back, and the
-  // installed one is left as it is rather than guessed at.
-  case before {
-    Ok(text) -> write_private(path, text)
-    Error(simplifile.Enoent) ->
-      simplifile.delete(path)
-      |> result.try_recover(fn(error) {
-        case error {
-          simplifile.Enoent -> Ok(Nil)
-          _ -> Error(error)
-        }
-      })
-      |> result.map_error(fn(error) {
-        path <> " cannot be removed: " <> simplifile.describe_error(error)
-      })
-    Error(_) -> Ok(Nil)
-  }
+  installed_after_setup(vm_home)
 }
 
 /// A build tree named relatively is named from this directory, and the
@@ -713,22 +656,21 @@ fn bundle_named(
 
 // What installing the orchestrator did to the user's configuration.
 type Enrolled {
-  Enrolled(config: String, daemon: DaemonImpact)
+  Enrolled(config: String, file: ConfigFile)
 }
 
-// Which daemon this `up` changed the configuration of. Only the daemon of the
+// Whose configuration holds the guest's deployment. Only the daemon of the
 // default state directory can be found and stopped, and it reads only the
 // default file, so a `--config` run must never reach it: a private file, as a
-// test uses, would otherwise shut down the developer's own idle daemon.
-type DaemonImpact {
-  // A newly minted deployment went into the default daemon's configuration.
-  DefaultDaemonStale
+// test uses, would otherwise shut down the developer's own idle daemon. A
+// resumed guest counts as well: a first `up` that installed the deployment and
+// then failed to boot leaves a daemon that never read it.
+type ConfigFile {
+  // The exact default file, which the default daemon reads.
+  DefaultConfigFile
 
-  // A newly minted deployment went into another file.
-  OtherConfigChanged
-
-  // A resumed guest installed nothing, so every daemon is still current.
-  NoDaemonChanged
+  // Another file.
+  OtherConfigFile
 }
 
 /// Installs the orchestrator's bundle into the user's `loom.toml` the way
@@ -748,23 +690,24 @@ fn enroll(
     bootstrap.absolute_path(distribution_install.default_config(home)),
   )
 
+  let file = config_file(config, default)
+
   // A resumed guest's deployment is already installed. Installing it again
   // compares the whole [distribution] table, so a key the user added since,
   // such as `listen_address`, would refuse the resume; the executor row is
   // what has to still be there.
   case provisioned {
-    Reused -> still_enrolled(orchestrator, config)
-    Minted ->
-      install(orchestrator, config, home, minted_impact(config, default))
+    Reused -> still_enrolled(orchestrator, config, file)
+    Minted -> install(orchestrator, config, home, file)
   }
 }
 
-/// Which daemon a newly minted deployment in `config` leaves out of date.
-fn minted_impact(config: String, default: String) -> DaemonImpact {
+/// Which file `config` is, for deciding whose daemon `up` may touch.
+fn config_file(config: String, default: String) -> ConfigFile {
   // Only the exact default file belongs to the daemon `up` can find.
   case config == default {
-    True -> DefaultDaemonStale
-    False -> OtherConfigChanged
+    True -> DefaultConfigFile
+    False -> OtherConfigFile
   }
 }
 
@@ -772,6 +715,7 @@ fn minted_impact(config: String, default: String) -> DaemonImpact {
 fn still_enrolled(
   orchestrator: Bundle,
   config: String,
+  file: ConfigFile,
 ) -> Result(Enrolled, String) {
   let row = "[executors." <> orchestrator_executor(orchestrator) <> "]"
   use text <- result.try(
@@ -785,7 +729,7 @@ fn still_enrolled(
   // only the row it needs is checked, and a missing one is the operator's to
   // restore, since reinstalling would be refused as an existing deployment.
   case string.contains(text, row) {
-    True -> Ok(Enrolled(config:, daemon: NoDaemonChanged))
+    True -> Ok(Enrolled(config:, file:))
     False ->
       Error(
         config
@@ -806,7 +750,7 @@ fn install(
   orchestrator: Bundle,
   config: String,
   home: String,
-  daemon: DaemonImpact,
+  file: ConfigFile,
 ) -> Result(Enrolled, String) {
   use _installed <- result.try(
     distribution_install.install(
@@ -836,7 +780,7 @@ fn install(
     config,
     vm_spec.with_loopback_listener(text),
   ))
-  Ok(Enrolled(config:, daemon:))
+  Ok(Enrolled(config:, file:))
 }
 
 /// The `[executors.<name>]` table the orchestrator's bundle installed, as
@@ -1049,21 +993,36 @@ fn copy_workspace(
   // A resumed guest's copy is the one the agent has been editing; copying
   // the host's checkout over it would discard that work.
   use <- bool.guard(bootstrap.path_exists(copy), Ok(Nil))
-  use _ <- result.try(tool(
-    "cp",
-    vm_spec.copy_arguments(platform, workspace.path, copy),
-    within: copy_budget_ms,
-  ))
-  use _ <- result.try(tool("chmod", ["-R", "u+w", copy], within: copy_budget_ms))
-  use Nil <- result.try(own_repository(root, workspace, copy))
-  scrub_config(copy <> "/.git/config")
+  let copied = {
+    use _ <- result.try(tool(
+      "cp",
+      vm_spec.copy_arguments(platform, workspace.path, copy),
+      within: copy_budget_ms,
+    ))
+    use _ <- result.try(tool(
+      "chmod",
+      ["-R", "u+w", copy],
+      within: copy_budget_ms,
+    ))
+    use Nil <- result.try(own_repository(root, workspace, copy))
+    scrub_config(copy <> "/.git/config")
+  }
+
+  // A later `up` keeps a copy that exists, so a copy that a step failed on
+  // (half copied, with a `.git` that still points at the host, or with the
+  // credentials unscrubbed) is removed and the next `up` makes it again.
+  case copied {
+    Ok(Nil) -> Ok(Nil)
+    Error(reason) -> {
+      let _ = remove_tree(copy)
+      Error(reason)
+    }
+  }
 }
 
 /// Gives a linked worktree's copy a repository of its own. A standalone
-/// checkout's copy already has one.
-///
-/// A failure removes the copy. A later `up` keeps a copy that exists, so one
-/// left with a `.git` file that points at the host would be kept as it is.
+/// checkout's copy already has one. A Git failure is refused in one line naming
+/// the worktree; `copy_workspace` removes the copy.
 fn own_repository(
   root: String,
   workspace: Workspace,
@@ -1076,15 +1035,7 @@ fn own_repository(
       let staging = root <> vm_spec.node_dir <> "/git-staging"
       let made = standalone_repository(workspace.path, copy, staging)
       let _ = simplifile.delete_all([staging])
-
-      // The refusal is one line naming the worktree; the copy goes with it.
-      case made {
-        Ok(Nil) -> Ok(Nil)
-        Error(reason) -> {
-          let _ = remove_tree(copy)
-          Error(vm_spec.git_refusal(workspace.path, reason))
-        }
-      }
+      result.map_error(made, vm_spec.git_refusal(workspace.path, _))
     }
   }
 }
@@ -1382,7 +1333,7 @@ fn report(
           <> workspace.name,
         "",
       ],
-      daemon_lines(enrolled.daemon),
+      daemon_lines(enrolled.file),
       ["Stop it with: loom vm down --name " <> options.name],
     ]),
     "\n",
@@ -1390,15 +1341,14 @@ fn report(
 }
 
 /// The lines about daemons, after doing what this `up` calls for.
-fn daemon_lines(impact: DaemonImpact) -> List(String) {
+fn daemon_lines(file: ConfigFile) -> List(String) {
   // Only the default daemon is ever observed or stopped.
-  case impact {
-    DefaultDaemonStale -> daemon_note()
-    OtherConfigChanged -> [
+  case file {
+    DefaultConfigFile -> daemon_note()
+    OtherConfigFile -> [
       "A daemon already running with that file must restart to use the guest.",
       "",
     ]
-    NoDaemonChanged -> []
   }
 }
 
@@ -1411,24 +1361,26 @@ fn daemon_lines(impact: DaemonImpact) -> List(String) {
 /// a daemon whose configuration has `[distribution]` (protocol-change/106). A
 /// daemon that holds any session is never stopped; the note names the command.
 fn daemon_note() -> List(String) {
-  let state = observe_daemon()
-
-  // Only a daemon that holds nothing is stopped. The others are left as they
-  // are, and the placeholder reason is never shown for them.
-  let stop = case state {
-    vm_spec.Idle(_) -> stop_daemon()
-    vm_spec.NoDaemon | vm_spec.Holding(..) | vm_spec.Unasked(_) ->
-      vm_spec.NotStopped("not asked")
+  // No daemon needs no action. A running one is decided on what it said about
+  // its sessions, in `vm_spec.daemon_step`, which is the only place that
+  // chooses to stop it.
+  let outcome = case observe_daemon() {
+    None -> vm_spec.NoDaemon
+    Some(#(fence, sessions)) ->
+      case vm_spec.daemon_step(fence.pid, sessions) {
+        vm_spec.StopIt -> stop_daemon(fence)
+        vm_spec.LeaveAlone(outcome) -> outcome
+      }
   }
 
-  vm_spec.daemon_note(state, stop)
+  vm_spec.daemon_note(outcome)
 }
 
 /// The daemon the default state directory's endpoint record names, if its
-/// process is still there, and how many sessions it holds. Anything that
-/// cannot be read counts as no daemon, because the note it chooses is advice
-/// and not a decision; a daemon that answers no status is `Unasked`.
-fn observe_daemon() -> vm_spec.DaemonState {
+/// process is still there, with how many sessions it says it holds. Anything
+/// that cannot be read counts as no daemon, because the note it chooses is
+/// advice and not a decision; a daemon that answers no status is `Uncounted`.
+fn observe_daemon() -> option.Option(#(endpoint.Fence, vm_spec.Sessions)) {
   let found = {
     use home <- result.try(home())
     use paths <- result.try(endpoint.paths(home <> "/.loom"))
@@ -1439,12 +1391,11 @@ fn observe_daemon() -> vm_spec.DaemonState {
   // A record with no live process is no daemon; a live one is asked how many
   // sessions it holds, and an answer that cannot be read is not a count of zero.
   case result.unwrap(found, None) {
-    None -> vm_spec.NoDaemon
+    None -> None
     Some(fence) ->
       case ask_daemon("status") |> result.try(vm_spec.occupied_sessions) {
-        Ok(0) -> vm_spec.Idle(fence.pid)
-        Ok(sessions) -> vm_spec.Holding(fence.pid, sessions)
-        Error(_) -> vm_spec.Unasked(fence.pid)
+        Ok(count) -> Some(#(fence, vm_spec.Counted(count)))
+        Error(_) -> Some(#(fence, vm_spec.Uncounted))
       }
   }
 }
@@ -1490,28 +1441,18 @@ fn ask_daemon(command: String) -> Result(core_json.JsonValue, String) {
 const daemon_stop_within_ms = 60_000
 
 /// Asks an idle daemon to drain and waits for its process to go.
-fn stop_daemon() -> vm_spec.StopAttempt {
+fn stop_daemon(fence: endpoint.Fence) -> vm_spec.DaemonOutcome {
   let stopped = {
-    use found <- result.try(daemon_fence())
     use _ <- result.try(ask_daemon("daemon.shutdown"))
-    await_departure(found)
+    await_departure(fence)
   }
 
   // A refusal or a timeout is a reason for the note, not a failed `up`: the
   // guest is already running.
   case stopped {
     Ok(Nil) -> vm_spec.Stopped
-    Error(reason) -> vm_spec.NotStopped(reason)
+    Error(why) -> vm_spec.NotStopped(fence.pid, why)
   }
-}
-
-/// The fence of the daemon the endpoint record names.
-fn daemon_fence() -> Result(endpoint.Fence, String) {
-  use home <- result.try(home())
-  use paths <- result.try(endpoint.paths(home <> "/.loom"))
-  use found <- result.try(endpoint.load(paths))
-  use present <- result.try(present_in(found))
-  option.to_result(present, "the daemon is gone")
 }
 
 /// Polls until the daemon's process, by pid and birth marker, is gone.

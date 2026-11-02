@@ -26,6 +26,12 @@
 ////   `api.github.com` from the jail: an unauthenticated `/zen` answers 200, and
 ////   `/user` with the placeholder answers 401, which shows the proxy replaced
 ////   the placeholder with the (fake, so rejected) token before GitHub saw it.
+//// - An idle daemon is stopped. With a daemon running on the isolated home's
+////   own `.loom` and holding no session, `vm up` for a second guest with no
+////   `--config` installs into that home's default `loom.toml`, says it stopped
+////   the daemon, and the daemon's process is gone. The step runs only when the
+////   launcher's home is the fixture's own (`isolated_home`), and skips with a
+////   line otherwise.
 //// - A guest resumes. After `loom vm down` the guest process is gone and its
 ////   epmd name is withdrawn; the next `loom vm up` without `--fresh` keeps the
 ////   root, so the marker written by the first turn is still in the checkout and
@@ -74,12 +80,14 @@ import gleam/list
 import gleam/result
 import gleam/string
 import host/bootstrap as native
+import host/endpoint
 import simplifile
 import support/internal/ffi_proc
 import support/provider_http as provider
 import support/remote_daemons
 import support/remote_pair
 import weft
+import weft/poll
 
 const label = "shipped microvm executor"
 
@@ -136,6 +144,8 @@ type Run {
     repository: String,
     /// The made-up token `vm up` reads from `LOOM_VM_GITHUB_TOKEN`.
     token: String,
+    /// The name of the second guest the idle-daemon step boots.
+    idle_name: String,
   )
 }
 
@@ -262,6 +272,7 @@ fn fixture(artifacts: Artifacts) -> Nil {
       name: guest_prefix <> hex(3),
       repository: directory <> "/" <> remote_pair.workspace_name,
       token: "ghp_loomvm" <> hex(18),
+      idle_name: guest_prefix <> hex(3),
     )
 
   let outcomes =
@@ -277,6 +288,8 @@ fn fixture(artifacts: Artifacts) -> Nil {
   // Teardown runs outside the body's deadline, so a body that failed midway
   // still stops the guest it started and retires the orchestrator.
   let _stopped = vm(run, ["down", "--name", run.name])
+  let _idle_stopped = vm(run, ["down", "--name", run.idle_name])
+  retire_default_daemon(run)
   remote_daemons.retire(run.orchestrator.paths)
   let assert [weft.Completed(0, Nil)] = outcomes
     as "the microvm body completes before native teardown"
@@ -397,6 +410,9 @@ fn drive(run: Run) -> Nil {
   let second = remote_daemons.result_text(requests, "resume-call")
   io.println_error(label <> " resumed tool result:\n" <> second)
   assert string.contains(second, marker_content)
+
+  // Last, because it replaces the cookie the assertions above compare with.
+  idle_daemon_is_stopped(run)
 }
 
 // Whether the guest's jailed shell calls api.github.com.
@@ -411,6 +427,120 @@ fn reach() -> Reach {
   case native.getenv("LOOM_VM_GITHUB_LIVE") {
     Ok("1") -> GitHub
     _ -> OffHost
+  }
+}
+
+// --- an idle daemon ----------------------------------------------------------
+
+// The isolated home the shipped launcher exports, if the step may act in it.
+// `HOME` is the launcher script's own variable, so the daemon, `vm up` and the
+// cookie all live under this directory and never under the developer's real
+// `~/.loom` or `~/.erlang.cookie`. The directory must be one the fixture
+// made under `build/shipped-home-`, and must not be the process's own `HOME`.
+fn isolated_home(run: Run) -> Result(String, String) {
+  let home = run.orchestrator.home
+  let real = native.getenv("HOME") |> result.unwrap("")
+  let fixture_made = string.contains(home, "/build/shipped-home-")
+
+  // A home that is the real one, or that is not the fixture's, is a path this
+  // step must never write under.
+  case fixture_made && home != real && real != "" {
+    True -> Ok(home)
+    False ->
+      Error("the launcher's home " <> home <> " is not the fixture's own")
+  }
+}
+
+// The default state directory's paths in the isolated home, which is where
+// `vm up` looks for the user's daemon.
+fn default_paths(home: String) -> endpoint.Paths {
+  let assert Ok(paths) = endpoint.paths(home <> "/.loom")
+    as "the isolated home's default state directory is private"
+  paths
+}
+
+// Starts an idle daemon on the isolated home's `.loom` and runs `vm up` for a
+// second guest with no `--config`. `up` finds the daemon through the endpoint
+// record, sees it holds no session, stops it and says so.
+fn idle_daemon_is_stopped(run: Run) -> Nil {
+  case isolated_home(run) {
+    Error(reason) ->
+      io.println_error("SKIP " <> label <> " idle daemon: " <> reason)
+    Ok(home) -> {
+      let paths = default_paths(home)
+      let config = home <> "/.loom/loom.toml"
+      let assert Ok(Nil) =
+        simplifile.write(
+          config,
+          remote_daemons.model_table("http://127.0.0.1:9"),
+        )
+        as "the idle daemon has a configuration with a model it never calls"
+
+      // The first part of the test installed its deployment's cookie in this
+      // home. A second deployment mints its own cookie, which the installer
+      // refuses to put beside a different one, so the fixture's own file is
+      // removed first; it is inside the isolated home asserted above.
+      let assert Ok(Nil) = simplifile.delete(home <> "/.erlang.cookie")
+        as "the first deployment's cookie is removed from the isolated home"
+
+      let layout =
+        remote_daemons.Layout(
+          ..run.orchestrator,
+          label: "idle",
+          paths:,
+          config:,
+        )
+      let idle = remote_daemons.start_plain(layout)
+      let assert endpoint.Ready(fence:, ..) = idle.connected.record
+        as "the idle daemon published its endpoint"
+      let assert Ok(True) = endpoint.is_present(fence)
+        as "the idle daemon runs before vm up"
+      assert paths.root == idle.connected.paths.root
+
+      let output =
+        expect_ok(
+          vm(run, [
+            "up",
+            "--name",
+            run.idle_name,
+            "--workspace",
+            run.repository,
+            "--github",
+            "off",
+            "--mem",
+            "1024",
+            "--cpus",
+            "2",
+          ]),
+          "loom vm up for the second guest",
+        )
+      io.println_error(label <> " idle daemon vm up:\n" <> output)
+      remote_pair.close_daemons([idle])
+
+      assert string.contains(output, "so it was stopped")
+      let assert poll.Answered(Nil) =
+        poll.until(within: 30_000, every: 100, attempt: fn() {
+          case endpoint.is_present(fence) {
+            Ok(False) -> poll.Done(Nil)
+            Ok(True) -> poll.Retry
+            Error(reason) -> poll.Fail(reason)
+          }
+        })
+        as "the daemon's process is gone after vm up"
+
+      let down = vm(run, ["down", "--name", run.idle_name])
+      assert string.contains(down.output, "Stopped the guest " <> run.idle_name)
+      Nil
+    }
+  }
+}
+
+// Retires a daemon the idle-daemon step left on the isolated home, by the pid
+// and birth marker its own endpoint record holds.
+fn retire_default_daemon(run: Run) -> Nil {
+  case isolated_home(run) {
+    Error(_) -> Nil
+    Ok(home) -> remote_daemons.retire(default_paths(home))
   }
 }
 

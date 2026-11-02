@@ -628,18 +628,49 @@ pub fn the_running_builds_release_is_one_attempt_per_candidate_test() {
   let assert Ok([first, second]) =
     vm_spec.setup_attempts(vm_spec.OwnRelease, "0.3.2", nightly(), "/h/vm")
   assert first.name == "commit-" <> nightly()
+
+  // Each guessed tag is told the running commit, so `loom-vm` refuses an image
+  // of another commit before it writes anything.
   assert first.arguments
-    == ["setup", "--home", "/h/vm", "--release", "commit-" <> nightly()]
-  assert first.revision == vm_spec.MatchesRunningBuild
-  assert second.arguments == ["setup", "--home", "/h/vm", "--release", "v0.3.2"]
-  assert second.revision == vm_spec.MatchesRunningBuild
+    == [
+      "setup",
+      "--home",
+      "/h/vm",
+      "--release",
+      "commit-" <> nightly(),
+      "--revision",
+      nightly(),
+    ]
+  assert second.arguments
+    == [
+      "setup",
+      "--home",
+      "/h/vm",
+      "--release",
+      "v0.3.2",
+      "--revision",
+      nightly(),
+    ]
 }
 
-pub fn a_named_release_or_tree_is_one_unchecked_attempt_test() {
+pub fn an_unknown_commit_passes_no_revision_test() {
+  let assert Ok([attempt]) =
+    vm_spec.setup_attempts(vm_spec.OwnRelease, "0.3.2", "unknown", "/h")
+  assert attempt.arguments == ["setup", "--home", "/h", "--release", "v0.3.2"]
+
+  let assert Ok([short]) =
+    vm_spec.setup_attempts(vm_spec.OwnRelease, "0.3.2", "4c266dd", "/h")
+  assert list.contains(short.arguments, "--revision")
+
+  let assert Ok([tiny]) =
+    vm_spec.setup_attempts(vm_spec.OwnRelease, "0.3.2", "4c2", "/h")
+  assert !list.contains(tiny.arguments, "--revision")
+}
+
+pub fn a_named_release_or_tree_is_one_attempt_without_a_revision_test() {
   let assert Ok([release]) =
     vm_spec.setup_attempts(vm_spec.ReleaseTag("v0.2.0"), "dev", "unknown", "/h")
   assert release.arguments == ["setup", "--home", "/h", "--release", "v0.2.0"]
-  assert release.revision == vm_spec.AsInstalled
 
   let assert Ok([tree]) =
     vm_spec.setup_attempts(vm_spec.BuildTree("/b"), "dev", "unknown", "/h")
@@ -705,7 +736,7 @@ pub fn an_odd_head_is_refused_not_passed_to_git_test() {
 
 pub fn the_clone_checks_out_nothing_and_links_nothing_test() {
   assert vm_spec.clone_arguments("/w", "/s")
-    == ["clone", "--quiet", "--no-checkout", "--no-hardlinks", "/w", "/s"]
+    == ["clone", "--quiet", "--no-checkout", "--no-local", "/w", "/s"]
 }
 
 pub fn origin_is_the_sources_own_or_none_test() {
@@ -739,9 +770,26 @@ pub fn the_session_count_is_the_status_replys_occupied_test() {
   assert result.is_error(vm_spec.occupied_sessions(json.Int(2)))
 }
 
-pub fn an_idle_daemon_that_stopped_is_said_to_restart_with_the_next_loom_test() {
-  let lines = vm_spec.daemon_note(vm_spec.Idle(7), vm_spec.Stopped)
-  let text = string.join(lines, "\n")
+pub fn only_a_daemon_that_counts_none_is_stopped_test() {
+  assert vm_spec.daemon_step(7, vm_spec.Counted(0)) == vm_spec.StopIt
+}
+
+pub fn a_daemon_with_sessions_is_never_stopped_test() {
+  // The decision is where it is made: any count above zero leaves the daemon
+  // alone, whatever the count.
+  assert vm_spec.daemon_step(7, vm_spec.Counted(1))
+    == vm_spec.LeaveAlone(vm_spec.Holding(7, 1))
+  assert vm_spec.daemon_step(7, vm_spec.Counted(40))
+    == vm_spec.LeaveAlone(vm_spec.Holding(7, 40))
+}
+
+pub fn a_daemon_that_said_nothing_is_never_stopped_test() {
+  assert vm_spec.daemon_step(9, vm_spec.Uncounted)
+    == vm_spec.LeaveAlone(vm_spec.Unasked(9))
+}
+
+pub fn a_stopped_daemon_is_said_to_restart_with_the_next_loom_test() {
+  let text = string.join(vm_spec.daemon_note(vm_spec.Stopped), "\n")
   assert string.contains(text, "was stopped")
   assert string.contains(text, "next `loom` command starts it")
   assert !string.contains(text, "kill")
@@ -749,30 +797,28 @@ pub fn an_idle_daemon_that_stopped_is_said_to_restart_with_the_next_loom_test() 
 
 pub fn an_idle_daemon_that_would_not_stop_gets_the_command_test() {
   let text =
-    vm_spec.daemon_note(vm_spec.Idle(7), vm_spec.NotStopped("still running"))
+    vm_spec.daemon_note(vm_spec.NotStopped(7, "still running"))
     |> string.join("\n")
   assert string.contains(text, "still running")
   assert string.contains(text, "kill -TERM 7")
 }
 
-pub fn a_daemon_with_sessions_is_never_stopped_and_gets_the_command_test() {
-  // The attempt is `Stopped` here to show the state decides: a daemon that
-  // holds sessions is reported as left running whatever the attempt says.
+pub fn a_daemon_with_sessions_gets_the_command_and_a_count_test() {
   let text =
-    vm_spec.daemon_note(vm_spec.Holding(7, 2), vm_spec.Stopped)
+    vm_spec.daemon_note(vm_spec.Holding(7, 2))
     |> string.join("\n")
   assert string.contains(text, "holds 2 sessions")
   assert string.contains(text, "left running")
   assert string.contains(text, "kill -TERM 7")
   assert string.contains(
-    string.join(vm_spec.daemon_note(vm_spec.Holding(7, 1), vm_spec.Stopped), ""),
+    string.join(vm_spec.daemon_note(vm_spec.Holding(7, 1)), ""),
     "holds 1 session,",
   )
 }
 
 pub fn a_daemon_that_said_nothing_is_left_running_test() {
   let text =
-    vm_spec.daemon_note(vm_spec.Unasked(9), vm_spec.NotStopped("not asked"))
+    vm_spec.daemon_note(vm_spec.Unasked(9))
     |> string.join("\n")
   assert string.contains(text, "left running")
   assert string.contains(text, "kill -TERM 9")
@@ -780,7 +826,7 @@ pub fn a_daemon_that_said_nothing_is_left_running_test() {
 
 pub fn no_daemon_means_the_next_loom_starts_one_test() {
   let text =
-    vm_spec.daemon_note(vm_spec.NoDaemon, vm_spec.NotStopped("not asked"))
+    vm_spec.daemon_note(vm_spec.NoDaemon)
     |> string.join("\n")
   assert string.contains(text, "next `loom` command starts the daemon")
   assert !string.contains(text, "kill")

@@ -284,16 +284,6 @@ fn full_commit(text: String) -> Bool {
 const development_refusal =
   "this is a development build, which has no release to install the microVM artifacts from. Build them in a checkout of this tree and run `make vmm-install-dev`"
 
-/// Whether the installed manifest has to name the running build's commit.
-pub type RevisionCheck {
-  /// The tag was guessed from the running build, so an installation of another
-  /// commit is a wrong guess and the next tag is tried.
-  MatchesRunningBuild
-
-  /// The user named the source, so what it installs is what they asked for.
-  AsInstalled
-}
-
 /// One `loom-vm setup` run `setup` may make.
 pub type Attempt {
   Attempt(
@@ -301,14 +291,13 @@ pub type Attempt {
     name: String,
     /// The `loom-vm` arguments.
     arguments: List(String),
-    /// Whether the manifest it writes is checked against the running build.
-    revision: RevisionCheck,
   )
 }
 
 /// The `loom-vm setup` runs for a source, in the order to try them, with the
 /// guest home each writes to. A source naming a release or a tree is one
-/// attempt; the running build's own release is one for each candidate tag.
+/// attempt; the running build's own release is one for each candidate tag,
+/// each with `--revision` set to the running commit when it is known.
 ///
 /// ## Examples
 ///
@@ -326,7 +315,9 @@ pub fn setup_attempts(
   let base = ["setup", "--home", home]
 
   // Only the running build's own release needs its identity; the other two
-  // sources name what to install.
+  // sources name what to install. A tag guessed from the build must hold the
+  // build's commit, so `loom-vm` is told the commit and refuses an image of
+  // another one before it downloads or writes anything.
   case source {
     OwnRelease ->
       release_candidates(version, commit)
@@ -334,21 +325,30 @@ pub fn setup_attempts(
         list.map(_, fn(tag) {
           Attempt(
             tag,
-            list.append(base, ["--release", tag]),
-            MatchesRunningBuild,
+            list.flatten([
+              base,
+              ["--release", tag],
+              revision_flag(commit),
+            ]),
           )
         }),
       )
-    ReleaseTag(tag) ->
-      Ok([Attempt(tag, list.append(base, ["--release", tag]), AsInstalled)])
+    ReleaseTag(tag) -> Ok([Attempt(tag, list.append(base, ["--release", tag]))])
     BuildTree(directory) ->
-      Ok([
-        Attempt(
-          directory,
-          list.append(base, ["--from-build", directory]),
-          AsInstalled,
-        ),
-      ])
+      Ok([Attempt(directory, list.append(base, ["--from-build", directory]))])
+  }
+}
+
+/// `--revision COMMIT` for a commit that names one, at least seven lowercase
+/// hexadecimal digits, and nothing for `unknown` or an empty commit.
+fn revision_flag(commit: String) -> List(String) {
+  let hexadecimal =
+    list.all(string.to_graphemes(commit), string.contains("0123456789abcdef", _))
+
+  // Anything shorter is no commit name, and `loom-vm` would refuse it.
+  case hexadecimal && string.byte_size(commit) >= 7 {
+    True -> ["--revision", commit]
+    False -> []
   }
 }
 
@@ -1394,17 +1394,19 @@ pub fn head_target(
 }
 
 /// The `git` arguments that make a standalone repository from a worktree
-/// without checking anything out: a local clone that links no object files
-/// with the source, so removing or rewriting either leaves the other whole.
+/// without checking anything out. `--no-local` makes Git copy the objects over
+/// its own transport instead of linking or copying the source's object
+/// directory, which also leaves out an `objects/info/alternates` file naming
+/// host paths that a source made with `git clone --shared` carries.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// assert vm_spec.clone_arguments("/w", "/s")
-///   == ["clone", "--quiet", "--no-checkout", "--no-hardlinks", "/w", "/s"]
+///   == ["clone", "--quiet", "--no-checkout", "--no-local", "/w", "/s"]
 /// ```
 pub fn clone_arguments(source: String, into: String) -> List(String) {
-  ["clone", "--quiet", "--no-checkout", "--no-hardlinks", source, into]
+  ["clone", "--quiet", "--no-checkout", "--no-local", source, into]
 }
 
 /// The `git` commands, each run in the copy, that point its `HEAD` where the
@@ -1465,19 +1467,59 @@ pub fn git_refusal(worktree: String, reason: String) -> String {
 
 // --- the daemon that was running before `up` -----------------------------------
 
-/// What `up` found out about the user's daemon.
-pub type DaemonState {
-  /// No daemon is running, so the next `loom` command starts one.
+/// What a running daemon said about the sessions it holds.
+pub type Sessions {
+  /// The daemon's `status` reply gave a count.
+  Counted(count: Int)
+
+  /// The daemon did not answer, or answered something with no count.
+  Uncounted
+}
+
+/// What `up` does about a running daemon, decided from what it said.
+pub type DaemonStep {
+  /// Ask the daemon to drain and wait for its process to go.
+  StopIt
+
+  /// Leave the daemon running, with the outcome to report.
+  LeaveAlone(outcome: DaemonOutcome)
+}
+
+/// How `up` left the user's daemon, for its closing note.
+pub type DaemonOutcome {
+  /// No daemon was running, so the next `loom` command starts one.
   NoDaemon
 
-  /// A daemon holds no session, so stopping it costs nothing.
-  Idle(pid: Int)
+  /// A daemon held no session and was stopped.
+  Stopped
 
-  /// A daemon holds `sessions` resident, opening or stopping sessions.
+  /// A daemon held no session and was not stopped, for the reason given.
+  NotStopped(pid: Int, why: String)
+
+  /// A daemon holds `sessions` resident, opening, stopping or blocked ones.
   Holding(pid: Int, sessions: Int)
 
   /// A daemon runs and did not say how many sessions it holds.
   Unasked(pid: Int)
+}
+
+/// Whether to stop the daemon with `pid`, given what it said. Only a daemon
+/// that reports no session is stopped; one that holds any, or that said
+/// nothing, is left running, so a daemon's work is never ended on a guess.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.daemon_step(7, vm_spec.Counted(0)) == vm_spec.StopIt
+/// assert vm_spec.daemon_step(7, vm_spec.Counted(2))
+///   == vm_spec.LeaveAlone(vm_spec.Holding(7, 2))
+/// ```
+pub fn daemon_step(pid: Int, sessions: Sessions) -> DaemonStep {
+  case sessions {
+    Counted(0) -> StopIt
+    Counted(count) -> LeaveAlone(Holding(pid, count))
+    Uncounted -> LeaveAlone(Unasked(pid))
+  }
 }
 
 /// The number of sessions a daemon's `status` reply says it holds: the ones
@@ -1510,8 +1552,7 @@ pub fn stop_command(pid: Int) -> String {
   "kill -TERM " <> int.to_string(pid)
 }
 
-/// The lines `up` ends with about the daemon, given what it found and, for an
-/// idle daemon, whether stopping it worked.
+/// The lines `up` ends with about the daemon.
 ///
 /// A daemon that holds any session is never stopped for the user: the note
 /// names the exact command instead. A stopped daemon is started again by the
@@ -1521,26 +1562,26 @@ pub fn stop_command(pid: Int) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// assert vm_spec.daemon_note(vm_spec.NoDaemon, vm_spec.NotStopped) != []
+/// assert vm_spec.daemon_note(vm_spec.NoDaemon) != []
 /// ```
-pub fn daemon_note(state: DaemonState, stop: StopAttempt) -> List(String) {
+pub fn daemon_note(outcome: DaemonOutcome) -> List(String) {
   let reason =
     "It read its configuration before the [distribution] table was installed, "
     <> "so it must restart to use the guest."
 
-  // The state decides what is said; the attempt matters only for an idle
-  // daemon, the one case in which `up` tried to stop anything.
-  case state, stop {
-    NoDaemon, _ -> [
+  // Each outcome is one thing said, and only a daemon that is still running
+  // gets the command that stops it.
+  case outcome {
+    NoDaemon -> [
       "The next `loom` command starts the daemon with the table in effect.",
       "",
     ]
-    Idle(_), Stopped -> [
+    Stopped -> [
       "Your daemon held no sessions, so it was stopped. The next `loom` "
         <> "command starts it with the table in effect.",
       "",
     ]
-    Idle(pid), NotStopped(why) -> [
+    NotStopped(pid, why) -> [
       "Your daemon holds no sessions but did not stop ("
         <> why
         <> "). "
@@ -1548,7 +1589,7 @@ pub fn daemon_note(state: DaemonState, stop: StopAttempt) -> List(String) {
       "Stop it with: " <> stop_command(pid),
       "",
     ]
-    Holding(pid, sessions), _ -> [
+    Holding(pid, sessions) -> [
       "Your daemon holds "
         <> int.to_string(sessions)
         <> " session"
@@ -1558,7 +1599,7 @@ pub fn daemon_note(state: DaemonState, stop: StopAttempt) -> List(String) {
       "When they are finished, stop it with: " <> stop_command(pid),
       "",
     ]
-    Unasked(pid), _ -> [
+    Unasked(pid) -> [
       "Your daemon is running and did not say whether it holds sessions, so "
         <> "it was left running. "
         <> reason,
@@ -1566,15 +1607,6 @@ pub fn daemon_note(state: DaemonState, stop: StopAttempt) -> List(String) {
       "",
     ]
   }
-}
-
-/// Whether stopping an idle daemon worked.
-pub type StopAttempt {
-  /// The daemon asked to drain and its process is gone.
-  Stopped
-
-  /// The daemon was not stopped, for the reason given.
-  NotStopped(reason: String)
 }
 
 fn plural(count: Int) -> String {

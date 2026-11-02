@@ -3125,13 +3125,13 @@ Run one standing executor in a microVM and use it from `loom --executor`.
 
   setup     Install the microVM artifacts the guest boots from and write their
             manifest, with the `loom-vm` that ships beside loomd. With no flag
-            it installs the artifacts published for this build: the nightly
-            release commit-<sha> of its own commit when it is a nightly, then
-            v<version>, the first whose revision is this build's. --release
-            TAG installs only that release and --from-build DIR records a
-            build tree
-            (packages/vmm/build). A development build has no release: build
-            the artifacts in a checkout and run `make vmm-install-dev`.
+            it tries the tag commit-<sha> of this build's own commit, when it
+            has one, then v<version>, and keeps the first whose guest image
+            was built from this commit. vmm-release.yml does not publish for
+            commit-* tags yet. --release TAG installs only that tag and
+            --from-build DIR records a build tree (packages/vmm/build). A
+            development build has no release: build the artifacts in a
+            checkout and run `make vmm-install-dev`.
   up        Provision a two-node deployment, enroll the orchestrator in your
             loom.toml as [executors.NAME], clone the guest root, copy the
             workspace into it, boot the guest with `loom-vm run` and wait until
