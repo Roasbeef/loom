@@ -82,6 +82,17 @@ pub type Env {
   )
 }
 
+/// What the control commands may ask of project mode: the running projects and
+/// the creation of a new one. The daemon builds it once the registry is ready.
+pub type Control {
+  Control(
+    /// The running projects.
+    book: Book,
+    /// Creates a project for a workspace and a name, or finds the existing one.
+    create: fn(String, String) -> Result(Created, String),
+  )
+}
+
 /// A created project, for the control reply.
 pub type Created {
   Created(
@@ -216,16 +227,18 @@ pub fn ensure_running(
     Ok(running) -> Ok(running)
     Error(Nil) -> {
       use started <- result.map(
-        project_host.start(project_host.Config(
-          project: project.id,
-          workspace: project.workspace,
-          router_session: project.router_session,
-          ledger_path: project.ledger_path,
-          max_workers: env.max_workers,
-          tick_ms: 2000,
-          router_turn_ms: 120_000,
-          ports: ports_for(env, project),
-        )),
+        project_host.start(
+          project_host.Config(
+            project: project.id,
+            workspace: project.workspace,
+            router_session: project.router_session,
+            ledger_path: project.ledger_path,
+            max_workers: env.max_workers,
+            tick_ms: 2000,
+            router_turn_ms: 120_000,
+            ports: fn() { ports_for(env, project) },
+          ),
+        ),
       )
       project_book.put(env.book, started)
       started
@@ -266,10 +279,13 @@ fn ports_for(env: Env, project: catalogue.Project) -> project_host.Ports {
       root: project.workspace,
       mode: workspaces.Worktree(workspaces.default_base),
     )
+
+  // The worktree service is started once, here, in the actor's own process.
+  let trees = env.worktrees_for(tree_workspace)
   project_host.Ports(
     now_ms: env.now_ms,
     start_session: fn(request) {
-      use trees <- result.try(env.worktrees_for(tree_workspace))
+      use trees <- result.try(trees)
       start_worker(env, project, tree_workspace, trees, request)
     },
     open_session: fn(session) {

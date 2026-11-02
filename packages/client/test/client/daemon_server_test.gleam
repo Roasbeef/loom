@@ -256,6 +256,7 @@ pub fn fixture_with_ledger(
         )
       },
       ui: None,
+      projects: None,
     )
   let ports = process.new_subject()
   let assert Ok(listener) =
@@ -2149,6 +2150,7 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
             |> response.set_body(mist.Bytes(bytes_tree.from_string("absent")))
           },
           ui: None,
+          projects: None,
         )
       let digest_of = fn(token) {
         let assert Ok(digest) =

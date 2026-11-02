@@ -118,8 +118,9 @@ pub type Config {
     /// Milliseconds a batch may stay with the router before its unrouted
     /// candidates go back to the queue.
     router_turn_ms: Int,
-    /// The daemon's side.
-    ports: Ports,
+    /// Builds the daemon's side. It runs in the actor's own process, so what
+    /// it starts is linked to the actor and ends with it.
+    ports: fn() -> Ports,
   )
 }
 
@@ -130,6 +131,8 @@ pub type Handle {
     project: String,
     /// The router's session id.
     router_session: String,
+    /// The workspace the project is bound to.
+    workspace: String,
     /// The actor's mailbox.
     commands: Subject(Message),
   )
@@ -197,6 +200,7 @@ pub opaque type Message {
 type Host {
   Host(
     config: Config,
+    ports: Ports,
     ledger: Ledger,
     engine: State,
     last_seq: Int,
@@ -242,6 +246,7 @@ pub fn start(config: Config) -> Result(Handle, String) {
     Handle(
       project: config.project,
       router_session: config.router_session,
+      workspace: config.workspace,
       commands: started.data,
     )
   })
@@ -437,6 +442,7 @@ fn boot(config: Config) -> Result(Host, String) {
   let fresh =
     Host(
       config:,
+      ports: config.ports(),
       ledger:,
       engine: state.start(state.Config(
         project: model.ProjectId(config.project),
@@ -560,7 +566,7 @@ fn handle(host: Host, message: Message) -> actor.Next(Host, Message) {
 // `RouterTurnEnded`, and a router that left some unrouted would otherwise keep
 // the project from ever offering another batch.
 fn tick(host: Host) -> Host {
-  let now = host.config.ports.now_ms()
+  let now = host.ports.now_ms()
   let stale =
     host.engine.router == state.RouterBusy
     && host.offered_at_ms > 0
@@ -595,7 +601,7 @@ fn commit(host: Host, incoming: Event) -> Result(Host, NotCommitted) {
   use #(next, effects) <- result.try(
     engine.apply(host.engine, incoming) |> result.map_error(Refused),
   )
-  let now = host.config.ports.now_ms()
+  let now = host.ports.now_ms()
   let drafts = project_records.drafts(host.last_seq + 1, now, effects)
   use seq <- result.map(
     project_ledger.append_with_effects(
@@ -622,7 +628,7 @@ fn record(host: Host, written: Record) -> Result(Host, String) {
     project_ledger.append(
       host.ledger,
       project_records.encode_record(written),
-      host.config.ports.now_ms(),
+      host.ports.now_ms(),
     )
     |> result.map_error(fn(error) { string.inspect(error) }),
   )
@@ -662,7 +668,7 @@ fn post_now(
     )
     True, True -> #(host, Ok(Repeated(request)))
     True, False -> {
-      let now = host.config.ports.now_ms()
+      let now = host.ports.now_ms()
       let arrived =
         model.Trigger(
           id:,
@@ -795,7 +801,7 @@ fn reply_now(
         project_ledger.append_with_effects(
           host.ledger,
           project_records.encode_record(written),
-          host.config.ports.now_ms(),
+          host.ports.now_ms(),
           [draft],
         )
       {
@@ -958,7 +964,7 @@ fn human_now(
             rule: None,
           ),
           generation: 0,
-          at_ms: host.config.ports.now_ms(),
+          at_ms: host.ports.now_ms(),
         )
       let outcome = {
         use texted <- result.try(record(
@@ -971,7 +977,7 @@ fn human_now(
       case outcome {
         Ok(next) -> next
         Error(reason) -> {
-          log.warn(host.config.ports.logger, "project.human_turn_refused", [
+          log.warn(host.ports.logger, "project.human_turn_refused", [
             field.ident(key: "session", value: session),
             field.text(key: "reason", value: reason),
           ])
@@ -995,7 +1001,7 @@ fn perform_rounds(host: Host, rounds: Int) -> Host {
   case rounds {
     0 -> host
     _ -> {
-      let now = host.config.ports.now_ms()
+      let now = host.ports.now_ms()
       case project_ledger.effects_due(host.ledger, now, 50) {
         Error(_) | Ok([]) -> host
         Ok(rows) -> {
@@ -1010,7 +1016,7 @@ fn perform_rounds(host: Host, rounds: Int) -> Host {
 fn perform_row(host: Host, row: project_ledger.Effect) -> Host {
   case project_records.job(row) {
     Error(reason) -> {
-      log.error(host.config.ports.logger, "project.job_unreadable", [
+      log.error(host.ports.logger, "project.job_unreadable", [
         field.ident(key: "kind", value: row.kind),
         field.text(key: "reason", value: reason),
       ])
@@ -1028,7 +1034,7 @@ fn settle(host: Host, row: project_ledger.Effect) -> Host {
 // Pushes a row's time out by a delay that grows with its attempts. The ledger
 // counts the attempt, so the delay survives a restart.
 fn defer(host: Host, row: project_ledger.Effect) -> Host {
-  let now = host.config.ports.now_ms()
+  let now = host.ports.now_ms()
   let delay = int.min(60_000, 1000 * int.bitwise_shift_left(1, row.attempts))
   let _deferred =
     project_ledger.defer(host.ledger, row.kind, row.key, now + delay)
@@ -1058,7 +1064,7 @@ fn not_served(
   kind: String,
   ticket: String,
 ) -> Host {
-  log.info(host.config.ports.logger, "project.effect_not_served", [
+  log.info(host.ports.logger, "project.effect_not_served", [
     field.ident(key: "kind", value: kind),
     field.ident(key: "ticket", value: ticket),
   ])
@@ -1093,7 +1099,7 @@ fn start_worker(
               seq:,
               title: model.title_text(found.title),
             )
-          case host.config.ports.start_session(request) {
+          case host.ports.start_session(request) {
             Ok(session) -> started(host, row, found, seq, session)
             Error(reason) -> start_failed(host, row, found, seq, reason)
           }
@@ -1127,7 +1133,7 @@ fn start_failed(
   seq: Int,
   reason: String,
 ) -> Host {
-  log.warn(host.config.ports.logger, "project.start_failed", [
+  log.warn(host.ports.logger, "project.start_failed", [
     field.ident(key: "ticket", value: ticket.id.value),
     field.text(key: "reason", value: reason),
   ])
@@ -1153,7 +1159,7 @@ fn stop_worker(
     Ok(found) -> {
       case bound_session(found, seq) {
         Some(session) -> {
-          let _stopped = host.config.ports.stop_session(session)
+          let _stopped = host.ports.stop_session(session)
           Nil
         }
         None -> Nil
@@ -1243,7 +1249,7 @@ fn offer_to_router(
     })
   case list.all(results, fn(each) { each == Admitted }) {
     True ->
-      Host(..host, offered_at_ms: host.config.ports.now_ms())
+      Host(..host, offered_at_ms: host.ports.now_ms())
       |> settle(row)
     False ->
       case row.attempts >= 9 {
@@ -1288,7 +1294,7 @@ fn admit(
       text: text.body,
       wake:,
     )
-  let ports = host.config.ports
+  let ports = host.ports
   let attempt = fn() {
     use endpoint <- result.try(ports.endpoint_of(session))
     endpoint.call(command)

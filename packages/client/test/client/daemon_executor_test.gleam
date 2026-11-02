@@ -55,6 +55,7 @@ fn config(
       None,
       None,
       dict.new(),
+      main.no_projects,
     ),
     state_root: state,
     session_defaults: arguments,

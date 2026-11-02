@@ -199,6 +199,23 @@ pub type Command {
   /// Lists authorized metadata after one canonical identity.
   ListSessions(after: String, revision: Option(Int))
 
+  /// Creates a project for a workspace, with its router session
+  /// (protocol-change/106). Owner-only.
+  CreateProject(workspace: String, name: String)
+
+  /// Lists the projects with their counts by stage. Owner-only.
+  ListProjects
+
+  /// One page of a project's board, needs-a-person first. Owner-only.
+  ProjectBoard(project: String, page: Int)
+
+  /// Adds the owner's text to a project as an explicit trigger, keyed by a
+  /// request id so a repeat changes nothing. Owner-only.
+  PostToProject(project: String, request: String, text: String)
+
+  /// A person's stop of one ticket, which withdraws its mandate. Owner-only.
+  StopTicket(project: String, ticket: String)
+
   /// Asks the named resident sessions what they are doing
   /// (`protocol-change/050`). Owner-only; saved sessions are never opened.
   SessionActivity(
@@ -638,6 +655,28 @@ fn decode_fields(
           Error("remember applies to the home link and not to a session's")
         PageLink, _, _ -> Ok(UiLink(id, page, remember))
       }
+    }
+    "projects.create" -> {
+      use workspace <- result.try(text_field(fields, "workspace", 4096))
+      use name <- result.map(text_field(fields, "name", 256))
+      CreateProject(workspace, name)
+    }
+    "projects.list" -> Ok(ListProjects)
+    "projects.board" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use page <- result.map(page_field(fields))
+      ProjectBoard(project, page)
+    }
+    "projects.post" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use request <- result.try(text_field(fields, "request_id", 64))
+      use text <- result.map(text_field(fields, "text", 32_768))
+      PostToProject(project, request, text)
+    }
+    "projects.stop" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use ticket <- result.map(text_field(fields, "ticket", 128))
+      StopTicket(project, ticket)
     }
     "sessions.list" -> {
       use after <- result.try(cursor(fields))
@@ -1368,6 +1407,17 @@ fn activity_sessions(
 }
 
 /// Decodes an optional integer revision sequence number.
+// A zero-based page number, defaulting to the first.
+
+/// Decodes the optional `page` field of a board read.
+fn page_field(fields: List(#(String, JsonValue))) -> Result(Int, String) {
+  case list.key_find(fields, "page") {
+    Error(Nil) -> Ok(0)
+    Ok(json.Int(page)) if page >= 0 && page <= 100_000 -> Ok(page)
+    Ok(_) -> Error("expected a nonnegative page number")
+  }
+}
+
 fn optional_revision(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(Int), String) {

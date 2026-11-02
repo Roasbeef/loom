@@ -58,6 +58,9 @@
 import broker/token
 import client/daemon/manager
 import client/daemon/profiles
+import client/daemon/project_book
+import client/daemon/project_host
+import client/daemon/project_start
 import client/daemon/protocol
 import client/daemon/root
 import client/daemon/ui_assets
@@ -160,6 +163,9 @@ pub type Config(instance) {
       Response(mist.ResponseData),
     /// The web view, present only when the daemon was started with `--ui`.
     ui: Option(Ui(instance)),
+    /// Project mode's control, present once the daemon started its project
+    /// table. `None` answers the `projects.*` commands `not_found`.
+    projects: Option(project_start.Control),
   )
 }
 
@@ -2982,6 +2988,11 @@ fn control(
             | protocol.UiLink(..)
             | protocol.DeviceLink(..)
             | protocol.ListSessions(..)
+            | protocol.CreateProject(..)
+            | protocol.ListProjects
+            | protocol.ProjectBoard(..)
+            | protocol.PostToProject(..)
+            | protocol.StopTicket(..)
             | protocol.SessionActivity(..)
             | protocol.ListArchivedSessions(..)
             | protocol.ArchiveSession(..)
@@ -3034,6 +3045,8 @@ fn control_use(command: protocol.Command) {
     | protocol.ListArchivedSessions(..)
     | protocol.GetSession(_)
     | protocol.WorkspaceDefault(_)
+    | protocol.ListProjects
+    | protocol.ProjectBoard(..)
     | protocol.DirectoryStatus
     | protocol.DeploymentStatus(_)
     | protocol.SessionsElsewhere(..)
@@ -3057,6 +3070,9 @@ fn control_use(command: protocol.Command) {
     | protocol.RevokeLogin(..)
     | protocol.RenamePrincipal(..)
     | protocol.CreateSession(..)
+    | protocol.CreateProject(..)
+    | protocol.PostToProject(..)
+    | protocol.StopTicket(..)
     | protocol.OpenSession(..)
     | protocol.StopSession(..)
     | protocol.MoveSession(..)
@@ -3193,10 +3209,154 @@ fn dispatch(
     | protocol.LedgerEntries(..)
     | protocol.LedgerStatus
     | protocol.LedgerHoldings -> ledger_command(config, principal, command)
+
+    // The project commands answer with project facts rather than session ones
+    // (protocol-change/106) and are the owner's alone.
+    protocol.CreateProject(workspace, name) ->
+      project_command(config, principal, fn(control) {
+        project_create(control, workspace, name)
+      })
+    protocol.ListProjects -> project_command(config, principal, project_list)
+    protocol.ProjectBoard(project, page) ->
+      project_command(config, principal, fn(control) {
+        project_board(control, project, page)
+      })
+    protocol.PostToProject(project, request, text) ->
+      project_command(config, principal, fn(control) {
+        project_post(control, project, request, text)
+      })
+    protocol.StopTicket(project, ticket) ->
+      project_command(config, principal, fn(control) {
+        project_stop(control, project, ticket)
+      })
     _ ->
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(control_refusal)
   }
+}
+
+// The owner gate and the daemon's project control, once, for the five project
+// commands. A daemon that started no project table answers `not_found`.
+fn project_command(
+  config: Config(instance),
+  principal: access.Principal,
+  run: fn(project_start.Control) -> Result(#(String, JsonValue), String),
+) -> Result(#(String, JsonValue), Refused) {
+  use Nil <- result.try(owner(principal) |> result.map_error(control_refusal))
+  use control <- result.try(
+    option.to_result(config.projects, Nil)
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
+  )
+  run(control) |> result.map_error(control_refusal)
+}
+
+fn project_create(
+  control: project_start.Control,
+  workspace: String,
+  name: String,
+) -> Result(#(String, JsonValue), String) {
+  control.create(workspace, name)
+  |> result.map_error(fn(_) { "bad_request" })
+  |> result.map(fn(created) {
+    #(
+      "projects.create",
+      json.Object([
+        #("project", json.String(created.project)),
+        #("workspace", json.String(created.workspace)),
+        #("router_session", json.String(created.router_session)),
+      ]),
+    )
+  })
+}
+
+fn project_list(
+  control: project_start.Control,
+) -> Result(#(String, JsonValue), String) {
+  let rows =
+    project_book.all(control.book)
+    |> list.map(fn(handle) {
+      let counts = result.unwrap(project_host.counts(handle), [])
+      json.Object([
+        #("id", json.String(handle.project)),
+        #("workspace", json.String(handle.workspace)),
+        #("router_session", json.String(handle.router_session)),
+        #(
+          "counts",
+          json.Object(
+            list.map(counts, fn(entry) { #(entry.0, json.Int(entry.1)) }),
+          ),
+        ),
+      ])
+    })
+  Ok(#("projects.list", json.Object([#("projects", json.Array(rows))])))
+}
+
+fn project_board(
+  control: project_start.Control,
+  project: String,
+  page: Int,
+) -> Result(#(String, JsonValue), String) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.replace_error("not_found"),
+  )
+  use shown <- result.map(
+    project_host.board(handle, page) |> result.replace_error("unavailable"),
+  )
+  #(
+    "projects.board",
+    json.Object([
+      #("project", json.String(project)),
+      #("revision", json.Int(shown.revision)),
+      #("page", json.Int(shown.page)),
+      #("total", json.Int(shown.total)),
+      #("tickets", json.Array(shown.tickets)),
+      #("replies", json.Array(shown.replies)),
+    ]),
+  )
+}
+
+fn project_post(
+  control: project_start.Control,
+  project: String,
+  request: String,
+  text: String,
+) -> Result(#(String, JsonValue), String) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.replace_error("not_found"),
+  )
+  use posted <- result.map(
+    project_host.post(handle, request, text)
+    |> result.replace_error("bad_request"),
+  )
+  let #(trigger, repeated) = case posted {
+    project_host.Posted(trigger) -> #(trigger, False)
+    project_host.Repeated(trigger) -> #(trigger, True)
+  }
+  #(
+    "projects.post",
+    json.Object([
+      #("trigger", json.String(trigger)),
+      #("repeated", json.Bool(repeated)),
+    ]),
+  )
+}
+
+fn project_stop(
+  control: project_start.Control,
+  project: String,
+  ticket: String,
+) -> Result(#(String, JsonValue), String) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.replace_error("not_found"),
+  )
+  use Nil <- result.map(
+    project_host.stop_ticket(handle, ticket, "owner")
+    |> result.replace_error("bad_request"),
+  )
+  #("projects.stop", json.Object([#("ticket", json.String(ticket))]))
 }
 
 /// The `ledger.*` owner commands (protocol-change/086). A member principal is
@@ -4208,6 +4368,13 @@ fn dispatch_class(
     | protocol.LedgerEntries(..)
     | protocol.LedgerStatus
     | protocol.LedgerHoldings -> Error("unavailable")
+
+    // The project commands are served by `dispatch` and never reach here.
+    protocol.CreateProject(..)
+    | protocol.ListProjects
+    | protocol.ProjectBoard(..)
+    | protocol.PostToProject(..)
+    | protocol.StopTicket(..) -> Error("unavailable")
     protocol.Shutdown(supplied) -> {
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))

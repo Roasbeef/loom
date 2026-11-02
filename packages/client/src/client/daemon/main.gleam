@@ -61,6 +61,8 @@ import client/daemon/manager
 import client/daemon/new_folder
 import client/daemon/node_facts
 import client/daemon/profiles
+import client/daemon/project_book
+import client/daemon/project_start
 import client/daemon/restart
 import client/daemon/root
 import client/daemon/server
@@ -101,6 +103,7 @@ import client/peer_outbox_drain
 import client/peers
 import client/pools
 import client/profile_switch
+import client/project_settings
 import client/relayed_session
 import client/remote/address
 import client/remote/host as executor_host
@@ -228,8 +231,24 @@ pub type Config {
     /// `[orchestrators.<name>]` each keeps, and empty before then
     /// (protocol-change/084, phase 2). A session's drainer votes to them.
     keepers: link_keeper.Keepers,
+    /// The project table and the `[project]` numbers.
+    projects: Projects,
   )
 }
+
+/// Project mode as the daemon holds it: the table of running project actors
+/// once `prepare_startup` has started it, and the numbers from `[project]`.
+pub type Projects {
+  Projects(
+    /// The running projects, or `None` before startup started the table.
+    book: Option(project_book.Book),
+    /// The `[project]` table.
+    settings: project_settings.Settings,
+  )
+}
+
+/// A daemon with no project table started and the default numbers.
+pub const no_projects = Projects(book: None, settings: project_settings.defaults)
 
 /// Whether the daemon serves the web view under `/ui` (protocol-change/051).
 pub type WebView {
@@ -456,6 +475,7 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
       None,
       None,
       dict.new(),
+      no_projects,
     )
   use config <- result.try(parse_loop(arguments, initial))
 
@@ -2328,6 +2348,11 @@ pub fn prepare_startup(
     spawners.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
+  use project_numbers <- result.try(
+    project_settings.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  use project_table <- result.try(project_book.start())
   use booted <- result.try(start_distribution(
     document,
     configuration,
@@ -2369,6 +2394,7 @@ pub fn prepare_startup(
       spawners:,
       membership: option.map(booted, fn(started) { started.membership }),
       ledger:,
+      projects: Projects(book: Some(project_table), settings: project_numbers),
     )
   root.start(
     root.Config(
@@ -2405,6 +2431,14 @@ pub fn prepare_startup(
             selected,
             state,
           )
+          |> diagnose_start(logger, identity, SettingsResolution),
+        )
+
+        // A router or a worker is built from its standing: the registry, the
+        // prompt, the model and the tool ceiling all follow from it. An
+        // ordinary session is left exactly as it was.
+        use settings <- result.try(
+          seated(config, directory, registration.id, settings)
           |> diagnose_start(logger, identity, SettingsResolution),
         )
         use tick <- result.try(
@@ -3092,6 +3126,7 @@ pub fn listen_serving(
     ui,
     session_movers.idle(),
     orchestrator_port.unreported(),
+    None,
   )
 }
 
@@ -3116,6 +3151,7 @@ pub fn listen_moving(
   ui: Option(server.Ui(instance)),
   movers: session_movers.Control,
   reads: orchestrator_port.Reads,
+  projects: Option(project_start.Control),
 ) -> Result(Serving(instance), String) {
   use ready <- result.try(root.ready(daemon, within: 20_000))
   use domain_configuration <- result.try(captured_domain_configuration(
@@ -3141,6 +3177,7 @@ pub fn listen_moving(
       },
       session_upgrade: upgrade,
       ui:,
+      projects:,
     )
   let builder =
     mist.new(fn(request) { server.handle(routing, request) })
@@ -3178,6 +3215,118 @@ fn captured_domain_configuration(
   }
 }
 
+// The settings of a session shaped by its project standing, or the settings
+// unchanged for an ordinary session.
+fn seated(
+  config: Config,
+  registry: manager.Manager(serve.Resident),
+  session: String,
+  settings: serve.Settings,
+) -> Result(serve.Settings, String) {
+  case config.projects.book {
+    None -> Ok(settings)
+    Some(book) -> {
+      use seat <- result.map(project_start.seat(registry, book, session))
+      case seat {
+        Some(found) -> serve.seat_project(settings, found)
+        None -> settings
+      }
+    }
+  }
+}
+
+// The control commands' view of project mode, or none for a daemon whose
+// startup did not make the table.
+fn project_control(
+  config: Config,
+  ready: root.Ready(serve.Resident),
+  logger: Logger,
+) -> Option(project_start.Control) {
+  case config.projects.book {
+    None -> None
+    Some(book) ->
+      case project_env(config, ready, book, logger) {
+        Error(_) -> None
+        Ok(env) ->
+          Some(
+            project_start.Control(book:, create: fn(workspace, name) {
+              project_start.create(env, workspace, name)
+            }),
+          )
+      }
+  }
+}
+
+/// What project startup needs from the ready daemon.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.project_env(config, ready, logger)
+/// ```
+@internal
+pub fn project_env(
+  config: Config,
+  ready: root.Ready(serve.Resident),
+  book: project_book.Book,
+  logger: Logger,
+) -> Result(project_start.Env, String) {
+  use domain_configuration <- result.map(captured_domain_configuration(
+    config.session_defaults,
+    "",
+  ))
+  project_start.Env(
+    book:,
+    registry: ready.registry,
+    sessions: ready.sessions_directory,
+    state_root: ready.state_root,
+    generator: fn() {
+      ids.generator(
+        clock.from_function(ffi_os.system_time_ms),
+        ffi_os.unique_positive_integer(),
+      )
+    },
+    domain_configuration:,
+    worktrees_for: fn(workspace) {
+      use machine <- result.try(executor_plane.machine(
+        config.session_defaults,
+        domain_configuration,
+        config.state_root,
+        logger,
+      ))
+      executor_plane.worktrees_of(machine, [workspace])
+    },
+    now_ms: ffi_os.system_time_ms,
+    max_workers: config.projects.settings.max_workers,
+    logger:,
+  )
+}
+
+/// Starts the actor of every active project and reopens its router and its
+/// live workers, once the registry is ready. A daemon with no projects does
+/// nothing here. Only rows the owner wrote open sessions at boot.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.reopen_projects(config, daemon, logger)
+/// ```
+@internal
+pub fn reopen_projects(
+  config: Config,
+  daemon: root.Root(serve.Resident),
+  logger: Logger,
+) -> Result(Nil, String) {
+  case config.projects.book {
+    None -> Ok(Nil)
+    Some(book) -> {
+      use ready <- result.try(root.ready(daemon, within: 20_000))
+      use env <- result.map(project_env(config, ready, book, logger))
+      project_start.reopen(env)
+    }
+  }
+}
+
 /// Main daemon runtime execution loop coordinating subsystems and wait signals.
 fn run(
   config: Config,
@@ -3204,6 +3353,7 @@ fn run(
         logger,
         ffi_os.system_time_ms(),
       ))
+      use Nil <- result.try(reopen_projects(config, daemon, logger))
       use movers <- result.try(start_movers(config, daemon, logger))
       use reads <- result.try(node_reads(config, daemon, executor, movers))
       use Nil <- result.try(start_orchestrator_port(
@@ -3220,6 +3370,8 @@ fn run(
       use Nil <- result.try(start_release_drain(config, daemon, logger))
       use Nil <- result.try(start_delegate_sweep(config, daemon, logger))
       use ui <- result.try(web_view(config, daemon))
+      use ready <- result.try(root.ready(daemon, within: 20_000))
+      let projects = project_control(config, ready, logger)
       use serving <- result.try(listen_moving(
         config,
         daemon,
@@ -3235,6 +3387,7 @@ fn run(
         ui,
         movers,
         reads,
+        projects,
       ))
       publish_endpoint(config, serving, paths, fence)
       |> result.replace(#(serving, executor))
