@@ -1515,6 +1515,7 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           | peer_mail.Received(..)
           | peer_mail.ReceivedGet(..)
           | peer_mail.SentReceipt(..)
+          | peer_mail.Trigger(..)
           | peer_mail.OutboxClaim(..)
           | peer_mail.OutboxSettle(..)
           | peer_mail.OutboxDue

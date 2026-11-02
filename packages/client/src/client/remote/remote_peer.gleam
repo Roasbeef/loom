@@ -80,6 +80,7 @@ pub fn wait_ms(command: peer_mail.Command) -> Int {
     | peer_mail.Links(..)
     | peer_mail.Grants(..)
     | peer_mail.Deliver(..)
+    | peer_mail.Trigger(..)
     | peer_mail.Describe(..)
     | peer_mail.Activity(..)
     | peer_mail.Inbox(..)
