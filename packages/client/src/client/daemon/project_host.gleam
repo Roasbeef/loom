@@ -188,6 +188,7 @@ pub opaque type Message {
   )
   ReadBoard(page: Int, reply: Subject(Board))
   ReadCounts(reply: Subject(List(#(String, Int))))
+  ReadLive(reply: Subject(List(String)))
   StopTicket(ticket: String, by: String, reply: Subject(Result(Nil, String)))
   HumanTurn(session: String, entry: String, actor: String, text: String)
   Tick
@@ -371,6 +372,18 @@ pub fn counts(handle: Handle) -> Result(List(#(String, Int)), String) {
   ask(handle, ReadCounts)
 }
 
+/// The sessions of the assignments that are still live, oldest ticket first,
+/// for the boot step that reopens them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_host.live_sessions(handle)
+/// ```
+pub fn live_sessions(handle: Handle) -> Result(List(String), String) {
+  ask(handle, ReadLive)
+}
+
 /// A person's stop of one ticket.
 ///
 /// ## Examples
@@ -523,6 +536,10 @@ fn handle(host: Host, message: Message) -> actor.Next(Host, Message) {
     }
     ReadCounts(reply) -> {
       process.send(reply, stage_counts(host))
+      actor.continue(host)
+    }
+    ReadLive(reply) -> {
+      process.send(reply, live_now(host))
       actor.continue(host)
     }
     StopTicket(ticket, by, reply) -> {
@@ -1315,6 +1332,19 @@ fn board_page(host: Host, page: Int) -> Board {
       _ -> []
     },
   )
+}
+
+// The bound sessions of assignments not yet done.
+fn live_now(host: Host) -> List(String) {
+  state.tickets_oldest_first(host.engine)
+  |> list.filter_map(fn(ticket) {
+    case state.active_assignment(ticket) {
+      Some(assignment) ->
+        option.map(assignment.session, fn(each) { each.value })
+        |> option.to_result(Nil)
+      None -> Error(Nil)
+    }
+  })
 }
 
 // Needs-a-person tickets first, each group newest first.
