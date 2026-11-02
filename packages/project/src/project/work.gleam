@@ -14,6 +14,7 @@
 //// review with no check. And `Ready` is reachable only through
 //// `readiness.check_passed`, which takes the host's `CheckPassed`.
 
+import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -419,7 +420,10 @@ fn update_assignment(
   }
 }
 
-/// A person asked for a new assignment on a stalled ticket.
+/// A person asked for a new assignment on a stalled ticket. The new worker
+/// starts with no memory of the old one, so the messages the gate admitted on
+/// the ticket's opening thread are queued for it again, oldest first, ahead of
+/// whatever was already waiting.
 ///
 /// ## Examples
 ///
@@ -437,10 +441,36 @@ pub fn retry(current: State, id: TicketId) -> Step {
         state.Ticket(
           ..ticket,
           demand: raise_demand(ticket.demand, model.Inferred),
+          inbox: requeued_inbox(current, ticket),
         )
       Ok(schedule_after(state.put_ticket(current, wanting), []))
     }
   }
+}
+
+/// The inbox a retry starts its worker with: the admitted messages of the
+/// ticket's opening thread, oldest first, then anything already waiting. The
+/// first worker's session received the opening message and the follow-ups, and
+/// a session that ended took them with it. Without this a retry starts a worker
+/// that is never told what to do, which is what happened to a ticket whose
+/// first session failed to start.
+fn requeued_inbox(current: State, ticket: Ticket) -> List(TriggerId) {
+  let admitted = case state.record(current, ticket.origin) {
+    Error(_) -> [ticket.origin]
+    Ok(stored) ->
+      case dict.get(current.threads, stored.trigger.thread) {
+        Error(Nil) -> [ticket.origin]
+        Ok(thread) ->
+          thread.entries
+          |> list.reverse
+          |> list.filter(fn(entry) { entry.reception == model.Received })
+          |> list.map(fn(entry) { entry.trigger })
+      }
+  }
+  list.append(
+    admitted,
+    list.filter(ticket.inbox, fn(waiting) { !list.contains(admitted, waiting) }),
+  )
 }
 
 // --- reports and checks ------------------------------------------------------

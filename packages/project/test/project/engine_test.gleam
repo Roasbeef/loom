@@ -792,6 +792,10 @@ pub fn a_retry_makes_a_second_assignment_with_its_own_key_test() {
       _ -> False
     }
   })
+
+  // The new worker is told what the ticket was opened for, because the first
+  // session took the opening message with it.
+  assert list.contains(effects, Deliver(ticket_of("c1"), 2, TriggerId("c1")))
   assert engine.apply(
       retried,
       event.RetryRequested(ticket_of("c1"), world_principal()),
