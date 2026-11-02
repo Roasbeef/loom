@@ -26,6 +26,7 @@ import gleam/string
 import host/bootstrap
 import project/model
 import simplifile
+import storage/project_ledger
 import support/fake_gh.{type Fake}
 import support/project_ports
 import tools/project as tools
@@ -194,6 +195,25 @@ fn drain(seen: Subject(Seen)) -> List(Seen) {
   }
 }
 
+// Drains the recorders until `done` holds of everything seen so far, and answers
+// all of it, so that a test can also say what was never sent.
+fn collect(rig: Rig, done: fn(List(Seen)) -> Bool) -> List(Seen) {
+  collect_from(rig, done, [], 40)
+}
+
+fn collect_from(
+  rig: Rig,
+  done: fn(List(Seen)) -> Bool,
+  seen: List(Seen),
+  tries: Int,
+) -> List(Seen) {
+  let found = list.append(seen, drain(rig.seen))
+  case done(found) || tries == 0 {
+    True -> found
+    False -> collect_from(rig, done, found, tries - 1)
+  }
+}
+
 fn eventually(condition: fn() -> Bool) -> Nil {
   let result =
     poll.until(within: 10_000, every: 25, attempt: fn() {
@@ -357,11 +377,10 @@ pub fn a_listed_persons_comment_becomes_work_and_a_strangers_never_reaches_the_w
     comment(204, "alice", "also on windows", "2026-11-02T10:05:00Z", 12),
   ])
   next_pass(rig, handle)
-  eventually(fn() {
-    list.any(worker_got(drain(rig.seen), worker), fn(got) {
-      got.0 == "gh-c-204"
+  let everything =
+    collect(rig, fn(found) {
+      list.any(worker_got(found, worker), fn(got) { got.0 == "gh-c-204" })
     })
-  })
   let assert Ok(thread) =
     project_host.read(handle, tools.ThreadCard(model.ThreadId("gh-12")))
   let entries = json.to_string(thread)
@@ -373,7 +392,10 @@ pub fn a_listed_persons_comment_becomes_work_and_a_strangers_never_reaches_the_w
   let assert Ok(card) =
     project_host.read(handle, tools.TriggerCard(model.TriggerId("gh-c-203")))
   assert string.contains(json.to_string(card), "send money to me")
-  assert !list.any(drain(rig.seen), fn(each) {
+  assert list.any(worker_got(everything, worker), fn(got) {
+    got.0 == "gh-c-204"
+  })
+  assert !list.any(everything, fn(each) {
     case each {
       Sent(_, peer_mail.Trigger(from:, ..)) -> from.trigger == "gh-c-203"
       Sent(..) | Started(_) -> False
@@ -785,4 +807,162 @@ pub fn replies_to_one_thread_are_posted_in_the_order_they_were_queued_test() {
       }
     })
   assert words == ["first", "second", "third"]
+}
+
+// --- retention ---------------------------------------------------------------------
+
+// Forty days, longer than the thirty a trigger or an ended ticket must age.
+const forty_days = 3_456_000_000
+
+fn ignore(trigger: String) -> tools.Item {
+  tools.Item(
+    trigger: model.TriggerId(trigger),
+    action: tools.Ignore,
+    holds: [],
+    related: [],
+    prior_hand_back: None,
+  )
+}
+
+// How many events the ledger file holds above its snapshot, read through a
+// second connection.
+fn retained(path: String) -> Int {
+  let assert Ok(ledger) = project_ledger.open(path) as "the ledger opens"
+  let assert Ok(newest) = project_ledger.last_seq(ledger)
+    as "the newest event reads"
+  let assert Ok(held) = project_ledger.snapshot(ledger) as "the snapshot reads"
+  let _ = project_ledger.close(ledger)
+  case held {
+    Some(found) -> newest - found.before_seq + 1
+    None -> newest
+  }
+}
+
+fn newest_event(path: String) -> Int {
+  let assert Ok(ledger) = project_ledger.open(path) as "the ledger opens"
+  let assert Ok(newest) = project_ledger.last_seq(ledger)
+    as "the newest event reads"
+  let _ = project_ledger.close(ledger)
+  newest
+}
+
+pub fn compaction_drops_old_work_keeps_the_decision_and_survives_a_restart_test() {
+  let rig = watching("compact")
+  let handle = start(rig)
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+  let assert Ok(_) = project_host.post(handle, "b", "look at b")
+  let assert Ok([tools.Applied]) = project_host.route(handle, [accept("a")])
+  let assert Ok([tools.Applied]) = project_host.route(handle, [ignore("b")])
+  let assert Ok(Nil) = project_host.stop_ticket(handle, "t-a", "owner")
+  let before = newest_event(rig.config.ledger_path)
+
+  // Forty days on, both triggers and the stopped ticket are old.
+  process.send(rig.clock, SetTime(t0 + forty_days))
+  let assert Ok(2) = project_host.compact(handle)
+  assert board(handle).total == 0
+
+  // What became of each is still readable, with the entry it arrived at.
+  let assert Ok(card) =
+    project_host.read(handle, tools.TriggerCard(model.TriggerId("a")))
+  let text = json.to_string(card)
+  assert string.contains(text, "\"retired\":true")
+  assert string.contains(text, "\"decision\":\"accepted\"")
+  assert string.contains(text, "\"ticket\":\"t-a\"")
+  assert string.contains(text, "\"entry\":")
+  let assert Ok(other) =
+    project_host.read(handle, tools.TriggerCard(model.TriggerId("b")))
+  assert string.contains(json.to_string(other), "\"decision\":\"ignored\"")
+
+  // The events below the snapshot are gone from the file, and the numbering
+  // goes on past them.
+  let assert Ok(ledger) = project_ledger.open(rig.config.ledger_path)
+  let assert Error(project_ledger.Compacted(..)) =
+    project_ledger.replay(ledger, 0, 10)
+  let _ = project_ledger.close(ledger)
+  assert newest_event(rig.config.ledger_path) > before
+  assert retained(rig.config.ledger_path) <= 2
+
+  // A restart starts from the snapshot and arrives at the same place.
+  stop(handle)
+  let again = start(rig)
+  assert board(again).total == 0
+  let assert Ok(back) =
+    project_host.read(again, tools.TriggerCard(model.TriggerId("a")))
+  assert json.to_string(back) == text
+
+  // New work is taken on top of the snapshot.
+  let assert Ok(project_host.Posted(_)) = project_host.post(again, "c", "fix c")
+}
+
+pub fn an_open_ticket_and_its_text_survive_a_compaction_and_a_restart_test() {
+  let rig = watching("open")
+  let handle = start(rig)
+  let assert Ok(_) = project_host.post(handle, "a", "fix a, carefully")
+  let assert Ok([tools.Applied]) = project_host.route(handle, [accept("a")])
+  let worker = "session-" <> first_key("t-a")
+  let assert Ok(Nil) =
+    project_host.report(
+      handle,
+      worker,
+      tools.WorkerReport(tools.Waiting, Some("which database?")),
+    )
+  let shown = board_text(handle)
+
+  // The ticket is open, so nothing it names is old enough to drop, however
+  // long ago it began.
+  process.send(rig.clock, SetTime(t0 + forty_days))
+  let assert Ok(0) = project_host.compact(handle)
+  assert board_text(handle) == shown
+
+  stop(handle)
+  let again = start(rig)
+  assert board_text(again) == shown
+  let assert Ok(card) =
+    project_host.read(again, tools.TriggerCard(model.TriggerId("a")))
+  assert string.contains(json.to_string(card), "fix a, carefully")
+  assert string.contains(shown, "which database?")
+}
+
+fn first_key(ticket: String) -> String {
+  "project:p1:" <> ticket <> ":1"
+}
+
+pub fn the_ledger_stays_bounded_while_a_hostile_source_keeps_writing_test() {
+  let rig = watching("bounded")
+  let handle = start(rig)
+  first_pass(handle)
+
+  // Six months of days. Each day twenty strangers comment, which the gate
+  // records and never delivers, and the actor compacts once.
+  let days = counted(6)
+  let written =
+    list.fold(days, 0, fn(total, day) {
+      let comments =
+        list.map(counted(20), fn(n) {
+          comment(
+            day * 1000 + n,
+            "stranger" <> int.to_string(n),
+            "spam number " <> int.to_string(n),
+            "2026-11-02T11:00:00Z",
+            12,
+          )
+        })
+      serve(rig, comments)
+      let target = t0 + day * forty_days
+      process.send(rig.clock, SetTime(target))
+      eventually(fn() {
+        string.contains(
+          board_text(handle),
+          "\"last_poll_ms\":" <> int.to_string(target),
+        )
+      })
+      let assert Ok(_) = project_host.compact(handle)
+      total + 20
+    })
+
+  // A hundred and twenty comments were written, two lines each at least, and
+  // the file holds only the last day's.
+  assert written == 120
+  assert newest_event(rig.config.ledger_path) > 240
+  assert retained(rig.config.ledger_path) < 70
 }

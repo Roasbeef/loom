@@ -113,9 +113,7 @@ pub fn the_four_request_frames_decode_to_their_commands_test() {
   assert protocol.decode(
       "{\"v\":2,\"id\":8,\"cmd\":\"projects.set_mode\",\"body\":{\"project\":\"p1\",\"rule\":\"ci\",\"mode\":\"observe\"}}",
     )
-    == Ok(
-      protocol.Request(8, protocol.SetProjectMode("p1", "ci", "observe")),
-    )
+    == Ok(protocol.Request(8, protocol.SetProjectMode("p1", "ci", "observe")))
 }
 
 pub fn a_set_mode_frame_without_a_rule_is_malformed_test() {

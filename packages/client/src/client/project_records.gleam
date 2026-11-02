@@ -115,6 +115,14 @@ pub type Record {
     text: String,
   )
 
+  /// The marker a compaction writes about itself, so that the event it
+  /// compacts to is never the engine's newest and the ledger's numbering
+  /// continues past the point. It changes no table.
+  Retention(
+    /// How many triggers the compaction dropped.
+    dropped: Int,
+  )
+
   /// An assignment's worktree was kept when its ticket ended, because it held
   /// commits its base lacks. The board names it from this record.
   TreeKept(
@@ -291,6 +299,11 @@ fn record_json(record: Record) -> Json {
         #("outcome", json.string(outcome)),
         #("detail", json.string(detail)),
       ])
+    Retention(dropped:) ->
+      json.object([
+        #("host", json.string("retention")),
+        #("dropped", json.int(dropped)),
+      ])
     SourceNote(source:, text:) ->
       json.object([
         #("host", json.string("source_note")),
@@ -378,6 +391,10 @@ fn host_decoder() -> decode.Decoder(Record) {
         outcome:,
         detail:,
       ))
+    }
+    "retention" -> {
+      use dropped <- decode.field("dropped", decode.int)
+      decode.success(Retention(dropped:))
     }
     "source_note" -> {
       use source <- decode.field("source", decode.string)

@@ -10269,7 +10269,7 @@ ordinary top-level worker session per ticket assignment
 - `peer_mail.Trigger` admits a stored trigger with the trigger origin. The daemon is
   the caller, so no grant is checked; `orchestrator_port.served` answers `False` for
   it, which is what keeps it off the relay (tested in `peer_remote_test`).
-- Control: `projects.create|list|board|post|stop|ticket|answer|retry|requeue|publish` in
+- Control: `projects.create|list|board|post|stop|ticket|answer|retry|requeue|publish|set_mode` in
   `daemon/protocol` and `daemon/server` (`project_command`), classified in
   `control_use`. `projects.ticket` is a read. `projects.answer` echoes the
   question's `seq`; `project_host.answer` checks it against the open question
@@ -10286,7 +10286,38 @@ ordinary top-level worker session per ticket assignment
   `ticket_read_for` and `answer_for`), and admits a click beneath
   `home.projects_path` for that page only (`ui_socket.home_event`).
   `[project]` is `client/project_settings` (`max_workers`, `token_ceiling`,
-  `check`, `protected_paths`, `publish`).
+  `check`, `protected_paths`, `publish`, `queue_limit`, `attention_limit`, and the
+  tables `source` and `rule`, read by `client/project_sources`).
+- The GitHub source is four modules and a section of `project_host`.
+  `client/project_github` decodes REST answers totally and translates each item
+  into the gate's inputs (sender class from the owner's literal lists, an exact
+  `@account` token, the first matching rule), drops the agent's own account, and
+  derives trigger ids from GitHub's (`gh-i|c|r-<id>`, `gh-ci-<id>`) and threads from
+  the issue or pull request number (`model.github_thread`, `gh-<n>`).
+  `client/project_poller` is one bounded pass over `gh api` on the REST interface
+  (never GraphQL), from a cursor per stream, with `retry-after` and
+  `x-ratelimit-*` honoured; `project_watcher` is the schedule and builds the request
+  from the engine's tickets. The actor runs the pass in a weft task and takes the
+  answer as `PollSettled`: texts and `TriggerArrived` first, cursors (the ledger's
+  `scanner_cursor`, keyed `src:<stream>`) only after every trigger was written, then
+  conclusions (`Concluded`) and a `SourceNote` record when the words change. A rule
+  gets its first mode from the configuration (`configure_rules`, `observe` by
+  default), a person's later mode survives restarts, and `projects.set_mode` refuses
+  `auto` in words. A reply to a GitHub thread is a `github_reply` effect row only when
+  `publish` is on, posted by `project_poller.post_reply` after a search for its marker
+  comment, one at a time per thread, with `project_github.reply_body` neutering `@`,
+  `<`, `>` and `#`. A body is stored whole and delivered cut at
+  `project_github.inline_chars` with a pointer (`delivered_text`). The board gains
+  `would_have_done` and `sources`.
+- Retention. `project/snapshot` writes the engine's state as one document and
+  `retire` drops ended tickets and settled triggers older than 30 days
+  (`project_retention.retain_ms`) that nothing remaining names. `compact_now` writes a
+  `Retention` marker record, builds a `project_retention.Document` (the state, the host
+  record lines that still matter, each remaining trigger's arrival entry, and the
+  decision kept for each dropped trigger) and calls `project_ledger.compact_before`;
+  `boot` starts from the snapshot (`restore_snapshot`) and replays the rest. Daily from
+  the tick, or on demand through `project_host.compact`. A dropped trigger's card is
+  its decision.
 - `client/project_scan` is a worker's commit scanner, modelled on `rulescan`: a
   restartable service subscribed by name through `writer.Routed`, started in
   `serve` only for a session seated as a worker (`Seat.feed`). It pulls the main

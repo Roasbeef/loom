@@ -286,3 +286,58 @@ fetches from `refs/tickets/<ticket>/<commit>` in `host.git` and does not run Git
 project's pinned URL lives in a file inside the host repository and not in a catalogue column: a
 column would have been catalogue version 21 and a regeneration of the SQL modules, for a value only
 the host reads.
+
+## Addendum: the GitHub source (2026-11-02)
+
+**Affects**: `[project]` by `queue_limit`, `attention_limit` and the arrays `source` and `rule`; the
+client control protocol by `projects.set_mode`; the board by `would_have_done` and `sources`; the
+project ledger by one host record kind for a source's note, one for a compaction's marker, and a
+snapshot document that a start now reads. No change to a worker's tools, the jail or the session wire.
+
+**The source.** The daemon polls one repository, the one the project's pinned push URL names, with
+`gh api` on the REST interface and the owner's credentials. It uses no webhook, no notifications API and
+no GraphQL, because the owner's GraphQL quota is shared by every agent running as the same user. A
+pass reads new issues, issue and pull request comments, pull request review comments, failed check runs
+on the default branch and on the head of each pull request a ticket opened, and whether those pull
+requests merged or closed. A read position is a cursor per stream in the ledger, and a stream with no
+cursor starts at the present. A `403` or `429` with `retry-after`, or with an exhausted
+`x-ratelimit-remaining`, defers the next pass to the time the headers name; failures in a row double the
+wait up to an hour.
+
+**Every field from GitHub is untrusted.** The decoders are total. A trigger's id is a function of
+GitHub's (`gh-i|c|r-<id>`, `gh-ci-<id>`), so a page read twice is stored once, and a thread is
+`gh-<number>`. The sender is `Person` on `allow`, `ListedBot` on `bots`, `CiFailure` for a failed check
+and `Unlisted` otherwise; `Owner` is never produced from GitHub. The agent's own account is dropped
+before the engine sees it. A text is stored whole up to 32768 code points and handed to a session cut at
+4000 with a pointer, and `project_read` serves the whole text. A trigger descending from a pull request
+the project opened carries a generation one past its ticket's.
+
+**Rules and modes.** A rule matches by literal strings, compared without case, in file order, whoever
+the sender. Its first mode is its configured one, `observe` by default; a person's later mode, set by
+`projects.set_mode`, survives a restart. `auto` is refused in words until a rule has a current passing
+verdict, so a rule configured with it starts in `observe`. In `observe` an inferred candidate that
+passes the gate and a rule goes through the router, and the engine records `WouldAccept` and does
+nothing else. The board lists those under `would_have_done` for the owner.
+
+**Overload.** `queue_limit` and `attention_limit` are the engine's existing per-source bound and its
+needs-a-person limit. The engine gains one rule, a cap of 20 inferred triggers per actor per hour, after
+which the actor's triggers are shed and recorded as shed. Shed work is counted on the board.
+
+**Replies.** A router reply to a GitHub thread goes out as an issue comment only when
+`[project].publish` is `pull_request`. It is an outbox row ordered per thread, its text is cut to the
+purpose's word cap, and `@`, `<`, `>` and `#` are replaced so the text cannot mention, tag or reference.
+A marker comment is searched for before posting, so a repeated row posts once. With publishing off a
+reply stays the draft the board shows.
+
+**Retention.** Once a day, and only after 200 events, the actor drops ended tickets and settled
+triggers older than 30 days that nothing remaining names, writes the engine's state without them as a
+snapshot, and has the ledger delete the events below it in one transaction. The snapshot also carries
+the host records that still matter and, for each dropped trigger, its decision, the ticket it named, and
+the ledger entry it arrived at. A start reads the snapshot and replays the events after it.
+
+**What it costs.** An ended ticket older than 30 days cannot be resumed by a comment on its pull request:
+the comment reaches the router as a stranger's. The ledger keeps at most 20000 decisions. A rule's
+literals also match an unlisted sender's text, so a literal an owner writes is a literal a stranger can
+type; the rule's mode is what limits the cost, and `observe` costs a router turn per matching comment up
+to the actor cap. The poller runs one pass at a time, so a page of 100 items per stream bounds the rate
+at which a flood is read.

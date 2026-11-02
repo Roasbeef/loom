@@ -53,6 +53,7 @@ import client/project_records.{
   Host as HostLine, ObserveJob, OfferJob, PublishJob, RecoverJob, ReplyJob,
   StartJob, StopJob,
 }
+import client/project_retention
 import client/project_settings.{PublishOff, PublishPullRequest}
 import client/project_sources.{type Sources}
 import client/project_watcher
@@ -75,6 +76,7 @@ import project/host as proof
 import project/model
 import project/protect
 import project/readiness
+import project/snapshot
 import project/stage
 import project/state.{type State, type Ticket}
 import storage/project_ledger.{type Ledger}
@@ -436,6 +438,7 @@ pub opaque type Message {
     by: String,
     reply: Subject(Result(Nil, String)),
   )
+  Compact(reply: Subject(Result(Int, String)))
   Tick
 }
 
@@ -455,6 +458,10 @@ type Host {
     kept_trees: Dict(String, List(KeptTree)),
     watcher: project_watcher.Watcher,
     replying: Dict(String, Int),
+    arrivals: Dict(String, Int),
+    gone: List(project_retention.Gone),
+    compacted_ms: Int,
+    compacted_seq: Int,
   )
 }
 
@@ -787,8 +794,15 @@ fn boot(config: Config, inbox: Subject(Message)) -> Result(Host, String) {
       kept_trees: dict.new(),
       watcher: project_watcher.new(),
       replying: dict.new(),
+      arrivals: dict.new(),
+      gone: [],
+      compacted_ms: 0,
+      compacted_seq: 0,
     )
-  use replayed <- result.try(replay(fresh, 0))
+
+  // A compacted ledger starts from its snapshot and replays what follows.
+  use restored <- result.try(restore_snapshot(fresh))
+  use replayed <- result.try(replay(restored, restored.last_seq))
   Ok(perform_due(configure_rules(recover_interrupted(replayed))))
 }
 
@@ -827,7 +841,14 @@ fn replay_line(
     Ok(HostLine(record)) -> Ok(keep_record(host, record))
     Ok(EngineLine(incoming)) ->
       case engine.apply(host.engine, incoming) {
-        Ok(#(next, _)) -> Ok(Host(..host, engine: next))
+        Ok(#(next, _)) ->
+          Ok(
+            Host(
+              ..host,
+              engine: next,
+              arrivals: note_arrival(host.arrivals, incoming, stored.seq),
+            ),
+          )
         Error(refusal) ->
           Error(
             "ledger line "
@@ -953,6 +974,11 @@ fn handle(host: Host, message: Message) -> actor.Next(Host, Message) {
       process.send(reply, answer)
       actor.continue(perform_due(next))
     }
+    Compact(reply:) -> {
+      let #(next, answer) = compact_now(host)
+      process.send(reply, answer)
+      actor.continue(next)
+    }
     Tick -> actor.continue(tick(host))
   }
 }
@@ -975,7 +1001,7 @@ fn tick(host: Host) -> Host {
     False -> host
   }
 
-  perform_due(poll_when_due(relieved))
+  perform_due(poll_when_due(compact_when_due(relieved)))
 }
 
 fn committed_or_same(host: Host, incoming: Event) -> Host {
@@ -1012,7 +1038,30 @@ fn commit(host: Host, incoming: Event) -> Result(Host, NotCommitted) {
     )
     |> result.map_error(fn(error) { WriteFailed(string.inspect(error)) }),
   )
-  Host(..host, engine: next, last_seq: seq)
+  Host(
+    ..host,
+    engine: next,
+    last_seq: seq,
+    arrivals: note_arrival(host.arrivals, incoming, seq),
+  )
+}
+
+/// Remembers the ledger entry a trigger arrived at, the first time it does.
+/// Retention keeps the number beside a dropped trigger's decision, so the
+/// decision says where in the history its trigger began.
+fn note_arrival(
+  arrivals: Dict(String, Int),
+  incoming: Event,
+  seq: Int,
+) -> Dict(String, Int) {
+  case incoming {
+    event.TriggerArrived(trigger, _) ->
+      case dict.has_key(arrivals, trigger.id.value) {
+        True -> arrivals
+        False -> dict.insert(arrivals, trigger.id.value, seq)
+      }
+    _ -> arrivals
+  }
 }
 
 fn not_committed_text(failure: NotCommitted) -> String {
@@ -1056,6 +1105,7 @@ fn keep_record(host: Host, written: Record) -> Host {
     project_records.CheckRecorded(..) -> host
     project_records.SourceNote(text:, ..) ->
       Host(..host, watcher: project_watcher.Watcher(..host.watcher, note: text))
+    project_records.Retention(..) -> host
     project_records.Recovered(ticket:, seq:) ->
       Host(..host, recovered: set.insert(host.recovered, #(ticket, seq)))
     project_records.TreeKept(ticket:, seq:, path:, reason:) ->
@@ -1253,6 +1303,8 @@ fn reply_now(
           )
       }
 
+      // The record and its row are written together, and the in-memory table
+      // changes only when the write did.
       case
         project_ledger.append_with_effects(
           host.ledger,
@@ -3204,8 +3256,20 @@ fn thread_json(thread: model.Thread) -> JsonValue {
 /// through this card, so it carries only the id, source, actor, thread and
 /// text.
 fn trigger_card(host: Host, id: model.TriggerId) -> Result(JsonValue, Nil) {
-  use stored <- result.try(dict.get(host.engine.triggers, id))
+  // A trigger that retention dropped has a card of its decision instead.
+  case dict.get(host.engine.triggers, id) {
+    Ok(stored) -> stored_card(host, id, stored)
+    Error(Nil) -> gone_card(host, id)
+  }
+}
 
+/// The card of a trigger the engine still holds, with the text the ledger
+/// stored for it.
+fn stored_card(
+  host: Host,
+  id: model.TriggerId,
+  stored: state.TriggerRecord,
+) -> Result(JsonValue, Nil) {
   // A trigger with no stored text shows empty text and does not fail the read.
   let text = case dict.get(host.texts, id.value) {
     Ok(found) -> found.body
@@ -3610,6 +3674,9 @@ pub fn set_mode(
 const auto_refused_words =
   "auto is not available yet: a rule may run on its own only after the evaluation instrument has judged it, and that arrives in a later slice. Use observe to see what it would do."
 
+/// Sets a configured rule's mode through the engine. The engine's refusal of
+/// `auto` is answered in the words above, and every other refusal in the
+/// engine's own.
 fn set_mode_now(
   host: Host,
   rule: String,
@@ -3624,6 +3691,8 @@ fn set_mode_now(
     Error(Nil) -> #(host, Error("there is no rule " <> rule))
     Ok(found) -> {
       let source = model.SourceId(found.source)
+
+      // The engine decides whether the mode may be set at all.
       case commit(host, event.ModeSet(source, model.RuleId(found.name), mode)) {
         Ok(next) -> {
           log.info(host.ports.logger, "project.mode_set", [
@@ -3643,6 +3712,7 @@ fn set_mode_now(
   }
 }
 
+/// A mode as the word the configuration, the wire and the board use.
 fn mode_word(mode: model.Mode) -> String {
   case mode {
     model.Off -> "off"
@@ -3669,12 +3739,15 @@ fn configure_rules(host: Host) -> Host {
   })
 }
 
+/// Gives a rule the first mode the configuration wrote for it. `off` is what
+/// an absent mode already means, so it writes nothing.
 fn first_mode(
   host: Host,
   source: model.SourceId,
   rule: model.RuleId,
   mode: model.Mode,
 ) -> Host {
+  // `auto` cannot be given without a verdict, so it starts as `observe`.
   case mode {
     model.Off -> host
     model.Observe -> committed_or_same(host, event.ModeSet(source, rule, mode))
@@ -3697,6 +3770,8 @@ type Source {
   )
 }
 
+/// The source, or nothing when the project has no GitHub source, the machine
+/// has no `gh`, or the checkout named no remote that names a repository.
 fn source_of(host: Host) -> Result(Source, Nil) {
   use github <- result.try(option.to_result(
     host.config.policy.sources.github,
@@ -3715,6 +3790,9 @@ const poll_wall_ms = 300_000
 /// back as `PollSettled`; the actor never waits on GitHub.
 fn poll_when_due(host: Host) -> Host {
   let now = host.ports.now_ms()
+
+  // A project with no readable source polls nothing, and one whose next pass
+  // is not due waits.
   case source_of(host) {
     Error(Nil) -> host
     Ok(source) ->
@@ -3725,6 +3803,8 @@ fn poll_when_due(host: Host) -> Host {
   }
 }
 
+/// Builds the pass's request from the engine and the stored cursors, runs the
+/// pass in a task under a deadline, and marks it in flight.
 fn start_poll(host: Host, source: Source, now: Int) -> Host {
   let request =
     project_watcher.request(
@@ -3757,6 +3837,8 @@ fn cursor_name(key: String) -> String {
   "src:" <> key
 }
 
+/// The stored cursors the next pass reads. A cursor the ledger does not hold is
+/// left out, which the pass reads as a stream not started yet.
 fn stored_cursors(host: Host) -> Dict(String, String) {
   project_watcher.cursor_keys(host.engine)
   |> list.filter_map(fn(key) {
@@ -3813,6 +3895,8 @@ fn take_arrival(
     |> result.map_error(not_committed_text)
   }
 
+  // A trigger that could not be written is logged and left for the next pass,
+  // which reads it again.
   case written {
     Ok(next) -> Ok(next)
     Error(reason) -> {
@@ -3836,6 +3920,9 @@ fn conclude(host: Host, ended: project_poller.Conclusion) -> Host {
   )
 }
 
+/// Stores the pass's cursors. A cursor that cannot be stored is logged: the
+/// stream is read again from the older one, and the engine's dedupe takes the
+/// repeats.
 fn store_cursors(host: Host, cursors: List(#(String, String))) -> Host {
   list.each(cursors, fn(entry) {
     case project_ledger.set_cursor(host.ledger, cursor_name(entry.0), entry.1) {
@@ -3854,22 +3941,31 @@ fn store_cursors(host: Host, cursors: List(#(String, String))) -> Host {
 /// record, and schedules the next pass.
 fn finish_poll(host: Host, polled: project_poller.Polled) -> Host {
   let now = host.ports.now_ms()
+
+  // The owner's interval, or the default when the source was removed from the
+  // configuration while a pass was in flight.
   let interval = case host.config.policy.sources.github {
     Some(github) -> github.interval_s
     None -> project_sources.default_interval_s
   }
+
   let text = project_watcher.note_text(polled)
+
+  // A note is written only when its words changed.
   let noted = case text == host.watcher.note {
     True -> host
     False -> note_source(host, text)
   }
+
   Host(
     ..noted,
     watcher: project_watcher.settled(noted.watcher, polled, now, interval),
   )
 }
 
+/// Writes the note, or leaves the host as it was when the ledger would not.
 fn note_source(host: Host, text: String) -> Host {
+  // A note that cannot be written is lost, and the next pass writes it again.
   case record(host, project_records.SourceNote("github", text)) {
     Ok(next) -> next
     Error(_) -> host
@@ -3899,10 +3995,12 @@ fn github_destination(
   host: Host,
   subject: model.TriggerId,
 ) -> Result(Int, Nil) {
+  // With publishing off nothing goes outward, so every reply is a draft.
   use Nil <- result.try(case host.config.policy.publish {
     PublishPullRequest -> Ok(Nil)
     PublishOff -> Error(Nil)
   })
+
   use stored <- result.try(dict.get(host.engine.triggers, subject))
 
   // The thread's name carries the issue or pull request number.
@@ -3912,7 +4010,10 @@ fn github_destination(
   }
 }
 
+/// The issue or pull request number of a GitHub thread, or nothing for a thread
+/// of another source or one that is not a number, such as a branch's CI.
 fn thread_number(thread: model.ThreadId) -> Result(Int, Nil) {
+  // Only a `gh-` thread followed by a positive number has one.
   case string.starts_with(thread.value, "gh-") {
     False -> Error(Nil)
     True ->
@@ -3933,6 +4034,9 @@ fn start_reply(
 ) -> Host {
   let thread = int.to_string(reply.number)
   let now = host.ports.now_ms()
+
+  // With no source the reply waits and is given up on after a few tries, a
+  // busy thread waits its turn, and otherwise the post goes out.
   case source_of(host), thread_busy(host, thread, now) {
     Error(Nil), _ -> give_up_or_wait(host, row.kind, row.key)
     Ok(_), True -> host
@@ -3952,6 +4056,9 @@ fn thread_busy(host: Host, thread: String, now: Int) -> Bool {
 /// How long a post may take, in milliseconds.
 const reply_wall_ms = 120_000
 
+/// Runs the post in a task of its own, marks the thread busy, and defers the
+/// row past the task's deadline. The post's marker is the reply's key, so the
+/// task finds an earlier attempt's comment instead of posting twice.
 fn post_in_task(
   host: Host,
   row: project_ledger.Effect,
@@ -3993,6 +4100,8 @@ fn reply_settled(
   posting: project_poller.Posting,
 ) -> Host {
   let freed = Host(..host, replying: dict.delete(host.replying, thread))
+
+  // The three ways a post can end.
   case posting {
     project_poller.Posted -> settle_key(freed, "github_reply", key)
     project_poller.PostLimited(until_ms:) -> {
@@ -4009,8 +4118,12 @@ fn reply_settled(
   }
 }
 
+/// Pushes a row thirty seconds out, and settles it once it has been deferred
+/// `max_reply_attempts` times, which leaves the reply as a draft.
 fn give_up_or_wait(host: Host, kind: String, key: String) -> Host {
   let due = host.ports.now_ms() + 30_000
+
+  // The ledger counts the attempt, so the count survives a restart.
   case project_ledger.defer(host.ledger, kind, key, due) {
     Ok(attempts) if attempts >= max_reply_attempts -> settle_key(host, kind, key)
     Ok(_) | Error(_) -> host
@@ -4037,6 +4150,8 @@ fn would_have_done(host: Host) -> List(JsonValue) {
   |> list.map(fn(stored) { would_json(host, stored) })
 }
 
+/// One "would have done" row: the trigger, the rule that matched, who wrote it,
+/// the start of its text and where to read it.
 fn would_json(host: Host, stored: state.TriggerRecord) -> JsonValue {
   let trigger = stored.trigger
   json.Object([
@@ -4064,10 +4179,15 @@ fn github_link(host: Host, thread: model.ThreadId) -> Option(String) {
     host.ports.remote_url()
     |> option.to_result(Nil)
     |> result.try(project_publish.repository_of)
+
+  // Without a remote there is no address to build.
   case repository {
     Error(Nil) -> None
     Ok(#(owner, name)) -> {
       let base = "https://github.com/" <> owner <> "/" <> name
+
+      // A numbered thread is an issue or a pull request, which GitHub resolves
+      // from the issues path; a branch's CI links to the checks.
       case thread_number(thread), string.starts_with(thread.value, "gh-ci-") {
         Ok(number), _ -> Some(base <> "/issues/" <> int.to_string(number))
         Error(Nil), True -> Some(base <> "/actions")
@@ -4084,7 +4204,11 @@ fn count_fate(host: Host, decision: state.Decision) -> Int {
   |> list.count(fn(stored) { stored.fate == state.Decided(decision) })
 }
 
+/// The board's record of the configured source: its interval, when it last and
+/// next polls, what its last pass left to read, how many triggers were shed, and
+/// each rule's current mode.
 fn sources_json(host: Host) -> List(JsonValue) {
+  // A project with no GitHub source has nothing to report.
   case host.config.policy.sources.github {
     None -> []
     Some(github) -> [
@@ -4118,4 +4242,249 @@ fn sources_json(host: Host) -> List(JsonValue) {
       ]),
     ]
   }
+}
+
+// --- retention ---------------------------------------------------------------
+
+/// Compacts the ledger now: drops what retention says no later event can name,
+/// writes the state without it as a snapshot, and has the ledger delete the
+/// events below the snapshot in one transaction. It answers how many triggers
+/// it dropped. The daily tick calls the same step; a test or an operator may
+/// ask for it directly.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_host.compact(handle)
+/// ```
+pub fn compact(handle: Handle) -> Result(Int, String) {
+  ask(handle, Compact)
+  |> result.flatten
+}
+
+/// Compacts when a day has passed since the last compaction and enough events
+/// have been written since to be worth the pause.
+fn compact_when_due(host: Host) -> Host {
+  let now = host.ports.now_ms()
+  let due =
+    now - host.compacted_ms >= project_retention.day_ms
+    && host.last_seq - host.compacted_seq >= project_retention.min_events
+
+  // A compaction that fails leaves the host as it was and tries again after
+  // another day, because the ledger is whole either way.
+  case due {
+    False -> host
+    True ->
+      case compact_now(host) {
+        #(next, Ok(_)) -> next
+        #(_, Error(reason)) -> {
+          log.warn(host.ports.logger, "project.compaction_failed", [
+            field.text(key: "reason", value: reason),
+          ])
+          Host(..host, compacted_ms: now)
+        }
+      }
+  }
+}
+
+/// The compaction. A marker record is written first, so the event it compacts
+/// to is never the engine's newest, which the ledger keeps to continue its
+/// numbering. The snapshot is the state as of the marker, and the marker's
+/// position is the point.
+fn compact_now(host: Host) -> #(Host, Result(Int, String)) {
+  let now = host.ports.now_ms()
+  let #(kept, dropped) =
+    snapshot.retire(host.engine, now - project_retention.retain_ms)
+
+  // A compaction that fails changes nothing the host holds: the marker it wrote
+  // stays in the ledger, harmless, and the state is as it was.
+  case compacted(host, kept, dropped, now) {
+    Ok(next) -> #(next, Ok(list.length(dropped)))
+    Error(reason) -> #(host, Error(reason))
+  }
+}
+
+/// Writes the marker, gathers the host records that still matter, and has the
+/// ledger swap the history for the snapshot in one transaction. The host that
+/// comes back is rebuilt from the same document a restart would read, so the
+/// two cannot differ.
+fn compacted(
+  host: Host,
+  kept: State,
+  dropped: List(snapshot.Retired),
+  now: Int,
+) -> Result(Host, String) {
+  use marked <- result.try(record(
+    host,
+    project_records.Retention(list.length(dropped)),
+  ))
+  use lines <- result.try(surviving_lines(marked))
+  let document =
+    project_retention.Document(
+      state: snapshot.encode(kept),
+      records: project_retention.select_records(lines, kept),
+      arrivals: dict.to_list(
+        dict.filter(marked.arrivals, fn(trigger, _) {
+          dict.has_key(kept.triggers, model.TriggerId(trigger))
+        }),
+      ),
+      gone: project_retention.gone(
+        dropped,
+        marked.arrivals,
+        marked.last_seq,
+        marked.gone,
+      ),
+    )
+  use Nil <- result.try(
+    project_ledger.compact_before(
+      marked.ledger,
+      marked.last_seq,
+      project_retention.encode(document),
+      now,
+    )
+    |> result.map_error(fn(error) {
+      "the ledger did not compact: " <> string.inspect(error)
+    }),
+  )
+  Ok(
+    Host(
+      ..from_document(marked, kept, document),
+      compacted_ms: now,
+      compacted_seq: marked.last_seq,
+    ),
+  )
+}
+
+/// Every host record line the ledger and the last snapshot still hold, below
+/// the marker, oldest first. The snapshot's lines are already the ones that
+/// mattered then, and the ledger's are everything written since.
+fn surviving_lines(host: Host) -> Result(List(String), String) {
+  use earlier <- result.try(
+    project_ledger.snapshot(host.ledger)
+    |> result.map_error(fn(error) { string.inspect(error) }),
+  )
+
+  // A snapshot that will not read stops the compaction: dropping the events
+  // after it would lose what only it held.
+  use #(carried, after) <- result.try(case earlier {
+    Some(found) ->
+      project_retention.decode(found.snapshot_json)
+      |> result.map(fn(document) { #(document.records, found.before_seq - 1) })
+    None -> Ok(#([], 0))
+  })
+
+  use written <- result.map(ledger_lines(host, after, host.last_seq, []))
+  list.append(carried, written)
+}
+
+/// The lines after `after` and below `limit`, a page at a time.
+fn ledger_lines(
+  host: Host,
+  after: Int,
+  limit: Int,
+  found: List(String),
+) -> Result(List(String), String) {
+  use page <- result.try(
+    project_ledger.replay(host.ledger, after, project_ledger.replay_page_limit)
+    |> result.map_error(fn(error) { string.inspect(error) }),
+  )
+
+  // The lines are gathered newest first and put in order once, at the end.
+  case list.last(page) {
+    Error(Nil) -> Ok(list.reverse(found))
+    Ok(last) -> {
+      let gathered =
+        list.fold(page, found, fn(acc, each) {
+          // Only the lines below the marker are gathered.
+          case each.seq < limit {
+            True -> [each.event_json, ..acc]
+            False -> acc
+          }
+        })
+
+      // The read stops at the marker, and goes on while the page was full of
+      // lines below it.
+      case last.seq >= limit - 1 {
+        True -> Ok(list.reverse(gathered))
+        False -> ledger_lines(host, last.seq, limit, gathered)
+      }
+    }
+  }
+}
+
+/// Starts from the ledger's snapshot when it has one. A project that was never
+/// compacted starts from nothing, as before.
+fn restore_snapshot(host: Host) -> Result(Host, String) {
+  use found <- result.try(
+    project_ledger.snapshot(host.ledger)
+    |> result.map_error(fn(error) {
+      "the project ledger's snapshot did not read: " <> string.inspect(error)
+    }),
+  )
+
+  // A ledger never compacted starts from nothing. One that was starts from its
+  // snapshot, and a snapshot that does not read stops the start.
+  case found {
+    None -> Ok(Host(..host, compacted_ms: host.ports.now_ms()))
+    Some(snap) -> {
+      use document <- result.try(project_retention.decode(snap.snapshot_json))
+      use current <- result.map(
+        snapshot.decode(host.engine.config, document.state)
+        |> result.replace_error("the engine's snapshot did not read"),
+      )
+      Host(
+        ..from_document(host, current, document),
+        last_seq: snap.before_seq - 1,
+        compacted_ms: snap.at_ms,
+        compacted_seq: snap.before_seq,
+      )
+    }
+  }
+}
+
+/// The host's tables from a snapshot document: the engine's state, and the
+/// records folded through the same function that folds them on replay.
+fn from_document(
+  host: Host,
+  current: State,
+  document: project_retention.Document,
+) -> Host {
+  let emptied =
+    Host(
+      ..host,
+      engine: current,
+      texts: dict.new(),
+      questions: dict.new(),
+      replies: [],
+      recovered: set.new(),
+      kept_trees: dict.new(),
+      arrivals: dict.from_list(document.arrivals),
+      gone: document.gone,
+    )
+  list.fold(document.records, emptied, fn(acc, line) {
+    case project_records.decode_line(line) {
+      Ok(HostLine(found)) -> keep_record(acc, found)
+      Ok(EngineLine(_)) | Error(_) -> acc
+    }
+  })
+}
+
+/// A card for a trigger that retention dropped: what became of it and the
+/// ledger entry it arrived at.
+fn gone_card(host: Host, id: model.TriggerId) -> Result(JsonValue, Nil) {
+  use found <- result.map(
+    project_retention.find(host.gone, id.value) |> option.to_result(Nil),
+  )
+  json.Object([
+    #("id", json.String(id.value)),
+    #("retired", json.Bool(True)),
+    #("decision", json.String(found.decision)),
+    #("ticket", case found.ticket {
+      Some(ticket) -> json.String(ticket)
+      None -> json.Null
+    }),
+    #("at_ms", json.Int(found.at_ms)),
+    #("entry", json.Int(found.entry)),
+    #("text", json.String("")),
+  ])
 }
