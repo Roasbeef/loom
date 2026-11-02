@@ -626,10 +626,13 @@ pub fn worker_clone(
   layout: project_repo.Layout,
   request: project_host.StartRequest,
 ) -> Result(String, String) {
+  // A recorded head is a commit the host repository holds. No head means the
+  // ticket has produced nothing, and the owner's checkout is the right start.
   let start = case request.head {
     Some(commit) -> project_repo.FromCommit(commit)
     None -> project_repo.FromOwner
   }
+
   project_repo.clone(
     trees,
     layout,
@@ -708,12 +711,23 @@ pub fn tree_name(ticket: String, seq: Int) -> String {
 /// capacity is spent. Only rows the owner wrote open sessions here: a model's
 /// message still cannot.
 ///
+/// The registry's end bell is installed first, so a worker session that ends
+/// while the projects come back is reported to its project. The bell only casts
+/// to the project table, because it rings inside the registry's own turn, and
+/// the registry rings nothing while the daemon shuts down.
+///
 /// ## Examples
 ///
 /// ```gleam
 /// // project_start.reopen(env)
 /// ```
 pub fn reopen(env: Env) -> Nil {
+  manager.on_session_ended(env.registry, fn(session, why) {
+    project_book.session_ended(env.book, session, why)
+  })
+
+  // A catalogue that cannot be read leaves every project as it was and says so.
+  // Otherwise each active project comes back, oldest first.
   case in_catalogue(env, catalogue.projects) {
     Error(error) ->
       log.warn(env.logger, "project.reopen_failed", [
@@ -742,11 +756,27 @@ fn reopen_one(env: Env, project: catalogue.Project) -> Nil {
     Ok(handle) -> {
       let _router = open_router(env, project)
       let live = result.unwrap(project_host.live_sessions(handle), [])
-      list.each(live, fn(session) {
-        let _opened = manager.open(env.registry, session)
-        Nil
-      })
+      list.each(live, fn(session) { reopen_worker(env, handle, session) })
     }
+  }
+}
+
+/// Opens one live worker's session at boot. A session that cannot be opened
+/// stays closed, and the board still shows its ticket, except when the registry
+/// has no registration for it at all. A worker the ledger calls live whose
+/// session was deleted while the daemon was down will never run again, and no
+/// bell rings for a session that was not resident, so the project is told here,
+/// with the same call the registry's end bell makes. Any other refusal may pass,
+/// such as a busy registry or an archived session, and is left to the board.
+fn reopen_worker(
+  env: Env,
+  handle: project_host.Handle,
+  session: String,
+) -> Nil {
+  case manager.open(env.registry, session) {
+    Error(manager.Catalogue(catalogue.Missing)) ->
+      project_host.session_gone(handle, session, "the session no longer exists")
+    Ok(_) | Error(_) -> Nil
   }
 }
 

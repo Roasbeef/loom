@@ -787,6 +787,9 @@ type Message(instance) {
   /// Installs the bell a deletion rings after it writes the releases it owes.
   SetReleaseBell(fn() -> Nil)
 
+  /// Installs the bell rung when a resident session is lost or stops.
+  SetEndBell(fn(String, String) -> Nil)
+
   /// Every release a deleted parent session still owes an orchestrator.
   RemoteReleases(Subject(Result(List(catalogue.RemoteRelease), Error)))
 
@@ -970,7 +973,7 @@ type Message(instance) {
   /// Delivery revalidates authority through this actor, so it must keep serving.
   DrainHeld(Subject(List(fn(Int) -> Nil)))
   Opened(String, String, Result(instance, String))
-  Faulted(String, String)
+  Faulted(String, String, String)
   Failed(String, String, String)
   Retired(String, String, process.ExitReason)
   LinkedExit(Pid)
@@ -1012,6 +1015,13 @@ type Book(instance) {
     // drainer, which sleeps when nothing is owed, wakes for them. A registry
     // that has no drainer rings nothing.
     release_bell: fn() -> Nil,
+    // Rung with a session's id and a reason when a session that was running
+    // faults, and again with a plainer reason when its slot drains. The first
+    // ring of a session is the one that names the cause, and a later one for
+    // the same session is the caller's to ignore. The registry rings nothing
+    // while it shuts down, so a stop the daemon orders for itself is never
+    // reported as a loss. A registry with no listener rings nothing.
+    end_bell: fn(String, String) -> Nil,
   )
 }
 
@@ -1802,6 +1812,7 @@ pub fn start(
             authority: dict.new(),
             releasing: dict.new(),
             release_bell: fn() { Nil },
+            end_bell: fn(_, _) { Nil },
           )
         sm.initialised(Ready, book)
         |> sm.selecting(selector(book))
@@ -2236,6 +2247,35 @@ pub fn with_catalogue(
 @internal
 pub fn on_releases_owed(manager: Manager(instance), bell: fn() -> Nil) -> Nil {
   process.send(manager.commands, SetReleaseBell(bell))
+}
+
+/// Installs the bell rung with a session's id and a reason when a resident
+/// session is lost or stops. It is the registry's report that a session is no
+/// longer running, whoever ended it: a fatal child that died, a stop the
+/// operator or a person asked for, or a domain that failed beneath it.
+///
+/// A session whose assembly faults while it runs rings with the fault's own
+/// text. Every session that drains rings once more with a plain reason, so a
+/// stop that no fault caused is reported too. A listener that wants the cause
+/// takes the first ring of a session and ignores the rest. The bell runs inside
+/// the registry's turn and must not wait: a cast to another process is the
+/// intended shape.
+///
+/// Nothing rings once the registry is shutting down, whether the daemon asked
+/// or its starter died, because the daemon stopping its own sessions is no loss
+/// of any of them. The registry starts with a bell that rings nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.on_session_ended(registry, fn(id, why) { project_book.session_ended(book, id, why) })
+/// ```
+@internal
+pub fn on_session_ended(
+  manager: Manager(instance),
+  bell: fn(String, String) -> Nil,
+) -> Nil {
+  process.send(manager.commands, SetEndBell(bell))
 }
 
 /// Every release a deleted parent session still owes an orchestrator
@@ -3812,6 +3852,7 @@ fn handle(
       sm.keep(book)
     }
     SetReleaseBell(bell) -> sm.keep(Book(..book, release_bell: bell))
+    SetEndBell(bell) -> sm.keep(Book(..book, end_bell: bell))
     RemoteReleases(reply) -> {
       process.send(
         reply,
@@ -3978,11 +4019,12 @@ fn handle(
     }
     Opened(id, operation, outcome) ->
       step(phase, opened(book, id, operation, outcome))
-    Faulted(id, operation) -> step(phase, faulted(book, id, operation))
+    Faulted(id, operation, reason) ->
+      step(phase, faulted(book, phase, id, operation, reason))
     Failed(id, operation, reason) ->
       step(phase, failed(book, id, operation, reason))
     Retired(id, operation, reason) ->
-      step(phase, retired(book, id, operation, reason))
+      step(phase, retired(book, phase, id, operation, reason))
 
     // Callbacks leave the actor with their original instance. A later slot
     // replacement must never redirect a drain to a different incarnation.
@@ -6580,12 +6622,44 @@ fn keep_start_failure(
 /// Coordinates faulted with the daemon manager’s session state and effects.
 fn faulted(
   book: Book(instance),
+  phase: Phase,
   id: String,
   operation: String,
+  reason: String,
 ) -> Book(instance) {
+  // A fault for an operation the slot no longer holds belongs to an earlier
+  // incarnation of the session, and changes nothing.
   case dict.get(book.slots, id) {
-    Ok(slot) if slot.operation == operation -> stop_slot(book, id)
+    Ok(slot) if slot.operation == operation -> {
+      // A fault in a slot that had not finished building is a start that
+      // failed, and the builder's own result reports that. Only a session that
+      // was running is reported lost, and with the fault's own words, because
+      // the drain that follows carries no cause.
+      case slot.phase {
+        Running(_) -> announce_end(book, phase, id, reason)
+        WaitingForDomain | Building | Closing | Blocked(_) -> Nil
+      }
+
+      stop_slot(book, id)
+    }
     Ok(_) | Error(Nil) -> book
+  }
+}
+
+// Reports a session's end to the listener, unless the registry itself is
+// shutting down. A daemon that stops its own sessions has lost none of them, and
+// a listener that took the stop for a loss would record every running worker as
+// failed just before the restart that is meant to resume them.
+/// Reports that a session is no longer running to the registry's listener.
+fn announce_end(
+  book: Book(instance),
+  phase: Phase,
+  id: String,
+  why: String,
+) -> Nil {
+  case phase {
+    Ready -> book.end_bell(id, why)
+    ShuttingDown -> Nil
   }
 }
 
@@ -6620,6 +6694,7 @@ fn failed(
 /// Coordinates retired with the daemon manager’s session state and effects.
 fn retired(
   book: Book(instance),
+  phase: Phase,
   id: String,
   operation: String,
   reason: process.ExitReason,
@@ -6629,6 +6704,11 @@ fn retired(
       case reason {
         process.Normal -> {
           process.demonitor_process(slot.watch)
+
+          // A drained slot is a session that is no longer running, whoever
+          // asked it to stop. A fault rang first with its cause when there was
+          // one, and this ring is the only report of a plain stop.
+          announce_end(book, phase, id, "the session was stopped")
           let book =
             Book(
               ..book,
@@ -6638,7 +6718,17 @@ fn retired(
             |> forget_authority(id)
           finish_drained_release(book, id)
         }
-        _ -> failed(book, id, operation, string.inspect(reason))
+        _ -> {
+          // Custody was lost rather than drained, so the session is gone all
+          // the same, and the slot stays reserved for an operator.
+          announce_end(
+            book,
+            phase,
+            id,
+            "the session's custody was lost: " <> string.inspect(reason),
+          )
+          failed(book, id, operation, string.inspect(reason))
+        }
       }
     Ok(_) | Error(Nil) -> book
   }
@@ -6725,8 +6815,8 @@ fn selector(book: Book(instance)) -> process.Selector(Message(instance)) {
     |> process.select_map(slot.results, fn(outcome) {
       Opened(id, slot.operation, outcome)
     })
-    |> process.select_map(slot.faults, fn(_reason) {
-      Faulted(id, slot.operation)
+    |> process.select_map(slot.faults, fn(reason) {
+      Faulted(id, slot.operation, reason)
     })
     |> process.select_map(slot.failures, fn(failure) {
       Failed(id, slot.operation, string.inspect(failure))

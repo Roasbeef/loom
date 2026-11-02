@@ -235,7 +235,30 @@ pub fn a_project_runs_two_tickets_and_survives_a_restart_test() {
         prior_hand_back: None,
       ),
     ])
+
+  // A worker's session stopped from outside the project, with no report, is a
+  // lost worker. The registry's end bell tells the project, and the ticket
+  // reads failed while the other ticket is untouched.
+  let assert Ok(_) = manager.stop_session(restarted.ready.registry, second)
+  let lost =
+    await_tickets(restarted, project, fn(tickets) {
+      stage_of(tickets, "fix b") == "person/failed"
+    })
+  assert stage_of(lost, "fix a") == "person/answer"
   stop(restarted)
+
+  // The daemon stopping its own sessions loses none of them. The third boot
+  // finds the first ticket where it was, and the second still failed: the
+  // shutdown of the daemon with the bell installed recorded no loss.
+  let third = boot(scratch <> "/state", seen)
+  project_start.reopen(third.env)
+  let settled =
+    await_tickets(third, project, fn(tickets) {
+      stage_of(tickets, "fix b") == "person/failed"
+      && stage_of(tickets, "fix a") == "person/answer"
+    })
+  assert ticket_titles(settled) == ["fix a", "fix b"]
+  stop(third)
   assert project_rig.digest(repository) == owners
   process.trap_exits(False)
 }

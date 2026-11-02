@@ -1170,3 +1170,133 @@ pub fn a_ticket_with_no_head_still_starts_from_the_owners_checkout_test() {
     == worktree_rig.git(repos.root, ["rev-parse", "HEAD"])
   assert worktree_rig.exists(clone <> "/newer")
 }
+
+// --- a worker that dies after it started ------------------------------------------------
+//
+// The registry's end bell reaches the actor as `session_gone`. The tests ring it
+// by hand, as the bell does, and read what the board and the fakes then show.
+
+// The board's text for a failed ticket and the host's reason, in one place.
+const failed_stage = "person/failed"
+
+const lost_prefix = "the worker's session ended without a report: "
+
+pub fn a_worker_that_dies_reads_failed_with_its_reason_and_frees_its_slot_test() {
+  let rig = rig("lost-worker")
+
+  // One general slot and the one kept for a person's message: the third
+  // ticket can start only when one of the first two gives its slot up.
+  let config = project_host.Config(..rig.config, max_workers: 1)
+  let assert Ok(handle) = project_host.start(config) as "the actor starts"
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+  let assert Ok(_) = project_host.post(handle, "b", "fix b")
+  let assert Ok(_) = project_host.post(handle, "c", "fix c")
+  let assert Ok([tools.Applied]) = project_host.route(handle, [accept("a")])
+  let assert Ok([tools.Applied]) = project_host.route(handle, [accept("b")])
+  let assert Ok([tools.Applied]) = project_host.route(handle, [accept("c")])
+  let started = drain(rig.seen)
+  assert list.contains(started, Started(first_key("t-a")))
+  assert list.contains(started, Started(first_key("t-b")))
+  assert !list.contains(started, Started(first_key("t-c")))
+  assert !string.contains(board_json(handle), failed_stage)
+
+  // The registry reports the worker's session lost, with the fault's words.
+  project_host.session_gone(
+    handle,
+    "session-" <> first_key("t-a"),
+    "agent_loop: Abnormal(\"model loop crashed\")",
+  )
+
+  // The ticket reads failed and names the cause, and its freed slot lets the
+  // queued ticket start.
+  let assert Ok(Nil) =
+    poll_until(fn() { string.contains(board_json(handle), failed_stage) })
+  let board = board_json(handle)
+  assert string.contains(board, lost_prefix)
+  assert string.contains(board, "model loop crashed")
+  let assert Ok(Nil) =
+    poll_until(fn() {
+      list.contains(drain(rig.seen), Started(first_key("t-c")))
+    })
+
+  // A second ring for the same session, such as the drain after a fault,
+  // changes nothing: the ledger already holds the first cause.
+  project_host.session_gone(
+    handle,
+    "session-" <> first_key("t-a"),
+    "the session was stopped",
+  )
+  assert board_json(handle) == board
+  assert !string.contains(board_json(handle), "the session was stopped")
+}
+
+pub fn a_session_the_host_stopped_or_a_worker_at_rest_is_not_read_as_failed_test() {
+  let rig = rig("not-lost")
+  let readings = process.new_subject()
+  let stopped = process.new_subject()
+  let ports =
+    project_host.Ports(
+      ..reading_ports(rig, readings),
+      stop_session: fn(session) {
+        process.send(stopped, session)
+        Ok(Nil)
+      },
+    )
+  let config = project_host.Config(..rig.config, ports: fn() { ports })
+  let assert Ok(handle) = project_host.start(config) as "the actor starts"
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+  let assert Ok(_) = project_host.post(handle, "b", "fix b")
+  let assert Ok([tools.Applied]) = project_host.route(handle, [accept("a")])
+  let assert Ok([tools.Applied]) = project_host.route(handle, [accept("b")])
+  let rested = "session-" <> first_key("t-a")
+  let running = "session-" <> first_key("t-b")
+
+  // Ticket a goes idle on work that waits for a person, so its assignment
+  // ends as rested while its session stays.
+  let assert Ok(Nil) =
+    project_host.report(handle, rested, tools.WorkerReport(tools.Waiting, None))
+  let assert Ok(Nil) =
+    poll_until(fn() { string.contains(ticket_text(handle), "done/rested") })
+
+  // The registry rings for the rested session when it is later closed, and the
+  // board is as it was.
+  let before = board_json(handle)
+  project_host.session_gone(handle, rested, "the session was stopped")
+  assert board_json(handle) == before
+
+  // Ticket b is stopped by a person. The host stops its session itself, and
+  // the registry rings for that stop as it does for any other.
+  let assert Ok(Nil) = project_host.stop_ticket(handle, "t-b", "owner")
+  let assert Ok(session) = process.receive(stopped, 2000)
+    as "the host stopped the session"
+  assert session == running
+  project_host.session_gone(handle, session, "the session was stopped")
+  let after = board_json(handle)
+  assert !string.contains(after, lost_prefix)
+  assert !string.contains(after, failed_stage)
+}
+
+pub fn a_loss_reported_after_a_restart_still_fails_the_ticket_test() {
+  let rig = rig("lost-after-restart")
+  let assert Ok(handle) = project_host.start(rig.config) as "the actor starts"
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+  let assert Ok([tools.Applied]) = project_host.route(handle, [accept("a")])
+  let worker = "session-" <> first_key("t-a")
+
+  // The daemon stops and starts again. The ledger says the assignment is
+  // running, which is all the new actor knows, and the boot step finds that
+  // its session was deleted while the daemon was down.
+  stop(handle)
+  let assert Ok(again) = project_host.start(rig.config) as "the actor restarts"
+  assert !string.contains(board_json(again), failed_stage)
+  project_host.session_gone(again, worker, "the session no longer exists")
+  let assert Ok(Nil) =
+    poll_until(fn() { string.contains(board_json(again), failed_stage) })
+  assert string.contains(board_json(again), "the session no longer exists")
+
+  // The failure is in the ledger, so another restart shows the same board.
+  let board = board_json(again)
+  stop(again)
+  let assert Ok(third) = project_host.start(rig.config) as "the actor restarts"
+  assert board_json(third) == board
+}

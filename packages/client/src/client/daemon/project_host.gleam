@@ -417,6 +417,7 @@ pub opaque type Message {
   StopTicket(ticket: String, by: String, reply: Subject(Result(Nil, String)))
   CloseTicket(ticket: String, by: String, reply: Subject(Result(Nil, String)))
   RouterRunEnded(at_ms: Int)
+  SessionGone(session: String, why: String)
   ReadTicket(ticket: String, reply: Subject(Result(JsonValue, Nil)))
   AnswerQuestion(
     ticket: String,
@@ -763,6 +764,25 @@ pub fn router_run_ended(handle: Handle, at_ms: Int) -> Nil {
   process.send(handle.commands, RouterRunEnded(at_ms))
 }
 
+/// Tells the actor that a session is no longer running, with the reason the
+/// registry has for it. It is a cast, sent from the registry's end bell and from
+/// the boot step that finds a live assignment's session deleted.
+///
+/// The actor acts only if the session is bound to an assignment that still
+/// holds its slot. A session the host stopped itself belongs to an assignment
+/// the engine already ended, and a worker at rest belongs to one that ended as
+/// rested, so neither is read as a loss. A session that is no assignment's, such
+/// as the router's or an ordinary one, is ignored.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_host.session_gone(handle, session_id, "the session was stopped")
+/// ```
+pub fn session_gone(handle: Handle, session: String, why: String) -> Nil {
+  process.send(handle.commands, SessionGone(session, why))
+}
+
 /// Hands the actor a person's turn typed into a worker. It is a cast: the
 /// scanner that reads the worker's log does not wait on the ledger, and the
 /// entry id keeps a repeat from recording a second turn.
@@ -1020,6 +1040,8 @@ fn handle(host: Host, message: Message) -> actor.Next(Host, Message) {
     }
     RouterRunEnded(at_ms) ->
       actor.continue(perform_due(router_ran_out(host, at_ms)))
+    SessionGone(session, why) ->
+      actor.continue(perform_due(session_lost(host, session, why)))
     CloseTicket(ticket, by, reply) -> {
       let #(next, answer) = close_now(host, ticket, by)
       process.send(reply, answer)
@@ -1144,6 +1166,56 @@ fn router_ran_out(host: Host, at_ms: Int) -> Host {
   {
     state.RouterBusy, True -> committed_or_same(host, event.RouterTurnEnded)
     state.RouterBusy, False | state.RouterIdle, _ -> host
+  }
+}
+
+/// A session is no longer running. If it is the session of an assignment that
+/// still holds its slot, the worker died or was stopped without a report, so the
+/// assignment ends as crashed and the ticket reads as failed with the reason.
+/// That is the same event a start that never succeeded produces
+/// (`start_failed`), and it frees the slot for the next ticket.
+///
+/// Only an assignment that holds its slot counts. A session the host stopped
+/// itself belongs to an assignment the engine ended before the stop was
+/// ordered, and a worker at rest belongs to one that ended as rested, so the
+/// engine would refuse the event for either as stale. The lookup leaves them
+/// out before it asks, which keeps the ledger free of refused events. A ticket
+/// that ended or was withdrawn refuses the event too, and stays as it is.
+fn session_lost(host: Host, session: String, why: String) -> Host {
+  let holder =
+    state.tickets_oldest_first(host.engine)
+    |> list.find_map(fn(ticket) {
+      use assignment <- result.try(option.to_result(
+        state.active_assignment(ticket),
+        Nil,
+      ))
+
+      // A ticket's active assignment is the only one that can hold a live
+      // session, and it counts only if it is bound to this one.
+      case assignment.session == Some(model.SessionId(session)) {
+        True -> Ok(#(ticket, assignment.seq))
+        False -> Error(Nil)
+      }
+    })
+
+  // No holder is a session the project never assigned, or one whose assignment
+  // already ended, and either leaves the host as it is.
+  case holder {
+    Error(Nil) -> host
+    Ok(#(ticket, seq)) -> {
+      log.warn(host.ports.logger, "project.worker_lost", [
+        field.ident(key: "ticket", value: ticket.id.value),
+        field.text(key: "reason", value: why),
+      ])
+      committed_or_same(
+        host,
+        event.WorkerFailed(
+          ticket.id,
+          seq,
+          "the worker's session ended without a report: " <> why,
+        ),
+      )
+    }
   }
 }
 

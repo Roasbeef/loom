@@ -62,6 +62,7 @@ type Message {
     ticket: String,
     reply: Subject(Result(model.Mandate, Nil)),
   )
+  SessionEnded(session: String, why: String)
 }
 
 /// What the table process keeps: the running projects' handles, and the
@@ -125,8 +126,9 @@ pub fn launch(
   started.data
 }
 
-/// The table's message handler. It never calls into a project's actor, so a
-/// lookup cannot wait on a project that is busy or stopped.
+/// The table's message handler. It never waits on a project's actor, so a
+/// lookup cannot wait on a project that is busy or stopped. It only casts to
+/// one, for `SessionEnded`.
 fn handle(table: Table, message: Message) -> actor.Next(Table, Message) {
   // A put replaces any earlier handle for the project, which is how a
   // restarted actor takes over its name.
@@ -167,6 +169,17 @@ fn handle(table: Table, message: Message) -> actor.Next(Table, Message) {
         reply,
         dict.get(table.mandates, mandate_key(project, ticket)),
       )
+      actor.continue(table)
+    }
+
+    // The session may belong to any project, or to none, and the table cannot
+    // tell which without asking the registry that is ringing the bell. So every
+    // project's actor is told and the one with an assignment on the session
+    // acts. The sends are casts: a project that is busy delays nothing here.
+    SessionEnded(session, why) -> {
+      dict.each(table.handles, fn(_project, found) {
+        project_host.session_gone(found, session, why)
+      })
       actor.continue(table)
     }
   }
@@ -213,6 +226,20 @@ pub fn all(book: Book) -> List(Handle) {
   call.try_call(book.inbox, waiting: 2000, sending: All)
   |> result.unwrap([])
   |> list.sort(fn(a, b) { string.compare(a.project, b.project) })
+}
+
+/// Tells every running project that a session is no longer running, for the
+/// registry's end bell (`manager.on_session_ended`). It is a cast, because the
+/// bell rings inside the registry's turn and must not wait. Only the project
+/// whose assignment is bound to the session does anything with it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_book.session_ended(book, "0198...", "the session was stopped")
+/// ```
+pub fn session_ended(book: Book, session: String, why: String) -> Nil {
+  process.send(book.inbox, SessionEnded(session, why))
 }
 
 /// Records the Mandate a project's ticket holds, and returns once the table

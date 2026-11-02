@@ -491,6 +491,8 @@ fn settle_start(
   layout: Layout,
   start: Start,
 ) -> Result(Start, String) {
+  // The owner's start needs no reading, because it is the clone's own source.
+  // A commit is proved held and then compared.
   case start {
     FromOwner -> Ok(FromOwner)
     FromCommit(commit:) -> {
@@ -528,6 +530,9 @@ fn make_clone(
 ) -> Result(String, String) {
   let making = tickets <> "/." <> name <> ".making"
   use Nil <- result.try(remove(making))
+
+  // The two starts differ only in where the objects come from. Both end with a
+  // clone that has no remote and a branch of the worker's own.
   let made = case start {
     FromOwner -> cut_from_owner(trees, layout, name, tickets, making)
     FromCommit(commit:) ->
