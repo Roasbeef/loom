@@ -474,6 +474,8 @@ pub fn retry(current: State, id: TicketId) -> Step {
 /// that is never told what to do, which is what happened to a ticket whose
 /// first session failed to start.
 fn requeued_inbox(current: State, ticket: Ticket) -> List(TriggerId) {
+  // A thread the state no longer holds leaves the opening message alone, which
+  // is the one delivery a worker cannot do without.
   let admitted = case state.record(current, ticket.origin) {
     Error(_) -> [ticket.origin]
     Ok(stored) ->
@@ -486,6 +488,7 @@ fn requeued_inbox(current: State, ticket: Ticket) -> List(TriggerId) {
           |> list.map(fn(entry) { entry.trigger })
       }
   }
+
   list.append(
     admitted,
     list.filter(ticket.inbox, fn(waiting) { !list.contains(admitted, waiting) }),

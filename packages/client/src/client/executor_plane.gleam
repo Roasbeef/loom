@@ -377,6 +377,9 @@ pub fn ledger_path(state_root: String) -> String {
 /// ```
 pub fn ensure_ledger(state_root: String) -> Result(Nil, String) {
   let path = ledger_path(state_root)
+
+  // A ledger that connects was opened by someone else and is left alone; only
+  // one that has no schema yet is opened here.
   case exec_ledger.connect(path) {
     Ok(ledger) -> {
       let _closed = exec_ledger.close(ledger)
