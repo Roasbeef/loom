@@ -426,7 +426,7 @@ pub fn an_answer_sends_the_sequence_number_the_form_was_drawn_with_test() {
   // it.
   assert drain(asked)
     == [Answered("p1", "t-ask", 9, "sqlite"), ReadTicket("p1", "t-ask")]
-  assert string.contains(drawn(after), "Answer recorded.")
+  assert string.contains(drawn(after), "Answer queued for the worker.")
 }
 
 pub fn an_empty_answer_asks_nothing_test() {
@@ -460,7 +460,7 @@ pub fn a_stale_answer_is_refused_and_said_in_words_test() {
     html,
     "The question changed while you were typing. Nothing was recorded",
   )
-  assert !string.contains(html, "Answer recorded.")
+  assert !string.contains(html, "Answer queued for the worker.")
   assert list.contains(drain(asked), Answered("p1", "t-ask", 9, "sqlite"))
 }
 

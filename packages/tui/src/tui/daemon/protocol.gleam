@@ -1445,6 +1445,7 @@ fn decode_reply(event: String, body: json.JsonValue) {
     | "projects.ticket"
     | "projects.answer"
     | "projects.retry"
+    | "projects.publish"
     | "projects.requeue" -> Ok(ProjectsReply(body))
     "status" -> result.map(summary(body), StatusReply)
     "ui.link" -> {

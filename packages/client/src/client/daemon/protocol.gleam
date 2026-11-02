@@ -231,6 +231,11 @@ pub type Command {
   /// A person's request that a stored trigger be evaluated afresh. Owner-only.
   RequeueTrigger(project: String, trigger: String)
 
+  /// A person's publish of a ticket's current commit past a failing or missing
+  /// check, recorded with the principal. Owner-only, and refused while the
+  /// project keeps `publish` off.
+  PublishTicket(project: String, ticket: String)
+
   /// Asks the named resident sessions what they are doing
   /// (`protocol-change/050`). Owner-only; saved sessions are never opened.
   SessionActivity(
@@ -709,6 +714,11 @@ fn decode_fields(
       use project <- result.try(text_field(fields, "project", 64))
       use ticket <- result.map(text_field(fields, "ticket", 128))
       RetryTicket(project, ticket)
+    }
+    "projects.publish" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use ticket <- result.map(text_field(fields, "ticket", 128))
+      PublishTicket(project, ticket)
     }
     "projects.requeue" -> {
       use project <- result.try(text_field(fields, "project", 64))

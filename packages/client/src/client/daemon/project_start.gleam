@@ -35,7 +35,10 @@
 import client/daemon/manager
 import client/daemon/project_book.{type Book}
 import client/daemon/project_host
+import client/goalcheck
+import client/goalstate
 import client/peer_mail
+import client/project_publish
 import client/project_scan
 import client/project_standing
 import client/projectseam
@@ -78,6 +81,10 @@ pub type Env {
     now_ms: fn() -> Int,
     /// General worker slots per project.
     max_workers: Int,
+    /// What a project does with a worker's finished work: its check, its
+    /// protected paths and whether it may publish. It comes from `[project]`
+    /// and is the owner's alone.
+    policy: project_host.Policy,
     /// Where startup reports.
     logger: Logger,
   )
@@ -229,26 +236,27 @@ pub fn ensure_running(
 ) -> Result(project_host.Handle, String) {
   // A project already in the table keeps its actor. Starting a second one
   // would put two writers on one ledger.
+  //
+  // A new actor starts under the book's supervisor, never linked to this
+  // caller: the caller is a control request's handler or the boot that reopens
+  // projects, and either may end abnormally while the project goes on.
   case project_book.get(env.book, project.id) {
     Ok(running) -> Ok(running)
-    Error(Nil) -> {
-      use started <- result.map(
-        project_host.start(
-          project_host.Config(
-            project: project.id,
-            workspace: project.workspace,
-            router_session: project.router_session,
-            ledger_path: project.ledger_path,
-            max_workers: env.max_workers,
-            tick_ms: 2000,
-            router_turn_ms: 120_000,
-            ports: fn() { ports_for(env, project) },
-          ),
+    Error(Nil) ->
+      project_book.launch(
+        env.book,
+        project_host.Config(
+          project: project.id,
+          workspace: project.workspace,
+          router_session: project.router_session,
+          ledger_path: project.ledger_path,
+          max_workers: env.max_workers,
+          tick_ms: 2000,
+          router_turn_ms: 120_000,
+          policy: env.policy,
+          ports: fn() { ports_for(env, project) },
         ),
       )
-      project_book.put(env.book, started)
-      started
-    }
   }
 }
 
@@ -326,8 +334,213 @@ fn ports_for(env: Env, project: catalogue.Project) -> project_host.Ports {
         Error(_) -> Error(peer_mail.NotOpen)
       }
     },
+    observe_head: fn(request) {
+      use trees <- result.try(trees)
+      observe(env.state_root, project.workspace, tree_workspace, trees, request)
+    },
+    run_check: fn(request) {
+      run_check(env.now_ms, tree_workspace, trees, request)
+    },
+    publish: fn(request) { published(project, request) },
     logger: env.logger,
   )
+}
+
+// --- finishing work ----------------------------------------------------------
+
+/// Reads the head of an assignment's worktree and the paths its branch changed
+/// against the project's base. Every Git command runs in the sandbox, because
+/// the tree is the worker's and the repository's configuration and hooks are
+/// files the worker's model may have written. The base is the checkout's own
+/// head, and the diff is `base...commit`, which is the commits the branch has
+/// that the base has not, so a base that has moved on since the tree was cut
+/// does not count its own new files. Paths are cut at the NUL bytes Git puts
+/// between them, never at a newline or a space, and they reach the engine as
+/// data to compare with the protected patterns.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_start.observe(state_root, checkout, workspace, trees, request)
+/// ```
+pub fn observe(
+  state_root: String,
+  checkout: String,
+  tree_workspace: workspaces.Workspace,
+  trees: Worktrees,
+  request: project_host.ObserveRequest,
+) -> Result(project_host.Observed, String) {
+  let directory =
+    worktrees.tree_path(
+      state_root,
+      tree_workspace.name,
+      tree_name(request.ticket, request.seq),
+    )
+  use head <- result.try(
+    worktrees.read(trees, directory, [
+      "rev-parse",
+      "--verify",
+      "HEAD^{commit}",
+    ]),
+  )
+  use base <- result.try(
+    worktrees.read(trees, checkout, [
+      "rev-parse",
+      "--verify",
+      "HEAD^{commit}",
+    ]),
+  )
+  let commit = string.trim(head)
+  let base = string.trim(base)
+  use Nil <- result.try(commit_name(commit))
+  use Nil <- result.try(commit_name(base))
+  use names <- result.map(
+    worktrees.read(trees, directory, [
+      "diff",
+      "--name-only",
+      "-z",
+      "--no-renames",
+      "--no-ext-diff",
+      base <> "..." <> commit,
+      "--",
+    ]),
+  )
+  project_host.Observed(
+    commit:,
+    changed: string.split(names, "\u{0}")
+      |> list.filter(fn(path) { path != "" }),
+  )
+}
+
+/// Runs the project's check at a commit. The tree is cut fresh from the
+/// commit, named from the ticket and the commit so a repeat adopts it, and
+/// removed afterwards whatever the check left in it. The command runs through
+/// `client/goalcheck` over the checking Git's broker: a process with its own
+/// helper and its own policy, reached by nothing the worker holds. The wall is
+/// the project's, and the output is the tail `goalcheck` keeps.
+///
+/// A check that could not be started is `DidNotFinish` with the reason, which
+/// the host reads as no verdict on the work.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_start.run_check(clock, workspace, trees, request)
+/// ```
+pub fn run_check(
+  now_ms: fn() -> Int,
+  tree_workspace: workspaces.Workspace,
+  trees: Result(Worktrees, String),
+  request: project_host.CheckRequest,
+) -> goalstate.CheckResult {
+  let unfinished = fn(reason) {
+    goalstate.CheckResult(
+      command: request.command,
+      ending: goalstate.DidNotFinish(reason:),
+      output: "",
+      ran_at_ms: now_ms(),
+    )
+  }
+
+  // The commit comes from Git's own answer, and is checked once more before it
+  // becomes part of a command line.
+  case trees, commit_name(request.commit) {
+    Error(reason), _ | _, Error(reason) -> unfinished(reason)
+    Ok(trees), Ok(Nil) -> {
+      let at =
+        workspaces.Workspace(
+          ..tree_workspace,
+          mode: workspaces.Worktree(request.commit),
+        )
+      let name = check_tree_name(request.ticket, request.commit)
+
+      // Without a tree there is nothing to check; with one, the tree goes
+      // whatever the check does.
+      case worktrees.open(trees, at, name) {
+        Error(reason) ->
+          unfinished("the check's worktree was not made: " <> reason)
+        Ok(tree) -> {
+          // A runner that cannot be built is a check that never started.
+          let outcome = case worktrees.check_runner(trees, tree.path) {
+            Error(reason) -> unfinished(reason)
+            Ok(runner) ->
+              { goalcheck.wiring(runner, timeout_ms: request.wall_ms) }.run(
+                request.command,
+              )
+          }
+
+          let _removed = worktrees.discard(trees, at, name)
+          outcome
+        }
+      }
+    }
+  }
+}
+
+/// Pushes a verified commit and opens its pull request, with the daemon's own
+/// credentials. The title and body arrive built, and the commit is checked once
+/// more before it becomes part of a command line.
+fn published(
+  project: catalogue.Project,
+  request: project_host.PublishRequest,
+) -> project_host.Published {
+  case commit_name(request.commit) {
+    Error(reason) -> project_host.Unavailable(reason)
+    Ok(Nil) ->
+      case
+        project_publish.publish(
+          project_publish.tools(),
+          project_publish.Repository(
+            directory: project.workspace,
+            remote: "origin",
+          ),
+          request.branch,
+          request.commit,
+          request.title,
+          request.body,
+        )
+      {
+        Ok(url) -> project_host.Opened(url)
+        Error(project_publish.Unavailable(why)) -> project_host.Unavailable(why)
+        Error(project_publish.Failed(why)) -> project_host.PublishFailed(why)
+      }
+  }
+}
+
+/// A commit name Git printed: seven to sixty-four lower-case hexadecimal
+/// digits. Anything else never reaches an argument list.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_start.commit_name("abc1234") == Ok(Nil)
+/// assert project_start.commit_name("--upload-pack=x") == Error("not a commit name")
+/// ```
+pub fn commit_name(text: String) -> Result(Nil, String) {
+  let size = string.length(text)
+  let hex =
+    list.all(string.to_graphemes(text), fn(each) {
+      string.contains("0123456789abcdef", each)
+    })
+
+  // Seven digits is the shortest abbreviation Git prints; sixty-four is the
+  // longest object name.
+  case size >= 7 && size <= 64 && hex {
+    True -> Ok(Nil)
+    False -> Error("not a commit name")
+  }
+}
+
+/// The directory name of a check's tree: the ticket and the first twelve
+/// digits of the commit. The ticket id is already a safe component.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_start.check_tree_name("t-c1", "0123456789abcdef") == "chk-t-c1-0123456789ab"
+/// ```
+pub fn check_tree_name(ticket: String, commit: String) -> String {
+  "chk-" <> ticket <> "-" <> string.slice(commit, 0, 12)
 }
 
 /// A worker session in a linked worktree. Creating the tree twice adopts it,

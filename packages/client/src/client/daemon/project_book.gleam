@@ -1,4 +1,5 @@
-//// The daemon's table of running project actors.
+//// The daemon's table of running project actors, and the supervisor that owns
+//// them.
 ////
 //// A session's builder runs inside the registry, long before it is known
 //// which projects exist, and a project's actor needs the registry to create
@@ -7,19 +8,42 @@
 //// a router or a worker, and `client/daemon/project_start` fills it as actors
 //// start. The table holds handles and nothing else; a project's state lives in
 //// its actor and its ledger.
+////
+//// ## Who owns an actor
+////
+//// A project's actor is the only writer of its ledger, so it must not end
+//// because of a process that merely asked for it. An actor started with a plain
+//// `start` is linked to its caller, which in the daemon is the handler of a
+//// control request or of the boot that reopens projects, and a handler that
+//// ends abnormally takes every link down with it: one failed request would
+//// stop a project's board and every ticket's worker with it, and nothing
+//// would start it again.
+////
+//// So `start` also starts a supervisor, linked to the daemon's own process,
+//// and `launch` starts each actor as that supervisor's child. The children are
+//// temporary: a crashed actor is not restarted behind the daemon's back,
+//// because its ledger decides what the next one does and the next boot or the
+//// next control request starts it again, as it does today. What the supervisor
+//// guarantees is the other direction only: an actor lives as long as the
+//// daemon, whoever asked for it.
 
 import broker/internal/call
 import client/daemon/project_host.{type Handle}
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/list
+import gleam/otp/factory_supervisor
+import gleam/otp/supervision
 import gleam/result
 import gleam/string
 import weft/actor
 
-/// The table's address.
+/// The table's address, and the supervisor the actors it lists run under.
 pub opaque type Book {
-  Book(inbox: Subject(Message))
+  Book(
+    inbox: Subject(Message),
+    actors: factory_supervisor.Supervisor(project_host.Config, Handle),
+  )
 }
 
 type Message {
@@ -28,7 +52,9 @@ type Message {
   All(reply: Subject(List(Handle)))
 }
 
-/// Starts the table, linked to the caller.
+/// Starts the table and the supervisor for the project actors, linked to the
+/// caller. The daemon calls it once from its own process, so both live as long
+/// as the daemon does.
 ///
 /// ## Examples
 ///
@@ -36,13 +62,47 @@ type Message {
 /// // project_book.start()
 /// ```
 pub fn start() -> Result(Book, String) {
-  actor.new_with_initialiser(1000, fn(inbox) {
-    actor.initialised(dict.new()) |> actor.returning(inbox) |> Ok
-  })
-  |> actor.on_message(handle)
-  |> actor.start
-  |> result.map(fn(started) { Book(started.data) })
-  |> result.replace_error("the project table did not start")
+  use table <- result.try(
+    actor.new_with_initialiser(1000, fn(inbox) {
+      actor.initialised(dict.new()) |> actor.returning(inbox) |> Ok
+    })
+    |> actor.on_message(handle)
+    |> actor.start
+    |> result.replace_error("the project table did not start"),
+  )
+  use supervisor <- result.map(
+    factory_supervisor.worker_child(project_host.start_child)
+    |> factory_supervisor.restart_strategy(supervision.Temporary)
+    |> factory_supervisor.start
+    |> result.map_error(fn(error) {
+      "the project supervisor did not start: " <> string.inspect(error)
+    }),
+  )
+  Book(table.data, supervisor.data)
+}
+
+/// Starts a project's actor under the supervisor and records its handle. The
+/// caller waits while the actor replays its ledger and performs what the last
+/// run left queued, and its own ending afterwards, abnormal or not, changes
+/// nothing for the actor.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_book.launch(book, config)
+/// ```
+pub fn launch(
+  book: Book,
+  config: project_host.Config,
+) -> Result(Handle, String) {
+  use started <- result.map(
+    factory_supervisor.start_child(book.actors, config)
+    |> result.map_error(fn(error) {
+      "the project actor did not start: " <> string.inspect(error)
+    }),
+  )
+  put(book, started.data)
+  started.data
 }
 
 /// The table's message handler. It never calls into a project's actor, so a

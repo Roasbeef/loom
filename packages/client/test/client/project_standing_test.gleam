@@ -6,6 +6,7 @@ import client/project_settings
 import client/project_standing
 import gleam/dict
 import gleam/list
+import gleam/option.{None, Some}
 import prompt/pack
 import storage/catalogue
 import tom
@@ -63,11 +64,48 @@ pub fn the_project_table_defaults_and_refuses_unknown_keys_test() {
     == Ok(project_settings.defaults)
   let assert Ok(document) = tom.parse("[project]\nmax_workers = 2\n")
   assert project_settings.from_document(document)
-    == Ok(project_settings.Settings(2, 5_000_000))
-  let assert Ok(unknown) = tom.parse("[project]\ncheck = \"make check\"\n")
+    == Ok(
+      project_settings.Settings(..project_settings.defaults, max_workers: 2),
+    )
+  let assert Ok(unknown) = tom.parse("[project]\nchecks = \"make check\"\n")
   let assert Error(_) = project_settings.from_document(unknown)
   let assert Ok(too_many) = tom.parse("[project]\nmax_workers = 99\n")
   let assert Error(_) = project_settings.from_document(too_many)
+}
+
+// A project with no table does nothing outward and checks nothing, and the
+// three keys of slice 2 read as written or are refused by name.
+pub fn the_check_protected_paths_and_publish_keys_read_as_written_test() {
+  assert project_settings.defaults.check == None
+  assert project_settings.defaults.publish == project_settings.PublishOff
+  let assert Ok(document) =
+    tom.parse(
+      "[project]\ncheck = \" make check \"\nprotected_paths = [\"Makefile\", \"ci/**\"]\npublish = \"pull_request\"\n",
+    )
+  assert project_settings.from_document(document)
+    == Ok(
+      project_settings.Settings(
+        ..project_settings.defaults,
+        check: Some("make check"),
+        protected_paths: ["Makefile", "ci/**"],
+        publish: project_settings.PublishPullRequest,
+      ),
+    )
+  list.each(
+    [
+      "check = \"\"",
+      "check = 3",
+      "protected_paths = \"Makefile\"",
+      "protected_paths = [\"\"]",
+      "protected_paths = [1]",
+      "publish = \"on\"",
+      "publish = true",
+    ],
+    fn(line) {
+      let assert Ok(bad) = tom.parse("[project]\n" <> line <> "\n")
+      let assert Error(_) = project_settings.from_document(bad)
+    },
+  )
 }
 
 pub fn route_takes_one_to_twenty_typed_items_test() {

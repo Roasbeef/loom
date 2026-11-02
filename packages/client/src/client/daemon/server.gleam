@@ -3005,6 +3005,7 @@ fn control(
             | protocol.AnswerQuestion(..)
             | protocol.RetryTicket(..)
             | protocol.RequeueTrigger(..)
+            | protocol.PublishTicket(..)
             | protocol.SessionActivity(..)
             | protocol.ListArchivedSessions(..)
             | protocol.ArchiveSession(..)
@@ -3089,6 +3090,7 @@ fn control_use(command: protocol.Command) {
     | protocol.AnswerQuestion(..)
     | protocol.RetryTicket(..)
     | protocol.RequeueTrigger(..)
+    | protocol.PublishTicket(..)
     | protocol.OpenSession(..)
     | protocol.StopSession(..)
     | protocol.MoveSession(..)
@@ -3256,6 +3258,10 @@ fn dispatch(
     protocol.RetryTicket(project, ticket) ->
       project_command(config, principal, fn(control) {
         project_retry(control, project, ticket)
+      })
+    protocol.PublishTicket(project, ticket) ->
+      project_command(config, principal, fn(control) {
+        project_publish(control, project, ticket)
       })
     protocol.RequeueTrigger(project, trigger) ->
       project_command(config, principal, fn(control) {
@@ -3458,6 +3464,32 @@ fn project_retry(
     |> result.replace_error("bad_request"),
   )
   #("projects.retry", json.Object([#("ticket", json.String(ticket))]))
+}
+
+/// The `projects.publish` step: the owner publishes a ticket's current commit
+/// past a failing or missing check. The principal is the owner, who is the only
+/// one `project_command` admits, and the project's actor records it. A project
+/// that keeps `publish` off, or a ticket with no commit, is `bad_request`.
+fn project_publish(
+  control: project_start.Control,
+  project: String,
+  ticket: String,
+) -> Result(#(String, JsonValue), String) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.replace_error("not_found"),
+  )
+  use commit <- result.map(
+    project_host.publish(handle, ticket, "owner")
+    |> result.replace_error("bad_request"),
+  )
+  #(
+    "projects.publish",
+    json.Object([
+      #("ticket", json.String(ticket)),
+      #("commit", json.String(commit)),
+    ]),
+  )
 }
 
 /// The `projects.requeue` step.
@@ -4496,7 +4528,8 @@ fn dispatch_class(
     | protocol.ProjectTicket(..)
     | protocol.AnswerQuestion(..)
     | protocol.RetryTicket(..)
-    | protocol.RequeueTrigger(..) -> Error("unavailable")
+    | protocol.RequeueTrigger(..)
+    | protocol.PublishTicket(..) -> Error("unavailable")
     protocol.Shutdown(supplied) -> {
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))

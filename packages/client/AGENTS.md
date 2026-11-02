@@ -10194,15 +10194,38 @@ ordinary top-level worker session per ticket assignment
   `request_key` (never randomise it), `DeliverJob` by the receipt of
   `peer_mail.Trigger` keyed on `trigger:session`. Triggers, questions and replies
   are host records (`client/project_records`, a `host` field no engine event has)
-  in the same ordered history. A report that asks for a check logs a row that nothing
-  serves (`CheckJob`): `ReadyWithCheck` is unreachable in this slice. Times are
-  `Ports.now_ms`, system time.
+  in the same ordered history. Times are `Ports.now_ms`, system time.
+  Finishing work is three jobs in order. `ObserveJob` reads an idle worker's head
+  through `Ports.observe_head` (sandboxed Git in the worker's tree) and commits
+  `HeadObserved`, with `project/protect` deciding the protected paths from the
+  diff, so a touched head never gets a `RequestCheck`. `CheckJob` runs
+  `Ports.run_check` in a witnessed `weft` task (`in_task`, deadline = wall plus
+  margin) and the answer returns as a `CheckSettled` message; the row is deferred
+  past the deadline and settled by the answer, and a task that dies leaves it to
+  run again (three attempts, then `ReviewRequested`). `host.passed` is called only
+  in `check_passed`, after the run is written as a `CheckRecorded` record whose
+  ledger position is the proof's entry. A failure is told to the live worker as a
+  `check` trigger with the output inside a fence (`tell_worker`). `PublishJob`
+  runs `Ports.publish` the same way, only when `Policy.publish` is on and the
+  commit is the one a pass or a person vouched for; `Policy.publish` off, no
+  remote and no `gh` become `ReviewRequested` with the reason. `projects.publish`
+  is `project_host.publish`, refused while publish is off. `Ports.run_check` and
+  `observe_head` are built in `project_start` (`run_check`, `observe`) over
+  `worktrees.read`, `worktrees.check_runner` (a second sandboxed Git so a check
+  does not hold the attach pool's one slot) and `worktrees.discard`; `publish` is
+  `client/project_publish` (`git push` without force or hooks, REST through `gh api`,
+  lookup before create). An answer is a `DeliverJob` for `model.answer_id`, source
+  `owner`; with no live session it waits in the ticket's inbox. The `started`
+  pair is finished by `mark_live` when a retry finds the session bound.
 - `client/daemon/project_start` fills the actor's `Ports` from the registry:
   `create` (project id is `p-` and twelve hex of the workspace's SHA-256),
   `ensure_running`, `start_worker` (worktree named from `<ticket>-<seq>`, then
   `manager.reserve`, `catalogue.bind_worker`, `manager.create_scoped`, in that order
   so the session's builder reads its standing), and `reopen` at boot.
-  `client/daemon/project_book` is the table of handles the builder reads. A worker's
+  `client/daemon/project_book` is the table of handles the builder reads and the
+  `factory_supervisor` (temporary children) every actor is started under
+  (`launch`), so a control handler that ends abnormally cannot take a project's
+  only ledger writer with it. A worker's
   memory domain stays its own worktree's: `domain.Scope` has only `WorkspacePrivate`
   and `SessionOnly`, and the id derives from the canonical workspace path.
 - `client/projectseam` fills `tools/project`'s closures over the actor. `serve.Settings`
@@ -10214,16 +10237,15 @@ ordinary top-level worker session per ticket assignment
 - `peer_mail.Trigger` admits a stored trigger with the trigger origin. The daemon is
   the caller, so no grant is checked; `orchestrator_port.served` answers `False` for
   it, which is what keeps it off the relay (tested in `peer_remote_test`).
-- Control: `projects.create|list|board|post|stop|ticket|answer|retry|requeue` in
+- Control: `projects.create|list|board|post|stop|ticket|answer|retry|requeue|publish` in
   `daemon/protocol` and `daemon/server` (`project_command`), classified in
   `control_use`. `projects.ticket` is a read. `projects.answer` echoes the
   question's `seq`; `project_host.answer` checks it against the open question
   before it writes the text, and a stale one is `StaleQuestion`, which the control
   command answers `conflict` and the page words as "the question changed". The
-  answer's text is stored in the ledger; relaying it to the worker is the
-  `AnswerJob` row, which the host still logs and settles without serving. The
-  board record gains `opened_ms` (the opening message's arrival time, or null), the
-  only source of an age.
+  answer's text is stored in the ledger and delivered to the worker (see above).
+  The board record gains `opened_ms` (the opening message's arrival time, or null),
+  the only source of an age, `check` and `review`, and the board gains `unrouted`.
 - `client/daemon/ui_projects` is the owner's home page's feed over the same actors
   (`boards`, `ticket`, `answer`), returning the daemon's JSON for
   `session_view/project_board` to decode; `board_body` is shared with
@@ -10231,7 +10253,8 @@ ordinary top-level worker session per ticket assignment
   (`ui_socket.home_projects_capability`, repeated by `projects_for`,
   `ticket_read_for` and `answer_for`), and admits a click beneath
   `home.projects_path` for that page only (`ui_socket.home_event`).
-  `[project]` is `client/project_settings` (`max_workers`, `token_ceiling`).
+  `[project]` is `client/project_settings` (`max_workers`, `token_ceiling`,
+  `check`, `protected_paths`, `publish`).
 - `client/project_scan` is a worker's commit scanner, modelled on `rulescan`: a
   restartable service subscribed by name through `writer.Routed`, started in
   `serve` only for a session seated as a worker (`Seat.feed`). It pulls the main

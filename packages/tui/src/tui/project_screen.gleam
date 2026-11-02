@@ -244,7 +244,7 @@ pub fn answered(state: State) -> State {
       State(
         ..state,
         page: Reading(ticket:, focus: Acting, draft: ""),
-        notice: "Answer recorded.",
+        notice: "Answer queued for the worker.",
         poll: PollDue,
       )
     Listing -> state

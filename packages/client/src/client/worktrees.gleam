@@ -64,6 +64,7 @@
 ////    made, for `loomd executor release --worktrees`.
 
 import broker/exec.{type EnforcementDemand}
+import client/goalcheck
 import client/remote/protocol
 import client/workspaces.{type Workspace}
 import client/worktree_git.{type Git, type Output}
@@ -102,7 +103,12 @@ pub type Config {
 /// The worktrees an executor manages: the sandboxed Git and a gate for each
 /// worktree workspace. A configuration with no such workspace holds neither.
 pub opaque type Worktrees {
-  Worktrees(config: Config, git: Option(Git), gates: List(#(String, Gate)))
+  Worktrees(
+    config: Config,
+    git: Option(Git),
+    checks: Option(Git),
+    gates: List(#(String, Gate)),
+  )
 }
 
 /// A tree a plane is built on.
@@ -232,7 +238,7 @@ pub fn start(
 
   // Decide how to handle wanted {.
   case wanted {
-    [] -> Ok(Worktrees(config:, git: None, gates: []))
+    [] -> Ok(Worktrees(config:, git: None, checks: None, gates: []))
     _ -> {
       use state_root <- result.try(bootstrap.canonical_directory(
         config.state_root,
@@ -248,13 +254,27 @@ pub fn start(
           demand: config.demand,
         )),
       )
+
+      // A second sandboxed Git, with its own helper pool, runs a project's
+      // check. A check can take minutes, and the first pool has one slot that
+      // every worktree command shares, so a check there would hold up every
+      // session's attach for as long as it ran. The pool is lazy: a daemon that
+      // never runs a check never starts its helper.
+      use checks <- result.try(
+        worktree_git.start(worktree_git.Config(
+          helper_path: config.helper_path,
+          scratch: state_root <> "/check",
+          state_root:,
+          demand: config.demand,
+        )),
+      )
       use gates <- result.map(
         list.try_map(wanted, fn(workspace) {
           gate_for(config, git, workspace)
           |> result.map(fn(gate) { #(workspace.name, gate) })
         }),
       )
-      Worktrees(config:, git: Some(git), gates:)
+      Worktrees(config:, git: Some(git), checks: Some(checks), gates:)
     }
   }
 }
@@ -275,6 +295,80 @@ pub fn stop(worktrees: Worktrees) -> Nil {
     }
     None -> Nil
   }
+
+  // The checking Git has a pool of its own to drain.
+  case worktrees.checks {
+    Some(checks) -> {
+      let _drained = worktree_git.stop(checks)
+      Nil
+    }
+    None -> Nil
+  }
+}
+
+/// Runs a read-only Git command in a directory, in the sandbox, and answers its
+/// standard output. A command that exits nonzero is an error with Git's
+/// message. It takes no gate: a query holds no lock, so it runs beside a
+/// checkout. The directory may be a session's tree, which the session's model
+/// can write, which is why the command runs in the sandbox and not here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // worktrees.read(worktrees, tree.path, ["rev-parse", "HEAD"])
+/// ```
+pub fn read(
+  worktrees: Worktrees,
+  directory: String,
+  arguments: List(String),
+) -> Result(String, String) {
+  use git <- result.try(option.to_result(
+    worktrees.git,
+    "the sandboxed Git is not running",
+  ))
+  use output <- result.try(worktree_git.run(
+    git,
+    worktree_git.Run(directory:, writable: [], arguments:),
+    worktree_git.query_within_ms,
+  ))
+
+  // Git that exits zero has answered, and any other exit is its message.
+  case output.code {
+    0 -> Ok(output.stdout)
+    code ->
+      Error(worktree_git.printable(
+        "git "
+          <> string.join(list.take(arguments, 2), " ")
+          <> " exited "
+          <> int.to_string(code)
+          <> ": "
+          <> output.stderr,
+        protocol.max_worktree_reason,
+      ))
+  }
+}
+
+/// A runner for a command in a directory, cleared through the checking
+/// Git's broker. It is `client/goalcheck`'s own runner, so the command is
+/// cleared by the same broker path as a goal check and a `bash` call: the same
+/// refusals, the same enforcement demand and the same helper. What differs is
+/// the policy (see `worktree_git.check_runner`) and that the broker is not the
+/// worker's, so nothing a worker's session holds can reach it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // worktrees.check_runner(worktrees, tree.path)
+/// ```
+pub fn check_runner(
+  worktrees: Worktrees,
+  directory: String,
+) -> Result(goalcheck.Runner, String) {
+  use checks <- result.map(option.to_result(
+    worktrees.checks,
+    "the sandboxed Git is not running",
+  ))
+  worktree_git.check_runner(checks, directory)
 }
 
 /// Whether a workspace is in worktree mode.
@@ -425,13 +519,47 @@ pub fn close_guarding_commits(
   close_with(worktrees, workspace, session, Guarded)
 }
 
-/// The close both public forms share. `commits` decides only what a clean tree
+/// Removes a tree whatever it holds. The host that made a tree for one job,
+/// such as a project's check, owns it and has no use for what the job left in
+/// it: build output is untracked, and a careful close would keep the tree for
+/// it. Nothing here is a session's work, so nothing is guarded. A tree that
+/// cannot be removed answers `Kept` with the reason, like any close.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // worktrees.discard(worktrees, workspace, "chk-t-a-0123456789ab")
+/// ```
+pub fn discard(
+  worktrees: Worktrees,
+  workspace: Workspace,
+  session: String,
+) -> Closed {
+  close_by(worktrees, workspace, session, fn(env, spec, row) {
+    settle(env, spec, row, Forced)
+  })
+}
+
+/// The close both careful forms share. `commits` decides only what a clean tree
 /// with commits ahead of its base becomes.
 fn close_with(
   worktrees: Worktrees,
   workspace: Workspace,
   session: String,
   commits: Commits,
+) -> Closed {
+  close_by(worktrees, workspace, session, fn(env, spec, row) {
+    settle_guarding(env, spec, row, commits)
+  })
+}
+
+/// Settles a session's tree by `how`, once the record says there is a tree to
+/// settle.
+fn close_by(
+  worktrees: Worktrees,
+  workspace: Workspace,
+  session: String,
+  how: fn(Env, Spec, Row) -> Result(Closed, String),
 ) -> Closed {
   let settled = {
     use spec <- result.try(spec_of(worktrees, workspace, session))
@@ -443,7 +571,7 @@ fn close_with(
       case recorded {
         Some(row)
           if row.state == exec_ledger.Present || row.state == exec_ledger.Kept
-        -> settle_guarding(env, spec, row, commits)
+        -> how(env, spec, row)
         Some(_) | None -> Ok(Removed)
       }
     })

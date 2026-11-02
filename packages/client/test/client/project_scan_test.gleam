@@ -17,7 +17,6 @@
 
 import client/daemon/project_host
 import client/internal/ffi_os
-import client/peer_mail
 import client/project_scan
 import client/projectseam
 import core/accounting
@@ -46,7 +45,7 @@ import runtime/writer
 import session/session
 import simplifile
 import support/addresses
-import telemetry/log
+import support/project_ports
 import tools/project as tools
 import weft/actor
 import weft/registry as address
@@ -232,18 +231,7 @@ fn rig(name: String, memory: Memory) -> Rig {
 // The project actor over a real ledger, with fake ports. The worker is never
 // delivered to in these tests, so the endpoints accept and forget.
 fn host(directory: String) -> project_host.Handle {
-  let ports =
-    project_host.Ports(
-      now_ms: ffi_os.system_time_ms,
-      start_session: fn(request) { Ok("session-" <> request.key) },
-      open_session: fn(_) { Ok(Nil) },
-      stop_session: fn(_) { Ok(Nil) },
-      release_worktree: fn(_) { Ok(project_host.Removed) },
-      endpoint_of: fn(session) {
-        Ok(peer_mail.Endpoint(session, fn(_command) { Ok(json.Null) }))
-      },
-      logger: log.discard(),
-    )
+  let ports = project_ports.inert()
   let assert Ok(handle) =
     project_host.start(
       project_host.Config(
@@ -254,6 +242,7 @@ fn host(directory: String) -> project_host.Handle {
         max_workers: 2,
         tick_ms: 3_600_000,
         router_turn_ms: 3_600_000,
+        policy: project_host.idle_policy,
         ports: fn() { ports },
       ),
     )

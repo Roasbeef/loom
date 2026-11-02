@@ -3555,7 +3555,7 @@ fn settled(
       OpenTicket(
         ..open,
         asking: projects_view.Ready,
-        notice: Some(projects_view.Told("Answer recorded.")),
+        notice: Some(projects_view.Told("Answer queued for the worker.")),
         answered: open.answered + 1,
       )
     feed.Refused(code:) ->

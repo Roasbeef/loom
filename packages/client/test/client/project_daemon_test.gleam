@@ -264,6 +264,7 @@ fn boot(state: String, seen: Subject(Seen)) -> Daemon {
       },
       now_ms: ffi_os.system_time_ms,
       max_workers: 2,
+      policy: project_host.idle_policy,
       logger: log.discard(),
     )
   let control =

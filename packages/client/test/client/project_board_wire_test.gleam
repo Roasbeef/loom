@@ -14,7 +14,6 @@ import client/daemon/project_start
 import client/daemon/protocol
 import client/daemon/ui_projects
 import client/internal/ffi_os
-import client/peer_mail
 import core/json
 import gleam/erlang/process
 import gleam/int
@@ -24,7 +23,7 @@ import gleam/string
 import host/bootstrap
 import project/model
 import simplifile
-import telemetry/log
+import support/project_ports
 import tools/project as tools
 import web_view/projects as page_projects
 
@@ -39,18 +38,7 @@ fn start(name: String) -> project_host.Handle {
     as "the build directory exists"
   let assert Ok(Nil) = bootstrap.ensure_private_directory(directory)
     as "the scratch directory is made"
-  let ports =
-    project_host.Ports(
-      now_ms: ffi_os.system_time_ms,
-      start_session: fn(request) { Ok("session-" <> request.key) },
-      open_session: fn(_) { Ok(Nil) },
-      stop_session: fn(_) { Ok(Nil) },
-      release_worktree: fn(_) { Ok(project_host.Removed) },
-      endpoint_of: fn(session) {
-        Ok(peer_mail.Endpoint(session, fn(_) { Ok(json.Null) }))
-      },
-      logger: log.discard(),
-    )
+  let ports = project_ports.inert()
   let assert Ok(handle) =
     project_host.start(
       project_host.Config(
@@ -61,6 +49,7 @@ fn start(name: String) -> project_host.Handle {
         max_workers: 2,
         tick_ms: 3_600_000,
         router_turn_ms: 3_600_000,
+        policy: project_host.idle_policy,
         ports: fn() { ports },
       ),
     )

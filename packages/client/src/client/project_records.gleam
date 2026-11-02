@@ -87,6 +87,22 @@ pub type Record {
     seq: Int,
   )
 
+  /// The host ran the project's check at a commit, or could not. The record
+  /// is what a passing check's entry id names, so the proof in the engine's
+  /// event points at a line that says what ran and what it printed.
+  CheckRecorded(
+    /// The ticket.
+    ticket: String,
+    /// The commit the check ran against.
+    commit: String,
+    /// The command, as the project's policy gave it.
+    command: String,
+    /// `passed`, `failed` or `unfinished`.
+    outcome: String,
+    /// The bounded tail of what the check printed, or why it did not finish.
+    detail: String,
+  )
+
   /// An assignment's worktree was kept when its ticket ended, because it held
   /// commits its base lacks. The board names it from this record.
   TreeKept(
@@ -129,28 +145,32 @@ pub type Job {
     triggers: List(String),
   )
 
-  /// A check the host does not run yet; the row is logged and settled.
+  /// Read the head of the idle worker's branch and report it.
+  ObserveJob(
+    /// The ticket.
+    ticket: String,
+    /// The assignment whose worktree to read.
+    seq: Int,
+  )
+
+  /// Run the project's check at a commit.
   CheckJob(
     /// The ticket.
     ticket: String,
+    /// The commit to check.
+    commit: String,
   )
 
-  /// A pull request the host does not open yet; logged and settled.
-  PullRequestJob(
+  /// Push the ticket's branch at a commit and open its pull request.
+  PublishJob(
     /// The ticket.
     ticket: String,
+    /// The commit to publish.
+    commit: String,
   )
 
   /// End the assignment's session.
   StopJob(
-    /// The ticket.
-    ticket: String,
-    /// The assignment.
-    seq: Int,
-  )
-
-  /// Tell the worker a person answered; logged and settled in this slice.
-  AnswerJob(
     /// The ticket.
     ticket: String,
     /// The assignment.
@@ -234,6 +254,15 @@ fn record_json(record: Record) -> Json {
         #("ticket", json.string(ticket)),
         #("seq", json.int(seq)),
       ])
+    CheckRecorded(ticket:, commit:, command:, outcome:, detail:) ->
+      json.object([
+        #("host", json.string("check")),
+        #("ticket", json.string(ticket)),
+        #("commit", json.string(commit)),
+        #("command", json.string(command)),
+        #("outcome", json.string(outcome)),
+        #("detail", json.string(detail)),
+      ])
     TreeKept(ticket:, seq:, path:, reason:) ->
       json.object([
         #("host", json.string("tree_kept")),
@@ -302,6 +331,20 @@ fn host_decoder() -> decode.Decoder(Record) {
       use seq <- decode.field("seq", decode.int)
       decode.success(Recovered(ticket:, seq:))
     }
+    "check" -> {
+      use ticket <- decode.field("ticket", decode.string)
+      use commit <- decode.field("commit", decode.string)
+      use command <- decode.field("command", decode.string)
+      use outcome <- decode.field("outcome", decode.string)
+      use detail <- decode.field("detail", decode.string)
+      decode.success(CheckRecorded(
+        ticket:,
+        commit:,
+        command:,
+        outcome:,
+        detail:,
+      ))
+    }
     "tree_kept" -> {
       use ticket <- decode.field("ticket", decode.string)
       use seq <- decode.field("seq", decode.int)
@@ -369,38 +412,44 @@ pub fn draft(
         ],
         now_ms,
       )
-    event.RequestCheck(ticket:, commit:) ->
+    event.ObserveHead(ticket:, seq: assignment) ->
       row(
-        "check",
-        ticket.value <> ":" <> commit.value,
-        [#("ticket", json.string(ticket.value))],
-        now_ms,
-      )
-    event.OpenPullRequest(ticket:, branch: _, commit:) ->
-      row(
-        "pull_request",
-        ticket.value <> ":" <> commit.value,
-        [#("ticket", json.string(ticket.value))],
-        now_ms,
-      )
-    event.StopSession(ticket:, seq: assignment) ->
-      row(
-        "stop",
-        ticket.value <> ":" <> int.to_string(assignment),
+        "observe",
+        ticket.value
+          <> ":"
+          <> int.to_string(assignment)
+          <> ":"
+          <> int.to_string(seq),
         [
           #("ticket", json.string(ticket.value)),
           #("seq", json.int(assignment)),
         ],
         now_ms,
       )
-    event.RelayAnswer(ticket:, seq: assignment, question:) ->
+    event.RequestCheck(ticket:, commit:) ->
       row(
-        "answer",
-        ticket.value
-          <> ":"
-          <> int.to_string(assignment)
-          <> ":"
-          <> int.to_string(question),
+        "check",
+        ticket.value <> ":" <> commit.value <> ":" <> int.to_string(seq),
+        [
+          #("ticket", json.string(ticket.value)),
+          #("commit", json.string(commit.value)),
+        ],
+        now_ms,
+      )
+    event.PublishBranch(ticket:, branch: _, commit:) ->
+      row(
+        "publish",
+        ticket.value <> ":" <> commit.value <> ":" <> int.to_string(seq),
+        [
+          #("ticket", json.string(ticket.value)),
+          #("commit", json.string(commit.value)),
+        ],
+        now_ms,
+      )
+    event.StopSession(ticket:, seq: assignment) ->
+      row(
+        "stop",
+        ticket.value <> ":" <> int.to_string(assignment),
         [
           #("ticket", json.string(ticket.value)),
           #("seq", json.int(assignment)),
@@ -498,27 +547,29 @@ pub fn job(found: project_ledger.Effect) -> Result(Job, String) {
         use triggers <- decode.field("triggers", decode.list(decode.string))
         decode.success(OfferJob(triggers:))
       })
+    "observe" ->
+      parse(payload, {
+        use ticket <- decode.field("ticket", decode.string)
+        use seq <- decode.field("seq", decode.int)
+        decode.success(ObserveJob(ticket:, seq:))
+      })
     "check" ->
       parse(payload, {
         use ticket <- decode.field("ticket", decode.string)
-        decode.success(CheckJob(ticket:))
+        use commit <- decode.field("commit", decode.string)
+        decode.success(CheckJob(ticket:, commit:))
       })
-    "pull_request" ->
+    "publish" ->
       parse(payload, {
         use ticket <- decode.field("ticket", decode.string)
-        decode.success(PullRequestJob(ticket:))
+        use commit <- decode.field("commit", decode.string)
+        decode.success(PublishJob(ticket:, commit:))
       })
     "stop" ->
       parse(payload, {
         use ticket <- decode.field("ticket", decode.string)
         use seq <- decode.field("seq", decode.int)
         decode.success(StopJob(ticket:, seq:))
-      })
-    "answer" ->
-      parse(payload, {
-        use ticket <- decode.field("ticket", decode.string)
-        use seq <- decode.field("seq", decode.int)
-        decode.success(AnswerJob(ticket:, seq:))
       })
     "recover" ->
       parse(payload, {

@@ -62,6 +62,7 @@ import client/daemon/new_folder
 import client/daemon/node_facts
 import client/daemon/profiles
 import client/daemon/project_book
+import client/daemon/project_host
 import client/daemon/project_start
 import client/daemon/restart
 import client/daemon/root
@@ -3303,6 +3304,12 @@ pub fn project_env(
     },
     now_ms: ffi_os.system_time_ms,
     max_workers: config.projects.settings.max_workers,
+    policy: project_host.Policy(
+      check: config.projects.settings.check,
+      protected_paths: config.projects.settings.protected_paths,
+      publish: config.projects.settings.publish,
+      check_wall_ms: project_host.idle_policy.check_wall_ms,
+    ),
     logger:,
   )
 }

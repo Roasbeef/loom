@@ -444,7 +444,7 @@ pub fn an_answer_echoes_the_sequence_number_the_ticket_showed_test() {
     page: project_screen.Reading(draft: "", ..),
     ..,
   ) = screen(accepted)
-  assert string.contains(painted(accepted), "Answer recorded.")
+  assert string.contains(painted(accepted), "Answer queued for the worker.")
 }
 
 pub fn a_stale_answer_is_refused_in_words_and_the_draft_is_kept_test() {

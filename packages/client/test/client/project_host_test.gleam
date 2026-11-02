@@ -8,9 +8,11 @@
 //// Everything the claims are about is real: the ledger, the replay, the
 //// engine, the idempotency keys and the order of writes.
 
+import client/daemon/project_book
 import client/daemon/project_host
 import client/internal/ffi_os
 import client/peer_mail
+import client/project_records
 import core/json
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -18,10 +20,15 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap
+import project/engine
+import project/event
 import project/model
+import project/state
 import simplifile
-import telemetry/log
+import storage/project_ledger
+import support/project_ports
 import tools/project as tools
+import weft/poll
 
 type Seen {
   Started(key: String)
@@ -46,14 +53,11 @@ fn rig(name: String) -> Rig {
   let seen = process.new_subject()
   let ports =
     project_host.Ports(
-      now_ms: ffi_os.system_time_ms,
-      start_session: fn(request) {
+      ..project_ports.inert(),
+      start_session: fn(request: project_host.StartRequest) {
         process.send(seen, Started(request.key))
         Ok("session-" <> request.key)
       },
-      open_session: fn(_) { Ok(Nil) },
-      stop_session: fn(_) { Ok(Nil) },
-      release_worktree: fn(_) { Ok(project_host.Removed) },
       endpoint_of: fn(session) {
         Ok(
           peer_mail.Endpoint(session, fn(command) {
@@ -62,7 +66,6 @@ fn rig(name: String) -> Rig {
           }),
         )
       },
-      logger: log.discard(),
     )
   Rig(
     config: project_host.Config(
@@ -73,6 +76,7 @@ fn rig(name: String) -> Rig {
       max_workers: 2,
       tick_ms: 3_600_000,
       router_turn_ms: 3_600_000,
+      policy: project_host.idle_policy,
       ports: fn() { ports },
     ),
     seen:,
@@ -414,4 +418,340 @@ pub fn a_worktree_with_unpushed_commits_stays_and_the_board_names_it_test() {
   stop(handle)
   let assert Ok(again) = project_host.start(config) as "the actor restarts"
   assert board_json(again) == board
+}
+
+// --- a ledger written by hand --------------------------------------------------------
+//
+// A crash leaves the ledger as it was at the instant of the crash. The tests
+// below build that ledger line by line, so each starts the actor in the state
+// a crash between two writes would leave, and no test needs a way to crash the
+// actor at an exact instruction.
+
+fn engine_config() -> state.Config {
+  state.Config(
+    project: model.ProjectId("p1"),
+    workspace: "/work/repo",
+    max_workers: 2,
+    queue_limit: 100,
+    attention_limit: 5,
+    policy_version: "v1",
+  )
+}
+
+fn arrival(trigger: String) -> event.Event {
+  event.TriggerArrived(
+    model.Trigger(
+      id: model.TriggerId(trigger),
+      source: model.SourceId("composer"),
+      thread: model.ThreadId(trigger),
+      actor: model.ActorId("owner"),
+      inputs: model.Inputs(
+        sender: model.Owner,
+        addressing: model.Addressed,
+        rule: None,
+      ),
+      generation: 0,
+      at_ms: 1,
+    ),
+    model.ActorId("loom"),
+  )
+}
+
+fn routed(trigger: String) -> event.Event {
+  event.Routed(model.Routing(
+    trigger: model.TriggerId(trigger),
+    kind: model.Accept(model.title("work on " <> trigger)),
+    holds: [],
+    related: [],
+    prior_hand_back: None,
+  ))
+}
+
+// One line of the hand-written ledger: an event with the rows its effects
+// become, or a host record.
+type Line {
+  Fact(event.Event)
+  Written(project_records.Record)
+}
+
+// Appends the lines to the rig's ledger, computing each event's effect rows
+// with the engine itself, as the actor would have. Rows are written for the
+// events named in `queued` only: an effect whose row a crash would have left
+// unsettled is the point of the test, and the rest are rows the first run
+// settled.
+fn seed(rig: Rig, lines: List(Line), queued: List(String)) -> Nil {
+  let assert Ok(ledger) = project_ledger.open(rig.config.ledger_path)
+    as "the ledger opens"
+  let now = ffi_os.system_time_ms()
+  let _ =
+    list.fold(lines, state.start(engine_config()), fn(current, line) {
+      case line {
+        Written(record) -> {
+          let assert Ok(_) =
+            project_ledger.append(
+              ledger,
+              project_records.encode_record(record),
+              now,
+            )
+            as "a record is written"
+          current
+        }
+        Fact(incoming) -> {
+          let assert Ok(#(next, effects)) = engine.apply(current, incoming)
+            as "the engine takes the seeded event"
+          let rows = case list.contains(queued, event_word(incoming)) {
+            True -> project_records.drafts(1, now, effects)
+            False -> []
+          }
+          let assert Ok(_) =
+            project_ledger.append_with_effects(
+              ledger,
+              project_records.encode_event(incoming),
+              now,
+              rows,
+            )
+            as "an event is written"
+          next
+        }
+      }
+    })
+  let assert Ok(Nil) = project_ledger.close(ledger) as "the ledger closes"
+  Nil
+}
+
+// The tag of an event, for choosing which seeded events leave rows.
+fn event_word(incoming: event.Event) -> String {
+  case incoming {
+    event.Routed(..) -> "routed"
+    event.SessionBound(..) -> "bound"
+    _ -> "other"
+  }
+}
+
+// A ticket whose first worker was bound to `s-1` and has not been marked live:
+// the instant after the first of the two events that `started` writes.
+fn bound_not_live(rig: Rig) -> Nil {
+  seed(
+    rig,
+    [
+      Written(project_records.TriggerText("a", "composer", "owner", "fix a")),
+      Fact(arrival("a")),
+      Fact(routed("a")),
+      Fact(event.SessionBound(model.TicketId("t-a"), 1, model.SessionId("s-1"))),
+    ],
+    ["routed"],
+  )
+}
+
+pub fn a_crash_between_binding_and_going_live_still_marks_the_worker_live_test() {
+  let rig = rig("bound")
+  bound_not_live(rig)
+  let handle = start(rig)
+
+  // The start row is still due, finds the session already bound, and finishes
+  // the pair. The ticket is not left queued, and no second session is made.
+  let board = board_json(handle)
+  assert string.contains(board, "\"stage\":\"working\"")
+  assert !string.contains(board, "\"stage\":\"queued\"")
+  let assert Ok(["s-1"]) = project_host.live_sessions(handle)
+  assert list.filter(drain(rig.seen), fn(each) {
+      case each {
+        Started(_) -> True
+        Sent(..) -> False
+      }
+    })
+    == []
+
+  // A restart finds the pair complete: the ticket is still working, in the
+  // same session, and no second one is started.
+  stop(handle)
+  let again = start(rig)
+  assert string.contains(board_json(again), "\"stage\":\"working\"")
+  let assert Ok(["s-1"]) = project_host.live_sessions(again)
+}
+
+// A ticket whose first worker is live and has asked a question, followed by
+// whatever else `after` says happened.
+fn asked_a_question(rig: Rig, question: Int, after: List(Line)) -> Nil {
+  seed(
+    rig,
+    list.append(
+      [
+        Written(project_records.TriggerText("a", "composer", "owner", "fix a")),
+        Fact(arrival("a")),
+        Fact(routed("a")),
+        Fact(event.SessionBound(
+          model.TicketId("t-a"),
+          1,
+          model.SessionId("s-1"),
+        )),
+        Fact(event.AssignmentLive(model.TicketId("t-a"), 1)),
+        Written(project_records.QuestionText("t-a", question, "which database?")),
+        Fact(event.Reported(
+          model.TicketId("t-a"),
+          1,
+          model.Waiting(model.Asking(question)),
+          model.NoHead,
+        )),
+      ],
+      after,
+    ),
+    [],
+  )
+}
+
+// The triggers a session's endpoint was handed, with where they said they came
+// from.
+fn handed(
+  seen: List(Seen),
+  session: String,
+) -> List(#(String, String, String, String, peer_mail.Wake)) {
+  list.filter_map(seen, fn(each) {
+    case each {
+      Sent(found, peer_mail.Trigger(from:, text:, wake:, ..))
+        if found == session
+      -> Ok(#(from.source, from.actor, from.trigger, text, wake))
+      Sent(..) | Started(_) -> Error(Nil)
+    }
+  })
+}
+
+pub fn a_persons_answer_reaches_the_worker_as_the_owners_words_test() {
+  let rig = rig("answer")
+  asked_a_question(rig, 5, [])
+  let handle = start(rig)
+  let _ = drain(rig.seen)
+
+  let assert Ok(Nil) =
+    project_host.answer(handle, "t-a", 5, "use sqlite", "owner")
+
+  // The worker's session is handed the text under the owner's source with the
+  // principal as the actor, keyed by the ticket and the question, and it may be
+  // woken, because a worker waiting on an answer is idle.
+  let delivered = handed(drain(rig.seen), "s-1")
+  assert delivered
+    == [
+      #("owner", "owner", "a~t-a~5", "use sqlite", peer_mail.MayWake),
+    ]
+
+  // The row is settled, so a restart hands over nothing.
+  stop(handle)
+  let _again = start(rig)
+  assert handed(drain(rig.seen), "s-1") == []
+}
+
+pub fn an_answer_with_no_live_worker_goes_on_the_next_assignment_test() {
+  let rig = rig("answer-held")
+  asked_a_question(rig, 5, [
+    Fact(event.AssignmentEnded(model.TicketId("t-a"), 1, model.SessionCrashed)),
+  ])
+  let handle = start(rig)
+  let _ = drain(rig.seen)
+
+  // Nobody is there to receive the answer, and the answer is not lost.
+  let assert Ok(Nil) =
+    project_host.answer(handle, "t-a", 5, "use sqlite", "owner")
+  assert handed(drain(rig.seen), "s-1") == []
+
+  // A retry starts a new worker, and the answer is the first thing it is told.
+  let assert Ok(Nil) = project_host.retry(handle, "t-a", "owner")
+  let worker = "session-" <> "project:p1:t-a:2"
+  let delivered = process.new_subject()
+  let assert Ok(Nil) =
+    poll_until(fn() {
+      case handed(drain(rig.seen), worker) {
+        [] -> False
+        [first, ..] -> {
+          process.send(delivered, first)
+          True
+        }
+      }
+    })
+  let assert Ok(first) = process.receive(delivered, 0)
+  assert first
+    == #("owner", "owner", "a~t-a~5", "use sqlite", peer_mail.MayWake)
+}
+
+// Polls a condition for a few seconds, on the caller's own process.
+fn poll_until(condition: fn() -> Bool) -> Result(Nil, Nil) {
+  case
+    poll.until(within: 10_000, every: 25, attempt: fn() {
+      case condition() {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+  {
+    poll.Answered(Nil) -> Ok(Nil)
+    poll.Expired | poll.Failed(_) -> Error(Nil)
+  }
+}
+
+// --- who owns an actor ---------------------------------------------------------------
+
+pub fn an_actor_outlives_the_caller_that_started_it_test() {
+  let rig = rig("owned")
+  let assert Ok(book) = project_book.start() as "the book starts"
+  let started = process.new_subject()
+
+  // A caller asks for the actor and then fails, the way a control request's
+  // handler does when something it does afterwards crashes.
+  let _caller =
+    process.spawn_unlinked(fn() {
+      let assert Ok(handle) = project_book.launch(book, rig.config)
+        as "the actor starts"
+      process.send(started, handle)
+      panic as "the request failed after it started the project"
+    })
+  let assert Ok(handle) = process.receive(started, 5000)
+    as "the caller got a handle"
+  process.sleep(200)
+
+  // The project still answers, and the table still lists it.
+  let assert Ok(_) = project_host.board(handle, 0)
+  let assert Ok(listed) = project_book.get(book, "p1")
+  assert listed == handle
+}
+
+// --- the router's second chances -----------------------------------------------------
+
+pub fn a_candidate_the_router_never_decides_waits_on_the_board_for_a_person_test() {
+  let rig = rig("unrouted")
+  let config =
+    project_host.Config(..rig.config, tick_ms: 50, router_turn_ms: 100)
+  let assert Ok(handle) = project_host.start(config) as "the actor starts"
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+
+  // The router is offered the message and never routes it. After three offers
+  // the board lists it, with its text, for a person.
+  let assert Ok(Nil) =
+    poll_until(fn() {
+      let assert Ok(shown) = project_host.board(handle, 0)
+      shown.unrouted != []
+    })
+  let assert Ok(shown) = project_host.board(handle, 0)
+  let listed = json.to_string(json.Array(shown.unrouted))
+  assert string.contains(listed, "\"trigger\":\"a\"")
+  assert string.contains(listed, "fix a")
+  assert string.contains(listed, "3 times")
+
+  // No more offers go out for it.
+  let offers = fn() {
+    list.count(drain(rig.seen), fn(each) {
+      case each {
+        Sent("router-1", peer_mail.Trigger(from:, ..)) -> from.trigger == "a"
+        Sent(..) | Started(_) -> False
+      }
+    })
+  }
+  let _ = offers()
+  assert offers() == 0
+
+  // A person queues it again, and it is offered once more and leaves the list.
+  let assert Ok(Nil) = project_host.requeue(handle, "a", "owner")
+  let assert Ok(Nil) =
+    poll_until(fn() {
+      let assert Ok(after) = project_host.board(handle, 0)
+      after.unrouted == []
+    })
 }
