@@ -372,7 +372,7 @@ pub fn version_eighteen_catalogue_gains_the_relayed_table_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_relayed_sessions; PRAGMA user_version=18",
+      "DROP TABLE catalogue_project_workers; DROP TABLE catalogue_projects; DROP TABLE catalogue_relayed_sessions; PRAGMA user_version=18",
       on: old,
     )
     == Ok(Nil)
