@@ -182,7 +182,7 @@ and the last three are the ordinary distributed path.
    a peer whose name differs from the atom dialled.
 
 The guest's own epmd is never reached from the host. The fixed guest listen
-port is 4370 (`vm_spec.guest_port`, `packages/client/src/client/vm_spec.gleam:92`).
+port is 4370 (`vm_spec.guest_port`, `packages/client/src/client/vm_spec.gleam:103`).
 
 ## Isolation around a tool call
 
@@ -574,13 +574,24 @@ revision is neither `dev` nor the running build's commit, because a guest
 daemon from another release crashes the host on its first unmatched message;
 the refusal names `loom vm setup`. It then:
 
-1. provisions a two-node static deployment in process into
-   `~/.loom/vm/<name>/deploy/`, with the nodes `loom_vm_<name>_orch@127.0.0.1`
-   and `loom_vm_<name>_exec@127.0.0.1` and the guest's fixed port 4370. A
-   second `up` reads the bundles back instead of minting new certificates;
+1. provisions a two-node deployment in ledger mode (protocol-change/086) in
+   process into `~/.loom/vm/<name>/deploy/`, with the nodes
+   `loom_vm_<name>_orch@127.0.0.1` and `loom_vm_<name>_exec@127.0.0.1` and the
+   guest's fixed port 4370. The bundles are `/2`, each carrying the signed
+   ledger, and `deploy/ledger.log` holds the public copy. A second `up` reads
+   the bundles back instead of minting new certificates, and reads a `/1`
+   bundle from a guest minted before this change the same way, as a static
+   deployment; such a guest is never converted. `up` keeps the authority key
+   (see "The authority key" below), so a node can be enrolled into the
+   deployment later without minting it again;
 2. installs the orchestrator bundle into the user's `loom.toml` with
    `distribution_install.install`, which merges `[distribution]` and
    `[executors.<name>]` and refuses a file that holds a different deployment.
+   The installed `[distribution]` table carries `ledger =` (the orchestrator's
+   `orch/ledger.log`) and no `[[distribution.peers]]`; the `[executors.<name>]`
+   row is still written, because the bundle's plan names it. A node that is
+   linked to the executor in the ledger would derive the same row
+   (`client/ledger_rows`), and a written row of the same name wins.
    A newly minted deployment's `[distribution]` table also gets
    `listen_address = "127.0.0.1"` (protocol-change/106), since nothing dials
    this orchestrator. A resumed `up` installs nothing and only checks the
@@ -596,7 +607,15 @@ the refusal names `loom vm setup`. It then:
    "A kept root after a loom upgrade"). It resolves
    the manifest's `guest_root` first, because `cp -R` copies a symbolic link
    named on its command line as a link. It then stages the executor node into
-   `<root>/srv/loom-node/`, rewriting its configuration and credentials, and
+   `<root>/srv/loom-node/`, rewriting its configuration and credentials, and,
+   for a ledger bundle, the ledger beside them as `creds/ledger.log`, which the
+   guest's `loom.toml` names. The ledger is written only when the root has no
+   such file, because the executor appends the entries it syncs to it and a
+   later `up` must not roll it back to the head it was minted at (`--fresh`
+   starts from a new root and stages the bundle's). The executor boots in ledger
+   mode from it, and the orchestrator reaches it through the same published
+   port as before. The guest's `loom.toml` and its `creds/` hold no
+   authority key, and neither does any bundle that goes there, and
    copies the workspace, with its `.git` directory, to
    `<root>/srv/workspaces/<directory name>` unless that copy exists. A linked
    worktree, whose `.git` is a file that points outside the directory, is copied
@@ -626,6 +645,33 @@ the refusal names `loom vm setup`. It then:
    also starts the credential proxy and the guest's `[tools]` table turns the
    jail's network on; `--github off` gives the guest no egress beyond the hosts
    `--allow` names (see "Package registries and toolchains").
+
+### The authority key
+
+`up` seals the deployment's authority key with `client/authority_key` in
+`<vm home>/authority/<deployment id>/` (mode 0700): `key.enc`, `ca.pem`,
+`ledger.log` (the operator's copy), `cookie`, and a `passphrase` file. `up`
+generates the passphrase, 32 bytes from `broker/token.production_entropy`
+spelled in unpadded base64url, and writes it atomically with mode 0600
+(`bootstrap.atomic_write_private`). A standing guest has no terminal, and a
+later `loom distribution enroll --passphrase-file` reads this file
+(`authority_key.passphrase_from_file`, which needs no terminal). The key is
+sealed before any bundle is written, and a failure afterwards removes the
+directory. The directory is outside every guest root, and the executor's bundle
+holds its own node key and the deployment's cookie but not the authority's key.
+
+The directory is under the vm home, and the daemon's jails mask it:
+`workspace_policy` masks `~/.loom/vm` (`node_home_masks`) and the state root's
+`vm`, and the authority directory is below either. A `$LOOM_VM_HOME` set
+anywhere else is not masked, so a jailed tool of a daemon whose home is not
+under `~/.loom/vm` or the state root can read the key and its passphrase. Keep
+`LOOM_VM_HOME` at the default, or under a path the daemon masks. `authority` is
+not a valid guest name, since it names this directory.
+
+`rm` deletes the directory with the guest, after the guest's directory and
+unless another guest's executor bundle names the same deployment id. The id is
+read from the guest's own bundle in `deploy/`, never from the guest root. A
+guest minted statically has no key to remove.
 
 A second `up` with another `--workspace` while the guest is stopped adds that
 directory's copy to the root, and the guest's `loom.toml` registers every copy:
@@ -997,9 +1043,12 @@ the host are not in it.
   deployment mints its own cookie and `[distribution]` table, and the install
   never replaces another's (the refusal names `loom vm rm` and says only one
   guest per home is supported). The refused `up` has already written the new
-  guest's `deploy/` and `orch/`, so it leaves a directory that `loom vm list`
-  shows; `loom vm rm --name NAME --yes` clears it and leaves the other
-  deployment's tables and cookie.
+  guest's `deploy/` and sealed its authority key, so it leaves a directory that
+  `loom vm list` shows; `loom vm rm --name NAME --yes` clears both and leaves
+  the other deployment's tables and cookie. Joining a daemon that is already in a
+  ledger deployment, which would lift this, is not built yet: `up` mints its
+  own deployment, and `vm_spec.deployment_state` and `guest_enrollment` are the
+  decisions the join will use.
 - There is no `loom vm shell`. A guest has no exec channel: its executor serves
   the orchestrator over the distribution link and nothing else, so a command in
   the guest runs only through a session's tools.

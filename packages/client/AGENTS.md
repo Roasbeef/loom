@@ -37,7 +37,17 @@ the artifact manifest decoder and revision check, the two-node
 argument lists, `scrub_git_config`, the pid-file codec, the `epmd -names`
 reader and the daily verbs' decisions (`printable`, the checkouts record,
 `fetch_arguments`, `bundle_arguments`, `unpushed_branches`, `read_enrolment`,
-`plan_teardown`). `client/vm_cli` performs them with `distribution_provision`,
+`plan_teardown`), and, for the join of a guest into a ledger deployment,
+`deployment_state` (`NoDeployment`, `LedgerDeployment`, `StaticDeployment`,
+read with `distribution.parse`), `guest_enrollment` (the `ledger_operator.Enrollment`
+of the guest, not yet called by `vm_cli`) and `bundle_deployment`. `up` mints in
+ledger mode with `distribution_provision.provision_ledger` and seals the
+authority key with `authority_key.keep` under `<vm home>/authority/<id>/`
+beside a generated `passphrase` file (`vm_cli.seal_authority`); `stage_ledger`
+puts the bundle's ledger at `creds/ledger.log` in the guest root only when the
+root has none; `rm` deletes the authority directory with the guest
+(`removable_authority`). The directory is under the vm home that
+`workspace_policy` masks. `client/vm_cli` performs them with `distribution_provision`,
 `distribution_install`, `host/bootstrap` (`spawn_server`, `process_identity`,
 `reserve_loopback_port`), `ffi_os.run_capture` for `cp`, `chmod`, `kill`, `ps`,
 `uname`, `git` and `epmd`, `host/access` (`raw_request`, `execute`) for the
