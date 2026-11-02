@@ -3278,8 +3278,8 @@ fn delivered(
 ) -> Host {
   let id = model.TicketId(ticket)
 
-  // Admitted settles the row, NotYet backs it off, and a fifth NotYet records
-  // the failure where a person will see it.
+  // Admitted settles the row, NotYet backs it off, and the last allowed NotYet
+  // records the failure where a person will see it.
   case admitted {
     Admitted -> {
       let current = state.ticket(host.engine, id)
@@ -3305,8 +3305,11 @@ fn delivered(
       settle(next, row)
     }
 
-    // Five attempts, counted from zero, are all a delivery gets.
-    NotYet(_) if row.attempts >= 4 ->
+    // A delivery gets the same attempts as the reopen row that waits out a
+    // writer lease, since a session whose lease a killed daemon left behind
+    // refuses the message for as long as the lease lasts. Fewer attempts would
+    // end inside the lease and mark an input failed that only had to wait.
+    NotYet(_) if row.attempts >= last_reopen_attempt ->
       committed_or_same(host, event.InputFailed(id, model.TriggerId(trigger)))
       |> settle(row)
     NotYet(_) -> defer(host, row)

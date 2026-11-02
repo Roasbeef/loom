@@ -328,6 +328,65 @@ pub fn a_delivery_for_an_assignment_that_failed_to_start_is_settled_test() {
   assert !list.contains(queued_kinds(rig), "deliver")
 }
 
+// Counts the calls made to it, from any process: each call answers how many
+// there have been, itself included.
+fn counter() -> fn() -> Int {
+  let made = process.new_subject()
+  process.spawn_unlinked(fn() {
+    let requests = process.new_subject()
+    process.send(made, requests)
+    count(requests, 1)
+  })
+  let assert Ok(requests) = process.receive(made, 1000)
+    as "the counter's process starts"
+  fn() { process.call(requests, 1000, fn(reply) { reply }) }
+}
+
+fn count(requests: Subject(Subject(Int)), next: Int) -> Nil {
+  let reply = process.receive_forever(requests)
+  process.send(reply, next)
+  count(requests, next + 1)
+}
+
+// A killed daemon leaves its sessions' writer leases to run out, and a message
+// to such a session is refused until then. A delivery that is refused for
+// longer than five attempts is still inside that wait, and giving up there
+// would put the ticket in `person/delivery` for an input that only had to wait.
+pub fn a_delivery_is_retried_as_long_as_a_reopen_is_test() {
+  let rig = rig("deliver-lease")
+  let calls = counter()
+  let ports = rig.config.ports()
+  let leased =
+    project_host.Ports(
+      ..ports,
+      now_ms: racing_clock(),
+      endpoint_of: fn(session) {
+        case string.starts_with(session, "session-") && calls() <= 6 {
+          True -> Error(peer_mail.Unreachable)
+          False -> ports.endpoint_of(session)
+        }
+      },
+    )
+  let config =
+    project_host.Config(..rig.config, tick_ms: 50, ports: fn() { leased })
+  let assert Ok(handle) = project_host.start(config) as "the actor starts"
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+  let assert Ok([tools.Applied]) = project_host.route(handle, [accept("a")])
+
+  // The input reaches the worker on the seventh try, and the ticket never
+  // asked a person to look at a delivery.
+  let assert Ok(Nil) =
+    poll_until(fn() {
+      list.any(drain(rig.seen), fn(each) {
+        case each {
+          Sent(_, peer_mail.Trigger(from:, ..)) -> from.trigger == "a"
+          Sent(..) | Started(_) -> False
+        }
+      })
+    })
+  assert !string.contains(board_json(handle), "person/delivery")
+}
+
 fn collect_keys(from: Subject(String), found: List(String)) -> List(String) {
   case process.receive(from, 50) {
     Ok(key) -> collect_keys(from, [key, ..found])

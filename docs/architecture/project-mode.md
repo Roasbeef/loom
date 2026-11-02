@@ -136,7 +136,7 @@ The row's key makes a repeat harmless. `start` carries `request_key`, `project:<
 | Kind | Performer | Gives up |
 | --- | --- | --- |
 | `start` | `start_worker` | 5 attempts, then `WorkerFailed` with the failure's text |
-| `deliver` | `deliver_to_worker` | 5 attempts, then `InputFailed` and stage `person/delivery`. A row whose assignment has no session stays due while the assignment is pending, and is settled once it failed to start or ended |
+| `deliver` | `deliver_to_worker` | 9 attempts, the same as `reopen`, then `InputFailed` and stage `person/delivery`. A row whose assignment has no session stays due while the assignment is pending, and is settled once it failed to start or ended |
 | `recover` | `recover_worker` | 9 attempts, then settled: the `reopen` row owns the ticket |
 | `reopen` | `reopen_session` | 9 attempts, then `WorkerFailed` with the refusal's text for a worker, a log line for the router |
 | `offer` | `offer_to_router` | 10 attempts, then `RouterTurnEnded` |
@@ -451,6 +451,5 @@ This document rests on four reader summaries against `be5a7b58e`. Its constants 
 - The live lane asks the router directly and doesn't apply `gate.classify`, so its trials can differ from what `auto` would admit.
 - A person stopping a worker session from outside the project fails its ticket.
 - The restart note is queued once per assignment, so a second restart of the same assignment reopens its session through the `reopen` row and doesn't tell the worker again.
-- A `deliver` row gives up after 5 attempts, about 15 seconds, which is shorter than a writer lease. An input that was queued for a worker when the daemon was killed can become `person/delivery` while the lease runs out, where the restart note and the reopen wait it out.
 - One worker whose session had last been attached by a terminal read `worker_failed` after a graceful restart in a live drive. A graceful stop with terminals attached to two workers records no loss in `project_daemon_test`, and no cause is established. A refused build no longer rings, which closes one way a client's open of a project session could have failed an assignment.
 - Remote workers depend on the #1137 bundle work, so workers run on the owning machine. Whether `active_tool_names` alone closes every effect path for a router on a remote executor hasn't been tested.
