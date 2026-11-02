@@ -1962,12 +1962,33 @@ twenty recorded triggers of that rule that no one has labelled yet, newest first
 replies `{trigger, label}`. The label is an event of the project ledger and survives a restart, a later
 label of a trigger replaces the earlier, and a trigger no rule matched or the project does not hold is
 refused `bad_request`. `projects.verdict` (`{project, rule, lane}` with `lane` `replay` by default)
-measures the rule's labelled triggers with the evaluation instrument and records the finding,
-replying `{rule, outcome, lane, triggers, trials, changed, bound_points, words}`. It is refused
-`bad_request`, with a sentence, below thirty labels. The `live` lane is refused in words until the
-daemon can start a scratch router session; `replay` runs the current gate over the recorded triggers,
-costs nothing, and says nothing about the router's prompt or model, so its pass reads `replay_only`
-and does not unlock `auto`. Until the live lane runs, no rule can reach `auto`. A verdict is pinned to the policy
+measures the rule's labelled triggers with the evaluation instrument and records the finding. It is
+refused `bad_request`, with a sentence, below thirty labels.
+
+The `replay` lane runs the current gate over the recorded triggers, costs nothing, says nothing about
+the router's prompt or model, and so reads `replay_only` and does not unlock `auto`. It replies at once
+with `{rule, outcome, lane, triggers, trials, changed, bound_points, agreement_points, words}`.
+
+The `live` lane asks the router's model what it would do with each labelled trigger, three times each,
+and is the only lane that unlocks `auto`. Each trial runs in a scratch session of its own: the router's
+prompt pack and resolved model, one tool (`route`, with the router's schema, whose calls are recorded
+and applied to nothing), the trigger's text under the same fence the router sees and the thread as it
+stood at that trigger. It is not the router's session, and nothing it decides reaches the project's
+ledger except the verdict. A live run is thirty or more triggers at three trials each, which is real
+spend, so it is bounded: four trials at a time and twenty minutes of wall time. The command replies at
+once with `{rule, lane: "live", state: "running", triggers, trials, words}` and the finding is
+recorded when every trial is done. A second `live` run on a rule whose run is going is refused
+`bad_request` in words. A run that fails, is cut off by its wall limit, or ends under a different
+router pin records no verdict and so no pass.
+
+The `run` object of each rule on the board's `sources` reports a live run: `{state: "running", done, of,
+calls, tokens, started_ms}` while it goes, and `{state, words, calls, tokens, ended_ms}` after, with
+`state` `passed`, `failed` or `incomplete`. It is memory only and is `null` before the first run and
+after a restart.
+
+A pass needs the instrument's verdict to be neither `harmed` nor `incomplete`, its interval of the change
+in agreement with the labels to stay above a drop of 30 points, and the candidate's own agreement with
+the labels to reach 75 percent of its trials (`agreement_points`). A verdict is pinned to the policy
 version, the router prompt revision and the router model, and a change to any of them returns the
 rule to `observe`.
 

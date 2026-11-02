@@ -406,21 +406,81 @@ There are two lanes, and they claim different things. The replay lane runs each 
 through the gate as the code stands, with the router's recorded answer served back. It is
 deterministic and free, and it says the same inputs give these decisions; it says nothing about the
 router's prompt or model. The live lane asks a router three times per trigger and says how that router
-judged these triggers. The lane's arithmetic is built (`judge.live_samples`); the daemon has no scratch
-router session that answers without feeding the project's own engine, so `projects.verdict` refuses
-`live` in words, and a test supplies a scripted decision to show it works. Building that session is
-what remains.
+judged these triggers.
 
-A pass needs two things: the instrument's verdict is neither `Harmed` nor `Incomplete`, and the
+*The scratch judgement session.* The live lane does not use the router's own session, whose `route` tool
+applies decisions to the ledger and whose conversation would let one trial see the ones before it. Each
+trial opens a session of its own in memory (`client/project_judge_session`, through `harness`) with the
+router's pack and the router's resolved model (`serve.routed_identity`: the head of the `router` role,
+else `subagent`, else `main`), and one tool: `route`, with the router's name, schema and wording, whose
+executor records the items the model gave and applies nothing (`tools/project.judge_tools`). There is no
+`project_read`, `reply`, `bash`, `code_mode`, extension or peer tool, and the tool context refuses every
+jailed execution. A successful `route` call ends the run. The trigger's text arrives under the router's
+own `TriggerOrigin`, so provider projection fences it with a marker longer than any run of `=` in the
+text, and the thread as the tape holds it (ids and whether each was received, oldest first, nothing
+later) comes first as host text. Any action but `ignore` for the candidate counts as taking it on, as the
+tape records it; a run that routes nothing for the candidate counts as declining and is counted in the
+report as unrouted. The session retries a failed request three times and not without limit, so a
+rejected key fails the run instead of holding it to the wall limit.
+
+*The run is bounded and does not block the project actor.* `projects.verdict` with `lane: live` starts
+the run in a weft task and answers at once with `state: running`. Four trials run at a time
+(`project_judge.default_concurrency`) and the whole run has twenty minutes
+(`project_judge.default_wall_ms`). The first trial that fails ends the run, since a verdict over a
+partial set of trials is not a verdict and further calls would be spend with nothing to buy. The task
+reports each trial's spend to the actor as it ends, and the actor holds the run in memory: the board's
+`run` object for the rule shows `done`, `of`, `calls` and `tokens` while it goes and how it ended after
+(`passed`, `failed`, `incomplete`) with the same spend. A second run on a rule whose run is going is
+refused in words. A run that fails, is cut off, or finds the router pin changed when it ends (a verdict
+recorded under the new pin would claim the new model) records nothing. The run is never resumed: a
+restart ends it with the actor and the restarted actor has none.
+
+*Every scratch session stops.* A trial closes its session when the model has answered or failed. A trial
+cancelled from outside, by the wall limit or by a failed sibling, is killed and cannot close what it
+opened, and a session left to die with it would keep restarting a writer whose store is gone. Each
+session is therefore opened and held by a custodian process, which the run adopts as the trial's owner
+(a weft managed task): the run asks it to close when it cancels the trial and holds the trial's slot
+until it has ended. The custodian also closes the session when the trial's process goes down for any
+reason, which is what the project actor stopping does. The tests check each path: success, failure,
+the wall limit and the actor killed while trials are in flight.
+
+A pass needs three things: the instrument's verdict is neither `Harmed` nor `Incomplete`, the
 instrument's interval of the change in agreement stays above a thirty-point drop
-(`judge.max_bound_points`). The second is needed because the recorded arm is one decision per trigger
-and not three trials. On the synthetic plans in `project/test/project/verdict_test.gleam` (300 plans
-of thirty triggers, three live trials) the verdict reads `Harmed` on 60 percent of thirty-point drops
-and 18 percent of fifteen-point drops, against the instrument's own 95 and 40 percent with three
-trials on both arms. Passing on "not `Harmed`" would let about a third of thirty-point drops through.
-With the interval rule, 4 percent of thirty-point drops pass, 36 percent of fifteen-point drops pass,
-and 87 percent of runs with no change pass. A pass rules out a large regression and does not show
-parity, and the verdict records how far down its interval reached (`bound_points`).
+(`judge.max_bound_points`), and the candidate's own agreement with the labels reaches 75 percent of
+its trials (`judge.min_agreement_points`). The second is needed because the recorded arm is one
+decision per trigger and not three trials. On the synthetic plans in
+`project/test/project/verdict_test.gleam` (300 plans of thirty triggers, three live trials) the verdict
+reads `Harmed` on 60 percent of thirty-point drops and 18 percent of fifteen-point drops, against the
+instrument's own 95 and 40 percent with three trials on both arms. Passing on "not `Harmed`" would let
+about a third of thirty-point drops through. With the interval rule, 4 percent of thirty-point drops
+pass, 36 percent of fifteen-point drops pass, and 87 percent of runs with no change pass. A pass rules
+out a large regression and does not show parity, and the verdict records how far down its interval
+reached (`bound_points`).
+
+*The absolute floor.* Both of those compare the candidate with the recorded arm, so neither says the
+candidate is any good. A router that disagrees with the person on half the triggers, and did so when it
+was recorded, shows no change on either arm and passed the interval rule on 249 of 300 synthetic plans.
+The third requirement is the absolute claim, at most one trial in four against the person's label. The
+value, 75, follows from the size of a run. A guess agrees on half the trials. A router that answers the
+same way every time clusters its three trials, so thirty triggers give an observed agreement a standard
+error near 9 points, and 75 is 2.7 of them above guessing. A router that is right 85 percent of the time
+passes about nine runs in ten, and one that is right 75 percent of the time passes half of them. A lower
+floor would admit routers the person's labels say are wrong on more than one inbound message in four,
+and `auto` acts on those messages without asking. The figure is rounded down, so a run on the line is
+not counted in. Re-run on the same plans (`verdict_test.gleam`), with a router that agrees on 45 to 55
+percent of triggers on both arms, the interval rule alone passes 249 of 300 plans and the floor passes
+none; at 60 to 70 percent the floor passes 6; at 80 to 90 percent it passes 278. For routers that agree
+on 75 to 100 percent with no change, 283 of 300 pass. For a fifteen-point drop from a router that agrees
+on 80 to 100 percent, the interval rule passes 124 of 300 plans and the floor 96. The interval rule's own
+figures above do not move, because the floor can only remove passes. The floor applies to the replay
+lane as well, since `outcome_of` is shared: a replay of a router whose recorded decisions agree with the
+labels on under 75 percent of the trials fails, which is the signal that the pair should not be in `auto`.
+
+The floor cannot see a router that declines everything when most labels are rejects. That router agrees
+with the labels as often as they are rejects, and the report says only that it agrees. A person who
+labels thirty triggers of which two are accepts has a floor that a router that never accepts passes at 93
+percent. The report shows `agreement_points` and nothing about the classes; a floor on the accept class
+alone would need more labels of that class than a rule of this size has.
 
 A verdict is pinned to the policy version, a digest of the router's pack, and the router's profile and
 model key. `RouterPinSet` announces the last two at each start and writes nothing when they are
@@ -433,8 +493,8 @@ this.
 
 Only a live pass unlocks `auto` (`state.verdict_of`). A replay pass reads `replay_only` and unlocks
 nothing, because replay serves the router's recorded answers back: an unchanged gate agrees with its own
-recording whatever the labels say, so a replay pass would admit a router that was never judged. Since
-the daemon can't run the live lane yet, no rule can reach `auto` in this version.
+recording whatever the labels say, so a replay pass would admit a router that was never judged. The
+daemon runs the live lane, so a rule reaches `auto` through a live pass, and only through one.
 
 **What it costs.** The model in the pin is the registration's profile and model key, because the
 model a `[roles]` chain resolves to is chosen when the session opens and is not visible to the
@@ -444,3 +504,14 @@ cannot run on its own. The replay lane re-runs the gate and serves recorded rout
 overload outcomes, so a change to the queue limits or the attention limit is not judged by it. A
 tape's relation is derived from the state's subscriptions, which are not timestamped, so it is the
 state's record of what the gate read and not the gate's own stored input.
+
+The live lane measures the router's model on a reduced context. The scratch session has `route` and not
+`project_read`, so it cannot open a ticket's card or another message of a thread before it decides, which
+the router can; the pack still names `project_read` and `reply`, and a call to either is refused as an
+unknown tool and the model is free to try `route` again. The system prompt is the router's pack rendered
+for one tool and carries none of the operator's instruction files, which the router's own prompt may. A
+live pass says how the model judged these triggers with what the scratch session shows it, and a router
+that leans on `project_read` to decide is measured without it. The run costs ninety model calls for thirty
+triggers, a daemon restart loses a run in progress and its spend, and the spend of a trial killed
+mid-request is not counted. The twenty-minute wall limit and the four trials in flight are constants and
+not configuration.

@@ -10290,6 +10290,20 @@ ordinary top-level worker session per ticket assignment
   `agent_*` tools, and `gateway.Options.tool_ceiling` makes `set_config` refuse a
   name above the router's list. `client/project_packs` derives the router and
   worker packs from `prompt/default` by replacing the `delegation` section.
+- The live lane of a verdict asks a scratch judgement session, not the router.
+  `client/project_judge_session` opens one in-memory `harness` session per trial with
+  the router's pack and resolved model (`serve.routed_identity`) and the one tool
+  `tools/project.judge_tools` gives, `route`, whose executor records its items and
+  applies nothing. The session is opened and held by a custodian actor that
+  `client/project_judge` adopts as a weft managed task's owner, so the wall limit, a
+  failed sibling or the project actor stopping all close it. `project_judge.measure`
+  runs the trials at a concurrency limit under a wall deadline and cancels the rest
+  on the first failure. `project_host` starts a live run in a witnessed weft task,
+  answers `projects.verdict` at once, keeps the run in memory (`Host.runs`, the rule
+  row's `run` object) and concludes it with `project_verdict.conclude`; a second run
+  on a rule that is going is refused, and a run that fails or is cut off records
+  nothing. `project_start.Control.judge` builds the judge from the router
+  registration's settings. `test/support/scripted_router` scripts the model.
 - `peer_mail.Trigger` admits a stored trigger with the trigger origin. The daemon is
   the caller, so no grant is checked; `orchestrator_port.served` answers `False` for
   it, which is what keeps it off the relay (tested in `peer_remote_test`).

@@ -424,15 +424,36 @@ drop; then 4% of thirty-point drops pass, 36% of fifteen-point drops pass, and 8
 runs with no change pass. A passing verdict rules out a large regression to the bound it
 records and doesn't prove parity.
 
+Both rules compare the candidate with the recording, so neither says the candidate is good:
+a router that disagrees with the person on half the triggers, and did so when it was
+recorded, shows no change and passed on 249 of 300 synthetic plans. A pass therefore also
+needs the candidate's own agreement with the labels to reach 75% of its trials
+(`judge.min_agreement_points`). A guess agrees on half the trials, and the standard error of
+thirty triggers is near 9 points, so 75 is 2.7 of them above guessing; a router right 85% of
+the time passes about nine runs in ten. With the floor, the router at 45 to 55% passes none of
+300 plans, and one at 80 to 90% passes 278. The floor cannot see a router that declines
+everything when most labels are rejects, because it then agrees as often as they are
+rejects.
+
 Simulation cannot drive a router session in a way that judges it. The simulator runs a
 session whose scripted model calls a tool named `route` and holds it to every check under a
 crash, but the call, its arguments and its result are the script's, and the project engine
 is not in the simulated tree, so the decision would be the script's own. The replay lane is
 therefore built over recorded triggers, and the live lane is built as a function of a
 decision callback. The daemon's real router can be driven with a scripted provider
-(`client/project_daemon_test`), but a scratch router that answers without feeding the
-project's own engine does not exist yet, so `projects.verdict` refuses the live lane in words.
-That session is what remains for the live lane.
+(`client/project_daemon_test`), and so can the live lane's scratch session
+(`client/project_judge_session_test`, `client/project_source_test`).
+
+The scratch session is what the live lane asks. It is not the router's own session, whose
+`route` applies decisions to the ledger and whose conversation carries from one trial to the
+next. Each trial opens an in-memory session of its own with the router's pack and resolved
+model and one tool, `route`, with the router's schema over an executor that records the items
+and applies nothing. It gets the trigger under the router's `TriggerOrigin` fence and the thread
+as the tape holds it, and it stops when the trial ends, on every path. The run is bounded to four
+trials in flight and twenty minutes, ends at the first failed trial, and runs in a task so the
+project actor keeps serving. `projects.verdict` answers a live run at once and the finding is
+recorded when the trials are done. The addendum of protocol-change/106 has the details and what
+the session cannot show the model.
 
 A verdict is pinned to the policy version, prompt revision and model. Changing any of
 them returns that pair to `observe`.
