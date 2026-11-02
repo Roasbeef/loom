@@ -3763,7 +3763,7 @@ fn input_json(
   let described = case dict.get(host.texts, entry.trigger.value) {
     Ok(found) -> [
       #("source", json.String(found.source)),
-      #("actor", json.String(found.actor)),
+      #("actor", json.String(shown_actor(found.actor))),
       #("text", json.String(string.slice(found.body, 0, input_text_limit))),
     ]
     Error(Nil) -> []
@@ -3774,6 +3774,34 @@ fn input_json(
     #("delivery", json.String(delivery)),
     ..described
   ])
+}
+
+/// The name a person's turn is shown under. A turn typed into a worker is
+/// recorded under the owner's principal, which is `owner-` and the 64 hex digits
+/// of a digest, and no one reads that. The owner is shown as `owner`, the name
+/// the composer records its posts under; any other actor keeps its own name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert shown_actor("owner-" <> string.repeat("a", 64)) == "owner"
+/// ```
+fn shown_actor(actor: String) -> String {
+  let digest = string.drop_start(actor, 6)
+  let hex = "0123456789abcdef"
+
+  // Only the owner's digest form is renamed, and every other actor keeps the
+  // name it was recorded under.
+  case
+    string.starts_with(actor, "owner-")
+    && string.length(digest) == 64
+    && list.all(string.to_graphemes(digest), fn(each) {
+      string.contains(hex, each)
+    })
+  {
+    True -> "owner"
+    False -> actor
+  }
 }
 
 /// When the ticket's opening trigger arrived, in Unix milliseconds, or null

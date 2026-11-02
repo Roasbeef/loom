@@ -876,9 +876,9 @@ fn ticket_lines(
 fn head_lines(ticket: board.Ticket, width: Int, now_ms: Int) -> List(Drawn) {
   let facts =
     board.stage_word(ticket.stage)
-    <> " · opened "
-    <> board.age_words(ticket.opened_ms, now_ms)
-    <> " ago · "
+    <> " · "
+    <> board.opened_words(ticket.opened_ms, now_ms)
+    <> " · "
     <> ticket.id
 
   list.flatten([
@@ -1048,11 +1048,27 @@ fn input_rows(input: board.Input, width: Int) -> List(Drawn) {
   // line would read as an empty message.
   let body = case input.text {
     Some(found) ->
-      list.take(wrapped(indented(found), theme.overlay_plain(), width), 2)
+      clipped(wrapped(indented(found), theme.overlay_plain(), width))
     None -> [plain("  (the text is not in the ledger)", theme.overlay_quiet())]
   }
 
   [plain(text.truncate(who, width, "…"), theme.overlay_quiet()), ..body]
+}
+
+/// The most lines of one message the page shows.
+const message_lines = 2
+
+/// The first lines of a message, and a line that says there is more when it was
+/// cut. A message cut at its line limit with nothing after it reads as though
+/// the sentence ended there.
+fn clipped(lines: List(Drawn)) -> List(Drawn) {
+  case list.length(lines) > message_lines {
+    True ->
+      list.append(list.take(lines, message_lines), [
+        plain("  …", theme.overlay_quiet()),
+      ])
+    False -> lines
+  }
 }
 
 /// Text with two cells of indent on each of its lines.

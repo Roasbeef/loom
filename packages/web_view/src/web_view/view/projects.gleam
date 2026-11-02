@@ -340,9 +340,9 @@ pub fn ticket_page(page: Page(message)) -> Element(message) {
         html.p([attribute.class("home-folder-path")], [
           html.text(
             board.stage_word(ticket.stage)
-            <> " · opened "
-            <> board.age_words(ticket.opened_ms, page.now)
-            <> " ago · "
+            <> " · "
+            <> board.opened_words(ticket.opened_ms, page.now)
+            <> " · "
             <> ticket.id,
           ),
         ]),

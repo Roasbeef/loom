@@ -297,6 +297,33 @@ pub fn a_human_turn_is_recorded_once_test() {
   assert echoed == []
 }
 
+// The owner's turn typed into a worker is recorded under their principal, a
+// digest nobody reads. The ticket shows it as the owner, and another actor
+// keeps their own name.
+pub fn a_human_turn_is_shown_under_a_name_and_not_a_digest_test() {
+  let rig = rig("shown")
+  let handle = start(rig)
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+  let assert Ok([tools.Applied]) = project_host.route(handle, [accept("a")])
+  let worker = "session-" <> first_key("t-a")
+  let digest = string.repeat("ab", 32)
+
+  project_host.human_turn(
+    handle,
+    worker,
+    "e-1",
+    "owner-" <> digest,
+    "use sqlite",
+  )
+  project_host.human_turn(handle, worker, "e-2", "pat", "and wal")
+  let assert Ok(Nil) =
+    poll_until(fn() { string.contains(ticket_text(handle), "and wal") })
+  let text = ticket_text(handle)
+  assert string.contains(text, "\"actor\":\"owner\"")
+  assert string.contains(text, "\"actor\":\"pat\"")
+  assert !string.contains(text, digest)
+}
+
 pub fn a_refused_route_item_does_not_cost_the_others_test() {
   let rig = rig("refuse")
   let handle = start(rig)

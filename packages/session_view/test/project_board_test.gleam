@@ -196,6 +196,9 @@ pub fn a_hostile_title_is_inert_text_test() {
 
 pub fn age_is_the_largest_whole_unit_and_never_negative_test() {
   assert board.age_words(Some(0), 30_000) == "now"
+  assert board.opened_words(Some(0), 30_000) == "opened just now"
+  assert board.opened_words(Some(0), 5 * 60_000) == "opened 5m ago"
+  assert board.opened_words(None, 5 * 60_000) == "opened at an unknown time"
   assert board.age_words(Some(0), 5 * 60_000) == "5m"
   assert board.age_words(Some(0), 3 * 3_600_000) == "3h"
   assert board.age_words(Some(0), 2 * 86_400_000) == "2d"

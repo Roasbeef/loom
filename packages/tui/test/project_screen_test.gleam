@@ -418,6 +418,45 @@ pub fn a_hostile_title_is_inert_on_the_board_test() {
   assert string.contains(text, "<img src=x onerror=alert(1)>")
 }
 
+// A long message is cut to its first lines and says so. Without a mark, the cut
+// reads as the sender's last words. A short message is whole, and a ticket
+// opened a moment ago is not "opened now ago".
+pub fn a_long_message_is_cut_with_an_ellipsis_and_a_short_one_is_not_test() {
+  let sentence = "This sentence goes on and on until it fills a line. "
+  let long = string.repeat(sentence, 12)
+  let document =
+    json.Object([
+      #("project", json.String("p1")),
+      #("revision", json.Int(2)),
+      #("ticket", asking("t-ask", 3, "which?")),
+      #("assignments", json.Array([])),
+      #(
+        "inputs",
+        json.Array([
+          json.Object([
+            #("trigger", json.String("tr-1")),
+            #("delivery", json.String("delivered")),
+            #("actor", json.String("owner")),
+            #("text", json.String(long)),
+          ]),
+          json.Object([
+            #("trigger", json.String("tr-2")),
+            #("delivery", json.String("delivered")),
+            #("actor", json.String("pat")),
+            #("text", json.String("short and whole")),
+          ]),
+        ]),
+      ),
+    ])
+  let opened = press(showing(body(2, [asking("t-ask", 3, "which?")])), "enter")
+  let text = painted(deliver(opened, job.ProjectTicketLoaded(document)))
+
+  assert string.contains(text, "short and whole")
+  assert string.contains(text, "  …")
+  assert !string.contains(text, "ago ago")
+  assert !string.contains(text, "opened now ago")
+}
+
 pub fn a_hostile_question_and_input_are_inert_on_the_ticket_page_test() {
   let evil = "ask\u{1b}[2Jme <b>now</b>\u{1b}]52;c;AAAA\u{7}"
   let document =

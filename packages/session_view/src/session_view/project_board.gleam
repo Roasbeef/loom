@@ -609,6 +609,25 @@ pub fn age_words(opened_ms: Option(Int), now_ms: Int) -> String {
   }
 }
 
+/// When a ticket was opened, as a phrase that reads whole: `opened 5m ago`,
+/// `opened just now` for the first minute, and `opened at an unknown time` when
+/// the daemon did not say. A caller that joined `opened`, the age and `ago`
+/// itself drew `opened now ago`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_board.opened_words(Some(0), 30_000) == "opened just now"
+/// assert project_board.opened_words(Some(0), 300_000) == "opened 5m ago"
+/// ```
+pub fn opened_words(opened_ms: Option(Int), now_ms: Int) -> String {
+  case opened_ms, age_words(opened_ms, now_ms) {
+    None, _ -> "opened at an unknown time"
+    Some(_), "now" -> "opened just now"
+    Some(_), age -> "opened " <> age <> " ago"
+  }
+}
+
 /// Why the ticket was allowed, in a sentence. The words state the basis the
 /// daemon recorded and nothing more; a basis this client does not know is
 /// shown as the daemon's word, never guessed.
