@@ -22,7 +22,6 @@ import runtime/api
 import support/scripted_router.{
   type Reply, type Request, Fail, Hang, Route, Say, candidate_of,
 }
-import tools/project as project_tools
 import tools/tool
 import weft/poll
 
@@ -119,9 +118,10 @@ pub fn the_session_offers_only_route_with_the_routers_model_and_pack_test() {
   // The call that named the candidate ended the run, so no second request.
   assert process.receive(seen, 300) == Error(Nil)
 
-  // The tool is the router's own `route` and no other.
-  let registry = tool.registry(project_tools.judge_tools(fn(_, _) { Ok([]) }))
-  assert tool.names(registry) == ["route"]
+  // The registry the session is built over holds the router's own `route` and
+  // no other tool. The request above shows the strand offers it alone; this
+  // shows nothing else is registered behind it.
+  assert tool.names(scratch.registry_of(process.new_subject())) == ["route"]
 }
 
 pub fn the_models_route_call_is_read_as_the_choice_test() {

@@ -318,10 +318,7 @@ fn build(
       "a scratch session did not open: " <> string.inspect(error)
     }),
   )
-  let registry =
-    tool.registry(
-      project_tools.judge_tools(recording(items)) |> list.map(ending),
-    )
+  let registry = registry_of(items)
   let configured =
     harness.new(
       harness.Settings(
@@ -416,6 +413,21 @@ fn open(
       Error("the run was ending, so this trial did not start.")
     }
   }
+}
+
+/// The tools a scratch session holds: the router's `route` over an executor
+/// that records, ending the run on a successful call, and no other tool. The
+/// strand's active list names `route` alone as well, so a second tool here
+/// would be registered and still not offered. A test reads the registry's names
+/// to hold the first of those two limits.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tool.names(project_judge_session.registry_of(process.new_subject())) == ["route"]
+/// ```
+pub fn registry_of(items: Subject(List(project_tools.Item))) -> tool.Registry {
+  tool.registry(project_tools.judge_tools(recording(items)) |> list.map(ending))
 }
 
 /// The router's `route` with nothing behind it. It records the items the model
