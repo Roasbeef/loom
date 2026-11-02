@@ -88,7 +88,13 @@ pub fn digest(repository: String) -> String {
   }
   let refs = worktree_rig.git(repository, ["for-each-ref"])
   let head = worktree_rig.git(repository, ["rev-parse", "HEAD"])
-  let objects = worktree_rig.git(repository, ["count-objects", "-v"])
+
+  // Every object by name, not `count-objects -v`, whose sizes are disk blocks
+  // and change on Linux when the filesystem flushes a delayed write.
+  let objects =
+    worktree_rig.git(repository, [
+      "cat-file", "--batch-all-objects", "--batch-check",
+    ])
   string.join([config, hooks, refs, head, objects], "\n--\n")
 }
 
@@ -101,7 +107,12 @@ pub fn moved(before: String, after: String) -> String {
     |> list.filter(fn(pair) { pair.0 != pair.1 })
     |> list.map(fn(pair) { "was: " <> pair.0 <> " now: " <> pair.1 })
     |> string.join("\n")
-  io.println_error(found)
+
+  // A clean comparison prints nothing, so the log holds only what moved.
+  case found {
+    "" -> Nil
+    _ -> io.println_error(found)
+  }
   found
 }
 
