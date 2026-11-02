@@ -240,6 +240,19 @@ pub type Command {
   /// `auto` is refused until a rule has a passing verdict. Owner-only.
   SetProjectMode(project: String, rule: String, mode: String)
 
+  /// A person's label of one recorded trigger: `accept` when the project
+  /// should have taken it on as work and `reject` when it should not. Counts
+  /// toward the verdict of the rule the trigger matched. Owner-only.
+  LabelTrigger(project: String, trigger: String, label: String)
+
+  /// The recorded triggers of one rule that want a label, newest first, with
+  /// the labelled count against what a verdict needs. Owner-only.
+  ProjectLabels(project: String, rule: String)
+
+  /// Runs a verdict for one rule on a lane, `replay` or `live`, and records
+  /// it. Owner-only.
+  RunProjectVerdict(project: String, rule: String, lane: Option(String))
+
   /// A person's publish of a ticket's current commit past a failing or missing
   /// check, recorded with the principal. Owner-only, and refused while the
   /// project keeps `publish` off.
@@ -745,6 +758,23 @@ fn decode_fields(
       use mode <- result.map(text_field(fields, "mode", 16))
       SetProjectMode(project, rule, mode)
     }
+    "projects.label" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use trigger <- result.try(text_field(fields, "trigger", 128))
+      use label <- result.map(text_field(fields, "label", 16))
+      LabelTrigger(project, trigger, label)
+    }
+    "projects.labels" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use rule <- result.map(text_field(fields, "rule", 64))
+      ProjectLabels(project, rule)
+    }
+    "projects.verdict" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use rule <- result.try(text_field(fields, "rule", 64))
+      use lane <- result.map(optional_text_field(fields, "lane", 16))
+      RunProjectVerdict(project, rule, lane)
+    }
     "sessions.list" -> {
       use after <- result.try(cursor(fields))
       use revision <- result.try(optional_revision(fields))
@@ -1115,6 +1145,17 @@ fn name_field(fields: List(#(String, JsonValue))) -> Result(String, String) {
 }
 
 /// Extracts an optional pagination cursor from payload fields.
+fn optional_text_field(
+  fields: List(#(String, JsonValue)),
+  key: String,
+  limit: Int,
+) -> Result(Option(String), String) {
+  case list.key_find(fields, key) {
+    Error(Nil) -> Ok(None)
+    Ok(_) -> text_field(fields, key, limit) |> result.map(Some)
+  }
+}
+
 fn optional_after(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(String), String) {

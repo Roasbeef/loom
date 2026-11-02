@@ -52,6 +52,7 @@ import client/goalstate
 import client/internal/ffi_os
 import client/peer_mail
 import client/project_jail
+import client/project_packs
 import client/project_poller
 import client/project_publish
 import client/project_repo
@@ -275,7 +276,37 @@ pub fn ensure_running(
           ports: fn() { ports_for(env, project) },
         ),
       )
+      |> result.map(fn(started) {
+        pin_router(env, project, started)
+        started
+      })
   }
+}
+
+/// Tells a project's actor which router prompt and model it runs, so a verdict
+/// can be pinned to them. A prompt revision is the digest of the router's pack.
+/// The model is the one the router's registration names, by profile and model
+/// key, because the model a `[roles]` chain resolves to is chosen when the
+/// session opens and is not visible here. A change to that chain alone does not
+/// move this pin, and the verdict's words say what it is pinned to.
+fn pin_router(
+  env: Env,
+  project: catalogue.Project,
+  started: project_host.Handle,
+) -> Nil {
+  let revision =
+    crypto.hash(crypto.Sha256, bit_array.from_string(project_packs.router()))
+    |> bit_array.base16_encode
+    |> string.lowercase
+  let router_model = case manager.get(env.registry, project.router_session) {
+    Ok(found) ->
+      "profile:"
+      <> option.unwrap(found.registration.profile, "default")
+      <> " model:"
+      <> option.unwrap(found.registration.model, "default")
+    Error(_) -> "unknown"
+  }
+  project_host.pin_router(started, "sha256:" <> revision, router_model)
 }
 
 /// Opens the project's router session. The request key reserves the session

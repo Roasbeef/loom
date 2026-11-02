@@ -120,6 +120,34 @@ pub fn the_four_request_frames_decode_to_their_commands_test() {
     == Ok(protocol.Request(8, protocol.SetProjectMode("p1", "ci", "observe")))
 }
 
+pub fn the_label_and_verdict_frames_decode_to_their_commands_test() {
+  assert protocol.decode(
+      "{\"v\":2,\"id\":9,\"cmd\":\"projects.label\",\"body\":{\"project\":\"p1\",\"trigger\":\"gh-c-1\",\"label\":\"accept\"}}",
+    )
+    == Ok(protocol.Request(9, protocol.LabelTrigger("p1", "gh-c-1", "accept")))
+  assert protocol.decode(
+      "{\"v\":2,\"id\":10,\"cmd\":\"projects.labels\",\"body\":{\"project\":\"p1\",\"rule\":\"ci\"}}",
+    )
+    == Ok(protocol.Request(10, protocol.ProjectLabels("p1", "ci")))
+  assert protocol.decode(
+      "{\"v\":2,\"id\":11,\"cmd\":\"projects.verdict\",\"body\":{\"project\":\"p1\",\"rule\":\"ci\"}}",
+    )
+    == Ok(protocol.Request(11, protocol.RunProjectVerdict("p1", "ci", None)))
+  assert protocol.decode(
+      "{\"v\":2,\"id\":12,\"cmd\":\"projects.verdict\",\"body\":{\"project\":\"p1\",\"rule\":\"ci\",\"lane\":\"live\"}}",
+    )
+    == Ok(protocol.Request(
+      12,
+      protocol.RunProjectVerdict("p1", "ci", Some("live")),
+    ))
+}
+
+pub fn a_label_frame_without_a_label_is_malformed_test() {
+  let frame =
+    "{\"v\":2,\"id\":9,\"cmd\":\"projects.label\",\"body\":{\"project\":\"p1\",\"trigger\":\"gh-c-1\"}}"
+  let assert Error(_) = protocol.decode(frame)
+}
+
 pub fn a_set_mode_frame_without_a_rule_is_malformed_test() {
   let frame =
     "{\"v\":2,\"id\":8,\"cmd\":\"projects.set_mode\",\"body\":{\"project\":\"p1\",\"mode\":\"observe\"}}"

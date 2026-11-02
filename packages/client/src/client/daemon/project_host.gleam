@@ -42,6 +42,7 @@
 //// meaningless after a restart and never reaches the ledger.
 
 import broker/internal/call
+import client/daemon/project_verdict
 import client/goalstate
 import client/notes
 import client/peer_mail
@@ -79,6 +80,7 @@ import project/protect
 import project/readiness
 import project/snapshot
 import project/stage
+import project/standing
 import project/state.{type State, type Ticket}
 import storage/project_ledger.{type Ledger}
 import telemetry/field
@@ -458,6 +460,24 @@ pub opaque type Message {
     reply: Subject(Result(Nil, String)),
   )
   Compact(reply: Subject(Result(Int, String)))
+  LabelTrigger(
+    trigger: String,
+    label: model.Label,
+    by: String,
+    reply: Subject(Result(Nil, String)),
+  )
+  ReadLabels(
+    rule: String,
+    limit: Int,
+    reply: Subject(Result(JsonValue, String)),
+  )
+  RunVerdict(
+    rule: String,
+    lane: project_verdict.Lane,
+    by: String,
+    reply: Subject(Result(JsonValue, String)),
+  )
+  PinRouter(prompt_revision: String, router_model: String)
   Tick
 }
 
@@ -1063,6 +1083,22 @@ fn handle(host: Host, message: Message) -> actor.Next(Host, Message) {
       process.send(reply, answer)
       actor.continue(next)
     }
+    LabelTrigger(trigger:, label:, by:, reply:) -> {
+      let #(next, answer) = label_now(host, trigger, label, by)
+      process.send(reply, answer)
+      actor.continue(next)
+    }
+    ReadLabels(rule:, limit:, reply:) -> {
+      process.send(reply, labels_now(host, rule, limit))
+      actor.continue(host)
+    }
+    RunVerdict(rule:, lane:, by:, reply:) -> {
+      let #(next, answer) = verdict_now(host, rule, lane, by)
+      process.send(reply, answer)
+      actor.continue(perform_due(next))
+    }
+    PinRouter(prompt_revision:, router_model:) ->
+      actor.continue(pin_now(host, prompt_revision, router_model))
     Tick -> actor.continue(tick(host))
   }
 }
@@ -3573,6 +3609,10 @@ fn refusal_text(refusal: Refusal) -> String {
     event.NotPublishable(ticket:) ->
       "ticket " <> ticket.value <> " cannot be published"
     event.VerdictRequired(..) -> "auto needs a current passing verdict"
+    event.NotLabellable(trigger:) ->
+      "message "
+      <> trigger.value
+      <> " cannot be labelled: it is unknown, or no rule matched it"
     event.NotRequeueable(trigger:) ->
       "message " <> trigger.value <> " cannot be queued again"
     event.StaleAnswer(ticket:) ->
@@ -3939,9 +3979,9 @@ fn requeue_now(
 // --- sources and rules -------------------------------------------------------
 
 /// A person's mode for one rule: `off`, `observe` or `auto`. The engine is the
-/// authority on `auto`, which it refuses without a current passing verdict, and
-/// no verdict can exist until the evaluation slice, so for now `auto` is always
-/// refused in the words below.
+/// authority on `auto`, which it refuses without a current passing verdict for
+/// the rule's source and rule, measured under the policy version, router prompt
+/// and model in force. The refusal says which of those is missing.
 ///
 /// ## Examples
 ///
@@ -3958,12 +3998,81 @@ pub fn set_mode(
   |> result.flatten
 }
 
-const auto_refused_words =
-  "auto is not available yet: a rule may run on its own only after the evaluation instrument has judged it, and that arrives in a later slice. Use observe to see what it would do."
+/// A person's label of one recorded trigger. Only the owner reaches this,
+/// through the control command. A later label of the same trigger replaces the
+/// earlier one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_host.label(handle, "gh-c-1", model.ShouldAccept, "owner")
+/// ```
+pub fn label(
+  handle: Handle,
+  trigger: String,
+  label: model.Label,
+  by: String,
+) -> Result(Nil, String) {
+  ask(handle, LabelTrigger(trigger, label, by, _))
+  |> result.flatten
+}
+
+/// The recorded triggers of a rule that want a label, newest first, with the
+/// labelled count against what a verdict needs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_host.labels(handle, "ci", 20)
+/// ```
+pub fn labels(
+  handle: Handle,
+  rule: String,
+  limit: Int,
+) -> Result(JsonValue, String) {
+  ask(handle, ReadLabels(rule, limit, _))
+  |> result.flatten
+}
+
+/// Runs a verdict for a rule on a lane and records it. It answers the finding,
+/// or a sentence saying what is missing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_host.run_verdict(handle, "ci", project_verdict.ReplayLane, "owner")
+/// ```
+pub fn run_verdict(
+  handle: Handle,
+  rule: String,
+  lane: project_verdict.Lane,
+  by: String,
+) -> Result(JsonValue, String) {
+  ask(handle, RunVerdict(rule, lane, by, _))
+  |> result.flatten
+}
+
+/// Tells the actor the digest of the router's prompt and the model it runs. A
+/// verdict is pinned to both, so a change here returns the pairs that relied on
+/// the old values to `observe`. The daemon calls it each time it starts the
+/// project, and repeating the values already held writes nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_host.pin_router(handle, "sha256:ab12", "default")
+/// ```
+pub fn pin_router(
+  handle: Handle,
+  prompt_revision: String,
+  router_model: String,
+) -> Nil {
+  process.send(handle.commands, PinRouter(prompt_revision, router_model))
+}
 
 /// Sets a configured rule's mode through the engine. The engine's refusal of
-/// `auto` is answered in the words above, and every other refusal in the
-/// engine's own.
+/// `auto` is answered in `project/standing.refusal`'s words, which say what is
+/// missing, and every other refusal in the engine's own.
 fn set_mode_now(
   host: Host,
   rule: String,
@@ -3989,13 +4098,116 @@ fn set_mode_now(
           ])
           #(next, Ok(Nil))
         }
-        Error(Refused(event.VerdictRequired(..))) -> #(
+        Error(Refused(event.VerdictRequired(source, id))) -> #(
           host,
-          Error(auto_refused_words),
+          Error(standing.refusal(host.engine, source, id)),
         )
         Error(failure) -> #(host, Error(not_committed_text(failure)))
       }
     }
+  }
+}
+
+// --- labels and verdicts -----------------------------------------------------
+
+/// Records a person's label of one stored trigger. The engine refuses a
+/// trigger it does not hold and one no rule matched. The label is an event of
+/// the ledger, so it survives a restart and retention keeps its trigger.
+fn label_now(
+  host: Host,
+  trigger: String,
+  label: model.Label,
+  by: String,
+) -> #(Host, Result(Nil, String)) {
+  let incoming =
+    event.Labelled(model.TriggerId(trigger), label, model.PrincipalId(by))
+
+  case commit(host, incoming) {
+    Ok(next) -> #(next, Ok(Nil))
+    Error(failure) -> #(host, Error(not_committed_text(failure)))
+  }
+}
+
+/// The recorded triggers of a rule that still want a label.
+fn labels_now(
+  host: Host,
+  rule: String,
+  limit: Int,
+) -> Result(JsonValue, String) {
+  use found <- result.map(configured_rule(host, rule))
+  project_verdict.to_label_json(
+    host.engine,
+    found.0,
+    found.1,
+    fn(id) { text_body(host, id.value) },
+    limit,
+  )
+}
+
+/// Runs a verdict for a configured rule and records it. A failing verdict
+/// returns an `auto` pair to `observe` in the same step, because the engine
+/// demotes a pair that no longer holds a current passing verdict.
+fn verdict_now(
+  host: Host,
+  rule: String,
+  lane: project_verdict.Lane,
+  by: String,
+) -> #(Host, Result(JsonValue, String)) {
+  let judged = {
+    use found <- result.try(configured_rule(host, rule))
+    project_verdict.run(host.engine, found.0, found.1, lane, fn(id) {
+      text_body(host, id.value)
+    })
+  }
+
+  case judged {
+    Error(words) -> #(host, Error(words))
+    Ok(#(recorded, body)) ->
+      case commit(host, recorded) {
+        Ok(next) -> {
+          log.info(host.ports.logger, "project.verdict_recorded", [
+            field.ident(key: "rule", value: rule),
+            field.ident(key: "by", value: by),
+          ])
+          #(next, Ok(body))
+        }
+        Error(failure) -> #(host, Error(not_committed_text(failure)))
+      }
+  }
+}
+
+/// A configured rule's source and rule ids, or a sentence saying there is none.
+fn configured_rule(
+  host: Host,
+  rule: String,
+) -> Result(#(model.SourceId, model.RuleId), String) {
+  list.find(host.config.policy.sources.rules, fn(each) { each.name == rule })
+  |> result.map(fn(found) {
+    #(model.SourceId(found.source), model.RuleId(found.name))
+  })
+  |> result.replace_error("there is no rule " <> rule)
+}
+
+/// The stored text of a trigger, or empty when the host holds none.
+fn text_body(host: Host, trigger: String) -> String {
+  case dict.get(host.texts, trigger) {
+    Ok(found) -> found.body
+    Error(Nil) -> ""
+  }
+}
+
+/// Announces the router's prompt revision and model to the engine. Announcing
+/// what the engine already holds writes nothing, so a restart does not grow
+/// the ledger. Announcing something different demotes every pair whose verdict
+/// relied on the old values, in the event itself.
+fn pin_now(host: Host, prompt_revision: String, router_model: String) -> Host {
+  case
+    host.engine.prompt_revision == prompt_revision
+    && host.engine.router_model == router_model
+  {
+    True -> host
+    False ->
+      committed_or_same(host, event.RouterPinSet(prompt_revision, router_model))
   }
 }
 
@@ -4034,16 +4246,21 @@ fn first_mode(
   rule: model.RuleId,
   mode: model.Mode,
 ) -> Host {
-  // `auto` cannot be given without a verdict, so it starts as `observe`.
+  // `auto` is given only to a rule that already holds a current passing
+  // verdict. Without one it starts as `observe`, and the log says so.
   case mode {
     model.Off -> host
     model.Observe -> committed_or_same(host, event.ModeSet(source, rule, mode))
-    model.Auto -> {
-      log.warn(host.ports.logger, "project.auto_not_available", [
-        field.ident(key: "rule", value: rule.value),
-      ])
-      committed_or_same(host, event.ModeSet(source, rule, model.Observe))
-    }
+    model.Auto ->
+      case commit(host, event.ModeSet(source, rule, model.Auto)) {
+        Ok(next) -> next
+        Error(_) -> {
+          log.warn(host.ports.logger, "project.auto_needs_verdict", [
+            field.ident(key: "rule", value: rule.value),
+          ])
+          committed_or_same(host, event.ModeSet(source, rule, model.Observe))
+        }
+      }
   }
 }
 
@@ -4520,6 +4737,14 @@ fn sources_json(host: Host) -> List(JsonValue) {
                       model.SourceId(rule.source),
                       model.RuleId(rule.name),
                     )),
+                  ),
+                ),
+                #(
+                  "verdict",
+                  project_verdict.standing_json(
+                    host.engine,
+                    model.SourceId(rule.source),
+                    model.RuleId(rule.name),
                   ),
                 ),
               ])

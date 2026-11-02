@@ -61,6 +61,7 @@ import client/daemon/profiles
 import client/daemon/project_book
 import client/daemon/project_host
 import client/daemon/project_start
+import client/daemon/project_verdict
 import client/daemon/protocol
 import client/daemon/root
 import client/daemon/ui_assets
@@ -3009,6 +3010,9 @@ fn control(
             | protocol.RetryTicket(..)
             | protocol.RequeueTrigger(..)
             | protocol.SetProjectMode(..)
+            | protocol.LabelTrigger(..)
+            | protocol.ProjectLabels(..)
+            | protocol.RunProjectVerdict(..)
             | protocol.PublishTicket(..)
             | protocol.SessionActivity(..)
             | protocol.ListArchivedSessions(..)
@@ -3065,6 +3069,7 @@ fn control_use(command: protocol.Command) {
     | protocol.ListProjects
     | protocol.ProjectBoard(..)
     | protocol.ProjectTicket(..)
+    | protocol.ProjectLabels(..)
     | protocol.DirectoryStatus
     | protocol.DeploymentStatus(_)
     | protocol.SessionsElsewhere(..)
@@ -3096,6 +3101,8 @@ fn control_use(command: protocol.Command) {
     | protocol.RetryTicket(..)
     | protocol.RequeueTrigger(..)
     | protocol.SetProjectMode(..)
+    | protocol.LabelTrigger(..)
+    | protocol.RunProjectVerdict(..)
     | protocol.PublishTicket(..)
     | protocol.OpenSession(..)
     | protocol.StopSession(..)
@@ -3280,6 +3287,18 @@ fn dispatch(
     protocol.SetProjectMode(project, rule, mode) ->
       project_command_in_words(config, principal, fn(control) {
         project_set_mode(control, project, rule, mode)
+      })
+    protocol.LabelTrigger(project, trigger, label) ->
+      project_command_in_words(config, principal, fn(control) {
+        project_label(control, project, trigger, label)
+      })
+    protocol.ProjectLabels(project, rule) ->
+      project_command_in_words(config, principal, fn(control) {
+        project_labels(control, project, rule)
+      })
+    protocol.RunProjectVerdict(project, rule, lane) ->
+      project_command_in_words(config, principal, fn(control) {
+        project_verdict(control, project, rule, lane)
       })
     _ ->
       dispatch_class(config, state, digest, principal, reply_to, command)
@@ -3590,6 +3609,83 @@ fn project_set_mode(
       #("mode", json.String(mode)),
     ]),
   )
+}
+
+/// The `projects.label` step: the owner judges one recorded trigger. The two
+/// words are `accept` (the project should have taken the trigger on) and
+/// `reject` (it should not have). An unknown trigger, or one no rule matched,
+/// is `bad_request` with the actor's sentence.
+fn project_label(
+  control: project_start.Control,
+  project: String,
+  trigger: String,
+  label: String,
+) -> Result(#(String, JsonValue), Refused) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
+  )
+  use parsed <- result.try(case label {
+    "accept" -> Ok(project_model.ShouldAccept)
+    "reject" -> Ok(project_model.ShouldNotAccept)
+    _ -> Error(Refused("bad_request", "a label is accept or reject", []))
+  })
+
+  use Nil <- result.map(
+    project_host.label(handle, trigger, parsed, "owner")
+    |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
+  )
+  #(
+    "projects.label",
+    json.Object([
+      #("trigger", json.String(trigger)),
+      #("label", json.String(label)),
+    ]),
+  )
+}
+
+/// The `projects.labels` step: the recorded triggers of one rule that want a
+/// label, with the labelled count against what a verdict needs.
+fn project_labels(
+  control: project_start.Control,
+  project: String,
+  rule: String,
+) -> Result(#(String, JsonValue), Refused) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
+  )
+
+  use body <- result.map(
+    project_host.labels(handle, rule, 20)
+    |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
+  )
+  #("projects.labels", body)
+}
+
+/// The `projects.verdict` step: run a verdict for one rule on a lane and
+/// record it. A lane the daemon cannot run, and too few labels, are
+/// `bad_request` with the sentence saying what is missing.
+fn project_verdict(
+  control: project_start.Control,
+  project: String,
+  rule: String,
+  lane: Option(String),
+) -> Result(#(String, JsonValue), Refused) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
+  )
+  use chosen <- result.try(
+    project_verdict.lane_of(lane)
+    |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
+  )
+
+  use body <- result.map(
+    project_host.run_verdict(handle, rule, chosen, "owner")
+    |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
+  )
+  #("projects.verdict", body)
 }
 
 /// The `ledger.*` owner commands (protocol-change/086). A member principal is
@@ -4619,6 +4715,9 @@ fn dispatch_class(
     | protocol.RetryTicket(..)
     | protocol.RequeueTrigger(..)
     | protocol.SetProjectMode(..)
+    | protocol.LabelTrigger(..)
+    | protocol.ProjectLabels(..)
+    | protocol.RunProjectVerdict(..)
     | protocol.PublishTicket(..) -> Error("unavailable")
     protocol.Shutdown(supplied) -> {
       use Nil <- result.try(owner(principal))

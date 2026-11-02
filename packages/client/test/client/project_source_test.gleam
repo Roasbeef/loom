@@ -10,6 +10,7 @@
 //// no model call" is asserted as "no endpoint was sent anything".
 
 import client/daemon/project_host
+import client/daemon/project_verdict
 import client/goalstate
 import client/internal/ffi_os
 import client/peer_mail
@@ -23,8 +24,10 @@ import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import host/bootstrap
+import project/judge
 import project/model
 import simplifile
 import storage/project_ledger
@@ -501,16 +504,17 @@ pub fn a_rule_set_to_off_stops_its_candidates_and_auto_is_refused_in_words_test(
   // The configured mode is observe until a person changes it.
   assert string.contains(
     board_text(handle),
-    "{\"name\":\"deps\",\"mode\":\"observe\"}",
+    "{\"name\":\"deps\",\"mode\":\"observe\",",
   )
   let assert Ok(Nil) = project_host.set_mode(handle, "deps", model.Off, "owner")
   assert string.contains(
     board_text(handle),
-    "{\"name\":\"deps\",\"mode\":\"off\"}",
+    "{\"name\":\"deps\",\"mode\":\"off\",",
   )
   let assert Error(words) =
     project_host.set_mode(handle, "deps", model.Auto, "owner")
-  assert string.contains(words, "not available yet")
+  assert string.contains(words, "no verdict has been recorded")
+  assert string.contains(words, "0 of 30")
   let assert Error(_) =
     project_host.set_mode(handle, "ghost", model.Observe, "owner")
 
@@ -527,8 +531,181 @@ pub fn a_rule_set_to_off_stops_its_candidates_and_auto_is_refused_in_words_test(
   let again = start(rig)
   assert string.contains(
     board_text(again),
-    "{\"name\":\"deps\",\"mode\":\"off\"}",
+    "{\"name\":\"deps\",\"mode\":\"off\",",
   )
+}
+
+// --- verdicts ---------------------------------------------------------------------
+
+// Thirty comments by the listed bot, each matching the `deps` rule, so each is
+// an inferred trigger the rule recorded.
+fn thirty_bumps(rig: Rig) -> List(String) {
+  let comments =
+    list.map(counted(30), fn(n) {
+      comment(
+        3000 + n,
+        "dependabot[bot]",
+        "bump package " <> int.to_string(n),
+        "2026-11-02T11:00:00Z",
+        40 + n,
+      )
+    })
+  serve(rig, comments)
+  list.map(counted(30), fn(n) { "gh-c-" <> int.to_string(3000 + n) })
+}
+
+// Labels every trigger: the first two should have been taken on, the rest not.
+fn label_all(handle: project_host.Handle, triggers: List(String)) -> Nil {
+  list.index_map(triggers, fn(trigger, position) {
+    let label = case position < 2 {
+      True -> model.ShouldAccept
+      False -> model.ShouldNotAccept
+    }
+    let assert Ok(Nil) = project_host.label(handle, trigger, label, "owner")
+  })
+  Nil
+}
+
+// Waits for the actor to hold the triggers a pass stored.
+fn stored(handle: project_host.Handle, triggers: List(String)) -> Nil {
+  let last = list.last(triggers) |> result.unwrap("")
+  eventually(fn() {
+    case project_host.labels(handle, "deps", 100) {
+      Ok(body) ->
+        string.contains(json.to_string(body), "\"trigger\":\"" <> last <> "\"")
+      Error(_) -> False
+    }
+  })
+}
+
+pub fn auto_needs_a_current_verdict_and_a_changed_pin_takes_it_away_test() {
+  let rig = watching("verdict")
+  let handle = start(rig)
+  project_host.pin_router(handle, "sha256:one", "profile:default model:a")
+  first_pass(handle)
+  let triggers = thirty_bumps(rig)
+  next_pass(rig, handle)
+  stored(handle, triggers)
+
+  // With nothing labelled, a verdict cannot run and `auto` is refused in words
+  // that say how many labels are missing.
+  let assert Error(unlabelled) =
+    project_host.run_verdict(
+      handle,
+      "deps",
+      project_verdict.ReplayLane,
+      "owner",
+    )
+  assert string.contains(unlabelled, "0 of 30")
+  let assert Error(refused) =
+    project_host.set_mode(handle, "deps", model.Auto, "owner")
+  assert string.contains(refused, "Label 30 more")
+
+  // Labelling is durable and only counts triggers a rule matched.
+  let assert Error(unknown) =
+    project_host.label(handle, "gh-c-nope", model.ShouldAccept, "owner")
+  assert string.contains(unknown, "cannot be labelled")
+  label_all(handle, triggers)
+  assert string.contains(board_text(handle), "\"labelled\":30,\"needed\":30")
+
+  // The replay lane judges the gate as the code stands. Nothing changed, so
+  // it passes, and it says so without claiming anything about the router.
+  let assert Ok(report) =
+    project_host.run_verdict(
+      handle,
+      "deps",
+      project_verdict.ReplayLane,
+      "owner",
+    )
+  let words = json.to_string(report)
+  assert string.contains(words, "\"outcome\":\"passed\"")
+  assert string.contains(words, "\"lane\":\"replay\"")
+  assert string.contains(words, "says nothing about the router's prompt")
+  let assert Ok(Nil) =
+    project_host.set_mode(handle, "deps", model.Auto, "owner")
+  assert string.contains(
+    board_text(handle),
+    "{\"name\":\"deps\",\"mode\":\"auto\",\"verdict\":{\"state\":\"current\"",
+  )
+
+  // A restart keeps the mode, the verdict and the labels, and announcing the
+  // pin it already holds writes nothing.
+  stop(handle)
+  let again = start(rig)
+  project_host.pin_router(again, "sha256:one", "profile:default model:a")
+  assert string.contains(
+    board_text(again),
+    "{\"name\":\"deps\",\"mode\":\"auto\",\"verdict\":{\"state\":\"current\"",
+  )
+
+  // A new prompt revision makes the verdict stale and returns the rule to
+  // observe, and the demotion survives another restart.
+  project_host.pin_router(again, "sha256:two", "profile:default model:a")
+  assert string.contains(
+    board_text(again),
+    "{\"name\":\"deps\",\"mode\":\"observe\",\"verdict\":{\"state\":\"stale\"",
+  )
+  stop(again)
+  let third = start(rig)
+  assert string.contains(
+    board_text(third),
+    "{\"name\":\"deps\",\"mode\":\"observe\",\"verdict\":{\"state\":\"stale\"",
+  )
+  let assert Error(stale) =
+    project_host.set_mode(third, "deps", model.Auto, "owner")
+  assert string.contains(stale, "the router prompt")
+
+  // Running the verdict again under the new prompt makes `auto` available,
+  // and a model change takes it away again.
+  let assert Ok(_) =
+    project_host.run_verdict(third, "deps", project_verdict.ReplayLane, "owner")
+  let assert Ok(Nil) = project_host.set_mode(third, "deps", model.Auto, "owner")
+  project_host.pin_router(third, "sha256:two", "profile:default model:b")
+  let assert Error(moved) =
+    project_host.set_mode(third, "deps", model.Auto, "owner")
+  assert string.contains(moved, "the router model")
+}
+
+pub fn a_failing_live_verdict_returns_the_rule_to_observe_test() {
+  let rig = watching("verdict-live")
+  let handle = start(rig)
+  project_host.pin_router(handle, "sha256:one", "profile:default model:a")
+  first_pass(handle)
+  let triggers = thirty_bumps(rig)
+  next_pass(rig, handle)
+  stored(handle, triggers)
+  label_all(handle, triggers)
+  let assert Ok(_) =
+    project_host.run_verdict(
+      handle,
+      "deps",
+      project_verdict.ReplayLane,
+      "owner",
+    )
+  let assert Ok(Nil) =
+    project_host.set_mode(handle, "deps", model.Auto, "owner")
+
+  // A router that takes everything on disagrees with the labels on 28 of 30
+  // triggers. The lane's arithmetic is the same as the replay lane's, with the
+  // decision supplied by the caller.
+  let takes_everything = project_verdict.LiveLane(fn(_, _) { judge.Take })
+  let assert Ok(report) =
+    project_host.run_verdict(handle, "deps", takes_everything, "owner")
+  assert string.contains(json.to_string(report), "\"outcome\":\"failed\"")
+  assert string.contains(
+    board_text(handle),
+    "{\"name\":\"deps\",\"mode\":\"observe\",\"verdict\":{\"state\":\"failing\"",
+  )
+  let assert Error(refused) =
+    project_host.set_mode(handle, "deps", model.Auto, "owner")
+  assert string.contains(refused, "its latest verdict failed")
+}
+
+pub fn the_live_lane_is_refused_in_words_when_there_is_no_scratch_router_test() {
+  let assert Error(words) = project_verdict.lane_of(Some("live"))
+  assert string.contains(words, "scratch router")
+  assert project_verdict.lane_of(None) == Ok(project_verdict.ReplayLane)
+  let assert Error(_) = project_verdict.lane_of(Some("sideways"))
 }
 
 // --- restarts and failures -------------------------------------------------------
