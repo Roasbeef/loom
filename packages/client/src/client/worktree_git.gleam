@@ -711,8 +711,9 @@ pub fn setup_runner(git: Git, directory: String) -> goalcheck.Runner {
   )
 }
 
-// The runner both commands share. They differ in the network and the limits,
-// which the caller chooses, and in nothing the masks or the environment cover.
+/// The runner a check and a setup share. They differ in the network and the
+/// limits, which the caller chooses, and in nothing the masks or the
+/// environment cover.
 fn runner(
   git: Git,
   directory: String,

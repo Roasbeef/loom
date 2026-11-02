@@ -127,24 +127,49 @@ pub fn select_records(lines: List(String), kept: State) -> List(String) {
         Ok(project_records.Engine(_)) | Error(_) -> Error(Nil)
       }
     })
+
+  // Only a record whose subject is still in the state can stay.
   let stays = list.filter(parsed, fn(entry) { stays(entry.1, kept) })
-  let replies = latest(stays, is_reply, max_replies)
-  let notes = latest(stays, is_note, 1)
-  let builds = latest(stays, is_template_build, 1)
-  let failures = latest(stays, is_template_failure, 1)
-  list.filter(stays, fn(entry) {
-    case is_reply(entry.1), is_note(entry.1) {
-      True, _ -> list.contains(replies, entry.0)
-      _, True -> list.contains(notes, entry.0)
-      False, False ->
-        case is_template_build(entry.1), is_template_failure(entry.1) {
-          True, _ -> list.contains(builds, entry.0)
-          _, True -> list.contains(failures, entry.0)
-          False, False -> True
-        }
-    }
-  })
+
+  // Of the kinds that repeat, only the newest stay: the router's replies, the
+  // latest note about a source, and the template's latest build and failure.
+  let newest =
+    Newest(
+      replies: latest(stays, is_reply, max_replies),
+      notes: latest(stays, is_note, 1),
+      builds: latest(stays, is_template_build, 1),
+      failures: latest(stays, is_template_failure, 1),
+    )
+  list.filter(stays, fn(entry) { survives(entry, newest) })
   |> list.map(fn(entry) { entry.0 })
+}
+
+/// The ledger lines of the newest records of each kind that repeats.
+type Newest {
+  Newest(
+    replies: List(String),
+    notes: List(String),
+    builds: List(String),
+    failures: List(String),
+  )
+}
+
+/// Whether a record that is in the state also survives its kind's limit.
+fn survives(entry: #(String, Record), newest: Newest) -> Bool {
+  case entry.1 {
+    project_records.ReplyQueued(..) -> list.contains(newest.replies, entry.0)
+    project_records.SourceNote(..) -> list.contains(newest.notes, entry.0)
+    project_records.TemplateBuilt(..) -> list.contains(newest.builds, entry.0)
+    project_records.TemplateFailed(..) ->
+      list.contains(newest.failures, entry.0)
+    project_records.TriggerText(..)
+    | project_records.QuestionText(..)
+    | project_records.HandedBack(..)
+    | project_records.Recovered(..)
+    | project_records.CheckRecorded(..)
+    | project_records.TreeKept(..)
+    | project_records.Retention(..) -> True
+  }
 }
 
 /// Whether a record's subject is still in the state.

@@ -989,6 +989,9 @@ fn queue_template(host: Host) -> Host {
       template_digest(host),
       now,
     )
+
+  // A project still preparing asks for its first build. The others have a
+  // state already, or no template at all.
   case standing {
     template_state.Preparing(_) ->
       ask_for_build(Host(..host, template: standing))
@@ -1012,6 +1015,8 @@ fn template_digest(host: Host) -> String {
 /// is wanted, so asking twice is asking once.
 fn ask_for_build(host: Host) -> Host {
   let draft = project_records.template_draft(host.ports.now_ms())
+
+  // A row that cannot be written is logged, and the next tick asks again.
   case project_ledger.enqueue(host.ledger, draft) {
     Ok(Nil) -> host
     Error(error) -> {
@@ -2221,6 +2226,9 @@ fn template_when_due(host: Host, now: Int) -> Host {
 /// leaves the row, and the next boot builds again from a tree that is removed
 /// first. A build that gives no answer three times is recorded as failed.
 fn start_template(host: Host, row: project_ledger.Effect) -> Host {
+  // A project that lost its setup command has nothing to build. A build that
+  // has given no answer too often is recorded as failed. Any other row starts
+  // a build.
   case host.config.policy.setup {
     None -> settle(host, row)
     Some(setup) if row.attempts >= max_task_attempts ->
@@ -2269,6 +2277,10 @@ fn template_settled(host: Host, outcome: project_template.Outcome) -> Host {
   let now = host.ports.now_ms()
   let next_look = now + template_look_ms
   let digest = template_digest(host)
+
+  // A finished build is recorded before the state says ready, an unchanged
+  // base records nothing, and a failure is recorded and kept beside any
+  // template that is in use.
   case outcome {
     project_template.Built(commit:) ->
       case record(host, project_records.TemplateBuilt(commit, digest)) {
@@ -2296,10 +2308,14 @@ fn template_settled(host: Host, outcome: project_template.Outcome) -> Host {
           project_template.stage_word(failure.stage),
           failure.output,
         )
+
+      // A failure the ledger refuses to record still shows on the board from
+      // memory. A restart loses it, and the build it finds to do shows it again.
       let recorded = case record(host, written) {
         Ok(next) -> next
         Error(_) -> host
       }
+
       Host(
         ..recorded,
         template: template_state.failed(host.template, failure, next_look),
@@ -4496,6 +4512,8 @@ fn retry_setup(host: Host) -> #(Host, Result(Nil, String)) {
   }
 }
 
+/// A person's retry of a ticket: the engine decides whether the ticket may
+/// take a new assignment.
 fn retry_ticket(
   host: Host,
   ticket: String,
@@ -5548,6 +5566,7 @@ fn sources_json(host: Host) -> List(JsonValue) {
 /// the end of what the failed step printed. A project with no `setup` has no
 /// row, and a ready template with nothing to say has a row with no note.
 fn template_rows(host: Host) -> List(JsonValue) {
+  // A project with no template has no row on its board.
   case template_state.word(host.template) {
     None -> []
     Some(word) -> {
@@ -5582,6 +5601,9 @@ fn template_rows(host: Host) -> List(JsonValue) {
   }
 }
 
+/// The board's account of the GitHub source: its interval, when it last and
+/// next polls, what it shed, and each rule's mode and verdict. A project with
+/// no such source has none.
 fn source_rows(host: Host) -> List(JsonValue) {
   // A project with no GitHub source has nothing to report.
   case host.config.policy.sources.github {

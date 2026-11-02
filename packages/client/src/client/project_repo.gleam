@@ -744,10 +744,13 @@ fn cut_from_template(
   start: Start,
   copier: Copier,
 ) -> Result(String, String) {
+  // A start from the owner's checkout begins at the owner's head as the host
+  // repository holds it now, and a start from a commit begins at that commit.
   use commit <- result.try(case start {
     FromOwner -> refresh_base(trees, layout)
     FromCommit(commit:) -> Ok(commit)
   })
+
   use Nil <- result.try(copy_template(trees, layout, tickets, making, copier))
   use _fetched <- result.try(fetch_into(trees, layout, making, commit))
   change(
@@ -805,6 +808,9 @@ fn copy_template(
   copier: Copier,
 ) -> Result(Nil, String) {
   let template = template_path(layout)
+
+  // A copier with a known program tries it first, and one without goes
+  // straight to the plain copy.
   case copier.program {
     None ->
       plain_copy(trees, parent, template, dest, copier, "git-cow not found")
@@ -860,6 +866,8 @@ fn plain_copy(
     ["-RPp", template, dest],
     copy_within_ms,
   ))
+
+  // A zero exit is a finished copy. Any other exit removes what it left.
   case output.code {
     0 -> {
       copier.report(PlainCopy(why))
@@ -892,6 +900,7 @@ pub fn force_remove(
   parent: String,
   path: String,
 ) -> Result(Nil, String) {
+  // A removal that works is done. One that fails may be a read-only tree.
   case remove(path) {
     Ok(Nil) -> Ok(Nil)
     Error(first) -> {
@@ -904,6 +913,8 @@ pub fn force_remove(
           ["-R", "u+w", path],
           copy_within_ms,
         )
+
+      // If the tree could be made writable, the removal is tried again.
       case writable {
         Ok(_) -> remove(path)
         Error(_) -> Error(first)
@@ -962,6 +973,9 @@ pub fn cut_template_tree(
 pub fn restore_interrupted_swap(layout: Layout) -> Result(Nil, String) {
   let template = template_path(layout)
   let old = template_old_path(layout)
+
+  // Only a template that is missing beside a waiting old one needs the swap
+  // undone.
   case bootstrap.path_exists(template), bootstrap.path_exists(old) {
     False, True ->
       simplifile.rename(old, template)
@@ -1003,6 +1017,9 @@ fn cut_detached(
 /// ```
 pub fn sound_template(path: String) -> Result(Nil, String) {
   use Nil <- result.try(sound_clone(path))
+
+  // An alternates file and a worktrees directory are what a copy must not
+  // carry to every worker.
   case
     bootstrap.path_exists(path <> "/.git/objects/info/alternates"),
     bootstrap.path_exists(path <> "/.git/worktrees")
@@ -1046,6 +1063,8 @@ pub fn exclude_untracked(
         False -> Error(Nil)
       }
     })
+
+  // A tree with nothing untracked needs no write.
   case patterns {
     [] -> Ok(Nil)
     _ ->
@@ -1075,8 +1094,11 @@ pub fn exclude_untracked(
   }
 }
 
-// A path as an anchored ignore pattern: the characters Git reads as pattern
-// syntax are escaped, and a trailing slash stays so a directory matches.
+/// The pattern for a path: the characters Git reads as pattern syntax are
+/// escaped, and a trailing slash stays so a directory matches.
+///
+/// A file name is data, so a name with a star in it excludes that file and no
+/// other.
 fn escape_pattern(path: String) -> String {
   string.to_graphemes(path)
   |> list.map(fn(each) {
@@ -1113,10 +1135,14 @@ pub fn swap_template(trees: Worktrees, layout: Layout) -> Result(Nil, String) {
     })
   }
   use Nil <- result.try(force_remove(trees, directory, old))
+
+  // The template being replaced waits under its own name. A first template
+  // has nothing to move.
   use Nil <- result.try(case bootstrap.path_exists(template) {
     True -> renamed(template, old)
     False -> Ok(Nil)
   })
+
   use Nil <- result.try(renamed(template_making_path(layout), template))
 
   // The old template is gone for good. A removal that fails leaves it under its
@@ -1387,6 +1413,9 @@ pub fn check_tree_from(
   let path = check_tree_path(layout, ticket, commit)
   use Nil <- result.try(bootstrap.ensure_private_directory(checks))
   use Nil <- result.try(force_remove(trees, checks, path))
+
+  // A cold tree is cut from nothing, and a warm one is a copy of the template
+  // moved to the commit.
   let cut = case seed {
     Cold -> cut_detached(trees, checks, path, layout, commit)
     Warm(copier:) -> {

@@ -22,20 +22,21 @@
 ////
 //// ## Flow
 ////
-//// `build` → `cut` → `run_setup` → `run_check` → `seal` → `swap`
+//// `build` → `build_to_swap` → `run_setup` → `run_check` → `seal`
 ////
 //// 1. `build` reads the base commit and answers `Unchanged` when the template
 ////    already stands at it, so a rebuild that finds the base where it was
 ////    costs one fetch.
-//// 2. `cut` makes the tree under the building name, which a crash leaves
-////    behind and the next build removes.
+//// 2. `build_to_swap` cuts the tree under the building name, which a crash
+////    leaves behind and the next build removes, and carries every step below
+////    to the rename that puts the tree in place.
 //// 3. `run_setup` runs the setup command with the network on.
 //// 4. `run_check` runs the project's check once on the clean base with the
 ////    network off, so a template whose own base is red is never used.
 //// 5. `seal` excludes what the build left untracked, so a worker's clone does
 ////    not read as holding changes, and checks that the tree can be copied.
-//// 6. `swap` renames the tree to the template's name. Everything before it can
-////    fail, and any failure removes the tree and leaves the last good template.
+////    The rename comes last. Everything before it can fail, and any failure
+////    removes the tree and leaves the last good template.
 
 import client/goalcheck
 import client/goalstate
@@ -127,6 +128,8 @@ pub const default_setup_wall_ms = 1_800_000
 /// // project_template.build(trees, layout, Request("make deps", Some("make check"), 1_800_000, 600_000, None))
 /// ```
 pub fn build(trees: Worktrees, layout: Layout, request: Request) -> Outcome {
+  // A failed build removes its tree whatever step failed, so no disk is left
+  // behind and nothing is left under the building name.
   case build_to_swap(trees, layout, request) {
     Ok(outcome) -> outcome
     Error(failed) -> {
@@ -136,7 +139,9 @@ pub fn build(trees: Worktrees, layout: Layout, request: Request) -> Outcome {
   }
 }
 
-// Everything up to the swap, with a failure carried as the outcome to answer.
+/// Everything up to the swap, with a failure carried as the outcome to answer.
+/// A recorded swap that stopped half way is undone first, so the last good
+/// template is back in place before anything is built beside it.
 fn build_to_swap(
   trees: Worktrees,
   layout: Layout,
@@ -148,6 +153,9 @@ fn build_to_swap(
   use base <- result.try(
     project_repo.base_commit(trees, layout) |> result.map_error(cutting),
   )
+
+  // A base the template already stands at needs no build. Any other base is
+  // cut, set up, proved and swapped in.
   case request.current == Some(base) {
     True -> Ok(Unchanged(base))
     False -> {
@@ -170,7 +178,8 @@ fn cutting(why: String) -> Outcome {
   Failed(Failure(Cutting, tail(why)))
 }
 
-// Runs the setup command in the tree with the network on.
+/// Runs the setup command in the tree with the network on, and passes when it
+/// exits zero.
 fn run_setup(
   trees: Worktrees,
   tree: String,
@@ -186,13 +195,14 @@ fn run_setup(
   verdict(done, Setup)
 }
 
-// Runs the project's check on the clean base with the network off. A project
-// with no check has nothing to prove here.
+/// Runs the project's check on the clean base with the network off, and passes
+/// when it exits zero. A project with no check has nothing to prove here.
 fn run_check(
   trees: Worktrees,
   tree: String,
   request: Request,
 ) -> Result(Nil, Outcome) {
+  // A check that is configured must pass on the base; none passes trivially.
   case request.check {
     None -> Ok(Nil)
     Some(command) -> {
@@ -208,8 +218,8 @@ fn run_check(
   }
 }
 
-// A command's end as the step's result: a clean exit passes, and anything else
-// fails the step with the end of what it printed.
+/// A command's end as the step's result: a clean exit passes, and anything else
+/// fails the step with the end of what it printed.
 fn verdict(done: goalstate.CheckResult, stage: Stage) -> Result(Nil, Outcome) {
   case done.ending {
     goalstate.Exited(status: 0) -> Ok(Nil)
