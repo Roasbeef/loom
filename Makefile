@@ -3,7 +3,7 @@
 # Every target is a thin wrapper over the scripts and package tooling, so
 # what CI runs and what you run locally are the same commands.
 
-PACKAGES := host core storage session machine prompt statem statem_parallel evalstat gepa session_view web_view telemetry runtime provider \
+PACKAGES := host core storage session machine prompt statem statem_parallel evalstat gepa project session_view web_view telemetry runtime provider \
 	broker executor mcp lsp tools cap ext codemode events harness client conformance eval tui lint
 # Packages that target JavaScript. They are formatted, built and documented
 # with the rest; their pure tests run on a JavaScript runtime.
@@ -94,8 +94,9 @@ test-%: sandbox ## Run tests for one package, e.g. make test-core
 # JavaScript too (scripts/portable_js_test.sh finds the runtime); the full
 # gate runs this after each one's Erlang suite.
 .PHONY: test-portable-js
-test-portable-js: ## Run gepa's and evalstat's tests on the JavaScript target
+test-portable-js: ## Run gepa's, evalstat's and project's tests on the JavaScript target
 	@bash scripts/portable_js_test.sh gepa
+	@bash scripts/portable_js_test.sh project
 	@bash scripts/portable_js_test.sh evalstat
 
 .PHONY: build
