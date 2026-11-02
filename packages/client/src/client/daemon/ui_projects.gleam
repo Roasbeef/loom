@@ -20,13 +20,14 @@
 ////
 //// ## Flow
 ////
-//// `feed` → `boards` → `ticket` → `answer`
+//// `feed` → `boards` → `ticket_of` → `answered`
 ////
 //// 1. `feed` is the daemon's offer to a page, or nothing when there is no
 ////    project table.
-//// 2. `boards` reads each running project's first page.
-//// 3. `ticket` reads one ticket and `answer` records an answer, both named by
-////    ids the page took from a board it holds.
+//// 2. `boards` reads each running project's first page, building each body
+////    with `board_body`.
+//// 3. `ticket_of` reads one ticket and `answered` records an answer, both named
+////    by ids the page took from a board it holds.
 
 import client/daemon/project_book
 import client/daemon/project_host
