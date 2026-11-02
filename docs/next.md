@@ -46,8 +46,9 @@ ADR-022's "developer path" addendum. Neither has a hosted CI run.
   guest and places a session on each. A guest is reached only from the
   orchestrators of its host; executor-to-executor placement is #1137. Not done:
   a join whose entry was signed but whose bundle could not be written has to be
-  finished with `loom distribution renew`, and a resumed joined guest does not
-  check that it is still a member.
+  finished with `loom distribution renew`. A resumed joined guest is refused when
+  the daemon's installed ledger records it as revoked, and goes on when that
+  ledger cannot be read.
 - **Unverified:** `.github/workflows/vmm-release.yml` has never run; the GHCR
   package must be made public once by hand after the first publish;
   `setup --release` has never downloaded a real release; Linux/KVM has not

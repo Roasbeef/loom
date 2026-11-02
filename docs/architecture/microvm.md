@@ -823,8 +823,7 @@ state disk, such as `/home/loom`, `/work` and tools installed by hand. The steps
    refused naming `--fresh`;
 4. deletes the old root, renames `root.next` to `root`, and `stage` then runs on
    the new root as it does for any `up`, so provisioning runs again. The record
-   is written after the script is staged, as the last step of `stage`'s work on
-   the root. `state.img` is not touched.
+   is written after the script is staged. `state.img` is not touched.
 
 An interrupted `up` can finish. Before step 3 the old root is whole, so the next
 `up` repeats the upgrade from a clean start. After it, `root.next/srv/workspaces`
