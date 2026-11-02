@@ -10231,7 +10231,12 @@ ordinary top-level worker session per ticket assignment
 - `client/project_repo` is where a worker's Git stops. A worker's workspace is a
   clone the host makes (`git clone --no-hardlinks`, `origin` removed, branch
   `loom/<ticket>-<seq>`) under `<state>/projects/<id>/tickets/`, with a real `.git`
-  directory, so `workspace_policy` adds no writable root for it. The host
+  directory, so `workspace_policy` adds no writable root for it. A ticket with a
+  recorded head starts its next clone there instead (`project_repo.clone` takes a
+  `Start`: `FromOwner`, or `FromCommit`, a template-less repository that fetches
+  the commit from `host.git` by path, so it has no remote at all, with hooks and
+  `core.fsmonitor` off on the command line), unless the owner's `HEAD` already
+  contains the head, as for a merged ticket the owner pulled. The host
   repository `<state>/projects/<id>/host.git` is bare, made by `ensure_host` when
   the project's actor starts, written only by host code, and masked in every
   session (`workspace_policy.protecting_projects`: the host repository, the
@@ -10262,7 +10267,14 @@ ordinary top-level worker session per ticket assignment
   `create` (project id is `p-` and twelve hex of the workspace's SHA-256),
   `ensure_running`, `start_worker` (clone named from `<ticket>-<seq>`, then
   `manager.reserve`, `catalogue.bind_worker`, `manager.create_scoped`, in that order
-  so the session's builder reads its standing), and `reopen` at boot.
+  so the session's builder reads its standing), and `reopen` at boot. `reopen`
+  also installs the registry's end bell (`manager.on_session_ended`, rung when a
+  running slot faults, with the fault's text, and again when any slot drains, but
+  never while the registry shuts down); the bell casts to `project_book`, which
+  casts `project_host.session_gone` to every actor, and the actor ends the
+  holding assignment as `WorkerFailed` only if it still holds its slot, so a stop
+  the host ordered or a worker at rest reads as nothing. `reopen` makes the same
+  call for a live assignment whose session has no registration.
   `client/daemon/project_book` is the table of handles, and of each ticket's
   Mandate (`Ports.remember_mandate`, called for every ticket when the actor starts
   and before each worker start; a builder cannot ask the actor, which waits for the

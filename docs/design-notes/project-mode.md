@@ -327,6 +327,14 @@ it names no writable path of the owner's. Its `.git` is a real directory inside 
 workspace, and the daemon refuses to build a worker session on a clone whose `.git` is a
 file or a link, because the session policy widens to the directory such a file names.
 
+A new assignment of a ticket that already has a recorded head is cut differently: the clone
+is a new repository made with no template that fetches that one commit from `host.git` by
+path. A fetch by path writes no remote, so the clone has no `origin` and nothing in its
+configuration names the host repository, and every object is a copy. The host does this
+because the head is a commit it took in itself, and the earlier clone may be gone. If the
+owner's `HEAD` already contains the head (a merged ticket whose owner has pulled), the clone
+starts from the owner's `HEAD` instead, so it is not cut behind the base.
+
 What a person should do with a kept clone: fetch from `refs/tickets/<ticket>/<commit>` in
 `host.git`, and treat the clone as untrusted. Its hooks and configuration are the worker's,
 so running Git inside it can run the worker's program as the owner.
