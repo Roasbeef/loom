@@ -36,6 +36,7 @@ import gleam/otp/factory_supervisor
 import gleam/otp/supervision
 import gleam/result
 import gleam/string
+import project/model
 import weft/actor
 
 /// The table's address, and the supervisor the actors it lists run under.
@@ -50,6 +51,23 @@ type Message {
   Put(handle: Handle)
   Get(project: String, reply: Subject(Result(Handle, Nil)))
   All(reply: Subject(List(Handle)))
+  Remember(
+    project: String,
+    ticket: String,
+    mandate: model.Mandate,
+    reply: Subject(Nil),
+  )
+  Recall(
+    project: String,
+    ticket: String,
+    reply: Subject(Result(model.Mandate, Nil)),
+  )
+}
+
+/// What the table process keeps: the running projects' handles, and the
+/// Mandate of each ticket as `project/ticket`.
+type Table {
+  Table(handles: Dict(String, Handle), mandates: Dict(String, model.Mandate))
 }
 
 /// Starts the table and the supervisor for the project actors, linked to the
@@ -64,7 +82,9 @@ type Message {
 pub fn start() -> Result(Book, String) {
   use table <- result.try(
     actor.new_with_initialiser(1000, fn(inbox) {
-      actor.initialised(dict.new()) |> actor.returning(inbox) |> Ok
+      actor.initialised(Table(dict.new(), dict.new()))
+      |> actor.returning(inbox)
+      |> Ok
     })
     |> actor.on_message(handle)
     |> actor.start
@@ -107,23 +127,55 @@ pub fn launch(
 
 /// The table's message handler. It never calls into a project's actor, so a
 /// lookup cannot wait on a project that is busy or stopped.
-fn handle(
-  table: Dict(String, Handle),
-  message: Message,
-) -> actor.Next(Dict(String, Handle), Message) {
+fn handle(table: Table, message: Message) -> actor.Next(Table, Message) {
   // A put replaces any earlier handle for the project, which is how a
   // restarted actor takes over its name.
   case message {
-    Put(found) -> actor.continue(dict.insert(table, found.project, found))
+    Put(found) ->
+      actor.continue(
+        Table(
+          ..table,
+          handles: dict.insert(table.handles, found.project, found),
+        ),
+      )
     Get(project, reply) -> {
-      process.send(reply, dict.get(table, project))
+      process.send(reply, dict.get(table.handles, project))
       actor.continue(table)
     }
     All(reply) -> {
-      process.send(reply, dict.values(table))
+      process.send(reply, dict.values(table.handles))
+      actor.continue(table)
+    }
+
+    // The actor waits for the acknowledgement, so a Mandate it has told the
+    // table is there before the actor starts or opens any session.
+    Remember(project, ticket, mandate, reply) -> {
+      process.send(reply, Nil)
+      actor.continue(
+        Table(
+          ..table,
+          mandates: dict.insert(
+            table.mandates,
+            mandate_key(project, ticket),
+            mandate,
+          ),
+        ),
+      )
+    }
+    Recall(project, ticket, reply) -> {
+      process.send(
+        reply,
+        dict.get(table.mandates, mandate_key(project, ticket)),
+      )
       actor.continue(table)
     }
   }
+}
+
+// A project id is `p-` and hex digits, so a slash cannot appear in it and the
+// pair cannot collide with another pair.
+fn mandate_key(project: String, ticket: String) -> String {
+  project <> "/" <> ticket
 }
 
 /// Records a running project's handle, replacing an earlier one.
@@ -161,4 +213,48 @@ pub fn all(book: Book) -> List(Handle) {
   call.try_call(book.inbox, waiting: 2000, sending: All)
   |> result.unwrap([])
   |> list.sort(fn(a, b) { string.compare(a.project, b.project) })
+}
+
+/// Records the Mandate a project's ticket holds, and returns once the table
+/// has it. The project's actor calls it, and the answer is waited for so that
+/// the Mandate is readable before the actor starts or opens the ticket's
+/// worker.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_book.remember(book, "p-1a2b3c", "t-c1", mandate)
+/// ```
+pub fn remember(
+  book: Book,
+  project: String,
+  ticket: String,
+  mandate: model.Mandate,
+) -> Nil {
+  call.try_call(book.inbox, waiting: 2000, sending: Remember(
+    project,
+    ticket,
+    mandate,
+    _,
+  ))
+  |> result.unwrap(Nil)
+}
+
+/// The Mandate the project's actor told the table for a ticket. It is read
+/// without calling into any actor, which is what lets a session builder use it
+/// while the actor waits for that build.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_book.recall(book, "p-1a2b3c", "t-c1")
+/// ```
+pub fn recall(
+  book: Book,
+  project: String,
+  ticket: String,
+) -> Result(model.Mandate, Nil) {
+  call.try_call(book.inbox, waiting: 2000, sending: Recall(project, ticket, _))
+  |> result.replace_error(Nil)
+  |> result.flatten
 }

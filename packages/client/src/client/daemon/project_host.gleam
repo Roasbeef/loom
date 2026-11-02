@@ -98,6 +98,12 @@ pub type Ports {
     start_session: fn(StartRequest) -> Result(String, String),
     /// Opens a saved session of this project.
     open_session: fn(String) -> Result(Nil, String),
+    /// Tells the daemon the Mandate a ticket holds, so a worker session built
+    /// for the ticket derives its jail from it. The actor calls it for every
+    /// ticket when it starts, and for a ticket again just before it starts a
+    /// worker. A session build cannot ask the actor instead, because the actor
+    /// waits for that very build while it starts or opens a session.
+    remember_mandate: fn(String, model.Mandate) -> Nil,
     /// Stops a resident session, leaving it saved.
     stop_session: fn(String) -> Result(Nil, String),
     /// Removes the worktree of an assignment whose ticket has ended, or keeps
@@ -850,7 +856,9 @@ fn boot(config: Config, inbox: Subject(Message)) -> Result(Host, String) {
   use replayed <- result.try(replay(restored, restored.last_seq))
   Ok(
     perform_due(
-      configure_rules(recover_interrupted(rearm_router_clock(replayed))),
+      configure_rules(
+        remember_mandates(recover_interrupted(rearm_router_clock(replayed))),
+      ),
     ),
   )
 }
@@ -864,6 +872,15 @@ fn rearm_router_clock(host: Host) -> Host {
     state.RouterBusy -> Host(..host, offered_at_ms: host.ports.now_ms())
     state.RouterIdle -> host
   }
+}
+
+/// Tells the daemon every ticket's Mandate before the actor performs anything,
+/// since performing may start or open a worker whose jail is derived from it.
+fn remember_mandates(host: Host) -> Host {
+  list.each(state.tickets_oldest_first(host.engine), fn(ticket) {
+    host.ports.remember_mandate(ticket.id.value, ticket.mandate)
+  })
+  host
 }
 
 /// Replays a page at a time, because the ledger returns at most a page, and the
@@ -1851,6 +1868,11 @@ fn start_worker(
               seq:,
               title: model.title_text(found.title),
             )
+
+          // The Mandate is told to the daemon first, because the session's
+          // builder derives its jail from it and cannot ask this actor, which
+          // is waiting for the build.
+          host.ports.remember_mandate(ticket, found.mandate)
 
           // The assignment after a rested one takes the same session over, and
           // with it the clone that holds the work. Any other start makes a

@@ -23,6 +23,7 @@ pub fn inert() -> project_host.Ports {
     now_ms: ffi_os.system_time_ms,
     start_session: fn(request) { Ok("session-" <> request.key) },
     open_session: fn(_) { Ok(Nil) },
+    remember_mandate: fn(_, _) { Nil },
     stop_session: fn(_) { Ok(Nil) },
     release_worktree: fn(_) { Ok(project_host.Removed) },
     endpoint_of: fn(session) {

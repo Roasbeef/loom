@@ -43,6 +43,7 @@
 //// `.git` is not a directory, because the session policy would otherwise
 //// widen to the Git directory that file names.
 
+import broker/policy
 import client/daemon/manager
 import client/daemon/project_book.{type Book}
 import client/daemon/project_host
@@ -50,6 +51,7 @@ import client/goalcheck
 import client/goalstate
 import client/internal/ffi_os
 import client/peer_mail
+import client/project_jail
 import client/project_poller
 import client/project_publish
 import client/project_repo
@@ -69,6 +71,7 @@ import gleam/result
 import gleam/string
 import host/bootstrap
 import project/model
+import project/policy as project_policy
 import storage/catalogue
 import storage/domain
 import telemetry/field
@@ -341,6 +344,9 @@ fn ports_for(env: Env, project: catalogue.Project) -> project_host.Ports {
     start_session: fn(request) {
       use trees <- result.try(trees)
       start_worker(env, project, layout, trees, request)
+    },
+    remember_mandate: fn(ticket, mandate) {
+      project_book.remember(env.book, project.id, ticket, mandate)
     },
     open_session: fn(session) {
       manager.open(env.registry, session)
@@ -715,6 +721,7 @@ pub fn seat(
   registry: manager.Manager(serve.Resident),
   book: Book,
   session: String,
+  owner: policy.SandboxPolicy,
 ) -> Result(Option(project_standing.Seat), String) {
   // The catalogue is read in the registry's own turn, and an unanswering
   // registry is a failure of the read, not an ordinary session.
@@ -740,19 +747,44 @@ pub fn seat(
 
       // The project's handle is what carries the session's tools.
       case project_book.get(book, project) {
-        Ok(handle) ->
-          Ok(
-            Some(project_standing.Seat(
-              standing:,
-              seam: projectseam.seam(handle, session),
-              feed: scan_feed(standing, handle, session),
-              run_ended: router_signal(standing, handle),
-              workspace: handle.workspace,
-            )),
-          )
+        Ok(handle) -> {
+          use jail <- result.map(jail_of(book, standing, owner))
+          Some(project_standing.Seat(
+            standing:,
+            seam: projectseam.seam(handle, session),
+            feed: scan_feed(standing, handle, session),
+            run_ended: router_signal(standing, handle),
+            workspace: handle.workspace,
+            jail:,
+          ))
+        }
         Error(Nil) -> Error("project " <> project <> " is not running")
       }
     }
+  }
+}
+
+/// A worker's jail, derived from the Mandate its ticket holds. The project's
+/// actor told the book that Mandate from its ledger, and the jail is derived on
+/// every build of the session and never read back from what the session stored,
+/// so a boot reopen, a resume and a retry all get the policy the ledger's
+/// Mandate gives. A ticket the book has no Mandate for is an error and no
+/// session is built: a worker with no Mandate has no policy to run under.
+fn jail_of(
+  book: Book,
+  standing: project_standing.Standing,
+  owner: policy.SandboxPolicy,
+) -> Result(Option(project_jail.Jail), String) {
+  case standing {
+    project_standing.Worker(project:, ticket:, ..) ->
+      project_book.recall(book, project, ticket)
+      |> result.map_error(fn(_) {
+        "project " <> project <> " has no mandate for ticket " <> ticket
+      })
+      |> result.map(fn(mandate) {
+        Some(project_jail.jail_for(project_policy.for_mandate(mandate), owner))
+      })
+    project_standing.Router(..) | project_standing.Ordinary -> Ok(None)
   }
 }
 

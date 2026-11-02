@@ -144,6 +144,7 @@ import client/peer_outbox_drain
 import client/peers
 import client/permissions
 import client/profile_switch
+import client/project_jail
 import client/project_packs
 import client/project_scan
 import client/project_standing
@@ -206,6 +207,7 @@ import host/bootstrap
 import host/skill
 import machine/operation
 import machine/strand as machine_strand
+import project/policy as project_policy
 import provider/adapter/anthropic
 import provider/adapter/gemini
 import provider/adapter/openai
@@ -4077,7 +4079,10 @@ fn assemble_in(
     owner_services.local(
       handle: agency.fact_supplier(agency_config),
       runtime: agency.runtime_supplier(agency_config),
-      escalate: escalate.seam(escalate_config).refused,
+      escalate: project_approvals(
+        settings.project,
+        escalate.seam(escalate_config),
+      ).refused,
       output: hub.tool_output_observer(event_bus, opened),
       capability: case home {
         Here(_) -> owner_services.no_capability
@@ -5151,7 +5156,7 @@ fn assemble_in(
             |> with_spawner_link(spawner_link)
             |> hub.with_remote_reach(hub_remote_reach)
             |> hub.with_registry(tool_registry)
-            |> with_project_ceiling(project_seat)
+            |> with_project_ceiling(project_seat, tool.names(tool_registry))
             |> hub.with_extension_refusals(extension_refusals)
             |> hub.with_skills(skills)
             |> with_evolution_control(evolution_wiring, core_control)
@@ -6431,19 +6436,71 @@ fn project_role(project: Option(project_standing.Seat)) -> model.Role {
   }
 }
 
-/// Gives the gateway the router's tool ceiling, so an operator's `set_config`
-/// cannot name a tool above it. Other sessions have no ceiling.
+/// Gives the gateway the tool ceiling of a router or a worker, so an
+/// operator's `set_config` cannot name a tool above it. A router's ceiling is
+/// its three tools. A worker's is the registered tools its jail allows, which
+/// keeps the peer and `agent_*` tools out of its active set even if a later
+/// registry were to hold them. Other sessions have no ceiling.
 fn with_project_ceiling(
   options: hub.Options,
   project: Option(project_standing.Seat),
+  registered: List(String),
 ) -> hub.Options {
-  case
-    option.map(project, fn(seat) {
-      project_standing.tool_ceiling(seat.standing)
-    })
-  {
-    Some(Ok(ceiling)) -> hub.with_tool_ceiling(options, ceiling)
-    Some(Error(Nil)) | None -> options
+  case project {
+    Some(project_standing.Seat(standing: project_standing.Worker(..), jail:, ..)) ->
+      hub.with_tool_ceiling(
+        options,
+        list.filter(registered, project_jail.allows(worker_tools(jail), _)),
+      )
+    Some(project_standing.Seat(standing:, ..)) ->
+      case project_standing.tool_ceiling(standing) {
+        Ok(ceiling) -> hub.with_tool_ceiling(options, ceiling)
+        Error(Nil) -> options
+      }
+    None -> options
+  }
+}
+
+/// The tool ceiling of a worker's seat. A worker seated with no jail never
+/// comes from the daemon, whose seat step derives one or builds no session, and
+/// the three readings here fail closed for it anyway: the worker ceiling,
+/// refused approvals and no network.
+fn worker_tools(jail: Option(project_jail.Jail)) -> project_jail.ToolCeiling {
+  option.map(jail, fn(found) { found.tools })
+  |> option.unwrap(project_jail.worker_tools)
+}
+
+/// The approval route of a worker's seat, refused when the seat has no jail.
+fn worker_approvals(
+  jail: Option(project_jail.Jail),
+) -> project_policy.ApprovalRoute {
+  option.map(jail, fn(found) { found.approvals })
+  |> option.unwrap(project_policy.ApprovalsRefused)
+}
+
+/// The base policy of a worker's seat. With no jail the worker keeps the
+/// owner's policy narrowed to the network a registries-only Mandate gets.
+fn worker_sandbox(
+  jail: Option(project_jail.Jail),
+  owner: policy.SandboxPolicy,
+) -> policy.SandboxPolicy {
+  option.map(jail, fn(found) { found.sandbox })
+  |> option.lazy_unwrap(fn() {
+    project_jail.sandbox_of(project_policy.RegistriesOnly, owner)
+  })
+}
+
+/// The escalation seam a session's refused calls go to. A worker whose
+/// Mandate refuses approvals gets the seam that writes no record and asks
+/// nobody, and every other session keeps the seam it was built with.
+fn project_approvals(
+  project: Option(project_standing.Seat),
+  person: escalate.Escalations,
+) -> escalate.Escalations {
+  case project {
+    Some(project_standing.Seat(standing: project_standing.Worker(..), jail:, ..)) ->
+      project_jail.escalations(worker_approvals(jail), person)
+    Some(project_standing.Seat(..)) | None -> person
   }
 }
 
@@ -6481,6 +6538,7 @@ pub fn seat_project(
           seat.workspace,
           usable_seed,
         ),
+        base_policy: worker_sandbox(seat.jail, settings.base_policy),
       )
   }
 }

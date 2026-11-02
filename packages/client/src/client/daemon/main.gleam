@@ -3229,7 +3229,12 @@ fn seated(
   case config.projects.book {
     None -> Ok(settings)
     Some(book) -> {
-      use seat <- result.map(project_start.seat(registry, book, session))
+      use seat <- result.map(project_start.seat(
+        registry,
+        book,
+        session,
+        settings.base_policy,
+      ))
 
       // Only the router and the workers of a project are seated. Every other
       // session keeps the settings it was opened with.

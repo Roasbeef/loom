@@ -13,6 +13,7 @@
 //// `session_directory.Standing`, which describe delegates and spawners. It
 //// does not replace them and carries no delegate case.
 
+import client/project_jail.{type Jail}
 import client/project_scan
 import gleam/int
 import gleam/option.{type Option, None, Some}
@@ -62,6 +63,10 @@ pub type Seat {
     /// build output, so what a session looks for beside its workspace it looks
     /// for beside this one.
     workspace: String,
+    /// What the worker's Mandate lets its jail do, derived from the ledger
+    /// each time the session is built. A router and an ordinary session have
+    /// none.
+    jail: Option(Jail),
   )
 }
 
@@ -180,8 +185,5 @@ pub fn project_tool_names(standing: Standing) -> List(String) {
 /// assert project_standing.worker_excludes("agent_spawn")
 /// ```
 pub fn worker_excludes(name: String) -> Bool {
-  case name {
-    "agent_" <> _ | "peer_" <> _ -> True
-    _ -> False
-  }
+  !project_jail.allows(project_jail.worker_tools, name)
 }

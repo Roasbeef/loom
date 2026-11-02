@@ -25,6 +25,7 @@ import client/memory_overview
 import client/notice
 import client/permissions
 import client/profile_switch
+import client/project_jail
 import client/proposals
 import client/protocol
 import client/provider_relay
@@ -2177,6 +2178,63 @@ pub fn set_config_above_the_tool_ceiling_refused_test() {
   let assert json.Object(fields) = config
   assert list.key_find(fields, "active_tools")
     == Ok(json.Array([json.String("grep")]))
+}
+
+// A project worker's jail is not configuration. `set_config` takes seven keys,
+// none of which names a network, an approval route or a sandbox, so a worker
+// that sends one gets a refusal and the jail is as it was. The one key that
+// names tools is held to the worker's ceiling, which the peer tools are above.
+pub fn set_config_cannot_widen_a_workers_jail_test() {
+  let registry = tool_registry.built_in(None, None, None, None, None)
+  let ceiling =
+    list.append(tool.names(registry), ["agent_send"])
+    |> list.filter(project_jail.allows(project_jail.worker_tools, _))
+  let harness =
+    start_harness_adjusted(
+      None,
+      Some(registry),
+      None,
+      None,
+      SettlingProvider,
+      None,
+      None,
+      gateway.with_tool_ceiling(_, ceiling),
+    )
+  subscribe(harness)
+  let keys = ["network", "approvals", "base_policy", "sandbox", "credentials"]
+  list.index_map(keys, fn(key, index) {
+    let id = 50 + index
+    send(
+      harness,
+      id,
+      protocol.SetConfig(
+        strand: Some("main"),
+        config: json.Object([#(key, json.String("full"))]),
+      ),
+    )
+    let envelope = next(harness)
+    assert envelope.reply_to == Some(id)
+    let assert protocol.ErrorEvent(code: "bad_request", message:, ..) =
+      envelope.event
+    assert string.contains(message, "unknown config key: " <> key)
+  })
+
+  // The peer tool is above the ceiling whether or not a registry holds it.
+  send(
+    harness,
+    60,
+    protocol.SetConfig(
+      strand: Some("main"),
+      config: json.Object([
+        #("active_tools", json.Array([json.String("agent_send")])),
+      ]),
+    ),
+  )
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(60)
+  let assert protocol.ErrorEvent(code: "bad_request", message:, ..) =
+    envelope.event
+  assert string.contains(message, "above this session's tool ceiling")
 }
 
 // With no ceiling the same change is allowed, as it always was.

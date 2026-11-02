@@ -265,6 +265,43 @@ fn collect_keys(from: Subject(String), found: List(String)) -> List(String) {
   }
 }
 
+// The daemon builds a worker's jail from its ticket's Mandate while the actor
+// waits for the session, so the actor has to have told the daemon the Mandate
+// first. This pins the order: the Mandate comes before the start, and a
+// restarted actor tells it again before it performs anything.
+pub fn a_mandate_is_told_before_its_worker_starts_and_again_after_a_restart_test() {
+  let rig = rig("mandate")
+  let told: Subject(String) = process.new_subject()
+  let recording =
+    project_host.Ports(
+      ..rig.config.ports(),
+      remember_mandate: fn(ticket, mandate: model.Mandate) {
+        let strength = case mandate.strength {
+          model.Explicit -> "explicit"
+          model.Inferred -> "inferred"
+        }
+        process.send(told, "mandate:" <> ticket <> ":" <> strength)
+      },
+      start_session: fn(request: project_host.StartRequest) {
+        process.send(told, "start:" <> request.key)
+        Ok("session-" <> request.key)
+      },
+    )
+  let config = project_host.Config(..rig.config, ports: fn() { recording })
+  let assert Ok(handle) = project_host.start(config) as "the actor starts"
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+  let assert Ok([tools.Applied]) = project_host.route(handle, [accept("a")])
+  assert list.reverse(collect_keys(told, []))
+    == ["mandate:t-a:explicit", "start:" <> first_key("t-a")]
+
+  // The restart replays the ledger and starts nothing, but it tells the
+  // Mandate again, so a worker opened afterwards can be built.
+  stop(handle)
+  let assert Ok(again) = project_host.start(config) as "the actor restarts"
+  assert list.reverse(collect_keys(told, [])) == ["mandate:t-a:explicit"]
+  stop(again)
+}
+
 pub fn a_human_turn_is_recorded_once_test() {
   let rig = rig("human")
   let handle = start(rig)

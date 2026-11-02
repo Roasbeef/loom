@@ -284,13 +284,18 @@ pub fn event() -> Generator(Event) {
 pub fn mandate() -> Generator(Mandate) {
   qcheck.map6(
     one_of([model.Explicit, model.Inferred]),
-    one_of([
-      model.FromComposer,
-      model.FromAddressed,
-      model.FromFollowUp,
-      model.FromOverheard,
-      model.FromAutomation,
-    ]),
+    // A rule-admitted basis is among them, since the rule that admitted a
+    // trigger is exactly the kind of field policy must not read.
+    qcheck.from_generators(
+      one_of([
+        model.FromComposer,
+        model.FromAddressed,
+        model.FromFollowUp,
+        model.FromOverheard,
+        model.FromAutomation,
+      ]),
+      [qcheck.map(text(), fn(rule) { model.FromRule(RuleId(rule)) })],
+    ),
     qcheck.map(text(), ActorId),
     qcheck.map(text(), SourceId),
     qcheck.tuple2(

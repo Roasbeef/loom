@@ -424,7 +424,12 @@ fn assemble(
         )),
         base_policy: workspace_policy.base_policy(record.workspace),
       )
-    use seat <- result.try(project_start.seat(directory, book, record.id))
+    use seat <- result.try(project_start.seat(
+      directory,
+      book,
+      record.id,
+      settings.base_policy,
+    ))
     let seated = case seat {
       Some(found) -> serve.seat_project(settings, found)
       None -> settings
