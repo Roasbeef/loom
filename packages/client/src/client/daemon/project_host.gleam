@@ -1185,7 +1185,10 @@ fn deliver_to_worker(
     Ok(_), Ok(_) if typed_here -> settle(host, row)
     Ok(current), Ok(text) ->
       case bound_session(current, seq) {
-        None -> defer(host, row)
+        // The assignment has no session yet. The row stays as it is, due now,
+        // so the next round of this very pass delivers it once the start job
+        // has bound the session; deferring it would cost a tick's wait.
+        None -> host
         Some(session) ->
           admit(host, row, session, trigger, text, peer_mail.MayWake, fn(ok) {
             delivered(host, row, ticket, trigger, ok)

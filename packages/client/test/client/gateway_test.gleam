@@ -2128,6 +2128,77 @@ pub fn set_config_unknown_active_tool_refused_test() {
   assert list.key_find(fields, "active_tools") == Ok(json.Array([]))
 }
 
+// A session with a tool ceiling (a project router) cannot be widened past it
+// by `set_config`, though the registry holds the tool. The refusal names the
+// ceiling, and an ordinary session with the same registry is unaffected.
+pub fn set_config_above_the_tool_ceiling_refused_test() {
+  let registry = tool_registry.built_in(None, None, None, None, None)
+  let harness =
+    start_harness_adjusted(
+      None,
+      Some(registry),
+      None,
+      None,
+      SettlingProvider,
+      None,
+      None,
+      gateway.with_tool_ceiling(_, ["grep"]),
+    )
+  subscribe(harness)
+  send(
+    harness,
+    30,
+    protocol.SetConfig(
+      strand: Some("main"),
+      config: json.Object([
+        #("active_tools", json.Array([json.String("bash")])),
+      ]),
+    ),
+  )
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(30)
+  let assert protocol.ErrorEvent(code: "bad_request", message:, ..) =
+    envelope.event
+  assert string.contains(message, "above this session's tool ceiling")
+  send(
+    harness,
+    31,
+    protocol.SetConfig(
+      strand: Some("main"),
+      config: json.Object([
+        #("active_tools", json.Array([json.String("grep")])),
+      ]),
+    ),
+  )
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(31)
+  let assert protocol.SnapshotEvent(protocol.ConfigSnapshot(config:)) =
+    envelope.event
+  let assert json.Object(fields) = config
+  assert list.key_find(fields, "active_tools")
+    == Ok(json.Array([json.String("grep")]))
+}
+
+// With no ceiling the same change is allowed, as it always was.
+pub fn set_config_without_a_ceiling_allows_bash_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  send(
+    harness,
+    32,
+    protocol.SetConfig(
+      strand: Some("main"),
+      config: json.Object([
+        #("active_tools", json.Array([json.String("bash")])),
+      ]),
+    ),
+  )
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(32)
+  let assert protocol.SnapshotEvent(protocol.ConfigSnapshot(..)) =
+    envelope.event
+}
+
 // A hub with no registry cannot check membership, so it writes nothing
 // rather than trusting the client — the same shape as a `model_name`
 // switch with no catalogue.
