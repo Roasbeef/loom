@@ -35,6 +35,7 @@ import client/internal/shared_history
 import client/owned_assembly_test
 import client/peer_mail
 import client/project_records
+import client/project_repo
 import client/roster
 import client/serve
 import client/session_directory
@@ -66,6 +67,7 @@ import storage/domain as storage_domain
 import storage/exec_ledger
 import storage/project_ledger
 import support/internal/ffi_ws
+import support/project_rig
 import support/provider as provider_test
 import support/worktree_rig
 import telemetry/log
@@ -112,6 +114,7 @@ pub fn a_project_runs_two_tickets_and_survives_a_restart_test() {
   process.trap_exits(True)
   let scratch = scratch("project-daemon")
   let repository = worktree_rig.repository(scratch <> "/repo")
+  let owners = project_rig.digest(repository)
   let seen = process.new_subject()
   let daemon = boot(scratch <> "/state", seen)
 
@@ -135,20 +138,29 @@ pub fn a_project_runs_two_tickets_and_survives_a_restart_test() {
     })
   assert ticket_titles(before) == ["fix a", "fix b"]
 
-  // The workers are in different worktrees, on different branches of the one
-  // repository, and Git agrees.
+  // The workers are in clones of their own under the daemon's state root, on
+  // different branches, and neither is a worktree of the owner's repository:
+  // Git lists none, each has a real `.git` directory, and the owner's
+  // configuration, hooks and refs are what they were.
   let sessions = ticket_sessions(before)
   let assert [first, second] = sessions
   let first_tree = workspace_of(daemon, first)
   let second_tree = workspace_of(daemon, second)
   assert first_tree != second_tree
-  let listed = worktree_rig.git(repository, ["worktree", "list"])
-  assert string.contains(listed, first_tree)
-  assert string.contains(listed, second_tree)
+  let tickets = daemon.ready.state_root <> "/projects/" <> project <> "/tickets"
+  assert first_tree == tickets <> "/t-a-1"
+  assert second_tree == tickets <> "/t-b-1"
+  assert !string.contains(
+    worktree_rig.git(repository, ["worktree", "list"]),
+    "t-a-1",
+  )
+  assert project_repo.sound_clone(first_tree) == Ok(Nil)
+  assert project_repo.sound_clone(second_tree) == Ok(Nil)
   assert worktree_rig.git(first_tree, ["rev-parse", "--abbrev-ref", "HEAD"])
     == "loom/t-a-1"
   assert worktree_rig.git(second_tree, ["rev-parse", "--abbrev-ref", "HEAD"])
     == "loom/t-b-1"
+  assert project_rig.digest(repository) == owners
 
   // The router offers exactly its three tools, and a worker was never given
   // them. The worker that tried to route was told so.
@@ -210,6 +222,7 @@ pub fn a_project_runs_two_tickets_and_survives_a_restart_test() {
       ),
     ])
   stop(restarted)
+  assert project_rig.digest(repository) == owners
   process.trap_exits(False)
 }
 

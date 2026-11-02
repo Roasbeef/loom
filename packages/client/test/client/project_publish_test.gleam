@@ -78,10 +78,7 @@ fn rig(name: String) -> Rig {
   let assert Ok(Nil) = simplifile.set_permissions_octal(bin <> "/gh", 0o755)
     as "the fake gh is executable"
   Rig(
-    repository: project_publish.Repository(
-      directory: repository,
-      remote: "origin",
-    ),
+    repository: project_publish.Repository(directory: repository, url: remote),
     commit:,
     remote:,
     bin:,
@@ -222,12 +219,35 @@ pub fn a_push_the_remote_refuses_is_a_failure_that_may_pass_test() {
 
 // --- when nothing can be published ----------------------------------------------
 
-pub fn a_repository_with_no_remote_is_unavailable_and_asks_nothing_of_gh_test() {
-  let rig = rig("noremote")
-  worktree_rig.git(rig.repository.directory, ["remote", "remove", "origin"])
-  let assert Error(Unavailable(why)) = publish(rig)
-  assert string.contains(why, "no remote named origin")
+pub fn a_url_with_no_owner_and_name_is_unavailable_and_asks_nothing_of_gh_test() {
+  let rig = rig("noowner")
+  let nameless = project_publish.Repository(..rig.repository, url: "r")
+  let assert Error(Unavailable(why)) =
+    project_publish.publish(
+      rig.tools,
+      nameless,
+      "project/t-a",
+      rig.commit,
+      "t",
+      "b",
+    )
+  assert string.contains(why, "no GitHub owner and name")
   assert calls(rig) == []
+}
+
+// The repository's own configuration names other places to push, as a worker's
+// clone could. The push goes to the pinned URL, which it was given literally.
+pub fn the_repositorys_configuration_does_not_redirect_the_push_test() {
+  let rig = rig("redirect")
+  let decoy = rig.bin <> "/decoy.git"
+  worktree_rig.git(rig.bin, ["init", "--quiet", "--bare", decoy])
+  let directory = rig.repository.directory
+  worktree_rig.git(directory, ["config", "remote.origin.url", decoy])
+  worktree_rig.git(directory, ["config", "remote.origin.pushurl", decoy])
+  let assert Ok(_) = publish(rig)
+  assert worktree_rig.git(rig.remote, ["rev-parse", "refs/heads/project/t-a"])
+    == rig.commit
+  assert !bootstrap.path_exists(decoy <> "/refs/heads/project")
 }
 
 pub fn a_machine_without_gh_is_unavailable_test() {

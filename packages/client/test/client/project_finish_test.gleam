@@ -45,6 +45,7 @@ type Script {
     hold: fn(String) -> Nil,
     output: String,
     publish: project_host.Published,
+    refusal: option.Option(String),
   )
 }
 
@@ -56,6 +57,7 @@ fn script() -> Script {
     hold: fn(_) { Nil },
     output: "ok",
     publish: project_host.Opened("https://example.test/o/r/pull/1"),
+    refusal: None,
   )
 }
 
@@ -107,7 +109,16 @@ fn rig(
       observe_head: fn(request: project_host.ObserveRequest) {
         process.send(work, Read(request.ticket))
         let now = current()
-        Ok(project_host.Observed(commit: now.commit, changed: now.changed))
+        case now.refusal {
+          Some(why) -> Ok(project_host.NotTaken(commit: now.commit, why:))
+          None ->
+            Ok(
+              project_host.Taken(project_host.Observed(
+                commit: now.commit,
+                changed: now.changed,
+              )),
+            )
+        }
       },
       run_check: fn(request: project_host.CheckRequest) {
         process.send(work, Checked(request.command, request.commit))
@@ -287,6 +298,29 @@ pub fn a_protected_path_goes_to_a_person_and_the_check_never_runs_test() {
   assert checks(work) == []
   assert publishes(work) == []
   assert string.contains(board(handle), "touches a protected path")
+}
+
+pub fn a_commit_the_host_repository_refuses_goes_to_a_person_and_nothing_runs_test() {
+  let refused = fn() {
+    Script(..script(), refusal: Some("fsck: badTimezone in the commit"))
+  }
+  let rig =
+    rig(
+      "refused",
+      policy(Some("make check"), project_settings.PublishPullRequest),
+      refused,
+    )
+  let #(handle, worker) = with_worker(rig)
+  idle(handle, worker)
+
+  // The ticket waits for a person, with the host's words, and neither the
+  // check nor the publish ran for a commit nothing vouches for.
+  assert board_says(handle, "\"stage\":\"person/review\"")
+  assert board_says(handle, "would not take the worker's commit in")
+  assert board_says(handle, "fsck: badTimezone in the commit")
+  let work = seen(rig)
+  assert checks(work) == []
+  assert publishes(work) == []
 }
 
 pub fn the_checks_own_script_is_protected_too_test() {

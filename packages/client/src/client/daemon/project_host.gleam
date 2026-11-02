@@ -97,11 +97,12 @@ pub type Ports {
     release_worktree: fn(ReleaseRequest) -> Result(Released, String),
     /// The endpoint of a resident session, or why it has none.
     endpoint_of: fn(String) -> Result(peer_mail.Endpoint, peer_mail.Failure),
-    /// Reads the head of an assignment's worktree and the paths its branch
-    /// changed against the project's base. It runs in the actor, so it must be
-    /// quick, and it reads a repository the worker may have written, so the
-    /// daemon runs it in the sandbox.
-    observe_head: fn(ObserveRequest) -> Result(Observed, String),
+    /// Takes the head of an assignment's clone into the project's host
+    /// repository and reads the paths its branch changed against the project's
+    /// base there. It runs in the actor, so it must be quick. The clone is
+    /// the worker's to write, so the daemon reads it only in the sandbox and
+    /// trusts nothing but what the host repository then holds.
+    observe_head: fn(ObserveRequest) -> Result(Intake, String),
     /// Runs the project's check at a commit in a fresh worktree, in a sandbox
     /// the worker cannot reach, and answers how it ended. It blocks until the
     /// check ends, so the actor calls it only from a task of its own.
@@ -125,14 +126,30 @@ pub type ObserveRequest {
   )
 }
 
-/// What reading a worktree found.
+/// What reading a clone found, once the host repository holds the commit.
 pub type Observed {
   Observed(
-    /// The commit the worktree's branch is at.
+    /// The commit the clone's branch is at, as the host repository holds it.
     commit: String,
     /// The paths that commit changed against the project's base, as Git names
     /// them. They are data, never a command.
     changed: List(String),
+  )
+}
+
+/// What taking an assignment's head into the host repository came to.
+pub type Intake {
+  /// The host repository holds the commit, and the diff was read there.
+  Taken(Observed)
+
+  /// The host repository would not take the commit in, or holds something
+  /// else under its name. The clone is not trusted: no check runs, and a
+  /// person is told why.
+  NotTaken(
+    /// The commit the clone's branch named. It is only a name.
+    commit: String,
+    /// The host's words for the refusal.
+    why: String,
   )
 }
 
@@ -1850,7 +1867,9 @@ fn observe_head(
     Ok(_) ->
       case host.ports.observe_head(ObserveRequest(ticket, seq)) {
         Error(reason) -> observe_failed(host, row, ticket, reason)
-        Ok(Observed(commit: found, changed:)) -> {
+        Ok(NotTaken(commit: named, why:)) ->
+          intake_refused(host, row, id, seq, named, why)
+        Ok(Taken(Observed(commit: found, changed:))) -> {
           let head =
             model.Head(
               model.CommitId(found),
@@ -1867,6 +1886,35 @@ fn observe_head(
           }
         }
       }
+  }
+}
+
+/// A head the host repository refused. The commit is recorded as the head with
+/// its paths counted as protected, which sends the ticket to a person and runs
+/// no check, and the host then says why in its own words. Nothing in the host
+/// repository vouches for the commit, so a publish of it fails at the push.
+fn intake_refused(
+  host: Host,
+  row: project_ledger.Effect,
+  id: model.TicketId,
+  seq: Int,
+  commit_named: String,
+  why: String,
+) -> Host {
+  let commit_id = model.CommitId(commit_named)
+  let head = model.Head(commit_id, model.ProtectedPathsTouched)
+
+  // A refusal here means the worker went back to work or the ticket ended
+  // while the head was being read. Neither leaves anything to record.
+  case commit(host, event.HeadObserved(id, seq, head)) {
+    Error(Refused(_)) -> settle(host, row)
+    Error(WriteFailed(reason)) -> observe_failed(host, row, id.value, reason)
+    Ok(next) -> {
+      let reason = model.intake_refused(why)
+      let requested =
+        committed_or_same(next, event.ReviewRequested(id, commit_id, reason))
+      settle(requested, row)
+    }
   }
 }
 
@@ -2921,6 +2969,10 @@ fn review_json(ticket: Ticket) -> JsonValue {
       json.String("publishing is off for this project")
     Some(model.PublishUnavailable(why)), _ ->
       json.String("the branch was not published: " <> why)
+    Some(model.IntakeRefused(why)), _ ->
+      json.String(
+        "the host repository would not take the worker's commit in: " <> why,
+      )
     None, readiness.AwaitingReview ->
       json.String("the change touches a protected path, so no check ran")
     None, readiness.InProgress

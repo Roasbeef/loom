@@ -24,10 +24,10 @@
 ////
 //// `publish` → `push` → `existing` → `create`
 ////
-//// 1. `publish` reads the remote's URL and the repository's owner and name
-////    from it, and says `Unavailable` when there is no remote or no gh command.
-//// 2. `push` sends the commit to `refs/heads/<branch>` of the remote, without
-////    force and without the repository's hooks.
+//// 1. `publish` reads the repository's owner and name from the pinned URL, and
+////    says `Unavailable` when the URL has none or there is no gh command.
+//// 2. `push` sends the commit to `refs/heads/<branch>` of the pinned URL,
+////    without force and without the repository's hooks.
 //// 3. `existing` asks the REST API for an open pull request from that branch.
 //// 4. `create` opens one when there is none. It reads the repository's default
 ////    branch first, because the pull request needs a base.
@@ -38,15 +38,17 @@
 //// across everything that runs as the same user, and a project must not spend
 //// that budget. Merging is never done here or anywhere in project mode.
 ////
-//// ## What this does not defend against
+//// ## What the push trusts
 ////
-//// The repository's `.git/config` is a file the worker's sandbox may be able to
-//// write, because a worktree shares its repository's configuration. The
-//// remote's URL, a credential helper or an SSH command set there would run, or
-//// be trusted, in this process. `push` turns the repository's hooks off, and
-//// reading the URL here is the only use of the configuration beyond Git's own.
-//// Pinning the remote's URL when the project is created would close the rest,
-//// and is left for the slice that gives workers other machines.
+//// The push runs in the project's host repository (`client/project_repo`),
+//// which only host code writes, so its configuration is the host's. It names
+//// the remote by the URL that was pinned from the owner's checkout when the
+//// project was created, literally on the command line and never by a remote
+//// name, so a `remote.origin.url`, `pushurl` or `url.*.insteadOf` in any clone
+//// is not consulted. The owner's own global Git configuration still applies to
+//// this one command, which is how their SSH and credential setup reaches it;
+//// the system configuration, replacement objects and every variable that
+//// redirects Git to another repository are switched off or cleared.
 
 import client/host_git
 import client/internal/ffi_os
@@ -112,10 +114,11 @@ pub type Tools {
 /// Where the commit is pushed from and to.
 pub type Repository {
   Repository(
-    /// The project's checkout, whose object store holds the commit.
+    /// The project's host repository, whose object store holds the commit.
     directory: String,
-    /// The remote's name, such as `origin`.
-    remote: String,
+    /// The URL pinned for the project's pushes. It is passed to Git as it is,
+    /// and no remote name stands for it.
+    url: String,
   )
 }
 
@@ -262,12 +265,11 @@ pub fn tools() -> Tools {
   )
 }
 
-/// Pushes `commit` to `branch` of the repository's remote and opens a pull
-/// request for it, or finds the one already open, and answers its URL.
+/// Pushes `commit` to `branch` of the pinned URL and opens a pull request for
+/// it, or finds the one already open, and answers its URL.
 ///
 /// The push is never forced and runs without the repository's hooks, so a
-/// remote branch that holds something else refuses it and a hook a worker
-/// wrote does not run with this process's credentials. A pull request found by
+/// remote branch that holds something else refuses it. A pull request found by
 /// `existing` is returned as it is.
 ///
 /// ## Examples
@@ -287,15 +289,10 @@ pub fn publish(
     tools.gh,
     Unavailable("the gh command is not installed on this machine"),
   ))
-  use url <- result.try(remote_url(tools, repository))
   use #(owner, name) <- result.try(
-    repository_of(url)
+    repository_of(repository.url)
     |> result.map_error(fn(_) {
-      Unavailable(
-        "the remote "
-        <> repository.remote
-        <> " has no GitHub owner and name in its URL",
-      )
+      Unavailable("the pinned remote URL has no GitHub owner and name")
     }),
   )
   use Nil <- result.try(push(tools, repository, branch, commit))
@@ -371,29 +368,11 @@ fn plain_name(name: String) -> Bool {
   })
 }
 
-/// The URL of the repository's remote, or why there is none.
-fn remote_url(tools: Tools, repository: Repository) -> Result(String, Failure) {
-  case
-    run(
-      tools,
-      tools.git,
-      ["-C", repository.directory, "remote", "get-url", "--", repository.remote],
-      query_within_ms,
-    )
-  {
-    Ok(#(0, output)) -> Ok(string.trim(output))
-    Ok(#(_, _)) ->
-      Error(Unavailable(
-        "the repository has no remote named " <> repository.remote,
-      ))
-    Error(reason) -> Error(Failed("could not read the remote: " <> reason))
-  }
-}
-
 /// The push. `--no-verify` skips the repository's pre-push hook and
-/// `core.hooksPath` points every other hook at nothing. The refspec names the
-/// commit itself, so the branch it creates holds exactly what was verified even
-/// if the worker's own branch has moved on since.
+/// `core.hooksPath` points every other hook at nothing. The destination is the
+/// pinned URL itself. The refspec names the commit itself, so the branch it
+/// creates holds exactly what was verified even if the worker's own branch has
+/// moved on since.
 fn push(
   tools: Tools,
   repository: Repository,
@@ -401,9 +380,8 @@ fn push(
   commit: String,
 ) -> Result(Nil, Failure) {
   case
-    run(
+    run_git(
       tools,
-      tools.git,
       [
         "-C",
         repository.directory,
@@ -412,7 +390,7 @@ fn push(
         "push",
         "--no-verify",
         "--",
-        repository.remote,
+        repository.url,
         commit <> ":refs/heads/" <> branch,
       ],
       push_within_ms,
@@ -525,6 +503,40 @@ fn api(
       ))
     Error(reason) -> Error(Failed("gh did not run: " <> reason))
   }
+}
+
+/// The variables that point Git at a repository, a work tree or an object store
+/// other than the one a command names, or add configuration from outside any
+/// file. A daemon started from a shell inside a repository may carry them.
+const redirecting_variables = [
+  "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE",
+  "GIT_PREFIX", "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
+  "GIT_REPLACE_REF_BASE", "GIT_GRAFT_FILE",
+]
+
+/// Runs Git for the host: the redirecting variables are removed, the system
+/// configuration and replacement objects are off, and no prompt can wait. The
+/// owner's global configuration is not touched, because the push needs it.
+fn run_git(
+  tools: Tools,
+  arguments: List(String),
+  within_ms: Int,
+) -> Result(#(Int, String), String) {
+  ffi_os.run_capture(
+    tools.env,
+    list.flatten([
+      list.flat_map(redirecting_variables, fn(name) { ["-u", name] }),
+      [
+        "GIT_CONFIG_NOSYSTEM=1",
+        "GIT_NO_REPLACE_OBJECTS=1",
+        "GIT_TERMINAL_PROMPT=0",
+        tools.git,
+      ],
+      arguments,
+    ]),
+    within_ms,
+  )
 }
 
 /// Runs a program under `env`, which turns off the prompts that would wait for a

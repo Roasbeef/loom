@@ -2,10 +2,12 @@
 //// and strict enforcement.
 ////
 //// The check runs where the worker cannot reach and cannot read what the
-//// daemon keeps. These tests start the production worktrees over a real
-//// repository, run `project_start.run_check` on a commit, and have the check
-//// itself try to read a session's store and a credential, and to write beside
-//// the repository. A check that is told by the jail it may not is the claim.
+//// daemon keeps, in a tree cut from the host repository and not from anything
+//// the worker wrote. These tests start the production worktrees over a real
+//// repository, make a clone and a commit in it, run `project_start.run_check`
+//// on that commit, and have the check itself try to read a session's store and
+//// a credential, and to write beside the repository. A check that is told by
+//// the jail it may not is the claim.
 ////
 //// Strict enforcement is asked for, so a host that cannot apply every layer
 //// refuses to run the command at all. That is not a failure of the claim, and
@@ -17,11 +19,13 @@ import client/daemon/project_host
 import client/daemon/project_start
 import client/goalstate
 import client/internal/ffi_os
+import client/project_repo
 import client/worktrees.{type Worktrees}
 import gleam/io
 import gleam/list
 import gleam/string
 import simplifile
+import support/project_rig
 import support/worktree_rig
 import telemetry/log
 
@@ -44,13 +48,27 @@ fn trees(rig: worktree_rig.Rig) -> Worktrees {
   strict
 }
 
-fn request(
-  rig: worktree_rig.Rig,
-  command: String,
-) -> project_host.CheckRequest {
+// A project whose worker has committed one file, and the commit the host
+// repository then holds.
+type Scene {
+  Scene(layout: project_repo.Layout, commit: String)
+}
+
+fn scene(rig: worktree_rig.Rig) -> Scene {
+  let layout = project_rig.started(rig)
+  let clone = project_rig.cloned(rig, layout, "t-a-1")
+  let commit = project_rig.commit(clone, [#("src/a.go", "package a\n")])
+  let assert Ok(project_repo.Accepted(commit: taken, changed: _)) =
+    project_repo.intake(rig.trees, layout, "t-a", "t-a-1")
+    as "the host repository takes the commit in"
+  assert taken == commit
+  Scene(layout:, commit:)
+}
+
+fn request(scene: Scene, command: String) -> project_host.CheckRequest {
   project_host.CheckRequest(
     ticket: "t-a",
-    commit: worktree_rig.git(rig.root, ["rev-parse", "HEAD"]),
+    commit: scene.commit,
     command:,
     wall_ms: 60_000,
   )
@@ -60,14 +78,15 @@ fn request(
 // carries the reason a host without full enforcement gives.
 fn run(
   rig: worktree_rig.Rig,
+  scene: Scene,
   command: String,
 ) -> Result(goalstate.CheckResult, String) {
   let result =
     project_start.run_check(
       ffi_os.system_time_ms,
-      rig.workspace,
+      scene.layout,
       Ok(trees(rig)),
-      request(rig, command),
+      request(scene, command),
     )
   case result.ending {
     goalstate.DidNotFinish(reason:) -> Error(reason)
@@ -81,13 +100,9 @@ fn skip(why: String) -> Nil {
 
 pub fn a_check_runs_in_a_fresh_tree_at_the_commit_and_the_tree_goes_away_test() {
   let rig = worktree_rig.rig_at("check-fresh", "main")
-  let tree =
-    worktrees.tree_path(
-      rig.state,
-      rig.workspace.name,
-      project_start.check_tree_name("t-a", request(rig, "").commit),
-    )
-  case run(rig, "test -f README && touch build-output && pwd") {
+  let scene = scene(rig)
+  let tree = project_repo.check_tree_path(scene.layout, "t-a", scene.commit)
+  case run(rig, scene, "test -f src/a.go && touch build-output && pwd") {
     Error(why) -> skip(why)
     Ok(result) -> {
       assert result.ending == goalstate.Exited(status: 0)
@@ -101,6 +116,7 @@ pub fn a_check_runs_in_a_fresh_tree_at_the_commit_and_the_tree_goes_away_test() 
 
 pub fn a_check_cannot_read_the_session_store_or_a_credential_or_write_beside_the_repo_test() {
   let rig = worktree_rig.rig_at("check-jail", "main")
+  let scene = scene(rig)
   let token = rig.state <> "/owner.token"
   let store = rig.state <> "/sessions/s1.db"
   let control = rig.state <> "/worktrees/control"
@@ -110,7 +126,9 @@ pub fn a_check_cannot_read_the_session_store_or_a_credential_or_write_beside_the
 
   // Exit 9 says the control file was not readable, which would make the other
   // lines pass for a reason that has nothing to do with the mask. Exit 7 and 8
-  // say a secret was read, and 6 that the repository was written.
+  // say a secret was read, and 6 that the owner's repository or the host
+  // repository was written.
+  let host = project_repo.host_path(scene.layout)
   let command =
     string.join(
       [
@@ -118,22 +136,25 @@ pub fn a_check_cannot_read_the_session_store_or_a_credential_or_write_beside_the
         "grep -q SECRET " <> token <> " && exit 7",
         "grep -q TRANSCRIPT " <> store <> " && exit 8",
         "touch " <> rig.root <> "/planted && exit 6",
+        "touch " <> host <> "/planted && exit 6",
         "exit 0",
       ],
       "\n",
     )
-  case run(rig, command) {
+  case run(rig, scene, command) {
     Error(why) -> skip(why)
     Ok(result) -> {
       assert result.ending == goalstate.Exited(status: 0)
       assert !worktree_rig.exists(rig.root <> "/planted")
+      assert !worktree_rig.exists(host <> "/planted")
     }
   }
 }
 
 pub fn a_failing_check_reports_its_status_and_its_output_test() {
   let rig = worktree_rig.rig_at("check-fails", "main")
-  case run(rig, "echo broken >&2; exit 3") {
+  let scene = scene(rig)
+  case run(rig, scene, "echo broken >&2; exit 3") {
     Error(why) -> skip(why)
     Ok(result) -> {
       assert result.ending == goalstate.Exited(status: 3)
@@ -142,19 +163,45 @@ pub fn a_failing_check_reports_its_status_and_its_output_test() {
   }
 }
 
-pub fn the_head_and_the_paths_it_changed_are_read_from_the_workers_tree_test() {
+pub fn a_commit_the_host_repository_lacks_is_not_checked_test() {
+  let rig = worktree_rig.rig_at("check-absent", "main")
+  let layout = project_rig.started(rig)
+
+  // The owner's own head is a real commit, but the host repository has not
+  // taken it in under a ticket, and only commits it holds are checked.
+  let owners = worktree_rig.git(rig.root, ["rev-parse", "HEAD"])
+  let absent =
+    project_start.run_check(
+      ffi_os.system_time_ms,
+      layout,
+      Ok(rig.trees),
+      project_host.CheckRequest(
+        ticket: "t-a",
+        commit: string.reverse(owners),
+        command: "true",
+        wall_ms: 1000,
+      ),
+    )
+  assert case absent.ending {
+    goalstate.DidNotFinish(reason:) ->
+      string.contains(reason, "the check's tree was not made")
+    goalstate.Exited(_) -> False
+  }
+}
+
+pub fn the_head_and_the_paths_it_changed_are_read_from_the_host_repository_test() {
   let rig = worktree_rig.rig_at("observe", "main")
-  let name = project_start.tree_name("t-a", 1)
-  let assert Ok(tree) = worktrees.open(rig.trees, rig.workspace, name)
+  let layout = project_rig.started(rig)
+  let clone = project_rig.cloned(rig, layout, project_start.tree_name("t-a", 1))
 
   // The worker commits a source file, the Makefile and a file whose name has a
   // space and a line break in it.
-  worktree_rig.write(tree.path <> "/src/a.go", "package a\n")
-  worktree_rig.write(tree.path <> "/Makefile", "check:\n")
-  worktree_rig.write(tree.path <> "/odd name\nMakefile", "x\n")
-  worktree_rig.git(tree.path, ["add", "-A"])
-  worktree_rig.git(tree.path, ["commit", "--quiet", "-m", "work"])
-  let head = worktree_rig.git(tree.path, ["rev-parse", "HEAD"])
+  let head =
+    project_rig.commit(clone, [
+      #("src/a.go", "package a\n"),
+      #("Makefile", "check:\n"),
+      #("odd name\nMakefile", "x\n"),
+    ])
 
   // The checkout moves on, which must not count its own new files as the
   // worker's.
@@ -162,11 +209,9 @@ pub fn the_head_and_the_paths_it_changed_are_read_from_the_workers_tree_test() {
   worktree_rig.git(rig.root, ["add", "elsewhere"])
   worktree_rig.git(rig.root, ["commit", "--quiet", "-m", "other work"])
 
-  let assert Ok(observed) =
+  let assert Ok(project_host.Taken(observed)) =
     project_start.observe(
-      rig.state,
-      rig.root,
-      rig.workspace,
+      layout,
       rig.trees,
       project_host.ObserveRequest("t-a", 1),
     )
@@ -177,6 +222,7 @@ pub fn the_head_and_the_paths_it_changed_are_read_from_the_workers_tree_test() {
 
 pub fn a_commit_that_is_not_a_commit_name_never_reaches_a_command_line_test() {
   let rig = worktree_rig.rig_at("check-name", "main")
+  let layout = project_rig.started(rig)
   let hostile =
     project_host.CheckRequest(
       ticket: "t-a",
@@ -187,12 +233,12 @@ pub fn a_commit_that_is_not_a_commit_name_never_reaches_a_command_line_test() {
   let result =
     project_start.run_check(
       ffi_os.system_time_ms,
-      rig.workspace,
+      layout,
       Ok(rig.trees),
       hostile,
     )
   assert result.ending == goalstate.DidNotFinish(reason: "not a commit name")
-  assert project_start.commit_name("0123abc") == Ok(Nil)
-  assert project_start.commit_name("ABCDEF1") == Error("not a commit name")
-  assert project_start.commit_name("abc") == Error("not a commit name")
+  assert project_repo.commit_name("0123abc") == Ok(Nil)
+  assert project_repo.commit_name("ABCDEF1") == Error("not a commit name")
+  assert project_repo.commit_name("abc") == Error("not a commit name")
 }

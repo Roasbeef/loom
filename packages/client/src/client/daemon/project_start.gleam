@@ -17,20 +17,31 @@
 //// 2. `ensure_running` starts a project's actor once and records it in the
 ////    table, so a session built afterwards can find its handle.
 //// 3. `ports_for` builds the closures the actor performs effects with.
-//// 4. `start_worker` makes a worker session in a linked worktree of the
-////    project's checkout. The registration is reserved first and bound to its
+//// 4. `start_worker` makes a worker session in a clone of the project's
+////    checkout. The registration is reserved first and bound to its
 ////    assignment second, and only then opened, so the session's builder reads
 ////    its standing before it builds.
 //// 5. `reopen` runs at boot. It starts each active project's actor, then
 ////    opens its router and the sessions of its live assignments.
 ////
-//// ## Why a worktree is named from the ticket
+//// ## Why a clone is named from the ticket
 ////
 //// A session's id is minted when its registration is reserved, and its
-//// workspace is part of that reservation, so the tree has to exist before the
-//// id does. The tree is therefore named from the ticket and the assignment
-//// (`worktrees.open` takes any safe name where it would take a session id),
+//// workspace is part of that reservation, so the clone has to exist before the
+//// id does. The clone is therefore named from the ticket and the assignment,
 //// and its branch is `loom/<ticket>-<seq>`.
+////
+//// ## Why a worker never has the owner's repository
+////
+//// A worker's workspace is a clone made by the host under the state root, not
+//// a linked worktree of the owner's checkout (`client/project_repo`). A linked
+//// worktree's session policy would have to make the checkout's `.git`
+//// writable, and a worker fed hostile text could plant a hook there that the
+//// owner's next Git command runs. Everything the host decides afterwards, the
+//// diff, the check and the push, reads the host repository, which no worker
+//// can write. `seat` also refuses to build a worker session on a clone whose
+//// `.git` is not a directory, because the session policy would otherwise
+//// widen to the Git directory that file names.
 
 import client/daemon/manager
 import client/daemon/project_book.{type Book}
@@ -39,6 +50,7 @@ import client/goalcheck
 import client/goalstate
 import client/peer_mail
 import client/project_publish
+import client/project_repo
 import client/project_scan
 import client/project_standing
 import client/projectseam
@@ -306,13 +318,26 @@ fn ports_for(env: Env, project: catalogue.Project) -> project_host.Ports {
       mode: workspaces.Worktree(workspaces.default_base),
     )
 
-  // The worktree service is started once, here, in the actor's own process.
-  let trees = env.worktrees_for(tree_workspace)
+  let layout =
+    project_repo.Layout(
+      state_root: env.state_root,
+      project: project.id,
+      owner: project.workspace,
+    )
+
+  // The sandboxed Git is started once, here, in the actor's own process, and
+  // the host repository is made and its remote pinned on the same occasion. A
+  // project whose host repository cannot be made has no ports that work.
+  let trees =
+    env.worktrees_for(tree_workspace)
+    |> result.try(fn(found) {
+      project_repo.ensure_host(found, layout) |> result.replace(found)
+    })
   project_host.Ports(
     now_ms: env.now_ms,
     start_session: fn(request) {
       use trees <- result.try(trees)
-      start_worker(env, project, tree_workspace, trees, request)
+      start_worker(env, project, layout, trees, request)
     },
     open_session: fn(session) {
       manager.open(env.registry, session)
@@ -326,7 +351,7 @@ fn ports_for(env: Env, project: catalogue.Project) -> project_host.Ports {
     },
     release_worktree: fn(request) {
       use trees <- result.try(trees)
-      release_tree(env, tree_workspace, trees, request)
+      release_tree(layout, trees, request)
     },
     endpoint_of: fn(session) {
       case manager.resolve(env.registry, session) {
@@ -336,88 +361,55 @@ fn ports_for(env: Env, project: catalogue.Project) -> project_host.Ports {
     },
     observe_head: fn(request) {
       use trees <- result.try(trees)
-      observe(env.state_root, project.workspace, tree_workspace, trees, request)
+      observe(layout, trees, request)
     },
-    run_check: fn(request) {
-      run_check(env.now_ms, tree_workspace, trees, request)
-    },
-    publish: fn(request) { published(project, request) },
+    run_check: fn(request) { run_check(env.now_ms, layout, trees, request) },
+    publish: fn(request) { published(layout, request) },
     logger: env.logger,
   )
 }
 
 // --- finishing work ----------------------------------------------------------
 
-/// Reads the head of an assignment's worktree and the paths its branch changed
-/// against the project's base. Every Git command runs in the sandbox, because
-/// the tree is the worker's and the repository's configuration and hooks are
-/// files the worker's model may have written. The base is the checkout's own
-/// head, and the diff is `base...commit`, which is the commits the branch has
-/// that the base has not, so a base that has moved on since the tree was cut
-/// does not count its own new files. Paths are cut at the NUL bytes Git puts
-/// between them, never at a newline or a space, and they reach the engine as
-/// data to compare with the protected patterns.
+/// Takes the head of an assignment's clone into the project's host repository
+/// and reads the paths its branch changed there (`project_repo.intake`). The
+/// clone is the worker's, so every Git command reads it in the sandbox, and the
+/// diff, the check and the push all come from the host repository afterwards.
+/// A commit the host repository refuses is `NotTaken`, and the engine sends
+/// the ticket to a person.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // project_start.observe(state_root, checkout, workspace, trees, request)
+/// // project_start.observe(layout, trees, request)
 /// ```
 pub fn observe(
-  state_root: String,
-  checkout: String,
-  tree_workspace: workspaces.Workspace,
+  layout: project_repo.Layout,
   trees: Worktrees,
   request: project_host.ObserveRequest,
-) -> Result(project_host.Observed, String) {
-  let directory =
-    worktrees.tree_path(
-      state_root,
-      tree_workspace.name,
-      tree_name(request.ticket, request.seq),
-    )
-  use head <- result.try(
-    worktrees.read(trees, directory, [
-      "rev-parse",
-      "--verify",
-      "HEAD^{commit}",
-    ]),
-  )
-  use base <- result.try(
-    worktrees.read(trees, checkout, [
-      "rev-parse",
-      "--verify",
-      "HEAD^{commit}",
-    ]),
-  )
-  let commit = string.trim(head)
-  let base = string.trim(base)
-  use Nil <- result.try(commit_name(commit))
-  use Nil <- result.try(commit_name(base))
-  use names <- result.map(
-    worktrees.read(trees, directory, [
-      "diff",
-      "--name-only",
-      "-z",
-      "--no-renames",
-      "--no-ext-diff",
-      base <> "..." <> commit,
-      "--",
-    ]),
-  )
-  project_host.Observed(
-    commit:,
-    changed: string.split(names, "\u{0}")
-      |> list.filter(fn(path) { path != "" }),
-  )
+) -> Result(project_host.Intake, String) {
+  use taken <- result.map(project_repo.intake(
+    trees,
+    layout,
+    request.ticket,
+    tree_name(request.ticket, request.seq),
+  ))
+
+  // The repository module's answer becomes the actor's, one for one.
+  case taken {
+    project_repo.Accepted(commit:, changed:) ->
+      project_host.Taken(project_host.Observed(commit:, changed:))
+    project_repo.Declined(commit:, why:) -> project_host.NotTaken(commit:, why:)
+  }
 }
 
-/// Runs the project's check at a commit. The tree is cut fresh from the
-/// commit, named from the ticket and the commit so a repeat adopts it, and
-/// removed afterwards whatever the check left in it. The command runs through
-/// `client/goalcheck` over the checking Git's broker: a process with its own
-/// helper and its own policy, reached by nothing the worker holds. The wall is
-/// the project's, and the output is the tail `goalcheck` keeps.
+/// Runs the project's check at a commit. The tree is cut fresh from the host
+/// repository at the commit, named from the ticket and the commit so a repeat
+/// replaces it, and removed afterwards whatever the check left in it. The
+/// command runs through `client/goalcheck` over the checking Git's broker: a
+/// process with its own helper and its own policy, reached by nothing the
+/// worker holds. The wall is the project's, and the output is the tail
+/// `goalcheck` keeps.
 ///
 /// A check that could not be started is `DidNotFinish` with the reason, which
 /// the host reads as no verdict on the work.
@@ -425,11 +417,11 @@ pub fn observe(
 /// ## Examples
 ///
 /// ```gleam
-/// // project_start.run_check(clock, workspace, trees, request)
+/// // project_start.run_check(clock, layout, trees, request)
 /// ```
 pub fn run_check(
   now_ms: fn() -> Int,
-  tree_workspace: workspaces.Workspace,
+  layout: project_repo.Layout,
   trees: Result(Worktrees, String),
   request: project_host.CheckRequest,
 ) -> goalstate.CheckResult {
@@ -444,24 +436,18 @@ pub fn run_check(
 
   // The commit comes from Git's own answer, and is checked once more before it
   // becomes part of a command line.
-  case trees, commit_name(request.commit) {
+  case trees, project_repo.commit_name(request.commit) {
     Error(reason), _ | _, Error(reason) -> unfinished(reason)
-    Ok(trees), Ok(Nil) -> {
-      let at =
-        workspaces.Workspace(
-          ..tree_workspace,
-          mode: workspaces.Worktree(request.commit),
-        )
-      let name = check_tree_name(request.ticket, request.commit)
-
+    Ok(trees), Ok(Nil) ->
       // Without a tree there is nothing to check; with one, the tree goes
       // whatever the check does.
-      case worktrees.open(trees, at, name) {
-        Error(reason) ->
-          unfinished("the check's worktree was not made: " <> reason)
-        Ok(tree) -> {
+      case
+        project_repo.check_tree(trees, layout, request.ticket, request.commit)
+      {
+        Error(reason) -> unfinished("the check's tree was not made: " <> reason)
+        Ok(path) -> {
           // A runner that cannot be built is a check that never started.
-          let outcome = case worktrees.check_runner(trees, tree.path) {
+          let outcome = case worktrees.check_runner(trees, path) {
             Error(reason) -> unfinished(reason)
             Ok(runner) ->
               { goalcheck.wiring(runner, timeout_ms: request.wall_ms) }.run(
@@ -469,30 +455,37 @@ pub fn run_check(
               )
           }
 
-          let _removed = worktrees.discard(trees, at, name)
+          project_repo.discard_check_tree(path)
           outcome
         }
       }
-    }
   }
 }
 
 /// Pushes a verified commit and opens its pull request, with the daemon's own
-/// credentials. The title and body arrive built, and the commit is checked once
-/// more before it becomes part of a command line.
+/// credentials. The push is from the host repository to the URL pinned when
+/// the project was created. The title and body arrive built, and the commit is
+/// checked once more before it becomes part of a command line.
 fn published(
-  project: catalogue.Project,
+  layout: project_repo.Layout,
   request: project_host.PublishRequest,
 ) -> project_host.Published {
-  case commit_name(request.commit) {
-    Error(reason) -> project_host.Unavailable(reason)
-    Ok(Nil) ->
+  case
+    project_repo.commit_name(request.commit),
+    project_repo.pinned_url(layout)
+  {
+    Error(reason), _ -> project_host.Unavailable(reason)
+    Ok(Nil), Error(Nil) ->
+      project_host.Unavailable(
+        "the owner's checkout had no usable origin remote when the project was created",
+      )
+    Ok(Nil), Ok(url) ->
       case
         project_publish.publish(
           project_publish.tools(),
           project_publish.Repository(
-            directory: project.workspace,
-            remote: "origin",
+            directory: project_repo.host_path(layout),
+            url:,
           ),
           request.branch,
           request.commit,
@@ -507,60 +500,24 @@ fn published(
   }
 }
 
-/// A commit name Git printed: seven to sixty-four lower-case hexadecimal
-/// digits. Anything else never reaches an argument list.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert project_start.commit_name("abc1234") == Ok(Nil)
-/// assert project_start.commit_name("--upload-pack=x") == Error("not a commit name")
-/// ```
-pub fn commit_name(text: String) -> Result(Nil, String) {
-  let size = string.length(text)
-  let hex =
-    list.all(string.to_graphemes(text), fn(each) {
-      string.contains("0123456789abcdef", each)
-    })
-
-  // Seven digits is the shortest abbreviation Git prints; sixty-four is the
-  // longest object name.
-  case size >= 7 && size <= 64 && hex {
-    True -> Ok(Nil)
-    False -> Error("not a commit name")
-  }
-}
-
-/// The directory name of a check's tree: the ticket and the first twelve
-/// digits of the commit. The ticket id is already a safe component.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert project_start.check_tree_name("t-c1", "0123456789abcdef") == "chk-t-c1-0123456789ab"
-/// ```
-pub fn check_tree_name(ticket: String, commit: String) -> String {
-  "chk-" <> ticket <> "-" <> string.slice(commit, 0, 12)
-}
-
-/// A worker session in a linked worktree. Creating the tree twice adopts it,
-/// reserving twice finds the registration, binding twice is refused as a
-/// conflict that is accepted when the standing already is this assignment, and
-/// creating twice finds the session. A restart anywhere in the sequence
-/// therefore ends with one session and one tree.
+/// A worker session in a clone of the project's checkout. Cloning twice adopts
+/// the clone, reserving twice finds the registration, binding twice is refused
+/// as a conflict that is accepted when the standing already is this assignment,
+/// and creating twice finds the session. A restart anywhere in the sequence
+/// therefore ends with one session and one clone.
 fn start_worker(
   env: Env,
   project: catalogue.Project,
-  tree_workspace: workspaces.Workspace,
+  layout: project_repo.Layout,
   trees: Worktrees,
   request: project_host.StartRequest,
 ) -> Result(String, String) {
   let name = tree_name(request.ticket, request.seq)
-  use tree <- result.try(worktrees.open(trees, tree_workspace, name))
+  use clone <- result.try(project_repo.clone(trees, layout, name))
   let creation =
     manager.Creation(
       request_key: request.key,
-      workspace: tree.path,
+      workspace: clone,
       name: request.title,
       configuration: "",
       profile: None,
@@ -601,26 +558,23 @@ fn start_worker(
   registration.id
 }
 
-/// Closes an assignment's tree under the rule for a project worker: it goes
-/// unless it holds changes or commits its base lacks. A kept tree is reported
-/// with its path, which is derived the way `worktrees` derives it, so the board
-/// can send a person to it.
+/// Closes an assignment's clone under the rule for a project worker: it goes
+/// unless it holds changes, or any ref naming an object the host repository
+/// lacks (`project_repo.release`). A kept clone is reported with its path, so
+/// the board can send a person to it. The person should fetch from the ticket's
+/// refs in the host repository and treat the clone itself as untrusted.
 fn release_tree(
-  env: Env,
-  tree_workspace: workspaces.Workspace,
+  layout: project_repo.Layout,
   trees: Worktrees,
   request: project_host.ReleaseRequest,
 ) -> Result(project_host.Released, String) {
   let name = tree_name(request.ticket, request.seq)
 
-  // A kept tree is reported with the path a person would look in.
-  case worktrees.close_guarding_commits(trees, tree_workspace, name) {
+  // A kept clone is reported with the path a person would look in.
+  case project_repo.release(trees, layout, name) {
     worktrees.Removed -> Ok(project_host.Removed)
     worktrees.Kept(reason:) ->
-      Ok(project_host.Kept(
-        path: worktrees.tree_path(env.state_root, tree_workspace.name, name),
-        reason:,
-      ))
+      Ok(project_host.Kept(path: project_repo.clone_path(layout, name), reason:))
   }
 }
 
@@ -771,7 +725,10 @@ pub fn seat(
   // project needs that project's handle to carry its tools.
   case project_standing.project_of(standing) {
     None -> Ok(None)
-    Some(project) ->
+    Some(project) -> {
+      use Nil <- result.try(sound_workspace(registry, standing, session))
+
+      // The project's handle is what carries the session's tools.
       case project_book.get(book, project) {
         Ok(handle) ->
           Ok(
@@ -783,6 +740,33 @@ pub fn seat(
           )
         Error(Nil) -> Error("project " <> project <> " is not running")
       }
+    }
+  }
+}
+
+/// A worker's clone must have a real `.git` directory when its session is
+/// built. The session policy widens its writable roots to the Git directory a
+/// `.git` file names (`workspace_policy.widening_linked_worktree`), and the
+/// worker's jail can write its own workspace, so a worker that replaced the
+/// directory with such a file would be given the owner's repository at its next
+/// start. Refusing to build the session closes that door without a second
+/// policy rule for ordinary sessions. Routers and ordinary sessions are not
+/// the host's clones and are not examined.
+fn sound_workspace(
+  registry: manager.Manager(serve.Resident),
+  standing: project_standing.Standing,
+  session: String,
+) -> Result(Nil, String) {
+  // Only a worker's workspace is a clone the host made.
+  case standing {
+    project_standing.Worker(..) -> {
+      use view <- result.try(
+        manager.get(registry, session)
+        |> result.map_error(fn(error) { string.inspect(error) }),
+      )
+      project_repo.sound_clone(view.registration.workspace)
+    }
+    project_standing.Router(..) | project_standing.Ordinary -> Ok(Nil)
   }
 }
 
