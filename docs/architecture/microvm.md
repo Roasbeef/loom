@@ -697,12 +697,23 @@ for a `--config` other than the default, whose daemon `up` cannot find. A
 guest directory the failed join made is removed.
 
 A joined guest has no orchestrator bundle, so a resume finds an executor
-bundle alone with a ledger in it and enrols nothing. It has no written
+bundle alone with a ledger in it and enrols nothing. It refuses, naming
+`loom vm rm`, when the daemon's installed ledger records the guest as revoked,
+and goes on when that ledger cannot be read. If the daemon did not take the
+entry when the guest joined, the join still succeeds and prints a warning: the
+entry is signed and the bundle holds the only copy of the node's key, as
+`loom distribution enroll` leaves it. The guest's ledger on a new root (`--fresh`
+or an upgrade) is the daemon's installed ledger when that replays against the
+guest's authority and holds the guest as the same node, so a certificate the
+orchestrator renewed since the join does not leave the guest with a stale pin
+table, and the bundle's ledger otherwise; a minted guest does the same. It has no written
 `[executors.<name>]` row, so the resume checks no row either. `rm` of a joined
 guest revokes it with `ledger_cli.revoke_member` when the key is on this machine,
 with the checks of `loom distribution revoke` (a guest that still holds sessions
 is refused and nothing is removed), and otherwise prints the revoke the operator
-runs; it removes nothing from `loom.toml`, because the `[distribution]` table and
+runs; a guest the operator's copy already records as revoked is treated as done,
+and a refusal of the revoke does not advise `--force`, which `rm` lacks. It
+removes nothing from `loom.toml`, because the `[distribution]` table and
 the cookie are the deployment's. The authority directory goes only when no
 remaining guest's bundle names its deployment. A guest that minted a deployment
 that other guests joined is refused by `rm` until they are removed, because the
@@ -804,11 +815,11 @@ state disk, such as `/home/loom`, `/work` and tools installed by hand. The steps
    there would be carried into the new root;
 2. clones the manifest's guest root into `<vm home>/<name>/root.building`, a
    name `up` does not read, removing a leftover `root.next` and `root.building`
-   first, and removes any `srv/workspaces` the clone brought
+   first, makes `srv` in it and removes any `srv/workspaces` the clone brought
    (`clear_workspaces_slot`), whatever the exported guest root ships;
-3. moves `srv/workspaces` from the old root into the clone with one `rename`,
-   so a link inside it stays a link and nothing is followed, and then renames
-   the clone to `root.next` (`move_into_place`). A failure of the first rename is
+3. renames `root.building` to `root.next`, and only then moves `srv/workspaces`
+   from the old root into it with one `rename`, so a link inside it stays a link
+   and nothing is followed (`upgrade_steps`). A failure of that rename is
    refused naming `--fresh`;
 4. deletes the old root, renames `root.next` to `root`, and `stage` then runs on
    the new root as it does for any `up`, so provisioning runs again. The record
@@ -819,10 +830,14 @@ An interrupted `up` can finish. Before step 3 the old root is whole, so the next
 `up` repeats the upgrade from a clean start. After it, `root.next/srv/workspaces`
 exists, which the next `up` reads as an upgrade whose swap is left
 (`FinishUpgrade`) and completes. That directory is the evidence because only the
-host writes `root.next`, and it is given that name only after the workspaces
-moved into it, so a stop after the clone of an export that ships
-`srv/workspaces` leaves a `root.building` and no `root.next`; the old root's
-`srv/workspaces` is not consulted, since the guest writes it. A crash before the
+host writes `root.next`, and `root.next/srv/workspaces` exists only after the
+last rename. After every step the workspaces are in the old root or in
+`root.next`, never in the clone's own directory: a stop before the last rename
+leaves a `root.next` without them, which the next `up` deletes and builds
+again from the old root, and a stop after it is a finished move. An export that
+ships `srv/workspaces` cannot fake that, because the slot is cleared before the
+rename. The old root's `srv/workspaces` is not consulted, since the guest
+writes it. A fresh clone (`replace_root`) deletes `root.building` as well. A crash before the
 record only makes the next `up` upgrade once more, and the provisioning of that
 `up` comes from the host's copy of the script and the new root, never from the
 old root, which the swap may have partly deleted. A root with neither marker nor
