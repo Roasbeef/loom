@@ -110,6 +110,18 @@ pub fn the_four_request_frames_decode_to_their_commands_test() {
       "{\"v\":2,\"id\":7,\"cmd\":\"projects.requeue\",\"body\":{\"project\":\"p1\",\"trigger\":\"tr-1\"}}",
     )
     == Ok(protocol.Request(7, protocol.RequeueTrigger("p1", "tr-1")))
+  assert protocol.decode(
+      "{\"v\":2,\"id\":8,\"cmd\":\"projects.set_mode\",\"body\":{\"project\":\"p1\",\"rule\":\"ci\",\"mode\":\"observe\"}}",
+    )
+    == Ok(
+      protocol.Request(8, protocol.SetProjectMode("p1", "ci", "observe")),
+    )
+}
+
+pub fn a_set_mode_frame_without_a_rule_is_malformed_test() {
+  let frame =
+    "{\"v\":2,\"id\":8,\"cmd\":\"projects.set_mode\",\"body\":{\"project\":\"p1\",\"mode\":\"observe\"}}"
+  let assert Error(_) = protocol.decode(frame)
 }
 
 pub fn an_answer_without_its_sequence_number_is_malformed_test() {

@@ -110,6 +110,7 @@ is not in this list is refused.
 | `jobs` | table | Background job wall ceiling and idle heartbeat. | [`[jobs]`](#jobs) |
 | `retry` | table | Provider retry ladder. | [`[retry]`](#retry) |
 | `peers` | table | Default peer links (from protocol-change 077). | [`[peers]`](#peers) |
+| `project` | table with arrays of `[[project.source]]` and `[[project.rule]]` | Worker limits, finished-work policy and event sources of a project (from protocol-change 106). | [`[project]`](#project) |
 | `distribution` | table and array of `[[distribution.peers]]` | Trusted TLS Erlang distribution (from protocol-change 078). | [`[distribution]`](#distribution) |
 | `executors` | table of `[executors.<name>]` | Machines a session's workspace may be registered on (from protocol-change 078). | [`[executors.<name>]`](#executorsname) |
 | `pools` | table of `[pools.<name>]` | Named groups of executors a session may be placed on without naming one (from protocol-change 078). | [`[pools.<name>]`](#poolsname) |
@@ -517,8 +518,9 @@ for explicit links.
 (From protocol-change 106.) Optional, read once when the daemon starts, like
 `[peers]`. Bounds the workers of every project the daemon runs. A project is made
 with `loom project init` and needs no table; the keys below only change its
-limits and what the host does with a worker's finished work. A key from a later slice
-(sources) is refused until that slice lands.
+limits, what the host does with a worker's finished work, and where else work can
+come from. The composer is always a source. `[[project.source]]` and
+`[[project.rule]]` add GitHub as one more.
 
 Each worker has a clone of the owner's repository under the daemon's state root
 (`<state>/projects/<id>/tickets/<ticket>-<n>`), not a worktree of it, so nothing a worker
@@ -541,7 +543,55 @@ created, and opens a pull request through `gh api`. It never merges. A checkout 
 | `token_ceiling` | integer | `5000000` | 1 or more | The token ceiling above which a project starts no new inferred work. Recorded in this slice; inferred work is off. |
 | `check` | string | none | a command of at most 4096 bytes | The command run against a worker's head, as `bash -c`. Unset, there is no check, and a ticket whose work is done waits for a person. A blank command is refused. The words of the command are protected paths too, so a worker cannot rewrite the script the check runs. |
 | `protected_paths` | array of strings | `["Makefile", "GNUmakefile", "makefile", ".github/**"]` | literal paths, or a directory followed by `/**` | Files whose change keeps the check from running. There is no other pattern syntax. Matching ignores case. An empty array protects only the files `check` names. |
-| `publish` | string | `off` | `off`, `pull_request` | `pull_request` lets the host push a verified commit and open a pull request with the owning machine's credentials and `gh`. `off` sends nothing outward: the ticket waits for a person with the reason shown. |
+| `publish` | string | `off` | `off`, `pull_request` | `pull_request` lets the host push a verified commit and open a pull request with the owning machine's credentials and `gh`, and post the router's replies to a GitHub issue or pull request as comments. `off` sends nothing outward: the ticket waits for a person with the reason shown, and a reply stays a draft on the board. |
+| `queue_limit` | integer | `100` | 1 to 10000 | The most candidates one source may hold queued for the router. Past it, an arriving inferred candidate is shed and recorded as shed, and an arriving explicit one makes room by shedding the oldest inferred one. An explicit candidate is never dropped. |
+| `attention_limit` | integer | `5` | 0 to 1000 | A source stops inferring new work while more than this many of its open tickets wait on a person. |
+| `source` | array of tables | none | at most one, `kind = "github"` | An event source besides the composer. See [`[[project.source]]`](#projectsource). |
+| `rule` | array of tables | none | at most 32 | What an inferred trigger may become. See [`[[project.rule]]`](#projectrule). |
+
+## `[[project.source]]`
+
+(From protocol-change 106.) The GitHub source of a project. The daemon polls the
+repository that the project's pinned push URL names, with `gh api` on the REST
+interface and the owner's credentials, and never reads another repository. It reads new
+issues, comments on issues and pull requests, pull request review comments, failed check
+runs on the default branch and on the head of each pull request a ticket opened, and
+whether those pull requests merged or closed. It uses no webhook and no GraphQL. The first
+pass only records the present as its read position, so a project that starts watching does
+not take in the repository's history. A rate limit (`retry-after`, or an exhausted
+`x-ratelimit-remaining` and its reset time) stops the pass and defers the next one to the
+time GitHub names.
+
+Every field of what GitHub returns is untrusted text. A person's comment becomes work only
+through the gate: the owner is never a sender that comes from GitHub; an `allow` login is a
+person, a `bots` login is a bot, and anyone else is unlisted and recorded without being
+delivered, unless a rule below admits their text. The agent's own account is dropped before
+the engine sees it.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `kind` | string | required | `github` | The source's kind. |
+| `allow` | array of strings | none | at most 64 logins | People whose comments may start or steer work. Compared by equality, without case. |
+| `bots` | array of strings | none | at most 64 logins, such as `dependabot[bot]` | Bots whose comments may become inferred work. |
+| `account` | string | asked of GitHub | a login | The agent's own login. Its messages are dropped, and `@account` in a text addresses the agent. Unset, the daemon asks GitHub who the credentials belong to. |
+| `interval_s` | integer | `60` | 15 to 86400 | Seconds between two passes. |
+
+## `[[project.rule]]`
+
+(From protocol-change 106.) What a source's inferred work may become. An inferred trigger
+is one from a person who did not address the agent, from a listed bot, from a failed check,
+or from an unlisted sender whose text a rule matches. It needs a rule and a mode. The first
+rule whose `match` strings occur in the text, in file order, is the trigger's rule, whoever
+sent it. A trigger from an unlisted sender that matches no rule is recorded and goes no
+further. The owner's composer needs no rule and works in every mode.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `name` | string | required | letters, digits, `-`, `_`, `.`, at most 64 bytes, unique | The rule's identity in the ledger and on the board. |
+| `source` | string | required | `github` | The source the rule belongs to. |
+| `mode` | string | `observe` | `off`, `observe`, `auto` | The rule's first mode. `off` ignores its inferred work. `observe` offers it to the router and records what the router would have done, without doing it; the board lists those under "would have done". `auto` is refused until a rule has a passing verdict, which a later slice adds, so a rule written with it starts in `observe`. A person changes the mode with `projects.set_mode`, and the change survives a restart. |
+| `match` | array of strings | required | 1 to 16 non-empty strings of at most 200 bytes | Literal strings, compared without case. There are no patterns. |
+| `approvals` | boolean | `false` | `true`, `false` | Whether work admitted by the rule may route approvals to a person. |
 
 ## `[distribution]`
 

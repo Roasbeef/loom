@@ -1817,7 +1817,7 @@ prints it, as text or, with `--json`, as the daemon sent it.
 ### 3.32 `projects.*`
 
 Project mode's control commands (protocol-change/106, design note
-`docs/design-notes/project-mode.md`). All ten are owner-only, and a daemon that
+`docs/design-notes/project-mode.md`). All eleven are owner-only, and a daemon that
 started no project table answers every one `not_found`. A reply carries the
 engine's own spelling of a stage, and a client displays it and never derives it.
 
@@ -1833,6 +1833,7 @@ engine's own spelling of a stage, and a client displays it and never derives it.
 | `projects.retry` | no | `project`, `ticket` (strings, required) | `projects.retry` |
 | `projects.requeue` | no | `project`, `trigger` (strings, required) | `projects.requeue` |
 | `projects.publish` | no | `project`, `ticket` (strings, required) | `projects.publish` |
+| `projects.set_mode` | no | `project`, `rule` (strings, required), `mode` (`off`, `observe` or `auto`) | `projects.set_mode` |
 
 ```json
 {"v":2,"id":9,"cmd":"projects.create","body":{"workspace":"/src/loom","name":"loom"}}
@@ -1909,6 +1910,18 @@ was accepted and queued, not that the worker has read it. `projects.retry` and `
 reply an echo, and the engine's refusal of either (a ticket that has a live worker, a message that
 is not waiting) is `bad_request`. `projects.ticket` is a read; the other three are not. An unknown
 project or ticket is `not_found` for all four.
+
+`projects.set_mode` sets the mode of one configured rule of a GitHub source and replies
+`{rule, mode}`. The mode survives a restart. An unknown rule, an unknown mode word and `auto` are
+refused `bad_request`, and the refusal's `message` is a sentence, not the generic "request refused":
+`auto` is refused because a rule may run on its own only after the evaluation instrument has judged
+it, which a later slice adds. On page zero `projects.board` also carries `would_have_done`, the
+newest 50 inferred messages that an `observe` rule recorded as work it would have done and did not,
+each `{trigger, source, actor, rule, text, link, at_ms}` (`link` is the issue, pull request or checks
+page, or `null`, and `text` is external), and `sources`, one record per configured source,
+`{source, interval_s, last_poll_ms, next_poll_ms, note, shed, rules:[{name, mode}]}`. `note` is empty
+when the last pass ran clean and otherwise says what it could not read or when a rate limit ends. `shed`
+counts triggers that overload shed, which a person can queue again with `projects.requeue`.
 
 `projects.publish` publishes a ticket's current commit past a failing or missing check. It is
 recorded with the principal, it is the owner's alone, and no tool a model holds reaches it. It
