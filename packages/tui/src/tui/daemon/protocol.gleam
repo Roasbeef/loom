@@ -863,6 +863,7 @@ pub fn mutates(command: Command) -> Bool {
     | DirectoryStatus
     | SessionsElsewhere(..)
     | ProjectsCommand("projects.board", _)
+    | ProjectsCommand("projects.ticket", _)
     | ProjectsCommand("projects.list", _)
     | SessionActivity(..) -> False
     ProjectsCommand(..) -> True
@@ -1440,7 +1441,11 @@ fn decode_reply(event: String, body: json.JsonValue) {
     | "projects.list"
     | "projects.board"
     | "projects.post"
-    | "projects.stop" -> Ok(ProjectsReply(body))
+    | "projects.stop"
+    | "projects.ticket"
+    | "projects.answer"
+    | "projects.retry"
+    | "projects.requeue" -> Ok(ProjectsReply(body))
     "status" -> result.map(summary(body), StatusReply)
     "ui.link" -> {
       use path <- result.try(text_at(body, "path", 1024))

@@ -2993,6 +2993,10 @@ fn control(
             | protocol.ProjectBoard(..)
             | protocol.PostToProject(..)
             | protocol.StopTicket(..)
+            | protocol.ProjectTicket(..)
+            | protocol.AnswerQuestion(..)
+            | protocol.RetryTicket(..)
+            | protocol.RequeueTrigger(..)
             | protocol.SessionActivity(..)
             | protocol.ListArchivedSessions(..)
             | protocol.ArchiveSession(..)
@@ -3047,6 +3051,7 @@ fn control_use(command: protocol.Command) {
     | protocol.WorkspaceDefault(_)
     | protocol.ListProjects
     | protocol.ProjectBoard(..)
+    | protocol.ProjectTicket(..)
     | protocol.DirectoryStatus
     | protocol.DeploymentStatus(_)
     | protocol.SessionsElsewhere(..)
@@ -3073,6 +3078,9 @@ fn control_use(command: protocol.Command) {
     | protocol.CreateProject(..)
     | protocol.PostToProject(..)
     | protocol.StopTicket(..)
+    | protocol.AnswerQuestion(..)
+    | protocol.RetryTicket(..)
+    | protocol.RequeueTrigger(..)
     | protocol.OpenSession(..)
     | protocol.StopSession(..)
     | protocol.MoveSession(..)
@@ -3229,6 +3237,22 @@ fn dispatch(
       project_command(config, principal, fn(control) {
         project_stop(control, project, ticket)
       })
+    protocol.ProjectTicket(project, ticket) ->
+      project_command(config, principal, fn(control) {
+        project_ticket(control, project, ticket)
+      })
+    protocol.AnswerQuestion(project, ticket, seq, text) ->
+      project_command(config, principal, fn(control) {
+        project_answer(control, project, ticket, seq, text)
+      })
+    protocol.RetryTicket(project, ticket) ->
+      project_command(config, principal, fn(control) {
+        project_retry(control, project, ticket)
+      })
+    protocol.RequeueTrigger(project, trigger) ->
+      project_command(config, principal, fn(control) {
+        project_requeue(control, project, trigger)
+      })
     _ ->
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(control_refusal)
@@ -3371,6 +3395,88 @@ fn project_stop(
     |> result.replace_error("bad_request"),
   )
   #("projects.stop", json.Object([#("ticket", json.String(ticket))]))
+}
+
+/// The `projects.ticket` step: one ticket with its assignments and inputs.
+fn project_ticket(
+  control: project_start.Control,
+  project: String,
+  ticket: String,
+) -> Result(#(String, JsonValue), String) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.replace_error("not_found"),
+  )
+  use detail <- result.map(
+    project_host.ticket(handle, ticket) |> result.replace_error("not_found"),
+  )
+  #("projects.ticket", detail)
+}
+
+/// The `projects.answer` step. A stale `seq` is `conflict`, which a client
+/// shows as "the question changed" and which records nothing.
+fn project_answer(
+  control: project_start.Control,
+  project: String,
+  ticket: String,
+  seq: Int,
+  text: String,
+) -> Result(#(String, JsonValue), String) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.replace_error("not_found"),
+  )
+  use Nil <- result.map(
+    project_host.answer(handle, ticket, seq, text, "owner")
+    |> result.map_error(fn(failure) {
+      case failure {
+        project_host.NoSuchTicket -> "not_found"
+        project_host.StaleQuestion -> "conflict"
+        project_host.NotAccepted(..) -> "bad_request"
+      }
+    }),
+  )
+  #(
+    "projects.answer",
+    json.Object([
+      #("ticket", json.String(ticket)),
+      #("seq", json.Int(seq)),
+    ]),
+  )
+}
+
+/// The `projects.retry` step.
+fn project_retry(
+  control: project_start.Control,
+  project: String,
+  ticket: String,
+) -> Result(#(String, JsonValue), String) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.replace_error("not_found"),
+  )
+  use Nil <- result.map(
+    project_host.retry(handle, ticket, "owner")
+    |> result.replace_error("bad_request"),
+  )
+  #("projects.retry", json.Object([#("ticket", json.String(ticket))]))
+}
+
+/// The `projects.requeue` step.
+fn project_requeue(
+  control: project_start.Control,
+  project: String,
+  trigger: String,
+) -> Result(#(String, JsonValue), String) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.replace_error("not_found"),
+  )
+  use Nil <- result.map(
+    project_host.requeue(handle, trigger, "owner")
+    |> result.replace_error("bad_request"),
+  )
+  #("projects.requeue", json.Object([#("trigger", json.String(trigger))]))
 }
 
 /// The `ledger.*` owner commands (protocol-change/086). A member principal is
@@ -4388,7 +4494,11 @@ fn dispatch_class(
     | protocol.ListProjects
     | protocol.ProjectBoard(..)
     | protocol.PostToProject(..)
-    | protocol.StopTicket(..) -> Error("unavailable")
+    | protocol.StopTicket(..)
+    | protocol.ProjectTicket(..)
+    | protocol.AnswerQuestion(..)
+    | protocol.RetryTicket(..)
+    | protocol.RequeueTrigger(..) -> Error("unavailable")
     protocol.Shutdown(supplied) -> {
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))

@@ -221,6 +221,20 @@ pub opaque type Message {
   ReadCounts(reply: Subject(List(#(String, Int))))
   ReadLive(reply: Subject(List(String)))
   StopTicket(ticket: String, by: String, reply: Subject(Result(Nil, String)))
+  ReadTicket(ticket: String, reply: Subject(Result(JsonValue, Nil)))
+  AnswerQuestion(
+    ticket: String,
+    seq: Int,
+    text: String,
+    by: String,
+    reply: Subject(Result(Nil, AnswerFailure)),
+  )
+  RetryTicket(ticket: String, by: String, reply: Subject(Result(Nil, String)))
+  RequeueTrigger(
+    trigger: String,
+    by: String,
+    reply: Subject(Result(Nil, String)),
+  )
   HumanTurn(session: String, entry: String, actor: String, text: String)
   ReplayReport(session: String, report: tools.WorkerReport)
   ReadScanCursor(
@@ -654,6 +668,25 @@ fn handle(host: Host, message: Message) -> actor.Next(Host, Message) {
     }
     StopTicket(ticket, by, reply) -> {
       let #(next, answer) = stop_now(host, ticket, by)
+      process.send(reply, answer)
+      actor.continue(perform_due(next))
+    }
+    ReadTicket(ticket, reply) -> {
+      process.send(reply, ticket_detail(host, ticket))
+      actor.continue(host)
+    }
+    AnswerQuestion(ticket, seq, text, by, reply) -> {
+      let #(next, answer) = answer_now(host, ticket, seq, text, by)
+      process.send(reply, answer)
+      actor.continue(perform_due(next))
+    }
+    RetryTicket(ticket, by, reply) -> {
+      let #(next, answer) = retry_now(host, ticket, by)
+      process.send(reply, answer)
+      actor.continue(perform_due(next))
+    }
+    RequeueTrigger(trigger, by, reply) -> {
+      let #(next, answer) = requeue_now(host, trigger, by)
       process.send(reply, answer)
       actor.continue(perform_due(next))
     }
@@ -1932,6 +1965,7 @@ fn ticket_json(host: Host, ticket: Ticket) -> JsonValue {
     #("session", session),
     #("mandate", mandate_json(ticket.mandate)),
     #("check", json.Null),
+    #("opened_ms", opened_json(host, ticket)),
     #("question", question_json(host, ticket)),
     #("kept_worktrees", kept_json(host, ticket)),
     #("pull_request", case ticket.pull_request {
@@ -2138,5 +2172,295 @@ fn refusal_text(refusal: Refusal) -> String {
       "that answer does not match ticket " <> ticket.value <> "'s question"
     event.NotAConclusion(ticket:) ->
       "that is not a way for ticket " <> ticket.value <> " to conclude"
+  }
+}
+
+// --- ticket detail and the board's controls ----------------------------------
+
+/// Why an answer was not taken. A stale answer is its own case because a
+/// client shows it in words of its own: the question changed while the person
+/// was typing, and nothing was recorded.
+pub type AnswerFailure {
+  /// The project holds no such ticket.
+  NoSuchTicket
+
+  /// The answer's sequence number is not the ticket's open question, either
+  /// because the question was answered already or because a newer one replaced
+  /// it.
+  StaleQuestion
+
+  /// The engine or the ledger refused it for another reason.
+  NotAccepted(
+    /// The reason, in words.
+    reason: String,
+  )
+}
+
+/// One ticket with what a person needs to decide about it: the ticket record,
+/// its assignments newest first, and its inputs oldest first. An error means
+/// the project holds no such ticket.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_host.ticket(handle, "t-c1")
+/// ```
+pub fn ticket(handle: Handle, ticket: String) -> Result(JsonValue, Nil) {
+  ask(handle, ReadTicket(ticket, _))
+  |> result.replace_error(Nil)
+  |> result.flatten
+}
+
+/// Records a person's answer to a ticket's open question. `seq` must be the
+/// question's sequence number as the board showed it, and an answer to any
+/// other is refused as `StaleQuestion` with nothing recorded.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_host.answer(handle, "t-c1", 7, "use sqlite", "owner")
+/// ```
+pub fn answer(
+  handle: Handle,
+  ticket: String,
+  seq: Int,
+  text: String,
+  by: String,
+) -> Result(Nil, AnswerFailure) {
+  case ask(handle, AnswerQuestion(ticket, seq, text, by, _)) {
+    Ok(settled) -> settled
+    Error(reason) -> Error(NotAccepted(reason))
+  }
+}
+
+/// A person's request for a new assignment on a stalled ticket.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_host.retry(handle, "t-c1", "owner")
+/// ```
+pub fn retry(
+  handle: Handle,
+  ticket: String,
+  by: String,
+) -> Result(Nil, String) {
+  ask(handle, RetryTicket(ticket, by, _))
+  |> result.flatten
+}
+
+/// A person's request that a stored trigger be evaluated afresh.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_host.requeue(handle, "tr-1", "owner")
+/// ```
+pub fn requeue(
+  handle: Handle,
+  trigger: String,
+  by: String,
+) -> Result(Nil, String) {
+  ask(handle, RequeueTrigger(trigger, by, _))
+  |> result.flatten
+}
+
+// The most inputs one ticket detail carries, the newest kept.
+const input_limit = 20
+
+// The most characters of one input's text a ticket detail carries. The text is
+// external and may be long, and a client draws it as inert text.
+const input_text_limit = 2000
+
+/// The ticket detail step of this module.
+fn ticket_detail(host: Host, ticket: String) -> Result(JsonValue, Nil) {
+  use found <- result.map(
+    state.ticket(host.engine, model.TicketId(ticket))
+    |> result.replace_error(Nil),
+  )
+
+  json.Object([
+    #("project", json.String(host.config.project)),
+    #("revision", json.Int(host.last_seq)),
+    #("ticket", ticket_json(host, found)),
+    #("assignments", json.Array(list.map(found.assignments, assignment_json))),
+    #("inputs", json.Array(inputs_json(host, found))),
+  ])
+}
+
+/// One assignment as the detail shows it. The status is the engine's three
+/// states, with how a finished session ended.
+fn assignment_json(assignment: state.Assignment) -> JsonValue {
+  let status = case assignment.status {
+    state.AssignmentPending -> "pending"
+    state.AssignmentRunning -> "running"
+    state.AssignmentDone(model.SessionExited) -> "done/exited"
+    state.AssignmentDone(model.SessionCrashed) -> "done/crashed"
+  }
+
+  json.Object([
+    #("seq", json.Int(assignment.seq)),
+    #("session", case assignment.session {
+      Some(bound) -> json.String(bound.value)
+      None -> json.Null
+    }),
+    #("status", json.String(status)),
+  ])
+}
+
+/// The ticket's inputs: the triggers on its opening thread, oldest first and
+/// at most `input_limit` of the newest.
+fn inputs_json(host: Host, ticket: Ticket) -> List(JsonValue) {
+  let entries = case dict.get(host.engine.triggers, ticket.origin) {
+    Ok(origin) ->
+      case dict.get(host.engine.threads, origin.trigger.thread) {
+        Ok(thread) -> thread.entries
+        Error(Nil) -> []
+      }
+    Error(Nil) -> []
+  }
+
+  // A thread keeps its entries newest first, so the limit takes the newest and
+  // the reverse puts them back in the order they arrived.
+  entries
+  |> list.take(input_limit)
+  |> list.reverse
+  |> list.map(fn(entry) { input_json(host, ticket, entry) })
+}
+
+/// One input. A trigger whose text the ledger does not hold carries no text
+/// field at all, so a client cannot mistake it for an empty message.
+fn input_json(
+  host: Host,
+  ticket: Ticket,
+  entry: model.ThreadEntry,
+) -> JsonValue {
+  let delivery = case
+    entry.reception,
+    list.contains(ticket.failed_inputs, entry.trigger),
+    list.contains(ticket.inbox, entry.trigger)
+  {
+    model.Recorded, _, _ -> "recorded"
+    model.Received, True, _ -> "failed"
+    model.Received, False, True -> "waiting"
+    model.Received, False, False -> "delivered"
+  }
+
+  let described = case dict.get(host.texts, entry.trigger.value) {
+    Ok(found) -> [
+      #("source", json.String(found.source)),
+      #("actor", json.String(found.actor)),
+      #("text", json.String(string.slice(found.body, 0, input_text_limit))),
+    ]
+    Error(Nil) -> []
+  }
+
+  json.Object([
+    #("trigger", json.String(entry.trigger.value)),
+    #("delivery", json.String(delivery)),
+    ..described
+  ])
+}
+
+/// When the ticket's opening trigger arrived, in Unix milliseconds, or null
+/// when the engine no longer holds that trigger. A client shows an age only
+/// from this, and never from when it first saw the ticket.
+fn opened_json(host: Host, ticket: Ticket) -> JsonValue {
+  case dict.get(host.engine.triggers, ticket.origin) {
+    Ok(origin) -> json.Int(origin.trigger.at_ms)
+    Error(Nil) -> json.Null
+  }
+}
+
+/// Takes an answer. The question is compared before the text is written, so a
+/// stale answer leaves nothing in the ledger; the engine then checks it again
+/// as the authority, and its refusal is the same case.
+fn answer_now(
+  host: Host,
+  ticket: String,
+  seq: Int,
+  text: String,
+  by: String,
+) -> #(Host, Result(Nil, AnswerFailure)) {
+  case state.ticket(host.engine, model.TicketId(ticket)) {
+    Error(_) -> #(host, Error(NoSuchTicket))
+    Ok(found) ->
+      case found.question {
+        model.Asking(seq: open) if open == seq ->
+          case record_answer(host, ticket, seq, text, by) {
+            Ok(next) -> #(next, Ok(Nil))
+            Error(failure) -> #(host, Error(failure))
+          }
+        model.Asking(_) | model.NoQuestion -> #(host, Error(StaleQuestion))
+      }
+  }
+}
+
+/// Writes the answer's text and then the event that closes the question. The
+/// text is keyed by ticket and question, so it is findable from the ledger.
+fn record_answer(
+  host: Host,
+  ticket: String,
+  seq: Int,
+  text: String,
+  by: String,
+) -> Result(Host, AnswerFailure) {
+  let id = "a-" <> ticket <> "-" <> int.to_string(seq)
+  use texted <- result.try(
+    record(host, project_records.TriggerText(id, "answer", by, text))
+    |> result.map_error(NotAccepted),
+  )
+
+  commit(
+    texted,
+    event.Answered(model.TicketId(ticket), seq, model.PrincipalId(by)),
+  )
+  |> result.map_error(answer_failure)
+}
+
+/// The engine's refusals that mean "the question moved on" or "no such
+/// ticket" keep their own cases, and every other refusal is words.
+fn answer_failure(failure: NotCommitted) -> AnswerFailure {
+  case failure {
+    Refused(event.StaleAnswer(..)) -> StaleQuestion
+    Refused(event.UnknownTicket(..)) -> NoSuchTicket
+    Refused(other) -> NotAccepted(refusal_text(other))
+    WriteFailed(reason) -> NotAccepted(reason)
+  }
+}
+
+/// A person's retry: the engine decides whether the ticket may take a new
+/// assignment.
+fn retry_now(
+  host: Host,
+  ticket: String,
+  by: String,
+) -> #(Host, Result(Nil, String)) {
+  case
+    commit(
+      host,
+      event.RetryRequested(model.TicketId(ticket), model.PrincipalId(by)),
+    )
+  {
+    Ok(next) -> #(next, Ok(Nil))
+    Error(failure) -> #(host, Error(not_committed_text(failure)))
+  }
+}
+
+/// A person's requeue: the engine decides whether the stored trigger may be
+/// evaluated again.
+fn requeue_now(
+  host: Host,
+  trigger: String,
+  by: String,
+) -> #(Host, Result(Nil, String)) {
+  case
+    commit(
+      host,
+      event.Requeued(model.TriggerId(trigger), model.PrincipalId(by)),
+    )
+  {
+    Ok(next) -> #(next, Ok(Nil))
+    Error(failure) -> #(host, Error(not_committed_text(failure)))
   }
 }

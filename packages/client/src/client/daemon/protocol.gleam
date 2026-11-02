@@ -216,6 +216,21 @@ pub type Command {
   /// A person's stop of one ticket, which withdraws its mandate. Owner-only.
   StopTicket(project: String, ticket: String)
 
+  /// One ticket with its Mandate, assignments, inputs, session id and
+  /// question. Owner-only.
+  ProjectTicket(project: String, ticket: String)
+
+  /// A person's answer to the ticket's open question, echoing the question's
+  /// sequence number so an answer to a question that has since changed is
+  /// refused. Owner-only.
+  AnswerQuestion(project: String, ticket: String, seq: Int, text: String)
+
+  /// A person's request for a new assignment on a stalled ticket. Owner-only.
+  RetryTicket(project: String, ticket: String)
+
+  /// A person's request that a stored trigger be evaluated afresh. Owner-only.
+  RequeueTrigger(project: String, trigger: String)
+
   /// Asks the named resident sessions what they are doing
   /// (`protocol-change/050`). Owner-only; saved sessions are never opened.
   SessionActivity(
@@ -677,6 +692,28 @@ fn decode_fields(
       use project <- result.try(text_field(fields, "project", 64))
       use ticket <- result.map(text_field(fields, "ticket", 128))
       StopTicket(project, ticket)
+    }
+    "projects.ticket" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use ticket <- result.map(text_field(fields, "ticket", 128))
+      ProjectTicket(project, ticket)
+    }
+    "projects.answer" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use ticket <- result.try(text_field(fields, "ticket", 128))
+      use seq <- result.try(question_seq_field(fields))
+      use text <- result.map(text_field(fields, "text", 32_768))
+      AnswerQuestion(project, ticket, seq, text)
+    }
+    "projects.retry" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use ticket <- result.map(text_field(fields, "ticket", 128))
+      RetryTicket(project, ticket)
+    }
+    "projects.requeue" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use trigger <- result.map(text_field(fields, "trigger", 128))
+      RequeueTrigger(project, trigger)
     }
     "sessions.list" -> {
       use after <- result.try(cursor(fields))
@@ -1413,6 +1450,20 @@ fn page_field(fields: List(#(String, JsonValue))) -> Result(Int, String) {
     Error(Nil) -> Ok(0)
     Ok(json.Int(page)) if page >= 0 && page <= 100_000 -> Ok(page)
     Ok(_) -> Error("expected a nonnegative page number")
+  }
+}
+
+/// The sequence number a `projects.answer` echoes. It is required, because an
+/// answer with no sequence number could not be told apart from one given to an
+/// earlier question.
+fn question_seq_field(
+  fields: List(#(String, JsonValue)),
+) -> Result(Int, String) {
+  use value <- result.try(required(fields, "seq"))
+
+  case value {
+    json.Int(seq) if seq >= 0 -> Ok(seq)
+    _other -> Error("expected a nonnegative question sequence number")
   }
 }
 

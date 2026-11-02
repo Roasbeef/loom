@@ -1817,7 +1817,7 @@ prints it, as text or, with `--json`, as the daemon sent it.
 ### 3.32 `projects.*`
 
 Project mode's control commands (protocol-change/106, design note
-`docs/design-notes/project-mode.md`). All five are owner-only, and a daemon that
+`docs/design-notes/project-mode.md`). All nine are owner-only, and a daemon that
 started no project table answers every one `not_found`. A reply carries the
 engine's own spelling of a stage, and a client displays it and never derives it.
 
@@ -1828,6 +1828,10 @@ engine's own spelling of a stage, and a client displays it and never derives it.
 | `projects.board` | yes | `project` (string, required), `page` (integer, optional, zero-based) | `projects.board` |
 | `projects.post` | no | `project`, `request_id` (at most 64 of letters, digits, `_`, `-`, `.`), `text` (string, required) | `projects.post` |
 | `projects.stop` | no | `project`, `ticket` (strings, required) | `projects.stop` |
+| `projects.ticket` | yes | `project`, `ticket` (strings, required) | `projects.ticket` |
+| `projects.answer` | no | `project`, `ticket` (strings), `seq` (integer, required), `text` (string, required, at most 32768 bytes) | `projects.answer` |
+| `projects.retry` | no | `project`, `ticket` (strings, required) | `projects.retry` |
+| `projects.requeue` | no | `project`, `trigger` (strings, required) | `projects.requeue` |
 
 ```json
 {"v":2,"id":9,"cmd":"projects.create","body":{"workspace":"/src/loom","name":"loom"}}
@@ -1840,7 +1844,10 @@ project. `projects.list` replies `{"projects":[{"id","workspace","router_session
 "total","tickets":[...],"replies":[...]}` with at most 20 tickets a page,
 needs-a-person first, and `revision` is the project ledger's newest sequence number.
 A ticket is the record of protocol-change/106, `{id, project, title, stage, session,
-mandate, check, question, kept_worktrees, pull_request, ended}`, where `stage` is one of
+mandate, check, opened_ms, question, kept_worktrees, pull_request, ended}`, where `opened_ms` is when
+the ticket's opening message arrived in Unix milliseconds, or `null` when the engine no
+longer holds that message (a client shows an age from it and never from when it first
+saw the ticket), where `stage` is one of
 `person/delivery`, `person/answer`, `person/review`, `person/blocked`,
 `person/failed`, `queued`, `idle`, `working` or `ended/<outcome>`, `check` is always
 `null` in this slice, and `question` is `null` or `{seq, text, options}`.
@@ -1851,6 +1858,44 @@ holds the router's queued replies on page zero. `projects.post` replies
 `{"trigger","repeated"}`; posting a `request_id` again changes nothing and answers
 `repeated: true`. Errors: `not_found` (no such project), `bad_request` (a refused
 post or stop), `forbidden` (a member principal), `unavailable`.
+
+```json
+{"v":2,"id":10,"cmd":"projects.ticket","body":{"project":"p1","ticket":"t-a"}}
+{"v":2,"event":"projects.ticket","reply_to":10,"body":{
+  "project":"p1","revision":14,
+  "ticket":{"id":"t-a","project":"p1","title":"fix a","stage":"person/answer",
+    "session":"s_01","mandate":{"strength":"explicit","via":"composer",
+    "source":"composer","actor":"owner","policy_version":"v1"},"check":null,
+    "opened_ms":1761993600000,"question":{"seq":9,"text":"which database?","options":[]},
+    "pull_request":null,"ended":null},
+  "assignments":[{"seq":1,"session":"s_01","status":"running"}],
+  "inputs":[{"trigger":"tr-1","delivery":"delivered","source":"composer",
+    "actor":"owner","text":"fix a"}]}}
+{"v":2,"id":11,"cmd":"projects.answer","body":{"project":"p1","ticket":"t-a","seq":9,"text":"sqlite"}}
+{"v":2,"event":"projects.answer","reply_to":11,"body":{"ticket":"t-a","seq":9}}
+{"v":2,"id":12,"cmd":"projects.retry","body":{"project":"p1","ticket":"t-a"}}
+{"v":2,"event":"projects.retry","reply_to":12,"body":{"ticket":"t-a"}}
+{"v":2,"id":13,"cmd":"projects.requeue","body":{"project":"p1","trigger":"tr-1"}}
+{"v":2,"event":"projects.requeue","reply_to":13,"body":{"trigger":"tr-1"}}
+```
+
+`projects.ticket` replies the ticket record, its `assignments` newest first as
+`{seq, session, status}` (`status` is `pending`, `running`, `done/exited` or
+`done/crashed`, and `session` is `null` until the host binds one), and its `inputs`:
+the messages on the ticket's opening thread, oldest first and at most the newest 20, each
+`{trigger, delivery, source, actor, text}`. `delivery` is `delivered`, `waiting` (queued for
+a session), `failed` (never reached the worker) or `recorded` (the gate did not admit it).
+`source`, `actor` and `text` are absent when the ledger holds no text for that message, and
+`text` is cut at 2000 characters. All three are external text and are drawn as text. `revision`
+is the ledger's newest sequence number, as on the board. `projects.answer` echoes the question's
+`seq` from the ticket's `question`; an answer whose `seq` is not the ticket's open question is
+refused `conflict` and records nothing, and a client says the question changed. The answer's
+text is stored in the project ledger beside the `Answered` event. Relaying that text to the
+worker is the `answer` effect row, which this slice logs and settles without serving (see
+`client/daemon/project_host`). `projects.retry` and `projects.requeue` reply an echo, and the
+engine's refusal of either (a ticket that has a live worker, a message that is not waiting) is
+`bad_request`. `projects.ticket` is a read; the other three are not. An unknown project or
+ticket is `not_found` for all four.
 
 ## 4. The session endpoint
 
