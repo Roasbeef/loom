@@ -383,6 +383,8 @@ fn seat_with(
       handback: fn(_, _) { Error(nothing) },
     ),
     feed: None,
+    run_ended: None,
+    workspace: "/workspace",
     jail:,
   )
 }

@@ -1070,12 +1070,14 @@ fn concluded_and_resumed(name: String, merged: String, word: String) -> Nil {
       ),
     ])
 
-  // The ticket's worker session is told the comment, as the resumed ticket's
-  // own, and the ticket is no longer ended.
+  // The conclusion stopped the first session, so the resumed ticket's second
+  // assignment has a session of its own, which is told the comment, and the
+  // ticket is no longer ended.
+  let resumed = "session-project:p1:t-a:2"
   let told =
     collect(rig, fn(found) {
-      list.any(worker_got(found, worker), fn(got) { got.0 == "gh-c-301" })
+      list.any(worker_got(found, resumed), fn(got) { got.0 == "gh-c-301" })
     })
-  assert list.any(worker_got(told, worker), fn(got) { got.0 == "gh-c-301" })
+  assert list.any(worker_got(told, resumed), fn(got) { got.0 == "gh-c-301" })
   assert !string.contains(board_text(handle), word)
 }
