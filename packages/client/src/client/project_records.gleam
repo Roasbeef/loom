@@ -76,6 +76,29 @@ pub type Record {
     /// The worker's reason.
     reason: String,
   )
+
+  /// The actor queued a recovery note for an assignment that a restart
+  /// interrupted. The record is what makes a second restart queue none: the
+  /// pair is in the history, and replay puts it in the actor's set.
+  Recovered(
+    /// The ticket.
+    ticket: String,
+    /// The assignment.
+    seq: Int,
+  )
+
+  /// An assignment's worktree was kept when its ticket ended, because it held
+  /// commits its base lacks. The board names it from this record.
+  TreeKept(
+    /// The ticket.
+    ticket: String,
+    /// The assignment.
+    seq: Int,
+    /// Where the worktree is.
+    path: String,
+    /// Why it stayed.
+    reason: String,
+  )
 }
 
 /// What the actor does for one effect.
@@ -128,6 +151,14 @@ pub type Job {
 
   /// Tell the worker a person answered; logged and settled in this slice.
   AnswerJob(
+    /// The ticket.
+    ticket: String,
+    /// The assignment.
+    seq: Int,
+  )
+
+  /// Tell a worker that a restart interrupted its assignment.
+  RecoverJob(
     /// The ticket.
     ticket: String,
     /// The assignment.
@@ -197,6 +228,20 @@ fn record_json(record: Record) -> Json {
         #("trigger", json.string(trigger)),
         #("reason", json.string(reason)),
       ])
+    Recovered(ticket:, seq:) ->
+      json.object([
+        #("host", json.string("recovered")),
+        #("ticket", json.string(ticket)),
+        #("seq", json.int(seq)),
+      ])
+    TreeKept(ticket:, seq:, path:, reason:) ->
+      json.object([
+        #("host", json.string("tree_kept")),
+        #("ticket", json.string(ticket)),
+        #("seq", json.int(seq)),
+        #("path", json.string(path)),
+        #("reason", json.string(reason)),
+      ])
   }
 }
 
@@ -251,6 +296,18 @@ fn host_decoder() -> decode.Decoder(Record) {
       use trigger <- decode.field("trigger", decode.string)
       use reason <- decode.field("reason", decode.string)
       decode.success(HandedBack(ticket:, trigger:, reason:))
+    }
+    "recovered" -> {
+      use ticket <- decode.field("ticket", decode.string)
+      use seq <- decode.field("seq", decode.int)
+      decode.success(Recovered(ticket:, seq:))
+    }
+    "tree_kept" -> {
+      use ticket <- decode.field("ticket", decode.string)
+      use seq <- decode.field("seq", decode.int)
+      use path <- decode.field("path", decode.string)
+      use reason <- decode.field("reason", decode.string)
+      decode.success(TreeKept(ticket:, seq:, path:, reason:))
     }
     _ -> decode.failure(HandedBack("", "", ""), "a known host record")
   }
@@ -353,6 +410,27 @@ pub fn draft(
   }
 }
 
+/// The row that tells a worker its assignment was interrupted by a restart,
+/// due at once. The key is the assignment, so the row is one per assignment.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_records.recovery_draft("t-a", 1, 0).key == "t-a:1"
+/// ```
+pub fn recovery_draft(
+  ticket: String,
+  seq: Int,
+  now_ms: Int,
+) -> project_ledger.EffectDraft {
+  row(
+    "recover",
+    ticket <> ":" <> int.to_string(seq),
+    [#("ticket", json.string(ticket)), #("seq", json.int(seq))],
+    now_ms,
+  )
+}
+
 /// An effect row due at `now_ms`, with its fields as a JSON object payload.
 fn row(
   kind: String,
@@ -441,6 +519,12 @@ pub fn job(found: project_ledger.Effect) -> Result(Job, String) {
         use ticket <- decode.field("ticket", decode.string)
         use seq <- decode.field("seq", decode.int)
         decode.success(AnswerJob(ticket:, seq:))
+      })
+    "recover" ->
+      parse(payload, {
+        use ticket <- decode.field("ticket", decode.string)
+        use seq <- decode.field("seq", decode.int)
+        decode.success(RecoverJob(ticket:, seq:))
       })
     other -> Error("unknown job kind " <> other)
   }

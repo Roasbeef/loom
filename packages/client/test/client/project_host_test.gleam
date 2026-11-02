@@ -53,6 +53,7 @@ fn rig(name: String) -> Rig {
       },
       open_session: fn(_) { Ok(Nil) },
       stop_session: fn(_) { Ok(Nil) },
+      release_worktree: fn(_) { Ok(project_host.Removed) },
       endpoint_of: fn(session) {
         Ok(
           peer_mail.Endpoint(session, fn(command) {
@@ -304,4 +305,113 @@ pub fn a_refused_route_item_does_not_cost_the_others_test() {
   let board = board_json(handle)
   assert string.contains(board, "t-a")
   assert !string.contains(board, "t-ghost")
+}
+
+// The note a restart sends, as the worker's endpoint saw it.
+fn recovery_notes(seen: List(Seen)) -> List(#(String, String, String)) {
+  list.filter_map(seen, fn(each) {
+    case each {
+      Sent(session, peer_mail.Trigger(from:, text:, ..))
+        if from.source == "harness"
+      -> Ok(#(session, from.trigger, text))
+      Sent(..) | Started(_) -> Error(Nil)
+    }
+  })
+}
+
+pub fn a_restart_tells_a_running_worker_once_test() {
+  let rig = rig("recovery")
+  let handle = start(rig)
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+  let assert Ok([tools.Applied]) = project_host.route(handle, [accept("a")])
+  let worker = "session-" <> first_key("t-a")
+
+  // The first run of the actor has nothing to recover from.
+  assert recovery_notes(drain(rig.seen)) == []
+
+  // The first restart finds the assignment running and tells its worker, in
+  // the harness's words, to check its worktree and the source before it
+  // repeats an outside action.
+  stop(handle)
+  let again = start(rig)
+  let assert [#(session, trigger, text)] = recovery_notes(drain(rig.seen))
+    as "one recovery note after the first restart"
+  assert session == worker
+  assert trigger == "recovery-t-a-1"
+  assert string.contains(text, "check your worktree and the source")
+
+  // A second restart finds the pair in the ledger and sends nothing.
+  let board = board_json(again)
+  stop(again)
+  let third = start(rig)
+  assert recovery_notes(drain(rig.seen)) == []
+  assert board_json(third) == board
+}
+
+pub fn a_worker_that_never_ran_is_not_told_of_a_restart_test() {
+  let rig = rig("never-ran")
+  let handle = start(rig)
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+
+  // The ticket is posted and never accepted, so there is no assignment.
+  stop(handle)
+  let _again = start(rig)
+  assert recovery_notes(drain(rig.seen)) == []
+}
+
+// A host whose release port records what it was asked and answers `outcome`.
+fn releasing(
+  rig: Rig,
+  outcome: project_host.Released,
+) -> #(project_host.Config, Subject(project_host.ReleaseRequest)) {
+  let asked = process.new_subject()
+  let ports =
+    project_host.Ports(..rig.config.ports(), release_worktree: fn(request) {
+      process.send(asked, request)
+      Ok(outcome)
+    })
+  #(project_host.Config(..rig.config, ports: fn() { ports }), asked)
+}
+
+pub fn an_ended_ticket_releases_its_worktree_test() {
+  let rig = rig("release")
+  let #(config, asked) = releasing(rig, project_host.Removed)
+  let assert Ok(handle) = project_host.start(config) as "the actor starts"
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+  let assert Ok([tools.Applied]) = project_host.route(handle, [accept("a")])
+
+  // A live ticket keeps its tree.
+  assert process.receive(asked, 100) == Error(Nil)
+
+  // A person's stop ends the ticket, and its tree is asked to go.
+  let assert Ok(Nil) = project_host.stop_ticket(handle, "t-a", "owner")
+  let assert Ok(request) = process.receive(asked, 2000)
+    as "the worktree is released"
+  assert request == project_host.ReleaseRequest("t-a", 1)
+  assert !string.contains(board_json(handle), "reason")
+}
+
+pub fn a_worktree_with_unpushed_commits_stays_and_the_board_names_it_test() {
+  let rig = rig("kept")
+  let kept =
+    project_host.Kept(
+      path: "/state/worktrees/p1/t-a-1",
+      reason: "it holds 2 commits absent from the base",
+    )
+  let #(config, asked) = releasing(rig, kept)
+  let assert Ok(handle) = project_host.start(config) as "the actor starts"
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+  let assert Ok([tools.Applied]) = project_host.route(handle, [accept("a")])
+  let assert Ok(Nil) = project_host.stop_ticket(handle, "t-a", "owner")
+  let assert Ok(_) = process.receive(asked, 2000) as "the worktree is released"
+
+  // The board names the tree and says why it stayed.
+  let board = board_json(handle)
+  assert string.contains(board, "/state/worktrees/p1/t-a-1")
+  assert string.contains(board, "2 commits absent from the base")
+
+  // The record is in the ledger, so a restart shows the same.
+  stop(handle)
+  let assert Ok(again) = project_host.start(config) as "the actor restarts"
+  assert board_json(again) == board
 }

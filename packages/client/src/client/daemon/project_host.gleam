@@ -45,7 +45,7 @@ import broker/internal/call
 import client/peer_mail
 import client/project_records.{
   type Job, type Record, AnswerJob, CheckJob, DeliverJob, Engine as EngineLine,
-  Host as HostLine, OfferJob, PullRequestJob, StartJob, StopJob,
+  Host as HostLine, OfferJob, PullRequestJob, RecoverJob, StartJob, StopJob,
 }
 import core/json.{type JsonValue}
 import gleam/dict.{type Dict}
@@ -54,6 +54,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
 import project/engine
 import project/event.{type Event, type Refusal}
@@ -79,6 +80,9 @@ pub type Ports {
     open_session: fn(String) -> Result(Nil, String),
     /// Stops a resident session, leaving it saved.
     stop_session: fn(String) -> Result(Nil, String),
+    /// Removes the worktree of an assignment whose ticket has ended, or keeps
+    /// it because it holds commits its base lacks.
+    release_worktree: fn(ReleaseRequest) -> Result(Released, String),
     /// The endpoint of a resident session, or why it has none.
     endpoint_of: fn(String) -> Result(peer_mail.Endpoint, peer_mail.Failure),
     /// Where the actor reports.
@@ -97,6 +101,30 @@ pub type StartRequest {
     seq: Int,
     /// The ticket's capped title, for the session's name.
     title: String,
+  )
+}
+
+/// Which worktree to release.
+pub type ReleaseRequest {
+  ReleaseRequest(
+    /// The ticket.
+    ticket: String,
+    /// The assignment.
+    seq: Int,
+  )
+}
+
+/// What releasing a worktree came to.
+pub type Released {
+  /// The worktree is gone. Its branch remains.
+  Removed
+
+  /// The worktree stays, because it holds work that nothing records as pushed.
+  Kept(
+    /// Where it is, so a person can find it.
+    path: String,
+    /// Why it was kept.
+    reason: String,
   )
 }
 
@@ -214,7 +242,14 @@ type Host {
     questions: Dict(#(String, Int), String),
     replies: List(#(String, String, String)),
     offered_at_ms: Int,
+    recovered: Set(#(String, Int)),
+    kept_trees: Dict(String, List(KeptTree)),
   )
+}
+
+// A worktree that outlived its ticket, with where it is and why it stayed.
+type KeptTree {
+  KeptTree(seq: Int, path: String, reason: String)
 }
 
 // The text and attribution of one stored trigger.
@@ -513,9 +548,11 @@ fn boot(config: Config) -> Result(Host, String) {
       questions: dict.new(),
       replies: [],
       offered_at_ms: 0,
+      recovered: set.new(),
+      kept_trees: dict.new(),
     )
   use replayed <- result.try(replay(fresh, 0))
-  Ok(perform_due(replayed))
+  Ok(perform_due(recover_interrupted(replayed)))
 }
 
 /// Replays a page at a time, because the ledger returns at most a page, and the
@@ -738,6 +775,15 @@ fn keep_record(host: Host, written: Record) -> Host {
     project_records.ReplyQueued(subject:, purpose:, body:) ->
       Host(..host, replies: [#(subject, purpose, body), ..host.replies])
     project_records.HandedBack(..) -> host
+    project_records.Recovered(ticket:, seq:) ->
+      Host(..host, recovered: set.insert(host.recovered, #(ticket, seq)))
+    project_records.TreeKept(ticket:, seq:, path:, reason:) ->
+      Host(
+        ..host,
+        kept_trees: dict.upsert(host.kept_trees, ticket, fn(found) {
+          [KeptTree(seq:, path:, reason:), ..option.unwrap(found, [])]
+        }),
+      )
   }
 }
 
@@ -1292,6 +1338,7 @@ fn perform(host: Host, row: project_ledger.Effect, job: Job) -> Host {
       deliver_to_worker(host, row, ticket, seq, trigger)
     OfferJob(triggers:) -> offer_to_router(host, row, triggers)
     StopJob(ticket:, seq:) -> stop_worker(host, row, ticket, seq)
+    RecoverJob(ticket:, seq:) -> recover_worker(host, row, ticket, seq)
 
     // These are recorded and settled. The host check, the pull request and
     // the relay of an answer belong to later slices, and a logged row is the
@@ -1409,9 +1456,9 @@ fn start_failed(
   }
 }
 
-/// Stops the session of an assignment, if it has one. The stop is best effort
-/// and its result is ignored, because the session may already be closed and
-/// the row must settle either way.
+/// Stops the session of an assignment, if it has one, and then releases its
+/// worktree if the ticket has ended. The stop is best effort and its result is
+/// ignored, because the session may already be closed.
 fn stop_worker(
   host: Host,
   row: project_ledger.Effect,
@@ -1431,8 +1478,185 @@ fn stop_worker(
         None -> Nil
       }
 
-      settle(host, row)
+      release_tree(host, row, found, seq)
     }
+  }
+}
+
+/// Releases the assignment's worktree once its ticket has ended. It runs after
+/// the session was stopped, in the same job, so the tree is never removed from
+/// under a session that is still writing to it. A stop that leaves the ticket
+/// open, such as the end of one assignment before a retry, keeps the tree.
+fn release_tree(
+  host: Host,
+  row: project_ledger.Effect,
+  ticket: Ticket,
+  seq: Int,
+) -> Host {
+  // Only a ticket that has ended releases its trees.
+  case ticket.outcome {
+    None -> settle(host, row)
+    Some(_) ->
+      case host.ports.release_worktree(ReleaseRequest(ticket.id.value, seq)) {
+        Ok(Removed) -> settle(host, row)
+        Ok(Kept(path:, reason:)) ->
+          record_kept_tree(host, ticket.id.value, seq, path, reason)
+          |> settle(row)
+        Error(reason) -> release_failed(host, row, ticket, reason)
+      }
+  }
+}
+
+/// A release that failed is tried again under the row's backoff, and given up
+/// on after the same five attempts a session start gets. The tree is then left
+/// where it is, which is the safe side: nothing was removed.
+fn release_failed(
+  host: Host,
+  row: project_ledger.Effect,
+  ticket: Ticket,
+  reason: String,
+) -> Host {
+  log.warn(host.ports.logger, "project.release_failed", [
+    field.ident(key: "ticket", value: ticket.id.value),
+    field.text(key: "reason", value: reason),
+  ])
+
+  // The ledger counts attempts from zero, so the fifth failure gives up.
+  case row.attempts >= 4 {
+    True -> settle(host, row)
+    False -> defer(host, row)
+  }
+}
+
+/// Writes down that a worktree stayed, so the board can name it after a
+/// restart. A write that fails is logged: the tree is still on disk, and only
+/// the board's mention of it is lost.
+fn record_kept_tree(
+  host: Host,
+  ticket: String,
+  seq: Int,
+  path: String,
+  reason: String,
+) -> Host {
+  // The record is what the board and a restart read the kept tree from.
+  case record(host, project_records.TreeKept(ticket, seq, path, reason)) {
+    Ok(next) -> next
+    Error(failure) -> {
+      log.warn(host.ports.logger, "project.tree_kept_unrecorded", [
+        field.ident(key: "ticket", value: ticket),
+        field.text(key: "reason", value: failure),
+      ])
+      host
+    }
+  }
+}
+
+// --- recovery ----------------------------------------------------------------
+
+// What a worker is told when the harness restarted under it. The wording is
+// the harness's own and carries nothing a person or a model chose.
+const recovery_note =
+  "The harness restarted while you were working on this ticket, and your last steps may not have finished. Before you repeat any action outside your worktree, such as a push, a message or a command with effects elsewhere, check your worktree and the source of the request to see what already happened. Then carry on."
+
+/// Queues one recovery note for every assignment that was running when the
+/// actor started and has not had one. The pair is written to the ledger with
+/// its effect row, so a later restart finds it and queues nothing, and the
+/// note's message id makes a repeated delivery admit nothing.
+fn recover_interrupted(host: Host) -> Host {
+  list.fold(state.tickets_oldest_first(host.engine), host, fn(so_far, ticket) {
+    case state.active_assignment(ticket) {
+      None -> so_far
+      Some(assignment) -> recover_assignment(so_far, ticket, assignment)
+    }
+  })
+}
+
+/// Queues the note for one assignment if it was running with a session and has
+/// not been told.
+fn recover_assignment(
+  host: Host,
+  ticket: Ticket,
+  assignment: state.Assignment,
+) -> Host {
+  let told = set.contains(host.recovered, #(ticket.id.value, assignment.seq))
+
+  // An assignment that never ran has nothing to recover from, and one already
+  // told is not told again.
+  case assignment.status, assignment.session, told {
+    state.AssignmentRunning, Some(_), False ->
+      queue_recovery(host, ticket.id.value, assignment.seq)
+    state.AssignmentRunning, _, _
+    | state.AssignmentPending, _, _
+    | state.AssignmentDone(_), _, _
+    -> host
+  }
+}
+
+/// Appends the record and its effect row in one transaction.
+fn queue_recovery(host: Host, ticket: String, seq: Int) -> Host {
+  let written = project_records.Recovered(ticket, seq)
+  let now = host.ports.now_ms()
+
+  // The record and the row commit together or not at all, so a restart sees
+  // either both or neither and never a row that nothing remembers queueing.
+  case
+    project_ledger.append_with_effects(
+      host.ledger,
+      project_records.encode_record(written),
+      now,
+      [project_records.recovery_draft(ticket, seq, now)],
+    )
+  {
+    Ok(last) -> Host(..keep_record(host, written), last_seq: last)
+    Error(error) -> {
+      log.warn(host.ports.logger, "project.recovery_unqueued", [
+        field.ident(key: "ticket", value: ticket),
+        field.text(key: "reason", value: string.inspect(error)),
+      ])
+      host
+    }
+  }
+}
+
+/// Delivers the recovery note to the assignment's worker through the same
+/// admission as any trigger, so it arrives with the trigger origin and a
+/// harness source. A worker that cannot be reached after the usual attempts is
+/// left alone: the note is a courtesy to a model and nothing depends on it.
+fn recover_worker(
+  host: Host,
+  row: project_ledger.Effect,
+  ticket: String,
+  seq: Int,
+) -> Host {
+  // A ticket the engine lost, or an assignment with no session, has nobody to
+  // tell.
+  case state.ticket(host.engine, model.TicketId(ticket)) {
+    Error(_) -> settle(host, row)
+    Ok(found) ->
+      case bound_session(found, seq) {
+        None -> settle(host, row)
+        Some(session) -> {
+          let id = "recovery-" <> ticket <> "-" <> int.to_string(seq)
+          let note =
+            Trigger(source: "harness", actor: "loom", body: recovery_note)
+          admit(host, row, session, id, note, peer_mail.MayWake, fn(admitted) {
+            recovery_delivered(host, row, admitted)
+          })
+        }
+      }
+  }
+}
+
+/// Settles a delivered note, backs off one that did not get through, and drops
+/// one that never will.
+fn recovery_delivered(
+  host: Host,
+  row: project_ledger.Effect,
+  admitted: Admitted,
+) -> Host {
+  case admitted {
+    Admitted | GaveUp -> settle(host, row)
+    NotYet -> defer(host, row)
   }
 }
 
@@ -1709,6 +1933,7 @@ fn ticket_json(host: Host, ticket: Ticket) -> JsonValue {
     #("mandate", mandate_json(ticket.mandate)),
     #("check", json.Null),
     #("question", question_json(host, ticket)),
+    #("kept_worktrees", kept_json(host, ticket)),
     #("pull_request", case ticket.pull_request {
       Some(request) -> json.String(request.url)
       None -> json.Null
@@ -1746,6 +1971,22 @@ fn mandate_json(mandate: model.Mandate) -> JsonValue {
     #("actor", json.String(mandate.actor.value)),
     #("policy_version", json.String(mandate.policy_version)),
   ])
+}
+
+/// The worktrees that stayed when the ticket ended, oldest assignment first,
+/// each with where it is and why. An empty list is the ordinary case.
+fn kept_json(host: Host, ticket: Ticket) -> JsonValue {
+  dict.get(host.kept_trees, ticket.id.value)
+  |> result.unwrap([])
+  |> list.reverse
+  |> list.map(fn(kept) {
+    json.Object([
+      #("seq", json.Int(kept.seq)),
+      #("path", json.String(kept.path)),
+      #("reason", json.String(kept.reason)),
+    ])
+  })
+  |> json.Array
 }
 
 /// An open question with its text. The text lives in a host record keyed by

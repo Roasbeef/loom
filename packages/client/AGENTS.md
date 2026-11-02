@@ -10228,5 +10228,15 @@ ordinary top-level worker session per ticket assignment
   sent after the turns it covers; correctness rests on the entry key and on
   `already_holds`, not on the cursor. The process carries no `telemetry/owner`
   role: a new role is a protocol change.
+- Restart and close. `recover_interrupted` runs in `boot`: each assignment that is
+  running with a session and has no `Recovered` host record gets one, with a
+  `recover` effect row, and `recover_worker` delivers a harness-worded note through
+  `admit` under the message id `recovery-<ticket>-<seq>`. The record is what stops a
+  second restart from sending another. `stop_worker` ends with `release_tree` for a
+  ticket that has an outcome: `Ports.release_worktree` closes the tree with
+  `worktrees.close_guarding_commits`, which keeps a clean tree whose HEAD has commits
+  the base lacks. A kept tree is written as a `TreeKept` host record and appears on
+  the ticket card as `kept_worktrees`. Nothing records a push yet, so any commit
+  ahead of the base keeps the tree.
 - Not built in this slice: the host check, pull requests, outbound delivery of
   replies, a Mandate-enforced broker policy.

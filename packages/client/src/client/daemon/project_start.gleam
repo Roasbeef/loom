@@ -309,6 +309,10 @@ fn ports_for(env: Env, project: catalogue.Project) -> project_host.Ports {
       |> result.replace(Nil)
       |> result.map_error(fn(error) { string.inspect(error) })
     },
+    release_worktree: fn(request) {
+      use trees <- result.try(trees)
+      release_tree(env, tree_workspace, trees, request)
+    },
     endpoint_of: fn(session) {
       case manager.resolve(env.registry, session) {
         Ok(resident) -> Ok(resident.peer)
@@ -375,6 +379,29 @@ fn start_worker(
     |> result.map_error(fn(error) { string.inspect(error) }),
   )
   registration.id
+}
+
+/// Closes an assignment's tree under the rule for a project worker: it goes
+/// unless it holds changes or commits its base lacks. A kept tree is reported
+/// with its path, which is derived the way `worktrees` derives it, so the board
+/// can send a person to it.
+fn release_tree(
+  env: Env,
+  tree_workspace: workspaces.Workspace,
+  trees: Worktrees,
+  request: project_host.ReleaseRequest,
+) -> Result(project_host.Released, String) {
+  let name = tree_name(request.ticket, request.seq)
+
+  // A kept tree is reported with the path a person would look in.
+  case worktrees.close_guarding_commits(trees, tree_workspace, name) {
+    worktrees.Removed -> Ok(project_host.Removed)
+    worktrees.Kept(reason:) ->
+      Ok(project_host.Kept(
+        path: worktrees.tree_path(env.state_root, tree_workspace.name, name),
+        reason:,
+      ))
+  }
 }
 
 /// Binding is refused as a conflict when the session already has a standing, so

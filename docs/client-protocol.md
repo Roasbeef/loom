@@ -1840,10 +1840,13 @@ project. `projects.list` replies `{"projects":[{"id","workspace","router_session
 "total","tickets":[...],"replies":[...]}` with at most 20 tickets a page,
 needs-a-person first, and `revision` is the project ledger's newest sequence number.
 A ticket is the record of protocol-change/106, `{id, project, title, stage, session,
-mandate, check, question, pull_request, ended}`, where `stage` is one of
+mandate, check, question, kept_worktrees, pull_request, ended}`, where `stage` is one of
 `person/delivery`, `person/answer`, `person/review`, `person/blocked`,
 `person/failed`, `queued`, `idle`, `working` or `ended/<outcome>`, `check` is always
-`null` in this slice, and `question` is `null` or `{seq, text, options}`. `replies`
+`null` in this slice, and `question` is `null` or `{seq, text, options}`.
+`kept_worktrees` is a list, empty unless a worker's worktree stayed after its ticket
+ended because it held commits its base lacks, and then each entry is
+`{seq, path, reason}`. `replies`
 holds the router's queued replies on page zero. `projects.post` replies
 `{"trigger","repeated"}`; posting a `request_id` again changes nothing and answers
 `repeated: true`. Errors: `not_found` (no such project), `bad_request` (a refused

@@ -391,16 +391,59 @@ pub fn close(
   workspace: Workspace,
   session: String,
 ) -> Closed {
+  close_with(worktrees, workspace, session, Disposable)
+}
+
+/// What a close does with a clean tree whose branch has commits that its base
+/// does not.
+pub type Commits {
+  /// Remove the tree. The branch keeps the commits, and a reopen of the
+  /// session restores them, so nothing is lost.
+  Disposable
+
+  /// Keep the tree. A project worker's commits are the ticket's output, and a
+  /// person looking for them should find a directory and not only a branch.
+  Guarded
+}
+
+/// Settles a tree like `close`, except that a clean tree holding commits its
+/// base lacks is kept and says how many. A project worker's tree is closed
+/// this way when its ticket ends. The commits are also on the tree's branch,
+/// but until something records them as pushed, the tree is where a person
+/// looks for them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // worktrees.close_guarding_commits(worktrees, workspace, "t-a-1")
+/// ```
+pub fn close_guarding_commits(
+  worktrees: Worktrees,
+  workspace: Workspace,
+  session: String,
+) -> Closed {
+  close_with(worktrees, workspace, session, Guarded)
+}
+
+/// The close both public forms share. `commits` decides only what a clean tree
+/// with commits ahead of its base becomes.
+fn close_with(
+  worktrees: Worktrees,
+  workspace: Workspace,
+  session: String,
+  commits: Commits,
+) -> Closed {
   let settled = {
     use spec <- result.try(spec_of(worktrees, workspace, session))
     through(worktrees, workspace.name, fn(env) {
       use recorded <- result.try(recorded(env, session))
 
-      // Decide how to handle recorded {.
+      // Only a tree that is on disk, or kept from an earlier close, has
+      // anything to settle.
       case recorded {
         Some(row)
           if row.state == exec_ledger.Present || row.state == exec_ledger.Kept
-        -> settle(env, spec, row, Careful)
+        -> settle_guarding(env, spec, row, commits)
         Some(_) | None -> Ok(Removed)
       }
     })
@@ -972,6 +1015,55 @@ fn settle(
         Error(reason) ->
           keep(env, spec, row, "it could not be checked: " <> reason)
       }
+  }
+}
+
+/// A careful settle, preceded under `Guarded` by a look at the commits. A tree
+/// that cannot be checked for them is kept, as it is when its status cannot be
+/// read.
+fn settle_guarding(
+  env: Env,
+  spec: Spec,
+  row: Row,
+  commits: Commits,
+) -> Result(Closed, String) {
+  case commits {
+    Disposable -> settle(env, spec, row, Careful)
+    Guarded ->
+      case commits_ahead(env, spec) {
+        Ok(None) -> settle(env, spec, row, Careful)
+        Ok(Some(reason)) -> keep(env, spec, row, reason)
+        Error(reason) ->
+          keep(env, spec, row, "it could not be checked: " <> reason)
+      }
+  }
+}
+
+/// The commits the tree's HEAD has that the workspace's base does not, counted
+/// by Git, or `None` when there are none. The base is resolved in the
+/// workspace's repository and counted from in the tree, so a base that has
+/// moved on since the tree was made does not count its own new commits.
+fn commits_ahead(env: Env, spec: Spec) -> Result(Option(String), String) {
+  use base <- result.try(
+    git_ok(env, spec.root, [], [
+      "rev-parse",
+      "--verify",
+      spec.base <> "^{commit}",
+    ]),
+  )
+  use ahead <- result.map(
+    git_ok(env, spec.path, [], [
+      "rev-list",
+      "--count",
+      string.trim(base.stdout) <> "..HEAD",
+    ]),
+  )
+
+  // Git prints a bare count, and zero is the only answer that means none.
+  case string.trim(ahead.stdout) {
+    "0" -> None
+    "1" -> Some("it holds 1 commit absent from the base")
+    count -> Some("it holds " <> count <> " commits absent from the base")
   }
 }
 
