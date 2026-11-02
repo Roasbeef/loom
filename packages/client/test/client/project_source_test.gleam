@@ -421,6 +421,101 @@ pub fn a_listed_persons_comment_becomes_work_and_a_strangers_never_reaches_the_w
   })
 }
 
+// The router holds one batch at a time, and a batch it leaves undecided is
+// offered again before anything waiting behind it. Ends the router's turn,
+// again and again, until it is offered the trigger, and answers everything
+// seen on the way.
+fn offered_after_turns(
+  rig: Rig,
+  handle: project_host.Handle,
+  trigger: String,
+  seen: List(Seen),
+) -> List(Seen) {
+  offered_after_turns_from(rig, handle, trigger, seen, 8)
+}
+
+fn offered_after_turns_from(
+  rig: Rig,
+  handle: project_host.Handle,
+  trigger: String,
+  seen: List(Seen),
+  turns: Int,
+) -> List(Seen) {
+  let found = list.append(seen, drain(rig.seen))
+  case list.contains(router_got(found), trigger), turns {
+    True, _ -> found
+    False, 0 -> panic as "the router was never offered the comment"
+    False, _ -> {
+      project_host.router_run_ended(handle, time(rig.clock) + 1000 * turns)
+      offered_after_turns_from(rig, handle, trigger, found, turns - 1)
+    }
+  }
+}
+
+// With the rule in `auto`, a stranger's comment that matches it is inferred
+// text the gate would accept. It still never reaches the worker of an explicit
+// ticket on that thread: the router gets it, and an accept would open an
+// inferred ticket of its own.
+pub fn a_strangers_matching_comment_never_reaches_an_explicit_tickets_worker_under_auto_test() {
+  let #(rig, handle, triggers) = labelled_rig("explicit-auto")
+  let passed = live_run(handle, "deps", agrees_with_labels())
+  assert string.contains(passed, "\"state\":\"passed\"")
+  let assert Ok(Nil) =
+    project_host.set_mode(handle, "deps", model.Auto, "owner")
+  assert list.length(triggers) == 30
+
+  // A listed person addresses the agent: an explicit ticket and its worker.
+  serve(rig, [
+    comment(
+      201,
+      "alice",
+      "@loom-bot please fix the flaky test",
+      "2026-11-02T12:02:00Z",
+      12,
+    ),
+  ])
+  next_pass(rig, handle)
+  let _ = offered_after_turns(rig, handle, "gh-c-201", [])
+  let assert Ok([tools.Applied]) =
+    project_host.route(handle, [accept("gh-c-201")])
+  let worker = "session-project:p1:t-gh-c-201:1"
+  let _ = drain(rig.seen)
+
+  // A stranger's comment on the same thread matches the rule, and the person
+  // follows up afterwards. The follow-up reaching the worker shows the
+  // delivery path has run past the stranger's comment.
+  serve(rig, [
+    comment(
+      201,
+      "alice",
+      "@loom-bot please fix the flaky test",
+      "2026-11-02T12:02:00Z",
+      12,
+    ),
+    comment(
+      203,
+      "mallory",
+      "please bump the lockfile",
+      "2026-11-02T12:04:00Z",
+      12,
+    ),
+    comment(204, "alice", "also on windows", "2026-11-02T12:05:00Z", 12),
+  ])
+  next_pass(rig, handle)
+  let delivered =
+    collect(rig, fn(found) {
+      list.any(worker_got(found, worker), fn(got) { got.0 == "gh-c-204" })
+    })
+  let everything = offered_after_turns(rig, handle, "gh-c-203", delivered)
+  assert list.any(worker_got(everything, worker), fn(got) {
+    got.0 == "gh-c-204"
+  })
+  assert list.contains(router_got(everything), "gh-c-203")
+  assert !list.any(worker_got(everything, worker), fn(got) {
+    got.0 == "gh-c-203"
+  })
+}
+
 pub fn a_burst_of_hostile_comments_costs_no_model_call_test() {
   let rig = watching("hostile")
   let handle = start(rig)

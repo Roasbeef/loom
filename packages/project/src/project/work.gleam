@@ -619,7 +619,8 @@ fn update_assignment(
 /// A person asked for a new assignment on a stalled ticket. The new worker
 /// starts with no memory of the old one, so the messages the gate admitted on
 /// the ticket's opening thread are queued for it again, oldest first, ahead of
-/// whatever was already waiting.
+/// whatever was already waiting. A ticket with an explicit mandate is queued
+/// none of the thread's inferred messages.
 ///
 /// A ticket already waiting for a session has nothing to retry either: asking
 /// again would only list its messages twice.
@@ -649,6 +650,18 @@ pub fn retry(current: State, id: TicketId) -> Step {
   }
 }
 
+/// Whether a message on the thread may reach this ticket's worker. An inferred
+/// message never reaches a worker whose mandate is explicit, the same rule
+/// `intake` applies when the message first arrives, so a retry cannot deliver
+/// what a live session was never given.
+fn may_steer(current: State, ticket: Ticket, trigger: TriggerId) -> Bool {
+  case ticket.mandate.strength, state.record(current, trigger) {
+    model.Inferred, _ -> True
+    Explicit, Ok(stored) -> admitted_strength(stored) == Explicit
+    Explicit, Error(_) -> False
+  }
+}
+
 /// The inbox a retry starts its worker with: the admitted messages of the
 /// ticket's opening thread, oldest first, then anything already waiting. The
 /// first worker's session received the opening message and the follow-ups, and
@@ -667,6 +680,7 @@ fn requeued_inbox(current: State, ticket: Ticket) -> List(TriggerId) {
           thread.entries
           |> list.reverse
           |> list.filter(fn(entry) { entry.reception == model.Received })
+          |> list.filter(fn(entry) { may_steer(current, ticket, entry.trigger) })
           |> list.map(fn(entry) { entry.trigger })
       }
   }

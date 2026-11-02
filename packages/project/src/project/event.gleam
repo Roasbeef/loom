@@ -392,6 +392,10 @@ pub type Refusal {
   /// The trigger is not a person's explicit message, so it cannot stop work.
   NotAPersonsMessage(trigger: TriggerId)
 
+  /// An inferred trigger cannot join a ticket whose mandate is explicit. The
+  /// router may accept it instead, which opens an inferred ticket of its own.
+  InferredOntoExplicit(trigger: TriggerId, ticket: TicketId)
+
   /// A person withdrew the mandate, and the ticket never resumes.
   TicketWithdrawn(ticket: TicketId)
 

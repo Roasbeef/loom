@@ -12,9 +12,11 @@
 //// unlisted sender is recorded and goes no further, which is what keeps
 //// hostile text away from a worker that holds a ticket on that thread.
 ////
-//// Inferred triggers reach a subscribed ticket only when the gate would let
-//// them be accepted, so a bot's comment on a thread never steers a worker
-//// from a source whose pair is not in `Auto` with a current verdict.
+//// Inferred triggers reach a subscribed ticket only when the ticket's own
+//// mandate is inferred and the gate would let them be accepted. A bot's
+//// comment on a thread never steers a worker from a source whose pair is not
+//// in `Auto` with a current verdict, and no inferred text ever steers a
+//// worker holding an explicit mandate, whatever the mode.
 
 import gleam/dict
 import gleam/list
@@ -163,8 +165,14 @@ fn follow_or_route(
   }
 }
 
-/// An open ticket with a standing mandate takes an explicit trigger, and an
-/// inferred one only when the gate would let it be accepted.
+/// An open ticket with a standing mandate takes an explicit trigger. An
+/// inferred trigger is taken only by an inferred ticket, and only when the gate
+/// would let it be accepted.
+///
+/// An explicit ticket never takes inferred text. Its worker holds the owner's
+/// network and its commit is published after a pass, so a stranger's matching
+/// comment must not steer it. The comment goes to the router instead, and an
+/// accept opens an inferred ticket with its own jail and a person's publish.
 fn takes(
   current: State,
   ticket: Ticket,
@@ -173,12 +181,14 @@ fn takes(
 ) -> Bool {
   let open = ticket.outcome == option.None && ticket.authority == Granted
 
-  // An explicit trigger reaches any open ticket; an inferred one only when the
-  // gate would let it be accepted.
-  case open, strength {
-    False, _ -> False
-    True, Explicit -> True
-    True, Inferred -> {
+  // An explicit trigger reaches any open ticket. An inferred one reaches only
+  // a ticket whose own mandate is inferred, and then only when the gate would
+  // let it be accepted.
+  case open, strength, ticket.mandate.strength {
+    False, _, _ -> False
+    True, Explicit, _ -> True
+    True, Inferred, Explicit -> False
+    True, Inferred, Inferred -> {
       let rule = option.map(trigger.inputs.rule, fn(matched) { matched.rule })
       let pair = state.pair(current, trigger.source, rule)
       gate.acceptance(Inferred, pair) == Proceed

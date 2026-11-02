@@ -3891,6 +3891,12 @@ fn refusal_text(refusal: Refusal) -> String {
     event.AcceptRefused(..) -> "the gate refuses to accept that message"
     event.NotAPersonsMessage(trigger:) ->
       "message " <> trigger.value <> " is not a person's explicit message"
+    event.InferredOntoExplicit(trigger:, ticket:) ->
+      "message "
+      <> trigger.value
+      <> " is inferred and ticket "
+      <> ticket.value
+      <> " is explicit, so it cannot join that ticket; accept it as a ticket of its own"
     event.TicketWithdrawn(ticket:) ->
       "ticket " <> ticket.value <> " was stopped by a person"
     event.TicketEnded(ticket:) -> "ticket " <> ticket.value <> " has ended"

@@ -200,19 +200,55 @@ pub fn a_follow_up_goes_straight_to_the_ticket_that_owns_the_thread_test() {
   assert next.queue == []
 }
 
-pub fn an_inferred_comment_on_a_followed_thread_reaches_the_worker_only_when_the_gate_allows_test() {
+// A listed bot's comment that matched a rule: inferred, on thread `th-c1`.
+fn bot_comment(id: String) -> model.Trigger {
+  world.trigger(
+    id,
+    "th-c1",
+    "ci",
+    model.ListedBot,
+    model.Unaddressed,
+    world.matched(),
+    0,
+  )
+}
+
+// The pair in `Auto` with a current passing verdict, applied to a state.
+fn armed(current: state.State) -> state.State {
+  run(current, [
+    world.verdict(world.source, world.rule, "v1", model.VerdictPassed),
+    event.ModeSet(world.source, world.rule, model.Auto),
+  ])
+}
+
+// Changed from the old rule: this test used to deliver the comment to the
+// explicit ticket `c1` under `auto`. An inferred ticket still takes an
+// inferred comment, and only when the gate allows it; the explicit ticket's
+// side of the rule has its own tests below.
+pub fn an_inferred_comment_on_a_followed_thread_reaches_an_inferred_worker_only_when_the_gate_allows_test() {
   let comment =
     world.trigger(
       "b1",
-      "th-c1",
+      "th",
       "ci",
       model.ListedBot,
       model.Unaddressed,
       world.matched(),
       0,
     )
+  let inferred_working =
+    run(automated(), [
+      arrival(world.overheard("o1", "th")),
+      accept("o1"),
+      event.AssignmentLive(ticket_of("o1"), 1),
+    ])
+  assert ticket(inferred_working, ticket_of("o1")).mandate.strength
+    == model.Inferred
+
   let observing =
-    run(working(), [event.ModeSet(world.source, world.rule, model.Observe)])
+    run(inferred_working, [
+      event.ModeSet(world.source, world.rule, model.Observe),
+    ])
   let #(_, held) = step(observing, arrival(comment))
   assert list.all(held, fn(effect) {
     case effect {
@@ -221,13 +257,78 @@ pub fn an_inferred_comment_on_a_followed_thread_reaches_the_worker_only_when_the
     }
   })
 
-  let armed =
-    run(working(), [
-      world.verdict(world.source, world.rule, "v1", model.VerdictPassed),
-      event.ModeSet(world.source, world.rule, model.Auto),
+  let #(_, delivered) = step(inferred_working, arrival(comment))
+  assert delivered == [Deliver(ticket_of("o1"), 1, TriggerId("b1"))]
+}
+
+// An explicit ticket never takes inferred text, in any mode. The comment goes
+// to the router like any other inferred candidate.
+pub fn an_explicit_ticket_does_not_take_an_inferred_comment_under_auto_test() {
+  let idle = armed(stoppable())
+  let #(next, effects) = step(idle, arrival(bot_comment("b1")))
+  assert effects == [OfferCandidates([TriggerId("b1")])]
+  let assert Ok(stored) = state.record(next, TriggerId("b1")) as "stored"
+  assert stored.fate == state.Offered
+  assert ticket(next, ticket_of("c1")).inbox == []
+
+  // The thread records the message as received, so a person reading it sees
+  // what the system saw.
+  let assert Ok(thread) = dict.get(next.threads, model.ThreadId("th-c1"))
+    as "thread"
+  assert list.contains(
+    thread.entries,
+    model.ThreadEntry(TriggerId("b1"), model.Received),
+  )
+}
+
+// A person following up on their own explicit ticket still reaches it, with
+// the pair in `Auto` as well.
+pub fn an_explicit_follow_up_still_reaches_the_explicit_worker_under_auto_test() {
+  let #(_, effects) =
+    step(armed(working()), arrival(world.addressed("f1", "th-c1", "me")))
+  assert effects == [Deliver(ticket_of("c1"), 1, TriggerId("f1"))]
+}
+
+// The router cannot join inferred text to an explicit ticket, by attach or by
+// resume, and a refusal changes nothing.
+pub fn attach_and_resume_of_an_inferred_trigger_onto_an_explicit_ticket_are_refused_test() {
+  let offered = step(armed(stoppable()), arrival(bot_comment("b1"))).0
+  let refused = event.InferredOntoExplicit(TriggerId("b1"), ticket_of("c1"))
+  assert engine.apply(offered, attach("b1", ticket_of("c1"))) == Error(refused)
+  assert engine.apply(offered, step_resume("b1")) == Error(refused)
+
+  // The same refusal holds for a ticket that has ended, which is where a
+  // resume is otherwise allowed.
+  let ended = run(offered, [event.Concluded(ticket_of("c1"), model.Merged)])
+  assert engine.apply(ended, step_resume("b1")) == Error(refused)
+  assert ticket(ended, ticket_of("c1")).inbox == []
+}
+
+// What the router may do with the same comment is accept it, which opens an
+// inferred ticket with its own mandate.
+pub fn accepting_an_inferred_comment_opens_an_inferred_ticket_test() {
+  let offered = step(armed(stoppable()), arrival(bot_comment("b1"))).0
+  let accepted = run(offered, [accept("b1")])
+  assert ticket(accepted, ticket_of("b1")).mandate.strength == model.Inferred
+  assert ticket(accepted, ticket_of("c1")).mandate.strength == model.Explicit
+  assert ticket(accepted, ticket_of("c1")).inbox == []
+}
+
+// A retry rebuilds the inbox from the opening thread's received entries, and
+// an inferred entry on an explicit ticket's thread is not one of them.
+pub fn a_retry_on_an_explicit_ticket_does_not_redeliver_an_inferred_entry_test() {
+  let failed =
+    run(armed(fresh()), [
+      arrival(owner("c1")),
+      accept("c1"),
+      arrival(bot_comment("b1")),
+      failed_start("the clone was not made"),
     ])
-  let #(_, delivered) = step(armed, arrival(comment))
-  assert delivered == [Deliver(ticket_of("c1"), 1, TriggerId("b1"))]
+  let #(retried, effects) =
+    step(failed, event.RetryRequested(ticket_of("c1"), world_principal()))
+  assert ticket(retried, ticket_of("c1")).inbox == []
+  assert list.contains(effects, Deliver(ticket_of("c1"), 2, TriggerId("c1")))
+  assert !list.contains(effects, Deliver(ticket_of("c1"), 2, TriggerId("b1")))
 }
 
 pub fn the_projects_own_messages_are_dropped_test() {

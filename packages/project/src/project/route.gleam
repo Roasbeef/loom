@@ -7,7 +7,10 @@
 //// fixed that when the trigger arrived, and `work.open` builds the mandate
 //// from the stored verdict. Accepting, attaching or resuming with an inferred
 //// trigger needs the gate's `Proceed`, and in `Observe` mode records
-//// `WouldAccept` and changes nothing else. Stopping needs a trigger the gate
+//// `WouldAccept` and changes nothing else. Attaching or resuming with an
+//// inferred trigger onto a ticket whose mandate is explicit is refused in
+//// every mode, because that worker holds more authority than inferred text may
+//// steer; the router may accept the trigger as a ticket of its own. Stopping needs a trigger the gate
 //// admitted as a person's explicit message, because a bot's comment must not
 //// be able to stop a person's ticket. A trigger accepted twice makes one
 //// ticket, because the ticket id derives from the trigger id.
@@ -123,6 +126,7 @@ fn proceed(current: State, stored: TriggerRecord, routing: Routing) -> Step {
 /// Attach a trigger to an open ticket.
 fn attach(current: State, routing: Routing, id: TicketId) -> Step {
   use ticket <- result.try(state.ticket(current, id))
+  use _ <- result.try(inferred_onto_explicit(current, routing, ticket))
 
   // Only an open ticket with a standing mandate takes an attachment.
   case ticket.authority, ticket.outcome {
@@ -136,6 +140,7 @@ fn attach(current: State, routing: Routing, id: TicketId) -> Step {
 /// Reopen an ended ticket with a trigger.
 fn resume(current: State, routing: Routing, id: TicketId) -> Step {
   use ticket <- result.try(state.ticket(current, id))
+  use _ <- result.try(inferred_onto_explicit(current, routing, ticket))
 
   // Only an ended ticket whose mandate stands can be resumed. A person's stop
   // never resumes.
@@ -146,6 +151,25 @@ fn resume(current: State, routing: Routing, id: TicketId) -> Step {
       let reopened = state.Ticket(..ticket, outcome: option.None)
       hand_over(current, routing, reopened, state.Resumed(id))
     }
+  }
+}
+
+/// Refuse an inferred trigger for a ticket whose mandate is explicit.
+fn inferred_onto_explicit(
+  current: State,
+  routing: Routing,
+  ticket: state.Ticket,
+) -> Result(Nil, Refusal) {
+  use stored <- result.try(state.record(current, routing.trigger))
+
+  // The trigger's strength is the gate's stored verdict, never the router's.
+  // Only the pair of an inferred trigger and an explicit mandate is refused.
+  case stored.admission, ticket.mandate.strength {
+    Admitted(Inferred, _, _), Explicit ->
+      Error(event.InferredOntoExplicit(routing.trigger, ticket.id))
+    Admitted(Inferred, _, _), Inferred -> Ok(Nil)
+    Admitted(Explicit, _, _), _ -> Ok(Nil)
+    NotAdmitted(_), _ -> Ok(Nil)
   }
 }
 

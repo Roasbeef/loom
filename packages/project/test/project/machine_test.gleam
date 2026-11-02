@@ -27,6 +27,8 @@
 ////   with no question and an unchecked head free of protected paths.
 //// - `inferred`: inferred work is accepted, attached or resumed only when
 ////   the gate says `Proceed`.
+//// - `steer`: no `Deliver` effect and no inbox entry on a ticket with an
+////   explicit Mandate names a trigger the gate admitted as inferred.
 //// - `stop`: the router stops a ticket only on an explicit trigger.
 //// - `queue`: only admitted triggers are queued, and a trigger is never both
 ////   queued and offered.
@@ -669,12 +671,18 @@ fn check_effects(
 ) -> Result(Nil, statem.Violation) {
   list.try_each(effects, fn(effect) {
     case effect {
-      event.Deliver(ticket, _, trigger) ->
-        holds(
+      event.Deliver(ticket, _, trigger) -> {
+        use _ <- result.try(holds(
           ok: admitted_in(next, trigger) || is_answer(incoming, ticket, trigger),
           tag: "deliver",
           detail: "delivered a trigger the gate did not admit",
+        ))
+        holds(
+          ok: !inferred_for_explicit(next, ticket, trigger),
+          tag: "steer",
+          detail: "inferred text was delivered to a worker with an explicit mandate",
         )
+      }
       event.OfferCandidates(triggers) -> check_offer(next, triggers)
       event.StartSession(ticket, _, _, _) ->
         holds(
@@ -698,6 +706,21 @@ fn is_answer(incoming: Event, ticket: TicketId, trigger: TriggerId) -> Bool {
     event.Answered(answered, question, _) ->
       answered == ticket && trigger == model.answer_id(ticket, question)
     _ -> False
+  }
+}
+
+// Whether the trigger is one the gate admitted as inferred and the ticket
+// holds an explicit mandate.
+fn inferred_for_explicit(
+  current: State,
+  ticket: TicketId,
+  trigger: TriggerId,
+) -> Bool {
+  case state.ticket(current, ticket) {
+    Ok(found) ->
+      found.mandate.strength == model.Explicit
+      && strength_in(current, trigger) == Some(model.Inferred)
+    Error(_) -> False
   }
 }
 
@@ -942,8 +965,24 @@ fn check_tickets(sut: Sut) -> Result(Nil, statem.Violation) {
     use _ <- result.try(check_ended(ticket))
     use _ <- result.try(check_working(ticket))
     use _ <- result.try(check_actions(sut, ticket))
+    use _ <- result.try(check_inbox(sut.state, ticket))
     check_reserved(sut, ticket)
   })
+}
+
+// An explicit ticket's inbox never holds inferred text, so a worker that starts
+// later is not given what a live one was refused.
+fn check_inbox(
+  current: State,
+  ticket: state.Ticket,
+) -> Result(Nil, statem.Violation) {
+  holds(
+    ok: !list.any(ticket.inbox, fn(waiting) {
+      inferred_for_explicit(current, ticket.id, waiting)
+    }),
+    tag: "steer",
+    detail: "an explicit ticket's inbox holds inferred text",
+  )
 }
 
 // The actions the engine lists for a ticket are exactly the ones whose event it
@@ -1265,6 +1304,23 @@ pub fn the_generator_reaches_the_states_the_invariants_guard_test() {
     tickets(s, fn(t) { t.mandate.strength == model.Inferred })
   })
     as "an inferred ticket"
+  assert any_state(fn(s) {
+    tickets(s, fn(t) {
+      t.mandate.strength == model.Explicit
+      && list.any(s.subscriptions, fn(link) {
+        link.ticket == t.id
+        && case dict.get(s.threads, link.thread) {
+          Ok(thread) ->
+            list.any(thread.entries, fn(entry) {
+              entry.reception == model.Received
+              && strength_in(s, entry.trigger) == Some(model.Inferred)
+            })
+          Error(Nil) -> False
+        }
+      })
+    })
+  })
+    as "inferred text admitted on an explicit ticket's thread"
   assert any_effect(fn(e) {
     case e {
       event.RequestCheck(_, _) -> True
