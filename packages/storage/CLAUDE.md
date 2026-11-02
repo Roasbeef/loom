@@ -38,7 +38,7 @@ independent test oracle, including Unicode rejection and length boundaries.
 
 ## Key Types
 
-- The catalogue is at `user_version` 19. Each later version has its own embedded
+- The catalogue is at `user_version` 20. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
   `catalogue_claims_schema`, `catalogue_subtitles_schema`,
   `catalogue_credential_kinds_schema`, `catalogue_logins_schema`,
@@ -48,7 +48,7 @@ independent test oracle, including Unicode rejection and length boundaries.
   `catalogue_deletions_schema`,
   `catalogue_delegates_schema`, `catalogue_releases_schema`,
   `catalogue_spend_schema`, `catalogue_start_failures_schema`,
-  `catalogue_relayed_schema`), and
+  `catalogue_relayed_schema`, `catalogue_projects_schema`), and
   `initialize_schema` applies every
   schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
@@ -201,6 +201,46 @@ independent test oracle, including Unicode rejection and length boundaries.
   read with `Invalid` and is never read as "not a delegate". `delete` removes the
   row first, which frees the slot. Claims do not move the catalogue revision,
   because no listing shows them.
+- `catalogue.Project` and `catalogue.ProjectWorker` are project mode's catalogue rows
+  (protocol-change/106, catalogue version 20). `catalogue_projects(project_id,
+  workspace, router_session, ledger_path, state, created_ms)` has a unique
+  `workspace` (the first version binds exactly one) and a unique `router_session`
+  that references `catalogue_sessions`; `catalogue_project_workers(session_id,
+  project_id, ticket_id, assignment_seq)` references both and is unique on
+  `(project_id, ticket_id, assignment_seq)`. `create_project` and `bind_worker`
+  run inside the caller's `atomic` (like `claim_relayed`) and answer any
+  constraint refusal, including a missing router or project, as `Conflict`;
+  a session that already has a standing is `Conflict` too. `project`,
+  `project_of_workspace` and `projects` read, `archive_project` is one
+  transaction and idempotent. `project_standing(session)` is the one lookup, in
+  one statement, and answers `ProjectStanding`: `NotProject`, `RouterOf(project)`
+  or `WorkerOf(project, ticket, seq)`; a session found as both is `Invalid`,
+  never `NotProject`. `ProjectStanding` is separate from the `Standing` types in
+  `client/spawners` and `client/session_directory`. The catalogue records the
+  ledger path and never opens the file. `delete` does not remove project rows, so
+  deleting a router or worker registration is refused by the foreign key.
+- `storage/project_ledger` is a project's own SQLite file (protocol-change/106,
+  "Durable state"; DDL in `sql/project_ledger.sql`, queries in
+  `src/storage/sql/project_ledger.sql`, `application_id` "PLDG", `user_version`
+  1), one writer, no process of its own. `Ledger` is opaque. `ledger_event(seq,
+  at_ms, event_json)` is append-only: events go in and out as JSON text, checked
+  with `core/json.parse` and otherwise opaque, because storage does not depend on
+  `project`. `append` and `append_with_effects` return the sequence number, the
+  latter writing the event and its `EffectDraft`s in one immediate transaction.
+  `replay(after_seq, limit)` pages in order (at most `replay_page_limit`, 500);
+  `effect_row(kind, key, ...)` holds queued actions: `enqueue` replaces a row with
+  the same key and restarts its attempts, `effects_due` lists due rows by time,
+  kind and key, `settle` deletes (absent is not an error), `defer` counts an attempt
+  and moves the time (`Missing` when the row is gone). `scanner_cursor` is per
+  session (`cursor`, `set_cursor`). `compact_before(before_seq, snapshot_json,
+  at_ms)` is the retention hook: one transaction that writes the single
+  `ledger_snapshot` row and deletes the events below it, requiring the point to
+  lie above the earlier snapshot and at or below the newest event (the newest row
+  anchors the numbering, since `seq` is not AUTOINCREMENT). A replay that would
+  start inside the deleted range is `Compacted(floor)`. A stored row that breaks
+  its grammar is `MalformedRow`, never skipped. Times are system milliseconds
+  passed by the caller. The tests inject a fault with a trigger on a second
+  connection (`test/storage/project_ledger_test.gleam`).
 - `catalogue.Relayed` is a top-level session another orchestrator's page started
   here (protocol-change/094, catalogue version 19).
   `catalogue_relayed_sessions(request_id, spawner, session_id, created_at)` has the

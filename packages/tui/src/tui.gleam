@@ -77,6 +77,7 @@ import gleam/set
 import gleam/string
 import gleam/time/calendar
 import gleam/time/duration
+import gleam/time/timestamp
 import host/bootstrap as host_bootstrap
 import host/build_identity
 import host/claim as claim_token
@@ -101,6 +102,7 @@ import session_view/model.{
 } as session_model
 import session_view/move_candidates
 import session_view/msg as session_msg
+import session_view/project_board
 import session_view/queue_request
 import session_view/remote_transcript
 import session_view/session_channel
@@ -111,6 +113,7 @@ import session_view/transcript_line.{
   Assistant, Line, Reasoning, System, ToolResult,
 }
 import session_view/worktree_view
+import simplifile
 import tui/access as access_command
 import tui/acp/server as acp_server
 import tui/admission
@@ -149,6 +152,7 @@ import tui/msg
 import tui/note_panel
 import tui/pacing
 import tui/placement
+import tui/project_control
 import tui/projection
 import tui/queue_editor
 import tui/recording
@@ -174,6 +178,11 @@ type Launch {
 
   Demo
   Local(bootstrap.Options, selected: String)
+
+  // `loom project board --watch` keeps the project board open in the terminal
+  // (protocol-change/106). It is a local launch that lands on the board in
+  // place of the session catalogue.
+  ProjectWatch(options: bootstrap.Options)
 
   // `loom ui --session <id>` prints a link that opens the session's web
   // view (protocol-change/051), an observer's page unless `--operate` asks
@@ -245,6 +254,10 @@ type Launch {
   // answer or one failure with an exit status.
   Directory(options: bootstrap.Options, output: Output)
 
+  /// `loom project init | post | board`: project mode for the repository in
+  /// the working directory (`protocol-change/106`).
+  Project(options: bootstrap.Options, command: ProjectCommand)
+
   // `loom run -p …` is the headless one-shot client (issue #492): it creates a
   // session, sends one prompt, waits for the run to end, prints one JSON line
   // and exits with the verdict. It installs no terminal state.
@@ -270,7 +283,40 @@ type Launch {
 // `list` carries its own `Showing` for the same reason: the parser is the
 // one place `--all` is read, so the runner never re-derives the question
 // from flags either.
+/// What `loom project` was asked to do.
 @internal
+pub type ProjectCommand {
+  /// Make a project for the working directory and show its router session.
+  ProjectInit
+
+  /// Post the owner's text as an explicit trigger.
+  ProjectPost(
+    /// The text.
+    text: String,
+  )
+
+  /// Show the board, with what needs a person first.
+  ProjectBoard
+
+  /// Set a rule's mode. The daemon refuses `auto` without a passing verdict.
+  ProjectMode(
+    /// The rule's name.
+    rule: String,
+    /// The mode to set.
+    mode: project_board.RuleMode,
+  )
+
+  /// Run a verdict for a rule. The live lane spends model calls and is asked
+  /// for by name with `--live`; it replies that the run started.
+  ProjectVerdict(
+    /// The rule's name.
+    rule: String,
+    /// The lane to measure in.
+    lane: project_board.Lane,
+  )
+}
+
+/// The `loom sessions` subcommands.
 pub type SessionsCommand {
   ListRegistrations(showing: Showing, reach: Reach)
   RemoveRegistration(session_id: String, consent: Consent)
@@ -420,6 +466,7 @@ pub fn main() {
         | ["sessions", ..]
         | ["deployment", ..]
         | ["directory", ..]
+        | ["project", ..]
         | ["run", ..]
         | ["acp", ..]
         | ["claim", ..]
@@ -447,6 +494,7 @@ pub fn main() {
         Sessions(options:, command:) -> run_sessions(options, command)
         Deployment(options:, command:) -> run_deployment(options, command)
         Directory(options:, output:) -> run_directory(options, output)
+        Project(options:, command:) -> run_project(options, command)
         Run(request:) -> finish_run(request)
         RunRefused(reason:) -> refuse_run(reason)
         Acp(config:) -> finish_acp(config)
@@ -456,7 +504,8 @@ pub fn main() {
         Access(arguments:) -> access_command.main(arguments)
         View(request:) -> run_view(request)
         Invalid(reason) -> rejected_launch(reason)
-        Demo | Local(..) | Remote(..) -> interactive_terminal(launch, record)
+        Demo | Local(..) | Remote(..) | ProjectWatch(..) ->
+          interactive_terminal(launch, record)
       }
     }
   }
@@ -539,6 +588,7 @@ fn help_topic(arguments: List(String)) -> Option(String) {
     Ok("sessions") -> Some(sessions_usage())
     Ok("deployment") -> Some(deployment_usage())
     Ok("directory") -> Some(directory_usage())
+    Ok("project") -> Some(project_usage())
     Ok("run") -> Some(run_usage())
     Ok("acp") -> Some(acp_server.usage())
     Ok("claim") | Ok("enroll") -> Some(claim.usage)
@@ -561,6 +611,7 @@ fn is_topic(word: String) -> Bool {
     | "sessions"
     | "deployment"
     | "directory"
+    | "project"
     | "run"
     | "acp"
     | "ext"
@@ -926,6 +977,7 @@ fn interactive(launch: Launch, record: String) -> Nil {
     | Sessions(..)
     | Deployment(..)
     | Directory(..)
+    | Project(..)
     | Run(..)
     | RunRefused(..)
     | Acp(..)
@@ -938,48 +990,9 @@ fn interactive(launch: Launch, record: String) -> Nil {
     // The demo has no session, so the one image it shows is seeded into its
     // entries (`demo_image`), where a box finds the data to draw.
     Demo -> demo_image.seed(base)
-    Local(options, selected) -> {
-      // The footer names the workspace the session was launched for, which
-      // is only the current directory when no `--workspace` was given; a
-      // later `/sessions` switch derives it the same way from its choice.
-      let local =
-        Model(
-          ..base,
-          view: base.view
-            |> view_set.local_options(Some(options))
-            |> view_set.workspace(case options.placement, options.workspace {
-              // A registered name is no directory here, so it is never probed
-              // for a repository: the footer shows the name as given.
-              placement.OnExecutor(workspace: name, ..), _
-              | placement.InPool(workspace: name, ..), _
-              -> workspace.Context(path: name, branch: None)
-              placement.OnThisHost, "" -> base.view.workspace
-              placement.OnThisHost, path -> workspace.discover_from(path)
-            }),
-        )
-
-      // Handle interactive branch dispatch.
-      case bootstrap.resolve_daemon(options, process.self(), 90_000) {
-        Error(reason) ->
-          tui_model.append_error(
-            Model(
-              ..local,
-              shared: local.shared
-                |> shared_set.peer(Disconnected)
-                |> shared_set.notice("daemon startup failed"),
-            ),
-            reason,
-          )
-        Ok(connected) ->
-          attach_daemon(
-            local,
-            connected.control,
-            endpoint.address(connected.record),
-            connected.paths.token,
-            selected,
-          )
-      }
-    }
+    Local(options, selected) ->
+      local_launch(base, options, ToCatalogue(selected))
+    ProjectWatch(options) -> local_launch(base, options, ToProjectBoard)
     Invalid(reason) ->
       tui_model.append_error(
         Model(..base, shared: shared_set.notice(base.shared, "invalid launch")),
@@ -1013,7 +1026,7 @@ fn interactive(launch: Launch, record: String) -> Nil {
   // Only a launch that is a real session remembers its layout. The rest
   // print and exit, replay, or show the demo, and read and write no file.
   let initial = case launch {
-    Local(options, _) ->
+    Local(options, _) | ProjectWatch(options) ->
       layout_save.remember_launch(initial, options.state_directory)
     Remote(..) -> layout_save.remember_launch(initial, "")
     Version
@@ -1023,6 +1036,7 @@ fn interactive(launch: Launch, record: String) -> Nil {
     | Sessions(..)
     | Deployment(..)
     | Directory(..)
+    | Project(..)
     | Run(..)
     | RunRefused(..)
     | Acp(..)
@@ -1170,7 +1184,7 @@ fn parse_launch(arguments: List(String)) -> Launch {
 // reports it the way it does for the trailing spelling.
 // The subcommands whose usage lists the daemon options.
 const hoisting_verbs = [
-  "sessions", "deployment", "directory", "ui", "run", "acp",
+  "sessions", "deployment", "directory", "project", "ui", "run", "acp",
 ]
 
 /// Establishes and coordinates hoist daemon options operations for the TUI runtime.
@@ -1230,6 +1244,7 @@ fn parse_words(arguments: List(String)) -> Launch {
     ["sessions", ..rest] -> parse_sessions(rest)
     ["deployment", ..rest] -> parse_deployment(rest)
     ["directory", ..rest] -> parse_directory(rest)
+    ["project", ..rest] -> parse_project(rest)
     ["run", ..rest] ->
       case run.parse(rest) {
         Ok(request) -> Run(request:)
@@ -1358,6 +1373,47 @@ pub fn launch_sessions_command(
   }
 }
 
+/// Classifies a whole argument vector, answering the daemon options of a
+/// `loom project board --watch` launch and a refusal for every other launch. It
+/// is the test seam for `--watch`, which keeps the board open instead of
+/// printing it once.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(options) =
+///   tui.launch_project_watch(["project", "board", "--watch", "--state-dir", "/s"])
+/// assert options.state_directory == "/s"
+/// ```
+@internal
+pub fn launch_project_watch(
+  arguments: List(String),
+) -> Result(bootstrap.Options, String) {
+  case parse_launch(arguments) {
+    ProjectWatch(options:) -> Ok(options)
+    Invalid(reason) -> Error(reason)
+    Version
+    | Demo
+    | Local(..)
+    | View(..)
+    | Remote(..)
+    | Forward(..)
+    | Update(..)
+    | Replay(..)
+    | ClaimAccess(..)
+    | Enroll(..)
+    | Access(..)
+    | Deployment(..)
+    | Directory(..)
+    | Run(..)
+    | RunRefused(..)
+    | Acp(..)
+    | AcpRefused(..)
+    | Project(..)
+    | Sessions(..) -> Error("not a project board watch")
+  }
+}
+
 /// Classifies a whole argument vector that names a `sessions`, `deployment` or
 /// `directory` command, answering the daemon options it settled on or the
 /// refusal. It is the test seam for the options written before the verb.
@@ -1376,7 +1432,8 @@ pub fn launch_daemon_options(
   case parse_launch(arguments) {
     Sessions(options:, ..)
     | Deployment(options:, ..)
-    | Directory(options:, ..) -> Ok(options)
+    | Directory(options:, ..)
+    | Project(options:, ..) -> Ok(options)
     Invalid(reason) -> Error(reason)
     _other -> Error("not a daemon command launch")
   }
@@ -1705,6 +1762,80 @@ fn parse_directory(arguments: List(String)) -> Launch {
 }
 
 /// Establishes and coordinates directory usage operations for the TUI runtime.
+fn project_usage() -> String {
+  "usage: loom project init | post <text> | board [--watch] "
+  <> "| mode <rule> off|observe|auto | verdict <rule> [--live] "
+  <> "[--state-dir <path>] [--config <loom.toml>] [--server <path>]\n"
+  <> "  init makes a project for the repository in the working directory, with\n"
+  <> "  a router session that decides what each message becomes. post sends\n"
+  <> "  your text to the router as an explicit request, and board lists the\n"
+  <> "  project's tickets with what needs you first; --watch keeps the board\n"
+  <> "  open, answers a worker's question and opens its session. A project needs no\n"
+  <> "  configuration: inferred work stays off and you are its only source.\n"
+  <> "  mode sets a rule to off, observe or auto; the daemon refuses auto without\n"
+  <> "  a current passing verdict. verdict measures a rule's labelled triggers: a\n"
+  <> "  replay is free, and --live spends about three model calls per labelled\n"
+  <> "  trigger, starts the run and returns; watch it with board --watch."
+}
+
+/// Parses the words after `loom project`. `post` takes its text as the first
+/// word after the verb, and the other flags are the ones every local command
+/// accepts.
+fn parse_project(arguments: List(String)) -> Launch {
+  // The verb names the subcommand, and what follows it is that subcommand's
+  // arguments and then the local flags.
+  case arguments {
+    ["init", ..flags] -> project_launch(flags, ProjectInit)
+    ["board", ..flags] ->
+      case list.contains(flags, "--watch") {
+        True -> watch_launch(list.filter(flags, fn(each) { each != "--watch" }))
+        False -> project_launch(flags, ProjectBoard)
+      }
+    ["post", text, ..flags] -> project_launch(flags, ProjectPost(text))
+    ["mode", rule, word, ..flags] ->
+      case project_board.parse_mode(word) {
+        Ok(mode) -> project_launch(flags, ProjectMode(rule, mode))
+        Error(Nil) ->
+          Invalid(
+            "the mode must be off, observe or auto, not "
+            <> word
+            <> "\n"
+            <> project_usage(),
+          )
+      }
+    ["verdict", rule, ..flags] -> {
+      // The live lane spends model calls, so it runs only when `--live` is on
+      // the command line. Without it the verdict is a replay, which is free.
+      let lane = case list.contains(flags, "--live") {
+        True -> project_board.Live
+        False -> project_board.Replay
+      }
+
+      project_launch(
+        list.filter(flags, fn(each) { each != "--live" }),
+        ProjectVerdict(rule, lane),
+      )
+    }
+    _unknown -> Invalid(project_usage())
+  }
+}
+
+/// `loom project board --watch`: the board kept open in the terminal.
+fn watch_launch(flags: List(String)) -> Launch {
+  case parse_local_options(flags, default_bootstrap_options()) {
+    Ok(options) -> ProjectWatch(options)
+    Error(reason) -> Invalid(reason <> "\n" <> project_usage())
+  }
+}
+
+fn project_launch(flags: List(String), command: ProjectCommand) -> Launch {
+  case parse_local_options(flags, default_bootstrap_options()) {
+    Ok(options) -> Project(options:, command:)
+    Error(reason) -> Invalid(reason <> "\n" <> project_usage())
+  }
+}
+
+/// The usage text of `loom directory`.
 fn directory_usage() -> String {
   "usage: loom directory status [--json] [--state-dir <path>] [--server <path>]\n"
   <> "  status shows the session directory's cluster as the daemon you are\n"
@@ -1737,6 +1868,7 @@ pub fn launch_deployment(
     Version
     | Demo
     | Local(..)
+    | ProjectWatch(..)
     | View(..)
     | Remote(..)
     | Forward(..)
@@ -1746,11 +1878,51 @@ pub fn launch_deployment(
     | Enroll(..)
     | Access(..)
     | Directory(..)
+    | Project(..)
     | Run(..)
     | RunRefused(..)
     | Acp(..)
     | AcpRefused(..)
     | Sessions(..) -> Error("not a deployment launch")
+  }
+}
+
+/// Classifies the words after `loom project` the way the launcher does,
+/// answering the parsed subcommand or the refusal. It is the test seam for the
+/// verbs, since the runner does not parse them again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.launch_project(["init"]) == Ok(tui.ProjectInit)
+/// assert tui.launch_project(["post", "fix it"]) == Ok(tui.ProjectPost("fix it"))
+/// ```
+@internal
+pub fn launch_project(
+  arguments: List(String),
+) -> Result(ProjectCommand, String) {
+  case parse_launch(["project", ..arguments]) {
+    Project(command:, ..) -> Ok(command)
+    Invalid(reason) -> Error(reason)
+    Version
+    | Demo
+    | Local(..)
+    | View(..)
+    | Remote(..)
+    | Forward(..)
+    | Update(..)
+    | Replay(..)
+    | ClaimAccess(..)
+    | Enroll(..)
+    | Access(..)
+    | Deployment(..)
+    | Directory(..)
+    | Run(..)
+    | RunRefused(..)
+    | Acp(..)
+    | AcpRefused(..)
+    | ProjectWatch(..)
+    | Sessions(..) -> Error("not a project launch")
   }
 }
 
@@ -1772,6 +1944,7 @@ pub fn launch_directory(arguments: List(String)) -> Result(Output, String) {
     Version
     | Demo
     | Local(..)
+    | ProjectWatch(..)
     | View(..)
     | Remote(..)
     | Forward(..)
@@ -1785,6 +1958,7 @@ pub fn launch_directory(arguments: List(String)) -> Result(Output, String) {
     | RunRefused(..)
     | Acp(..)
     | AcpRefused(..)
+    | Project(..)
     | Sessions(..) -> Error("not a directory launch")
   }
 }
@@ -1813,7 +1987,224 @@ fn run_deployment(
   }
 }
 
-/// Establishes and coordinates run directory operations for the TUI runtime.
+/// Runs one `loom project` subcommand against the daemon and prints its
+/// result. The connection is closed before printing, so a slow terminal does
+/// not hold it open.
+fn run_project(options: bootstrap.Options, command: ProjectCommand) -> Nil {
+  // A daemon that cannot be reached ends the command with the reason.
+  case sessions_host(options) {
+    Error(reason) -> command_failed("project", reason)
+    Ok(#(control, host)) -> {
+      let outcome = project_outcome(host, command)
+      daemon.close(control)
+      print_outcome("project", outcome)
+    }
+  }
+}
+
+/// One round trip per subcommand, except that `post` and `board` first find the
+/// project of the working directory in `projects.list`.
+fn project_outcome(
+  host: daemon_selection.Host,
+  command: ProjectCommand,
+) -> Result(String, String) {
+  use here <- result.try(
+    simplifile.current_directory()
+    |> result.replace_error("the working directory cannot be read"),
+  )
+
+  // Each subcommand ends in one line of text for the terminal.
+  case command {
+    ProjectInit -> {
+      // The project is named for the directory, or "project" at the root.
+      let name = case list.last(string.split(here, "/")) {
+        Ok(last) if last != "" -> last
+        _ -> "project"
+      }
+
+      use made <- result.map(
+        project_request(host, "projects.create", [
+          #("workspace", json.String(here)),
+          #("name", json.String(name)),
+        ]),
+      )
+      project_reply_text(command, made)
+    }
+    ProjectPost(text) -> {
+      use id <- result.try(project_here(host, here))
+      use posted <- result.map(
+        project_request(host, "projects.post", [
+          #("project", json.String(id)),
+          #("request_id", json.String(fresh_request_id())),
+          #("text", json.String(text)),
+        ]),
+      )
+      project_reply_text(command, posted)
+    }
+    ProjectBoard -> {
+      use id <- result.try(project_here(host, here))
+      use board <- result.map(
+        project_request(host, "projects.board", [#("project", json.String(id))]),
+      )
+      project_reply_text(command, board)
+    }
+    ProjectMode(rule, mode) -> {
+      use id <- result.try(project_here(host, here))
+      use set <- result.map(
+        project_request(host, "projects.set_mode", [
+          #("project", json.String(id)),
+          #("rule", json.String(rule)),
+          #("mode", json.String(project_board.mode_word(mode))),
+        ]),
+      )
+      project_reply_text(command, set)
+    }
+    ProjectVerdict(rule, lane) -> {
+      use id <- result.try(project_here(host, here))
+      use measured <- result.map(
+        project_request(host, "projects.verdict", [
+          #("project", json.String(id)),
+          #("rule", json.String(rule)),
+          #("lane", json.String(project_board.lane_word(lane))),
+        ]),
+      )
+      project_reply_text(command, measured)
+    }
+  }
+}
+
+/// What a `loom project` subcommand prints for the reply it got. The text is
+/// built from the reply alone, so it can be tested without a daemon.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.project_reply_text(tui.ProjectBoard, json.Object([])) == "no tickets"
+/// ```
+@internal
+pub fn project_reply_text(
+  command: ProjectCommand,
+  reply: json.JsonValue,
+) -> String {
+  // Each subcommand prints one text built from its reply alone.
+  case command {
+    ProjectInit ->
+      "project "
+      <> project_text(reply, "project")
+      <> " ready for "
+      <> project_text(reply, "workspace")
+      <> "; router session "
+      <> project_text(reply, "router_session")
+    ProjectPost(_) -> "posted " <> project_text(reply, "trigger")
+    ProjectBoard -> board_text(reply)
+    ProjectMode(rule, mode) ->
+      "rule "
+      <> text_hygiene.single_line(rule)
+      <> " is now "
+      <> project_board.mode_word(mode)
+    ProjectVerdict(rule, lane) -> {
+      let words = project_board.verdict_reply_words(lane, rule, reply)
+
+      // A live run replies at once and finishes later, so the line says where
+      // to watch it. A replay's reply is its finding.
+      case lane {
+        project_board.Live ->
+          words <> " Watch it with `loom project board --watch`."
+        project_board.Replay -> words
+      }
+    }
+  }
+}
+
+/// Sends one `projects.*` command and returns the reply body.
+fn project_request(
+  host: daemon_selection.Host,
+  name: String,
+  fields: List(#(String, json.JsonValue)),
+) -> Result(json.JsonValue, String) {
+  daemon_selection.projects(host, name, fields)
+}
+
+/// The project whose workspace is the working directory, from the list.
+fn project_here(
+  host: daemon_selection.Host,
+  here: String,
+) -> Result(String, String) {
+  use listed <- result.try(project_request(host, "projects.list", []))
+
+  // A project is found by its workspace path. Any other shape of reply is
+  // reported as not understood.
+  case listed {
+    json.Object(fields) ->
+      case list.key_find(fields, "projects") {
+        Ok(json.Array(rows)) ->
+          list.find_map(rows, fn(row) {
+            case project_text(row, "workspace") == here {
+              True -> Ok(project_text(row, "id"))
+              False -> Error(Nil)
+            }
+          })
+          |> result.replace_error(
+            "no project for this directory; run `loom project init` here",
+          )
+        _ -> Error("the project list was not understood")
+      }
+    _ -> Error("the project list was not understood")
+  }
+}
+
+/// A string field of a reply, flattened to one line because the daemon's text
+/// is shown in a terminal. A missing or non-string field reads as empty.
+fn project_text(document: json.JsonValue, key: String) -> String {
+  case document {
+    json.Object(fields) ->
+      case list.key_find(fields, key) {
+        Ok(json.String(text)) -> text_hygiene.single_line(text)
+        _ -> ""
+      }
+    _ -> ""
+  }
+}
+
+/// Each ticket is one line: its stage as the engine spells it, its id and its
+/// title. The daemon sends needs-a-person tickets first, and the order is kept.
+fn board_text(board: json.JsonValue) -> String {
+  // A reply without a ticket list reads as an empty board.
+  let tickets = case board {
+    json.Object(fields) ->
+      case list.key_find(fields, "tickets") {
+        Ok(json.Array(rows)) -> rows
+        _ -> []
+      }
+    _ -> []
+  }
+
+  // An empty board says so in words instead of printing nothing.
+  case tickets {
+    [] -> "no tickets"
+    _ ->
+      tickets
+      |> list.map(fn(row) {
+        project_text(row, "stage")
+        <> "  "
+        <> project_text(row, "id")
+        <> "  "
+        <> project_text(row, "title")
+      })
+      |> string.join("\n")
+  }
+}
+
+// A request id for one `post`. Posting is keyed by it, so a resend of the same
+// command line would need the same id; a command line is one post, and the time
+// to the nanosecond is distinct for each.
+fn fresh_request_id() -> String {
+  let #(seconds, nanoseconds) =
+    timestamp.to_unix_seconds_and_nanoseconds(timestamp.system_time())
+  "cli-" <> int.to_string(seconds) <> "-" <> int.to_string(nanoseconds)
+}
+
+/// Runs `loom directory status` against the daemon and prints the result.
 fn run_directory(options: bootstrap.Options, output: Output) -> Nil {
   // Handle run directory branch dispatch.
   case sessions_host(options) {
@@ -3635,6 +4026,65 @@ fn live_base(base: Model) -> Model {
   )
 }
 
+/// Where a local launch lands once the daemon is attached.
+type Landing {
+  /// The session catalogue, or the named session when `selected` is not empty.
+  ToCatalogue(selected: String)
+
+  /// The project board of the working directory.
+  ToProjectBoard
+}
+
+/// Starts or finds the daemon for a local launch and attaches to it, landing
+/// on `landing`. A daemon that cannot be started leaves the transcript with
+/// the reason.
+fn local_launch(
+  base: Model,
+  options: bootstrap.Options,
+  landing: Landing,
+) -> Model {
+  // The footer names the workspace the session was launched for, which
+  // is only the current directory when no `--workspace` was given; a
+  // later `/sessions` switch derives it the same way from its choice.
+  let local =
+    Model(
+      ..base,
+      view: base.view
+        |> view_set.local_options(Some(options))
+        |> view_set.workspace(case options.placement, options.workspace {
+          // A registered name is no directory here, so it is never probed
+          // for a repository: the footer shows the name as given.
+          placement.OnExecutor(workspace: name, ..), _
+          | placement.InPool(workspace: name, ..), _
+          -> workspace.Context(path: name, branch: None)
+          placement.OnThisHost, "" -> base.view.workspace
+          placement.OnThisHost, path -> workspace.discover_from(path)
+        }),
+    )
+
+  // Handle interactive branch dispatch.
+  case bootstrap.resolve_daemon(options, process.self(), 90_000) {
+    Error(reason) ->
+      tui_model.append_error(
+        Model(
+          ..local,
+          shared: local.shared
+            |> shared_set.peer(Disconnected)
+            |> shared_set.notice("daemon startup failed"),
+        ),
+        reason,
+      )
+    Ok(connected) ->
+      attach_landing(
+        local,
+        connected.control,
+        endpoint.address(connected.record),
+        connected.paths.token,
+        landing,
+      )
+  }
+}
+
 /// Attaches a local launch to the daemon it resolved, opening `selected` when
 /// one was named and the picker otherwise.
 ///
@@ -3655,6 +4105,17 @@ pub fn attach_daemon(
   address: Result(String, String),
   token_path: String,
   selected: String,
+) -> Model {
+  attach_landing(base, control, address, token_path, ToCatalogue(selected))
+}
+
+/// Adopts the daemon's control connection and lands on `landing`.
+fn attach_landing(
+  base: Model,
+  control: daemon.Connection,
+  address: Result(String, String),
+  token_path: String,
+  landing: Landing,
 ) -> Model {
   let host = {
     use address <- result.try(address)
@@ -3683,9 +4144,10 @@ pub fn attach_daemon(
 
       // Flushed for the reason `connect_remote` gives: the first request
       // starts at launch rather than at the loop's first event.
-      case selected {
-        "" -> session_control.load_catalogue(model, "", None)
-        id -> session_control.open_chosen(model, id)
+      case landing {
+        ToCatalogue("") -> session_control.load_catalogue(model, "", None)
+        ToCatalogue(id) -> session_control.open_chosen(model, id)
+        ToProjectBoard -> project_control.open(model)
       }
       |> runtime.flush
     }

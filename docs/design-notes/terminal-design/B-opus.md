@@ -95,11 +95,11 @@ answers `←` with "daemon control is unavailable". What is wrong with it:
 ### Data
 
 Everything drawn is already in the control protocol. A row is
-`Session` at `tui/daemon/protocol.gleam:525`: identity, workspace, name,
+`Session` at `tui/daemon/protocol.gleam:537`: identity, workspace, name,
 `created_at` and lifecycle. The state words and counts come from
-`Activity` at `tui/daemon/protocol.gleam:407`: state, strands, working,
+`Activity` at `tui/daemon/protocol.gleam:419`: state, strands, working,
 approvals, last outcome, last message and model, with up to four
-`GlanceLine` at `tui/daemon/protocol.gleam:427` rows. The filter counts are
+`GlanceLine` at `tui/daemon/protocol.gleam:439` rows. The filter counts are
 `counts` at `tui/session_selector.gleam:755`. "Created" uses `created_at`. A
 "last active" column would need a new control field, which is a
 protocol-change; this concept does not ask for one (question 6).
@@ -351,9 +351,9 @@ call list in both needs a new wire record (section 10).
 | Key | Today | Concept B |
 |---|---|---|
 | `←` on an empty composer | session picker (`tui/interaction.gleam:1376`) | unchanged |
-| `↓` on an empty composer | into the strip (`down_from_composer` at `tui/interaction.gleam:1721`) | unchanged; lands on `main` when another strand is focused |
-| `Shift+Tab` | toggle the rail (`tui/interaction.gleam:1672`) | toggle the drawer, which replaces the rail |
-| `Ctrl+O`, `F2` | open `/agents` (`open_agents` at `tui/interaction.gleam:1611`) | open Strands: full body, or focus the docked drawer |
+| `↓` on an empty composer | into the strip (`down_from_composer` at `tui/interaction.gleam:1735`) | unchanged; lands on `main` when another strand is focused |
+| `Shift+Tab` | toggle the rail (`tui/interaction.gleam:1686`) | toggle the drawer, which replaces the rail |
+| `Ctrl+O`, `F2` | open `/agents` (`open_agents` at `tui/interaction.gleam:1625`) | open Strands: full body, or focus the docked drawer |
 | `Ctrl+T` | unbound | timeline cursor (new) |
 | `Ctrl+G` | details everywhere | unchanged |
 | `Ctrl+D` | changes navigator focus | focus the drawer on Changes |
@@ -397,7 +397,7 @@ record would need a new control command.
 | Region | Data | Source today |
 |---|---|---|
 | Gutter hues | strand hue | `hue` at `session_view/turns.gleam:308` |
-| Worked divider with failure count | the turn's steps | `divider` at `session_view/turns.gleam:1537`, plus a failure count from the steps' results |
+| Worked divider with failure count | the turn's steps | `divider` at `session_view/turns.gleam:1572`, plus a failure count from the steps' results |
 | Collapsed repeats (`agent_wait ×15`) | consecutive identical calls | a new rule in `project` at `session_view/tool_activity.gleam:55`; no wire change |
 | Collapsed repeated errors (`429 ×20`) | consecutive identical local lines | a fold in `session_view` over `Shared.transcript`; no wire change |
 | Harness notices as system lines | the `[loom] ` prefix | recognised today only to bound the turn, `harness_injection_summary` at `session_view/composer.gleam:494`; the line builder still draws a User turn |
@@ -409,7 +409,7 @@ record would need a new control command.
 | Strands tab: cache | outlook per strand | `outlook` at `session_view/cache_watch.gleam:120` |
 | Changes tab | session edits | `fold` at `session_view/changes_view.gleam:210` |
 | Session tab: jobs, viewers | jobs board, presence | `jobs` at `session_view/session_summary.gleam:99`, `viewers` at `session_view/session_summary.gleam:122` |
-| Code mode block, Trace tab | program, status, result | `code_mode_program` at `session_view/transcript_lines.gleam:3875`, `code_mode_result_lines` at `session_view/transcript_lines.gleam:4187`; the call list has no data and needs a new wire record |
+| Code mode block, Trace tab | program, status, result | `code_mode_program` at `session_view/transcript_lines.gleam:3916`, `code_mode_result_lines` at `session_view/transcript_lines.gleam:4228`; the call list has no data and needs a new wire record |
 | Peer messages | authenticated origin | `PeerOrigin` at `core/message.gleam:43`, `peer_message_lines` at `session_view/transcript_lines.gleam:2912` |
 | Strand messages | harness text frame | `frame_message` at `client/agency.gleam:2902`; not recognised by `session_view` today |
 | Images | mime type and bytes | `Image` at `session_view/transcript_image.gleam:29` |
@@ -451,10 +451,10 @@ receives.
   "needs protocol-change: call record".
 
 What the client receives: the program, from the call's `program` argument
-only (`code_mode_program` at `session_view/transcript_lines.gleam:3875`),
+only (`code_mode_program` at `session_view/transcript_lines.gleam:3916`),
 and the result's details, which carry the value or the error message and
 details, `status`, `manifest_hash` and `sandbox`
-(`code_mode_result_lines` at `session_view/transcript_lines.gleam:4187`
+(`code_mode_result_lines` at `session_view/transcript_lines.gleam:4228`
 draws them). There is no call data at all: no call list, no capability
 names, no per-call status. Capability calls are serviced inside the
 satellite and the broker, and no transcript entry is written per call. A

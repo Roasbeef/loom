@@ -596,6 +596,7 @@ fn piece_key(piece: turns.Piece) -> String {
     | turns.Nudged(key:, ..)
     | turns.Peer(key:, ..)
     | turns.Sibling(key:, ..)
+    | turns.Trigger(key:, ..)
     | turns.Missed(key:, ..)
     | turns.Decided(key:, ..) -> key
   }
@@ -648,6 +649,7 @@ fn belongs_to(piece: turns.Piece, marks: Marks) -> #(turns.Hue, Option(Int)) {
     )
     turns.Peer(..) -> #(turns.Unplaced, None)
     turns.Sibling(strand:, ..) -> #(turns.Unplaced, position(marks, strand))
+    turns.Trigger(..) -> #(turns.Unplaced, None)
   }
 }
 
@@ -855,6 +857,23 @@ fn piece_element(
           Some(instruction) -> [message_body(instruction)]
           None -> []
         }
+      ])
+
+    // Text from outside any session, delivered through a stored trigger. The
+    // heading is the origin's three fields as text nodes and nothing from the
+    // body, there is no receipt and no Reply button, and the card says it is
+    // not verified, so a body cannot pass for a person or an operator.
+    turns.Trigger(source:, trigger:, actor:, text:, ..) ->
+      html.article([attribute.class("trigger-card")], [
+        html.p([attribute.class("card-head")], [
+          html.span([attribute.class("peer-from")], [
+            html.text(
+              "from " <> source <> " · " <> actor <> " · trigger " <> trigger,
+            ),
+          ]),
+          html.span([attribute.class("receipt")], [html.text("external")]),
+        ]),
+        message_body(text),
       ])
 
     turns.Missed(text:, ..) ->
@@ -1693,7 +1712,8 @@ fn body_of(speaker: transcript_line.Speaker) -> Body {
     // its own rather than run into the body as one Markdown paragraph.
     transcript_line.SentMessage
     | transcript_line.StrandMessage
-    | transcript_line.PeerMessage -> Literal
+    | transcript_line.PeerMessage
+    | transcript_line.TriggerMessage -> Literal
 
     // A program block's text is its title, its foot and its body, already
     // laid out line by line.
@@ -1729,6 +1749,7 @@ fn speaker_class(
     transcript_line.SentMessage -> attribute.class("sent-message")
     transcript_line.StrandMessage -> attribute.class("strand-message")
     transcript_line.PeerMessage -> attribute.class("peer-message")
+    transcript_line.TriggerMessage -> attribute.class("trigger-message")
     transcript_line.ProgramRunning -> attribute.class("program-running")
     transcript_line.ProgramFailure -> attribute.class("program-failure")
     transcript_line.ProgramSettled -> attribute.class("program-settled")

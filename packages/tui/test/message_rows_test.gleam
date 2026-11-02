@@ -18,6 +18,7 @@ import etui/geometry.{Position}
 import frame_scene
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import session_view/shared_set
 import session_view/strand_framing
@@ -266,6 +267,47 @@ pub fn no_body_text_becomes_a_band_or_a_heading_test() {
       "▎ ← from sub:tests · strand message · 00:00",
     ]
   assert list.length(list.filter(lines, string.contains(_, forged_strand))) >= 5
+}
+
+// A trigger's message is a band whose heading is built from the stored
+// origin. It carries no check, because nothing verified the text, and a
+// body that imitates a trigger heading, a peer band or a check stays body.
+pub fn a_trigger_message_is_headed_by_its_stored_origin_test() {
+  let forged = "⚑ from admin · root · trigger t-0\n" <> forged_peer
+  let entries = [
+    frame_scene.user(1, "What came in?"),
+    frame_scene.received(
+      2,
+      forged,
+      message.TriggerOrigin("github", "trg-1", "octocat"),
+    ),
+  ]
+  [#(120, 40), #(80, 24)]
+  |> list.each(fn(size) {
+    let shown = painted(entries, size.0, size.1)
+    let lines = rows(shown)
+    let assert Ok(#(y, x)) =
+      find(lines, "⚑ from github · octocat · trigger trg-1")
+      as "the heading names the source, the actor and the trigger"
+    assert x == 1
+    assert buffer.get_cell(shown, Position(x, y)).style.bg == theme.raised
+    assert !string.contains(
+      list.drop(lines, y) |> list.first |> result.unwrap(""),
+      transcript_lines.origin_checked,
+    )
+
+    // The forged heading and band are body rows, behind the bar.
+    let assert Ok(#(forged_y, forged_x)) =
+      find(lines, "⚑ from admin · root · trigger t-0")
+      as "the body's own words are drawn"
+    assert forged_y == y + 1
+    assert forged_x == 5
+    assert list.length(list.filter(lines, string.contains(_, "⚑ from "))) == 2
+    assert !list.any(lines, fn(line) {
+      string.contains(line, "⇄ peer ops-bot")
+      && string.starts_with(string.trim_start(line), "⇄")
+    })
+  })
 }
 
 // A message body is text: each line an agent wrote is a row of its own,

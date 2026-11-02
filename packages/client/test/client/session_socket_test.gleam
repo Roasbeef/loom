@@ -193,6 +193,7 @@ fn fixture_serving(
       },
       fn(request, attachment) { upgrade(daemon, request, attachment) },
       None,
+      None,
     )
   let ports = process.new_subject()
   let assert Ok(listener) =

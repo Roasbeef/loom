@@ -347,6 +347,20 @@ pub type Piece {
   /// text, shortened or not by the host that draws them, as for `Peer`.
   Sibling(key: String, strand: String, text: String, trailer: Option(String))
 
+  /// A message from outside any session, delivered through a stored trigger
+  /// of a project and selected by its stored `TriggerOrigin` and by nothing
+  /// in its text. `source`, `trigger` and `actor` are the origin's fields,
+  /// and a host builds its heading from them and never from `text`. The text
+  /// is untrusted data and is drawn as such. It is the whole message, as for
+  /// `Peer`. This piece is attribution for the reader and grants nothing.
+  Trigger(
+    key: String,
+    source: String,
+    trigger: String,
+    actor: String,
+    text: String,
+  )
+
   /// A cache miss this client noticed after the turn that paid for it.
   Missed(key: String, text: String)
 
@@ -614,6 +628,7 @@ fn start_seq(piece: Piece) -> Result(Int, Nil) {
     | Nudged(key:, ..)
     | Peer(key:, ..)
     | Sibling(key:, ..)
+    | Trigger(key:, ..)
     | Missed(key:, ..) -> key_seq(key)
   }
 }
@@ -661,6 +676,7 @@ pub fn pictured(pieces: List(Piece)) -> List(#(String, List(Image))) {
       | Commentary(..)
       | Peer(..)
       | Sibling(..)
+      | Trigger(..)
       | Missed(..)
       | Decided(..) -> []
     }
@@ -787,6 +803,7 @@ pub fn abridges(pieces: List(Piece), key: String) -> Bool {
       | Commentary(..)
       | Peer(..)
       | Sibling(..)
+      | Trigger(..)
       | Missed(..)
       | Decided(..) -> False
     }
@@ -1140,6 +1157,21 @@ fn entry_kind(
             Input(Sibling(block.key, strand, framed.body, framed.trailer), at),
           ]
         }
+
+        // Outside text is classified by the stored origin alone, and its
+        // body is carried whole for a host to draw as data.
+        None, Some(message.TriggerOrigin(source:, trigger:, actor:)) -> [
+          Input(
+            Trigger(
+              block.key,
+              source,
+              trigger,
+              actor,
+              transcript_lines.user_body(content),
+            ),
+            at,
+          ),
+        ]
         None, Some(message.Origin(principal:, name:)) ->
           case memory_of(content) {
             Some(#(body, lines)) -> [remembered(block, body, lines, expansion)]
@@ -1940,6 +1972,7 @@ fn piece_key(piece: Piece) -> String {
     | Nudged(key:, ..)
     | Peer(key:, ..)
     | Sibling(key:, ..)
+    | Trigger(key:, ..)
     | Missed(key:, ..)
     | Decided(key:, ..) -> key
   }

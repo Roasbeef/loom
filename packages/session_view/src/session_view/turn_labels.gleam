@@ -88,6 +88,7 @@ pub fn apply(pieces: List(Piece), labels: Labels) -> List(Piece) {
       | turns.Commentary(..)
       | turns.Peer(..)
       | turns.Sibling(..)
+      | turns.Trigger(..)
       | turns.Missed(..)
       | turns.Decided(..) -> piece
     }
@@ -121,6 +122,7 @@ pub fn keys(pieces: List(Piece)) -> List(Key) {
       | turns.Commentary(..)
       | turns.Peer(..)
       | turns.Sibling(..)
+      | turns.Trigger(..)
       | turns.Missed(..)
       | turns.Decided(..) -> []
     }

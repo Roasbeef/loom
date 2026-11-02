@@ -25,7 +25,9 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   under protocol 016. `PeerOrigin(session, strand)` records the host-bound peer
   sender under protocol 048. `StrandOrigin(strand)` records a strand of the
   same session that sent the message through the Agency (protocol 059; the
-  Agency writes it from the authenticated caller, in the same release that reads it). All
+  Agency writes it from the authenticated caller, in the same release that reads it).
+  `TriggerOrigin(source, trigger, actor)` records outside text delivered through
+  a stored project trigger (protocol 106; reader only, no writer yet). All
   carry attribution only, without credentials or authority. Historical
   unattributed turns remain `None`.
 - `core/origin` owns validation, encoding, decoding and presentation of that
@@ -37,6 +39,10 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   principal can equal. `project` adds an explicit human or peer-agent label at
   the provider boundary while preserving stored content, and leaves a strand
   message's content unchanged so the model sees only the Agency's framing.
+  Trigger records use `{kind: "trigger", source, trigger, actor}`, validated by
+  `validate_trigger` (no quote, backslash, control character or `·`). `project`
+  brackets a trigger body between begin and end lines whose run of `=` is longer
+  than any run in the body, so the body cannot close the bracket.
   `display_label` gives existing client views
   an explicit peer label instead of treating a strand name as a human name.
 - `core/todo_list.{Board, Phase, Task, Status}` — a strand's todo board,

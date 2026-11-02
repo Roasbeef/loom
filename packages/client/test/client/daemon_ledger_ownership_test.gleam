@@ -48,6 +48,7 @@ fn config(handle: ledger_control.Handle) -> main.Config {
       None,
       None,
       dict.new(),
+      main.no_projects,
     ),
     ledger: Some(handle),
   )

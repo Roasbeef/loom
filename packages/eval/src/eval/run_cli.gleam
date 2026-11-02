@@ -138,6 +138,7 @@ pub fn base_settings(
     memory: memory_config.default_options(),
     tools: catalog.default_tools(),
     advisor: None,
+    project: None,
   )
 }
 

@@ -416,6 +416,25 @@ code reads it to grant, widen or skip a check, and the vision turn bound ends
 a turn at a sibling message as it does at a peer message, with an admitted
 image-bearing prompt still protected through the operation's own batch.
 
+Text from outside any session has a fourth origin variant,
+`TriggerOrigin(source, trigger, actor)` (protocol-change/106), which a stored
+trigger of a project will carry. This slice adds the reader and the rendering
+and no writer: nothing stores the variant yet. It encodes as `{"kind":
+"trigger", "source", "trigger", "actor"}`, and `core/origin.validate_trigger`
+bounds the three fields and refuses quotes, backslashes, control characters and
+`·`, the separator the headings join them with. A malformed one is corruption,
+as for a peer. Unlike the other variants, its body is hostile text, so provider
+projection brackets it between `[begin trigger text ===]` and `[end trigger
+text ===]` lines, with a label that names the text as external and the source
+and actor as attribution data. The run of `=` is one longer than any run in the
+body (three at least), so the body cannot contain the end line, and the
+projection is deterministic for replay. The terminal draws a band headed `⚑
+from <source> · <actor> · trigger <id>`, the web view an `external` card with
+the same fields, and both build the heading from the origin and never from the
+body. Neither heading claims a daemon check, because nothing verified the text.
+The origin is attribution and not authority: no code reads it to grant, widen
+or skip a check.
+
 A background execution keeps one satellite alive under a fixed deadline.
 `cap/execution.receive` reads committed input that the program can decode
 into messages for its typed actors. Children belong to that execution and

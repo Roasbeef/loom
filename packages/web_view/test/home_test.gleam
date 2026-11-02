@@ -81,6 +81,7 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     create: None,
     folders: None,
     elsewhere: None,
+    projects: None,
     profiles: [],
     models: [],
     signins: fn(deliver) { deliver(signins.Listed([])) },

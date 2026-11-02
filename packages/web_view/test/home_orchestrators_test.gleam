@@ -172,6 +172,7 @@ fn owner(orchestrating: option.Option(home.Orchestrators)) -> home.Start {
     create: Some(fn(_, _, _, _, _, _) { Nil }),
     folders: None,
     elsewhere: None,
+    projects: None,
     profiles: ["fast"],
     models: ["glm"],
     signins: fn(deliver) { deliver(signins.Listed([])) },

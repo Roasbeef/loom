@@ -53,6 +53,10 @@ pub type Surface {
   /// Inspect and administer owner-granted peer links.
   PeerLinks
 
+  /// Show the working directory's project board: what needs a person, and a
+  /// way to answer it (protocol-change/106). Owner-only.
+  Project
+
   /// Inspect and reduce who has access to this daemon. Owner-only.
   Access
 
@@ -472,6 +476,7 @@ fn all_suggestions() -> List(Suggestion) {
     Suggestion("/steer", "inject into the live operation", True),
     Suggestion("/queue", "inspect queued inputs; /queue text adds one", False),
     Suggestion("/access", "owner: see and reduce who has access", False),
+    Suggestion("/project", "owner: what needs you in this project", False),
     Suggestion("/evolution", "review and select evolution candidates", False),
     Suggestion("/profile", "show or switch the model profile", True),
     Suggestion("/model-profile", "alias of /profile", True),
@@ -524,6 +529,7 @@ pub fn parse(input: String) -> Command {
     "/agents" -> Surface(Agents)
     "/peers" -> Surface(PeerLinks)
     "/access" -> Surface(Access)
+    "/project" -> Surface(Project)
     "/evolution" -> Surface(Evolution)
     "/sessions" -> Surface(Sessions)
     "/rename" -> Session(MissingArgument("rename"))

@@ -142,6 +142,20 @@ pub type Source {
   )
 }
 
+/// The attribution a project trigger carries into a session: the source that
+/// produced it, its id, and the actor, all from the engine's stored record and
+/// never from a model.
+pub type TriggerSource {
+  TriggerSource(
+    /// The source's name, such as `composer` or `github`.
+    source: String,
+    /// The stored trigger's id.
+    trigger: String,
+    /// The person or bot the source names.
+    actor: String,
+  )
+}
+
 /// Commands reachable only through a harness-owned endpoint.
 pub type Command {
   /// Owner-authorized grant replacement.
@@ -164,6 +178,19 @@ pub type Command {
 
   /// Commits the message and request identity together.
   Deliver(source: Source, target: String, message_id: String, text: String)
+
+  /// Admits a stored project trigger to a resident session with the
+  /// trigger origin. Only the daemon's project actor sends it, and the actor
+  /// is the caller, so there is no grant to check; the remote port refuses it
+  /// by construction (`orchestrator_port.served`), so no peer reaches it.
+  /// The receipt is keyed on `message_id`, so a repeat admits nothing.
+  Trigger(
+    from: TriggerSource,
+    target: String,
+    message_id: String,
+    text: String,
+    wake: Wake,
+  )
 
   /// Lists only strands this source is authorized to address.
   Describe(strand: String, description: String)
@@ -573,6 +600,8 @@ pub fn handle_with(
     }
     Deliver(source, target, id, body) ->
       deliver(runtime, clock, defaults, source, target, id, body)
+    Trigger(from, target, id, body, wake) ->
+      trigger(runtime, clock, from, target, id, body, wake)
     Describe(strand, description) -> {
       case string.byte_size(description) <= 2048 {
         False -> Error("self-description exceeds 2048 bytes")
@@ -761,6 +790,103 @@ fn deliver(
           use existing <- result.try(option.to_result(
             existing,
             "peer grant changed during admission",
+          ))
+          same_receipt(existing, request)
+        }
+        Error(error) -> Error(string.inspect(error))
+      }
+    }
+  }
+}
+
+// A trigger is the daemon's own act, so it skips the grant that guards a peer
+// message and keeps the rest: a bound on the text, an admission receipt that
+// commits with the message, and the same wake split. The receipt's request
+// names the stored trigger and the target, so reusing a message id for
+// anything else fails instead of delivering twice.
+/// Admits a stored project trigger with the trigger origin, once.
+fn trigger(
+  runtime: api.Runtime,
+  clock: clock.Clock,
+  from: TriggerSource,
+  target: String,
+  id: String,
+  body: String,
+  wake: Wake,
+) -> Result(JsonValue, String) {
+  // The same bounds a peer message has, so a trigger cannot carry more.
+  use Nil <- result.try(
+    case
+      string.byte_size(id) > 0
+      && string.byte_size(id) <= 128
+      && string.byte_size(body) <= 32_768
+    {
+      True -> Ok(Nil)
+      False -> Error("message id or body exceeds its bound")
+    },
+  )
+
+  use trigger_origin <- result.try(
+    origin.validate_trigger(from.source, from.trigger, from.actor)
+    |> result.map_error(fn(_) { "invalid trigger attribution" }),
+  )
+
+  let request =
+    json.Object([
+      #("source_session", json.String("trigger")),
+      #("source_strand", json.String(from.source)),
+      #("target_strand", json.String(target)),
+      #("message_id", json.String(id)),
+      #("body", json.String(body)),
+    ])
+  let key = receipt_key("trigger", from.source, id)
+  let receipt =
+    json.Object([
+      #("request", request),
+      #("source", json.Object([#("trigger", json.String(from.trigger))])),
+      #("admitted", json.Bool(True)),
+    ])
+  use existing <- result.try(
+    api.fact(runtime, key) |> result.map_error(string.inspect),
+  )
+
+  // A repeat of a delivered trigger answers its receipt and admits nothing.
+  case existing {
+    Some(existing) -> same_receipt(existing, request)
+    None -> {
+      let #(now, _) = clock.read(clock)
+      let payload =
+        message.UserMessage(
+          content: [message.UserText(body, None)],
+          timestamp: now,
+          origin: Some(trigger_origin),
+        )
+      let mark = api.GuardedMark(key, receipt, [])
+
+      // A busy-only trigger steers a run that is already going and never starts
+      // one. A may-wake trigger starts a run on an idle strand.
+      let accepted = case wake {
+        BusyOnly ->
+          api.steer_marking(api.on_strand(runtime, target), payload, mark)
+          |> result.replace(Nil)
+        MayWake ->
+          api.send_to_strand_marking(runtime, target, payload, mark)
+          |> result.replace(Nil)
+      }
+
+      // Admission and the receipt committed together, so the nudge may follow.
+      case accepted {
+        Ok(Nil) -> {
+          api.nudge(api.on_strand(runtime, target))
+          Ok(receipt)
+        }
+        Error(api.FactConflict(_)) -> {
+          use existing <- result.try(
+            api.fact(runtime, key) |> result.map_error(string.inspect),
+          )
+          use existing <- result.try(option.to_result(
+            existing,
+            "trigger receipt vanished during admission",
           ))
           same_receipt(existing, request)
         }

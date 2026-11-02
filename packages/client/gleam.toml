@@ -12,6 +12,7 @@ storage = { path = "../storage" }
 session = { path = "../session" }
 machine = { path = "../machine" }
 prompt = { path = "../prompt" }
+project = { path = "../project" }
 events = { path = "../events" }
 runtime = { path = "../runtime" }
 harness = { path = "../harness" }

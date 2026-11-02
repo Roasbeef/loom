@@ -218,6 +218,7 @@ fn divider_of(sealed: turn_ledger.Sealed) -> String {
         | turns.Commentary(..)
         | turns.Peer(..)
         | turns.Sibling(..)
+        | turns.Trigger(..)
         | turns.Missed(..)
         | turns.Decided(..) -> False
       }

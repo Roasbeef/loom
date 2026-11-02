@@ -10172,3 +10172,217 @@ and the id round-trips through `ids.parse_session_id`; anything else is `Unknown
   socket admission, the visit reaching the upgrade, the create allowance and the
   capability) and `ui_top_test` (real ports on this node, including the offers
   conversion, the listing and `found`).
+
+## Project mode (slice 1, protocol-change/106)
+
+The daemon runs projects: a catalogue row, a `router` role session and one
+ordinary top-level worker session per ticket assignment
+([design note](../../docs/design-notes/project-mode.md)).
+
+- `client/project_standing.Standing` is `Ordinary | Router(project) |
+  Worker(project, ticket, seq)`, lifted from `catalogue.project_standing`. The
+  deciding sites match it with no catch-all: `manager.project_free` (move and
+  archive, and the delegate sweeps) goes through `mobility`, `serve.project_shaped`
+  through the standing, and the gateway ceiling through `tool_ceiling`. It is
+  separate from `spawners.Standing` and `session_directory.Standing`, and delegates
+  are not on it. `Seat` pairs a standing with the tool seam built for the session
+  and, for a worker, its `client/project_jail.Jail`.
+- `client/project_jail` maps `project/policy.WorkerPolicy` and the owner's session
+  policy onto what a worker runs under: `sandbox` (the owner's policy for an
+  explicit Mandate, `NetworkOff` for an inferred one, because nothing enforces a
+  registry allowlist), `approvals` (`escalate.none` when refused, so no record is
+  written and no person is asked) and `tools` (the peer and `agent_*` tools are
+  above it). `project_start.seat` derives it on every build of a worker's
+  session from the Mandate the actor told `project_book`, never from stored
+  session configuration, and `serve.seat_project` applies it.
+- `client/daemon/project_host` is the actor, on `weft/actor`, one per active project
+  and the sole writer of its ledger. `commit` asks `engine.apply`, appends the
+  event with its effect rows in one `append_with_effects`, and keeps the new
+  state only after the append; `perform_due` then runs the queued rows, bounded to
+  eight rounds a message. Effects are idempotent by key: `StartJob` by the engine's
+  `request_key` (never randomise it), `DeliverJob` by the receipt of
+  `peer_mail.Trigger` keyed on `trigger:session`. Triggers, questions and replies
+  are host records (`client/project_records`, a `host` field no engine event has)
+  in the same ordered history. Times are `Ports.now_ms`, system time.
+  Finishing work is three jobs in order. `ObserveJob` reads an idle worker's head
+  through `Ports.observe_head` and commits `HeadObserved`, with `project/protect`
+  deciding the protected paths from the diff, so a touched head never gets a
+  `RequestCheck`. `observe_head` answers `Intake`: `Taken` when the host repository
+  holds the commit and the diff was read there, `NotTaken` when it refused the
+  commit (`intake_refused`: the actor records the commit as a head with its paths
+  counted as protected, then a `ReviewRequested` with `model.IntakeRefused` and
+  the host's words, so no check or publish runs for it). `CheckJob` runs
+  `Ports.run_check` in a witnessed `weft` task (`in_task`, deadline = wall plus
+  margin) and the answer returns as a `CheckSettled` message; the row is deferred
+  past the deadline and settled by the answer, and a task that dies leaves it to
+  run again (three attempts, then `ReviewRequested`). `host.passed` is called only
+  in `check_passed`, after the run is written as a `CheckRecorded` record whose
+  ledger position is the proof's entry. A failure is told to the live worker as a
+  `check` trigger with the output inside a fence (`tell_worker`). `PublishJob`
+  runs `Ports.publish` the same way, only when `Policy.publish` is on and the
+  commit is the one a pass or a person vouched for; `Policy.publish` off, no
+  remote and no `gh` become `ReviewRequested` with the reason. `projects.publish`
+  is `project_host.publish`, refused while publish is off. `Ports.run_check` and
+  `observe_head` are built in `project_start` (`run_check`, `observe`) over
+  `client/project_repo` and `worktrees.check_runner` (a second sandboxed Git so a
+  check does not hold the attach pool's one slot); `publish` is
+  `client/project_publish` (`git push` from the host repository to the pinned URL,
+  without force or hooks, REST through `gh api`, lookup before create).
+- `client/project_repo` is where a worker's Git stops. A worker's workspace is a
+  clone the host makes (`git clone --no-hardlinks`, `origin` removed, branch
+  `loom/<ticket>-<seq>`) under `<state>/projects/<id>/tickets/`, with a real `.git`
+  directory, so `workspace_policy` adds no writable root for it. A ticket with a
+  recorded head starts its next clone there instead (`project_repo.clone` takes a
+  `Start`: `FromOwner`, or `FromCommit`, a template-less repository that fetches
+  the commit from `host.git` by path, so it has no remote at all, with hooks and
+  `core.fsmonitor` off on the command line), unless the owner's `HEAD` already
+  contains the head, as for a merged ticket the owner pulled. The host
+  repository `<state>/projects/<id>/host.git` is bare, made by `ensure_host` when
+  the project's actor starts, written only by host code, and masked in every
+  session (`workspace_policy.protecting_projects`: the host repository, the
+  ledger and its side files, the check trees; a clone is not masked because it is
+  removed with its ticket and a mask over a removed path refuses every call of a
+  session that still holds it). `ensure_host` also pins the owner's
+  `origin` push URL in `host.git/loom-origin-url`, once; `publish` pushes to that
+  URL literally and never by remote name. `intake` reads the clone's `HEAD`,
+  fetches exactly that commit into the host repository under
+  `refs/tickets/<ticket>/<commit>` (jailed: clone read-only, host repository
+  writable, `transfer.fsckObjects`), requires the id the host repository holds to
+  be the one the clone named, and reads `base...commit` there against the owner's
+  `HEAD` fetched into `refs/base/head`. `check_tree` cuts the check's repository
+  from the host repository. `release` keeps a clone with working-tree changes or
+  with any ref or `HEAD` naming an object the host repository lacks, comparing every
+  ref rather than the branch the clone says it is on. `sound_clone` is checked by
+  `project_start.seat`: a worker whose `.git` was turned into a file is refused its
+  session, because the session policy widens to the Git directory such a file
+  names. Every host Git command here runs in the sandbox with
+  `GIT_NO_REPLACE_OBJECTS` and `GIT_CONFIG_GLOBAL=/dev/null`
+  (`worktree_git.environment`); the push runs unjailed with the redirecting
+  variables removed and the owner's global configuration kept
+  (`project_publish.run_git`). Ordinary linked-worktree sessions keep
+  `widening_linked_worktree` unchanged. An answer is a `DeliverJob` for `model.answer_id`, source
+  `owner`; with no live session it waits in the ticket's inbox. The `started`
+  pair is finished by `mark_live` when a retry finds the session bound.
+- `client/daemon/project_start` fills the actor's `Ports` from the registry:
+  `create` (project id is `p-` and twelve hex of the workspace's SHA-256),
+  `ensure_running`, `start_worker` (clone named from `<ticket>-<seq>`, then
+  `manager.reserve`, `catalogue.bind_worker`, `manager.create_scoped`, in that order
+  so the session's builder reads its standing), and `reopen` at boot. `reopen`
+  also installs the registry's end bell (`manager.on_session_ended`, rung when a
+  running slot faults, with the fault's text, and again when any slot drains, but
+  never while the registry shuts down); the bell casts to `project_book`, which
+  casts `project_host.session_gone` to every actor, and the actor ends the
+  holding assignment as `WorkerFailed` only if it still holds its slot, so a stop
+  the host ordered or a worker at rest reads as nothing. `reopen` makes the same
+  call for a live assignment whose session has no registration.
+  `client/daemon/project_book` is the table of handles, and of each ticket's
+  Mandate (`Ports.remember_mandate`, called for every ticket when the actor starts
+  and before each worker start; a builder cannot ask the actor, which waits for the
+  build), that the builder reads, and the
+  `factory_supervisor` (temporary children) every actor is started under
+  (`launch`), so a control handler that ends abnormally cannot take a project's
+  only ledger writer with it. A worker's
+  memory domain stays its own clone's: `domain.Scope` has only `WorkspacePrivate`
+  and `SessionOnly`, and the id derives from the canonical workspace path.
+- `client/projectseam` fills `tools/project`'s closures over the actor. `serve.Settings`
+  gains `project`; a router's registry is exactly `route`, `project_read` and
+  `reply` (no `bash`, no `code_mode`, no extension), a worker's loses the peer and
+  `agent_*` tools, and `gateway.Options.tool_ceiling` makes `set_config` refuse a
+  name above the router's list. `client/project_packs` derives the router and
+  worker packs from `prompt/default` by replacing the `delegation` section.
+- The live lane of a verdict asks a scratch judgement session, not the router.
+  `client/project_judge_session` opens one in-memory `harness` session per trial with
+  the router's pack and resolved model (`serve.routed_identity`) and the one tool
+  `tools/project.judge_tools` gives, `route`, whose executor records its items and
+  applies nothing. The session is opened and held by a custodian actor that
+  `client/project_judge` adopts as a weft managed task's owner, so the wall limit, a
+  failed sibling or the project actor stopping all close it. `project_judge.measure`
+  runs the trials at a concurrency limit under a wall deadline and cancels the rest
+  on the first failure. `project_host` starts a live run in a witnessed weft task,
+  answers `projects.verdict` at once, keeps the run in memory (`Host.runs`, the rule
+  row's `run` object) and concludes it with `project_verdict.conclude`; a second run
+  on a rule that is going is refused, and a run that fails or is cut off records
+  nothing. `project_start.Control.judge` builds the judge from the router
+  registration's settings. `test/support/scripted_router` scripts the model.
+- `peer_mail.Trigger` admits a stored trigger with the trigger origin. The daemon is
+  the caller, so no grant is checked; `orchestrator_port.served` answers `False` for
+  it, which is what keeps it off the relay (tested in `peer_remote_test`).
+- Control: `projects.create|list|board|post|stop|ticket|answer|retry|requeue|publish|set_mode` in
+  `daemon/protocol` and `daemon/server` (`project_command`), classified in
+  `control_use`. `projects.ticket` is a read. `projects.answer` echoes the
+  question's `seq`; `project_host.answer` checks it against the open question
+  before it writes the text, and a stale one is `StaleQuestion`, which the control
+  command answers `conflict` and the page words as "the question changed". The
+  answer's text is stored in the ledger and delivered to the worker (see above).
+  The board record gains `opened_ms` (the opening message's arrival time, or null),
+  the only source of an age, `check` and `review`, and the board gains `unrouted`.
+- `client/daemon/ui_projects` is the owner's home page's feed over the same actors
+  (`boards`, `ticket`, `answer`), returning the daemon's JSON for
+  `session_view/project_board` to decode; `board_body` is shared with
+  `projects.board`. The socket hands it to the owner's operating page alone
+  (`ui_socket.home_projects_capability`, repeated by `projects_for`,
+  `ticket_read_for` and `answer_for`), and admits a click beneath
+  `home.projects_path` for that page only (`ui_socket.home_event`).
+  `[project]` is `client/project_settings` (`max_workers`, `token_ceiling`,
+  `check`, `protected_paths`, `publish`, `queue_limit`, `attention_limit`, and the
+  tables `source` and `rule`, read by `client/project_sources`).
+- The GitHub source is four modules and a section of `project_host`.
+  `client/project_github` decodes REST answers totally and translates each item
+  into the gate's inputs (sender class from the owner's literal lists, an exact
+  `@account` token, the first matching rule), drops the agent's own account, and
+  derives trigger ids from GitHub's (`gh-i|c|r-<id>`, `gh-ci-<id>`) and threads from
+  the issue or pull request number (`model.github_thread`, `gh-<n>`).
+  `client/project_poller` is one bounded pass over `gh api` on the REST interface
+  (never GraphQL), from a cursor per stream, with `retry-after` and
+  `x-ratelimit-*` honoured; `project_watcher` is the schedule and builds the request
+  from the engine's tickets. The actor runs the pass in a weft task and takes the
+  answer as `PollSettled`: texts and `TriggerArrived` first, cursors (the ledger's
+  `scanner_cursor`, keyed `src:<stream>`) only after every trigger was written, then
+  conclusions (`Concluded`) and a `SourceNote` record when the words change. A rule
+  gets its first mode from the configuration (`configure_rules`, `observe` by
+  default), a person's later mode survives restarts, and `projects.set_mode` refuses
+  `auto` in words. A reply to a GitHub thread is a `github_reply` effect row only when
+  `publish` is on, posted by `project_poller.post_reply` after a search for its marker
+  comment, one at a time per thread, with `project_github.reply_body` neutering `@`,
+  `<`, `>` and `#`. A body is stored whole and delivered cut at
+  `project_github.inline_chars` with a pointer (`delivered_text`). The board gains
+  `would_have_done` and `sources`.
+- Retention. `project/snapshot` writes the engine's state as one document and
+  `retire` drops ended tickets and settled triggers older than 30 days
+  (`project_retention.retain_ms`) that nothing remaining names. `compact_now` writes a
+  `Retention` marker record, builds a `project_retention.Document` (the state, the host
+  record lines that still matter, each remaining trigger's arrival entry, and the
+  decision kept for each dropped trigger) and calls `project_ledger.compact_before`;
+  `boot` starts from the snapshot (`restore_snapshot`) and replays the rest. Daily from
+  the tick, or on demand through `project_host.compact`. A dropped trigger's card is
+  its decision.
+- `client/project_scan` is a worker's commit scanner, modelled on `rulescan`: a
+  restartable service subscribed by name through `writer.Routed`, started in
+  `serve` only for a session seated as a worker (`Seat.feed`). It pulls the main
+  strand with `storage.branch_scan` and sends the project actor each user message
+  whose origin is a human principal (`project_host.human_turn`, keyed `h-<entry id>`
+  so a repeat records nothing) and the last committed successful `project_report`
+  result above its cursor (`replay_report`, dropped when the ticket already holds
+  that report). The cursor is `project_ledger.cursor`/`set_cursor`, a checkpoint
+  sent after the turns it covers; correctness rests on the entry key and on
+  `already_holds`, not on the cursor. The process carries no `telemetry/owner`
+  role: a new role is a protocol change.
+- Restart and close. `recover_interrupted` runs in `boot`: each assignment that is
+  running with a session and has no `Recovered` host record gets one, with a
+  `recover` effect row, and `recover_worker` delivers a harness-worded note through
+  `admit` under the message id `recovery-<ticket>-<seq>`. The record is what stops a
+  second restart from sending another. `stop_worker` ends with `release_tree` for a
+  ticket that has an outcome: `Ports.release_worktree` closes the clone with
+  `project_repo.release`, which keeps a clone with changes or with refs the host
+  repository has not taken in. A kept clone is written as a `TreeKept` host record
+  and appears on the ticket card as `kept_worktrees`; a person fetches from the
+  ticket's refs in `host.git` and treats the clone as untrusted, because its
+  configuration and hooks are the worker's.
+- `project_daemon_test` is the daemon-level fixture: a real `root.start` with the
+  production session builder, a real catalogue, ledger and Git worktrees, the
+  control commands over a socket, and only the model scripted. It found that
+  `open_router` re-created the router under a different name than `make_project`
+  reserved it with, which the registry refuses as a conflicting request, so no
+  project could be created; it now reads the name from the registration.
+- Not built in this slice: the host check, pull requests, outbound delivery of
+  replies, a Mandate-enforced broker policy.

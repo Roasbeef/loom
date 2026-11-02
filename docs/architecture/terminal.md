@@ -161,7 +161,7 @@ model.
 
 The whole of `tui.update` is
 `runtime.settle(step(runtime.message(event, model), runtime.receive(model)))`
-(`update` at `packages/tui/src/tui.gleam:3708`). Everything inside the
+(`update` at `packages/tui/src/tui.gleam:3257`). Everything inside the
 box below is pure; everything outside it is the host.
 
 ```mermaid
@@ -820,6 +820,7 @@ already have.
 | Proposals review | `Alt+p` (owner only), or the `proposals N` badge on the input frame's bottom rule | The `proposals_get` board: proposed standing rules newest first, one as a red and green diff, with approve and reject | `proposals` (in `session_view`), `proposal_panel` |
 | Evolution review | `/evolution`, or the `evolution N` badge on the input frame's bottom rule | The `board` read (protocol-change/099): candidates by kind with their approval, evidence and generation, the history of decisions and a read-only core card. `a`, `s`, `r` and `b` ask and only `y` sends; a staging selection draws on its row. The shared step reads a watched board again once it is a minute old (`tick.watch_evolution`) | `evolution`, `evolution_pending` (in `session_view`), `evolution_panel` |
 | Memory overview | `Alt+m` (owner only) | The `memory_get` board, read-only (protocol-change/087): the `[memory] inject` mode and the size of each file a run reads, the newest typed notes, the approved rules and the pending proposal count; arrows and page keys scroll, `Esc` closes. The shared step reads it again once a minute while the overlay is open (`tick.watch_memory`) | `memory_overview` (in `session_view`), `memory_panel` |
+| Project board | `/project`, `loom project board --watch` (owner only) | `projects.board` polled by `revision`, `projects.ticket`, `projects.answer`, `projects.close` and `projects.retry` (protocol-change/106): tickets that need a person grouped by stage word with title and age, one line for the rest, and a ticket page with its mandate in words, its question and an answer input, and the worker's session | `project_board` (in `session_view`), `project_screen`, `project_control`, `project_jobs` |
 
 The peer-link path starts in `tui/interaction`: `l` on a resident `/sessions`
 row passes that row to `tui/session_control` without attaching its session.
@@ -833,6 +834,17 @@ residency, and grant authority. A saved session cannot become a target through
 selection alone. `tui/render` paints the confirmation and acknowledged result;
 closing the modal returns to the session picker, agent inspector, or composer
 without changing the attached session or its draft.
+
+`/project` (protocol-change/106) is the owner's board for the project of the working
+directory, and `loom project board --watch` lands on it in place of the session
+catalogue (`ProjectWatch`, `Landing`). `tui/project_screen` is a pure state
+machine in the picker's shape, `tui/project_control` starts its control jobs in
+the terminal's one slot and files the replies, and `session_view/project_board`
+decodes the board and writes its sentences, which the web view uses too. A
+healthy project shows one line. The screen polls `projects.board` and compares
+`revision`, so an unchanged board is not repainted. An answer echoes the
+question's `seq`, and a stale one is refused by the daemon and said so in words
+with the draft kept. Opening the worker's session uses the picker's open path.
 
 `/access` (protocol-change/053, phase 3) is the owner's view of who can reach the
 daemon. It needs the daemon control connection and no attached session.

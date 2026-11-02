@@ -1,4 +1,4 @@
-//// R6: the seven packages held to the portable subset, and what that
+//// R6: the eight packages held to the portable subset, and what that
 //// membership protects.
 ////
 //// `core`, `machine` and `prompt` contain no `@external` and reach for no
@@ -52,6 +52,15 @@
 //// and no BEAM-only one, and its state machine is property-tested on both
 //// targets the way `evalstat`'s rule is. The eval package consumes it; it
 //// consumes nothing in the tree.
+////
+//// `project`, the engine of project mode, joined for the first reason and
+//// for replay. Its state space (triggers, tickets, assignments, slots) is
+//// explored by a model-based test over random event sequences, which only
+//// works if applying an event spawns nothing, and its event codec is the
+//// ledger format, so a client that reads the ledger on either target must
+//// get the same events. It decides and returns effects as data; an actor
+//// in `client` holds the state and performs them. Its JSON codec uses
+//// `gleam_json`, which has both targets, and nothing BEAM-only.
 ////
 //// The second property is the one nothing recorded, and it is the one a
 //// contributor cannot be expected to infer. Reaching for a fast hash, a

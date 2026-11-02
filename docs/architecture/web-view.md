@@ -274,12 +274,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:546`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:565`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:6764`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:6976`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -1322,6 +1322,30 @@ profile sets the roles, and a model replaces the main model the profile gives; t
 server resolves them in that order (`profiles.resolve`). The line is a
 `home-create-note` and not a hint, because the stylesheet hides the hints after the
 name field once it holds a name.
+
+#### Projects and a ticket's page
+
+A daemon with project mode adds a Projects section at the top of the owner's home
+(protocol-change/106, the addendum on the web view), above the composer or the session
+list. It answers one question, what is waiting on the owner, and a project with
+nothing waiting is one line. A project with tickets that need a person lists them
+under the daemon's stage word (delivery, answer, review, blocked, failed, then a
+stage this client does not know but the daemon spelled `person/...`), most urgent
+first and newest first within a stage, each as a button with its title and age, and
+ends with the line that counts the rest. The order and the words come from
+`session_view/project_board`, which the terminal's board screen uses too. The section
+is given on the creation capability's condition (`Start.projects`, from
+`ui_socket.home_projects_capability`): the owner's operating page, and no other.
+
+A ticket's button opens its page in the centre (`Ticketed`). The page says why the
+ticket was allowed in words from its Mandate, shows the worker's question with an
+answer box, lists the messages the worker was given and offers the worker's session
+through the row's own open or resume press when the page holds that row. The form
+sends the question's sequence number it was drawn with and one text field. A stale
+answer is refused by the daemon and the page says the question changed and that
+nothing was recorded, keeping the text. Reads run in weft tasks behind the owner
+check (`projects_for`, `ticket_read_for`, `answer_for`) and an unchanged board
+revision changes nothing. The addendum states the routes and their authority.
 
 #### Sessions on other orchestrators
 

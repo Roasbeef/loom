@@ -1475,6 +1475,93 @@ pub fn protecting_state_root(
   )
 }
 
+/// The base policy with a project host's private files masked: each project's
+/// host repository, its ledger and its check trees.
+///
+/// The host repository is what the host's diff, check and push read, and it is
+/// the line a worker's clone is isolated behind (`client/project_repo`). It is
+/// in no session's writable roots, and this mask also keeps a session from
+/// reading it. The ledger holds every ticket's inbound text and the check trees
+/// hold built output, so a session has no use for either.
+///
+/// Only entries on disk are masked, because the jail refuses to mask a path
+/// that does not exist (`protecting`) and a policy lives as long as its
+/// session. That is why a ticket's clone is not masked, here or from the other
+/// workers: a clone is removed when its ticket ends, and a mask over a removed
+/// path would refuse every later call of the sessions that still held it. A
+/// worker can therefore read the other clones as it can read the rest of the
+/// host, and it can write none of them, since only its own workspace is
+/// writable.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace_policy.protecting_projects(base, "/home/o/.loom")
+/// ```
+pub fn protecting_projects(
+  base: policy.SandboxPolicy,
+  state_root: String,
+) -> policy.SandboxPolicy {
+  let masks =
+    project_directories(state_root)
+    |> list.flat_map(fn(directory) {
+      list.append(private_masks(directory), existing([directory <> "/checks"]))
+    })
+  protecting(base, always: masks, where_maskable: [])
+}
+
+/// The base policy with each project's host repository and ledger masked, and
+/// its check trees left alone.
+///
+/// A check is worker-authored code, and it reads the host as a session's tools
+/// do. Without this mask it could read every project's `host.git`, which holds
+/// each commit the host took in, and its `ledger.db`, which holds every ticket's
+/// inbound text, and the failing output that goes back to the worker could
+/// carry what it read. `protecting_projects` is not the policy for it, because
+/// it also masks `<project>/checks`, which holds the tree the check is running
+/// in. Only entries on disk are masked, as there.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace_policy.protecting_project_files(base, "/home/o/.loom")
+/// ```
+pub fn protecting_project_files(
+  base: policy.SandboxPolicy,
+  state_root: String,
+) -> policy.SandboxPolicy {
+  let masks =
+    project_directories(state_root)
+    |> list.flat_map(private_masks)
+  protecting(base, always: masks, where_maskable: [])
+}
+
+/// The directory of each project under the state root, in a stable order.
+fn project_directories(state_root: String) -> List(String) {
+  let projects = state_root <> "/projects"
+  simplifile.read_directory(projects)
+  |> result.unwrap([])
+  |> list.sort(string.compare)
+  |> list.map(fn(id) { projects <> "/" <> id })
+}
+
+/// The files of one project's directory that neither a session nor a check has
+/// a use for, as they are on disk now: the host repository, and the ledger with
+/// its SQLite side files.
+fn private_masks(directory: String) -> List(String) {
+  let ledger = directory <> "/ledger.db"
+  existing(
+    list.flatten([
+      [directory <> "/host.git", ledger],
+      sqlite_side_files(ledger),
+    ]),
+  )
+}
+
+fn existing(paths: List(String)) -> List(String) {
+  list.filter(paths, exists)
+}
+
 // The masked entries `client/daemon/root.directories` and the startup
 // that follows it have certainly created by the time any session policy
 // is built, so masking them costs no existence question.

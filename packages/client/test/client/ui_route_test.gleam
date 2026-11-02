@@ -257,6 +257,7 @@ fn fixture_lasting_with_root(
       ledger: None,
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(_, _) { stub(501, "v2 adapter absent") },
+      projects: None,
       ui: Some(server.Ui(
         sessions:,
         origins: [listed],

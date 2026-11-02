@@ -60,6 +60,7 @@ pub fn loom_roots() -> List(String) {
     "lsp",
     "machine",
     "mcp",
+    "project",
     "prompt",
     "provider",
     "runtime",

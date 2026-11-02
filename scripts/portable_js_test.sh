@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # portable_js_test.sh — run a portable package's tests on the JavaScript target.
 #
-# Usage: scripts/portable_js_test.sh <package>   (gepa or evalstat)
+# Usage: scripts/portable_js_test.sh <package>   (gepa, evalstat or project)
 #
-# `gepa` and `evalstat` are held to the R6 portable subset and promise, in
-# their package docs, that their suites pass on both targets: gepa because
+# `gepa`, `evalstat` and `project` are held to the R6 portable subset and
+# promise, in their package docs, that their suites pass on both targets:
+# project because its event codec and engine are replayed by clients on
+# either target, gepa because
 # it is embedded in projects that are not Loom, evalstat because its
 # bootstrap must print the same digits wherever a report is rendered. A
 # promise the gate never checks is a promise that drifts, and the codec in
@@ -21,9 +23,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-package=${1:?usage: scripts/portable_js_test.sh <gepa|evalstat>}
+package=${1:?usage: scripts/portable_js_test.sh <gepa|evalstat|project>}
 case "$package" in
-gepa | evalstat) ;;
+gepa | evalstat | project) ;;
 *) echo "not a portable package with a JavaScript suite: $package" >&2; exit 2 ;;
 esac
 

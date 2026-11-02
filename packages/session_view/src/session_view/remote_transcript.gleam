@@ -561,7 +561,11 @@ fn message_said(sent: message.AgentMessage) -> List(Said) {
           strand_framing.strip(text, strand).body
         Some(message.PeerOrigin(strand:, ..)) ->
           strand_framing.strip(text, "^" <> strand).body
-        Some(message.Origin(..)) | None -> text
+
+        // A trigger's text is outside text with no framing of ours to take
+        // off, so it is shown whole.
+        Some(message.TriggerOrigin(..)) | Some(message.Origin(..)) | None ->
+          text
       }
 
       // Omit empty stripped prompt bodies from transcript display.

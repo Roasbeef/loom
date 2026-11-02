@@ -359,6 +359,49 @@ pub fn ledger_path(state_root: String) -> String {
   state_root <> "/exec-ledger.db"
 }
 
+/// Makes sure the execution ledger exists and has its schema, without taking
+/// the executor host's place as its opener.
+///
+/// The worktree service records every tree it makes in the ledger, and it only
+/// connects to a ledger that has been opened and migrated. On a daemon that
+/// serves `[workspaces]` the executor host did that at boot. A daemon that
+/// serves none, which is what a project's workers run on, has no host, and the
+/// service then found an empty file and refused to start. A ledger that already
+/// connects is left alone, so a running host is never opened a second time (an
+/// open turns the admitted rows into unknown ones).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // executor_plane.ensure_ledger(machine.state_root)
+/// ```
+pub fn ensure_ledger(state_root: String) -> Result(Nil, String) {
+  let path = ledger_path(state_root)
+
+  // A ledger that connects was opened by someone else and is left alone; only
+  // one that has no schema yet is opened here.
+  case exec_ledger.connect(path) {
+    Ok(ledger) -> {
+      let _closed = exec_ledger.close(ledger)
+      Ok(Nil)
+    }
+
+    // The file is new or empty, so this is the first opener.
+    Error(exec_ledger.Unsupported) -> {
+      use ledger <- result.map(
+        exec_ledger.open(path)
+        |> result.map_error(fn(error) {
+          path <> " did not open: " <> string.inspect(error)
+        }),
+      )
+      let _closed = exec_ledger.close(ledger)
+      Nil
+    }
+
+    Error(other) -> Error(path <> " did not open: " <> string.inspect(other))
+  }
+}
+
 /// The factory the executor host builds planes with.
 ///
 /// A name that is not in `configured` is refused with a reason an operator can

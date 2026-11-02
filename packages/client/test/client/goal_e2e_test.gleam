@@ -1129,6 +1129,7 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
   serve.Settings(
     evolution_role: serve.Source,
     pack: None,
+    project: None,
     peer_directory: None,
     peer_defaults: None,
     remote_reach: None,

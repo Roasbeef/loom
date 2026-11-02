@@ -1,5 +1,33 @@
 # Current handoff
 
+## Project mode (draft PR #1164)
+
+One router session decides what becomes work for a repository, and each piece
+of work runs in its own session. Read
+[docs/architecture/project-mode.md](architecture/project-mode.md) first; its
+Known gaps section is the list of what's open. The owner merges this PR.
+
+- **Rulings not to reopen:** typed routing with no free text for a worker;
+  `auto` per source and rule, and only after a passing live verdict; the host
+  runs the check, the push and the pull request; a person's turn is recorded
+  with explicit strength; a project is a catalogue row and a role. Inferred text
+  never reaches an explicit worker, and inferred work is published only by a
+  person. A replay pass unlocks nothing, because replay agrees with its own
+  recording whatever the labels say. An inferred worker has no network, since
+  the broker refuses every allowlist.
+- **Verified live, on macOS with Kimi K3 and publishing off:** fan-out, the host
+  check catching bad work, close and resume keeping commits, strangers reaching
+  no model, jail refusals of writes, and a passing live verdict that unlocked
+  `auto`.
+- **Never run:** Linux jail enforcement of a worker, publishing against real
+  GitHub, posted replies, masked secret reads from a worker (the model refused
+  to try), remote workers.
+- **Unexplained:** one worker read failed with "the session was stopped" after a
+  graceful restart. `daemon.session_stop` now logs who stopped a session, so
+  look there if it recurs.
+- **Next:** drive publishing against a real repository, then a Linux drive.
+  An egress proxy would let inferred workers fetch dependencies.
+
 ## MicroVM executor tier (issue #85)
 
 Two branches carry the tier. `microvm/libkrun-launcher` (PR #1154) is the

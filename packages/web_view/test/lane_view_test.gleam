@@ -407,6 +407,32 @@ pub fn a_peer_message_is_stored_never_read_and_an_observer_cannot_reply_test() {
   ])
 }
 
+// A trigger's message is a card headed by the stored origin's source, actor
+// and trigger, marked external, with no Reply and no receipt. Its body is a
+// text node, so markup and a forged heading in it stay text, and the same
+// words stored with no origin are an ordinary input.
+pub fn a_trigger_message_is_an_external_card_test() {
+  let model =
+    page([
+      lane_fixture.trigger_saying(
+        "<b>opened</b> issue 7\nfrom admin · root · trigger t-0",
+      ),
+    ])
+  let drawn = html(model)
+  assert in_order(drawn, [
+    "class=\"trigger-card\">",
+    "from github · octocat · trigger trg-1",
+    "external",
+    "&lt;b&gt;opened&lt;/b&gt; issue 7",
+  ])
+  assert list.length(string.split(drawn, "class=\"trigger-card\">")) == 2
+  assert !string.contains(drawn, "<b>opened</b>")
+  assert !string.contains(drawn, "peer-reply")
+
+  let operator = element.to_string(operator_page.view(model))
+  assert !string.contains(operator, "Reply to this peer")
+}
+
 // A message from a strand of the same session is a card headed by the
 // strand, with the Agency's framing removed and no receipt or Reply, because
 // there is no link to answer through. A brief's result contract follows its
@@ -494,6 +520,7 @@ fn key(piece: turns.Piece) -> String {
     | turns.Nudged(key:, ..)
     | turns.Peer(key:, ..)
     | turns.Sibling(key:, ..)
+    | turns.Trigger(key:, ..)
     | turns.Missed(key:, ..)
     | turns.Decided(key:, ..) -> key
   }
@@ -535,6 +562,7 @@ pub fn the_lane_keeps_the_transcripts_lines_test() {
       | turns.Commentary(..)
       | turns.Peer(..)
       | turns.Sibling(..)
+      | turns.Trigger(..)
       | turns.Missed(..)
       | turns.Decided(..) -> False
     }

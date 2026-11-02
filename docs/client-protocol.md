@@ -171,7 +171,7 @@ links from another app).
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:504-187`).
+Source: `handle` (`client/daemon/server.gleam:526-187`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -419,7 +419,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.origins` | array of strings | optional | Present only when the daemon serves the view and `[daemon] ui_origins` lists at least one origin: each listed `https` origin as a browser writes it, the host lowercased and port 443 left out ([protocol-change/052](../protocol-change/052-web-view-remote-origin.md)). `loom ui --origin` and `--device` build their link on one of them. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:2568`).
+`hello_view` (`client/daemon/server.gleam:2591`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -541,6 +541,7 @@ Each session record:
 | `created_at` | integer | required | Creation time in milliseconds. |
 | `status` | object | required | Lifecycle status, described below. |
 | `subtitle` | string | optional | The first line of the first prompt a person sent the session, at most 60 characters, derived once by the daemon and never changed ([protocol-change/067](../protocol-change/067-session-subtitle.md)). Omitted when the session has none. A client that does not know the member ignores it; a client that does treats a value that is not a nonblank string of at most 60 characters as absent. |
+| `standing` | object | optional | Present on a session that belongs to a project (protocol-change/106): `{"kind":"router","project"}` for the project's router, `{"kind":"worker","project","ticket"}` for a ticket's worker. Omitted for every other session, so an ordinary record is unchanged. `sessions.list` returns every session; a client that offers a list of conversations to pick from leaves the sessions that carry it out, and reaches a worker from its ticket's `session`. The terminal's picker and `loom sessions list` do, and so do the web home, its sidebar and its remembered folders. A client that does not know the member ignores it. |
 | `executor` | string | optional | The executor the session's `workspace` is registered on ([protocol-change/078](../protocol-change/078-distributed-runtime.md)). Present only for a session created with an `executor`, so the record of a local session is unchanged. When it is present `workspace` is a name and not a path on the daemon's host. A client that does not know the member ignores it. |
 | `pool` | string | optional | The executor pool the session was created in ([protocol-change/078](../protocol-change/078-distributed-runtime.md), the addendum on pools). Present only for a session created with a `pool`. Such a session has no `executor` member until its first open chooses one, and carries both afterwards. A client that does not know the member ignores it. |
 | `moving` | object | optional | While a move to another orchestrator is in flight: `op` and `to`, as section 3.5 gives them. The session is stopped and still reads `saved`, and it cannot be opened here. |
@@ -564,7 +565,7 @@ Source: (`client/daemon/server.gleam:4780-4821`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:4007`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:4512`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -1076,7 +1077,7 @@ While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:2940-1130`).
+`control_use` (`client/daemon/server.gleam:2963-1130`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -1246,7 +1247,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1308`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1459`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -1814,6 +1815,191 @@ prints it, as text or, with `--json`, as the daemon sent it.
 
 ---
 
+### 3.32 `projects.*`
+
+Project mode's control commands (protocol-change/106, design note
+`docs/design-notes/project-mode.md`). All eleven are owner-only, and a daemon that
+started no project table answers every one `not_found`. A reply carries the
+engine's own spelling of a stage, and a client displays it and never derives it.
+
+| Command | Read | Body fields | Reply event |
+|---|---|---|---|
+| `projects.create` | no | `workspace` (string, required), `name` (string, required) | `projects.create` |
+| `projects.list` | yes | none | `projects.list` |
+| `projects.board` | yes | `project` (string, required), `page` (integer, optional, zero-based) | `projects.board` |
+| `projects.post` | no | `project`, `request_id` (at most 64 of letters, digits, `_`, `-`, `.`), `text` (string, required) | `projects.post` |
+| `projects.stop` | no | `project`, `ticket` (strings, required) | `projects.stop` |
+| `projects.close` | no | `project`, `ticket` (strings, required) | `projects.close` |
+| `projects.ticket` | yes | `project`, `ticket` (strings, required) | `projects.ticket` |
+| `projects.answer` | no | `project`, `ticket` (strings), `seq` (integer, required), `text` (string, required, at most 32768 bytes) | `projects.answer` |
+| `projects.retry` | no | `project`, `ticket` (strings, required) | `projects.retry` |
+| `projects.requeue` | no | `project`, `trigger` (strings, required) | `projects.requeue` |
+| `projects.publish` | no | `project`, `ticket` (strings, required) | `projects.publish` |
+| `projects.set_mode` | no | `project`, `rule` (strings, required), `mode` (`off`, `observe` or `auto`) | `projects.set_mode` |
+| `projects.labels` | yes | `project`, `rule` (strings, required) | `projects.labels` |
+| `projects.label` | no | `project`, `trigger` (strings, required), `label` (`accept` or `reject`) | `projects.label` |
+| `projects.verdict` | no | `project`, `rule` (strings, required), `lane` (`replay` or `live`, optional, `replay` by default) | `projects.verdict` |
+
+```json
+{"v":2,"id":9,"cmd":"projects.create","body":{"workspace":"/src/loom","name":"loom"}}
+```
+
+`projects.create` replies `{"project","workspace","router_session"}`. The project
+id is a function of the canonical workspace, so creating twice answers the first
+project. `projects.list` replies `{"projects":[{"id","workspace","router_session",
+"counts":{"<stage>":n}}]}`. `projects.board` replies `{"project","revision","page",
+"total","tickets":[...],"replies":[...],"unrouted":[...]}` with at most 20 tickets a page,
+needs-a-person first, and `revision` is the project ledger's newest sequence number.
+A ticket is the record of protocol-change/106, `{id, project, title, stage, session,
+mandate, check, review, failure, actions, opened_ms, question, kept_worktrees, pull_request, ended}`, where `opened_ms` is when
+the ticket's opening message arrived in Unix milliseconds, or `null` when the engine no
+longer holds that message (a client shows an age from it and never from when it first
+saw the ticket), where `stage` is one of
+`person/delivery`, `person/answer`, `person/review`, `person/blocked`,
+`person/failed`, `queued`, `idle`, `working` or `ended/<outcome>`, `check` is `null` until the
+host's check has judged the head and then `{commit, outcome}` with `outcome` one of `passed`,
+`failed` or `overridden` (a person published past the check), `review` is `null` or the host's
+sentence for why a ticket waits for a person although its work may be done (no check is
+configured, the check gave no result, publishing is off, the branch could not be published, the host
+repository would not take the worker's commit in, the worker made no commit, its clone holds changes that no commit has, or the change touched a protected path), and `question` is `null` or `{seq, text, options}`.
+`failure` is `null`, or the host's sentence for why a worker's session was given up on before it
+reported anything (it did not start after five attempts); the stage is then `person/failed`, and a
+retry or a person's message clears it. `actions` lists what a person can do with the ticket now,
+from `answer`, `close`, `retry`, `publish` and `stop`, in that order. It is the engine's own rule: an
+action is listed exactly when its command would be accepted and would change the ticket, so a client
+shows a control for each word listed and derives none from the stage. `publish` is also dropped while
+`[project].publish` is `off`, and `retry` is not listed for a ticket that has a session or is already
+waiting for one. A client ignores a word it does not know.
+`kept_worktrees` is a list, empty unless a worker's clone stayed after its ticket
+ended because it held changes, or refs naming objects the host repository had not taken
+in, and then each entry is `{seq, path, reason}`. The clone is the worker's, so its
+configuration and hooks are the worker's: a person should fetch from the ticket's refs
+(`refs/tickets/<ticket>/<commit>`) in the project's `host.git` and not run Git inside the clone. `replies`
+holds the router's queued replies on page zero. `unrouted` holds, on page zero, the messages the
+router was offered three times and decided nothing about, each `{trigger, source, actor, text,
+reason, at_ms}` with `text` cut at 2000 characters; they are never offered again until a person
+sends `projects.requeue` for the `trigger`. An explicit message that ends here is not lost: it is
+this record. `projects.post` replies
+`{"trigger","repeated"}`; posting a `request_id` again changes nothing and answers
+`repeated: true`. Errors: `not_found` (no such project), `bad_request` (a refused
+post or stop), `forbidden` (a member principal), `unavailable`.
+
+```json
+{"v":2,"id":10,"cmd":"projects.ticket","body":{"project":"p1","ticket":"t-a"}}
+{"v":2,"event":"projects.ticket","reply_to":10,"body":{
+  "project":"p1","revision":14,
+  "ticket":{"id":"t-a","project":"p1","title":"fix a","stage":"person/answer",
+    "session":"s_01","mandate":{"strength":"explicit","via":"composer",
+    "source":"composer","actor":"owner","policy_version":"v1"},"check":null,
+    "opened_ms":1761993600000,"question":{"seq":9,"text":"which database?","options":[]},
+    "pull_request":null,"ended":null},
+  "assignments":[{"seq":1,"session":"s_01","status":"running"}],
+  "inputs":[{"trigger":"tr-1","delivery":"delivered","source":"composer",
+    "actor":"owner","text":"fix a"}]}}
+{"v":2,"id":11,"cmd":"projects.answer","body":{"project":"p1","ticket":"t-a","seq":9,"text":"sqlite"}}
+{"v":2,"event":"projects.answer","reply_to":11,"body":{"ticket":"t-a","seq":9}}
+{"v":2,"id":14,"cmd":"projects.close","body":{"project":"p1","ticket":"t-a"}}
+{"v":2,"event":"projects.close","reply_to":14,"body":{"ticket":"t-a"}}
+{"v":2,"id":12,"cmd":"projects.retry","body":{"project":"p1","ticket":"t-a"}}
+{"v":2,"event":"projects.retry","reply_to":12,"body":{"ticket":"t-a"}}
+{"v":2,"id":13,"cmd":"projects.requeue","body":{"project":"p1","trigger":"tr-1"}}
+{"v":2,"event":"projects.requeue","reply_to":13,"body":{"trigger":"tr-1"}}
+```
+
+`projects.ticket` replies the ticket record, its `assignments` newest first as
+`{seq, session, status}` (`status` is `pending`, `running`, `done/exited` or
+`done/crashed` or `done/rested`, and `session` is `null` until the host binds one), and its `inputs`:
+the messages on the ticket's opening thread, oldest first and at most the newest 20, each
+`{trigger, delivery, source, actor, text}`. `delivery` is `delivered`, `waiting` (queued for
+a session), `failed` (never reached the worker) or `recorded` (the gate did not admit it).
+`source`, `actor` and `text` are absent when the ledger holds no text for that message, and
+`text` is cut at 2000 characters. All three are external text and are drawn as text. `revision`
+is the ledger's newest sequence number, as on the board. `projects.answer` echoes the question's
+`seq` from the ticket's `question`; an answer whose `seq` is not the ticket's open question is
+refused `conflict` and records nothing, and a client says the question changed. The answer's
+text is stored in the project ledger beside the `Answered` event, and it is delivered to the
+ticket's worker as a trigger keyed by the ticket and the question, with the source `owner` and
+the principal as the actor, waking the worker if it is idle. A ticket with no live session keeps
+the answer pending, and it goes to the next assignment's worker first. The reply means the answer
+was accepted and queued, not that the worker has read it. `projects.retry` and `projects.requeue`
+reply an echo, and the engine's refusal of either (a ticket that has a live worker, a message that
+is not waiting) is `bad_request`. `projects.ticket` is a read; the other three are not. An unknown
+project or ticket is `not_found` for all four.
+
+`projects.set_mode` sets the mode of one configured rule of a GitHub source and replies
+`{rule, mode}`. The mode survives a restart. An unknown rule and an unknown mode word are refused
+`bad_request`. So is `auto` without a current passing verdict for that source and rule, and the
+refusal's `message` is a sentence, not the generic "request refused": it says whether no verdict was
+recorded, the latest one failed, or a passing one went stale, which of the policy version, the router
+prompt and the router model changed, and how many of the thirty labels a verdict needs the rule has.
+On page zero `projects.board` also carries `would_have_done`, the
+newest 50 inferred messages that an `observe` rule recorded as work it would have done and did not,
+each `{trigger, source, actor, rule, text, link, at_ms}` (`link` is the issue, pull request or checks
+page, or `null`, and `text` is external), and `sources`, one record per configured source,
+`{source, interval_s, last_poll_ms, next_poll_ms, note, shed, rules:[{name, mode, verdict}]}`. `verdict`
+is `{state, words, labelled, needed, lane}`: `state` is `none`, `failing`, `stale` or `current`, `words`
+is a sentence saying what a passing verdict claims or what is missing, `labelled` is the triggers of
+that rule a person has labelled, `needed` is the thirty a verdict asks for, and `lane` is `replay`,
+`live` or `null`. `note` is empty
+when the last pass ran clean and otherwise says what it could not read or when a rate limit ends. `shed`
+counts triggers that overload shed, which a person can queue again with `projects.requeue`.
+
+`projects.close` records that the owner accepted a ticket's work. It is not a stop. A stop
+withdraws the ticket's mandate, so the ticket can never resume; a close ends the ticket as
+`ended/closed`, stops its session, frees its slot and keeps the mandate, so a later message that
+the router resumes the ticket with reopens it. It replies an echo, and is refused `bad_request` for
+a ticket that already ended or that a person stopped, and `not_found` for an unknown project or
+ticket. A worker whose work waits for a person is idle, so its assignment ends as `done/rested`
+and frees its slot while the session and its clone stay; a message to the ticket starts a new
+assignment in the same session.
+
+Three owner-only commands produce the verdict that `auto` needs. `projects.labels`
+(`{project, rule}`, a read) replies `{rule, labelled, needed, triggers}` where `triggers` are up to
+twenty recorded triggers of that rule that no one has labelled yet, newest first, each
+`{trigger, actor, text, recorded, at_ms}`; `recorded` is `took` (the project took the trigger on, or an
+`observe` rule recorded that it would have), `declined` (the router ignored it) or `not_asked`, and
+`text` is external. `projects.label` (`{project, trigger, label}` with `label` `accept` or `reject`)
+replies `{trigger, label}`. The label is an event of the project ledger and survives a restart, a later
+label of a trigger replaces the earlier, and a trigger no rule matched or the project does not hold is
+refused `bad_request`. `projects.verdict` (`{project, rule, lane}` with `lane` `replay` by default)
+measures the rule's labelled triggers with the evaluation instrument and records the finding. It is
+refused `bad_request`, with a sentence, below thirty labels or when no trigger is labelled `accept`, or none `reject`.
+
+The `replay` lane runs the current gate over the recorded triggers, costs nothing, says nothing about
+the router's prompt or model, and so reads `replay_only` and does not unlock `auto`. It replies at once
+with `{rule, outcome, lane, triggers, trials, changed, bound_points, agreement_points, words}`.
+
+The `live` lane asks the router's model what it would do with each labelled trigger, three times each,
+and is the only lane that unlocks `auto`. Each trial runs in a scratch session of its own: the router's
+prompt pack and resolved model, one tool (`route`, with the router's schema, whose calls are recorded
+and applied to nothing), the trigger's text under the same fence the router sees and the thread as it
+stood at that trigger. It is not the router's session, and nothing it decides reaches the project's
+ledger except the verdict. A live run is thirty or more triggers at three trials each, which is real
+spend, so it is bounded: four trials at a time and twenty minutes of wall time. The command replies at
+once with `{rule, lane: "live", state: "running", triggers, trials, words}` and the finding is
+recorded when every trial is done. A second `live` run on a rule whose run is going is refused
+`bad_request` in words. A run that fails, is cut off by its wall limit, or ends under a different
+router pin records no verdict and so no pass.
+
+The `run` object of each rule on the board's `sources` reports a live run: `{state: "running", done, of,
+calls, tokens, started_ms}` while it goes, and `{state, words, calls, tokens, ended_ms}` after, with
+`state` `passed`, `failed` or `incomplete`. It is memory only and is `null` before the first run and
+after a restart.
+
+A pass needs the instrument's verdict to be neither `harmed` nor `incomplete`, its interval of the change
+in agreement with the labels to stay above a drop of 30 points, and the candidate's own agreement with
+the labels to reach 75 percent of its trials, among the triggers labelled `accept` and among those labelled `reject`, whichever share is lower (`agreement_points`). A verdict is pinned to the policy
+version, the router prompt revision and the router model, and a change to any of them returns the
+rule to `observe`.
+
+`projects.publish` publishes a ticket's current commit past a failing or missing check. It is
+recorded with the principal, it is the owner's alone, and no tool a model holds reaches it. It
+replies `{ticket, commit}`. It is refused `bad_request` while `[project].publish` is `off`, for a
+ticket with no commit, and when the engine refuses the commit as out of date. The push and the
+pull request it asks for are the host's: `git push` to `refs/heads/project/<ticket>` of the
+`origin` remote, and `gh api` (REST only) to look for an open pull request from that branch and
+open one when there is none. The ticket's `pull_request` carries the URL once it is recorded.
+
 ## 4. The session endpoint
 
 ### 4.1 Attachment and admission
@@ -2072,7 +2258,7 @@ single strand's chain. Source: (`client/gateway.gleam:1378-1381`) and
 (`storage/snapshot.gleam:42`).
 
 A `session` that is not this attachment's own is refused with the code
-`wrong_session`. Source: (`client/gateway.gleam:2746`).
+`wrong_session`. Source: (`client/gateway.gleam:2770`).
 
 `from_seq` exists in the command's decoder for the in-process host
 fixture, where it selects a resume reply. Over the authenticated
@@ -2417,7 +2603,7 @@ Source: (`client/gateway.gleam:3883-3915`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:7775`).
+   is `stale_approval`. Source: (`client/gateway.gleam:7799`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3941-3952`).
@@ -3391,7 +3577,7 @@ Source: (`core/codec.gleam:249-260`).
 |---|---|---|---|
 | `content` | array | required | User content blocks: `text` or `image`. |
 | `timestamp` | integer | required | Milliseconds. |
-| `origin` | object or null | required | Human `{principal, name}`, peer `{kind: "peer", session, strand}`, or `null`. |
+| `origin` | object or null | required | Human `{principal, name}`, peer `{kind: "peer", session, strand}`, same-session strand `{kind: "strand", strand}`, external trigger `{kind: "trigger", source, trigger, actor}`, or `null`. |
 
 Source: (`core/codec.gleam:152-158`).
 
@@ -3408,6 +3594,19 @@ Source: (`core/origin.gleam:98-153`).
 
 ```json
 {"role":"user","content":[{"type":"text","text":"Review found a missing cancellation check."}],"timestamp":1756000010000,"origin":{"kind":"peer","session":"sess-review","strand":"security"}}
+```
+
+A trigger message carries text that arrived from outside any session through a
+stored trigger of a project ([protocol-change/106](../protocol-change/106-project-mode.md)).
+`source` is at most 128 bytes, `trigger` and `actor` at most 256, and each is
+non-empty with no control characters, no surrounding whitespace, and none of
+`"`, `\` or `·`. A trigger origin that breaks any bound fails decoding like a
+malformed peer. The `actor` is the name the source reported and nothing more.
+A client that draws the message MUST build its heading from these three fields
+and never from the text, and MUST present the text as untrusted data.
+
+```json
+{"role":"user","content":[{"type":"text","text":"Issue 7 was opened."}],"timestamp":1756000010000,"origin":{"kind":"trigger","source":"github","trigger":"trg-1","actor":"octocat"}}
 ```
 
 `origin` is durable attribution, and a client MUST NOT derive any
@@ -4445,14 +4644,14 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:4757`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:4781`) and `navigating`
    (`client/gateway.gleam:3052`).
 
 9. **The spec's control command list is incomplete.**
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:549`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:608`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one
