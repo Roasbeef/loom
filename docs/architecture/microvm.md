@@ -699,10 +699,15 @@ guest directory the failed join made is removed.
 A joined guest has no orchestrator bundle, so a resume finds an executor
 bundle alone with a ledger in it and enrols nothing. It refuses, naming
 `loom vm rm`, when the daemon's installed ledger records the guest as revoked,
-and goes on when that ledger cannot be read. If the daemon did not take the
-entry when the guest joined, the join still succeeds and prints a warning: the
-entry is signed and the bundle holds the only copy of the node's key, as
-`loom distribution enroll` leaves it. The guest's ledger on a new root (`--fresh`
+and refuses, naming `loom distribution import` and `loom vm up --name NAME`,
+when that ledger does not hold the guest at all, because its entry never
+reached the daemon and the daemon would not derive its row; neither boots a
+guest. A configuration whose ledger cannot be read lets the resume go on. If the
+daemon did not take the entry when the guest joined, the join fails and boots
+nothing, and its message names the kept bundle and the operator's copy to import
+(`vm_spec.undelivered_refusal`). The bundle stays, since the entry is signed and
+it holds the only copy of the node's key; after the import `up` resumes from it.
+The guest's ledger on a new root (`--fresh`
 or an upgrade) is the daemon's installed ledger when that replays against the
 guest's authority and holds the guest as the same node, so a certificate the
 orchestrator renewed since the join does not leave the guest with a stale pin
@@ -711,7 +716,8 @@ table, and the bundle's ledger otherwise; a minted guest does the same. It has n
 guest revokes it with `ledger_cli.revoke_member` when the key is on this machine,
 with the checks of `loom distribution revoke` (a guest that still holds sessions
 is refused and nothing is removed), and otherwise prints the revoke the operator
-runs; a guest the operator's copy already records as revoked is treated as done,
+runs; a guest already recorded as revoked, in the operator's copy or in the
+daemon's installed ledger, is treated as done,
 and a refusal of the revoke does not advise `--force`, which `rm` lacks. It
 removes nothing from `loom.toml`, because the `[distribution]` table and
 the cookie are the deployment's. The authority directory goes only when no
