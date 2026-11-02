@@ -25,7 +25,7 @@ import core/origin
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
@@ -96,6 +96,15 @@ fn sources(queue_limit: Int) -> project_sources.Sources {
 }
 
 fn rig(name: String, policy: project_host.Policy) -> Rig {
+  rig_at(name, policy, Some("git@github.com:o/r.git"))
+}
+
+// A rig whose project was pinned to the given origin, or to none.
+fn rig_at(
+  name: String,
+  policy: project_host.Policy,
+  origin: Option(String),
+) -> Rig {
   let directory =
     "build/project-source-"
     <> name
@@ -126,7 +135,7 @@ fn rig(name: String, policy: project_host.Policy) -> Rig {
         )
       },
       gh_runner: fn() { project_poller.runner(fake.tools) },
-      remote_url: fn() { Some("git@github.com:o/r.git") },
+      remote_url: fn() { origin },
     )
   Rig(
     config: project_host.Config(
@@ -1217,6 +1226,40 @@ pub fn answers_that_are_not_json_leave_a_recorded_error_and_a_living_actor_test(
   serve(rig, [])
   next_pass(rig, again)
   assert string.contains(board_text(again), "\"note\":\"\"")
+}
+
+// --- an origin that is not GitHub's -------------------------------------------------
+
+// A local path whose last two parts look like an owner and a name used to be
+// polled as `repos/pd2/remoteA` with the owner's credentials. A source whose
+// origin is not a GitHub URL is not read, and the board says so.
+pub fn an_origin_that_is_not_github_is_not_polled_and_the_board_says_so_test() {
+  let origins = [
+    Some("/x/pd2/remoteA.git"),
+    Some("https://gitlab.com/o/r.git"),
+    Some("https://github.com/o/r/extra"),
+    None,
+  ]
+
+  list.each(origins, fn(origin) {
+    let rig =
+      rig_at(
+        "elsewhere",
+        project_host.Policy(..project_host.idle_policy, sources: sources(100)),
+        origin,
+      )
+    let handle = start(rig)
+    eventually(fn() {
+      string.contains(board_text(handle), "origin is not a GitHub URL")
+    })
+
+    // Time passes and GitHub is never asked.
+    process.send(rig.clock, SetTime(time(rig.clock) + step))
+    process.sleep(300)
+    assert fake_gh.calls(rig.fake) == []
+    assert string.contains(board_text(handle), "\"last_poll_ms\":0")
+    stop(handle)
+  })
 }
 
 // --- what a worker is handed -------------------------------------------------------

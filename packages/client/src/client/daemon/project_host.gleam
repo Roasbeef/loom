@@ -4695,12 +4695,44 @@ fn poll_when_due(host: Host) -> Host {
   // A project with no readable source polls nothing, and one whose next pass
   // is not due waits.
   case source_of(host) {
-    Error(Nil) -> host
+    Error(Nil) -> note_unreadable_origin(host)
     Ok(source) ->
       case project_watcher.is_due(host.watcher, now) {
         True -> start_poll(host, source, now)
         False -> host
       }
+  }
+}
+
+/// The words the board's source note carries when the owner configured a source
+/// and the pinned origin is not a GitHub URL. The source is then not read, and
+/// the note says why, so a quiet board is not taken for an empty repository.
+const origin_note =
+  "the project's origin is not a GitHub URL, so its source is not read"
+
+/// Writes the origin note when a source is configured, `gh` is installed and
+/// the pinned origin names no GitHub repository. A project missing the source
+/// or `gh` is as it was, and an unchanged note is not written again.
+fn note_unreadable_origin(host: Host) -> Host {
+  let configured = option.is_some(host.config.policy.sources.github)
+  let has_gh = option.is_some(host.ports.gh_runner())
+
+  // The note is written once, when it changes, and otherwise the host is
+  // left as it is. Only an origin that is missing or not GitHub's explains a
+  // source that does not poll; the other causes are the owner's own
+  // configuration.
+  case configured && has_gh && !origin_is_github(host) {
+    True if host.watcher.note != origin_note -> note_source(host, origin_note)
+    True | False -> host
+  }
+}
+
+/// Whether the pinned origin names a GitHub repository.
+fn origin_is_github(host: Host) -> Bool {
+  // A project made from a checkout with no origin pinned nothing to name one.
+  case host.ports.remote_url() {
+    Some(url) -> result.is_ok(project_publish.repository_of(url))
+    None -> False
   }
 }
 

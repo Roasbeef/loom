@@ -64,8 +64,18 @@ fn rig(name: String) -> Rig {
     as "the scratch directory resolves"
   let repository = worktree_rig.repository(scratch <> "/repo")
   let remote = scratch <> "/remote.git"
+  let pinned = "https://github.com/o/r.git"
   worktree_rig.git(scratch, ["init", "--quiet", "--bare", remote])
   worktree_rig.git(repository, ["remote", "add", "origin", remote])
+
+  // The pinned URL must be a GitHub one, or nothing is published. The repository
+  // rewrites that address to the bare repository on disk, so the push is still a
+  // real one and reaches nothing else.
+  worktree_rig.git(repository, [
+    "config",
+    "url." <> remote <> ".insteadOf",
+    pinned,
+  ])
   worktree_rig.write(repository <> "/feature", "work\n")
   worktree_rig.git(repository, ["add", "feature"])
   worktree_rig.git(repository, ["commit", "--quiet", "-m", "work"])
@@ -78,7 +88,7 @@ fn rig(name: String) -> Rig {
   let assert Ok(Nil) = simplifile.set_permissions_octal(bin <> "/gh", 0o755)
     as "the fake gh is executable"
   Rig(
-    repository: project_publish.Repository(directory: repository, url: remote),
+    repository: project_publish.Repository(directory: repository, url: pinned),
     commit:,
     remote:,
     bin:,
@@ -315,16 +325,80 @@ pub fn the_body_is_built_from_ledger_facts_test() {
   assert string.contains(overridden, "published past the check by owner")
 }
 
-pub fn the_owner_and_name_come_from_the_remotes_url_test() {
-  assert project_publish.repository_of("https://github.com/o/r.git")
-    == Ok(#("o", "r"))
-  assert project_publish.repository_of("git@github.com:o/r.git")
-    == Ok(#("o", "r"))
-  assert project_publish.repository_of("ssh://git@github.com/o/r/")
-    == Ok(#("o", "r"))
-  assert project_publish.repository_of("/tmp/x/remote.git")
-    == Ok(#("x", "remote"))
-  assert project_publish.repository_of("r") == Error(Nil)
-  assert project_publish.repository_of("https://h/o/..") == Error(Nil)
-  assert project_publish.repository_of("https://h/o/r;rm") == Error(Nil)
+pub fn the_owner_and_name_come_from_a_github_url_test() {
+  let accepted = [
+    #("https://github.com/o/r", #("o", "r")),
+    #("https://github.com/o/r.git", #("o", "r")),
+    #("https://github.com/o/r/", #("o", "r")),
+    #("git@github.com:o/r", #("o", "r")),
+    #("git@github.com:o/r.git", #("o", "r")),
+    #("ssh://git@github.com/o/r", #("o", "r")),
+    #("ssh://git@github.com/o/r.git", #("o", "r")),
+    #("ssh://git@github.com/o/r/", #("o", "r")),
+    #("HTTPS://GitHub.COM/o/r.git", #("o", "r")),
+    #("git@GITHUB.com:Own-er/na_me.js.git", #("Own-er", "na_me.js")),
+    #("  https://github.com/o/r.git\n", #("o", "r")),
+  ]
+  list.each(accepted, fn(each) {
+    assert project_publish.repository_of(each.0) == Ok(each.1)
+  })
+}
+
+// Each of these used to be read as a GitHub repository, or could be made to
+// name one the origin does not. None of them names a GitHub repository.
+pub fn a_url_that_is_not_github_names_no_repository_test() {
+  let refused = [
+    // A path on this machine whose last two parts look like an owner and name.
+    "/x/pd2/remoteA.git",
+    "/tmp/x/remote.git",
+    "../pd2/remoteA",
+    "file:///x/pd2/remoteA.git",
+    "pd2/remoteA",
+    // A path that carries the host in a directory name.
+    "/srv/github.com/o/r.git",
+    "/srv/https://github.com/o/r.git",
+    // Other hosts, and a host that only starts like GitHub's.
+    "https://gitlab.com/o/r.git",
+    "https://github.com.evil.test/o/r.git",
+    "https://evilgithub.com/o/r.git",
+    "git@gitlab.com:o/r.git",
+    "ssh://git@github.com.evil.test/o/r.git",
+    // Spellings outside the three: a plain http address, a user, a port.
+    "http://github.com/o/r.git",
+    "https://user@github.com/o/r.git",
+    "https://github.com:443/o/r.git",
+    "ssh://git@github.com:22/o/r.git",
+    "git@github.com/o/r.git",
+    // Extra or missing parts, and names that are not plain.
+    "https://github.com/o",
+    "https://github.com/o/r/extra",
+    "https://github.com//r",
+    "https://github.com/o/..",
+    "https://github.com/o/r;rm",
+    "https://github.com/o/r?x=1",
+    "https://github.com/o/r#frag",
+    "https://github.com/o/.git",
+    "",
+    "r",
+  ]
+  list.each(refused, fn(each) {
+    assert project_publish.repository_of(each) == Error(Nil)
+  })
+}
+
+pub fn a_local_origin_is_unavailable_and_asks_nothing_of_gh_test() {
+  let rig = rig("local")
+  let local = project_publish.Repository(..rig.repository, url: rig.remote)
+  let assert Error(Unavailable(why)) =
+    project_publish.publish(
+      rig.tools,
+      local,
+      "project/t-a",
+      rig.commit,
+      "t",
+      "b",
+    )
+  assert string.contains(why, "no GitHub owner and name")
+  assert calls(rig) == []
+  assert !bootstrap.path_exists(rig.remote <> "/refs/heads/project")
 }

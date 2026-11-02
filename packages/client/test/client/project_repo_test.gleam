@@ -655,6 +655,19 @@ fn remote(rig: worktree_rig.Rig) -> Remote {
   )
 }
 
+// Publishing needs a GitHub URL, and the bare remote is a path. The host
+// repository rewrites a GitHub address to the bare remote, so the push is real
+// and reaches nothing else, and the address is what the publish is given.
+fn github_alias(layout: project_repo.Layout, remote: Remote) -> String {
+  let address = "https://github.com/o/r.git"
+  worktree_rig.git(project_repo.host_path(layout), [
+    "config",
+    "url." <> remote.bare <> ".insteadOf",
+    address,
+  ])
+  address
+}
+
 pub fn the_owners_push_url_is_pinned_when_the_host_repository_is_made_test() {
   let rig = worktree_rig.rig("pin")
   let remote = remote(rig)
@@ -725,7 +738,7 @@ pub fn what_a_worker_writes_in_its_clone_does_not_redirect_the_push_test() {
   let assert Ok(project_repo.Accepted(commit: taken, changed: _)) =
     project_repo.intake(rig.trees, layout, "t-a", "t-a-1")
   assert taken == head
-  let assert Ok(url) = project_repo.pinned_url(layout)
+  let url = github_alias(layout, remote)
   let assert Ok(opened) =
     project_publish.publish(
       remote.tools,
@@ -760,7 +773,7 @@ pub fn the_owners_repository_is_unchanged_across_a_whole_scenario_test() {
     project_repo.intake(rig.trees, layout, "t-a", "t-a-1")
   let assert Ok(path) = project_repo.check_tree(rig.trees, layout, "t-a", head)
   project_repo.discard_check_tree(path)
-  let assert Ok(url) = project_repo.pinned_url(layout)
+  let url = github_alias(layout, remote)
   let assert Ok(_) =
     project_publish.publish(
       remote.tools,

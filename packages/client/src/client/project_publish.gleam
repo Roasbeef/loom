@@ -307,10 +307,17 @@ pub fn publish(
   }
 }
 
-/// The owner and name in a remote's URL, for `https://github.com/o/r.git`,
-/// `git@github.com:o/r.git` and `ssh://git@github.com/o/r`, and for any path
-/// whose last two parts are two names. Each name is letters, digits, `.`, `_`
-/// and `-`, and the URL's own text reaches the API only through them.
+/// The owner and name a GitHub remote names, for `https://github.com/o/r`,
+/// `git@github.com:o/r` and `ssh://git@github.com/o/r`, each with an optional
+/// `.git` and an optional trailing `/`, and with the host in any letter case.
+///
+/// Anything else is not a GitHub remote and answers `Error(Nil)`: another
+/// host, a path on this machine, an address with a user, a port or extra path
+/// parts, and a name outside letters, digits, `.`, `_` and `-`. A local path
+/// whose last two parts look like an owner and a name would otherwise be read
+/// as a GitHub repository, and the owner's credentials would be used against a
+/// repository the project's origin never named. The URL's own text reaches the
+/// API only through the two names. GitHub Enterprise hosts are not recognised.
 ///
 /// ## Examples
 ///
@@ -319,29 +326,53 @@ pub fn publish(
 /// ```
 ///
 /// ```gleam
-/// assert project_publish.repository_of("https://github.com/o/r/") == Ok(#("o", "r"))
+/// assert project_publish.repository_of("HTTPS://GitHub.com/o/r/") == Ok(#("o", "r"))
 /// ```
 ///
 /// ```gleam
-/// assert project_publish.repository_of("r") == Error(Nil)
+/// assert project_publish.repository_of("/tmp/x/remote.git") == Error(Nil)
 /// ```
 pub fn repository_of(url: String) -> Result(#(String, String), Nil) {
+  let trimmed = string.trim(url)
+
+  // The host sits in one of three fixed prefixes, and what follows must be
+  // exactly an owner and a name.
+  use rest <- result.try(
+    list.find_map(github_prefixes, fn(prefix) { after_prefix(trimmed, prefix) }),
+  )
   let parts =
-    string.trim(url)
+    rest
     |> without_suffix("/")
     |> without_suffix(".git")
-    |> string.replace(":", "/")
     |> string.split("/")
-    |> list.filter(fn(part) { part != "" })
 
-  // The last two parts are the owner and the repository's name.
-  case list.reverse(parts) {
-    [name, owner, ..] ->
+  // Two plain names and nothing else, so an extra part does not slip through.
+  case parts {
+    [owner, name] ->
       case plain_name(owner) && plain_name(name) {
         True -> Ok(#(owner, name))
         False -> Error(Nil)
       }
     _ -> Error(Nil)
+  }
+}
+
+/// The three spellings of a GitHub remote's start, before the owner.
+const github_prefixes = [
+  "https://github.com/",
+  "git@github.com:",
+  "ssh://git@github.com/",
+]
+
+/// What follows `prefix` in `text`, comparing the prefix without regard to
+/// letter case, or an error when the text does not begin with it.
+fn after_prefix(text: String, prefix: String) -> Result(String, Nil) {
+  let size = string.length(prefix)
+
+  // A host name is case-insensitive, so only the lowercased start is compared.
+  case string.lowercase(string.slice(text, 0, size)) == prefix {
+    True -> Ok(string.drop_start(text, size))
+    False -> Error(Nil)
   }
 }
 
