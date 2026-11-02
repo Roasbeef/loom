@@ -39,6 +39,7 @@
 ////   falls out of both.
 //// - `rest`: a ticket whose work waits for a person while its worker is idle
 ////   holds no slot, unless the host has yet to read the worker's head.
+//// - `ended`: a ticket that ended holds no slot, however it ended.
 //// - `replay`: replaying the accepted events rebuilds the final state.
 //// - `snapshot`: the final state reads back from its snapshot, as the state
 ////   that retention keeps, which never drops an open ticket or an unsettled
@@ -306,6 +307,7 @@ fn ticket_events(current: State) -> Generator(Event) {
         }),
       ),
       #(3, qcheck.map(by, event.PersonStopped(ticket, _))),
+      #(2, qcheck.map(by, event.PersonClosed(ticket, _))),
       #(2, qcheck.map(by, event.RetryRequested(ticket, _))),
       #(
         2,
@@ -925,8 +927,20 @@ fn check_tickets(sut: Sut) -> Result(Nil, statem.Violation) {
     use _ <- result.try(check_readiness(sut, ticket))
     use _ <- result.try(check_withdrawal(ticket))
     use _ <- result.try(check_rest(sut, ticket))
+    use _ <- result.try(check_ended(ticket))
     check_reserved(sut, ticket)
   })
+}
+
+// However a ticket ended, whether a person stopped or closed it, a pull
+// request concluded it or its worker let it go, nothing of it still holds a
+// slot.
+fn check_ended(ticket: state.Ticket) -> Result(Nil, statem.Violation) {
+  holds(
+    ok: ticket.outcome == None || state.active_assignment(ticket) == None,
+    tag: "ended",
+    detail: "an ended ticket still holds a slot",
+  )
 }
 
 // A ticket in review, ready or published whose worker last reported idle with

@@ -3004,6 +3004,7 @@ fn control(
             | protocol.StopTicket(..)
             | protocol.ProjectTicket(..)
             | protocol.AnswerQuestion(..)
+            | protocol.CloseTicket(..)
             | protocol.RetryTicket(..)
             | protocol.RequeueTrigger(..)
             | protocol.SetProjectMode(..)
@@ -3090,6 +3091,7 @@ fn control_use(command: protocol.Command) {
     | protocol.PostToProject(..)
     | protocol.StopTicket(..)
     | protocol.AnswerQuestion(..)
+    | protocol.CloseTicket(..)
     | protocol.RetryTicket(..)
     | protocol.RequeueTrigger(..)
     | protocol.SetProjectMode(..)
@@ -3257,6 +3259,10 @@ fn dispatch(
     protocol.AnswerQuestion(project, ticket, seq, text) ->
       project_command(config, principal, fn(control) {
         project_answer(control, project, ticket, seq, text)
+      })
+    protocol.CloseTicket(project, ticket) ->
+      project_command(config, principal, fn(control) {
+        project_close(control, project, ticket)
       })
     protocol.RetryTicket(project, ticket) ->
       project_command(config, principal, fn(control) {
@@ -3454,6 +3460,24 @@ fn project_answer(
       #("seq", json.Int(seq)),
     ]),
   )
+}
+
+/// The `projects.close` step: the owner accepted a ticket's work. A ticket that
+/// already ended, or that a person stopped, is `bad_request`.
+fn project_close(
+  control: project_start.Control,
+  project: String,
+  ticket: String,
+) -> Result(#(String, JsonValue), String) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.replace_error("not_found"),
+  )
+  use Nil <- result.map(
+    project_host.close_ticket(handle, ticket, "owner")
+    |> result.replace_error("bad_request"),
+  )
+  #("projects.close", json.Object([#("ticket", json.String(ticket))]))
 }
 
 /// The `projects.retry` step.
@@ -4585,6 +4609,7 @@ fn dispatch_class(
     | protocol.StopTicket(..)
     | protocol.ProjectTicket(..)
     | protocol.AnswerQuestion(..)
+    | protocol.CloseTicket(..)
     | protocol.RetryTicket(..)
     | protocol.RequeueTrigger(..)
     | protocol.SetProjectMode(..)

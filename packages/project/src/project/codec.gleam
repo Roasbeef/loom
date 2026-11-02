@@ -178,6 +178,11 @@ fn to_json(incoming: Event) -> Json {
         ticket_field(ticket),
         #("by", json.string(by.value)),
       ])
+    event.PersonClosed(ticket, by) ->
+      tagged("person_closed", [
+        ticket_field(ticket),
+        #("by", json.string(by.value)),
+      ])
     event.RetryRequested(ticket, by) ->
       tagged("retry_requested", [
         ticket_field(ticket),
@@ -360,6 +365,11 @@ fn closing_decoder(tag: String) -> Decoder(Event) {
       use ticket <- decode.field("ticket", ticket_id())
       use by <- decode.field("by", principal())
       decode.success(event.PersonStopped(ticket, by))
+    }
+    "person_closed" -> {
+      use ticket <- decode.field("ticket", ticket_id())
+      use by <- decode.field("by", principal())
+      decode.success(event.PersonClosed(ticket, by))
     }
     "retry_requested" -> {
       use ticket <- decode.field("ticket", ticket_id())

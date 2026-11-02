@@ -121,6 +121,9 @@ pub type Page(message) {
     /// The message the answer form sends, given the question's sequence number
     /// the form was drawn with and the text.
     answer: fn(Int, String) -> message,
+    /// The message the "Close ticket" button sends, or none when the ticket
+    /// has ended or the page may not ask.
+    close: Option(message),
     /// The message that opens the worker's session, when the page holds the
     /// session's row, and none otherwise.
     worker: Option(message),
@@ -349,10 +352,33 @@ pub fn ticket_page(page: Page(message)) -> Element(message) {
       ],
       noticed(page.notice),
       question(page),
+      closer(page),
       worker(page),
       inputs(page.detail),
     ]),
   )
+}
+
+/// The "Close ticket" button: the owner accepts the work. The ticket ends as
+/// closed and can be resumed by a later message. It is disabled while a request
+/// is with the daemon, and absent when it could only be refused.
+fn closer(page: Page(message)) -> List(Element(message)) {
+  case page.close {
+    None -> []
+    Some(press) -> [
+      html.p([attribute.class("home-folder-path")], [
+        html.button(
+          [
+            attribute.type_("button"),
+            attribute.class("home-new"),
+            attribute.disabled(page.asking == Sending),
+            event.on_click(press),
+          ],
+          [html.text("Close ticket")],
+        ),
+      ]),
+    ]
+  }
 }
 
 /// The last thing the page said about an answer.

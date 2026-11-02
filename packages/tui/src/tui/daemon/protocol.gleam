@@ -1444,6 +1444,7 @@ fn decode_reply(event: String, body: json.JsonValue) {
     | "projects.stop"
     | "projects.ticket"
     | "projects.answer"
+    | "projects.close"
     | "projects.retry"
     | "projects.publish"
     | "projects.requeue"

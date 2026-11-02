@@ -84,6 +84,19 @@ pub type Answer {
   )
 }
 
+/// What the daemon said to a close.
+pub type Closing {
+  /// The ticket was closed, and its mandate stands.
+  Closed
+
+  /// The daemon refused it. The code is the daemon's, such as `bad_request` for
+  /// a ticket that already ended or that a person stopped.
+  NotClosed(
+    /// The daemon's error code.
+    code: String,
+  )
+}
+
 /// A project as the page holds it: its id, its workspace, and its board once
 /// the reply decoded.
 pub type Loaded {

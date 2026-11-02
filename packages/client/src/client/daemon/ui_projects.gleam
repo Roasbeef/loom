@@ -20,14 +20,14 @@
 ////
 //// ## Flow
 ////
-//// `feed` → `boards` → `ticket_of` → `answered`
+//// `feed` → `boards` → `ticket_of` → `answered` → `closed`
 ////
 //// 1. `feed` is the daemon's offer to a page, or nothing when there is no
 ////    project table.
 //// 2. `boards` reads each running project's first page, building each body
 ////    with `board_body`.
-//// 3. `ticket_of` reads one ticket and `answered` records an answer, both named
-////    by ids the page took from a board it holds.
+//// 3. `ticket_of` reads one ticket, and `answered` and `closed` record an
+////    answer and a close, all named by ids the page took from a board it holds.
 
 import client/daemon/project_book
 import client/daemon/project_host
@@ -47,6 +47,8 @@ pub type Feed {
     ticket: fn(String, String) -> projects.TicketRead,
     /// An answer to a ticket's question, echoing the question's sequence number.
     answer: fn(String, String, Int, String) -> projects.Answer,
+    /// A close of a ticket whose work the owner accepted.
+    close: fn(String, String) -> projects.Closing,
   )
 }
 
@@ -66,6 +68,7 @@ pub fn feed(control: Option(project_start.Control)) -> Option(Feed) {
       answer: fn(project, ticket, seq, text) {
         answered(held, project, ticket, seq, text)
       },
+      close: fn(project, ticket) { closed(held, project, ticket) },
     )
   })
 }
@@ -122,6 +125,23 @@ fn ticket_of(
       case project_host.ticket(handle, ticket) {
         Ok(detail) -> projects.TicketHeard(detail)
         Error(Nil) -> projects.TicketGone
+      }
+  }
+}
+
+/// The actor's word on a close, as the page needs it: closed, or refused with
+/// the code the control command would answer.
+fn closed(
+  control: project_start.Control,
+  project: String,
+  ticket: String,
+) -> projects.Closing {
+  case project_book.get(control.book, project) {
+    Error(Nil) -> projects.NotClosed("not_found")
+    Ok(handle) ->
+      case project_host.close_ticket(handle, ticket, "owner") {
+        Ok(Nil) -> projects.Closed
+        Error(_) -> projects.NotClosed("bad_request")
       }
   }
 }

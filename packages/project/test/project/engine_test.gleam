@@ -718,6 +718,97 @@ pub fn a_message_to_a_ticket_in_review_starts_a_new_assignment_test() {
   assert list.length(ticket(woken, ticket_of("c1")).assignments) == 2
 }
 
+// --- closing a ticket -------------------------------------------------------------------
+
+fn close(name: String) -> event.Event {
+  event.PersonClosed(ticket_of(name), world_principal())
+}
+
+// A person who accepts the work closes the ticket. It ends as closed, its
+// rested session is stopped, and, unlike a stop, the mandate stands.
+pub fn a_persons_close_ends_the_ticket_and_keeps_the_mandate_test() {
+  let rested = run(working(), [rests_in_review("c1")])
+  let #(closed, effects) = step(rested, close("c1"))
+  let ended = ticket(closed, ticket_of("c1"))
+  assert ended.outcome == Some(model.Closed)
+  assert ended.authority == state.Granted
+  assert state.stage_of(ended) == stage.StageEnded(model.Closed)
+  assert effects == [StopSession(ticket_of("c1"), 1)]
+
+  // Nothing of the ticket holds a slot, and a rested assignment now reads as
+  // an exit, so the next one will not be seated in a stopped session.
+  assert list.map(ended.assignments, fn(each) { each.status })
+    == [state.AssignmentDone(model.SessionExited)]
+}
+
+// A ticket whose worker is still running is stopped and freed by a close, and
+// the slot goes to the next ticket in line.
+pub fn closing_a_running_ticket_frees_its_slot_test() {
+  let full = full_with_a_fourth_waiting()
+  let #(closed, effects) = step(full, close("c1"))
+  assert ticket(closed, ticket_of("c1")).outcome == Some(model.Closed)
+  assert state.active_assignment(ticket(closed, ticket_of("c1"))) == None
+  assert list.contains(effects, StopSession(ticket_of("c1"), 1))
+  assert state.active_assignment(ticket(closed, ticket_of("c4"))) != None
+}
+
+// A later message the router resumes the ticket with reopens it, which a stop
+// never allows.
+pub fn a_closed_ticket_can_be_resumed_and_a_stopped_one_cannot_test() {
+  let rested = run(working(), [rests_in_review("c1")])
+  let closed =
+    run(rested, [close("c1"), event.RouterTurnEnded, arrival(owner("c2"))])
+  let resume =
+    event.Routed(model.Routing(
+      TriggerId("c2"),
+      model.Resume(ticket_of("c1")),
+      [],
+      [],
+      None,
+    ))
+  let #(reopened, effects) = step(closed, resume)
+  assert ticket(reopened, ticket_of("c1")).outcome == None
+  assert list.any(effects, fn(effect) {
+    case effect {
+      StartSession(ticket, 2, _, _) -> ticket == ticket_of("c1")
+      _ -> False
+    }
+  })
+
+  let stopped =
+    run(rested, [
+      event.PersonStopped(ticket_of("c1"), world_principal()),
+      event.RouterTurnEnded,
+      arrival(owner("c2")),
+    ])
+  assert engine.apply(stopped, resume)
+    == Error(event.TicketWithdrawn(ticket_of("c1")))
+}
+
+pub fn only_an_open_ticket_can_be_closed_test() {
+  let rested = run(working(), [rests_in_review("c1")])
+  let closed = run(rested, [close("c1")])
+  assert engine.apply(closed, close("c1"))
+    == Error(event.TicketEnded(ticket_of("c1")))
+  let stopped =
+    run(rested, [event.PersonStopped(ticket_of("c1"), world_principal())])
+  assert engine.apply(stopped, close("c1"))
+    == Error(event.TicketWithdrawn(ticket_of("c1")))
+  assert engine.apply(rested, close("nobody"))
+    == Error(event.UnknownTicket(ticket_of("nobody")))
+}
+
+// A worker that lets a ticket go has ended it, and its session and slot go
+// with it like any other end.
+pub fn a_dropped_ticket_frees_its_slot_test() {
+  let full = full_with_a_fourth_waiting()
+  let #(dropped, effects) =
+    step(full, event.Reported(ticket_of("c1"), 1, model.Dropped, model.NoHead))
+  assert ticket(dropped, ticket_of("c1")).outcome == Some(model.Abandoned)
+  assert list.contains(effects, StopSession(ticket_of("c1"), 1))
+  assert state.active_assignment(ticket(dropped, ticket_of("c4"))) != None
+}
+
 pub fn a_freed_slot_goes_to_the_waiting_ticket_oldest_person_first_test() {
   let full =
     run(automated(), [

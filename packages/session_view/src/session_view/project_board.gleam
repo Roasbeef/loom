@@ -617,6 +617,26 @@ pub fn answer_refusal_words(code: String) -> String {
   }
 }
 
+/// The words for a refused close. Every code is the daemon's, so only the ones
+/// a client can act on are worded, and any other is shown made safe.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_board.close_refusal_words("not_found")
+///   == "That ticket no longer exists."
+/// ```
+pub fn close_refusal_words(code: String) -> String {
+  case code {
+    "not_found" -> "That ticket no longer exists."
+    "forbidden" -> "Only the owner can close a project's ticket."
+    "bad_request" ->
+      "That ticket cannot be closed: it has ended or was stopped."
+    _ ->
+      "The daemon refused the close (" <> text_hygiene.single_line(code) <> ")."
+  }
+}
+
 /// The words for a delivery state.
 ///
 /// ## Examples

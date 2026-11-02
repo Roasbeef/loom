@@ -164,6 +164,8 @@ pub fn act(
     project_screen.Worker(session) -> open_worker(model, session)
     project_screen.Send(state, ticket, seq, text) ->
       change(model, state, answer(state, ticket, seq, text))
+    project_screen.Accept(state, ticket) ->
+      change(model, state, closing(state, ticket))
     project_screen.Retry(state, ticket) ->
       change(model, state, retry(state, ticket))
   }
@@ -286,6 +288,14 @@ fn answer(
   })
 }
 
+/// The close a key sent, when the screen knows the project.
+fn closing(
+  state: project_screen.State,
+  ticket: String,
+) -> Option(job.ProjectChange) {
+  option.map(state.project, fn(project) { job.CloseTicket(project:, ticket:) })
+}
+
 /// The retry a key sent, when the screen knows the project.
 fn retry(
   state: project_screen.State,
@@ -318,6 +328,13 @@ fn filed(
       project_screen.answered(state)
     job.ProjectChanged(job.AnswerTicket(..), Some(code)) ->
       project_screen.answer_refused(state, code)
+    job.ProjectChanged(job.CloseTicket(..), None) ->
+      project_screen.failed(state, "Ticket closed.")
+    job.ProjectChanged(job.CloseTicket(..), Some(code)) ->
+      project_screen.failed(
+        state,
+        "The daemon refused the close (" <> code <> ").",
+      )
     job.ProjectChanged(job.RetryTicket(..), None) ->
       project_screen.failed(state, "Retry requested.")
     job.ProjectChanged(job.RetryTicket(..), Some(code)) ->

@@ -82,6 +82,11 @@ pub fn the_wire_form_of_one_event_is_pinned_test() {
     == "{\"t\":\"reported\",\"ticket\":\"t-c1\",\"seq\":2,\"report\":{\"kind\":\"waiting\",\"question\":3},\"head\":{\"commit\":\"abc\",\"paths\":\"touched\"}}"
   assert codec.encode(event.RoutedIgnore(TriggerId("x")))
     == "{\"t\":\"routed_ignore\",\"trigger\":\"x\"}"
+  assert codec.encode(event.PersonClosed(
+      TicketId("t-c1"),
+      model.PrincipalId("owner"),
+    ))
+    == "{\"t\":\"person_closed\",\"ticket\":\"t-c1\",\"by\":\"owner\"}"
 }
 
 pub fn the_wire_form_of_the_host_facts_is_pinned_test() {

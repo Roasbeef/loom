@@ -257,6 +257,7 @@ pub fn event() -> Generator(Event) {
     qcheck.map2(ticket_id(), check_result(), event.CheckFinished),
     qcheck.map3(ticket_id(), principal(), commit(), event.PersonPublished),
     qcheck.map2(ticket_id(), principal(), event.PersonStopped),
+    qcheck.map2(ticket_id(), principal(), event.PersonClosed),
     qcheck.map2(ticket_id(), principal(), event.RetryRequested),
     qcheck.map2(
       ticket_id(),

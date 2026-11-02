@@ -225,6 +225,11 @@ pub type Command {
   /// refused. Owner-only.
   AnswerQuestion(project: String, ticket: String, seq: Int, text: String)
 
+  /// A person's close of a ticket whose work they accepted. The ticket ends as
+  /// `closed` and its mandate stands, so a later message can resume it, unlike
+  /// a stop. Owner-only.
+  CloseTicket(project: String, ticket: String)
+
   /// A person's request for a new assignment on a stalled ticket. Owner-only.
   RetryTicket(project: String, ticket: String)
 
@@ -713,6 +718,11 @@ fn decode_fields(
       use seq <- result.try(question_seq_field(fields))
       use text <- result.map(text_field(fields, "text", 32_768))
       AnswerQuestion(project, ticket, seq, text)
+    }
+    "projects.close" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use ticket <- result.map(text_field(fields, "ticket", 128))
+      CloseTicket(project, ticket)
     }
     "projects.retry" -> {
       use project <- result.try(text_field(fields, "project", 64))

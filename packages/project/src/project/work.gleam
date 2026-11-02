@@ -297,6 +297,22 @@ fn stop_sessions(ticket: Ticket) -> List(Effect) {
   }
 }
 
+/// A person accepted the ticket's work and closed it. The ticket ends as
+/// `Closed`, its sessions are stopped and its slots are freed, and the mandate
+/// stands, so a later message on its thread that the router resumes it with
+/// reopens it. That is the whole difference from a stop, which withdraws the
+/// mandate for good.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> Error(TicketEnded(id)) for a ticket that already ended
+/// ```
+pub fn person_closed(current: State, id: TicketId, _by: PrincipalId) -> Step {
+  use ticket <- result.map(open_ticket(current, id))
+  end_ticket(current, ticket, model.Closed)
+}
+
 /// A person's stop command.
 ///
 /// ## Examples
@@ -644,11 +660,15 @@ pub fn reported(
   let moved = apply_head(heard_from, head)
   let #(settled, effects) = apply_report(moved, seq, report, head)
 
-  // A report that ends the ticket frees its slot; any other leaves slots as
-  // they were.
+  // A report that ends the ticket ends its session and frees its slot like
+  // any other end; any other report leaves slots as they were.
   let step = case settled.outcome {
     None -> Ok(#(state.put_ticket(current, settled), effects))
-    Some(_) -> Ok(schedule_after(state.put_ticket(current, settled), effects))
+    Some(outcome) -> {
+      let #(ended, stops) =
+        end_ticket(state.put_ticket(current, settled), settled, outcome)
+      Ok(#(ended, list.append(effects, stops)))
+    }
   }
 
   // A report that carries no head leaves resting to the head the host reads

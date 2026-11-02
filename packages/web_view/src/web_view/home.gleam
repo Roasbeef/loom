@@ -735,6 +735,10 @@ pub type Projects {
     /// question's sequence number as the form was drawn with it, and the text.
     /// The daemon refuses an answer whose number is no longer the open question's.
     answer: fn(String, String, Int, String, fn(feed.Answer) -> Nil) -> Nil,
+    /// Closes a ticket whose work the owner accepted: the project, the ticket and
+    /// the function the daemon's word goes to. The daemon keeps the ticket's
+    /// mandate, so a later message can resume it.
+    close: fn(String, String, fn(feed.Closing) -> Nil) -> Nil,
   )
 }
 
@@ -1086,6 +1090,12 @@ pub type Msg {
 
   /// The daemon answered an answer. It is the effect's own message.
   AnswerSettled(project: String, ticket: String, answer: feed.Answer)
+
+  /// The ticket page's "Close ticket" was pressed: the owner accepts the work.
+  ClosingWork
+
+  /// The daemon's word on a close. It is the effect's own message.
+  CloseSettled(project: String, ticket: String, closing: feed.Closing)
 
   /// A row's "Where" was pressed: open its detail. The orchestrator's key and
   /// the session are the group's and the row's, fixed when the tree was drawn,
@@ -1943,6 +1953,33 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         | SessionList, _, _
         | Relayed(_), _, _
         -> #(model, effect.none())
+      }
+
+    // The close button asks the daemon once, and the box is busy until it
+    // answers. Only a connected page with the capability asks.
+    ClosingWork ->
+      case model.pane, model.start.projects, model.status {
+        Ticketed(open), Some(Projects(close:, ..)), Connected ->
+          closing(model, open, close)
+        Ticketed(_), Some(_), Connecting
+        | Ticketed(_), Some(_), Ended(_)
+        | Ticketed(_), None, _
+        | NewSession, _, _
+        | SessionList, _, _
+        | Relayed(_), _, _
+        -> #(model, effect.none())
+      }
+
+    // The daemon's word on a close, and then the read that shows the ticket as
+    // it now stands.
+    CloseSettled(project:, ticket:, closing:) ->
+      case model.pane {
+        Ticketed(open) if open.project == project && open.ticket == ticket ->
+          close_settled(model, open, closing)
+        Ticketed(_) | NewSession | SessionList | Relayed(_) -> #(
+          model,
+          effect.none(),
+        )
       }
 
     // The daemon's word on an answer. A recorded one leaves an empty box, and a
@@ -3542,6 +3579,61 @@ fn answering(
   }
 }
 
+/// Sends a close, unless one is already out.
+fn closing(
+  model: Model,
+  open: OpenTicket,
+  close: fn(String, String, fn(feed.Closing) -> Nil) -> Nil,
+) -> #(Model, Effect(Msg)) {
+  // A page already closing asks nothing more.
+  case open.asking {
+    projects_view.Sending -> #(model, effect.none())
+    projects_view.Ready -> #(
+      Model(
+        ..model,
+        pane: Ticketed(
+          OpenTicket(..open, asking: projects_view.Sending, notice: None),
+        ),
+      ),
+      {
+        use dispatch <- effect.from
+        close(open.project, open.ticket, fn(outcome) {
+          dispatch(CloseSettled(open.project, open.ticket, outcome))
+        })
+      },
+    )
+  }
+}
+
+/// What the daemon's word on a close changes, and the read that follows it.
+fn close_settled(
+  model: Model,
+  open: OpenTicket,
+  closing: feed.Closing,
+) -> #(Model, Effect(Msg)) {
+  // Either way the daemon has judged the close, so the page is ready again.
+  let next = case closing {
+    feed.Closed ->
+      OpenTicket(
+        ..open,
+        asking: projects_view.Ready,
+        notice: Some(projects_view.Told("Ticket closed.")),
+      )
+    feed.NotClosed(code:) ->
+      OpenTicket(
+        ..open,
+        asking: projects_view.Ready,
+        notice: Some(projects_view.Refusal(board.close_refusal_words(code))),
+      )
+  }
+
+  reading_ticket(
+    Model(..model, pane: Ticketed(next)),
+    open.project,
+    open.ticket,
+  )
+}
+
 /// What the daemon's word on an answer changes, and the read that follows it.
 fn settled(
   model: Model,
@@ -3912,8 +4004,21 @@ fn ticket_page(model: Model, open: OpenTicket) -> Element(Msg) {
         answered: open.answered,
         back: ClosingTicket,
         answer: Answering,
+        close: closable(ticket, model),
         worker: option.then(ticket.session, worker_press(model, _)),
       ))
+  }
+}
+
+/// The press that closes a ticket, when the page may ask the daemon and the
+/// ticket is still open. An ended ticket has nothing to close, so no button
+/// could only be refused.
+fn closable(ticket: board.Ticket, model: Model) -> Option(Msg) {
+  case ticket.stage, model.start.projects, model.start.ceiling {
+    board.Ended(..), _, _ -> None
+    _, None, _ -> None
+    _, Some(_), ObserverCeiling -> None
+    _, Some(_), OperatorCeiling -> Some(ClosingWork)
   }
 }
 

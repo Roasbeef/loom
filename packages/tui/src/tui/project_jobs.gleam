@@ -102,6 +102,10 @@ pub fn change(
       #("seq", json.Int(seq)),
       #("text", json.String(text)),
     ])
+    job.CloseTicket(project:, ticket:) -> #("projects.close", [
+      #("project", json.String(project)),
+      #("ticket", json.String(ticket)),
+    ])
     job.RetryTicket(project:, ticket:) -> #("projects.retry", [
       #("project", json.String(project)),
       #("ticket", json.String(ticket)),

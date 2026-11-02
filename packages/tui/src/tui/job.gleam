@@ -285,6 +285,10 @@ pub type ProjectChange {
   /// An answer to the ticket's open question, echoing its sequence number.
   AnswerTicket(project: String, ticket: String, seq: Int, text: String)
 
+  /// The person accepted the ticket's work and closes it. The ticket ends as
+  /// closed and its mandate stands, so a later message can resume it.
+  CloseTicket(project: String, ticket: String)
+
   /// A request for a new assignment on a stalled ticket.
   RetryTicket(project: String, ticket: String)
 }

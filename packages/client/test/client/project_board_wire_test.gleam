@@ -107,6 +107,10 @@ pub fn the_four_request_frames_decode_to_their_commands_test() {
     )
     == Ok(protocol.Request(6, protocol.RetryTicket("p1", "t-a")))
   assert protocol.decode(
+      "{\"v\":2,\"id\":8,\"cmd\":\"projects.close\",\"body\":{\"project\":\"p1\",\"ticket\":\"t-a\"}}",
+    )
+    == Ok(protocol.Request(8, protocol.CloseTicket("p1", "t-a")))
+  assert protocol.decode(
       "{\"v\":2,\"id\":7,\"cmd\":\"projects.requeue\",\"body\":{\"project\":\"p1\",\"trigger\":\"tr-1\"}}",
     )
     == Ok(protocol.Request(7, protocol.RequeueTrigger("p1", "tr-1")))
@@ -218,7 +222,35 @@ pub fn retry_and_requeue_are_refused_by_the_engine_not_by_the_wire_test() {
   stop(handle)
 }
 
+// A close ends the ticket as closed and leaves its mandate, and it works once:
+// a second close finds the ticket ended and says so in words.
+pub fn a_close_ends_the_ticket_and_a_second_is_refused_test() {
+  let handle = start("close")
+  let _seq = asking(handle)
+
+  let assert Ok(Nil) = project_host.close_ticket(handle, "t-a", "owner")
+  let assert Ok(detail) = project_host.ticket(handle, "t-a")
+  let text = json.to_string(detail)
+  assert string.contains(text, "\"stage\":\"ended/closed\"")
+  let assert Error(reason) = project_host.close_ticket(handle, "t-a", "owner")
+  assert string.contains(reason, "ended")
+  let assert Error(unknown) = project_host.close_ticket(handle, "t-x", "owner")
+  assert string.contains(unknown, "t-x")
+  stop(handle)
+}
+
 // --- the page's feed ---------------------------------------------------------
+
+pub fn the_feed_closes_a_ticket_and_says_so_when_it_cannot_test() {
+  let handle = start("feed-close")
+  let _ = asking(handle)
+  let assert Some(feed) = ui_projects.feed(Some(controlled(handle)))
+
+  assert feed.close("p1", "t-a") == page_projects.Closed
+  assert feed.close("p1", "t-a") == page_projects.NotClosed("bad_request")
+  assert feed.close("nope", "t-a") == page_projects.NotClosed("not_found")
+  stop(handle)
+}
 
 fn controlled(handle: project_host.Handle) -> project_start.Control {
   let assert Ok(book) = project_book.start() as "the table starts"

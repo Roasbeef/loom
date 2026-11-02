@@ -83,7 +83,7 @@ pub type Focus {
   /// Typing writes the answer to the worker's question.
   Answering
 
-  /// Letters are actions: open the worker's session, retry.
+  /// Letters are actions: open the worker's session, close, retry.
   Acting
 }
 
@@ -156,6 +156,9 @@ pub type Action {
 
   /// Send an answer to the ticket's question, echoing its sequence number.
   Send(state: State, ticket: String, seq: Int, text: String)
+
+  /// Close the ticket: the person accepted its work.
+  Accept(state: State, ticket: String)
 
   /// Ask for a new assignment on the ticket.
   Retry(state: State, ticket: String)
@@ -518,6 +521,20 @@ fn acting(key: keys.Key, state: State, ticket: String) -> Action {
         Some(session) -> Worker(session)
         None ->
           Continue(State(..state, notice: "No worker session is bound yet."))
+      }
+    keys.Char("c"), Some(found) ->
+      case found.stage {
+        board.Ended(_) ->
+          Continue(State(..state, notice: "That ticket has already ended."))
+        board.PersonDelivery
+        | board.PersonAnswer
+        | board.PersonReview
+        | board.PersonBlocked
+        | board.PersonFailed
+        | board.Queued
+        | board.Idle
+        | board.Working
+        | board.UnknownStage(_) -> Accept(state, ticket)
       }
     keys.Char("t"), Some(found) ->
       case found.stage {
@@ -1079,7 +1096,7 @@ fn help_line(state: State, width: Int) -> span.Line {
     Reading(focus: Answering, ..) ->
       "type an answer · Enter send · Tab actions · Esc clear or back"
     Reading(focus: Acting, ..) ->
-      "o open worker · t retry · Tab answer · Esc back"
+      "o open worker · c close · t retry · Tab answer · Esc back"
   }
 
   span.line_new([

@@ -390,6 +390,7 @@ pub opaque type Message {
   ReadCounts(reply: Subject(List(#(String, Int))))
   ReadLive(reply: Subject(List(String)))
   StopTicket(ticket: String, by: String, reply: Subject(Result(Nil, String)))
+  CloseTicket(ticket: String, by: String, reply: Subject(Result(Nil, String)))
   ReadTicket(ticket: String, reply: Subject(Result(JsonValue, Nil)))
   AnswerQuestion(
     ticket: String,
@@ -686,6 +687,23 @@ pub fn stop_ticket(
   |> result.flatten
 }
 
+/// A person's close of one ticket: they accepted the work. Unlike a stop the
+/// mandate stands, so a later message can resume the ticket.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_host.close_ticket(handle, "t-c1", "owner")
+/// ```
+pub fn close_ticket(
+  handle: Handle,
+  ticket: String,
+  by: String,
+) -> Result(Nil, String) {
+  ask(handle, CloseTicket(ticket, by, _))
+  |> result.flatten
+}
+
 /// Hands the actor a person's turn typed into a worker. It is a cast: the
 /// scanner that reads the worker's log does not wait on the ledger, and the
 /// entry id keeps a repeat from recording a second turn.
@@ -912,6 +930,11 @@ fn handle(host: Host, message: Message) -> actor.Next(Host, Message) {
     }
     StopTicket(ticket, by, reply) -> {
       let #(next, answer) = stop_now(host, ticket, by)
+      process.send(reply, answer)
+      actor.continue(perform_due(next))
+    }
+    CloseTicket(ticket, by, reply) -> {
+      let #(next, answer) = close_now(host, ticket, by)
       process.send(reply, answer)
       actor.continue(perform_due(next))
     }
@@ -1460,6 +1483,24 @@ fn stop_now(
   }
 }
 
+/// Forwards a person's close to the engine, which decides whether the ticket is
+/// open. A refusal comes back as text for the caller.
+fn close_now(
+  host: Host,
+  ticket: String,
+  by: String,
+) -> #(Host, Result(Nil, String)) {
+  case
+    commit(
+      host,
+      event.PersonClosed(model.TicketId(ticket), model.PrincipalId(by)),
+    )
+  {
+    Ok(next) -> #(next, Ok(Nil))
+    Error(failure) -> #(host, Error(not_committed_text(failure)))
+  }
+}
+
 /// A person's turn typed into a worker becomes an explicit trigger on the
 /// ticket's own thread, keyed by the entry that carried it. The key is what
 /// makes a scanner that reads the same entry twice record one turn.
@@ -1800,6 +1841,7 @@ fn rested_session(ticket: Ticket, seq: Int) -> Option(String) {
 /// from a rested assignment keeps that assignment's clone, so the clone is
 /// named by the first assignment bound to the session.
 fn tree_seq(ticket: Ticket, seq: Int) -> Int {
+  // An assignment the ticket does not hold has no session to share.
   let session = case
     list.find(ticket.assignments, fn(each) { each.seq == seq })
   {

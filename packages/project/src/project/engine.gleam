@@ -91,6 +91,7 @@ pub fn apply(current: State, incoming: Event) -> Step {
     event.PersonPublished(ticket, by, commit) ->
       work.person_published(current, ticket, by, commit)
     event.PersonStopped(ticket, by) -> work.person_stopped(current, ticket, by)
+    event.PersonClosed(ticket, by) -> work.person_closed(current, ticket, by)
     event.RetryRequested(ticket, _) -> work.retry(current, ticket)
     event.PullRequestOpened(ticket, pull_request) ->
       work.pull_request_opened(current, ticket, pull_request)

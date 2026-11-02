@@ -1019,6 +1019,11 @@ pub fn upgrade_home(
               answer_for(standing, open, feed, project, ticket, seq, text)
             })
           },
+          close: fn(project, ticket, deliver) {
+            read_task(deliver, fn() {
+              close_for(standing, open, feed, project, ticket)
+            })
+          },
         ),
       )
     })
@@ -3794,6 +3799,30 @@ pub fn answer_for(
   case authorized_owner(standing, open) {
     Ok(_) -> feed.answer(project, ticket, seq, text)
     Error(_) -> page_projects.Refused("forbidden")
+  }
+}
+
+/// Closes a ticket for the owner's page. The owner check runs first, as for an
+/// answer, and a page that fails it closes nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.close_for(standing, open, feed, "p1", "t-a")
+/// ```
+@internal
+pub fn close_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  feed: ui_projects.Feed,
+  project: String,
+  ticket: String,
+) -> page_projects.Closing {
+  // The check comes before the actor, so a page that may not close writes
+  // nothing to a project's ledger.
+  case authorized_owner(standing, open) {
+    Ok(_) -> feed.close(project, ticket)
+    Error(_) -> page_projects.NotClosed("forbidden")
   }
 }
 

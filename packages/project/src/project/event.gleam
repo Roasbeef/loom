@@ -231,6 +231,15 @@ pub type Event {
     by: PrincipalId,
   )
 
+  /// A person accepted a ticket's work and closed it. Unlike a stop, the
+  /// mandate stands, so the ticket can be resumed.
+  PersonClosed(
+    /// The ticket.
+    ticket: TicketId,
+    /// Who closed it.
+    by: PrincipalId,
+  )
+
   /// A person asked for a new assignment on a stalled ticket.
   RetryRequested(
     /// The ticket.

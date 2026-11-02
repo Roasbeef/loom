@@ -537,6 +537,31 @@ pub fn the_actions_open_the_workers_session_test() {
   assert opened
 }
 
+// c closes the ticket the person accepted. It sends one change that names the
+// project and the ticket, and the line the screen shows says what happened.
+pub fn c_closes_the_ticket_from_the_actions_test() {
+  let acting = press(on_ticket(), "tab")
+  let assert Some(daemon) = acting.view.daemon_host
+  let #(sent, effects) = stepping.step(backend.KeyPress("c"), acting)
+
+  assert control_jobs(effects)
+    == [
+      job.Control(
+        daemon.control,
+        job.ChangeProject(job.CloseTicket("p1", "t-ask")),
+      ),
+    ]
+  let settled =
+    deliver(sent, job.ProjectChanged(job.CloseTicket("p1", "t-ask"), None))
+  assert string.contains(painted(settled), "Ticket closed.")
+  let refused =
+    deliver(
+      sent,
+      job.ProjectChanged(job.CloseTicket("p1", "t-ask"), Some("bad_request")),
+    )
+  assert string.contains(painted(refused), "The daemon refused the close")
+}
+
 pub fn escape_clears_a_draft_then_leaves_the_ticket_then_the_screen_test() {
   let typed = tui.update(backend.Paste("sqlite"), on_ticket())
   let cleared = press(typed, "esc")

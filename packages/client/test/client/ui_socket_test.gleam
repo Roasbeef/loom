@@ -2006,6 +2006,7 @@ pub fn only_an_owners_operating_home_is_handed_the_projects_capability_test() {
       boards: fn(_) { Nil },
       ticket: fn(_, _, _) { Nil },
       answer: fn(_, _, _, _, _) { Nil },
+      close: fn(_, _, _) { Nil },
     )
   let owner = home_principal(access.OwnerPrincipal)
   let member = home_principal(access.MemberPrincipal)

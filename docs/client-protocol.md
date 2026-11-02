@@ -1828,6 +1828,7 @@ engine's own spelling of a stage, and a client displays it and never derives it.
 | `projects.board` | yes | `project` (string, required), `page` (integer, optional, zero-based) | `projects.board` |
 | `projects.post` | no | `project`, `request_id` (at most 64 of letters, digits, `_`, `-`, `.`), `text` (string, required) | `projects.post` |
 | `projects.stop` | no | `project`, `ticket` (strings, required) | `projects.stop` |
+| `projects.close` | no | `project`, `ticket` (strings, required) | `projects.close` |
 | `projects.ticket` | yes | `project`, `ticket` (strings, required) | `projects.ticket` |
 | `projects.answer` | no | `project`, `ticket` (strings), `seq` (integer, required), `text` (string, required, at most 32768 bytes) | `projects.answer` |
 | `projects.retry` | no | `project`, `ticket` (strings, required) | `projects.retry` |
@@ -1885,6 +1886,8 @@ post or stop), `forbidden` (a member principal), `unavailable`.
     "actor":"owner","text":"fix a"}]}}
 {"v":2,"id":11,"cmd":"projects.answer","body":{"project":"p1","ticket":"t-a","seq":9,"text":"sqlite"}}
 {"v":2,"event":"projects.answer","reply_to":11,"body":{"ticket":"t-a","seq":9}}
+{"v":2,"id":14,"cmd":"projects.close","body":{"project":"p1","ticket":"t-a"}}
+{"v":2,"event":"projects.close","reply_to":14,"body":{"ticket":"t-a"}}
 {"v":2,"id":12,"cmd":"projects.retry","body":{"project":"p1","ticket":"t-a"}}
 {"v":2,"event":"projects.retry","reply_to":12,"body":{"ticket":"t-a"}}
 {"v":2,"id":13,"cmd":"projects.requeue","body":{"project":"p1","trigger":"tr-1"}}
@@ -1893,7 +1896,7 @@ post or stop), `forbidden` (a member principal), `unavailable`.
 
 `projects.ticket` replies the ticket record, its `assignments` newest first as
 `{seq, session, status}` (`status` is `pending`, `running`, `done/exited` or
-`done/crashed`, and `session` is `null` until the host binds one), and its `inputs`:
+`done/crashed` or `done/rested`, and `session` is `null` until the host binds one), and its `inputs`:
 the messages on the ticket's opening thread, oldest first and at most the newest 20, each
 `{trigger, delivery, source, actor, text}`. `delivery` is `delivered`, `waiting` (queued for
 a session), `failed` (never reached the worker) or `recorded` (the gate did not admit it).
@@ -1922,6 +1925,15 @@ page, or `null`, and `text` is external), and `sources`, one record per configur
 `{source, interval_s, last_poll_ms, next_poll_ms, note, shed, rules:[{name, mode}]}`. `note` is empty
 when the last pass ran clean and otherwise says what it could not read or when a rate limit ends. `shed`
 counts triggers that overload shed, which a person can queue again with `projects.requeue`.
+
+`projects.close` records that the owner accepted a ticket's work. It is not a stop. A stop
+withdraws the ticket's mandate, so the ticket can never resume; a close ends the ticket as
+`ended/closed`, stops its session, frees its slot and keeps the mandate, so a later message that
+the router resumes the ticket with reopens it. It replies an echo, and is refused `bad_request` for
+a ticket that already ended or that a person stopped, and `not_found` for an unknown project or
+ticket. A worker whose work waits for a person is idle, so its assignment ends as `done/rested`
+and frees its slot while the session and its clone stay; a message to the ticket starts a new
+assignment in the same session.
 
 `projects.publish` publishes a ticket's current commit past a failing or missing check. It is
 recorded with the principal, it is the owner's alone, and no tool a model holds reaches it. It

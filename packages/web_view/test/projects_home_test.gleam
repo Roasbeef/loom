@@ -142,6 +142,7 @@ type Asked {
   ReadBoards
   ReadTicket(project: String, ticket: String)
   Answered(project: String, ticket: String, seq: Int, text: String)
+  Accepted(project: String, ticket: String)
 }
 
 fn projects_with(
@@ -162,6 +163,10 @@ fn projects_with(
     answer: fn(project, id, seq, text, deliver) {
       process.send(asked, Answered(project, id, seq, text))
       deliver(answer(project, id, seq, text))
+    },
+    close: fn(project, id, deliver) {
+      process.send(asked, Accepted(project, id))
+      deliver(feed.Closed)
     },
   )
 }
@@ -490,6 +495,72 @@ pub fn a_stale_answer_is_refused_and_said_in_words_test() {
   )
   assert !string.contains(html, "Answer queued for the worker.")
   assert list.contains(drain(asked), Answered("p1", "t-ask", 9, "sqlite"))
+}
+
+// The owner who accepts a ticket's work closes it from the ticket page. The
+// daemon is asked once, and the ticket is read again to show where it stands.
+pub fn closing_a_ticket_asks_the_daemon_once_and_reads_it_again_test() {
+  let #(start, asked) = serving(board_body(12, [asking("t-ask", 9, "pick")]))
+  let model = run(opened(start), home.OpeningTicket("p1", "t-ask"))
+  let _ = drain(asked)
+  assert string.contains(drawn(model), "Close ticket")
+
+  let after = run(model, home.ClosingWork)
+  assert drain(asked) == [Accepted("p1", "t-ask"), ReadTicket("p1", "t-ask")]
+  assert string.contains(drawn(after), "Ticket closed.")
+}
+
+// A refused close is said in words and keeps the page where it was.
+pub fn a_refused_close_is_said_in_words_test() {
+  let asked = process.new_subject()
+  let projects =
+    home.Projects(
+      boards: fn(deliver) {
+        deliver(listed(board_body(12, [asking("t-ask", 9, "pick")])))
+      },
+      ticket: fn(_, _, deliver) { deliver(feed.TicketHeard(detail(9))) },
+      answer: fn(_, _, _, _, deliver) { deliver(feed.Recorded) },
+      close: fn(project, id, deliver) {
+        process.send(asked, Accepted(project, id))
+        deliver(feed.NotClosed("bad_request"))
+      },
+    )
+  let model =
+    run(opened(start_with(Some(projects))), home.OpeningTicket("p1", "t-ask"))
+
+  let after = run(model, home.ClosingWork)
+  assert string.contains(
+    drawn(after),
+    "That ticket cannot be closed: it has ended or was stopped.",
+  )
+}
+
+// An ended ticket has nothing to close, so the page draws no button for it.
+pub fn an_ended_ticket_has_no_close_button_test() {
+  let done = ticket("t-done", "ended/closed", 1000, "done")
+  let projects =
+    home.Projects(
+      boards: fn(deliver) { deliver(listed(board_body(12, [done]))) },
+      ticket: fn(_, _, deliver) {
+        deliver(
+          feed.TicketHeard(
+            json.Object([
+              #("project", json.String("p1")),
+              #("revision", json.Int(12)),
+              #("ticket", done),
+              #("assignments", json.Array([])),
+              #("inputs", json.Array([])),
+            ]),
+          ),
+        )
+      },
+      answer: fn(_, _, _, _, deliver) { deliver(feed.Recorded) },
+      close: fn(_, _, deliver) { deliver(feed.Closed) },
+    )
+  let model =
+    run(opened(start_with(Some(projects))), home.OpeningTicket("p1", "t-done"))
+  assert string.contains(drawn(model), "t-done")
+  assert !string.contains(drawn(model), "Close ticket")
 }
 
 pub fn back_returns_to_the_composer_or_the_list_test() {
