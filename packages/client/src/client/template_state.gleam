@@ -16,8 +16,8 @@
 ////
 //// `start` → `building` → `built` or `unchanged` or `failed`
 ////
-//// 1. `start` gives a project with `setup` the state `Preparing`, and a
-////    project without it `Unmanaged`, which changes nothing about how workers
+//// 1. `start` gives a project with a setup command the state `Preparing`, and
+////    a project without one `Unmanaged`, which changes nothing about how workers
 ////    and checks start.
 //// 2. `building` marks a build under way. From `Ready` it is a rebuild, and the
 ////    last good template stays in use.
@@ -368,7 +368,9 @@ pub fn note(standing: Standing) -> Option(String) {
   }
 }
 
+/// The words for the step that failed, with the first line of what it printed.
 fn stage_words(failure: Failure) -> String {
+  // Each step says in words what was being done when it failed.
   let what = case failure.stage {
     project_template.Cutting -> "the host could not make the template tree"
     project_template.Setup -> "the setup command failed"
@@ -376,7 +378,8 @@ fn stage_words(failure: Failure) -> String {
   }
 
   // The first line of the output is the exit status or the reason the step did
-  // not run, and the rest is on the row beside the note.
+  // not run, and the rest is on the row beside the note. An empty output adds
+  // nothing to say.
   case string.split(failure.output, "\n") {
     [first, ..] if first != "" -> what <> ": " <> string.slice(first, 0, 200)
     _ -> what

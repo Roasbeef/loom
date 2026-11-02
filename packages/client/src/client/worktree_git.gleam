@@ -256,8 +256,9 @@ pub fn run_program(
   cleared(git, program, call.arguments, call, within_ms)
 }
 
-// One sandboxed call: the policy is built from the call's directory and
-// writable roots, and the argument list is whole, program excluded.
+/// Clears and runs one call in the sandbox, with the program and its whole
+/// argument list given. The policy comes from the call's directory and
+/// writable roots, and the answer is how the program ended.
 fn cleared(
   git: Git,
   program: String,
@@ -365,8 +366,9 @@ pub fn setup_runner(git: Git, directory: String) -> goalcheck.Runner {
   )
 }
 
-// The runner both commands share. They differ in the network and the limits,
-// which the caller chooses, and in nothing the masks or the environment cover.
+/// The runner a check and a setup share. They differ in the network and the
+/// limits, which the caller chooses, and in nothing the masks or the
+/// environment cover.
 fn runner(
   git: Git,
   directory: String,
