@@ -1767,12 +1767,44 @@ pub fn removal_words_its_revoke_refusal_without_force_test() {
   assert string.ends_with(worded, "Nothing was signed and nothing was removed.")
 }
 
-pub fn an_undelivered_entry_is_a_warning_and_not_a_failure_test() {
-  assert vm_spec.undelivered_warning(Ok("the daemon on this host")) == None
-  let assert Some(warning) =
-    vm_spec.undelivered_warning(Error("no daemon took entry 3"))
-  assert string.starts_with(warning, "warning: ")
-  assert string.contains(warning, "no daemon took entry 3")
+pub fn an_undelivered_entry_fails_the_join_and_names_the_way_on_test() {
+  assert vm_spec.undelivered_refusal(
+      Ok("the daemon"),
+      "/b/vm2.loombundle",
+      "vm2",
+    )
+    == Ok(Nil)
+  let assert Error(reason) =
+    vm_spec.undelivered_refusal(
+      Error("no daemon took entry 3; run `loom distribution import FILE`."),
+      "/b/vm2.loombundle",
+      "vm2",
+    )
+  assert string.contains(reason, "/b/vm2.loombundle")
+  assert string.contains(reason, "loom distribution import")
+  assert string.contains(reason, "loom vm up --name vm2")
+  assert string.contains(reason, "No guest was booted")
+}
+
+pub fn a_guest_the_daemon_has_not_learned_or_has_revoked_does_not_resume_test() {
+  let enrolled =
+    membership_ledger.Enrolled(member: member_of(minted_ledger("dev"), "dev"))
+  assert vm_spec.resume_refusal("vm2", "/h/loom.toml", Ok(enrolled)) == Ok(Nil)
+  assert vm_spec.resume_refusal("vm2", "/h/loom.toml", Error(Nil)) == Ok(Nil)
+
+  let assert Error(revoked) =
+    vm_spec.resume_refusal("vm2", "/h/loom.toml", Ok(membership_ledger.Revoked))
+  assert string.contains(revoked, "loom vm rm --name vm2")
+
+  // The entry never reached the daemon: import, then up again.
+  let assert Error(unknown) =
+    vm_spec.resume_refusal(
+      "vm2",
+      "/h/loom.toml",
+      Ok(membership_ledger.NotEnrolled),
+    )
+  assert string.contains(unknown, "loom distribution import")
+  assert string.contains(unknown, "loom vm up --name vm2")
 }
 
 pub fn a_member_the_copy_records_as_revoked_is_done_test() {
@@ -1804,6 +1836,14 @@ pub fn a_member_the_copy_records_as_revoked_is_done_test() {
     )
   assert ledger_cli.is_revoked(authority, "other")
   assert !ledger_cli.is_revoked(authority, "dev")
+
+  // The copy's text, read the way the daemon's installed ledger is, says the
+  // same: revoked for the one, enrolled for the other.
+  let assert Ok(text) = simplifile.read(directory <> "/ledger.log")
+  assert vm_spec.standing(made.authority.certificate, text, "other")
+    == Ok(membership_ledger.Revoked)
+  let assert Ok(membership_ledger.Enrolled(..)) =
+    vm_spec.standing(made.authority.certificate, text, "dev")
   let assert Ok(Nil) = simplifile.delete_all([home])
 }
 

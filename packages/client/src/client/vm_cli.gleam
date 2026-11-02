@@ -893,9 +893,10 @@ fn deployment(
 }
 
 /// Refuses to resume a joined guest that the daemon's installed ledger records
-/// as revoked, which would otherwise boot and serve nothing. A configuration
-/// with no readable ledger, or one that does not replay against the guest's
-/// certificate authority, says nothing and the resume goes on.
+/// as revoked, or does not hold at all (`vm_spec.resume_refusal`): it would
+/// boot and serve nothing. A configuration with no readable ledger, or one that
+/// does not replay against the guest's certificate authority, says nothing and
+/// the resume goes on.
 fn refuse_revoked(config: String, executor: Bundle) -> Result(Nil, String) {
   // With no installed ledger there is nothing to read the standing from.
   let standing = case installed_ledger(config) {
@@ -903,21 +904,7 @@ fn refuse_revoked(config: String, executor: Bundle) -> Result(Nil, String) {
     None -> Error(Nil)
   }
 
-  // Only a revocation is a reason; any other answer is the resume's as before.
-  case standing {
-    Ok(membership_ledger.Revoked) ->
-      Error(
-        "the guest "
-        <> executor.name
-        <> " was revoked from the deployment of "
-        <> config
-        <> ", so its executor would not be trusted. Remove it with `loom vm "
-        <> "rm --name "
-        <> executor.name
-        <> "`, and run `loom vm up` for a new guest.",
-      )
-    _ -> Ok(Nil)
-  }
+  vm_spec.resume_refusal(executor.name, config, standing)
 }
 
 /// Decides, for a guest with no bundles, between minting, joining and refusing.
@@ -1062,11 +1049,13 @@ fn join(
   // did, as `loom distribution enroll` leaves it.
   case signed, existed {
     Ok(signed), _ -> {
-      // A daemon that did not take the entry is a warning; the join stands.
-      case vm_spec.undelivered_warning(ledger_cli.delivered(signed)) {
-        Some(warning) -> io.println_error(warning)
-        None -> Nil
-      }
+      // A daemon that did not take the entry fails the join, and the bundle
+      // stays: it holds the only copy of the node's key.
+      use Nil <- result.try(vm_spec.undelivered_refusal(
+        ledger_cli.delivered(signed),
+        path,
+        names.name,
+      ))
 
       read_bundle(path, names.executor_node)
       |> result.map(fn(executor) { Reused(None, executor) })
@@ -3629,13 +3618,35 @@ fn revoke_membership(
 
       // A guest the operator's copy already records as revoked is done: the
       // fold would refuse the entry, and the removal must not be stuck on it.
-      case ledger_cli.is_revoked(authority, name) {
+      case revoked_already(plan.config, directory, authority, name) {
         True ->
           Ok([name <> " is already revoked in the ledger; nothing signed."])
         False -> signed_revoke(authority, name)
       }
     }
   }
+}
+
+/// Whether `name` is already revoked, in the operator's copy of the ledger or
+/// in the installed ledger of the daemon, which may hold a revoke the copy has
+/// not yet caught up with.
+fn revoked_already(
+  config: String,
+  directory: String,
+  authority: ledger_cli.Authority,
+  name: String,
+) -> Bool {
+  // The daemon's ledger is read against the authority's own certificate.
+  let in_daemon = case
+    installed_ledger(config),
+    read_text(directory <> "/ca.pem")
+  {
+    Some(text), Ok(ca) ->
+      vm_spec.standing(ca, text, name) == Ok(membership_ledger.Revoked)
+    _, _ -> False
+  }
+
+  in_daemon || ledger_cli.is_revoked(authority, name)
 }
 
 /// Signs the revoke of `name` and words what happened.

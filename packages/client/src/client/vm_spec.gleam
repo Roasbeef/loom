@@ -1938,19 +1938,81 @@ pub fn rm_revoke_refusal(reason: String) -> String {
   )
 }
 
-/// The warning for a join whose entry no daemon took, or `None` when one did.
-/// The bundle stays and the join succeeds, as `loom distribution enroll` does:
-/// the entry is signed and the bundle holds the only copy of the node's key.
+/// What a join answers when the daemon did not take the entry it was handed
+/// (`delivery`, from `ledger_cli.delivered`). The entry is signed and the
+/// bundle at `bundle` holds the only copy of the node's key, so the bundle is
+/// kept, but the daemon never learned the member and would not derive its row,
+/// so the join fails and no guest boots. The words name the bundle, and the
+/// import that gives the daemon the entry, after which `up` resumes from the
+/// bundle. A delivered entry is `Ok`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert vm_spec.undelivered_warning(Ok("the daemon")) == None
+/// assert vm_spec.undelivered_refusal(Ok("the daemon"), "/b", "vm2") == Ok(Nil)
 /// ```
-pub fn undelivered_warning(delivery: Result(String, String)) -> Option(String) {
+pub fn undelivered_refusal(
+  delivery: Result(String, String),
+  bundle: String,
+  name: String,
+) -> Result(Nil, String) {
   case delivery {
-    Ok(_) -> None
-    Error(sentence) -> Some("warning: " <> sentence)
+    Ok(_) -> Ok(Nil)
+    Error(sentence) ->
+      Error(
+        name
+        <> " is enrolled, but "
+        <> sentence
+        <> " Its bundle is kept at "
+        <> bundle
+        <> ". After the import, run `loom vm up --name "
+        <> name
+        <> "` again, which resumes the guest from it. No guest was booted.",
+      )
+  }
+}
+
+/// What resuming a joined guest does given where the daemon's installed ledger
+/// puts it (`standing`). A revoked guest would not be trusted, and one the
+/// ledger does not hold yet is one whose entry never reached the daemon, which
+/// would not derive its row; both are refused and neither boots. Any other
+/// answer, including an unreadable ledger, lets the resume go on.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.resume_refusal("vm2", "/h/loom.toml", Error(Nil)) == Ok(Nil)
+/// ```
+pub fn resume_refusal(
+  name: String,
+  config: String,
+  standing: Result(membership_ledger.Enrollment, Nil),
+) -> Result(Nil, String) {
+  case standing {
+    Ok(membership_ledger.Revoked) ->
+      Error(
+        "the guest "
+        <> name
+        <> " was revoked from the deployment of "
+        <> config
+        <> ", so its executor would not be trusted. Remove it with `loom vm "
+        <> "rm --name "
+        <> name
+        <> "`, and run `loom vm up` for a new guest.",
+      )
+    Ok(membership_ledger.NotEnrolled) ->
+      Error(
+        "the deployment of "
+        <> config
+        <> " does not hold the guest "
+        <> name
+        <> " yet, so its daemon would not derive the guest's row. Run "
+        <> "`loom distribution import FILE` with the operator's copy of the "
+        <> "ledger, then `loom vm up --name "
+        <> name
+        <> "` again.",
+      )
+    Ok(membership_ledger.Enrolled(..)) | Error(Nil) -> Ok(Nil)
   }
 }
 
