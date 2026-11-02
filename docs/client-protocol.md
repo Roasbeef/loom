@@ -1854,11 +1854,13 @@ saw the ticket), where `stage` is one of
 host's check has judged the head and then `{commit, outcome}` with `outcome` one of `passed`,
 `failed` or `overridden` (a person published past the check), `review` is `null` or the host's
 sentence for why a ticket waits for a person although its work may be done (no check is
-configured, the check gave no result, publishing is off, the branch could not be published, or the
-change touched a protected path), and `question` is `null` or `{seq, text, options}`.
-`kept_worktrees` is a list, empty unless a worker's worktree stayed after its ticket
-ended because it held commits its base lacks, and then each entry is
-`{seq, path, reason}`. `replies`
+configured, the check gave no result, publishing is off, the branch could not be published, the host
+repository would not take the worker's commit in, or the change touched a protected path), and `question` is `null` or `{seq, text, options}`.
+`kept_worktrees` is a list, empty unless a worker's clone stayed after its ticket
+ended because it held changes, or refs naming objects the host repository had not taken
+in, and then each entry is `{seq, path, reason}`. The clone is the worker's, so its
+configuration and hooks are the worker's: a person should fetch from the ticket's refs
+(`refs/tickets/<ticket>/<commit>`) in the project's `host.git` and not run Git inside the clone. `replies`
 holds the router's queued replies on page zero. `unrouted` holds, on page zero, the messages the
 router was offered three times and decided nothing about, each `{trigger, source, actor, text,
 reason, at_ms}` with `text` cut at 2000 characters; they are never offered again until a person

@@ -225,9 +225,64 @@ mention, link or reorder text, and prefixed with the ticket's id. The body is bu
 facts: the ticket, the commit, the check command's digest and the ledger entry of the run. The
 host looks for an open pull request from the branch before it creates one.
 
-**What it costs.** The repository's `.git/config` is a file a worker's sandbox may be able to
-write, because a worktree shares its repository's configuration. The remote's URL, a credential
-helper or an SSH command set there would be trusted by the host's push. Hooks are turned off for
-the push; pinning the remote when the project is created would close the rest and is left for
-the slice that gives workers other machines. A check runs with the network off, and a toolchain
-that needs the network to build fails its check until that is given a reason to be otherwise.
+**What it costs.** A check runs with the network off, and a toolchain that needs the network to
+build fails its check until that is given a reason to be otherwise. This addendum originally also
+listed a residual risk: the repository's `.git/config` was a file a worker's sandbox could write,
+because a worktree shares its repository's configuration. The addendum below removes it.
+
+## Addendum: a worker has a clone, not the owner's repository (2026-11-02)
+
+**Affects**: where a worker's workspace is and what the host reads. No wire command, no ledger
+event shape and no catalogue column changes, and no key joins `[project]`. A review reason,
+`intake_refused`, joins the three the ledger already stores (`project/codec`).
+
+**The problem.** A worker's workspace was a linked worktree of the owner's checkout, and the session
+policy makes a linked worktree's Git directory writable, which is the owner's `.git`, with no mask
+over its hooks, configuration, refs or objects. A worker that read hostile text could plant a hook or
+a `core.hooksPath`, `core.fsmonitor` or `core.sshCommand` there, which the owner's next Git command
+in their own checkout runs outside any jail, whatever `publish` says. It could alter another ticket's
+branches and objects, which share a common directory. With `publish` on, the host's unjailed push
+honoured a worker-written `remote.origin.url`, `pushurl`, `url.*.insteadOf`, `core.sshCommand`,
+`credential.helper` or `http.proxy`. And `refs/replace/*`, `info/grafts` or an object swap could make
+the protected-path diff and the check read different content from the tree the push shipped for the
+same commit id.
+
+**What was considered.** Filtering the configuration keys a worker may set (rejected: the list is
+open-ended and each omission reopens the hole), masking hooks and configuration inside the owner's
+`.git` while leaving refs and objects writable (rejected: `git commit` then cannot run, and objects and
+refs remain a way to change another ticket), and changing `widening_linked_worktree` for every session
+(rejected: a person's own linked-worktree session keeps today's behaviour).
+
+**Decision.** No session of `Worker` standing has the owner's repository as its Git directory.
+
+1. A worker's workspace is an independent clone the host makes under the state root,
+   `projects/<id>/tickets/<ticket>-<seq>`, with `--no-hardlinks`, no alternates, and `origin`
+   removed. Its `.git` is a directory inside the workspace, so `workspace_policy` adds nothing. The
+   daemon refuses to build a worker session on a clone whose `.git` is not a directory.
+2. Each project has a bare host repository, `projects/<id>/host.git`, written only by host code and
+   masked in every session. Every host Git command in it runs with the system and global
+   configuration off, replacement objects off and no redirecting variable set.
+3. On `HeadObserved` the host fetches exactly the commit the clone's branch names into the host
+   repository, in the sandbox with the clone read-only and `transfer.fsckObjects` on, and requires
+   the host repository to hold the same commit id. A refusal, including a refused fetch, is a
+   `ReviewRequested` with the reason `intake_refused` and the host's words.
+4. The protected-path diff (`base...commit`, with `base` the owner's `HEAD` fetched into the host
+   repository), the check's repository (cut from the host repository at the commit) and the push all
+   read the host repository.
+5. The push goes from the host repository to the URL that `origin` had in the owner's checkout when
+   the project was created, pinned in the host repository and given literally on the command line,
+   with no remote name. The owner's global Git configuration still applies to that one command, which
+   is how their SSH and credential setup reaches it.
+6. A clone that ends with its ticket is removed unless it has working-tree changes or any ref or `HEAD`
+   naming an object the host repository lacks. Every ref is compared, so a clone that looks clean from
+   the branch its `HEAD` names does not hide commits on another.
+
+**What it costs.** A clone copies the repository's objects, in time and disk, once per assignment. The
+host repository keeps every commit it takes in. A worker's jail can still read the other tickets'
+clones, because a mask over a clone would refuse every call of a session that outlives it. The owner's
+`origin` is read once, when the project is created, and a project created before this change pins it
+the first time its actor starts. A kept clone's hooks and configuration are the worker's, so a person
+fetches from `refs/tickets/<ticket>/<commit>` in `host.git` and does not run Git inside it. The
+project's pinned URL lives in a file inside the host repository and not in a catalogue column: a
+column would have been catalogue version 21 and a regeneration of the SQL modules, for a value only
+the host reads.

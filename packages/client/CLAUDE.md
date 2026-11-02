@@ -10196,9 +10196,13 @@ ordinary top-level worker session per ticket assignment
   are host records (`client/project_records`, a `host` field no engine event has)
   in the same ordered history. Times are `Ports.now_ms`, system time.
   Finishing work is three jobs in order. `ObserveJob` reads an idle worker's head
-  through `Ports.observe_head` (sandboxed Git in the worker's tree) and commits
-  `HeadObserved`, with `project/protect` deciding the protected paths from the
-  diff, so a touched head never gets a `RequestCheck`. `CheckJob` runs
+  through `Ports.observe_head` and commits `HeadObserved`, with `project/protect`
+  deciding the protected paths from the diff, so a touched head never gets a
+  `RequestCheck`. `observe_head` answers `Intake`: `Taken` when the host repository
+  holds the commit and the diff was read there, `NotTaken` when it refused the
+  commit (`intake_refused`: the actor records the commit as a head with its paths
+  counted as protected, then a `ReviewRequested` with `model.IntakeRefused` and
+  the host's words, so no check or publish runs for it). `CheckJob` runs
   `Ports.run_check` in a witnessed `weft` task (`in_task`, deadline = wall plus
   margin) and the answer returns as a `CheckSettled` message; the row is deferred
   past the deadline and settled by the answer, and a task that dies leaves it to
@@ -10211,22 +10215,50 @@ ordinary top-level worker session per ticket assignment
   remote and no `gh` become `ReviewRequested` with the reason. `projects.publish`
   is `project_host.publish`, refused while publish is off. `Ports.run_check` and
   `observe_head` are built in `project_start` (`run_check`, `observe`) over
-  `worktrees.read`, `worktrees.check_runner` (a second sandboxed Git so a check
-  does not hold the attach pool's one slot) and `worktrees.discard`; `publish` is
-  `client/project_publish` (`git push` without force or hooks, REST through `gh api`,
-  lookup before create). An answer is a `DeliverJob` for `model.answer_id`, source
+  `client/project_repo` and `worktrees.check_runner` (a second sandboxed Git so a
+  check does not hold the attach pool's one slot); `publish` is
+  `client/project_publish` (`git push` from the host repository to the pinned URL,
+  without force or hooks, REST through `gh api`, lookup before create).
+- `client/project_repo` is where a worker's Git stops. A worker's workspace is a
+  clone the host makes (`git clone --no-hardlinks`, `origin` removed, branch
+  `loom/<ticket>-<seq>`) under `<state>/projects/<id>/tickets/`, with a real `.git`
+  directory, so `workspace_policy` adds no writable root for it. The host
+  repository `<state>/projects/<id>/host.git` is bare, made by `ensure_host` when
+  the project's actor starts, written only by host code, and masked in every
+  session (`workspace_policy.protecting_projects`: the host repository, the
+  ledger and its side files, the check trees; a clone is not masked because it is
+  removed with its ticket and a mask over a removed path refuses every call of a
+  session that still holds it). `ensure_host` also pins the owner's
+  `origin` push URL in `host.git/loom-origin-url`, once; `publish` pushes to that
+  URL literally and never by remote name. `intake` reads the clone's `HEAD`,
+  fetches exactly that commit into the host repository under
+  `refs/tickets/<ticket>/<commit>` (jailed: clone read-only, host repository
+  writable, `transfer.fsckObjects`), requires the id the host repository holds to
+  be the one the clone named, and reads `base...commit` there against the owner's
+  `HEAD` fetched into `refs/base/head`. `check_tree` cuts the check's repository
+  from the host repository. `release` keeps a clone with working-tree changes or
+  with any ref or `HEAD` naming an object the host repository lacks, comparing every
+  ref rather than the branch the clone says it is on. `sound_clone` is checked by
+  `project_start.seat`: a worker whose `.git` was turned into a file is refused its
+  session, because the session policy widens to the Git directory such a file
+  names. Every host Git command here runs in the sandbox with
+  `GIT_NO_REPLACE_OBJECTS` and `GIT_CONFIG_GLOBAL=/dev/null`
+  (`worktree_git.environment`); the push runs unjailed with the redirecting
+  variables removed and the owner's global configuration kept
+  (`project_publish.run_git`). Ordinary linked-worktree sessions keep
+  `widening_linked_worktree` unchanged. An answer is a `DeliverJob` for `model.answer_id`, source
   `owner`; with no live session it waits in the ticket's inbox. The `started`
   pair is finished by `mark_live` when a retry finds the session bound.
 - `client/daemon/project_start` fills the actor's `Ports` from the registry:
   `create` (project id is `p-` and twelve hex of the workspace's SHA-256),
-  `ensure_running`, `start_worker` (worktree named from `<ticket>-<seq>`, then
+  `ensure_running`, `start_worker` (clone named from `<ticket>-<seq>`, then
   `manager.reserve`, `catalogue.bind_worker`, `manager.create_scoped`, in that order
   so the session's builder reads its standing), and `reopen` at boot.
   `client/daemon/project_book` is the table of handles the builder reads and the
   `factory_supervisor` (temporary children) every actor is started under
   (`launch`), so a control handler that ends abnormally cannot take a project's
   only ledger writer with it. A worker's
-  memory domain stays its own worktree's: `domain.Scope` has only `WorkspacePrivate`
+  memory domain stays its own clone's: `domain.Scope` has only `WorkspacePrivate`
   and `SessionOnly`, and the id derives from the canonical workspace path.
 - `client/projectseam` fills `tools/project`'s closures over the actor. `serve.Settings`
   gains `project`; a router's registry is exactly `route`, `project_read` and
@@ -10271,11 +10303,12 @@ ordinary top-level worker session per ticket assignment
   `recover` effect row, and `recover_worker` delivers a harness-worded note through
   `admit` under the message id `recovery-<ticket>-<seq>`. The record is what stops a
   second restart from sending another. `stop_worker` ends with `release_tree` for a
-  ticket that has an outcome: `Ports.release_worktree` closes the tree with
-  `worktrees.close_guarding_commits`, which keeps a clean tree whose HEAD has commits
-  the base lacks. A kept tree is written as a `TreeKept` host record and appears on
-  the ticket card as `kept_worktrees`. Nothing records a push yet, so any commit
-  ahead of the base keeps the tree.
+  ticket that has an outcome: `Ports.release_worktree` closes the clone with
+  `project_repo.release`, which keeps a clone with changes or with refs the host
+  repository has not taken in. A kept clone is written as a `TreeKept` host record
+  and appears on the ticket card as `kept_worktrees`; a person fetches from the
+  ticket's refs in `host.git` and treats the clone as untrusted, because its
+  configuration and hooks are the worker's.
 - `project_daemon_test` is the daemon-level fixture: a real `root.start` with the
   production session builder, a real catalogue, ledger and Git worktrees, the
   control commands over a socket, and only the model scripted. It found that

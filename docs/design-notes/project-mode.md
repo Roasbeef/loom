@@ -268,18 +268,26 @@ own workspace, and its result is evidence for the advisor, which makes the decis
 A worker could edit a test or the Makefile and the check would still pass. So:
 
 1. When a worker reports `waiting` with no open question and a head that hasn't been
-   checked yet, the host snapshots that head as a commit. Other idle turns run nothing.
-2. If the diff touches any of the project's `protected_paths` (by default the
-   Makefile, CI configuration and the check's own definition), the ticket goes to
-   `AwaitingReview` and the check doesn't run, so edited build files never execute
-   on this path.
+   checked yet, the host takes that head into the project's host repository: it fetches
+   exactly the commit the worker's clone names, in the sandbox, with the clone read-only
+   and `transfer.fsckObjects` on, and requires the host repository to hold that same
+   commit id afterwards. A refusal at any step sends the ticket to `AwaitingReview` with
+   the host's words, and nothing about the commit is checked or published. Other idle
+   turns run nothing.
+2. If the diff, read in the host repository as `base...commit`, touches any of the
+   project's `protected_paths` (by default the Makefile, CI configuration and the
+   check's own definition), the ticket goes to `AwaitingReview` and the check doesn't
+   run, so edited build files never execute on this path.
 3. Otherwise the host runs the project's check command, which comes from policy, in a
-   fresh worktree at that commit, in a jail the worker can't reach.
+   fresh repository cut from the host repository at that commit, in a jail the worker
+   can't reach.
 4. A pass records `CheckPassed(commit, command_digest, entry)`. A later commit on the
    ticket invalidates it.
 
-The host then pushes the branch and opens the pull request on the owning machine. A
-worktree's local branch stays `loom/<session>`, and the host pushes it to a remote
+The host then pushes the branch and opens the pull request on the owning machine. The
+push is from the host repository to the URL that `origin` had in the owner's checkout when
+the project was created, given on the command line and never by remote name. A worker's
+local branch stays `loom/<ticket>-<seq>`, and the host pushes the commit to a remote
 branch named from the ticket ID, with the body from ledger facts (commits, check digest).
 The title is the only model text, capped and fenced like `reply`. It looks for an existing pull request from that head before creating one, so a crash
 between the request and its record can't open two. Merging stays with people. A
@@ -289,6 +297,40 @@ unbuilt and is part of #1137.
 Some tickets have nothing to check, such as an investigation or a reproduction.
 These end in `AwaitingReview` and never in `Ready`. A person can also publish past a
 failing check from the board. That's a recorded command, and no model can issue it.
+
+### What a worker's Git can reach
+
+A worker's session policy makes its workspace writable and, for a linked worktree, the
+Git directory the worktree names, which is the owner's `.git`. That is the ordinary
+session's trust and it stays for ordinary sessions. A worker reads hostile text, so no
+session of `Worker` standing has the owner's repository as its Git directory. The
+alternative of filtering the configuration keys a worker could set was rejected: the list
+is open-ended (`core.hooksPath`, `core.fsmonitor`, `core.sshCommand`, `credential.helper`,
+`url.*.insteadOf`, `http.proxy`, and the hooks directory), and every omission is a way for
+the owner's next command, or the host's push, to run a worker's program.
+
+| Repository | Who writes it | Who reads it |
+|---|---|---|
+| The owner's checkout | The owner. No project code writes it. | The host, in the sandbox, to clone from and to fetch its `HEAD` and read its `origin`. |
+| A ticket's clone, `<state>/projects/<id>/tickets/<ticket>-<n>` | The worker, and only the worker. | The host, in the sandbox, read-only, to learn the head and to fetch one commit. Not the owner's tools. |
+| The host repository, `<state>/projects/<id>/host.git` | Host code only. It is in no session's writable roots and the session policy masks it. | The host: the diff, the check's tree and the push. |
+
+The clone is made with `git clone --no-hardlinks`, so its objects are copies and no write
+through it reaches the source, with no alternates, and its `origin` remote is removed, so
+it names no writable path of the owner's. Its `.git` is a real directory inside the
+workspace, and the daemon refuses to build a worker session on a clone whose `.git` is a
+file or a link, because the session policy widens to the directory such a file names.
+
+What a person should do with a kept clone: fetch from `refs/tickets/<ticket>/<commit>` in
+`host.git`, and treat the clone as untrusted. Its hooks and configuration are the worker's,
+so running Git inside it can run the worker's program as the owner.
+
+What this does not give. A worker's jail can still read the other tickets' clones, as it
+reads the rest of the host, because masking them would refuse every call of a session
+that outlives a clone removed with its ticket. A worker can write only its own. The
+owner's `origin` URL is read once, when the project is created, so an owner who changes
+the remote afterwards must create the project again. The host repository grows with every
+commit taken in and is not collected.
 
 ## 7. A ticket's stage
 

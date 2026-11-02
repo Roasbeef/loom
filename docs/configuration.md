@@ -520,13 +520,20 @@ with `loom project init` and needs no table; the keys below only change its
 limits and what the host does with a worker's finished work. A key from a later slice
 (sources) is refused until that slice lands.
 
-The three keys that govern finished work default to doing nothing outward. A worker that
-reports itself idle has its branch's head read. A head that changes a protected path goes to
-a person and the check never runs. Any other head is checked by `check`, in a fresh worktree
-of that commit, in the sandbox, with the network off, the state root's secrets masked and
-only that worktree writable. A passing check makes the ticket ready, and with `publish =
-"pull_request"` the host then pushes the commit to `project/<ticket>` of the `origin` remote
-and opens a pull request through `gh api`. It never merges.
+Each worker has a clone of the owner's repository under the daemon's state root
+(`<state>/projects/<id>/tickets/<ticket>-<n>`), not a worktree of it, so nothing a worker
+writes can reach the owner's `.git`. The three keys that govern finished work default to
+doing nothing outward. A worker that reports itself idle has its branch's head taken into the
+project's host repository (`<state>/projects/<id>/host.git`, which no worker can write) and
+the paths it changed are read there. A head that changes a protected path goes to a person
+and the check never runs. A head the host repository refuses also goes to a person, with the
+refusal's words. Any other head is checked by `check`, in a fresh repository cut from the host
+repository at that commit, in the sandbox, with the network off, the state root's secrets
+masked and only that tree writable. A passing check makes the ticket ready, and with `publish
+= "pull_request"` the host then pushes the commit from the host repository to
+`project/<ticket>` of the URL that `origin` had in the owner's checkout when the project was
+created, and opens a pull request through `gh api`. It never merges. A checkout with no
+`origin` when the project was created publishes nothing and says so.
 
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |
