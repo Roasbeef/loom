@@ -307,7 +307,7 @@ one.
   `tools`, `lsp`, `approvals`, `models`, `compaction`, `memory`.
   Programs and extensions: `code-mode`, `extensions`, `mcp`,
   `async-collaboration`. Strands and automation: `messaging`,
-  `advisor`, `goals`, `automation`, `hooks-compat`. Observation and
+  `advisor`, `goals`, `automation`, `hooks-compat`, `project-mode`. Observation and
   testing: `events`, `telemetry`, `simulation`, and `evaluation`, the
   instrument that measures prompt, tool and model changes.
 - **Harbor** — `integrations/harbor/README.md`: Loom as a Harbor (Terminal-Bench)
