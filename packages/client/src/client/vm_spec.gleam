@@ -1857,6 +1857,103 @@ pub fn orchestrator_membership(
   }
 }
 
+/// Where a guest stands in the ledger text of a daemon's configuration, read
+/// against the certificate authority `ca`. `Error(Nil)` means the ledger does
+/// not replay against that authority, which says nothing about the guest.
+///
+/// ## Examples
+///
+/// ```gleam
+/// vm_spec.standing(ca, ledger_text, "vm2") // -> Ok(membership_ledger.Revoked)
+/// ```
+pub fn standing(
+  ca: String,
+  ledger_text: String,
+  name: String,
+) -> Result(membership_ledger.Enrollment, Nil) {
+  let lines =
+    string.split(ledger_text, "\n")
+    |> list.filter(fn(line) { string.trim(line) != "" })
+  replayed(ca, lines)
+  |> result.map(membership_ledger.enrollment(_, name))
+}
+
+/// The lines of the ledger a guest's executor starts with. The daemon's
+/// installed ledger (`installed`) is the more recent one, since the guest's
+/// bundle holds the ledger as of its enrolment and a certificate renewed since
+/// makes the bundle's pin table refuse the handshake. It is used only when it
+/// replays against the executor's own certificate authority and holds the
+/// executor as an active member of the node the bundle names; otherwise the
+/// bundle's lines are used. A static bundle has none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.ledger_to_stage(static_bundle, None) == []
+/// ```
+pub fn ledger_to_stage(
+  executor: Bundle,
+  installed: Option(String),
+) -> List(String) {
+  // The installed ledger is considered only for a ledger bundle that has one
+  // to compare with.
+  case executor.trust, installed {
+    distribution_bundle.StaticPeers(_), _ -> []
+    distribution_bundle.SignedLedger(lines), None -> lines
+    distribution_bundle.SignedLedger(lines), Some(text) -> {
+      let candidate =
+        string.split(text, "\n")
+        |> list.filter(fn(line) { string.trim(line) != "" })
+
+      // The installed ledger must say this node is this guest.
+      let current =
+        replayed(executor.ca, candidate)
+        |> result.try(fn(ledger) {
+          membership_ledger.member(ledger, executor.name)
+        })
+
+      // Anything short of that is the bundle's own ledger.
+      case current {
+        Ok(member) if member.node == executor.erlang_node -> candidate
+        _ -> lines
+      }
+    }
+  }
+}
+
+/// A refusal of the revoke `rm` makes, worded for `rm`. The revoke command's
+/// own refusal ends by advising `--force`, which `rm` does not have.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.rm_revoke_refusal("x\nNothing was signed. Pass --force to revoke anyway.")
+///   == "x\nNothing was signed and nothing was removed."
+/// ```
+pub fn rm_revoke_refusal(reason: String) -> String {
+  string.replace(
+    reason,
+    "Nothing was signed. Pass --force to revoke anyway.",
+    "Nothing was signed and nothing was removed.",
+  )
+}
+
+/// The warning for a join whose entry no daemon took, or `None` when one did.
+/// The bundle stays and the join succeeds, as `loom distribution enroll` does:
+/// the entry is signed and the bundle holds the only copy of the node's key.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.undelivered_warning(Ok("the daemon")) == None
+/// ```
+pub fn undelivered_warning(delivery: Result(String, String)) -> Option(String) {
+  case delivery {
+    Ok(_) -> None
+    Error(sentence) -> Some("warning: " <> sentence)
+  }
+}
+
 /// The authority directory of a deployment under the vm home.
 ///
 /// ## Examples

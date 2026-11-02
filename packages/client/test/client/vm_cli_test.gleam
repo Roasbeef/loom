@@ -7,13 +7,18 @@
 import broker/token
 import client
 import client/authority_key
+import client/daemon/admin
+import client/daemon/ledger_cli
 import client/distribution
 import client/distribution_bundle
 import client/distribution_install
 import client/distribution_plan
 import client/distribution_provision
 import client/ledger_operator
+import client/ledger_sync
 import client/membership_entry
+import client/membership_ledger
+import client/membership_signing
 import client/vm_cli
 import client/vm_spec.{Launch, Manifest, PidRecord}
 import core/json
@@ -1493,18 +1498,18 @@ pub fn the_ledger_is_staged_once_beside_the_credentials_test() {
   let path = root <> "/srv/loom-node/creds/ledger.log"
   let assert distribution_bundle.SignedLedger(lines) = executor.trust
 
-  assert vm_cli.stage_ledger(root, executor) == Ok(Nil)
+  assert vm_cli.stage_ledger(root, executor, None) == Ok(Nil)
   assert simplifile.read(path) == Ok(string.join(lines, "\n") <> "\n")
 
   // A file the executor has since extended is never written over.
   let assert Ok(Nil) = simplifile.write(path, "synced\n")
-  assert vm_cli.stage_ledger(root, executor) == Ok(Nil)
+  assert vm_cli.stage_ledger(root, executor, None) == Ok(Nil)
   assert simplifile.read(path) == Ok("synced\n")
 
   // A static bundle stages no ledger.
   let #(_, static) = bundles("dev")
   let assert Ok(Nil) = simplifile.delete(path)
-  assert vm_cli.stage_ledger(root, static) == Ok(Nil)
+  assert vm_cli.stage_ledger(root, static, None) == Ok(Nil)
   assert simplifile.is_file(path) == Ok(False)
   let assert Ok(Nil) = simplifile.delete_all([scratch])
 }
@@ -1623,28 +1628,58 @@ pub fn the_key_stays_while_a_guest_of_its_deployment_remains_test() {
   let assert Ok(Nil) = simplifile.delete_all([home])
 }
 
-pub fn an_upgrade_names_its_root_only_after_the_workspaces_moved_test() {
+// Runs the first `count` steps of an upgrade in a scratch directory whose old
+// root holds the real workspace and whose clone holds a shipped one, and says
+// where the workspace is and what `up` would do next.
+fn upgrade_stopped_after(count: Int) -> #(Bool, Bool, vm_spec.RootStep) {
   let #(scratch, root, _) = scratch_root()
   let building = scratch <> "/root.building"
   let next = scratch <> "/root.next"
-
-  // The old root holds the real workspace; the clone of an export that ships
-  // a workspaces directory holds a shipped one.
   let assert Ok(Nil) =
     simplifile.create_directory_all(root <> "/srv/workspaces/real")
   let assert Ok(Nil) =
     simplifile.create_directory_all(building <> "/srv/workspaces/shipped")
+  let steps = vm_cli.upgrade_steps(root <> "/srv/workspaces", building, next)
+  list.take(steps, count)
+  |> list.each(fn(step) {
+    assert step() == Ok(Nil)
+  })
 
-  // Before the move, `root.next` does not exist, so a stop after the clone
-  // cannot look like a finished rename.
-  assert simplifile.is_directory(next) == Ok(False)
-  assert vm_cli.move_into_place(root <> "/srv/workspaces", building, next)
-    == Ok(Nil)
-  assert simplifile.is_directory(next <> "/srv/workspaces/real") == Ok(True)
-  assert simplifile.is_directory(next <> "/srv/workspaces/shipped") == Ok(False)
-  assert simplifile.is_directory(building) == Ok(False)
-  assert simplifile.is_directory(root <> "/srv/workspaces") == Ok(False)
+  let in_old =
+    simplifile.is_directory(root <> "/srv/workspaces/real") == Ok(True)
+  let in_next =
+    simplifile.is_directory(next <> "/srv/workspaces/real") == Ok(True)
+
+  // What `up` reads: the layout is the evidence that the workspaces moved.
+  let moved = case simplifile.is_directory(next <> "/srv/workspaces") {
+    Ok(True) -> vm_spec.Present
+    _ -> vm_spec.Absent
+  }
+  let step =
+    vm_spec.root_step(
+      vm_spec.Resume,
+      vm_spec.RootLayout(vm_spec.Present, moved),
+      Some("aaaaaaa"),
+      "bbbbbbb",
+    )
   let assert Ok(Nil) = simplifile.delete_all([scratch])
+  #(in_old, in_next, step)
+}
+
+pub fn an_upgrade_never_strands_the_workspaces_between_steps_test() {
+  // Stopped after each step, the workspaces are in the old root or in the new
+  // one, never in the directory the clone is built in, and `up` finishes only
+  // once they are in the new root. The old order moved them into the clone
+  // first, so a stop after that step had them in neither place.
+  list.each([0, 1, 2, 3], fn(count) {
+    let #(in_old, in_next, step) = upgrade_stopped_after(count)
+    assert in_old != in_next
+    assert step == vm_spec.UpgradeRoot(Some("aaaaaaa"))
+  })
+  let #(in_old, in_next, step) = upgrade_stopped_after(4)
+  assert !in_old
+  assert in_next
+  assert step == vm_spec.FinishUpgrade
 }
 
 pub fn a_stop_after_the_clone_is_an_upgrade_again_not_a_finish_test() {
@@ -1675,6 +1710,101 @@ pub fn a_host_copy_with_no_staged_script_is_staged_again_test() {
       Some("/vm/provision"),
     )
     == Ok(vm_spec.NoScript)
+}
+
+pub fn the_daemons_installed_ledger_is_staged_only_when_it_vouches_for_the_guest_test() {
+  let made = minted_ledger("dev")
+  let executor = bundle_of(made, "dev")
+  let assert distribution_bundle.SignedLedger(lines) = executor.trust
+
+  // Nothing installed, or the same ledger, gives the bundle's lines.
+  assert vm_spec.ledger_to_stage(executor, None) == lines
+  assert vm_spec.ledger_to_stage(executor, Some(made.ledger)) == lines
+
+  // A ledger of another authority does not replay against the guest's, so the
+  // bundle's lines are kept.
+  let other = minted_ledger("dev")
+  assert vm_spec.ledger_to_stage(executor, Some(other.ledger)) == lines
+
+  // A static bundle stages nothing.
+  let #(_, static) = bundles("dev")
+  assert vm_spec.ledger_to_stage(static, Some(made.ledger)) == []
+}
+
+pub fn a_guests_standing_is_read_from_a_ledger_test() {
+  let made = minted_ledger("dev")
+  let ca = made.authority.certificate
+  assert vm_spec.standing(ca, made.ledger, "dev")
+    == Ok(membership_ledger.Enrolled(member_of(made, "dev")))
+  assert vm_spec.standing(ca, made.ledger, "nobody")
+    == Ok(membership_ledger.NotEnrolled)
+  let other = minted_ledger("dev")
+  assert vm_spec.standing(other.authority.certificate, made.ledger, "dev")
+    == Error(Nil)
+}
+
+fn member_of(
+  made: distribution_provision.Provisioned,
+  name: String,
+) -> membership_entry.Member {
+  let assert Ok(verifier) =
+    membership_signing.verifier(made.authority.certificate)
+  let lines =
+    string.split(made.ledger, "\n")
+    |> list.filter(fn(line) { line != "" })
+    |> list.map(bit_array.from_string)
+  let assert Ok(ledger) = membership_ledger.replay(lines, verifier)
+  let assert Ok(member) = membership_ledger.member(ledger, name)
+  member
+}
+
+pub fn removal_words_its_revoke_refusal_without_force_test() {
+  let refusal =
+    "revoking x may strand sessions:\n  1 session\n"
+    <> "Nothing was signed. Pass --force to revoke anyway."
+  let worded = vm_spec.rm_revoke_refusal(refusal)
+  assert !string.contains(worded, "--force")
+  assert string.ends_with(worded, "Nothing was signed and nothing was removed.")
+}
+
+pub fn an_undelivered_entry_is_a_warning_and_not_a_failure_test() {
+  assert vm_spec.undelivered_warning(Ok("the daemon on this host")) == None
+  let assert Some(warning) =
+    vm_spec.undelivered_warning(Error("no daemon took entry 3"))
+  assert string.starts_with(warning, "warning: ")
+  assert string.contains(warning, "no daemon took entry 3")
+}
+
+pub fn a_member_the_copy_records_as_revoked_is_done_test() {
+  let home = scratch_home()
+  let made = two_guest_deployment()
+  let directory = vm_spec.authority_directory(home, made.authority.deployment)
+  assert vm_cli.seal_authority(directory, made) == Ok(Nil)
+  let assert Ok(authority) =
+    ledger_cli.unlock_at(directory, Some(directory <> "/passphrase"))
+  assert !ledger_cli.is_revoked(authority, "other")
+
+  // A daemon that answers nothing: the entry goes to the copy alone.
+  let silent = fn(_) {
+    ledger_sync.Daemon(
+      status: fn() { Error("no daemon") },
+      entries: fn(_, _) { Error("no daemon") },
+      append: fn(_) { Error("no daemon") },
+      holdings: fn() { Error("no daemon") },
+    )
+  }
+  let assert Ok(_) =
+    ledger_cli.revoke_member(
+      authority,
+      "other",
+      "test",
+      ledger_cli.Forced,
+      admin.ThisHost(""),
+      silent,
+    )
+  assert ledger_cli.is_revoked(authority, "other")
+  assert !ledger_cli.is_revoked(authority, "dev")
+  let assert Ok(Nil) = simplifile.delete_all([home])
 }
 
 // --- undoing an enrolment ----------------------------------------------------

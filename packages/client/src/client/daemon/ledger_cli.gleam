@@ -980,6 +980,28 @@ pub fn delivered(signed: Signed) -> Result(String, String) {
   }
 }
 
+/// Whether the operator's copy of the ledger already records `name` as
+/// revoked. A revoke of such a member is refused by the fold, so a caller that
+/// only wants the member gone treats it as done. A copy that cannot be read
+/// says nothing, and the answer is `False`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_cli.is_revoked(authority, "vm2")
+/// ```
+pub fn is_revoked(authority: Authority, name: String) -> Bool {
+  let path = authority.directory <> "/" <> authority_key.ledger_file
+
+  // An unreadable copy is no evidence of a revocation.
+  case membership_store.open(path, authority.verifier) {
+    Ok(opened) ->
+      membership_ledger.enrollment(opened.ledger, name)
+      == membership_ledger.Revoked
+    Error(_) -> False
+  }
+}
+
 /// The sequence number of the signed entry.
 pub fn entry_seq(signed: Signed) -> Int {
   signed.entry.entry.seq

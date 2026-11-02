@@ -119,6 +119,7 @@ import client/distribution_provision.{RefuseExisting, ReplaceExisting}
 import client/install
 import client/internal/ffi_os
 import client/ledger_operator
+import client/membership_ledger
 import client/membership_provision
 import client/vm_spec.{
   type Command, type Manifest, type PidRecord, type SyncOptions, type UpOptions,
@@ -625,6 +626,7 @@ fn up(options: UpOptions) -> Result(String, String) {
     manifest,
     guest,
     executor_of(deployed),
+    installed_ledger(config),
     workspace,
     options,
     plan,
@@ -833,17 +835,12 @@ type Deployed {
   /// certificate. A guest that joined its daemon's deployment has no
   /// orchestrator bundle, because the daemon is already a member.
   Reused(orchestrator: option.Option(Bundle), executor: Bundle)
-
-  /// A guest this `up` enrolled in the ledger the daemon's configuration names.
-  /// Nothing is installed: the daemon learns the member from the ledger.
-  Joined(executor: Bundle)
 }
 
 /// The executor bundle of any of the three.
 fn executor_of(deployed: Deployed) -> Bundle {
   case deployed {
-    Minted(executor:, ..) | Reused(executor:, ..) | Joined(executor:) ->
-      executor
+    Minted(executor:, ..) | Reused(executor:, ..) -> executor
   }
 }
 
@@ -883,12 +880,43 @@ fn deployment(
 
       // A static executor bundle without its orchestrator is a leftover.
       case executor.trust {
-        distribution_bundle.SignedLedger(_) -> Ok(Reused(None, executor))
+        distribution_bundle.SignedLedger(_) -> {
+          use Nil <- result.try(refuse_revoked(config, executor))
+          Ok(Reused(None, executor))
+        }
         distribution_bundle.StaticPeers(_) ->
           begin(vm_home, guest, names, config, file)
       }
     }
     _, _ -> begin(vm_home, guest, names, config, file)
+  }
+}
+
+/// Refuses to resume a joined guest that the daemon's installed ledger records
+/// as revoked, which would otherwise boot and serve nothing. A configuration
+/// with no readable ledger, or one that does not replay against the guest's
+/// certificate authority, says nothing and the resume goes on.
+fn refuse_revoked(config: String, executor: Bundle) -> Result(Nil, String) {
+  // With no installed ledger there is nothing to read the standing from.
+  let standing = case installed_ledger(config) {
+    Some(text) -> vm_spec.standing(executor.ca, text, executor.name)
+    None -> Error(Nil)
+  }
+
+  // Only a revocation is a reason; any other answer is the resume's as before.
+  case standing {
+    Ok(membership_ledger.Revoked) ->
+      Error(
+        "the guest "
+        <> executor.name
+        <> " was revoked from the deployment of "
+        <> config
+        <> ", so its executor would not be trusted. Remove it with `loom vm "
+        <> "rm --name "
+        <> executor.name
+        <> "`, and run `loom vm up` for a new guest.",
+      )
+    _ -> Ok(Nil)
   }
 }
 
@@ -987,7 +1015,7 @@ fn join(
   // The key first: its absence is permanent on this machine, and a daemon
   // that is down is not.
   use kept <- result.try(
-    sealed_authority(vm_home, membership.deployment, joining.ledger)
+    sealed_authority(vm_home, membership.deployment, Some(joining.ledger))
     |> result.map_error(fn(_) {
       key_elsewhere(guest, names, membership, request)
     }),
@@ -1019,21 +1047,30 @@ fn join(
   let existed = is_plain_directory(guest.directory)
   let path = bundle_file(guest, names.name)
   use Nil <- result.try(bootstrap.ensure_private_directory(guest.directory))
-  let enrolled = {
-    use signed <- result.try(ledger_cli.enroll_member(
+  let signed =
+    ledger_cli.enroll_member(
       authority,
       request,
       admin.ThisHost(""),
       ledger_cli.socket_connect(),
       path,
-    ))
-    use _daemon <- result.try(ledger_cli.delivered(signed))
-    read_bundle(path, names.executor_node)
-  }
+    )
 
-  // A failure removes the directory only when this call made it.
-  case enrolled, existed {
-    Ok(executor), _ -> Ok(Joined(executor))
+  // A failure before anything was signed leaves nothing, and the directory is
+  // removed only when this call made it. Once the entry is signed the bundle
+  // holds the only copy of the node's key, so it stays whatever the daemon
+  // did, as `loom distribution enroll` leaves it.
+  case signed, existed {
+    Ok(signed), _ -> {
+      // A daemon that did not take the entry is a warning; the join stands.
+      case vm_spec.undelivered_warning(ledger_cli.delivered(signed)) {
+        Some(warning) -> io.println_error(warning)
+        None -> Nil
+      }
+
+      read_bundle(path, names.executor_node)
+      |> result.map(fn(executor) { Reused(None, executor) })
+    }
     Error(reason), True -> Error(reason)
     Error(reason), False ->
       case remove_tree_if_present(guest.directory) {
@@ -1052,12 +1089,17 @@ fn join(
 fn sealed_authority(
   vm_home: String,
   deployment: String,
-  ledger: String,
+  ledger: option.Option(String),
 ) -> Result(#(String, option.Option(String)), String) {
   let ours = vm_spec.authority_directory(vm_home, deployment)
   let passphrase = ours <> "/" <> vm_spec.passphrase_file
+
+  // Without a ledger path there is no home recorded beside it to consult.
   let hinted =
-    authority_home.hinted_home(filepath.directory_name(ledger))
+    option.to_result(ledger, Nil)
+    |> result.try(fn(path) {
+      authority_home.hinted_home(filepath.directory_name(path))
+    })
     |> result.map(authority_key.default_directory(_, deployment))
   let homed =
     home()
@@ -1073,6 +1115,30 @@ fn sealed_authority(
       }
     _, _, _ -> hinted_key(hinted)
   }
+}
+
+/// The ledger file a configuration names, when it holds a ledger deployment and
+/// can be read. Anything else is `None`: the caller falls back to what it has.
+fn config_ledger(config: String) -> option.Option(String) {
+  simplifile.read(config)
+  |> result.replace_error(Nil)
+  |> result.try(fn(text) {
+    vm_spec.deployment_state(text) |> result.replace_error(Nil)
+  })
+  |> result.try(fn(state) {
+    case state {
+      vm_spec.LedgerDeployment(ledger:) -> Ok(ledger)
+      vm_spec.NoDeployment | vm_spec.StaticDeployment -> Error(Nil)
+    }
+  })
+  |> option.from_result
+}
+
+/// The text of the ledger the daemon of `config` has installed, when there is
+/// one and it can be read.
+fn installed_ledger(config: String) -> option.Option(String) {
+  config_ledger(config)
+  |> option.then(fn(path) { simplifile.read(path) |> option.from_result })
 }
 
 /// The key in the home recorded beside the ledger, if it is really there. The
@@ -1353,8 +1419,7 @@ fn enroll(
     Reused(orchestrator: Some(orchestrator), ..) ->
       still_enrolled(orchestrator, config, file)
     Minted(orchestrator:, ..) -> install(orchestrator, config, home, file)
-    Reused(orchestrator: None, ..) | Joined(..) ->
-      Ok(Enrolled(config:, file:, row: Derived))
+    Reused(orchestrator: None, ..) -> Ok(Enrolled(config:, file:, row: Derived))
   }
 }
 
@@ -1468,6 +1533,7 @@ fn stage(
   manifest: Manifest,
   guest: Instance,
   executor: Bundle,
+  installed: option.Option(String),
   workspace: Workspace,
   options: UpOptions,
   plan: vm_spec.ProvisionPlan,
@@ -1482,6 +1548,7 @@ fn stage(
   use Nil <- result.try(stage_node(
     guest.root,
     executor,
+    installed,
     registered,
     options.github,
     options.allow,
@@ -1719,13 +1786,13 @@ fn record_provision_copy(
 ///
 /// The order is what lets an interrupted `up` finish. Every step before the
 /// rename leaves the old root whole, so `up` runs the whole upgrade again from
-/// a clean `root.next`. The new root is built as `root.building`
-/// (`move_into_place`) and takes the name `root.next` last, so a `root.next`
-/// with `srv/workspaces` in it exists only once the workspaces have moved, and
-/// what remains is `swap_roots`, which `up` finds by that `root.next` beside a
-/// root with no workspaces (`vm_spec.root_step`, `FinishUpgrade`). The directory
-/// moves as one `rename`, so a link inside it stays a link and nothing is
-/// followed.
+/// a clean `root.next`. The new root is cloned as `root.building` and named
+/// `root.next` before the workspaces move into it (`upgrade_steps`), so a
+/// `root.next` with `srv/workspaces` in it exists only once the workspaces have
+/// moved, and what remains is `swap_roots`, which `up` finds by that `root.next`
+/// beside a root with no workspaces (`vm_spec.root_step`, `FinishUpgrade`). The
+/// directory moves as one `rename`, so a link inside it stays a link and nothing
+/// is followed.
 fn build_next_root(
   manifest: Manifest,
   guest: Instance,
@@ -1756,43 +1823,59 @@ fn build_next_root(
   move_into_place(workspaces, guest.building_root, guest.next_root)
 }
 
-/// Finishes an upgrade's new root in a directory `up` does not read, and gives
-/// it its final name last. The clone of the export may ship `srv/workspaces`,
-/// and `up` takes `root.next/srv/workspaces` to mean that the real workspaces
-/// have moved and the old root may go (`vm_spec.root_step`). So the clone is
-/// `building`, its slot is cleared and the old workspaces renamed into it
-/// there, and only then is it renamed to `next_root`. A stop at any point
-/// before that rename leaves no `next_root`, and the old root still holds the
-/// workspaces.
+/// The steps that put an upgrade's new root in place, in order. The clone of
+/// the export may ship `srv/workspaces`, and `up` takes `root.next/srv/workspaces`
+/// to mean that the real workspaces have moved and the old root may go
+/// (`vm_spec.root_step`). So the clone is `building` until its slot is cleared,
+/// and it is given the name `root.next` before the workspaces are renamed into
+/// it. After every step the workspaces are in exactly one place, and the layout
+/// says they have moved only once they are in `root.next`: a stop before the
+/// last rename leaves a `root.next` without them, which `up` deletes and
+/// redoes from the old root, and a stop after it is a finished move.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // vm_cli.move_into_place("/vm/dev/root/srv/workspaces", "/vm/dev/root.building", "/vm/dev/root.next")
+/// // vm_cli.upgrade_steps("/vm/dev/root/srv/workspaces", "/vm/dev/root.building", "/vm/dev/root.next")
 /// ```
 @internal
-pub fn move_into_place(
+pub fn upgrade_steps(
+  workspaces: String,
+  building: String,
+  next_root: String,
+) -> List(fn() -> Result(Nil, String)) {
+  [
+    fn() { make_inside(building, "/srv") },
+    fn() { clear_workspaces_slot(building) },
+    fn() {
+      simplifile.rename(building, next_root)
+      |> result.map_error(fn(error) {
+        vm_spec.upgrade_refusal(
+          "the new root cannot be put in place: "
+          <> simplifile.describe_error(error),
+        )
+      })
+    },
+    fn() {
+      simplifile.rename(workspaces, next_root <> vm_spec.workspaces_dir)
+      |> result.map_error(fn(error) {
+        vm_spec.upgrade_refusal(
+          "the workspaces cannot be moved into the new root: "
+          <> simplifile.describe_error(error),
+        )
+      })
+    },
+  ]
+}
+
+/// Runs `upgrade_steps` in order.
+fn move_into_place(
   workspaces: String,
   building: String,
   next_root: String,
 ) -> Result(Nil, String) {
-  use Nil <- result.try(make_inside(building, "/srv"))
-  use Nil <- result.try(clear_workspaces_slot(building))
-  use Nil <- result.try(
-    simplifile.rename(workspaces, building <> vm_spec.workspaces_dir)
-    |> result.map_error(fn(error) {
-      vm_spec.upgrade_refusal(
-        "the workspaces cannot be moved into the new root: "
-        <> simplifile.describe_error(error),
-      )
-    }),
-  )
-  simplifile.rename(building, next_root)
-  |> result.map_error(fn(error) {
-    vm_spec.upgrade_refusal(
-      "the new root cannot be put in place: "
-      <> simplifile.describe_error(error),
-    )
+  list.try_each(upgrade_steps(workspaces, building, next_root), fn(step) {
+    step()
   })
 }
 
@@ -1908,6 +1991,7 @@ fn replace_root(
   )
   use Nil <- result.try(remove_root(guest))
   use Nil <- result.try(remove_tree_if_present(guest.next_root))
+  use Nil <- result.try(remove_tree_if_present(guest.building_root))
 
   // A record names a copy in this root, and the new root has none.
   use Nil <- result.try(remove_checkouts(guest))
@@ -1948,6 +2032,7 @@ fn remove_root(guest: Instance) -> Result(Nil, String) {
 fn stage_node(
   root: String,
   executor: Bundle,
+  installed: option.Option(String),
   workspaces: List(String),
   github: vm_spec.GitHubAccess,
   allow: List(String),
@@ -1968,40 +2053,46 @@ fn stage_node(
     node <> "/home/.erlang.cookie",
     executor.cookie,
   ))
-  use Nil <- result.try(stage_ledger(root, executor))
+  use Nil <- result.try(stage_ledger(root, executor, installed))
   write_private(
     node <> "/loom.toml",
     vm_spec.guest_config(executor, workspaces, github, allow),
   )
 }
 
-/// Puts the membership ledger of a ledger bundle beside the executor's
-/// credentials, where the `ledger` key of its configuration names it
-/// (`distribution_bundle.ledger_path`). A static bundle has none. The file is
-/// written only when the root has none: the executor appends the entries it
-/// syncs to it, and writing the bundle's copy over a later `up` would roll the
-/// ledger back to the head it was minted at. A new root has no file, so
-/// `--fresh` stages the bundle's.
+/// Puts the membership ledger beside the executor's credentials, where the
+/// `ledger` key of its configuration names it
+/// (`distribution_bundle.ledger_path`). A static bundle has none. The lines are
+/// the daemon's installed ledger when `vm_spec.ledger_to_stage` accepts it, and
+/// the bundle's otherwise: a bundle's ledger is as of the enrolment, and a
+/// certificate renewed since would make its pin table refuse the handshake on a
+/// new root. The file is written only when the root has none: the executor
+/// appends the entries it syncs to it, and writing over a later `up` would roll
+/// the ledger back. A new root has no file, so `--fresh` and an upgrade stage
+/// one.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // vm_cli.stage_ledger("/vm/dev/root", executor_bundle)
+/// // vm_cli.stage_ledger("/vm/dev/root", executor_bundle, None)
 /// ```
 @internal
-pub fn stage_ledger(root: String, executor: Bundle) -> Result(Nil, String) {
-  // Only a ledger bundle has a file to stage.
-  case executor.trust {
-    distribution_bundle.StaticPeers(_) -> Ok(Nil)
-    distribution_bundle.SignedLedger(lines) -> {
-      let path = root <> distribution_bundle.ledger_path(vm_spec.guest_files())
+pub fn stage_ledger(
+  root: String,
+  executor: Bundle,
+  installed: option.Option(String),
+) -> Result(Nil, String) {
+  let path = root <> distribution_bundle.ledger_path(vm_spec.guest_files())
 
+  // Only a ledger bundle has lines to stage.
+  case vm_spec.ledger_to_stage(executor, installed) {
+    [] -> Ok(Nil)
+    lines ->
       // A link counts as present: the file is only ever read in the guest.
       case simplifile.link_info(path) {
         Ok(_) -> Ok(Nil)
         Error(_) -> write_private(path, membership_provision.file_text(lines))
       }
-    }
   }
 }
 
@@ -3321,7 +3412,7 @@ fn removal_plan(
   let revocation = case id, joiner {
     Ok(deployment), True ->
       // The vm home is searched, then the operator's homes.
-      case sealed_authority(vm_home, deployment, "") {
+      case sealed_authority(vm_home, deployment, config_ledger(config)) {
         Ok(#(directory, passphrase)) -> RevokeWith(directory, passphrase)
         Error(_) -> RevokeByOperator(deployment)
       }
@@ -3468,7 +3559,7 @@ fn cookie_state(
 fn removal_preview(plan: RemovalPlan, name: String, home: String) -> String {
   string.join(
     list.flatten([
-      ["`--yes` also undoes the enrolment in " <> plan.config <> ":"],
+      [preview_header(plan)],
       list.map(removed_things(plan, home), fn(thing) { "  removes " <> thing }),
       list.map(revocation_line(plan, name), fn(line) {
         case plan.revocation {
@@ -3480,6 +3571,22 @@ fn removal_preview(plan: RemovalPlan, name: String, home: String) -> String {
     ]),
     "\n",
   )
+}
+
+/// The first line of the preview: a guest that joined has no entry in the
+/// configuration to undo, and its revoke goes through the daemon of the default
+/// configuration.
+fn preview_header(plan: RemovalPlan) -> String {
+  case plan.revocation {
+    NoRevocation ->
+      "`--yes` also undoes the enrolment in " <> plan.config <> ":"
+    RevokeWith(..) ->
+      "`--yes` also revokes the guest through the default daemon and leaves "
+      <> plan.config
+      <> " as it is:"
+    RevokeByOperator(..) ->
+      "`--yes` removes the guest and leaves " <> plan.config <> " as it is:"
+  }
 }
 
 /// The sentence about the ledger entry of a guest that joined, for the preview
@@ -3519,32 +3626,50 @@ fn revoke_membership(
     RevokeByOperator(..) -> Ok([])
     RevokeWith(directory:, passphrase:) -> {
       use authority <- result.try(ledger_cli.unlock_at(directory, passphrase))
-      use #(signed, checked) <- result.map(ledger_cli.revoke_member(
-        authority,
-        name,
-        "removed with loom vm rm",
-        ledger_cli.Checked,
-        admin.ThisHost(""),
-        ledger_cli.socket_connect(),
-      ))
 
-      // An entry no daemon took is in the operator's copy, which is reported.
-      let took = case ledger_cli.delivered(signed) {
-        Ok(where_) -> "Handed to " <> where_ <> "."
-        Error(reason) -> "Not handed to a daemon: " <> reason
+      // A guest the operator's copy already records as revoked is done: the
+      // fold would refuse the entry, and the removal must not be stuck on it.
+      case ledger_cli.is_revoked(authority, name) {
+        True ->
+          Ok([name <> " is already revoked in the ledger; nothing signed."])
+        False -> signed_revoke(authority, name)
       }
-
-      [
-        "Revoked "
-          <> name
-          <> " as entry "
-          <> int.to_string(ledger_cli.entry_seq(signed))
-          <> ". "
-          <> checked,
-        took,
-      ]
     }
   }
+}
+
+/// Signs the revoke of `name` and words what happened.
+fn signed_revoke(
+  authority: ledger_cli.Authority,
+  name: String,
+) -> Result(List(String), String) {
+  use #(signed, checked) <- result.map(
+    ledger_cli.revoke_member(
+      authority,
+      name,
+      "removed with loom vm rm",
+      ledger_cli.Checked,
+      admin.ThisHost(""),
+      ledger_cli.socket_connect(),
+    )
+    |> result.map_error(vm_spec.rm_revoke_refusal),
+  )
+
+  // An entry no daemon took is in the operator's copy, which is reported.
+  let took = case ledger_cli.delivered(signed) {
+    Ok(where_) -> "Handed to " <> where_ <> "."
+    Error(reason) -> "Not handed to a daemon: " <> reason
+  }
+
+  [
+    "Revoked "
+      <> name
+      <> " as entry "
+      <> int.to_string(ledger_cli.entry_seq(signed))
+      <> ". "
+      <> checked,
+    took,
+  ]
 }
 
 /// The tables and the cookie the plan removes, each as the name a person
