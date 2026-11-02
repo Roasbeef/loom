@@ -420,6 +420,12 @@ pub type Options {
     bus: Option(bus.Bus),
     catalog: Option(catalog.Catalog),
     registry: Option(Registry),
+    /// The most tools the session may ever hold active, or `None` for no
+    /// ceiling. A project router carries one (`client/project_standing`), so
+    /// an operator's `set_config` cannot widen it to `bash`. It bounds only
+    /// `active_tools` changes here; the registry the host built bounds what
+    /// exists at all.
+    tool_ceiling: Option(List(String)),
     /// Skills captured by this daemon, shared with the model load tool.
     skills: skill.Catalogue,
     /// Boot diagnostic when code mode could not be registered.
@@ -666,6 +672,8 @@ type State {
     // Absence still refuses active-set changes; a configured empty set permits
     // clearing the selection without retaining execution authority in this slot.
     registered_tools: Option(Dict(String, Nil)),
+    // The names `active_tools` may never exceed, when the session has a ceiling.
+    tool_ceiling: Option(List(String)),
     /// Skills captured by this daemon, shared with the model load tool.
     skills: skill.Catalogue,
     // The original boot diagnostic, not a guessed missing executable.
@@ -701,6 +709,7 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     bus: None,
     catalog: None,
     registry: None,
+    tool_ceiling: None,
     skills: skill.empty(),
     code_mode_issue: None,
     extension_refusals: [],
@@ -949,6 +958,20 @@ pub fn with_bus(options: Options, events_bus: bus.Bus) -> Options {
 ///
 pub fn with_registry(options: Options, registry: Registry) -> Options {
   Options(..options, registry: Some(registry))
+}
+
+/// Bounds the tools `set_config`'s `active_tools` may name. A name outside the
+/// ceiling is refused with a message that says so, even when the registry
+/// holds it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.default_options("sess-01", runtime)
+/// // |> gateway.with_tool_ceiling(["route", "project_read", "reply"])
+/// ```
+pub fn with_tool_ceiling(options: Options, ceiling: List(String)) -> Options {
+  Options(..options, tool_ceiling: Some(ceiling))
 }
 
 /// Supplies the host's code-mode discovery diagnostic for client display.
@@ -1494,6 +1517,7 @@ fn start_with_delivery(
         goal_abort: options.goal_abort,
         catalog: options.catalog,
         registered_tools:,
+        tool_ceiling: options.tool_ceiling,
         skills: options.skills,
         code_mode_issue: options.code_mode_issue,
         extension_refusals: options.extension_refusals,
@@ -9979,6 +10003,7 @@ fn canonical_tool_names(
   case state.registered_tools {
     None -> Error("no tool registry is configured")
     Some(registry) -> {
+      use Nil <- result.try(within_ceiling(state.tool_ceiling, names))
       use _known <- result.try(
         list.try_map(names, fn(name) {
           case dict.has_key(registry, name) {
@@ -9993,6 +10018,33 @@ fn canonical_tool_names(
         |> list.unique,
       )
     }
+  }
+}
+
+// A session with a ceiling may name only tools inside it. The check runs
+// before the registry check so that the refusal says why a registered tool
+// is still not allowed, which "unknown tool name" would not.
+/// Refuses the first name above the session's tool ceiling.
+fn within_ceiling(
+  ceiling: Option(List(String)),
+  names: List(String),
+) -> Result(Nil, String) {
+  case ceiling {
+    None -> Ok(Nil)
+    Some(allowed) ->
+      list.try_each(names, fn(name) {
+        case list.contains(allowed, name) {
+          True -> Ok(Nil)
+          False ->
+            Error(
+              "tool "
+              <> name
+              <> " is above this session's tool ceiling (allowed: "
+              <> string.join(allowed, ", ")
+              <> ")",
+            )
+        }
+      })
   }
 }
 

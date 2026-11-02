@@ -82,6 +82,7 @@ import client/internal/ffi_os
 import client/internal/instance_host as host
 import client/internal/instance_owner as custody
 import client/internal/shared_history
+import client/project_standing
 import client/remote_child
 import client/remote_release
 import client/spawners
@@ -743,6 +744,10 @@ type Message(instance) {
     Subject(Result(View, Error)),
   )
   DelegateSession(DelegateRequest, Subject(Result(Delegated, DelegateError)))
+
+  /// Runs a function over the catalogue in the registry's own turn. The
+  /// function sends its answer itself, so the message needs no reply type.
+  WithCatalogue(fn(catalogue.Catalogue) -> Nil)
 
   /// Reserves a top-level session for another orchestrator's page, in one
   /// catalogue transaction (protocol-change/094).
@@ -2193,6 +2198,31 @@ pub fn delegate_of(
   |> result.unwrap(Error(Unavailable))
 }
 
+/// Runs `run` over the catalogue in one turn of the registry and returns its
+/// answer. Project mode reads a session's standing and writes project rows
+/// through this, because the registry's connection is the only one and its turn
+/// is what keeps a read and the write after it from interleaving with an open.
+///
+/// `run` must not call back into the manager: it holds the registry's turn.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.with_catalogue(registry, fn(store) { catalogue.projects(store) })
+/// ```
+@internal
+pub fn with_catalogue(
+  manager: Manager(instance),
+  run: fn(catalogue.Catalogue) -> a,
+) -> Result(a, Error) {
+  let answer = process.new_subject()
+  process.send(
+    manager.commands,
+    WithCatalogue(fn(store) { process.send(answer, run(store)) }),
+  )
+  process.receive(answer, 5000) |> result.replace_error(Unavailable)
+}
+
 /// Installs the bell a deletion rings after it writes the releases it owes
 /// (protocol-change/084, phase 2). The daemon's release drainer sleeps when
 /// nothing is owed, and the bell is what wakes it for a row written later. The
@@ -3289,6 +3319,10 @@ fn handle(
         })
 
         use Nil <- result.try(refuse_moved(book, id))
+        use Nil <- result.try(case visibility {
+          catalogue.Archived -> project_free(book, id)
+          catalogue.Active -> Ok(Nil)
+        })
         use record <- result.map(
           catalogue.set_visibility(book.catalogue, id, visibility)
           |> result.map_error(AdminMetadata),
@@ -3762,6 +3796,10 @@ fn handle(
       )
       sm.keep(book)
     }
+    WithCatalogue(run) -> {
+      run(book.catalogue)
+      sm.keep(book)
+    }
     DelegateOf(id, reply) -> {
       process.send(
         reply,
@@ -4223,6 +4261,35 @@ fn begin_move_now(
   }
 }
 
+// Whether a session's project standing lets it move or be archived. The
+// standing decides through `project_standing.mobility`, which matches on every
+// standing, and a project the owner has archived no longer holds its sessions.
+// A standing the catalogue cannot read refuses, because a damaged row must not
+// let a session that project mode keeps in place be moved.
+/// Refuses to move or archive a session that a live project holds in place.
+fn project_free(book: Book(instance), id: String) -> Result(Nil, AdminError) {
+  use found <- result.try(
+    catalogue.project_standing(book.catalogue, id)
+    |> result.map_error(AdminMetadata),
+  )
+  let standing = project_standing.from_catalogue(found)
+  case
+    project_standing.mobility(standing),
+    project_standing.project_of(standing)
+  {
+    project_standing.Free, _ -> Ok(Nil)
+    project_standing.Held(reason:), None -> Error(AdminNotMovable(reason))
+    project_standing.Held(reason:), Some(project) ->
+      case catalogue.project(book.catalogue, project) {
+        Ok(Some(catalogue.Project(state: catalogue.ProjectArchived, ..))) ->
+          Ok(Nil)
+        Ok(Some(catalogue.Project(state: catalogue.ProjectActive, ..)))
+        | Ok(None)
+        | Error(_) -> Error(AdminNotMovable(reason))
+      }
+  }
+}
+
 // Whether a registration can be handed over: a session on an executor, whose
 // scope the receiver can reopen, that has a file and is not archived. A local
 // session's checkout is a directory on this machine, which does not travel.
@@ -4252,6 +4319,9 @@ fn movable(
       ))
     None -> Ok(Nil)
   })
+
+  // A router and a worker hold their places while their project lives.
+  use Nil <- result.try(project_free(book, record.id))
 
   // movable distinguishes the record.state, visibility, record.executor outcomes before continuing the transition.
   case record.state, visibility, record.executor {
@@ -4674,7 +4744,10 @@ fn sweep_now(
     list.partition(rows, fn(row) { dict.has_key(book.slots, row.session_id) })
   let deleted =
     free
-    |> list.filter(fn(row) { due_for_deletion(standing, row, now_ms) })
+    |> list.filter(fn(row) {
+      due_for_deletion(standing, row, now_ms)
+      && result.is_ok(project_free(book, row.session_id))
+    })
     |> list.count(fn(row) {
       result.is_ok(delete_delegate(book, row.session_id, sessions))
     })
@@ -4708,13 +4781,16 @@ fn close_idle(
     let #(session_id, contact) = one
 
     // close_idle distinguishes the catalogue.delegate_of(book.catalogue, session_id) outcomes before continuing the transition.
-    case catalogue.delegate_of(book.catalogue, session_id) {
-      Ok(Some(row)) ->
+    case
+      catalogue.delegate_of(book.catalogue, session_id),
+      project_free(book, session_id)
+    {
+      Ok(Some(row)), Ok(Nil) ->
         case row.last_contact_ms == contact, running_slot(book, row) {
           True, Ok(_instance) -> #(stop_slot(book, session_id), closed + 1)
           _, _ -> #(book, closed)
         }
-      Ok(None) | Error(_) -> #(book, closed)
+      Ok(Some(_)), Error(_) | Ok(None), _ | Error(_), _ -> #(book, closed)
     }
   })
 }
