@@ -642,6 +642,7 @@
      ran into one another. */
   li.home-detail{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;}
   li.home-detail .home-folder-path{flex:1 1 20ch;}
+  li.home-detail .home-folder-name{flex:0 1 auto;min-width:0;max-width:100%;overflow-wrap:anywhere;}
   button.home-forget{flex:0 0 auto;margin:0;padding:2px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);cursor:pointer;}
   button.home-forget:hover{background:var(--color-bg-raised);}
   form.home-create{display:flex;flex-direction:column;gap:10px;margin:0 0 12px 0;padding:12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);}
