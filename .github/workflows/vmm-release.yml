@@ -52,7 +52,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing v* release tag to publish artifacts for. A commit-* tag only pre-builds its image; never a branch or commit.
+        description: Existing v* release tag to publish artifacts for. A commit-* tag builds the image, the kernel and the macOS assets, keeps the assets in this run's vmm-assets artifact and attaches nothing; never a branch or commit.
         required: true
         type: string
   workflow_call:
