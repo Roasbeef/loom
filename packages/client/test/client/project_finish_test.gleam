@@ -534,11 +534,9 @@ pub fn a_push_that_keeps_failing_is_tried_three_times_then_reviewed_test() {
   let quick =
     Rig(
       ..slow,
-      config: project_host.Config(
-        ..slow.config,
-        tick_ms: 50,
-        ports: fn() { ports },
-      ),
+      config: project_host.Config(..slow.config, tick_ms: 50, ports: fn() {
+        ports
+      }),
     )
   let #(handle, worker) = with_worker(quick)
   idle(handle, worker)
