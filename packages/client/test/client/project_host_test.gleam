@@ -265,6 +265,69 @@ pub fn a_failed_start_retries_under_the_same_key_test() {
   assert list.all(keys, fn(key) { key == first_key("t-a") })
 }
 
+// A clock that moves a hundred seconds each time it is read, so that every
+// back-off the actor sets is already over by its next pass and five failed
+// starts take a moment and not fifteen seconds.
+fn racing_clock() -> fn() -> Int {
+  let made = process.new_subject()
+  process.spawn_unlinked(fn() {
+    let requests = process.new_subject()
+    process.send(made, requests)
+    race(requests, ffi_os.system_time_ms())
+  })
+  let assert Ok(requests) = process.receive(made, 1000)
+    as "the clock's process starts"
+  fn() { process.call(requests, 1000, fn(reply) { reply }) }
+}
+
+fn race(requests: Subject(Subject(Int)), now: Int) -> Nil {
+  let reply = process.receive_forever(requests)
+  process.send(reply, now)
+  race(requests, now + 100_000)
+}
+
+// The rows still queued for the project, read from a ledger file the actor is
+// no longer using.
+fn queued_kinds(rig: Rig) -> List(String) {
+  let assert Ok(ledger) = project_ledger.open(rig.config.ledger_path)
+    as "the ledger opens"
+  let assert Ok(rows) =
+    project_ledger.effects_due(ledger, ffi_os.system_time_ms() * 2, 50)
+    as "the due rows read"
+  let assert Ok(Nil) = project_ledger.close(ledger) as "the ledger closes"
+  list.map(rows, fn(row) { row.kind })
+}
+
+// An assignment that never got a session has nothing to deliver to, and its
+// `deliver` row must not wait for one for ever: fifty such rows fill the page
+// of due rows the actor reads and starve every row behind them.
+pub fn a_delivery_for_an_assignment_that_failed_to_start_is_settled_test() {
+  let rig = rig("deliver-orphan")
+  let flaky =
+    project_host.Ports(
+      ..rig.config.ports(),
+      now_ms: racing_clock(),
+      start_session: fn(_) { Error("registry busy") },
+    )
+  let config =
+    project_host.Config(..rig.config, tick_ms: 50, ports: fn() { flaky })
+  let assert Ok(handle) = project_host.start(config) as "the actor starts"
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+  let assert Ok([tools.Applied]) = project_host.route(handle, [accept("a")])
+
+  // The fifth failed start gives the assignment up.
+  let assert Ok(Nil) =
+    poll_until(fn() {
+      string.contains(ticket_text(handle), "did not start after 5 attempts")
+    })
+
+  // The actor performs a pass every tick; give it the passes that settle the
+  // delivery, then read what it left behind.
+  process.sleep(500)
+  stop(handle)
+  assert !list.contains(queued_kinds(rig), "deliver")
+}
+
 fn collect_keys(from: Subject(String), found: List(String)) -> List(String) {
   case process.receive(from, 50) {
     Ok(key) -> collect_keys(from, [key, ..found])

@@ -136,7 +136,7 @@ The row's key makes a repeat harmless. `start` carries `request_key`, `project:<
 | Kind | Performer | Gives up |
 | --- | --- | --- |
 | `start` | `start_worker` | 5 attempts, then `WorkerFailed` with the failure's text |
-| `deliver` | `deliver_to_worker` | 5 attempts, then `InputFailed` and stage `person/delivery` |
+| `deliver` | `deliver_to_worker` | 5 attempts, then `InputFailed` and stage `person/delivery`. A row whose assignment has no session stays due while the assignment is pending, and is settled once it failed to start or ended |
 | `recover` | `recover_worker` | 9 attempts, then settled: the `reopen` row owns the ticket |
 | `reopen` | `reopen_session` | 9 attempts, then `WorkerFailed` with the refusal's text for a worker, a log line for the router |
 | `offer` | `offer_to_router` | 10 attempts, then `RouterTurnEnded` |

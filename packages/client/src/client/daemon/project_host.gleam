@@ -2164,16 +2164,19 @@ fn started(
 /// refusal, such as a ticket a person stopped meanwhile, leaves the host as it
 /// was.
 fn mark_live(host: Host, ticket: Ticket, seq: Int) -> Host {
-  let pending =
-    list.any(ticket.assignments, fn(assignment) {
-      assignment.seq == seq && assignment.status == state.AssignmentPending
-    })
-
   // Only a pending assignment still lacks the event.
-  case pending {
+  case assignment_pending(ticket, seq) {
     True -> committed_or_same(host, event.AssignmentLive(ticket.id, seq))
     False -> host
   }
+}
+
+/// Whether assignment `seq` of the ticket exists and is still waiting for its
+/// session. An assignment that failed, ended or never existed is not pending.
+fn assignment_pending(ticket: Ticket, seq: Int) -> Bool {
+  list.any(ticket.assignments, fn(assignment) {
+    assignment.seq == seq && assignment.status == state.AssignmentPending
+  })
 }
 
 /// Five failed starts give the assignment up, which frees its slot and puts the
@@ -3240,10 +3243,17 @@ fn deliver_to_worker(
     Ok(_), Ok(_) if typed_here -> settle(host, row)
     Ok(current), Ok(text) ->
       case bound_session(current, seq) {
-        // The assignment has no session yet. The row stays as it is, due now,
-        // so the next round of this very pass delivers it once the start job
-        // has bound the session; deferring it would cost a tick's wait.
-        None -> host
+        // The assignment has no session. While it is still pending, the start
+        // job may yet bind one, so the row stays as it is, due now, and the
+        // next round of this very pass delivers it; deferring it would cost a
+        // tick's wait. An assignment that failed to start or was withdrawn
+        // never gets one, and a row left due for it would stay in every page
+        // `effects_due` reads until fifty of them starved the rows behind.
+        None ->
+          case assignment_pending(current, seq) {
+            True -> host
+            False -> settle(host, row)
+          }
         Some(session) ->
           admit(host, session, trigger, text, peer_mail.MayWake, fn(ok) {
             delivered(host, row, ticket, trigger, ok)
