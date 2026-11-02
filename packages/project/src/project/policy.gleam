@@ -10,7 +10,7 @@
 ////
 //// | | Explicit | Inferred |
 //// | --- | --- | --- |
-//// | Network | the owner's session policy | package registries only |
+//// | Network | the owner's session policy | package registries only, which the host maps to no network until the broker enforces an allowlist |
 //// | Credentials | none | none |
 //// | Approvals | go to a person | refused unless a rule grants them |
 ////

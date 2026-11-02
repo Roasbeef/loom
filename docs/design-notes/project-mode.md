@@ -244,7 +244,7 @@ output by type.
 | | Explicit | Inferred |
 |---|---|---|
 | Workspace | Its worktree | Its worktree |
-| Network | The owner's session policy | Package registries only, by default |
+| Network | The owner's session policy | None, until the broker can enforce a registry allowlist (protocol-change/106 addendum) |
 | Credentials | None | None |
 | Approvals | Go to a person | Refused unless a rule grants them |
 
