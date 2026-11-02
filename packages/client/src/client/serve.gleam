@@ -1806,7 +1806,8 @@ fn compaction_settings(context_window: Int) -> operation.CompactionSettings {
 // rather than refusing, which is what keeps such a session running.
 
 /// Establishes catalogue facts for the caller, keeping its validation and result policy at this boundary.
-fn catalogue_facts(
+@internal
+pub fn catalogue_facts(
   catalogue: catalog.Catalog,
 ) -> fn(machine_strand.ModelIdentity) ->
   Result(#(model.ResolvedModel, String, catalog.ImageReading), Nil) {
@@ -6569,7 +6570,8 @@ pub fn worker_seed(
 
 /// The identity a router's strand is seeded with. Dispatch matches a strand to a
 /// role by its model, so the strand must hold the head of the role it routes on.
-fn routed_identity(settings: Settings) -> machine_strand.ModelIdentity {
+@internal
+pub fn routed_identity(settings: Settings) -> machine_strand.ModelIdentity {
   let resolved =
     [catalog.router_role, model.Subagent]
     |> list.find_map(fn(role) {
