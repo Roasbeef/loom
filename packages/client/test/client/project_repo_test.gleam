@@ -83,7 +83,8 @@ pub fn a_clone_is_adopted_on_a_second_start_and_never_replaced_test() {
   let head = project_rig.commit(clone, [#("work", "w\n")])
 
   // A restart repeats the start, and the worker's commit is still there.
-  let assert Ok(again) = project_repo.clone(rig.trees, layout, "t-a-1")
+  let assert Ok(again) =
+    project_repo.clone(rig.trees, layout, "t-a-1", project_repo.FromOwner)
   assert again == clone
   assert worktree_rig.git(clone, ["rev-parse", "HEAD"]) == head
 }
@@ -102,6 +103,134 @@ pub fn two_tickets_have_clones_that_share_nothing_test() {
   assert code != 0
   assert !bootstrap.path_exists(second <> "/.git/objects/info/alternates")
   assert !bootstrap.path_exists(first <> "/.git/objects/info/alternates")
+}
+
+// The commit a first assignment left, taken into the host repository the way
+// the host takes in a head, and the clone it was made in.
+fn first_assignment_head(
+  rig: worktree_rig.Rig,
+  layout: project_repo.Layout,
+) -> String {
+  let clone = project_rig.cloned(rig, layout, "t-a-1")
+  let head = project_rig.commit(clone, [#("src/first.go", "package first\n")])
+  let assert Ok(project_repo.Accepted(commit:, changed: _)) =
+    project_repo.intake(rig.trees, layout, "t-a", "t-a-1")
+  assert commit == head
+  head
+}
+
+pub fn a_clone_cut_from_a_head_holds_that_commit_and_names_no_remote_test() {
+  let rig = worktree_rig.rig("clone-from-head")
+  let layout = project_rig.started(rig)
+  let head = first_assignment_head(rig, layout)
+  let owners = project_rig.digest(rig.root)
+  let host = project_repo.host_path(layout)
+
+  // The second assignment's clone starts at the first one's commit, with that
+  // commit's file in its working tree and a branch of its own at it.
+  let second =
+    project_rig.cloned_from(rig, layout, "t-a-2", project_repo.FromCommit(head))
+  assert project_repo.sound_clone(second) == Ok(Nil)
+  assert worktree_rig.git(second, ["rev-parse", "HEAD"]) == head
+  assert worktree_rig.git(second, ["rev-parse", "--abbrev-ref", "HEAD"])
+    == "loom/t-a-2"
+  assert worktree_rig.exists(second <> "/src/first.go")
+
+  // It names nothing writable: no remote of any kind, no alternates, no hard
+  // link to an object file of the host's, and no mention of the host
+  // repository's path in its configuration, which a worker could read and an
+  // escape could use.
+  assert worktree_rig.git(second, ["remote"]) == ""
+  assert !bootstrap.path_exists(second <> "/.git/objects/info/alternates")
+  assert linked_objects(second) == ""
+  let assert Ok(config) = simplifile.read(second <> "/.git/config")
+  assert !string.contains(config, host)
+  assert !string.contains(config, rig.root)
+
+  // The repository was made with no template, so it holds no hook to run.
+  let hooks = case simplifile.read_directory(second <> "/.git/hooks") {
+    Ok(names) -> names
+    Error(_) -> []
+  }
+  assert hooks == []
+
+  // A commit the new worker makes descends from the earlier one, which is what
+  // lets a push of the ticket's branch fast-forward the one already pushed.
+  let next =
+    project_rig.commit(second, [#("src/second.go", "package second\n")])
+  assert worktree_rig.git(second, ["merge-base", head, next]) == head
+
+  // The owner's checkout is as it was, and the first assignment's clone and
+  // the host repository are untouched by the second.
+  assert project_rig.digest(rig.root) == owners
+}
+
+pub fn a_head_the_owner_already_has_starts_from_the_owners_checkout_test() {
+  let rig = worktree_rig.rig("clone-from-merged-head")
+  let layout = project_rig.started(rig)
+  let head = first_assignment_head(rig, layout)
+
+  // The ticket's pull request merged and the owner pulled it, and the owner
+  // has moved on since. The head is an ancestor of the owner's `HEAD`.
+  worktree_rig.git(rig.root, [
+    "fetch",
+    "--quiet",
+    project_repo.clone_path(layout, "t-a-1"),
+    "loom/t-a-1",
+  ])
+  worktree_rig.git(rig.root, ["merge", "--quiet", "--ff-only", "FETCH_HEAD"])
+  worktree_rig.write(rig.root <> "/later", "later\n")
+  worktree_rig.git(rig.root, ["add", "later"])
+  worktree_rig.git(rig.root, ["commit", "--quiet", "-m", "later work"])
+  let owners_head = worktree_rig.git(rig.root, ["rev-parse", "HEAD"])
+  assert owners_head != head
+
+  // The clone starts at the owner's `HEAD` and so has the later work, and it
+  // is the same clone a ticket with no head gets, remote removal included.
+  let second =
+    project_rig.cloned_from(rig, layout, "t-a-2", project_repo.FromCommit(head))
+  assert worktree_rig.git(second, ["rev-parse", "HEAD"]) == owners_head
+  assert worktree_rig.exists(second <> "/later")
+  assert worktree_rig.git(second, ["remote"]) == ""
+}
+
+pub fn a_head_the_host_does_not_hold_is_refused_and_leaves_no_clone_test() {
+  let rig = worktree_rig.rig("clone-from-unknown-head")
+  let layout = project_rig.started(rig)
+  let unknown = "0123456789abcdef0123456789abcdef01234567"
+  let assert Error(_) =
+    project_repo.clone(
+      rig.trees,
+      layout,
+      "t-a-2",
+      project_repo.FromCommit(unknown),
+    )
+  assert !bootstrap.path_exists(project_repo.clone_path(layout, "t-a-2"))
+
+  // A name that is not a commit name never reaches a command line.
+  let assert Error(_) =
+    project_repo.clone(
+      rig.trees,
+      layout,
+      "t-a-3",
+      project_repo.FromCommit("--upload-pack=x"),
+    )
+  assert !bootstrap.path_exists(project_repo.clone_path(layout, "t-a-3"))
+}
+
+pub fn an_adopted_clone_ignores_the_start_it_is_given_test() {
+  let rig = worktree_rig.rig("clone-adopt-start")
+  let layout = project_rig.started(rig)
+  let head = first_assignment_head(rig, layout)
+  let clone = project_rig.cloned(rig, layout, "t-a-2")
+  let work = project_rig.commit(clone, [#("kept", "k\n")])
+
+  // A restart repeats the start of the second assignment, now naming a head.
+  // The clone on disk holds the worker's commit and is not replaced.
+  let again =
+    project_rig.cloned_from(rig, layout, "t-a-2", project_repo.FromCommit(head))
+  assert again == clone
+  assert worktree_rig.git(clone, ["rev-parse", "HEAD"]) == work
 }
 
 pub fn a_git_file_where_the_directory_was_is_not_a_sound_clone_test() {

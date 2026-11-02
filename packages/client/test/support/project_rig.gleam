@@ -49,7 +49,17 @@ pub fn cloned(
   found: project_repo.Layout,
   name: String,
 ) -> String {
-  let assert Ok(path) = project_repo.clone(rig.trees, found, name)
+  cloned_from(rig, found, name, project_repo.FromOwner)
+}
+
+/// Makes an assignment's clone at the start given and answers its path.
+pub fn cloned_from(
+  rig: worktree_rig.Rig,
+  found: project_repo.Layout,
+  name: String,
+  start: project_repo.Start,
+) -> String {
+  let assert Ok(path) = project_repo.clone(rig.trees, found, name, start)
     as "the clone is made"
   path
 }

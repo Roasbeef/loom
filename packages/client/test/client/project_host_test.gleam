@@ -10,14 +10,18 @@
 
 import client/daemon/project_book
 import client/daemon/project_host
+import client/daemon/project_start
 import client/internal/ffi_os
 import client/peer_mail
 import client/project_records
+import client/project_repo
+import client/worktrees
 import core/json
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import host/bootstrap
 import project/engine
@@ -27,6 +31,8 @@ import project/state
 import simplifile
 import storage/project_ledger
 import support/project_ports
+import support/project_rig
+import support/worktree_rig
 import tools/project as tools
 import weft/poll
 
@@ -1014,4 +1020,153 @@ fn ticket_text(handle: project_host.Handle) -> String {
     Ok(detail) -> json.to_string(detail)
     Error(Nil) -> ""
   }
+}
+
+// --- a resumed ticket starts where its work stopped ---------------------------------------
+//
+// These tests run the production halves of a start (`project_start.worker_clone`)
+// and of a head's intake (`project_start.observe`) over a real owner checkout and
+// the shipped sandbox helper, with the actor, its ledger and its engine as they
+// are. Only the session is a fake, because the claim is about the clone.
+
+// Ports whose start makes the real clone and reports the request it was given,
+// whose head is taken in through the real intake, and whose release goes through
+// the real rule for a clone that holds nothing the host lacks.
+fn cloning_ports(
+  rig: Rig,
+  repos: worktree_rig.Rig,
+  layout: project_repo.Layout,
+  requests: Subject(project_host.StartRequest),
+) -> project_host.Ports {
+  project_host.Ports(
+    ..rig.config.ports(),
+    start_session: fn(request: project_host.StartRequest) {
+      use _clone <- result.map(project_start.worker_clone(
+        repos.trees,
+        layout,
+        request,
+      ))
+
+      // The request is reported once the clone exists, so a test that reads
+      // the clone after receiving the request never races its making.
+      process.send(requests, request)
+      "session-" <> request.key
+    },
+    observe_head: fn(request) {
+      project_start.observe(layout, repos.trees, request)
+    },
+    release_worktree: fn(request: project_host.ReleaseRequest) {
+      case
+        project_repo.release(
+          repos.trees,
+          layout,
+          project_start.tree_name(request.ticket, request.seq),
+        )
+      {
+        worktrees.Removed -> Ok(project_host.Removed)
+        worktrees.Kept(reason:) ->
+          Ok(project_host.Kept(
+            path: project_repo.clone_path(
+              layout,
+              project_start.tree_name(request.ticket, request.seq),
+            ),
+            reason:,
+          ))
+      }
+    },
+  )
+}
+
+fn resume(trigger: String, ticket: String) -> tools.Item {
+  tools.Item(
+    trigger: model.TriggerId(trigger),
+    action: tools.Resume(model.TicketId(ticket)),
+    holds: [],
+    related: [],
+    prior_hand_back: None,
+  )
+}
+
+pub fn a_resumed_closed_tickets_second_clone_holds_the_first_assignments_commit_test() {
+  let rig = rig("resume-seed")
+  let repos = worktree_rig.rig("host-resume-seed")
+  let layout = project_rig.started(repos)
+  let requests = process.new_subject()
+  let ports = cloning_ports(rig, repos, layout, requests)
+  let config = project_host.Config(..rig.config, ports: fn() { ports })
+  let assert Ok(handle) = project_host.start(config) as "the actor starts"
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+  let assert Ok([tools.Applied]) = project_host.route(handle, [accept("a")])
+
+  // The first worker has produced nothing, so its clone is the owner's checkout.
+  let assert Ok(first) = process.receive(requests, 5000)
+    as "the first worker is started"
+  assert first.head == None
+  let first_clone = project_repo.clone_path(layout, "t-a-1")
+  assert worktree_rig.git(first_clone, ["rev-parse", "HEAD"])
+    == worktree_rig.git(repos.root, ["rev-parse", "HEAD"])
+
+  // It commits and goes idle. The host takes the commit into its repository,
+  // records it as the ticket's head, and the assignment rests.
+  let head =
+    project_rig.commit(first_clone, [#("src/first.go", "package first\n")])
+  let assert Ok(Nil) =
+    project_host.report(
+      handle,
+      "session-" <> first_key("t-a"),
+      tools.WorkerReport(tools.Waiting, None),
+    )
+  let assert Ok(Nil) =
+    poll_until(fn() { string.contains(ticket_text(handle), "done/rested") })
+
+  // A person closes the ticket. Its clone held nothing the host lacks, so it is
+  // removed, and the only copy of the work is the host repository's.
+  let assert Ok(Nil) = project_host.close_ticket(handle, "t-a", "owner")
+  let assert Ok(Nil) = poll_until(fn() { !worktree_rig.exists(first_clone) })
+
+  // A later message on the thread resumes the ticket in a new assignment. Its
+  // request carries the head, and its clone holds the first assignment's commit
+  // on a branch of its own, with no remote.
+  let assert Ok(_) = project_host.post(handle, "b", "more on a")
+  let assert Ok([tools.Applied]) =
+    project_host.route(handle, [resume("b", "t-a")])
+  let assert Ok(second) = process.receive(requests, 5000)
+    as "the resumed worker is started"
+  assert second.seq == 2
+  assert second.head == Some(head)
+  let second_clone = project_repo.clone_path(layout, "t-a-2")
+  assert worktree_rig.git(second_clone, ["rev-parse", "HEAD"]) == head
+  assert worktree_rig.git(second_clone, ["rev-parse", "--abbrev-ref", "HEAD"])
+    == "loom/t-a-2"
+  assert worktree_rig.exists(second_clone <> "/src/first.go")
+  assert worktree_rig.git(second_clone, ["remote"]) == ""
+}
+
+pub fn a_ticket_with_no_head_still_starts_from_the_owners_checkout_test() {
+  let rig = rig("no-head-seed")
+  let repos = worktree_rig.rig("host-no-head-seed")
+  let layout = project_rig.started(repos)
+  let requests = process.new_subject()
+  let ports = cloning_ports(rig, repos, layout, requests)
+  let config = project_host.Config(..rig.config, ports: fn() { ports })
+  let assert Ok(handle) = project_host.start(config) as "the actor starts"
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+  let assert Ok([tools.Applied]) = project_host.route(handle, [accept("a")])
+  let assert Ok(_first) = process.receive(requests, 5000)
+    as "the first worker is started"
+
+  // The owner's checkout moves on. A second ticket has no head either, so its
+  // clone is the owner's checkout as it is now and not as the first was.
+  worktree_rig.write(repos.root <> "/newer", "newer\n")
+  worktree_rig.git(repos.root, ["add", "newer"])
+  worktree_rig.git(repos.root, ["commit", "--quiet", "-m", "newer work"])
+  let assert Ok(_) = project_host.post(handle, "b", "fix b")
+  let assert Ok([tools.Applied]) = project_host.route(handle, [accept("b")])
+  let assert Ok(second) = process.receive(requests, 5000)
+    as "the second worker is started"
+  assert second.head == None
+  let clone = project_repo.clone_path(layout, "t-b-1")
+  assert worktree_rig.git(clone, ["rev-parse", "HEAD"])
+    == worktree_rig.git(repos.root, ["rev-parse", "HEAD"])
+  assert worktree_rig.exists(clone <> "/newer")
 }

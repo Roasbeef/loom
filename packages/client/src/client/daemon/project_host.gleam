@@ -278,6 +278,12 @@ pub type StartRequest {
     seq: Int,
     /// The ticket's capped title, for the session's name.
     title: String,
+    /// The commit the host last read from an earlier assignment of this
+    /// ticket, or none for a ticket that has produced no commit. The host
+    /// repository holds it, because the host took it in before it recorded it.
+    /// A new assignment's clone starts there, so a resumed or retried worker
+    /// sees the work already done.
+    head: Option(String),
   )
 }
 
@@ -1903,6 +1909,7 @@ fn start_worker(
               ticket:,
               seq:,
               title: model.title_text(found.title),
+              head: option.map(found.head, fn(commit) { commit.value }),
             )
 
           // The Mandate is told to the daemon first, because the session's

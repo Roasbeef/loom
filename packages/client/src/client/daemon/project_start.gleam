@@ -563,8 +563,7 @@ fn start_worker(
   trees: Worktrees,
   request: project_host.StartRequest,
 ) -> Result(String, String) {
-  let name = tree_name(request.ticket, request.seq)
-  use clone <- result.try(project_repo.clone(trees, layout, name))
+  use clone <- result.try(worker_clone(trees, layout, request))
   let creation =
     manager.Creation(
       request_key: request.key,
@@ -607,6 +606,36 @@ fn start_worker(
     |> result.map_error(fn(error) { string.inspect(error) }),
   )
   registration.id
+}
+
+/// Makes the clone an assignment's worker works in, or adopts the one an
+/// earlier start made. A ticket with a recorded head begins where its earlier
+/// assignment left off, and one without begins at the owner's checkout. The
+/// recorded head is a commit the host repository took in before the ticket
+/// recorded it, which is why `project_repo.clone` reads it from there. A
+/// ticket resumed after a merge or a close, and a retry after a crash or a
+/// failed start, are both such tickets.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_start.worker_clone(trees, layout, request)
+/// ```
+pub fn worker_clone(
+  trees: Worktrees,
+  layout: project_repo.Layout,
+  request: project_host.StartRequest,
+) -> Result(String, String) {
+  let start = case request.head {
+    Some(commit) -> project_repo.FromCommit(commit)
+    None -> project_repo.FromOwner
+  }
+  project_repo.clone(
+    trees,
+    layout,
+    tree_name(request.ticket, request.seq),
+    start,
+  )
 }
 
 /// Closes an assignment's clone under the rule for a project worker: it goes

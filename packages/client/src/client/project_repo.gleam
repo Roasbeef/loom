@@ -22,7 +22,9 @@
 ////   the worker's workspace. It is made by `git clone --no-hardlinks`, which
 ////   copies every object, so no write the worker makes can reach the source.
 ////   Its `origin` remote is removed, so it names nothing writable of the
-////   owner's. Its `.git` is a real directory inside the workspace, so the
+////   owner's. A clone for a resumed ticket is instead a new repository that
+////   fetches the ticket's head from the host repository, and it has no remote
+////   to remove. Its `.git` is a real directory inside the workspace, so the
 ////   session's policy adds no writable root for it. Everything in it is the
 ////   worker's: its configuration, its hooks and its refs.
 //// - **The host repository**, `<state>/projects/<id>/host.git`, is bare and is
@@ -35,7 +37,9 @@
 //// `ensure_host` → `clone` → `intake` → `check_tree` → `release`
 ////
 //// 1. `ensure_host` makes the host repository and pins the owner's push URL.
-//// 2. `clone` makes a worker's workspace from the owner's checkout.
+//// 2. `clone` makes a worker's workspace, from the owner's checkout or, for a
+////    ticket whose earlier assignment left a commit, from that commit in the
+////    host repository.
 //// 3. `intake` takes the commit a worker's branch is at into the host
 ////    repository, and reads the paths it changed there.
 //// 4. `check_tree` cuts a fresh repository from the host repository at a
@@ -72,6 +76,22 @@ pub type Layout {
     project: String,
     /// The owner's checkout, which the host reads and never writes.
     owner: String,
+  )
+}
+
+/// Where a new clone's work begins.
+pub type Start {
+  /// At the commit the owner's checkout is on now. A ticket that has not
+  /// produced a commit starts here.
+  FromOwner
+
+  /// At a commit the host repository holds: the head the host last read from
+  /// an earlier assignment of the same ticket. The new worker then sees that
+  /// work, and a commit it makes is a descendant of the branch that was pushed.
+  FromCommit(
+    /// The commit, as the host repository names it. The clone resolves it
+    /// again before it is part of any command.
+    commit: String,
   )
 }
 
@@ -409,30 +429,90 @@ fn pin_origin(trees: Worktrees, layout: Layout) -> Result(Nil, String) {
 /// earlier start made, and answers its path.
 ///
 /// The clone is made beside its final name and moved into place, so the name
-/// exists only for a clone that is whole. `--no-hardlinks` makes the object
-/// copy a real one: hard links would let a write through the clone's object
-/// files change the owner's. The `origin` remote is removed, and the branch
-/// `loom/<name>` is made at the commit the owner's checkout was on.
+/// exists only for a clone that is whole. The branch `loom/<name>` is made at
+/// the commit `start` names. In both cases the clone ends with no remote at
+/// all, and every object in it is a copy: a hard link would let a write through
+/// the clone's object files change the repository it came from.
+///
+/// From the owner (`FromOwner`) the clone is `git clone --no-hardlinks` of the
+/// owner's checkout with the `origin` remote removed.
+///
+/// From a commit (`FromCommit`) the clone is a new repository that fetches
+/// that one commit from the host repository by its path. A fetch by path
+/// writes no remote, so there is nothing to remove and nothing in the clone's
+/// configuration that names the host repository. The host repository is the
+/// source because it is the only place the earlier assignment's commit is
+/// known to be: the host took the commit in before it recorded it as the
+/// ticket's head. The commands run with hooks and `core.fsmonitor` switched
+/// off on the command line, though a repository made with no template has
+/// neither.
+///
+/// A commit that the owner's checkout already contains starts from the owner's
+/// checkout instead. That is the ticket whose pull request merged and whose
+/// owner has pulled: the work is in the base, and a clone cut from the older
+/// commit would start behind it and carry the merged history into the next
+/// pull request. A merged branch the owner has not pulled is not contained
+/// and starts from its own commit, which is all the host can know about it.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // project_repo.clone(trees, layout, "t-a-1")
+/// // project_repo.clone(trees, layout, "t-a-1", project_repo.FromOwner)
+/// // project_repo.clone(trees, layout, "t-a-2", project_repo.FromCommit(head))
 /// ```
 pub fn clone(
   trees: Worktrees,
   layout: Layout,
   name: String,
+  start: Start,
 ) -> Result(String, String) {
   let tickets = tickets_path(layout)
   let final = clone_path(layout, name)
   use Nil <- result.try(bootstrap.ensure_private_directory(tickets))
 
   // A clone on disk is adopted if it is sound and refused if it is not. It is
-  // never replaced, because it may hold the worker's commits.
+  // never replaced, because it may hold the worker's commits, and the start is
+  // not even looked at: the adopted clone is already where it began.
   case bootstrap.path_exists(final) {
     True -> result.replace(sound_clone(final), final)
-    False -> make_clone(trees, layout, name, tickets, final)
+    False -> {
+      use settled <- result.try(settle_start(trees, layout, start))
+      make_clone(trees, layout, name, tickets, final, settled)
+    }
+  }
+}
+
+/// Decides where a new clone begins. A commit is read back from the host
+/// repository, which both proves the host holds it and replaces a short name
+/// with the full one, and then compared with the owner's `HEAD`, fetched just
+/// now. A commit the owner's `HEAD` already contains is `FromOwner`.
+fn settle_start(
+  trees: Worktrees,
+  layout: Layout,
+  start: Start,
+) -> Result(Start, String) {
+  case start {
+    FromOwner -> Ok(FromOwner)
+    FromCommit(commit:) -> {
+      use Nil <- result.try(commit_name(commit))
+      use text <- result.try(
+        query(trees, host_path(layout), [
+          "rev-parse",
+          "--verify",
+          commit <> "^{commit}",
+        ]),
+      )
+      let held = string.trim(text)
+      use Nil <- result.try(commit_name(held))
+      use base <- result.try(refresh_base(trees, layout))
+      use ahead <- result.map(commits_ahead(trees, layout, base, held))
+
+      // No commit beyond the owner's `HEAD` means the owner's `HEAD` has it.
+      case ahead {
+        0 -> FromOwner
+        _ -> FromCommit(held)
+      }
+    }
   }
 }
 
@@ -444,27 +524,14 @@ fn make_clone(
   name: String,
   tickets: String,
   final: String,
+  start: Start,
 ) -> Result(String, String) {
   let making = tickets <> "/." <> name <> ".making"
   use Nil <- result.try(remove(making))
-  let made = {
-    use _cloned <- result.try(
-      change(trees, tickets, [tickets], [
-        "clone", "--quiet", "--no-hardlinks", "--no-tags", "--", layout.owner,
-        making,
-      ]),
-    )
-
-    // The clone must name nothing of the owner's that it could write.
-    use _unlinked <- result.try(
-      change(trees, making, [making], ["remote", "remove", "origin"]),
-    )
-    change(trees, making, [making], [
-      "checkout",
-      "--quiet",
-      "-b",
-      worktrees.branch_of(name),
-    ])
+  let made = case start {
+    FromOwner -> cut_from_owner(trees, layout, name, tickets, making)
+    FromCommit(commit:) ->
+      cut_from_commit(trees, layout, name, tickets, making, commit)
   }
 
   // A failed clone leaves nothing under the final name, and its partial
@@ -482,6 +549,81 @@ fn make_clone(
         <> simplifile.describe_error(error)
       })
   }
+}
+
+/// Cuts a clone from the owner's checkout: a copy of every object, with the
+/// `origin` remote removed and a branch of the worker's own at the commit the
+/// owner's checkout is on.
+fn cut_from_owner(
+  trees: Worktrees,
+  layout: Layout,
+  name: String,
+  tickets: String,
+  making: String,
+) -> Result(String, String) {
+  use _cloned <- result.try(
+    change(trees, tickets, [tickets], [
+      "clone", "--quiet", "--no-hardlinks", "--no-tags", "--", layout.owner,
+      making,
+    ]),
+  )
+
+  // The clone must name nothing of the owner's that it could write.
+  use _unlinked <- result.try(
+    change(trees, making, [making], ["remote", "remove", "origin"]),
+  )
+  change(trees, making, [making], [
+    "checkout",
+    "--quiet",
+    "-b",
+    worktrees.branch_of(name),
+  ])
+}
+
+/// Cuts a clone that holds one commit of the host repository and a branch of
+/// the worker's own at it. The repository is new and made with no template,
+/// and the commit comes in by a fetch of the host repository's path, so the
+/// clone has no remote, no alternates and no link to a file of the host's.
+fn cut_from_commit(
+  trees: Worktrees,
+  layout: Layout,
+  name: String,
+  tickets: String,
+  making: String,
+  commit: String,
+) -> Result(String, String) {
+  use _made <- result.try(
+    change(trees, tickets, [tickets], [
+      "init", "--quiet", "--template=", "--", making,
+    ]),
+  )
+  use _fetched <- result.try(change(
+    trees,
+    making,
+    [making],
+    unhooked([
+      "fetch",
+      "--quiet",
+      "--no-tags",
+      "--no-write-fetch-head",
+      "--",
+      host_path(layout),
+      commit,
+    ]),
+  ))
+  change(
+    trees,
+    making,
+    [making],
+    unhooked(["checkout", "--quiet", "-b", worktrees.branch_of(name), commit]),
+  )
+}
+
+/// A Git command line with hooks and the file system monitor switched off for
+/// that command, whatever any configuration file says. They are the two
+/// settings the host already overrides when it reads a clone.
+fn unhooked(arguments: List(String)) -> List(String) {
+  ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ..arguments]
 }
 
 /// Takes the commit an assignment's branch is at into the host repository, and
