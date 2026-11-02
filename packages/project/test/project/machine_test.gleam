@@ -42,6 +42,8 @@
 //// - `ended`: a ticket that ended holds no slot, however it ended.
 //// - `actions`: the actions a ticket lists are exactly those whose event the
 ////   engine accepts and acts on.
+//// - `stranded`: only a busy router holds candidates, so a turn that ends
+////   releases every one of them, to the queue or to a person.
 //// - `replay`: replaying the accepted events rebuilds the final state.
 //// - `snapshot`: the final state reads back from its snapshot, as the state
 ////   that retention keeps, which never drops an open ticket or an unsettled
@@ -1112,6 +1114,11 @@ fn check_triggers(current: State) -> Result(Nil, statem.Violation) {
     ok: list.all(current.queue, fn(id) { !list.contains(current.offered, id) }),
     tag: "queue",
     detail: "a trigger is both queued and offered",
+  ))
+  use _ <- result.try(holds(
+    ok: current.router == state.RouterBusy || current.offered == [],
+    tag: "stranded",
+    detail: "an idle router still holds candidates nobody will free",
   ))
   check_offers(current)
 }

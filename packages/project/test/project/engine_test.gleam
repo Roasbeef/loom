@@ -1318,6 +1318,60 @@ fn turns_ended(current: state.State, turns: Int) -> state.State {
   }
 }
 
+fn resume_c1(trigger: String) -> event.Event {
+  event.Routed(model.Routing(
+    TriggerId(trigger),
+    model.Resume(ticket_of("c1")),
+    [],
+    [],
+    None,
+  ))
+}
+
+// A router that resumes a stopped ticket is refused, and the refused candidate
+// is still the router's: it stays offered, the project queues everything else
+// behind it, and a person's requeue is refused too, because the trigger is
+// not waiting. Nothing about that is a loss. The router's turn ending is what
+// frees it, and each end offers it again until its offers are spent, when it is
+// a visible record that a person can queue again.
+pub fn a_refused_resume_leaves_the_candidate_with_the_router_until_its_turn_ends_test() {
+  let stopped =
+    run(working(), [
+      event.PersonStopped(ticket_of("c1"), world_principal()),
+      event.RouterTurnEnded,
+      arrival(owner("c2")),
+    ])
+  assert engine.apply(stopped, resume_c1("c2"))
+    == Error(event.TicketWithdrawn(ticket_of("c1")))
+  assert stopped.offered == [TriggerId("c2")]
+  assert stopped.router == state.RouterBusy
+
+  // A later post queues behind the held batch, and a requeue of the held
+  // candidate is refused rather than ignored.
+  let behind = run(stopped, [arrival(owner("c3"))])
+  assert behind.queue == [TriggerId("c3")]
+  assert engine.apply(
+      behind,
+      event.Requeued(TriggerId("c2"), world_principal()),
+    )
+    == Error(event.NotRequeueable(TriggerId("c2")))
+
+  // The turn ends: the refused candidate goes to the back of the queue and the
+  // waiting one is offered first.
+  let #(first, effects) = step(behind, event.RouterTurnEnded)
+  assert effects == [OfferCandidates([TriggerId("c3"), TriggerId("c2")])]
+  assert state.offer_count(first, TriggerId("c2")) == 2
+
+  // Refused twice more, it is a record for a person and not a stranded batch.
+  let spent = turns_ended(first, 3)
+  assert spent.router == state.RouterIdle
+  assert list.map(state.unrouted(spent), fn(each) { each.trigger.id })
+    == [TriggerId("c2"), TriggerId("c3")]
+  let #(_, again) =
+    step(spent, event.Requeued(TriggerId("c2"), world_principal()))
+  assert again == [OfferCandidates([TriggerId("c2")])]
+}
+
 pub fn a_candidate_offered_three_times_without_a_decision_waits_for_a_person_test() {
   let offered = run(fresh(), [arrival(owner("c1"))])
   assert state.offer_count(offered, TriggerId("c1")) == 1

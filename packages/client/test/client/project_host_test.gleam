@@ -759,6 +759,56 @@ pub fn a_candidate_the_router_never_decides_waits_on_the_board_for_a_person_test
     })
 }
 
+// The messages the router was sent for one candidate, by their receipt ids.
+fn receipts(seen: List(Seen), trigger: String) -> List(String) {
+  list.filter_map(seen, fn(each) {
+    case each {
+      Sent("router-1", peer_mail.Trigger(from:, message_id:, ..))
+        if from.trigger == trigger
+      -> Ok(message_id)
+      Sent(..) | Started(_) -> Error(Nil)
+    }
+  })
+}
+
+// A candidate offered again has to reach the router again. The receipt that
+// makes a delivery safe to repeat is keyed on the offer as well, so the second
+// and third offers are admitted and the router is woken for each, where before
+// they admitted nothing and each waited out the whole turn deadline.
+pub fn each_offer_of_a_candidate_reaches_the_router_under_its_own_receipt_test() {
+  let rig = rig("receipts")
+  let config =
+    project_host.Config(..rig.config, tick_ms: 50, router_turn_ms: 100)
+  let assert Ok(handle) = project_host.start(config) as "the actor starts"
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+  let assert Ok(Nil) =
+    poll_until(fn() {
+      let assert Ok(shown) = project_host.board(handle, 0)
+      shown.unrouted != []
+    })
+  assert receipts(drain(rig.seen), "a") == ["a~1", "a~2", "a~3"]
+}
+
+// A batch the router held when the actor stopped is still its own after a
+// restart, and its turn ends on a deadline that starts again. Without one the
+// batch, and every message queued behind it, waited for good.
+pub fn a_restart_does_not_strand_the_batch_the_router_held_test() {
+  let rig = rig("stranded")
+  let first = start(rig)
+  let assert Ok(_) = project_host.post(first, "a", "fix a")
+  let _ = drain(rig.seen)
+  stop(first)
+
+  let config =
+    project_host.Config(..rig.config, tick_ms: 50, router_turn_ms: 100)
+  let assert Ok(again) = project_host.start(config) as "the actor restarts"
+  let assert Ok(Nil) =
+    poll_until(fn() {
+      let assert Ok(shown) = project_host.board(again, 0)
+      shown.unrouted != []
+    })
+}
+
 // --- a worker at rest ----------------------------------------------------------------
 
 // The ports with a worktree that has one commit, touching a protected path so

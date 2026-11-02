@@ -818,11 +818,25 @@ fn boot(config: Config, inbox: Subject(Message)) -> Result(Host, String) {
       compacted_ms: 0,
       compacted_seq: 0,
     )
-
   // A compacted ledger starts from its snapshot and replays what follows.
   use restored <- result.try(restore_snapshot(fresh))
   use replayed <- result.try(replay(restored, restored.last_seq))
-  Ok(perform_due(configure_rules(recover_interrupted(replayed))))
+  Ok(
+    perform_due(
+      configure_rules(recover_interrupted(rearm_router_clock(replayed))),
+    ),
+  )
+}
+
+/// A batch the router held when the actor stopped is still its own, and the
+/// clock that ends its turn was in memory only. Without a clock the turn never
+/// ends, and the batch, with everything queued behind it, waits for good, so
+/// the deadline starts again from the restart.
+fn rearm_router_clock(host: Host) -> Host {
+  case host.engine.router {
+    state.RouterBusy -> Host(..host, offered_at_ms: host.ports.now_ms())
+    state.RouterIdle -> host
+  }
 }
 
 /// Replays a page at a time, because the ledger returns at most a page, and the
@@ -2924,23 +2938,42 @@ fn offer_to_router(
   triggers: List(String),
 ) -> Host {
   let router = host.config.router_session
+
+  // The turn's clock starts before the router is told, so that anything the
+  // router does in answer to this batch is later than the stamp.
+  let started = host.ports.now_ms()
   let results =
     list.map(triggers, fn(trigger) {
+      // A candidate whose text the host does not hold has nothing to send and
+      // counts as delivered.
       case dict.get(host.texts, trigger) {
         Error(Nil) -> Admitted
-        Ok(text) ->
-          admit(host, row, router, trigger, text, peer_mail.MayWake, fn(ok) {
-            ok
-          })
+        Ok(text) -> {
+          // A candidate offered again must reach the router again, and a
+          // receipt keyed on the trigger alone would admit nothing the second
+          // time, leaving the router asleep for a whole turn deadline. The
+          // receipt names the offer as well, and a repeat of the same offer,
+          // after a crash, still admits nothing.
+          let offers = state.offer_count(host.engine, model.TriggerId(trigger))
+          let receipt = trigger <> "~" <> int.to_string(offers)
+          admit_as(
+            host,
+            row,
+            router,
+            receipt,
+            trigger,
+            text,
+            peer_mail.MayWake,
+            fn(ok) { ok },
+          )
+        }
       }
     })
 
   // A partly delivered batch is retried whole. The message id of each trigger
   // and the router makes the repeats of the delivered ones admit nothing.
   case list.all(results, fn(each) { each == Admitted }) {
-    True ->
-      Host(..host, offered_at_ms: host.ports.now_ms())
-      |> settle(row)
+    True -> Host(..host, offered_at_ms: started) |> settle(row)
     False ->
       case row.attempts >= 9 {
         True ->
@@ -2972,6 +3005,22 @@ fn admit(
   wake: peer_mail.Wake,
   finish: fn(Admitted) -> a,
 ) -> a {
+  let receipt = trigger <> ":" <> session
+  admit_as(host, row, session, receipt, trigger, text, wake, finish)
+}
+
+/// `admit` with the receipt named by the caller, for a message that may
+/// legitimately be sent to the same session more than once.
+fn admit_as(
+  host: Host,
+  row: project_ledger.Effect,
+  session: String,
+  receipt: String,
+  trigger: String,
+  text: Trigger,
+  wake: peer_mail.Wake,
+  finish: fn(Admitted) -> a,
+) -> a {
   let command =
     peer_mail.Trigger(
       from: peer_mail.TriggerSource(
@@ -2980,7 +3029,7 @@ fn admit(
         actor: text.actor,
       ),
       target: main_strand,
-      message_id: trigger <> ":" <> session,
+      message_id: receipt,
       text: delivered_text(text, trigger),
       wake:,
     )
