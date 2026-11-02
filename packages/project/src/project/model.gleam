@@ -830,8 +830,8 @@ pub type Lane {
   Replay
 
   /// Recorded triggers put to the real router, several times each. It says
-  /// how this model judged these triggers, to within the minimum detectable
-  /// effect.
+  /// how this model judged these triggers, to within the bound the
+  /// verdict's interval gives.
   Live
 }
 
@@ -848,9 +848,11 @@ pub type Covers {
     /// The triggers on which the candidate's decisions differed from the
     /// recorded ones in any trial.
     changed: Int,
-    /// The minimum detectable effect in whole percentage points, rounded up,
-    /// or a hundred when the instrument could not size it.
-    mde_points: Int,
+    /// How far down the instrument's 95 percent interval of the change in
+    /// agreement with the labels reaches, in whole percentage points rounded
+    /// up, or a hundred when the interval could not be formed. A pass rules
+    /// out a drop of more than this.
+    bound_points: Int,
   )
 }
 

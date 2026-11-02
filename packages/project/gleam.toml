@@ -6,6 +6,7 @@ description = "Project mode's engine: a pure, replayable state machine over trig
 [dependencies]
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
+evalstat = { path = "../evalstat" }
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

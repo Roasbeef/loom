@@ -136,7 +136,7 @@ pub const covers =
     triggers: 30,
     trials: 1,
     changed: 0,
-    mde_points: 20,
+    bound_points: 20,
   )
 
 /// The pin of a state that has had no router announced: the policy version

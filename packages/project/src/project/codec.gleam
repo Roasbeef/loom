@@ -855,7 +855,7 @@ pub fn covers_json(covers: model.Covers) -> Json {
     #("triggers", json.int(covers.triggers)),
     #("trials", json.int(covers.trials)),
     #("changed", json.int(covers.changed)),
-    #("mde_points", json.int(covers.mde_points)),
+    #("bound_points", json.int(covers.bound_points)),
   ])
 }
 
@@ -865,8 +865,14 @@ pub fn covers_decoder() -> Decoder(model.Covers) {
   use triggers <- decode.field("triggers", decode.int)
   use trials <- decode.field("trials", decode.int)
   use changed <- decode.field("changed", decode.int)
-  use mde_points <- decode.field("mde_points", decode.int)
-  decode.success(model.Covers(lane:, triggers:, trials:, changed:, mde_points:))
+  use bound_points <- decode.field("bound_points", decode.int)
+  decode.success(model.Covers(
+    lane:,
+    triggers:,
+    trials:,
+    changed:,
+    bound_points:,
+  ))
 }
 
 /// The wire word of a label, shared with the snapshot and the tape.
