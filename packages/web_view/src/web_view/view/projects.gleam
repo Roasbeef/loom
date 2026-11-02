@@ -236,7 +236,7 @@ fn rules(rows: List(board.Rule)) -> List(Element(message)) {
         html.ul(
           [attribute.class("home-list")],
           list.map(rows, fn(each) {
-            html.li([attribute.class("home-folder")], [
+            html.li([attribute.class("home-folder home-detail")], [
               html.span([attribute.class("home-folder-name")], [
                 html.text(board.rule_words(each)),
               ]),
@@ -281,7 +281,7 @@ fn would(rows: List(board.Would)) -> List(Element(message)) {
         html.ul(
           [attribute.class("home-list")],
           list.map(rows, fn(each) {
-            html.li([attribute.class("home-folder")], [
+            html.li([attribute.class("home-folder home-detail")], [
               html.span([attribute.class("home-folder-name")], [
                 html.text(board.would_words(each)),
               ]),

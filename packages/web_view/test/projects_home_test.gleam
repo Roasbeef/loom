@@ -362,6 +362,10 @@ pub fn what_observe_would_have_done_is_listed_as_escaped_text_test() {
   assert string.contains(html, "https://github.com/o/r/issues/5")
   assert !string.contains(html, "<script>alert(1)")
   assert !string.contains(html, "href=\"https://github.com/o/r/issues/5\"")
+
+  // The row is a flex row of its own kind, so the words and the address are
+  // separate items with a gap and do not run together as inline text.
+  assert string.contains(html, "<li class=\"home-folder home-detail\">")
 }
 
 pub fn the_rule_list_shows_each_verdict_state_as_escaped_text_test() {
@@ -409,6 +413,10 @@ pub fn the_rule_list_shows_each_verdict_state_as_escaped_text_test() {
   )
   assert string.contains(html, "Stale: the router prompt changed.")
   assert !string.contains(html, "<script>alert(1)")
+
+  // The mode line and the daemon's sentence are separate items of a flex row,
+  // so "30 of 30 labelled" and the sentence after it do not run together.
+  assert string.contains(html, "<li class=\"home-folder home-detail\">")
 }
 
 // The web view only displays a run. Each state the daemon reports is drawn as

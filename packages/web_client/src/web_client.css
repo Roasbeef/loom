@@ -636,6 +636,12 @@
   .home-folder .home-group-head{margin:0;}
   .home-folder-name{flex:0 0 auto;color:var(--color-fg);font:500 13px/1.4 var(--font-sans);}
   .home-folder-path{flex:1 1 auto;min-width:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  /* A rule's row and a would-have-done row hold two or three spans that are not
+     a heading with a control. As flex items they each get a gap and wrap onto
+     their own line when the sentence is long, where they were inline text that
+     ran into one another. */
+  li.home-detail{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;}
+  li.home-detail .home-folder-path{flex:1 1 20ch;}
   button.home-forget{flex:0 0 auto;margin:0;padding:2px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);cursor:pointer;}
   button.home-forget:hover{background:var(--color-bg-raised);}
   form.home-create{display:flex;flex-direction:column;gap:10px;margin:0 0 12px 0;padding:12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);}
