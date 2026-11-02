@@ -34,7 +34,7 @@ flowchart TB
     subgraph Guest["Guest (6.12.91-loom-landlock)"]
         direction TB
         init["loom-guest-init<br/>network, cgroup, setpriv"]
-        gexec["loom-guest-executor<br/>tmpfs, options, readiness"]
+        gexec["loom-guest-executor<br/>state mount, options, readiness"]
         loomd["executor loomd<br/>executor_plane"]
         jail["loom-exec<br/>bwrap, Landlock, seccomp"]
     end
@@ -67,7 +67,7 @@ same provider.
 | `setup` (`packages/vmm/setup`) | The manifest under `$LOOM_VM_HOME`, the install of a release or a build tree into it, the unprivileged extraction of the guest image, and the doctor report. | Booting. Nothing in `setup` starts a guest; the manifest is read by whatever launches one. |
 | `go-microvm-runner` | The libkrun VMM, in its own session (`setsid`), and the guest's devices. | The network stack: with a hosted provider the runner only forwards Ethernet frames over a socket. |
 | `loom-guest-init` (`packages/vmm/guest/loom-guest-init`) | Guest networking, trusting the proxy CA and exporting its environment when staged, ownership of the `loom` user's directories, the delegated cgroup v2 subtree, and the privilege drop. | Which program runs. It runs its arguments. |
-| `loom-guest-executor` (`packages/vmm/guest/loom-guest-executor`) | The tmpfs state root, the distribution options file rendered in the guest, the daemon's process, and the readiness markers on the console. | The daemon's configuration and credentials, which the caller stages into the root before boot. |
+| `loom-guest-executor` (`packages/vmm/guest/loom-guest-executor`) | The state root mount (the persistent state disk, or a tmpfs when no device is given), the distribution options file rendered in the guest, the daemon's process, and the readiness markers on the console. | The daemon's configuration and credentials, which the caller stages into the root before boot. |
 | executor `loomd` (`packages/client/src/client/executor_plane.gleam`) | Sessions' scopes, the broker and helper pool, and the policy every jailed child gets, including the node credential mask. | The VM. It runs as on any host and does not know it is in a guest. |
 
 ## Startup
@@ -91,7 +91,7 @@ sequenceDiagram
     V->>R: microvm.Run (stage files, spawn runner)
     R->>X: init.krun execs NODE_DIR phase (root)
     V->>E: epmd.Register(NAME, HOST)
-    X->>X: mount tmpfs on state, chown to loom
+    X->>X: mount state disk on state, chown to loom
     X->>I: exec loom-guest-init ... --serve
     I->>I: static eth0, cgroup tree, setpriv to loom
     I->>D: distribution options, then loomd --state-dir
@@ -111,10 +111,14 @@ after `loom-vm` starts.
 
 The steps that need root run before the drop, in this order:
 
-1. **State root.** `loom-guest-executor` mounts a 512 MiB tmpfs on
-   `NODE_DIR/state` (`packages/vmm/guest/loom-guest-executor:89`). The guest
-   root is a virtio-fs share, and the executor's SQLite ledger and code mode's
-   AF_UNIX socket need a local filesystem.
+1. **State root.** `loom-guest-executor` mounts the state device on
+   `NODE_DIR/state` as ext4, formatting it on the first boot
+   (`packages/vmm/guest/loom-guest-executor:104`). `vm_spec.launch_arguments`
+   passes `--state-device /dev/vda`, the `state.img` that `loom vm up` keeps, so
+   the state survives `down` and `up`. Only with no device does the script mount
+   a 512 MiB tmpfs (`:107`) that starts empty on every boot. The guest root is a
+   virtio-fs share, and the executor's SQLite ledger and code mode's AF_UNIX
+   socket need a local filesystem.
 2. **Ownership.** It gives `NODE_DIR` and every `/srv/workspaces/*` to `loom`
    (`packages/vmm/guest/loom-guest-executor:92`). Staged files arrive owned by
    root, and the daemon's credential checks require a 0600 file it can read.
@@ -307,7 +311,9 @@ against GitHub.
 **The CA.** `newCA` generates an ECDSA P-256 authority in memory when
 `loom-vm run` starts. The private key is a field of an unexported type with no
 accessor and is never written. The certificate expires one hour after the run's
-`--timeout`, and carries a critical name constraint that permits only the
+`--timeout`, or 30 days after it starts when the timeout is 0, as it is for a
+standing guest (`standingProxyLifetime`; a guest that outlives it is restarted
+to mint a new one), and carries a critical name constraint that permits only the
 injection hosts' domains, so the copy in the guest's trust store cannot vouch for
 any other site, whatever the key could sign. Leaves are minted per host on first
 use and cached.
@@ -481,7 +487,7 @@ guest the paths are these:
 | `/opt/loom` | the server release, bundled ERTS, `loom-exec` | image, read by everyone |
 | `/srv/loom-node/loom.toml` | the executor's configuration, with guest paths | staged per boot, readable by model code (no secrets) |
 | `/srv/loom-node/creds/key.pem`, `home/.erlang.cookie` | the node's TLS key and cookie | staged per boot, 0600 `loom`, masked from jails |
-| `/srv/loom-node/state` | tmpfs: the state root, `dist.options`, `loomd.log` | per boot, lost on stop |
+| `/srv/loom-node/state` | the state disk (`state.img`, ext4): the state root, `dist.options`, `loomd.log`; a tmpfs only when no device is given | kept across `down` and `up`, replaced by `--fresh` |
 | `/srv/workspaces/<name>` | the checkout the executor serves | staged per boot, owned by `loom` |
 | `/sys/fs/cgroup/loom/{init,work,exec}` | the delegated cgroup subtree | built by `loom-guest-init` each boot |
 
@@ -498,7 +504,7 @@ communicate only through files, sockets and signals.
 | `ghproxy` handler goroutines in `loom-vm` | one goroutine per CONNECT, which owns the hijacked guest connection and its upstream; `Proxy.Close` closes them all when the run ends |
 | `go-microvm-runner` (own session) | the VMM, guest memory and devices |
 | guest `loom-guest-init` | stays the parent of the workload and exits with its status |
-| executor `loomd` | everything a session does: scopes, broker, helper pool, ledger on the tmpfs |
+| executor `loomd` | everything a session does: scopes, broker, helper pool, ledger on the state disk |
 | `loom-exec` helpers | one jailed execution each, as on any host |
 
 Four rules follow from that table:
@@ -533,10 +539,10 @@ hand. It runs one standing guest executor, called `vm` unless `--name` says anot
 and enrolls it as an ordinary `[executors.<name>]` row, so `loom --executor
 <name> --workspace <directory name>` places a session's tools in the guest
 through the same remote placement every executor has. The guest is a separate
-`loom-vm run` process. The daemon does not start it and does not own it. One
-guest per home is supported today: each deployment mints its own cookie and
-`[distribution]` table, and the install refuses a home that holds another
-(see "Known gaps").
+`loom-vm run` process. The daemon does not start it and does not own it. Several
+guests can run at once, each with its own `--name`, directory, root, state disk,
+host port and epmd name; they share one deployment (see "Three states of a
+`loom.toml`").
 
 `loom vm setup [--release TAG | --from-build DIR]` runs the `loom-vm` that ships
 beside `loomd` (`install.launcher()`, `bin/loom-vm` in the server tree, which is
@@ -574,17 +580,20 @@ revision is neither `dev` nor the running build's commit, because a guest
 daemon from another release crashes the host on its first unmatched message;
 the refusal names `loom vm setup`. It then:
 
-1. provisions a two-node deployment in ledger mode (protocol-change/086) in
-   process into `~/.loom/vm/<name>/deploy/`, with the nodes
-   `loom_vm_<name>_orch@127.0.0.1` and `loom_vm_<name>_exec@127.0.0.1` and the
-   guest's fixed port 4370. The bundles are `/2`, each carrying the signed
-   ledger, and `deploy/ledger.log` holds the public copy. A second `up` reads
-   the bundles back instead of minting new certificates, and reads a `/1`
-   bundle from a guest minted before this change the same way, as a static
-   deployment; such a guest is never converted. `up` keeps the authority key
-   (see "The authority key" below), so a node can be enrolled into the
-   deployment later without minting it again;
-2. installs the orchestrator bundle into the user's `loom.toml` with
+1. settles the deployment before anything is minted or written
+   (`vm_cli.deployment`, "Three states of a `loom.toml`"). A guest that
+   already has bundles in `deploy/` reads them back and enrols nothing. A new
+   guest in a `loom.toml` with no deployment gets a two-node ledger deployment
+   (protocol-change/086) minted in process into `~/.loom/vm/<name>/deploy/`,
+   with the nodes `loom_vm_<name>_orch@127.0.0.1` and
+   `loom_vm_<name>_exec@127.0.0.1` and the guest's fixed port 4370. The bundles
+   are `/2`, each carrying the signed ledger, and `deploy/ledger.log` holds the
+   public copy. A second `up` reads the bundles back instead of minting new
+   certificates, and reads a `/1` bundle from a guest minted before the ledger
+   the same way, as a static deployment; such a guest is never converted. `up`
+   keeps the authority key (see "The authority key" below), so a node can be
+   enrolled into the deployment later without minting it again;
+2. for a minted deployment, installs the orchestrator bundle into the user's `loom.toml` with
    `distribution_install.install`, which merges `[distribution]` and
    `[executors.<name>]` and refuses a file that holds a different deployment.
    The installed `[distribution]` table carries `ledger =` (the orchestrator's
@@ -645,6 +654,60 @@ the refusal names `loom vm setup`. It then:
    also starts the credential proxy and the guest's `[tools]` table turns the
    jail's network on; `--github off` gives the guest no egress beyond the hosts
    `--allow` names (see "Package registries and toolchains").
+
+### Three states of a `loom.toml`
+
+`vm_spec.deployment_state` reads the configuration with the daemon's own parser
+(`distribution.parse`) and answers one of three, and `up` acts on it for a guest
+that has no bundles yet:
+
+- **No `[distribution]` table** (`NoDeployment`). `up` mints a deployment, installs
+  the orchestrator's bundle and, as the first guest, makes the file a ledger
+  deployment.
+- **A `ledger` key** (`LedgerDeployment`). `up` enrols the guest as an executor
+  member of that ledger and leaves the file alone. It reads the deployment id and
+  the daemon's own member name from the installed ledger
+  (`vm_spec.orchestrator_membership`: the member whose node is
+  `[distribution] node`, which must be an orchestrator), finds the sealed key
+  (`<vm home>/authority/<id>` with its `passphrase` file, then the operator's
+  `~/.loom/authority/<id>` and the home recorded beside the ledger, whose
+  passphrase is asked for on the terminal), and signs
+  `vm_spec.guest_enrollment` (executor, `loom_vm_<name>_exec@127.0.0.1`, host
+  `127.0.0.1`, port 4370, linked to the daemon's member, not in the directory)
+  through the factored `ledger_cli.enroll_member`. The entry reaches the running
+  daemon over `ledger.append` and the bundle is written to `deploy/`; the
+  daemon derives `[executors.<name>]` from its pin table with no restart
+  (`client/ledger_rows`), so `loom --executor <name>` works at once. `up`
+  does not edit `loom.toml`, add the loopback listener line, stop the daemon or
+  touch `.erlang.cookie`, and prints nothing about a restart. The joined guest's
+  bundle holds its own key, the CA certificate and the cookie, never the
+  authority's key, and `up` stages it into the guest as any other.
+- **`[[distribution.peers]]`** (`StaticDeployment`). No key remains that could
+  admit a node, so `up` refuses and says to re-provision in ledger mode, or to
+  `loom vm rm` the guest that minted it and run `up` again. A static guest that
+  has its own `deploy/` keeps resuming.
+
+The join refuses, before it writes anything: when the daemon of the default
+configuration is not running (it names `loom deployment status`, which starts
+it; `up` never starts a daemon, and 086 gives a node no other way to adopt an
+entry), when the key cannot be opened on this machine (it names the deployment
+and the `loom distribution enroll` command the operator who holds the key
+runs; the bundle is then copied to `deploy/` and `up` resumes from it), and
+for a `--config` other than the default, whose daemon `up` cannot find. A
+guest directory the failed join made is removed.
+
+A joined guest has no orchestrator bundle, so a resume finds an executor
+bundle alone with a ledger in it and enrols nothing. It has no written
+`[executors.<name>]` row, so the resume checks no row either. `rm` of a joined
+guest revokes it with `ledger_cli.revoke_member` when the key is on this machine,
+with the checks of `loom distribution revoke` (a guest that still holds sessions
+is refused and nothing is removed), and otherwise prints the revoke the operator
+runs; it removes nothing from `loom.toml`, because the `[distribution]` table and
+the cookie are the deployment's. The authority directory goes only when no
+remaining guest's bundle names its deployment. A guest that minted a deployment
+that other guests joined is refused by `rm` until they are removed, because the
+tables, cookie and key are theirs too; removing the joined guests first is the
+order that never leaves a deployment without its guests' key.
 
 ### The authority key
 
@@ -739,24 +802,32 @@ state disk, such as `/home/loom`, `/work` and tools installed by hand. The steps
 1. checks that `srv/workspaces` and every parent of it in the old root is a real
    directory, and otherwise refuses with a line naming `--fresh`, because a link
    there would be carried into the new root;
-2. clones the manifest's guest root into `<vm home>/<name>/root.next`, removing
-   a leftover `root.next` first, and removes any `srv/workspaces` the clone
-   brought (`clear_workspaces_slot`), whatever the exported guest root ships;
-3. moves `srv/workspaces` from the old root into the new one with one `rename`,
-   so a link inside it stays a link and nothing is followed. This is the last
-   step that can fail, and a failure is refused naming `--fresh`;
-4. deletes the old root, renames `root.next` to `root` and writes the record.
-   `state.img` is not touched, and `stage` then runs on the new root as it does
-   for any `up`, so provisioning runs again.
+2. clones the manifest's guest root into `<vm home>/<name>/root.building`, a
+   name `up` does not read, removing a leftover `root.next` and `root.building`
+   first, and removes any `srv/workspaces` the clone brought
+   (`clear_workspaces_slot`), whatever the exported guest root ships;
+3. moves `srv/workspaces` from the old root into the clone with one `rename`,
+   so a link inside it stays a link and nothing is followed, and then renames
+   the clone to `root.next` (`move_into_place`). A failure of the first rename is
+   refused naming `--fresh`;
+4. deletes the old root, renames `root.next` to `root`, and `stage` then runs on
+   the new root as it does for any `up`, so provisioning runs again. The record
+   is written after the script is staged, as the last step of `stage`'s work on
+   the root. `state.img` is not touched.
 
 An interrupted `up` can finish. Before step 3 the old root is whole, so the next
-`up` repeats the upgrade from a clean `root.next`. After it, `root.next/srv/workspaces`
+`up` repeats the upgrade from a clean start. After it, `root.next/srv/workspaces`
 exists, which the next `up` reads as an upgrade whose swap is left
 (`FinishUpgrade`) and completes. That directory is the evidence because only the
-host writes `root.next` and step 2 guarantees it exists only after the rename;
-the old root's `srv/workspaces` is not consulted, since the guest writes it. A
-crash between the swap and the record only makes the next `up` upgrade once
-more.
+host writes `root.next`, and it is given that name only after the workspaces
+moved into it, so a stop after the clone of an export that ships
+`srv/workspaces` leaves a `root.building` and no `root.next`; the old root's
+`srv/workspaces` is not consulted, since the guest writes it. A crash before the
+record only makes the next `up` upgrade once more, and the provisioning of that
+`up` comes from the host's copy of the script and the new root, never from the
+old root, which the swap may have partly deleted. A root with neither marker nor
+script but a host copy of the script is a stop between the clone and the
+staging, and the script is staged again.
 
 Provisioning needs the script, and the root is untrusted, so the script is never
 read back out of it. `up` keeps a host-owned copy at `<vm home>/<name>/provision`
@@ -917,7 +988,8 @@ follow mode.
 `loom vm list` prints one line for each directory of the vm home that has a
 valid guest name and a `deploy/` directory: the name, `running` or `stopped`,
 and the workspace copies in its root. A guest directory with no pid file, or
-whose recorded process is gone, is stopped. The manifest and any other file in
+whose recorded process is gone, is stopped; one whose pid file cannot be read is
+`unknown`. The manifest and any other file in
 the home are not guests.
 
 `loom vm rm [--name NAME] [--config PATH] [--yes]` deletes a stopped guest and
@@ -945,8 +1017,8 @@ only for an empty one. With `--yes`:
   file that cannot be parsed or a table the line edit cannot reach (a dotted key,
   an inline table) is refused with one line and nothing is removed. The file is
   written atomically before the cookie and the guest's directory are removed.
-- `<vm home>/<name>/` is removed after `chmod -R u+rwX`, with a removal that does
-  not follow links (`file:del_dir_r`, which removes a link itself).
+- `<vm home>/<name>/` is removed after `chmod -R u+rwX` (`remove_tree`), with
+  `simplifile.delete_all`, which removes a link itself and does not follow it.
 
 Deleting a guest loses work that was not pushed, so a person who wants it first
 runs `loom vm sync`; uncommitted edits cannot be fetched and are lost.
@@ -1015,7 +1087,7 @@ branch: refs land only under `refs/remotes/vm/*`, to be merged or checked out
 with `git merge vm/<branch>`.
 
 `loom vm sync --to-guest` goes the other way for a resumed copy, which `up`
-never refreshes. It runs `git -C <checkout> bundle create --quiet <file> --all`
+never refreshes. It runs `git -C <checkout> bundle create --quiet <file> --branches`
 into `<vm home>/<name>/to-guest-<workspace>.bundle`, beside the root where the
 guest cannot reach it, then creates `/srv/host-refs` with `make_inside` and
 renames the bundle to `/srv/host-refs/<workspace>.bundle` in the root (a rename
@@ -1039,16 +1111,10 @@ the host are not in it.
 - Nothing in the daemon places an executor into a guest. `loom vm up` does it
   for one standing guest from the command line; a broker or pool driver and
   the bundle transport of #1137 do not exist yet.
-- One guest per home. A second `loom vm up --name` is refused because each
-  deployment mints its own cookie and `[distribution]` table, and the install
-  never replaces another's (the refusal names `loom vm rm` and says only one
-  guest per home is supported). The refused `up` has already written the new
-  guest's `deploy/` and sealed its authority key, so it leaves a directory that
-  `loom vm list` shows; `loom vm rm --name NAME --yes` clears both and leaves
-  the other deployment's tables and cookie. Joining a daemon that is already in a
-  ledger deployment, which would lift this, is not built yet: `up` mints its
-  own deployment, and `vm_spec.deployment_state` and `guest_enrollment` are the
-  decisions the join will use.
+- A guest is reached only from orchestrators on its own host: it listens on a
+  forwarded loopback port, and the link from another machine is the executor-to-executor
+  placement of #1137, which does not exist. Another machine uses the guest by
+  spawning on the orchestrator of this host.
 - There is no `loom vm shell`. A guest has no exec channel: its executor serves
   the orchestrator over the distribution link and nothing else, so a command in
   the guest runs only through a session's tools.

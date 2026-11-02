@@ -40,7 +40,7 @@ reader and the daily verbs' decisions (`printable`, the checkouts record,
 `plan_teardown`), and, for the join of a guest into a ledger deployment,
 `deployment_state` (`NoDeployment`, `LedgerDeployment`, `StaticDeployment`,
 read with `distribution.parse`), `guest_enrollment` (the `ledger_operator.Enrollment`
-of the guest, not yet called by `vm_cli`) and `bundle_deployment`. `up` mints in
+of the guest) and `bundle_deployment`, `orchestrator_membership` (the daemon's member name from its installed ledger) and `joined_teardown`. `up` decides from `deployment_state` before minting anything: no deployment mints, a ledger deployment is joined (`vm_cli.join` enrols `guest_enrollment` through `ledger_cli.enroll_member` and `ledger_cli.socket_connect` on the running default daemon, with `ledger_cli.unlock_at` on the sealed key; `rm` revokes with `revoke_member`), and a static one is refused. `up` mints in
 ledger mode with `distribution_provision.provision_ledger` and seals the
 authority key with `authority_key.keep` under `<vm home>/authority/<id>/`
 beside a generated `passphrase` file (`vm_cli.seal_authority`); `stage_ledger`
