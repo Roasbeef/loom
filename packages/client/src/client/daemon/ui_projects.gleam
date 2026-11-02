@@ -88,6 +88,8 @@ pub fn board_body(project: String, shown: project_host.Board) -> JsonValue {
     #("tickets", json.Array(shown.tickets)),
     #("replies", json.Array(shown.replies)),
     #("unrouted", json.Array(shown.unrouted)),
+    #("would_have_done", json.Array(shown.would_have_done)),
+    #("sources", json.Array(shown.sources)),
   ])
 }
 

@@ -49,6 +49,7 @@ import client/daemon/project_host
 import client/goalcheck
 import client/goalstate
 import client/peer_mail
+import client/project_poller
 import client/project_publish
 import client/project_repo
 import client/project_scan
@@ -365,6 +366,8 @@ fn ports_for(env: Env, project: catalogue.Project) -> project_host.Ports {
     },
     run_check: fn(request) { run_check(env.now_ms, layout, trees, request) },
     publish: fn(request) { published(layout, request) },
+    gh_runner: fn() { project_poller.runner(project_publish.tools()) },
+    remote_url: fn() { option.from_result(project_repo.pinned_url(layout)) },
     logger: env.logger,
   )
 }

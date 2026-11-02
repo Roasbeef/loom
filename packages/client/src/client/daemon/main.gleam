@@ -3313,6 +3313,7 @@ pub fn project_env(
       protected_paths: config.projects.settings.protected_paths,
       publish: config.projects.settings.publish,
       check_wall_ms: project_host.idle_policy.check_wall_ms,
+      sources: config.projects.settings.sources,
     ),
     logger:,
   )

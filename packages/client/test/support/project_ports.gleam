@@ -13,6 +13,7 @@ import client/goalstate
 import client/internal/ffi_os
 import client/peer_mail
 import core/json
+import gleam/option.{None}
 import telemetry/log
 
 /// Ports whose sessions start and accept every message, whose worktrees are
@@ -37,6 +38,8 @@ pub fn inert() -> project_host.Ports {
       )
     },
     publish: fn(_) { project_host.Unavailable("this test has no remote") },
+    gh_runner: fn() { None },
+    remote_url: fn() { None },
     logger: log.discard(),
   )
 }

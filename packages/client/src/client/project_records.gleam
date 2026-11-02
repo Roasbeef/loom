@@ -18,6 +18,7 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/json.{type Json}
 import gleam/list
+import gleam/string
 import project/codec
 import project/event.{type Effect, type Event}
 import project/policy
@@ -103,6 +104,17 @@ pub type Record {
     detail: String,
   )
 
+  /// What a source's last pass left for a person to read: a rate limit's end,
+  /// an answer GitHub gave that could not be read, items skipped. The host
+  /// writes one only when the words change, so a source that stays broken for
+  /// a day adds one line and not one for every poll.
+  SourceNote(
+    /// The source's name.
+    source: String,
+    /// The words, capped. Empty when the source recovered.
+    text: String,
+  )
+
   /// An assignment's worktree was kept when its ticket ended, because it held
   /// commits its base lacks. The board names it from this record.
   TreeKept(
@@ -184,6 +196,22 @@ pub type Job {
     /// The assignment.
     seq: Int,
   )
+
+  /// Post a router's reply to a GitHub issue or pull request as a comment.
+  ReplyJob(
+    /// The trigger the reply answers.
+    subject: String,
+    /// The issue or pull request number, from the subject's thread.
+    number: Int,
+    /// The purpose word, which sets the word cap.
+    purpose: String,
+    /// The router's words, before they are made safe for GitHub.
+    text: String,
+    /// The reply's own key, which names its marker comment.
+    key: String,
+    /// When the reply was queued, so a search for its marker starts there.
+    queued_ms: Int,
+  )
 }
 
 /// A time no due scan reaches, for rows the host keeps for reading and never
@@ -262,6 +290,12 @@ fn record_json(record: Record) -> Json {
         #("command", json.string(command)),
         #("outcome", json.string(outcome)),
         #("detail", json.string(detail)),
+      ])
+    SourceNote(source:, text:) ->
+      json.object([
+        #("host", json.string("source_note")),
+        #("source", json.string(source)),
+        #("text", json.string(text)),
       ])
     TreeKept(ticket:, seq:, path:, reason:) ->
       json.object([
@@ -344,6 +378,11 @@ fn host_decoder() -> decode.Decoder(Record) {
         outcome:,
         detail:,
       ))
+    }
+    "source_note" -> {
+      use source <- decode.field("source", decode.string)
+      use text <- decode.field("text", decode.string)
+      decode.success(SourceNote(source:, text:))
     }
     "tree_kept" -> {
       use ticket <- decode.field("ticket", decode.string)
@@ -480,6 +519,41 @@ pub fn recovery_draft(
   )
 }
 
+/// The row that posts a router's reply to GitHub, due at once. Its key leads
+/// with the ledger position in twelve digits, so the rows of one thread sort
+/// in the order the replies were queued, and the performer posts them in that
+/// order.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_records.github_reply_draft(7, "gh-c-1", 12, "clarify", "which one?", 0).key
+///   == "000000000007:gh-c-1"
+/// ```
+pub fn github_reply_draft(
+  seq: Int,
+  subject: String,
+  number: Int,
+  purpose: String,
+  text: String,
+  now_ms: Int,
+) -> project_ledger.EffectDraft {
+  let key = string.pad_start(int.to_string(seq), 12, "0") <> ":" <> subject
+  row(
+    "github_reply",
+    key,
+    [
+      #("subject", json.string(subject)),
+      #("number", json.int(number)),
+      #("purpose", json.string(purpose)),
+      #("text", json.string(text)),
+      #("key", json.string(key)),
+      #("queued_ms", json.int(now_ms)),
+    ],
+    now_ms,
+  )
+}
+
 /// An effect row due at `now_ms`, with its fields as a JSON object payload.
 fn row(
   kind: String,
@@ -576,6 +650,23 @@ pub fn job(found: project_ledger.Effect) -> Result(Job, String) {
         use ticket <- decode.field("ticket", decode.string)
         use seq <- decode.field("seq", decode.int)
         decode.success(RecoverJob(ticket:, seq:))
+      })
+    "github_reply" ->
+      parse(payload, {
+        use subject <- decode.field("subject", decode.string)
+        use number <- decode.field("number", decode.int)
+        use purpose <- decode.field("purpose", decode.string)
+        use text <- decode.field("text", decode.string)
+        use key <- decode.field("key", decode.string)
+        use queued_ms <- decode.field("queued_ms", decode.int)
+        decode.success(ReplyJob(
+          subject:,
+          number:,
+          purpose:,
+          text:,
+          key:,
+          queued_ms:,
+        ))
       })
     other -> Error("unknown job kind " <> other)
   }

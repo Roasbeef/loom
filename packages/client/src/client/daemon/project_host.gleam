@@ -45,13 +45,17 @@ import broker/internal/call
 import client/goalstate
 import client/notes
 import client/peer_mail
+import client/project_github
+import client/project_poller
 import client/project_publish
 import client/project_records.{
   type Job, type Record, CheckJob, DeliverJob, Engine as EngineLine,
-  Host as HostLine, ObserveJob, OfferJob, PublishJob, RecoverJob, StartJob,
-  StopJob,
+  Host as HostLine, ObserveJob, OfferJob, PublishJob, RecoverJob, ReplyJob,
+  StartJob, StopJob,
 }
 import client/project_settings.{PublishOff, PublishPullRequest}
+import client/project_sources.{type Sources}
+import client/project_watcher
 import core/json.{type JsonValue}
 import gleam/bit_array
 import gleam/crypto
@@ -60,6 +64,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order
 import gleam/otp/actor as otp_actor
 import gleam/result
 import gleam/set.{type Set}
@@ -111,6 +116,12 @@ pub type Ports {
     /// one already open for it. It blocks, and the actor calls it only from a
     /// task of its own.
     publish: fn(PublishRequest) -> Published,
+    /// The runner for `gh`, or none on a machine without it. The poller and the
+    /// reply outbox call GitHub through it and nothing else.
+    gh_runner: fn() -> Option(project_poller.Runner),
+    /// The URL pinned for the project's pushes, which names the one repository
+    /// its GitHub source reads, or none when the checkout had no origin.
+    remote_url: fn() -> Option(String),
     /// Where the actor reports.
     logger: Logger,
   )
@@ -218,17 +229,21 @@ pub type Policy {
     publish: project_settings.PublishMode,
     /// The wall a check may take, in milliseconds.
     check_wall_ms: Int,
+    /// The event sources and their rules. With none, the composer is the only
+    /// way work starts.
+    sources: Sources,
   )
 }
 
 /// The policy of a project whose owner wrote no `[project]` keys: no check,
-/// the default protected paths, nothing published.
+/// the default protected paths, nothing published, no source but the composer.
 pub const idle_policy =
   Policy(
     check: None,
     protected_paths: protect.default_paths,
     publish: PublishOff,
     check_wall_ms: 600_000,
+    sources: project_sources.none,
   )
 
 /// A request to create a worker session.
@@ -341,6 +356,12 @@ pub type Board {
     /// The messages the router was offered and decided nothing about, shown on
     /// the first page for a person to queue again.
     unrouted: List(JsonValue),
+    /// What `observe` rules recorded as accepted work they did not do, newest
+    /// first, shown on the first page. A person reads it to judge a rule before
+    /// letting it act.
+    would_have_done: List(JsonValue),
+    /// How each configured source is doing, shown on the first page.
+    sources: List(JsonValue),
   )
 }
 
@@ -407,6 +428,14 @@ pub opaque type Message {
     attempt: Int,
     outcome: Published,
   )
+  PollSettled(polled: project_poller.Polled)
+  ReplySettled(key: String, thread: String, posting: project_poller.Posting)
+  SetMode(
+    rule: String,
+    mode: model.Mode,
+    by: String,
+    reply: Subject(Result(Nil, String)),
+  )
   Tick
 }
 
@@ -424,6 +453,8 @@ type Host {
     offered_at_ms: Int,
     recovered: Set(#(String, Int)),
     kept_trees: Dict(String, List(KeptTree)),
+    watcher: project_watcher.Watcher,
+    replying: Dict(String, Int),
   )
 }
 
@@ -743,8 +774,8 @@ fn boot(config: Config, inbox: Subject(Message)) -> Result(Host, String) {
         project: model.ProjectId(config.project),
         workspace: config.workspace,
         max_workers: config.max_workers,
-        queue_limit: 100,
-        attention_limit: 5,
+        queue_limit: config.policy.sources.queue_limit,
+        attention_limit: config.policy.sources.attention_limit,
         policy_version: "v1",
       )),
       last_seq: 0,
@@ -754,9 +785,11 @@ fn boot(config: Config, inbox: Subject(Message)) -> Result(Host, String) {
       offered_at_ms: 0,
       recovered: set.new(),
       kept_trees: dict.new(),
+      watcher: project_watcher.new(),
+      replying: dict.new(),
     )
   use replayed <- result.try(replay(fresh, 0))
-  Ok(perform_due(recover_interrupted(replayed)))
+  Ok(perform_due(configure_rules(recover_interrupted(replayed))))
 }
 
 /// Replays a page at a time, because the ledger returns at most a page, and the
@@ -911,6 +944,15 @@ fn handle(host: Host, message: Message) -> actor.Next(Host, Message) {
       actor.continue(
         perform_due(publish_settled(host, key, ticket, commit, attempt, outcome)),
       )
+    PollSettled(polled:) ->
+      actor.continue(perform_due(poll_settled(host, polled)))
+    ReplySettled(key:, thread:, posting:) ->
+      actor.continue(perform_due(reply_settled(host, key, thread, posting)))
+    SetMode(rule:, mode:, by:, reply:) -> {
+      let #(next, answer) = set_mode_now(host, rule, mode, by)
+      process.send(reply, answer)
+      actor.continue(perform_due(next))
+    }
     Tick -> actor.continue(tick(host))
   }
 }
@@ -933,7 +975,7 @@ fn tick(host: Host) -> Host {
     False -> host
   }
 
-  perform_due(relieved)
+  perform_due(poll_when_due(relieved))
 }
 
 fn committed_or_same(host: Host, incoming: Event) -> Host {
@@ -1012,6 +1054,8 @@ fn keep_record(host: Host, written: Record) -> Host {
       Host(..host, replies: [#(subject, purpose, body), ..host.replies])
     project_records.HandedBack(..) -> host
     project_records.CheckRecorded(..) -> host
+    project_records.SourceNote(text:, ..) ->
+      Host(..host, watcher: project_watcher.Watcher(..host.watcher, note: text))
     project_records.Recovered(ticket:, seq:) ->
       Host(..host, recovered: set.insert(host.recovered, #(ticket, seq)))
     project_records.TreeKept(ticket:, seq:, path:, reason:) ->
@@ -1186,16 +1230,29 @@ fn reply_now(
       let written =
         project_records.ReplyQueued(queued.subject.value, purpose, queued.text)
       let key = queued.subject.value <> ":" <> int.to_string(host.last_seq + 1)
-      let draft =
-        project_ledger.EffectDraft(
-          kind: "reply",
-          key:,
-          payload_json: project_records.encode_record(written),
-          due_ms: project_records.never_ms,
-        )
 
-      // The row is the outbox entry; delivery to the source is a later slice,
-      // so its time is one no scan reaches.
+      // A reply to a GitHub thread goes out only when the project publishes.
+      // Every other reply stays a draft: its row is one no scan reaches, and
+      // the board shows it.
+      let draft = case github_destination(host, queued.subject) {
+        Ok(number) ->
+          project_records.github_reply_draft(
+            host.last_seq + 1,
+            queued.subject.value,
+            number,
+            purpose,
+            queued.text,
+            host.ports.now_ms(),
+          )
+        Error(Nil) ->
+          project_ledger.EffectDraft(
+            kind: "reply",
+            key:,
+            payload_json: project_records.encode_record(written),
+            due_ms: project_records.never_ms,
+          )
+      }
+
       case
         project_ledger.append_with_effects(
           host.ledger,
@@ -1590,6 +1647,12 @@ fn perform(host: Host, row: project_ledger.Effect, job: Job) -> Host {
     ObserveJob(ticket:, seq:) -> observe_head(host, row, ticket, seq)
     CheckJob(ticket:, commit:) -> start_check(host, row, ticket, commit)
     PublishJob(ticket:, commit:) -> start_publish(host, row, ticket, commit)
+    ReplyJob(number:, purpose:, text:, key:, queued_ms:, ..) ->
+      start_reply(
+        host,
+        row,
+        GithubReply(number:, purpose:, text:, key:, queued_ms:),
+      )
   }
 }
 
@@ -2754,7 +2817,7 @@ fn admit(
       ),
       target: main_strand,
       message_id: trigger <> ":" <> session,
-      text: text.body,
+      text: delivered_text(text, trigger),
       wake:,
     )
   let ports = host.ports
@@ -2794,6 +2857,17 @@ fn admit(
   }
 }
 
+/// The text a session is handed for a stored trigger. A GitHub body is cut at
+/// `project_github.inline_chars` with a pointer to the ledger, where the full
+/// text stays readable through `project_read`. The owner's own words are never
+/// cut: the owner is the one person whose message has no reason to be capped.
+fn delivered_text(text: Trigger, trigger: String) -> String {
+  case text.source {
+    "github" -> project_github.inline(text.body, trigger)
+    _ -> text.body
+  }
+}
+
 // --- reading -----------------------------------------------------------------
 
 /// One page of the board, stamped with the revision it was read at. The queued
@@ -2812,6 +2886,14 @@ fn board_page(host: Host, page: Int) -> Board {
     },
     unrouted: case page {
       0 -> list.map(state.unrouted(host.engine), unrouted_json(host, _))
+      _ -> []
+    },
+    would_have_done: case page {
+      0 -> would_have_done(host)
+      _ -> []
+    },
+    sources: case page {
+      0 -> sources_json(host)
       _ -> []
     },
   )
@@ -3500,5 +3582,540 @@ fn requeue_now(
   {
     Ok(next) -> #(next, Ok(Nil))
     Error(failure) -> #(host, Error(not_committed_text(failure)))
+  }
+}
+
+// --- sources and rules -------------------------------------------------------
+
+/// A person's mode for one rule: `off`, `observe` or `auto`. The engine is the
+/// authority on `auto`, which it refuses without a current passing verdict, and
+/// no verdict can exist until the evaluation slice, so for now `auto` is always
+/// refused in the words below.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_host.set_mode(handle, "ci", model.Observe, "owner")
+/// ```
+pub fn set_mode(
+  handle: Handle,
+  rule: String,
+  mode: model.Mode,
+  by: String,
+) -> Result(Nil, String) {
+  ask(handle, SetMode(rule, mode, by, _))
+  |> result.flatten
+}
+
+const auto_refused_words =
+  "auto is not available yet: a rule may run on its own only after the evaluation instrument has judged it, and that arrives in a later slice. Use observe to see what it would do."
+
+fn set_mode_now(
+  host: Host,
+  rule: String,
+  mode: model.Mode,
+  by: String,
+) -> #(Host, Result(Nil, String)) {
+  let known =
+    list.find(host.config.policy.sources.rules, fn(each) { each.name == rule })
+
+  // Only a rule the owner configured has a mode to set.
+  case known {
+    Error(Nil) -> #(host, Error("there is no rule " <> rule))
+    Ok(found) -> {
+      let source = model.SourceId(found.source)
+      case commit(host, event.ModeSet(source, model.RuleId(found.name), mode)) {
+        Ok(next) -> {
+          log.info(host.ports.logger, "project.mode_set", [
+            field.ident(key: "rule", value: rule),
+            field.ident(key: "mode", value: mode_word(mode)),
+            field.ident(key: "by", value: by),
+          ])
+          #(next, Ok(Nil))
+        }
+        Error(Refused(event.VerdictRequired(..))) -> #(
+          host,
+          Error(auto_refused_words),
+        )
+        Error(failure) -> #(host, Error(not_committed_text(failure)))
+      }
+    }
+  }
+}
+
+fn mode_word(mode: model.Mode) -> String {
+  case mode {
+    model.Off -> "off"
+    model.Observe -> "observe"
+    model.Auto -> "auto"
+  }
+}
+
+/// At boot, gives each configured rule the mode the owner wrote, unless the
+/// ledger already holds a mode for it. A mode a person set later survives a
+/// restart, because the configuration only supplies a rule's first mode. A
+/// rule that asks for `auto` starts in `observe`, since the engine refuses
+/// `auto` without a verdict, and says so in the log.
+fn configure_rules(host: Host) -> Host {
+  list.fold(host.config.policy.sources.rules, host, fn(acc, rule) {
+    let source = model.SourceId(rule.source)
+    let id = model.RuleId(rule.name)
+
+    // A rule the ledger knows keeps the mode the ledger gave it.
+    case dict.has_key(acc.engine.modes, #(source, id)) {
+      True -> acc
+      False -> first_mode(acc, source, id, rule.mode)
+    }
+  })
+}
+
+fn first_mode(
+  host: Host,
+  source: model.SourceId,
+  rule: model.RuleId,
+  mode: model.Mode,
+) -> Host {
+  case mode {
+    model.Off -> host
+    model.Observe -> committed_or_same(host, event.ModeSet(source, rule, mode))
+    model.Auto -> {
+      log.warn(host.ports.logger, "project.auto_not_available", [
+        field.ident(key: "rule", value: rule.value),
+      ])
+      committed_or_same(host, event.ModeSet(source, rule, model.Observe))
+    }
+  }
+}
+
+/// The source the project can read now: the owner configured one, the machine
+/// has `gh`, and the checkout named a GitHub remote.
+type Source {
+  Source(
+    github: project_sources.Github,
+    repository: project_poller.Repository,
+    run: project_poller.Runner,
+  )
+}
+
+fn source_of(host: Host) -> Result(Source, Nil) {
+  use github <- result.try(option.to_result(
+    host.config.policy.sources.github,
+    Nil,
+  ))
+  use run <- result.try(option.to_result(host.ports.gh_runner(), Nil))
+  use url <- result.try(option.to_result(host.ports.remote_url(), Nil))
+  use #(owner, name) <- result.map(project_publish.repository_of(url))
+  Source(github:, repository: project_poller.Repository(owner, name), run:)
+}
+
+/// How long a poll task may run before its scope kills it, in milliseconds.
+const poll_wall_ms = 300_000
+
+/// Starts a poll when one is due. The task runs the pass and sends its answer
+/// back as `PollSettled`; the actor never waits on GitHub.
+fn poll_when_due(host: Host) -> Host {
+  let now = host.ports.now_ms()
+  case source_of(host) {
+    Error(Nil) -> host
+    Ok(source) ->
+      case project_watcher.is_due(host.watcher, now) {
+        True -> start_poll(host, source, now)
+        False -> host
+      }
+  }
+}
+
+fn start_poll(host: Host, source: Source, now: Int) -> Host {
+  let request =
+    project_watcher.request(
+      source.run,
+      source.repository,
+      source.github,
+      host.config.policy.sources.rules,
+      host.engine,
+      stored_cursors(host),
+      host.watcher,
+      now,
+    )
+  let inbox = host.inbox
+  let _witnessed =
+    weft.new([
+      fn() {
+        process.send(inbox, PollSettled(project_poller.poll(request)))
+        Ok(Nil)
+      },
+    ])
+    |> weft.deadline(poll_wall_ms)
+    |> weft.start_witnessed
+  Host(..host, watcher: project_watcher.begun(host.watcher, now))
+}
+
+/// The ledger name of a source cursor. The scanner's table is keyed by a
+/// printable name of up to 64 bytes, and a worker session's id never begins
+/// with `src:`.
+fn cursor_name(key: String) -> String {
+  "src:" <> key
+}
+
+fn stored_cursors(host: Host) -> Dict(String, String) {
+  project_watcher.cursor_keys(host.engine)
+  |> list.filter_map(fn(key) {
+    case project_ledger.cursor(host.ledger, cursor_name(key)) {
+      Ok(Some(value)) -> Ok(#(key, value))
+      Ok(None) | Error(_) -> Error(Nil)
+    }
+  })
+  |> dict.from_list
+}
+
+/// Takes in a finished pass. Each new trigger is written as its text and then
+/// as the engine event; the engine's own dedupe is what makes a trigger read
+/// twice stored once. The read positions are stored only after every trigger
+/// was, so a pass that failed halfway is read again from where it began.
+fn poll_settled(host: Host, polled: project_poller.Polled) -> Host {
+  let fresh = project_watcher.fresh(host.engine, polled.arrivals)
+
+  // A write that fails ends the intake there and keeps the old read positions.
+  case list.try_fold(fresh, host, take_arrival) {
+    Error(partial) -> finish_poll(partial, polled)
+    Ok(taken) -> {
+      let concluded =
+        list.fold(
+          project_watcher.open_conclusions(taken.engine, polled.conclusions),
+          taken,
+          conclude,
+        )
+      finish_poll(store_cursors(concluded, polled.cursors), polled)
+    }
+  }
+}
+
+/// Writes one trigger's text and the event that gives it to the engine. The
+/// text is written first: an orphaned text is harmless, and a trigger without
+/// its text would reach the router with nothing to read. The error carries the
+/// host as it was, because a refused or unwritten trigger changes nothing.
+fn take_arrival(
+  host: Host,
+  arrival: project_github.Arrival,
+) -> Result(Host, Host) {
+  let id = arrival.trigger.id.value
+  let written = {
+    use texted <- result.try(record(
+      host,
+      project_records.TriggerText(
+        id,
+        "github",
+        arrival.trigger.actor.value,
+        arrival.body,
+      ),
+    ))
+    commit(texted, event.TriggerArrived(arrival.trigger, arrival.bot))
+    |> result.map_error(not_committed_text)
+  }
+
+  case written {
+    Ok(next) -> Ok(next)
+    Error(reason) -> {
+      log.warn(host.ports.logger, "project.intake_failed", [
+        field.ident(key: "trigger", value: id),
+        field.text(key: "reason", value: reason),
+      ])
+      Error(host)
+    }
+  }
+}
+
+/// Ends a ticket whose pull request merged or closed. Its subscriptions stay,
+/// so a person's comment on the pull request reaches the router and can resume
+/// the ticket. A refusal, because the ticket ended some other way meanwhile,
+/// leaves the host as it was.
+fn conclude(host: Host, ended: project_poller.Conclusion) -> Host {
+  committed_or_same(
+    host,
+    event.Concluded(model.TicketId(ended.ticket), ended.outcome),
+  )
+}
+
+fn store_cursors(host: Host, cursors: List(#(String, String))) -> Host {
+  list.each(cursors, fn(entry) {
+    case project_ledger.set_cursor(host.ledger, cursor_name(entry.0), entry.1) {
+      Ok(Nil) -> Nil
+      Error(error) ->
+        log.warn(host.ports.logger, "project.cursor_failed", [
+          field.ident(key: "cursor", value: entry.0),
+          field.text(key: "reason", value: string.inspect(error)),
+        ])
+    }
+  })
+  host
+}
+
+/// Records what the pass left for a person when it differs from the last
+/// record, and schedules the next pass.
+fn finish_poll(host: Host, polled: project_poller.Polled) -> Host {
+  let now = host.ports.now_ms()
+  let interval = case host.config.policy.sources.github {
+    Some(github) -> github.interval_s
+    None -> project_sources.default_interval_s
+  }
+  let text = project_watcher.note_text(polled)
+  let noted = case text == host.watcher.note {
+    True -> host
+    False -> note_source(host, text)
+  }
+  Host(
+    ..noted,
+    watcher: project_watcher.settled(noted.watcher, polled, now, interval),
+  )
+}
+
+fn note_source(host: Host, text: String) -> Host {
+  case record(host, project_records.SourceNote("github", text)) {
+    Ok(next) -> next
+    Error(_) -> host
+  }
+}
+
+// --- replies to GitHub -------------------------------------------------------
+
+/// A router reply on its way to a GitHub thread.
+type GithubReply {
+  GithubReply(
+    number: Int,
+    purpose: String,
+    text: String,
+    key: String,
+    queued_ms: Int,
+  )
+}
+
+/// The most attempts a reply gets before the host leaves it as a draft.
+const max_reply_attempts = 5
+
+/// The thread number a reply to `subject` goes to, when it goes to GitHub at
+/// all: the project publishes, and the subject came from GitHub. Any other
+/// reply is a draft that nothing sends.
+fn github_destination(
+  host: Host,
+  subject: model.TriggerId,
+) -> Result(Int, Nil) {
+  use Nil <- result.try(case host.config.policy.publish {
+    PublishPullRequest -> Ok(Nil)
+    PublishOff -> Error(Nil)
+  })
+  use stored <- result.try(dict.get(host.engine.triggers, subject))
+
+  // The thread's name carries the issue or pull request number.
+  case stored.trigger.source.value {
+    "github" -> thread_number(stored.trigger.thread)
+    _ -> Error(Nil)
+  }
+}
+
+fn thread_number(thread: model.ThreadId) -> Result(Int, Nil) {
+  case string.starts_with(thread.value, "gh-") {
+    False -> Error(Nil)
+    True ->
+      case int.parse(string.drop_start(thread.value, 3)) {
+        Ok(number) if number > 0 -> Ok(number)
+        Ok(_) | Error(Nil) -> Error(Nil)
+      }
+  }
+}
+
+/// Posts a reply, one per thread at a time. A reply whose thread has another
+/// post in flight stays due and goes out after it, which keeps the replies of a
+/// thread in the order they were queued: the rows sort by ledger position.
+fn start_reply(
+  host: Host,
+  row: project_ledger.Effect,
+  reply: GithubReply,
+) -> Host {
+  let thread = int.to_string(reply.number)
+  let now = host.ports.now_ms()
+  case source_of(host), thread_busy(host, thread, now) {
+    Error(Nil), _ -> give_up_or_wait(host, row.kind, row.key)
+    Ok(_), True -> host
+    Ok(source), False -> post_in_task(host, row, source, reply, thread, now)
+  }
+}
+
+/// Whether a post to the thread is in flight. One that has overstayed its
+/// task's deadline no longer counts, so a lost answer cannot block the thread.
+fn thread_busy(host: Host, thread: String, now: Int) -> Bool {
+  case dict.get(host.replying, thread) {
+    Ok(since) -> now - since < reply_wall_ms + task_grace_ms
+    Error(Nil) -> False
+  }
+}
+
+/// How long a post may take, in milliseconds.
+const reply_wall_ms = 120_000
+
+fn post_in_task(
+  host: Host,
+  row: project_ledger.Effect,
+  source: Source,
+  reply: GithubReply,
+  thread: String,
+  now: Int,
+) -> Host {
+  let marker =
+    "<!-- loom-reply:" <> host.config.project <> ":" <> reply.key <> " -->"
+  let body = project_github.reply_body(reply.text, reply.purpose, marker)
+  let key = row.key
+  let started =
+    in_task(host, row, reply_wall_ms, fn() {
+      ReplySettled(
+        key:,
+        thread:,
+        posting: project_poller.post_reply(
+          source.run,
+          source.repository,
+          reply.number,
+          marker,
+          body,
+          reply.queued_ms - 60_000,
+          now,
+        ),
+      )
+    })
+  Host(..started, replying: dict.insert(started.replying, thread, now))
+}
+
+/// The post's answer. A comment that is up settles the row. A rate limit moves
+/// the row to the time the limit ends. A failure backs the row off, and after
+/// `max_reply_attempts` leaves the reply as the draft the board already shows.
+fn reply_settled(
+  host: Host,
+  key: String,
+  thread: String,
+  posting: project_poller.Posting,
+) -> Host {
+  let freed = Host(..host, replying: dict.delete(host.replying, thread))
+  case posting {
+    project_poller.Posted -> settle_key(freed, "github_reply", key)
+    project_poller.PostLimited(until_ms:) -> {
+      let _deferred =
+        project_ledger.defer(freed.ledger, "github_reply", key, until_ms)
+      freed
+    }
+    project_poller.PostFailed(reason:) -> {
+      log.warn(freed.ports.logger, "project.reply_failed", [
+        field.text(key: "reason", value: reason),
+      ])
+      give_up_or_wait(freed, "github_reply", key)
+    }
+  }
+}
+
+fn give_up_or_wait(host: Host, kind: String, key: String) -> Host {
+  let due = host.ports.now_ms() + 30_000
+  case project_ledger.defer(host.ledger, kind, key, due) {
+    Ok(attempts) if attempts >= max_reply_attempts -> settle_key(host, kind, key)
+    Ok(_) | Error(_) -> host
+  }
+}
+
+// --- the board's view of a source -------------------------------------------
+
+/// The most entries of "would have done" the board carries.
+const would_limit = 50
+
+/// The inferred triggers that an `observe` rule recorded as accepted work it
+/// did not do, newest first.
+fn would_have_done(host: Host) -> List(JsonValue) {
+  dict.values(host.engine.triggers)
+  |> list.filter(fn(stored) { stored.fate == state.Decided(state.WouldAccept) })
+  |> list.sort(fn(a, b) {
+    case int.compare(b.trigger.at_ms, a.trigger.at_ms) {
+      order.Eq -> string.compare(a.trigger.id.value, b.trigger.id.value)
+      other -> other
+    }
+  })
+  |> list.take(would_limit)
+  |> list.map(fn(stored) { would_json(host, stored) })
+}
+
+fn would_json(host: Host, stored: state.TriggerRecord) -> JsonValue {
+  let trigger = stored.trigger
+  json.Object([
+    #("trigger", json.String(trigger.id.value)),
+    #("source", json.String(trigger.source.value)),
+    #("actor", json.String(trigger.actor.value)),
+    #("rule", case trigger.inputs.rule {
+      Some(matched) -> json.String(matched.rule.value)
+      None -> json.Null
+    }),
+    #("text", json.String(capped_text(host, trigger.id.value))),
+    #("link", case github_link(host, trigger.thread) {
+      Some(link) -> json.String(link)
+      None -> json.Null
+    }),
+    #("at_ms", json.Int(trigger.at_ms)),
+  ])
+}
+
+/// The web address of a GitHub thread, built from the project's pinned remote
+/// and the thread's number. A thread that is a branch's CI links to the
+/// repository's checks.
+fn github_link(host: Host, thread: model.ThreadId) -> Option(String) {
+  let repository =
+    host.ports.remote_url()
+    |> option.to_result(Nil)
+    |> result.try(project_publish.repository_of)
+  case repository {
+    Error(Nil) -> None
+    Ok(#(owner, name)) -> {
+      let base = "https://github.com/" <> owner <> "/" <> name
+      case thread_number(thread), string.starts_with(thread.value, "gh-ci-") {
+        Ok(number), _ -> Some(base <> "/issues/" <> int.to_string(number))
+        Error(Nil), True -> Some(base <> "/actions")
+        Error(Nil), False -> None
+      }
+    }
+  }
+}
+
+/// How many stored triggers overload shed. Shedding is recorded per trigger,
+/// and this count is what makes the loss visible without listing each one.
+fn count_fate(host: Host, decision: state.Decision) -> Int {
+  dict.values(host.engine.triggers)
+  |> list.count(fn(stored) { stored.fate == state.Decided(decision) })
+}
+
+fn sources_json(host: Host) -> List(JsonValue) {
+  case host.config.policy.sources.github {
+    None -> []
+    Some(github) -> [
+      json.Object([
+        #("source", json.String("github")),
+        #("interval_s", json.Int(github.interval_s)),
+        #("last_poll_ms", json.Int(host.watcher.last_ms)),
+        #("shed", json.Int(count_fate(host, state.Shed))),
+        #("next_poll_ms", json.Int(host.watcher.due_ms)),
+        #("note", json.String(host.watcher.note)),
+        #(
+          "rules",
+          json.Array(
+            list.map(host.config.policy.sources.rules, fn(rule) {
+              json.Object([
+                #("name", json.String(rule.name)),
+                #(
+                  "mode",
+                  json.String(
+                    mode_word(state.mode_of(
+                      host.engine,
+                      model.SourceId(rule.source),
+                      model.RuleId(rule.name),
+                    )),
+                  ),
+                ),
+              ])
+            }),
+          ),
+        ),
+      ]),
+    ]
   }
 }

@@ -66,6 +66,7 @@ fn policy(
   publish: project_settings.PublishMode,
 ) -> project_host.Policy {
   project_host.Policy(
+    ..project_host.idle_policy,
     check:,
     protected_paths: ["Makefile", ".github/**"],
     publish:,
