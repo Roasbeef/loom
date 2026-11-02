@@ -8,10 +8,11 @@ import project/gate
 import project/host
 import project/model.{
   Abandoned, Addressed, Asking, Closed, CommitId, Explicit, Inferred, Merged,
-  NoQuestion, PersonHeard, Satisfied, Silent, StoppedByPerson, Unaddressed,
-  Waiting, Wanting,
+  NoQuestion, PersonHeard, Satisfied, Silent, StoppedByPerson, TicketId,
+  TriggerId, Unaddressed, Waiting, Wanting,
 }
 import project/policy
+import project/protect
 import project/readiness
 import project/stage.{type Facts, Facts}
 import qcheck
@@ -355,7 +356,74 @@ pub fn a_person_may_publish_from_any_state_test() {
   )
 }
 
+pub fn a_ticket_needing_review_keeps_what_it_earned_test() {
+  let ready = readiness.Ready(proof("a"))
+  let published = readiness.Published(model.PrincipalId("p"), CommitId("a"))
+  assert readiness.review_needed(readiness.InProgress)
+    == readiness.AwaitingReview
+  assert readiness.review_needed(readiness.AwaitingReview)
+    == readiness.AwaitingReview
+  assert readiness.review_needed(ready) == ready
+  assert readiness.review_needed(published) == published
+}
+
+// --- protected paths ---------------------------------------------------------------------
+
+pub fn a_literal_pattern_matches_one_path_and_a_directory_pattern_a_prefix_test() {
+  assert protect.matches("Makefile", "Makefile")
+  assert !protect.matches("docs/Makefile", "Makefile")
+  assert protect.matches(".github/workflows/ci.yml", ".github/**")
+  assert protect.matches(".github/x", ".github/**")
+  assert !protect.matches(".githubx", ".github/**")
+  assert !protect.matches(".github", ".github/**")
+}
+
+pub fn matching_ignores_case_and_a_leading_dot_slash_test() {
+  assert protect.matches("makefile", "Makefile")
+  assert protect.matches("MAKEFILE", "makefile")
+  assert protect.matches("./Makefile", "Makefile")
+  assert protect.matches(".GitHub/Workflows/a.yml", ".github/**")
+}
+
+pub fn there_is_no_pattern_language_beyond_the_trailing_directory_form_test() {
+  assert !protect.matches("src/a.go", "src/*.go")
+  assert !protect.matches("a.go", "*")
+  assert !protect.matches("src/a.go", "src/**/a.go")
+  assert protect.matches("src/*.go", "src/*.go")
+}
+
+pub fn a_diff_touching_any_protected_path_is_touched_test() {
+  assert protect.scope(["src/a.go", "Makefile"], protect.default_paths)
+    == model.ProtectedPathsTouched
+  assert protect.scope(["src/a.go", "docs/b.md"], protect.default_paths)
+    == model.ProtectedPathsUntouched
+  assert protect.scope([], protect.default_paths)
+    == model.ProtectedPathsUntouched
+  assert protect.scope(["GNUmakefile"], protect.default_paths)
+    == model.ProtectedPathsTouched
+}
+
+pub fn the_check_command_protects_the_files_it_names_test() {
+  let patterns =
+    protect.with_check(["Makefile"], "bash ./scripts/check.sh --fast")
+  assert patterns == ["Makefile", "bash", "scripts/check.sh"]
+  assert protect.scope(["scripts/check.sh"], patterns)
+    == model.ProtectedPathsTouched
+  assert protect.scope(["scripts/other.sh"], patterns)
+    == model.ProtectedPathsUntouched
+  assert protect.with_check(["Makefile"], "FOO=1 make -j4 check")
+    == ["Makefile", "make", "check"]
+}
+
 // --- derived names -----------------------------------------------------------------------
+
+pub fn an_answer_id_names_the_ticket_and_the_question_test() {
+  assert model.answer_id(TicketId("t-c1"), 7) == TriggerId("a~t-c1~7")
+  assert model.answer_id(TicketId("t-c1"), 7)
+    != model.answer_id(TicketId("t-c1"), 8)
+  assert model.answer_id(TicketId("t-c1"), 7)
+    != model.answer_id(TicketId("t-c2"), 7)
+}
 
 pub fn a_ticket_id_is_a_function_of_its_trigger_test() {
   assert model.ticket_for(model.TriggerId("c1")) == model.TicketId("t-c1")

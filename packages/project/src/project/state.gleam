@@ -13,8 +13,11 @@
 //// them, and a question answered in two places is answered two ways.
 
 import gleam/dict.{type Dict}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order
+import gleam/string
 import project/event.{type Effect, type Refusal}
 import project/gate
 import project/model.{
@@ -98,6 +101,24 @@ pub type Decision {
   Held(
     /// Why.
     hold: Hold,
+  )
+
+  /// The router was offered it too many times and decided nothing. It waits
+  /// on the board for a person, who can queue it again.
+  Unrouted(
+    /// Why it stopped being offered.
+    reason: UnroutedReason,
+  )
+}
+
+/// Why a candidate stopped being offered to the router.
+pub type UnroutedReason {
+  /// It went out in this many batches and came back each time with no
+  /// decision. An explicit trigger can end here as well as an inferred one,
+  /// and nothing drops it: it is a record a person sees.
+  NoDecision(
+    /// How many times it was offered.
+    offers: Int,
   )
 }
 
@@ -247,6 +268,9 @@ pub type Ticket {
     rejected: Option(#(CommitId, CommandDigest)),
     /// Where its work stands for a person.
     readiness: Readiness,
+    /// Why the host would not go on by itself at the current head, if it
+    /// said so. A new head clears it.
+    review: Option(model.ReviewReason),
     /// The pull request, once the host opened it.
     pull_request: Option(PullRequestRef),
     /// How it ended, if it did.
@@ -296,6 +320,9 @@ pub type State {
     queue: List(TriggerId),
     /// Candidates the router holds now.
     offered: List(TriggerId),
+    /// How many batches each candidate has been in. The count is what bounds
+    /// the router's second chances, see `queue.max_offers`.
+    offers: Dict(TriggerId, Int),
     /// Whether a batch is out.
     router: RouterPhase,
     /// The mode of each source and rule pair; absent means `Off`.
@@ -338,6 +365,7 @@ pub fn start(config: Config) -> State {
     order: [],
     queue: [],
     offered: [],
+    offers: dict.new(),
     router: RouterIdle,
     modes: dict.new(),
     verdicts: dict.new(),
@@ -506,15 +534,58 @@ fn delivery_fact(ticket: Ticket) -> stage.Delivery {
 }
 
 /// A pull request counts only when the ticket is ready or published, because
-/// readiness is what lets the host open one.
+/// readiness is what lets the host open one. A ready or published ticket whose
+/// pull request the host declined to open waits for a person all the same,
+/// which is what `review` says.
 fn review_fact(ticket: Ticket) -> stage.ReviewFact {
-  case ticket.readiness, ticket.pull_request {
-    readiness.AwaitingReview, _ -> stage.InReview
-    readiness.Ready(_), Some(_) -> stage.PullRequestOpen
-    readiness.Published(_, _), Some(_) -> stage.PullRequestOpen
-    readiness.Ready(_), None -> stage.NotInReview
-    readiness.Published(_, _), None -> stage.NotInReview
-    readiness.InProgress, _ -> stage.NotInReview
+  case ticket.readiness, ticket.pull_request, ticket.review {
+    readiness.AwaitingReview, _, _ -> stage.InReview
+    readiness.Ready(_), Some(_), _ -> stage.PullRequestOpen
+    readiness.Published(_, _), Some(_), _ -> stage.PullRequestOpen
+    readiness.Ready(_), None, Some(_) -> stage.InReview
+    readiness.Published(_, _), None, Some(_) -> stage.InReview
+    readiness.Ready(_), None, None -> stage.NotInReview
+    readiness.Published(_, _), None, None -> stage.NotInReview
+    readiness.InProgress, _, _ -> stage.NotInReview
+  }
+}
+
+/// The triggers that were offered without a decision and now wait for a
+/// person, oldest first and then by id.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert state.unrouted(state.start(config)) == []
+/// ```
+pub fn unrouted(state: State) -> List(TriggerRecord) {
+  state.triggers
+  |> dict.values
+  |> list.filter(fn(stored) {
+    case stored.fate {
+      Decided(Unrouted(_)) -> True
+      Decided(_) | Awaiting | Offered -> False
+    }
+  })
+  |> list.sort(fn(a, b) {
+    case int.compare(a.trigger.at_ms, b.trigger.at_ms) {
+      order.Eq -> string.compare(a.trigger.id.value, b.trigger.id.value)
+      other -> other
+    }
+  })
+}
+
+/// How many batches a trigger has been offered in.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert state.offer_count(state.start(config), model.TriggerId("x")) == 0
+/// ```
+pub fn offer_count(state: State, id: TriggerId) -> Int {
+  case dict.get(state.offers, id) {
+    Ok(count) -> count
+    Error(Nil) -> 0
   }
 }
 

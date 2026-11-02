@@ -16,12 +16,12 @@
 ////
 //// <!-- transitions: readiness.Readiness -->
 ////
-//// | state | check passed | person publishes | protected paths touched | new commit |
-//// | --- | --- | --- | --- | --- |
-//// | `InProgress` | `Ready` with the proof | `Published` | `AwaitingReview` | unchanged |
-//// | `AwaitingReview` | refused, no check ran | `Published` | unchanged | `InProgress` |
-//// | `Ready` | refused, already ready | `Published` | unchanged | `InProgress` |
-//// | `Published` | refused, a person already decided | `Published` with the new commit | unchanged | `InProgress` |
+//// | state | check passed | person publishes | protected paths touched | new commit | review needed |
+//// | --- | --- | --- | --- | --- | --- |
+//// | `InProgress` | `Ready` with the proof | `Published` | `AwaitingReview` | unchanged | `AwaitingReview` |
+//// | `AwaitingReview` | refused, no check ran | `Published` | unchanged | `InProgress` | unchanged |
+//// | `Ready` | refused, already ready | `Published` | unchanged | `InProgress` | unchanged |
+//// | `Published` | refused, a person already decided | `Published` with the new commit | unchanged | `InProgress` | unchanged |
 
 import gleam/option.{type Option}
 import project/host.{type CheckPassed}
@@ -108,6 +108,25 @@ pub fn person_publishes(
 ///   == readiness.AwaitingReview
 /// ```
 pub fn protected_touched(current: Readiness) -> Readiness {
+  case current {
+    InProgress -> AwaitingReview
+    AwaitingReview -> AwaitingReview
+    Ready(_) -> current
+    Published(_, _) -> current
+  }
+}
+
+/// Record that the host will not go on by itself and a person must look. A
+/// ticket still in progress, which has no check to lean on, waits for review;
+/// one that is ready or published keeps what it earned.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert readiness.review_needed(readiness.InProgress)
+///   == readiness.AwaitingReview
+/// ```
+pub fn review_needed(current: Readiness) -> Readiness {
   case current {
     InProgress -> AwaitingReview
     AwaitingReview -> AwaitingReview

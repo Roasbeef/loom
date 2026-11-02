@@ -84,6 +84,39 @@ pub fn the_wire_form_of_one_event_is_pinned_test() {
     == "{\"t\":\"routed_ignore\",\"trigger\":\"x\"}"
 }
 
+pub fn the_wire_form_of_the_host_facts_is_pinned_test() {
+  assert codec.encode(event.HeadObserved(
+      TicketId("t-c1"),
+      1,
+      model.Head(CommitId("abc"), model.ProtectedPathsUntouched),
+    ))
+    == "{\"t\":\"head_observed\",\"ticket\":\"t-c1\",\"seq\":1,\"head\":{\"commit\":\"abc\",\"paths\":\"untouched\"}}"
+  assert codec.encode(event.ReviewRequested(
+      TicketId("t-c1"),
+      CommitId("abc"),
+      model.PublishingOff,
+    ))
+    == "{\"t\":\"review_requested\",\"ticket\":\"t-c1\",\"commit\":\"abc\",\"reason\":{\"k\":\"publishing_off\"}}"
+}
+
+pub fn a_review_reason_longer_than_the_cap_is_cut_on_the_way_in_test() {
+  let long = string.repeat("w", 500)
+  let text =
+    "{\"t\":\"review_requested\",\"ticket\":\"x\",\"commit\":\"a\",\"reason\":{\"k\":\"unavailable\",\"why\":\""
+    <> long
+    <> "\"}}"
+  assert codec.decode(text)
+    == Ok(event.ReviewRequested(
+      TicketId("x"),
+      CommitId("a"),
+      model.PublishUnavailable(string.repeat("w", model.max_reason_chars)),
+    ))
+  assert codec.decode(
+      "{\"t\":\"review_requested\",\"ticket\":\"x\",\"commit\":\"a\",\"reason\":{\"k\":\"other\"}}",
+    )
+    == Error(codec.Malformed)
+}
+
 pub fn a_title_longer_than_the_cap_is_cut_on_the_way_in_test() {
   let long = string.repeat("a", 500)
   let text =

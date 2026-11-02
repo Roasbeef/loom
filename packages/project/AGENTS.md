@@ -38,6 +38,9 @@ is `gleam_json`, which has both targets.
   `host.passed`, belongs to the host's event path and to the codec.
 - `project/readiness` owns `Readiness` and its transition table. `Ready`
   needs a `CheckPassed`; a person's publish is a separate state.
+- `project/protect` is the protected-path matcher: a literal path or a
+  trailing `/**`, compared without case, plus `with_check`, which adds the
+  words of the check command. The host feeds it the diff's paths.
 - `project/stage` is the pure stage function with the wire spelling,
   including `ended/<outcome>`.
 - `project/policy` maps a `Mandate` to a `WorkerPolicy` of plain data, taking
@@ -81,7 +84,21 @@ is `gleam_json`, which has both targets.
   made, and it skips withdrawn and ended tickets.
 - **Check rule.** `work.check_rule` requests a check only for a `Waiting`
   report with no question and a head that differs from `last_checked`; a diff
-  touching protected paths goes to `AwaitingReview` and requests none.
+  touching protected paths goes to `AwaitingReview` and requests none. A
+  report with no head asks the host to read one (`ObserveHead`), and the
+  host's `HeadObserved` runs the same rule; it is refused as `Stale` once the
+  worker has moved on. A new head clears the pass, the `review` reason and the
+  recorded rejection.
+- **The host asks a person by `ReviewRequested`**, naming the commit it was
+  about (stale once the head moves). A ticket still in progress goes to
+  `AwaitingReview`; a ready or published one keeps what it earned and shows
+  `review`.
+- **Answers travel as deliveries.** `Answered` delivers `model.answer_id` to the
+  live assignment, or queues it in the ticket's inbox for the next one. There is
+  no separate relay effect.
+- **The router's offers are bounded.** `queue.max_offers` (3): a candidate
+  still unrouted when its third turn ends becomes `Decided(Unrouted)`, explicit
+  or not, and `Requeued` starts its count again. `State.offers` is the count.
 - **Session ids are not derived.** The catalogue mints them. An assignment
   carries `model.request_key(project, ticket, seq)` for idempotent creation,
   and `SessionBound` records the id once the host has one.

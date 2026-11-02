@@ -17,6 +17,7 @@
 //// first, and only one batch is out at a time. Candidates that arrive during
 //// a turn wait, and drain together at the next checkpoint.
 
+import gleam/dict
 import gleam/list
 import gleam/option
 import gleam/result
@@ -30,6 +31,12 @@ import project/state.{
 
 /// The most candidates one `OfferCandidates` effect carries.
 pub const max_offer: Int = 20
+
+/// The most batches one candidate goes out in. A router that lets a candidate
+/// go unrouted this many times is not going to decide it, and offering it
+/// again would spend a model turn each time for nothing. The candidate then
+/// becomes `Unrouted` and waits for a person.
+pub const max_offers: Int = 3
 
 /// Put an admitted, undelivered trigger in front of the router, or hold or
 /// shed it. Returns the offer effect when a batch goes out.
@@ -198,8 +205,21 @@ fn offer_batch(current: State, ids: List(TriggerId)) -> #(State, List(Effect)) {
   case ids {
     [] -> #(current, [])
     [_, ..] -> {
+      // Each candidate in the batch has now been offered one more time. The
+      // count is what `turn_ended` reads to stop offering it.
       let marked =
-        list.fold(ids, current, fn(acc, id) { state.set_fate(acc, id, Offered) })
+        list.fold(ids, current, fn(acc, id) {
+          let counted =
+            state.State(
+              ..acc,
+              offers: dict.insert(
+                acc.offers,
+                id,
+                state.offer_count(acc, id) + 1,
+              ),
+            )
+          state.set_fate(counted, id, Offered)
+        })
       let remaining =
         list.filter(marked.queue, fn(id) { !list.contains(ids, id) })
       #(
@@ -236,7 +256,10 @@ fn batch(current: State) -> List(TriggerId) {
 }
 
 /// End the router's turn: candidates it left unrouted go to the back of the
-/// queue, and the next batch is offered.
+/// queue, and the next batch is offered. A candidate that has been offered
+/// `max_offers` times goes to a person instead, as `Unrouted`, whatever its
+/// strength: an explicit trigger is never dropped, and here it is recorded
+/// where the board shows it.
 ///
 /// ## Examples
 ///
@@ -244,14 +267,29 @@ fn batch(current: State) -> List(TriggerId) {
 /// // -> #(state, []) with an empty queue
 /// ```
 pub fn turn_ended(current: State) -> #(State, List(Effect)) {
-  let back =
-    list.fold(current.offered, current, fn(acc, id) { append(acc, id) })
-  offer(state.State(..back, offered: [], router: RouterIdle))
+  let settled =
+    list.fold(current.offered, current, fn(acc, id) {
+      let offers = state.offer_count(acc, id)
+
+      // A candidate with offers to spare queues again; one without becomes a
+      // record for a person.
+      case offers >= max_offers {
+        True ->
+          state.set_fate(
+            acc,
+            id,
+            Decided(state.Unrouted(state.NoDecision(offers))),
+          )
+        False -> append(acc, id)
+      }
+    })
+  offer(state.State(..settled, offered: [], router: RouterIdle))
 }
 
-/// Queue a stored trigger the router ignored, shed or was never offered, for
-/// a fresh evaluation. Triggers still queued, offered or already routed to
-/// work are refused.
+/// Queue a stored trigger the router ignored, shed, never decided or was never
+/// offered, for a fresh evaluation. Triggers still queued, offered or already
+/// routed to work are refused. A requeued trigger starts its count of offers
+/// again, because a person asked for it.
 ///
 /// ## Examples
 ///
@@ -260,14 +298,16 @@ pub fn turn_ended(current: State) -> #(State, List(Effect)) {
 /// ```
 pub fn requeue(current: State, id: TriggerId) -> state.Step {
   use stored <- result.try(state.record(current, id))
+  let fresh = state.State(..current, offers: dict.delete(current.offers, id))
 
-  // Only a trigger that was ignored, shed, held or merely recorded as
-  // would-accept can be evaluated again.
+  // Only a trigger that was ignored, shed, held, left unrouted or merely
+  // recorded as would-accept can be evaluated again.
   case stored.fate {
-    Decided(state.Ignored) -> Ok(consider(current, id))
-    Decided(state.Shed) -> Ok(consider(current, id))
-    Decided(state.Held(_)) -> Ok(consider(current, id))
-    Decided(state.WouldAccept) -> Ok(consider(current, id))
+    Decided(state.Ignored) -> Ok(consider(fresh, id))
+    Decided(state.Shed) -> Ok(consider(fresh, id))
+    Decided(state.Held(_)) -> Ok(consider(fresh, id))
+    Decided(state.WouldAccept) -> Ok(consider(fresh, id))
+    Decided(state.Unrouted(_)) -> Ok(consider(fresh, id))
     Awaiting -> Error(event.NotRequeueable(id))
     Offered -> Error(event.NotRequeueable(id))
     Decided(state.OwnMessage) -> Error(event.NotRequeueable(id))

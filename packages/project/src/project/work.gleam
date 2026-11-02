@@ -19,7 +19,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import project/event.{
   type CheckResult, type Effect, type Refusal, CheckOk, CheckRejected,
-  OpenPullRequest, RelayAnswer, RequestCheck, StopSession,
+  ObserveHead, PublishBranch, RequestCheck, StopSession,
 }
 import project/gate.{Admitted, NotAdmitted}
 import project/host
@@ -96,6 +96,7 @@ pub fn open(
           last_checked: None,
           rejected: None,
           readiness: readiness.InProgress,
+          review: None,
           pull_request: None,
           outcome: None,
           routings: [routing],
@@ -472,7 +473,7 @@ pub fn reported(
 
   let heard_from = state.Ticket(..live, latest: Some(report), heard: Silent)
   let moved = apply_head(heard_from, head)
-  let #(settled, effects) = apply_report(moved, report, head)
+  let #(settled, effects) = apply_report(moved, seq, report, head)
 
   // A report that ends the ticket frees its slot; any other leaves slots as
   // they were.
@@ -482,7 +483,9 @@ pub fn reported(
   }
 }
 
-/// A new commit invalidates whatever the old one earned.
+/// A new commit invalidates whatever the old one earned: a passed check, a
+/// publish, a pending review, the host's reason for asking a person to look
+/// and the record of a failed check, all of which were about the old commit.
 fn apply_head(ticket: Ticket, head: Head) -> Ticket {
   case head {
     NoHead -> ticket
@@ -494,6 +497,8 @@ fn apply_head(ticket: Ticket, head: Head) -> Ticket {
             ..ticket,
             head: Some(commit),
             readiness: readiness.new_commit(ticket.readiness),
+            review: None,
+            rejected: None,
           )
       }
   }
@@ -503,6 +508,7 @@ fn apply_head(ticket: Ticket, head: Head) -> Ticket {
 /// one.
 fn apply_report(
   ticket: Ticket,
+  seq: Int,
   report: Report,
   head: Head,
 ) -> #(Ticket, List(Effect)) {
@@ -515,26 +521,100 @@ fn apply_report(
       [],
     )
     Waiting(question) ->
-      check_rule(state.Ticket(..ticket, question:), question, head)
+      check_rule(state.Ticket(..ticket, question:), seq, question, head)
   }
 }
 
 /// The check rule: a request only for an idle worker with no open question
 /// and a head not yet checked. Protected paths go to a person instead, and the
 /// head is marked checked so a repeated idle report does not ask again.
+///
+/// An idle report that arrives with no head is the ordinary case, because a
+/// worker's own call cannot name its branch. The engine then asks the host to
+/// read it (`ObserveHead`), and the answer comes back as `HeadObserved` and
+/// runs this rule again with the head in hand.
 fn check_rule(
   ticket: Ticket,
+  seq: Int,
   question: model.Question,
   head: Head,
 ) -> #(Ticket, List(Effect)) {
   case question, head {
     Asking(_), _ -> #(ticket, [])
-    NoQuestion, NoHead -> #(ticket, [])
+    NoQuestion, NoHead -> #(ticket, [ObserveHead(ticket.id, seq)])
     NoQuestion, Head(commit, paths) ->
       case ticket.last_checked == Some(commit) {
         True -> #(ticket, [])
         False -> check_head(ticket, commit, paths)
       }
+  }
+}
+
+/// The host read the head of an idle worker's branch. The head counts only
+/// while the ticket's latest word from the worker is still an idle report with
+/// no question: a worker that went back to work, or asked something, has moved
+/// past the moment the host was asked about, and a check of its head would be
+/// a check of work in flight.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> Error(Stale(id)) when the worker reported progress meanwhile
+/// ```
+pub fn head_observed(
+  current: State,
+  id: TicketId,
+  seq: Int,
+  head: Head,
+) -> Step {
+  use ticket <- result.try(open_ticket(current, id))
+  use _ <- result.try(update_assignment(ticket, seq, fn(found) { Ok(found) }))
+
+  // Only an idle report with no question has a head worth reading.
+  case ticket.latest, ticket.question {
+    Some(Waiting(NoQuestion)), NoQuestion -> {
+      let moved = apply_head(ticket, head)
+      let #(settled, effects) = check_rule(moved, seq, NoQuestion, head)
+      Ok(#(state.put_ticket(current, settled), effects))
+    }
+    _, _ -> Error(event.Stale(id))
+  }
+}
+
+/// The host says it will not run the check or open a pull request by itself
+/// and why. The reason is kept on the ticket until the head moves, and a ticket
+/// that no check could vouch for waits for review.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> Error(Stale(id)) for a commit other than the head
+/// ```
+pub fn review_requested(
+  current: State,
+  id: TicketId,
+  commit: CommitId,
+  reason: model.ReviewReason,
+) -> Step {
+  use ticket <- result.try(open_ticket(current, id))
+
+  // The reason is about one commit, and a ticket that has moved on needs none.
+  case ticket.head == Some(commit) {
+    False -> Error(event.Stale(id))
+    True ->
+      Ok(
+        #(
+          state.put_ticket(
+            current,
+            state.Ticket(
+              ..ticket,
+              review: Some(reason),
+              readiness: readiness.review_needed(ticket.readiness),
+            ),
+          ),
+          [],
+        ),
+      )
   }
 }
 
@@ -653,19 +733,18 @@ pub fn person_published(
   }
 }
 
-/// Store the ticket and ask for its pull request unless one is open.
+/// Store the ticket and ask the host to publish the commit. A ticket whose pull
+/// request is open is asked too, because a later commit has to reach the same
+/// branch for the pull request to show it; the host finds the pull request
+/// that is open and opens no second one.
 fn publish(
   current: State,
   ticket: Ticket,
   commit: CommitId,
 ) -> #(State, List(Effect)) {
-  // A ticket whose pull request is open needs no second request.
-  let effects = case ticket.pull_request {
-    Some(_) -> []
-    None -> [OpenPullRequest(ticket.id, model.branch_name(ticket.id), commit)]
-  }
-
-  #(state.put_ticket(current, ticket), effects)
+  #(state.put_ticket(current, ticket), [
+    PublishBranch(ticket.id, model.branch_name(ticket.id), commit),
+  ])
 }
 
 /// The host opened the ticket's pull request. Only a ready or published
@@ -717,15 +796,35 @@ pub fn answered(current: State, id: TicketId, question: Int) -> Step {
     True -> {
       let answered_ticket =
         state.Ticket(..ticket, question: NoQuestion, heard: PersonHeard)
-      Ok(#(state.put_ticket(current, answered_ticket), relay(ticket, question)))
+      Ok(relay(current, answered_ticket, question))
     }
   }
 }
 
-fn relay(ticket: Ticket, question: Int) -> List(Effect) {
+/// Send the answer to the worker that is live now. With no live session the
+/// answer waits in the ticket's inbox and goes out on the next assignment,
+/// which is how any input for a ticket without a session travels. The answer
+/// has no session of its own to wake, so it asks for none: a ticket with no
+/// worker takes the answer along when a person or the router next wants one.
+fn relay(
+  current: State,
+  ticket: Ticket,
+  question: Int,
+) -> #(State, List(Effect)) {
+  let answer = model.answer_id(ticket.id, question)
+
+  // A pending or running session receives it at once; otherwise it queues.
   case state.active_assignment(ticket) {
-    Some(assignment) -> [RelayAnswer(ticket.id, assignment.seq, question)]
-    None -> []
+    Some(assignment) -> #(state.put_ticket(current, ticket), [
+      event.Deliver(ticket.id, assignment.seq, answer),
+    ])
+    None -> #(
+      state.put_ticket(
+        current,
+        state.Ticket(..ticket, inbox: list.append(ticket.inbox, [answer])),
+      ),
+      [],
+    )
   }
 }
 

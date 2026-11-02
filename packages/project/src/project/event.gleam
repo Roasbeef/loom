@@ -13,8 +13,8 @@ import project/host.{type CheckPassed}
 import project/model.{
   type ActorId, type Ceiling, type CommandDigest, type CommitId, type Head,
   type Mandate, type Mode, type Outcome, type PrincipalId, type PullRequestRef,
-  type Report, type Routing, type RuleId, type SessionEnd, type SessionId,
-  type SourceId, type TicketId, type Trigger, type TriggerId,
+  type Report, type ReviewReason, type Routing, type RuleId, type SessionEnd,
+  type SessionId, type SourceId, type TicketId, type Trigger, type TriggerId,
   type VerdictOutcome,
 }
 
@@ -140,7 +140,10 @@ pub type Event {
     end: SessionEnd,
   )
 
-  /// A worker reported. `head` is the host's snapshot of its branch.
+  /// A worker reported. `head` is the host's snapshot of its branch when the
+  /// host had one to hand; a report committed from the worker's own call
+  /// carries `NoHead`, and the host reads the branch afterwards when the
+  /// engine asks (`ObserveHead`).
   Reported(
     /// The ticket.
     ticket: TicketId,
@@ -150,6 +153,30 @@ pub type Event {
     report: Report,
     /// The branch snapshot.
     head: Head,
+  )
+
+  /// The host read the head of an idle worker's branch, because the engine
+  /// asked for it. The head carries the host's verdict on the protected
+  /// paths, so a worker cannot say that its diff is clean.
+  HeadObserved(
+    /// The ticket.
+    ticket: TicketId,
+    /// The assignment whose worktree was read.
+    seq: Int,
+    /// The branch snapshot.
+    head: Head,
+  )
+
+  /// The host will not run the check or open a pull request on its own, and
+  /// says why, so a person decides. It names the commit it was about, and it
+  /// is stale once the head has moved.
+  ReviewRequested(
+    /// The ticket.
+    ticket: TicketId,
+    /// The head the host was working on.
+    commit: CommitId,
+    /// Why a person must look.
+    reason: ReviewReason,
   )
 
   /// A person answered a question, echoing its sequence number.
@@ -243,7 +270,8 @@ pub type Effect {
     mandate: Mandate,
   )
 
-  /// Hand a stored trigger to the worker of assignment `seq`. The worker
+  /// Hand a stored trigger, or a person's answer (`model.answer_id`), to the
+  /// worker of assignment `seq`. The worker
   /// reads the original text through its reference.
   Deliver(
     /// The ticket.
@@ -268,11 +296,22 @@ pub type Effect {
     commit: CommitId,
   )
 
-  /// Push the ticket's branch and open its pull request.
-  OpenPullRequest(
+  /// Read the head of the idle worker's branch and report it as
+  /// `HeadObserved`. The engine asks because only the host can read a
+  /// worktree and decide which paths are protected.
+  ObserveHead(
     /// The ticket.
     ticket: TicketId,
-    /// The branch, see `model.branch_name`.
+    /// The assignment whose worktree to read.
+    seq: Int,
+  )
+
+  /// Push the ticket's branch to the remote and open its pull request, when
+  /// the project's `publish` setting allows it.
+  PublishBranch(
+    /// The ticket.
+    ticket: TicketId,
+    /// The remote branch, see `model.branch_name`.
     branch: String,
     /// The commit to publish.
     commit: CommitId,
@@ -284,16 +323,6 @@ pub type Effect {
     ticket: TicketId,
     /// The assignment whose session to stop.
     seq: Int,
-  )
-
-  /// Tell the worker a person answered its question.
-  RelayAnswer(
-    /// The ticket.
-    ticket: TicketId,
-    /// The assignment that asked.
-    seq: Int,
-    /// The question's sequence number.
-    question: Int,
   )
 }
 

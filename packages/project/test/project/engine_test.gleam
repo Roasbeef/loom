@@ -8,7 +8,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import project/engine
 import project/event.{
-  AcceptRefused, Deliver, OfferCandidates, OpenPullRequest, RequestCheck,
+  AcceptRefused, Deliver, OfferCandidates, PublishBranch, RequestCheck,
   StartSession, StopSession,
 }
 import project/gate
@@ -17,6 +17,7 @@ import project/model.{
   Asking, CommitId, Head, NoQuestion, ProtectedPathsTouched,
   ProtectedPathsUntouched, TicketId, TriggerId, Waiting,
 }
+import project/queue
 import project/readiness
 import project/stage
 import project/state
@@ -559,7 +560,132 @@ pub fn an_open_question_or_a_busy_worker_requests_no_check_test() {
       head_at("a", ProtectedPathsUntouched),
     )
   assert step(working(), busy).1 == []
-  assert step(working(), waiting_report(model.NoHead, NoQuestion)).1 == []
+}
+
+pub fn an_idle_report_with_no_head_asks_the_host_to_read_the_branch_test() {
+  let #(_, effects) = step(working(), waiting_report(model.NoHead, NoQuestion))
+  assert effects == [event.ObserveHead(ticket_of("c1"), 1)]
+}
+
+// The head the host read is what a check is requested for, and a repeated
+// reading of the same head asks for nothing.
+pub fn an_observed_head_requests_one_check_test() {
+  let idle = run(working(), [waiting_report(model.NoHead, NoQuestion)])
+  let observed = observed_head("a", ProtectedPathsUntouched)
+  let #(checked, effects) = step(idle, observed)
+  assert effects == [RequestCheck(ticket_of("c1"), CommitId("a"))]
+  assert ticket(checked, ticket_of("c1")).head == Some(CommitId("a"))
+  let #(_, again) = step(checked, observed)
+  assert again == []
+}
+
+// The protected paths are decided before the check is: a head that touches one
+// goes to a person and no check is requested for it.
+pub fn an_observed_head_on_protected_paths_runs_no_check_test() {
+  let idle = run(working(), [waiting_report(model.NoHead, NoQuestion)])
+  let #(next, effects) = step(idle, observed_head("a", ProtectedPathsTouched))
+  assert effects == []
+  let held = ticket(next, ticket_of("c1"))
+  assert held.readiness == readiness.AwaitingReview
+  assert state.stage_of(held) == stage.PersonReview
+
+  // A passing check for that head is refused: none was requested.
+  assert engine.apply(next, passed("a")) == Error(event.Stale(ticket_of("c1")))
+}
+
+// A head read after the worker has gone back to work, or asked something, is
+// a reading of work in flight, and the engine refuses it.
+pub fn an_observed_head_is_stale_once_the_worker_moved_on_test() {
+  let busy =
+    run(working(), [
+      waiting_report(model.NoHead, NoQuestion),
+      event.Reported(ticket_of("c1"), 1, model.Progress, model.NoHead),
+    ])
+  assert engine.apply(busy, observed_head("a", ProtectedPathsUntouched))
+    == Error(event.Stale(ticket_of("c1")))
+  let asking = run(working(), [waiting_report(model.NoHead, Asking(2))])
+  assert engine.apply(asking, observed_head("a", ProtectedPathsUntouched))
+    == Error(event.Stale(ticket_of("c1")))
+}
+
+// A commit made after a pass is seen at the next idle report, and the pass it
+// invalidates cannot reach a pull request.
+pub fn a_later_observed_commit_invalidates_ready_and_asks_for_a_new_check_test() {
+  let ready =
+    run(working(), [
+      waiting_report(model.NoHead, NoQuestion),
+      observed_head("a", ProtectedPathsUntouched),
+      passed("a"),
+      waiting_report(model.NoHead, NoQuestion),
+    ])
+  assert readiness.vouches_for(ticket(ready, ticket_of("c1")).readiness)
+    == Some(CommitId("a"))
+  let #(moved, effects) =
+    step(ready, observed_head("b", ProtectedPathsUntouched))
+  assert effects == [RequestCheck(ticket_of("c1"), CommitId("b"))]
+  assert ticket(moved, ticket_of("c1")).readiness == readiness.InProgress
+  assert engine.apply(moved, passed("a")) == Error(event.Stale(ticket_of("c1")))
+}
+
+fn observed_head(commit: String, paths: model.PathScope) -> event.Event {
+  event.HeadObserved(ticket_of("c1"), 1, head_at(commit, paths))
+}
+
+// The host's reason for asking a person is about one commit.
+pub fn a_review_request_holds_until_the_head_moves_test() {
+  let ready =
+    run(working(), [
+      waiting_report(model.NoHead, NoQuestion),
+      observed_head("a", ProtectedPathsUntouched),
+      passed("a"),
+    ])
+  let off =
+    event.ReviewRequested(ticket_of("c1"), CommitId("a"), model.PublishingOff)
+  let #(asked, effects) = step(ready, off)
+  assert effects == []
+  let held = ticket(asked, ticket_of("c1"))
+  assert held.review == Some(model.PublishingOff)
+  assert state.stage_of(held) == stage.PersonReview
+
+  // It keeps what the pass earned.
+  assert readiness.vouches_for(held.readiness) == Some(CommitId("a"))
+
+  // A reason about a commit that is not the head is stale.
+  assert engine.apply(
+      ready,
+      event.ReviewRequested(ticket_of("c1"), CommitId("z"), model.PublishingOff),
+    )
+    == Error(event.Stale(ticket_of("c1")))
+
+  // A new commit clears the reason along with the pass.
+  let moved =
+    run(asked, [
+      waiting_report(model.NoHead, NoQuestion),
+      observed_head("b", ProtectedPathsUntouched),
+    ])
+  assert ticket(moved, ticket_of("c1")).review == None
+}
+
+// Without a check there is nothing to vouch for the work, so a ticket still in
+// progress waits for a person.
+pub fn a_review_request_without_a_check_sends_the_ticket_to_review_test() {
+  let idle =
+    run(working(), [
+      waiting_report(model.NoHead, NoQuestion),
+      observed_head("a", ProtectedPathsUntouched),
+    ])
+  let #(asked, _) =
+    step(
+      idle,
+      event.ReviewRequested(
+        ticket_of("c1"),
+        CommitId("a"),
+        model.NoCheckConfigured,
+      ),
+    )
+  let held = ticket(asked, ticket_of("c1"))
+  assert held.readiness == readiness.AwaitingReview
+  assert state.stage_of(held) == stage.PersonReview
 }
 
 pub fn protected_paths_go_to_review_and_run_no_check_test() {
@@ -578,7 +704,7 @@ pub fn a_passing_check_makes_the_ticket_ready_and_opens_a_pull_request_test() {
     ])
   let #(ready, effects) = step(checked, passed("a"))
   assert effects
-    == [OpenPullRequest(ticket_of("c1"), "project/t-c1", CommitId("a"))]
+    == [PublishBranch(ticket_of("c1"), "project/t-c1", CommitId("a"))]
   let held = ticket(ready, ticket_of("c1"))
   assert readiness.vouches_for(held.readiness) == Some(CommitId("a"))
   let opened =
@@ -640,7 +766,7 @@ pub fn a_person_may_publish_past_a_failing_check_test() {
   let #(published, effects) =
     step(failed, event.PersonPublished(ticket_of("c1"), by, CommitId("a")))
   assert effects
-    == [OpenPullRequest(ticket_of("c1"), "project/t-c1", CommitId("a"))]
+    == [PublishBranch(ticket_of("c1"), "project/t-c1", CommitId("a"))]
   assert ticket(published, ticket_of("c1")).readiness
     == readiness.Published(by, CommitId("a"))
   assert engine.apply(
@@ -740,8 +866,87 @@ pub fn an_answer_must_echo_the_open_question_test() {
     == Error(event.StaleAnswer(ticket_of("c1")))
   let #(answered, effects) =
     step(asking, event.Answered(ticket_of("c1"), 4, world_principal()))
-  assert effects == [event.RelayAnswer(ticket_of("c1"), 1, 4)]
+  assert effects
+    == [event.Deliver(ticket_of("c1"), 1, model.answer_id(ticket_of("c1"), 4))]
   assert state.stage_of(ticket(answered, ticket_of("c1"))) == stage.Idle
+}
+
+// --- an answer reaches the worker --------------------------------------------------------
+
+pub fn an_answer_with_no_live_worker_waits_for_the_next_assignment_test() {
+  let asked =
+    run(working(), [
+      event.Reported(ticket_of("c1"), 1, Waiting(Asking(4)), model.NoHead),
+      event.AssignmentEnded(ticket_of("c1"), 1, model.SessionCrashed),
+    ])
+  let #(answered, effects) =
+    step(asked, event.Answered(ticket_of("c1"), 4, world_principal()))
+
+  // Nothing is delivered, because nobody is there to receive it, and nothing
+  // is lost: the answer waits in the ticket's inbox.
+  assert effects == []
+  let answer = model.answer_id(ticket_of("c1"), 4)
+  assert list.contains(ticket(answered, ticket_of("c1")).inbox, answer)
+
+  // The next assignment is started with the answer delivered to it.
+  let #(_, retried) =
+    step(answered, event.RetryRequested(ticket_of("c1"), world_principal()))
+  assert list.contains(retried, Deliver(ticket_of("c1"), 2, answer))
+}
+
+// --- the router's second chances are bounded ----------------------------------------------
+
+fn turns_ended(current: state.State, turns: Int) -> state.State {
+  case turns {
+    0 -> current
+    _ -> turns_ended(run(current, [event.RouterTurnEnded]), turns - 1)
+  }
+}
+
+pub fn a_candidate_offered_three_times_without_a_decision_waits_for_a_person_test() {
+  let offered = run(fresh(), [arrival(owner("c1"))])
+  assert state.offer_count(offered, TriggerId("c1")) == 1
+
+  // The first two turns that end with no decision offer the candidate again.
+  let twice = turns_ended(offered, 2)
+  assert state.offer_count(twice, TriggerId("c1")) == queue.max_offers
+  assert twice.offered == [TriggerId("c1")]
+
+  // The third turn is the last: the candidate is recorded as unrouted and the
+  // router is offered nothing.
+  let #(settled, effects) = step(twice, event.RouterTurnEnded)
+  assert effects == []
+  assert settled.offered == []
+  assert settled.queue == []
+  assert settled.router == state.RouterIdle
+  let assert Ok(stored) = state.record(settled, TriggerId("c1")) as "stored"
+  assert stored.fate
+    == state.Decided(state.Unrouted(state.NoDecision(queue.max_offers)))
+  assert list.map(state.unrouted(settled), fn(each) { each.trigger.id })
+    == [TriggerId("c1")]
+
+  // The router can no longer route it, and a person can queue it again.
+  assert engine.apply(settled, accept("c1"))
+    == Error(event.NotOffered(TriggerId("c1")))
+  let #(again, offers) =
+    step(settled, event.Requeued(TriggerId("c1"), world_principal()))
+  assert offers == [OfferCandidates([TriggerId("c1")])]
+  assert state.offer_count(again, TriggerId("c1")) == 1
+  assert state.unrouted(again) == []
+
+  // And the requeued candidate can be accepted like any other.
+  let accepted = run(again, [accept("c1")])
+  assert dict.size(accepted.tickets) == 1
+}
+
+// A candidate the router decides is never counted against it, however many
+// turns end afterwards.
+pub fn a_decided_candidate_is_never_unrouted_test() {
+  let decided =
+    run(fresh(), [arrival(owner("c1")), accept("c1"), event.RouterTurnEnded])
+  let assert Ok(stored) = state.record(decided, TriggerId("c1")) as "stored"
+  assert stored.fate == state.Decided(state.Accepted(ticket_of("c1")))
+  assert state.unrouted(turns_ended(decided, 5)) == []
 }
 
 pub fn replaying_the_log_rebuilds_the_state_test() {

@@ -134,6 +134,18 @@ fn to_json(incoming: Event) -> Json {
         #("report", report_json(report)),
         #("head", head_json(head)),
       ])
+    event.HeadObserved(ticket, seq, head) ->
+      tagged("head_observed", [
+        ticket_field(ticket),
+        #("seq", json.int(seq)),
+        #("head", head_json(head)),
+      ])
+    event.ReviewRequested(ticket, commit, reason) ->
+      tagged("review_requested", [
+        ticket_field(ticket),
+        #("commit", json.string(commit.value)),
+        #("reason", reason_json(reason)),
+      ])
     event.Answered(ticket, question, by) ->
       tagged("answered", [
         ticket_field(ticket),
@@ -287,6 +299,18 @@ fn assignment_decoder(tag: String) -> Decoder(Event) {
       use report <- decode.field("report", report_decoder())
       use head <- decode.field("head", head_decoder())
       decode.success(event.Reported(ticket, seq, report, head))
+    }
+    "head_observed" -> {
+      use ticket <- decode.field("ticket", ticket_id())
+      use seq <- decode.field("seq", decode.int)
+      use head <- decode.field("head", head_decoder())
+      decode.success(event.HeadObserved(ticket, seq, head))
+    }
+    "review_requested" -> {
+      use ticket <- decode.field("ticket", ticket_id())
+      use commit <- decode.field("commit", commit_id())
+      use reason <- decode.field("reason", reason_decoder())
+      decode.success(event.ReviewRequested(ticket, commit, reason))
     }
     _ -> person_decoder(tag)
   }
@@ -601,6 +625,46 @@ fn head_fields() -> Decoder(Head) {
     word_decoder(scopes, model.ProtectedPathsTouched, "PathScope"),
   )
   decode.success(Head(commit:, paths:))
+}
+
+/// Write a review reason under its `k` tag. Only the host's own words reach
+/// it, and the decoder caps them again.
+fn reason_json(reason: model.ReviewReason) -> Json {
+  case reason {
+    model.NoCheckConfigured -> json.object([#("k", json.string("no_check"))])
+    model.CheckUnfinished(why) ->
+      json.object([
+        #("k", json.string("check_unfinished")),
+        #("why", json.string(why)),
+      ])
+    model.PublishingOff -> json.object([#("k", json.string("publishing_off"))])
+    model.PublishUnavailable(why) ->
+      json.object([
+        #("k", json.string("unavailable")),
+        #("why", json.string(why)),
+      ])
+  }
+}
+
+/// Read a review reason. A stored reason longer than the cap is cut on the
+/// way in, so a ledger line cannot carry more words than the host may write.
+fn reason_decoder() -> Decoder(model.ReviewReason) {
+  use tag <- decode.field("k", decode.string)
+
+  // The `k` tag picks the reason; an unknown tag fails the decode.
+  case tag {
+    "no_check" -> decode.success(model.NoCheckConfigured)
+    "check_unfinished" -> {
+      use why <- decode.field("why", decode.string)
+      decode.success(model.check_unfinished(why))
+    }
+    "publishing_off" -> decode.success(model.PublishingOff)
+    "unavailable" -> {
+      use why <- decode.field("why", decode.string)
+      decode.success(model.publish_unavailable(why))
+    }
+    _ -> decode.failure(model.NoCheckConfigured, "ReviewReason")
+  }
 }
 
 /// Write a check result, including the ledger entry of a pass.

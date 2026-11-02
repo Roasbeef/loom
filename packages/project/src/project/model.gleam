@@ -130,6 +130,67 @@ pub type PullRequestRef {
   )
 }
 
+/// The most code points of the host's own words that a review reason keeps.
+pub const max_reason_chars: Int = 200
+
+/// Why a ticket waits for a person although its work may be done. The host
+/// writes every one of these; none is a worker's or a router's text.
+pub type ReviewReason {
+  /// The project names no check, so nothing could vouch for the work.
+  NoCheckConfigured
+
+  /// The check was started and gave no verdict, more than once: it ran out of
+  /// time or the sandbox would not run it. That says nothing about the work,
+  /// so a person decides whether to publish it.
+  CheckUnfinished(
+    /// What stopped the check, in the host's words, capped.
+    why: String,
+  )
+
+  /// The project keeps `publish` off, so nothing goes outward on its own.
+  PublishingOff
+
+  /// The host could not push the branch or open the pull request. The words
+  /// are the host's description of the step that failed, capped.
+  PublishUnavailable(
+    /// What failed.
+    why: String,
+  )
+}
+
+/// A review reason for a failed publish, with the host's words capped at
+/// `max_reason_chars` code points.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert model.publish_unavailable("no remote named origin")
+///   == model.PublishUnavailable("no remote named origin")
+/// ```
+pub fn publish_unavailable(why: String) -> ReviewReason {
+  PublishUnavailable(capped(why))
+}
+
+/// A review reason for a check that gave no verdict, with the host's words
+/// capped at `max_reason_chars` code points.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert model.check_unfinished("the check ran out of time")
+///   == model.CheckUnfinished("the check ran out of time")
+/// ```
+pub fn check_unfinished(why: String) -> ReviewReason {
+  CheckUnfinished(capped(why))
+}
+
+fn capped(text: String) -> String {
+  text
+  |> string.to_utf_codepoints
+  |> list.take(max_reason_chars)
+  |> string.from_utf_codepoints
+}
+
 // --- derived identity --------------------------------------------------------
 
 /// The ticket that accepting `trigger` creates. The id is a function of the
@@ -163,6 +224,20 @@ pub fn request_key(project: ProjectId, ticket: TicketId, seq: Int) -> String {
   <> slug(ticket.value)
   <> ":"
   <> int.to_string(seq)
+}
+
+/// The id under which a person's answer to a ticket's question travels to its
+/// worker. It is a function of the ticket and the question's number, so a
+/// delivery repeated after a crash names the same message. The `~` is not in
+/// the alphabet a composer request id may use, so no request can take it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert model.answer_id(model.TicketId("t-c1"), 7) == model.TriggerId("a~t-c1~7")
+/// ```
+pub fn answer_id(ticket: TicketId, question: Int) -> TriggerId {
+  TriggerId("a~" <> ticket.value <> "~" <> int.to_string(question))
 }
 
 /// The remote branch the host pushes for `ticket`. No model output reaches

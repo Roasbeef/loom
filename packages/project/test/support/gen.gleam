@@ -178,6 +178,16 @@ pub fn head() -> Generator(Head) {
   ])
 }
 
+/// Any review reason. The host's words are capped when a reason is made, so
+/// the generator makes them the same way.
+pub fn review_reason() -> Generator(model.ReviewReason) {
+  qcheck.from_generators(qcheck.return(model.NoCheckConfigured), [
+    qcheck.return(model.PublishingOff),
+    qcheck.map(text(), model.publish_unavailable),
+    qcheck.map(text(), model.check_unfinished),
+  ])
+}
+
 pub fn check_result() -> Generator(event.CheckResult) {
   qcheck.from_generators(
     qcheck.map3(
@@ -238,6 +248,8 @@ pub fn event() -> Generator(Event) {
       event.AssignmentEnded,
     ),
     qcheck.map4(ticket_id(), seq, report(), head(), event.Reported),
+    qcheck.map3(ticket_id(), seq, head(), event.HeadObserved),
+    qcheck.map3(ticket_id(), commit(), review_reason(), event.ReviewRequested),
     qcheck.map3(ticket_id(), seq, principal(), event.Answered),
     qcheck.map2(ticket_id(), trigger_id(), event.InputFailed),
     qcheck.map2(ticket_id(), trigger_id(), event.InputDelivered),

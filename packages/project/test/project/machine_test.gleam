@@ -30,6 +30,13 @@
 //// - `stop`: the router stops a ticket only on an explicit trigger.
 //// - `queue`: only admitted triggers are queued, and a trigger is never both
 ////   queued and offered.
+//// - `protected`: a ticket is never `Ready` at a commit whose diff touches a
+////   protected path, however the check events are ordered.
+//// - `unrouted`: a candidate is offered at most `queue.max_offers` times, and
+////   one left unrouted had spent all of them.
+//// - `limbo`: a trigger waiting for the router is in the queue and one the
+////   router holds is on its table, so no candidate, explicit or inferred,
+////   falls out of both.
 //// - `replay`: replaying the accepted events rebuilds the final state.
 ////
 //// A command names no identity by value that it could not find again: tickets
@@ -49,6 +56,7 @@ import project/host
 import project/model.{
   type CommitId, type TicketId, type TriggerId, CommitId, Head, TriggerId,
 }
+import project/queue
 import project/readiness
 import project/state.{type State}
 import qcheck.{type Generator}
@@ -244,6 +252,8 @@ fn ticket_events(current: State) -> Generator(Event) {
     let seq = qcheck.bounded_int(1, int.max(1, known))
     let by = qcheck.return(model.PrincipalId("owner"))
     qcheck.from_weighted_generators(#(10, reported(ticket, seq)), [
+      #(6, observed(ticket, seq)),
+      #(2, reviews(ticket, commit)),
       #(5, qcheck.map(seq, event.AssignmentLive(ticket, _))),
       #(
         4,
@@ -360,21 +370,43 @@ fn report_gen() -> Generator(model.Report) {
   )
 }
 
+// Which commits touch protected paths. A commit's diff is a fact about the
+// commit, so the host would report the same scope every time it read it, and
+// the generator and the invariants read it from one place.
+fn scope_of(commit: CommitId) -> model.PathScope {
+  case commit {
+    CommitId("c2") -> model.ProtectedPathsTouched
+    CommitId(_) -> model.ProtectedPathsUntouched
+  }
+}
+
+fn head_at(commit: CommitId) -> model.Head {
+  Head(commit, scope_of(commit))
+}
+
 fn report_head() -> Generator(model.Head) {
   qcheck.from_weighted_generators(#(1, qcheck.return(model.NoHead)), [
-    #(
-      5,
-      qcheck.map2(
-        pool("c", 3),
-        gen.one_of([
-          model.ProtectedPathsUntouched,
-          model.ProtectedPathsUntouched,
-          model.ProtectedPathsTouched,
-        ]),
-        fn(commit, paths) { Head(CommitId(commit), paths) },
-      ),
-    ),
+    #(5, qcheck.map(pool("c", 3), fn(commit) { head_at(CommitId(commit)) })),
   ])
+}
+
+// The host's reading of a worker's head, and its reasons for asking a person.
+fn observed(ticket: TicketId, seq: Generator(Int)) -> Generator(Event) {
+  qcheck.map2(seq, pool("c", 3), fn(s, commit) {
+    event.HeadObserved(ticket, s, head_at(CommitId(commit)))
+  })
+}
+
+fn reviews(ticket: TicketId, commit: Generator(CommitId)) -> Generator(Event) {
+  qcheck.map2(
+    commit,
+    gen.one_of([
+      model.NoCheckConfigured,
+      model.PublishingOff,
+      model.publish_unavailable("no remote"),
+    ]),
+    fn(c, reason) { event.ReviewRequested(ticket, c, reason) },
+  )
 }
 
 // The mix follows what the model can accept: a router with nothing offered
@@ -535,7 +567,7 @@ fn check_step(
   next: State,
   effects: List(Effect),
 ) -> Result(Nil, statem.Violation) {
-  use _ <- result.try(check_effects(sut, next, effects))
+  use _ <- result.try(check_effects(sut, incoming, next, effects))
   use _ <- result.try(check_check_rule(sut, incoming, effects))
   use _ <- result.try(check_routing(sut, incoming, next))
   check_inferred_delivery(sut, incoming, next, effects)
@@ -543,14 +575,15 @@ fn check_step(
 
 fn check_effects(
   sut: Sut,
+  incoming: Event,
   next: State,
   effects: List(Effect),
 ) -> Result(Nil, statem.Violation) {
   list.try_each(effects, fn(effect) {
     case effect {
-      event.Deliver(_, _, trigger) ->
+      event.Deliver(ticket, _, trigger) ->
         holds(
-          ok: admitted_in(next, trigger),
+          ok: admitted_in(next, trigger) || is_answer(incoming, ticket, trigger),
           tag: "deliver",
           detail: "delivered a trigger the gate did not admit",
         )
@@ -562,11 +595,22 @@ fn check_effects(
           detail: "a stopped ticket was given an assignment",
         )
       event.RequestCheck(_, _) -> Ok(Nil)
-      event.OpenPullRequest(_, _, _) -> Ok(Nil)
+      event.PublishBranch(_, _, _) -> Ok(Nil)
       event.StopSession(_, _) -> Ok(Nil)
-      event.RelayAnswer(_, _, _) -> Ok(Nil)
+      event.ObserveHead(_, _) -> Ok(Nil)
     }
   })
+}
+
+// A person's answer is delivered under the id derived from the ticket and the
+// question they echoed, and it is the one delivery the gate did not admit,
+// because it is not a trigger: a person typed it into the board.
+fn is_answer(incoming: Event, ticket: TicketId, trigger: TriggerId) -> Bool {
+  case incoming {
+    event.Answered(answered, question, _) ->
+      answered == ticket && trigger == model.answer_id(ticket, question)
+    _ -> False
+  }
 }
 
 fn admitted_in(current: State, id: TriggerId) -> Bool {
@@ -623,13 +667,8 @@ fn check_check_rule(
       }
     })
 
-  case incoming {
-    event.Reported(
-      ticket,
-      _,
-      model.Waiting(model.NoQuestion),
-      Head(commit, model.ProtectedPathsUntouched),
-    ) -> {
+  case idle_head(incoming) {
+    Some(#(ticket, commit)) -> {
       let unchecked = case state.ticket(sut.state, ticket) {
         Ok(found) -> found.last_checked != Some(commit)
         Error(_) -> False
@@ -644,12 +683,30 @@ fn check_check_rule(
         detail: "a check was requested, or skipped, against the rule",
       )
     }
-    _ ->
+    None ->
       holds(
         ok: requested == [],
         tag: "check",
         detail: "a check was requested by something other than an idle report",
       )
+  }
+}
+
+// The ticket and commit of an idle worker's head that is free of protected
+// paths, whether it arrived with the report or was read by the host after it.
+// Both are the moments the check rule may request a check, and a head that
+// touches a protected path is never among them.
+fn idle_head(incoming: Event) -> Option(#(TicketId, CommitId)) {
+  case incoming {
+    event.Reported(
+      ticket,
+      _,
+      model.Waiting(model.NoQuestion),
+      Head(commit, model.ProtectedPathsUntouched),
+    ) -> Some(#(ticket, commit))
+    event.HeadObserved(ticket, _, Head(commit, model.ProtectedPathsUntouched)) ->
+      Some(#(ticket, commit))
+    _ -> None
   }
 }
 
@@ -802,13 +859,22 @@ fn check_readiness(
   ticket: state.Ticket,
 ) -> Result(Nil, statem.Violation) {
   case ticket.readiness {
-    readiness.Ready(proof) ->
-      holds(
+    readiness.Ready(proof) -> {
+      use _ <- result.try(holds(
         ok: list.contains(passed_for(sut, ticket.id), host.commit(proof))
           && ticket.head == Some(host.commit(proof)),
         tag: "ready",
         detail: "a ticket is Ready without a passing check at its head",
+      ))
+
+      // A commit that touches a protected path is never checked, so it is
+      // never vouched for.
+      holds(
+        ok: scope_of(host.commit(proof)) == model.ProtectedPathsUntouched,
+        tag: "protected",
+        detail: "a ticket is Ready at a commit that touches protected paths",
       )
+    }
     readiness.Published(_, commit) ->
       holds(
         ok: ticket.head == Some(commit),
@@ -869,11 +935,49 @@ fn check_triggers(current: State) -> Result(Nil, statem.Violation) {
     tag: "queue",
     detail: "a trigger the gate did not admit reached the router's queue",
   ))
-  holds(
+  use _ <- result.try(holds(
     ok: list.all(current.queue, fn(id) { !list.contains(current.offered, id) }),
     tag: "queue",
     detail: "a trigger is both queued and offered",
-  )
+  ))
+  check_offers(current)
+}
+
+// The router's second chances are bounded, and no candidate is dropped on the
+// way: every queued trigger is in the queue and every offered one is on the
+// router's table, and a trigger left unrouted has been offered exactly as many
+// times as the bound allows, so it was not given up on early.
+fn check_offers(current: State) -> Result(Nil, statem.Violation) {
+  list.try_each(dict.values(current.triggers), fn(stored) {
+    let id = stored.trigger.id
+    let offers = state.offer_count(current, id)
+    use _ <- result.try(holds(
+      ok: offers <= queue.max_offers,
+      tag: "unrouted",
+      detail: "a trigger was offered more than the bound allows",
+    ))
+    case stored.fate {
+      state.Awaiting ->
+        holds(
+          ok: list.contains(current.queue, id),
+          tag: "limbo",
+          detail: "a waiting trigger is not in the queue",
+        )
+      state.Offered ->
+        holds(
+          ok: list.contains(current.offered, id),
+          tag: "limbo",
+          detail: "an offered trigger is not on the router's table",
+        )
+      state.Decided(state.Unrouted(state.NoDecision(counted))) ->
+        holds(
+          ok: counted == queue.max_offers && offers == counted,
+          tag: "unrouted",
+          detail: "a trigger was left unrouted before its offers were spent",
+        )
+      state.Decided(_) -> Ok(Nil)
+    }
+  })
 }
 
 // --- the tests -------------------------------------------------------------------------
@@ -900,7 +1004,7 @@ pub fn the_engine_keeps_every_invariant_over_random_event_sequences_test() {
 // The generator must reach the states the invariants are about, or the check
 // above could pass without ever testing them.
 pub fn the_generator_reaches_the_states_the_invariants_guard_test() {
-  let runs = counted(150)
+  let runs = counted(600)
   let finals =
     list.flat_map(runs, fn(run) {
       let commands = statem.commands(spec(), config(), run)
@@ -961,4 +1065,29 @@ pub fn the_generator_reaches_the_states_the_invariants_guard_test() {
     }
   })
     as "a batch of several candidates"
+  assert any_effect(fn(e) {
+    case e {
+      event.ObserveHead(_, _) -> True
+      _ -> False
+    }
+  })
+    as "a request to read a worker's head"
+  assert any_effect(fn(e) {
+    case e {
+      event.PublishBranch(_, _, _) -> True
+      _ -> False
+    }
+  })
+    as "a branch to publish"
+  assert any_state(fn(s) { state.unrouted(s) != [] }) as "an unrouted candidate"
+  assert any_state(fn(s) {
+    tickets(s, fn(t) { t.review != None && t.readiness != readiness.InProgress })
+  })
+    as "a ticket the host sent to a person"
+  assert any_state(fn(s) {
+    tickets(s, fn(t) {
+      t.head != None && t.readiness == readiness.AwaitingReview
+    })
+  })
+    as "a protected head waiting for review"
 }

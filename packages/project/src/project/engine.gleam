@@ -76,6 +76,10 @@ pub fn apply(current: State, incoming: Event) -> Step {
       work.assignment_ended(current, ticket, seq, end)
     event.Reported(ticket, seq, report, head) ->
       work.reported(current, ticket, seq, report, head)
+    event.HeadObserved(ticket, seq, head) ->
+      work.head_observed(current, ticket, seq, head)
+    event.ReviewRequested(ticket, commit, reason) ->
+      work.review_requested(current, ticket, commit, reason)
     event.Answered(ticket, question, _) ->
       work.answered(current, ticket, question)
     event.InputFailed(ticket, trigger) ->
