@@ -10,6 +10,7 @@
 //// no model call" is asserted as "no endpoint was sent anything".
 
 import client/daemon/project_host
+import client/goalstate
 import client/internal/ffi_os
 import client/peer_mail
 import client/project_poller
@@ -965,4 +966,116 @@ pub fn the_ledger_stays_bounded_while_a_hostile_source_keeps_writing_test() {
   assert written == 120
   assert newest_event(rig.config.ledger_path) > 240
   assert retained(rig.config.ledger_path) < 70
+}
+
+// --- a pull request that ends -------------------------------------------------------
+
+// A project whose published work opens pull request 7 of the watched
+// repository. The head read, the check and the push are fakes that say yes, so
+// the ticket reaches a pull request by the path a real one takes, through the
+// engine's own checks. The poller, the gate and the ledger are the real ones.
+fn opening_pull_requests(name: String) -> Rig {
+  let policy =
+    project_host.Policy(
+      ..project_host.idle_policy,
+      sources: sources(100),
+      check: Some("make check"),
+      publish: project_settings.PublishPullRequest,
+      check_wall_ms: 5000,
+    )
+  let base = rig(name, policy)
+  let ports =
+    project_host.Ports(
+      ..base.config.ports(),
+      observe_head: fn(_) {
+        Ok(
+          project_host.Taken(
+            project_host.Observed(commit: "aaaaaaa", changed: ["src/a.go"]),
+          ),
+        )
+      },
+      run_check: fn(request: project_host.CheckRequest) {
+        goalstate.CheckResult(
+          command: request.command,
+          ending: goalstate.Exited(status: 0),
+          output: "ok",
+          ran_at_ms: 0,
+        )
+      },
+      publish: fn(_) { project_host.Opened("https://github.com/o/r/pull/7") },
+    )
+  Rig(..base, config: project_host.Config(..base.config, ports: fn() { ports }))
+}
+
+pub fn a_merged_pull_request_concludes_its_ticket_and_a_later_comment_resumes_it_test() {
+  concluded_and_resumed("merged", "true", "ended/merged")
+}
+
+pub fn a_closed_pull_request_concludes_its_ticket_and_a_later_comment_resumes_it_test() {
+  concluded_and_resumed("closed", "false", "ended/closed")
+}
+
+// Drives one ticket to pull request 7, has the poller find it ended in the way
+// `merged` says, and checks the board's word for it and what a later comment
+// does.
+fn concluded_and_resumed(name: String, merged: String, word: String) -> Nil {
+  let rig = opening_pull_requests(name)
+  let handle = start(rig)
+  first_pass(handle)
+
+  // The owner's ticket is worked, checked and published as pull request 7.
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+  let assert Ok([tools.Applied]) = project_host.route(handle, [accept("a")])
+  let worker = "session-project:p1:t-a:1"
+  let assert Ok(Nil) =
+    project_host.report(handle, worker, tools.WorkerReport(tools.Waiting, None))
+  eventually(fn() { string.contains(board_text(handle), "/pull/7") })
+
+  // The pass that finds the pull request ended ends the ticket through the
+  // host's conclusion, and the board says how.
+  serve(rig, [])
+  fake_gh.ok(
+    rig.fake,
+    "repos/o/r/pulls/7",
+    "{\"number\":7,\"state\":\"closed\",\"merged\":"
+      <> merged
+      <> ",\"head\":{\"sha\":\"aaaaaaa\"}}",
+  )
+  next_pass(rig, handle)
+  eventually(fn() { string.contains(board_text(handle), word) })
+
+  // The ticket keeps its subscription to the pull request's thread, so a listed
+  // person's comment there reaches the router, and the router's `resume` opens
+  // the ticket again under a new assignment.
+  let _ = drain(rig.seen)
+  serve(rig, [
+    comment(
+      301,
+      "alice",
+      "@loom-bot one more case on windows",
+      "2026-11-02T10:10:00Z",
+      7,
+    ),
+  ])
+  next_pass(rig, handle)
+  eventually(fn() { list.contains(router_got(drain(rig.seen)), "gh-c-301") })
+  let assert Ok([tools.Applied]) =
+    project_host.route(handle, [
+      tools.Item(
+        trigger: model.TriggerId("gh-c-301"),
+        action: tools.Resume(model.TicketId("t-a")),
+        holds: [],
+        related: [],
+        prior_hand_back: None,
+      ),
+    ])
+
+  // The ticket's worker session is told the comment, as the resumed ticket's
+  // own, and the ticket is no longer ended.
+  let told =
+    collect(rig, fn(found) {
+      list.any(worker_got(found, worker), fn(got) { got.0 == "gh-c-301" })
+    })
+  assert list.any(worker_got(told, worker), fn(got) { got.0 == "gh-c-301" })
+  assert !string.contains(board_text(handle), word)
 }
