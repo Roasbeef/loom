@@ -221,6 +221,49 @@ pub fn steer_racing_a_live_effect_corpus_test() {
   expect_case(raced, [fault.CrashAtCommit(ordinal: 4)])
 }
 
+pub fn a_router_shaped_script_converges_but_the_decision_is_the_scripts_test() {
+  // Slice 6 asked whether simulation can drive a router session. It can run
+  // a session whose scripted model calls a tool named `route`, and hold it to
+  // every check under a crash. What it cannot do is judge: the `route` call,
+  // its arguments and its result are all the script's, the project engine is
+  // not in the simulated tree, and no candidate is ever offered. The decision
+  // under test would be the script's own, which makes this a replay of a
+  // recorded answer and never a measurement of a prompt or a model. The
+  // verdict's live lane therefore runs against the daemon's real router
+  // instead (`client/project_daemon_test` drives one with a scripted
+  // provider).
+  let routing =
+    script.Script(
+      registry: [#("route", ReplayNever), #("project_read", ReplaySafe)],
+      tools: [
+        #("route", script.ToolOk(text: "routed.")),
+        #("project_read", script.ToolOk(text: "the message")),
+      ],
+      ops: [
+        script.RunOp(
+          prompt: "candidates: gh-c-1",
+          settles: [
+            script.Calls(
+              calls: [script.Call(id: "t00route", tool: "route")],
+              tokens: 4,
+            ),
+            script.Answer(text: "routed.", tokens: 5),
+          ],
+          post: script.Answer(text: "after compaction", tokens: 2),
+        ),
+      ],
+      threshold_after: None,
+      structural: script.Supplied,
+      interventions: [],
+      poll_answer: script.Answer(text: "deferred answer", tokens: 4),
+      subagent: None,
+      parallel: False,
+      escalate: False,
+    )
+  expect_case(routing, [])
+  expect_case(routing, [fault.CrashDuringEffect(index: 2)])
+}
+
 pub fn abort_at_the_terminal_commit_corpus_test() {
   // The §4.6 race the harness could not reach: the abort request is sent
   // from the writer, after the terminal transaction is durable and
