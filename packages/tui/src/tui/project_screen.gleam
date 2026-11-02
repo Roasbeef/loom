@@ -690,8 +690,47 @@ fn list_lines(state: State, width: Int, now_ms: Int) -> List(Drawn) {
         ),
       ]
 
-      list.flatten([notice, rows, health, unreadable_lines(held, width)])
+      list.flatten([
+        notice,
+        rows,
+        health,
+        unreadable_lines(held, width),
+        would_lines(held, width),
+      ])
     }
+  }
+}
+
+/// What `observe` rules recorded as work they would have done, under one
+/// heading, so the owner can judge a rule before it is allowed to act. The
+/// address of each message is drawn as text, like a pull request's.
+fn would_lines(held: board.Board, width: Int) -> List(Drawn) {
+  case held.would {
+    [] -> []
+    rows -> [
+      plain("", theme.overlay_plain()),
+      plain(
+        "WOULD HAVE DONE (" <> int.to_string(list.length(rows)) <> ")",
+        theme.overlay_quiet(),
+      ),
+      ..list.flat_map(rows, fn(each) {
+        [
+          plain(
+            text.truncate(board.would_words(each), width, "…"),
+            theme.overlay_plain(),
+          ),
+          ..case each.link {
+            Some(link) -> [
+              plain(
+                text.truncate("  " <> link, width, "…"),
+                theme.overlay_quiet(),
+              ),
+            ]
+            None -> []
+          }
+        ]
+      })
+    ]
   }
 }
 

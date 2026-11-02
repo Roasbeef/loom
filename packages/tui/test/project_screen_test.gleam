@@ -283,6 +283,39 @@ pub fn a_healthy_board_takes_one_line_test() {
   assert !string.contains(text, "QUEUED")
 }
 
+// What an observe rule recorded as work it would have done is listed under one
+// heading with the rule, the actor, the start of the text and the address, and
+// the text is external, so a terminal escape in it never reaches the screen.
+pub fn what_observe_would_have_done_is_listed_for_the_owner_test() {
+  let would =
+    json.Object([
+      #("trigger", json.String("gh-ci-900")),
+      #("source", json.String("github")),
+      #("actor", json.String("github-actions")),
+      #("rule", json.String("ci")),
+      #("text", json.String("CI failure: check unit \u{1b}[31mfailed")),
+      #("link", json.String("https://github.com/o/r/actions")),
+      #("at_ms", json.Int(1)),
+    ])
+  let document =
+    json.Object([
+      #("project", json.String("p1")),
+      #("revision", json.Int(4)),
+      #("total", json.Int(0)),
+      #("tickets", json.Array([])),
+      #("would_have_done", json.Array([would])),
+    ])
+  let text = painted(showing(document))
+
+  assert string.contains(text, "WOULD HAVE DONE (1)")
+  assert string.contains(text, "ci: github-actions: CI failure: check unit")
+  assert string.contains(text, "https://github.com/o/r/actions")
+  assert !string.contains(text, "\u{1b}[31m")
+
+  // A board with nothing recorded has no such heading.
+  assert !string.contains(painted(showing(healthy())), "WOULD HAVE DONE")
+}
+
 pub fn a_widens_the_list_to_every_ticket_and_back_test() {
   let wide = press(showing(mixed()), "a")
   let text = painted(wide)

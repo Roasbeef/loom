@@ -204,16 +204,50 @@ fn waiting(
     ])
 
   // A project with nothing that needs a person is its one line; otherwise the
-  // line follows the stage groups and counts the rest.
-  case board.needing(held) {
-    [] -> health
+  // line follows the stage groups and counts the rest. What `observe` rules
+  // would have done comes last, because it needs nobody yet.
+  let waiting = case board.needing(held) {
+    [] -> [health]
     needing ->
-      html.div(
-        [],
-        list.append(list.map(board.groups(needing), group(id, _, now, open)), [
-          health,
+      list.append(list.map(board.groups(needing), group(id, _, now, open)), [
+        health,
+      ])
+  }
+  html.div([], list.append(waiting, would(held.would)))
+}
+
+/// What `observe` rules recorded as work they would have done, newest first.
+/// Every string is external text drawn as a text node, and the address of each
+/// message is drawn as text too: no `href` is built from one.
+fn would(rows: List(board.Would)) -> List(Element(message)) {
+  case rows {
+    [] -> []
+    _ -> [
+      html.div([attribute.class("home-project-stage")], [
+        html.p([attribute.class("home-folder-path")], [
+          html.text(
+            "WOULD HAVE DONE (" <> int.to_string(list.length(rows)) <> ")",
+          ),
         ]),
-      )
+        html.ul(
+          [attribute.class("home-list")],
+          list.map(rows, fn(each) {
+            html.li([attribute.class("home-folder")], [
+              html.span([attribute.class("home-folder-name")], [
+                html.text(board.would_words(each)),
+              ]),
+              case each.link {
+                Some(link) ->
+                  html.span([attribute.class("home-folder-path")], [
+                    html.text(link),
+                  ])
+                None -> element.none()
+              },
+            ])
+          }),
+        ),
+      ]),
+    ]
   }
 }
 

@@ -332,3 +332,38 @@ pub fn the_project_of_a_workspace_comes_from_the_list_test() {
   assert board.project_for(listed, "/nowhere") == None
   assert board.project_for(json.Null, "/work/repo") == None
 }
+
+pub fn the_would_have_done_list_decodes_totally_and_cuts_its_text_test() {
+  let long = string.repeat("x", 500)
+  let row = fn(fields) { json.Object(fields) }
+  let with =
+    json.Object([
+      #("project", json.String("p1")),
+      #("revision", json.Int(1)),
+      #(
+        "would_have_done",
+        json.Array([
+          row([
+            #("trigger", json.String("gh-c-1")),
+            #("rule", json.String("deps")),
+            #("actor", json.String("dependabot[bot]")),
+            #("text", json.String(long)),
+            #("link", json.String("https://github.com/o/r/issues/1")),
+          ]),
+          row([#("rule", json.String("no trigger so unreadable"))]),
+          json.String("not an object"),
+        ]),
+      ),
+    ])
+  let assert Ok(decoded) = board.decode_board(with)
+  let assert [one] = decoded.would
+  assert one.trigger == "gh-c-1"
+  assert string.length(one.text) == board.would_text_limit
+  assert one.link == Some("https://github.com/o/r/issues/1")
+  assert board.would_words(board.Would("t", "ci", "alice", "boom", None))
+    == "ci: alice: boom"
+
+  // A daemon that sends none, or something else, has an empty list.
+  let assert Ok(without) = board.decode_board(body([]))
+  assert without.would == []
+}

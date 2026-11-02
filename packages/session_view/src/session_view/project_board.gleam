@@ -168,8 +168,33 @@ pub type Board {
     tickets: List(Ticket),
     /// Rows this client could not address and left out.
     unreadable: Int,
+    /// What `observe` rules recorded as work they would have done, newest
+    /// first. The owner reads these to judge a rule before it acts.
+    would: List(Would),
   )
 }
+
+/// One inferred message that a rule in `observe` mode recorded as accepted
+/// work and did nothing about.
+pub type Would {
+  Would(
+    /// The message's id.
+    trigger: String,
+    /// The rule that matched it.
+    rule: String,
+    /// Who wrote it.
+    actor: String,
+    /// The start of its text, on one line.
+    text: String,
+    /// Where it can be read, as the daemon built the address from the
+    /// project's remote. It is drawn as text and never made into a link by a
+    /// client, like a pull request's address.
+    link: Option(String),
+  )
+}
+
+/// The most characters of a message a "would have done" row shows.
+pub const would_text_limit = 160
 
 /// Where an input stands with the worker.
 pub type Delivery {
@@ -634,6 +659,7 @@ fn board_of(fields: List(#(String, JsonValue))) -> Result(Board, String) {
         }),
         tickets:,
         unreadable: list.length(rows) - list.length(tickets),
+        would: rows_in(fields, "would_have_done", would_row),
       ))
     }
     None, _ -> Error("the board named no project")
@@ -814,6 +840,33 @@ fn assignment_row(value: JsonValue) -> Result(Assignment, Nil) {
       }
     _ -> Error(Nil)
   }
+}
+
+/// The words of a "would have done" row: the rule that matched, who wrote the
+/// message and where it starts. Both hosts draw this line.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let each = project_board.Would("gh-c-1", "ci", "alice", "CI failure", None)
+/// assert project_board.would_words(each) == "ci: alice: CI failure"
+/// ```
+pub fn would_words(each: Would) -> String {
+  each.rule <> ": " <> each.actor <> ": " <> each.text
+}
+
+/// One "would have done" row. It needs a trigger id to show, and nothing else.
+fn would_row(value: JsonValue) -> Result(Would, Nil) {
+  use fields <- result.try(fields_of(value))
+  use trigger <- result.map(option.to_result(text_in(fields, "trigger"), Nil))
+  Would(
+    trigger: text_hygiene.single_line(trigger),
+    rule: safe_in(fields, "rule"),
+    actor: safe_in(fields, "actor"),
+    text: text_hygiene.single_line(safe_in(fields, "text"))
+      |> string.slice(0, would_text_limit),
+    link: option.map(text_in(fields, "link"), text_hygiene.single_line),
+  )
 }
 
 /// One input row.

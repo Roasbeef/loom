@@ -323,6 +323,34 @@ pub fn a_stage_from_a_newer_daemon_is_drawn_as_text_test() {
   assert string.contains(html, "1 from-the-future")
 }
 
+pub fn what_observe_would_have_done_is_listed_as_escaped_text_test() {
+  let would =
+    json.Object([
+      #("trigger", json.String("gh-c-5")),
+      #("rule", json.String("deps")),
+      #("actor", json.String("dependabot[bot]")),
+      #("text", json.String("bump <script>alert(1)</script> left-pad")),
+      #("link", json.String("https://github.com/o/r/issues/5")),
+    ])
+  let document =
+    json.Object([
+      #("project", json.String("p1")),
+      #("revision", json.Int(3)),
+      #("total", json.Int(1)),
+      #("tickets", json.Array([ticket("t-1", "working", 1, "quiet")])),
+      #("would_have_done", json.Array([would])),
+    ])
+  let html = drawn(opened(serving(document).0))
+
+  // The heading, the rule, the actor and the address appear, the text is
+  // escaped, and no address was made into a link.
+  assert string.contains(html, "WOULD HAVE DONE (1)")
+  assert string.contains(html, "deps: dependabot[bot]: bump")
+  assert string.contains(html, "https://github.com/o/r/issues/5")
+  assert !string.contains(html, "<script>alert(1)")
+  assert !string.contains(html, "href=\"https://github.com/o/r/issues/5\"")
+}
+
 pub fn a_project_whose_board_cannot_be_read_says_so_test() {
   let html = drawn(opened(serving(json.String("garbage")).0))
 
