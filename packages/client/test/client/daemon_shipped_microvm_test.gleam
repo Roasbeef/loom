@@ -123,7 +123,11 @@ const marker_content = "placed-in-guest\n"
 // The one host the guest is allowed to reach, and a public one it is not.
 const allowed_host = "deb.debian.org"
 
-const denied_host = "example.com"
+const security_host = "security.debian.org"
+
+// Refused: on the same infrastructure as the allowed host and reachable from
+// the host, so a refusal can only be the allowlist.
+const denied_host = "ftp.debian.org"
 
 // Where the provisioning script writes inside the guest. The file gains a
 // line each time the script runs, so its length counts the runs.
@@ -169,6 +173,8 @@ type Run {
     script: String,
     /// The name of the second guest the idle-daemon step boots.
     idle_name: String,
+    /// The name of the guest whose provisioning script fails.
+    failing_name: String,
   )
 }
 
@@ -198,10 +204,11 @@ fn first_command(reach: Reach) -> String {
       <> "https://"
       <> allowed_host
       <> "/debian/"
-      <> "; curl -sS --max-time 30 -o /dev/null -w 'denied=%{http_code}\\n' "
+      <> "; curl -sS --max-time 30 -o /dev/null -w 'denied=%{http_connect}\\n' "
       <> "https://"
       <> denied_host
       <> " || true"
+      <> "; echo \"jq=$(jq --version)\""
       <> "; curl -sS --max-time 30 -o /dev/null -w 'zen=%{http_code}\\n' "
       <> "https://api.github.com/zen"
       <> "; curl -sS --max-time 30 -o /dev/null -w 'user=%{http_code}\\n' "
@@ -326,6 +333,7 @@ fn fixture(artifacts: Artifacts) -> Nil {
       token: "ghp_loomvm" <> hex(18),
       script: directory <> "/provision.sh",
       idle_name: guest_prefix <> hex(3),
+      failing_name: guest_prefix <> hex(3),
     )
 
   let outcomes =
@@ -342,6 +350,7 @@ fn fixture(artifacts: Artifacts) -> Nil {
   // still stops the guest it started and retires the orchestrator.
   let _stopped = vm(run, ["down", "--name", run.name])
   let _idle_stopped = vm(run, ["down", "--name", run.idle_name])
+  let _failing_stopped = vm(run, ["down", "--name", run.failing_name])
   retire_default_daemon(run)
   remote_daemons.retire(run.orchestrator.paths)
   let assert [weft.Completed(0, Nil)] = outcomes
@@ -385,7 +394,14 @@ fn drive(run: Run) -> Nil {
   let #(Nil, report) =
     provider.with_server_for(script, provider.OnlySuccessful, 840_000, fn(url) {
       let first_up =
-        up(run, ["--allow", allowed_host, "--provision", run.script])
+        up(run, [
+          "--allow",
+          allowed_host,
+          "--allow",
+          security_host,
+          "--provision",
+          run.script,
+        ])
       assert string.contains(
         first_up,
         "serves " <> executor_node(run) <> " on host port",
@@ -439,8 +455,11 @@ fn drive(run: Run) -> Nil {
 
       // The allowed host is recorded and `status` lists it, with the script's
       // state.
-      assert read_allow(run) == allowed_host <> "\n"
-      assert string.contains(status.output, "allowed:    " <> allowed_host)
+      assert read_allow(run) == allowed_host <> "\n" <> security_host <> "\n"
+      assert string.contains(
+        status.output,
+        "allowed:    " <> allowed_host <> ", " <> security_host,
+      )
       assert string.contains(status.output, "provision:  done")
 
       // Neither flag: the resume keeps the allowed host and skips the script.
@@ -488,11 +507,12 @@ fn drive(run: Run) -> Nil {
       assert string.contains(second, "allowed=200")
     }
   }
-  assert read_allow(run) == allowed_host <> "\n"
+  assert read_allow(run) == allowed_host <> "\n" <> security_host <> "\n"
   assert_script_ran_once(run)
 
   // Last, because it replaces the cookie the assertions above compare with.
   idle_daemon_is_stopped(run)
+  failing_script_fails_up(run)
 }
 
 // Whether the guest's jailed shell calls api.github.com.
@@ -610,6 +630,66 @@ fn idle_daemon_is_stopped(run: Run) -> Nil {
 
       let down = vm(run, ["down", "--name", run.idle_name])
       assert string.contains(down.output, "Stopped the guest " <> run.idle_name)
+      Nil
+    }
+  }
+}
+
+// A script that exits 3 fails `up`: the refusal names the console line and
+// carries the script's own output, the guest root holds the script and no
+// marker, and no guest is left running. The deployment goes into a scratch
+// `loom.toml`, and the cookie the idle step installed is removed first, for
+// the reason that step gives; both are inside the isolated home.
+fn failing_script_fails_up(run: Run) -> Nil {
+  case isolated_home(run) {
+    Error(reason) ->
+      io.println_error("SKIP " <> label <> " failing script: " <> reason)
+    Ok(home) -> {
+      let assert Ok(Nil) = simplifile.delete(home <> "/.erlang.cookie")
+        as "the idle deployment's cookie is removed from the isolated home"
+      let script = run.directory <> "/fail.sh"
+      let assert Ok(Nil) =
+        simplifile.write(
+          script,
+          "#!/bin/sh\necho failing-script-output\nexit 3\n",
+        )
+        as "the failing script is written"
+
+      let outcome =
+        vm(run, [
+          "up",
+          "--name",
+          run.failing_name,
+          "--workspace",
+          run.repository,
+          "--config",
+          run.directory <> "/fail.toml",
+          "--github",
+          "off",
+          "--mem",
+          "1024",
+          "--cpus",
+          "2",
+          "--provision",
+          script,
+        ])
+      assert outcome.status != 0
+      assert string.contains(outcome.output, "LOOM-PROVISION-FAILED status=3")
+      assert string.contains(outcome.output, "failing-script-output")
+
+      // The script is staged and the marker is not, so the next `up` retries.
+      let root = run.vm_home <> "/" <> run.failing_name <> "/root/etc/loom-vm"
+      assert simplifile.is_file(root <> "/provision") == Ok(True)
+      assert simplifile.is_file(root <> "/provisioned") == Ok(False)
+
+      // `up` stopped the guest it started: nothing runs and no pid is kept.
+      let status = vm(run, ["status", "--name", run.failing_name])
+      assert string.contains(status.output, "process:    not running")
+      assert string.contains(status.output, "provision:  pending")
+      assert simplifile.is_file(
+          run.vm_home <> "/" <> run.failing_name <> "/loom-vm.pid",
+        )
+        == Ok(False)
       Nil
     }
   }
@@ -841,7 +921,11 @@ fn assert_first_turn(run: Run, result: String) -> Nil {
     OffHost -> Nil
     GitHub -> {
       assert string.contains(result, "allowed=200")
-      assert string.contains(result, "denied=000")
+      assert string.contains(result, "denied=403")
+
+      // The script installed jq as root and the jail, whose PATH holds
+      // /usr/bin, runs it.
+      assert string.contains(result, "jq=jq-")
       assert string.contains(result, "zen=200")
       assert string.contains(result, "user=401")
     }
@@ -893,7 +977,8 @@ fn write_provision_script(run: Run) -> Nil {
       <> "\ncurl -fsS --max-time 30 -o /dev/null https://"
       <> allowed_host
       <> "/debian/"
-      <> "\n"
+      <> "\napt-get update\n"
+      <> "apt-get install -y --no-install-recommends jq\n"
   }
   let assert Ok(Nil) =
     simplifile.write(

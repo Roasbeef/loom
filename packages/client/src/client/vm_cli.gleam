@@ -974,7 +974,10 @@ fn stage_script(
     vm_spec.NoScript | vm_spec.RetryStaged -> Ok(Nil)
     vm_spec.StageScript(source) -> {
       let target = root <> vm_spec.provision_script
-      use Nil <- result.try(make_directories([filepath.directory_name(target)]))
+      use Nil <- result.try(make_inside(
+        root,
+        filepath.directory_name(vm_spec.provision_script),
+      ))
       use bytes <- result.try(
         simplifile.read_bits(source)
         |> result.map_error(fn(error) {
@@ -1106,7 +1109,9 @@ fn stage_node(
 ) -> Result(Nil, String) {
   let node = root <> vm_spec.node_dir
   use Nil <- result.try(
-    make_directories([node <> "/home", node <> "/creds", node <> "/state"]),
+    list.try_each(["/home", "/creds", "/state"], fn(directory) {
+      make_inside(root, vm_spec.node_dir <> directory)
+    }),
   )
   use Nil <- result.try(write_private(node <> "/creds/ca.pem", executor.ca))
   use Nil <- result.try(write_private(
@@ -1124,14 +1129,60 @@ fn stage_node(
   )
 }
 
-/// Creates each directory, and its parents, or names the one that failed.
-fn make_directories(paths: List(String)) -> Result(Nil, String) {
-  list.try_each(paths, fn(path) {
-    simplifile.create_directory_all(path)
-    |> result.map_error(fn(error) {
-      path <> " is unwritable: " <> simplifile.describe_error(error)
+/// Creates the directory `below` under the guest root, one component at a time,
+/// and checks after each that it is where the root keeps it: its canonical path
+/// must be the canonical root plus the same suffix. The root is a directory the
+/// guest's `loom` user can write into, so an earlier boot that escaped its jail
+/// could have left a link where a directory belongs, and the next write would
+/// then land in a host directory (the executor's key and cookie, for the node).
+/// Checking each component before creating the next means nothing is created
+/// through a link either. `below` is a guest path such as `/srv/loom-node/home`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // vm_cli.make_inside("/vm/dev/root", "/srv/loom-node/home")
+/// ```
+@internal
+pub fn make_inside(root: String, below: String) -> Result(Nil, String) {
+  use real_root <- result.try(
+    bootstrap.canonical_path(root)
+    |> result.map_error(fn(reason) { root <> " is unreadable: " <> reason }),
+  )
+  let segments =
+    string.split(below, "/") |> list.filter(fn(part) { part != "" })
+
+  // Each step extends the guest-relative suffix by one component.
+  list.try_fold(segments, "", fn(suffix, segment) {
+    let suffix = suffix <> "/" <> segment
+    let path = root <> suffix
+
+    // An existing directory, or a link the check below judges, is not an
+    // error to create over; anything else is.
+    use Nil <- result.try(case simplifile.create_directory(path) {
+      Ok(Nil) | Error(simplifile.Eexist) -> Ok(Nil)
+      Error(error) ->
+        Error(path <> " is unwritable: " <> simplifile.describe_error(error))
     })
+
+    // A dangling link exists but resolves to nothing, which is as wrong as one
+    // that resolves elsewhere.
+    let resolved = result.unwrap(bootstrap.canonical_path(path), "nowhere")
+
+    // Only the exact suffix under the real root is where the guest keeps it.
+    case resolved == real_root <> suffix {
+      True -> Ok(suffix)
+      False ->
+        Error(
+          path
+          <> " resolves to "
+          <> resolved
+          <> ", not inside the guest root, so something in the guest left a "
+          <> "link there. Replace the guest with --fresh.",
+        )
+    }
   })
+  |> result.replace(Nil)
 }
 
 /// Writes a file only its owner can read, atomically.
@@ -1157,7 +1208,7 @@ fn copy_workspace(
 ) -> Result(Nil, String) {
   let parent = root <> vm_spec.workspaces_dir
   let copy = parent <> "/" <> workspace.name
-  use Nil <- result.try(make_directories([parent]))
+  use Nil <- result.try(make_inside(root, vm_spec.workspaces_dir))
 
   // A resumed guest's copy is the one the agent has been editing; copying
   // the host's checkout over it would discard that work.
@@ -1201,6 +1252,9 @@ fn own_repository(
   case workspace.checkout {
     Standalone -> Ok(Nil)
     Linked -> {
+      // The staging directory is inside the node directory, which the guest
+      // owns, so it is checked here as well as by `stage_node`.
+      use Nil <- result.try(make_inside(root, vm_spec.node_dir))
       let staging = root <> vm_spec.node_dir <> "/git-staging"
       let made = standalone_repository(workspace.path, copy, staging)
       let _ = simplifile.delete_all([staging])

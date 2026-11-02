@@ -4,6 +4,7 @@
 //// configuration, and the two small records the command reads back. Nothing
 //// here boots a guest; the live check does that against the built artifacts.
 
+import broker/token
 import client
 import client/distribution_bundle
 import client/distribution_plan
@@ -11,10 +12,12 @@ import client/distribution_provision
 import client/vm_cli
 import client/vm_spec.{Launch, Manifest, PidRecord}
 import core/json
+import gleam/bit_array
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import simplifile
 import tom
 
 // --- the command line --------------------------------------------------------
@@ -987,4 +990,57 @@ pub fn no_daemon_means_the_next_loom_starts_one_test() {
     |> string.join("\n")
   assert string.contains(text, "next `loom` command starts the daemon")
   assert !string.contains(text, "kill")
+}
+
+// --- links in the guest root ---------------------------------------------------
+
+// A scratch directory with a guest root and a directory outside it, both real.
+fn scratch_root() -> #(String, String, String) {
+  let name =
+    token.production_entropy()(4) |> bit_array.base16_encode |> string.lowercase
+  let scratch = "/var/tmp/loom-vm-inside-" <> name
+  let root = scratch <> "/root"
+  let outside = scratch <> "/outside"
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(outside)
+  #(scratch, root, outside)
+}
+
+pub fn directories_under_a_real_root_are_made_test() {
+  let #(scratch, root, _) = scratch_root()
+  assert vm_cli.make_inside(root, "/srv/loom-node/home") == Ok(Nil)
+  assert simplifile.is_directory(root <> "/srv/loom-node/home") == Ok(True)
+
+  // Making them again is not an error.
+  assert vm_cli.make_inside(root, "/srv/loom-node/home") == Ok(Nil)
+  let assert Ok(Nil) = simplifile.delete_all([scratch])
+}
+
+pub fn a_link_out_of_the_root_is_refused_and_the_target_untouched_test() {
+  let #(scratch, root, outside) = scratch_root()
+
+  // A link where a middle component belongs: nothing below it may be made.
+  let assert Ok(Nil) = simplifile.create_symlink(outside, root <> "/srv")
+  let assert Error(reason) = vm_cli.make_inside(root, "/srv/loom-node/home")
+  assert string.contains(reason, root <> "/srv")
+  assert string.contains(reason, "--fresh")
+  assert simplifile.read_directory(outside) == Ok([])
+
+  // A link at the last component, with the parents real.
+  let assert Ok(Nil) = simplifile.delete(root <> "/srv")
+  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/etc")
+  let assert Ok(Nil) =
+    simplifile.create_symlink(outside, root <> "/etc/loom-vm")
+  let assert Error(reason) = vm_cli.make_inside(root, "/etc/loom-vm")
+  assert string.contains(reason, "--fresh")
+  assert simplifile.read_directory(outside) == Ok([])
+
+  // A link to nothing is refused as well.
+  let assert Ok(Nil) = simplifile.delete(root <> "/etc/loom-vm")
+  let assert Ok(Nil) =
+    simplifile.create_symlink(scratch <> "/absent", root <> "/etc/loom-vm")
+  assert result.is_error(vm_cli.make_inside(root, "/etc/loom-vm"))
+  assert simplifile.read_directory(outside) == Ok([])
+
+  let assert Ok(Nil) = simplifile.delete_all([scratch])
 }
