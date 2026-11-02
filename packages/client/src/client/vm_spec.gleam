@@ -1,5 +1,5 @@
-//// The decisions behind `loom vm setup | up | down | status`, with no effect in
-//// them.
+//// The decisions behind `loom vm setup | up | down | status | logs | list | rm |
+//// sync`, with no effect in them.
 ////
 //// `client/vm_cli` does the work: it provisions, copies, spawns and signals.
 //// Everything it needs to decide first lives here as a function of plain
@@ -28,7 +28,13 @@
 ////   `up` changed it (`occupied_sessions`, `daemon_note`);
 //// - how to read the two small records the command leaves behind and consults
 ////   later: its pid file (`encode_pid`, `decode_pid`) and the host epmd's
-////   listing (`registered_port`).
+////   listing (`registered_port`);
+//// - the daily verbs: what may be printed of text a guest wrote (`printable`),
+////   the record of each workspace's developer checkout (`encode_checkouts`,
+////   `decode_checkouts`), the Git command lines of `sync` (`fetch_arguments`,
+////   `bundle_arguments`), which branches a guest's copy holds that origin lacks
+////   (`packed_refs`, `loose_hash`, `unpushed_branches`) and what `rm` undoes in
+////   the user's `loom.toml` (`read_enrolment`, `plan_teardown`).
 ////
 //// ## Flow
 ////
@@ -44,6 +50,10 @@
 //// - `valid_host`, `encode_allow`, `decode_allow` and `effective_allow` keep
 ////   the `--allow` list, and `provision_plan` and `boot_budget_ms` decide what
 ////   `--provision` does.
+//// - `printable`, `decode_checkouts`, `only_workspace`, `fetch_arguments`,
+////   `bundle_arguments` and `unpushed_branches` serve the commands that read a
+////   guest's root and sync it; `read_enrolment` and `plan_teardown` decide what
+////   removing a guest takes out of the user's configuration.
 ////
 //// ## The deployment
 ////
@@ -60,6 +70,7 @@ import client/distribution_bundle.{type Bundle}
 import client/distribution_plan.{type Plan, Executor, Node, Orchestrator, Plan}
 import core/json as core_json
 import gleam/bool
+import gleam/dict
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
@@ -68,6 +79,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import storage/catalogue
+import tom
 
 /// The name a standing guest has unless `--name` says another.
 pub const default_name = "vm"
@@ -130,6 +142,12 @@ pub const failed_marker = "LOOM-EXECUTOR-FAILED"
 /// The console line that says the provisioning script failed, followed by its
 /// exit status. The script's own output precedes it on the console.
 pub const provision_failed_marker = "LOOM-PROVISION-FAILED"
+
+/// How many lines `loom vm logs` prints when `--lines` is not given.
+pub const default_log_lines = 100
+
+/// The most lines `loom vm logs` will print.
+pub const log_lines_limit = 100_000
 
 /// The longest `--name`. The orchestrator's plan name adds `-host`, and a plan
 /// name is at most 32 bytes.
@@ -208,7 +226,7 @@ pub type SetupSource {
   BuildTree(directory: String)
 }
 
-/// One of the four commands.
+/// One of the commands.
 pub type Command {
   /// Install the artifacts the guest boots from and write their manifest.
   Setup(SetupSource)
@@ -221,6 +239,51 @@ pub type Command {
 
   /// Report the guest named.
   Status(name: String)
+
+  /// Print the end of the guest's console log.
+  Logs(name: String, lines: Int)
+
+  /// List the guests under the vm home, one line each.
+  Guests
+
+  /// Delete a stopped guest and undo its enrolment.
+  Remove(name: String, config: Option(String), consent: Consent)
+
+  /// Move committed work between the developer's checkout and a guest's copy.
+  Sync(SyncOptions)
+}
+
+/// Whether the user said `--yes` to a deletion that cannot be undone.
+pub type Consent {
+  /// `--yes` was given.
+  Confirmed
+
+  /// The flag was not given, so the command lists what it would lose and
+  /// stops.
+  Unconfirmed
+}
+
+/// Which way `vm sync` moves commits.
+pub type Direction {
+  /// The guest's committed work arrives in the developer's checkout.
+  FromGuest
+
+  /// The developer's commits are bundled for the guest to fetch.
+  ToGuest
+}
+
+/// What `loom vm sync` was asked.
+pub type SyncOptions {
+  SyncOptions(
+    /// The guest's name.
+    name: String,
+    /// The workspace copy to sync, or `None` for the guest's only one.
+    workspace: Option(String),
+    /// The developer's checkout, overriding the one `up` recorded.
+    checkout: Option(String),
+    /// Which way the commits go.
+    direction: Direction,
+  )
 }
 
 /// Reads the words after `loom vm`.
@@ -242,7 +305,18 @@ pub fn parse(arguments: List(String)) -> Result(Command, String) {
     }
     ["down", ..flags] -> name_flag(flags) |> result.map(Down)
     ["status", ..flags] -> name_flag(flags) |> result.map(Status)
-    [] -> Error("loom vm needs a command: setup, up, down or status")
+    ["logs", ..flags] -> logs_flags(flags, default_name, default_log_lines)
+    ["list"] -> Ok(Guests)
+    ["list", word, ..] -> Error("unexpected argument " <> word)
+    ["rm", ..flags] ->
+      remove_flags(flags, Remove(default_name, None, Unconfirmed))
+    ["sync", ..flags] ->
+      sync_flags(flags, SyncOptions(default_name, None, None, FromGuest))
+      |> result.map(Sync)
+    [] ->
+      Error(
+        "loom vm needs a command: setup, up, down, status, logs, list, rm or sync",
+      )
     [word, ..] -> Error("unknown loom vm command " <> word)
   }
 }
@@ -769,6 +843,90 @@ fn name_flag(arguments: List(String)) -> Result(String, String) {
     ["--name", value] -> valid_name(value) |> result.replace(value)
     ["--name"] -> Error("--name needs a value")
     [word, ..] -> Error("unexpected argument " <> word)
+  }
+}
+
+/// Reads `logs`'s flags: a name and a line count.
+fn logs_flags(
+  arguments: List(String),
+  name: String,
+  lines: Int,
+) -> Result(Command, String) {
+  // Each arm takes one flag and its value, so the flags come in any order.
+  case arguments {
+    [] -> Ok(Logs(name, lines))
+    ["--name", value, ..rest] -> {
+      use Nil <- result.try(valid_name(value))
+      logs_flags(rest, value, lines)
+    }
+    ["--lines", value, ..rest] -> {
+      use lines <- result.try(bounded("--lines", value, 1, log_lines_limit))
+      logs_flags(rest, name, lines)
+    }
+    _ -> unknown_flag(arguments)
+  }
+}
+
+/// Reads `rm`'s flags: a name, a configuration file and `--yes`.
+fn remove_flags(
+  arguments: List(String),
+  command: Command,
+) -> Result(Command, String) {
+  // The command always holds a `Remove`; the arms below rebuild it.
+  case arguments, command {
+    [], _ -> Ok(command)
+    ["--name", value, ..rest], Remove(_, config, consent) -> {
+      use Nil <- result.try(valid_name(value))
+      remove_flags(rest, Remove(value, config, consent))
+    }
+    ["--config", value, ..rest], Remove(name, _, consent) ->
+      remove_flags(rest, Remove(name, Some(value), consent))
+    ["--yes", ..rest], Remove(name, config, _) ->
+      remove_flags(rest, Remove(name, config, Confirmed))
+    _, _ -> unknown_flag(arguments)
+  }
+}
+
+/// Reads `sync`'s flags.
+fn sync_flags(
+  arguments: List(String),
+  options: SyncOptions,
+) -> Result(SyncOptions, String) {
+  // Each arm takes one flag and recurses on the rest, as `up_flags` does.
+  case arguments {
+    [] -> Ok(options)
+    ["--name", value, ..rest] -> {
+      use Nil <- result.try(valid_name(value))
+      sync_flags(rest, SyncOptions(..options, name: value))
+    }
+    ["--workspace", value, ..rest] -> {
+      use Nil <- result.try(valid_workspace_name(value))
+      sync_flags(rest, SyncOptions(..options, workspace: Some(value)))
+    }
+    ["--checkout", value, ..rest] ->
+      sync_flags(rest, SyncOptions(..options, checkout: Some(value)))
+
+    // The one flag with no value: the direction is a choice, not a setting.
+    ["--to-guest", ..rest] ->
+      sync_flags(rest, SyncOptions(..options, direction: ToGuest))
+    _ -> unknown_flag(arguments)
+  }
+}
+
+/// The refusal for the first word of `arguments` that no flag arm took.
+fn unknown_flag(arguments: List(String)) -> Result(a, String) {
+  case arguments {
+    [flag] ->
+      case string.starts_with(flag, "--") {
+        True -> Error(flag <> " needs a value")
+        False -> Error("unexpected argument " <> flag)
+      }
+    [word, ..] ->
+      case string.starts_with(word, "--") {
+        True -> Error("unknown option " <> word)
+        False -> Error("unexpected argument " <> word)
+      }
+    [] -> Error("unexpected end of the command line")
   }
 }
 
@@ -1954,5 +2112,654 @@ pub fn tail(text: String, limit: Int) -> String {
   case excess > 0 {
     True -> "..." <> string.drop_start(trimmed, excess)
     False -> trimmed
+  }
+}
+
+// --- text a guest wrote ------------------------------------------------------
+
+/// `text` with every character that could steer a terminal removed. A guest's
+/// root is written by model-influenced code, so a log line, a ref name or a
+/// directory name read from it is untrusted input to the host, and an escape
+/// sequence in it could rewrite the screen or the title. Newlines stay, a tab
+/// becomes a space, and the other C0 and C1 controls, DEL and the bidirectional
+/// overrides are dropped.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.printable("ok\u{1b}[31m\r\nnext\ttab") == "ok[31m\nnext tab"
+/// ```
+pub fn printable(text: String) -> String {
+  string.replace(text, "\t", " ")
+  |> string.to_utf_codepoints
+  |> list.filter(fn(point) {
+    printable_code(string.utf_codepoint_to_int(point))
+  })
+  |> string.from_utf_codepoints
+}
+
+/// Whether a code point may reach a terminal.
+fn printable_code(code: Int) -> Bool {
+  let control = code < 0x20 || code == 0x7F || { code >= 0x80 && code <= 0x9F }
+  let bidirectional =
+    { code >= 0x202A && code <= 0x202E } || { code >= 0x2066 && code <= 0x2069 }
+
+  // A newline is the one control character a multi-line report needs.
+  code == 0x0A || { !control && !bidirectional }
+}
+
+// --- where a workspace came from ---------------------------------------------
+
+/// The name of the file in a guest's directory that records the developer's
+/// checkout of each workspace copy, one `NAME<TAB>PATH` line each. It lives
+/// beside the root and never inside it, because the guest can write the root.
+pub const checkouts_file = "checkouts"
+
+/// Whether a path can be recorded: absolute, and free of control characters,
+/// because the record holds one path per line after a tab.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.valid_checkout_path("/src/proj") == Ok(Nil)
+/// assert result.is_error(vm_spec.valid_checkout_path("proj"))
+/// ```
+pub fn valid_checkout_path(path: String) -> Result(Nil, String) {
+  let clean =
+    string.to_utf_codepoints(path)
+    |> list.all(fn(point) {
+      let code = string.utf_codepoint_to_int(point)
+      code >= 0x20 && code != 0x7F
+    })
+
+  // The refusal names what to change, because the path comes from the
+  // directory the user chose.
+  case string.starts_with(path, "/") && clean {
+    True -> Ok(Nil)
+    False ->
+      Error(
+        "the checkout path \""
+        <> printable(path)
+        <> "\" must be absolute and hold no control characters",
+      )
+  }
+}
+
+/// The text of a checkouts record: a `NAME<TAB>PATH` line per workspace.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.encode_checkouts([#("proj", "/src/proj")])
+///   == "proj\t/src/proj\n"
+/// ```
+pub fn encode_checkouts(entries: List(#(String, String))) -> String {
+  list.map(entries, fn(entry) { entry.0 <> "\t" <> entry.1 <> "\n" })
+  |> string.concat
+}
+
+/// Reads a checkouts record. Blank lines are skipped, every other line must be
+/// a valid workspace name, a tab and a valid path, and the first that is not
+/// is the error with its number, so a damaged record is refused and never
+/// half-read. A name that appears twice keeps its last path.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.decode_checkouts("proj\t/src/proj\n") == Ok([#("proj", "/src/proj")])
+/// assert result.is_error(vm_spec.decode_checkouts("proj /src/proj\n"))
+/// ```
+pub fn decode_checkouts(
+  text: String,
+) -> Result(List(#(String, String)), String) {
+  let lines =
+    string.split(text, "\n")
+    |> list.index_map(fn(line, n) { #(n + 1, line) })
+
+  // Each line is judged alone, in order, so a later line replaces an earlier
+  // one of the same workspace.
+  list.try_fold(lines, [], fn(entries, numbered) {
+    let #(number, line) = numbered
+    let at = "line " <> int.to_string(number) <> ": "
+
+    // A blank line adds nothing; any other must be a name, a tab, a path.
+    case string.trim(line) {
+      "" -> Ok(entries)
+      _ ->
+        case string.split_once(line, "\t") {
+          Error(Nil) -> Error(at <> "expected NAME, a tab and PATH")
+          Ok(#(name, path)) -> {
+            use Nil <- result.try(
+              valid_workspace_name(name)
+              |> result.map_error(fn(reason) { at <> reason }),
+            )
+            use Nil <- result.try(
+              valid_checkout_path(path)
+              |> result.map_error(fn(reason) { at <> reason }),
+            )
+            Ok(record_checkout(entries, name, path))
+          }
+        }
+    }
+  })
+}
+
+/// `entries` with `workspace` recorded at `path`, replacing an earlier path
+/// for the same workspace.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.record_checkout([#("a", "/x")], "a", "/y") == [#("a", "/y")]
+/// ```
+pub fn record_checkout(
+  entries: List(#(String, String)),
+  workspace: String,
+  path: String,
+) -> List(#(String, String)) {
+  list.append(list.filter(entries, fn(entry) { entry.0 != workspace }), [
+    #(workspace, path),
+  ])
+}
+
+/// The checkout recorded for `workspace`, if there is one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.checkout_of([#("a", "/x")], "a") == Some("/x")
+/// ```
+pub fn checkout_of(
+  entries: List(#(String, String)),
+  workspace: String,
+) -> Option(String) {
+  list.key_find(entries, workspace) |> option.from_result
+}
+
+// --- sync --------------------------------------------------------------------
+
+/// Where, inside the guest, `sync --to-guest` puts the bundle of the host's
+/// commits.
+pub const host_refs_dir = "/srv/host-refs"
+
+/// The guest path of the bundle `sync --to-guest` writes for a workspace.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.bundle_guest_path("proj") == "/srv/host-refs/proj.bundle"
+/// ```
+pub fn bundle_guest_path(workspace: String) -> String {
+  host_refs_dir <> "/" <> workspace <> ".bundle"
+}
+
+/// The command to run in the guest to take the host's branches from the bundle
+/// as `refs/remotes/host/*`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.guest_fetch_command("proj")
+///   == "git fetch /srv/host-refs/proj.bundle '+refs/heads/*:refs/remotes/host/*'"
+/// ```
+pub fn guest_fetch_command(workspace: String) -> String {
+  "git fetch "
+  <> bundle_guest_path(workspace)
+  <> " '+refs/heads/*:refs/remotes/host/*'"
+}
+
+/// The `git` arguments that fetch a guest copy's branches into the developer's
+/// checkout as `refs/remotes/vm/*`.
+///
+/// The repository is the developer's checkout and the guest's copy is only the
+/// remote. A guest's root is written by model-influenced code, so nothing here
+/// runs Git with its working directory inside it: a planted `.git/config` could
+/// run commands through `core.fsmonitor`, `core.sshCommand`, `core.hooksPath`
+/// and others. Git's local transport does start `git-upload-pack` on the copy,
+/// which reads the copy's configuration; `uploadpack.packObjectsHook` is
+/// honoured only from protected configuration, and `docs/architecture/microvm.md`
+/// records the hostile configuration this was tried against. Objects are
+/// checked as they arrive (both `fetch.fsckObjects` and `transfer.fsckObjects`,
+/// because the first overrides the second), tags and submodules are not
+/// followed, the developer's own hooks do not run, and no background
+/// maintenance is left running after the command.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert list.contains(
+///   vm_spec.fetch_arguments("/src/proj", "/vm/root/srv/workspaces/proj"),
+///   "--no-tags",
+/// )
+/// ```
+pub fn fetch_arguments(checkout: String, copy: String) -> List(String) {
+  [
+    "-C", checkout, "-c", "transfer.fsckObjects=true", "-c",
+    "fetch.fsckObjects=true", "-c", "core.hooksPath=/dev/null", "-c",
+    "maintenance.auto=false", "fetch", "--no-tags", "--no-recurse-submodules",
+    copy, "+refs/heads/*:refs/remotes/vm/*",
+  ]
+}
+
+/// The `git` arguments that bundle every ref of the developer's checkout into
+/// `file`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.bundle_arguments("/src/proj", "/vm/x.bundle")
+///   == ["-C", "/src/proj", "bundle", "create", "--quiet", "/vm/x.bundle", "--all"]
+/// ```
+pub fn bundle_arguments(checkout: String, file: String) -> List(String) {
+  ["-C", checkout, "bundle", "create", "--quiet", file, "--all"]
+}
+
+/// The workspace `sync` acts on: the one asked for when the guest holds it,
+/// or the guest's only one. `held` is the names of the guest's copies.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.only_workspace(["proj"], None) == Ok("proj")
+/// assert result.is_error(vm_spec.only_workspace(["a", "b"], None))
+/// ```
+pub fn only_workspace(
+  held: List(String),
+  asked: Option(String),
+) -> Result(String, String) {
+  case asked, held {
+    Some(name), _ ->
+      case list.contains(held, name) {
+        True -> Ok(name)
+        False ->
+          Error(
+            "the guest holds no workspace "
+            <> name
+            <> " ("
+            <> held_names(held)
+            <> ")",
+          )
+      }
+    None, [only] -> Ok(only)
+    None, [] -> Error("the guest holds no workspace copy yet")
+    None, _ ->
+      Error(
+        "the guest holds several workspaces ("
+        <> held_names(held)
+        <> "); name one with --workspace",
+      )
+  }
+}
+
+/// The names a guest holds, for a message.
+fn held_names(held: List(String)) -> String {
+  case held {
+    [] -> "none"
+    _ -> "it holds " <> string.join(held, ", ")
+  }
+}
+
+// --- the branches a copy holds -----------------------------------------------
+
+/// What `rm` could learn of the branches in one workspace copy.
+pub type Inventory {
+  /// The local branches that origin lacks, or has at another commit. Empty
+  /// when every local branch is on origin.
+  Unpushed(branches: List(String))
+
+  /// The copy's refs could not be read, and why.
+  Unreadable(reason: String)
+}
+
+/// Whether text is a Git object name: 40 or 64 lowercase hexadecimal digits.
+fn object_name(text: String) -> Bool {
+  let size = string.byte_size(text)
+  { size == 40 || size == 64 }
+  && list.all(string.to_graphemes(text), string.contains("0123456789abcdef", _))
+}
+
+/// The refs a `packed-refs` file lists, as `(ref name, object name)`. A guest
+/// wrote the file, so every line that is not a well-formed `<object> refs/...`
+/// pair is skipped: comments, peeled lines and anything else.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.packed_refs("# pack-refs\n" <> hash <> " refs/heads/main\n")
+///   == [#("refs/heads/main", hash)]
+/// ```
+pub fn packed_refs(text: String) -> List(#(String, String)) {
+  string.split(text, "\n")
+  |> list.filter_map(fn(line) {
+    case string.split_once(line, " ") {
+      Ok(#(hash, name)) ->
+        case object_name(hash) && string.starts_with(name, "refs/") {
+          True -> Ok(#(name, hash))
+          False -> Error(Nil)
+        }
+      Error(Nil) -> Error(Nil)
+    }
+  })
+}
+
+/// The object name a loose ref file holds, or an empty string for a symbolic
+/// ref or any other content, which never equals a real object name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.loose_hash("ref: refs/heads/main\n") == ""
+/// ```
+pub fn loose_hash(text: String) -> String {
+  let line = string.trim(text)
+
+  // Anything but a bare object name is kept out of every comparison.
+  case object_name(line) {
+    True -> line
+    False -> ""
+  }
+}
+
+/// The local branches among `refs` that `refs/remotes/origin/*` does not hold
+/// at the same commit, sorted. A branch whose origin ref names another commit
+/// may be ahead of origin, so it is listed rather than assumed pushed. Refs
+/// that appear twice keep their last value, which is how a loose ref replaces
+/// a packed one when the caller lists packed refs first.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let refs = [#("refs/heads/a", h1), #("refs/remotes/origin/a", h1), #("refs/heads/b", h1)]
+/// assert vm_spec.unpushed_branches(refs) == ["b"]
+/// ```
+pub fn unpushed_branches(refs: List(#(String, String))) -> List(String) {
+  let latest =
+    list.fold(refs, dict.new(), fn(found, ref) {
+      dict.insert(found, ref.0, ref.1)
+    })
+
+  // A branch is pushed when origin's ref of the same name holds its commit.
+  dict.to_list(latest)
+  |> list.filter_map(fn(ref) { unpushed_branch(latest, ref.0, ref.1) })
+  |> list.sort(string.compare)
+}
+
+/// The branch name when `ref` is a local branch that origin does not hold at
+/// the same commit, and nothing for every other ref.
+fn unpushed_branch(
+  latest: dict.Dict(String, String),
+  ref: String,
+  hash: String,
+) -> Result(String, Nil) {
+  let local = "refs/heads/"
+  let name = string.drop_start(ref, string.length(local))
+
+  // A ref outside `refs/heads/` is not a branch, and a symbolic ref's empty
+  // hash never equals origin's, so it is listed.
+  case string.starts_with(ref, local), dict.get(latest, origin_ref(name)) {
+    False, _ -> Error(Nil)
+    True, Ok(pushed) if pushed == hash && hash != "" -> Error(Nil)
+    True, _ -> Ok(name)
+  }
+}
+
+/// The name of the ref origin would hold for the local branch `name`.
+fn origin_ref(name: String) -> String {
+  "refs/remotes/origin/" <> name
+}
+
+/// What `rm` says when it was not given `--yes`: what the guest holds that
+/// would be lost, and the way to go on.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(
+///   vm_spec.removal_refusal("vm", [#("proj", vm_spec.Unpushed(["main"]))]),
+///   "--yes",
+/// )
+/// ```
+pub fn removal_refusal(
+  name: String,
+  copies: List(#(String, Inventory)),
+) -> String {
+  // A guest with no copy says so rather than listing nothing.
+  let held = case copies {
+    [] -> ["  no workspace copy"]
+    _ ->
+      list.map(copies, fn(copy) {
+        let #(workspace, inventory) = copy
+        "  " <> printable(workspace) <> ": " <> describe_inventory(inventory)
+      })
+  }
+
+  string.join(
+    list.flatten([
+      [
+        "Deleting the guest "
+        <> name
+        <> " is permanent: its root, its state disk and every copy of a "
+        <> "workspace in it are lost, and work that is not pushed is gone. "
+        <> "It holds:",
+      ],
+      held,
+      [
+        "Fetch committed work first with `loom vm sync --name "
+        <> name
+        <> "`; uncommitted edits cannot be fetched. Run it again with --yes "
+        <> "to delete the guest.",
+      ],
+    ]),
+    "\n",
+  )
+}
+
+/// One workspace copy's line in the refusal.
+fn describe_inventory(inventory: Inventory) -> String {
+  case inventory {
+    Unreadable(reason) ->
+      "its branches cannot be read (" <> printable(reason) <> ")"
+    Unpushed([]) -> "every local branch is on origin"
+    Unpushed(branches) ->
+      "not on origin at the same commit: "
+      <> string.join(list.map(branches, printable), ", ")
+  }
+}
+
+// --- undoing an enrolment ----------------------------------------------------
+
+/// What a `loom.toml` says about one guest's enrolment.
+pub type Enrolment {
+  Enrolment(
+    /// The `node` of the `[executors.<name>]` table, when there is one.
+    executor_node: Option(String),
+    /// The `node` of the `[distribution]` table, when there is one.
+    distribution_node: Option(String),
+    /// The names of the other `[executors.*]` tables.
+    other_executors: List(String),
+  )
+}
+
+/// Reads the enrolment of the guest called `name` out of a `loom.toml`. Empty
+/// text is a file with nothing in it. Text that is not valid TOML is the error,
+/// and `rm` then touches nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(found) = vm_spec.read_enrolment("[executors.vm]\nnode = \"a@b\"\n", "vm")
+/// assert found.executor_node == Some("a@b")
+/// ```
+pub fn read_enrolment(text: String, name: String) -> Result(Enrolment, String) {
+  use document <- result.try(
+    tom.parse(text)
+    |> result.map_error(fn(error) {
+      "is not valid TOML: " <> string.inspect(error)
+    }),
+  )
+  let others =
+    tom.get_table(document, ["executors"])
+    |> result.map(dict.keys)
+    |> result.unwrap([])
+    |> list.filter(fn(other) { other != name })
+    |> list.sort(string.compare)
+
+  Ok(Enrolment(
+    executor_node: tom.get_string(document, ["executors", name, "node"])
+      |> option.from_result,
+    distribution_node: tom.get_string(document, ["distribution", "node"])
+      |> option.from_result,
+    other_executors: others,
+  ))
+}
+
+/// What the home's `.erlang.cookie` is, compared with the cookie in the
+/// guest's `deploy/` bundle.
+pub type CookieState {
+  /// There is no cookie file.
+  CookieAbsent
+
+  /// The file holds this guest's deployment's cookie.
+  CookieOurs
+
+  /// The file holds another cookie, or the guest's bundle is not there to
+  /// compare with.
+  CookieOther
+}
+
+/// Compares the cookie file's contents with the deployment's.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.cookie_state(Some("c"), Some("c")) == vm_spec.CookieOurs
+/// assert vm_spec.cookie_state(Some("c"), None) == vm_spec.CookieOther
+/// ```
+pub fn cookie_state(
+  found: Option(String),
+  deployed: Option(String),
+) -> CookieState {
+  case found, deployed {
+    None, _ -> CookieAbsent
+    Some(have), Some(want) if have == want -> CookieOurs
+    Some(_), _ -> CookieOther
+  }
+}
+
+/// What `rm` does with the cookie file.
+pub type CookieAction {
+  RemoveCookie
+  KeepCookie
+}
+
+/// What `rm` takes out of the user's configuration, and what it leaves with
+/// the reason.
+pub type Teardown {
+  Teardown(
+    /// The table paths to remove, such as `["executors", "vm"]`.
+    tables: List(List(String)),
+    /// Whether the home's cookie file goes.
+    cookie: CookieAction,
+    /// One line for each thing left in place, with its reason.
+    left: List(String),
+  )
+}
+
+/// Decides what undoing a guest's enrolment may remove.
+///
+/// The `[executors.<name>]` table goes when it names this guest's executor
+/// node. The `[distribution]` table and the home's cookie are shared by every
+/// executor of the daemon, so they go only when they are this guest's
+/// deployment's (the table names the guest's orchestrator node, the cookie
+/// equals the one in `deploy/`) and no other `[executors.*]` table remains.
+/// Anything else is left and named.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let found = vm_spec.Enrolment(Some("loom_vm_vm_exec@127.0.0.1"), Some("loom_vm_vm_orch@127.0.0.1"), [])
+/// let plan = vm_spec.plan_teardown(vm_spec.names("vm"), found, vm_spec.CookieOurs)
+/// assert plan.tables == [["executors", "vm"], ["distribution"]]
+/// ```
+pub fn plan_teardown(
+  names: Names,
+  found: Enrolment,
+  cookie: CookieState,
+) -> Teardown {
+  let row = "[executors." <> names.name <> "]"
+
+  // The row goes only when it names this guest's executor; another node under
+  // the same key is the user's own and keeps the deployment in use.
+  let #(rows, row_left, own) = case found.executor_node {
+    Some(node) if node == names.executor_node -> #(
+      [["executors", names.name]],
+      [],
+      [],
+    )
+    Some(node) -> #(
+      [],
+      [row <> " names the node " <> node <> ", not this guest's, so it stays"],
+      [names.name],
+    )
+    None -> #([], [], [])
+  }
+
+  let remaining = list.append(found.other_executors, own)
+  let shared_present = found.distribution_node != None || cookie != CookieAbsent
+
+  // An executor that remains is a reason to leave the shared tables, and the
+  // line says which one.
+  let still_used = case remaining {
+    [] -> []
+    _ -> [
+      "[distribution] and the cookie stay because "
+      <> string.join(
+        list.map(remaining, fn(other) { "[executors." <> other <> "]" }),
+        ", ",
+      )
+      <> " still need them",
+    ]
+  }
+
+  // The shared tables are judged together: another deployment's table, or an
+  // executor that still needs it, keeps both the table and the cookie.
+  case found.distribution_node, still_used {
+    Some(node), _ if node != names.orchestrator_node ->
+      Teardown(rows, KeepCookie, [
+        "[distribution] names the node "
+          <> node
+          <> ", which is another deployment's, so it and the cookie stay",
+        ..row_left
+      ])
+    _, [line] if shared_present -> Teardown(rows, KeepCookie, [line, ..row_left])
+    _, _ -> own_shared(found, rows, row_left, cookie)
+  }
+}
+
+/// What goes of the shared tables when no executor needs them and they are not
+/// another deployment's: the `[distribution]` table when there is one, and the
+/// cookie when it is this guest's deployment's.
+fn own_shared(
+  found: Enrolment,
+  rows: List(List(String)),
+  row_left: List(String),
+  cookie: CookieState,
+) -> Teardown {
+  // A missing `[distribution]` table leaves only the executor row to go.
+  let tables = case found.distribution_node {
+    Some(_) -> list.append(rows, [["distribution"]])
+    None -> rows
+  }
+
+  // A cookie that is not the deployment's belongs to someone else and stays.
+  case cookie {
+    CookieOurs -> Teardown(tables, RemoveCookie, row_left)
+    CookieOther ->
+      Teardown(tables, KeepCookie, [
+        "the home's .erlang.cookie is not this guest's deployment's, so it "
+          <> "stays",
+        ..row_left
+      ])
+    CookieAbsent -> Teardown(tables, KeepCookie, row_left)
   }
 }

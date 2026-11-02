@@ -7,6 +7,7 @@
 import broker/token
 import client
 import client/distribution_bundle
+import client/distribution_install
 import client/distribution_plan
 import client/distribution_provision
 import client/vm_cli
@@ -71,8 +72,10 @@ pub fn down_and_status_take_only_a_name_test() {
 
 pub fn a_bad_command_line_is_refused_with_its_reason_test() {
   assert vm_spec.parse([])
-    == Error("loom vm needs a command: setup, up, down or status")
-  assert vm_spec.parse(["sync"]) == Error("unknown loom vm command sync")
+    == Error(
+      "loom vm needs a command: setup, up, down, status, logs, list, rm or sync",
+    )
+  assert vm_spec.parse(["shell"]) == Error("unknown loom vm command shell")
   assert vm_spec.parse(["up", "--bogus", "1"])
     == Error("unknown option --bogus")
   assert vm_spec.parse(["up", "--mem"]) == Error("--mem needs a value")
@@ -1043,4 +1046,471 @@ pub fn a_link_out_of_the_root_is_refused_and_the_target_untouched_test() {
   assert simplifile.read_directory(outside) == Ok([])
 
   let assert Ok(Nil) = simplifile.delete_all([scratch])
+}
+
+// --- logs, list, rm and sync: the command line -------------------------------
+
+pub fn logs_takes_a_name_and_a_line_count_test() {
+  assert vm_spec.parse(["logs"]) == Ok(vm_spec.Logs("vm", 100))
+  assert vm_spec.parse(["logs", "--lines", "5", "--name", "dev"])
+    == Ok(vm_spec.Logs("dev", 5))
+  assert result.is_error(vm_spec.parse(["logs", "--lines", "0"]))
+  assert result.is_error(vm_spec.parse(["logs", "--lines", "100001"]))
+  assert result.is_error(vm_spec.parse(["logs", "--lines", "many"]))
+  assert vm_spec.parse(["logs", "--lines"]) == Error("--lines needs a value")
+  assert vm_spec.parse(["logs", "--follow"]) == Error("--follow needs a value")
+}
+
+pub fn list_takes_nothing_test() {
+  assert vm_spec.parse(["list"]) == Ok(vm_spec.Guests)
+  assert vm_spec.parse(["list", "--name", "x"])
+    == Error("unexpected argument --name")
+}
+
+pub fn rm_needs_yes_to_be_confirmed_test() {
+  assert vm_spec.parse(["rm"])
+    == Ok(vm_spec.Remove("vm", None, vm_spec.Unconfirmed))
+  assert vm_spec.parse(["rm", "--yes", "--name", "dev", "--config", "/c.toml"])
+    == Ok(vm_spec.Remove("dev", Some("/c.toml"), vm_spec.Confirmed))
+  assert result.is_error(vm_spec.parse(["rm", "--name", "Bad Name"]))
+  assert vm_spec.parse(["rm", "--config"]) == Error("--config needs a value")
+}
+
+pub fn sync_reads_its_flags_test() {
+  let assert Ok(vm_spec.Sync(options)) = vm_spec.parse(["sync"])
+  assert options == vm_spec.SyncOptions("vm", None, None, vm_spec.FromGuest)
+
+  let assert Ok(vm_spec.Sync(options)) =
+    vm_spec.parse([
+      "sync", "--to-guest", "--workspace", "proj", "--checkout", "/src/proj",
+      "--name", "dev",
+    ])
+  assert options
+    == vm_spec.SyncOptions(
+      "dev",
+      Some("proj"),
+      Some("/src/proj"),
+      vm_spec.ToGuest,
+    )
+  assert result.is_error(vm_spec.parse(["sync", "--workspace", "../x"]))
+  assert result.is_error(vm_spec.parse(["sync", "--exec", "ls"]))
+}
+
+pub fn usage_names_the_daily_verbs_test() {
+  assert string.contains(vm_cli.usage, "loom vm logs [--name NAME] [--lines N]")
+  assert string.contains(vm_cli.usage, "loom vm list")
+  assert string.contains(vm_cli.usage, "loom vm rm [--name NAME]")
+  assert string.contains(vm_cli.usage, "[--to-guest]")
+  assert !string.contains(vm_cli.usage, "loom vm shell")
+}
+
+// --- text a guest wrote ------------------------------------------------------
+
+pub fn printable_text_loses_terminal_controls_test() {
+  // An escape sequence, a carriage return, a bell, DEL, a C1 control and a
+  // right-to-left override all go; a newline stays and a tab becomes a space.
+  assert vm_spec.printable("a\u{1b}[31mb\rc\u{7}d\u{7f}e\u{9b}f\u{202e}g\nh\ti")
+    == "a[31mbcdefg\nh i"
+  assert vm_spec.printable("loom/session-é") == "loom/session-é"
+}
+
+// --- where a workspace came from ---------------------------------------------
+
+pub fn the_checkouts_record_round_trips_test() {
+  let entries = [#("proj", "/src/proj"), #("other", "/src/other dir")]
+  assert vm_spec.decode_checkouts(vm_spec.encode_checkouts(entries))
+    == Ok(entries)
+  assert vm_spec.decode_checkouts("") == Ok([])
+}
+
+pub fn the_checkouts_record_is_total_and_strict_test() {
+  // A later line for a workspace replaces the earlier one.
+  assert vm_spec.decode_checkouts("a\t/x\n\na\t/y\n") == Ok([#("a", "/y")])
+
+  let assert Error(reason) = vm_spec.decode_checkouts("a /x\n")
+  assert string.contains(reason, "line 1")
+  let assert Error(reason) = vm_spec.decode_checkouts("a\t/x\n../x\t/y\n")
+  assert string.contains(reason, "line 2")
+  assert result.is_error(vm_spec.decode_checkouts("a\trelative\n"))
+  assert result.is_error(vm_spec.decode_checkouts("a\t/x\u{1b}[2J\n"))
+}
+
+pub fn a_checkout_path_must_be_recordable_test() {
+  assert vm_spec.valid_checkout_path("/src/my proj") == Ok(Nil)
+  assert result.is_error(vm_spec.valid_checkout_path("src"))
+  assert result.is_error(vm_spec.valid_checkout_path("/src/a\nb"))
+  assert result.is_error(vm_spec.valid_checkout_path("/src/a\tb"))
+}
+
+pub fn recording_a_checkout_replaces_that_workspace_only_test() {
+  let entries = [#("a", "/x"), #("b", "/y")]
+  assert vm_spec.record_checkout(entries, "a", "/z")
+    == [#("b", "/y"), #("a", "/z")]
+  assert vm_spec.checkout_of(entries, "b") == Some("/y")
+  assert vm_spec.checkout_of(entries, "c") == None
+}
+
+// --- sync --------------------------------------------------------------------
+
+pub fn the_fetch_runs_in_the_developers_checkout_with_the_copy_as_remote_test() {
+  let copy = "/vm/dev/root/srv/workspaces/proj"
+  let arguments = vm_spec.fetch_arguments("/src/proj", copy)
+
+  // The repository is the developer's checkout and nothing else is `-C`.
+  assert list.take(arguments, 2) == ["-C", "/src/proj"]
+  assert list.count(arguments, fn(argument) { argument == "-C" }) == 1
+
+  // The copy is only the remote, followed by the one refspec into
+  // `refs/remotes/vm/*`.
+  assert list.drop(arguments, list.length(arguments) - 2)
+    == [copy, "+refs/heads/*:refs/remotes/vm/*"]
+  assert list.count(arguments, fn(argument) { string.contains(argument, copy) })
+    == 1
+
+  // The hardening the guest's untrusted objects and configuration call for.
+  assert list.contains(arguments, "transfer.fsckObjects=true")
+  assert list.contains(arguments, "fetch.fsckObjects=true")
+  assert list.contains(arguments, "core.hooksPath=/dev/null")
+  assert list.contains(arguments, "--no-tags")
+  assert list.contains(arguments, "--no-recurse-submodules")
+  assert !list.contains(arguments, "--recurse-submodules")
+
+  // The file transport is allowed for a plain fetch, so the override that
+  // would also allow it from a submodule is not given.
+  assert !string.contains(string.join(arguments, " "), "protocol.file.allow")
+}
+
+pub fn the_bundle_is_made_in_the_developers_checkout_test() {
+  assert vm_spec.bundle_arguments("/src/proj", "/vm/dev/to-guest.bundle")
+    == [
+      "-C", "/src/proj", "bundle", "create", "--quiet",
+      "/vm/dev/to-guest.bundle", "--all",
+    ]
+  assert vm_spec.bundle_guest_path("proj") == "/srv/host-refs/proj.bundle"
+  assert vm_spec.guest_fetch_command("proj")
+    == "git fetch /srv/host-refs/proj.bundle '+refs/heads/*:refs/remotes/host/*'"
+}
+
+pub fn sync_picks_the_only_workspace_or_asks_test() {
+  assert vm_spec.only_workspace(["proj"], None) == Ok("proj")
+  assert vm_spec.only_workspace(["a", "b"], Some("b")) == Ok("b")
+
+  let assert Error(reason) = vm_spec.only_workspace(["a", "b"], None)
+  assert string.contains(reason, "--workspace")
+  assert string.contains(reason, "a, b")
+  let assert Error(reason) = vm_spec.only_workspace(["a"], Some("z"))
+  assert string.contains(reason, "no workspace z")
+  assert result.is_error(vm_spec.only_workspace([], None))
+}
+
+// --- the branches a copy holds -----------------------------------------------
+
+const hash_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+const hash_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+pub fn packed_refs_keep_only_well_formed_pairs_test() {
+  let text =
+    "# pack-refs with: peeled fully-peeled sorted \n"
+    <> hash_a
+    <> " refs/heads/main\n"
+    <> "^"
+    <> hash_b
+    <> "\n"
+    <> "not-a-hash refs/heads/x\n"
+    <> hash_b
+    <> " not-a-ref\n"
+    <> hash_b
+    <> " refs/remotes/origin/main\n"
+  assert vm_spec.packed_refs(text)
+    == [#("refs/heads/main", hash_a), #("refs/remotes/origin/main", hash_b)]
+}
+
+pub fn a_loose_ref_is_its_object_name_or_nothing_test() {
+  assert vm_spec.loose_hash(hash_a <> "\n") == hash_a
+  assert vm_spec.loose_hash("ref: refs/heads/main\n") == ""
+  assert vm_spec.loose_hash("") == ""
+}
+
+pub fn branches_origin_lacks_are_listed_test() {
+  let refs = [
+    #("refs/heads/pushed", hash_a),
+    #("refs/remotes/origin/pushed", hash_a),
+    #("refs/heads/ahead", hash_b),
+    #("refs/remotes/origin/ahead", hash_a),
+    #("refs/heads/loom/session-1", hash_a),
+    #("refs/heads/symbolic", ""),
+    #("refs/remotes/origin/symbolic", ""),
+    #("refs/remotes/origin/only-remote", hash_a),
+  ]
+  assert vm_spec.unpushed_branches(refs)
+    == ["ahead", "loom/session-1", "symbolic"]
+}
+
+pub fn a_later_ref_replaces_an_earlier_one_of_the_same_name_test() {
+  // Packed refs are listed first and loose refs after, so a loose branch that
+  // moved on is the one compared with origin.
+  let refs = [
+    #("refs/heads/main", hash_a),
+    #("refs/remotes/origin/main", hash_a),
+    #("refs/heads/main", hash_b),
+  ]
+  assert vm_spec.unpushed_branches(refs) == ["main"]
+}
+
+pub fn the_removal_refusal_lists_what_would_be_lost_test() {
+  let text =
+    vm_spec.removal_refusal("dev", [
+      #("proj", vm_spec.Unpushed(["loom/s1", "main"])),
+      #("clean", vm_spec.Unpushed([])),
+      #("odd", vm_spec.Unreadable("a link \u{1b}[2J")),
+    ])
+  assert string.contains(
+    text,
+    "proj: not on origin at the same commit: loom/s1, main",
+  )
+  assert string.contains(text, "clean: every local branch is on origin")
+  assert string.contains(text, "odd: its branches cannot be read")
+  assert string.contains(text, "loom vm sync --name dev")
+  assert string.contains(text, "--yes")
+  assert !string.contains(text, "\u{1b}")
+}
+
+// --- reading a copy's refs from the host -------------------------------------
+
+fn copy_git(directory: String) -> String {
+  // The guest directory's layout: `root/srv/workspaces/<name>/.git`.
+  let git = directory <> "/root/srv/workspaces/proj/.git"
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(git <> "/refs/heads/loom")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(git <> "/refs/remotes/origin")
+  git
+}
+
+pub fn a_copys_refs_are_read_as_plain_files_test() {
+  let #(scratch, _, _) = scratch_root()
+  let git = copy_git(scratch)
+  let assert Ok(Nil) =
+    simplifile.write(git <> "/refs/heads/main", hash_a <> "\n")
+  let assert Ok(Nil) =
+    simplifile.write(git <> "/refs/heads/loom/s1", hash_b <> "\n")
+  let assert Ok(Nil) =
+    simplifile.write(git <> "/refs/remotes/origin/main", hash_a <> "\n")
+  let assert Ok(Nil) = simplifile.write(git <> "/refs/heads/x.lock", "junk")
+
+  assert vm_cli.read_inventory(scratch, "proj") == vm_spec.Unpushed(["loom/s1"])
+
+  // A packed ref counts, and a loose ref replaces its packed value.
+  let assert Ok(Nil) =
+    simplifile.write(
+      git <> "/packed-refs",
+      "# pack-refs\n" <> hash_b <> " refs/heads/main\n",
+    )
+  assert vm_cli.read_inventory(scratch, "proj") == vm_spec.Unpushed(["loom/s1"])
+  let assert Ok(Nil) = simplifile.delete(git <> "/refs/heads/main")
+  assert vm_cli.read_inventory(scratch, "proj")
+    == vm_spec.Unpushed(["loom/s1", "main"])
+  let assert Ok(Nil) = simplifile.delete_all([scratch])
+}
+
+pub fn a_link_in_a_copy_makes_it_unreadable_and_is_never_followed_test() {
+  let #(scratch, _, outside) = scratch_root()
+  let git = copy_git(scratch)
+  let assert Ok(Nil) = simplifile.write(outside <> "/ref", hash_a <> "\n")
+
+  // A link as a ref.
+  let assert Ok(Nil) =
+    simplifile.create_symlink(outside <> "/ref", git <> "/refs/heads/linked")
+  let assert vm_spec.Unreadable(reason) = vm_cli.read_inventory(scratch, "proj")
+  assert string.contains(reason, "linked")
+  let assert Ok(Nil) = simplifile.delete(git <> "/refs/heads/linked")
+
+  // A link as the refs directory itself.
+  let assert Ok(Nil) = simplifile.delete_all([git <> "/refs/remotes"])
+  let assert Ok(Nil) =
+    simplifile.create_symlink(outside, git <> "/refs/remotes")
+  let assert vm_spec.Unreadable(reason) = vm_cli.read_inventory(scratch, "proj")
+  assert string.contains(reason, "is a link")
+  let assert Ok(Nil) = simplifile.delete(git <> "/refs/remotes")
+
+  // A link as `.git`, and as a directory above it.
+  let assert Ok(Nil) = simplifile.delete_all([git])
+  let assert Ok(Nil) = simplifile.create_symlink(outside, git)
+  let assert vm_spec.Unreadable(reason) = vm_cli.read_inventory(scratch, "proj")
+  assert string.contains(reason, "is a link")
+  let assert Ok(Nil) = simplifile.delete(git)
+  let assert Ok(Nil) =
+    simplifile.rename(
+      scratch <> "/root/srv/workspaces",
+      scratch <> "/elsewhere",
+    )
+  let assert Ok(Nil) =
+    simplifile.create_symlink(
+      scratch <> "/elsewhere",
+      scratch <> "/root/srv/workspaces",
+    )
+  let assert vm_spec.Unreadable(reason) = vm_cli.read_inventory(scratch, "proj")
+  assert string.contains(reason, "is a link")
+  let assert Ok(Nil) = simplifile.delete_all([scratch])
+}
+
+pub fn an_oversized_or_hostile_ref_tree_is_refused_test() {
+  let #(scratch, _, _) = scratch_root()
+  let git = copy_git(scratch)
+
+  // A ref file far larger than any object name.
+  let assert Ok(Nil) =
+    simplifile.write(git <> "/refs/heads/huge", string.repeat("a", 4096))
+  let assert vm_spec.Unreadable(reason) = vm_cli.read_inventory(scratch, "proj")
+  assert string.contains(reason, "huge")
+  let assert Ok(Nil) = simplifile.delete(git <> "/refs/heads/huge")
+
+  // Directories nested past the depth limit.
+  let deep = git <> "/refs/heads/" <> string.repeat("d/", 12)
+  let assert Ok(Nil) = simplifile.create_directory_all(deep)
+  let assert vm_spec.Unreadable(reason) = vm_cli.read_inventory(scratch, "proj")
+  assert string.contains(reason, "nested too deeply")
+  let assert Ok(Nil) = simplifile.delete_all([scratch])
+}
+
+// --- undoing an enrolment ----------------------------------------------------
+
+const orch_node = "loom_vm_dev_orch@127.0.0.1"
+
+const exec_node = "loom_vm_dev_exec@127.0.0.1"
+
+fn enrolled_text(extra: String) -> String {
+  "# the user's own comment\n[models.m]\nmodel_id = \"x\"\n\n[distribution]\nnode = \""
+  <> orch_node
+  <> "\"\nca = \"/c/ca.pem\"\n\n[[distribution.peers]]\nnode = \""
+  <> exec_node
+  <> "\"\nsha256 = \"ab\"\n\n[executors.dev]\nnode = \""
+  <> exec_node
+  <> "\"\n"
+  <> extra
+}
+
+pub fn the_guests_enrolment_is_read_from_the_configuration_test() {
+  let assert Ok(found) =
+    vm_spec.read_enrolment(
+      enrolled_text("\n[executors.other]\nnode = \"o@h\"\n"),
+      "dev",
+    )
+  assert found.executor_node == Some(exec_node)
+  assert found.distribution_node == Some(orch_node)
+  assert found.other_executors == ["other"]
+
+  let assert Ok(empty) = vm_spec.read_enrolment("", "dev")
+  assert empty == vm_spec.Enrolment(None, None, [])
+  assert result.is_error(vm_spec.read_enrolment("[executors\n", "dev"))
+}
+
+pub fn a_lone_guest_takes_its_tables_and_cookie_with_it_test() {
+  let assert Ok(found) = vm_spec.read_enrolment(enrolled_text(""), "dev")
+  let plan =
+    vm_spec.plan_teardown(vm_spec.names("dev"), found, vm_spec.CookieOurs)
+  assert plan.tables == [["executors", "dev"], ["distribution"]]
+  assert plan.cookie == vm_spec.RemoveCookie
+  assert plan.left == []
+}
+
+pub fn another_executor_keeps_the_shared_tables_and_cookie_test() {
+  let assert Ok(found) =
+    vm_spec.read_enrolment(
+      enrolled_text("\n[executors.other]\nnode = \"o@h\"\n"),
+      "dev",
+    )
+  let plan =
+    vm_spec.plan_teardown(vm_spec.names("dev"), found, vm_spec.CookieOurs)
+  assert plan.tables == [["executors", "dev"]]
+  assert plan.cookie == vm_spec.KeepCookie
+  let assert [line] = plan.left
+  assert string.contains(line, "[executors.other]")
+  assert string.contains(line, "[distribution] and the cookie stay")
+}
+
+pub fn a_deployment_that_is_not_the_guests_is_left_test() {
+  let text =
+    "[distribution]\nnode = \"mine@host\"\n\n[executors.dev]\nnode = \"mine-exec@host\"\n"
+  let assert Ok(found) = vm_spec.read_enrolment(text, "dev")
+  let plan =
+    vm_spec.plan_teardown(vm_spec.names("dev"), found, vm_spec.CookieOther)
+
+  // Neither table is this guest's, so nothing goes and each is named.
+  assert plan.tables == []
+  assert plan.cookie == vm_spec.KeepCookie
+  assert list.length(plan.left) == 2
+}
+
+pub fn a_cookie_that_differs_stays_when_the_tables_go_test() {
+  let assert Ok(found) = vm_spec.read_enrolment(enrolled_text(""), "dev")
+  let plan =
+    vm_spec.plan_teardown(vm_spec.names("dev"), found, vm_spec.CookieOther)
+  assert plan.tables == [["executors", "dev"], ["distribution"]]
+  assert plan.cookie == vm_spec.KeepCookie
+  let assert [line] = plan.left
+  assert string.contains(line, ".erlang.cookie")
+}
+
+pub fn the_cookie_is_compared_with_the_deployments_test() {
+  assert vm_spec.cookie_state(None, Some("c")) == vm_spec.CookieAbsent
+  assert vm_spec.cookie_state(Some("c"), Some("c")) == vm_spec.CookieOurs
+  assert vm_spec.cookie_state(Some("c"), Some("d")) == vm_spec.CookieOther
+
+  // Without the bundle there is nothing to compare with.
+  assert vm_spec.cookie_state(Some("c"), None) == vm_spec.CookieOther
+}
+
+pub fn removing_tables_keeps_every_other_byte_test() {
+  let text =
+    enrolled_text(
+      "\n[executors.other]\nnode = \"o@h\"\n# the other executor's comment\n",
+    )
+  let assert Ok(without) =
+    distribution_install.without_tables(
+      text,
+      [["executors", "dev"], ["distribution"]],
+      "/h/loom.toml",
+    )
+
+  // The user's comment and tables survive exactly, the removed sections are
+  // gone with the peers table below `[distribution]`, and the text still
+  // parses.
+  assert string.starts_with(
+    without,
+    "# the user's own comment\n[models.m]\nmodel_id = \"x\"\n\n",
+  )
+  assert string.ends_with(
+    without,
+    "[executors.other]\nnode = \"o@h\"\n# the other executor's comment\n",
+  )
+  assert !string.contains(without, "[distribution")
+  assert !string.contains(without, "[executors.dev]")
+  let assert Ok(_) = tom.parse(without)
+
+  // Nothing to remove is the same text.
+  assert distribution_install.without_tables(text, [], "/h/loom.toml")
+    == Ok(text)
+}
+
+pub fn a_table_that_cannot_be_removed_by_line_refuses_the_rewrite_test() {
+  // A dotted key at the top of the file defines the table without a header.
+  let dotted = "executors.dev.node = \"x@h\"\n"
+  let assert Error(reason) =
+    distribution_install.without_tables(
+      dotted,
+      [["executors", "dev"]],
+      "/h/loom.toml",
+    )
+  assert string.contains(reason, "remove it by hand")
+
+  // Text that is not TOML is refused before anything is judged.
+  let assert Error(reason) =
+    distribution_install.without_tables(
+      "[executors\n",
+      [["executors", "dev"]],
+      "/h/loom.toml",
+    )
+  assert string.contains(reason, "is not valid TOML")
 }

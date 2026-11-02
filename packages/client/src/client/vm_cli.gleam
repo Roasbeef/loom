@@ -1,4 +1,5 @@
-//// `loom vm setup | up | down | status`: one standing microVM executor.
+//// `loom vm setup | up | down | status | logs | list | rm | sync`: one standing
+//// microVM executor and the commands for living with it.
 ////
 //// A developer with loom and libkrun installed runs `loom vm up` in a checkout,
 //// or with `--workspace ~/src/proj`, and gets a guest that runs an executor daemon named
@@ -25,6 +26,22 @@
 //// - `down` signals the recorded process and waits for it (`down`).
 //// - `status` reports what the pid file, the process table and the host epmd
 ////   say (`status`).
+//// - logs prints the end of the console log (`logs`), and list prints one line
+////   per guest directory (`guests`).
+//// - rm deletes a stopped guest and undoes its enrolment (`remove`).
+//// - sync fetches a copy's committed work into the developer's checkout, or
+////   bundles the checkout's commits for the guest (`sync`).
+////
+//// ## The guest root is untrusted input
+////
+//// Model-influenced code writes the guest's root while the guest runs, so
+//// everything the host reads from it afterwards is untrusted: a link where a
+//// directory belongs, a `.git/config` that names a command, a ref name with a
+//// terminal escape in it. The commands that read it never run `git` with a
+//// working directory inside it (`sync` fetches into the developer's checkout
+//// with the copy as the remote), read refs as plain bounded files without
+//// following a link (`read_inventory`), write only through `make_inside`, and
+//// print what they read through `vm_spec.printable`.
 ////
 //// ## Where `loom-vm` comes from
 ////
@@ -70,11 +87,13 @@ import client/distribution_provision.{RefuseExisting, ReplaceExisting}
 import client/install
 import client/internal/ffi_os
 import client/vm_spec.{
-  type Command, type Manifest, type PidRecord, type UpOptions, Down, Launch,
-  PidRecord, Setup, Status, Up, UpOptions,
+  type Command, type Manifest, type PidRecord, type SyncOptions, type UpOptions,
+  Down, Guests, Launch, Logs, PidRecord, Remove, Setup, Status, Sync, Up,
+  UpOptions,
 }
 import core/json as core_json
 import filepath
+import gleam/bit_array
 import gleam/bool
 import gleam/int
 import gleam/io
@@ -97,6 +116,11 @@ pub const usage =
                   [--allow HOST]... [--provision SCRIPT]
        loom vm down [--name NAME]
        loom vm status [--name NAME]
+       loom vm logs [--name NAME] [--lines N]
+       loom vm list
+       loom vm rm [--name NAME] [--config PATH] [--yes]
+       loom vm sync [--name NAME] [--workspace NAME] [--checkout PATH]
+                    [--to-guest]
 
 Run one standing executor in a microVM and use it from `loom --executor`.
 
@@ -115,7 +139,10 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             its executor serves. The guest keeps running after this command
             exits. NAME defaults to vm. DIR defaults to the current directory;
             its copy, .git included, is registered in the guest under the
-            directory's own name. A linked Git worktree is copied too, and its
+            directory's own name, and only the latest up's copy is registered:
+            another directory's copy joins the guest's root but needs its own
+            up (with the guest stopped) before `loom --executor` can name it.
+            A linked Git worktree is copied too, and its
             copy gets a repository of its own. With no artifacts installed it
             first runs `setup` for this release. --mem is the guest's memory in MiB (default
             2048) and --cpus its virtual CPUs (default 4). --config is the
@@ -145,6 +172,29 @@ Run one standing executor in a microVM and use it from `loom --executor`.
   down      Stop the guest. Its root, and the checkout inside it, stay on disk.
   status    Say whether the guest runs, where it is registered and what it
             holds.
+  logs      Print the last lines of the guest's console log, loom-vm.log:
+            100, or --lines N. There is no follow mode.
+  list      Print one line for each guest under the vm home: its name,
+            whether it runs, and its workspaces.
+  rm        Delete a stopped guest and undo its enrolment. It removes
+            [executors.NAME] from loom.toml (--config PATH, default
+            ~/.loom/loom.toml), and the [distribution] table and the home's
+            .erlang.cookie only when they are this guest's deployment's and no
+            other [executors.*] table remains; otherwise it leaves them and
+            says so. Every other line of loom.toml is kept. A running guest is
+            refused: run `loom vm down` first. Deleting a guest is permanent
+            and work that is not pushed is lost, so without --yes it only lists
+            the workspaces and the local branches that origin lacks.
+  sync      Fetch a workspace copy's committed work into your own checkout as
+            remote-tracking refs refs/remotes/vm/*, with no network and no
+            daemon: `loom vm up` records which checkout each copy came from,
+            and --checkout PATH names it (an older guest has no record). The
+            guest's root is untrusted, so Git runs in your checkout and only
+            reads the copy as a remote. Uncommitted edits are not fetched.
+            --workspace NAME picks the copy when the guest holds several.
+            --to-guest goes the other way: it bundles your checkout's refs into
+            /srv/host-refs/NAME.bundle in the guest and prints the jailed
+            command that fetches them as refs/remotes/host/*.
 
 The artifacts come from `~/.loom/vm/manifest.json` ($LOOM_VM_HOME overrides
 ~/.loom/vm), which `loom vm setup` writes. They must be built from the release
@@ -197,6 +247,10 @@ fn dispatch(command: Command) -> Result(String, String) {
     Up(options) -> up(options)
     Down(name) -> down(name)
     Status(name) -> status(name)
+    Logs(name, lines) -> logs(name, lines)
+    Guests -> guests()
+    Remove(name, config, consent) -> remove(name, config, consent)
+    Sync(options) -> sync(options)
   }
 }
 
@@ -213,6 +267,7 @@ type Instance {
     pid_file: String,
     log: String,
     allow_file: String,
+    checkouts_file: String,
   )
 }
 
@@ -244,6 +299,7 @@ fn instance(vm_home: String, name: String) -> Instance {
     pid_file: directory <> "/loom-vm.pid",
     log: directory <> "/loom-vm.log",
     allow_file: directory <> "/" <> vm_spec.allow_file,
+    checkouts_file: directory <> "/" <> vm_spec.checkouts_file,
   )
 }
 
@@ -645,6 +701,9 @@ fn workspace_of(options: UpOptions) -> Result(Workspace, String) {
   let name = filepath.base_name(path)
   use Nil <- result.try(vm_spec.valid_workspace_name(name))
 
+  // The path is recorded for `sync`, so it must be one the record can hold.
+  use Nil <- result.try(vm_spec.valid_checkout_path(path))
+
   // A linked worktree's `.git` is a file that points at the main repository,
   // outside the copy. `copy_workspace` gives its copy a repository of its own.
   let checkout = case bootstrap.path_kind(path <> "/.git") {
@@ -892,8 +951,10 @@ fn install(
       <> "\n`loom vm up` never replaces a [distribution] table, an "
       <> "[executors."
       <> orchestrator_executor(orchestrator)
-      <> "] table or a cookie that differs from the deployment's. Remove the "
-      <> "conflicting one from "
+      <> "] table or a cookie that differs from the deployment's, and each "
+      <> "guest mints its own, so only one guest per home is supported today. "
+      <> "If another guest made the conflicting one, `loom vm rm --name NAME` "
+      <> "removes it. Otherwise remove it from "
       <> config
       <> " (the cookie is "
       <> home
@@ -957,7 +1018,8 @@ fn stage(
     options.allow,
   ))
   use Nil <- result.try(stage_script(guest.root, plan))
-  copy_workspace(guest.root, workspace, platform)
+  use copy <- result.try(copy_workspace(guest.root, workspace, platform))
+  record_checkout(guest, workspace, copy)
 }
 
 /// Copies the developer's script into the guest root, where the init runs it
@@ -1066,6 +1128,9 @@ fn replace_root(
     }),
   )
   use Nil <- result.try(remove_root(guest))
+
+  // A record names a copy in this root, and the new root has none.
+  use Nil <- result.try(remove_checkouts(guest))
   tool(
     "cp",
     vm_spec.copy_arguments(platform, export, guest.root),
@@ -1205,14 +1270,14 @@ fn copy_workspace(
   root: String,
   workspace: Workspace,
   platform: vm_spec.Platform,
-) -> Result(Nil, String) {
+) -> Result(Copy, String) {
   let parent = root <> vm_spec.workspaces_dir
   let copy = parent <> "/" <> workspace.name
   use Nil <- result.try(make_inside(root, vm_spec.workspaces_dir))
 
   // A resumed guest's copy is the one the agent has been editing; copying
   // the host's checkout over it would discard that work.
-  use <- bool.guard(bootstrap.path_exists(copy), Ok(Nil))
+  use <- bool.guard(bootstrap.path_exists(copy), Ok(Kept))
   let copied = {
     use _ <- result.try(tool(
       "cp",
@@ -1232,11 +1297,74 @@ fn copy_workspace(
   // (half copied, with a `.git` that still points at the host, or with the
   // credentials unscrubbed) is removed and the next `up` makes it again.
   case copied {
-    Ok(Nil) -> Ok(Nil)
+    Ok(Nil) -> Ok(Copied)
     Error(reason) -> {
       let _ = remove_tree(copy)
       Error(reason)
     }
+  }
+}
+
+// Whether `up` made a workspace copy now or found the one an earlier `up`
+// made. Only a copy made now is known to come from the directory `up` was
+// given, so only it is recorded.
+type Copy {
+  Copied
+  Kept
+}
+
+/// Records which developer checkout a workspace copy came from, in the file
+/// beside the root that `sync` reads. A damaged record is replaced, since the
+/// copy was just made from the checkout the record would name.
+fn record_checkout(
+  guest: Instance,
+  workspace: Workspace,
+  copy: Copy,
+) -> Result(Nil, String) {
+  // A kept copy's origin is whatever the record already says.
+  case copy {
+    Kept -> Ok(Nil)
+    Copied -> {
+      let known = result.unwrap(read_checkouts(guest), [])
+      write_private(
+        guest.checkouts_file,
+        vm_spec.encode_checkouts(vm_spec.record_checkout(
+          known,
+          workspace.name,
+          workspace.path,
+        )),
+      )
+    }
+  }
+}
+
+/// The recorded checkouts of a guest's workspaces; none when there is no
+/// record, the error when it is damaged.
+fn read_checkouts(guest: Instance) -> Result(List(#(String, String)), String) {
+  case simplifile.read(guest.checkouts_file) {
+    Error(simplifile.Enoent) -> Ok([])
+    Error(error) ->
+      Error(
+        guest.checkouts_file
+        <> " is unreadable: "
+        <> simplifile.describe_error(error),
+      )
+    Ok(text) ->
+      vm_spec.decode_checkouts(text)
+      |> result.map_error(fn(reason) { guest.checkouts_file <> ", " <> reason })
+  }
+}
+
+/// Removes the checkouts record, which a replaced root outdates.
+fn remove_checkouts(guest: Instance) -> Result(Nil, String) {
+  case simplifile.delete(guest.checkouts_file) {
+    Ok(Nil) | Error(simplifile.Enoent) -> Ok(Nil)
+    Error(error) ->
+      Error(
+        guest.checkouts_file
+        <> " cannot be removed: "
+        <> simplifile.describe_error(error),
+      )
   }
 }
 
@@ -1331,9 +1459,15 @@ fn git(directory: String, arguments: List(String)) -> Result(String, String) {
   tool("git", ["-C", directory, ..arguments], within: copy_budget_ms)
 }
 
-/// Removes a tree that may hold read-only files.
+/// Removes a tree that may hold read-only files and directories. `chmod -R`
+/// does not follow a link it meets, and `simplifile.delete_all` removes a link
+/// itself, so a link a guest left in the tree is deleted and never entered.
 fn remove_tree(path: String) -> Result(Nil, String) {
-  use _ <- result.try(tool("chmod", ["-R", "u+w", path], within: copy_budget_ms))
+  use _ <- result.try(tool(
+    "chmod",
+    ["-R", "u+rwX", path],
+    within: copy_budget_ms,
+  ))
   simplifile.delete_all([path])
   |> result.map_error(fn(error) {
     path <> " cannot be removed: " <> simplifile.describe_error(error)
@@ -1942,12 +2076,13 @@ fn root_line(guest: Instance) -> String {
   }
 }
 
-/// The workspaces the guest's root holds, which are what `--workspace` names
-/// to `loom --executor`.
+/// The workspace copies the guest's root holds. Only the one the latest `up`
+/// registered in the guest's configuration is what `--workspace` can name to
+/// `loom --executor`; the others are copies on disk.
 fn workspace_line(guest: Instance) -> String {
-  case simplifile.read_directory(guest.root <> vm_spec.workspaces_dir) {
+  case workspace_names(guest) {
     Ok([]) | Error(_) -> "none"
-    Ok(names) -> string.join(list.sort(names, string.compare), ", ")
+    Ok(names) -> string.join(names, ", ")
   }
 }
 
@@ -1967,5 +2102,812 @@ fn provision_line(guest: Instance) -> String {
     vm_spec.AlreadyProvisioned -> "done"
     vm_spec.FailedBefore -> "pending, the next up runs it again"
     vm_spec.NeverProvisioned -> "none"
+  }
+}
+
+// --- reading a guest's root without trusting it -------------------------------
+
+/// Checks that each directory of `segments` below `base` exists, is a
+/// directory and is not a link, one component at a time, and answers the final
+/// path. A guest's root is writable by model-influenced code, so a link may
+/// have replaced any directory in it, and reading through one would read
+/// whatever it points at.
+fn plain_chain(base: String, segments: List(String)) -> Result(String, String) {
+  list.try_fold(segments, base, fn(path, segment) {
+    let next = path <> "/" <> segment
+
+    // `link_info` describes the entry itself, never what a link points at.
+    case simplifile.link_info(next) {
+      Ok(info) ->
+        case simplifile.file_info_type(info) {
+          simplifile.Directory -> Ok(next)
+          simplifile.Symlink ->
+            Error(
+              vm_spec.printable(next)
+              <> " is a link, so something in the guest left it there. "
+              <> "Replace the guest with --fresh.",
+            )
+          simplifile.File | simplifile.Other ->
+            Error(vm_spec.printable(next) <> " is not a directory")
+        }
+      Error(error) ->
+        Error(
+          vm_spec.printable(next)
+          <> " is unreadable: "
+          <> simplifile.describe_error(error),
+        )
+    }
+  })
+}
+
+/// Whether `path` is a directory itself and not a link to one.
+fn is_plain_directory(path: String) -> Bool {
+  case simplifile.link_info(path) {
+    Ok(info) -> simplifile.file_info_type(info) == simplifile.Directory
+    Error(_) -> False
+  }
+}
+
+/// Refuses a guest that has no directory under the vm home, or whose directory
+/// is a link.
+fn existing_guest(
+  guest: Instance,
+  name: String,
+  vm_home: String,
+) -> Result(Nil, String) {
+  case is_plain_directory(guest.directory) {
+    True -> Ok(Nil)
+    False ->
+      Error(
+        "there is no guest "
+        <> name
+        <> " under "
+        <> vm_home
+        <> ". `loom vm list` names the guests there.",
+      )
+  }
+}
+
+/// The names of the workspace copies in a guest's root, sorted. Only names a
+/// workspace can have are returned, because the directory is the guest's to
+/// fill. A guest with no copies yet holds none, and a link anywhere on the way
+/// is the error.
+fn workspace_names(guest: Instance) -> Result(List(String), String) {
+  // A root that was never made holds nothing; a link on the way is not
+  // nothing, so only a missing path is skipped.
+  use <- bool.guard(
+    !bootstrap.path_exists(guest.root <> vm_spec.workspaces_dir),
+    Ok([]),
+  )
+  use directory <- result.try(
+    plain_chain(guest.directory, ["root", "srv", "workspaces"]),
+  )
+  use entries <- result.try(
+    bootstrap.list_directory_bounded(directory, 1000)
+    |> result.map_error(fn(reason) {
+      vm_spec.printable(directory) <> ": " <> reason
+    }),
+  )
+
+  Ok(
+    entries
+    |> list.filter(fn(entry) {
+      result.is_ok(vm_spec.valid_workspace_name(entry))
+    })
+    |> list.sort(string.compare),
+  )
+}
+
+// --- logs --------------------------------------------------------------------
+
+// The last lines of a file, with whatever is not UTF-8 dropped. The console is
+// the guest's own output, so it may hold any byte; `iconv -c` keeps the result
+// text, and `|| true` is there because it exits nonzero when it dropped some.
+const tail_script = "tail -n \"$1\" \"$2\" | iconv -c -f UTF-8 -t UTF-8 || true"
+
+/// Prints the last `lines` lines of the guest's console log.
+fn logs(name: String, lines: Int) -> Result(String, String) {
+  use vm_home <- result.try(vm_home())
+  let guest = instance(vm_home, name)
+
+  // A guest that never started has no console.
+  use Nil <- result.try(case bootstrap.path_kind(guest.log) {
+    bootstrap.RegularFile -> Ok(Nil)
+    bootstrap.OtherEntry | bootstrap.NoEntry ->
+      Error(
+        guest.log
+        <> " does not exist, so the guest "
+        <> name
+        <> " has not been started. `loom vm list` names the guests.",
+      )
+  })
+
+  use text <- result.try(tool(
+    "sh",
+    ["-c", tail_script, "sh", int.to_string(lines), guest.log],
+    within: quick_ms,
+  ))
+
+  // Guest text goes to a terminal only after its control characters are gone.
+  case string.trim_end(vm_spec.printable(text)) {
+    "" -> Ok("The console log " <> guest.log <> " is empty.")
+    printed -> Ok(printed)
+  }
+}
+
+// --- list --------------------------------------------------------------------
+
+/// One line for each guest under the vm home.
+fn guests() -> Result(String, String) {
+  use vm_home <- result.try(vm_home())
+
+  // A home that does not exist yet holds no guests, which is not an error.
+  use entries <- result.try(case simplifile.read_directory(vm_home) {
+    Ok(entries) -> Ok(entries)
+    Error(simplifile.Enoent) -> Ok([])
+    Error(error) ->
+      Error(vm_home <> " is unreadable: " <> simplifile.describe_error(error))
+  })
+
+  // A guest directory has a valid name, is a directory of its own and holds
+  // the deployment `up` provisions first. The manifest and the artifact cache
+  // that share the home are neither.
+  let names =
+    entries
+    |> list.filter(fn(entry) {
+      result.is_ok(vm_spec.valid_name(entry))
+      && is_plain_directory(vm_home <> "/" <> entry)
+      && is_plain_directory(vm_home <> "/" <> entry <> "/deploy")
+    })
+    |> list.sort(string.compare)
+  let width =
+    list.fold(names, 0, fn(widest, name) {
+      int.max(widest, string.length(name))
+    })
+
+  // An empty home says so instead of printing nothing.
+  case names {
+    [] -> Ok("No guests under " <> vm_home <> ".")
+    _ ->
+      names
+      |> list.map(guest_line(vm_home, _, width))
+      |> string.join("\n")
+      |> Ok
+  }
+}
+
+/// A guest's name, whether it runs and its workspaces, in aligned columns. A
+/// guest with no pid file is stopped.
+fn guest_line(vm_home: String, name: String, width: Int) -> String {
+  let guest = instance(vm_home, name)
+
+  // A pid file that cannot be read says nothing either way, so the guest is
+  // reported as unknown and not as stopped.
+  let state = case process_state(guest) {
+    Ok(Alive(_)) -> "running"
+    Ok(NotRunning) -> "stopped"
+    Error(_) -> "unknown"
+  }
+
+  string.pad_end(name, width, " ")
+  <> "  "
+  <> string.pad_end(state, 7, " ")
+  <> "  "
+  <> workspace_line(guest)
+}
+
+// --- rm ----------------------------------------------------------------------
+
+// What `rm` will do to the user's configuration and cookie, decided before
+// anything is written so a file that cannot be edited refuses the whole command.
+type RemovalPlan {
+  RemovalPlan(
+    config: String,
+    teardown: vm_spec.Teardown,
+    // The configuration text after the tables go, or `None` when it is
+    // unchanged.
+    rewritten: option.Option(String),
+  )
+}
+
+// How many refs, how deep and how large a ref file `rm` reads from a copy that
+// a guest wrote. The limits are far above any real repository's branches and
+// exist so a hostile tree costs one refusal and not the host's memory.
+const refs_budget = 5000
+
+const refs_depth = 8
+
+const ref_file_limit = 512
+
+const packed_refs_limit = 4_194_304
+
+/// Deletes a stopped guest and undoes its enrolment.
+fn remove(
+  name: String,
+  config: option.Option(String),
+  consent: vm_spec.Consent,
+) -> Result(String, String) {
+  use vm_home <- result.try(vm_home())
+  let guest = instance(vm_home, name)
+  use Nil <- result.try(existing_guest(guest, name, vm_home))
+  use state <- result.try(process_state(guest))
+
+  // The guest's files are open in a running `loom-vm`, and its pid file is how
+  // `down` finds it, so a running guest is stopped first.
+  use Nil <- result.try(case state {
+    Alive(record) ->
+      Error(
+        "the guest "
+        <> name
+        <> " runs as process "
+        <> int.to_string(record.pid)
+        <> ". Stop it with `loom vm down --name "
+        <> name
+        <> "` first.",
+      )
+    NotRunning -> Ok(Nil)
+  })
+
+  use home <- result.try(home())
+  use config <- result.try(
+    bootstrap.absolute_path(
+      option.lazy_unwrap(config, fn() {
+        distribution_install.default_config(home)
+      }),
+    ),
+  )
+  use plan <- result.try(removal_plan(guest, name, config, home))
+
+  // Nothing is changed until the user has said yes, and the refusal is the
+  // inventory of what the answer would lose.
+  case consent {
+    vm_spec.Unconfirmed ->
+      Error(
+        vm_spec.removal_refusal(name, inventory(guest))
+        <> "\n"
+        <> removal_preview(plan, home),
+      )
+    vm_spec.Confirmed -> apply_removal(guest, name, home, plan)
+  }
+}
+
+/// Reads the configuration and the cookie and decides what undoing the guest's
+/// enrolment removes. A configuration that cannot be parsed, or whose tables
+/// cannot be removed line by line, refuses here with one line.
+fn removal_plan(
+  guest: Instance,
+  name: String,
+  config: String,
+  home: String,
+) -> Result(RemovalPlan, String) {
+  let names = vm_spec.names(name)
+
+  // A configuration that does not exist has no enrolment to undo.
+  use text <- result.try(case simplifile.read(config) {
+    Ok(text) -> Ok(text)
+    Error(simplifile.Enoent) -> Ok("")
+    Error(error) ->
+      Error(config <> " is unreadable: " <> simplifile.describe_error(error))
+  })
+
+  use found <- result.try(
+    vm_spec.read_enrolment(text, name)
+    |> result.map_error(fn(reason) {
+      config <> " " <> reason <> ". Nothing was removed."
+    }),
+  )
+  use cookie <- result.try(cookie_state(guest, names, home))
+  let teardown = vm_spec.plan_teardown(names, found, cookie)
+  use edited <- result.try(
+    distribution_install.without_tables(text, teardown.tables, config)
+    |> result.map_error(fn(reason) { reason <> ". Nothing was removed." }),
+  )
+
+  // Text that is unchanged needs no write, so a guest that never enrolled
+  // leaves the user's file untouched.
+  let rewritten = case edited == text {
+    True -> None
+    False -> Some(edited)
+  }
+
+  Ok(RemovalPlan(config:, teardown:, rewritten:))
+}
+
+/// Compares the home's cookie with the one in the guest's deployment. A bundle
+/// that is missing or unreadable cannot be compared, so the cookie counts as
+/// another's and stays.
+fn cookie_state(
+  guest: Instance,
+  names: vm_spec.Names,
+  home: String,
+) -> Result(vm_spec.CookieState, String) {
+  let path = home <> "/.erlang.cookie"
+
+  // No cookie file is a state of its own, not a failure.
+  use found <- result.try(case simplifile.read(path) {
+    Ok(text) -> Ok(Some(text))
+    Error(simplifile.Enoent) -> Ok(None)
+    Error(error) ->
+      Error(path <> " is unreadable: " <> simplifile.describe_error(error))
+  })
+
+  // The bundle is the record of what `up` installed, so it is what the file
+  // is compared with.
+  let deployed =
+    read_bundle(bundle_file(guest, names.orchestrator), names.orchestrator_node)
+    |> result.map(fn(bundle) { bundle.cookie })
+    |> option.from_result
+
+  Ok(vm_spec.cookie_state(found, deployed))
+}
+
+/// What `--yes` would remove and leave in the configuration, for the refusal.
+fn removal_preview(plan: RemovalPlan, home: String) -> String {
+  string.join(
+    list.flatten([
+      ["`--yes` also undoes the enrolment in " <> plan.config <> ":"],
+      list.map(removed_things(plan, home), fn(thing) { "  removes " <> thing }),
+      list.map(plan.teardown.left, fn(line) { "  leaves " <> line }),
+    ]),
+    "\n",
+  )
+}
+
+/// The tables and the cookie the plan removes, each as the name a person
+/// would use for it.
+fn removed_things(plan: RemovalPlan, home: String) -> List(String) {
+  let tables =
+    list.map(plan.teardown.tables, fn(path) {
+      "[" <> string.join(path, ".") <> "]"
+    })
+
+  // The cookie is listed only when the plan removes it.
+  case plan.teardown.cookie {
+    vm_spec.RemoveCookie -> list.append(tables, [home <> "/.erlang.cookie"])
+    vm_spec.KeepCookie -> tables
+  }
+}
+
+/// Removes the tables and the cookie the plan names, then the guest's
+/// directory, and reports what it did and what it left.
+fn apply_removal(
+  guest: Instance,
+  name: String,
+  home: String,
+  plan: RemovalPlan,
+) -> Result(String, String) {
+  // The enrolment is undone before the files go, so a failure part way leaves
+  // a guest that can be removed again and no configuration naming a missing one.
+  use Nil <- result.try(case plan.rewritten {
+    Some(text) -> write_private(plan.config, text)
+    None -> Ok(Nil)
+  })
+
+  // The cookie goes after the tables that name it, and only when the plan
+  // found it to be this guest's deployment's.
+  use Nil <- result.try(case plan.teardown.cookie {
+    vm_spec.RemoveCookie ->
+      simplifile.delete(home <> "/.erlang.cookie")
+      |> result.map_error(fn(error) {
+        home
+        <> "/.erlang.cookie cannot be removed: "
+        <> simplifile.describe_error(error)
+      })
+    vm_spec.KeepCookie -> Ok(Nil)
+  })
+
+  // The tree is made writable and removed without following a link.
+  use Nil <- result.try(remove_tree(guest.directory))
+
+  Ok(string.join(
+    list.flatten([
+      ["Removed the guest " <> name <> ": deleted " <> guest.directory <> "."],
+      list.map(removed_things(plan, home), fn(thing) {
+        "Removed " <> thing <> "."
+      }),
+      list.map(plan.teardown.left, fn(line) { "Left in place: " <> line }),
+      enrolment_notice(plan),
+    ]),
+    "\n",
+  ))
+}
+
+/// The reminder that a running daemon keeps the enrolment until it restarts,
+/// when any table went.
+fn enrolment_notice(plan: RemovalPlan) -> List(String) {
+  case plan.teardown.tables {
+    [] -> []
+    _ -> [
+      "A daemon that is already running keeps the enrolment until it restarts.",
+    ]
+  }
+}
+
+/// The branches each workspace copy holds that origin lacks, read as plain
+/// files and never with `git`.
+fn inventory(guest: Instance) -> List(#(String, vm_spec.Inventory)) {
+  case workspace_names(guest) {
+    Error(reason) -> [#("(workspaces)", vm_spec.Unreadable(reason))]
+    Ok(names) ->
+      list.map(names, fn(name) {
+        #(name, read_inventory(guest.directory, name))
+      })
+  }
+}
+
+/// One copy's local branches that origin lacks at the same commit.
+///
+/// The copy is untrusted, so each directory on the way must be a plain
+/// directory, each ref a plain file of bounded size, and any link, special
+/// file or oversized tree makes the whole copy unreadable instead of partly
+/// read. Packed refs come first, so a loose ref replaces its packed value as
+/// Git reads them. `directory` is the guest's directory under the vm home.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // vm_cli.read_inventory("/vm/dev", "proj")
+/// ```
+@internal
+pub fn read_inventory(
+  directory: String,
+  workspace: String,
+) -> vm_spec.Inventory {
+  let read = {
+    use git <- result.try(
+      plain_chain(directory, ["root", "srv", "workspaces", workspace, ".git"]),
+    )
+    use packed <- result.try(packed_refs(git <> "/packed-refs"))
+    use heads <- result.try(loose_refs(git, ["refs", "heads"], "refs/heads"))
+    use origin <- result.try(loose_refs(
+      git,
+      ["refs", "remotes", "origin"],
+      "refs/remotes/origin",
+    ))
+    Ok(vm_spec.unpushed_branches(list.flatten([packed, heads, origin])))
+  }
+
+  // One unreadable ref makes the whole copy unreadable, and says why.
+  case read {
+    Ok(branches) -> vm_spec.Unpushed(branches)
+    Error(reason) -> vm_spec.Unreadable(reason)
+  }
+}
+
+/// The refs in a copy's `packed-refs`, none when it has no such file.
+fn packed_refs(path: String) -> Result(List(#(String, String)), String) {
+  case simplifile.link_info(path) {
+    Error(simplifile.Enoent) -> Ok([])
+    Error(error) ->
+      Error(
+        vm_spec.printable(path)
+        <> " is unreadable: "
+        <> simplifile.describe_error(error),
+      )
+    Ok(info) ->
+      case simplifile.file_info_type(info) {
+        simplifile.File -> {
+          use bytes <- result.try(
+            bootstrap.read_bounded(path, packed_refs_limit)
+            |> result.map_error(fn(reason) {
+              vm_spec.printable(path) <> ": " <> reason
+            }),
+          )
+          Ok(vm_spec.packed_refs(
+            bit_array.to_string(bytes) |> result.unwrap(""),
+          ))
+        }
+        simplifile.Directory | simplifile.Symlink | simplifile.Other ->
+          Error(vm_spec.printable(path) <> " is a link or not a plain file")
+      }
+  }
+}
+
+/// The loose refs below `segments` under a copy's `.git`, named from
+/// `prefix`. A directory that does not exist holds none, and a link anywhere on
+/// the way is refused: the walk would otherwise read the link's target.
+fn loose_refs(
+  git: String,
+  segments: List(String),
+  prefix: String,
+) -> Result(List(#(String, String)), String) {
+  use found <- result.try(present_chain(git, segments))
+
+  // A missing directory holds no refs, as a fresh repository has no remotes.
+  case found {
+    None -> Ok([])
+    Some(directory) ->
+      walk_refs(directory, prefix, refs_depth, refs_budget)
+      |> result.map(fn(read) { read.0 })
+  }
+}
+
+/// `plain_chain`, except that a component that does not exist ends the chain
+/// with `None` instead of an error.
+fn present_chain(
+  base: String,
+  segments: List(String),
+) -> Result(option.Option(String), String) {
+  list.try_fold(segments, Some(base), fn(found, segment) {
+    // Once a component is absent, everything below it is too.
+    case found {
+      None -> Ok(None)
+      Some(path) ->
+        case simplifile.link_info(path <> "/" <> segment) {
+          Error(simplifile.Enoent) -> Ok(None)
+          Ok(_) | Error(_) -> plain_chain(path, [segment]) |> result.map(Some)
+        }
+    }
+  })
+}
+
+/// Reads one directory of loose refs and the directories below it, and answers
+/// the refs with the entries left of the budget.
+fn walk_refs(
+  directory: String,
+  prefix: String,
+  depth: Int,
+  budget: Int,
+) -> Result(#(List(#(String, String)), Int), String) {
+  use <- bool.lazy_guard(depth < 0, fn() {
+    Error(vm_spec.printable(directory) <> " is nested too deeply")
+  })
+  use entries <- result.try(
+    bootstrap.list_directory_bounded(directory, budget)
+    |> result.map_error(fn(reason) {
+      vm_spec.printable(directory) <> ": " <> reason
+    }),
+  )
+
+  // Every entry spends one of the budget, so the walk as a whole is bounded,
+  // not only each directory.
+  list.try_fold(entries, #([], budget - list.length(entries)), fn(state, entry) {
+    let #(found, left) = state
+    let path = directory <> "/" <> entry
+    let ref = prefix <> "/" <> entry
+    read_ref_entry(path, ref, depth, left)
+    |> result.map(fn(read) { #(list.append(read.0, found), read.1) })
+  })
+}
+
+/// One entry of a refs directory: a plain file is a ref, a plain directory is
+/// walked, a lock file is a write in progress and skipped, and anything else
+/// refuses the copy.
+fn read_ref_entry(
+  path: String,
+  ref: String,
+  depth: Int,
+  left: Int,
+) -> Result(#(List(#(String, String)), Int), String) {
+  case simplifile.link_info(path) |> result.map(simplifile.file_info_type) {
+    Ok(simplifile.File) ->
+      case string.ends_with(path, ".lock") {
+        True -> Ok(#([], left))
+        False -> {
+          use bytes <- result.try(
+            bootstrap.read_bounded(path, ref_file_limit)
+            |> result.map_error(fn(reason) {
+              vm_spec.printable(path) <> ": " <> reason
+            }),
+          )
+          let hash =
+            vm_spec.loose_hash(bit_array.to_string(bytes) |> result.unwrap(""))
+          Ok(#([#(ref, hash)], left))
+        }
+      }
+    Ok(simplifile.Directory) -> walk_refs(path, ref, depth - 1, left)
+    Ok(simplifile.Symlink) | Ok(simplifile.Other) ->
+      Error(vm_spec.printable(path) <> " is a link or a special file")
+    Error(error) ->
+      Error(
+        vm_spec.printable(path)
+        <> " is unreadable: "
+        <> simplifile.describe_error(error),
+      )
+  }
+}
+
+// --- sync --------------------------------------------------------------------
+
+/// Moves committed work between the developer's checkout and a guest's copy.
+fn sync(options: SyncOptions) -> Result(String, String) {
+  use vm_home <- result.try(vm_home())
+  let guest = instance(vm_home, options.name)
+  use Nil <- result.try(existing_guest(guest, options.name, vm_home))
+  use held <- result.try(workspace_names(guest))
+  use workspace <- result.try(
+    vm_spec.only_workspace(held, options.workspace)
+    |> result.map_error(fn(reason) {
+      "the guest " <> options.name <> ": " <> reason
+    }),
+  )
+
+  // `.git` of the copy must be a directory of its own: a link or a file there
+  // would send Git to a repository outside the guest's root.
+  use copy <- result.try(
+    plain_chain(guest.directory, ["root", "srv", "workspaces", workspace]),
+  )
+  use _git <- result.try(plain_chain(copy, [".git"]))
+  use checkout <- result.try(developer_checkout(guest, workspace, options))
+
+  // The two directions share every check above and differ only in who is the
+  // repository: the developer's checkout fetches, and its commits are bundled.
+  case options.direction {
+    vm_spec.FromGuest ->
+      fetch_from_guest(options.name, workspace, copy, checkout)
+    vm_spec.ToGuest -> bundle_to_guest(guest, options.name, workspace, checkout)
+  }
+}
+
+/// The developer's checkout of a workspace: the one `--checkout` names, or the
+/// one `up` recorded. It must be a directory, and not one inside the guest,
+/// since Git runs there and the guest is never a place to run it.
+fn developer_checkout(
+  guest: Instance,
+  workspace: String,
+  options: SyncOptions,
+) -> Result(String, String) {
+  // The flag overrides the record, which an older guest does not have.
+  use asked <- result.try(case options.checkout {
+    Some(path) -> bootstrap.absolute_path(path)
+    None -> recorded_checkout(guest, workspace, options.name)
+  })
+
+  use checkout <- result.try(
+    bootstrap.canonical_directory(asked)
+    |> result.map_error(fn(reason) {
+      vm_spec.printable(asked) <> " is not a directory: " <> reason
+    }),
+  )
+  use inside <- result.try(
+    bootstrap.canonical_directory(guest.directory)
+    |> result.map_error(fn(reason) { guest.directory <> ": " <> reason }),
+  )
+
+  // A path inside the guest's directory would make the checkout the guest's.
+  case string.starts_with(checkout <> "/", inside <> "/") {
+    True ->
+      Error(
+        checkout
+        <> " is inside the guest's directory, which is untrusted. Name your own checkout with --checkout.",
+      )
+    False -> Ok(checkout)
+  }
+}
+
+/// The checkout `up` recorded for a workspace, or the refusal that names the
+/// flag that supplies it.
+fn recorded_checkout(
+  guest: Instance,
+  workspace: String,
+  name: String,
+) -> Result(String, String) {
+  use entries <- result.try(read_checkouts(guest))
+  vm_spec.checkout_of(entries, workspace)
+  |> option.to_result(
+    "the guest "
+    <> name
+    <> " has no record of the checkout of "
+    <> workspace
+    <> ", because it was made by an older `loom vm up`. Name your checkout "
+    <> "with --checkout PATH.",
+  )
+}
+
+/// Fetches the copy's branches into the developer's checkout as
+/// `refs/remotes/vm/*`. Git runs with the checkout as its repository and the
+/// copy only as the remote, so nothing the guest wrote in `.git/config` is a
+/// configuration of the process that fetches.
+fn fetch_from_guest(
+  name: String,
+  workspace: String,
+  copy: String,
+  checkout: String,
+) -> Result(String, String) {
+  use output <- result.try(run_git(vm_spec.fetch_arguments(checkout, copy)))
+
+  // A fetch with nothing new prints nothing, which would read as a failure.
+  let fetched = case string.trim(vm_spec.printable(output)) {
+    "" -> "Nothing new: every branch of the copy is already fetched."
+    text -> text
+  }
+
+  Ok(string.join(
+    [
+      "Fetched the committed work of "
+        <> workspace
+        <> " in the guest "
+        <> name
+        <> " into "
+        <> checkout
+        <> " as refs/remotes/vm/*.",
+      fetched,
+      "",
+      "Uncommitted edits in the guest are not fetched. List the branches "
+        <> "with `git -C "
+        <> checkout
+        <> " branch -r`.",
+    ],
+    "\n",
+  ))
+}
+
+/// Writes a bundle of the developer's refs into the guest root and says how to
+/// fetch it in a jailed call. The bundle is made beside the root, where the
+/// guest cannot reach it, and renamed into place, so a link the guest left at
+/// the destination is replaced and never written through.
+fn bundle_to_guest(
+  guest: Instance,
+  name: String,
+  workspace: String,
+  checkout: String,
+) -> Result(String, String) {
+  let staged = guest.directory <> "/to-guest-" <> workspace <> ".bundle"
+  let target = guest.root <> vm_spec.bundle_guest_path(workspace)
+
+  let placed = {
+    use _ <- result.try(run_git(vm_spec.bundle_arguments(checkout, staged)))
+    use Nil <- result.try(make_inside(guest.root, vm_spec.host_refs_dir))
+    use Nil <- result.try(
+      simplifile.set_permissions_octal(staged, 0o644)
+      |> result.map_error(fn(error) {
+        staged <> " is unwritable: " <> simplifile.describe_error(error)
+      }),
+    )
+    simplifile.rename(staged, target)
+    |> result.map_error(fn(error) {
+      target <> " is unwritable: " <> simplifile.describe_error(error)
+    })
+  }
+
+  // The staged file never stays: it was renamed away, or it is left over from
+  // a failure.
+  case placed {
+    Ok(Nil) ->
+      Ok(string.join(
+        [
+          "Wrote the commits of "
+            <> checkout
+            <> " to "
+            <> vm_spec.bundle_guest_path(workspace)
+            <> " in the guest "
+            <> name
+            <> ".",
+          "Run this in the guest, in a jailed call in the workspace copy, to "
+            <> "take them as refs/remotes/host/*:",
+          "",
+          "  " <> vm_spec.guest_fetch_command(workspace),
+          "",
+          "Uncommitted edits on the host are not included.",
+        ],
+        "\n",
+      ))
+    Error(reason) -> {
+      let _ = simplifile.delete(staged)
+      Error(reason)
+    }
+  }
+}
+
+/// Runs `git` with the arguments and answers its output, standard error
+/// included. A refusal carries that output with its control characters gone,
+/// because part of it is text a guest wrote.
+fn run_git(arguments: List(String)) -> Result(String, String) {
+  use git <- result.try(
+    ffi_os.find_executable("git")
+    |> result.map_error(fn(_) { "git is not on PATH" }),
+  )
+
+  // Only status zero is success, and the refusal shows Git's own words.
+  case bootstrap.run_captured(git, arguments, copy_budget_ms) {
+    Ok(bootstrap.Captured(0, output)) -> Ok(output)
+    Ok(bootstrap.Captured(status, output)) ->
+      Error(
+        "git exited with status "
+        <> int.to_string(status)
+        <> ":\n"
+        <> string.trim(vm_spec.printable(output)),
+      )
+    Error(reason) -> Error("git: " <> reason)
   }
 }

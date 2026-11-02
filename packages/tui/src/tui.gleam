@@ -3121,6 +3121,11 @@ fn vm_usage() -> String {
                   [--allow HOST]... [--provision SCRIPT]
        loom vm down [--name NAME]
        loom vm status [--name NAME]
+       loom vm logs [--name NAME] [--lines N]
+       loom vm list
+       loom vm rm [--name NAME] [--config PATH] [--yes]
+       loom vm sync [--name NAME] [--workspace NAME] [--checkout PATH]
+                    [--to-guest]
 
 Run one standing executor in a microVM and use it from `loom --executor`.
 
@@ -3139,7 +3144,10 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             its executor serves. The guest keeps running after this command
             exits. NAME defaults to vm. DIR defaults to the current directory;
             its copy, .git included, is registered in the guest under the
-            directory's own name. A linked Git worktree is copied too, and its
+            directory's own name, and only the latest up's copy is registered:
+            another directory's copy joins the guest's root but needs its own
+            up (with the guest stopped) before `loom --executor` can name it.
+            A linked Git worktree is copied too, and its
             copy gets a repository of its own. With no artifacts installed it
             first runs `setup` for this release. --mem is the guest's memory in MiB (default
             2048) and --cpus its virtual CPUs (default 4). --config is the
@@ -3169,6 +3177,29 @@ Run one standing executor in a microVM and use it from `loom --executor`.
   down      Stop the guest. Its root, and the checkout inside it, stay on disk.
   status    Say whether the guest runs, where it is registered and what it
             holds.
+  logs      Print the last lines of the guest's console log, loom-vm.log:
+            100, or --lines N. There is no follow mode.
+  list      Print one line for each guest under the vm home: its name,
+            whether it runs, and its workspaces.
+  rm        Delete a stopped guest and undo its enrolment. It removes
+            [executors.NAME] from loom.toml (--config PATH, default
+            ~/.loom/loom.toml), and the [distribution] table and the home's
+            .erlang.cookie only when they are this guest's deployment's and no
+            other [executors.*] table remains; otherwise it leaves them and
+            says so. Every other line of loom.toml is kept. A running guest is
+            refused: run `loom vm down` first. Deleting a guest is permanent
+            and work that is not pushed is lost, so without --yes it only lists
+            the workspaces and the local branches that origin lacks.
+  sync      Fetch a workspace copy's committed work into your own checkout as
+            remote-tracking refs refs/remotes/vm/*, with no network and no
+            daemon: `loom vm up` records which checkout each copy came from,
+            and --checkout PATH names it (an older guest has no record). The
+            guest's root is untrusted, so Git runs in your checkout and only
+            reads the copy as a remote. Uncommitted edits are not fetched.
+            --workspace NAME picks the copy when the guest holds several.
+            --to-guest goes the other way: it bundles your checkout's refs into
+            /srv/host-refs/NAME.bundle in the guest and prints the jailed
+            command that fetches them as refs/remotes/host/*.
 
 The artifacts come from `~/.loom/vm/manifest.json` ($LOOM_VM_HOME overrides
 ~/.loom/vm), which `loom vm setup` writes. They must be built from the release

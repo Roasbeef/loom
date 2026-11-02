@@ -38,6 +38,26 @@
 ////   guest the script already provisioned is refused naming `--fresh`, and the
 ////   `up` that resumes with neither flag keeps the allowed host and does not
 ////   run the script again: the file still holds one line.
+//// - The daily verbs work on the running guest. `vm list` names it with its
+////   workspace, `vm logs` prints the console's end, and `vm rm` refuses it
+////   naming `vm down`. A commit a jailed call makes on a new `loom/*` branch
+////   arrives through `vm sync` as `refs/remotes/vm/*` in the checkout `up`
+////   recorded and in a scratch checkout named with `--checkout`. After a
+////   jailed call plants a hostile `.git/config` and hook in the guest's copy
+////   (`core.fsmonitor`, `core.hooksPath`, `core.sshCommand`,
+////   `uploadpack.packObjectsHook`, a credential helper, each a command that
+////   touches a marker on the host), `vm sync` still succeeds and no marker
+////   appears; a control repository shows the markers would have been writable.
+////   A host commit made after `up` reaches the guest through `vm sync
+////   --to-guest`, and a jailed `git fetch` of the bundle reads it back.
+//// - `vm rm` undoes an enrolment. A second guest in a home that holds another
+////   deployment is refused naming `loom vm rm`, and removing it leaves the
+////   other deployment's tables and cookie. Without `--yes` a removal lists the
+////   copy's branches that origin lacks and changes nothing. With it, the
+////   idle-daemon step's guest loses its `[executors.<name>]` and
+////   `[distribution]` tables but keeps a cookie that is not its own, and the
+////   failing-script step's guest, whose cookie is the home's, loses that too.
+////   Both run under the fixture's isolated home.
 //// - An idle daemon is stopped. With a daemon running on the isolated home's
 ////   own `.loom` and holding no session, `vm up` for a second guest with no
 ////   `--config` installs into that home's default `loom.toml`, says it stopped
@@ -175,6 +195,8 @@ type Run {
     idle_name: String,
     /// The name of the guest whose provisioning script fails.
     failing_name: String,
+    /// The name of a third guest, refused for want of a home of its own.
+    third_name: String,
   )
 }
 
@@ -334,6 +356,7 @@ fn fixture(artifacts: Artifacts) -> Nil {
       script: directory <> "/provision.sh",
       idle_name: guest_prefix <> hex(3),
       failing_name: guest_prefix <> hex(3),
+      third_name: guest_prefix <> hex(3),
     )
 
   let outcomes =
@@ -389,6 +412,7 @@ fn drive(run: Run) -> Nil {
       provider.AwaitToolResult("resume-call"),
       fn(_seen) { provider.ReplyText(second_answer) },
     ),
+    ..daily_exchanges(run)
   ]
 
   let #(Nil, report) =
@@ -485,6 +509,8 @@ fn drive(run: Run) -> Nil {
         [second_answer],
       )
       remote_daemons.stop_session(running, control, 300, resumed)
+
+      daily_verbs(run, running, control)
       remote_pair.close_daemons([running])
     })
 
@@ -510,9 +536,12 @@ fn drive(run: Run) -> Nil {
   assert read_allow(run) == allowed_host <> "\n" <> security_host <> "\n"
   assert_script_ran_once(run)
 
+  assert_daily_results(run, requests)
+
   // Last, because it replaces the cookie the assertions above compare with.
   idle_daemon_is_stopped(run)
   failing_script_fails_up(run)
+  guests_are_removed(run)
 }
 
 // Whether the guest's jailed shell calls api.github.com.
@@ -527,6 +556,487 @@ fn reach() -> Reach {
   case native.getenv("LOOM_VM_GITHUB_LIVE") {
     Ok("1") -> GitHub
     _ -> OffHost
+  }
+}
+
+// --- the daily verbs ---------------------------------------------------------
+
+// The branch the jailed commit is made on, and the three prompts the daily
+// steps add to the scripted provider. Each call prints its facts and ends with
+// `true`, so the tool result is a successful one whatever Git said.
+const commit_branch = "loom/e2e-sync"
+
+const commit_prompt = "commit in the guest"
+
+const commit_answer = "committed in the guest"
+
+const hostile_prompt = "plant a hostile configuration in the guest"
+
+const hostile_answer = "planted in the guest"
+
+const fetch_prompt = "fetch the host commits in the guest"
+
+const fetch_answer = "fetched in the guest"
+
+// The command `vm sync --to-guest` prints for the copy this fixture's guest
+// holds, which the jailed call then runs word for word.
+const guest_fetch =
+  "git fetch /srv/host-refs/repo.bundle '+refs/heads/*:refs/remotes/host/*'"
+
+// A directory on the host that every command of the hostile configuration
+// would write a marker into. It exists, so a command that ran would leave one.
+fn marker_dir(run: Run) -> String {
+  run.directory <> "/hostile-markers"
+}
+
+// Where, inside the guest, the planted hooks directory is.
+const hostile_hooks = "/srv/workspaces/repo/.git/hostile-hooks"
+
+fn commit_command() -> String {
+  let identity = "-c user.name=guest -c user.email=guest@loom.invalid "
+  "git "
+  <> identity
+  <> "checkout -q -b "
+  <> commit_branch
+  <> " 2>&1 && echo guest-work > guest.txt && git add guest.txt && git "
+  <> identity
+  <> "commit -q -m guest-commit 2>&1; echo \"guest_sha=$(git rev-parse HEAD)\"; "
+  <> "echo \"guest_branch=$(git rev-parse --abbrev-ref HEAD)\"; true"
+}
+
+// A guest's `.git/config` and hooks as model-influenced code could leave them:
+// every setting that runs a command on a host names a command that touches a
+// marker there.
+fn hostile_command(run: Run) -> String {
+  let mark = marker_dir(run)
+  "mkdir -p "
+  <> hostile_hooks
+  <> " && printf '#!/bin/sh\\ntouch "
+  <> mark
+  <> "/hook-reference-transaction\\nexit 0\\n' > "
+  <> hostile_hooks
+  <> "/reference-transaction && chmod +x "
+  <> hostile_hooks
+  <> "/reference-transaction && printf '[core]\\n\\tfsmonitor = touch "
+  <> mark
+  <> "/fsmonitor\\n\\thooksPath = "
+  <> hostile_hooks
+  <> "\\n\\tsshCommand = touch "
+  <> mark
+  <> "/ssh\\n\\tpager = touch "
+  <> mark
+  <> "/pager\\n[uploadpack]\\n\\tpackObjectsHook = touch "
+  <> mark
+  <> "/packhook\\n[credential]\\n\\thelper = !touch "
+  <> mark
+  <> "/credential\\n' >> .git/config; echo hostile_planted=$(grep -c touch .git/config); true"
+}
+
+fn fetch_command() -> String {
+  guest_fetch
+  <> " 2>&1; echo \"fetch_status=$?\"; "
+  <> "echo \"host_main=$(git rev-parse refs/remotes/host/main)\"; true"
+}
+
+// The three scripted calls the daily steps drive, appended to the script.
+fn daily_exchanges(run: Run) -> List(provider.Exchange) {
+  [
+    bash_exchange(commit_prompt, "commit-call", commit_command()),
+    reply_after("commit-call", commit_answer),
+    bash_exchange(hostile_prompt, "hostile-call", hostile_command(run)),
+    reply_after("hostile-call", hostile_answer),
+    bash_exchange(fetch_prompt, "fetch-call", fetch_command()),
+    reply_after("fetch-call", fetch_answer),
+  ]
+}
+
+fn bash_exchange(
+  prompt: String,
+  call: String,
+  command: String,
+) -> provider.Exchange {
+  provider.ToolUseExchange(
+    prompt,
+    call,
+    "bash",
+    json.Object([#("command", json.String(command))]),
+  )
+}
+
+fn reply_after(call: String, answer: String) -> provider.Exchange {
+  provider.ComputedExchange(provider.AwaitToolResult(call), fn(_seen) {
+    provider.ReplyText(answer)
+  })
+}
+
+// One jailed turn on the guest: a new session, the prompt, and the session
+// stopped again. `id` is the first control command id the creation may use.
+fn jailed_turn(
+  run: Run,
+  running: remote_daemons.Running,
+  control: remote_daemons.Control,
+  id: Int,
+  key: String,
+  prompt: String,
+  answer: String,
+) -> Nil {
+  let #(session, settled) =
+    remote_daemons.create_and_settle(
+      control,
+      id,
+      key,
+      run.name,
+      remote_pair.workspace_name,
+    )
+  assert remote_daemons.settled_state(settled) == "resident"
+  remote_pair.converse_for(
+    remote_pair.Opened(orchestrator: running, control:, session:),
+    prompt,
+    [answer],
+  )
+  remote_daemons.stop_session(running, control, id + 100, session)
+}
+
+// `list`, `logs` and a refused `rm` on the guest that is up; then the commit, the
+// syncs, the hostile configuration and the bundle to the guest.
+fn daily_verbs(
+  run: Run,
+  running: remote_daemons.Running,
+  control: remote_daemons.Control,
+) -> Nil {
+  list_logs_and_refused_removal(run)
+  assert_markers_would_fire(run)
+
+  // A commit made by a jailed call arrives in the checkout `up` recorded, and
+  // again in a scratch checkout named by `--checkout`.
+  jailed_turn(
+    run,
+    running,
+    control,
+    400,
+    "e2e-commit",
+    commit_prompt,
+    commit_answer,
+  )
+  let synced = expect_ok(vm(run, ["sync", "--name", run.name]), "loom vm sync")
+  io.println_error(label <> " vm sync:\n" <> synced)
+  assert string.contains(synced, "refs/remotes/vm/")
+  assert string.contains(
+    vm_refs(run.repository),
+    "refs/remotes/vm/" <> commit_branch,
+  )
+
+  let scratch = run.directory <> "/scratch"
+  git_in(run.directory, ["clone", "-q", run.repository, scratch])
+  let _ =
+    expect_ok(
+      vm(run, ["sync", "--name", run.name, "--checkout", scratch]),
+      "loom vm sync --checkout",
+    )
+  assert string.contains(vm_refs(scratch), "refs/remotes/vm/" <> commit_branch)
+
+  // A jailed call plants a hostile configuration and hook. The sync still
+  // succeeds, and nothing the configuration names ran on the host.
+  jailed_turn(
+    run,
+    running,
+    control,
+    600,
+    "e2e-hostile",
+    hostile_prompt,
+    hostile_answer,
+  )
+  let hostile_sync =
+    expect_ok(
+      vm(run, ["sync", "--name", run.name, "--checkout", scratch]),
+      "loom vm sync after the hostile configuration",
+    )
+  io.println_error(label <> " hostile vm sync:\n" <> hostile_sync)
+  assert simplifile.read_directory(marker_dir(run)) == Ok([])
+
+  // A host commit made after `up` reaches the guest through a bundle, which a
+  // jailed `git fetch` reads back.
+  git_in(run.repository, [
+    "-c",
+    "user.name=Loom Fixture",
+    "-c",
+    "user.email=fixture@loom.invalid",
+    "commit",
+    "-q",
+    "--allow-empty",
+    "-m",
+    "host-work",
+  ])
+  let bundled =
+    expect_ok(
+      vm(run, ["sync", "--name", run.name, "--to-guest"]),
+      "loom vm sync --to-guest",
+    )
+  io.println_error(label <> " vm sync --to-guest:\n" <> bundled)
+  assert string.contains(bundled, guest_fetch)
+  assert simplifile.is_file(
+      run.vm_home <> "/" <> run.name <> "/root/srv/host-refs/repo.bundle",
+    )
+    == Ok(True)
+  jailed_turn(
+    run,
+    running,
+    control,
+    800,
+    "e2e-fetch",
+    fetch_prompt,
+    fetch_answer,
+  )
+  Nil
+}
+
+// `vm list` shows the running guest with its workspace, `vm logs` shows the end
+// of its console without a terminal escape, and `vm rm` refuses a running guest
+// naming `vm down`.
+fn list_logs_and_refused_removal(run: Run) -> Nil {
+  let listed = expect_ok(vm(run, ["list"]), "loom vm list")
+  assert string.contains(
+    listed,
+    run.name <> "  running  " <> remote_pair.workspace_name,
+  )
+
+  let logs =
+    expect_ok(
+      vm(run, ["logs", "--name", run.name, "--lines", "100000"]),
+      "loom vm logs",
+    )
+  assert string.contains(logs, "LOOM-EXECUTOR-READY")
+  assert !string.contains(logs, "\u{1b}")
+  let few =
+    expect_ok(
+      vm(run, ["logs", "--name", run.name, "--lines", "3"]),
+      "loom vm logs --lines 3",
+    )
+  assert list.length(string.split(string.trim_end(few), "\n")) <= 3
+
+  let refused =
+    vm(run, [
+      "rm",
+      "--name",
+      run.name,
+      "--config",
+      run.orchestrator.config,
+      "--yes",
+    ])
+  assert refused.status != 0
+  assert string.contains(refused.output, "loom vm down --name " <> run.name)
+  assert simplifile.is_directory(run.vm_home <> "/" <> run.name) == Ok(True)
+  Nil
+}
+
+// The control for the hostile configuration: a repository whose
+// `core.fsmonitor` is a command that touches a marker really does write it
+// when Git runs there. Without this, an empty marker directory would show only
+// that the directory was unwritable.
+fn assert_markers_would_fire(run: Run) -> Nil {
+  let assert Ok(Nil) = simplifile.create_directory_all(marker_dir(run))
+    as "the marker directory is created"
+  let control = run.directory <> "/control-repo"
+  let assert Ok(Nil) = simplifile.create_directory_all(control)
+    as "the control repository directory is created"
+  git_in(control, ["init", "-q", "-b", "main"])
+  git_in(control, [
+    "config",
+    "core.fsmonitor",
+    "touch " <> marker_dir(run) <> "/control",
+  ])
+  git_in(control, ["status", "--short"])
+  assert simplifile.is_file(marker_dir(run) <> "/control") == Ok(True)
+  let assert Ok(Nil) = simplifile.delete(marker_dir(run) <> "/control")
+    as "the control marker is removed"
+  Nil
+}
+
+// What the jailed calls printed, read after the scripted turns are over: the
+// commit's sha is the one now in `refs/remotes/vm/*` of both checkouts, the
+// hostile configuration was planted, and the bundle fetched in the jail holds
+// the host's commit.
+fn assert_daily_results(
+  run: Run,
+  requests: List(provider.ObservedRequest),
+) -> Nil {
+  let committed = remote_daemons.result_text(requests, "commit-call")
+  io.println_error(label <> " commit tool result:\n" <> committed)
+  let sha = line_value(committed, "guest_sha=")
+  assert string.length(sha) == 40
+  assert line_value(committed, "guest_branch=") == commit_branch
+  let ref = "refs/remotes/vm/" <> commit_branch
+  assert string.trim(git_output(run.repository, ["rev-parse", ref])) == sha
+  assert string.trim(
+      git_output(run.directory <> "/scratch", ["rev-parse", ref]),
+    )
+    == sha
+
+  let hostile = remote_daemons.result_text(requests, "hostile-call")
+  assert line_value(hostile, "hostile_planted=") != "0"
+
+  // The jail read the bundle under its default read scope and fetched the host
+  // commit made after `up`.
+  let fetched = remote_daemons.result_text(requests, "fetch-call")
+  io.println_error(label <> " fetch tool result:\n" <> fetched)
+  assert string.contains(fetched, "fetch_status=0")
+  let host_sha =
+    string.trim(git_output(run.repository, ["rev-parse", "refs/heads/main"]))
+  assert line_value(fetched, "host_main=") == host_sha
+  Nil
+}
+
+// The value after `prefix` on the first line that starts with it.
+fn line_value(text: String, prefix: String) -> String {
+  let found =
+    string.split(text, "\n")
+    |> list.find(fn(line) { string.starts_with(string.trim(line), prefix) })
+  case found {
+    Ok(line) ->
+      string.trim(string.drop_start(string.trim(line), string.length(prefix)))
+    Error(Nil) -> ""
+  }
+}
+
+// The remote-tracking refs a checkout holds under `refs/remotes/vm`.
+fn vm_refs(directory: String) -> String {
+  git_output(directory, [
+    "for-each-ref",
+    "--format=%(refname)",
+    "refs/remotes/vm",
+  ])
+}
+
+fn git_in(directory: String, arguments: List(String)) -> Nil {
+  let assert Ok(git) = ffi_proc.which("git") as "git is on PATH"
+  let assert Ok(#(0, _)) = ffi_proc.run(git, arguments, in: directory)
+    as "git runs in the fixture's own directory"
+  Nil
+}
+
+fn git_output(directory: String, arguments: List(String)) -> String {
+  let assert Ok(git) = ffi_proc.which("git") as "git is on PATH"
+  let assert Ok(#(0, output)) = ffi_proc.run(git, arguments, in: directory)
+    as "git answers in the fixture's own directory"
+  output
+}
+
+// --- removing guests ---------------------------------------------------------
+
+fn read_file(path: String) -> String {
+  let assert Ok(text) = simplifile.read(path) as { path <> " is readable" }
+  text
+}
+
+// Under the isolated home, a third guest is refused because the home holds
+// another deployment, and removing it leaves that deployment alone. Then the
+// idle-daemon step's guest is removed after a refusal that lists its branches,
+// keeping a cookie that is not its own, and the failing-script step's guest is
+// removed with its cookie. Every file named is inside the fixture.
+fn guests_are_removed(run: Run) -> Nil {
+  case isolated_home(run) {
+    Error(reason) ->
+      io.println_error("SKIP " <> label <> " removal: " <> reason)
+    Ok(home) -> {
+      let config = home <> "/.loom/loom.toml"
+      let fail_config = run.directory <> "/fail.toml"
+      let cookie = home <> "/.erlang.cookie"
+      let guest = fn(name) { run.vm_home <> "/" <> name }
+
+      let listed = expect_ok(vm(run, ["list"]), "loom vm list")
+      assert string.contains(listed, run.idle_name <> "  stopped")
+      assert string.contains(listed, run.failing_name <> "  stopped")
+
+      // The home holds the idle guest's deployment, so a third guest mints its
+      // own and is refused, with words that name the way out.
+      let config_before = read_file(config)
+      let cookie_before = read_file(cookie)
+      let third =
+        vm(run, [
+          "up",
+          "--name",
+          run.third_name,
+          "--workspace",
+          run.repository,
+          "--github",
+          "off",
+        ])
+      assert third.status != 0
+      assert string.contains(third.output, "loom vm rm")
+      assert string.contains(third.output, "only one guest per home")
+      assert read_file(config) == config_before
+
+      // Removing it takes its directory and nothing of the other deployment.
+      let removed_third =
+        expect_ok(
+          vm(run, ["rm", "--name", run.third_name, "--yes"]),
+          "rm third",
+        )
+      assert string.contains(removed_third, "Left in place: [distribution]")
+      assert simplifile.is_directory(guest(run.third_name)) == Ok(False)
+      assert read_file(config) == config_before
+      assert read_file(cookie) == cookie_before
+
+      // Without `--yes` the idle guest's removal lists what it would lose and
+      // changes nothing.
+      let refusal = vm(run, ["rm", "--name", run.idle_name])
+      assert refusal.status != 0
+      assert string.contains(refusal.output, "Deleting the guest")
+      assert string.contains(
+        refusal.output,
+        "repo: not on origin at the same commit: main",
+      )
+      assert string.contains(refusal.output, "--yes")
+      assert simplifile.is_directory(guest(run.idle_name)) == Ok(True)
+      assert read_file(config) == config_before
+
+      // With it, the tables go and the cookie, which is the failing guest's,
+      // stays.
+      let removed =
+        expect_ok(vm(run, ["rm", "--name", run.idle_name, "--yes"]), "rm idle")
+      io.println_error(label <> " vm rm:\n" <> removed)
+      assert simplifile.is_directory(guest(run.idle_name)) == Ok(False)
+      let after = read_file(config)
+      assert !string.contains(after, "[distribution")
+      assert !string.contains(after, "[executors.")
+      assert string.contains(after, "[models.")
+      assert string.contains(
+        removed,
+        "Removed [executors." <> run.idle_name <> "]",
+      )
+      assert string.contains(
+        removed,
+        "Left in place: the home's .erlang.cookie",
+      )
+      assert read_file(cookie) == cookie_before
+
+      // The failing guest's tables are in its own file and its cookie is the
+      // home's, so all of it goes.
+      let removed_failing =
+        expect_ok(
+          vm(run, [
+            "rm",
+            "--name",
+            run.failing_name,
+            "--config",
+            fail_config,
+            "--yes",
+          ]),
+          "rm failing",
+        )
+      assert simplifile.is_directory(guest(run.failing_name)) == Ok(False)
+      let emptied = read_file(fail_config)
+      assert !string.contains(emptied, "[distribution")
+      assert !string.contains(emptied, "[executors.")
+      assert string.contains(removed_failing, cookie)
+      assert simplifile.is_file(cookie) == Ok(False)
+
+      // Neither guest is listed any more.
+      let remaining = expect_ok(vm(run, ["list"]), "loom vm list")
+      assert !string.contains(remaining, run.idle_name)
+      assert !string.contains(remaining, run.failing_name)
+      Nil
+    }
   }
 }
 
