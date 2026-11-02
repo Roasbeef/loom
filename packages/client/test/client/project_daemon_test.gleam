@@ -101,6 +101,14 @@ type Daemon {
 }
 
 pub fn a_project_runs_two_tickets_and_survives_a_restart_test() {
+  // Every worker's worktree is made by the sandbox helper. Without the built
+  // binary no worker ever starts, the board stays at its first state, and the
+  // run ends as a timeout in `await_tickets` that says nothing about the
+  // helper. Naming the missing file here turns that into an immediate failure.
+  let helper = here() <> "/../sandbox/loom-exec"
+  let assert Ok(True) = simplifile.is_file(helper)
+    as "packages/sandbox/loom-exec is missing: run make sandbox"
+
   process.trap_exits(True)
   let scratch = scratch("project-daemon")
   let repository = worktree_rig.repository(scratch <> "/repo")
