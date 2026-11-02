@@ -182,10 +182,11 @@ fn board(handle: project_host.Handle) -> String {
   json.to_string(json.Array(shown.tickets))
 }
 
-// Waits until the board says `wanted`.
+// Waits until the board says `wanted`, for less than the 50 s EUnit allows a
+// test, so a miss fails this test and does not cancel the rest of its module.
 fn board_says(handle: project_host.Handle, wanted: String) -> Bool {
   case
-    poll.until(within: 60_000, every: 25, attempt: fn() {
+    poll.until(within: 40_000, every: 25, attempt: fn() {
       case string.contains(board(handle), wanted) {
         True -> poll.Done(Nil)
         False -> poll.Retry
@@ -529,7 +530,7 @@ pub fn a_push_that_keeps_failing_is_tried_three_times_then_reviewed_test() {
   let ports =
     project_host.Ports(
       ..slow.config.ports(),
-      now_ms: project_ports.racing_clock(),
+      now_ms: project_ports.stepping_clock(2000),
     )
   let quick =
     Rig(
