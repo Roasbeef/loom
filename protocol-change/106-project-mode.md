@@ -341,3 +341,34 @@ literals also match an unlisted sender's text, so a literal an owner writes is a
 type; the rule's mode is what limits the cost, and `observe` costs a router turn per matching comment up
 to the actor cap. The poller runs one pass at a time, so a page of 100 items per stream bounds the rate
 at which a flood is read.
+
+## Addendum: the Mandate decides the jail (2026-11-02)
+
+**Affects**: nothing frozen. No Part 1 interface, wire record or `loom.toml` key changes. The
+worker's base policy, its escalation seam and its tool ceiling are now derived from the ticket's
+Mandate each time its session is built (`client/project_jail`).
+
+**What a Mandate sets.** An explicit Mandate gives the worker the owner's session policy unchanged. An
+inferred one gives it the same policy with the network turned off. Approvals go to a person for an
+explicit Mandate and for an inferred one whose admitting rule granted them, and are refused for the
+rest: the worker's escalation seam is `escalate.none`, which writes no record, so nobody is asked and the
+call settles in band. No worker holds a credential. The tool ceiling is the same at both strengths and
+refuses the peer and `agent_*` tools.
+
+**Registries only is enforced as no network.** The design note says an inferred worker reaches package
+registries only. `NetworkProxy` with an allowlist can state that, but nothing enforces it:
+`policy.narrow_unenforceable` turns every proxy into `NetworkOff` and the call is refused with a
+narrowing, and `bash` asks for whatever network its base allows. A proxy base would therefore refuse
+every shell command an inferred worker ran, including those that touch no network. Considered: building
+the egress proxy sidecar, which is a separate piece of work; and mapping to `NetworkProxy` anyway, which
+breaks inferred workers. Decided: map to `NetworkOff`, which both the broker and the jail enforce. It is
+narrower than the note and never wider. What it costs is that an inferred worker cannot fetch
+dependencies, so work that needs them reaches a person. `client/project_jail.registry_hosts` keeps the
+list for the day a proxy can enforce it, and a test pins that the broker refuses a registry allowlist
+for both strengths.
+
+**Where it is read from.** The actor tells `project_book` each ticket's Mandate when it starts and again
+before it starts a worker, because a session's builder runs while the actor waits for it and cannot ask
+the actor. The Mandate never changes once the ticket exists, so this is a copy and not a second source of
+truth. A worker's `set_config` takes no key that names a network, an approval route or a sandbox, and its
+`active_tools` are held to the ceiling, so nothing the worker sends changes the jail.

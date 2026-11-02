@@ -10185,7 +10185,16 @@ ordinary top-level worker session per ticket assignment
   archive, and the delegate sweeps) goes through `mobility`, `serve.project_shaped`
   through the standing, and the gateway ceiling through `tool_ceiling`. It is
   separate from `spawners.Standing` and `session_directory.Standing`, and delegates
-  are not on it. `Seat` pairs a standing with the tool seam built for the session.
+  are not on it. `Seat` pairs a standing with the tool seam built for the session
+  and, for a worker, its `client/project_jail.Jail`.
+- `client/project_jail` maps `project/policy.WorkerPolicy` and the owner's session
+  policy onto what a worker runs under: `sandbox` (the owner's policy for an
+  explicit Mandate, `NetworkOff` for an inferred one, because nothing enforces a
+  registry allowlist), `approvals` (`escalate.none` when refused, so no record is
+  written and no person is asked) and `tools` (the peer and `agent_*` tools are
+  above it). `project_start.seat` derives it on every build of a worker's
+  session from the Mandate the actor told `project_book`, never from stored
+  session configuration, and `serve.seat_project` applies it.
 - `client/daemon/project_host` is the actor, on `weft/actor`, one per active project
   and the sole writer of its ledger. `commit` asks `engine.apply`, appends the
   event with its effect rows in one `append_with_effects`, and keeps the new
@@ -10254,7 +10263,10 @@ ordinary top-level worker session per ticket assignment
   `ensure_running`, `start_worker` (clone named from `<ticket>-<seq>`, then
   `manager.reserve`, `catalogue.bind_worker`, `manager.create_scoped`, in that order
   so the session's builder reads its standing), and `reopen` at boot.
-  `client/daemon/project_book` is the table of handles the builder reads and the
+  `client/daemon/project_book` is the table of handles, and of each ticket's
+  Mandate (`Ports.remember_mandate`, called for every ticket when the actor starts
+  and before each worker start; a builder cannot ask the actor, which waits for the
+  build), that the builder reads, and the
   `factory_supervisor` (temporary children) every actor is started under
   (`launch`), so a control handler that ends abnormally cannot take a project's
   only ledger writer with it. A worker's
