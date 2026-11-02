@@ -55,7 +55,7 @@ packages = [
   { name = "mcp", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_mcp", "gleam_stdlib"], source = "local", path = "../mcp" },
   { name = "mist", version = "6.0.3", build_tools = ["gleam"], requirements = ["exception", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "glisten", "gramps", "hpack_erl", "logging"], source = "git", repo = "https://github.com/Roasbeef/mist.git", commit = "28b43178ff57bfb619c64b8c3544831646d5fdb9" },
   { name = "parrot", version = "2.3.0", build_tools = ["gleam"], requirements = ["argv", "envoy", "filepath", "gleam_crypto", "gleam_httpc", "gleam_json", "gleam_stdlib", "gleam_time", "glearray", "repeatedly", "simplifile", "tom"], otp_app = "parrot", source = "hex", outer_checksum = "236C3B20EF03468AFD665C3107C5E7D9128344D06A5950F55822FC5B3B35FBC3" },
-  { name = "project", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib"], source = "local", path = "../project" },
+  { name = "project", version = "0.1.0", build_tools = ["gleam"], requirements = ["evalstat", "gleam_json", "gleam_stdlib"], source = "local", path = "../project" },
   { name = "prompt", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_stdlib"], source = "local", path = "../prompt" },
   { name = "provider", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_stdlib", "weft"], source = "local", path = "../provider" },
   { name = "ra", version = "3.2.0", build_tools = ["rebar3"], requirements = ["aten", "gen_batch_server", "seshat"], otp_app = "ra", source = "hex", outer_checksum = "8542B71AF2FAD6B4E92B98C2092BEEBB6E51E1CADA9D51D6D4BB1CDCA3DBCD06" },
