@@ -103,8 +103,8 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             manifest, with the `loom-vm` that ships beside loomd. With no flag
             it tries the tag commit-<sha> of this build's own commit, when it
             has one, then v<version>, and keeps the first whose guest image
-            was built from this commit. vmm-release.yml does not publish for
-            commit-* tags yet. --release TAG installs only that tag and
+            was built from this commit. Nightly builds have no published
+            artifacts yet. --release TAG installs only that tag and
             --from-build DIR records a build tree (packages/vmm/build). A
             development build has no release: build the artifacts in a
             checkout and run `make vmm-install-dev`.
