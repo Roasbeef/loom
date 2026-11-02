@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loom Web Mock</title>
+<style>
+/* Static mock for docs/design-notes/web-ui-redesign.md. All content is invented.
+   Colours are the A2 tokens from docs/design-notes/web-design.md section 5. */
+:root {
+  --bg:#f6f5f2; --raised:#ffffff; --sunk:#efede8; --line:#e2dfd8; --fg:#1d1c1a; --quiet:#6f6b63; --faint:#a29d92;
+  --main:#3b5bdb; --signal:#a8620f; --signal-bg:#fbf0e0; --signal-line:#ecd2a8;
+  --ok:#2f7d3f; --bad:#b8285a; --bad-bg:#fbe9ef; --bad-line:#f0c6d5;
+  --addbg:#e6f4ea; --addfg:#1c6b32; --delbg:#fbe9ef; --delfg:#a11f4e; --code:#f1efe9;
+  --gap-bg:#eeecf8; --gap-fg:#5a45a8; --have-bg:#ebeae5; --have-fg:#5f5b53;
+  --sans:Inter,"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono","JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:#141517; --raised:#1b1c1f; --sunk:#111214; --line:#2b2d31; --fg:#e8e6e1; --quiet:#9a978f; --faint:#66645e;
+    --main:#7c96ff; --signal:#f0a24f; --signal-bg:#2a2115; --signal-line:#4d3a1e;
+    --ok:#51cf66; --bad:#f06595; --bad-bg:#2d1720; --bad-line:#57293c;
+    --addbg:#17301f; --addfg:#7fdc93; --delbg:#3a1a26; --delfg:#f591b4; --code:#212226;
+    --gap-bg:#25213b; --gap-fg:#b3a5f2; --have-bg:#25262a; --have-fg:#a4a199;
+  }
+}
+:root[data-theme="dark"] {
+  --bg:#141517; --raised:#1b1c1f; --sunk:#111214; --line:#2b2d31; --fg:#e8e6e1; --quiet:#9a978f; --faint:#66645e;
+  --main:#7c96ff; --signal:#f0a24f; --signal-bg:#2a2115; --signal-line:#4d3a1e;
+  --ok:#51cf66; --bad:#f06595; --bad-bg:#2d1720; --bad-line:#57293c;
+  --addbg:#17301f; --addfg:#7fdc93; --delbg:#3a1a26; --delfg:#f591b4; --code:#212226;
+  --gap-bg:#25213b; --gap-fg:#b3a5f2; --have-bg:#25262a; --have-fg:#a4a199;
+}
+* { box-sizing:border-box; }
+html,body { margin:0; }
+body { background:var(--bg); color:var(--fg); font:14px/1.45 var(--sans); -webkit-font-smoothing:antialiased; }
+.mono { font-family:var(--mono); font-size:12.5px; }
+.q { color:var(--quiet); }
+.small { font-size:12.5px; }
+button { font:inherit; color:inherit; background:transparent; border:1px solid var(--line); border-radius:6px; padding:3px 10px; cursor:pointer; white-space:nowrap; min-height:28px; }
+button:hover { background:var(--sunk); }
+button:focus-visible, a:focus-visible { outline:2px solid var(--main); outline-offset:1px; }
+button.primary { border-color:var(--fg); }
+h1,h2,h3 { margin:0; font-weight:600; }
+
+.mockbar { background:var(--gap-bg); color:var(--gap-fg); border-bottom:1px solid var(--line); padding:6px 16px; font-size:12.5px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+.mockbar label { display:inline-flex; gap:6px; align-items:center; cursor:pointer; }
+.mockbar .sp { flex:1; }
+.mockbar button { min-height:24px; padding:1px 8px; border-color:currentColor; }
+
+.top { display:flex; align-items:center; gap:4px 16px; padding:8px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+.brand { font-weight:600; }
+nav.tabs { display:flex; gap:2px; }
+nav.tabs button { border:0; padding:4px 10px; color:var(--quiet); }
+nav.tabs button[aria-selected="true"] { color:var(--fg); background:var(--sunk); }
+.count { display:inline-block; background:var(--signal-bg); color:var(--signal); border:1px solid var(--signal-line); border-radius:999px; font-size:11px; line-height:15px; padding:0 5px; margin-left:4px; font-variant-numeric:tabular-nums; }
+.daemon { margin-left:auto; display:flex; gap:14px; align-items:center; font-size:12.5px; color:var(--quiet); flex-wrap:wrap; }
+.daemon b { color:var(--fg); font-weight:500; }
+
+main { max-width:1360px; margin:0 auto; padding:16px; }
+section.screen { display:none; }
+section.screen.on { display:block; }
+.cols { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:20px; align-items:start; }
+.stack { display:grid; gap:20px; min-width:0; }
+.head { display:flex; align-items:baseline; gap:8px; margin:0 0 8px; }
+.head h2 { font-size:13px; }
+.head .q { font-size:12.5px; }
+
+.src { display:inline-block; font:11px/16px var(--mono); border-radius:4px; padding:0 5px; margin:2px 4px 0 0; overflow-wrap:anywhere; }
+.src.have { background:var(--have-bg); color:var(--have-fg); }
+.src.gap { background:var(--gap-bg); color:var(--gap-fg); }
+body.nosrc .srcs { display:none; }
+.srcs { margin-top:6px; }
+
+.box { background:var(--raised); border:1px solid var(--line); border-radius:8px; }
+.box.notice { background:var(--signal-bg); border-color:var(--signal-line); padding:10px 14px; margin-bottom:20px; }
+.notice-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:4px 20px; margin-top:6px; font-size:13px; }
+.notice-grid b { font-weight:600; font-variant-numeric:tabular-nums; }
+
+.item { padding:12px 14px; border-top:1px solid var(--line); }
+.item:first-child { border-top:0; }
+.item.p1 { background:var(--signal-bg); }
+.item .l1 { display:flex; gap:8px; flex-wrap:wrap; align-items:baseline; }
+.state { font-size:12px; font-weight:600; white-space:nowrap; }
+.state.need { color:var(--signal); }
+.state.bad { color:var(--bad); }
+.state.ok { color:var(--ok); }
+.state.idle { color:var(--quiet); font-weight:400; }
+.age { margin-left:auto; color:var(--quiet); font-size:12.5px; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.preview { background:var(--code); border:1px solid var(--line); border-radius:6px; padding:6px 10px; margin:8px 0; overflow-x:auto; white-space:pre; font:12.5px/1.45 var(--mono); }
+.actions { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+.diff { border:1px solid var(--line); border-radius:6px; overflow-x:auto; margin:8px 0; font:12.5px/1.5 var(--mono); }
+.diff div { padding:0 10px; white-space:pre; width:max-content; min-width:100%; }
+.diff .a { background:var(--addbg); color:var(--addfg); }
+.diff .d { background:var(--delbg); color:var(--delfg); }
+.diff .c { color:var(--quiet); }
+
+.strip { display:grid; grid-template-columns:92px minmax(0,1.1fr) minmax(0,1.6fr) 150px 66px 56px; gap:4px 12px; padding:9px 14px; border-top:1px solid var(--line); align-items:baseline; font-size:13px; }
+.strip:first-child { border-top:0; }
+.strip.h { font-size:11.5px; color:var(--quiet); padding-block:6px; }
+.strip .name { font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.strip .sub { color:var(--quiet); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.strip .num { text-align:right; font-variant-numeric:tabular-nums; }
+.strip.quiet { color:var(--quiet); }
+
+.row { display:flex; gap:8px; justify-content:space-between; padding:6px 0; border-top:1px solid var(--line); font-size:13px; }
+.row:first-of-type { border-top:0; }
+.pad { padding:10px 14px; }
+.meter { height:4px; background:var(--sunk); border-radius:2px; overflow:hidden; margin-top:4px; }
+.meter i { display:block; height:100%; background:var(--quiet); }
+.meter i.warn { background:var(--signal); }
+.sub2 { color:var(--quiet); font-size:12px; }
+
+/* Session screen */
+.sess-head { display:flex; gap:6px 14px; align-items:baseline; flex-wrap:wrap; margin-bottom:12px; }
+.sess-head h1 { font-size:16px; }
+.chip { border:1px solid var(--line); border-radius:999px; padding:0 8px; font:12px/20px var(--mono); color:var(--quiet); white-space:nowrap; }
+.sess { display:grid; grid-template-columns:230px minmax(0,1fr) 320px; gap:20px; align-items:start; }
+.tree { font-size:13px; }
+.strand { display:block; width:100%; text-align:left; border:0; border-radius:6px; padding:6px 8px; white-space:normal; }
+.strand.on { background:var(--sunk); }
+.strand .mono { display:block; }
+.strand.ind { margin-left:14px; width:calc(100% - 14px); }
+.turn { margin-bottom:14px; }
+.who { font-size:12px; color:var(--quiet); margin-bottom:3px; }
+.user { background:var(--raised); border:1px solid var(--line); border-radius:8px; padding:8px 12px; }
+.program { background:var(--raised); border:1px solid var(--line); border-radius:8px; padding:8px 12px; }
+.calls { display:grid; grid-template-columns:minmax(0,130px) minmax(0,1fr) 44px; gap:3px 10px; margin-top:8px; font:12px/18px var(--mono); align-items:center; }
+.bar { height:6px; background:var(--sunk); border-radius:3px; position:relative; }
+.bar i { position:absolute; top:0; bottom:0; background:var(--quiet); border-radius:3px; }
+.composer { background:var(--raised); border:1px solid var(--line); border-radius:8px; padding:10px 12px; color:var(--quiet); display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.composer span:first-child { flex:1; min-width:150px; }
+details.ins { border-top:1px solid var(--line); }
+details.ins:first-child { border-top:0; }
+details.ins summary { padding:9px 14px; cursor:pointer; font-size:13px; font-weight:500; display:flex; justify-content:space-between; gap:8px; }
+details.ins summary span { font-weight:400; color:var(--quiet); font-size:12.5px; }
+details.ins .body { padding:0 14px 10px; font-size:13px; }
+
+/* Machines */
+.nodes { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr)); gap:12px; }
+.node { padding:12px 14px; }
+.node.degraded { background:var(--signal-bg); border-color:var(--signal-line); }
+.node.down { background:var(--bad-bg); border-color:var(--bad-line); }
+.node h3 { font-size:14px; display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
+.tablewrap { overflow-x:auto; }
+table { border-collapse:collapse; width:100%; font-size:13px; }
+th,td { text-align:left; padding:7px 14px; border-top:1px solid var(--line); white-space:nowrap; font-weight:400; }
+thead th { border-top:0; color:var(--quiet); font-size:11.5px; }
+td.warn { color:var(--signal); font-weight:600; }
+
+@media (max-width:1080px) {
+  .cols, .sess { grid-template-columns:minmax(0,1fr); }
+  .sess .tree { order:0; } .sess .inspect { order:2; }
+}
+@media (max-width:760px) {
+  main { padding:12px 16px; }
+  .daemon { margin-left:0; width:100%; gap:10px; }
+  .top { padding:8px 16px; }
+  .strip.h { display:none; }
+  .strip { grid-template-columns:minmax(0,1fr) auto; }
+  .strip .state { order:2; text-align:right; }
+  .strip .col-name { order:1; }
+  .strip .col-now { order:3; grid-column:1 / -1; }
+  .strip .col-where { order:4; }
+  .strip .num { order:5; }
+  .strip .num.age2 { display:none; }
+  .preview { white-space:pre-wrap; overflow-wrap:anywhere; }
+  .age { margin-left:0; }
+  button { min-height:36px; }
+  nav.tabs button { min-height:32px; }
+}
+</style>
+</head>
+<body>
+<div class="mockbar">
+  <strong>MOCK, not the running UI.</strong> <span>All names and numbers are invented.</span>
+  <span class="sp"></span>
+  <label><input type="checkbox" id="srcs" checked> Show data sources</label>
+  <span class="src have">exists</span><span class="src gap">needs protocol change</span>
+  <button id="theme" type="button">Theme</button>
+</div>
+
+<header class="top">
+  <span class="brand">Loom</span>
+  <nav class="tabs" role="tablist" aria-label="Screens">
+    <button role="tab" data-s="now" aria-selected="true">Now<span class="count">4</span></button>
+    <button role="tab" data-s="session" aria-selected="false">Session</button>
+    <button role="tab" data-s="machines" aria-selected="false">Machines<span class="count">1</span></button>
+  </nav>
+  <div class="daemon">
+    <span><b>hub</b> up 3 h 12 m</span>
+    <span><b>6 of 8</b> slots</span>
+    <span>socket <b>open</b></span>
+    <button type="button">New session</button>
+  </div>
+</header>
+
+<main>
+<!-- ======================= NOW ======================= -->
+<section class="screen on" id="now" aria-label="Now">
+  <div class="box notice">
+    <strong>The daemon restarted 3 h 12 m ago.</strong> <span class="q">Here is what the durable record kept, and what it could not.</span>
+    <div class="notice-grid">
+      <div><b>5</b> sessions were resident, now <b>saved</b></div>
+      <div><b>2</b> approvals were still pending</div>
+      <div><b>1</b> sub-agent resumed when opened</div>
+      <div><b>3</b> queued messages were not admitted and are gone</div>
+    </div>
+    <div class="actions"><button class="primary" type="button">Reopen the 5 sessions</button><button type="button">Dismiss</button></div>
+    <div class="srcs"><span class="src have">status.epoch</span><span class="src have">sessions.list status</span><span class="src gap">restart record: resident set, lost inputs</span></div>
+  </div>
+
+  <div class="cols">
+    <div class="stack">
+      <div>
+        <div class="head"><h2>Needs you</h2><span class="q">4, ordered by what stops until you answer</span></div>
+        <div class="box">
+          <div class="item p1">
+            <div class="l1"><span class="state need">Approval</span> <strong>retry ladder audit</strong> <span class="mono q">sub:main/audit-callers</span><span class="age">waiting 41 m</span></div>
+            <div class="small q" style="margin-top:4px">connect to registry.npmjs.org:443 blocked by policy</div>
+            <div class="preview">bash  npm install left-pad</div>
+            <div class="small">Widens to: <span class="mono">network proxy, allow registry.npmjs.org</span></div>
+            <div class="small q">The call already returned to the agent. Allowing it tells the agent to retry.</div>
+            <div class="actions"><button type="button">Deny</button><button type="button">Allow once</button><button type="button">Allow for session</button><button type="button">Open session</button></div>
+            <div class="srcs"><span class="src have">sessions.activity approvals</span><span class="src have">escalation preview, denial.wanted</span><span class="src gap">age: no time on the record</span><span class="src gap">web: decide from a page with no lane (051)</span><span class="src gap">Allow for session: owner role, not a capped relay</span></div>
+          </div>
+          <div class="item p1">
+            <div class="l1"><span class="state need">Approval</span> <strong>docs pass</strong> <span class="chip">saved</span><span class="age">from before restart</span></div>
+            <div class="small q" style="margin-top:4px">1 approval stored in a session that is not running. Opening it reads the request.</div>
+            <div class="actions"><button class="primary" type="button">Open and read</button></div>
+            <div class="srcs"><span class="src gap">saved-session pending count in the catalogue</span></div>
+          </div>
+          <div class="item">
+            <div class="l1"><span class="state bad">Run failed</span> <strong>signoff flake hunt</strong><span class="age">18 m ago</span></div>
+            <div class="small" style="margin-top:4px"><span class="mono">provider_error</span> stream disconnected after 3 attempts</div>
+            <div class="actions"><button type="button">Send "continue"</button><button type="button">Open session</button></div>
+            <div class="srcs"><span class="src have">sessions.activity last_outcome, last_message</span><span class="src have">strand_result error</span></div>
+          </div>
+          <div class="item">
+            <div class="l1"><span class="state need">Goal stopped</span> <strong>land the migration</strong><span class="age">52 m ago</span></div>
+            <div class="small" style="margin-top:4px">Used its token budget: 400k of 400k, $3.18. Last check <span class="mono">make check</span> exit 1.</div>
+            <div class="actions"><button type="button">Raise budget</button><button type="button">Clear goal</button><button type="button">Open session</button></div>
+            <div class="srcs"><span class="src have">goal_get status, because, last_check</span><span class="src gap">goal state on a row, without attaching</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="head"><h2>Running</h2><span class="q">Grey means normal</span></div>
+        <div class="box">
+          <div class="strip h"><span>State</span><span>Session</span><span>Doing now</span><span>Agent → commands</span><span class="num">Strands</span><span class="num">Spend</span></div>
+          <div class="strip"><span class="state idle">Working</span><span class="col-name"><div class="name">retry ladder audit</div><div class="sub">loom · fix/retry-ladder</div></span><span class="col-now">sub:main/audit-callers: reading manager.gleam</span><span class="col-where mono q">hub → box</span><span class="num">1 of 3</span><span class="num q age2">$1.42</span></div>
+          <div class="strip"><span class="state idle">Working</span><span class="col-name"><div class="name">lane memo pass</div><div class="sub">loom · web/lane-memos</div></span><span class="col-now">main: running make check-web_view</span><span class="col-where mono q">hub → hub</span><span class="num">1 of 1</span><span class="num q age2">$0.37</span></div>
+          <div class="strip"><span class="state idle">Working</span><span class="col-name"><div class="name">gepa report</div><div class="sub">gepa · main</div></span><span class="col-now">main: scoring generation 4 of 6</span><span class="col-where mono q">bravo → exec2 <span style="color:var(--signal)">down</span></span><span class="num">2 of 2</span><span class="num q age2">not read</span></div>
+          <div class="strip quiet"><span class="state idle">Idle</span><span class="col-name"><div class="name">notes triage</div><div class="sub">loom · main</div></span><span class="col-now">Finished: merged the retry fix.</span><span class="col-where mono">hub → hub</span><span class="num">0 of 1</span><span class="num age2">$0.08</span></div>
+        </div>
+        <div class="srcs"><span class="src have">sessions.activity state, glances, strands</span><span class="src have">sessions.list executor, pool</span><span class="src have">deployment.status placements</span><span class="src gap">spend without attaching</span></div>
+      </div>
+
+      <div>
+        <div class="head"><h2>Since you last looked</h2><span class="q">2 h 40 m ago, from this browser</span></div>
+        <div class="box pad">
+          <div class="row"><span><strong>retry ladder audit</strong> <span class="q">41 entries, 1 run finished, 2 peer messages stored</span></span><span class="q">+$0.91</span></div>
+          <div class="row"><span><strong>notes triage</strong> <span class="q">Alice approved <span class="mono">bash</span> once, 6 entries</span></span><span class="q">+$0.04</span></div>
+          <div class="srcs"><span class="src have">catch_up from next_seq</span><span class="src have">escalations_decided, newest 16</span><span class="src gap">entries_since on activity; cursor per person</span></div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="stack">
+      <div>
+        <div class="head"><h2>Running without you</h2></div>
+        <div class="box pad">
+          <div class="row"><span>Goal <strong>land the map port</strong><div class="sub2">active, 210k of 500k tokens</div><div class="meter"><i style="width:42%"></i></div></span><span class="q">3 continues</span></div>
+          <div class="row"><span>Schedule <span class="mono">nightly-audit</span><div class="sub2">every 86400s · fired 7 · wakes main</div></span><button type="button">Cancel</button></div>
+          <div class="row"><span>Job <span class="mono">make signoff</span><div class="sub2">running 8 m, deadline in 12 m</div></span><span class="q small">read only</span></div>
+          <div class="row"><span>Remote child <span class="mono">bench-runner</span><div class="sub2">on bravo, running, glance 40 s ago</div></span><button type="button">Read</button></div>
+          <div class="srcs"><span class="src have">goal_get</span><span class="src have">schedules</span><span class="src have">live_jobs, 4 per strand</span><span class="src have">remote_children</span><span class="src gap">daemon-wide read of all four</span></div>
+        </div>
+      </div>
+      <div>
+        <div class="head"><h2>Machines</h2><span class="q">degraded</span></div>
+        <div class="box pad">
+          <div class="row"><span>hub, bravo, box</span><span class="state ok">ok</span></div>
+          <div class="row"><span><strong>exec2</strong><div class="sub2">timeout. 1 session placed here.</div></span><span class="state need">down</span></div>
+          <div class="row"><span>Move <span class="mono">docs pass</span> to bravo<div class="sub2">stalled 4 m: the receiver did not answer</div></span><span class="state need">stalled</span></div>
+          <div class="srcs"><span class="src have">deployment.status state, reasons, moves</span></div>
+        </div>
+      </div>
+      <div>
+        <div class="head"><h2>Standing rules</h2><span class="q">1 to review</span></div>
+        <div class="box pad">
+          <div class="small"><span class="mono q">prop-ec251fba8f</span> from <strong>retry ladder audit</strong></div>
+          <div class="diff"><div class="a">+ Run make doc-check before every push.</div></div>
+          <div class="small q">Citation drift reddened the signoff static lane twice.</div>
+          <div class="small">Reaches new sessions only. The <strong>5 resident sessions</strong> keep the rules they started with.</div>
+          <div class="actions"><button type="button">Reject</button><button type="button">Approve</button></div>
+          <div class="srcs"><span class="src have">proposals_get</span><span class="src have">proposals_changed</span><span class="src have">status resident</span></div>
+        </div>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ======================= SESSION ======================= -->
+<section class="screen" id="session" aria-label="Session">
+  <div class="sess-head">
+    <h1>retry ladder audit</h1>
+    <span class="chip">fix/retry-ladder</span>
+    <span class="chip">agent hub</span>
+    <span class="chip">commands box</span>
+    <span class="chip">workspace-write · network off</span>
+    <span class="q small" style="margin-left:auto">Alice watching · you operate · $1.42 · ctx 41%</span>
+  </div>
+  <div class="sess">
+    <div class="tree">
+      <div class="head"><h2>Strands</h2><span class="q">3</span></div>
+      <div class="box" style="padding:4px">
+        <button class="strand" type="button"><span class="mono">main</span><span class="q small">Waiting on sub-agent</span></button>
+        <button class="strand ind on" type="button"><span class="mono">sub:main/audit-callers</span><span class="small" style="color:var(--signal)">Needs approval</span></button>
+        <button class="strand ind" type="button"><span class="mono">sub:main/write-note</span><span class="q small">Finished, 2 m ago</span></button>
+        <button class="strand" type="button"><span class="mono">advisor</span><span class="q small">1 nudge queued</span></button>
+        <button class="strand ind" type="button"><span class="mono">bench-runner</span><span class="q small">on bravo, running</span></button>
+      </div>
+      <div class="srcs"><span class="src have">snapshot strands, live_op</span><span class="src have">remote_children</span><span class="src have">advisor_pending</span></div>
+    </div>
+
+    <div>
+      <div class="turn"><div class="who">Owner · main → sub:main/audit-callers</div><div class="user">Audit every caller of the retry ladder and say which share a budget.</div></div>
+      <div class="turn">
+        <div class="who mono">code_mode program</div>
+        <div class="program">
+          <strong>Read 6 files, ran 2 git commands</strong> <span class="q small">8 calls, 2.4 s, no side effects</span>
+          <div class="calls">
+            <span>cap/fs.read ×6</span><div class="bar"><i style="left:0;width:38%"></i></div><span class="q">0.9 s</span>
+            <span>cap/lsp.references</span><div class="bar"><i style="left:38%;width:24%"></i></div><span class="q">0.6 s</span>
+            <span>cap/proc.run ×2</span><div class="bar"><i style="left:62%;width:38%"></i></div><span class="q">0.9 s</span>
+          </div>
+          <div class="srcs"><span class="src have">entry toolCall, program call record</span></div>
+        </div>
+      </div>
+      <div class="turn"><div class="who">sub:main/audit-callers</div><div>Three callers share one budget, and <span class="mono">serve.retry</span> owns it. The fix narrows the default ladder.</div></div>
+      <div class="turn">
+        <div class="who mono">fs_edit packages/client/src/client/serve.gleam</div>
+        <div class="diff"><div class="c">@@ -41,3 +41,3 @@ pub fn retry(budget: Budget) -&gt; Outcome {</div><div class="d">-  let ladder = default_ladder()</div><div class="a">+  let ladder = ladder_within(budget)</div><div class="c">   run_attempts(ladder, budget)</div></div>
+      </div>
+      <div class="turn">
+        <div class="box" style="background:var(--signal-bg);border-color:var(--signal-line);padding:10px 12px">
+          <div class="l1"><strong>sub:main/audit-callers wants network access</strong></div>
+          <div class="preview">bash  npm install left-pad</div>
+          <div class="small">Widens to: <span class="mono">network proxy, allow registry.npmjs.org</span></div>
+          <div class="actions"><button type="button">Deny</button><button type="button">Allow once</button><button type="button">Allow for session</button></div>
+        </div>
+      </div>
+      <div class="composer"><span>Message sub:main/audit-callers</span><span class="small">You · operator</span><button type="button">Queue</button><button type="button">Steer</button></div>
+      <div class="small q" style="margin-top:6px">Queued input stays in memory until admitted, and a crash loses it.</div>
+    </div>
+
+    <aside class="inspect">
+      <div class="head"><h2>Inspector</h2></div>
+      <div class="box">
+        <details class="ins" open><summary>Authority <span>3 decisions</span></summary><div class="body">
+          <div class="row"><span><span class="mono">bash</span> allowed once<div class="sub2">by Owner · <span class="mono">9f2c1a7b</span> · writable /tmp/out</div></span></div>
+          <div class="row"><span><span class="mono">bash</span> denied<div class="sub2">by Alice · <span class="mono">41b0d2e6</span></div></span></div>
+          <div class="row"><span>Remembered for this session<div class="sub2">network proxy, github.com</div></span><button type="button">Forget</button></div>
+          <div class="sub2" style="margin-top:6px">The daemon keeps the newest 16 decisions.</div>
+          <div class="srcs"><span class="src have">escalations_decided</span><span class="src have">permissions</span><span class="src gap">history past 16</span></div>
+        </div></details>
+        <details class="ins" open><summary>Context and cache <span>82k of 200k</span></summary><div class="body">
+          <div class="meter" style="height:6px"><i style="width:41%"></i></div>
+          <div class="row"><span>System and tools</span><span class="q">14k</span></div>
+          <div class="row"><span>Conversation</span><span class="q">61k</span></div>
+          <div class="row"><span>Memory notes</span><span class="q">7k</span></div>
+          <div class="row"><span>Cache head held</span><span class="q">at most 42 m</span></div>
+          <div class="srcs"><span class="src have">context</span><span class="src have">usage rows</span></div>
+        </div></details>
+        <details class="ins"><summary>What this session runs <span>generation 3</span></summary><div class="body">
+          <div class="row"><span>Rules pinned at start</span><span class="q">12 of 13</span></div>
+          <div class="row"><span>Extension <span class="mono">lint-fix</span></span><span class="q">approved, tested</span></div>
+          <div class="srcs"><span class="src have">evolution board</span><span class="src have">memory_get</span><span class="src gap">rule count pinned at start</span></div>
+        </div></details>
+        <details class="ins"><summary>Changes <span>+41 −12, 4 files</span></summary><div class="body"><div class="srcs"><span class="src have">worktree_diff</span></div></div></details>
+        <details class="ins"><summary>People and links <span>2 attached</span></summary><div class="body"><div class="srcs"><span class="src have">presence</span><span class="src have">sessions.members</span><span class="src have">peers.inspect</span></div></div></details>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ======================= MACHINES ======================= -->
+<section class="screen" id="machines" aria-label="Machines">
+  <div class="head"><h2>Deployment</h2><span class="q">degraded · read from hub 4 s ago</span></div>
+  <div class="nodes">
+    <div class="box node"><h3>hub <span class="state ok">ok</span> <span class="sub2">this daemon · orchestrator, member</span></h3>
+      <div class="small q">0.3.2 (ccb79575) · up 3 h 12 m</div>
+      <div class="row"><span>Slots</span><span>6 of 8</span></div><div class="meter"><i style="width:75%"></i></div>
+    </div>
+    <div class="box node"><h3>bravo <span class="state ok">ok</span> <span class="sub2">orchestrator, member, leader</span></h3>
+      <div class="small q">0.3.2 (ccb79575) · up 2 d</div>
+      <div class="row"><span>Imports</span><span>receiving</span></div>
+    </div>
+    <div class="box node degraded"><h3>box <span class="state need">degraded</span> <span class="sub2">executor, member</span></h3>
+      <div class="small">1 scope closed with unknown cleanup. It blocks a reopen until released.</div>
+      <div class="row"><span>Scopes open</span><span>3 of 16</span></div><div class="meter"><i class="warn" style="width:25%"></i></div>
+      <div class="row"><span>Ledger</span><span>2 MiB of 512 MiB</span></div>
+      <div class="actions"><button type="button">Copy release command</button></div>
+    </div>
+    <div class="box node down"><h3>exec2 <span class="state bad">down</span> <span class="sub2">executor</span></h3>
+      <div class="small">timeout from hub. <strong>1 session placed here:</strong> gepa report.</div>
+      <div class="sub2" style="margin-top:6px">hub could not reach it. Its work may still be running.</div>
+    </div>
+  </div>
+  <div class="srcs"><span class="src have">deployment.status nodes, edges, reasons</span><span class="src have">directory.status</span></div>
+
+  <div class="head" style="margin-top:20px"><h2>Where each session runs</h2></div>
+  <div class="box tablewrap">
+    <table>
+      <thead><tr><th>Session</th><th>Agent on</th><th>Commands on</th><th>Pool</th><th>State</th></tr></thead>
+      <tbody>
+        <tr><td>retry ladder audit</td><td class="mono">hub</td><td class="mono">box</td><td class="mono">builders</td><td>Working</td></tr>
+        <tr><td>lane memo pass</td><td class="mono">hub</td><td class="mono">hub</td><td class="q">none</td><td>Working</td></tr>
+        <tr><td>gepa report</td><td class="mono">bravo</td><td class="mono">exec2</td><td class="mono">builders</td><td class="warn">Commands host down</td></tr>
+        <tr><td>docs pass</td><td class="mono">hub → bravo</td><td class="mono">box</td><td class="q">none</td><td class="warn">Move stalled 4 m</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="srcs"><span class="src have">sessions.list executor, pool, moving</span><span class="src have">sessions.elsewhere</span><span class="src have">deployment.status moves</span></div>
+
+  <div class="head" style="margin-top:20px"><h2>Membership ledger</h2><span class="q">head 9</span></div>
+  <div class="box tablewrap">
+    <table>
+      <thead><tr><th>Member</th><th>Role</th><th>Reported head</th><th>Last report</th><th>Sessions held</th></tr></thead>
+      <tbody>
+        <tr><td>hub</td><td>orchestrator</td><td>9</td><td class="q">now</td><td>5</td></tr>
+        <tr><td>bravo</td><td>orchestrator</td><td>9</td><td class="q">12 s</td><td>1</td></tr>
+        <tr><td>laptop2</td><td>orchestrator</td><td class="warn">7</td><td class="q">3 h</td><td class="q">unknown</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="srcs"><span class="src have">ledger.status</span><span class="src have">ledger.holdings</span></div>
+</section>
+</main>
+
+<script>
+(function () {
+  var tabs = document.querySelectorAll('nav.tabs button');
+  function show(id) {
+    document.querySelectorAll('section.screen').forEach(function (s) { s.classList.toggle('on', s.id === id); });
+    tabs.forEach(function (t) { t.setAttribute('aria-selected', String(t.dataset.s === id)); });
+  }
+  tabs.forEach(function (t) { t.addEventListener('click', function () { show(t.dataset.s); location.hash = t.dataset.s; }); });
+  if (['now','session','machines'].indexOf(location.hash.slice(1)) >= 0) show(location.hash.slice(1));
+  document.getElementById('srcs').addEventListener('change', function (e) { document.body.classList.toggle('nosrc', !e.target.checked); });
+  document.getElementById('theme').addEventListener('click', function () {
+    var r = document.documentElement, dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+    r.dataset.theme = dark ? 'light' : 'dark';
+  });
+})();
+</script>
+</body>
+</html>
