@@ -526,24 +526,37 @@ pub fn up_reads_the_provisioning_script_test() {
 
 pub fn a_script_runs_on_a_new_guest_and_a_failed_one_runs_again_test() {
   let script = Some("/host/setup.sh")
-  assert vm_spec.provision_plan(script, vm_spec.NeverProvisioned)
+  assert vm_spec.provision_plan(script, vm_spec.NeverProvisioned, None)
     == Ok(vm_spec.StageScript("/host/setup.sh"))
 
   // A failed run left a script and no marker, so a new one replaces it.
-  assert vm_spec.provision_plan(script, vm_spec.FailedBefore)
+  assert vm_spec.provision_plan(script, vm_spec.FailedBefore, None)
     == Ok(vm_spec.StageScript("/host/setup.sh"))
-  assert vm_spec.provision_plan(None, vm_spec.FailedBefore)
+
+  // Without a host copy the script the root holds is retried; with one, the
+  // copy is staged, because the root's script is whatever the last boot left.
+  assert vm_spec.provision_plan(None, vm_spec.FailedBefore, None)
     == Ok(vm_spec.RetryStaged)
+  assert vm_spec.provision_plan(
+      None,
+      vm_spec.FailedBefore,
+      Some("/vm/provision"),
+    )
+    == Ok(vm_spec.StageScript("/vm/provision"))
 }
 
 pub fn a_resume_skips_a_script_that_succeeded_and_refuses_a_new_one_test() {
-  assert vm_spec.provision_plan(None, vm_spec.AlreadyProvisioned)
+  assert vm_spec.provision_plan(None, vm_spec.AlreadyProvisioned, None)
     == Ok(vm_spec.NoScript)
-  assert vm_spec.provision_plan(None, vm_spec.NeverProvisioned)
+  assert vm_spec.provision_plan(None, vm_spec.NeverProvisioned, None)
     == Ok(vm_spec.NoScript)
 
   let assert Error(reason) =
-    vm_spec.provision_plan(Some("/host/setup.sh"), vm_spec.AlreadyProvisioned)
+    vm_spec.provision_plan(
+      Some("/host/setup.sh"),
+      vm_spec.AlreadyProvisioned,
+      None,
+    )
   assert string.contains(reason, "--fresh")
 }
 
@@ -1434,14 +1447,13 @@ pub fn damaged_root_revision_record_is_unknown_test() {
 
 fn layout(
   root: vm_spec.Presence,
-  next: vm_spec.Presence,
-  workspaces: vm_spec.Presence,
+  moved: vm_spec.Presence,
 ) -> vm_spec.RootLayout {
-  vm_spec.RootLayout(root:, next:, workspaces:)
+  vm_spec.RootLayout(root:, moved:)
 }
 
 pub fn matching_root_is_kept_test() {
-  let whole = layout(vm_spec.Present, vm_spec.Absent, vm_spec.Present)
+  let whole = layout(vm_spec.Present, vm_spec.Absent)
   assert vm_spec.root_step(vm_spec.Resume, whole, Some("abc1234"), "abc1234")
     == vm_spec.KeepRoot
 
@@ -1451,51 +1463,86 @@ pub fn matching_root_is_kept_test() {
 }
 
 pub fn root_of_another_revision_is_upgraded_test() {
-  let whole = layout(vm_spec.Present, vm_spec.Absent, vm_spec.Present)
+  let whole = layout(vm_spec.Present, vm_spec.Absent)
   assert vm_spec.root_step(vm_spec.Resume, whole, Some("abc1234"), "def5678")
     == vm_spec.UpgradeRoot(Some("abc1234"))
 }
 
 pub fn root_with_no_record_is_upgraded_test() {
-  let whole = layout(vm_spec.Present, vm_spec.Absent, vm_spec.Present)
+  let whole = layout(vm_spec.Present, vm_spec.Absent)
   assert vm_spec.root_step(vm_spec.Resume, whole, None, "def5678")
     == vm_spec.UpgradeRoot(None)
 }
 
-pub fn development_on_either_side_keeps_the_root_test() {
-  let whole = layout(vm_spec.Present, vm_spec.Absent, vm_spec.Present)
+pub fn only_a_development_manifest_keeps_a_stale_root_test() {
+  let whole = layout(vm_spec.Present, vm_spec.Absent)
   assert vm_spec.root_step(vm_spec.Resume, whole, Some("abc1234"), "dev")
     == vm_spec.KeepRoot
-  assert vm_spec.root_step(vm_spec.Resume, whole, Some("dev"), "def5678")
+  assert vm_spec.root_step(vm_spec.Resume, whole, Some("dev"), "dev")
     == vm_spec.KeepRoot
   assert vm_spec.root_step(vm_spec.Resume, whole, None, "dev")
     == vm_spec.KeepRoot
+
+  // A root recorded as `dev` under a release manifest is the mismatch the
+  // upgrade closes.
+  assert vm_spec.root_step(vm_spec.Resume, whole, Some("dev"), "def5678")
+    == vm_spec.UpgradeRoot(Some("dev"))
 }
 
 pub fn fresh_and_missing_roots_are_cloned_test() {
-  let whole = layout(vm_spec.Present, vm_spec.Absent, vm_spec.Present)
-  let gone = layout(vm_spec.Absent, vm_spec.Absent, vm_spec.Absent)
+  let whole = layout(vm_spec.Present, vm_spec.Absent)
+  let gone = layout(vm_spec.Absent, vm_spec.Absent)
   assert vm_spec.root_step(vm_spec.Fresh, whole, Some("abc1234"), "def5678")
     == vm_spec.CloneRoot
   assert vm_spec.root_step(vm_spec.Resume, gone, None, "def5678")
     == vm_spec.CloneRoot
 }
 
-pub fn interrupted_upgrade_is_finished_not_repeated_test() {
-  // The workspaces have left the old root, so only the swap remains, whether
-  // the old root is hollow or already gone.
-  let hollow = layout(vm_spec.Present, vm_spec.Present, vm_spec.Absent)
-  let swapping = layout(vm_spec.Absent, vm_spec.Present, vm_spec.Absent)
+pub fn a_completed_rename_is_finished_not_repeated_test() {
+  // The workspaces are in `root.next`, so only the swap remains, whether the
+  // old root is hollow or already gone.
+  let hollow = layout(vm_spec.Present, vm_spec.Present)
+  let swapping = layout(vm_spec.Absent, vm_spec.Present)
   assert vm_spec.root_step(vm_spec.Resume, hollow, Some("abc1234"), "def5678")
     == vm_spec.FinishUpgrade
   assert vm_spec.root_step(vm_spec.Resume, swapping, Some("abc1234"), "def5678")
     == vm_spec.FinishUpgrade
+}
 
-  // An upgrade that stopped before the move left the workspaces in the old
-  // root, so it runs again from a clean `root.next`.
-  let early = layout(vm_spec.Present, vm_spec.Present, vm_spec.Present)
-  assert vm_spec.root_step(vm_spec.Resume, early, Some("abc1234"), "def5678")
+pub fn a_guest_that_moves_its_workspaces_does_not_finish_an_upgrade_test() {
+  // The step reads nothing the guest writes: a partial `root.next` and an old
+  // root whose `srv/workspaces` the guest moved away show `moved` absent, so
+  // the upgrade runs again from a clean `root.next`.
+  let partial = layout(vm_spec.Present, vm_spec.Absent)
+  assert vm_spec.root_step(vm_spec.Resume, partial, Some("abc1234"), "def5678")
     == vm_spec.UpgradeRoot(Some("abc1234"))
+}
+
+pub fn the_workspaces_slot_is_cleared_before_the_rename_test() {
+  let base = "/var/tmp/loom-vm-cli-test-" <> hex_name()
+  let next = base <> "/root.next"
+
+  // An export that ships `srv/workspaces`, with something in it.
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(next <> "/srv/workspaces/x")
+  assert clear_slot(next) == Ok(Nil)
+  assert simplifile.is_directory(next <> "/srv/workspaces") == Ok(False)
+  assert simplifile.is_directory(next <> "/srv") == Ok(True)
+
+  // One that ships nothing there is left alone.
+  assert clear_slot(next) == Ok(Nil)
+  let _ = simplifile.delete_all([base])
+  Nil
+}
+
+fn clear_slot(next: String) -> Result(Nil, String) {
+  vm_cli.clear_workspaces_slot(next)
+}
+
+fn hex_name() -> String {
+  token.production_entropy()(4)
+  |> bit_array.base16_encode
+  |> string.lowercase
 }
 
 pub fn upgrade_line_is_one_line_naming_both_revisions_test() {
@@ -1504,6 +1551,7 @@ pub fn upgrade_line_is_one_line_naming_both_revisions_test() {
   assert string.contains(line, "Upgrading the guest vm in place")
   assert string.contains(line, "abc1234")
   assert string.contains(line, "def5678")
+  assert string.contains(line, "/home/loom, /work and tools installed by hand")
   assert string.contains(vm_spec.upgrade_line("vm", None, "def5678"), "none")
 }
 
@@ -1557,20 +1605,79 @@ pub fn stranded_runner_is_found_by_its_root_or_disk_test() {
 
   // Only the runner names the root in its JSON specification: the launcher's
   // own flags and an unrelated reader of a file under the root are not it.
-  assert vm_spec.stranded_runners(listing, "/vm/m/root", "/vm/m/state.img")
+  assert vm_spec.stranded_runners(
+      listing,
+      "/vm/m/root",
+      "/vm/m/state.img",
+      None,
+    )
     == [16_333]
-  assert vm_spec.stranded_runners("", "/vm/m/root", "/vm/m/state.img") == []
+  assert vm_spec.stranded_runners("", "/vm/m/root", "/vm/m/state.img", None)
+    == []
   assert vm_spec.stranded_runners(
       "garbage line\n",
       "/vm/m/root",
       "/vm/m/state.img",
+      None,
     )
     == []
 }
 
+pub fn a_process_that_is_not_the_manifests_runner_is_not_stranded_test() {
+  // A jailed tool can put the same JSON in its own arguments; the manifest's
+  // runner path decides when the manifest is at hand.
+  let json = "{\"root_path\":\"/vm/m/root\"}"
+  let listing =
+    "  500     1 /usr/bin/printf "
+    <> json
+    <> "\n"
+    <> "  501     1 /build/go-microvm-runner "
+    <> json
+    <> "\n"
+    <> "  502     1 /build/go-microvm-runner-extra "
+    <> json
+    <> "\n"
+  assert vm_spec.stranded_runners(
+      listing,
+      "/vm/m/root",
+      "/vm/m/state.img",
+      Some("/build/go-microvm-runner"),
+    )
+    == [501]
+  assert vm_spec.stranded_runners(
+      listing,
+      "/vm/m/root",
+      "/vm/m/state.img",
+      None,
+    )
+    == [500, 501, 502]
+}
+
 pub fn stranded_refusal_names_the_pid_and_how_to_stop_it_test() {
-  let one = vm_spec.stranded_refusal("vm", [42])
-  assert string.contains(one, "kill 42")
-  assert string.contains(one, "loom vm up")
-  assert string.contains(vm_spec.stranded_refusal("vm", [4, 5]), "kill 4")
+  let up =
+    vm_spec.stranded_refusal("vm", [42], vm_spec.Certain, vm_spec.BlocksUp)
+  assert string.contains(up, "kill 42")
+  assert string.contains(up, "`loom vm up` again")
+  assert !string.contains(up, "may be")
+
+  let removal =
+    vm_spec.stranded_refusal(
+      "vm",
+      [4, 5],
+      vm_spec.Possible,
+      vm_spec.BlocksRemoval,
+    )
+  assert string.contains(removal, "kill 4 and kill 5")
+  assert string.contains(removal, "loom vm rm --name vm --yes")
+  assert string.contains(removal, "may be")
+}
+
+pub fn down_and_status_say_a_runner_holds_the_files_test() {
+  let note = vm_spec.stranded_note([42], vm_spec.Certain)
+  assert string.contains(note, "kill 42")
+  assert string.contains(note, "still holds")
+  assert string.contains(
+    vm_spec.stranded_note([42], vm_spec.Possible),
+    "may be",
+  )
 }

@@ -768,20 +768,26 @@ pub type ProvisionPlan {
 /// Decides what `--provision` and the root's history mean together. A script
 /// given for a guest that already succeeded is refused, because a resume must
 /// not run it again; `--fresh` is the way to run a new one, and it replaces the
-/// root, so the caller passes `NeverProvisioned` for it.
+/// root, so the caller passes `NeverProvisioned` for it. An unfinished script
+/// is retried from the host's own copy when there is one, because the script
+/// staged in the root is whatever the previous boot left there; only a root
+/// from a loom that kept no copy retries the script it holds.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert vm_spec.provision_plan(None, vm_spec.AlreadyProvisioned)
+/// assert vm_spec.provision_plan(None, vm_spec.AlreadyProvisioned, None)
 ///   == Ok(vm_spec.NoScript)
+/// assert vm_spec.provision_plan(None, vm_spec.FailedBefore, Some("/vm/provision"))
+///   == Ok(vm_spec.StageScript("/vm/provision"))
 /// assert result.is_error(
-///   vm_spec.provision_plan(Some("/s.sh"), vm_spec.AlreadyProvisioned),
+///   vm_spec.provision_plan(Some("/s.sh"), vm_spec.AlreadyProvisioned, None),
 /// )
 /// ```
 pub fn provision_plan(
   requested: Option(String),
   seen: RootProvisioning,
+  kept: Option(String),
 ) -> Result(ProvisionPlan, String) {
   case requested, seen {
     Some(_), AlreadyProvisioned ->
@@ -791,7 +797,11 @@ pub fn provision_plan(
         <> "the script on the new one.",
       )
     Some(path), _ -> Ok(StageScript(path))
-    None, FailedBefore -> Ok(RetryStaged)
+    None, FailedBefore ->
+      case kept {
+        Some(path) -> Ok(StageScript(path))
+        None -> Ok(RetryStaged)
+      }
     None, AlreadyProvisioned | None, NeverProvisioned -> Ok(NoScript)
   }
 }
@@ -905,10 +915,10 @@ pub type RootLayout {
   RootLayout(
     /// The guest's `root`.
     root: Presence,
-    /// The `root.next` an interrupted upgrade may have left.
-    next: Presence,
-    /// `srv/workspaces` inside the `root`.
-    workspaces: Presence,
+    /// `srv/workspaces` inside `root.next`. Only the host writes `root.next`,
+    /// and `build_next_root` removes any such directory the clone brought, so
+    /// it exists exactly when an upgrade's rename of the workspaces completed.
+    moved: Presence,
   )
 }
 
@@ -925,8 +935,8 @@ pub type RootStep {
   /// take the old root's place. The record says what the old root came from.
   UpgradeRoot(recorded: Option(String))
 
-  /// An earlier upgrade got as far as moving the workspaces, so the new root
-  /// holds them: only the swap is left.
+  /// An earlier upgrade completed the rename of the workspaces, so the new
+  /// root holds them: only the swap is left.
   FinishUpgrade
 }
 
@@ -935,16 +945,18 @@ pub type RootStep {
 /// A kept root holds the `loomd` of the build that cloned it, and the
 /// executor protocol negotiates exact revisions, so a root cloned from other
 /// artifacts than the manifest names must be replaced. It is upgraded in place
-/// when neither the manifest nor the record is `dev`, a root with no record
-/// counting as another revision, because a development tree rebuilds too
-/// often to replace the root each time. `layout` is read first, because an
-/// upgrade that stopped after moving the workspaces left a hollow root that
-/// only `FinishUpgrade` can finish.
+/// unless the manifest is `dev`, a root with no record counting as another
+/// revision, because a development tree rebuilds too often to replace the root
+/// each time. A root recorded as `dev` under a release manifest is stale. The
+/// workspaces in `root.next` are read first, because an upgrade that completed
+/// the rename left an old root with nothing of value, and only `FinishUpgrade`
+/// finishes it. A `root.next` without them is a leftover that the next
+/// clone deletes.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let layout = vm_spec.RootLayout(vm_spec.Present, vm_spec.Absent, vm_spec.Present)
+/// let layout = vm_spec.RootLayout(vm_spec.Present, vm_spec.Absent)
 /// assert vm_spec.root_step(vm_spec.Resume, layout, Some("abc1234"), "abc1234")
 ///   == vm_spec.KeepRoot
 /// ```
@@ -954,12 +966,12 @@ pub fn root_step(
   recorded: Option(String),
   revision: String,
 ) -> RootStep {
+  // The order matters: a finished rename wins over everything, and a missing
+  // root has nothing to keep or upgrade.
   case freshness, layout {
     Fresh, _ -> CloneRoot
-    Resume, RootLayout(root: Absent, next: Absent, ..) -> CloneRoot
-    Resume, RootLayout(root: Absent, next: Present, ..) -> FinishUpgrade
-    Resume, RootLayout(root: Present, next: Present, workspaces: Absent) ->
-      FinishUpgrade
+    Resume, RootLayout(moved: Present, ..) -> FinishUpgrade
+    Resume, RootLayout(root: Absent, ..) -> CloneRoot
     Resume, _ ->
       case stale_root(recorded, revision) {
         True -> UpgradeRoot(recorded)
@@ -969,12 +981,12 @@ pub fn root_step(
 }
 
 /// Whether a root came from other artifacts than the manifest names, or from
-/// none the host recorded, with neither side a development tree.
+/// none the host recorded. Only a `dev` manifest keeps a root: a root recorded
+/// as `dev` under a release manifest is the mismatch this closes.
 fn stale_root(recorded: Option(String), revision: String) -> Bool {
   case revision == dev_revision, recorded {
     True, _ -> False
-    False, Some(origin) ->
-      origin != dev_revision && !same_commit(origin, revision)
+    False, Some(origin) -> !same_commit(origin, revision)
     False, None -> True
   }
 }
@@ -1006,7 +1018,8 @@ pub fn upgrade_line(
   <> origin
   <> " and the artifacts are revision "
   <> printable(revision)
-  <> ". Its workspaces and state disk are kept."
+  <> ". Its workspaces and state disk are kept; everything else in the old "
+  <> "root, such as /home/loom, /work and tools installed by hand, is replaced."
 }
 
 /// The refusal for a root whose `srv/workspaces` cannot be moved safely. It
@@ -1062,16 +1075,25 @@ pub fn new_root_provision(
 /// launcher that was killed, so one found after the pid file says the guest is
 /// not running is a second guest waiting to share the root and the disk.
 ///
+/// A process a jailed tool started could carry the same text in its arguments,
+/// so when the manifest names the runner binary (`Some(runner)`) the command
+/// must also start with that path and a space. Without the manifest the match
+/// is the JSON alone, and `certainty_of` says so.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// let listing = "  42     1 runner {\"root_path\":\"/vm/root\"}\n"
-/// assert vm_spec.stranded_runners(listing, "/vm/root", "/vm/state.img") == [42]
+/// let listing = "  42     1 /b/runner {\"root_path\":\"/vm/root\"}\n"
+/// assert vm_spec.stranded_runners(listing, "/vm/root", "/vm/state.img", Some("/b/runner"))
+///   == [42]
+/// assert vm_spec.stranded_runners(listing, "/vm/root", "/vm/state.img", Some("/x/other"))
+///   == []
 /// ```
 pub fn stranded_runners(
   listing: String,
   root: String,
   state_disk: String,
+  runner: Option(String),
 ) -> List(Int) {
   let names_root = "\"root_path\":\"" <> root <> "\""
   let names_disk = "\"path\":\"" <> state_disk <> "\""
@@ -1088,11 +1110,21 @@ pub fn stranded_runners(
       " ",
     ))
 
+    // Only a command that starts with the manifest's runner counts when the
+    // manifest is at hand.
+    let started_by_runner = case runner {
+      Some(path) -> string.starts_with(command, path <> " ")
+      None -> True
+    }
+
     // The runner's specification names its root and its disk; no other
     // process's command line holds either as a JSON field.
     case
-      string.contains(command, names_root)
-      || string.contains(command, names_disk)
+      started_by_runner
+      && {
+        string.contains(command, names_root)
+        || string.contains(command, names_disk)
+      }
     {
       True -> Ok(pid)
       False -> Error(Nil)
@@ -1100,31 +1132,108 @@ pub fn stranded_runners(
   })
 }
 
-/// The refusal `up` gives when runners of a guest survive. It names each pid
-/// and how to stop it, and stops nothing itself.
+/// How sure the match of `stranded_runners` is.
+pub type Certainty {
+  /// The manifest named the runner binary and the command starts with it.
+  Certain
+
+  /// The manifest could not be read, so only the JSON was matched.
+  Possible
+}
+
+/// The certainty a match has, from whether the manifest named the runner.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert string.contains(vm_spec.stranded_refusal("vm", [42]), "kill 42")
+/// assert vm_spec.certainty_of(Some("/b/runner")) == vm_spec.Certain
+/// assert vm_spec.certainty_of(None) == vm_spec.Possible
 /// ```
-pub fn stranded_refusal(name: String, pids: List(Int)) -> String {
+pub fn certainty_of(runner: Option(String)) -> Certainty {
+  case runner {
+    Some(_) -> Certain
+    None -> Possible
+  }
+}
+
+/// What a refused command was going to do, so the refusal ends with the
+/// command to run once the runner is stopped.
+pub type Blocked {
+  BlocksUp
+  BlocksRemoval
+}
+
+/// The runners as a noun phrase and the `kill` commands that stop them.
+fn runners_phrase(pids: List(Int), certainty: Certainty) -> #(String, String) {
+  let numbers = list.map(pids, int.to_string) |> string.join(", ")
   let stop =
     list.map(pids, fn(pid) { "kill " <> int.to_string(pid) })
     |> string.join(" and ")
 
-  // The sentence agrees with the count.
-  let which = case pids {
-    [_] -> "a runner of the guest " <> name <> " is"
-    _ -> "runners of the guest " <> name <> " are"
+  // The phrase agrees with the count and says how sure the match is.
+  let phrase = case certainty, pids {
+    Certain, [_] -> "a runner (process " <> numbers <> ")"
+    Certain, _ -> "runners (processes " <> numbers <> ")"
+    Possible, [_] ->
+      "a process that may be a runner (process " <> numbers <> ")"
+    Possible, _ -> "processes that may be runners (processes " <> numbers <> ")"
   }
 
-  which
-  <> " still running and hold its root and state disk, because its launcher "
-  <> "was killed without stopping it, so `loom vm down` cannot see "
-  <> "them. Stop with `"
+  #(phrase, stop)
+}
+
+/// The refusal `up` and `rm` give when runners of a guest survive. It names
+/// each pid and how to stop it, and stops nothing itself.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(
+///   vm_spec.stranded_refusal("vm", [42], vm_spec.Certain, vm_spec.BlocksUp),
+///   "kill 42",
+/// )
+/// ```
+pub fn stranded_refusal(
+  name: String,
+  pids: List(Int),
+  certainty: Certainty,
+  blocked: Blocked,
+) -> String {
+  let #(phrase, stop) = runners_phrase(pids, certainty)
+
+  // Each refused command ends with itself, to be run once the runner is gone.
+  let again = case blocked {
+    BlocksUp -> "`loom vm up`"
+    BlocksRemoval -> "`loom vm rm --name " <> name <> " --yes`"
+  }
+
+  "the launcher of the guest "
+  <> name
+  <> " was killed without stopping it, and "
+  <> phrase
+  <> " still holds its root and state disk, so `loom vm down` cannot see it. "
+  <> "Stop it with `"
   <> stop
-  <> "` and run `loom vm up` again."
+  <> "` and run "
+  <> again
+  <> " again."
+}
+
+/// What `down` and `status` say when the pid file names no process but a
+/// runner of the guest remains.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(vm_spec.stranded_note([42], vm_spec.Certain), "kill 42")
+/// ```
+pub fn stranded_note(pids: List(Int), certainty: Certainty) -> String {
+  let #(phrase, stop) = runners_phrase(pids, certainty)
+  phrase
+  <> " still holds the guest's root and state disk, though its launcher is "
+  <> "gone. Stop it with `"
+  <> stop
+  <> "`."
 }
 
 /// `down` and `status` take the guest's name and nothing else.

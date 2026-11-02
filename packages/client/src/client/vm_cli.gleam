@@ -552,12 +552,16 @@ fn up(options: UpOptions) -> Result(String, String) {
   let names = vm_spec.names(options.name)
   let guest = instance(vm_home, options.name)
   use Nil <- result.try(refuse_running(guest, options.name))
-  use Nil <- result.try(refuse_stranded(guest, options.name))
+  use Nil <- result.try(refuse_stranded(
+    guest,
+    options.name,
+    Some(manifest.runner),
+    vm_spec.BlocksUp,
+  ))
 
   // What the root needs is read before anything is written, because the
   // provisioning plan depends on whether the root is replaced.
   use step <- result.try(root_step_of(guest, manifest, options))
-  announce_upgrade(step, options.name, manifest)
 
   // What the script and the allowlist ask for is settled before anything is
   // written, so a refused `--provision` or a bad allow file changes nothing.
@@ -681,7 +685,7 @@ fn provisioning(
   // the old one had, so it is provisioned again from the host's copy.
   case step {
     vm_spec.KeepRoot ->
-      vm_spec.provision_plan(requested, root_provisioning(guest))
+      vm_spec.provision_plan(requested, root_provisioning(guest), kept)
     vm_spec.CloneRoot ->
       vm_spec.new_root_provision(requested, kept, vm_spec.NeverProvisioned)
     vm_spec.UpgradeRoot(..) | vm_spec.FinishUpgrade ->
@@ -1143,7 +1147,14 @@ fn prepare_root(
       record_root_revision(guest, manifest)
     }
 
-    vm_spec.UpgradeRoot(..) -> {
+    vm_spec.UpgradeRoot(recorded) -> {
+      // The line comes after every refusal of `up` and before the first
+      // change; `build_next_root`'s own refusal of an unsafe root follows it.
+      io.println_error(vm_spec.upgrade_line(
+        options.name,
+        recorded,
+        manifest.revision,
+      ))
       use Nil <- result.try(build_next_root(manifest, guest, platform))
       use Nil <- result.try(swap_roots(guest))
       record_root_revision(guest, manifest)
@@ -1177,8 +1188,7 @@ fn root_step_of(
   let layout =
     vm_spec.RootLayout(
       root:,
-      next: presence_of(guest.next_root),
-      workspaces: presence_of(guest.root <> vm_spec.workspaces_dir),
+      moved: presence_of(guest.next_root <> vm_spec.workspaces_dir),
     )
   Ok(vm_spec.root_step(options.freshness, layout, recorded, manifest.revision))
 }
@@ -1219,19 +1229,6 @@ fn record_root_revision(
   )
 }
 
-/// Says on one line that the guest's root is being replaced, and why.
-fn announce_upgrade(
-  step: vm_spec.RootStep,
-  name: String,
-  manifest: Manifest,
-) -> Nil {
-  case step {
-    vm_spec.UpgradeRoot(recorded) ->
-      io.println_error(vm_spec.upgrade_line(name, recorded, manifest.revision))
-    _ -> Nil
-  }
-}
-
 /// Keeps the host's own copy of the `--provision` script, so a root cloned
 /// again is provisioned from it and the script is never read back out of the
 /// untrusted root. `--fresh` with no script clears it.
@@ -1249,10 +1246,15 @@ fn record_provision_copy(
           path <> " is unreadable: " <> simplifile.describe_error(error)
         }),
       )
-      let _ = simplifile.delete(guest.provision_file)
+
+      // A temporary file in the same directory, renamed over the copy, so a
+      // failure partway leaves the earlier copy whole.
+      let temporary = guest.provision_file <> ".tmp"
+      let _ = simplifile.delete(temporary)
       {
-        use Nil <- result.try(simplifile.write_bits(guest.provision_file, bytes))
-        simplifile.set_permissions_octal(guest.provision_file, 0o600)
+        use Nil <- result.try(simplifile.write_bits(temporary, bytes))
+        use Nil <- result.try(simplifile.set_permissions_octal(temporary, 0o600))
+        simplifile.rename(temporary, guest.provision_file)
       }
       |> result.map_error(fn(error) {
         guest.provision_file
@@ -1310,11 +1312,30 @@ fn build_next_root(
     within: copy_budget_ms,
   ))
   use Nil <- result.try(make_inside(guest.next_root, "/srv"))
+  use Nil <- result.try(clear_workspaces_slot(guest.next_root))
   simplifile.rename(workspaces, guest.next_root <> vm_spec.workspaces_dir)
   |> result.map_error(fn(error) {
-    "the workspaces cannot be moved into the new root: "
-    <> simplifile.describe_error(error)
+    vm_spec.upgrade_refusal(
+      "the workspaces cannot be moved into the new root: "
+      <> simplifile.describe_error(error),
+    )
   })
+}
+
+/// Removes any `srv/workspaces` the clone of the export brought into the new
+/// root. `up` decides that an upgrade's rename completed from this directory's
+/// existence (`vm_spec.RootLayout.moved`), so it must not exist before the
+/// rename, whatever the exported guest root ships. A link is removed itself
+/// and never entered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // vm_cli.clear_workspaces_slot("/vm/dev/root.next")
+/// ```
+@internal
+pub fn clear_workspaces_slot(next_root: String) -> Result(Nil, String) {
+  remove_tree_if_present(next_root <> vm_spec.workspaces_dir)
 }
 
 /// Replaces the root with the new one that holds the workspaces. It is safe to
@@ -1328,22 +1349,48 @@ fn swap_roots(guest: Instance) -> Result(Nil, String) {
   })
 }
 
-/// Refuses `up` when a runner of this guest survives. `loom-vm` runs the
-/// virtual machine monitor as a separate process, which outlives a launcher
-/// killed by SIGKILL, so the pid file can say the guest is stopped while its
-/// runner holds the root and the state disk. A second guest on the same
-/// ext4 disk would corrupt it. Nothing is stopped here: the refusal names the
-/// pids and the way to stop them. A host whose `ps` cannot be run is treated as
-/// having none, as `down` has no other way to see them either.
-fn refuse_stranded(guest: Instance, name: String) -> Result(Nil, String) {
+/// The runners of this guest that survive its launcher, and how sure the
+/// match is. `loom-vm` runs the virtual machine monitor as a separate process,
+/// which outlives a launcher killed by SIGKILL, so the pid file can say the
+/// guest is stopped while its runner holds the root and the state disk. A
+/// host whose `ps` cannot be run is treated as having none.
+fn stranded_in(
+  guest: Instance,
+  runner: option.Option(String),
+) -> #(List(Int), vm_spec.Certainty) {
   let listing =
     tool("ps", ["-axww", "-o", "pid=,ppid=,command="], within: quick_ms)
     |> result.unwrap("")
+  let pids =
+    vm_spec.stranded_runners(listing, guest.root, guest.state_disk, runner)
+  #(pids, vm_spec.certainty_of(runner))
+}
 
+/// The runner binary the manifest names, or `None` when it cannot be read, as
+/// `down`, `status` and `rm` may have to work without a manifest.
+fn manifest_runner(vm_home: String) -> option.Option(String) {
+  case read_manifest_if_present(vm_home) {
+    Ok(Some(manifest)) -> Some(manifest.runner)
+    _ -> None
+  }
+}
+
+/// Refuses a command that would use the guest's root and state disk when a
+/// runner of the guest survives. A second guest on the same ext4 disk would
+/// corrupt it, and removing the files under a running VM would leave it
+/// writing to deleted ones. Nothing is stopped here: the refusal names the
+/// pids and the way to stop them.
+fn refuse_stranded(
+  guest: Instance,
+  name: String,
+  runner: option.Option(String),
+  blocked: vm_spec.Blocked,
+) -> Result(Nil, String) {
   // Any runner found is a refusal; none means the guest is really stopped.
-  case vm_spec.stranded_runners(listing, guest.root, guest.state_disk) {
-    [] -> Ok(Nil)
-    pids -> Error(vm_spec.stranded_refusal(name, pids))
+  case stranded_in(guest, runner) {
+    #([], _) -> Ok(Nil)
+    #(pids, certainty) ->
+      Error(vm_spec.stranded_refusal(name, pids, certainty, blocked))
   }
 }
 
@@ -2208,7 +2255,19 @@ fn down(name: String) -> Result(String, String) {
   case state {
     NotRunning -> {
       let _ = simplifile.delete(guest.pid_file)
-      Ok("The guest " <> name <> " is not running.")
+
+      // A launcher killed without stopping its runner leaves the guest
+      // running with nothing to signal, which `down` must not call stopped.
+      case stranded_in(guest, manifest_runner(vm_home)) {
+        #([], _) -> Ok("The guest " <> name <> " is not running.")
+        #(pids, certainty) ->
+          Error(
+            "The guest "
+            <> name
+            <> " has no launcher, but "
+            <> vm_spec.stranded_note(pids, certainty),
+          )
+      }
     }
     Alive(record) -> stop(guest, name, record)
   }
@@ -2286,20 +2345,43 @@ fn status(name: String) -> Result(String, String) {
   let names = vm_spec.names(name)
   use state <- result.try(process_state(guest))
   Ok(string.join(
-    [
-      "guest:      " <> name,
-      "process:    " <> process_line(state),
-      "node:       " <> names.executor_node,
-      "epmd:       " <> epmd_line(names),
-      "revision:   " <> revision_line(vm_home),
-      "root:       " <> root_line(guest),
-      "root from:  " <> root_origin_line(guest),
-      "workspaces: " <> workspace_line(guest),
-      "allowed:    " <> allow_line(guest),
-      "provision:  " <> provision_line(guest),
-    ],
+    list.flatten([
+      [
+        "guest:      " <> name,
+        "process:    " <> process_line(state),
+        "node:       " <> names.executor_node,
+        "epmd:       " <> epmd_line(names),
+        "revision:   " <> revision_line(vm_home),
+        "root:       " <> root_line(guest),
+        "root from:  " <> root_origin_line(guest),
+        "workspaces: " <> workspace_line(guest),
+        "allowed:    " <> allow_line(guest),
+        "provision:  " <> provision_line(guest),
+      ],
+      stranded_line(guest, state, vm_home),
+    ]),
     "\n",
   ))
+}
+
+/// A line naming a runner that holds the guest's files when the pid file names
+/// no process, so `not running` is never the whole account of such a guest.
+fn stranded_line(
+  guest: Instance,
+  state: ProcessState,
+  vm_home: String,
+) -> List(String) {
+  // A running launcher owns its runner; only a missing one strands it.
+  case state {
+    Alive(_) -> []
+    NotRunning ->
+      case stranded_in(guest, manifest_runner(vm_home)) {
+        #([], _) -> []
+        #(pids, certainty) -> [
+          "runner:     " <> vm_spec.stranded_note(pids, certainty),
+        ]
+      }
+  }
 }
 
 /// The process's state in words.
@@ -2611,6 +2693,14 @@ fn remove(
       )
     NotRunning -> Ok(Nil)
   })
+
+  // A runner that outlived its launcher still has the files open.
+  use Nil <- result.try(refuse_stranded(
+    guest,
+    name,
+    manifest_runner(vm_home),
+    vm_spec.BlocksRemoval,
+  ))
 
   use home <- result.try(home())
   use config <- result.try(

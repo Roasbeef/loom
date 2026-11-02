@@ -931,14 +931,32 @@ fn killed_launcher(
     })
     as "status reports the guest with a killed launcher as not running"
 
+  // When the runner outlived its launcher, `status` names it, `down` does not
+  // call the guest stopped and `rm` refuses to delete what it holds.
+  let status = vm(run, ["status", "--name", run.name])
+  case string.contains(status.output, "runner:     ") {
+    False -> Nil
+    True -> {
+      assert string.contains(status.output, "kill ")
+      let down = vm(run, ["down", "--name", run.name])
+      assert down.status != 0
+      assert string.contains(down.output, "kill ")
+      let removal = vm(run, ["rm", "--name", run.name, "--yes"])
+      assert removal.status != 0
+      assert string.contains(removal.output, "kill ")
+      assert simplifile.is_directory(guest_directory(run) <> "/root")
+        == Ok(True)
+    }
+  }
+
   // The runner of the killed launcher is the guest's second process.
   let first = vm(run, up_arguments(run))
   case first.status {
     0 -> io.println_error(label <> " the runner did not outlive its launcher")
     _ -> {
-      assert string.contains(first.output, "still running and hold its root")
+      assert string.contains(first.output, "still holds its root")
       let assert [_, after_kill] =
-        string.split(first.output, "Stop with `kill ")
+        string.split(first.output, "Stop it with `kill ")
       let assert [runner, ..] = string.split(after_kill, "`")
       io.println_error(label <> " stranded runner " <> runner <> " refused up")
 
