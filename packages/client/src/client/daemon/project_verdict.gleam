@@ -239,9 +239,10 @@ pub fn start(
     LiveLane(chosen) -> {
       let work = judge.labelled_frames(found, current.labels)
 
-      // The count is checked before the plan exists, so a run that cannot be
-      // measured costs nothing and says why.
-      use Nil <- result.map(enough(rule, list.length(work)))
+      // The labels are checked before the plan exists, so a run that cannot be
+      // measured costs nothing and says why. That covers a label set with no
+      // accept or no reject, which no router could pass.
+      use Nil <- result.map(usable(rule, list.map(work, fn(entry) { entry.1 })))
       Measuring(Plan(
         source:,
         rule:,
@@ -289,18 +290,40 @@ fn finish(
   which: model.Lane,
 ) -> Result(judge.Finding, String) {
   judge.judge(samples, which)
-  |> result.map_error(fn(refusal) {
-    let judge.NotEnoughLabels(have, need) = refusal
-    not_enough(rule, have, need)
-  })
+  |> result.map_error(refusal_words(rule, _))
 }
 
-/// Whether `have` labelled triggers are enough, and the sentence if not.
-fn enough(rule: RuleId, have: Int) -> Result(Nil, String) {
-  case have < judge.needed_labels {
-    True -> Error(not_enough(rule, have, judge.needed_labels))
-    False -> Ok(Nil)
+/// Whether the labels can be judged, and the sentence if not.
+fn usable(rule: RuleId, labels: List(model.Label)) -> Result(Nil, String) {
+  judge.check_labels(labels)
+  |> result.map_error(refusal_words(rule, _))
+}
+
+/// A refusal as a sentence for the owner. It records nothing.
+fn refusal_words(rule: RuleId, refusal: judge.Refusal) -> String {
+  case refusal {
+    judge.NotEnoughLabels(have, need) -> not_enough(rule, have, need)
+    judge.MissingLabelClass(missing:) -> missing_class(rule, missing)
   }
+}
+
+/// A label set with no trigger of one kind cannot show the router apart from
+/// one that always gives the other answer, so the owner is told which kind to
+/// add before a run is spent on it.
+fn missing_class(rule: RuleId, missing: model.Label) -> String {
+  let #(kind, other) = case missing {
+    model.ShouldAccept -> #("accept", "declines every trigger")
+    model.ShouldNotAccept -> #("reject", "takes every trigger on")
+  }
+  "rule "
+  <> rule.value
+  <> " has no trigger labelled "
+  <> kind
+  <> ". A router that "
+  <> other
+  <> " would agree with every label it has, so a verdict could not tell it from a good one. Label at least one trigger "
+  <> kind
+  <> " before running a verdict."
 }
 
 /// Too few labels is a sentence for the owner and records nothing.

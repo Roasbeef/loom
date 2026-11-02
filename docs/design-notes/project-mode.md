@@ -438,12 +438,15 @@ Both rules compare the candidate with the recording, so neither says the candida
 a router that disagrees with the person on half the triggers, and did so when it was
 recorded, shows no change and passed on 249 of 300 synthetic plans. A pass therefore also
 needs the candidate's own agreement with the labels to reach 75% of its trials
-(`judge.min_agreement_points`). A guess agrees on half the trials, and the standard error of
-thirty triggers is near 9 points, so 75 is 2.7 of them above guessing; a router right 85% of
-the time passes about nine runs in ten. With the floor, the router at 45 to 55% passes none of
-300 plans, and one at 80 to 90% passes 278. The floor cannot see a router that declines
-everything when most labels are rejects, because it then agrees as often as they are
-rejects.
+(`judge.min_agreement_points`), among the triggers labelled accept and among those labelled
+reject, and the lower of the two is what counts. An overall share would pass a router that
+declines everything when most labels are rejects, since it agrees as often as they are
+rejects: with two accepts in thirty that is 93%. A guess agrees on half the trials, and the
+standard error of thirty triggers is near 9 points, so 75 is 2.7 of them above guessing. On
+synthetic plans with half the labels of each kind, the router at 45 to 55% passes none of
+300 plans, one at 60 to 70% passes 2, one at 70 to 80% passes 82, and one at 80 to 90%
+passes 264. A label set with no accept, or no reject, cannot pass, so the verdict is refused
+before it spends anything and the owner is told which kind to add.
 
 Simulation cannot drive a router session in a way that judges it. The simulator runs a
 session whose scripted model calls a tool named `route` and holds it to every check under a

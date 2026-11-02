@@ -598,10 +598,15 @@ fn scripted(
   ))
 }
 
-// A live lane whose router declines everything, which matches the labels on 28
-// of the 30 triggers `label_all` labels.
-fn agrees_with_most() -> project_verdict.Lane {
-  scripted(fn(_, _) { judge.Pass })
+// A live lane whose router takes on the two triggers `label_all` says to take
+// on and declines the other twenty-eight, so it agrees with every label.
+fn agrees_with_labels() -> project_verdict.Lane {
+  scripted(fn(frame, _) {
+    case should_take(frame.trigger.id.value) {
+      True -> judge.Take
+      False -> judge.Pass
+    }
+  })
 }
 
 // Runs a live verdict and waits for the rule's run to end, then answers the
@@ -710,6 +715,18 @@ pub fn auto_needs_a_current_verdict_and_a_changed_pin_takes_it_away_test() {
   label_all(handle, triggers)
   assert string.contains(board_text(handle), "\"labelled\":30,\"needed\":30")
 
+  // The router took on the two triggers the labels say to take on, which the
+  // rule in `observe` records as would-accept. Replay serves that recording
+  // back, so it agrees with every label, accepts included.
+  // The router holds one offer at a time, so the second waits for the first
+  // turn to end.
+  let assert Ok([tools.Applied]) =
+    project_host.route(handle, [accept("gh-c-3001")])
+  project_host.router_run_ended(handle, time(rig.clock) + 1000)
+  eventually(fn() { list.contains(router_got(drain(rig.seen)), "gh-c-3002") })
+  let assert Ok([tools.Applied]) =
+    project_host.route(handle, [accept("gh-c-3002")])
+
   // The replay lane judges the gate as the code stands. Nothing changed, so
   // it passes, and it says so without claiming anything about the router.
   let assert Ok(report) =
@@ -728,7 +745,7 @@ pub fn auto_needs_a_current_verdict_and_a_changed_pin_takes_it_away_test() {
   let assert Error(replayed) =
     project_host.set_mode(handle, "deps", model.Auto, "owner")
   assert string.contains(replayed, "only a live verdict")
-  let passed = live_run(handle, "deps", agrees_with_most())
+  let passed = live_run(handle, "deps", agrees_with_labels())
   assert string.contains(passed, "\"state\":\"passed\"")
   let assert Ok(Nil) =
     project_host.set_mode(handle, "deps", model.Auto, "owner")
@@ -766,7 +783,7 @@ pub fn auto_needs_a_current_verdict_and_a_changed_pin_takes_it_away_test() {
 
   // Running the verdict again under the new prompt makes `auto` available,
   // and a model change takes it away again.
-  let again_passed = live_run(third, "deps", agrees_with_most())
+  let again_passed = live_run(third, "deps", agrees_with_labels())
   assert string.contains(again_passed, "\"state\":\"passed\"")
   let assert Ok(Nil) = project_host.set_mode(third, "deps", model.Auto, "owner")
   project_host.pin_router(third, "sha256:two", "profile:default model:b")
@@ -784,18 +801,19 @@ pub fn a_failing_live_verdict_returns_the_rule_to_observe_test() {
   next_pass(rig, handle)
   stored(handle, triggers)
   label_all(handle, triggers)
-  let passed = live_run(handle, "deps", agrees_with_most())
+  let passed = live_run(handle, "deps", agrees_with_labels())
   assert string.contains(passed, "\"state\":\"passed\"")
   let assert Ok(Nil) =
     project_host.set_mode(handle, "deps", model.Auto, "owner")
 
-  // A router that takes everything on disagrees with the labels on 28 of 30
-  // triggers. The lane's arithmetic is the same as the replay lane's, with the
-  // decision supplied by the caller.
+  // A router that takes everything on is right on both accepts and wrong on
+  // all twenty-eight rejects, so the weaker class reads 0. The lane's
+  // arithmetic is the same as the replay lane's, with the decision supplied by
+  // the caller.
   let takes_everything = scripted(fn(_, _) { judge.Take })
   let report = live_run(handle, "deps", takes_everything)
   assert string.contains(report, "\"state\":\"failed\"")
-  assert string.contains(report, "agreed with the labels on 6 percent")
+  assert string.contains(report, "agreed with the labels on 0 percent")
   assert string.contains(
     board_text(handle),
     "{\"name\":\"deps\",\"mode\":\"observe\",\"verdict\":{\"state\":\"failing\"",
@@ -985,10 +1003,51 @@ pub fn a_scratch_router_that_takes_everything_fails_the_pair_test() {
     )
   let row = live_run(handle, "deps", lane)
   assert string.contains(row, "\"state\":\"failed\"")
-  assert string.contains(row, "agreed with the labels on 6 percent")
+  assert string.contains(row, "agreed with the labels on 0 percent")
   let assert Error(refused) =
     project_host.set_mode(handle, "deps", model.Auto, "owner")
   assert string.contains(refused, "its latest verdict failed")
+}
+
+// Two of the thirty labels are accepts, so a router that declines every
+// trigger agrees with 93 percent of them overall. That is what an overall floor
+// passed. The floor is per label class, and this router is right on every
+// reject and on no accept, so it fails.
+pub fn a_router_that_declines_everything_fails_when_two_labels_in_thirty_are_accepts_test() {
+  let #(_, handle, _) = labelled_rig("live-declines-all")
+  let report = live_run(handle, "deps", scripted(fn(_, _) { judge.Pass }))
+  assert string.contains(report, "\"state\":\"failed\"")
+  assert string.contains(report, "agreed with the labels on 0 percent")
+  assert string.contains(report, "weaker label class")
+  let assert Error(refused) =
+    project_host.set_mode(handle, "deps", model.Auto, "owner")
+  assert string.contains(refused, "its latest verdict failed")
+}
+
+// Labels of one kind cannot tell a good router from one that always gives the
+// other answer, so the run is refused before a plan exists and nothing is
+// spent, with words naming the kind to add.
+pub fn labels_of_one_kind_refuse_a_live_run_before_it_spends_anything_test() {
+  let rig = watching("live-one-kind")
+  let handle = start(rig)
+  project_host.pin_router(handle, "sha256:one", "profile:default model:a")
+  first_pass(handle)
+  let triggers = thirty_bumps(rig)
+  next_pass(rig, handle)
+  stored(handle, triggers)
+  list.each(triggers, fn(trigger) {
+    let assert Ok(Nil) =
+      project_host.label(handle, trigger, model.ShouldNotAccept, "owner")
+  })
+  let assert Error(words) =
+    project_host.run_verdict(
+      handle,
+      "deps",
+      scripted(fn(_, _) { judge.Pass }),
+      "owner",
+    )
+  assert string.contains(words, "has no trigger labelled accept")
+  assert string.contains(words, "Label at least one trigger accept")
 }
 
 pub fn a_router_that_disagrees_with_the_labels_on_both_arms_fails_on_the_floor_test() {
@@ -1021,7 +1080,7 @@ pub fn a_router_that_disagrees_with_the_labels_on_both_arms_fails_on_the_floor_t
     )
   let row = live_run(handle, "deps", lane)
   assert string.contains(row, "\"state\":\"failed\"")
-  assert string.contains(row, "agreed with the labels on 6 percent")
+  assert string.contains(row, "agreed with the labels on 0 percent")
   assert string.contains(row, "under the 75 a pass needs")
   assert !string.contains(row, "worse than the recording")
   assert !string.contains(row, "could reach down")

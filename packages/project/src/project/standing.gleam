@@ -181,11 +181,11 @@ pub fn claim(covers: Covers) -> String {
 }
 
 /// What every pass says about the candidate's own agreement with the labels,
-/// which `judge.min_agreement_points` holds a pass to.
+/// which `judge.min_agreement_points` holds a pass to, in each label class.
 fn agreement_clause() -> String {
   "The candidate agreed with the labels on at least "
   <> int.to_string(judge.min_agreement_points)
-  <> " percent of its trials."
+  <> " percent of its trials, among the triggers labelled accept and among those labelled reject."
 }
 
 /// Why a verdict failed, in words, from the finding. Each reason a pass needs
@@ -195,7 +195,7 @@ fn agreement_clause() -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// // standing.failure(finding) == "It failed: it agreed with the labels on 40 percent of its trials, under the 75 a pass needs."
+/// // standing.failure(finding) == "It failed: it agreed with the labels on 40 percent of its trials in its weaker label class, under the 75 a pass needs in each."
 /// ```
 pub fn failure(finding: judge.Finding) -> String {
   let reasons =
@@ -219,9 +219,9 @@ pub fn failure(finding: judge.Finding) -> String {
         True -> [
           "it agreed with the labels on "
           <> int.to_string(finding.agreement_points)
-          <> " percent of its trials, under the "
+          <> " percent of its trials in its weaker label class, under the "
           <> int.to_string(judge.min_agreement_points)
-          <> " a pass needs",
+          <> " a pass needs in each",
         ]
         False -> []
       },

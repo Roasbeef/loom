@@ -296,20 +296,26 @@ fn plans(seed: Int, low: Float, high: Float) -> List(Plan) {
   qcheck.generate(plan, aa_plans, qcheck.seed(seed)).0
 }
 
-// A plan as samples. The recording matches its label with the trigger's
-// probability, and the candidate with that probability less `drop`.
+// A plan as samples, with every other trigger labelled accept and the rest
+// labelled reject, since a label set of one kind is refused. The recording
+// matches its label with the trigger's probability, and the candidate with that
+// probability less `drop`.
 fn samples_of(plan: Plan, drop: Float) -> List(judge.Sample) {
   list.index_map(plan, fn(task, index) {
+    let #(label, right, wrong) = case index % 2 == 0 {
+      True -> #(ShouldAccept, judge.Take, judge.Pass)
+      False -> #(ShouldNotAccept, judge.Pass, judge.Take)
+    }
     let choose = fn(draw, p) {
       case draw <. p {
-        True -> judge.Take
-        False -> judge.Pass
+        True -> right
+        False -> wrong
       }
     }
     let assert [first, ..rest] = task.1
     judge.Sample(
       TriggerId(id(index)),
-      ShouldAccept,
+      label,
       choose(first, task.0),
       list.map(rest, choose(_, task.0 -. drop)),
     )
@@ -373,8 +379,9 @@ fn interval_outcomes(
 
 /// A live run with no change passes on most plans, so `auto` is reachable. The
 /// plans are a router that agrees with the labels on 75 to 100 percent of its
-/// triggers, 87.5 on average. Measured on this seed: 283 of 300 plans pass,
-/// all of them on the interval rule as well. The floor is 260.
+/// triggers, 87.5 on average, with half the triggers labelled accept and half
+/// reject. Measured on this seed: 280 of 300 plans pass, and 283 on the
+/// interval rule alone. The floor is 260.
 pub fn a_live_run_with_no_change_usually_passes_test() {
   let outcomes = live_outcomes(plans(aa_seed, 0.75, 1.0), 0.0)
   assert count_passed(outcomes) >= 260
@@ -397,9 +404,9 @@ pub fn a_large_live_drop_rarely_passes_test() {
 
 /// A fifteen-point drop sits inside the interval of a run this size. From a
 /// router that agrees on 80 to 100 percent of triggers, 124 of 300 plans pass
-/// the interval rule and 96 also reach the floor, and 163 read `Harmed`. This
-/// is why a pass rules out a large regression and does not show parity. The
-/// floor is 60 passes, and `Harmed` is held under 200.
+/// the interval rule and 68 also reach the floor in both label classes, and
+/// 163 read `Harmed`. This is why a pass rules out a large regression and does
+/// not show parity. The floor is 60 passes, and `Harmed` is held under 200.
 pub fn a_small_live_drop_often_passes_test() {
   let small = plans(6003, 0.8, 1.0)
   assert count_passed(interval_outcomes(small, 0.15)) >= 100
@@ -410,8 +417,8 @@ pub fn a_small_live_drop_often_passes_test() {
 /// The case the floor is for. A router that agrees with the labels on about
 /// half the triggers, and did so when it was recorded, shows no change on
 /// either arm. The interval rule passes 249 of 300 such plans. The floor
-/// fails all of them, and fails nearly all of the plans at 65 percent. A
-/// router at 85 percent still passes on 278 of 300.
+/// fails all of them, and fails nearly all of the plans at 65 percent (2 of
+/// 300 pass). A router at 85 percent still passes on 264 of 300.
 pub fn the_floor_fails_a_router_that_is_wrong_on_both_arms_test() {
   let guessing = plans(6004, 0.45, 0.55)
   assert count_passed(interval_outcomes(guessing, 0.0)) >= 200
@@ -460,7 +467,7 @@ pub fn the_outcome_needs_the_candidate_to_agree_with_the_labels_test() {
 }
 
 /// A router that is wrong on half the triggers on both arms has not regressed,
-/// and the finding reports that agreement and fails it.
+/// and the finding reports its agreement in the weaker class and fails it.
 pub fn a_candidate_that_matches_the_recording_but_not_the_labels_fails_test() {
   let wrong_alike =
     list.index_map(list.repeat(Nil, 30), fn(_, index) {
@@ -482,34 +489,88 @@ pub fn a_candidate_that_matches_the_recording_but_not_the_labels_fails_test() {
   let assert Ok(found) = judge.judge(wrong_alike, model.Live)
   assert found.covers.changed == 0
   assert found.covers.bound_points == 0
-  assert found.agreement_points == 50
+
+  // The candidate takes everything on, so it is right on every accept and on no
+  // reject, and the lower of the two classes is what counts.
+  assert found.agreement_points == 0
   assert found.outcome == model.VerdictFailed
 }
 
 /// The figure is rounded down, so a run on the line is not counted in: 74 of
-/// 99 trials is 74.7 points and reads 74.
+/// 99 trials is 74.7 points and reads 74. It is the weaker class that is
+/// rounded, here the rejects, while the accepts all agree.
 pub fn agreement_is_rounded_down_test() {
-  let samples =
+  let accepts =
+    list.index_map(list.repeat(Nil, 8), fn(_, index) {
+      judge.Sample(TriggerId(id(100 + index)), ShouldAccept, judge.Take, [
+        judge.Take,
+        judge.Take,
+        judge.Take,
+      ])
+    })
+  let rejects =
     list.index_map(list.repeat(Nil, 33), fn(_, index) {
       let trials = case index < 25 {
-        True -> [judge.Take, judge.Take, judge.Take]
-        False -> [judge.Pass, judge.Pass, judge.Pass]
+        True -> [judge.Pass, judge.Pass, judge.Pass]
+        False -> [judge.Take, judge.Take, judge.Take]
       }
-      judge.Sample(TriggerId(id(index)), ShouldAccept, judge.Take, trials)
+      judge.Sample(TriggerId(id(index)), ShouldNotAccept, judge.Pass, trials)
     })
-  let assert Ok(found) = judge.judge(samples, model.Live)
+  let assert Ok(found) = judge.judge(list.append(accepts, rejects), model.Live)
   assert found.agreement_points == 75
   let one_short =
-    list.index_map(samples, fn(each, index) {
+    list.index_map(rejects, fn(each, index) {
       case index == 24 {
         True ->
-          judge.Sample(..each, candidate: [judge.Take, judge.Take, judge.Pass])
+          judge.Sample(..each, candidate: [judge.Pass, judge.Pass, judge.Take])
         False -> each
       }
     })
-  let assert Ok(near) = judge.judge(one_short, model.Live)
+  let assert Ok(near) = judge.judge(list.append(accepts, one_short), model.Live)
   assert near.agreement_points == 74
   assert near.outcome == model.VerdictFailed
+}
+
+/// A router that declines everything agrees with the labels as often as they
+/// are rejects. With two accepts in thirty that is 93 percent overall, which
+/// the old overall floor passed. Per class it agrees on every reject and on no
+/// accept, so the finding reads 0 and the pair fails.
+pub fn a_router_that_declines_everything_fails_when_most_labels_are_rejects_test() {
+  let skewed =
+    list.index_map(list.repeat(Nil, 30), fn(_, index) {
+      let #(label, recorded) = case index < 2 {
+        True -> #(ShouldAccept, judge.Take)
+        False -> #(ShouldNotAccept, judge.Pass)
+      }
+      judge.Sample(TriggerId(id(index)), label, recorded, [
+        judge.Pass,
+        judge.Pass,
+        judge.Pass,
+      ])
+    })
+  let assert Ok(found) = judge.judge(skewed, model.Live)
+  assert found.agreement_points == 0
+  assert found.outcome == model.VerdictFailed
+  assert string.contains(
+    standing.failure(found),
+    "it agreed with the labels on 0 percent of its trials in its weaker label class, under the 75 a pass needs in each",
+  )
+}
+
+/// A label set with no accept, or no reject, is refused before anything is
+/// measured, whatever the router does, and the refusal names the missing kind.
+pub fn labels_of_one_kind_cannot_be_judged_test() {
+  let only = fn(label, choice) {
+    list.index_map(list.repeat(Nil, 30), fn(_, index) {
+      judge.Sample(TriggerId(id(index)), label, choice, [choice, choice, choice])
+    })
+  }
+  assert judge.judge(only(ShouldNotAccept, judge.Pass), model.Live)
+    == Error(judge.MissingLabelClass(ShouldAccept))
+  assert judge.judge(only(ShouldAccept, judge.Take), model.Replay)
+    == Error(judge.MissingLabelClass(ShouldNotAccept))
+  assert judge.check_labels(list.repeat(ShouldAccept, 29))
+    == Error(judge.NotEnoughLabels(29, 30))
 }
 
 // --- the pin and the gate -----------------------------------------------------
@@ -683,16 +744,22 @@ pub fn a_pass_says_how_much_agreement_it_needed_test() {
   let live = standing.claim(model.Covers(model.Live, 30, 3, 4, 19))
   assert string.contains(
     live,
-    "agreed with the labels on at least 75 percent of its trials",
+    "agreed with the labels on at least 75 percent of its trials, among the triggers labelled accept and among those labelled reject",
   )
   let replay = standing.claim(model.Covers(model.Replay, 30, 1, 2, 28))
   assert string.contains(replay, "at least 75 percent")
 }
 
 pub fn a_failure_names_each_reason_it_failed_for_test() {
+  // The recording and the candidate both decline everything, so the interval
+  // finds no change and only the accept class is wrong.
   let wrong_alike =
     list.index_map(list.repeat(Nil, 30), fn(_, index) {
-      judge.Sample(TriggerId(id(index)), ShouldAccept, judge.Pass, [
+      let label = case index % 2 == 0 {
+        True -> ShouldAccept
+        False -> ShouldNotAccept
+      }
+      judge.Sample(TriggerId(id(index)), label, judge.Pass, [
         judge.Pass,
         judge.Pass,
         judge.Pass,
@@ -701,16 +768,20 @@ pub fn a_failure_names_each_reason_it_failed_for_test() {
   let assert Ok(floor_only) = judge.judge(wrong_alike, model.Live)
   assert floor_only.outcome == model.VerdictFailed
   assert standing.failure(floor_only)
-    == "It failed: it agreed with the labels on 0 percent of its trials, under the 75 a pass needs."
+    == "It failed: it agreed with the labels on 0 percent of its trials in its weaker label class, under the 75 a pass needs in each."
 
   // A candidate whose change from the recording the interval cannot bound is
   // named as that, and as the floor too when it also did not hold.
   let unbounded =
     list.index_map(list.repeat(Nil, 30), fn(_, index) {
-      judge.Sample(TriggerId(id(index)), ShouldAccept, judge.Take, [
-        judge.Pass,
-        judge.Pass,
-        judge.Pass,
+      let #(label, recorded, candidate) = case index % 2 == 0 {
+        True -> #(ShouldAccept, judge.Take, judge.Pass)
+        False -> #(ShouldNotAccept, judge.Pass, judge.Take)
+      }
+      judge.Sample(TriggerId(id(index)), label, recorded, [
+        candidate,
+        candidate,
+        candidate,
       ])
     })
   let assert Ok(wide) = judge.judge(unbounded, model.Live)

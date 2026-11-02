@@ -351,7 +351,7 @@ flowchart TD
     Conclude -- "yes" --> Record["VerdictRecorded, lane Live"]
 ```
 
-`judge.outcome_of` passes when the instrument's verdict is neither `Harmed` nor `Incomplete`, the interval's lower bound stays within `max_bound_points` (30), and agreement with the labels reaches `min_agreement_points` (75). The bound rules out a large drop against the recording, and the floor rules out a router that was already wrong on both arms. A pass doesn't show parity with the recording.
+`judge.outcome_of` passes when the instrument's verdict is neither `Harmed` nor `Incomplete`, the interval's lower bound stays within `max_bound_points` (30), and agreement with the labels reaches `min_agreement_points` (75), taken among the triggers labelled accept and among those labelled reject, whichever is lower. The bound rules out a large drop against the recording, and the floor rules out a router that was already wrong on both arms, or that declines everything when most labels are rejects. A label set with no accept or no reject is refused before the run (`judge.check_labels`), with words naming the missing kind. A pass doesn't show parity with the recording.
 
 The scratch session's `route` tool has the router's schema, and its executor records the items and applies nothing, so a run writes no routing, ticket or assignment. Each trial's session is held by a custodian actor that closes it when the run cancels or the trial process goes down. A restart forgets a running run, since `runs` lives in memory, and starts nothing.
 

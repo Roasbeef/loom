@@ -469,18 +469,24 @@ floor would admit routers the person's labels say are wrong on more than one inb
 and `auto` acts on those messages without asking. The figure is rounded down, so a run on the line is
 not counted in. Re-run on the same plans (`verdict_test.gleam`), with a router that agrees on 45 to 55
 percent of triggers on both arms, the interval rule alone passes 249 of 300 plans and the floor passes
-none; at 60 to 70 percent the floor passes 6; at 80 to 90 percent it passes 278. For routers that agree
-on 75 to 100 percent with no change, 283 of 300 pass. For a fifteen-point drop from a router that agrees
-on 80 to 100 percent, the interval rule passes 124 of 300 plans and the floor 96. The interval rule's own
+none; at 60 to 70 percent the floor passes 2; at 80 to 90 percent it passes 264. For routers that agree
+on 75 to 100 percent with no change, 280 of 300 pass. For a fifteen-point drop from a router that agrees
+on 80 to 100 percent, the interval rule passes 124 of 300 plans and the floor 68. The interval rule's own
 figures above do not move, because the floor can only remove passes. The floor applies to the replay
 lane as well, since `outcome_of` is shared: a replay of a router whose recorded decisions agree with the
 labels on under 75 percent of the trials fails, which is the signal that the pair should not be in `auto`.
 
-The floor cannot see a router that declines everything when most labels are rejects. That router agrees
-with the labels as often as they are rejects, and the report says only that it agrees. A person who
-labels thirty triggers of which two are accepts has a floor that a router that never accepts passes at 93
-percent. The report shows `agreement_points` and nothing about the classes; a floor on the accept class
-alone would need more labels of that class than a rule of this size has.
+The floor as first written took one share over all the trials, and that cannot see a router that
+declines everything when most labels are rejects: such a router agrees as often as they are rejects, so
+a person who labels thirty triggers of which two are accepts had a floor that a router that never accepts
+passed at 93 percent. The floor is now taken per label class, among the triggers labelled accept and among
+those labelled reject, and the lower of the two is `agreement_points`. The router that declines everything
+reads 0. The plan figures above are measured that way, with half the labels of each kind, and they are
+lower than the overall share gave (the figures that were 283, 278 and 96 above) because the lower of two
+noisier shares is lower still. A label set with no accept, or no reject, cannot pass, so `judge.judge`
+refuses it (`MissingLabelClass`) and the live lane refuses it before it spends a call, in words that
+name the missing kind. A second-pass figure the old text gave, a router right 75 percent of the time
+passing about half of runs, was a guess and not a measurement; on these plans it is 82 of 300.
 
 A verdict is pinned to the policy version, a digest of the router's pack, and the router's profile and
 model key. `RouterPinSet` announces the last two at each start and writes nothing when they are

@@ -41,7 +41,11 @@
 //// compare it with the recorded arm, and a router that disagrees with the
 //// person's labels on both arms has not regressed. A pass therefore also needs
 //// the candidate's own agreement with the labels to reach
-//// `min_agreement_points`.
+//// `min_agreement_points`, and that agreement is measured separately for the
+//// triggers labelled accept and for those labelled reject, and is the lower of
+//// the two. An overall share would let a router that declines everything pass
+//// when most labels are rejects, so a label set with no accept, or no reject,
+//// is refused before any measurement (`MissingLabelClass`).
 ////
 //// ## Flow
 ////
@@ -85,26 +89,30 @@ pub const live_trials: Int = 3
 pub const max_bound_points: Int = 30
 
 /// The least agreement with the labels, in whole points of the candidate's
-/// trials, that a pass needs.
+/// trials, that a pass needs, in each of the two label classes.
 ///
 /// The interval rule compares the candidate with the recorded arm, so it says
 /// nothing about a router that disagrees with the person on both arms. This
 /// floor is the absolute claim: at most one trial in four goes against the
-/// person's label.
+/// person's label, among the triggers labelled accept and among those labelled
+/// reject alike.
 ///
 /// The value follows from the size of a run and from what is being protected.
 /// A guess agrees on half the trials. A router that answers the same way every
 /// time clusters its three trials, so thirty triggers give an observed
 /// agreement a standard error near 9 points, and 75 is 2.7 of them above
-/// guessing. A router that is right 85 percent of the time passes about nine
-/// runs in ten, and one that is right 75 percent of the time passes half of
-/// them. A lower floor would admit routers that the person's labels say are
-/// wrong on more than one inbound message in four, and `auto` acts on those
-/// messages without asking.
+/// guessing. Measured on synthetic plans with half the labels of each kind, a
+/// router that is right 85 percent of the time passes 264 of 300 runs, and one
+/// that is right 75 percent of the time passes 82. A lower floor would admit
+/// routers that the person's labels say are wrong on more than one inbound
+/// message in four, and `auto` acts on those messages without asking.
 ///
-/// A floor on agreement cannot see a router that declines everything when most
-/// labels are rejects. That router agrees with the labels as often as they are
-/// rejects, and the verdict says only that it agrees.
+/// The floor holds per class because a router that declines everything agrees
+/// with the labels as often as they are rejects, so an overall share would pass
+/// it when most labels are rejects. Each class has fewer triggers than the
+/// whole set, so its share is noisier than the overall one, and the lower of
+/// two noisy shares is lower still: a router that is right more often than the
+/// floor passes somewhat less often than it would on the overall share.
 pub const min_agreement_points: Int = 75
 
 const recorded_arm = "recorded"
@@ -149,8 +157,9 @@ pub type Finding {
     /// What the run covered.
     covers: Covers,
     /// The share of the candidate's trials that matched the person's label, in
-    /// whole points rounded down. It is the number `min_agreement_points`
-    /// holds a pass to.
+    /// whole points rounded down, taken among the triggers labelled accept and
+    /// among those labelled reject, and the lower of the two. It is the number
+    /// `min_agreement_points` holds a pass to.
     agreement_points: Int,
   )
 }
@@ -163,6 +172,14 @@ pub type Refusal {
     have: Int,
     /// What `needed_labels` asks for.
     need: Int,
+  )
+
+  /// No trigger carries this label. A router that always gave the other answer
+  /// would agree with every label there is, so the labels cannot tell it from a
+  /// good one.
+  MissingLabelClass(
+    /// The label no trigger has.
+    missing: Label,
   )
 }
 
@@ -320,12 +337,39 @@ fn sampled(
 /// assert judge.judge([], model.Replay) == Error(judge.NotEnoughLabels(0, 30))
 /// ```
 pub fn judge(samples: List(Sample), lane: Lane) -> Result(Finding, Refusal) {
-  let have = list.length(samples)
+  use Nil <- result.map(
+    check_labels(list.map(samples, fn(each) { each.label })),
+  )
+  measure(samples, lane)
+}
 
-  // Fewer than the instrument's own test size cannot say what a pass means.
+/// Whether labels can be judged: at least `needed_labels` of them, since fewer
+/// than the instrument's own test size cannot say what a pass means, and at
+/// least one accept and one reject, since without both the agreement floor
+/// cannot tell a good router from one that always gives the other answer. A
+/// host calls this before it spends anything on a run.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert judge.check_labels([]) == Error(judge.NotEnoughLabels(0, 30))
+/// ```
+pub fn check_labels(labels: List(Label)) -> Result(Nil, Refusal) {
+  let have = list.length(labels)
+
+  // The count comes first, so a run that is short on both is told to label
+  // more before it is told which kind.
   case have < needed_labels {
     True -> Error(NotEnoughLabels(have, needed_labels))
-    False -> Ok(measure(samples, lane))
+    False ->
+      case
+        list.contains(labels, ShouldAccept),
+        list.contains(labels, model.ShouldNotAccept)
+      {
+        True, True -> Ok(Nil)
+        False, _ -> Error(MissingLabelClass(ShouldAccept))
+        True, False -> Error(MissingLabelClass(model.ShouldNotAccept))
+      }
   }
 }
 
@@ -371,13 +415,23 @@ fn measure(samples: List(Sample), lane: Lane) -> Finding {
 }
 
 /// The share of the candidate's trials that matched the label, in whole points
-/// rounded down so that a figure on the line is never counted in. A run with no
-/// trials agrees with nothing.
+/// rounded down so that a figure on the line is never counted in, taken among
+/// the triggers of each label class and then the lower of the two. A class with
+/// no trials agrees with nothing.
 fn agreement_of(samples: List(Sample)) -> Int {
+  int.min(
+    class_agreement(samples, ShouldAccept),
+    class_agreement(samples, model.ShouldNotAccept),
+  )
+}
+
+/// The share of the candidate's trials on the triggers carrying `label` that
+/// matched it.
+fn class_agreement(samples: List(Sample), label: Label) -> Int {
   let trials =
-    list.flat_map(samples, fn(each) {
-      list.map(each.candidate, agrees(_, each.label))
-    })
+    samples
+    |> list.filter(fn(each) { each.label == label })
+    |> list.flat_map(fn(each) { list.map(each.candidate, agrees(_, label)) })
   let matched = list.count(trials, fn(matches) { matches })
 
   // Integer division rounds down, which is the direction the floor wants.
@@ -474,8 +528,9 @@ fn bound_points(rows: List(Trial), plan: List(#(String, Int))) -> Int {
 /// A pass needs three things. The instrument must not have called the candidate
 /// `Harmed` or found the rows `Incomplete`. Its interval of the change in
 /// agreement with the labels must not reach below a drop of `max_bound_points`.
-/// And the candidate's own agreement with the labels, `agreement_points`, must
-/// reach `min_agreement_points`.
+/// And the candidate's own agreement with the labels, `agreement_points`, which
+/// is the lower of its agreement on accepts and on rejects, must reach
+/// `min_agreement_points`.
 ///
 /// The second is what lets a pass say it ruled out a large regression. The
 /// verdict alone cannot say that, because `Underpowered` is the instrument's

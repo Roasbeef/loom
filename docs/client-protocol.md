@@ -1963,7 +1963,7 @@ replies `{trigger, label}`. The label is an event of the project ledger and surv
 label of a trigger replaces the earlier, and a trigger no rule matched or the project does not hold is
 refused `bad_request`. `projects.verdict` (`{project, rule, lane}` with `lane` `replay` by default)
 measures the rule's labelled triggers with the evaluation instrument and records the finding. It is
-refused `bad_request`, with a sentence, below thirty labels.
+refused `bad_request`, with a sentence, below thirty labels or when no trigger is labelled `accept`, or none `reject`.
 
 The `replay` lane runs the current gate over the recorded triggers, costs nothing, says nothing about
 the router's prompt or model, and so reads `replay_only` and does not unlock `auto`. It replies at once
@@ -1988,7 +1988,7 @@ after a restart.
 
 A pass needs the instrument's verdict to be neither `harmed` nor `incomplete`, its interval of the change
 in agreement with the labels to stay above a drop of 30 points, and the candidate's own agreement with
-the labels to reach 75 percent of its trials (`agreement_points`). A verdict is pinned to the policy
+the labels to reach 75 percent of its trials, among the triggers labelled `accept` and among those labelled `reject`, whichever share is lower (`agreement_points`). A verdict is pinned to the policy
 version, the router prompt revision and the router model, and a change to any of them returns the
 rule to `observe`.
 
