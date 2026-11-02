@@ -189,6 +189,36 @@ pub fn a_follow_up_goes_straight_to_the_ticket_that_owns_the_thread_test() {
   assert next.queue == []
 }
 
+pub fn an_inferred_comment_on_a_followed_thread_reaches_the_worker_only_when_the_gate_allows_test() {
+  let comment =
+    world.trigger(
+      "b1",
+      "th-c1",
+      "ci",
+      model.ListedBot,
+      model.Unaddressed,
+      world.matched(),
+      0,
+    )
+  let observing =
+    run(working(), [event.ModeSet(world.source, world.rule, model.Observe)])
+  let #(_, held) = step(observing, arrival(comment))
+  assert list.all(held, fn(effect) {
+    case effect {
+      Deliver(_, _, _) -> False
+      _ -> True
+    }
+  })
+
+  let armed =
+    run(working(), [
+      event.VerdictRecorded(world.source, world.rule, "v1", model.VerdictPassed),
+      event.ModeSet(world.source, world.rule, model.Auto),
+    ])
+  let #(_, delivered) = step(armed, arrival(comment))
+  assert delivered == [Deliver(ticket_of("c1"), 1, TriggerId("b1"))]
+}
+
 pub fn the_projects_own_messages_are_dropped_test() {
   let own =
     world.trigger(

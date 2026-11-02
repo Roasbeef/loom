@@ -538,7 +538,7 @@ fn check_step(
   use _ <- result.try(check_effects(sut, next, effects))
   use _ <- result.try(check_check_rule(sut, incoming, effects))
   use _ <- result.try(check_routing(sut, incoming, next))
-  Ok(Nil)
+  check_inferred_delivery(sut, incoming, next, effects)
 }
 
 fn check_effects(
@@ -650,6 +650,40 @@ fn check_check_rule(
         tag: "check",
         detail: "a check was requested by something other than an idle report",
       )
+  }
+}
+
+// An inferred trigger reaches a subscribed worker only when the gate would
+// let it be accepted.
+fn check_inferred_delivery(
+  sut: Sut,
+  incoming: Event,
+  next: State,
+  effects: List(Effect),
+) -> Result(Nil, statem.Violation) {
+  case incoming {
+    event.TriggerArrived(trigger, _) -> {
+      let delivered =
+        list.any(effects, fn(effect) {
+          case effect {
+            event.Deliver(_, _, id) -> id == trigger.id
+            _ -> False
+          }
+        })
+      let rule = option.map(trigger.inputs.rule, fn(matched) { matched.rule })
+      let pair = state.pair(sut.state, trigger.source, rule)
+
+      case delivered, strength_in(next, trigger.id) {
+        True, Some(model.Inferred) ->
+          holds(
+            ok: gate.acceptance(model.Inferred, pair) == gate.Proceed,
+            tag: "inferred",
+            detail: "an inferred trigger was delivered without the gate's say-so",
+          )
+        _, _ -> Ok(Nil)
+      }
+    }
+    _ -> Ok(Nil)
   }
 }
 
