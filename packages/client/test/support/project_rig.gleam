@@ -12,8 +12,6 @@
 
 import client/project_repo
 import client/worktrees
-import gleam/bit_array
-import gleam/crypto
 import gleam/list
 import gleam/string
 import host/bootstrap
@@ -75,10 +73,11 @@ pub fn commit(clone: String, files: List(#(String, String))) -> String {
   worktree_rig.git(clone, ["rev-parse", "HEAD"])
 }
 
-/// A digest of everything in a repository that a worker's write could change
+/// A record of everything in a repository that a worker's write could change
 /// to the owner's harm: its configuration, its hooks, its refs, its `HEAD`
 /// and the objects its refs name. Equal digests before and after a scenario
-/// are the claim that nothing reached the owner's repository.
+/// are the claim that nothing reached the owner's repository. It stays text so
+/// that a failed comparison names the part that moved.
 pub fn digest(repository: String) -> String {
   let assert Ok(config) = simplifile.read(repository <> "/.git/config")
     as "the configuration is readable"
@@ -89,9 +88,7 @@ pub fn digest(repository: String) -> String {
   let refs = worktree_rig.git(repository, ["for-each-ref"])
   let head = worktree_rig.git(repository, ["rev-parse", "HEAD"])
   let objects = worktree_rig.git(repository, ["count-objects", "-v"])
-  let text = string.join([config, hooks, refs, head, objects], "\n--\n")
-  crypto.hash(crypto.Sha256, bit_array.from_string(text))
-  |> bit_array.base16_encode
+  string.join([config, hooks, refs, head, objects], "\n--\n")
 }
 
 /// The host repository's ref for a commit taken in for a ticket, or an empty
