@@ -311,10 +311,13 @@ fn refusal_words(rule: RuleId, refusal: judge.Refusal) -> String {
 /// one that always gives the other answer, so the owner is told which kind to
 /// add before a run is spent on it.
 fn missing_class(rule: RuleId, missing: model.Label) -> String {
+  // The missing kind names the router that the labels could not tell from a
+  // good one: the one that always gives the other answer.
   let #(kind, other) = case missing {
     model.ShouldAccept -> #("accept", "declines every trigger")
     model.ShouldNotAccept -> #("reject", "takes every trigger on")
   }
+
   "rule "
   <> rule.value
   <> " has no trigger labelled "
