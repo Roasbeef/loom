@@ -472,7 +472,8 @@ fn replay(host: Host, after: Int) -> Result(Host, String) {
     }),
   )
 
-  // In replay, the arms below are the outcomes of `list.last(page)`.
+  // An empty page means the ledger is exhausted. Otherwise the next page
+  // starts after this page's last sequence number.
   case list.last(page) {
     Error(Nil) -> Ok(host)
     Ok(last) -> {
@@ -482,7 +483,10 @@ fn replay(host: Host, after: Int) -> Result(Host, String) {
   }
 }
 
-/// The replay line step of this module.
+/// Applies one stored line. A host record only updates the host's own tables.
+/// An engine event must be accepted by the engine against the state built so
+/// far, and a refusal means the ledger was not written by this engine, so the
+/// replay stops there and names the line.
 fn replay_line(
   host: Host,
   stored: project_ledger.StoredEvent,
@@ -507,9 +511,12 @@ fn replay_line(
 
 // --- messages ----------------------------------------------------------------
 
-/// The handle step of this module.
+/// Takes one message and answers its sender, if it has a reply subject, before
+/// performing the effects the message made due, so a caller never waits on a
+/// slow session start.
 fn handle(host: Host, message: Message) -> actor.Next(Host, Message) {
-  // In handle, the arms below are the outcomes of `message`.
+  // Writes that commit engine events end in `perform_due`. Reads, a queued
+  // reply and a hand-back leave nothing due and skip it.
   case message {
     Post(request, text, reply) -> {
       let #(next, answer) = post_now(host, request, text)
@@ -576,7 +583,8 @@ fn tick(host: Host) -> Host {
     && host.offered_at_ms > 0
     && now - host.offered_at_ms > host.config.router_turn_ms
 
-  // In tick, the arms below are the outcomes of `let relieved = case stale`.
+  // Ending the turn is how the engine returns the unrouted candidates to the
+  // queue. A refusal, because the turn already ended, leaves the host as it is.
   let relieved = case stale {
     True -> committed_or_same(host, event.RouterTurnEnded)
     False -> host
@@ -642,7 +650,9 @@ fn record(host: Host, written: Record) -> Result(Host, String) {
   Host(..keep_record(host, written), last_seq: seq)
 }
 
-/// The keep record step of this module.
+/// Folds one host record into the in-memory tables. Writing a record and
+/// replaying it both come through here, so the tables after a restart match
+/// the tables before it.
 fn keep_record(host: Host, written: Record) -> Host {
   case written {
     project_records.TriggerText(trigger:, source:, actor:, body:) ->
@@ -663,7 +673,9 @@ fn keep_record(host: Host, written: Record) -> Host {
 
 // --- composer ----------------------------------------------------------------
 
-/// The post now step of this module.
+/// Records an owner's post. A request id that was posted before answers
+/// `Repeated` and writes nothing, so a client may retry a post whose reply it
+/// never saw.
 fn post_now(
   host: Host,
   request: String,
@@ -671,7 +683,8 @@ fn post_now(
 ) -> #(Host, Result(Posted, String)) {
   let id = model.TriggerId(request)
 
-  // In post_now, the arms below are the outcomes of `valid_request(request), dict.has_key(host.engine.trig...`.
+  // An invalid id is refused before anything is written. A known id is a
+  // repeat. Anything else becomes an explicit trigger from the composer.
   case valid_request(request), dict.has_key(host.engine.triggers, id) {
     False, _ -> #(
       host,
@@ -706,7 +719,8 @@ fn post_now(
         |> result.map_error(not_committed_text)
       }
 
-      // In post_now, the arms below are the outcomes of `outcome`.
+      // A failure returns the old host, so memory shows neither the text nor
+      // the trigger. A text row that did reach the disk is harmless.
       case outcome {
         Ok(next) -> #(next, Ok(Posted(request)))
         Error(reason) -> #(host, Error(reason))
@@ -715,7 +729,9 @@ fn post_now(
   }
 }
 
-/// The valid request step of this module.
+/// A request id is 1 to 64 letters, digits, underscore, hyphen or dot. The
+/// alphabet leaves out the colon, so the id can join a session id in a message
+/// id and be split apart again without ambiguity.
 fn valid_request(request: String) -> Bool {
   let size = string.length(request)
   size >= 1
@@ -730,7 +746,8 @@ fn valid_request(request: String) -> Bool {
 
 // --- the router's decisions --------------------------------------------------
 
-/// The route now step of this module.
+/// Applies the routing items in order, each as its own engine event, so one
+/// refused item does not undo the others. The outcomes come back in item order.
 fn route_now(
   host: Host,
   items: List(tools.Item),
@@ -739,7 +756,8 @@ fn route_now(
     list.fold(items, #(host, []), fn(acc, item) {
       let #(so_far, done) = acc
 
-      // In route_now, the arms below are the outcomes of `commit(so_far, routed_event(item))`.
+      // An accepted item advances the host. A refused one leaves it as it was
+      // and reports the reason to the router.
       case commit(so_far, routed_event(item)) {
         Ok(next) -> #(next, [tools.Applied, ..done])
         Error(failure) -> #(so_far, [
@@ -763,7 +781,8 @@ fn route_now(
   #(settled, list.reverse(outcomes))
 }
 
-/// The routed event step of this module.
+/// The engine event one routing item asks for. Every field is an id or a kind,
+/// and the only text is the capped title of an accept.
 fn routed_event(item: tools.Item) -> Event {
   case item.action {
     tools.Accept(title:) -> event.Routed(routing(item, model.Accept(title)))
@@ -774,7 +793,8 @@ fn routed_event(item: tools.Item) -> Event {
   }
 }
 
-/// The routing step of this module.
+/// The engine's `Routing` for an accept, attach or resume. The type has no
+/// place for text the router could address to a worker.
 fn routing(item: tools.Item, kind: model.RouteKind) -> model.Routing {
   model.Routing(
     trigger: item.trigger,
@@ -787,12 +807,14 @@ fn routing(item: tools.Item, kind: model.RouteKind) -> model.Routing {
 
 // --- replies, reports, hand-backs --------------------------------------------
 
-/// The reply now step of this module.
+/// Writes a router reply as a host record plus an outbox row in one
+/// transaction. The subject must be a trigger the engine knows, so the router
+/// cannot address a message that is not in this project.
 fn reply_now(
   host: Host,
   queued: tools.Reply,
 ) -> #(Host, Result(Nil, tools.Refusal)) {
-  // In reply_now, the arms below are the outcomes of `dict.has_key(host.engine.triggers, queued.subject)`.
+  // An unknown subject is refused before anything is written.
   case dict.has_key(host.engine.triggers, queued.subject) {
     False -> #(
       host,
@@ -801,7 +823,7 @@ fn reply_now(
       )),
     )
     True -> {
-      // In reply_now, the arms below are the outcomes of `let purpose = case queued.purpose`.
+      // The purpose is stored as its wire word.
       let purpose = case queued.purpose {
         tools.Acknowledge -> "acknowledge"
         tools.Clarify -> "clarify"
@@ -851,13 +873,15 @@ fn assignment_of(host: Host, session: String) -> Result(#(Ticket, Int), Nil) {
   })
 }
 
-/// The report now step of this module.
+/// Applies a worker's report to the ticket its session is bound to. The
+/// session id comes from the calling session and not from the report, so a
+/// worker can only report on its own assignment.
 fn report_now(
   host: Host,
   session: String,
   report: tools.WorkerReport,
 ) -> #(Host, Result(Nil, tools.Refusal)) {
-  // In report_now, the arms below are the outcomes of `assignment_of(host, session)`.
+  // Only a session the engine has bound to an assignment may report.
   case assignment_of(host, session) {
     Error(Nil) -> #(
       host,
@@ -876,7 +900,8 @@ fn report_now(
           report,
         ))
 
-        // In report_now, the arms below are the outcomes of `let engine_report = case report.status`.
+        // The tool's status words map one to one onto the engine's. Only a
+        // waiting report carries the number of the question it asked.
         let engine_report = case report.status {
           tools.Progress -> model.Progress
           tools.Waiting -> model.Waiting(asked)
@@ -892,7 +917,8 @@ fn report_now(
         |> result.map_error(not_committed_text)
       }
 
-      // In report_now, the arms below are the outcomes of `outcome`.
+      // A refusal returns the old host, which also drops the question text
+      // written ahead of the commit from memory.
       case outcome {
         Ok(next) -> #(next, Ok(Nil))
         Error(reason) -> #(host, Error(tools.NotPermitted(reason)))
@@ -901,13 +927,15 @@ fn report_now(
   }
 }
 
-/// The question of step of this module.
+/// Writes a question's text ahead of the report and returns its number. The
+/// number is the ledger position the report event will take, one past the text
+/// row's own, so it is unique and rises.
 fn question_of(
   host: Host,
   ticket: String,
   report: tools.WorkerReport,
 ) -> Result(#(Host, model.Question), String) {
-  // In question_of, the arms below are the outcomes of `report.question`.
+  // A report with no question needs no text row.
   case report.question {
     None -> Ok(#(host, model.NoQuestion))
     Some(text) -> {
@@ -921,7 +949,8 @@ fn question_of(
   }
 }
 
-/// The hand back now step of this module.
+/// Records a worker's hand-back as a host record. It changes no engine state,
+/// so it commits no event and queues no effect.
 fn hand_back_now(
   host: Host,
   session: String,
@@ -951,7 +980,8 @@ fn hand_back_now(
   }
 }
 
-/// The stop now step of this module.
+/// Forwards a person's stop to the engine, which decides what it means. A
+/// refusal comes back as text for the caller.
 fn stop_now(
   host: Host,
   ticket: String,
@@ -981,11 +1011,14 @@ fn human_now(
   let id = model.TriggerId("h-" <> entry)
   let located = assignment_of(host, session)
 
-  // In human_now, the arms below are the outcomes of `located, dict.has_key(host.engine.triggers, id)`.
+  // A turn typed into a session the engine has not bound is ignored, and so
+  // is an entry whose trigger already exists, which is the scanner repeating
+  // itself.
   case located, dict.has_key(host.engine.triggers, id) {
     Error(Nil), _ | _, True -> host
     Ok(#(ticket, _)), False -> {
-      // In human_now, the arms below are the outcomes of `let thread = case dict.get(host.engine.triggers, tick...`.
+      // The turn joins the thread of the ticket's origin trigger, so it reads
+      // as a follow-up on the same conversation.
       let thread = case dict.get(host.engine.triggers, ticket.origin) {
         Ok(origin) -> origin.trigger.thread
         Error(Nil) -> model.ThreadId(ticket.origin.value)
@@ -1014,7 +1047,8 @@ fn human_now(
         |> result.map_error(not_committed_text)
       }
 
-      // In human_now, the arms below are the outcomes of `outcome`.
+      // A turn that could not be written is logged, and the host stays as it
+      // was.
       case outcome {
         Ok(next) -> next
         Error(reason) -> {
@@ -1038,15 +1072,19 @@ fn perform_due(host: Host) -> Host {
   perform_rounds(host, 8)
 }
 
-/// The perform rounds step of this module.
+/// Runs due effects in rounds. A performed job can commit an event whose
+/// effects are due at once, such as a start that lets a queued delivery go
+/// out, so another round follows until nothing is due or the rounds run out.
 fn perform_rounds(host: Host, rounds: Int) -> Host {
-  // In perform_rounds, the arms below are the outcomes of `rounds`.
+  // Spent rounds stop the pass. Rows still due are read again on the next
+  // message or tick.
   case rounds {
     0 -> host
     _ -> {
       let now = host.ports.now_ms()
 
-      // In perform_rounds, the arms below are the outcomes of `project_ledger.effects_due(host.ledger, now, 50)`.
+      // A failed read is treated as nothing due. The rows stay in the ledger
+      // and the next tick reads them again.
       case project_ledger.effects_due(host.ledger, now, 50) {
         Error(_) | Ok([]) -> host
         Ok(rows) -> {
@@ -1058,9 +1096,10 @@ fn perform_rounds(host: Host, rounds: Int) -> Host {
   }
 }
 
-/// The perform row step of this module.
+/// Decodes one effect row and performs it.
 fn perform_row(host: Host, row: project_ledger.Effect) -> Host {
-  // In perform_row, the arms below are the outcomes of `project_records.job(row)`.
+  // A row that does not decode is settled, because retrying a payload that
+  // cannot be parsed never succeeds and would hold up every later round.
   case project_records.job(row) {
     Error(reason) -> {
       log.error(host.ports.logger, "project.job_unreadable", [
@@ -1088,7 +1127,9 @@ fn defer(host: Host, row: project_ledger.Effect) -> Host {
   host
 }
 
-/// The perform step of this module.
+/// Performs one job. Each performer ends by settling the row, deferring it, or
+/// committing the engine event that gives up on it, so no row is left due
+/// without a reason.
 fn perform(host: Host, row: project_ledger.Effect, job: Job) -> Host {
   case job {
     StartJob(ticket:, seq:, key:) -> start_worker(host, row, ticket, seq, key)
@@ -1106,7 +1147,8 @@ fn perform(host: Host, row: project_ledger.Effect, job: Job) -> Host {
   }
 }
 
-/// The not served step of this module.
+/// Logs and settles a job kind that has no performer in this slice, so its row
+/// does not come due again on every scan.
 fn not_served(
   host: Host,
   row: project_ledger.Effect,
@@ -1120,7 +1162,8 @@ fn not_served(
   settle(host, row)
 }
 
-/// The bound session step of this module.
+/// The session bound to assignment `seq` of a ticket, or `None` while the
+/// assignment has no session yet.
 fn bound_session(ticket: Ticket, seq: Int) -> Option(String) {
   list.find(ticket.assignments, fn(assignment) { assignment.seq == seq })
   |> result.map(fn(assignment) {
@@ -1129,7 +1172,10 @@ fn bound_session(ticket: Ticket, seq: Int) -> Option(String) {
   |> result.unwrap(None)
 }
 
-/// The start worker step of this module.
+/// Starts the worker session for an assignment. The request key is the
+/// engine's, so a repeat after a crash finds the session the first attempt
+/// made. A ticket the engine no longer has, or an assignment that already has
+/// a session, needs no start.
 fn start_worker(
   host: Host,
   row: project_ledger.Effect,
@@ -1151,7 +1197,8 @@ fn start_worker(
               title: model.title_text(found.title),
             )
 
-          // In start_worker, the arms below are the outcomes of `host.ports.start_session(request)`.
+          // A started session is bound to the assignment. A failure counts as
+          // an attempt against the row.
           case host.ports.start_session(request) {
             Ok(session) -> started(host, row, found, seq, session)
             Error(reason) -> start_failed(host, row, found, seq, reason)
@@ -1161,7 +1208,9 @@ fn start_worker(
   }
 }
 
-/// The started step of this module.
+/// Binds the new session to the assignment and marks it live, as two engine
+/// events, and then settles the row. A refusal of either, such as a ticket a
+/// person stopped meanwhile, leaves the host as it was.
 fn started(
   host: Host,
   row: project_ledger.Effect,
@@ -1192,7 +1241,8 @@ fn start_failed(
     field.text(key: "reason", value: reason),
   ])
 
-  // In start_failed, the arms below are the outcomes of `row.attempts >= 4`.
+  // The ledger counts attempts from zero, so the fifth failure is the one
+  // that gives up.
   case row.attempts >= 4 {
     True ->
       committed_or_same(
@@ -1204,18 +1254,20 @@ fn start_failed(
   }
 }
 
-/// The stop worker step of this module.
+/// Stops the session of an assignment, if it has one. The stop is best effort
+/// and its result is ignored, because the session may already be closed and
+/// the row must settle either way.
 fn stop_worker(
   host: Host,
   row: project_ledger.Effect,
   ticket: String,
   seq: Int,
 ) -> Host {
-  // In stop_worker, the arms below are the outcomes of `state.ticket(host.engine, model.TicketId(ticket))`.
+  // A ticket the engine does not have needs no stop.
   case state.ticket(host.engine, model.TicketId(ticket)) {
     Error(_) -> settle(host, row)
     Ok(found) -> {
-      // In stop_worker, the arms below are the outcomes of `bound_session(found, seq)`.
+      // An assignment that never received a session has nothing to stop.
       case bound_session(found, seq) {
         Some(session) -> {
           let _stopped = host.ports.stop_session(session)
@@ -1229,7 +1281,9 @@ fn stop_worker(
   }
 }
 
-/// The deliver to worker step of this module.
+/// Delivers a stored trigger to the worker bound to an assignment. A missing
+/// ticket or text is settled, since neither comes back. A person's own turn is
+/// settled without delivery, because they typed it into that very session.
 fn deliver_to_worker(
   host: Host,
   row: project_ledger.Effect,
@@ -1240,7 +1294,7 @@ fn deliver_to_worker(
   let found = state.ticket(host.engine, model.TicketId(ticket))
   let typed_here = is_human(trigger)
 
-  // In deliver_to_worker, the arms below are the outcomes of `found, dict.get(host.texts, trigger)`.
+  // Delivery needs both the ticket and the trigger's text.
   case found, dict.get(host.texts, trigger) {
     Error(_), _ | _, Error(Nil) -> settle(host, row)
 
@@ -1264,7 +1318,9 @@ fn is_human(trigger: String) -> Bool {
   string.starts_with(trigger, "h-")
 }
 
-/// The delivered step of this module.
+/// Turns an admission result into the row's fate. A success settles the row.
+/// A failure to admit backs off, and after enough attempts it is recorded as a
+/// failed input, which is what puts the ticket in `person/delivery`.
 fn delivered(
   host: Host,
   row: project_ledger.Effect,
@@ -1274,19 +1330,21 @@ fn delivered(
 ) -> Host {
   let id = model.TicketId(ticket)
 
-  // In delivered, the arms below are the outcomes of `admitted`.
+  // Admitted settles the row, NotYet backs it off, and GaveUp records the
+  // failure where a person will see it.
   case admitted {
     Admitted -> {
       let current = state.ticket(host.engine, id)
 
-      // In delivered, the arms below are the outcomes of `let was_failed = case current`.
+      // Whether an earlier attempt had already given up on this input.
       let was_failed = case current {
         Ok(found) ->
           list.contains(found.failed_inputs, model.TriggerId(trigger))
         Error(_) -> False
       }
 
-      // In delivered, the arms below are the outcomes of `let next = case was_failed`.
+      // A success after a recorded failure clears the failure, so the ticket
+      // leaves `person/delivery`. A first-time success has nothing to clear.
       let next = case was_failed {
         True ->
           committed_or_same(
@@ -1305,7 +1363,10 @@ fn delivered(
   }
 }
 
-/// The offer to router step of this module.
+/// Delivers a batch of candidate triggers to the router. The row settles only
+/// when every trigger was admitted, and that moment starts the router-turn
+/// clock. After ten failed attempts the turn is ended, which returns the
+/// candidates to the queue.
 fn offer_to_router(
   host: Host,
   row: project_ledger.Effect,
@@ -1323,7 +1384,8 @@ fn offer_to_router(
       }
     })
 
-  // In offer_to_router, the arms below are the outcomes of `list.all(results, fn(each) { each == Admitted })`.
+  // A partly delivered batch is retried whole. The message id of each trigger
+  // and the router makes the repeats of the delivered ones admit nothing.
   case list.all(results, fn(each) { each == Admitted }) {
     True ->
       Host(..host, offered_at_ms: host.ports.now_ms())
@@ -1378,7 +1440,8 @@ fn admit(
   }
   let first = attempt()
 
-  // In admit, the arms below are the outcomes of `let answered = case first`.
+  // A session that is not resident is opened once and the call is repeated.
+  // Any other failure goes to the caller as it is.
   let answered = case first {
     Error(peer_mail.NotOpen) ->
       case ports.open_session(session) {
@@ -1388,7 +1451,8 @@ fn admit(
     other -> other
   }
 
-  // In admit, the arms below are the outcomes of `answered`.
+  // An answer admits the message. A failure is logged and reported as not yet
+  // or as given up, depending on how many attempts the row has had.
   case answered {
     Ok(_) -> finish(Admitted)
     Error(failure) -> {
@@ -1397,7 +1461,7 @@ fn admit(
         field.text(key: "reason", value: peer_mail.reason(failure)),
       ])
 
-      // In admit, the arms below are the outcomes of `row.attempts >= 4`.
+      // Five attempts, counted from zero, are all a delivery gets.
       case row.attempts >= 4 {
         True -> finish(GaveUp)
         False -> finish(NotYet)
@@ -1408,7 +1472,8 @@ fn admit(
 
 // --- reading -----------------------------------------------------------------
 
-/// The board page step of this module.
+/// One page of the board, stamped with the revision it was read at. The queued
+/// replies appear on the first page only.
 fn board_page(host: Host, page: Int) -> Board {
   let all = ordered_tickets(host)
   let window = all |> list.drop(page * page_size) |> list.take(page_size)
@@ -1447,7 +1512,7 @@ fn ordered_tickets(host: Host) -> List(Ticket) {
   list.append(needing, rest)
 }
 
-/// The stage counts step of this module.
+/// Counts tickets by stage word, sorted by word so the output is stable.
 fn stage_counts(host: Host) -> List(#(String, Int)) {
   state.tickets_oldest_first(host.engine)
   |> list.fold(dict.new(), fn(counts, ticket) {
@@ -1458,7 +1523,7 @@ fn stage_counts(host: Host) -> List(#(String, Int)) {
   |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
 }
 
-/// The reply json step of this module.
+/// The board's form of one queued reply.
 fn reply_json(entry: #(String, String, String)) -> JsonValue {
   json.Object([
     #("subject", json.String(entry.0)),
@@ -1467,9 +1532,10 @@ fn reply_json(entry: #(String, String, String)) -> JsonValue {
   ])
 }
 
-/// The ticket json step of this module.
+/// A ticket's card, shared by the board and `project_read`. Its stage is the
+/// engine's pure function of the ticket, so no client recomputes it.
 fn ticket_json(host: Host, ticket: Ticket) -> JsonValue {
-  // In ticket_json, the arms below are the outcomes of `let session = case list.first(ticket.assignments)`.
+  // The session shown is the newest assignment's, if it has one yet.
   let session = case list.first(ticket.assignments) {
     Ok(latest) ->
       case latest.session {
@@ -1499,15 +1565,16 @@ fn ticket_json(host: Host, ticket: Ticket) -> JsonValue {
   ])
 }
 
-/// The mandate json step of this module.
+/// A mandate as the board shows it: strength, basis, source, actor and policy
+/// version.
 fn mandate_json(mandate: model.Mandate) -> JsonValue {
-  // In mandate_json, the arms below are the outcomes of `let strength = case mandate.strength`.
+  // Strength goes on the wire as a word.
   let strength = case mandate.strength {
     model.Explicit -> "explicit"
     model.Inferred -> "inferred"
   }
 
-  // In mandate_json, the arms below are the outcomes of `let via = case mandate.basis`.
+  // The basis is shown without the rule behind a rule-based accept.
   let via = case mandate.basis {
     model.FromComposer -> "composer"
     model.FromAddressed -> "addressed"
@@ -1526,7 +1593,8 @@ fn mandate_json(mandate: model.Mandate) -> JsonValue {
   ])
 }
 
-/// The question json step of this module.
+/// An open question with its text. The text lives in a host record keyed by
+/// ticket and number, and a question whose record is missing shows empty text.
 fn question_json(host: Host, ticket: Ticket) -> JsonValue {
   case ticket.question {
     model.NoQuestion -> json.Null
@@ -1545,12 +1613,14 @@ fn question_json(host: Host, ticket: Ticket) -> JsonValue {
   }
 }
 
-/// The serve resource step of this module.
+/// Serves one `project_read` resource. Candidates are the triggers now offered
+/// to the router, and every other resource reads one node of the graph by id.
 fn serve_resource(
   host: Host,
   resource: tools.Resource,
 ) -> Result(JsonValue, tools.Refusal) {
-  // In serve_resource, the arms below are the outcomes of `resource`.
+  // No resource serves a transcript or a file, so the private data the
+  // router could leak stays out of its reach.
   case resource {
     tools.Candidates ->
       Ok(
@@ -1596,7 +1666,8 @@ fn serve_resource(
   }
 }
 
-/// The thread json step of this module.
+/// A thread's entries, oldest first, each with whether the trigger was
+/// received or only recorded.
 fn thread_json(thread: model.Thread) -> JsonValue {
   json.Object([
     #("id", json.String(thread.id.value)),
@@ -1614,11 +1685,13 @@ fn thread_json(thread: model.Thread) -> JsonValue {
   ])
 }
 
-/// The trigger card step of this module.
+/// A trigger's card with its stored text. The router reads hostile text
+/// through this card, so it carries only the id, source, actor, thread and
+/// text.
 fn trigger_card(host: Host, id: model.TriggerId) -> Result(JsonValue, Nil) {
   use stored <- result.try(dict.get(host.engine.triggers, id))
 
-  // In trigger_card, the arms below are the outcomes of `let text = case dict.get(host.texts, id.value)`.
+  // A trigger with no stored text shows empty text and does not fail the read.
   let text = case dict.get(host.texts, id.value) {
     Ok(found) -> found.body
     Error(Nil) -> ""
@@ -1637,7 +1710,8 @@ fn trigger_card(host: Host, id: model.TriggerId) -> Result(JsonValue, Nil) {
 
 // --- refusals ----------------------------------------------------------------
 
-/// The refusal text step of this module.
+/// The sentence a refusal becomes for a caller. It names ids and never repeats
+/// the text of a message.
 fn refusal_text(refusal: Refusal) -> String {
   case refusal {
     event.UnknownTicket(ticket:) -> "there is no ticket " <> ticket.value

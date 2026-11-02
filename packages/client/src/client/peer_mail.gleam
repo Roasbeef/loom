@@ -863,7 +863,8 @@ fn trigger(
         )
       let mark = api.GuardedMark(key, receipt, [])
 
-      // In trigger, the arms below are the outcomes of `let accepted = case wake`.
+      // A busy-only trigger steers a run that is already going and never starts
+      // one. A may-wake trigger starts a run on an idle strand.
       let accepted = case wake {
         BusyOnly ->
           api.steer_marking(api.on_strand(runtime, target), payload, mark)

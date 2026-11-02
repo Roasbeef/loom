@@ -1745,7 +1745,9 @@ fn project_usage() -> String {
   <> "  configuration: inferred work stays off and you are its only source."
 }
 
-/// The parse project step of this module.
+/// Parses the words after `loom project`. `post` takes its text as the first
+/// word after the verb, and the other flags are the ones every local command
+/// accepts.
 fn parse_project(arguments: List(String)) -> Launch {
   case arguments {
     ["init", ..flags] -> project_launch(flags, ProjectInit)
@@ -1762,7 +1764,7 @@ fn project_launch(flags: List(String), command: ProjectCommand) -> Launch {
   }
 }
 
-/// The directory usage step of this module.
+/// The usage text of `loom directory`.
 fn directory_usage() -> String {
   "usage: loom directory status [--json] [--state-dir <path>] [--server <path>]\n"
   <> "  status shows the session directory's cluster as the daemon you are\n"
@@ -1873,9 +1875,11 @@ fn run_deployment(
   }
 }
 
-/// Establishes and coordinates run directory operations for the TUI runtime.
+/// Runs one `loom project` subcommand against the daemon and prints its
+/// result. The connection is closed before printing, so a slow terminal does
+/// not hold it open.
 fn run_project(options: bootstrap.Options, command: ProjectCommand) -> Nil {
-  // In run_project, the arms below are the outcomes of `sessions_host(options)`.
+  // A daemon that cannot be reached ends the command with the reason.
   case sessions_host(options) {
     Error(reason) -> command_failed("project", reason)
     Ok(#(control, host)) -> {
@@ -1897,10 +1901,10 @@ fn project_outcome(
     |> result.replace_error("the working directory cannot be read"),
   )
 
-  // In project_outcome, the arms below are the outcomes of `command`.
+  // Each subcommand ends in one line of text for the terminal.
   case command {
     ProjectInit -> {
-      // In project_outcome, the arms below are the outcomes of `let name = case list.last(string.split(here, "/"))`.
+      // The project is named for the directory, or "project" at the root.
       let name = case list.last(string.split(here, "/")) {
         Ok(last) if last != "" -> last
         _ -> "project"
@@ -1940,7 +1944,7 @@ fn project_outcome(
   }
 }
 
-/// The project request step of this module.
+/// Sends one `projects.*` command and returns the reply body.
 fn project_request(
   host: daemon_selection.Host,
   name: String,
@@ -1956,7 +1960,8 @@ fn project_here(
 ) -> Result(String, String) {
   use listed <- result.try(project_request(host, "projects.list", []))
 
-  // In project_here, the arms below are the outcomes of `listed`.
+  // A project is found by its workspace path. Any other shape of reply is
+  // reported as not understood.
   case listed {
     json.Object(fields) ->
       case list.key_find(fields, "projects") {
@@ -1976,7 +1981,8 @@ fn project_here(
   }
 }
 
-/// The project text step of this module.
+/// A string field of a reply, flattened to one line because the daemon's text
+/// is shown in a terminal. A missing or non-string field reads as empty.
 fn project_text(document: json.JsonValue, key: String) -> String {
   case document {
     json.Object(fields) ->
@@ -1991,7 +1997,7 @@ fn project_text(document: json.JsonValue, key: String) -> String {
 /// Each ticket is one line: its stage as the engine spells it, its id and its
 /// title. The daemon sends needs-a-person tickets first, and the order is kept.
 fn board_text(board: json.JsonValue) -> String {
-  // In board_text, the arms below are the outcomes of `let tickets = case board`.
+  // A reply without a ticket list reads as an empty board.
   let tickets = case board {
     json.Object(fields) ->
       case list.key_find(fields, "tickets") {
@@ -2001,7 +2007,7 @@ fn board_text(board: json.JsonValue) -> String {
     _ -> []
   }
 
-  // In board_text, the arms below are the outcomes of `tickets`.
+  // An empty board says so in words instead of printing nothing.
   case tickets {
     [] -> "no tickets"
     _ ->
@@ -2026,7 +2032,7 @@ fn fresh_request_id() -> String {
   "cli-" <> int.to_string(seconds) <> "-" <> int.to_string(nanoseconds)
 }
 
-/// The run directory step of this module.
+/// Runs `loom directory status` against the daemon and prints the result.
 fn run_directory(options: bootstrap.Options, output: Output) -> Nil {
   // Handle run directory branch dispatch.
   case sessions_host(options) {

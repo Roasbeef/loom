@@ -6424,7 +6424,8 @@ pub fn seat_project(
 ) -> Settings {
   let seated = Settings(..settings, project: Some(seat))
 
-  // In seat_project, the arms below are the outcomes of `seat.standing`.
+  // An ordinary session keeps its settings untouched, even though a seat was
+  // offered. A router also changes its model and a worker only its pack.
   case seat.standing {
     project_standing.Ordinary -> settings
     project_standing.Router(..) ->
@@ -6447,7 +6448,7 @@ fn routed_identity(settings: Settings) -> machine_strand.ModelIdentity {
       provider_gateway.resolve(settings.gateway, role)
     })
 
-  // In routed_identity, the arms below are the outcomes of `resolved`.
+  // With neither role configured, the router keeps the model it was given.
   case resolved {
     Ok(found) ->
       machine_strand.ModelIdentity(

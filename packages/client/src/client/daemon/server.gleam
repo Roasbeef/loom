@@ -3250,7 +3250,8 @@ fn project_command(
   run(control) |> result.map_error(control_refusal)
 }
 
-/// The project create step of this module.
+/// `projects.create`: makes the project row, its ledger and its router session
+/// for a workspace, and answers their ids. Any failure answers `bad_request`.
 fn project_create(
   control: project_start.Control,
   workspace: String,
@@ -3270,7 +3271,8 @@ fn project_create(
   })
 }
 
-/// The project list step of this module.
+/// `projects.list`: every running project with its ticket count per stage. A
+/// project whose actor does not answer the count lists with no counts.
 fn project_list(
   control: project_start.Control,
 ) -> Result(#(String, JsonValue), String) {
@@ -3293,7 +3295,9 @@ fn project_list(
   Ok(#("projects.list", json.Object([#("projects", json.Array(rows))])))
 }
 
-/// The project board step of this module.
+/// `projects.board`: one page of a project's tickets with the revision they
+/// were read at. An unknown project is `not_found`, and an actor that does not
+/// answer is `unavailable`.
 fn project_board(
   control: project_start.Control,
   project: String,
@@ -3319,7 +3323,9 @@ fn project_board(
   )
 }
 
-/// The project post step of this module.
+/// `projects.post`: the owner's text as an explicit trigger. The request id is
+/// the idempotency key, and `repeated` tells the client its earlier post
+/// already took.
 fn project_post(
   control: project_start.Control,
   project: String,
@@ -3335,7 +3341,7 @@ fn project_post(
     |> result.replace_error("bad_request"),
   )
 
-  // In project_post, the arms below are the outcomes of `let #(trigger, repeated) = case posted`.
+  // Both answers name the trigger, so a client can follow it on the board.
   let #(trigger, repeated) = case posted {
     project_host.Posted(trigger) -> #(trigger, False)
     project_host.Repeated(trigger) -> #(trigger, True)
@@ -3350,7 +3356,7 @@ fn project_post(
   )
 }
 
-/// The project stop step of this module.
+/// `projects.stop`: a person's stop of one ticket, attributed to the owner.
 fn project_stop(
   control: project_start.Control,
   project: String,

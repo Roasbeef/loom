@@ -892,7 +892,8 @@ pub fn projects(
     |> result.map_error(failure),
   )
 
-  // In projects, the arms below are the outcomes of `reply`.
+  // The daemon answers a projects command with a projects reply. Any other
+  // reply means the two sides disagree about the protocol.
   case reply {
     protocol.ProjectsReply(document) -> Ok(document)
     _other -> Error(name <> " returned an unexpected control reply")

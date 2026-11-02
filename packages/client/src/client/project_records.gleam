@@ -164,7 +164,8 @@ pub fn encode_record(record: Record) -> String {
   record_json(record) |> json.to_string
 }
 
-/// The record json step of this module.
+/// The ledger line of a host record. The `host` field names the variant, and
+/// is also what `decode_line` uses to tell a host record from an engine event.
 fn record_json(record: Record) -> Json {
   case record {
     TriggerText(trigger:, source:, actor:, body:) ->
@@ -219,11 +220,12 @@ pub fn decode_line(text: String) -> Result(Line, String) {
   }
 }
 
-/// The host decoder step of this module.
+/// Decodes a host record by its `host` word. A word it does not know fails the
+/// decoder, which `decode_line` then reads as an engine event.
 fn host_decoder() -> decode.Decoder(Record) {
   use kind <- decode.field("host", decode.string)
 
-  // In host_decoder, the arms below are the outcomes of `kind`.
+  // Each arm reads the fields its variant wrote in `record_json`.
   case kind {
     "text" -> {
       use trigger <- decode.field("trigger", decode.string)
@@ -270,7 +272,8 @@ pub fn draft(
   now_ms: Int,
   effect: Effect,
 ) -> project_ledger.EffectDraft {
-  // In draft, the arms below are the outcomes of `effect`.
+  // The key of each row is built from the ids that make the effect unique, so
+  // a repeat of the same event cannot queue a second copy of the same work.
   case effect {
     event.StartSession(ticket:, seq: assignment, key:, mandate:) -> {
       let recorded = policy.for_mandate(mandate)
@@ -350,7 +353,7 @@ pub fn draft(
   }
 }
 
-/// The row step of this module.
+/// An effect row due at `now_ms`, with its fields as a JSON object payload.
 fn row(
   kind: String,
   key: String,
@@ -369,13 +372,13 @@ fn row(
 /// ledger sees what the worker was meant to get. Enforcement by the broker is a
 /// later slice; this slice records the result and does not apply it.
 fn policy_text(found: policy.WorkerPolicy) -> String {
-  // In policy_text, the arms below are the outcomes of `let network = case found.network`.
+  // The network posture as a word.
   let network = case found.network {
     policy.RegistriesOnly -> "registries_only"
     policy.OwnerSessionPolicy -> "owner_session_policy"
   }
 
-  // In policy_text, the arms below are the outcomes of `let approvals = case found.approvals`.
+  // The approvals posture as a word.
   let approvals = case found.approvals {
     policy.ApprovalsRefused -> "refused"
     policy.ApprovalsToPerson -> "to_person"
@@ -395,7 +398,8 @@ fn policy_text(found: policy.WorkerPolicy) -> String {
 pub fn job(found: project_ledger.Effect) -> Result(Job, String) {
   let payload = found.payload_json
 
-  // In job, the arms below are the outcomes of `found.kind`.
+  // The kind word is the one `draft` wrote. An unknown kind is an error the
+  // caller settles, since it can never decode later.
   case found.kind {
     "start" ->
       parse(payload, {

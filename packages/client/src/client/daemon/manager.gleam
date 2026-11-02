@@ -4277,7 +4277,8 @@ fn project_free(book: Book(instance), id: String) -> Result(Nil, AdminError) {
   )
   let standing = project_standing.from_catalogue(found)
 
-  // In project_free, the arms below are the outcomes of `case`.
+  // A standing that holds its session is released only when the owner has
+  // archived the project. An unreadable project row keeps the hold.
   case
     project_standing.mobility(standing),
     project_standing.project_of(standing)

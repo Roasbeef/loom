@@ -76,7 +76,8 @@ open a pull request: the host does that when the work passes its check."
 fn with_section(source: String, name: String, body: String) -> String {
   let header = "%% section " <> name <> "\n"
 
-  // In with_section, the arms below are the outcomes of `string.split_once(source, header)`.
+  // The section runs to the next header, or to the end of the pack when it is
+  // the last one.
   case string.split_once(source, header) {
     Error(Nil) -> source
     Ok(#(before, after)) ->

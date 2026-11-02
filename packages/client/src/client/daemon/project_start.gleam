@@ -226,7 +226,8 @@ pub fn ensure_running(
   env: Env,
   project: catalogue.Project,
 ) -> Result(project_host.Handle, String) {
-  // In ensure_running, the arms below are the outcomes of `project_book.get(env.book, project.id)`.
+  // A project already in the table keeps its actor. Starting a second one
+  // would put two writers on one ledger.
   case project_book.get(env.book, project.id) {
     Ok(running) -> Ok(running)
     Error(Nil) -> {
@@ -250,7 +251,8 @@ pub fn ensure_running(
   }
 }
 
-/// The open router step of this module.
+/// Opens the project's router session. The request key reserves the session
+/// when the project is created, so this resumes it and never makes another.
 fn open_router(env: Env, project: catalogue.Project) -> Result(Nil, String) {
   // Creating under the reserving request key opens the router, and repeating
   // it finds the registration it made.
@@ -277,7 +279,9 @@ fn open_router(env: Env, project: catalogue.Project) -> Result(Nil, String) {
 
 // --- ports -------------------------------------------------------------------
 
-/// The ports for step of this module.
+/// The daemon's side of one project: how its actor reads the clock, creates
+/// and opens sessions, and reaches a session's peer endpoint. They are
+/// closures over the registry, so the actor holds no reference to a session.
 fn ports_for(env: Env, project: catalogue.Project) -> project_host.Ports {
   let tree_workspace =
     workspaces.Workspace(
@@ -379,7 +383,8 @@ fn bind(env: Env, worker: catalogue.ProjectWorker) -> Result(Nil, String) {
   let bound =
     in_catalogue(env, fn(store) { catalogue.bind_worker(store, worker) })
 
-  // In bind, the arms below are the outcomes of `bound`.
+  // The first bind of a session succeeds. A refusal may be a repeat after a
+  // restart, which the standing on record settles.
   case bound {
     Ok(Nil) -> Ok(Nil)
     Error(first) -> {
@@ -388,7 +393,8 @@ fn bind(env: Env, worker: catalogue.ProjectWorker) -> Result(Nil, String) {
           catalogue.project_standing(store, worker.session_id)
         })
 
-      // In bind, the arms below are the outcomes of `standing`.
+      // Only a standing that is exactly this assignment excuses the refusal.
+      // Any other standing, or an unreadable one, reports the original error.
       case standing {
         Ok(catalogue.WorkerOf(project:, ticket:, seq:))
           if project == worker.project
@@ -439,9 +445,12 @@ pub fn reopen(env: Env) -> Nil {
   }
 }
 
-/// The reopen one step of this module.
+/// Brings one project back. The router and each live worker are opened on a
+/// best-effort basis: a session that cannot open stays closed, and the board
+/// still shows its ticket.
 fn reopen_one(env: Env, project: catalogue.Project) -> Nil {
-  // In reopen_one, the arms below are the outcomes of `ensure_running(env, project)`.
+  // A project whose actor will not start is logged and skipped, so one
+  // damaged ledger does not stop the others from reopening.
   case ensure_running(env, project) {
     Error(reason) ->
       log.warn(env.logger, "project.start_failed", [
@@ -461,7 +470,9 @@ fn reopen_one(env: Env, project: catalogue.Project) -> Nil {
 
 // --- helpers -----------------------------------------------------------------
 
-/// The in catalogue step of this module.
+/// Runs a catalogue operation in the registry's own turn, because the
+/// catalogue's connection belongs to the registry. A registry that does not
+/// answer is an error of the operation.
 fn in_catalogue(
   env: Env,
   run: fn(catalogue.Catalogue) -> Result(a, catalogue.Error),
@@ -508,7 +519,8 @@ pub fn seat(
 
   let standing = project_standing.from_catalogue(found)
 
-  // In seat, the arms below are the outcomes of `project_standing.project_of(standing)`.
+  // A session with no project is ordinary and gets no seat. One with a
+  // project needs that project's handle to carry its tools.
   case project_standing.project_of(standing) {
     None -> Ok(None)
     Some(project) ->

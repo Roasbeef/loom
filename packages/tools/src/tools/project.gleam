@@ -290,7 +290,8 @@ pub fn worker_tools(seam: Projects) -> List(Tool) {
 
 // --- route -------------------------------------------------------------------
 
-/// The route tool step of this module.
+/// The router's `route` tool. It runs `Exclusive` and is never replayed,
+/// because applying a routing decision changes the ledger.
 fn route_tool(
   route: fn(Ctx, List(Item)) -> Result(List(ItemOutcome), Refusal),
 ) -> Tool {
@@ -342,7 +343,8 @@ fn route_tool(
   )
 }
 
-/// The item schema step of this module.
+/// The JSON schema of one routing item. It has no field for text addressed to
+/// a worker: the only free text is the capped title, which stays on the board.
 fn item_schema() -> JsonValue {
   tool.object_schema(
     [
@@ -408,7 +410,8 @@ fn item_schema() -> JsonValue {
   )
 }
 
-/// The run route step of this module.
+/// Decodes the items, hands them to the seam and answers one line per item.
+/// The structured details carry the same outcomes for a client to read.
 fn run_route(
   route: fn(Ctx, List(Item)) -> Result(List(ItemOutcome), Refusal),
   ctx: Ctx,
@@ -444,11 +447,12 @@ fn outcome_text(outcome: ItemOutcome) -> String {
   }
 }
 
-/// The outcome json step of this module.
+/// One item's outcome as structured details. A declined item carries the
+/// reason the host gave.
 fn outcome_json(item: Item, outcome: ItemOutcome) -> JsonValue {
   let base = [#("trigger", json.String(item.trigger.value))]
 
-  // In outcome_json, the arms below are the outcomes of `outcome`.
+  // Both results name the trigger. Only a declined one adds a reason.
   case outcome {
     Applied ->
       json.Object(list.append(base, [#("result", json.String("applied"))]))
@@ -468,14 +472,15 @@ fn outcome_json(item: Item, outcome: ItemOutcome) -> JsonValue {
 fn decode_items(args: JsonValue) -> Result(List(Item), String) {
   use raw <- result.try(tool.optional_value(args, "items"))
 
-  // In decode_items, the arms below are the outcomes of `raw`.
+  // Anything but an array is refused, whether it is another type or missing.
   case raw {
     Some(json.Array(items)) -> decode_item_list(items)
     Some(_) | None -> Error("`items` must be an array")
   }
 }
 
-/// The decode item list step of this module.
+/// Checks the item count against the one to twenty the tool allows before
+/// decoding any item.
 fn decode_item_list(items: List(JsonValue)) -> Result(List(Item), String) {
   case list.length(items) {
     0 -> Error("give at least one item")
@@ -487,7 +492,8 @@ fn decode_item_list(items: List(JsonValue)) -> Result(List(Item), String) {
   }
 }
 
-/// The decode item step of this module.
+/// Decodes one routing item. Its ids are wrapped in their id types here, so
+/// nothing past this point handles them as plain strings.
 fn decode_item(raw: JsonValue) -> Result(Item, String) {
   use trigger <- result.try(tool.required_string(raw, "trigger"))
   use action_word <- result.try(tool.required_string(raw, "action"))
@@ -507,7 +513,10 @@ fn decode_item(raw: JsonValue) -> Result(Item, String) {
   ))
 }
 
-/// The decode action step of this module.
+/// Matches the action word against the title and ticket the item carries. Each
+/// action takes exactly the arguments that mean something for it: an accept
+/// has a title and no ticket, the others have a ticket and no title, and an
+/// ignore has neither.
 fn decode_action(
   word: String,
   title: Option(String),
@@ -532,13 +541,13 @@ fn decode_action(
   }
 }
 
-/// The decode related step of this module.
+/// Decodes the optional `related` list of an item.
 fn decode_related(
   raw: JsonValue,
 ) -> Result(List(#(model.TicketId, model.Relation)), String) {
   use found <- result.try(tool.optional_value(raw, "related"))
 
-  // In decode_related, the arms below are the outcomes of `found`.
+  // An absent list and a null both mean no relations.
   case found {
     None | Some(json.Null) -> Ok([])
     Some(json.Array(entries)) -> list.try_map(entries, decode_relation)
@@ -546,14 +555,15 @@ fn decode_related(
   }
 }
 
-/// The decode relation step of this module.
+/// Decodes one entry of `related`: a ticket and how the work relates to it.
 fn decode_relation(
   entry: JsonValue,
 ) -> Result(#(model.TicketId, model.Relation), String) {
   use ticket <- result.try(tool.required_string(entry, "ticket"))
   use word <- result.try(tool.required_string(entry, "relation"))
 
-  // In decode_relation, the arms below are the outcomes of `word`.
+  // The relations are a closed set. An unknown word names itself in the
+  // refusal so the model can correct it.
   case word {
     "duplicate" -> Ok(#(model.TicketId(ticket), model.Duplicate))
     "blocks" -> Ok(#(model.TicketId(ticket), model.Blocks))
@@ -564,7 +574,8 @@ fn decode_relation(
 
 // --- project_read ------------------------------------------------------------
 
-/// The read tool step of this module.
+/// The router's `project_read` tool. Reading changes nothing, so it is safe to
+/// replay and may run beside other reads.
 fn read_tool(read: fn(Ctx, Resource) -> Result(JsonValue, Refusal)) -> Tool {
   tool.Tool(
     name: read_tool_name,
@@ -589,7 +600,8 @@ fn read_tool(read: fn(Ctx, Resource) -> Result(JsonValue, Refusal)) -> Tool {
   )
 }
 
-/// The run read step of this module.
+/// Parses the resource word and returns the card the seam reads for it, both as
+/// text and as structured details.
 fn run_read(
   read: fn(Ctx, Resource) -> Result(JsonValue, Refusal),
   ctx: Ctx,
@@ -636,7 +648,7 @@ pub fn parse_resource(text: String) -> Result(Resource, String) {
   }
 }
 
-/// The named step of this module.
+/// Builds a resource from the id after the colon, refusing an empty one.
 fn named(
   id: String,
   build: fn(String) -> Resource,
@@ -649,7 +661,8 @@ fn named(
 
 // --- reply -------------------------------------------------------------------
 
-/// The reply tool step of this module.
+/// The router's `reply` tool. The subject names a message and the host works
+/// out the destination, so the model chooses words and never an address.
 fn reply_tool(reply: fn(Ctx, Reply) -> Result(Nil, Refusal)) -> Tool {
   tool.Tool(
     name: reply_tool_name,
@@ -683,7 +696,8 @@ fn reply_tool(reply: fn(Ctx, Reply) -> Result(Nil, Refusal)) -> Tool {
   )
 }
 
-/// The run reply step of this module.
+/// Decodes the subject, purpose and text, enforces the word limit and queues
+/// the reply through the seam.
 fn run_reply(
   reply: fn(Ctx, Reply) -> Result(Nil, Refusal),
   ctx: Ctx,
@@ -698,11 +712,12 @@ fn run_reply(
   tool.success("queued the reply to " <> subject <> ".")
 }
 
-/// The decode purpose step of this module.
+/// Decodes the purpose of a reply.
 fn decode_purpose(args: JsonValue) -> Result(Purpose, String) {
   use word <- result.try(tool.required_string(args, "purpose"))
 
-  // In decode_purpose, the arms below are the outcomes of `word`.
+  // The purposes are a closed set, and the word cap that goes with them is
+  // checked separately.
   case word {
     "acknowledge" -> Ok(Acknowledge)
     "clarify" -> Ok(Clarify)
@@ -711,11 +726,13 @@ fn decode_purpose(args: JsonValue) -> Result(Purpose, String) {
   }
 }
 
-/// The within words step of this module.
+/// Refuses a reply over the word cap. Words are counted between spaces, which
+/// is coarse, and the cap exists to bound the router's output channel rather
+/// than to measure prose.
 fn within_words(text: String) -> Result(String, String) {
   let words = string.split(text, " ") |> list.filter(fn(word) { word != "" })
 
-  // In within_words, the arms below are the outcomes of `list.length(words) <= max_reply_words`.
+  // The refusal tells the model to shorten the reply and try again.
   case list.length(words) <= max_reply_words {
     True -> Ok(text)
     False ->
@@ -729,7 +746,8 @@ fn within_words(text: String) -> Result(String, String) {
 
 // --- project_report and project_handback ------------------------------------
 
-/// The report tool step of this module.
+/// A worker's `project_report` tool. Its status set has no ready word, because
+/// only the host's check can say that work is done.
 fn report_tool(report: fn(Ctx, WorkerReport) -> Result(Nil, Refusal)) -> Tool {
   tool.Tool(
     name: report_tool_name,
@@ -773,7 +791,8 @@ fn report_tool(report: fn(Ctx, WorkerReport) -> Result(Nil, Refusal)) -> Tool {
   )
 }
 
-/// The run report step of this module.
+/// Decodes the report and hands it to the seam, which knows the calling
+/// session and so which assignment the report is for.
 fn run_report(
   report: fn(Ctx, WorkerReport) -> Result(Nil, Refusal),
   ctx: Ctx,
@@ -784,21 +803,22 @@ fn run_report(
   tool.success("recorded.")
 }
 
-/// The decode report step of this module.
+/// Decodes a report and checks that a question appears only beside `waiting`.
 fn decode_report(args: JsonValue) -> Result(WorkerReport, String) {
   use word <- result.try(tool.required_string(args, "status"))
   use question <- result.try(tool.optional_string(args, "question"))
   use status <- result.try(decode_status(word))
   use question <- result.try(capped(question))
 
-  // In decode_report, the arms below are the outcomes of `status, question`.
+  // A question beside any other status would never be shown to a person, so
+  // it is refused instead of silently dropped.
   case status, question {
     Waiting, _ | _, None -> Ok(WorkerReport(status:, question:))
     _, Some(_) -> Error("a `question` goes only beside `waiting`")
   }
 }
 
-/// The decode status step of this module.
+/// Decodes a status word from the closed set of five.
 fn decode_status(word: String) -> Result(Status, String) {
   case word {
     "progress" -> Ok(Progress)
@@ -810,7 +830,8 @@ fn decode_status(word: String) -> Result(Status, String) {
   }
 }
 
-/// The capped step of this module.
+/// Refuses model text over the note cap. A report is relayed to people, so its
+/// length is bounded when it is written.
 fn capped(text: Option(String)) -> Result(Option(String), String) {
   case text {
     Some(value) ->
@@ -827,7 +848,9 @@ fn capped(text: Option(String)) -> Result(Option(String), String) {
   }
 }
 
-/// The handback tool step of this module.
+/// A worker's `project_handback` tool, for a message that belongs to another
+/// task. The worker keeps working, and the project decides what the message
+/// becomes.
 fn handback_tool(handback: fn(Ctx, Handback) -> Result(Nil, Refusal)) -> Tool {
   tool.Tool(
     name: handback_tool_name,
@@ -850,7 +873,7 @@ fn handback_tool(handback: fn(Ctx, Handback) -> Result(Nil, Refusal)) -> Tool {
   )
 }
 
-/// The run handback step of this module.
+/// Decodes the trigger and the capped reason and hands them to the seam.
 fn run_handback(
   handback: fn(Ctx, Handback) -> Result(Nil, Refusal),
   ctx: Ctx,
@@ -872,7 +895,8 @@ fn run_handback(
 
 /// The model's answer to a refused call. The reason is worded by the seam.
 fn refusal_outcome(refusal: Refusal) -> ToolOutcome {
-  // In refusal_outcome, the arms below are the outcomes of `let #(code, reason) = case refusal`.
+  // Each refusal has a stable code beside its reason, so a client can tell a
+  // refusal of the call from an unavailable project without parsing text.
   let #(code, reason) = case refusal {
     NotPermitted(reason:) -> #("not_permitted", reason)
     NotFound(reason:) -> #("not_found", reason)

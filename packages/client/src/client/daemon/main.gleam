@@ -3223,13 +3223,15 @@ fn seated(
   session: String,
   settings: serve.Settings,
 ) -> Result(serve.Settings, String) {
-  // In seated, the arms below are the outcomes of `config.projects.book`.
+  // A daemon started without project mode has no book, so no session of it can
+  // have a project standing.
   case config.projects.book {
     None -> Ok(settings)
     Some(book) -> {
       use seat <- result.map(project_start.seat(registry, book, session))
 
-      // In seated, the arms below are the outcomes of `seat`.
+      // Only the router and the workers of a project are seated. Every other
+      // session keeps the settings it was opened with.
       case seat {
         Some(found) -> serve.seat_project(settings, found)
         None -> settings
@@ -3320,7 +3322,8 @@ pub fn reopen_projects(
   daemon: root.Root(serve.Resident),
   logger: Logger,
 ) -> Result(Nil, String) {
-  // In reopen_projects, the arms below are the outcomes of `config.projects.book`.
+  // A daemon without a book has no projects to reopen. Otherwise the registry
+  // must be ready first, because reopening resumes sessions through it.
   case config.projects.book {
     None -> Ok(Nil)
     Some(book) -> {
