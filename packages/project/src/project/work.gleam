@@ -1,0 +1,776 @@
+//// A ticket's working life: opening, delivery, assignments, reports,
+//// checks, publication, withdrawal and conclusion.
+////
+//// Everything in a ticket that a worker or the host can change goes through
+//// this module, and every function returns a `Step`: a new state with the
+//// effects to perform, or a refusal that leaves the state alone.
+////
+//// Three rules are enforced here and nowhere else. A person's stop withdraws
+//// the mandate, ends the ticket as `StoppedByPerson` and cancels its
+//// waiting demand, and every other transition refuses a withdrawn or ended
+//// ticket, so such a ticket never resumes. A check is requested only when a
+//// worker reports `Waiting` with no open question and a head that differs
+//// from the last checked commit, and a diff touching protected paths goes to
+//// review with no check. And `Ready` is reachable only through
+//// `readiness.check_passed`, which takes the host's `CheckPassed`.
+
+import gleam/list
+import gleam/option.{None, Some}
+import gleam/result
+import project/event.{
+  type CheckResult, type Effect, type Refusal, CheckOk, CheckRejected,
+  OpenPullRequest, RelayAnswer, RequestCheck, StopSession,
+}
+import project/gate.{Admitted, NotAdmitted}
+import project/host
+import project/model.{
+  type CommitId, type Head, type PrincipalId, type PullRequestRef, type Report,
+  type SessionEnd, type SessionId, type TicketId, type TicketTitle,
+  type TriggerId, Abandoned, Asking, Blocked, ByPerson, ByRouting, Dropped,
+  Explicit, Failed, Head, Mandate, NoHead, NoQuestion, PersonHeard, Progress,
+  Satisfied, Scope, Silent, StoppedByPerson, Subscription, Waiting, Wanting,
+}
+import project/readiness
+import project/schedule
+import project/state.{
+  type Assignment, type State, type Step, type Ticket, Assignment,
+  AssignmentDone, AssignmentPending, AssignmentRunning, ByCommand, ByMessage,
+  Granted, Withdrawn,
+}
+
+// --- opening and delivery ----------------------------------------------------
+
+/// Open a ticket for an admitted trigger and subscribe it to the trigger's
+/// thread. The mandate is built here from the stored admission, which is why a
+/// routing event cannot choose a strength.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> a state holding the ticket `model.ticket_for(trigger.id)`
+/// ```
+pub fn open(
+  current: State,
+  stored: state.TriggerRecord,
+  title: TicketTitle,
+  routing: model.Routing,
+) -> State {
+  // A trigger the gate did not admit never opens a ticket.
+  case stored.admission {
+    NotAdmitted(_) -> current
+    Admitted(strength, basis, approvals) -> {
+      let trigger = stored.trigger
+      let id = model.ticket_for(trigger.id)
+      let mandate =
+        Mandate(
+          strength:,
+          basis:,
+          actor: trigger.actor,
+          source: trigger.source,
+          scope: Scope(current.config.workspace, approvals),
+          policy_version: current.policy_version,
+        )
+
+      // An explicit request is a person's demand; an inferred one is the
+      // router's.
+      let by = case strength {
+        Explicit -> ByPerson
+        model.Inferred -> ByRouting
+      }
+
+      let ticket =
+        state.Ticket(
+          id:,
+          title:,
+          origin: trigger.id,
+          mandate:,
+          authority: Granted,
+          assignments: [],
+          demand: Wanting(by),
+          inbox: [trigger.id],
+          failed_inputs: [],
+          question: NoQuestion,
+          latest: None,
+          heard: Silent,
+          head: None,
+          last_checked: None,
+          rejected: None,
+          readiness: readiness.InProgress,
+          pull_request: None,
+          outcome: None,
+          routings: [routing],
+        )
+      subscribe(state.put_ticket(current, ticket), id, trigger.thread)
+    }
+  }
+}
+
+/// Link a ticket to a thread, once.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> the same state when the link already exists
+/// ```
+pub fn subscribe(
+  current: State,
+  ticket: TicketId,
+  thread: model.ThreadId,
+) -> State {
+  let link = Subscription(ticket, thread)
+
+  // A link is stored once.
+  case list.contains(current.subscriptions, link) {
+    True -> current
+    False ->
+      state.State(..current, subscriptions: [link, ..current.subscriptions])
+  }
+}
+
+/// Hand an admitted trigger to a ticket. With a session pending or running the
+/// worker receives it at once; otherwise it waits in the ticket's inbox and
+/// the ticket wants a session, on a person's demand when the trigger is a
+/// person's explicit message. The caller schedules afterwards.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> #(state, [Deliver(ticket, seq, trigger)]) for a ticket with a session
+/// ```
+pub fn deliver_to(
+  current: State,
+  id: TicketId,
+  trigger: TriggerId,
+) -> #(State, List(Effect)) {
+  // A trigger the state cannot find counts as inferred, which never records a
+  // person's voice.
+  let strength = case state.record(current, trigger) {
+    Ok(stored) -> admitted_strength(stored)
+    Error(_) -> model.Inferred
+  }
+
+  // An unknown ticket receives nothing.
+  case state.ticket(current, id) {
+    Error(_) -> #(current, [])
+    Ok(ticket) -> {
+      // Only a person's explicit message counts as hearing from a person.
+      let heard = case strength {
+        Explicit -> PersonHeard
+        model.Inferred -> ticket.heard
+      }
+
+      // With a pending or running session the worker receives the input at
+      // once; otherwise it waits in the inbox.
+      case state.active_assignment(ticket) {
+        Some(assignment) -> #(
+          state.put_ticket(current, state.Ticket(..ticket, heard:)),
+          [event.Deliver(id, assignment.seq, trigger)],
+        )
+        None -> #(
+          state.put_ticket(
+            current,
+            state.Ticket(
+              ..ticket,
+              heard:,
+              inbox: list.append(ticket.inbox, [trigger]),
+              demand: raise_demand(ticket.demand, strength),
+            ),
+          ),
+          [],
+        )
+      }
+    }
+  }
+}
+
+fn admitted_strength(stored: state.TriggerRecord) -> model.Strength {
+  case stored.admission {
+    Admitted(strength, _, _) -> strength
+    NotAdmitted(_) -> model.Inferred
+  }
+}
+
+/// A person's demand is never lowered by a routing demand that arrives later.
+fn raise_demand(
+  demand: model.Demand,
+  strength: model.Strength,
+) -> model.Demand {
+  case demand, strength {
+    Wanting(ByPerson), _ -> Wanting(ByPerson)
+    _, Explicit -> Wanting(ByPerson)
+    Satisfied, model.Inferred -> Wanting(ByRouting)
+    Wanting(ByRouting), model.Inferred -> Wanting(ByRouting)
+  }
+}
+
+// --- withdrawal and conclusion -----------------------------------------------
+
+/// Withdraw a ticket's mandate on a person's say. The ticket ends as
+/// `StoppedByPerson`, loses its waiting demand and inbox, and its live
+/// sessions are stopped. A second stop changes nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> Ok(#(state, [])) when the ticket was already withdrawn
+/// ```
+pub fn withdraw(current: State, id: TicketId, by: state.Withdrawal) -> Step {
+  use ticket <- result.try(state.ticket(current, id))
+
+  // A second stop changes nothing.
+  case ticket.authority {
+    Withdrawn(_) -> Ok(#(current, []))
+    Granted -> {
+      let stopped =
+        state.Ticket(
+          ..ticket,
+          authority: Withdrawn(by),
+          outcome: Some(StoppedByPerson),
+          demand: Satisfied,
+          inbox: [],
+        )
+      Ok(#(state.put_ticket(current, stopped), stop_sessions(ticket)))
+    }
+  }
+}
+
+fn stop_sessions(ticket: Ticket) -> List(Effect) {
+  ticket.assignments
+  |> list.filter(state.holds_slot)
+  |> list.map(fn(assignment) { StopSession(ticket.id, assignment.seq) })
+}
+
+/// A person's stop command.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> the ticket ends as stopped and never resumes
+/// ```
+pub fn person_stopped(current: State, id: TicketId, by: PrincipalId) -> Step {
+  withdraw(current, id, ByCommand(by))
+}
+
+/// A person's stop by message, as the router relayed it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> the ticket ends as stopped and never resumes
+/// ```
+pub fn message_stopped(
+  current: State,
+  id: TicketId,
+  trigger: TriggerId,
+) -> Step {
+  withdraw(current, id, ByMessage(trigger))
+}
+
+/// The ticket ended: its pull request merged or closed, or the worker let it
+/// go.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> Error(NotAConclusion(id)) for StoppedByPerson
+/// ```
+pub fn concluded(current: State, id: TicketId, outcome: model.Outcome) -> Step {
+  use ticket <- result.try(open_ticket(current, id))
+
+  // A person's stop has its own command; only a merge, a close or abandonment
+  // concludes a ticket.
+  case outcome {
+    StoppedByPerson -> Error(event.NotAConclusion(id))
+    model.Merged -> Ok(end_ticket(current, ticket, outcome))
+    model.Closed -> Ok(end_ticket(current, ticket, outcome))
+    Abandoned -> Ok(end_ticket(current, ticket, outcome))
+  }
+}
+
+/// Record how a ticket ended, stop its sessions and let the freed slots be
+/// used.
+fn end_ticket(
+  current: State,
+  ticket: Ticket,
+  outcome: model.Outcome,
+) -> #(State, List(Effect)) {
+  let ended =
+    state.Ticket(..ticket, outcome: Some(outcome), demand: Satisfied, inbox: [])
+  schedule_after(state.put_ticket(current, ended), stop_sessions(ticket))
+}
+
+/// A ticket that is neither withdrawn nor ended, or the refusal saying which.
+fn open_ticket(current: State, id: TicketId) -> Result(Ticket, Refusal) {
+  use ticket <- result.try(state.ticket(current, id))
+
+  // A withdrawn ticket and an ended one refuse work with different refusals.
+  case ticket.authority, ticket.outcome {
+    Withdrawn(_), _ -> Error(event.TicketWithdrawn(id))
+    Granted, Some(_) -> Error(event.TicketEnded(id))
+    Granted, None -> Ok(ticket)
+  }
+}
+
+/// Effects first, then whatever the freed slot lets the scheduler start.
+fn schedule_after(
+  current: State,
+  effects: List(Effect),
+) -> #(State, List(Effect)) {
+  let #(scheduled, more) = schedule.run(current)
+  #(scheduled, list.append(effects, more))
+}
+
+// --- assignments -------------------------------------------------------------
+
+/// Record the session the host created or recovered for an assignment.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> Error(Stale(id)) when the assignment is bound to another session
+/// ```
+pub fn session_bound(
+  current: State,
+  id: TicketId,
+  seq: Int,
+  session: SessionId,
+) -> Step {
+  use ticket <- result.try(state.ticket(current, id))
+  use updated <- result.try(
+    update_assignment(ticket, seq, fn(assignment) {
+      case assignment.session {
+        None -> Ok(Assignment(..assignment, session: Some(session)))
+        Some(bound) if bound == session -> Ok(assignment)
+        Some(_) -> Error(event.Stale(id))
+      }
+    }),
+  )
+  Ok(#(state.put_ticket(current, updated), []))
+}
+
+/// The assignment's session is running.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> Error(Stale(id)) for an assignment that already ended
+/// ```
+pub fn assignment_live(current: State, id: TicketId, seq: Int) -> Step {
+  use ticket <- result.try(state.ticket(current, id))
+  use updated <- result.try(
+    update_assignment(ticket, seq, fn(assignment) {
+      case assignment.status {
+        AssignmentPending | AssignmentRunning ->
+          Ok(Assignment(..assignment, status: AssignmentRunning))
+        AssignmentDone(_) -> Error(event.Stale(id))
+      }
+    }),
+  )
+  Ok(#(state.put_ticket(current, updated), []))
+}
+
+/// The assignment's session ended, which frees its slot.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> the slot is free for the next waiting ticket
+/// ```
+pub fn assignment_ended(
+  current: State,
+  id: TicketId,
+  seq: Int,
+  end: SessionEnd,
+) -> Step {
+  use ticket <- result.try(state.ticket(current, id))
+  use updated <- result.try(
+    update_assignment(ticket, seq, fn(assignment) {
+      case assignment.status {
+        AssignmentDone(_) -> Ok(assignment)
+        AssignmentPending | AssignmentRunning ->
+          Ok(Assignment(..assignment, status: AssignmentDone(end)))
+      }
+    }),
+  )
+  Ok(schedule_after(state.put_ticket(current, updated), []))
+}
+
+/// Rewrite one assignment of a ticket, or refuse when it does not exist.
+fn update_assignment(
+  ticket: Ticket,
+  seq: Int,
+  change: fn(Assignment) -> Result(Assignment, Refusal),
+) -> Result(Ticket, Refusal) {
+  // An unknown sequence number refuses.
+  case list.find(ticket.assignments, fn(found) { found.seq == seq }) {
+    Error(Nil) -> Error(event.UnknownAssignment(ticket.id, seq))
+    Ok(found) -> {
+      use changed <- result.try(change(found))
+      let assignments =
+        list.map(ticket.assignments, fn(other) {
+          case other.seq == seq {
+            True -> changed
+            False -> other
+          }
+        })
+      Ok(state.Ticket(..ticket, assignments:))
+    }
+  }
+}
+
+/// A person asked for a new assignment on a stalled ticket.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> Error(AssignmentActive(id)) while a session is pending or running
+/// ```
+pub fn retry(current: State, id: TicketId) -> Step {
+  use ticket <- result.try(open_ticket(current, id))
+
+  // A ticket with a pending or running session has nothing to retry.
+  case state.active_assignment(ticket) {
+    Some(_) -> Error(event.AssignmentActive(id))
+    None -> {
+      let wanting =
+        state.Ticket(
+          ..ticket,
+          demand: raise_demand(ticket.demand, model.Inferred),
+        )
+      Ok(schedule_after(state.put_ticket(current, wanting), []))
+    }
+  }
+}
+
+// --- reports and checks ------------------------------------------------------
+
+/// A worker reported. The report updates the ticket's facts; a `Waiting`
+/// report with a fresh head may request a check or send the ticket to review.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> #(state, [RequestCheck(id, commit)]) for a first idle report
+/// ```
+pub fn reported(
+  current: State,
+  id: TicketId,
+  seq: Int,
+  report: Report,
+  head: Head,
+) -> Step {
+  use ticket <- result.try(open_ticket(current, id))
+  use live <- result.try(
+    update_assignment(ticket, seq, fn(assignment) {
+      case assignment.status {
+        AssignmentDone(_) -> Error(event.Stale(id))
+        AssignmentPending | AssignmentRunning ->
+          Ok(Assignment(..assignment, status: AssignmentRunning))
+      }
+    }),
+  )
+
+  let heard_from = state.Ticket(..live, latest: Some(report), heard: Silent)
+  let moved = apply_head(heard_from, head)
+  let #(settled, effects) = apply_report(moved, report, head)
+
+  // A report that ends the ticket frees its slot; any other leaves slots as
+  // they were.
+  case settled.outcome {
+    None -> Ok(#(state.put_ticket(current, settled), effects))
+    Some(_) -> Ok(schedule_after(state.put_ticket(current, settled), effects))
+  }
+}
+
+/// A new commit invalidates whatever the old one earned.
+fn apply_head(ticket: Ticket, head: Head) -> Ticket {
+  case head {
+    NoHead -> ticket
+    Head(commit, _) ->
+      case ticket.head == Some(commit) {
+        True -> ticket
+        False ->
+          state.Ticket(
+            ..ticket,
+            head: Some(commit),
+            readiness: readiness.new_commit(ticket.readiness),
+          )
+      }
+  }
+}
+
+/// Apply what a report says to the ticket, and run the check rule for an idle
+/// one.
+fn apply_report(
+  ticket: Ticket,
+  report: Report,
+  head: Head,
+) -> #(Ticket, List(Effect)) {
+  case report {
+    Progress -> #(ticket, [])
+    Blocked -> #(ticket, [])
+    Failed -> #(ticket, [])
+    Dropped -> #(
+      state.Ticket(..ticket, outcome: Some(Abandoned), demand: Satisfied),
+      [],
+    )
+    Waiting(question) ->
+      check_rule(state.Ticket(..ticket, question:), question, head)
+  }
+}
+
+/// The check rule: a request only for an idle worker with no open question
+/// and a head not yet checked. Protected paths go to a person instead, and the
+/// head is marked checked so a repeated idle report does not ask again.
+fn check_rule(
+  ticket: Ticket,
+  question: model.Question,
+  head: Head,
+) -> #(Ticket, List(Effect)) {
+  case question, head {
+    Asking(_), _ -> #(ticket, [])
+    NoQuestion, NoHead -> #(ticket, [])
+    NoQuestion, Head(commit, paths) ->
+      case ticket.last_checked == Some(commit) {
+        True -> #(ticket, [])
+        False -> check_head(ticket, commit, paths)
+      }
+  }
+}
+
+/// Mark the head checked, then request a check, or send protected paths to a
+/// person instead.
+fn check_head(
+  ticket: Ticket,
+  commit: CommitId,
+  paths: model.PathScope,
+) -> #(Ticket, List(Effect)) {
+  let marked = state.Ticket(..ticket, last_checked: Some(commit))
+
+  // A diff touching protected paths goes to review and runs no check.
+  case paths {
+    model.ProtectedPathsTouched -> #(
+      state.Ticket(
+        ..marked,
+        readiness: readiness.protected_touched(marked.readiness),
+      ),
+      [],
+    )
+    model.ProtectedPathsUntouched -> #(marked, [
+      RequestCheck(ticket.id, commit),
+    ])
+  }
+}
+
+/// The host's check finished for the ticket's current head. A pass makes the
+/// ticket `Ready` and asks the host to open its pull request; a result for a
+/// commit that is no longer the head is stale.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> Error(Stale(id)) when the head moved on while the check ran
+/// ```
+pub fn check_finished(
+  current: State,
+  id: TicketId,
+  finished: CheckResult,
+) -> Step {
+  use ticket <- result.try(open_ticket(current, id))
+
+  // A rejection is recorded only for the current head.
+  case finished {
+    CheckOk(proof) -> check_passed(current, ticket, proof)
+    CheckRejected(commit, digest) ->
+      case ticket.head == Some(commit) {
+        False -> Error(event.Stale(id))
+        True ->
+          Ok(
+            #(
+              state.put_ticket(
+                current,
+                state.Ticket(..ticket, rejected: Some(#(commit, digest))),
+              ),
+              [],
+            ),
+          )
+      }
+  }
+}
+
+/// Make the ticket ready when the passing check was requested for the current
+/// head and the readiness accepts it.
+fn check_passed(
+  current: State,
+  ticket: Ticket,
+  proof: host.CheckPassed,
+) -> Step {
+  let commit = host.commit(proof)
+  let requested =
+    ticket.head == Some(commit) && ticket.last_checked == Some(commit)
+
+  // The check must have been requested for the current head, and the readiness
+  // must still accept a pass.
+  case requested, readiness.check_passed(ticket.readiness, proof) {
+    True, Ok(ready) ->
+      Ok(publish(
+        current,
+        state.Ticket(..ticket, readiness: ready, rejected: None),
+        commit,
+      ))
+    True, Error(Nil) -> Error(event.Stale(ticket.id))
+    False, _ -> Error(event.Stale(ticket.id))
+  }
+}
+
+/// A person published past the check. The commit must be the ticket's head.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> Error(Stale(id)) for a commit other than the head
+/// ```
+pub fn person_published(
+  current: State,
+  id: TicketId,
+  by: PrincipalId,
+  commit: CommitId,
+) -> Step {
+  use ticket <- result.try(open_ticket(current, id))
+
+  // A person publishes the ticket's current head and nothing else.
+  case ticket.head == Some(commit) {
+    False -> Error(event.Stale(id))
+    True ->
+      Ok(publish(
+        current,
+        state.Ticket(
+          ..ticket,
+          readiness: readiness.person_publishes(ticket.readiness, by, commit),
+        ),
+        commit,
+      ))
+  }
+}
+
+/// Store the ticket and ask for its pull request unless one is open.
+fn publish(
+  current: State,
+  ticket: Ticket,
+  commit: CommitId,
+) -> #(State, List(Effect)) {
+  // A ticket whose pull request is open needs no second request.
+  let effects = case ticket.pull_request {
+    Some(_) -> []
+    None -> [OpenPullRequest(ticket.id, model.branch_name(ticket.id), commit)]
+  }
+
+  #(state.put_ticket(current, ticket), effects)
+}
+
+/// The host opened the ticket's pull request. Only a ready or published
+/// ticket has one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> Error(NotPublishable(id)) for a ticket still in progress
+/// ```
+pub fn pull_request_opened(
+  current: State,
+  id: TicketId,
+  pull_request: PullRequestRef,
+) -> Step {
+  use ticket <- result.try(state.ticket(current, id))
+
+  // Only a ticket that vouches for a commit has a pull request.
+  case readiness.vouches_for(ticket.readiness) {
+    None -> Error(event.NotPublishable(id))
+    Some(_) ->
+      Ok(
+        #(
+          state.put_ticket(
+            current,
+            state.Ticket(..ticket, pull_request: Some(pull_request)),
+          ),
+          [],
+        ),
+      )
+  }
+}
+
+// --- questions and inputs ----------------------------------------------------
+
+/// A person answered the open question, echoing its sequence number.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> Error(StaleAnswer(id)) for a number the ticket did not ask
+/// ```
+pub fn answered(current: State, id: TicketId, question: Int) -> Step {
+  use ticket <- result.try(open_ticket(current, id))
+
+  // The answer must echo the open question.
+  case ticket.question == Asking(question) {
+    False -> Error(event.StaleAnswer(id))
+    True -> {
+      let answered_ticket =
+        state.Ticket(..ticket, question: NoQuestion, heard: PersonHeard)
+      Ok(#(state.put_ticket(current, answered_ticket), relay(ticket, question)))
+    }
+  }
+}
+
+fn relay(ticket: Ticket, question: Int) -> List(Effect) {
+  case state.active_assignment(ticket) {
+    Some(assignment) -> [RelayAnswer(ticket.id, assignment.seq, question)]
+    None -> []
+  }
+}
+
+/// An input did not reach the worker.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> the ticket's stage becomes `person/delivery`
+/// ```
+pub fn input_failed(current: State, id: TicketId, trigger: TriggerId) -> Step {
+  use ticket <- result.try(state.ticket(current, id))
+
+  // A failure is recorded once.
+  let failed = case list.contains(ticket.failed_inputs, trigger) {
+    True -> ticket.failed_inputs
+    False -> list.append(ticket.failed_inputs, [trigger])
+  }
+
+  Ok(
+    #(
+      state.put_ticket(current, state.Ticket(..ticket, failed_inputs: failed)),
+      [],
+    ),
+  )
+}
+
+/// An input reached the worker.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> the ticket's failed inputs lose the trigger
+/// ```
+pub fn input_delivered(
+  current: State,
+  id: TicketId,
+  trigger: TriggerId,
+) -> Step {
+  use ticket <- result.try(state.ticket(current, id))
+  let failed = list.filter(ticket.failed_inputs, fn(other) { other != trigger })
+  Ok(
+    #(
+      state.put_ticket(current, state.Ticket(..ticket, failed_inputs: failed)),
+      [],
+    ),
+  )
+}
