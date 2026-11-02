@@ -6,56 +6,82 @@
 <title>Loom Web Mock</title>
 <style>
 /* Static mock for docs/design-notes/web-ui-redesign.md. All content is invented.
-   Colours are the A2 tokens from docs/design-notes/web-design.md section 5. */
+   Colours are the plant-grey tokens from section 9 of that note, named as in web_client.css without the --color- prefix. */
 :root {
-  --bg:#f6f5f2; --raised:#ffffff; --sunk:#efede8; --line:#e2dfd8; --fg:#1d1c1a; --quiet:#6f6b63; --faint:#a29d92;
-  --main:#3b5bdb; --signal:#a8620f; --signal-bg:#fbf0e0; --signal-line:#ecd2a8;
-  --ok:#2f7d3f; --bad:#b8285a; --bad-bg:#fbe9ef; --bad-line:#f0c6d5;
-  --addbg:#e6f4ea; --addfg:#1c6b32; --delbg:#fbe9ef; --delfg:#a11f4e; --code:#f1efe9;
-  --gap-bg:#eeecf8; --gap-fg:#5a45a8; --have-bg:#ebeae5; --have-fg:#5f5b53;
+  color-scheme:light dark;
+  --bg:#ebecec; --bg-raised:#f8f8f7; --bg-sunk:#e2e3e3; --code:#eff0ef; --divider:#d2d4d4;
+  --fg:#17191a; --fg-quiet:#50565a; --fg-faint:#8b9195; --current:#0b5cad; --signal:#b05f00;
+  --signal-text:#985000; --signal-bg:#fbeacb; --signal-line:#e3c183; --danger:#b4141a; --danger-text:#800c10;
+  --danger-bg:#f7cdc9; --danger-line:#e5a5a0; --added:#1e8a45; --added-text:#176a35; --added-bg:#e6f7e2;
+  --diff-removed-text:#7c0b0e; --removed-bg:#f6c6c2; --diff-added-text:#125a2b; --advisor:#6a4aa8; --peer:#94357f;
+  --strand-2:#0a6a78; --strand-3:#5a5f8f; --strand-4:#7f4a9e; --strand-5:#7a5a6a; --strand-6:#4a6572;
+  --on-danger:#ffffff; --diff-context:#44494d; --control-line:#74797d; --tag-have-bg:#e2e3e3; --tag-have-text:#50565a;
+  --tag-gap-bg:#f8f8f7; --tag-gap-text:#0b5cad;
   --sans:Inter,"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
   --mono:"IBM Plex Mono","JetBrains Mono",ui-monospace,Menlo,monospace;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg:#141517; --raised:#1b1c1f; --sunk:#111214; --line:#2b2d31; --fg:#e8e6e1; --quiet:#9a978f; --faint:#66645e;
-    --main:#7c96ff; --signal:#f0a24f; --signal-bg:#2a2115; --signal-line:#4d3a1e;
-    --ok:#51cf66; --bad:#f06595; --bad-bg:#2d1720; --bad-line:#57293c;
-    --addbg:#17301f; --addfg:#7fdc93; --delbg:#3a1a26; --delfg:#f591b4; --code:#212226;
-    --gap-bg:#25213b; --gap-fg:#b3a5f2; --have-bg:#25262a; --have-fg:#a4a199;
+    --bg:#17191b; --bg-raised:#1f2224; --bg-sunk:#121415; --code:#25282b; --divider:#34383b;
+    --fg:#e7e9ea; --fg-quiet:#bcc2c6; --fg-faint:#6b7175; --current:#7db4f0; --signal:#f08a1c;
+    --signal-text:#f5a742; --signal-bg:#2c1e0c; --signal-line:#57401c; --danger:#dc625c; --danger-text:#ff7a70;
+    --danger-bg:#561e1c; --danger-line:#80332f; --added:#6fcf6a; --added-text:#adeb9f; --added-bg:#0e2715;
+    --diff-removed-text:#ffb6af; --removed-bg:#642120; --diff-added-text:#adeb9f; --advisor:#b49ee8; --peer:#dd8ccb;
+    --strand-2:#5cc4d4; --strand-3:#8a93c0; --strand-4:#c79ae0; --strand-5:#c4a5b5; --strand-6:#9ab4c2;
+    --on-danger:#17191b; --diff-context:#bcc2c6; --control-line:#7a8084; --tag-have-bg:#121415; --tag-have-text:#bcc2c6;
+    --tag-gap-bg:#1f2224; --tag-gap-text:#7db4f0;
   }
 }
 :root[data-theme="dark"] {
-  --bg:#141517; --raised:#1b1c1f; --sunk:#111214; --line:#2b2d31; --fg:#e8e6e1; --quiet:#9a978f; --faint:#66645e;
-  --main:#7c96ff; --signal:#f0a24f; --signal-bg:#2a2115; --signal-line:#4d3a1e;
-  --ok:#51cf66; --bad:#f06595; --bad-bg:#2d1720; --bad-line:#57293c;
-  --addbg:#17301f; --addfg:#7fdc93; --delbg:#3a1a26; --delfg:#f591b4; --code:#212226;
-  --gap-bg:#25213b; --gap-fg:#b3a5f2; --have-bg:#25262a; --have-fg:#a4a199;
+  color-scheme:dark;
+  --bg:#17191b; --bg-raised:#1f2224; --bg-sunk:#121415; --code:#25282b; --divider:#34383b;
+  --fg:#e7e9ea; --fg-quiet:#bcc2c6; --fg-faint:#6b7175; --current:#7db4f0; --signal:#f08a1c;
+  --signal-text:#f5a742; --signal-bg:#2c1e0c; --signal-line:#57401c; --danger:#dc625c; --danger-text:#ff7a70;
+  --danger-bg:#561e1c; --danger-line:#80332f; --added:#6fcf6a; --added-text:#adeb9f; --added-bg:#0e2715;
+  --diff-removed-text:#ffb6af; --removed-bg:#642120; --diff-added-text:#adeb9f; --advisor:#b49ee8; --peer:#dd8ccb;
+  --strand-2:#5cc4d4; --strand-3:#8a93c0; --strand-4:#c79ae0; --strand-5:#c4a5b5; --strand-6:#9ab4c2;
+  --on-danger:#17191b; --diff-context:#bcc2c6; --control-line:#7a8084; --tag-have-bg:#121415; --tag-have-text:#bcc2c6;
+  --tag-gap-bg:#1f2224; --tag-gap-text:#7db4f0;
+}
+:root[data-theme="light"] { color-scheme:light;
+  --bg:#ebecec; --bg-raised:#f8f8f7; --bg-sunk:#e2e3e3; --code:#eff0ef; --divider:#d2d4d4;
+  --fg:#17191a; --fg-quiet:#50565a; --fg-faint:#8b9195; --current:#0b5cad; --signal:#b05f00;
+  --signal-text:#985000; --signal-bg:#fbeacb; --signal-line:#e3c183; --danger:#b4141a; --danger-text:#800c10;
+  --danger-bg:#f7cdc9; --danger-line:#e5a5a0; --added:#1e8a45; --added-text:#176a35; --added-bg:#e6f7e2;
+  --diff-removed-text:#7c0b0e; --removed-bg:#f6c6c2; --diff-added-text:#125a2b; --advisor:#6a4aa8; --peer:#94357f;
+  --strand-2:#0a6a78; --strand-3:#5a5f8f; --strand-4:#7f4a9e; --strand-5:#7a5a6a; --strand-6:#4a6572;
+  --on-danger:#ffffff; --diff-context:#44494d; --control-line:#74797d; --tag-have-bg:#e2e3e3; --tag-have-text:#50565a;
+  --tag-gap-bg:#f8f8f7; --tag-gap-text:#0b5cad;
 }
 * { box-sizing:border-box; }
 html,body { margin:0; }
 body { background:var(--bg); color:var(--fg); font:14px/1.45 var(--sans); -webkit-font-smoothing:antialiased; }
 .mono { font-family:var(--mono); font-size:12.5px; }
-.q { color:var(--quiet); }
+.q { color:var(--fg-quiet); }
 .small { font-size:12.5px; }
-button { font:inherit; color:inherit; background:transparent; border:1px solid var(--line); border-radius:6px; padding:3px 10px; cursor:pointer; white-space:nowrap; min-height:28px; }
-button:hover { background:var(--sunk); }
-button:focus-visible, a:focus-visible { outline:2px solid var(--main); outline-offset:1px; }
+button { font:inherit; color:inherit; background:transparent; border:1px solid var(--control-line); border-radius:6px; padding:3px 10px; cursor:pointer; white-space:nowrap; min-height:28px; }
+button:hover { background:color-mix(in srgb, var(--fg) 8%, transparent); }
+button:focus-visible, a:focus-visible { outline:2px solid var(--current); outline-offset:1px; }
 button.primary { border-color:var(--fg); }
 h1,h2,h3 { margin:0; font-weight:600; }
 
-.mockbar { background:var(--gap-bg); color:var(--gap-fg); border-bottom:1px solid var(--line); padding:6px 16px; font-size:12.5px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+.mockbar { background:var(--tag-gap-bg); color:var(--tag-gap-text); border-bottom:1px solid var(--divider); padding:6px 16px; font-size:12.5px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
 .mockbar label { display:inline-flex; gap:6px; align-items:center; cursor:pointer; }
 .mockbar .sp { flex:1; }
 .mockbar button { min-height:24px; padding:1px 8px; border-color:currentColor; }
 
-.top { display:flex; align-items:center; gap:4px 16px; padding:8px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+.top { display:flex; align-items:center; gap:4px 16px; padding:8px 16px; border-bottom:1px solid var(--divider); flex-wrap:wrap; }
 .brand { font-weight:600; }
 nav.tabs { display:flex; gap:2px; }
-nav.tabs button { border:0; padding:4px 10px; color:var(--quiet); }
-nav.tabs button[aria-selected="true"] { color:var(--fg); background:var(--sunk); }
-.count { display:inline-block; background:var(--signal-bg); color:var(--signal); border:1px solid var(--signal-line); border-radius:999px; font-size:11px; line-height:15px; padding:0 5px; margin-left:4px; font-variant-numeric:tabular-nums; }
-.daemon { margin-left:auto; display:flex; gap:14px; align-items:center; font-size:12.5px; color:var(--quiet); flex-wrap:wrap; }
+nav.tabs button { border:0; padding:4px 10px; color:var(--fg-quiet); }
+nav.tabs button[aria-selected="true"] { color:var(--fg); background:var(--bg-sunk); }
+.count.bad { background:var(--danger-bg); color:var(--danger-text); border-color:var(--danger-line); }
+.count.bad::before { content:"\2716\00A0"; }
+.count.warn { background:transparent; }
+.count.warn::before { content:"\25C7\00A0"; }
+.count.need::before { content:"\25C6\00A0"; }
+.count { display:inline-block; background:var(--signal-bg); color:var(--signal-text); border:1px solid var(--signal-line); border-radius:999px; font-size:11px; line-height:15px; padding:0 5px; margin-left:4px; font-variant-numeric:tabular-nums; }
+.daemon { margin-left:auto; display:flex; gap:14px; align-items:center; font-size:12.5px; color:var(--fg-quiet); flex-wrap:wrap; }
 .daemon b { color:var(--fg); font-weight:500; }
 
 main { max-width:1360px; margin:0 auto; padding:16px; }
@@ -68,86 +94,97 @@ section.screen.on { display:block; }
 .head .q { font-size:12.5px; }
 
 .src { display:inline-block; font:11px/16px var(--mono); border-radius:4px; padding:0 5px; margin:2px 4px 0 0; overflow-wrap:anywhere; }
-.src.have { background:var(--have-bg); color:var(--have-fg); }
-.src.gap { background:var(--gap-bg); color:var(--gap-fg); }
+.src.have { background:var(--tag-have-bg); color:var(--tag-have-text); }
+.src.gap { background:var(--tag-gap-bg); color:var(--tag-gap-text); }
 body.nosrc .srcs { display:none; }
 .srcs { margin-top:6px; }
 
-.box { background:var(--raised); border:1px solid var(--line); border-radius:8px; }
-.box.notice { background:var(--signal-bg); border-color:var(--signal-line); padding:10px 14px; margin-bottom:20px; }
+.box { background:var(--bg-raised); border:1px solid var(--divider); border-radius:8px; }
+.box.notice { background:var(--bg-raised); padding:10px 14px; margin-bottom:20px; }
 .notice-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:4px 20px; margin-top:6px; font-size:13px; }
 .notice-grid b { font-weight:600; font-variant-numeric:tabular-nums; }
 
-.item { padding:12px 14px; border-top:1px solid var(--line); }
+.item { padding:12px 14px; border-top:1px solid var(--divider); }
 .item:first-child { border-top:0; }
-.item.p1 { background:var(--signal-bg); }
+.item.p1 { background:var(--signal-bg); border-top-color:var(--signal-line); }
+.item.p2 { background:var(--danger-bg); border-top-color:var(--danger-line); }
 .item .l1 { display:flex; gap:8px; flex-wrap:wrap; align-items:baseline; }
 .state { font-size:12px; font-weight:600; white-space:nowrap; }
-.state.need { color:var(--signal); }
-.state.bad { color:var(--bad); }
-.state.ok { color:var(--ok); }
-.state.idle { color:var(--quiet); font-weight:400; }
-.age { margin-left:auto; color:var(--quiet); font-size:12.5px; white-space:nowrap; font-variant-numeric:tabular-nums; }
-.preview { background:var(--code); border:1px solid var(--line); border-radius:6px; padding:6px 10px; margin:8px 0; overflow-x:auto; white-space:pre; font:12.5px/1.45 var(--mono); }
+.state.need { color:var(--signal-text); }
+.state.bad { color:var(--danger-text); }
+.state.ok { color:var(--fg-quiet); font-weight:400; }
+.state.idle { color:var(--fg-quiet); font-weight:400; }
+.state.need::before { content:"\25C6\00A0"; }
+.state.bad::before { content:"\2716\00A0"; }
+.state.warn { color:var(--signal-text); }
+.state.warn::before { content:"\25C7\00A0"; }
+.state.ok::before { content:"\2713\00A0"; }
+.age { margin-left:auto; color:var(--fg-quiet); font-size:12.5px; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.preview { background:var(--code); border:1px solid var(--divider); border-radius:6px; padding:6px 10px; margin:8px 0; overflow-x:auto; white-space:pre; font:12.5px/1.45 var(--mono); }
 .actions { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
-.diff { border:1px solid var(--line); border-radius:6px; overflow-x:auto; margin:8px 0; font:12.5px/1.5 var(--mono); }
+.diff { border:1px solid var(--divider); border-radius:6px; overflow-x:auto; margin:8px 0; font:12.5px/1.5 var(--mono); }
 .diff div { padding:0 10px; white-space:pre; width:max-content; min-width:100%; }
-.diff .a { background:var(--addbg); color:var(--addfg); }
-.diff .d { background:var(--delbg); color:var(--delfg); }
-.diff .c { color:var(--quiet); }
+.diff .a { background:var(--added-bg); color:var(--diff-added-text); }
+.diff .d { background:var(--removed-bg); color:var(--diff-removed-text); }
+.diff .c { color:var(--diff-context); }
+.diff b { font-weight:700; }
 
-.strip { display:grid; grid-template-columns:92px minmax(0,1.1fr) minmax(0,1.6fr) 150px 66px 56px; gap:4px 12px; padding:9px 14px; border-top:1px solid var(--line); align-items:baseline; font-size:13px; }
+.strip { display:grid; grid-template-columns:92px minmax(0,1.1fr) minmax(0,1.6fr) 150px 66px 56px; gap:4px 12px; padding:9px 14px; border-top:1px solid var(--divider); align-items:baseline; font-size:13px; }
 .strip:first-child { border-top:0; }
-.strip.h { font-size:11.5px; color:var(--quiet); padding-block:6px; }
+.strip.h { font-size:11.5px; color:var(--fg-quiet); padding-block:6px; }
 .strip .name { font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.strip .sub { color:var(--quiet); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.strip .sub { color:var(--fg-quiet); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .strip .num { text-align:right; font-variant-numeric:tabular-nums; }
-.strip.quiet { color:var(--quiet); }
+.strip.fault { background:var(--danger-bg); }
+.strip.quiet { color:var(--fg-quiet); }
 
-.row { display:flex; gap:8px; justify-content:space-between; padding:6px 0; border-top:1px solid var(--line); font-size:13px; }
+.row { display:flex; gap:8px; justify-content:space-between; padding:6px 0; border-top:1px solid var(--divider); font-size:13px; }
 .row:first-of-type { border-top:0; }
 .pad { padding:10px 14px; }
-.meter { height:4px; background:var(--sunk); border-radius:2px; overflow:hidden; margin-top:4px; }
-.meter i { display:block; height:100%; background:var(--quiet); }
+.meter { height:4px; background:var(--bg-sunk); border-radius:2px; overflow:hidden; margin-top:4px; }
+.meter i { display:block; height:100%; background:var(--fg-quiet); }
 .meter i.warn { background:var(--signal); }
-.sub2 { color:var(--quiet); font-size:12px; }
+.sub2 { color:var(--fg-quiet); font-size:12px; }
 
 /* Session screen */
 .sess-head { display:flex; gap:6px 14px; align-items:baseline; flex-wrap:wrap; margin-bottom:12px; }
 .sess-head h1 { font-size:16px; }
-.chip { border:1px solid var(--line); border-radius:999px; padding:0 8px; font:12px/20px var(--mono); color:var(--quiet); white-space:nowrap; }
+.chip { border:1px solid var(--divider); border-radius:999px; padding:0 8px; font:12px/20px var(--mono); color:var(--fg-quiet); white-space:nowrap; }
 .sess { display:grid; grid-template-columns:230px minmax(0,1fr) 320px; gap:20px; align-items:start; }
 .tree { font-size:13px; }
 .strand { display:block; width:100%; text-align:left; border:0; border-radius:6px; padding:6px 8px; white-space:normal; }
-.strand.on { background:var(--sunk); }
+.strand.on { background:var(--bg-sunk); outline:1px solid var(--control-line); outline-offset:-1px; }
 .strand .mono { display:block; }
 .strand.ind { margin-left:14px; width:calc(100% - 14px); }
 .turn { margin-bottom:14px; }
-.who { font-size:12px; color:var(--quiet); margin-bottom:3px; }
-.user { background:var(--raised); border:1px solid var(--line); border-radius:8px; padding:8px 12px; }
-.program { background:var(--raised); border:1px solid var(--line); border-radius:8px; padding:8px 12px; }
+.who { font-size:12px; color:var(--fg-quiet); margin-bottom:3px; }
+.user { background:var(--bg-raised); border:1px solid var(--divider); border-radius:8px; padding:8px 12px; }
+.program { background:var(--bg-raised); border:1px solid var(--divider); border-radius:8px; padding:8px 12px; }
 .calls { display:grid; grid-template-columns:minmax(0,130px) minmax(0,1fr) 44px; gap:3px 10px; margin-top:8px; font:12px/18px var(--mono); align-items:center; }
-.bar { height:6px; background:var(--sunk); border-radius:3px; position:relative; }
-.bar i { position:absolute; top:0; bottom:0; background:var(--quiet); border-radius:3px; }
-.composer { background:var(--raised); border:1px solid var(--line); border-radius:8px; padding:10px 12px; color:var(--quiet); display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.bar { height:6px; background:var(--bg-sunk); border-radius:3px; position:relative; }
+.bar i { position:absolute; top:0; bottom:0; background:var(--fg-quiet); border-radius:3px; }
+.composer { background:var(--bg-raised); border:1px solid var(--divider); border-radius:8px; padding:10px 12px; color:var(--fg-quiet); display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
 .composer span:first-child { flex:1; min-width:150px; }
-details.ins { border-top:1px solid var(--line); }
+details.ins { border-top:1px solid var(--divider); }
 details.ins:first-child { border-top:0; }
 details.ins summary { padding:9px 14px; cursor:pointer; font-size:13px; font-weight:500; display:flex; justify-content:space-between; gap:8px; }
-details.ins summary span { font-weight:400; color:var(--quiet); font-size:12.5px; }
+details.ins summary span { font-weight:400; color:var(--fg-quiet); font-size:12.5px; }
 details.ins .body { padding:0 14px 10px; font-size:13px; }
 
 /* Machines */
 .nodes { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr)); gap:12px; }
 .node { padding:12px 14px; }
-.node.degraded { background:var(--signal-bg); border-color:var(--signal-line); }
-.node.down { background:var(--bad-bg); border-color:var(--bad-line); }
+.node.degraded { border-color:var(--signal-line); }
+.node.down { background:var(--danger-bg); border-color:var(--danger-line); }
 .node h3 { font-size:14px; display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
 .tablewrap { overflow-x:auto; }
 table { border-collapse:collapse; width:100%; font-size:13px; }
-th,td { text-align:left; padding:7px 14px; border-top:1px solid var(--line); white-space:nowrap; font-weight:400; }
-thead th { border-top:0; color:var(--quiet); font-size:11.5px; }
-td.warn { color:var(--signal); font-weight:600; }
+th,td { text-align:left; padding:7px 14px; border-top:1px solid var(--divider); white-space:nowrap; font-weight:400; }
+thead th { border-top:0; color:var(--fg-quiet); font-size:11.5px; }
+td.bad { color:var(--danger-text); font-weight:600; }
+td.bad::before { content:"\2716\00A0"; }
+td.warn { color:var(--signal-text); font-weight:600; }
+td.warn::before { content:"\25C7\00A0"; }
 
 @media (max-width:1080px) {
   .cols, .sess { grid-template-columns:minmax(0,1fr); }
@@ -184,9 +221,9 @@ td.warn { color:var(--signal); font-weight:600; }
 <header class="top">
   <span class="brand">Loom</span>
   <nav class="tabs" role="tablist" aria-label="Screens">
-    <button role="tab" data-s="now" aria-selected="true">Now<span class="count">4</span></button>
+    <button role="tab" data-s="now" aria-selected="true">Now<span class="count need">3</span><span class="count bad">1</span></button>
     <button role="tab" data-s="session" aria-selected="false">Session</button>
-    <button role="tab" data-s="machines" aria-selected="false">Machines<span class="count">1</span></button>
+    <button role="tab" data-s="machines" aria-selected="false">Machines<span class="count bad">1</span><span class="count warn">1</span></button>
   </nav>
   <div class="daemon">
     <span><b>hub</b> up 3 h 12 m</span>
@@ -231,13 +268,13 @@ td.warn { color:var(--signal); font-weight:600; }
             <div class="actions"><button class="primary" type="button">Open and read</button></div>
             <div class="srcs"><span class="src gap">saved-session pending count in the catalogue</span></div>
           </div>
-          <div class="item">
+          <div class="item p2">
             <div class="l1"><span class="state bad">Run failed</span> <strong>signoff flake hunt</strong><span class="age">18 m ago</span></div>
             <div class="small" style="margin-top:4px"><span class="mono">provider_error</span> stream disconnected after 3 attempts</div>
             <div class="actions"><button type="button">Send "continue"</button><button type="button">Open session</button></div>
             <div class="srcs"><span class="src have">sessions.activity last_outcome, last_message</span><span class="src have">strand_result error</span></div>
           </div>
-          <div class="item">
+          <div class="item p1">
             <div class="l1"><span class="state need">Goal stopped</span> <strong>land the migration</strong><span class="age">52 m ago</span></div>
             <div class="small" style="margin-top:4px">Used its token budget: 400k of 400k, $3.18. Last check <span class="mono">make check</span> exit 1.</div>
             <div class="actions"><button type="button">Raise budget</button><button type="button">Clear goal</button><button type="button">Open session</button></div>
@@ -252,7 +289,7 @@ td.warn { color:var(--signal); font-weight:600; }
           <div class="strip h"><span>State</span><span>Session</span><span>Doing now</span><span>Agent → commands</span><span class="num">Strands</span><span class="num">Spend</span></div>
           <div class="strip"><span class="state idle">Working</span><span class="col-name"><div class="name">retry ladder audit</div><div class="sub">loom · fix/retry-ladder</div></span><span class="col-now">sub:main/audit-callers: reading manager.gleam</span><span class="col-where mono q">hub → box</span><span class="num">1 of 3</span><span class="num q age2">$1.42</span></div>
           <div class="strip"><span class="state idle">Working</span><span class="col-name"><div class="name">lane memo pass</div><div class="sub">loom · web/lane-memos</div></span><span class="col-now">main: running make check-web_view</span><span class="col-where mono q">hub → hub</span><span class="num">1 of 1</span><span class="num q age2">$0.37</span></div>
-          <div class="strip"><span class="state idle">Working</span><span class="col-name"><div class="name">gepa report</div><div class="sub">gepa · main</div></span><span class="col-now">main: scoring generation 4 of 6</span><span class="col-where mono q">bravo → exec2 <span style="color:var(--signal)">down</span></span><span class="num">2 of 2</span><span class="num q age2">not read</span></div>
+          <div class="strip fault"><span class="state bad">Host down</span><span class="col-name"><div class="name">gepa report</div><div class="sub">gepa · main</div></span><span class="col-now">main: scoring generation 4 of 6</span><span class="col-where mono q">bravo → exec2</span><span class="num">2 of 2</span><span class="num q age2">not read</span></div>
           <div class="strip quiet"><span class="state idle">Idle</span><span class="col-name"><div class="name">notes triage</div><div class="sub">loom · main</div></span><span class="col-now">Finished: merged the retry fix.</span><span class="col-where mono">hub → hub</span><span class="num">0 of 1</span><span class="num age2">$0.08</span></div>
         </div>
         <div class="srcs"><span class="src have">sessions.activity state, glances, strands</span><span class="src have">sessions.list executor, pool</span><span class="src have">deployment.status placements</span><span class="src gap">spend without attaching</span></div>
@@ -280,11 +317,11 @@ td.warn { color:var(--signal); font-weight:600; }
         </div>
       </div>
       <div>
-        <div class="head"><h2>Machines</h2><span class="q">degraded</span></div>
+        <div class="head"><h2>Machines</h2><span class="state bad">1 down</span></div>
         <div class="box pad">
           <div class="row"><span>hub, bravo, box</span><span class="state ok">ok</span></div>
-          <div class="row"><span><strong>exec2</strong><div class="sub2">timeout. 1 session placed here.</div></span><span class="state need">down</span></div>
-          <div class="row"><span>Move <span class="mono">docs pass</span> to bravo<div class="sub2">stalled 4 m: the receiver did not answer</div></span><span class="state need">stalled</span></div>
+          <div class="row"><span><strong>exec2</strong><div class="sub2">timeout. 1 session placed here.</div></span><span class="state bad">down</span></div>
+          <div class="row"><span>Move <span class="mono">docs pass</span> to bravo<div class="sub2">stalled 4 m: the receiver did not answer</div></span><span class="state warn">stalled</span></div>
           <div class="srcs"><span class="src have">deployment.status state, reasons, moves</span></div>
         </div>
       </div>
@@ -292,7 +329,7 @@ td.warn { color:var(--signal); font-weight:600; }
         <div class="head"><h2>Standing rules</h2><span class="q">1 to review</span></div>
         <div class="box pad">
           <div class="small"><span class="mono q">prop-ec251fba8f</span> from <strong>retry ladder audit</strong></div>
-          <div class="diff"><div class="a">+ Run make doc-check before every push.</div></div>
+          <div class="diff"><div class="a"><b>+</b> Run make doc-check before every push.</div></div>
           <div class="small q">Citation drift reddened the signoff static lane twice.</div>
           <div class="small">Reaches new sessions only. The <strong>5 resident sessions</strong> keep the rules they started with.</div>
           <div class="actions"><button type="button">Reject</button><button type="button">Approve</button></div>
@@ -318,10 +355,10 @@ td.warn { color:var(--signal); font-weight:600; }
       <div class="head"><h2>Strands</h2><span class="q">3</span></div>
       <div class="box" style="padding:4px">
         <button class="strand" type="button"><span class="mono">main</span><span class="q small">Waiting on sub-agent</span></button>
-        <button class="strand ind on" type="button"><span class="mono">sub:main/audit-callers</span><span class="small" style="color:var(--signal)">Needs approval</span></button>
-        <button class="strand ind" type="button"><span class="mono">sub:main/write-note</span><span class="q small">Finished, 2 m ago</span></button>
-        <button class="strand" type="button"><span class="mono">advisor</span><span class="q small">1 nudge queued</span></button>
-        <button class="strand ind" type="button"><span class="mono">bench-runner</span><span class="q small">on bravo, running</span></button>
+        <button class="strand ind on" type="button"><span class="mono" style="color:var(--strand-2)">sub:main/audit-callers</span><span class="small state need">Needs approval</span></button>
+        <button class="strand ind" type="button"><span class="mono" style="color:var(--strand-3)">sub:main/write-note</span><span class="q small">Finished, 2 m ago</span></button>
+        <button class="strand" type="button"><span class="mono" style="color:var(--advisor)">advisor</span><span class="q small">1 nudge queued</span></button>
+        <button class="strand ind" type="button"><span class="mono" style="color:var(--peer)">bench-runner</span><span class="q small">on bravo, running</span></button>
       </div>
       <div class="srcs"><span class="src have">snapshot strands, live_op</span><span class="src have">remote_children</span><span class="src have">advisor_pending</span></div>
     </div>
@@ -343,7 +380,7 @@ td.warn { color:var(--signal); font-weight:600; }
       <div class="turn"><div class="who">sub:main/audit-callers</div><div>Three callers share one budget, and <span class="mono">serve.retry</span> owns it. The fix narrows the default ladder.</div></div>
       <div class="turn">
         <div class="who mono">fs_edit packages/client/src/client/serve.gleam</div>
-        <div class="diff"><div class="c">@@ -41,3 +41,3 @@ pub fn retry(budget: Budget) -&gt; Outcome {</div><div class="d">-  let ladder = default_ladder()</div><div class="a">+  let ladder = ladder_within(budget)</div><div class="c">   run_attempts(ladder, budget)</div></div>
+        <div class="diff"><div class="c">@@ -41,3 +41,3 @@ pub fn retry(budget: Budget) -&gt; Outcome {</div><div class="d"><b>-</b>  let ladder = default_ladder()</div><div class="a"><b>+</b>  let ladder = ladder_within(budget)</div><div class="c">   run_attempts(ladder, budget)</div></div>
       </div>
       <div class="turn">
         <div class="box" style="background:var(--signal-bg);border-color:var(--signal-line);padding:10px 12px">
@@ -389,7 +426,7 @@ td.warn { color:var(--signal); font-weight:600; }
 
 <!-- ======================= MACHINES ======================= -->
 <section class="screen" id="machines" aria-label="Machines">
-  <div class="head"><h2>Deployment</h2><span class="q">degraded · read from hub 4 s ago</span></div>
+  <div class="head"><h2>Deployment</h2><span class="state bad">1 down</span><span class="q">read from hub 4 s ago</span></div>
   <div class="nodes">
     <div class="box node"><h3>hub <span class="state ok">ok</span> <span class="sub2">this daemon · orchestrator, member</span></h3>
       <div class="small q">0.3.2 (ccb79575) · up 3 h 12 m</div>
@@ -399,7 +436,7 @@ td.warn { color:var(--signal); font-weight:600; }
       <div class="small q">0.3.2 (ccb79575) · up 2 d</div>
       <div class="row"><span>Imports</span><span>receiving</span></div>
     </div>
-    <div class="box node degraded"><h3>box <span class="state need">degraded</span> <span class="sub2">executor, member</span></h3>
+    <div class="box node degraded"><h3>box <span class="state warn">degraded</span> <span class="sub2">executor, member</span></h3>
       <div class="small">1 scope closed with unknown cleanup. It blocks a reopen until released.</div>
       <div class="row"><span>Scopes open</span><span>3 of 16</span></div><div class="meter"><i class="warn" style="width:25%"></i></div>
       <div class="row"><span>Ledger</span><span>2 MiB of 512 MiB</span></div>
@@ -419,7 +456,7 @@ td.warn { color:var(--signal); font-weight:600; }
       <tbody>
         <tr><td>retry ladder audit</td><td class="mono">hub</td><td class="mono">box</td><td class="mono">builders</td><td>Working</td></tr>
         <tr><td>lane memo pass</td><td class="mono">hub</td><td class="mono">hub</td><td class="q">none</td><td>Working</td></tr>
-        <tr><td>gepa report</td><td class="mono">bravo</td><td class="mono">exec2</td><td class="mono">builders</td><td class="warn">Commands host down</td></tr>
+        <tr><td>gepa report</td><td class="mono">bravo</td><td class="mono">exec2</td><td class="mono">builders</td><td class="bad">Commands host down</td></tr>
         <tr><td>docs pass</td><td class="mono">hub → bravo</td><td class="mono">box</td><td class="q">none</td><td class="warn">Move stalled 4 m</td></tr>
       </tbody>
     </table>
@@ -450,6 +487,7 @@ td.warn { color:var(--signal); font-weight:600; }
   }
   tabs.forEach(function (t) { t.addEventListener('click', function () { show(t.dataset.s); location.hash = t.dataset.s; }); });
   if (['now','session','machines'].indexOf(location.hash.slice(1)) >= 0) show(location.hash.slice(1));
+  addEventListener('hashchange', function () { if (['now','session','machines'].indexOf(location.hash.slice(1)) >= 0) show(location.hash.slice(1)); });
   document.getElementById('srcs').addEventListener('change', function (e) { document.body.classList.toggle('nosrc', !e.target.checked); });
   document.getElementById('theme').addEventListener('click', function () {
     var r = document.documentElement, dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;

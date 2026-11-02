@@ -3,8 +3,8 @@
 **Status: exploration, for the owner's review. Nothing here is built.** The
 mock is [web-ui-redesign-mock.html](web-ui-redesign-mock.html). It builds on
 [the web UI note](web-ui.md) and [the web design note](web-design.md), and it
-would change one decision they record: what the home page is (section 7,
-choice 1).
+would change two decisions they record: what the home page is (section 7,
+choice 1), and the A2 palette (section 9).
 
 Claims about the daemon carry one of three marks:
 
@@ -57,7 +57,8 @@ then a `kill -9` and a restart.
   memory section that says a note's body is not shown [L].
 - **`Cmd+K`** lists Home and every session, saved ones included [L].
 - **The design rules.** Tinted background and hairline border, red and green
-  diffs, the A2 tokens. The mock uses them unchanged.
+  diffs, no accent bars and no card shadows. The mock keeps these. It replaces the
+  A2 colour values, for the reasons in section 9.
 
 ### Wrong
 
@@ -257,9 +258,9 @@ either; keep every figure honest when a source is absent or stale.
 | Forensic accounting and shift handover | Reconcile each figure to its source; SBAR digest | Reconciliation table, digest definition | B, agent | Kept |
 | Process-plant HMI and air traffic control strips | ISA-101: grey when normal, colour for abnormal. One strip per flight in fixed columns, ordered by next action. | Visual rules, strip columns | B, by the lead | Kept |
 | Short seller | Attack each claim in the draft from primary sources | Claims list | C, agent | Kept, the adversary. See section 8. |
-| Brand designer | Restyle | | | Struck: tone only, and A2 is approved |
+| Brand designer | Restyle | | | Struck: tone only. The owner later reopened colour, and section 9 answers that with measurement. |
 | Game theorist | Multi-party incentives | | | Struck: wrong object |
-| Accessibility specialist | Contrast and keyboard audit | | | Cut: would have checked the mock's contrast and tab order. Needed before build. |
+| Accessibility specialist | Contrast and keyboard audit | | | Cut at first. Section 9 now covers colour and contrast. Tab order and screen readers are still unchecked, and are needed before build. |
 | Motion designer | Timed transitions | | | Cut: `web-ui.md` 6.1 already sets motion |
 
 I ran HMI and strips myself, because the input is the visual vocabulary I already
@@ -285,9 +286,10 @@ estimates [A]; the ranking is the design.
 **HMI rules produced the visual language.** This is where the page becomes
 quieter. Normal is grey: `Working` carries no colour, and a page with nothing
 wrong has almost no colour on it. Colour appears only on what needs action, always
-with a word: amber tint for a required decision, rose for failed or down, green
-only for `ok` and diff additions. The mock's Running list shows the effect. The
-owner's rule about tint and hairline, and no bars or shadows, fits this directly.
+with a word and a shape: amber for a required decision, red for failed or down,
+green only for diffs. The mock's Running list shows the effect. The owner's rule
+about tint and hairline, and no bars or shadows, fits this directly. Section 9 has
+the values.
 
 **Strips produced the Running table.** A row per session with fixed columns: state,
 session and branch, doing now, agent → commands, strands, spend. It reads down a
@@ -336,7 +338,7 @@ flowchart TD
 
 ## 5. Key screens
 
-All three are in the mock. Tags under each block name the source, and purple tags
+All three are in the mock. Tags under each block name the source, and blue tags
 mark what needs a change. The checkbox in the mock's top bar hides them.
 
 **Now.**
@@ -420,5 +422,221 @@ findings. Eight changed the note or the mock:
 
 It confirmed the saved-session gap and the Machines fields against sections 3.21,
 3.4, 3.29 and 3.30. The alarm rationalization produced the queue's order, and the
-reconciliation produced the catalogue summary as the largest gap. I had no
-accessibility pass, and the mock has not had one.
+reconciliation produced the catalogue summary as the largest gap. The mock has
+had a colour and contrast pass (section 9), and no keyboard or screen reader pass.
+
+## 9. Colour: the plant grey palette
+
+The owner invited a new colour scheme for this redesign and left the choice to
+this pass. The mock now uses the palette below in place of A2. Both schemes follow
+`prefers-color-scheme`, and the mock's Theme button overrides them.
+
+**What it has to do.** A person monitoring many long-running agents must spot what
+needs them within seconds, read dense code and transcript for hours, and trust the
+status colours, in light and dark.
+
+**Targets.** Body text at least 7:1. Secondary text at least 4.5:1. Status text at
+least 4.5:1 on its tinted fill. Diff text at least 7:1. Controls and marks at least
+3:1. The owner's rules stand: no left-edge bars, no card shadows, tinted background
+and hairline border, red removed and green added.
+
+### The rules the palette follows
+
+- Normal is grey, as in ISA-101 plant displays. A page with nothing wrong has almost
+  no colour on it.
+- Each alarm hue has one meaning and is used for nothing else. A filled diamond in
+  amber means a decision is waiting on this row. A hollow diamond in amber is a
+  warning with no decision on the row. A cross in red means failed or down.
+- `ok` is grey with a check, because it is normal. Green is for diffs.
+- Status never rests on colour alone. Each state has a word and a shape, and each
+  diff line has a bold `+` or `-`.
+- A strand, advisor or peer hue colours a name and nothing else. It is never a fill.
+
+### Tokens
+
+Names are the `--color-*` names in `web_client.css` without the prefix. Ratios are
+the WCAG ratio on the worst surface the mock draws the token on. **Lc** is the APCA
+value on that token's worst surface, and is reported but was not a target, except
+that secondary text was held to Lc 60.
+
+**Surfaces**
+
+| Token | Light | Dark | Use |
+|---|---|---|---|
+| `bg` | `#ebecec` | `#17191b` | Page |
+| `bg-raised` | `#f8f8f7` | `#1f2224` | Cards, table rows |
+| `bg-sunk` | `#e2e3e3` | `#121415` | Selected strand, meter track |
+| `code` | `#eff0ef` | `#25282b` | Code blocks |
+| `divider` | `#d2d4d4` | `#34383b` | Layout hairlines, decorative |
+| `signal-bg` | `#fbeacb` | `#2c1e0c` | Row with a decision waiting |
+| `signal-line` | `#e3c183` | `#57401c` | Its hairline |
+| `danger-bg` | `#f7cdc9` | `#561e1c` | Failed or down row |
+| `danger-line` | `#e5a5a0` | `#80332f` | Its hairline |
+| `added-bg` | `#e6f7e2` | `#0e2715` | Added diff line |
+| `removed-bg` | `#f6c6c2` | `#642120` | Removed diff line |
+
+**Text and controls, with measured contrast**
+
+| Token | Light | Worst, light | Dark | Worst, dark | Floor |
+|---|---|---|---|---|---|
+| `fg` | `#17191a` | 11.57 on `removed-bg`, Lc 78 | `#e7e9ea` | 9.68 on `removed-bg`, Lc 86 | 7 |
+| `fg-quiet` | `#50565a` | 5.15 on `danger-bg`, Lc 62 | `#bcc2c6` | 7.30 on `danger-bg`, Lc 64 | 4.5 |
+| `signal-text` | `#985000` | 4.69 on `bg-sunk`, Lc 63 | `#f5a742` | 7.40 on `code`, Lc 60 | 4.5 |
+| `danger-text` | `#800c10` | 7.35 on `danger-bg`, Lc 69 | `#ff7a70` | 5.17 on `danger-bg`, Lc 47 | 4.5 |
+| `added-text` | `#176a35` | 5.63 on `bg`, Lc 71 | `#adeb9f` | 10.70 on `code`, Lc 81 | 4.5 |
+| `current` (links, focus) | `#0b5cad` | 4.62 on `danger-bg`, Lc 59 | `#7db4f0` | 6.04 on `danger-bg`, Lc 54 | 4.5 |
+| `diff-added-text` (new) | `#125a2b` | 7.44 on `added-bg`, Lc 81 | `#adeb9f` | 11.49 on `added-bg`, Lc 82 | 7 |
+| `diff-removed-text` (new) | `#7c0b0e` | 7.21 on `removed-bg`, Lc 67 | `#ffb6af` | 7.06 on `removed-bg`, Lc 66 | 7 |
+| `diff-context` (new) | `#44494d` | 7.69 on `bg`, Lc 80 | `#bcc2c6` | 8.89 on `bg-raised`, Lc 67 | 7 |
+| `control-line` (new) | `#74797d` | 3.04 on `danger-bg` | `#7a8084` | 3.28 on `danger-bg` | 3 |
+
+The body floor was 7:1 for `fg` on every surface. The lowest values above are on
+diff fills; on page surfaces `fg` is at least 13.72:1 in light and 12.17:1 in dark.
+
+**Marks, with no words on them**
+
+| Token | Light | Worst, light | Dark | Worst, dark |
+|---|---|---|---|---|
+| `signal` | `#b05f00` | 3.64 on `bg-sunk` | `#f08a1c` | 6.37 on `bg-raised` |
+| `danger` | `#b4141a` | 5.34 on `bg-sunk` | `#dc625c` | 4.53 on `bg-raised` |
+| `added` | `#1e8a45` | 3.42 on `bg-sunk` | `#6fcf6a` | 8.24 on `bg-raised` |
+| `fg-faint` | `#8b9195` | Marks only, never text | `#6b7175` | Marks only, never text |
+| `on-danger` | `#ffffff` | 6.87 on `danger` | `#17191b` | 4.99 on `danger` |
+
+**Identity hues.** Each serves as mark and as text, so `X` and `X-text` hold one
+value. All clear 4.5:1 on `bg`, `bg-raised` and `bg-sunk`; the lowest is 4.67 in
+light and 5.34 in dark. None is on the alarm hues.
+
+| Token | Light | Dark |
+|---|---|---|
+| `advisor` | `#6a4aa8` | `#b49ee8` |
+| `peer` | `#94357f` | `#dd8ccb` |
+| `strand-2` | `#0a6a78` | `#5cc4d4` |
+| `strand-3` | `#5a5f8f` | `#8a93c0` |
+| `strand-4` | `#7f4a9e` | `#c79ae0` |
+| `strand-5` | `#7a5a6a` | `#c4a5b5` |
+| `strand-6` | `#4a6572` | `#9ab4c2` |
+
+### Colour vision
+
+Values are the CIEDE2000 distance after the Machado 2009 full-severity simulation.
+A larger number means more distinct. There is no standard threshold; I treated
+about 10 as the point where small text separates at a glance, which is a judgement.
+
+| Pair | Light, deutan | Light, protan | Dark, deutan | Dark, protan |
+|---|---|---|---|---|
+| Worst status text pair | 9.4 | 7.0 | 9.9 | 15.0 |
+| Worst alarm mark pair | 8.9 | 10.0 | 9.6 | 13.1 |
+| Worst tint fill pair | 5.3 | 5.1 | 4.4 | 2.1 |
+| Diff text, added and removed | 7.8 | 12.4 | 6.2 | 14.9 |
+| Diff fill, added and removed | 6.7 | 9.3 | 11.6 | 3.8 |
+
+These do not clear 10 everywhere. For the three status text colours, a grid search
+over hue, lightness and chroma, with a floor on chroma, reached 9.0 in light and 16.7
+in dark, so little more was available there. That search is why red is dark
+in the light scheme and amber is the brighter of the two: lightness carries the
+split that hue cannot. Moving red toward crimson and green toward teal made it
+worse (4.0 in light), because the two then sit on the same confusion line.
+
+The tint fills are the weakest result, at 2.1 for dark red and green fills under
+protanopia. Those two fills never mean a status at the same time: green is a diff
+line and red is a fault. The word, shape and `+` or `-` carry the difference.
+
+### Why it won, and the two that lost
+
+All three were rendered in the mock, light and dark, at 1440 and 375 px, and run
+through the same script. Only plant grey went through the later tuning rounds and
+the adversary, so its numbers are better partly for that reason. The same grid
+search gave the other two a similar ceiling (13.4 to 16.9 with no chroma floor,
+against 13.5 for plant grey in light), so colour vision alone did not decide this.
+
+- **Plant grey (chosen).** It comes from high-performance HMI practice, where the
+  operator's task is the same as this page's: watch a lot of normal and catch the
+  exception. Its neutral surfaces leave the alarm hues nothing to compete with, and
+  light `bg` at `#ebecec` avoids white glare during long reading. It looks plain,
+  which is intended.
+- **Rubric (lost).** Warm paper, black ink and spot colour, from editorial print and
+  rubrication. Light was `bg #f5f0e6`, `fg #1c1915`, red `#a32414`, ochre `#6f4f00`;
+  dark was `bg #1a1714`. It was pleasant to read and the most attractive of the
+  three. It lost for three reasons. Amber sits close to a warm page, so the attention
+  tint was the least distinct from its surface in dark (10.7 against plant grey's
+  15.3 before tuning). Status text under deuteranopia measured 2.6 in light. Print
+  practice assumes one or two inks, and this page needs three alarm meanings. It
+  also stays close to A2's warm family, so it is less of a change than the invitation
+  allowed. Untuned, it had four contrast failures: two diff text pairs and two marks.
+- **High-legibility editor (lost).** Modelled on the Modus themes for Emacs, which
+  hold text to 7:1: white and black surfaces, saturated hues. It had the best raw
+  contrast, with one failure (the amber mark on `bg-sunk`). Its yellow tint was the
+  most visible (20.7 from the page), and that was the problem: two approval rows
+  dominated the screen in both schemes, leaving nothing louder for a worse event.
+  Pure black dark surfaces with white text also read harsher in the screenshots.
+  Status text under deuteranopia measured 0.9 in light. I took its 7:1 diff text from
+  it. Values are modelled from memory of those themes and not copied from them.
+
+### What the adversary changed
+
+One adversary attacked the palette from the screenshots, the numbers and the script.
+Its findings, and what happened to each:
+
+- **Fixed.** Tab badges were always amber, which hid failures, and now show one badge
+  per severity with a shape.
+- **Fixed, in part.** A down host appeared in three colours. It is now red everywhere,
+  including a tinted row and word in Running. I did not move it to Needs You as
+  proposed: section 3 rules that a plain down node has no required action.
+- **Fixed.** Dark red read as salmon, weaker than amber. `danger-text` and `danger-bg`
+  moved, `signal-bg` darkened, and the cross got heavier. Dark red text still has lower
+  Lc than amber (47 against 60), because a lighter red turns pink. Accepted: the fill
+  and shape carry the priority.
+- **Fixed.** Dark `ok` green was the loudest status on the page. `ok` is now grey.
+- **Fixed.** Under deuteranopia the light red row lost its alarm look. Red text and fill
+  darkened (distance from raised 5.3 to 9.6).
+- **Fixed.** Amber meant both a decision and a warning. The hollow diamond now takes
+  warnings, and a degraded node keeps its amber line and loses its fill.
+- **Fixed.** Goal Stopped had an amber word and no tint, and tinted rows used the grey
+  hairline.
+- **Fixed.** Dark `fg-quiet` measured 7.21:1 but only Lc 56 at 12 px. It moved to Lc 67,
+  and secondary text now has an Lc 60 floor.
+- **Fixed.** Diff context lines missed 7:1 in light, and the script did not check them.
+- **Fixed, in part.** Diff fills were close under colour-blindness simulation, and now
+  differ more in lightness. Dark protan stays low (3.8), so the bold prefix is required.
+- **Fixed.** Button borders were 1.2 to 1.5:1. `control-line` is new, and `divider` stays
+  for layout.
+- **Fixed, in part.** `strand-3` was close to the link blue and `strand-5` to the alarm
+  hues, so both changed value. It proposed dropping `strand-5`, which I did not do,
+  since a session can list five strands. `advisor` against link blue stays close under
+  colour-blindness simulation (2.3 in light, 1.5 in dark). Accepted: a strand hue is
+  always a labelled name.
+
+### How it maps onto the page's tokens
+
+Applying this means editing `packages/web_client/src/web_client.css` and running
+`make gen-client`. This note changes no Gleam or CSS outside the mock.
+
+| Today | Change |
+|---|---|
+| `bg`, `bg-raised`, `bg-sunk`, `code`, `fg`, `fg-quiet`, `fg-faint`, `divider`, `current` | New values, same names |
+| `bg-user` | Takes the value of `bg-raised`, as now |
+| `signal`, `signal-text`, `danger`, `danger-text`, `on-danger` | New values, same names |
+| `added`, `added-text`, `added-bg`, `removed-bg` | New values, same names |
+| `advisor`, `advisor-text`, `peer`, `peer-text`, `strand-N`, `strand-N-text` | New values. Each pair holds one value. `advisor` no longer equals `signal`, which settles that open point in `web-design.md` section 5. |
+| `pill-wait-bg`, `pill-bad-bg` | Point at `signal-bg` and `danger-bg` in place of a `color-mix` |
+| `pill-ok-bg` | Transparent: an `ok` pill is normal, so it has no fill |
+| `primary-button`, `shadow-float` | Unchanged |
+| New | `signal-bg`, `signal-line`, `danger-bg`, `danger-line`, `diff-added-text`, `diff-removed-text`, `diff-context`, `control-line` |
+
+Four rules in the stylesheet change as well. `.tok-del` and the other diff rules take
+`diff-removed-text` and `diff-added-text`, since `danger-text` does not reach 7:1 on
+`removed-bg` in dark. Classes that draw `ok` in `added-text` (`.chip-status.done`,
+`.step.done .glyph`, `.pc-ok .pc-glyph`) move to `fg-quiet`. Each new token needs an
+`inherit` line in the `:host` block and a place in both light blocks. And
+`scripts/web_client_contrast_check.sh` needs the new surfaces, with the 7:1 floors.
+
+### What this does not establish
+
+- Simulated colour blindness is a model, and nobody with the condition looked at
+  the mock. Neither did anyone read it for hours, so comfort is a judgement from
+  the ratios and the screenshots.
+- Screenshots came from one display and engine, with the fallback font stack.
+- APCA is a draft method; the WCAG ratios are the numbers the targets use.
+- The native client will share these token names, but I did not render them in
+  SwiftUI, where vibrancy and system materials can change the surfaces.
