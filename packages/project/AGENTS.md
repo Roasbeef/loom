@@ -20,8 +20,8 @@ subset as `core`, `machine`, `prompt`, `gepa` and the others in
 is explored by a model-based test over random event sequences with no
 processes, and the ledger codec reads the same events on either target. The
 suite runs on both, and `scripts/check.sh` runs it on JavaScript through
-`scripts/portable_js_test.sh`. The one dependency beyond the standard library
-is `gleam_json`, which has both targets.
+`scripts/portable_js_test.sh`. The dependencies beyond the standard library
+are `gleam_json` and `evalstat`, both of which have both targets.
 
 ## Modules, in reading order
 
@@ -60,9 +60,34 @@ is `gleam_json`, which has both targets.
   decoders, and `retire`, the retention rule: it drops tickets that ended and
   triggers that were settled before a horizon and that nothing remaining names, and
   says what became of each trigger it dropped. `decode(config, encode(s)) == Ok(s)`
-  is a property the model-based test checks on every state it reaches.
+  is a property the model-based test checks on every state it reaches. A labelled
+  trigger is never retired.
+- `project/tape` records the triggers of one source and rule from the state:
+  each with the thread as it stood at that trigger (the thread's entries from the
+  trigger's own back, so a later comment cannot enter), the relation the gate
+  saw, and what the router answered. A pure value with a total decoder.
+- `project/judge` turns labelled frames into `evalstat` rows (a trigger is a task,
+  a trial passes when the decision matches the label) and asks the instrument for
+  a verdict. `replay_samples` runs a gate function with the router's recorded
+  answers served back; `live_samples` takes a decision callback. `outcome_of`
+  passes a finding only when it is not `Harmed` and the instrument's interval stays
+  above a thirty-point drop. It adds no statistic.
+- `project/standing` words where a pair stands (`none`, `failing`, `stale`,
+  `current`), what a pass claims, and the refusal of `auto`, for every surface.
 
 ## Invariants that break things when violated
+
+- **A verdict is current only under the exact pin in force.** `state.verdict_of`
+  compares the verdict's `Pin` (policy version, router prompt revision, router
+  model) with `state.pin_of`; `PolicyVersionSet` and `RouterPinSet` demote every
+  `Auto` pair left without a current passing verdict, in the event itself, so the
+  demotion is in the ledger. `RouterPinSet` with the values already held changes
+  nothing.
+- **Labels count toward the rule the trigger matched.** `Labelled` is refused
+  (`NotLabellable`) for a trigger the state does not hold or no rule matched. The
+  owner-only check is the host's; the event carries the principal.
+- **A tape holds the thread as it stood.** `tape.record` cuts a thread at the
+  trigger's own entry. Never read a thread's later entries into a frame.
 
 - **`Ready` needs the host's proof.** `readiness.check_passed` is the only way
   into `Ready` and takes a `host.CheckPassed`; a worker `Report` has no
@@ -154,9 +179,13 @@ against a shadow of the log, and a replay check at the end of each run. Its
 second test asserts the generator reaches the guarded states. Fixed seeds
 throughout. `test/project/tables_test.gleam` covers the gate, stage, policy,
 readiness and names; `test/project/codec_test.gleam` the codec properties.
+`test/project/verdict_test.gleam` is slice 6: tapes, labels, the computation
+(an A/A property and planted drops on fixed seeds), the pin and the `auto` gate
+across a restart.
 
 ## Dependencies
 
-`gleam_stdlib` and `gleam_json`; `gleeunit`, `qcheck` and `statem` for tests.
+`gleam_stdlib`, `gleam_json` and `evalstat`; `gleeunit`, `qcheck` and `statem`
+for tests.
 `client` and `tools` depend on it (types and the codec); the engine's actor is
 `client/daemon/project_host`.

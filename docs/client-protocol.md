@@ -1836,6 +1836,9 @@ engine's own spelling of a stage, and a client displays it and never derives it.
 | `projects.requeue` | no | `project`, `trigger` (strings, required) | `projects.requeue` |
 | `projects.publish` | no | `project`, `ticket` (strings, required) | `projects.publish` |
 | `projects.set_mode` | no | `project`, `rule` (strings, required), `mode` (`off`, `observe` or `auto`) | `projects.set_mode` |
+| `projects.labels` | yes | `project`, `rule` (strings, required) | `projects.labels` |
+| `projects.label` | no | `project`, `trigger` (strings, required), `label` (`accept` or `reject`) | `projects.label` |
+| `projects.verdict` | no | `project`, `rule` (strings, required), `lane` (`replay` or `live`, optional, `replay` by default) | `projects.verdict` |
 
 ```json
 {"v":2,"id":9,"cmd":"projects.create","body":{"workspace":"/src/loom","name":"loom"}}
@@ -1924,14 +1927,20 @@ is not waiting) is `bad_request`. `projects.ticket` is a read; the other three a
 project or ticket is `not_found` for all four.
 
 `projects.set_mode` sets the mode of one configured rule of a GitHub source and replies
-`{rule, mode}`. The mode survives a restart. An unknown rule, an unknown mode word and `auto` are
-refused `bad_request`, and the refusal's `message` is a sentence, not the generic "request refused":
-`auto` is refused because a rule may run on its own only after the evaluation instrument has judged
-it, which a later slice adds. On page zero `projects.board` also carries `would_have_done`, the
+`{rule, mode}`. The mode survives a restart. An unknown rule and an unknown mode word are refused
+`bad_request`. So is `auto` without a current passing verdict for that source and rule, and the
+refusal's `message` is a sentence, not the generic "request refused": it says whether no verdict was
+recorded, the latest one failed, or a passing one went stale, which of the policy version, the router
+prompt and the router model changed, and how many of the thirty labels a verdict needs the rule has.
+On page zero `projects.board` also carries `would_have_done`, the
 newest 50 inferred messages that an `observe` rule recorded as work it would have done and did not,
 each `{trigger, source, actor, rule, text, link, at_ms}` (`link` is the issue, pull request or checks
 page, or `null`, and `text` is external), and `sources`, one record per configured source,
-`{source, interval_s, last_poll_ms, next_poll_ms, note, shed, rules:[{name, mode}]}`. `note` is empty
+`{source, interval_s, last_poll_ms, next_poll_ms, note, shed, rules:[{name, mode, verdict}]}`. `verdict`
+is `{state, words, labelled, needed, lane}`: `state` is `none`, `failing`, `stale` or `current`, `words`
+is a sentence saying what a passing verdict claims or what is missing, `labelled` is the triggers of
+that rule a person has labelled, `needed` is the thirty a verdict asks for, and `lane` is `replay`,
+`live` or `null`. `note` is empty
 when the last pass ran clean and otherwise says what it could not read or when a rate limit ends. `shed`
 counts triggers that overload shed, which a person can queue again with `projects.requeue`.
 
@@ -1943,6 +1952,23 @@ a ticket that already ended or that a person stopped, and `not_found` for an unk
 ticket. A worker whose work waits for a person is idle, so its assignment ends as `done/rested`
 and frees its slot while the session and its clone stay; a message to the ticket starts a new
 assignment in the same session.
+
+Three owner-only commands produce the verdict that `auto` needs. `projects.labels`
+(`{project, rule}`, a read) replies `{rule, labelled, needed, triggers}` where `triggers` are up to
+twenty recorded triggers of that rule that no one has labelled yet, newest first, each
+`{trigger, actor, text, recorded, at_ms}`; `recorded` is `took` (the project took the trigger on, or an
+`observe` rule recorded that it would have), `declined` (the router ignored it) or `not_asked`, and
+`text` is external. `projects.label` (`{project, trigger, label}` with `label` `accept` or `reject`)
+replies `{trigger, label}`. The label is an event of the project ledger and survives a restart, a later
+label of a trigger replaces the earlier, and a trigger no rule matched or the project does not hold is
+refused `bad_request`. `projects.verdict` (`{project, rule, lane}` with `lane` `replay` by default)
+measures the rule's labelled triggers with the evaluation instrument and records the finding,
+replying `{rule, outcome, lane, triggers, trials, changed, bound_points, words}`. It is refused
+`bad_request`, with a sentence, below thirty labels. The `live` lane is refused in words until the
+daemon can start a scratch router session; `replay` runs the current gate over the recorded triggers,
+costs nothing, and says nothing about the router's prompt or model. A verdict is pinned to the policy
+version, the router prompt revision and the router model, and a change to any of them returns the
+rule to `observe`.
 
 `projects.publish` publishes a ticket's current commit past a failing or missing check. It is
 recorded with the principal, it is the owner's alone, and no tool a model holds reaches it. It

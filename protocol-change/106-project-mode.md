@@ -84,6 +84,9 @@ All are owner-only in the first version. Reads are classified by `read_only`.
 | `projects.publish` | no | Publish past a failing check; recorded with the principal |
 | `projects.requeue` | no | Queue a stored trigger for a fresh Eval |
 | `projects.set_mode` | no | `off`, `observe` or `auto` for one source and rule; `auto` is refused without a current verdict |
+| `projects.labels` | yes | The recorded triggers of a rule that want a label, with the labelled count |
+| `projects.label` | no | A person's `accept` or `reject` of one recorded trigger |
+| `projects.verdict` | no | Measure a rule's labelled triggers on a lane and record the finding |
 
 ### A ticket on the wire
 
@@ -372,3 +375,67 @@ before it starts a worker, because a session's builder runs while the actor wait
 the actor. The Mandate never changes once the ticket exists, so this is a copy and not a second source of
 truth. A worker's `set_config` takes no key that names a network, an approval route or a sandbox, and its
 `active_tools` are held to the ceiling, so nothing the worker sends changes the jail.
+
+## Addendum: the verdict (2026-11-02)
+
+**Affects**: `docs/client-protocol.md` section 3.32 by `projects.labels`, `projects.label` and
+`projects.verdict`, and by a `verdict` object on each rule of the board's `sources`; the project
+ledger by three engine events (`Labelled`, `RouterPinSet`, and a `VerdictRecorded` that carries a pin
+and what it covers); the snapshot document by the router pin and the labels. No change to a worker's
+tools, the jail or the session wire.
+
+**The problem.** `auto` was refused for every rule because nothing could produce the passing verdict
+the design asks for. A verdict has to say what it measured, hold only while that stays true, and not
+claim more than the measurement can.
+
+**What was considered.** Judging the router with the simulator was rejected: a simulated session's
+model is its script, so the decision under test would be the script's own (see the conformance case
+`a_router_shaped_script_converges_but_the_decision_is_the_scripts_test`). Building a tape from the
+event log was rejected: retention deletes events below a snapshot, and the state already keeps a
+thread's entries newest first and never rewrites one, so the state gives the thread as it stood.
+Passing on "the instrument did not say Harmed" was rejected, with the numbers below.
+
+**Decision.** A person labels recorded triggers of a rule `accept` or `reject` (`projects.label`), at
+least thirty (`judge.needed_labels`). The label is a ledger event, only the owner reaches it, and
+retention never drops a labelled trigger. `projects.verdict` builds the rule's tape (`project/tape`):
+each trigger, the thread as it stood at that trigger, the relation the gate saw, and what the router
+answered. It then measures with `evalstat`. A trigger is a task, a trial passes when the decision
+matches the label, and the recorded arm is what the project did at the time.
+
+There are two lanes, and they claim different things. The replay lane runs each labelled trigger
+through the gate as the code stands, with the router's recorded answer served back. It is
+deterministic and free, and it says the same inputs give these decisions; it says nothing about the
+router's prompt or model. The live lane asks a router three times per trigger and says how that router
+judged these triggers. The lane's arithmetic is built (`judge.live_samples`); the daemon has no scratch
+router session that answers without feeding the project's own engine, so `projects.verdict` refuses
+`live` in words, and a test supplies a scripted decision to show it works. Building that session is
+what remains.
+
+A pass needs two things: the instrument's verdict is neither `Harmed` nor `Incomplete`, and the
+instrument's interval of the change in agreement stays above a thirty-point drop
+(`judge.max_bound_points`). The second is needed because the recorded arm is one decision per trigger
+and not three trials. On the synthetic plans in `project/test/project/verdict_test.gleam` (300 plans
+of thirty triggers, three live trials) the verdict reads `Harmed` on 60 percent of thirty-point drops
+and 18 percent of fifteen-point drops, against the instrument's own 95 and 40 percent with three
+trials on both arms. Passing on "not `Harmed`" would let about a third of thirty-point drops through.
+With the interval rule, 4 percent of thirty-point drops pass, 36 percent of fifteen-point drops pass,
+and 87 percent of runs with no change pass. A pass rules out a large regression and does not show
+parity, and the verdict records how far down its interval reached (`bound_points`).
+
+A verdict is pinned to the policy version, a digest of the router's pack, and the router's profile and
+model key. `RouterPinSet` announces the last two at each start and writes nothing when they are
+unchanged. Changing any of the three makes every verdict measured under the old pin stale, and the
+engine returns the pairs that relied on it to `observe` in the same event, so the demotion is in the
+ledger and survives a restart. `auto` is refused without a current passing verdict for that source and
+rule, in words that say which of the three changed and how many labels are missing. A rule configured
+as `auto` starts in `observe` unless a current verdict already exists. Explicit work never reads any of
+this.
+
+**What it costs.** The model in the pin is the registration's profile and model key, because the
+model a `[roles]` chain resolves to is chosen when the session opens and is not visible to the
+project. A change to that chain alone does not move the pin. The prompt revision is the router's
+pack, not its tool descriptions. Thirty labels is a person's effort per rule, and a rule with fewer
+cannot run on its own. The replay lane re-runs the gate and serves recorded router answers and
+overload outcomes, so a change to the queue limits or the attention limit is not judged by it. A
+tape's relation is derived from the state's subscriptions, which are not timestamped, so it is the
+state's record of what the gate read and not the gate's own stored input.

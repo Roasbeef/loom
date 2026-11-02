@@ -589,7 +589,7 @@ further. The owner's composer needs no rule and works in every mode.
 | --- | --- | --- | --- | --- |
 | `name` | string | required | letters, digits, `-`, `_`, `.`, at most 64 bytes, unique | The rule's identity in the ledger and on the board. |
 | `source` | string | required | `github` | The source the rule belongs to. |
-| `mode` | string | `observe` | `off`, `observe`, `auto` | The rule's first mode. `off` ignores its inferred work. `observe` offers it to the router and records what the router would have done, without doing it; the board lists those under "would have done". `auto` is refused until a rule has a passing verdict, which a later slice adds, so a rule written with it starts in `observe`. A person changes the mode with `projects.set_mode`, and the change survives a restart. |
+| `mode` | string | `observe` | `off`, `observe`, `auto` | The rule's first mode. `off` ignores its inferred work. `observe` offers it to the router and records what the router would have done, without doing it; the board lists those under "would have done". `auto` is refused until the rule has a current passing verdict (see `projects.verdict`), so a rule written with it starts in `observe` unless one already exists. A change to the policy version, the router prompt or the router model makes the verdict stale and returns the rule to `observe`. A person changes the mode with `projects.set_mode`, and the change survives a restart. |
 | `match` | array of strings | required | 1 to 16 non-empty strings of at most 200 bytes | Literal strings, compared without case. There are no patterns. |
 | `approvals` | boolean | `false` | `true`, `false` | Whether work admitted by the rule may route approvals to a person. |
 

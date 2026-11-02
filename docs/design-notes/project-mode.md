@@ -404,11 +404,27 @@ capture the thread as it stood at each trigger, because a later read would leak 
 future into the judgement.
 
 The cost is labels. A person labels about 30 triggers from that source. The
-instrument's tests use 30 tasks with three trials each, and at that size a thirty-point
-drop reads `Harmed` at least 95% of the time, but a fifteen-point drop only about 40%.
-So a passing verdict rules out a large regression and doesn't prove parity. Whether
-simulation can drive a router session today is unproven, and it's the first thing to
-establish in that slice.
+instrument's tests use 30 tasks with three trials each on both arms, and at that size a
+thirty-point drop reads `Harmed` at least 95% of the time, but a fifteen-point drop only
+about 40%. Those figures are right for the instrument's own plans and are not the figures
+for a verdict. A verdict's recorded arm is the one decision the project made, not three
+trials, and measured on synthetic plans of 30 triggers with three live trials the verdict
+reads `Harmed` on about 60% of thirty-point drops and 18% of fifteen-point drops. Passing
+on "not `Harmed`" would have let about a third of thirty-point drops through, so a pass also
+needs the instrument's interval of the change in agreement to stay above a thirty-point
+drop; then 4% of thirty-point drops pass, 36% of fifteen-point drops pass, and 87% of
+runs with no change pass. A passing verdict rules out a large regression to the bound it
+records and doesn't prove parity.
+
+Simulation cannot drive a router session in a way that judges it. The simulator runs a
+session whose scripted model calls a tool named `route` and holds it to every check under a
+crash, but the call, its arguments and its result are the script's, and the project engine
+is not in the simulated tree, so the decision would be the script's own. The replay lane is
+therefore built over recorded triggers, and the live lane is built as a function of a
+decision callback. The daemon's real router can be driven with a scripted provider
+(`client/project_daemon_test`), but a scratch router that answers without feeding the
+project's own engine does not exist yet, so `projects.verdict` refuses the live lane in words.
+That session is what remains for the live lane.
 
 A verdict is pinned to the policy version, prompt revision and model. Changing any of
 them returns that pair to `observe`.
