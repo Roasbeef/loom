@@ -101,6 +101,33 @@ pub type Stage {
   )
 }
 
+/// Something the daemon says a person can do with a ticket now. The daemon
+/// lists these from the engine's own rules, so a client shows a control for
+/// each one listed and derives none of them from the stage.
+pub type Action {
+  /// Answer the worker's open question.
+  CanAnswer
+
+  /// Accept the work and close the ticket.
+  CanClose
+
+  /// Ask for a new worker.
+  CanRetry
+
+  /// Publish the ticket's head.
+  CanPublish
+
+  /// Withdraw the ticket's mandate.
+  CanStop
+
+  /// An action this client does not know, kept as the daemon sent it. No
+  /// control is drawn for it.
+  UnknownAction(
+    /// The action word, made safe to draw.
+    word: String,
+  )
+}
+
 /// Why a ticket was allowed to exist, as the daemon recorded it.
 pub type Mandate {
   Mandate(
@@ -151,6 +178,12 @@ pub type Ticket {
     question: Option(Question),
     /// The pull request address, once there is one.
     pull_request: Option(String),
+    /// Why the daemon ended the worker's attempt as failed, when the worker
+    /// never reported, in the daemon's words.
+    failure: Option(String),
+    /// What a person can do with the ticket now, as the daemon listed it. A
+    /// daemon that sends none offers none.
+    actions: List(Action),
   )
 }
 
@@ -742,7 +775,58 @@ fn ticket_row(value: JsonValue) -> Result(Ticket, Nil) {
       text_in(fields, "pull_request"),
       text_hygiene.single_line,
     ),
+    failure: option.map(text_in(fields, "failure"), text_hygiene.single_line),
+    actions: actions_in(fields),
   )
+}
+
+/// The actions a ticket lists. A field that is missing or is not a list of
+/// words lists none.
+fn actions_in(fields: List(#(String, JsonValue))) -> List(Action) {
+  case list.key_find(fields, "actions") {
+    Ok(json.Array(words)) ->
+      list.filter_map(words, fn(each) {
+        case each {
+          json.String(word) -> Ok(parse_action(word))
+          json.Array(_)
+          | json.Object(_)
+          | json.Int(_)
+          | json.Float(_)
+          | json.Bool(_)
+          | json.Null -> Error(Nil)
+        }
+      })
+    Ok(_) | Error(Nil) -> []
+  }
+}
+
+/// Reads an action word.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_board.parse_action("close") == project_board.CanClose
+/// ```
+pub fn parse_action(word: String) -> Action {
+  case word {
+    "answer" -> CanAnswer
+    "close" -> CanClose
+    "retry" -> CanRetry
+    "publish" -> CanPublish
+    "stop" -> CanStop
+    other -> UnknownAction(text_hygiene.single_line(other))
+  }
+}
+
+/// Whether the daemon lists an action for the ticket.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_board.offers(ticket, project_board.CanClose)
+/// ```
+pub fn offers(ticket: Ticket, wanted: Action) -> Bool {
+  list.contains(ticket.actions, wanted)
 }
 
 /// The fields of a value that is an object.

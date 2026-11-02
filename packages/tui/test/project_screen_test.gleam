@@ -81,6 +81,37 @@ fn asking(id: String, seq: Int, text: String) -> json.JsonValue {
         #("options", json.Array([])),
       ]),
     ),
+    #(
+      "actions",
+      json.Array([
+        json.String("answer"),
+        json.String("close"),
+        json.String("stop"),
+      ]),
+    ),
+  ])
+}
+
+// A ticket in review whose only offered action is a retry, as the daemon lists
+// it for a finished worker that has no session.
+fn in_review() -> json.JsonValue {
+  json.Object([
+    #("project", json.String("p1")),
+    #("revision", json.Int(12)),
+    #(
+      "ticket",
+      json.Object([
+        #("id", json.String("t-ask")),
+        #("title", json.String("review me")),
+        #("stage", json.String("person/review")),
+        #("session", json.String("s_01")),
+        #("opened_ms", json.Int(1000)),
+        #("question", json.Null),
+        #("actions", json.Array([json.String("retry")])),
+      ]),
+    ),
+    #("assignments", json.Array([])),
+    #("inputs", json.Array([])),
   ])
 }
 
@@ -560,6 +591,30 @@ pub fn c_closes_the_ticket_from_the_actions_test() {
       job.ProjectChanged(job.CloseTicket("p1", "t-ask"), Some("bad_request")),
     )
   assert string.contains(painted(refused), "The daemon refused the close")
+}
+
+// The keys follow the daemon's list of actions and not the stage. A ticket in
+// review that the daemon lets be retried is retried, which a rule of the
+// terminal's own once refused, and a close the daemon does not list sends
+// nothing.
+pub fn the_keys_follow_the_actions_the_daemon_lists_test() {
+  let opened =
+    press(showing(body(12, [asking("t-ask", 9, "which database?")])), "enter")
+  let acting =
+    press(deliver(opened, job.ProjectTicketLoaded(in_review())), "tab")
+  let assert Some(daemon) = acting.view.daemon_host
+
+  let #(_, retry) = stepping.step(backend.KeyPress("t"), acting)
+  assert control_jobs(retry)
+    == [
+      job.Control(
+        daemon.control,
+        job.ChangeProject(job.RetryTicket("p1", "t-ask")),
+      ),
+    ]
+  let #(refused, close) = stepping.step(backend.KeyPress("c"), acting)
+  assert control_jobs(close) == []
+  assert string.contains(painted(refused), "cannot be closed now")
 }
 
 pub fn escape_clears_a_draft_then_leaves_the_ticket_then_the_screen_test() {

@@ -259,6 +259,10 @@ pub type Ticket {
     /// The worker's latest report. A new assignment clears it, because the
     /// worker it described is gone and the new one has said nothing yet.
     latest: Option(Report),
+    /// Why the host ended the latest assignment as failed, in the host's
+    /// words, or `None`. It accompanies a `Failed` latest report that no
+    /// worker made, and it clears with the report.
+    failure: Option(String),
     /// Whether a person spoke since that report.
     heard: Heard,
     /// The worker's latest snapshot commit.

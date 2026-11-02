@@ -74,6 +74,8 @@ pub fn apply(current: State, incoming: Event) -> Step {
       work.assignment_live(current, ticket, seq)
     event.AssignmentEnded(ticket, seq, end) ->
       work.assignment_ended(current, ticket, seq, end)
+    event.WorkerFailed(ticket, seq, why) ->
+      work.worker_failed(current, ticket, seq, why)
     event.Reported(ticket, seq, report, head) ->
       work.reported(current, ticket, seq, report, head)
     event.HeadObserved(ticket, seq, head) ->

@@ -6,6 +6,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import project/action
 import project/engine
 import project/event.{
   AcceptRefused, Deliver, OfferCandidates, PublishBranch, RequestCheck,
@@ -716,6 +717,95 @@ pub fn a_message_to_a_ticket_in_review_starts_a_new_assignment_test() {
     }
   })
   assert list.length(ticket(woken, ticket_of("c1")).assignments) == 2
+}
+
+// --- a worker that failed to start -----------------------------------------------------
+
+fn failed_start(why: String) -> event.Event {
+  event.WorkerFailed(ticket_of("c1"), 1, why)
+}
+
+// A worker whose session never started is not idle. The ticket reads as failed
+// with the host's words, its slot is free, and a retry starts another worker
+// and clears the failure.
+pub fn a_worker_that_failed_to_start_leaves_the_ticket_failed_with_a_reason_test() {
+  let fresh_ticket = run(fresh(), [arrival(owner("c1")), accept("c1")])
+  let failed = run(fresh_ticket, [failed_start("the clone was not made")])
+  let held = ticket(failed, ticket_of("c1"))
+  assert state.stage_of(held) == stage.PersonFailed
+  assert held.failure == Some("the clone was not made")
+  assert state.active_assignment(held) == None
+  assert state.slots_used(failed, state.General) == 0
+  assert list.map(held.assignments, fn(each) { each.status })
+    == [state.AssignmentDone(model.SessionCrashed)]
+
+  // The failure is not a report anyone made, and a retry clears it.
+  let #(retried, effects) =
+    step(failed, event.RetryRequested(ticket_of("c1"), world_principal()))
+  assert ticket(retried, ticket_of("c1")).failure == None
+  assert state.stage_of(ticket(retried, ticket_of("c1"))) == stage.Queued
+  assert list.any(effects, fn(effect) {
+    case effect {
+      StartSession(ticket, 2, _, _) -> ticket == ticket_of("c1")
+      _ -> False
+    }
+  })
+}
+
+pub fn a_start_failure_names_the_assignment_and_is_capped_test() {
+  let started = run(fresh(), [arrival(owner("c1")), accept("c1")])
+  assert engine.apply(started, event.WorkerFailed(ticket_of("c1"), 7, "x"))
+    == Error(event.UnknownAssignment(ticket_of("c1"), 7))
+  let failed = run(started, [failed_start(string.repeat("w", 500))])
+  let assert Some(why) = ticket(failed, ticket_of("c1")).failure
+  assert string.length(why) == model.max_reason_chars
+
+  // A second report for an assignment that already ended is out of date.
+  assert engine.apply(failed, failed_start("again"))
+    == Error(event.Stale(ticket_of("c1")))
+}
+
+// A ticket that is already in line for a worker has nothing to retry.
+pub fn a_ticket_already_in_line_cannot_be_retried_test() {
+  let full = full_with_a_fourth_waiting()
+  assert engine.apply(
+      full,
+      event.RetryRequested(ticket_of("c4"), world_principal()),
+    )
+    == Error(event.AlreadyWanted(ticket_of("c4")))
+}
+
+// --- the actions a ticket lists ---------------------------------------------------------
+
+fn actions_of(current: state.State, name: String) -> List(action.Action) {
+  action.available(ticket(current, ticket_of(name)))
+}
+
+pub fn the_engine_lists_what_a_person_can_do_with_a_ticket_test() {
+  // A running worker with no question offers close and stop.
+  let live = working()
+  assert actions_of(live, "c1") == [action.Close, action.Stop]
+
+  // A failed start offers a retry, and a question offers an answer.
+  let failed = run(live, [event.WorkerFailed(ticket_of("c1"), 1, "no clone")])
+  assert actions_of(failed, "c1") == [action.Close, action.Retry, action.Stop]
+  let asking =
+    run(live, [
+      event.Reported(ticket_of("c1"), 1, Waiting(Asking(4)), model.NoHead),
+    ])
+  assert actions_of(asking, "c1") == [action.Answer, action.Close, action.Stop]
+
+  // A ticket in review with a head offers a retry and a publish.
+  let review = run(live, [rests_in_review("c1")])
+  assert actions_of(review, "c1")
+    == [action.Close, action.Retry, action.Publish, action.Stop]
+
+  // An ended ticket offers only a stop, and a stopped one nothing.
+  let closed = run(review, [close("c1")])
+  assert actions_of(closed, "c1") == [action.Stop]
+  let stopped =
+    run(review, [event.PersonStopped(ticket_of("c1"), world_principal())])
+  assert actions_of(stopped, "c1") == []
 }
 
 // --- closing a ticket -------------------------------------------------------------------

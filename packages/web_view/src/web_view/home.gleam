@@ -4011,14 +4011,16 @@ fn ticket_page(model: Model, open: OpenTicket) -> Element(Msg) {
 }
 
 /// The press that closes a ticket, when the page may ask the daemon and the
-/// ticket is still open. An ended ticket has nothing to close, so no button
-/// could only be refused.
+/// daemon lists a close for the ticket. The daemon's list is the engine's own
+/// rule, so no button could only be refused.
 fn closable(ticket: board.Ticket, model: Model) -> Option(Msg) {
-  case ticket.stage, model.start.projects, model.start.ceiling {
-    board.Ended(..), _, _ -> None
-    _, None, _ -> None
-    _, Some(_), ObserverCeiling -> None
-    _, Some(_), OperatorCeiling -> Some(ClosingWork)
+  case
+    board.offers(ticket, board.CanClose),
+    model.start.projects,
+    model.start.ceiling
+  {
+    True, Some(_), OperatorCeiling -> Some(ClosingWork)
+    True, Some(_), ObserverCeiling | True, None, _ | False, _, _ -> None
   }
 }
 

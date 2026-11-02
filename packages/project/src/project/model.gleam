@@ -206,6 +206,19 @@ pub fn check_unfinished(why: String) -> ReviewReason {
   CheckUnfinished(capped(why))
 }
 
+/// The host's words for why a worker's session failed, capped at
+/// `max_reason_chars` code points. It is shown to a person beside a ticket in
+/// `person/failed` and is never given to a worker.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert model.failure_text("the clone was not made") == "the clone was not made"
+/// ```
+pub fn failure_text(why: String) -> String {
+  capped(why)
+}
+
 fn capped(text: String) -> String {
   text
   |> string.to_utf_codepoints

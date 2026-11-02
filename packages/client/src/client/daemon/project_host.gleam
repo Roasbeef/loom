@@ -70,6 +70,7 @@ import gleam/otp/actor as otp_actor
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
+import project/action
 import project/engine
 import project/event.{type Event, type Refusal}
 import project/host as proof
@@ -1911,12 +1912,17 @@ fn start_failed(
   ])
 
   // The ledger counts attempts from zero, so the fifth failure is the one
-  // that gives up.
+  // that gives up. The ticket then reads as failed with the last failure's
+  // words, so a worker that never started is not left looking idle.
   case row.attempts >= 4 {
     True ->
       committed_or_same(
         host,
-        event.AssignmentEnded(ticket.id, seq, model.SessionCrashed),
+        event.WorkerFailed(
+          ticket.id,
+          seq,
+          "the worker's session did not start after 5 attempts: " <> reason,
+        ),
       )
       |> settle(row)
     False -> defer(host, row)
@@ -3159,6 +3165,11 @@ fn ticket_json(host: Host, ticket: Ticket) -> JsonValue {
     #("mandate", mandate_json(ticket.mandate)),
     #("check", check_json(ticket)),
     #("review", review_json(ticket)),
+    #("failure", case ticket.failure {
+      Some(why) -> json.String(why)
+      None -> json.Null
+    }),
+    #("actions", actions_json(host, ticket)),
     #("opened_ms", opened_json(host, ticket)),
     #("question", question_json(host, ticket)),
     #("kept_worktrees", kept_json(host, ticket)),
@@ -3171,6 +3182,19 @@ fn ticket_json(host: Host, ticket: Ticket) -> JsonValue {
       None -> json.Null
     }),
   ])
+}
+
+/// What a person may do with the ticket now, as the engine lists it. The
+/// engine cannot know whether the owner lets the host push, so a project that
+/// keeps `publish` off drops that one action here, which is the same refusal
+/// `publish_now` gives.
+fn actions_json(host: Host, ticket: Ticket) -> JsonValue {
+  let may_push = host.config.policy.publish == PublishPullRequest
+
+  action.available(ticket)
+  |> list.filter(fn(each) { each != action.Publish || may_push })
+  |> list.map(fn(each) { json.String(action.word(each)) })
+  |> json.Array
 }
 
 /// What the host's check made of the head, or null before it has made
@@ -3418,6 +3442,8 @@ fn refusal_text(refusal: Refusal) -> String {
     event.Stale(ticket:) -> "that is out of date for ticket " <> ticket.value
     event.AssignmentActive(ticket:) ->
       "ticket " <> ticket.value <> " already has a worker"
+    event.AlreadyWanted(ticket:) ->
+      "ticket " <> ticket.value <> " is already waiting for a worker"
     event.NotPublishable(ticket:) ->
       "ticket " <> ticket.value <> " cannot be published"
     event.VerdictRequired(..) -> "auto needs a current passing verdict"

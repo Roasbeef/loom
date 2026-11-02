@@ -82,6 +82,8 @@ pub fn the_wire_form_of_one_event_is_pinned_test() {
     == "{\"t\":\"reported\",\"ticket\":\"t-c1\",\"seq\":2,\"report\":{\"kind\":\"waiting\",\"question\":3},\"head\":{\"commit\":\"abc\",\"paths\":\"touched\"}}"
   assert codec.encode(event.RoutedIgnore(TriggerId("x")))
     == "{\"t\":\"routed_ignore\",\"trigger\":\"x\"}"
+  assert codec.encode(event.WorkerFailed(TicketId("t-c1"), 1, "no clone"))
+    == "{\"t\":\"worker_failed\",\"ticket\":\"t-c1\",\"seq\":1,\"why\":\"no clone\"}"
   assert codec.encode(event.PersonClosed(
       TicketId("t-c1"),
       model.PrincipalId("owner"),

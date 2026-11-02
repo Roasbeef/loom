@@ -140,6 +140,18 @@ pub type Event {
     end: SessionEnd,
   )
 
+  /// The host gave up on an assignment's worker before it reported anything:
+  /// the session would not start after the host's attempts, or it was lost.
+  /// The reason is the host's own sentence about the failure.
+  WorkerFailed(
+    /// The ticket.
+    ticket: TicketId,
+    /// The assignment's sequence number.
+    seq: Int,
+    /// What failed, in the host's words.
+    why: String,
+  )
+
   /// A worker reported. `head` is the host's snapshot of its branch when the
   /// host had one to hand; a report committed from the worker's own call
   /// carries `NoHead`, and the host reads the branch afterwards when the
@@ -372,6 +384,9 @@ pub type Refusal {
 
   /// The ticket has an active assignment already.
   AssignmentActive(ticket: TicketId)
+
+  /// The ticket is already in line for a session.
+  AlreadyWanted(ticket: TicketId)
 
   /// The event's state change is not allowed from the ticket's readiness.
   NotPublishable(ticket: TicketId)

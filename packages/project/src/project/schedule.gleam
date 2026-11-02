@@ -125,6 +125,7 @@ fn start_assignment(
       ..ticket,
       assignments: [assignment, ..ticket.assignments],
       latest: None,
+      failure: None,
       demand: Satisfied,
       inbox: [],
     )

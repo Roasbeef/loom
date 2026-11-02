@@ -108,6 +108,7 @@ pub fn open(
           failed_inputs: [],
           question: NoQuestion,
           latest: None,
+          failure: None,
           heard: Silent,
           head: None,
           last_checked: None,
@@ -549,6 +550,49 @@ pub fn assignment_ended(
   Ok(schedule_after(state.put_ticket(current, updated), []))
 }
 
+/// The host gave up on an assignment's worker before it reported: its session
+/// would not start, or it was lost. The assignment ends as crashed and frees
+/// its slot, and the ticket reads as failed with the host's reason, so a
+/// ticket whose worker never spoke is not left looking idle. A person's later
+/// message clears the failure from the stage like any other, and a retry
+/// starts a fresh worker.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> Error(Stale(id)) for an assignment that already ended
+/// ```
+pub fn worker_failed(
+  current: State,
+  id: TicketId,
+  seq: Int,
+  why: String,
+) -> Step {
+  use ticket <- result.try(open_ticket(current, id))
+  use ended <- result.try(
+    update_assignment(ticket, seq, fn(assignment) {
+      case assignment.status {
+        AssignmentDone(_) -> Error(event.Stale(id))
+        AssignmentPending | AssignmentRunning ->
+          Ok(
+            Assignment(
+              ..assignment,
+              status: AssignmentDone(model.SessionCrashed),
+            ),
+          )
+      }
+    }),
+  )
+  let failed =
+    state.Ticket(
+      ..ended,
+      latest: Some(Failed),
+      failure: Some(model.failure_text(why)),
+      heard: Silent,
+    )
+  Ok(schedule_after(state.put_ticket(current, failed), []))
+}
+
 /// Rewrite one assignment of a ticket, or refuse when it does not exist.
 fn update_assignment(
   ticket: Ticket,
@@ -577,6 +621,9 @@ fn update_assignment(
 /// the ticket's opening thread are queued for it again, oldest first, ahead of
 /// whatever was already waiting.
 ///
+/// A ticket already waiting for a session has nothing to retry either: asking
+/// again would only list its messages twice.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -585,10 +632,12 @@ fn update_assignment(
 pub fn retry(current: State, id: TicketId) -> Step {
   use ticket <- result.try(open_ticket(current, id))
 
-  // A ticket with a pending or running session has nothing to retry.
-  case state.active_assignment(ticket) {
-    Some(_) -> Error(event.AssignmentActive(id))
-    None -> {
+  // A ticket with a pending or running session has nothing to retry, and
+  // neither has one that is already in line for a session.
+  case state.active_assignment(ticket), ticket.demand {
+    Some(_), _ -> Error(event.AssignmentActive(id))
+    None, Wanting(_) -> Error(event.AlreadyWanted(id))
+    None, Satisfied -> {
       let wanting =
         state.Ticket(
           ..ticket,
@@ -656,7 +705,8 @@ pub fn reported(
     }),
   )
 
-  let heard_from = state.Ticket(..live, latest: Some(report), heard: Silent)
+  let heard_from =
+    state.Ticket(..live, latest: Some(report), failure: None, heard: Silent)
   let moved = apply_head(heard_from, head)
   let #(settled, effects) = apply_report(moved, seq, report, head)
 

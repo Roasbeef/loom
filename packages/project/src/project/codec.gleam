@@ -127,6 +127,12 @@ fn to_json(incoming: Event) -> Json {
         #("seq", json.int(seq)),
         #("end", word(ends, end)),
       ])
+    event.WorkerFailed(ticket, seq, why) ->
+      tagged("worker_failed", [
+        ticket_field(ticket),
+        #("seq", json.int(seq)),
+        #("why", json.string(why)),
+      ])
     event.Reported(ticket, seq, report, head) ->
       tagged("reported", [
         ticket_field(ticket),
@@ -297,6 +303,12 @@ fn assignment_decoder(tag: String) -> Decoder(Event) {
         word_decoder(ends, model.SessionExited, "SessionEnd"),
       )
       decode.success(event.AssignmentEnded(ticket, seq, end))
+    }
+    "worker_failed" -> {
+      use ticket <- decode.field("ticket", ticket_id())
+      use seq <- decode.field("seq", decode.int)
+      use why <- decode.field("why", decode.string)
+      decode.success(event.WorkerFailed(ticket, seq, why))
     }
     "reported" -> {
       use ticket <- decode.field("ticket", ticket_id())

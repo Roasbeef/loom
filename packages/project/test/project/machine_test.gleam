@@ -40,6 +40,8 @@
 //// - `rest`: a ticket whose work waits for a person while its worker is idle
 ////   holds no slot, unless the host has yet to read the worker's head.
 //// - `ended`: a ticket that ended holds no slot, however it ended.
+//// - `actions`: the actions a ticket lists are exactly those whose event the
+////   engine accepts and acts on.
 //// - `replay`: replaying the accepted events rebuilds the final state.
 //// - `snapshot`: the final state reads back from its snapshot, as the state
 ////   that retention keeps, which never drops an open ticket or an unsettled
@@ -55,6 +57,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import project/action
 import project/engine
 import project/event.{type Effect, type Event}
 import project/gate
@@ -308,6 +311,10 @@ fn ticket_events(current: State) -> Generator(Event) {
       ),
       #(3, qcheck.map(by, event.PersonStopped(ticket, _))),
       #(2, qcheck.map(by, event.PersonClosed(ticket, _))),
+      #(
+        2,
+        qcheck.map(seq, fn(s) { event.WorkerFailed(ticket, s, "no session") }),
+      ),
       #(2, qcheck.map(by, event.RetryRequested(ticket, _))),
       #(
         2,
@@ -928,8 +935,62 @@ fn check_tickets(sut: Sut) -> Result(Nil, statem.Violation) {
     use _ <- result.try(check_withdrawal(ticket))
     use _ <- result.try(check_rest(sut, ticket))
     use _ <- result.try(check_ended(ticket))
+    use _ <- result.try(check_actions(sut, ticket))
     check_reserved(sut, ticket)
   })
+}
+
+// The actions the engine lists for a ticket are exactly the ones whose event it
+// would accept and act on. A client that shows a button for a listed action
+// never offers one the engine refuses, and never hides one it would take.
+fn check_actions(
+  sut: Sut,
+  ticket: state.Ticket,
+) -> Result(Nil, statem.Violation) {
+  let listed = action.available(ticket)
+  let everything = [
+    action.Answer,
+    action.Close,
+    action.Retry,
+    action.Publish,
+    action.Stop,
+  ]
+
+  list.try_each(everything, fn(each) {
+    let accepted = case engine.apply(sut.state, event_for(ticket, each)) {
+      Ok(#(next, effects)) -> next != sut.state || effects != []
+      Error(_) -> False
+    }
+    holds(
+      ok: list.contains(listed, each) == accepted,
+      tag: "actions",
+      detail: "the action "
+        <> action.word(each)
+        <> " is listed or accepted but not both on ticket "
+        <> ticket.id.value,
+    )
+  })
+}
+
+// The event a person's action sends for a ticket as it stands.
+fn event_for(ticket: state.Ticket, each: action.Action) -> Event {
+  let person = model.PrincipalId("owner")
+  case each {
+    action.Answer ->
+      case ticket.question {
+        model.Asking(number) -> event.Answered(ticket.id, number, person)
+        model.NoQuestion -> event.Answered(ticket.id, 0, person)
+      }
+    action.Close -> event.PersonClosed(ticket.id, person)
+    action.Retry -> event.RetryRequested(ticket.id, person)
+    action.Publish ->
+      event.PersonPublished(
+        ticket.id,
+        person,
+        option.unwrap(ticket.head, CommitId("none")),
+      )
+    action.Stop -> event.PersonStopped(ticket.id, person)
+  }
 }
 
 // However a ticket ended, whether a person stopped or closed it, a pull

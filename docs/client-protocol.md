@@ -1847,7 +1847,7 @@ project. `projects.list` replies `{"projects":[{"id","workspace","router_session
 "total","tickets":[...],"replies":[...],"unrouted":[...]}` with at most 20 tickets a page,
 needs-a-person first, and `revision` is the project ledger's newest sequence number.
 A ticket is the record of protocol-change/106, `{id, project, title, stage, session,
-mandate, check, review, opened_ms, question, kept_worktrees, pull_request, ended}`, where `opened_ms` is when
+mandate, check, review, failure, actions, opened_ms, question, kept_worktrees, pull_request, ended}`, where `opened_ms` is when
 the ticket's opening message arrived in Unix milliseconds, or `null` when the engine no
 longer holds that message (a client shows an age from it and never from when it first
 saw the ticket), where `stage` is one of
@@ -1858,6 +1858,14 @@ host's check has judged the head and then `{commit, outcome}` with `outcome` one
 sentence for why a ticket waits for a person although its work may be done (no check is
 configured, the check gave no result, publishing is off, the branch could not be published, the host
 repository would not take the worker's commit in, or the change touched a protected path), and `question` is `null` or `{seq, text, options}`.
+`failure` is `null`, or the host's sentence for why a worker's session was given up on before it
+reported anything (it did not start after five attempts); the stage is then `person/failed`, and a
+retry or a person's message clears it. `actions` lists what a person can do with the ticket now,
+from `answer`, `close`, `retry`, `publish` and `stop`, in that order. It is the engine's own rule: an
+action is listed exactly when its command would be accepted and would change the ticket, so a client
+shows a control for each word listed and derives none from the stage. `publish` is also dropped while
+`[project].publish` is `off`, and `retry` is not listed for a ticket that has a session or is already
+waiting for one. A client ignores a word it does not know.
 `kept_worktrees` is a list, empty unless a worker's clone stayed after its ticket
 ended because it held changes, or refs naming objects the host repository had not taken
 in, and then each entry is `{seq, path, reason}`. The clone is the worker's, so its

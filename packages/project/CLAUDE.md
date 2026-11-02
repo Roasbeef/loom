@@ -110,6 +110,13 @@ is `gleam_json`, which has both targets.
   started is never taken for the idle one before it. Ending the ticket
   (`withdraw`, `end_ticket`) turns a rested assignment into an exited one and
   stops the newest one's session. The statem tag is `rest`.
+- **A worker that never reported is failed, not idle.** The host's
+  `WorkerFailed` ends the assignment as crashed, sets the latest report to
+  `Failed` and keeps the host's reason in `Ticket.failure`; a new assignment
+  or a report clears it.
+- **`project/action` is the one list of what a person may do.** An action is
+  listed exactly when its event is accepted and changes the ticket (statem tag
+  `actions`), the wire carries the list, and no client derives it.
 - **Check rule.** `work.check_rule` requests a check only for a `Waiting`
   report with no question and a head that differs from `last_checked`; a diff
   touching protected paths goes to `AwaitingReview` and requests none. A

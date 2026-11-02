@@ -149,6 +149,18 @@ pub fn the_ticket_reply_carries_the_documented_fields_test() {
   let assert Ok(json.Object(ticket)) = list.key_find(body, "ticket")
   assert list.key_find(ticket, "id") == Ok(json.String("t-a"))
   assert list.key_find(ticket, "stage") == Ok(json.String("person/answer"))
+
+  // The engine says what a person can do, and a client derives none of it.
+  // The project keeps publishing off, so a publish is not offered.
+  assert list.key_find(ticket, "actions")
+    == Ok(
+      json.Array([
+        json.String("answer"),
+        json.String("close"),
+        json.String("stop"),
+      ]),
+    )
+  assert list.key_find(ticket, "failure") == Ok(json.Null)
   assert list.key_find(ticket, "session")
     == Ok(json.String("session-project:p1:t-a:1"))
   let assert Ok(json.Int(_)) = list.key_find(ticket, "opened_ms")

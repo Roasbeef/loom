@@ -523,36 +523,16 @@ fn acting(key: keys.Key, state: State, ticket: String) -> Action {
           Continue(State(..state, notice: "No worker session is bound yet."))
       }
     keys.Char("c"), Some(found) ->
-      case found.stage {
-        board.Ended(_) ->
-          Continue(State(..state, notice: "That ticket has already ended."))
-        board.PersonDelivery
-        | board.PersonAnswer
-        | board.PersonReview
-        | board.PersonBlocked
-        | board.PersonFailed
-        | board.Queued
-        | board.Idle
-        | board.Working
-        | board.UnknownStage(_) -> Accept(state, ticket)
+      case board.offers(found, board.CanClose) {
+        True -> Accept(state, ticket)
+        False ->
+          Continue(State(..state, notice: "That ticket cannot be closed now."))
       }
     keys.Char("t"), Some(found) ->
-      case found.stage {
-        board.PersonBlocked | board.PersonFailed -> Retry(state, ticket)
-        board.PersonDelivery
-        | board.PersonAnswer
-        | board.PersonReview
-        | board.Queued
-        | board.Idle
-        | board.Working
-        | board.Ended(_)
-        | board.UnknownStage(_) ->
-          Continue(
-            State(
-              ..state,
-              notice: "Only a blocked or failed ticket can be retried.",
-            ),
-          )
+      case board.offers(found, board.CanRetry) {
+        True -> Retry(state, ticket)
+        False ->
+          Continue(State(..state, notice: "That ticket cannot be retried now."))
       }
     _, _ -> Continue(state)
   }
@@ -983,6 +963,18 @@ fn worker_lines(ticket: board.Ticket, state: State, width: Int) -> List(Drawn) {
     None -> []
   }
 
+  // The host's reason for a failed attempt, in its words, when the worker
+  // never reported.
+  let failure = case ticket.failure {
+    Some(why) -> [
+      plain(
+        text.truncate("Failed: " <> why, width, "…"),
+        theme.overlay_signal(),
+      ),
+    ]
+    None -> []
+  }
+
   // Assignments come from the ticket read, and only a read for this ticket
   // counts; a read for a ticket the person left is not drawn here.
   let assignments = case state.detail {
@@ -993,6 +985,7 @@ fn worker_lines(ticket: board.Ticket, state: State, width: Int) -> List(Drawn) {
 
   list.flatten([
     [plain(text.truncate(session, width, "…"), theme.overlay_plain())],
+    failure,
     pull_request,
     assignments,
     [plain("", theme.overlay_plain())],

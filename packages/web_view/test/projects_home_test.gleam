@@ -70,6 +70,14 @@ fn asking(id: String, seq: Int, title: String) -> json.JsonValue {
         #("options", json.Array([])),
       ]),
     ),
+    #(
+      "actions",
+      json.Array([
+        json.String("answer"),
+        json.String("close"),
+        json.String("stop"),
+      ]),
+    ),
   ])
 }
 
@@ -533,6 +541,48 @@ pub fn a_refused_close_is_said_in_words_test() {
     drawn(after),
     "That ticket cannot be closed: it has ended or was stopped.",
   )
+}
+
+// A ticket whose worker never started reads as failed with the daemon's words,
+// and the page offers what the daemon lists: a close, and no answer box.
+pub fn a_failed_start_shows_the_reason_and_offers_what_is_listed_test() {
+  let failed =
+    json.Object([
+      #("id", json.String("t-bad")),
+      #("title", json.String("never started")),
+      #("stage", json.String("person/failed")),
+      #("session", json.Null),
+      #("opened_ms", json.Int(1000)),
+      #("question", json.Null),
+      #("failure", json.String("the clone was not made")),
+      #("actions", json.Array([json.String("retry")])),
+    ])
+  let projects =
+    home.Projects(
+      boards: fn(deliver) { deliver(listed(board_body(12, [failed]))) },
+      ticket: fn(_, _, deliver) {
+        deliver(
+          feed.TicketHeard(
+            json.Object([
+              #("project", json.String("p1")),
+              #("revision", json.Int(12)),
+              #("ticket", failed),
+              #("assignments", json.Array([])),
+              #("inputs", json.Array([])),
+            ]),
+          ),
+        )
+      },
+      answer: fn(_, _, _, _, deliver) { deliver(feed.Recorded) },
+      close: fn(_, _, deliver) { deliver(feed.Closed) },
+    )
+  let model =
+    run(opened(start_with(Some(projects))), home.OpeningTicket("p1", "t-bad"))
+  assert string.contains(
+    drawn(model),
+    "The worker failed: the clone was not made",
+  )
+  assert !string.contains(drawn(model), "Close ticket")
 }
 
 // An ended ticket has nothing to close, so the page draws no button for it.

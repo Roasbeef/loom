@@ -350,6 +350,7 @@ pub fn ticket_page(page: Page(message)) -> Element(message) {
           html.text(board.mandate_words(ticket.mandate)),
         ]),
       ],
+      failure(ticket),
       noticed(page.notice),
       question(page),
       closer(page),
@@ -357,6 +358,18 @@ pub fn ticket_page(page: Page(message)) -> Element(message) {
       inputs(page.detail),
     ]),
   )
+}
+
+/// The daemon's reason for a worker that never reported, when it gave one.
+fn failure(ticket: board.Ticket) -> List(Element(message)) {
+  case ticket.failure {
+    None -> []
+    Some(why) -> [
+      html.p([attribute.class("home-note"), attribute.class("refused")], [
+        html.text("The worker failed: " <> why),
+      ]),
+    ]
+  }
 }
 
 /// The "Close ticket" button: the owner accepts the work. The ticket ends as
