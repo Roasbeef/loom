@@ -75,6 +75,7 @@ import gleam/string
 import project/action
 import project/engine
 import project/event.{type Event, type Refusal}
+import project/gate
 import project/host as proof
 import project/judge
 import project/model
@@ -1519,62 +1520,94 @@ fn reply_now(
   host: Host,
   queued: tools.Reply,
 ) -> #(Host, Result(Nil, tools.Refusal)) {
-  // An unknown subject is refused before anything is written.
-  case dict.has_key(host.engine.triggers, queued.subject) {
-    False -> #(
+  // An unknown subject is refused before anything is written, and so is an
+  // acknowledgement of work that nobody asked for by name: the attention
+  // budget allows none for inferred work, and without the refusal the host
+  // would post the router's words to a thread on the strength of a comment
+  // from a stranger or a bystander.
+  case dict.get(host.engine.triggers, queued.subject) {
+    Error(Nil) -> #(
       host,
       Error(tools.NotFound(
         "there is no message " <> queued.subject.value <> " to answer",
       )),
     )
-    True -> {
-      // The purpose is stored as its wire word.
-      let purpose = case queued.purpose {
-        tools.Acknowledge -> "acknowledge"
-        tools.Clarify -> "clarify"
-        tools.Decline -> "decline"
-      }
-
-      let written =
-        project_records.ReplyQueued(queued.subject.value, purpose, queued.text)
-      let key = queued.subject.value <> ":" <> int.to_string(host.last_seq + 1)
-
-      // A reply to a GitHub thread goes out only when the project publishes.
-      // Every other reply stays a draft: its row is one no scan reaches, and
-      // the board shows it.
-      let draft = case github_destination(host, queued.subject) {
-        Ok(number) ->
-          project_records.github_reply_draft(
-            host.last_seq + 1,
-            queued.subject.value,
-            number,
-            purpose,
-            queued.text,
-            host.ports.now_ms(),
-          )
-        Error(Nil) ->
-          project_ledger.EffectDraft(
-            kind: "reply",
-            key:,
-            payload_json: project_records.encode_record(written),
-            due_ms: project_records.never_ms,
-          )
-      }
-
-      // The record and its row are written together, and the in-memory table
-      // changes only when the write did.
-      case
-        project_ledger.append_with_effects(
-          host.ledger,
-          project_records.encode_record(written),
-          host.ports.now_ms(),
-          [draft],
+    Ok(stored) ->
+      case acknowledges_inferred_work(stored, queued.purpose) {
+        True -> #(
+          host,
+          Error(tools.NotPermitted(
+            "an acknowledgement is not sent for inferred work; use clarify or decline if the sender needs an answer",
+          )),
         )
-      {
-        Ok(seq) -> #(Host(..keep_record(host, written), last_seq: seq), Ok(Nil))
-        Error(error) -> #(host, Error(tools.Unavailable(string.inspect(error))))
+        False -> write_reply(host, queued)
       }
-    }
+  }
+}
+
+/// Whether a reply is an acknowledgement of a trigger the project admitted
+/// only by inference. Clarifying and declining stay open, because they tell a
+/// person something they need.
+fn acknowledges_inferred_work(
+  stored: state.TriggerRecord,
+  purpose: tools.Purpose,
+) -> Bool {
+  case purpose, stored.admission {
+    tools.Acknowledge, gate.Admitted(model.Inferred, _, _) -> True
+    tools.Acknowledge, _ | tools.Clarify, _ | tools.Decline, _ -> False
+  }
+}
+
+/// Writes a reply's host record and its outbox row.
+fn write_reply(
+  host: Host,
+  queued: tools.Reply,
+) -> #(Host, Result(Nil, tools.Refusal)) {
+  // The purpose is stored as its wire word.
+  let purpose = case queued.purpose {
+    tools.Acknowledge -> "acknowledge"
+    tools.Clarify -> "clarify"
+    tools.Decline -> "decline"
+  }
+
+  let written =
+    project_records.ReplyQueued(queued.subject.value, purpose, queued.text)
+  let key = queued.subject.value <> ":" <> int.to_string(host.last_seq + 1)
+
+  // A reply to a GitHub thread goes out only when the project publishes.
+  // Every other reply stays a draft: its row is one no scan reaches, and the
+  // board shows it.
+  let draft = case github_destination(host, queued.subject) {
+    Ok(number) ->
+      project_records.github_reply_draft(
+        host.last_seq + 1,
+        queued.subject.value,
+        number,
+        purpose,
+        queued.text,
+        host.ports.now_ms(),
+      )
+    Error(Nil) ->
+      project_ledger.EffectDraft(
+        kind: "reply",
+        key:,
+        payload_json: project_records.encode_record(written),
+        due_ms: project_records.never_ms,
+      )
+  }
+
+  // The record and its row are written together, and the in-memory table
+  // changes only when the write did.
+  case
+    project_ledger.append_with_effects(
+      host.ledger,
+      project_records.encode_record(written),
+      host.ports.now_ms(),
+      [draft],
+    )
+  {
+    Ok(seq) -> #(Host(..keep_record(host, written), last_seq: seq), Ok(Nil))
+    Error(error) -> #(host, Error(tools.Unavailable(string.inspect(error))))
   }
 }
 

@@ -1380,6 +1380,43 @@ pub fn with_publish_off_a_reply_stays_a_draft_on_the_board_test() {
   assert string.contains(board_text(handle), "On it.")
 }
 
+// A comment from a listed person that does not address the agent is inferred
+// work. The design allows no acknowledgement for it, because that is the case
+// where the router's words would answer text the project was never asked to
+// act on; a clarifying question or a decline still goes through.
+pub fn an_acknowledgement_of_inferred_work_is_refused_test() {
+  let rig = watching("noack")
+  let handle = start(rig)
+  first_pass(handle)
+  serve(rig, [
+    comment(
+      202,
+      "alice",
+      "the CI failure on main again",
+      "2026-11-02T10:03:00Z",
+      13,
+    ),
+  ])
+  next_pass(rig, handle)
+  eventually(fn() { list.contains(router_got(drain(rig.seen)), "gh-c-202") })
+  let subject = model.TriggerId("gh-c-202")
+  assert project_host.queue_reply(
+      handle,
+      tools.Reply(subject, tools.Acknowledge, "On it."),
+    )
+    == Error(tools.NotPermitted(
+      "an acknowledgement is not sent for inferred work; use clarify or decline if the sender needs an answer",
+    ))
+  let assert Ok(Nil) =
+    project_host.queue_reply(
+      handle,
+      tools.Reply(subject, tools.Clarify, "Which branch?"),
+    )
+  process.sleep(300)
+  assert string.contains(board_text(handle), "Which branch?")
+  assert !string.contains(board_text(handle), "On it.")
+}
+
 pub fn replies_to_one_thread_are_posted_in_the_order_they_were_queued_test() {
   let rig = publishing("order")
   let handle = start(rig)
