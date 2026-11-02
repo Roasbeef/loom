@@ -182,7 +182,7 @@ and the last three are the ordinary distributed path.
    a peer whose name differs from the atom dialled.
 
 The guest's own epmd is never reached from the host. The fixed guest listen
-port is 4370 (`vm_spec.guest_port`, `packages/client/src/client/vm_spec.gleam:71`).
+port is 4370 (`vm_spec.guest_port`, `packages/client/src/client/vm_spec.gleam:80`).
 
 ## Isolation around a tool call
 
@@ -615,7 +615,8 @@ the refusal names `loom vm setup`. It then:
    `loom-vm.log`. A guest that does not report is stopped, and the tail of its
    log is the error. With `--github gh|env` (the default is `gh`) `loom-vm`
    also starts the credential proxy and the guest's `[tools]` table turns the
-   jail's network on; `--github off` gives the guest no egress.
+   jail's network on; `--github off` gives the guest no egress beyond the hosts
+   `--allow` names (see "Package registries and toolchains").
 
 `down` sends SIGTERM to the recorded process while the pid still has the
 recorded birth marker, and waits for it to exit. It leaves the root and the
@@ -644,6 +645,80 @@ with "block count exceeds size of device". `loom-vm run` extends an existing
 `--state-disk` file to the requested size, so `down` and `up` resume. A resumed
 guest keeps the checkout its agent edited and the sessions its executor holds;
 `--fresh` replaces the root and the state disk.
+
+## Package registries and toolchains: `--allow` and `--provision`
+
+A guest reaches GitHub and nothing else, and its image holds no project
+toolchain, so a project that needs a package registry or a compiler cannot
+build. Two flags of `loom vm up` close that, and neither widens the proxy.
+
+`--allow HOST` (repeatable) adds hosts to the guest's egress allowlist, after
+the GitHub hosts. An entry is a bare hostname or a leading `*.` over at least
+two labels, the rule `machine.Spec.Validate` applies; `vm_spec.valid_host`
+refuses anything else in `parse`, in one line, before any file is touched. The
+default stays GitHub only. With `--github off` the allowed hosts are the whole
+list, there is no proxy, and the jail's network is on (`[tools] network =
+"full"`, with no environment names, since there is no proxy to name). The
+launcher's `--allow` list is the one statement of reachability, and
+`--inject-host` is never passed for it, so an allowed host never receives the
+GitHub credential; `vm_cli_test` pins that.
+
+The allowed hosts are written to `<vm home>/<name>/allow`, one per line
+(`vm_spec.encode_allow`, `decode_allow`, total and strict about each line). An
+`up` with no `--allow` reuses the recorded list, an `up` with `--allow`
+replaces it, `--fresh` with none clears it, and `status` prints it. A damaged
+file refuses `up` naming itself, unless `--allow` replaces it or `--fresh`
+ignores it.
+
+`--provision SCRIPT` takes a host path to a script the developer wrote. Only
+this flag can supply one: the workspace is untrusted input and is never
+searched for a script. `up` copies it to `/etc/loom-vm/provision` in the guest
+root (mode 0700). `loom-guest-init` runs it as root, once, after the network
+and the proxy environment exist and before it chowns anything, starts the
+executor or drops to the `loom` user, with standard output and error on the
+console, so `loom-vm.log` shows them. It runs with `HOME=/root`,
+`DEBIAN_FRONTEND=noninteractive` and a system `PATH`. When it exits zero the
+init creates `/etc/loom-vm/provisioned`. A nonzero exit prints
+`LOOM-PROVISION-FAILED status=N` and stops the guest, `up` fails with the tail
+of the log, and no marker is left, so the next `up` runs the staged script
+again. A resume with the marker skips it, `--fresh` replaces the root and so
+runs a given script again, and `--provision` on a resume whose marker exists is
+refused with a line naming `--fresh` (`vm_spec.provision_plan`). The READY wait
+is 120 s, and 1800 s when a script will run, because the executor starts after
+the script.
+
+**What the script can reach.** Root in the init sees the same network the
+executor does. The guest has a route to the launcher's gateway only; its
+resolver answers allowlisted names and the launcher's firewall passes TCP to
+their addresses on any port. When `--github` is on, the init sources
+`/etc/loom-vm/github.env` with `set -a` before the script runs, so root's
+`HTTPS_PROXY` points at the proxy: HTTPS clients tunnel through it, and the
+proxy admits exactly the allowlist (port 443 only). Plain HTTP is not proxied
+(`http_proxy` is not set) and goes direct. Measured with `loom-vm run --allow
+deb.debian.org --allow security.debian.org` on the guest image
+(Debian trixie), `apt-get update` and `apt-get install make` over the image's
+default `http://deb.debian.org` sources succeeded as root with no proxy and no
+configuration, and `make` ran. So apt needs no special approach: allow
+`deb.debian.org` and `security.debian.org` and port 80 works directly. The
+proxy's 443-only rule is unchanged and is not needed for it. A script that
+installs from other registries allows their hosts, and a client that honours
+`HTTPS_PROXY` reaches them through the proxy or, with `--github off`, directly.
+
+### Trust
+
+A provisioning script runs as root in the guest, before the jail exists, with
+the guest's whole network allowlist. It is the developer's own code and is
+trusted as much as `sudo` is. An allowed host can receive anything a jailed
+call sends: the workspace, files the jail can read, and anything model code
+can put in a request. Each `--allow` is therefore an exfiltration path the
+developer chooses, and a host that accepts uploads (a paste site, an object
+store, a wildcard over a hosting domain) is a bad entry. The GitHub token is
+not at risk from this: the guest never holds it and the proxy injects it only
+for the three GitHub hosts and `--inject-host`.
+
+The proxy is not the only egress path. A direct connection to an allowlisted
+host works and carries no credential, as before; making the proxy the only path
+is #214.
 
 ## Known gaps
 

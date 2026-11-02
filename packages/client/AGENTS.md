@@ -48,7 +48,20 @@ drives `vm up`, a scripted turn through an orchestrator on the configuration
 the GitHub placeholder, that a fake token given as `LOOM_VM_GITHUB_TOKEN` is
 nowhere under the guest's files, that the guest's root is a directory and not a
 link to the export, and, with `LOOM_VM_GITHUB_LIVE=1`, that `api.github.com`
-answers `/zen` 200 and `/user` 401 through the proxy.
+answers `/zen` 200 and `/user` 401 through the proxy. The first `up` also gives
+`--allow deb.debian.org` and `--provision` of a script that appends a line to a
+file in the guest root: a jailed call reads it, reaches the host and is refused
+another, `up --provision` on the provisioned guest is refused naming `--fresh`,
+and the resume (no flags) keeps the allowed host and leaves one line in the file.
+
+`--allow HOST` and `--provision SCRIPT` are decided in `vm_spec`: `valid_host`
+(the `machine.Spec` rule, refused in `parse`), `encode_allow`/`decode_allow` for
+`<vm home>/<name>/allow`, `effective_allow` (given replaces recorded, `--fresh`
+clears), `provision_plan` (stage, retry the staged script, skip, or refuse a
+script on a provisioned resume) and `boot_budget_ms` (120 s, or 1800 s when a
+script runs). `vm_cli` records the list in `stage`, copies the script to
+`<root>/etc/loom-vm/provision` and reads the marker `<root>/etc/loom-vm/provisioned`.
+`LOOM-PROVISION-FAILED` on the console fails `up`.
 
 `setup` runs `install.bundled_launcher()` (`bin/loom-vm` in the server tree)
 with `setup --home <vm home> --release TAG` (or `--from-build`), where with no
@@ -74,7 +87,7 @@ proves the idle stop on its isolated home.
 Invariants that break things when violated:
 
 - A guest's files all live under `<vm home>/<name>/`: `deploy/`, `orch/`,
-  `root/`, `state.img`, `loom-vm.pid` and `loom-vm.log`. `LOOM_VM_HOME` overrides
+  `root/`, `state.img`, `allow`, `loom-vm.pid` and `loom-vm.log`. `LOOM_VM_HOME` overrides
   `~/.loom/vm`.
 - `up` reads the bundles in `deploy/` again instead of minting new ones, so the
   orchestrator's installed pins keep matching the executor's certificate.
@@ -95,6 +108,10 @@ Invariants that break things when violated:
   unless `--fresh`. `up` clones the export from the manifest's path resolved
   through symbolic links, because `cp -R` copies a link as a link and the guest
   would otherwise boot the export itself.
+- `--allow` never widens `--inject-host`: `launch_arguments` passes no
+  `--inject-host`, and the allowed hosts are reachable, never credentialed.
+- Only `--provision` supplies a script. The workspace is never searched, and a
+  script on a provisioned resume is refused rather than run again.
 - The workspace copy is made owner-writable. The guest's init cannot give a
   file to the `loom` user when the host user cannot write it, and Git's object
   files are read-only.

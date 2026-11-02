@@ -105,7 +105,10 @@ registry client, gVisor's netstack) never enters the jail helper's module.
   both architectures and publishes `ghcr.io/<owner>/loom-guest:<tag>`.
   `loom-guest-init` is the payload libkrun runs as root: it configures the
   network statically, trusts the proxy CA (`update-ca-certificates`) and
-  exports `/etc/loom-vm/github.env` when the CA file exists, chowns the loom
+  exports `/etc/loom-vm/github.env` when the CA file exists, runs
+  `/etc/loom-vm/provision` as root once when it exists and
+  `/etc/loom-vm/provisioned` does not (printing `LOOM-PROVISION-FAILED
+  status=N` and exiting 1 on failure, which `loom vm up` reports), chowns the loom
   user's directories, builds the delegated
   cgroup v2 subtree under `/sys/fs/cgroup/loom`, and runs its arguments as
   `loom` with `LOOM_CGROUP_BASE` set.
@@ -183,6 +186,12 @@ credential.
   line or staged file. `TestGuestFilesHoldNoToken` and
   `TestLogsNeverCarryTheTokenOrPlaceholderOrHeaders` pin it. Do not log a
   header value in `ghproxy`, and do not add a way to export the CA key.
+- **A provisioning script runs once, as root, before the executor.** The
+  marker is created only on exit zero. The script is staged by `loom vm up
+  --provision` and nothing else; the init never looks in a workspace. With the
+  proxy on, root's `HTTPS_PROXY` is set (the init sources `github.env` with
+  `set -a`); plain HTTP to an allowlisted host goes direct, which is how `apt`
+  reaches `deb.debian.org`. The proxy still takes CONNECT to port 443 only.
 - **Injection never widens egress.** The injection list says who gets a
   credential; the allowlist says who is reachable, and an injection host the
   allowlist omits is refused.
