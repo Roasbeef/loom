@@ -55,9 +55,12 @@
 //// Everything of one guest lives in `<vm home>/<name>/`, where the vm home is
 //// `$LOOM_VM_HOME` or `~/.loom/vm`:
 ////
-//// - `deploy/` holds the two provisioned bundles. A second `up` reads them
-////   again rather than minting new certificates, so the orchestrator's
-////   installed configuration keeps matching the executor it trusts.
+//// - `deploy/` holds the two provisioned bundles and the public ledger. A
+////   second `up` reads the bundles again rather than minting new certificates,
+////   so the orchestrator's installed configuration keeps matching the executor
+////   it trusts. A guest minted before the membership ledger holds `/1` bundles
+////   that list their peers; they are read and installed as they were, and are
+////   never converted.
 //// - `orch/` holds the orchestrator's installed credentials.
 //// - `root/` is the guest's own clone of the exported guest root, and
 ////   `state.img` is the disk its executor keeps its ledger and scopes on. A
@@ -66,6 +69,26 @@
 ////   replaces both. `down` leaves them for the user to read.
 //// - `loom-vm.pid` names the process and its birth marker, and `loom-vm.log`
 ////   holds the guest's console.
+////
+//// ## The authority key
+////
+//// `up` mints a deployment in ledger mode (protocol-change/086), so a node can
+//// be enrolled into it later without minting everything again. The authority
+//// key that signs the ledger is sealed under
+//// `<vm home>/authority/<deployment id>/` with `client/authority_key`, beside
+//// the authority certificate, the operator's copy of the ledger, the cookie
+//// and a `passphrase` file `up` generated (32 bytes from the production
+//// entropy source, mode 0600). A standing guest has no terminal, and the file
+//// is what a later `loom distribution enroll --passphrase-file` reads.
+////
+//// That directory is outside every guest root and no bundle that reaches the
+//// guest holds the key: the executor's bundle has its own node key and the
+//// deployment's cookie. The daemon's jails mask `~/.loom/vm` and the state
+//// root's `vm` (`workspace_policy`), so the directory is out of reach of
+//// jailed tools under either. A `$LOOM_VM_HOME` elsewhere is not masked, and
+//// the key and its passphrase are then readable by any process of the user.
+//// `rm` deletes the directory with the guest that minted it, unless another
+//// guest's bundle names the same deployment.
 ////
 //// The orchestrator's bundle goes into the user's `loom.toml` the way `loom
 //// distribution install` puts it: it merges `[distribution]` and
@@ -81,11 +104,14 @@
 //// still there. A pid file left by a machine that rebooted therefore names no
 //// process, and a recycled pid is never signalled.
 
+import broker/token
+import client/authority_key
 import client/distribution_bundle.{type Bundle}
 import client/distribution_install.{Options}
 import client/distribution_provision.{RefuseExisting, ReplaceExisting}
 import client/install
 import client/internal/ffi_os
+import client/membership_provision
 import client/vm_spec.{
   type Command, type Manifest, type PidRecord, type SyncOptions, type UpOptions,
   Down, Guests, Launch, Logs, PidRecord, Remove, Setup, Status, Sync, Up,
@@ -93,6 +119,7 @@ import client/vm_spec.{
 }
 import core/json as core_json
 import filepath
+import gleam/bit_array
 import gleam/bool
 import gleam/int
 import gleam/io
@@ -100,6 +127,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import gleam/time/timestamp
 import host/access
 import host/bootstrap
 import host/build_identity
@@ -574,6 +602,7 @@ fn up(options: UpOptions) -> Result(String, String) {
   // loom.toml that holds another deployment is refused before a root of
   // several hundred megabytes is cloned.
   use #(orchestrator, executor, provisioned) <- result.try(deployment(
+    vm_home,
     guest,
     names,
   ))
@@ -775,6 +804,7 @@ fn refuse_running(guest: Instance, name: String) -> Result(Nil, String) {
 /// them and minted there otherwise. Reading them again is what keeps the
 /// orchestrator's installed pins matching the executor's certificate.
 fn deployment(
+  vm_home: String,
   guest: Instance,
   names: vm_spec.Names,
 ) -> Result(#(Bundle, Bundle, Provisioned), String) {
@@ -796,7 +826,7 @@ fn deployment(
       Ok(#(orchestrator, executor, Reused))
     }
     False ->
-      provision(guest, names)
+      provision(vm_home, guest, names)
       |> result.map(fn(pair) { #(pair.0, pair.1, Minted) })
   }
 }
@@ -843,10 +873,15 @@ fn read_bundle(path: String, node: String) -> Result(Bundle, String) {
   }
 }
 
-/// Mints the authority, the certificates and the cookie in this process and
-/// writes the bundles, as `loom distribution provision --static` does. Static
-/// mode keeps no authority key: nothing ever enrolls a third node here.
+/// Mints the authority, the certificates, the cookie and a signed membership
+/// ledger in this process (protocol-change/086), seals the authority key under
+/// the vm home, and writes the bundles into `deploy/`. The ledger mode is what
+/// lets a later node be enrolled without minting the deployment again. The
+/// guest's executor bundle holds its own node key and the deployment's cookie,
+/// and never the authority's key, which `provision_ledger` hands back
+/// separately and which only `seal_authority` writes.
 fn provision(
+  vm_home: String,
   guest: Instance,
   names: vm_spec.Names,
 ) -> Result(#(Bundle, Bundle), String) {
@@ -854,7 +889,96 @@ fn provision(
     names,
     guest.orchestrator_credentials,
   ))
-  use minted <- result.try(distribution_provision.provision(plan))
+  use made <- result.try(distribution_provision.provision_ledger(
+    plan,
+    timestamp.system_time(),
+  ))
+  let authority =
+    vm_spec.authority_directory(vm_home, made.authority.deployment)
+
+  // The key is sealed before any bundle is written: bundles whose ledger can
+  // never be extended are worse than a sealed key with no bundles. A failure
+  // after that takes the directory with it, since its id exists nowhere else.
+  use Nil <- result.try(
+    seal_authority(authority, made)
+    |> or_unseal(authority),
+  )
+  use bundles <- result.try(
+    write_bundles(guest, made.deployment, names)
+    |> or_unseal(authority),
+  )
+  Ok(bundles)
+}
+
+/// Seals the authority key of a ledger deployment under a passphrase `up`
+/// generates, and keeps the certificate, the operator's copy of the ledger and
+/// the cookie beside it, as `loom distribution provision` does. The passphrase
+/// is 32 bytes from the production entropy source, written to a file of its own
+/// (mode 0600, created atomically) in the same directory, because a standing
+/// guest has no terminal to ask on and the later `enroll` and `revoke` of the
+/// join read it with `--passphrase-file`. The directory is under the vm home,
+/// which the daemon's jails mask (`workspace_policy`), and never under a guest
+/// root.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // vm_cli.seal_authority("/h/vm/authority/3f9c", made)
+/// ```
+@internal
+pub fn seal_authority(
+  directory: String,
+  made: distribution_provision.Provisioned,
+) -> Result(Nil, String) {
+  let text = bit_array.base64_url_encode(token.production_entropy()(32), False)
+  use passphrase <- result.try(
+    authority_key.passphrase(text)
+    |> result.map_error(authority_key.describe),
+  )
+  use Nil <- result.try(bootstrap.ensure_private_directory(directory))
+  use Nil <- result.try(write_private(
+    directory <> "/" <> vm_spec.passphrase_file,
+    text <> "\n",
+  ))
+  let authority = made.authority
+  authority_key.keep(
+    directory,
+    authority_key.Kept(
+      deployment: authority.deployment,
+      key: authority.key,
+      certificate: authority.certificate,
+      ledger: made.ledger,
+      cookie: authority.cookie,
+    ),
+    passphrase,
+  )
+  |> result.replace(Nil)
+  |> result.map_error(authority_key.describe)
+}
+
+/// Passes a success through, and removes the authority directory a failed
+/// provisioning created so that no sealed key outlives the bundles it was for.
+fn or_unseal(
+  outcome: Result(a, String),
+  authority: String,
+) -> Result(a, String) {
+  case outcome {
+    Ok(_) -> outcome
+    Error(reason) ->
+      case remove_tree_if_present(authority) {
+        Ok(Nil) -> Error(reason)
+        Error(more) -> Error(reason <> "; " <> more)
+      }
+  }
+}
+
+/// Writes the bundles and the public ledger into `deploy/` and returns the
+/// orchestrator's and the executor's.
+fn write_bundles(
+  guest: Instance,
+  minted: distribution_provision.Deployment,
+  names: vm_spec.Names,
+) -> Result(#(Bundle, Bundle), String) {
   use Nil <- result.try(bootstrap.ensure_private_directory(guest.directory))
   use _written <- result.try(distribution_provision.write(
     minted,
@@ -1495,10 +1619,41 @@ fn stage_node(
     node <> "/home/.erlang.cookie",
     executor.cookie,
   ))
+  use Nil <- result.try(stage_ledger(root, executor))
   write_private(
     node <> "/loom.toml",
     vm_spec.guest_config(executor, workspaces, github, allow),
   )
+}
+
+/// Puts the membership ledger of a ledger bundle beside the executor's
+/// credentials, where the `ledger` key of its configuration names it
+/// (`distribution_bundle.ledger_path`). A static bundle has none. The file is
+/// written only when the root has none: the executor appends the entries it
+/// syncs to it, and writing the bundle's copy over a later `up` would roll the
+/// ledger back to the head it was minted at. A new root has no file, so
+/// `--fresh` stages the bundle's.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // vm_cli.stage_ledger("/vm/dev/root", executor_bundle)
+/// ```
+@internal
+pub fn stage_ledger(root: String, executor: Bundle) -> Result(Nil, String) {
+  // Only a ledger bundle has a file to stage.
+  case executor.trust {
+    distribution_bundle.StaticPeers(_) -> Ok(Nil)
+    distribution_bundle.SignedLedger(lines) -> {
+      let path = root <> distribution_bundle.ledger_path(vm_spec.guest_files())
+
+      // A link counts as present: the file is only ever read in the guest.
+      case simplifile.link_info(path) {
+        Ok(_) -> Ok(Nil)
+        Error(_) -> write_private(path, membership_provision.file_text(lines))
+      }
+    }
+  }
 }
 
 /// Creates the directory `below` under the guest root, one component at a time,
@@ -2665,6 +2820,9 @@ type RemovalPlan {
     // The configuration text after the tables go, or `None` when it is
     // unchanged.
     rewritten: option.Option(String),
+    // The sealed authority key's directory, when this guest minted one and no
+    // other guest's deployment uses it.
+    authority: option.Option(String),
   )
 }
 
@@ -2711,7 +2869,7 @@ fn remove(
       }),
     ),
   )
-  use plan <- result.try(removal_plan(guest, name, config, home))
+  use plan <- result.try(removal_plan(vm_home, guest, name, config, home))
 
   // Nothing is changed until the user has said yes, and the refusal names the
   // copies the answer would lose.
@@ -2730,6 +2888,7 @@ fn remove(
 /// enrolment removes. A configuration that cannot be parsed, or whose tables
 /// cannot be removed line by line, refuses here with one line.
 fn removal_plan(
+  vm_home: String,
   guest: Instance,
   name: String,
   config: String,
@@ -2765,7 +2924,71 @@ fn removal_plan(
     False -> Some(edited)
   }
 
-  Ok(RemovalPlan(config:, teardown:, rewritten:))
+  Ok(RemovalPlan(
+    config:,
+    teardown:,
+    rewritten:,
+    authority: removable_authority(vm_home, name),
+  ))
+}
+
+/// The authority directory `up` sealed for the guest called `name`, when it
+/// is still there and no other guest's executor bundle names the same
+/// deployment. The id is read from the guest's own executor bundle, which `up`
+/// wrote, never from the guest root. A static guest, a bundle that is gone and
+/// a deployment whose key was sealed somewhere else (a guest that joined an
+/// operator's deployment) each have nothing here to remove.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // vm_cli.removable_authority("/h/vm", "dev") -> Some("/h/vm/authority/3f9c")
+/// ```
+@internal
+pub fn removable_authority(
+  vm_home: String,
+  name: String,
+) -> option.Option(String) {
+  // A guest whose bundle names no deployment, or no bundle at all, sealed
+  // nothing.
+  case deployment_of(vm_home, name) {
+    Error(Nil) -> None
+    Ok(id) -> {
+      let directory = vm_spec.authority_directory(vm_home, id)
+      let shared = shared_deployment(vm_home, name, id)
+
+      // The key is deleted only when it is still there and no other guest's
+      // deployment depends on it.
+      case is_plain_directory(directory), shared {
+        True, False -> Some(directory)
+        _, _ -> None
+      }
+    }
+  }
+}
+
+/// The deployment id in the executor bundle of the guest called `name`.
+fn deployment_of(vm_home: String, name: String) -> Result(String, Nil) {
+  let names = vm_spec.names(name)
+  use bundle <- result.try(
+    read_bundle(
+      bundle_file(instance(vm_home, name), names.name),
+      names.executor_node,
+    )
+    |> result.replace_error(Nil),
+  )
+  vm_spec.bundle_deployment(bundle)
+}
+
+/// Whether a guest other than `name` holds a bundle of the deployment `id`.
+fn shared_deployment(vm_home: String, name: String, id: String) -> Bool {
+  let others =
+    simplifile.read_directory(vm_home)
+    |> result.unwrap([])
+    |> list.filter(fn(entry) {
+      entry != name && result.is_ok(vm_spec.valid_name(entry))
+    })
+  list.any(others, fn(other) { deployment_of(vm_home, other) == Ok(id) })
 }
 
 /// Compares the home's cookie with the one in the guest's deployment. A bundle
@@ -2817,9 +3040,16 @@ fn removed_things(plan: RemovalPlan, home: String) -> List(String) {
     })
 
   // The cookie is listed only when the plan removes it.
-  case plan.teardown.cookie {
+  let with_cookie = case plan.teardown.cookie {
     vm_spec.RemoveCookie -> list.append(tables, [home <> "/.erlang.cookie"])
     vm_spec.KeepCookie -> tables
+  }
+
+  // The sealed key is the last thing listed, since it goes last.
+  case plan.authority {
+    Some(directory) ->
+      list.append(with_cookie, ["the sealed authority key in " <> directory])
+    None -> with_cookie
   }
 }
 
@@ -2853,6 +3083,13 @@ fn apply_removal(
 
   // The tree is made writable and removed without following a link.
   use Nil <- result.try(remove_tree(guest.directory))
+
+  // The key goes after the guest it was minted for, so a failure part way
+  // leaves a guest that still names its key and can be removed again.
+  use Nil <- result.try(case plan.authority {
+    Some(directory) -> remove_tree(directory)
+    None -> Ok(Nil)
+  })
 
   Ok(string.join(
     list.flatten([

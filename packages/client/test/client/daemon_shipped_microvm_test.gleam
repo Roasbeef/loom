@@ -6,7 +6,10 @@
 ////
 //// ## What it proves
 ////
-//// - `loom vm up` provisions the two-node deployment, installs the
+//// - `loom vm up` provisions the two-node deployment in ledger mode (the
+////   installed `[distribution]` table carries `ledger =` and no peer, the guest
+////   root holds the ledger beside its credentials), seals the authority key
+////   under `<vm home>/authority/<id>` with a passphrase file, and installs the
 ////   orchestrator's half into a `loom.toml`, clones the guest root, boots
 ////   `loom-vm run` and reports that the executor serves, with nothing in the
 ////   fixture standing in for any of those steps.
@@ -116,6 +119,7 @@
 ////   assertions.
 
 import broker/token
+import client/authority_key
 import client/tui_e2e_test.{type EunitTest, Timeout}
 import core/json
 import gleam/bit_array
@@ -449,6 +453,7 @@ fn drive(run: Run) -> Nil {
       let orchestrator = run.orchestrator
       let assert Ok(installed) = simplifile.read(orchestrator.config)
         as "vm up installed the orchestrator's configuration"
+      assert_ledger_deployment(run, installed)
       let assert Ok(Nil) =
         simplifile.write(
           orchestrator.config,
@@ -482,6 +487,9 @@ fn drive(run: Run) -> Nil {
       let status = vm(run, ["status", "--name", run.name])
       assert string.contains(status.output, "process:    not running")
       assert string.contains(status.output, "epmd:       not registered")
+
+      // The guest is stopped, so its root is quiet while it is searched.
+      assert_authority_stays_on_host(run)
 
       // The guest was provisioned, so a script given now is refused before
       // anything changes, and the refusal names the way to run a new one.
@@ -1349,6 +1357,78 @@ fn git_output(directory: String, arguments: List(String)) -> String {
   output
 }
 
+// --- the ledger deployment ---------------------------------------------------
+
+// The deployment directories under `<vm home>/authority`, sorted.
+fn sealed_keys(run: Run) -> List(String) {
+  case simplifile.read_directory(run.vm_home <> "/authority") {
+    Ok(entries) -> list.sort(entries, string.compare)
+    Error(_) -> []
+  }
+}
+
+// `vm up` mints in ledger mode: the table it installed names a ledger and no
+// peer, the executor row is still written, and the guest holds the ledger
+// beside its credentials, which its configuration names.
+fn assert_ledger_deployment(run: Run, installed: String) -> Nil {
+  assert string.contains(installed, "[distribution]")
+  assert string.contains(installed, "ledger = ")
+  assert !string.contains(installed, "[[distribution.peers]]")
+  assert string.contains(installed, "[executors." <> run.name <> "]")
+
+  let guest = run.vm_home <> "/" <> run.name
+  assert simplifile.is_file(guest <> "/deploy/ledger.log") == Ok(True)
+  assert simplifile.is_file(guest <> "/orch/ledger.log") == Ok(True)
+  assert simplifile.is_file(guest <> "/root" <> node_dir <> "/creds/ledger.log")
+    == Ok(True)
+  let configuration = read_file(guest <> "/root" <> node_dir <> "/loom.toml")
+  assert string.contains(
+    configuration,
+    "ledger = \"" <> node_dir <> "/creds/ledger.log\"",
+  )
+  assert !string.contains(configuration, "[[distribution.peers]]")
+
+  // One key is sealed for the guest, with its passphrase file.
+  let assert [id] = sealed_keys(run)
+  let directory = run.vm_home <> "/authority/" <> id
+  assert simplifile.is_file(directory <> "/key.enc") == Ok(True)
+  assert simplifile.is_file(directory <> "/passphrase") == Ok(True)
+  Nil
+}
+
+// Neither the passphrase nor the authority key reaches a guest root. The root
+// is searched for the passphrase's bytes, for a body line of the key (which the
+// test opens with the passphrase file) and for the key file's name. The search
+// is `grep` and `find` over the files; no Git runs in a guest root.
+fn assert_authority_stays_on_host(run: Run) -> Nil {
+  let assert [id] = sealed_keys(run)
+  let directory = run.vm_home <> "/authority/" <> id
+  let root = run.vm_home <> "/" <> run.name <> "/root"
+  let assert Ok(passphrase) =
+    authority_key.passphrase_from_file(directory <> "/passphrase")
+    as "the passphrase file is private and readable without a terminal"
+  let assert Ok(key) = authority_key.load(directory, id, passphrase)
+    as "the passphrase opens the sealed key"
+  let text = string.trim(read_file(directory <> "/passphrase"))
+  let assert [_, body, ..] = string.split(key, "\n")
+
+  let assert Ok(grep) = ffi_proc.which("grep") as "grep is on PATH"
+  list.each([text, body], fn(needle) {
+    let assert Ok(#(status, output)) =
+      ffi_proc.run(grep, ["-rFla", needle, root], in: run.directory)
+      as "grep runs over the guest's root"
+    assert output == ""
+    assert status == 1
+  })
+
+  let assert Ok(find) = ffi_proc.which("find") as "find is on PATH"
+  let assert Ok(#(0, found)) =
+    ffi_proc.run(find, [root, "-name", "key.enc"], in: run.directory)
+    as "find runs over the guest's root"
+  assert found == ""
+  Nil
+}
+
 // --- removing guests ---------------------------------------------------------
 
 fn read_file(path: String) -> String {
@@ -1379,6 +1459,7 @@ fn guests_are_removed(run: Run) -> Nil {
       // own and is refused, with words that name the way out.
       let config_before = read_file(config)
       let cookie_before = read_file(cookie)
+      let sealed_before = sealed_keys(run)
       let third =
         vm(run, [
           "up",
@@ -1394,14 +1475,21 @@ fn guests_are_removed(run: Run) -> Nil {
       assert string.contains(third.output, "only one guest per home")
       assert read_file(config) == config_before
 
-      // Removing it takes its directory and nothing of the other deployment.
+      // The refused guest minted a deployment of its own, so its key is sealed
+      // and nothing else of the home's changed.
+      assert list.length(sealed_keys(run)) == list.length(sealed_before) + 1
+
+      // Removing it takes its directory, its sealed key and nothing of the
+      // other deployment.
       let removed_third =
         expect_ok(
           vm(run, ["rm", "--name", run.third_name, "--yes"]),
           "rm third",
         )
       assert string.contains(removed_third, "Left in place: [distribution]")
+      assert string.contains(removed_third, "the sealed authority key in")
       assert simplifile.is_directory(guest(run.third_name)) == Ok(False)
+      assert sealed_keys(run) == sealed_before
       assert read_file(config) == config_before
       assert read_file(cookie) == cookie_before
 

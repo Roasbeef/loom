@@ -29,6 +29,9 @@
 //// - how to read the two small records the command leaves behind and consults
 ////   later: its pid file (`encode_pid`, `decode_pid`) and the host epmd's
 ////   listing (`registered_port`);
+//// - what kind of deployment a `loom.toml` already holds and what enrolling a
+////   guest in a ledger would ask of the operator's tooling (`deployment_state`,
+////   `guest_enrollment`);
 //// - the daily verbs: what may be printed of text a guest wrote (`printable`),
 ////   the record of each workspace's developer checkout (`encode_checkouts`,
 ////   `decode_checkouts`), the Git command lines of `sync` (`fetch_arguments`,
@@ -46,6 +49,9 @@
 //// - `names` derives the node names, `deployment_plan` the two-node plan, and
 ////   `guest_config` the executor's configuration file, with the tools table that
 ////   GitHub access needs.
+//// - `deployment_state` says which deployment a configuration file belongs to,
+////   and `guest_enrollment` is the request that enrols a guest in a ledger.
+////   `bundle_deployment` and `authority_directory` find the sealed key.
 //// - `launch_arguments` builds the `loom-vm run` command line.
 //// - `valid_host`, `encode_allow`, `decode_allow` and `effective_allow` keep
 ////   the `--allow` list, and `provision_plan` and `boot_budget_ms` decide what
@@ -68,7 +74,12 @@
 import client/distribution.{type CredentialFiles, CredentialFiles}
 import client/distribution_bundle.{type Bundle}
 import client/distribution_plan.{type Plan, Executor, Node, Orchestrator, Plan}
+import client/ledger_operator
+import client/membership_entry
+import client/membership_ledger
+import client/membership_signing
 import core/json as core_json
+import gleam/bit_array
 import gleam/bool
 import gleam/dict
 import gleam/dynamic/decode
@@ -148,6 +159,15 @@ pub const default_log_lines = 100
 
 /// The most lines `loom vm logs` will print.
 pub const log_lines_limit = 100_000
+
+/// The directory of the vm home that holds the sealed authority key of each
+/// ledger deployment `up` minted, one directory per deployment id. A guest
+/// cannot be called this, because its directory would be the key's.
+pub const authority_dir = "authority"
+
+/// The file inside a deployment's authority directory that holds the
+/// passphrase `up` sealed its key under.
+pub const passphrase_file = "passphrase"
 
 /// The longest `--name`. The orchestrator's plan name adds `-host`, and a plan
 /// name is at most 32 bytes.
@@ -1340,10 +1360,13 @@ fn unknown_flag(arguments: List(String)) -> Result(a, String) {
 /// ```gleam
 /// assert vm_spec.valid_name("dev") == Ok(Nil)
 /// assert result.is_error(vm_spec.valid_name("Dev Box"))
+/// assert result.is_error(vm_spec.valid_name(vm_spec.authority_dir))
 /// ```
 pub fn valid_name(name: String) -> Result(Nil, String) {
   case
-    catalogue.is_executor_name(name) && string.byte_size(name) <= name_limit
+    catalogue.is_executor_name(name)
+    && string.byte_size(name) <= name_limit
+    && name != authority_dir
   {
     True -> Ok(Nil)
     False ->
@@ -1646,6 +1669,118 @@ pub fn deployment_plan(
       directory: [],
     ),
   )
+}
+
+// --- what the configuration already holds ------------------------------------
+
+/// The deployment a daemon's `loom.toml` already belongs to, which decides
+/// whether a guest can be enrolled into it or has to bring its own.
+pub type DeploymentState {
+  /// The file has no `[distribution]` table, so the daemon is on no deployment
+  /// and a guest may mint one for it.
+  NoDeployment
+
+  /// The table names a membership ledger (protocol-change/086). The ledger's
+  /// authority can enrol a guest as a member without a restart.
+  LedgerDeployment(
+    /// The ledger file the `ledger` key names.
+    ledger: String,
+  )
+
+  /// The table lists `[[distribution.peers]]` (protocol-change/078). No key
+  /// remains that could admit a third node.
+  StaticDeployment
+}
+
+/// Reads which deployment `text`, the contents of a `loom.toml`, belongs to,
+/// with the parser the daemon itself reads the table with, so a table the
+/// daemon would refuse is refused here and is not guessed at.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.deployment_state("") == Ok(vm_spec.NoDeployment)
+/// ```
+pub fn deployment_state(text: String) -> Result(DeploymentState, String) {
+  use found <- result.try(distribution.parse(text))
+
+  // Only a table can name a ledger, so the absence of a table is decided
+  // first and the `ledger` key then tells the two modes apart.
+  case found {
+    None -> Ok(NoDeployment)
+    Some(config) ->
+      // The daemon enters ledger mode by this key and no other.
+      case distribution.ledger_path(config) {
+        Some(ledger) -> Ok(LedgerDeployment(ledger:))
+        None -> Ok(StaticDeployment)
+      }
+  }
+}
+
+/// What `loom distribution enroll` is asked for the guest called `names.name`
+/// when the guest joins a deployment that already exists: an executor on
+/// loopback at the guest's port, linked to `orchestrator_member`, the ledger's
+/// name for the orchestrator that will use it, and not in the session
+/// directory. The link is required because links cannot be added to a member
+/// later (`ledger_operator.check_enrollment`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// let request = vm_spec.guest_enrollment(vm_spec.names("vm"), "laptop")
+/// assert request.links == ["laptop"]
+/// ```
+pub fn guest_enrollment(
+  names: Names,
+  orchestrator_member: String,
+) -> ledger_operator.Enrollment {
+  ledger_operator.Enrollment(
+    name: names.name,
+    node: names.executor_node,
+    role: Executor,
+    host: Some("127.0.0.1"),
+    listen_port: Some(guest_port),
+    links: [orchestrator_member],
+    directory: membership_entry.NotInDirectory,
+    workspaces: [],
+    bundle_dir: None,
+  )
+}
+
+/// The deployment id a ledger bundle's genesis entry carries, or `Nil` for a
+/// static bundle and for a ledger that does not replay against the bundle's
+/// own certificate authority. `rm` uses it to find the authority directory
+/// `up` sealed the key in.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.bundle_deployment(static_bundle) == Error(Nil)
+/// ```
+pub fn bundle_deployment(bundle: Bundle) -> Result(String, Nil) {
+  // A static bundle lists peers and has no ledger to carry an id.
+  case bundle.trust {
+    distribution_bundle.StaticPeers(_) -> Error(Nil)
+    distribution_bundle.SignedLedger(lines) -> {
+      use verifier <- result.try(
+        membership_signing.verifier(bundle.ca) |> result.replace_error(Nil),
+      )
+      membership_ledger.replay(list.map(lines, bit_array.from_string), verifier)
+      |> result.map(membership_ledger.deployment)
+      |> result.replace_error(Nil)
+    }
+  }
+}
+
+/// The authority directory of a deployment under the vm home.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.authority_directory("/h/vm", "3f9c") == "/h/vm/authority/3f9c"
+/// ```
+pub fn authority_directory(vm_home: String, deployment: String) -> String {
+  vm_home <> "/" <> authority_dir <> "/" <> deployment
 }
 
 /// Where the executor's credentials sit inside the guest.
