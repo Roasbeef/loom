@@ -3652,6 +3652,10 @@ fn review_json(ticket: Ticket) -> JsonValue {
       json.String("the check gave no result: " <> why)
     Some(model.PublishingOff), _ ->
       json.String("publishing is off for this project")
+    Some(model.InferredWork), _ ->
+      json.String(
+        "this work was started by an inferred trigger, and inferred work is published by a person",
+      )
     Some(model.PublishUnavailable(why)), _ ->
       json.String("the branch was not published: " <> why)
     Some(model.NoCommits), _ ->

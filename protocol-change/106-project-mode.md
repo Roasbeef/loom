@@ -515,3 +515,20 @@ that leans on `project_read` to decide is measured without it. The run costs nin
 triggers, a daemon restart loses a run in progress and its spend, and the spend of a trial killed
 mid-request is not counted. The twenty-minute wall limit and the four trials in flight are constants and
 not configuration.
+
+## Addendum: review fixes (2026-11-02)
+
+**Affects**: one new `ReviewReason`, `InferredWork`, written as `{"k":"inferred_work"}` in a
+`ReviewRequested` event and in the snapshot's ticket facts, and a board `review` sentence for it. An
+older ledger never holds it, and a reader that predates it fails the decode of a line that does.
+No command, wire field or `loom.toml` key changes.
+
+**Inferred work is published by a person.** `NetworkOff` on an inferred worker does not stop it from
+writing what its sandbox reads into a commit, and the host publishes a passing commit with the owner's
+credentials. Considered: scanning the diff for secrets, which is open-ended; and a host check on
+the Mandate in `start_publish`, which leaves an engine that asks for a publish it will not get. Decided:
+`work.check_passed` on an inferred Mandate sets the review reason and emits no `PublishBranch`, so the
+host cannot publish it by any path. `PersonPublished` still does, with readiness `Published`.
+What it costs is a person's click on every inferred ticket that would otherwise have opened a
+pull request by itself.
+

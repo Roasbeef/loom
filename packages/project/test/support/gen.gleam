@@ -205,6 +205,7 @@ pub fn head() -> Generator(Head) {
 pub fn review_reason() -> Generator(model.ReviewReason) {
   qcheck.from_generators(qcheck.return(model.NoCheckConfigured), [
     qcheck.return(model.PublishingOff),
+    qcheck.return(model.InferredWork),
     qcheck.map(text(), model.publish_unavailable),
     qcheck.map(text(), model.check_unfinished),
     qcheck.map(text(), model.intake_refused),

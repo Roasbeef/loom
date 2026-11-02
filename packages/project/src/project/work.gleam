@@ -941,13 +941,39 @@ fn check_passed(
   // must still accept a pass.
   case requested, readiness.check_passed(ticket.readiness, proof) {
     True, Ok(ready) ->
-      Ok(publish(
+      Ok(vouched(
         current,
         state.Ticket(..ticket, readiness: ready, rejected: None),
         commit,
       ))
     True, Error(Nil) -> Error(event.Stale(ticket.id))
     False, _ -> Error(event.Stale(ticket.id))
+  }
+}
+
+/// A passing check on a ticket asks the host to publish its commit only when
+/// the mandate is explicit. The check jail confines what the commit's code can
+/// do while it runs, but the commit itself came from a worker that an inferred
+/// trigger steered, and a worker's sandbox can read the whole checkout and the
+/// files around it. Publishing uses the owner's credentials, so an inferred
+/// ticket stops at `Ready` with a reason and waits for a person, whose
+/// `PersonPublished` is the only way its commit leaves the machine.
+fn vouched(
+  current: State,
+  ticket: Ticket,
+  commit: CommitId,
+) -> #(State, List(Effect)) {
+  // The mandate's strength was fixed when the ticket opened, so a later
+  // explicit message to the thread does not change which way this goes.
+  case ticket.mandate.strength {
+    Explicit -> publish(current, ticket, commit)
+    model.Inferred -> #(
+      state.put_ticket(
+        current,
+        state.Ticket(..ticket, review: Some(model.InferredWork)),
+      ),
+      [],
+    )
   }
 }
 

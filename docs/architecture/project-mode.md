@@ -205,7 +205,7 @@ stateDiagram-v2
     Published --> InProgress: new_commit
 ```
 
-`check_passed` from any state but `InProgress` is an error that `work` maps to `Stale`, and a rejected check changes no readiness. It sets `rejected` and leaves `last_checked` at that commit, so only a new commit or a retry runs the check again. `PublishBranch` follows a pass or a person's publish, and the host turns it into a `PublishingOff` review when `[project].publish` is off.
+`check_passed` from any state but `InProgress` is an error that `work` maps to `Stale`, and a rejected check changes no readiness. It sets `rejected` and leaves `last_checked` at that commit, so only a new commit or a retry runs the check again. `PublishBranch` follows a pass on an explicit Mandate, or a person's publish, and the host turns it into a `PublishingOff` review when `[project].publish` is off. A pass on an inferred Mandate makes the ticket `Ready` and asks the host for nothing: `work.vouched` sets the `InferredWork` review reason, and only `PersonPublished` publishes the commit. The host publishes with the owner's credentials, and a worker that a stranger's text steered can commit anything its sandbox reads, so a passing check is not enough to send that commit outward.
 
 ```mermaid
 flowchart TD
@@ -229,7 +229,7 @@ flowchart TD
 2. **Protected paths.** `protected_patterns` joins `[project]` settings, `protect.default_paths` (`Makefile`, `GNUmakefile`, `makefile`, `.github/**`) and every word of the check command that isn't a flag or an assignment. A match sends the ticket to a person, so an edited build file never runs on this path.
 3. **Check.** `check_tree` builds a new repository under `checks/`, fetches the commit from `host.git`, and runs `bash -o pipefail -c <command>` through `worktrees.check_runner`. The network is off and the tree is its only writable root. The tree is removed afterwards whatever happened.
 4. **Record.** A pass writes `CheckRecorded` first, because `CheckPassed` names the ledger entry that holds the result.
-5. **Publish.** `project_publish.publish` runs `git -C host.git push --no-verify` with hooks off and no force, to the URL pinned in `loom-origin-url` when the project was created. It then looks for an open pull request on `project/<ticket>` and creates one only if there's none, so a crash between the two doesn't open a second. The push and `gh` run in the daemon process, outside any jail, and the owner's global Git config applies to them, because that's where the owner's credentials are configured. Only a pinned GitHub URL is published: for any other origin the publish is unavailable and neither the push nor `gh` runs.
+5. **Publish.** A ticket with an explicit Mandate reaches this step on a pass, and an inferred one only after a person publishes it. `project_publish.publish` runs `git -C host.git push --no-verify` with hooks off and no force, to the URL pinned in `loom-origin-url` when the project was created. It then looks for an open pull request on `project/<ticket>` and creates one only if there's none, so a crash between the two doesn't open a second. The push and `gh` run in the daemon process, outside any jail, and the owner's global Git config applies to them, because that's where the owner's credentials are configured. Only a pinned GitHub URL is published: for any other origin the publish is unavailable and neither the push nor `gh` runs.
 
 A later report with no head goes through `ObserveHead` again, and a new commit returns readiness to `InProgress`.
 
@@ -441,7 +441,9 @@ This document rests on four reader summaries against `be5a7b58e`. Its constants 
 
 - A session that dies between `create_scoped` returning and `SessionBound` being recorded rings before the assignment is bound, so that assignment looks running.
 - `project_book` starts actors with restart `Temporary`, so a crashed project actor isn't restarted, and its stale `Handle` stays until the next boot or `Put`. Calls then fail after the 10 s `ask` wait.
-- `project_settings` parses `token_ceiling`, and no reader found a consumer of it.
+- `project_settings` parses `token_ceiling`, and no reader found a consumer of it. The engine handles `CeilingChanged`, and nothing in the daemon emits it, so the ceiling never engages outside tests.
+- An explicit ticket whose rule pair is in `auto` takes an inferred comment on its thread (`intake.takes`), and its Mandate stays explicit. A stranger's text that matched a rule can therefore steer that worker, and the commit it writes is published after a pass. The Mandate's strength is fixed at open, so `work.vouched` does not see the inferred input.
+- A router's `clarify` or `decline` reply to an inferred trigger is posted to that trigger's GitHub thread when publishing is on. Its text is the router's, which has read the stranger's text, and `reply_body` removes `@ < > #` and invisible characters and nothing else, so it can carry a link. It goes to one thread, under the owner's account, and is limited by the router's tools (`project_read`, `reply`, `route`).
 - The check runner's policy has `readable_roots ["/"]` with the state-root masks and without the per-project masks a worker session gets. Worker-authored code in a check can therefore read other projects' files, and up to 4000 characters of its failing output go back to the worker.
 - `protecting_projects` masks only what exists when a session's policy is built, so a `checks/` directory made later isn't masked for that session.
 - `fetch_commit` runs against a worker-writable clone with `host.git` writable to that jailed Git. Whether the clone's repository config can affect `upload-pack` there wasn't verified.

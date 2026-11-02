@@ -300,6 +300,13 @@ between the request and its record can't open two. Merging stays with people. A
 worker that runs on another machine returns its result as a git bundle, which is
 unbuilt and is part of #1137.
 
+Inferred work is the exception to that push. An inferred worker has no network, but its sandbox
+reads the checkout and the files around it, and a stranger's text may have told it to copy what it
+finds into a data file. A check does not look for that, and the push uses the owner's credentials. So
+a passing check on a ticket with an inferred Mandate makes it `Ready` and asks the host for no push:
+the ticket waits in review with the reason `InferredWork`, and `PersonPublished` is the only way the
+commit leaves the machine. Explicit work is unchanged.
+
 Some tickets have nothing to check, such as an investigation or a reproduction.
 These end in `AwaitingReview` and never in `Ready`. A person can also publish past a
 failing check from the board. That's a recorded command, and no model can issue it.

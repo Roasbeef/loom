@@ -107,6 +107,12 @@ pub fn the_wire_form_of_the_host_facts_is_pinned_test() {
   assert codec.encode(event.ReviewRequested(
       TicketId("t-c1"),
       CommitId("abc"),
+      model.InferredWork,
+    ))
+    == "{\"t\":\"review_requested\",\"ticket\":\"t-c1\",\"commit\":\"abc\",\"reason\":{\"k\":\"inferred_work\"}}"
+  assert codec.encode(event.ReviewRequested(
+      TicketId("t-c1"),
+      CommitId("abc"),
       model.intake_refused("fsck"),
     ))
     == "{\"t\":\"review_requested\",\"ticket\":\"t-c1\",\"commit\":\"abc\",\"reason\":{\"k\":\"intake_refused\",\"why\":\"fsck\"}}"

@@ -1135,6 +1135,59 @@ pub fn a_passing_check_makes_the_ticket_ready_and_opens_a_pull_request_test() {
   assert state.stage_of(ticket(opened, ticket_of("c1"))) == stage.PersonReview
 }
 
+// A ticket that an inferred trigger opened, its worker live and idle at
+// commit `a`, with the host's check requested for it.
+fn inferred_checked() -> state.State {
+  let armed = run(automated(), [arrival(world.overheard("o1", "th"))])
+  run(armed, [
+    accept("o1"),
+    event.AssignmentLive(ticket_of("o1"), 1),
+    event.Reported(
+      ticket_of("o1"),
+      1,
+      Waiting(NoQuestion),
+      head_at("a", ProtectedPathsUntouched),
+    ),
+  ])
+}
+
+fn passed_for(id: String, commit: String) -> event.Event {
+  event.CheckFinished(
+    ticket_of(id),
+    event.CheckOk(host.passed(
+      CommitId(commit),
+      model.CommandDigest("d"),
+      model.EntryId("e"),
+    )),
+  )
+}
+
+// The host publishes with the owner's credentials, so a stranger's text that
+// steered a worker must not reach a remote without a person. A pass leaves the
+// inferred ticket ready, asks the host for nothing, and says why a person has
+// to look.
+pub fn a_passing_check_on_inferred_work_asks_for_no_publish_test() {
+  let #(ready, effects) = step(inferred_checked(), passed_for("o1", "a"))
+  assert effects == []
+  let held = ticket(ready, ticket_of("o1"))
+  assert held.mandate.strength == model.Inferred
+  assert readiness.vouches_for(held.readiness) == Some(CommitId("a"))
+  assert held.review == Some(model.InferredWork)
+  assert state.stage_of(held) == stage.PersonReview
+}
+
+// A person's publish is the one way inferred work leaves the machine.
+pub fn a_person_publishes_inferred_work_past_the_reason_test() {
+  let #(ready, _) = step(inferred_checked(), passed_for("o1", "a"))
+  let by = world_principal()
+  let #(published, effects) =
+    step(ready, event.PersonPublished(ticket_of("o1"), by, CommitId("a")))
+  assert effects
+    == [PublishBranch(ticket_of("o1"), "project/t-o1", CommitId("a"))]
+  assert ticket(published, ticket_of("o1")).readiness
+    == readiness.Published(by, CommitId("a"))
+}
+
 pub fn a_check_that_nobody_requested_cannot_make_a_ticket_ready_test() {
   assert engine.apply(working(), passed("a"))
     == Error(event.Stale(ticket_of("c1")))

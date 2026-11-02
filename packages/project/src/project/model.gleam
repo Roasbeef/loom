@@ -150,6 +150,12 @@ pub type ReviewReason {
   /// The project keeps `publish` off, so nothing goes outward on its own.
   PublishingOff
 
+  /// An inferred trigger started the work and the check passed. Inferred work
+  /// is published by a person and never by the host alone, because the host
+  /// publishes with the owner's credentials and a stranger's text may have
+  /// steered the worker that wrote the commit.
+  InferredWork
+
   /// The host could not push the branch or open the pull request. The words
   /// are the host's description of the step that failed, capped.
   PublishUnavailable(

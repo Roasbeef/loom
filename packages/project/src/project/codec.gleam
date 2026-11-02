@@ -692,6 +692,7 @@ pub fn reason_json(reason: model.ReviewReason) -> Json {
         #("why", json.string(why)),
       ])
     model.PublishingOff -> json.object([#("k", json.string("publishing_off"))])
+    model.InferredWork -> json.object([#("k", json.string("inferred_work"))])
     model.PublishUnavailable(why) ->
       json.object([
         #("k", json.string("unavailable")),
@@ -722,6 +723,7 @@ pub fn reason_decoder() -> Decoder(model.ReviewReason) {
       decode.success(model.check_unfinished(why))
     }
     "publishing_off" -> decode.success(model.PublishingOff)
+    "inferred_work" -> decode.success(model.InferredWork)
     "no_commits" -> decode.success(model.NoCommits)
     "uncommitted" -> decode.success(model.UncommittedChanges)
     "unavailable" -> {
