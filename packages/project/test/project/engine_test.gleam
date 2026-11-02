@@ -1471,6 +1471,26 @@ pub fn an_actor_past_the_rate_cap_is_shed_and_others_are_not_test() {
   assert fate_of(other, "quinn01") == state.Awaiting
 }
 
+// The actor's other triggers in the hour are what shed the last one, so a
+// requeue that counted them again would shed it again at once and the promise
+// that a person can queue a shed trigger again would hold for nothing.
+pub fn a_person_can_queue_a_rate_capped_trigger_again_test() {
+  let busy = run(roomy(), comments_from("pat", queue.actor_cap))
+  let id = "pat" <> int_text(queue.actor_cap + 1)
+  let shed = run(busy, [last_of("pat", queue.actor_cap + 1)])
+  assert fate_of(shed, id) == state.Decided(state.Shed)
+
+  // The actor is still over the cap, and the person's request overrides it
+  // for this trigger only.
+  let #(again, _) = step(shed, event.Requeued(TriggerId(id), world_principal()))
+  assert fate_of(again, id) == state.Awaiting
+
+  // The next arrival from the same actor is still shed.
+  let later = run(again, [last_of("pat", queue.actor_cap + 2)])
+  assert fate_of(later, "pat" <> int_text(queue.actor_cap + 2))
+    == state.Decided(state.Shed)
+}
+
 fn last_of(actor: String, position: Int) -> event.Event {
   let id = actor <> int_text(position)
   arrival(world.trigger(

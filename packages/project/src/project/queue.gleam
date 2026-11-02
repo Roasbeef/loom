@@ -46,6 +46,17 @@ pub const actor_cap: Int = 20
 /// The window `actor_cap` is counted over, in milliseconds.
 pub const actor_window_ms: Int = 3_600_000
 
+/// Whether `actor_cap` applies when a trigger is considered.
+pub type RateCap {
+  /// Count the actor's recent inferred triggers against `actor_cap`.
+  CapApplies
+
+  /// Skip the count. A person who queues a trigger again has decided that it
+  /// is worth a router turn, and the actor's other triggers in the window
+  /// would otherwise shed it again at once.
+  CapWaived
+}
+
 /// Put an admitted, undelivered trigger in front of the router, or hold or
 /// shed it. Returns the offer effect when a batch goes out.
 ///
@@ -55,9 +66,18 @@ pub const actor_window_ms: Int = 3_600_000
 /// // -> #(state, [OfferCandidates([id])]) for an explicit trigger and an idle router
 /// ```
 pub fn consider(current: State, id: TriggerId) -> #(State, List(Effect)) {
+  consider_under(current, id, CapApplies)
+}
+
+/// `consider` with the rate cap named. Only `requeue` waives it.
+fn consider_under(
+  current: State,
+  id: TriggerId,
+  cap: RateCap,
+) -> #(State, List(Effect)) {
   case state.record(current, id) {
     Error(_) -> #(current, [])
-    Ok(stored) -> consider_record(current, stored)
+    Ok(stored) -> consider_record(current, stored, cap)
   }
 }
 
@@ -66,11 +86,12 @@ pub fn consider(current: State, id: TriggerId) -> #(State, List(Effect)) {
 fn consider_record(
   current: State,
   stored: TriggerRecord,
+  cap: RateCap,
 ) -> #(State, List(Effect)) {
   case stored.admission {
     NotAdmitted(_) -> #(current, [])
     Admitted(Explicit, _, _) -> enqueue(current, stored)
-    Admitted(Inferred, _, _) -> consider_inferred(current, stored)
+    Admitted(Inferred, _, _) -> consider_inferred(current, stored, cap)
   }
 }
 
@@ -79,6 +100,7 @@ fn consider_record(
 fn consider_inferred(
   current: State,
   stored: TriggerRecord,
+  cap: RateCap,
 ) -> #(State, List(Effect)) {
   let trigger = stored.trigger
   let rule = option.map(trigger.inputs.rule, fn(matched) { matched.rule })
@@ -88,8 +110,8 @@ fn consider_inferred(
   // a router turn.
   case gate.acceptance(Inferred, pair) {
     Refuse(reason) -> hold(current, trigger.id, HeldByGate(reason))
-    Proceed -> consider_load(current, stored)
-    RecordOnly -> consider_load(current, stored)
+    Proceed -> consider_load(current, stored, cap)
+    RecordOnly -> consider_load(current, stored, cap)
   }
 }
 
@@ -97,6 +119,7 @@ fn consider_inferred(
 fn consider_load(
   current: State,
   stored: TriggerRecord,
+  cap: RateCap,
 ) -> #(State, List(Effect)) {
   let trigger = stored.trigger
   let attended =
@@ -110,9 +133,12 @@ fn consider_load(
     True, _ -> hold(current, trigger.id, HeldByAttention)
     False, CeilingReached -> hold(current, trigger.id, HeldByCeiling)
     False, model.CeilingClear ->
-      case over_rate_cap(current, trigger) {
-        True -> #(state.set_fate(current, trigger.id, Decided(state.Shed)), [])
-        False -> enqueue(current, stored)
+      case cap, over_rate_cap(current, trigger) {
+        CapApplies, True -> #(
+          state.set_fate(current, trigger.id, Decided(state.Shed)),
+          [],
+        )
+        CapApplies, False | CapWaived, _ -> enqueue(current, stored)
       }
   }
 }
@@ -331,7 +357,10 @@ pub fn turn_ended(current: State) -> #(State, List(Effect)) {
 /// Queue a stored trigger the router ignored, shed, never decided or was never
 /// offered, for a fresh evaluation. Triggers still queued, offered or already
 /// routed to work are refused. A requeued trigger starts its count of offers
-/// again, because a person asked for it.
+/// again, because a person asked for it, and it is not held to the actor's
+/// rate cap a second time: the actor's other triggers in the window are what
+/// shed it, so counting them again would make the requeue of a shed trigger a
+/// no-op for the rest of the hour.
 ///
 /// ## Examples
 ///
@@ -345,11 +374,11 @@ pub fn requeue(current: State, id: TriggerId) -> state.Step {
   // Only a trigger that was ignored, shed, held, left unrouted or merely
   // recorded as would-accept can be evaluated again.
   case stored.fate {
-    Decided(state.Ignored) -> Ok(consider(fresh, id))
-    Decided(state.Shed) -> Ok(consider(fresh, id))
-    Decided(state.Held(_)) -> Ok(consider(fresh, id))
-    Decided(state.WouldAccept) -> Ok(consider(fresh, id))
-    Decided(state.Unrouted(_)) -> Ok(consider(fresh, id))
+    Decided(state.Ignored) -> Ok(consider_under(fresh, id, CapWaived))
+    Decided(state.Shed) -> Ok(consider_under(fresh, id, CapWaived))
+    Decided(state.Held(_)) -> Ok(consider_under(fresh, id, CapWaived))
+    Decided(state.WouldAccept) -> Ok(consider_under(fresh, id, CapWaived))
+    Decided(state.Unrouted(_)) -> Ok(consider_under(fresh, id, CapWaived))
     Awaiting -> Error(event.NotRequeueable(id))
     Offered -> Error(event.NotRequeueable(id))
     Decided(state.OwnMessage) -> Error(event.NotRequeueable(id))
