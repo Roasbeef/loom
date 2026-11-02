@@ -37,6 +37,12 @@
 //// `Covers.bound_points` records how far down it reached. A pass rules out a
 //// large regression to that bound and does not show parity.
 ////
+//// Neither the verdict nor the interval says the candidate is any good. Both
+//// compare it with the recorded arm, and a router that disagrees with the
+//// person's labels on both arms has not regressed. A pass therefore also needs
+//// the candidate's own agreement with the labels to reach
+//// `min_agreement_points`.
+////
 //// ## Flow
 ////
 //// `replay_samples` or `live_samples` → `judge` → `outcome_of`
@@ -77,6 +83,29 @@ pub const live_trials: Int = 3
 /// leave inside its interval. It is the "large regression" a pass claims to
 /// rule out.
 pub const max_bound_points: Int = 30
+
+/// The least agreement with the labels, in whole points of the candidate's
+/// trials, that a pass needs.
+///
+/// The interval rule compares the candidate with the recorded arm, so it says
+/// nothing about a router that disagrees with the person on both arms. This
+/// floor is the absolute claim: at most one trial in four goes against the
+/// person's label.
+///
+/// The value follows from the size of a run and from what is being protected.
+/// A guess agrees on half the trials. A router that answers the same way every
+/// time clusters its three trials, so thirty triggers give an observed
+/// agreement a standard error near 9 points, and 75 is 2.7 of them above
+/// guessing. A router that is right 85 percent of the time passes about nine
+/// runs in ten, and one that is right 75 percent of the time passes half of
+/// them. A lower floor would admit routers that the person's labels say are
+/// wrong on more than one inbound message in four, and `auto` acts on those
+/// messages without asking.
+///
+/// A floor on agreement cannot see a router that declines everything when most
+/// labels are rejects. That router agrees with the labels as often as they are
+/// rejects, and the verdict says only that it agrees.
+pub const min_agreement_points: Int = 75
 
 const recorded_arm = "recorded"
 
@@ -119,6 +148,10 @@ pub type Finding {
     outcome: VerdictOutcome,
     /// What the run covered.
     covers: Covers,
+    /// The share of the candidate's trials that matched the person's label, in
+    /// whole points rounded down. It is the number `min_agreement_points`
+    /// holds a pass to.
+    agreement_points: Int,
   )
 }
 
@@ -319,7 +352,30 @@ fn measure(samples: List(Sample), lane: Lane) -> Finding {
       changed:,
       bound_points: bound_points(rows, plan),
     )
-  Finding(measured:, outcome: outcome_of(measured, covers), covers:)
+  let agreement_points = agreement_of(samples)
+  Finding(
+    measured:,
+    outcome: outcome_of(measured, covers, agreement_points),
+    covers:,
+    agreement_points:,
+  )
+}
+
+/// The share of the candidate's trials that matched the label, in whole points
+/// rounded down so that a figure on the line is never counted in. A run with no
+/// trials agrees with nothing.
+fn agreement_of(samples: List(Sample)) -> Int {
+  let trials =
+    list.flat_map(samples, fn(each) {
+      list.map(each.candidate, agrees(_, each.label))
+    })
+  let matched = list.count(trials, fn(matches) { matches })
+
+  // Integer division rounds down, which is the direction the floor wants.
+  case list.length(trials) {
+    0 -> 0
+    total -> matched * 100 / total
+  }
 }
 
 /// The rows of one trigger: the recorded arm's decision at every index, and
@@ -406,25 +462,39 @@ fn bound_points(rows: List(Trial), plan: List(#(String, Int))) -> Int {
 
 /// Whether the instrument's verdict lets the pair go to `auto`.
 ///
-/// A pass needs two things. The instrument must not have called the candidate
-/// `Harmed` or found the rows `Incomplete`, and its interval of the change in
-/// agreement with the labels must not reach below a drop of
-/// `max_bound_points`. The second is what lets a pass say it ruled out a large
-/// regression. The verdict alone cannot say that, because `Underpowered` is
-/// the instrument's answer to most plans of this size and means only that
-/// nothing was shown. On the synthetic plans of the tests, passing on "not
-/// `Harmed`" would have let about a third of thirty-point drops through, and
-/// with the interval rule about 4 percent pass.
+/// A pass needs three things. The instrument must not have called the candidate
+/// `Harmed` or found the rows `Incomplete`. Its interval of the change in
+/// agreement with the labels must not reach below a drop of `max_bound_points`.
+/// And the candidate's own agreement with the labels, `agreement_points`, must
+/// reach `min_agreement_points`.
+///
+/// The second is what lets a pass say it ruled out a large regression. The
+/// verdict alone cannot say that, because `Underpowered` is the instrument's
+/// answer to most plans of this size and means only that nothing was shown. On
+/// the synthetic plans of the tests, passing on "not `Harmed`" would have let
+/// about a third of thirty-point drops through, and with the interval rule
+/// about 4 percent pass. The third is what lets a pass say the router is good,
+/// which a comparison with the recorded arm cannot: a router that disagrees
+/// with the labels as often as the recording did has not regressed.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// let covers = model.Covers(model.Replay, 30, 1, 0, 0)
-/// assert judge.outcome_of(stat.Underpowered(0.9, 400, "no spread"), covers)
+/// assert judge.outcome_of(stat.Underpowered(0.9, 400, "no spread"), covers, 90)
 ///   == model.VerdictPassed
 /// ```
-pub fn outcome_of(measured: stat.Verdict, covers: Covers) -> VerdictOutcome {
-  case measured, covers.bound_points <= max_bound_points {
+pub fn outcome_of(
+  measured: stat.Verdict,
+  covers: Covers,
+  agreement_points: Int,
+) -> VerdictOutcome {
+  let bounded = covers.bound_points <= max_bound_points
+  let agreeing = agreement_points >= min_agreement_points
+
+  // A verdict that harmed or could not form fails whatever else holds. Of the
+  // rest, only a run that is both bounded and agreeing passes.
+  case measured, bounded && agreeing {
     stat.Harmed(..), _ -> VerdictFailed
     stat.Incomplete(_), _ -> VerdictFailed
     _, True -> VerdictPassed

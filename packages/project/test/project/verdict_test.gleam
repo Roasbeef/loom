@@ -359,11 +359,25 @@ fn count_passed(outcomes: List(model.VerdictOutcome)) -> Int {
   list.count(outcomes, fn(each) { each == model.VerdictPassed })
 }
 
-/// A live run with no change passes on most plans, so `auto` is reachable.
-/// Measured on this seed: 261 of 300 plans pass. The floor is 240.
+/// What the interval rule alone would have decided, with the floor taken away.
+/// Counting it beside the full outcome shows what the floor changes.
+fn interval_outcomes(
+  plans: List(Plan),
+  drop: Float,
+) -> List(model.VerdictOutcome) {
+  list.map(plans, fn(plan) {
+    let assert Ok(found) = judge.judge(samples_of(plan, drop), model.Live)
+    judge.outcome_of(found.measured, found.covers, 100)
+  })
+}
+
+/// A live run with no change passes on most plans, so `auto` is reachable. The
+/// plans are a router that agrees with the labels on 75 to 100 percent of its
+/// triggers, 87.5 on average. Measured on this seed: 283 of 300 plans pass,
+/// all of them on the interval rule as well. The floor is 260.
 pub fn a_live_run_with_no_change_usually_passes_test() {
-  let outcomes = live_outcomes(plans(aa_seed, 0.1, 0.9), 0.0)
-  assert count_passed(outcomes) >= 240
+  let outcomes = live_outcomes(plans(aa_seed, 0.75, 1.0), 0.0)
+  assert count_passed(outcomes) >= 260
 }
 
 /// A thirty-point drop in a live run of thirty triggers, three trials each,
@@ -372,37 +386,130 @@ pub fn a_live_run_with_no_change_usually_passes_test() {
 /// recorded arm is a single decision per trigger. The instrument's own test
 /// reaches 95 percent with three trials on both arms. A pass therefore also
 /// needs the interval to stay above `judge.max_bound_points`, and with that
-/// 13 of 300 plans pass. The ceiling is 30.
+/// 13 of 300 plans pass. The ceiling is 30. A pass needs the floor as well, and
+/// the drop leaves these plans below it, so none pass.
 pub fn a_large_live_drop_rarely_passes_test() {
   let large = plans(6002, 0.35, 0.95)
-  assert count_passed(live_outcomes(large, 0.3)) <= 30
+  assert count_passed(interval_outcomes(large, 0.3)) <= 30
+  assert count_passed(live_outcomes(large, 0.3)) == 0
   assert count_harmed(live_verdicts(large, 0.3)) >= 150
 }
 
-/// A fifteen-point drop sits inside the interval of a run this size. On this
-/// seed 109 of 300 plans pass and 54 read `Harmed`. This is why a pass rules
-/// out a large regression and does not show parity. The floor is 60 passes.
+/// A fifteen-point drop sits inside the interval of a run this size. From a
+/// router that agrees on 80 to 100 percent of triggers, 124 of 300 plans pass
+/// the interval rule and 96 also reach the floor, and 163 read `Harmed`. This
+/// is why a pass rules out a large regression and does not show parity. The
+/// floor is 60 passes, and `Harmed` is held under 200.
 pub fn a_small_live_drop_often_passes_test() {
-  let small = plans(6003, 0.3, 0.9)
+  let small = plans(6003, 0.8, 1.0)
+  assert count_passed(interval_outcomes(small, 0.15)) >= 100
   assert count_passed(live_outcomes(small, 0.15)) >= 60
-  assert count_harmed(live_verdicts(small, 0.15)) <= 100
+  assert count_harmed(live_verdicts(small, 0.15)) <= 200
+}
+
+/// The case the floor is for. A router that agrees with the labels on about
+/// half the triggers, and did so when it was recorded, shows no change on
+/// either arm. The interval rule passes 249 of 300 such plans. The floor
+/// fails all of them, and fails nearly all of the plans at 65 percent. A
+/// router at 85 percent still passes on 278 of 300.
+pub fn the_floor_fails_a_router_that_is_wrong_on_both_arms_test() {
+  let guessing = plans(6004, 0.45, 0.55)
+  assert count_passed(interval_outcomes(guessing, 0.0)) >= 200
+  assert count_passed(live_outcomes(guessing, 0.0)) == 0
+  let poor = plans(6004, 0.6, 0.7)
+  assert count_passed(live_outcomes(poor, 0.0)) <= 20
+  let good = plans(6004, 0.8, 0.9)
+  assert count_passed(live_outcomes(good, 0.0)) >= 250
 }
 
 pub fn the_outcome_needs_an_unharmed_verdict_and_a_bounded_drop_test() {
   let within = model.Covers(model.Live, 30, 3, 5, 25)
-  assert judge.outcome_of(stat.Underpowered(0.25, 100, "x"), within)
+  assert judge.outcome_of(stat.Underpowered(0.25, 100, "x"), within, 100)
     == model.VerdictPassed
   assert judge.outcome_of(
       stat.Indistinguishable(0.0, #(-0.2, 0.2), 0.9, 0.2),
       within,
+      100,
     )
     == model.VerdictPassed
   let wide = model.Covers(..within, bound_points: 60)
-  assert judge.outcome_of(stat.Underpowered(0.6, 100, "x"), wide)
+  assert judge.outcome_of(stat.Underpowered(0.6, 100, "x"), wide, 100)
     == model.VerdictFailed
-  assert judge.outcome_of(stat.Harmed(-0.4, #(-0.5, -0.3), 0.001, 0.2), within)
+  assert judge.outcome_of(
+      stat.Harmed(-0.4, #(-0.5, -0.3), 0.001, 0.2),
+      within,
+      100,
+    )
     == model.VerdictFailed
-  assert judge.outcome_of(stat.Incomplete("x"), within) == model.VerdictFailed
+  assert judge.outcome_of(stat.Incomplete("x"), within, 100)
+    == model.VerdictFailed
+}
+
+/// A comparison cannot see a candidate that is as wrong as the recording was.
+/// With no change, no drop and an interval inside the bound, a candidate whose
+/// agreement is below the floor still fails, and one at the floor passes.
+pub fn the_outcome_needs_the_candidate_to_agree_with_the_labels_test() {
+  let within = model.Covers(model.Live, 30, 3, 0, 0)
+  let quiet = stat.Underpowered(0.0, 100, "no spread")
+  assert judge.min_agreement_points == 75
+  assert judge.outcome_of(quiet, within, judge.min_agreement_points - 1)
+    == model.VerdictFailed
+  assert judge.outcome_of(quiet, within, judge.min_agreement_points)
+    == model.VerdictPassed
+  assert judge.outcome_of(quiet, within, 0) == model.VerdictFailed
+}
+
+/// A router that is wrong on half the triggers on both arms has not regressed,
+/// and the finding reports that agreement and fails it.
+pub fn a_candidate_that_matches_the_recording_but_not_the_labels_fails_test() {
+  let wrong_alike =
+    list.index_map(list.repeat(Nil, 30), fn(_, index) {
+      case index < 15 {
+        True ->
+          judge.Sample(TriggerId(id(index)), ShouldNotAccept, judge.Take, [
+            judge.Take,
+            judge.Take,
+            judge.Take,
+          ])
+        False ->
+          judge.Sample(TriggerId(id(index)), ShouldAccept, judge.Take, [
+            judge.Take,
+            judge.Take,
+            judge.Take,
+          ])
+      }
+    })
+  let assert Ok(found) = judge.judge(wrong_alike, model.Live)
+  assert found.covers.changed == 0
+  assert found.covers.bound_points == 0
+  assert found.agreement_points == 50
+  assert found.outcome == model.VerdictFailed
+}
+
+/// The figure is rounded down, so a run on the line is not counted in: 74 of
+/// 99 trials is 74.7 points and reads 74.
+pub fn agreement_is_rounded_down_test() {
+  let samples =
+    list.index_map(list.repeat(Nil, 33), fn(_, index) {
+      let trials = case index < 25 {
+        True -> [judge.Take, judge.Take, judge.Take]
+        False -> [judge.Pass, judge.Pass, judge.Pass]
+      }
+      judge.Sample(TriggerId(id(index)), ShouldAccept, judge.Take, trials)
+    })
+  let assert Ok(found) = judge.judge(samples, model.Live)
+  assert found.agreement_points == 75
+  let one_short =
+    list.index_map(samples, fn(each, index) {
+      case index == 24 {
+        True ->
+          judge.Sample(..each, candidate: [judge.Take, judge.Take, judge.Pass])
+        False -> each
+      }
+    })
+  let assert Ok(near) = judge.judge(one_short, model.Live)
+  assert near.agreement_points == 74
+  assert near.outcome == model.VerdictFailed
 }
 
 // --- the pin and the gate -----------------------------------------------------
