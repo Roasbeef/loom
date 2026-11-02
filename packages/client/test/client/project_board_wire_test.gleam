@@ -45,6 +45,7 @@ fn start(name: String) -> project_host.Handle {
       start_session: fn(request) { Ok("session-" <> request.key) },
       open_session: fn(_) { Ok(Nil) },
       stop_session: fn(_) { Ok(Nil) },
+      release_worktree: fn(_) { Ok(project_host.Removed) },
       endpoint_of: fn(session) {
         Ok(peer_mail.Endpoint(session, fn(_) { Ok(json.Null) }))
       },
