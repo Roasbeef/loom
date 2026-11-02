@@ -1,6 +1,6 @@
 # Project mode
 
-Project mode lets one long-lived router session decide what becomes work for a repository, and runs each piece of work in its own ordinary session. This document describes who owns which state, which process touches it, and how a request moves from a post or a GitHub comment to a durable result. It reflects the code at `be5a7b58e` on `project/super-agent-mode`.
+Project mode lets one long-lived router session decide what becomes work for a repository, and runs each piece of work in its own ordinary session. This document describes who owns which state, which process touches it, and how a request moves from a post or a GitHub comment to a durable result. It reflects the code on `project/super-agent-mode` as of draft PR #1164.
 
 For why the design has this shape, see the [design note](../design-notes/project-mode.md). For the wire formats, see [protocol-change/106](../../protocol-change/106-project-mode.md) and section 3.32 of [client-protocol.md](../client-protocol.md). For the sessions a project is built from, see [sessions.md](sessions.md), and for the instrument behind a verdict, see [evaluation.md](evaluation.md).
 

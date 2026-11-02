@@ -1,6 +1,6 @@
 # Project mode: one agent for a repository, many sessions underneath
 
-Status: **proposed, nothing built.** The owner asked on 2026-11-01 for a version
+Status: **built on draft PR #1164, not merged.** [docs/architecture/project-mode.md](../architecture/project-mode.md) describes the code as it stands. The owner asked on 2026-11-01 for a version
 of DeepSeek's [Super-agent design](https://github.com/deepseek-ai/dsh-superagent-prototype)
 as a default mode of Loom, and said to aim higher than the prototype. The owner
 accepted the five decisions in [section 2](#2-decisions-already-made). The wire and

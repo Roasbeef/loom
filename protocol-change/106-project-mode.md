@@ -1,8 +1,8 @@
 # protocol-change/106: projects, tickets and the trigger origin
 
-**Status**: PROPOSED 2026-11-01. The owner accepted the design's five decisions
-([docs/design-notes/project-mode.md](../docs/design-notes/project-mode.md)); this
-proposal's formats aren't yet accepted, and nothing is built.
+**Status**: PROPOSED 2026-11-01, built on draft PR #1164. The owner accepted the design's
+five decisions ([docs/design-notes/project-mode.md](../docs/design-notes/project-mode.md)); the
+formats are accepted when that PR merges.
 **Affects**: the core `Origin` type (Part 1.1) by one variant; the client control
 protocol (Part 1.6) by new `projects.*` commands; `loom.toml` by
 `[project]`; the catalogue by `catalogue_projects`; a new per-project ledger file.
