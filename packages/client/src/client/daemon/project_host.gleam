@@ -2291,6 +2291,8 @@ fn ticket_detail(host: Host, ticket: String) -> Result(JsonValue, Nil) {
 /// One assignment as the detail shows it. The status is the engine's three
 /// states, with how a finished session ended.
 fn assignment_json(assignment: state.Assignment) -> JsonValue {
+  // The wire spells a finished session by how it ended, so a client can tell a
+  // crash from an exit without a second field.
   let status = case assignment.status {
     state.AssignmentPending -> "pending"
     state.AssignmentRunning -> "running"
@@ -2311,8 +2313,11 @@ fn assignment_json(assignment: state.Assignment) -> JsonValue {
 /// The ticket's inputs: the triggers on its opening thread, oldest first and
 /// at most `input_limit` of the newest.
 fn inputs_json(host: Host, ticket: Ticket) -> List(JsonValue) {
+  // The inputs are the messages on the thread the ticket opened on. A ticket
+  // whose opening message or thread the engine no longer holds has none.
   let entries = case dict.get(host.engine.triggers, ticket.origin) {
     Ok(origin) ->
+      // The thread is looked up by the id the opening message carries.
       case dict.get(host.engine.threads, origin.trigger.thread) {
         Ok(thread) -> thread.entries
         Error(Nil) -> []
@@ -2335,6 +2340,9 @@ fn input_json(
   ticket: Ticket,
   entry: model.ThreadEntry,
 ) -> JsonValue {
+  // The gate's reception decides first, because a message it did not admit
+  // was never queued for the worker. After that, a failed delivery outranks a
+  // waiting one.
   let delivery = case
     entry.reception,
     list.contains(ticket.failed_inputs, entry.trigger),
@@ -2346,6 +2354,8 @@ fn input_json(
     model.Received, False, False -> "delivered"
   }
 
+  // The source, actor and text come from the host's record of the message, and
+  // are left out together when that record is missing.
   let described = case dict.get(host.texts, entry.trigger.value) {
     Ok(found) -> [
       #("source", json.String(found.source)),

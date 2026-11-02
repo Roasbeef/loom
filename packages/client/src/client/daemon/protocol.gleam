@@ -1461,6 +1461,7 @@ fn question_seq_field(
 ) -> Result(Int, String) {
   use value <- result.try(required(fields, "seq"))
 
+  // Only a nonnegative integer can echo a sequence number the daemon assigned.
   case value {
     json.Int(seq) if seq >= 0 -> Ok(seq)
     _other -> Error("expected a nonnegative question sequence number")
