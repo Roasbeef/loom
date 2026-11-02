@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-packages=(host core storage session machine prompt statem statem_parallel evalstat gepa session_view web_view web_client web_mermaid telemetry runtime provider broker executor mcp lsp tools cap ext codemode events harness client tui conformance eval lint sandbox)
+packages=(host core storage session machine prompt statem statem_parallel evalstat gepa session_view web_view web_client web_mermaid telemetry runtime provider broker executor mcp lsp tools cap ext codemode events harness client tui conformance eval lint sandbox vmm)
 targets=("${@:-${packages[@]}}")
 
 if [ $# -eq 0 ]; then
@@ -52,7 +52,7 @@ for pkg in "${targets[@]}"; do
 done
 
 for pkg in "${targets[@]}"; do
-  if [ "$pkg" = "sandbox" ]; then
+  if [ "$pkg" = "sandbox" ] || [ "$pkg" = "vmm" ]; then
     echo "==> $pkg (Go)"
     # Capture the listing directly because macOS wc pads a zero count with
     # spaces. An assignment preserves gofmt's failure status under set -e,

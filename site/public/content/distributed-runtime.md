@@ -45,7 +45,7 @@ loom distribution show out              # print the deployment, with no secrets
 loom distribution install box.loombundle    # on each machine, install its bundle
 ```
 
-`install` prints the command that starts the daemon with `LOOM_DISTRIBUTION_OPTFILE` set, and a plain `loomd` does not start distribution. The orchestrator also needs `[models]` and `[roles]` as for any session. A plan lists each node, its role and its Erlang node name (`name@host`, with a dot in the host). An executor also lists its workspaces, each a short name and an absolute path on that machine. `provision` writes one bundle per node. A bundle holds the node's private key and the shared cookie, so copy each to its machine over a channel you trust. `install` puts the certificates in place and merges the role tables into `loom.toml`.
+`install` prints the command that starts the daemon with `LOOM_DISTRIBUTION_OPTFILE` set, and a plain `loomd` does not start distribution. A daemon that `loom` starts gets the variable and the options file without any step from you. The orchestrator also needs `[models]` and `[roles]` as for any session. A plan lists each node, its role and its Erlang node name (`name@host`, with a dot in the host). An executor also lists its workspaces, each a short name and an absolute path on that machine. `provision` writes one bundle per node. A bundle holds the node's private key and the shared cookie, so copy each to its machine over a channel you trust. `install` puts the certificates in place and merges the role tables into `loom.toml`.
 
 Then create a remote session from the orchestrator:
 

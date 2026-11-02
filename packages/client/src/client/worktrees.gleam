@@ -92,6 +92,8 @@ pub type Config {
     helper_path: String,
     /// Enforcement strictness for every Git call.
     demand: EnforcementDemand,
+    /// The node's distribution key and cookie, masked from every Git call.
+    credentials: List(String),
     /// Where reconciliation and closes report.
     logger: Logger,
   )
@@ -242,6 +244,7 @@ pub fn start(
           helper_path: config.helper_path,
           scratch: state_root <> "/git",
           state_root:,
+          credentials: config.credentials,
           demand: config.demand,
         )),
       )

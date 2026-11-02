@@ -118,6 +118,7 @@ import broker/exec.{type EnforcementDemand}
 import broker/policy
 import client/catalog
 import client/codemode as codemode_wiring
+import client/distribution
 import client/evolution/identity as evolution_identity
 import client/evolution/machine/local
 import client/evolution/record
@@ -192,6 +193,10 @@ pub type Machine {
     /// The `[mcp.<name>]` servers this executor can run. A session's attach
     /// names the ones its orchestrator expects here, and only those start.
     mcp_servers: List(catalog.McpServer),
+    /// This node's distribution secrets, its TLS key and its cookie, which
+    /// every jailed child has masked. Empty for a daemon with no
+    /// `[distribution]` table.
+    credentials: List(String),
     /// Where builds and closes report.
     logger: Logger,
   )
@@ -252,6 +257,11 @@ pub fn machine(
     catalog.parse_mcp(text) |> result.map_error(named),
   )
   use helper_path <- result.try(find_helper(flags.helper))
+  use credentials <- result.try(
+    distribution.parse(text)
+    |> result.map(node_credentials)
+    |> result.map_error(named),
+  )
 
   // Each failed entry is one warned line, never a refused start: a credential
   // this machine's tools may never need must not stop the executor.
@@ -290,8 +300,22 @@ pub fn machine(
     secrets: secrets.store(resolved, beneath: secret.env()),
     home: workspace_policy.home_directory(),
     mcp_servers:,
+    credentials:,
     logger:,
   ))
+}
+
+/// The files of this node's distribution identity a jailed child must not
+/// read: the private key and the cookie. The certificates are public.
+fn node_credentials(config: Option(distribution.Config)) -> List(String) {
+  // A daemon with no [distribution] table holds no node identity to mask.
+  case config {
+    Some(config) -> {
+      let files = distribution.credential_files(config)
+      [files.key, files.cookie]
+    }
+    None -> []
+  }
 }
 
 /// Starts what the configured worktree workspaces need: the sandboxed Git and a
@@ -317,6 +341,7 @@ pub fn worktrees_of(
       ledger_path: ledger_path(machine.state_root),
       helper_path: machine.helper_path,
       demand: machine.demand,
+      credentials: machine.credentials,
       logger: machine.logger,
     ),
     configured,
@@ -578,6 +603,7 @@ fn start(
     |> workspace_policy.admitting_config_mounts(machine.workspace.mounts)
     |> workspace_policy.protecting_state_root(machine.state_root)
     |> workspace_policy.protecting_blobs(blob_root)
+    |> workspace_policy.protecting_node_credentials(machine.credentials)
     |> protecting_siblings(machine.state_root, custody)
     |> workspace_policy.protecting_evolution(evolution_root(machine.state_root))
   use prepared <- result.try(

@@ -7,6 +7,11 @@ on:
         description: Captured main commit for an immutable nightly release.
         required: true
         type: string
+      vmm_assets:
+        description: The caller's vmm-assets artifact holds the microVM files to publish with a nightly.
+        required: false
+        default: false
+        type: boolean
   push:
     tags: ['v*']
   workflow_dispatch:
@@ -141,6 +146,16 @@ jobs:
         with:
           pattern: release-*
           path: candidates
+      # The microVM files are not candidates: they are not built twice and the
+      # comparison above never sees them. They come from the nightly's own
+      # vmm-release run, are published in the creating command below because an
+      # immutable release takes no asset afterwards, and are present only when
+      # that run succeeded.
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        if: ${{ inputs.vmm_assets }}
+        with:
+          name: vmm-assets
+          path: vmm
       - name: Compare and bind all release assets
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
@@ -155,6 +170,7 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           SOURCE_COMMIT: ${{ needs.prepare.outputs.commit }}
           NIGHTLY_COMMIT: ${{ inputs.source_commit }}
+          VMM_ASSETS: ${{ inputs.vmm_assets }}
         run: |
           set -euo pipefail
           if [ -n "$NIGHTLY_COMMIT" ]; then
@@ -166,4 +182,14 @@ jobs:
             args=(--draft --verify-tag --title "Loom $RELEASE_TAG" --notes-file docs/release-notes.md --generate-notes)
             if [[ "$RELEASE_TAG" == *-* ]]; then args+=(--prerelease); fi
           fi
-          gh release create "$RELEASE_TAG" "${args[@]}" upload/*
+          files=(upload/*)
+          if [ "$VMM_ASSETS" = true ]; then
+            [ -n "$NIGHTLY_COMMIT" ]
+            for asset in go-microvm-runner-darwin-arm64 \
+                         libkrunfw-landlock-darwin-arm64.5.dylib \
+                         vmm-SHA256SUMS; do
+              [ -f "vmm/$asset" ]
+            done
+            files+=(vmm/*)
+          fi
+          gh release create "$RELEASE_TAG" "${args[@]}" "${files[@]}"

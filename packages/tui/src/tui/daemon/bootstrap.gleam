@@ -23,7 +23,10 @@ import weft/poll
 /// Trusted executable and arguments resolved outside the workspace.
 pub type Launch {
   Launch(
-    /// An absolute executable selected by the installed discovery ladder.
+    /// An absolute executable selected by the installed discovery ladder, or
+    /// `/usr/bin/env` when the launch adds environment variables, in which
+    /// case the first arguments are the assignments and that executable follows
+    /// them (`tui/distribution_launch.command`).
     executable: String,
     /// Only global daemon flags; no session database or workspace token.
     arguments: List(String),

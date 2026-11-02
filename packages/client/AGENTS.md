@@ -26,6 +26,186 @@ returning the existing error, because EUnit truncates a failed binary pattern.
 
 # client
 
+## Standing microVM guest (`loom vm`)
+
+`client.gleam` dispatches `loomd vm setup | up | down | status | logs | list | rm |
+sync` to `client/vm_cli`, and `loom vm …` forwards there (`tui.gleam`, `Forward(verb: "vm", …)`, with a
+private copy of the usage text that `scripts/cli_help_test.sh` compares).
+`client/vm_spec` holds every decision that needs no effect: argument parsing,
+the artifact manifest decoder and revision check, the two-node
+`distribution_plan.Plan`, the guest's `loom.toml`, the `loom-vm run` and `cp`
+argument lists, `scrub_git_config`, the pid-file codec, the `epmd -names`
+reader and the daily verbs' decisions (`printable`, the checkouts record,
+`fetch_arguments`, `bundle_arguments`, `unpushed_branches`, `read_enrolment`,
+`plan_teardown`). `client/vm_cli` performs them with `distribution_provision`,
+`distribution_install`, `host/bootstrap` (`spawn_server`, `process_identity`,
+`reserve_loopback_port`), `ffi_os.run_capture` for `cp`, `chmod`, `kill`, `ps`,
+`uname`, `git` and `epmd`, `host/access` (`raw_request`, `execute`) for the
+daemon's `status` and `daemon.shutdown`, and `weft/poll`. It adds no FFI. Tests: `client/vm_cli_test`,
+which covers the pure decisions, and `daemon_shipped_microvm_test`, the live
+boot, which needs the built artifacts. The latter assembles a build tree of
+links, runs `loom-vm setup --from-build` into a private `LOOM_VM_HOME`, and
+drives `vm up`, a scripted turn through an orchestrator on the configuration
+`up` wrote, `vm down`, `vm status`, `vm up` again and a second turn. It checks
+the GitHub placeholder, that a fake token given as `LOOM_VM_GITHUB_TOKEN` is
+nowhere under the guest's files, that the guest's root is a directory and not a
+link to the export, and, with `LOOM_VM_GITHUB_LIVE=1`, that `api.github.com`
+answers `/zen` 200 and `/user` 401 through the proxy. The first `up` also gives
+`--allow deb.debian.org` and `--provision` of a script that appends a line to a
+file in the guest root: a jailed call reads it, reaches the host and is refused
+another, `up --provision` on the provisioned guest is refused naming `--fresh`,
+and the resume (no flags) keeps the allowed host and leaves one line in the file.
+The same run then drives `vm list`, `vm logs`, a commit made by a jailed call
+that arrives through `vm sync` as `refs/remotes/vm/*` (in the checkout `up`
+recorded and in a `--checkout` scratch one), a hostile `.git/config` and hook
+planted by a jailed call whose marker never appears on the host after `vm sync`
+(with a control repository showing the marker would be writable), `vm sync
+--to-guest` read back by a jailed `git fetch`, a refused second guest, and `vm rm`
+of the idle and failing guests under the isolated home.
+
+`logs`, `list`, `rm` and `sync` read the guest's root, which model-influenced code
+writes, so they treat it as untrusted: no `git` with a working directory in the
+root (`sync` fetches into the developer's checkout with the copy as remote,
+`vm_spec.fetch_arguments`), reads through `plain_chain` (each component a real
+directory, no link), writes
+through `make_inside` and a rename, and guest text printed through
+`vm_spec.printable`. `up` records each copy's developer checkout in
+`<vm home>/<name>/checkouts` (`vm_spec.decode_checkouts`), outside the root, for
+`sync`; `--checkout PATH` overrides it and is required for a guest with no record.
+`rm` removes `[executors.<name>]`, and `[distribution]` and the home's cookie only
+when they are this guest's and no other executor remains
+(`distribution_install.without_tables`, `vm_spec.plan_teardown`), refuses a
+running guest, and without `--yes` only lists the workspaces. `sync` needs a
+Git release with upload-pack's lazy-fetch refusal, 2.45.1 or a backport
+(`vm_spec.check_git_version`) and runs it with
+`GIT_NO_LAZY_FETCH=1`, because the fetch's `-c` settings do not reach
+upload-pack; `--to-guest` bundles `--branches`; `logs` caps its output at 4 MiB;
+and `stage_node` registers every workspace the `checkouts` record names.
+
+`--allow HOST` and `--provision SCRIPT` are decided in `vm_spec`: `valid_host`
+(the `machine.Spec` rule, refused in `parse`), `encode_allow`/`decode_allow` for
+`<vm home>/<name>/allow`, `effective_allow` (given replaces recorded, `--fresh`
+clears), `provision_plan` (stage, retry the staged script, skip, or refuse a
+script on a provisioned resume) and `boot_budget_ms` (120 s, or 1800 s when a
+script runs). `vm_cli` records the list in `stage`, copies the script to
+`<root>/etc/loom-vm/provision` and reads the marker `<root>/etc/loom-vm/provisioned`.
+`LOOM-PROVISION-FAILED` on the console fails `up`.
+
+A kept root cloned from other artifacts than the manifest names is upgraded in
+place (`vm_spec.root_step`, decided from `RootLayout`, the host's
+`<vm home>/<name>/root-revision` record and the manifest revision; only a `dev`
+manifest keeps a stale root, and a root recorded `dev` under a release manifest
+upgrades). `vm_cli.build_next_root` clones into
+`<vm home>/<name>/root.next`, then moves `srv/workspaces` with one `rename`
+(refused naming `--fresh` when it or a parent is a link), the last fallible
+step, refused naming `--fresh` when it fails; `clear_workspaces_slot` removes any
+`srv/workspaces` the clone brought first. `swap_roots` then deletes the root and
+renames `root.next` over it. `root.next/srv/workspaces` existing means the rename
+completed and the next `up` finishes the swap (`FinishUpgrade`); the guest-written
+old root is never consulted. `up` prints `upgrade_line` in `prepare_root`, just
+before `build_next_root`. `state.img` is kept. The host keeps the `--provision` script at
+`<vm home>/<name>/provision` (`record_provision_copy`; `--fresh` without the flag
+clears it) and a new root is provisioned from it (`vm_spec.new_root_provision`),
+never from the root; an unfinished script is retried from it too
+(`provision_plan`'s `kept`), and the copy is written by temporary file and rename.
+`stranded_in` lists processes; `refuse_stranded` refuses `up` and `rm`, `down`'s
+not-running arm fails and `status` adds a `runner:` line when a runner survives
+whose command starts with the manifest's runner path (`Some`; without a readable
+manifest only the JSON matches and the text says "may be") and whose JSON names
+the guest's root or state disk (`vm_spec.stranded_runners`); none stops anything.
+
+`setup` runs `install.bundled_launcher()` (`bin/loom-vm` in the server tree)
+with `setup --home <vm home> --release TAG` (or `--from-build`), where with no
+flag the tags are `vm_spec.release_candidates`: `commit-<commit>` for a 40-hex
+commit, then `v<version>`, each run with `--revision <commit>` so `loom-vm`
+refuses an image of another commit before it writes anything (`vmm-release.yml`
+does not publish `commit-*` tags yet). A failed attempt changes nothing, so
+nothing is restored. A
+development build (`build_identity` version `dev`) has no release and is
+refused naming `make vmm-install-dev`; `up` with no manifest runs the same
+setup first for a release build. A linked worktree (`.git` a file) is copied as
+a plain tree, then `own_repository` clones it `--no-checkout --no-local`
+into `<root>/srv/loom-node/git-staging`, moves that `.git` over the copy's,
+restores `HEAD` and `origin` from the worktree (`vm_spec.head_target`,
+`head_arguments`, `origin_arguments`), resets the index, and removes the copy if
+any copy step fails. At the end, when the deployment is in the exact default
+`loom.toml` (a first `up` or a resume), `up` asks the user's daemon how many
+sessions it holds. `vm_spec.daemon_step` decides: a count of zero means
+`daemon.shutdown` and a note that the next `loom` starts it; any session, or no
+count, means no stop and a `kill -TERM <pid>` line. `daemon_shipped_microvm_test`
+proves the idle stop on its isolated home.
+
+Invariants that break things when violated:
+
+- A guest's files all live under `<vm home>/<name>/`: `deploy/`, `orch/`,
+  `root/`, `root.next/` (only during an upgrade), `state.img`, `allow`, `checkouts`,
+  `root-revision`, `provision`, `loom-vm.pid` and `loom-vm.log`. `LOOM_VM_HOME` overrides
+  `~/.loom/vm`.
+- `up` reads the bundles in `deploy/` again instead of minting new ones, so the
+  orchestrator's installed pins keep matching the executor's certificate.
+- The install is `RefuseExisting`: a `loom.toml` that holds another
+  deployment, or a cookie that differs, is refused and never replaced.
+- The manifest's revision must be `dev` or the running build's commit.
+- `up` never stops a daemon that holds a session, and never starts one.
+- A linked worktree's copy never keeps a `.git` file or an `origin` that names
+  a host path; any failed copy step removes the copy, because a resumed `up`
+  keeps a copy that exists.
+- The pid file holds the process's birth marker, and `down` signals a pid only
+  while it still has that marker.
+- The console log is truncated before each launch. It is appended to, and the
+  `LOOM-EXECUTOR-READY` of an earlier run would satisfy the wait.
+- `--timeout 0` is passed because `loom-vm run` stops a guest after ten
+  minutes by default, and zero means until stopped.
+- A guest that ran before keeps `root/`, its workspace copies and `state.img`
+  unless `--fresh`. `up` clones the export from the manifest's path resolved
+  through symbolic links, because `cp -R` copies a link as a link and the guest
+  would otherwise boot the export itself.
+- `--allow` never widens `--inject-host`: `launch_arguments` passes no
+  `--inject-host`, and the allowed hosts are reachable, never credentialed.
+- A host write under `root/` goes through `make_inside`, which checks each
+  directory's canonical path against the canonical root and refuses a link the
+  guest left (naming `--fresh`). Never `create_directory_all` under the root.
+- A host write that moves workspaces between roots is one `rename` of `srv/workspaces`,
+  after `plain_chain` found it and its parents real directories.
+- Only `--provision` supplies a script. The workspace is never searched, and a
+  script on a provisioned resume is refused rather than run again.
+- Nothing the host runs after a guest has booted uses a directory inside `root/`
+  as Git's working directory, and nothing reads `root/` through a link or prints
+  its text without `vm_spec.printable`.
+- A `checkouts` record names a copy made in the current root: replacing the root
+  removes it, and a kept copy is not re-recorded.
+- The workspace copy is made owner-writable. The guest's init cannot give a
+  file to the `loom` user when the host user cannot write it, and Git's object
+  files are read-only.
+
+See `docs/architecture/microvm.md`, "A standing guest".
+
+## Node credential masks on an executor
+
+`executor_plane.machine` parses its own `[distribution]` table and keeps the
+node's TLS key and cookie in `Machine.credentials`. The executor's base policy
+adds them through `workspace_policy.protecting_node_credentials`, beside the
+state-root and blob masks, so a jailed child cannot print them into a tool
+result (ADR-022 D2 and its 2026-11-01 addendum). `worktrees.Config` and
+`worktree_git.Config` carry the same list, so the sandboxed Git that runs a
+repository's hooks during `git worktree add` masks them too. Both live outside the state
+root, which is why the state-root masks never covered them. An absent path is
+skipped, as for every conditional mask. Every jail, a host session's
+included, also masks the state root's `vm` directory, the home's `.loom/vm`
+and the home's `.erlang.cookie` (`workspace_policy.lazy_masks`,
+`node_home_masks`): `loom vm up` keeps each guest's bundles and its
+executor's key and cookie there, and the cookie is every distributed
+daemon's. A node key `loom distribution install` places outside the state
+root is still unmasked for host sessions. `loom vm up` installs a newly
+minted deployment with `listen_address = "127.0.0.1"`
+(`vm_spec.with_loopback_listener`) and, on resume, does not reinstall it.
+The line is not in the bundle, so a later `loom distribution install` into the
+same file needs `--force`, which drops it.
+`daemon_shipped_microvm_test` proves the mask from
+inside a libkrun guest it boots with `loom vm up` (see "Standing microVM guest");
+it needs `LOOM_VM`, `LOOM_VM_GUEST_ROOT`, `LOOM_VM_RUNNER`, `LOOM_VM_LIB_DIR` and
+`LOOM_VM_FIRMWARE_DIR`, and skips without them.
+
 ## Fresh history source pages
 
 `daemon/manager.collect_sources` asks the catalogue owner for `DomainSources`,
@@ -6824,7 +7004,19 @@ booted without the flags fails before any state is touched. The launcher
 -ssl_dist_optfile "$LOOM_DISTRIBUTION_OPTFILE"` to `ERL_FLAGS` when that
 variable is set and is otherwise unchanged. `daemon/distribution_cli` is
 `loomd distribution options CONFIG OUTPUT`, which writes the options file with
-mode 0600 from the same table.
+mode 0600 from the same table. The `loom` client runs that command itself and
+sets the variable when it starts a daemon (`tui/distribution_launch`), so a
+change to this command's arguments or output is a change to the client's
+launcher; its stand-in test and the shipped-daemon fixtures both depend on it.
+
+`[distribution] listen_address` (protocol-change/106) is an IPv4 loopback
+address, parsed by `distribution.parse_loopback` into four octets and held in
+`Config.listen_address`. `start` passes it with `listen_port` as one
+`ffi_distribution.Listen` and the FFI's `set_listen` applies it as the kernel
+parameter `inet_dist_use_interface` before `net_kernel:start/2`. It is not in the
+options file or the boot-argument comparison, which stay exact. The
+`listen_loopback` and `listen_all` scenarios read a table through the production
+reader and inspect the address the listener socket is bound to.
 
 `test/client/distribution_test.gleam` covers configuration refusals in process
 and drives `test/client_distribution_fixture_ffi.erl`, which mints certificates

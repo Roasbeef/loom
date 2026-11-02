@@ -130,3 +130,17 @@ pub fn executor_is_forwarded_with_its_arguments_untouched_test() {
   assert tui.server_arguments(["help", "executor"])
     == Some(["executor", "--help"])
 }
+
+pub fn vm_is_forwarded_with_its_arguments_untouched_test() {
+  assert tui.server_arguments([
+      "vm",
+      "up",
+      "--workspace",
+      "/src/proj",
+      "--name",
+      "dev",
+    ])
+    == Some(["vm", "up", "--workspace", "/src/proj", "--name", "dev"])
+  assert tui.server_arguments(["vm", "status"]) == Some(["vm", "status"])
+  assert tui.server_arguments(["help", "vm"]) == Some(["vm", "--help"])
+}

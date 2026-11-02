@@ -91,6 +91,7 @@ fn machine(state: String, seed: Option(String)) -> executor_plane.Machine {
     home: None,
     logger: log.discard(),
     mcp_servers: [],
+    credentials: [],
   )
 }
 

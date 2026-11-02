@@ -1419,6 +1419,30 @@ pub fn state_root_mask_candidates(state_root: String) -> List(String) {
   list.append(established_masks(state_root), lazy_masks(state_root))
 }
 
+/// The base policy with this node's own distribution secrets protected: the
+/// private key of its TLS leaf and its Erlang cookie (ADR-022 D2).
+///
+/// A distributed daemon keeps both outside its state root, at the paths its
+/// `[distribution]` table names, so the state-root masks do not reach them.
+/// Under the default host read scope a jailed `bash` could print either into
+/// a tool result, which the model provider then receives, and either one is
+/// enough to speak to this node's peers as this node. A path that does not
+/// exist is skipped, as `protecting` skips any absent conditional mask,
+/// because the jail refuses to mask a missing path and a distributed daemon
+/// has already read both files before any session boots.
+///
+/// ## Examples
+///
+/// ```gleam
+/// workspace_policy.protecting_node_credentials(base, ["/srv/node/key.pem"])
+/// ```
+pub fn protecting_node_credentials(
+  base: policy.SandboxPolicy,
+  paths: List(String),
+) -> policy.SandboxPolicy {
+  protecting(base, always: [], where_maskable: paths)
+}
+
 /// The base policy with the daemon's state-root secrets masked, in place
 /// of the state root itself.
 ///
@@ -1545,8 +1569,45 @@ fn lazy_masks(state_root: String) -> List(String) {
 
       // The launcher's startup lock, on `daemon.lock`'s argument.
       state_root <> "/launch.lock",
+
+      // Each standing microVM guest's directory (`loom vm up`, ADR-022):
+      // its two deployment bundles, the orchestrator's credentials, and the
+      // guest root, whose node directory holds the executor's TLS key and
+      // cookie. Either pair lets a process join this daemon's distribution
+      // as a pinned node, which is Erlang RPC on the host daemon.
+      state_root <> "/vm",
     ],
+    node_home_masks(),
   ])
+}
+
+/// The node secrets a distributed daemon keeps under the user's home rather
+/// than its state root. The cookie must be the VM's `$HOME/.erlang.cookie`
+/// (the emulator reads it from nowhere else), and `loom vm up` keeps its
+/// guests in `$HOME/.loom/vm` whatever `--state-dir` the daemon runs with.
+/// A jailed process that read the cookie and a key could connect to this
+/// daemon's distribution listener as a pinned peer.
+fn node_home_masks() -> List(String) {
+  // A daemon with no `HOME` has neither file to mask.
+  case home_directory() {
+    Some(home) -> list.append(existing_cookie(home), [home <> "/.loom/vm"])
+    None -> []
+  }
+}
+
+/// The home's cookie, only when it is already a file. A missing path under a
+/// writable root would otherwise be masked with a tmpfs, and bwrap creates
+/// the mountpoint as a directory in the real home, where it outlives the jail
+/// and breaks every later distributed boot, which reads that path as the
+/// cookie. A stray directory at `.loom/vm` has no such consequence.
+fn existing_cookie(home: String) -> List(String) {
+  let cookie = home <> "/.erlang.cookie"
+
+  // An unreadable answer is treated as no cookie: there is no file to mask.
+  case simplifile.is_file(cookie) {
+    Ok(True) -> [cookie]
+    _ -> []
+  }
 }
 
 // The whole SQLite file family beside a database: it runs in WAL mode,

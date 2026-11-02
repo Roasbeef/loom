@@ -1,5 +1,54 @@
 # Current handoff
 
+## MicroVM executor tier (issue #85)
+
+Two branches carry the tier. `microvm/libkrun-launcher` (PR #1154) is the
+first slice: the `loom-vm` launcher, the Landlock libkrunfw, the guest root,
+the executor-in-a-guest link and the node credential mask.
+`microvm/dev-experience`, cut from its tip, is the developer path recorded in
+ADR-022's "developer path" addendum. Neither has a hosted CI run.
+
+- **What a developer runs:** `loom-vm setup --release TAG` (or `make
+  vmm-install-dev` from a checkout), then `loom vm up --workspace DIR`, then
+  `loom --executor vm --workspace NAME`. `loom vm down` stops the guest and
+  `loom vm status` reports it. A second `up` resumes the guest's checkout and
+  its state disk; `--fresh` starts both again. `--github gh|env|off` (default
+  `gh`) chooses the token the credential proxy injects; the guest only ever
+  holds a placeholder.
+- **Verified on an Apple Silicon Mac:** `daemon_shipped_microvm_test` drives
+  `loom vm up`. An orchestrator on the host runs a scripted turn whose
+  jailed `bash` call shows the Landlock guest kernel and loom-exec, cannot
+  read the node's cookie, and sees only the placeholder token. With
+  `LOOM_VM_GITHUB_LIVE=1`, GitHub answers `/zen` with 200 and the injected
+  fake token with 401 on `/user`. A host-side grep finds the fake token
+  nowhere under the guest's directory. After `down` and `up`, a new session
+  reads a file the first one wrote. A cold `up` takes about 7 s and a resume
+  about 4 s.
+- **Fixed on the way:** an executor's distribution key and cookie, and then
+  the standing guest's deployment and the home's `.erlang.cookie`, were
+  readable from host jails; all are masked now. Formatting the state disk in
+  the guest shortened its image by 64 KiB, which refused the next boot;
+  `loom-vm` restores the size. A symlinked guest root was booted in place of
+  a private copy.
+- **Ruled (owner, 2026-11-01):** a standing guest run by `loom vm`, separate
+  from the daemon; the local daemon as a loopback-bound distribution member
+  (protocol-change/106); prebuilt artifacts on GHCR and the release; the
+  agent pushes from the guest through the credential proxy, superseding
+  #214's no-injection line and #1137's owner-pushes ruling for this tier; a
+  persistent state disk per guest. `loom vm sync` is #1155.
+- **Unverified:** `.github/workflows/vmm-release.yml` has never run; the GHCR
+  package must be made public once by hand after the first publish;
+  `setup --release` has never downloaded a real release; Linux/KVM has not
+  booted; no real push with a real token has been made.
+- **Open:** a pool driver and a guest per session; the remaining #214 pieces
+  (proxy as the only egress path, per-call allowlists, an enforcement-report
+  entry, a self-test probe) before `narrow_unenforceable` stops downgrading
+  for guests; whether the proxy should refuse private address ranges, which
+  would break a GitHub Enterprise allowlist; a node key installed by `loom
+  distribution install` outside the state root is still unmasked for host
+  sessions (the cookie is masked); the Linux half of the firmware build and a
+  Linux runner download; Firecracker.
+
 ## JSON string cursor allocation
 
 The [profile follow-up](review/json-cursor-2026-10-30.md) keeps one origin cursor
@@ -93,6 +142,29 @@ directions and their precise limits. One independent pass and its native-test
 delta check found no actionable issues. Full static gates pass; broad and
 exact-head hosted/Linux validation remain required. TLS launch preflight is the
 following slice; no live upgrade is authorized.
+
+## TLS launch and loopback listener (issue #1137, branch `dist/launcher-optfile`)
+
+Two edges of distributed startup are closed by
+[protocol 106](../protocol-change/106-distribution-launch-and-listen-address.md).
+A daemon that `loom` starts no longer needs `LOOM_DISTRIBUTION_OPTFILE`: when its
+configuration has a `[distribution]` table the client renders the options file into
+the state root at every start and sets the variable for the child, and an
+explicit variable still wins (`tui/distribution_launch`). A daemon started by hand
+through `bin/loomd` still needs the variable; that was a ruling, not an omission,
+and the reasons are in the architecture document ("Booting a distributed VM").
+`[distribution] listen_address` binds the listener to an IPv4 loopback address,
+for an orchestrator nobody dials; it is not in the options file, so the boot
+comparison is unchanged. The live check (isolated home, static two-node plan, a
+daemon started by `loom sessions list`) showed the node in `epmd -names` and its
+listener on `*:14471`, then on `127.0.0.1:14471` with the key set.
+
+Left open: `loom distribution install` treats a table with an extra
+`listen_address` as a different table and refuses without `--force`, which drops
+the key; plans and bundles do not carry it. In the client suite on macOS,
+`start_without_an_epmd_reports_the_port_not_credentials_test` fails when the whole
+`client@distribution_test` module runs and passes alone, with or without this
+branch.
 
 ## Distributed runtime experience (issue #1137)
 

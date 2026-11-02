@@ -791,15 +791,29 @@ The output must contain `name exec at port 9201`.
 
 #### Keeping a dial-only orchestrator off the network
 
-**Not run.** An orchestrator that never receives connections still opens a
-distribution listener on every address unless you tell it otherwise. If it can
-skip the listener (the Linux recipe above does), it should. If it must keep one, as
-the Mac in direction A does, restrict it to loopback by adding the kernel option
-to `ERL_FLAGS`:
+An orchestrator that never receives connections still opens a distribution
+listener on every address unless you tell it otherwise. If it can skip the
+listener (the Linux recipe above does), it should. If it must keep one, as the Mac
+in direction A does, restrict it to loopback with one key in its `[distribution]`
+table:
 
-```sh
-ERL_FLAGS="-kernel inet_dist_use_interface {127,0,0,1}"
+```toml
+[distribution]
+listen_address = "127.0.0.1"
 ```
+
+**Verified** on macOS (2026-11-01) under an isolated home with a two-node static
+plan, the daemon started by `loom sessions list` with no
+`LOOM_DISTRIBUTION_OPTFILE` set: with the key unset
+`lsof -nP -iTCP:14471 -sTCP:LISTEN` showed the listener on `*:14471`, and with it
+set the same command showed `127.0.0.1:14471`, while `epmd -names` still listed
+the node. Only an IPv4 loopback address is accepted, and the executor must leave
+the key unset, because its orchestrator's connections arrive from another machine
+or from a microVM's virtual gateway. A bundle `install` that finds the table
+already carrying this key reports a different table and needs `--force`, which
+drops the key; add it again afterwards. The older way to the same result, for a
+daemon without the key, is `ERL_FLAGS="-kernel inet_dist_use_interface
+{127,0,0,1}"`.
 
 TLS, the pins and the cookie still apply to a reachable listener, so this reduces
 exposure and does not replace them. The first cross-host attempt saw the Mac
@@ -1605,8 +1619,12 @@ prints one plain line first (see below) and exits with status 1.
 **`[distribution] is configured but this VM was not booted with -proto_dist
 inet_tls`** (**Pending**). You started the daemon without
 `LOOM_DISTRIBUTION_OPTFILE`, or you started it by some route that does not use
-`bin/loomd`. Generate the options file and start through `bin/loomd` with the
-variable set. The daemon exits without opening anything.
+`bin/loomd`. A daemon that `loom` starts needs nothing from you: the client
+renders `<state>/distribution-launch.options` and sets the variable itself, unless
+your environment already names a file, which it then uses as it is (**Verified**,
+the isolated-home run in section 5). For a daemon you start yourself, generate the
+options file and start through `bin/loomd` with the variable set. The daemon exits
+without opening anything.
 
 **`... booted without -ssl_dist_optfile`, or `ERL_FLAGS` conflicts.** `ERL_FLAGS`
 must not set `-name`, `-sname`, `-setcookie` or `-ssl_dist_opt`. Remove those.

@@ -423,7 +423,7 @@ jobs:
           - bucket: fast
             packages: >-
               host core machine prompt statem statem_parallel evalstat gepa session_view web_view web_client web_mermaid telemetry provider broker executor
-              mcp lsp tools cap ext codemode harness tui lint sandbox
+              mcp lsp tools cap ext codemode harness tui lint sandbox vmm
     steps:
       # actions/checkout v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -1323,7 +1323,7 @@ jobs:
             2>&1 | tee ../../go-jail.log
 
       - name: Skip census (go jail tests)
-        run: .github/scripts/skip_census.sh "jail (linux, go tests)" go-jail.log
+        run: LOOM_DECLARED_SKIPS=/dev/null .github/scripts/skip_census.sh "jail (linux, go tests)" go-jail.log
 
       # The ordinary tools bucket has no bubblewrap, so its Git worktree
       # fixture records a declared skip. Run that exact fixture here with
@@ -1388,7 +1388,7 @@ jobs:
           .github/scripts/hex_retry.sh make e2e-codemode 2>&1 | tee e2e-codemode.log
 
       - name: Skip census (end to end)
-        run: .github/scripts/skip_census.sh "jail (linux, e2e)" e2e.log e2e-codemode.log
+        run: LOOM_DECLARED_SKIPS=/dev/null .github/scripts/skip_census.sh "jail (linux, e2e)" e2e.log e2e-codemode.log
 
       # The standalone executor against this job's bwrap-bearing helper: its
       # smoke refuses a degraded result, so only a jail with bwrap can pass.
@@ -1411,7 +1411,7 @@ jobs:
             2>&1 | tee shipped-multiplayer.log
 
       - name: Skip census (shipped multiplayer)
-        run: .github/scripts/skip_census.sh "jail (linux, shipped multiplayer)" shipped-multiplayer.log
+        run: LOOM_DECLARED_SKIPS=/dev/null .github/scripts/skip_census.sh "jail (linux, shipped multiplayer)" shipped-multiplayer.log
 
       # The background-jobs fixture belongs here more than anywhere else:
       # its scenarios turn on how an unattended payload is contained, and
@@ -1433,7 +1433,7 @@ jobs:
             2>&1 | tee shipped-jobs.log
 
       - name: Skip census (shipped background jobs)
-        run: .github/scripts/skip_census.sh "jail (linux, shipped jobs)" shipped-jobs.log
+        run: LOOM_DECLARED_SKIPS=/dev/null .github/scripts/skip_census.sh "jail (linux, shipped jobs)" shipped-jobs.log
 
       # The ordinary client bucket may decline the deployment-status fixture
       # at its shared pair's enforcement probe. This job has supplied those

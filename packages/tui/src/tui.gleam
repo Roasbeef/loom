@@ -415,6 +415,7 @@ pub fn main() {
         | ["distribution", ..]
         | ["dist", ..]
         | ["executor", ..]
+        | ["vm", ..]
         | ["replay", ..]
         | ["sessions", ..]
         | ["deployment", ..]
@@ -545,6 +546,7 @@ fn help_topic(arguments: List(String)) -> Option(String) {
     Ok("evolution") -> Some(evolution_usage())
     Ok("distribution") | Ok("dist") -> Some(distribution_usage())
     Ok("executor") -> Some(executor_usage())
+    Ok("vm") -> Some(vm_usage())
     Ok("update") -> Some(update_options.usage())
     Ok("version") -> Some(version_usage())
     Ok("ui") | Ok("--ui") -> Some(ui_usage())
@@ -566,6 +568,7 @@ fn is_topic(word: String) -> Bool {
     | "distribution"
     | "dist"
     | "executor"
+    | "vm"
     | "update"
     | "version"
     | "claim"
@@ -1214,12 +1217,14 @@ fn parse_words(arguments: List(String)) -> Launch {
     ["evolution", ..rest] -> Forward(verb: "evolution", arguments: rest)
     ["distribution", ..rest] | ["dist", ..rest] -> forward_distribution(rest)
     ["executor", ..rest] -> Forward(verb: "executor", arguments: rest)
+    ["vm", ..rest] -> Forward(verb: "vm", arguments: rest)
     ["update", ..rest] -> Update(arguments: rest)
     ["help", "ext"] -> Forward(verb: "ext", arguments: ["--help"])
     ["help", "evolution"] -> Forward(verb: "evolution", arguments: ["--help"])
     ["help", "distribution"] | ["help", "dist"] ->
       Forward(verb: "distribution", arguments: ["--help"])
     ["help", "executor"] -> Forward(verb: "executor", arguments: ["--help"])
+    ["help", "vm"] -> Forward(verb: "vm", arguments: ["--help"])
     ["replay", ..rest] -> parse_replay(rest)
     ["ui", ..rest] -> view_launch(rest)
     ["sessions", ..rest] -> parse_sessions(rest)
@@ -2885,7 +2890,9 @@ fn launch_usage() -> String {
   <> "                      Provision trusted distribution between daemons\n"
   <> "                      (init, provision, install, show). `dist` is short.\n"
   <> "  executor release SESSION\n"
-  <> "                      Release a scope an executor will not reopen itself.\n\n"
+  <> "                      Release a scope an executor will not reopen itself.\n"
+  <> "  vm setup|up|down|status\n"
+  <> "                      Run a standing microVM executor.\n\n"
   <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
   <> "  --model-profile names a [profiles.<name>] table of that file whose\n"
   <> "       roles a newly created session uses; a resumed session keeps its own\n"
@@ -3106,6 +3113,107 @@ Example:
   loom dist enroll laptop2 --node loom@laptop2.example --role orchestrator --links devbox --passphrase-file ~/.loom-passphrase"
 }
 
+/// The `loom vm` help, the same text `loomd vm --help` prints.
+fn vm_usage() -> String {
+  "usage: loom vm setup [--release TAG | --from-build DIR]
+       loom vm up [--name NAME] [--workspace DIR] [--mem MIB] [--cpus N]
+                  [--config PATH] [--github gh|env|off] [--fresh]
+                  [--allow HOST]... [--provision SCRIPT]
+       loom vm down [--name NAME]
+       loom vm status [--name NAME]
+       loom vm logs [--name NAME] [--lines N]
+       loom vm list
+       loom vm rm [--name NAME] [--config PATH] [--yes]
+       loom vm sync [--name NAME] [--workspace NAME] [--checkout PATH]
+                    [--to-guest]
+
+Run one standing executor in a microVM and use it from `loom --executor`.
+
+  setup     Install the microVM artifacts the guest boots from and write their
+            manifest, with the `loom-vm` that ships beside loomd. With no flag
+            it tries the tag commit-<sha> of this build's own commit, when it
+            has one, then v<version>, and keeps the first whose guest image
+            was built from this commit. A nightly has them from the first
+            nightly that carries the workflow which publishes them; older
+            nightlies have none. --release TAG installs only that tag and
+            --from-build DIR records a build tree (packages/vmm/build). A
+            development build has no release: build the artifacts in a
+            checkout and run `make vmm-install-dev`.
+  up        Provision a two-node deployment, enroll the orchestrator in your
+            loom.toml as [executors.NAME], clone the guest root, copy the
+            workspace into it, boot the guest with `loom-vm run` and wait until
+            its executor serves. The guest keeps running after this command
+            exits. NAME defaults to vm. DIR defaults to the current directory;
+            its copy, .git included, is registered in the guest under the
+            directory's own name. Every copy an earlier up recorded stays
+            registered, so a stopped guest brought up with another DIR serves
+            both (a running guest refuses up). A linked Git worktree is copied too, and its
+            copy gets a repository of its own. With no artifacts installed it
+            first runs `setup` for this release. --mem is the guest's memory in MiB (default
+            2048) and --cpus its virtual CPUs (default 4). --config is the
+            loom.toml to enroll in (default ~/.loom/loom.toml).
+            A loom.toml that already holds a different [distribution] table is
+            refused, not replaced.
+            A guest that ran before keeps its root, the checkouts in it and its
+            state disk, so `down` and `up` resume where it stopped. --fresh
+            replaces all three.
+            --github chooses where loom-vm reads the token its credential proxy
+            injects: gh (the default) runs `gh auth token`, env reads
+            LOOM_VM_GITHUB_TOKEN, and off gives the guest no network beyond
+            the --allow hosts. The guest holds only a placeholder, never the
+            token.
+            --allow HOST adds a host to the guest's egress allowlist, on top
+            of the GitHub hosts, so a build can reach a package registry. HOST
+            is a hostname or *.domain.tld; repeat the flag for more. The list
+            is recorded and a later up with no --allow keeps it; --allow
+            replaces it and --fresh clears it. An allowed host can receive
+            anything a jailed call sends, and it is never given the GitHub
+            token.
+            --provision SCRIPT copies a script you wrote into the guest, which
+            runs it once as root before the executor starts, with its output
+            in loom-vm.log. A failing script fails up, and the next up runs it
+            again. A resume skips a script that succeeded, and refuses a new
+            one: add --fresh. Use --allow for the hosts it needs.
+  down      Stop the guest. Its root, and the checkout inside it, stay on disk.
+  status    Say whether the guest runs, where it is registered and what it
+            holds.
+  logs      Print the last lines of the guest's console log, loom-vm.log:
+            100, or --lines N, and at most the last 4 MiB of them. There is
+            no follow mode.
+  list      Print one line for each guest under the vm home: its name,
+            whether it runs, and its workspaces.
+  rm        Delete a stopped guest and undo its enrolment. It removes
+            [executors.NAME] from loom.toml (--config PATH, default
+            ~/.loom/loom.toml), and the [distribution] table and the home's
+            .erlang.cookie only when they are this guest's deployment's and no
+            other [executors.*] table remains; otherwise it leaves them and
+            says so. Every other line of loom.toml is kept. A running guest is
+            refused: run `loom vm down` first. Deleting a guest is permanent
+            and work that is not pushed is lost, so without --yes it only lists
+            the workspaces and the local branches that origin lacks.
+  sync      Fetch a workspace copy's committed work into your own checkout as
+            remote-tracking refs refs/remotes/vm/*, with no network and no
+            daemon: `loom vm up` records which checkout each copy came from,
+            and --checkout PATH names it (an older guest has no record). The
+            guest's root is untrusted, so Git runs in your checkout and only
+            reads the copy as a remote. Uncommitted edits are not fetched.
+            --workspace NAME picks the copy when the guest holds several.
+            It needs a Git with the 2024 upload-pack fix. --to-guest goes the
+            other way: it
+            bundles your checkout's local branches (not tags, remote-tracking
+            refs or the stash) into
+            /srv/host-refs/NAME.bundle in the guest and prints the jailed
+            command that fetches them as refs/remotes/host/*.
+
+The artifacts come from `~/.loom/vm/manifest.json` ($LOOM_VM_HOME overrides
+~/.loom/vm), which `loom vm setup` writes. They must be built from the release
+this loom is.
+
+Example:
+  loom vm up --workspace ~/src/proj
+  loom --executor vm --workspace proj"
+}
+
 /// Establishes and coordinates executor usage operations for the TUI runtime.
 fn executor_usage() -> String {
   "usage: loom executor release SESSION [--state-dir PATH]   (also: loomd executor release)
@@ -3154,8 +3262,8 @@ Example:
 
 /// The arguments `loom` would hand to the server for a passthrough command,
 /// or `None` when the command is the launcher's own. `loom ext` and
-/// `loom distribution` (with its `dist` shorthand) and `loom executor` are
-/// passthroughs, and the
+/// `loom distribution` (with its `dist` shorthand), `loom executor` and
+/// `loom vm` are passthroughs, and the
 /// server sees the subcommand spelled the way it spells it.
 ///
 /// ## Examples

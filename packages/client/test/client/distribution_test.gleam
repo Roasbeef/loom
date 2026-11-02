@@ -11,6 +11,7 @@ import client/tui_e2e_test.{type EunitTest, Timeout}
 import gleam/dict
 import gleam/int
 import gleam/io
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
@@ -155,6 +156,52 @@ pub fn names_paths_and_ports_are_bounded_test() {
     document("listen_port = \"9100\"\n", peer("executor@10.0.0.2", pin)),
     "distribution.listen_port must be a whole number",
   )
+}
+
+pub fn listen_address_is_a_strict_loopback_address_test() {
+  let table = fn(address: String) {
+    document(
+      "listen_address = " <> address <> "\n",
+      peer("executor@10.0.0.2", pin),
+    )
+  }
+  let assert Ok(Some(config)) = distribution.parse(table("\"127.0.0.1\""))
+  assert distribution.listen_address(config) == Some("127.0.0.1")
+  let assert Ok(Some(config)) = distribution.parse(table("\"127.1.2.3\""))
+  assert distribution.listen_address(config) == Some("127.1.2.3")
+
+  // An absent key keeps every interface.
+  let assert Ok(Some(config)) =
+    distribution.parse(document("", peer("executor@10.0.0.2", pin)))
+  assert distribution.listen_address(config) == None
+
+  // Every refusal names the key, and none names a value the operator did not
+  // write. These are the spellings a looser parser would accept.
+  [
+    "\"0.0.0.0\"", "\"10.0.0.1\"", "\"192.168.127.1\"", "\"::1\"",
+    "\"localhost\"", "\"\"", "\"127.0.0\"", "\"127.0.0.1.1\"", "\"127.0.0.256\"",
+    "\"127.0.0.-1\"", "\"127.0.0.+1\"", "\"127.0.0.01\"", "\" 127.0.0.1\"",
+    "\"127.0.0.1 \"", "\"127.0.0.1:4370\"", "\"127..0.1\"",
+  ]
+  |> list.each(fn(address) {
+    refused(
+      table(address),
+      "distribution.listen_address must be an IPv4 loopback",
+    )
+  })
+  refused(table("127"), "distribution.listen_address must be a string")
+  refused(table("true"), "distribution.listen_address must be a string")
+}
+
+pub fn listen_address_applies_to_a_ledger_table_too_test() {
+  let text =
+    document(
+      "listen_address = \"127.0.0.1\"\nledger = \"/var/loom/ledger.log\"\n",
+      "",
+    )
+  let assert Ok(Some(config)) = distribution.parse(text)
+  assert distribution.listen_address(config) == Some("127.0.0.1")
+  assert distribution.ledger_path(config) == Some("/var/loom/ledger.log")
 }
 
 pub fn the_catalogue_parser_refuses_a_bad_table_too_test() {
@@ -331,6 +378,22 @@ pub fn a_listen_port_that_is_taken_is_a_start_failure_not_credentials_test() {
   let message = distribution.describe(distribution.StartFailed)
   assert string.contains(message, "listen_port")
   assert !string.contains(message, "credential")
+}
+
+pub fn a_loopback_listen_address_binds_the_listener_there_test() {
+  proves(
+    "listen_loopback",
+    "With listen_address = 127.0.0.1 the distribution listener must be "
+      <> "bound to 127.0.0.1 and to no other interface.",
+  )
+}
+
+pub fn without_a_listen_address_the_listener_binds_every_interface_test() {
+  proves(
+    "listen_all",
+    "Without listen_address the listener must keep binding every interface, "
+      <> "because a guest executor is dialled through the virtual gateway.",
+  )
 }
 
 pub fn start_epmd_false_is_honoured_test() {
