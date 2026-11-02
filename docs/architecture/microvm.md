@@ -589,7 +589,9 @@ the refusal names `loom vm setup`. It then:
    still dialled by nobody;
 3. clones the guest root to `~/.loom/vm/<name>/root` (`cp -cRp` on macOS,
    `cp -a --reflink=auto` on Linux) unless the guest ran before and `--fresh`
-   was not given, in which case the root and `state.img` are kept. It resolves
+   was not given, in which case the root and `state.img` are kept (upgraded in
+   place first when the root came from other artifacts than the manifest names, see
+   "A kept root after a loom upgrade"). It resolves
    the manifest's `guest_root` first, because `cp -R` copies a symbolic link
    named on its command line as a link. It then stages the executor node into
    `<root>/srv/loom-node/`, rewriting its configuration and credentials, and
@@ -664,6 +666,76 @@ with "block count exceeds size of device". `loom-vm run` extends an existing
 `--state-disk` file to the requested size, so `down` and `up` resume. A resumed
 guest keeps the checkout its agent edited and the sessions its executor holds;
 `--fresh` replaces the root and the state disk.
+
+### A kept root after a loom upgrade
+
+A root holds the `loomd` of the build that cloned it, and the executor protocol
+negotiates exact revisions, so a resumed guest whose root came from older
+artifacts would put a new orchestrator in front of an older executor. Before
+this check, `check_revision` compared the manifest with the running build and
+nothing compared the kept root with the manifest. `status` printed the
+manifest's revision for a guest whose root was older.
+
+`up` records the manifest revision a root was cloned from in
+`<vm home>/<name>/root-revision`, beside the root and not in it
+(`vm_spec.encode_root_revision`). A root with no record, from an earlier build,
+counts as unknown. When the recorded revision differs from the manifest's, or is
+unknown, and neither is `dev`, `up` upgrades the guest in place and prints one
+line saying so (`vm_spec.root_step`, `upgrade_line`). A development tree
+rebuilds often, so `dev` on either side keeps today's behaviour: the root is
+booted as it is. The upgrade:
+
+1. checks that `srv/workspaces` and every parent of it in the old root is a real
+   directory, and otherwise refuses with a line naming `--fresh`, because a link
+   there would be carried into the new root;
+2. clones the manifest's guest root into `<vm home>/<name>/root.next`, removing
+   a leftover `root.next` first;
+3. moves `srv/workspaces` from the old root into the new one with one `rename`,
+   so a link inside it stays a link and nothing is followed. This is the last
+   step that can fail;
+4. deletes the old root, renames `root.next` to `root` and writes the record.
+   `state.img` is not touched, and `stage` then runs on the new root as it does
+   for any `up`, so provisioning runs again.
+
+An interrupted `up` can finish. Before step 3 the old root is whole, so the next
+`up` repeats the upgrade from a clean `root.next`. After it, the old root has no
+`srv/workspaces` and `root.next` exists, which the next `up` reads as an
+upgrade whose swap is left (`FinishUpgrade`) and completes. A crash between the
+swap and the record only makes the next `up` upgrade once more.
+
+Provisioning needs the script, and the root is untrusted, so the script is never
+read back out of it. `up` keeps a host-owned copy at `<vm home>/<name>/provision`
+from the moment `--provision` is given, and stages from that copy into a root it
+has just cloned (`vm_spec.new_root_provision`). `--fresh` with no `--provision`
+removes the copy. A root provisioned by a loom that kept no copy cannot be
+provisioned again, so its upgrade is refused with a line that says to give
+`--provision SCRIPT` or `--fresh`.
+
+The state disk is kept. The executor's ledger lives on it at
+`state/root/exec-ledger.db` (`loom-guest-executor`, `executor_cli`), and
+`exec_ledger.open` migrates a ledger written by an older schema forward (versions
+1 to 3 to 4, each covered by `exec_ledger_test`) and refuses any other version
+as unsupported. A call the old executor had in flight becomes lost on open, as
+it does at every `down` and `up`, and the orchestrator re-attaches its sessions.
+A scope's directory is recreated at attach, and blobs are named by their own
+SHA-256. Nothing else on the disk carries a format. The direction matters: an
+upgrade reads an old ledger, but a manifest older than the disk (a ledger version
+newer than the executor knows) makes the executor refuse the file, and `up`
+reports the executor's failed boot and its log. That case needs `--fresh`.
+
+`up` also refuses when a runner of the guest is still alive. `loom-vm run` starts
+the virtual machine monitor as a separate process. A launcher killed with SIGKILL
+leaves the pid file naming a process that is gone, so `status` correctly says
+`not running` and `down` has nothing to signal, but the runner continues with
+the root and `state.img` open. Measured on macOS, the runner survived
+the kill with parent 1, and an `up` then started a second guest on the same root
+and ext4 disk. `up` now lists processes (`ps`) and refuses when a command line
+holds this guest's `"root_path"` or state disk path in a runner's specification,
+naming each pid and `kill <pid>`. It stops nothing itself.
+
+The GitHub token is read once, when `loom-vm run` starts (`readGitHubToken` in
+`packages/vmm/cmd/loom-vm/github.go`) and held by the proxy for the guest's life,
+and no refresh is attempted. After a token rotates, run `loom vm down` and `loom vm up`.
 
 ## Package registries and toolchains: `--allow` and `--provision`
 

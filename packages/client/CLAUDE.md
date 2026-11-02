@@ -91,6 +91,21 @@ script runs). `vm_cli` records the list in `stage`, copies the script to
 `<root>/etc/loom-vm/provision` and reads the marker `<root>/etc/loom-vm/provisioned`.
 `LOOM-PROVISION-FAILED` on the console fails `up`.
 
+A kept root cloned from other artifacts than the manifest names is upgraded in
+place (`vm_spec.root_step`, decided from `RootLayout`, the host's
+`<vm home>/<name>/root-revision` record and the manifest revision; `dev` on
+either side keeps the root). `vm_cli.build_next_root` clones into
+`<vm home>/<name>/root.next`, then moves `srv/workspaces` with one `rename`
+(refused naming `--fresh` when it or a parent is a link), the last fallible
+step; `swap_roots` then deletes the root and renames `root.next` over it, and a
+`root.next` beside a root with no workspaces is finished by the next `up`
+(`FinishUpgrade`). `state.img` is kept. The host keeps the `--provision` script at
+`<vm home>/<name>/provision` (`record_provision_copy`; `--fresh` without the flag
+clears it) and a new root is provisioned from it (`vm_spec.new_root_provision`),
+never from the root. `refuse_stranded` lists processes and refuses `up` when a
+runner whose JSON specification names the guest's root or state disk survives
+(`vm_spec.stranded_runners`); it stops nothing.
+
 `setup` runs `install.bundled_launcher()` (`bin/loom-vm` in the server tree)
 with `setup --home <vm home> --release TAG` (or `--from-build`), where with no
 flag the tags are `vm_spec.release_candidates`: `commit-<commit>` for a 40-hex
@@ -115,7 +130,8 @@ proves the idle stop on its isolated home.
 Invariants that break things when violated:
 
 - A guest's files all live under `<vm home>/<name>/`: `deploy/`, `orch/`,
-  `root/`, `state.img`, `allow`, `checkouts`, `loom-vm.pid` and `loom-vm.log`. `LOOM_VM_HOME` overrides
+  `root/`, `root.next/` (only during an upgrade), `state.img`, `allow`, `checkouts`,
+  `root-revision`, `provision`, `loom-vm.pid` and `loom-vm.log`. `LOOM_VM_HOME` overrides
   `~/.loom/vm`.
 - `up` reads the bundles in `deploy/` again instead of minting new ones, so the
   orchestrator's installed pins keep matching the executor's certificate.
@@ -141,6 +157,8 @@ Invariants that break things when violated:
 - A host write under `root/` goes through `make_inside`, which checks each
   directory's canonical path against the canonical root and refuses a link the
   guest left (naming `--fresh`). Never `create_directory_all` under the root.
+- A host write that moves workspaces between roots is one `rename` of `srv/workspaces`,
+  after `plain_chain` found it and its parents real directories.
 - Only `--provision` supplies a script. The workspace is never searched, and a
   script on a provisioned resume is refused rather than run again.
 - Nothing the host runs after a guest has booted uses a directory inside `root/`

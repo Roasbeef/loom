@@ -89,6 +89,22 @@ leaves the installed and retained trees intact. Coordinate this restart with
 other users of the shared daemon, or use `--install-only` and the manual restart
 procedure below. Downloading and publication do not hot-load a running VM.
 
+## Standing microVM guests
+
+A guest started with `loom vm up` keeps its root across `down` and `up`, and the
+root holds the `loomd` of the build it was cloned from. After `loom update`,
+run `loom vm setup` (or `make vmm-install-dev` in a checkout) so the manifest
+names the new build, then `loom vm up`. When the root came from other artifacts,
+`up` prints one line, replaces the root in place, moves the guest's workspace
+copies into the new one, keeps its state disk and runs the provisioning script
+again from the copy `up` kept at `<vm home>/<name>/provision`. A guest started
+by a loom that kept no such copy, and that was provisioned, needs
+`--provision SCRIPT` again or `--fresh`. A development manifest (`dev`) keeps
+the root as it is. After a GitHub token rotates, run `loom vm down` and `loom vm up`:
+the token is read once at launch. A launcher killed with SIGKILL can leave its
+runner alive; `up` refuses and names the pid to stop. See
+[the microVM architecture](architecture/microvm.md).
+
 ## Install a source build
 
 Ordinary builds use released Gleam 1.19.0 (1.18.1 still compiles the
