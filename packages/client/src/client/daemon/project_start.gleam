@@ -36,6 +36,7 @@ import client/daemon/manager
 import client/daemon/project_book.{type Book}
 import client/daemon/project_host
 import client/peer_mail
+import client/project_scan
 import client/project_standing
 import client/projectseam
 import client/serve
@@ -530,9 +531,24 @@ pub fn seat(
             Some(project_standing.Seat(
               standing:,
               seam: projectseam.seam(handle, session),
+              feed: scan_feed(standing, handle, session),
             )),
           )
         Error(Nil) -> Error("project " <> project <> " is not running")
       }
+  }
+}
+
+/// Only a worker has a log the project reads. A router's conversation is
+/// with the project through its tools, and an ordinary session is not the
+/// project's at all.
+fn scan_feed(
+  standing: project_standing.Standing,
+  handle: project_host.Handle,
+  session: String,
+) -> Option(project_scan.Feed) {
+  case standing {
+    project_standing.Worker(..) -> Some(projectseam.feed(handle, session))
+    project_standing.Router(..) | project_standing.Ordinary -> None
   }
 }

@@ -10217,7 +10217,16 @@ ordinary top-level worker session per ticket assignment
 - Control: `projects.create|list|board|post|stop` in `daemon/protocol` and
   `daemon/server` (`project_command`), classified in `control_use`.
   `[project]` is `client/project_settings` (`max_workers`, `token_ceiling`).
-- Not built in this slice: the commit scanner for human turns typed into a worker
-  and missed-report replay (`project_host.human_turn` is the entry point and is
-  tested, nothing subscribes to it yet), the host check, pull requests, outbound
-  delivery of replies, a Mandate-enforced broker policy.
+- `client/project_scan` is a worker's commit scanner, modelled on `rulescan`: a
+  restartable service subscribed by name through `writer.Routed`, started in
+  `serve` only for a session seated as a worker (`Seat.feed`). It pulls the main
+  strand with `storage.branch_scan` and sends the project actor each user message
+  whose origin is a human principal (`project_host.human_turn`, keyed `h-<entry id>`
+  so a repeat records nothing) and the last committed successful `project_report`
+  result above its cursor (`replay_report`, dropped when the ticket already holds
+  that report). The cursor is `project_ledger.cursor`/`set_cursor`, a checkpoint
+  sent after the turns it covers; correctness rests on the entry key and on
+  `already_holds`, not on the cursor. The process carries no `telemetry/owner`
+  role: a new role is a protocol change.
+- Not built in this slice: the host check, pull requests, outbound delivery of
+  replies, a Mandate-enforced broker policy.

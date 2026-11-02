@@ -145,6 +145,7 @@ import client/peers
 import client/permissions
 import client/profile_switch
 import client/project_packs
+import client/project_scan
 import client/project_standing
 import client/proposals
 import client/relayed_session
@@ -3827,6 +3828,10 @@ fn assemble_in(
   // anything under it.
   let rulescan_name = address.new_address(namespace)
 
+  // A project worker's commit scanner is a writer subscriber by name for the
+  // same reason, and it is started only for a session seated as a worker.
+  let project_scan_name = address.new_address(namespace)
+
   // The scheduled-heartbeat scanner is not a writer subscriber — it is
   // driven by its own injected timer, never by a commit hint, so its
   // name is minted for exactly one reason: the restartable-service tier
@@ -4809,6 +4814,7 @@ fn assemble_in(
         // skips, at no cost to the commit.
         subscribers: [
           writer.Routed(rulescan_name),
+          writer.Routed(project_scan_name),
           writer.Routed(forwarder_name),
           writer.Routed(summary_commits),
           ..history_subscribers(history_seam, history_pulls)
@@ -5085,6 +5091,7 @@ fn assemble_in(
     // again, cold, and says so.
     |> half.children.lsp_manager
     |> with_rule_scanner(settings, runtime, rulescan_name, logger)
+    |> with_project_scanner(settings, runtime, project_scan_name, logger)
     |> with_schedule_scanner(settings, runtime, schedulescan_name, logger)
     // The peer outbox drainer is in this tier because everything it owes is
     // a pending row in the session's own store: a replacement begins with a
@@ -5595,6 +5602,32 @@ fn with_rule_scanner(
         ),
       )
     }
+  }
+}
+
+/// Starts the commit scanner of a project worker. Only a worker has a log the
+/// project reads, so a router, an ordinary session and a boot without project
+/// mode start nothing, and the name stays unregistered, which the writer skips.
+fn with_project_scanner(
+  builder: sup.Builder,
+  settings: Settings,
+  runtime: api.Runtime,
+  name: address.Address(writer.Event),
+  logger: Logger,
+) -> sup.Builder {
+  // The seat carries the feed only for a worker.
+  case settings.project {
+    Some(project_standing.Seat(feed: Some(feed), ..)) ->
+      sup.add(
+        builder,
+        project_scan.supervised(
+          project_scan.default_options(feed)
+            |> project_scan.with_logger(logger),
+          runtime,
+          name,
+        ),
+      )
+    Some(project_standing.Seat(feed: None, ..)) | None -> builder
   }
 }
 
@@ -6354,7 +6387,7 @@ fn project_shaped(
 ) -> List(contributions.Contribution) {
   case project {
     None -> found
-    Some(project_standing.Seat(standing:, seam:)) ->
+    Some(project_standing.Seat(standing:, seam:, ..)) ->
       case standing {
         project_standing.Ordinary -> found
         project_standing.Router(..) -> [

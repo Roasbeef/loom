@@ -9,6 +9,7 @@
 //// the wrong session would answer `NotPermitted` and nothing more.
 
 import client/daemon/project_host.{type Handle}
+import client/project_scan
 import tools/project as tools
 
 /// The seam for the session `session` of the project `handle` serves.
@@ -35,6 +36,34 @@ pub fn seam(handle: Handle, session: String) -> tools.Projects {
     report: fn(_ctx, report) { project_host.report(handle, session, report) },
     handback: fn(_ctx, handback) {
       project_host.hand_back(handle, session, handback)
+    },
+  )
+}
+
+/// Where the commit scanner of the worker `session` sends what it finds. Each
+/// closure is a cast or one read of the project actor, so the scanner never
+/// waits on the ledger while a turn is in flight.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // projectseam.feed(handle, session_id)
+/// ```
+pub fn feed(handle: Handle, session: String) -> project_scan.Feed {
+  project_scan.Feed(
+    cursor: fn() { project_host.scan_cursor(handle, session) },
+    turn: fn(turn) {
+      project_host.human_turn(
+        handle,
+        session,
+        turn.entry,
+        turn.actor,
+        turn.text,
+      )
+    },
+    report: fn(report) { project_host.replay_report(handle, session, report) },
+    checkpoint: fn(entry) {
+      project_host.checkpoint_scan(handle, session, entry)
     },
   )
 }

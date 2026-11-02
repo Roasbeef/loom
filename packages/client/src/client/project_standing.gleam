@@ -13,6 +13,7 @@
 //// `session_directory.Standing`, which describe delegates and spawners. It
 //// does not replace them and carries no delegate case.
 
+import client/project_scan
 import gleam/int
 import gleam/option.{type Option, None, Some}
 import storage/catalogue
@@ -48,6 +49,9 @@ pub type Seat {
     standing: Standing,
     /// The host half of the project tools, filled for this session.
     seam: project_tools.Projects,
+    /// Where a worker's commit scanner sends what it finds. A router has no
+    /// log for the project to read, so it has none.
+    feed: Option(project_scan.Feed),
   )
 }
 

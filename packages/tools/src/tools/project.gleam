@@ -804,7 +804,17 @@ fn run_report(
 }
 
 /// Decodes a report and checks that a question appears only beside `waiting`.
-fn decode_report(args: JsonValue) -> Result(WorkerReport, String) {
+/// The project scanner reads it back from the arguments of a committed
+/// `project_report` call, so a call is judged the same way when it is replayed
+/// as when it was made.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project.decode_report(json.Object([#("status", json.String("progress"))]))
+///   == Ok(project.WorkerReport(project.Progress, None))
+/// ```
+pub fn decode_report(args: JsonValue) -> Result(WorkerReport, String) {
   use word <- result.try(tool.required_string(args, "status"))
   use question <- result.try(tool.optional_string(args, "question"))
   use status <- result.try(decode_status(word))

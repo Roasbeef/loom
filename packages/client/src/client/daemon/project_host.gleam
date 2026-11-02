@@ -194,6 +194,12 @@ pub opaque type Message {
   ReadLive(reply: Subject(List(String)))
   StopTicket(ticket: String, by: String, reply: Subject(Result(Nil, String)))
   HumanTurn(session: String, entry: String, actor: String, text: String)
+  ReplayReport(session: String, report: tools.WorkerReport)
+  ReadScanCursor(
+    session: String,
+    reply: Subject(Result(Option(String), String)),
+  )
+  ScanCheckpoint(session: String, entry: String)
   Tick
 }
 
@@ -424,6 +430,56 @@ pub fn human_turn(
   process.send(handle.commands, HumanTurn(session, entry, actor, text))
 }
 
+/// Hands the actor a report that a worker's commit stream shows was made. The
+/// scanner sends the last committed `project_report` result above its cursor,
+/// in case the call that carried it never reached the ledger. The actor skips
+/// a report that matches what the ticket already holds, so a report applied
+/// live and then seen again by the scanner changes nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_host.replay_report(handle, session_id, report)
+/// ```
+pub fn replay_report(
+  handle: Handle,
+  session: String,
+  report: tools.WorkerReport,
+) -> Nil {
+  process.send(handle.commands, ReplayReport(session, report))
+}
+
+/// The id of the last entry of a worker's log that the scanner has taken in,
+/// or `None` for a session not scanned yet.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_host.scan_cursor(handle, session_id)
+/// ```
+pub fn scan_cursor(
+  handle: Handle,
+  session: String,
+) -> Result(Option(String), String) {
+  ask(handle, ReadScanCursor(session, _))
+  |> result.flatten
+}
+
+/// Moves a worker's scan cursor to an entry. It is a cast, sent after the
+/// turns and reports the scan found, so the actor takes the cursor in only
+/// after it has taken those in. The cursor is a checkpoint and not a record: a
+/// restart that resumes behind it repeats entries that the entry-keyed
+/// triggers and the report comparison already make harmless.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_host.checkpoint_scan(handle, session_id, entry_id)
+/// ```
+pub fn checkpoint_scan(handle: Handle, session: String, entry: String) -> Nil {
+  process.send(handle.commands, ScanCheckpoint(session, entry))
+}
+
 fn ask(handle: Handle, make: fn(Subject(a)) -> Message) -> Result(a, String) {
   call.try_call(handle.commands, waiting: 10_000, sending: make)
   |> result.replace_error("the project is not answering")
@@ -568,6 +624,20 @@ fn handle(host: Host, message: Message) -> actor.Next(Host, Message) {
       actor.continue(
         perform_due(human_now(host, session, entry, actor_name, text)),
       )
+    ReplayReport(session, report) ->
+      actor.continue(perform_due(replay_now(host, session, report)))
+    ReadScanCursor(session, reply) -> {
+      process.send(
+        reply,
+        project_ledger.cursor(host.ledger, session)
+          |> result.map_error(string.inspect),
+      )
+      actor.continue(host)
+    }
+    ScanCheckpoint(session, entry) -> {
+      checkpoint_now(host, session, entry)
+      actor.continue(host)
+    }
     Tick -> actor.continue(tick(host))
   }
 }
@@ -1060,6 +1130,91 @@ fn human_now(
         }
       }
     }
+  }
+}
+
+/// Applies a report the scanner found in a worker's log. A report that matches
+/// the one the ticket already holds is dropped, so the scanner seeing a report
+/// that the live call already applied changes nothing. Without that check, a
+/// replayed question would be asked a second time, with a new number, after a
+/// person had answered the first.
+fn replay_now(host: Host, session: String, report: tools.WorkerReport) -> Host {
+  // A session the engine has not bound has no assignment to report on.
+  case assignment_of(host, session) {
+    Error(Nil) -> host
+    Ok(#(ticket, _)) ->
+      case already_holds(host, ticket, report) {
+        True -> host
+        False -> report_now(host, session, report).0
+      }
+  }
+}
+
+/// Whether the ticket's latest report is this one. A waiting report matches by
+/// its question text, since the question's number is the ledger position the
+/// live report took and the replay cannot know it.
+fn already_holds(
+  host: Host,
+  ticket: Ticket,
+  report: tools.WorkerReport,
+) -> Bool {
+  case ticket.latest {
+    None -> False
+    Some(latest) ->
+      report_word(latest) == status_word(report.status)
+      && asks_the_same(host, ticket, latest, report)
+  }
+}
+
+/// The status word of an engine report, in the tool's spelling.
+fn report_word(report: model.Report) -> String {
+  case report {
+    model.Progress -> "progress"
+    model.Waiting(..) -> "waiting"
+    model.Blocked -> "blocked"
+    model.Failed -> "failed"
+    model.Dropped -> "dropped"
+  }
+}
+
+/// The status word of a tool report.
+fn status_word(status: tools.Status) -> String {
+  case status {
+    tools.Progress -> "progress"
+    tools.Waiting -> "waiting"
+    tools.Blocked -> "blocked"
+    tools.Failed -> "failed"
+    tools.Dropped -> "dropped"
+  }
+}
+
+/// For two waiting reports, whether they asked the same thing. Every other
+/// status carries no question, so two reports of one such status are the same.
+fn asks_the_same(
+  host: Host,
+  ticket: Ticket,
+  latest: model.Report,
+  report: tools.WorkerReport,
+) -> Bool {
+  case latest {
+    model.Waiting(model.NoQuestion) -> report.question == None
+    model.Waiting(model.Asking(number)) ->
+      Ok(option.unwrap(report.question, ""))
+      == dict.get(host.questions, #(ticket.id.value, number))
+    model.Progress | model.Blocked | model.Failed | model.Dropped -> True
+  }
+}
+
+/// Moves the cursor in the ledger. A write that fails is logged and dropped,
+/// because the cursor is a checkpoint and the next one replaces it.
+fn checkpoint_now(host: Host, session: String, entry: String) -> Nil {
+  case project_ledger.set_cursor(host.ledger, session, entry) {
+    Ok(Nil) -> Nil
+    Error(error) ->
+      log.warn(host.ports.logger, "project.scan_checkpoint_failed", [
+        field.ident(key: "session", value: session),
+        field.text(key: "reason", value: string.inspect(error)),
+      ])
   }
 }
 
