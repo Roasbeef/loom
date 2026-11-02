@@ -226,13 +226,32 @@ pub fn withdraw(current: State, id: TicketId, by: state.Withdrawal) -> Step {
       let stopped =
         state.Ticket(
           ..ticket,
+          assignments: list.map(ticket.assignments, released),
           authority: Withdrawn(by),
           outcome: Some(StoppedByPerson),
           demand: Satisfied,
           inbox: [],
         )
-      Ok(#(state.put_ticket(current, stopped), stop_sessions(ticket)))
+
+      // The stopped sessions' slots are free from this event on, so a ticket
+      // waiting for one is assigned now and not at some later event.
+      Ok(schedule_after(
+        state.put_ticket(current, stopped),
+        stop_sessions(ticket),
+      ))
     }
+  }
+}
+
+/// An assignment as a stop leaves it. The stop is the only thing that ends a
+/// session of a ticket the person withdrew, and nothing else reports that
+/// session's exit, so without this the assignment stayed pending or running
+/// for good and kept holding its slot.
+fn released(assignment: Assignment) -> Assignment {
+  case state.holds_slot(assignment) {
+    True ->
+      Assignment(..assignment, status: AssignmentDone(model.SessionExited))
+    False -> assignment
   }
 }
 

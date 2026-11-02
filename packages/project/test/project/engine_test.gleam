@@ -340,6 +340,39 @@ pub fn a_stop_command_is_idempotent_and_ends_assignments_wanting_test() {
   assert again == stopped
 }
 
+// A stop is the only event that ends the session of a ticket a person
+// withdrew, so it has to free the slot itself. The drive of project mode on a
+// real model left every stopped ticket's assignment running, which kept the
+// waiting tickets queued for good.
+pub fn a_stop_frees_the_slot_for_a_waiting_ticket_test() {
+  // Two general slots and the reserved one are taken by c1, c2 and c3, which a
+  // person's request may use, so c4 waits.
+  let full =
+    run(fresh(), [
+      arrival(owner("c1")),
+      accept("c1"),
+      arrival(owner("c2")),
+      arrival(owner("c3")),
+      arrival(owner("c4")),
+      event.RouterTurnEnded,
+      accept("c2"),
+      accept("c3"),
+      accept("c4"),
+    ])
+  assert state.slots_used(full, state.General) == 2
+  assert state.slots_used(full, state.Reserved) == 1
+  assert state.active_assignment(ticket(full, ticket_of("c4"))) == None
+  let #(stopped, effects) =
+    step(full, event.PersonStopped(ticket_of("c1"), world_principal()))
+  assert state.slots_used(stopped, state.General) == 2
+  assert list.any(effects, fn(effect) {
+    case effect {
+      StartSession(ticket, 1, _, _) -> ticket == ticket_of("c4")
+      _ -> False
+    }
+  })
+}
+
 pub fn a_stopped_ticket_is_never_assigned_again_test() {
   let queued =
     run(fresh(), [
