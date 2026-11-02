@@ -1724,7 +1724,11 @@ pub fn standing_guest_secrets_are_state_root_masks_test() {
 
   case workspace_policy.home_directory() {
     Some(home) -> {
-      assert list.contains(masks, home <> "/.erlang.cookie")
+      // The cookie is masked only when it exists, because masking a missing
+      // path makes bwrap create a directory there.
+      let cookie = home <> "/.erlang.cookie"
+      assert list.contains(masks, cookie)
+        == { simplifile.is_file(cookie) == Ok(True) }
       assert list.contains(masks, home <> "/.loom/vm")
     }
     None -> Nil
