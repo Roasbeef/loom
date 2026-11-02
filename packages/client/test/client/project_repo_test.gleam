@@ -341,6 +341,42 @@ pub fn a_commit_is_taken_into_the_host_repository_and_its_paths_read_there_test(
   assert project_rig.ticket_ref_of(layout, "t-a", head) == head
 }
 
+pub fn no_program_a_clone_names_runs_when_the_host_takes_a_commit_in_test() {
+  let rig = worktree_rig.rig("intake-programs")
+  let layout = project_rig.started(rig)
+  let clone = project_rig.cloned(rig, layout, "t-a-1")
+  let head = project_rig.commit(clone, [#("work", "w\n")])
+  let marker = rig.state <> "/program-ran"
+  let program = rig.state <> "/program.sh"
+  worktree_rig.write(program, "#!/bin/sh\ntouch " <> marker <> "\n")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(program, 0o755)
+
+  // The worker has committed, and only then does its clone name programs: the
+  // operator's own Git in a hostile clone would run them. Every key of the clone's configuration that names a program, and the
+  // hooks directory, point at the marker.
+  list.each(
+    [
+      "core.fsmonitor", "core.alternateRefsCommand", "core.sshCommand",
+      "core.hooksPath", "core.editor", "core.pager",
+      "uploadpack.packObjectsHook", "credential.helper", "gpg.program",
+      "diff.external", "core.askPass",
+    ],
+    fn(key) { worktree_rig.git(clone, ["config", key, program]) },
+  )
+  worktree_rig.write(
+    clone <> "/.git/hooks/reference-transaction",
+    "#!/bin/sh\ntouch " <> marker <> "\n",
+  )
+  worktree_rig.write(
+    clone <> "/.git/hooks/pre-auto-gc",
+    "#!/bin/sh\ntouch " <> marker <> "\n",
+  )
+  let assert Ok(project_repo.Accepted(commit:, changed: _)) =
+    project_repo.intake(rig.trees, layout, "t-a", "t-a-1")
+  assert commit == head
+  assert !bootstrap.path_exists(marker)
+}
+
 pub fn objects_git_rejects_by_shape_are_refused_at_intake_test() {
   let rig = worktree_rig.rig("intake-fsck")
   let layout = project_rig.started(rig)

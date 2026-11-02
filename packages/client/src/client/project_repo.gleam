@@ -710,8 +710,8 @@ fn unrecorded_work(
 ) -> Result(Option(String), String) {
   use status <- result.try(
     query(trees, clone, [
-      "status", "--porcelain=v1", "--untracked-files=normal", "--", ".",
-      ":(exclude).codemode",
+      "-c", "core.fsmonitor=false", "status", "--porcelain=v1",
+      "--untracked-files=normal", "--", ".", ":(exclude).codemode",
     ]),
   )
 
