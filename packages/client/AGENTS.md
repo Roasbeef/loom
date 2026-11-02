@@ -67,7 +67,7 @@ of the idle and failing guests under the isolated home.
 writes, so they treat it as untrusted: no `git` with a working directory in the
 root (`sync` fetches into the developer's checkout with the copy as remote,
 `vm_spec.fetch_arguments`), reads through `plain_chain` (each component a real
-directory, no link), refs read as bounded plain files (`read_inventory`), writes
+directory, no link), writes
 through `make_inside` and a rename, and guest text printed through
 `vm_spec.printable`. `up` records each copy's developer checkout in
 `<vm home>/<name>/checkouts` (`vm_spec.decode_checkouts`), outside the root, for
@@ -75,8 +75,11 @@ through `make_inside` and a rename, and guest text printed through
 `rm` removes `[executors.<name>]`, and `[distribution]` and the home's cookie only
 when they are this guest's and no other executor remains
 (`distribution_install.without_tables`, `vm_spec.plan_teardown`), refuses a
-running guest, and without `--yes` only lists the workspaces and the branches
-origin lacks.
+running guest, and without `--yes` only lists the workspaces. `sync` needs git
+2.45.1 or newer (`vm_spec.check_git_version`) and runs it with
+`GIT_NO_LAZY_FETCH=1`, because the fetch's `-c` settings do not reach
+upload-pack; `--to-guest` bundles `--branches`; `logs` caps its output at 4 MiB;
+and `stage_node` registers every workspace the `checkouts` record names.
 
 `--allow HOST` and `--provision SCRIPT` are decided in `vm_spec`: `valid_host`
 (the `machine.Spec` rule, refused in `parse`), `encode_allow`/`decode_allow` for

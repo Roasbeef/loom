@@ -624,14 +624,18 @@ the refusal names `loom vm setup`. It then:
    `--allow` names (see "Package registries and toolchains").
 
 A second `up` with another `--workspace` while the guest is stopped adds that
-directory's copy to the root, but `stage_node` rewrites the guest's `loom.toml`
-with one `[workspaces.<name>]` row, the latest `up`'s. The earlier copy stays on
-disk and `loom --executor <name> --workspace <earlier>` no longer finds it
-until an `up` names that directory again. While the guest runs, `up` of any
-directory is refused (`refuse_running`). `up` also records, for each copy it
-makes, which directory it came from in `<vm home>/<name>/checkouts`, one
-`NAME<TAB>PATH` line per copy (`vm_spec.encode_checkouts`), outside the root
-because the guest writes the root; `sync` reads it.
+directory's copy to the root, and the guest's `loom.toml` registers every copy:
+`stage_node` writes one `[workspaces.<name>]` row for the current directory and
+one for each workspace the host's `checkouts` record names whose copy is in the
+root (`registered_workspaces`). The names come from that record, which the host
+wrote, and never from a listing of the root, which the guest wrote. A guest from
+before the record registers the current copy alone. The live test brings a
+stopped guest up with a second directory and runs a session in each workspace.
+While the guest runs, `up` of any directory is refused (`refuse_running`). `up`
+records, for each copy it makes, which directory it came from in
+`<vm home>/<name>/checkouts`, one `NAME<TAB>PATH` line per copy
+(`vm_spec.encode_checkouts`), outside the root because the guest writes the
+root; `sync` and the registration read it.
 
 `down` sends SIGTERM to the recorded process while the pid still has the
 recorded birth marker, and waits for it to exit. It leaves the root and the
@@ -769,9 +773,11 @@ range, DEL and the bidirectional overrides.
 
 `loom vm logs [--name NAME] [--lines N]` prints the last `N` lines (default 100,
 at most 100000) of `<vm home>/<name>/loom-vm.log`, the console, which includes
-the executor daemon's log. It runs `tail` and `iconv -c` through `sh` with the
-arguments as positional parameters, so what is not UTF-8 is dropped before the
-text reaches the BEAM. There is no follow mode.
+the executor daemon's log, and at most the last 4 MiB of them. It runs `tail -n
+N file | tail -c 4194304 | iconv -c` through `sh` with the arguments as
+positional parameters (`vm_spec.log_tail_script`), so one huge line is cut and
+what is not UTF-8 is dropped before the text reaches the BEAM. There is no
+follow mode.
 
 `loom vm list` prints one line for each directory of the vm home that has a
 valid guest name and a `deploy/` directory: the name, `running` or `stopped`,
@@ -781,15 +787,14 @@ the home are not guests.
 
 `loom vm rm [--name NAME] [--config PATH] [--yes]` deletes a stopped guest and
 undoes its enrolment. A running guest is refused, naming `loom vm down`. Without
-`--yes` it changes nothing: it refuses with each workspace copy and the local
-branches the copy holds that `refs/remotes/origin/*` does not hold at the same
-commit, then what `--yes` would do to `loom.toml`. The branches are read as
-plain files (`read_inventory`): `.git/packed-refs` (at most 4 MiB), then
-`.git/refs/heads` and `.git/refs/remotes/origin` (at most 5000 entries, 8 deep,
-each file at most 512 bytes). A link, a special file or a tree past a limit makes
-that copy "unreadable" in the listing, never partly read, and a loose ref
-replaces a packed one of the same name as in Git. A branch whose origin ref names
-another commit is listed, since it may be ahead. With `--yes`:
+`--yes` it changes nothing: it refuses with the guest's workspace names, then
+"Fetch committed work first with `loom vm sync`; uncommitted edits cannot be
+fetched. Run again with --yes to delete it.", then what `--yes` would do to
+`loom.toml`. It does not list unpushed branches: a copy's own
+`refs/remotes/origin/*` is never updated by `sync`, so such a list would stay
+wrong after the developer followed the advice. `list` and `status` print
+`unreadable` for a workspaces directory that is a link or too large, and `none`
+only for an empty one. With `--yes`:
 
 - `[executors.<name>]` is removed when its `node` is this guest's executor node,
   and left, with a line saying so, when it names another.
@@ -845,7 +850,20 @@ rest was tried: a copy whose `.git/config` set `core.fsmonitor`,
 marker, was fetched from with Git 2.54.0 (Apple), for protocol versions 0, 1
 and 2. `GIT_TRACE` showed `git-upload-pack` and `pack-objects` on the copy, and
 `index-pack`, `rev-list` and `maintenance` in the developer's checkout, and no
-marker appeared. The same configuration did fire when Git ran inside the copy (a plain
+marker appeared. The `-c` settings above do not reach `git-upload-pack`: the local transport
+unsets `GIT_CONFIG_PARAMETERS` for it. `sync` therefore relies on upload-pack's
+own rules, and in particular on its refusal to lazy fetch from a promisor remote,
+which is what stops a planted `extensions.partialclone`, a promisor `ssh://`
+remote and `core.sshCommand` from running a command on the host. Git 2.45.1
+added that refusal (the 2.45.1 release is from memory; `git help git-upload-pack`
+on 2.54.0 documents the behaviour, and the release notes were not on the machine),
+so `sync` runs `git version` first and refuses below 2.45.1, or when it cannot
+read the version (`vm_spec.check_git_version`), and runs Git with
+`GIT_NO_LAZY_FETCH=1` through `env`, which `git help git` documents. A scratch
+copy with `extensions.partialclone`, a promisor `ssh://` remote, a
+`core.sshCommand` that touches a marker and a deleted blob was fetched from on
+2.54.0, with and without that variable: the fetch failed as a corrupt remote and
+no marker appeared. The same configuration did fire when Git ran inside the copy (a plain
 `git commit` there touched the `fsmonitor` and `reference-transaction` markers),
 which is the case the rule exists for, and the live test repeats this with a
 control repository. `-c protocol.file.allow=always` is not given: a plain fetch
@@ -877,9 +895,10 @@ git fetch /srv/host-refs/<workspace>.bundle '+refs/heads/*:refs/remotes/host/*'
 The jail reads that path under its default read scope with no configuration:
 in the live run a jailed `git fetch /srv/host-refs/repo.bundle ...` exited 0 and
 `refs/remotes/host/main` in the copy equalled the host's commit, which
-`daemon_shipped_microvm_test` asserts. The bundle holds every ref of the
-checkout, `refs/remotes/vm/*` included, and a later `--to-guest` replaces it.
-Uncommitted edits on the host are not in it.
+`daemon_shipped_microvm_test` asserts. The bundle is made with `--branches`, so
+it holds the local branches only: the stash, remote-tracking refs, notes and
+tags stay on the host. A later `--to-guest` replaces it. Uncommitted edits on
+the host are not in it.
 
 ## Known gaps
 
@@ -893,8 +912,6 @@ Uncommitted edits on the host are not in it.
   guest's `deploy/` and `orch/`, so it leaves a directory that `loom vm list`
   shows; `loom vm rm --name NAME --yes` clears it and leaves the other
   deployment's tables and cookie.
-- One registered workspace per guest. Only the latest `up`'s directory is in the
-  guest's `loom.toml`; see "A standing guest".
 - There is no `loom vm shell`. A guest has no exec channel: its executor serves
   the orchestrator over the distribution link and nothing else, so a command in
   the guest runs only through a session's tools.
