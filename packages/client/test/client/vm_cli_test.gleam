@@ -280,7 +280,7 @@ pub fn each_node_trusts_the_other_and_the_orchestrator_names_the_row_test() {
 
 pub fn the_guest_configuration_names_guest_paths_only_test() {
   let #(_, executor) = bundles("dev")
-  let text = vm_spec.guest_config(executor, "proj", vm_spec.GitHubOff, [])
+  let text = vm_spec.guest_config(executor, ["proj"], vm_spec.GitHubOff, [])
   let assert Ok(document) = tom.parse(text)
 
   let assert Ok(distribution) = tom.get_table(document, ["distribution"])
@@ -306,13 +306,13 @@ pub fn github_access_opens_the_jail_to_the_proxy_test() {
   // guest's egress allowlist, and passes the proxy's names through; without
   // it there is no [tools] table and the jail keeps the network off.
   let #(_, executor) = bundles("dev")
-  let text = vm_spec.guest_config(executor, "proj", vm_spec.GitHubFromGh, [])
+  let text = vm_spec.guest_config(executor, ["proj"], vm_spec.GitHubFromGh, [])
   let assert Ok(document) = tom.parse(text)
   assert tom.get_string(document, ["tools", "network"]) == Ok("full")
   let assert Ok(names) = tom.get_array(document, ["tools", "env"])
   assert list.length(names) == 4
 
-  let text = vm_spec.guest_config(executor, "proj", vm_spec.GitHubOff, [])
+  let text = vm_spec.guest_config(executor, ["proj"], vm_spec.GitHubOff, [])
   let assert Ok(document) = tom.parse(text)
   assert result.is_error(tom.get_table(document, ["tools"]))
 }
@@ -322,18 +322,18 @@ pub fn allowed_hosts_open_the_jail_without_the_proxy_names_test() {
   // and no environment names; with neither there is still no [tools] table.
   let #(_, executor) = bundles("dev")
   let text =
-    vm_spec.guest_config(executor, "proj", vm_spec.GitHubOff, ["example.com"])
+    vm_spec.guest_config(executor, ["proj"], vm_spec.GitHubOff, ["example.com"])
   let assert Ok(document) = tom.parse(text)
   assert tom.get_string(document, ["tools", "network"]) == Ok("full")
   assert result.is_error(tom.get_array(document, ["tools", "env"]))
 
   // With GitHub access the table is the same whatever `--allow` adds.
   let with_github =
-    vm_spec.guest_config(executor, "proj", vm_spec.GitHubFromEnv, [
+    vm_spec.guest_config(executor, ["proj"], vm_spec.GitHubFromEnv, [
       "example.com",
     ])
   assert with_github
-    == vm_spec.guest_config(executor, "proj", vm_spec.GitHubFromEnv, [])
+    == vm_spec.guest_config(executor, ["proj"], vm_spec.GitHubFromEnv, [])
 }
 
 pub fn the_guest_node_line_is_the_first_one_the_guest_script_reads_test() {
@@ -344,7 +344,7 @@ pub fn the_guest_node_line_is_the_first_one_the_guest_script_reads_test() {
   let #(_, executor) = bundles("dev")
   let lines =
     string.split(
-      vm_spec.guest_config(executor, "proj", vm_spec.GitHubFromGh, []),
+      vm_spec.guest_config(executor, ["proj"], vm_spec.GitHubFromGh, []),
       "\n",
     )
     |> list.filter(string.starts_with(_, "node = \""))
@@ -1184,7 +1184,7 @@ pub fn the_bundle_is_made_in_the_developers_checkout_test() {
   assert vm_spec.bundle_arguments("/src/proj", "/vm/dev/to-guest.bundle")
     == [
       "-C", "/src/proj", "bundle", "create", "--quiet",
-      "/vm/dev/to-guest.bundle", "--all",
+      "/vm/dev/to-guest.bundle", "--branches",
     ]
   assert vm_spec.bundle_guest_path("proj") == "/srv/host-refs/proj.bundle"
   assert vm_spec.guest_fetch_command("proj")
@@ -1203,175 +1203,23 @@ pub fn sync_picks_the_only_workspace_or_asks_test() {
   assert result.is_error(vm_spec.only_workspace([], None))
 }
 
-// --- the branches a copy holds -----------------------------------------------
-
-const hash_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-
-const hash_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-
-pub fn packed_refs_keep_only_well_formed_pairs_test() {
-  let text =
-    "# pack-refs with: peeled fully-peeled sorted \n"
-    <> hash_a
-    <> " refs/heads/main\n"
-    <> "^"
-    <> hash_b
-    <> "\n"
-    <> "not-a-hash refs/heads/x\n"
-    <> hash_b
-    <> " not-a-ref\n"
-    <> hash_b
-    <> " refs/remotes/origin/main\n"
-  assert vm_spec.packed_refs(text)
-    == [#("refs/heads/main", hash_a), #("refs/remotes/origin/main", hash_b)]
-}
-
-pub fn a_loose_ref_is_its_object_name_or_nothing_test() {
-  assert vm_spec.loose_hash(hash_a <> "\n") == hash_a
-  assert vm_spec.loose_hash("ref: refs/heads/main\n") == ""
-  assert vm_spec.loose_hash("") == ""
-}
-
-pub fn branches_origin_lacks_are_listed_test() {
-  let refs = [
-    #("refs/heads/pushed", hash_a),
-    #("refs/remotes/origin/pushed", hash_a),
-    #("refs/heads/ahead", hash_b),
-    #("refs/remotes/origin/ahead", hash_a),
-    #("refs/heads/loom/session-1", hash_a),
-    #("refs/heads/symbolic", ""),
-    #("refs/remotes/origin/symbolic", ""),
-    #("refs/remotes/origin/only-remote", hash_a),
-  ]
-  assert vm_spec.unpushed_branches(refs)
-    == ["ahead", "loom/session-1", "symbolic"]
-}
-
-pub fn a_later_ref_replaces_an_earlier_one_of_the_same_name_test() {
-  // Packed refs are listed first and loose refs after, so a loose branch that
-  // moved on is the one compared with origin.
-  let refs = [
-    #("refs/heads/main", hash_a),
-    #("refs/remotes/origin/main", hash_a),
-    #("refs/heads/main", hash_b),
-  ]
-  assert vm_spec.unpushed_branches(refs) == ["main"]
-}
-
-pub fn the_removal_refusal_lists_what_would_be_lost_test() {
-  let text =
-    vm_spec.removal_refusal("dev", [
-      #("proj", vm_spec.Unpushed(["loom/s1", "main"])),
-      #("clean", vm_spec.Unpushed([])),
-      #("odd", vm_spec.Unreadable("a link \u{1b}[2J")),
-    ])
+pub fn the_removal_refusal_lists_the_workspaces_test() {
+  let text = vm_spec.removal_refusal("dev", Ok(["proj", "other\u{1b}[2J"]))
+  assert string.contains(text, "  proj")
+  assert string.contains(text, "  other[2J")
+  assert !string.contains(text, "\u{1b}")
   assert string.contains(
     text,
-    "proj: not on origin at the same commit: loom/s1, main",
+    "Fetch committed work first with `loom vm sync`; uncommitted edits cannot be fetched. Run again with --yes to delete it.",
   )
-  assert string.contains(text, "clean: every local branch is on origin")
-  assert string.contains(text, "odd: its branches cannot be read")
-  assert string.contains(text, "loom vm sync --name dev")
-  assert string.contains(text, "--yes")
-  assert !string.contains(text, "\u{1b}")
-}
-
-// --- reading a copy's refs from the host -------------------------------------
-
-fn copy_git(directory: String) -> String {
-  // The guest directory's layout: `root/srv/workspaces/<name>/.git`.
-  let git = directory <> "/root/srv/workspaces/proj/.git"
-  let assert Ok(Nil) =
-    simplifile.create_directory_all(git <> "/refs/heads/loom")
-  let assert Ok(Nil) =
-    simplifile.create_directory_all(git <> "/refs/remotes/origin")
-  git
-}
-
-pub fn a_copys_refs_are_read_as_plain_files_test() {
-  let #(scratch, _, _) = scratch_root()
-  let git = copy_git(scratch)
-  let assert Ok(Nil) =
-    simplifile.write(git <> "/refs/heads/main", hash_a <> "\n")
-  let assert Ok(Nil) =
-    simplifile.write(git <> "/refs/heads/loom/s1", hash_b <> "\n")
-  let assert Ok(Nil) =
-    simplifile.write(git <> "/refs/remotes/origin/main", hash_a <> "\n")
-  let assert Ok(Nil) = simplifile.write(git <> "/refs/heads/x.lock", "junk")
-
-  assert vm_cli.read_inventory(scratch, "proj") == vm_spec.Unpushed(["loom/s1"])
-
-  // A packed ref counts, and a loose ref replaces its packed value.
-  let assert Ok(Nil) =
-    simplifile.write(
-      git <> "/packed-refs",
-      "# pack-refs\n" <> hash_b <> " refs/heads/main\n",
-    )
-  assert vm_cli.read_inventory(scratch, "proj") == vm_spec.Unpushed(["loom/s1"])
-  let assert Ok(Nil) = simplifile.delete(git <> "/refs/heads/main")
-  assert vm_cli.read_inventory(scratch, "proj")
-    == vm_spec.Unpushed(["loom/s1", "main"])
-  let assert Ok(Nil) = simplifile.delete_all([scratch])
-}
-
-pub fn a_link_in_a_copy_makes_it_unreadable_and_is_never_followed_test() {
-  let #(scratch, _, outside) = scratch_root()
-  let git = copy_git(scratch)
-  let assert Ok(Nil) = simplifile.write(outside <> "/ref", hash_a <> "\n")
-
-  // A link as a ref.
-  let assert Ok(Nil) =
-    simplifile.create_symlink(outside <> "/ref", git <> "/refs/heads/linked")
-  let assert vm_spec.Unreadable(reason) = vm_cli.read_inventory(scratch, "proj")
-  assert string.contains(reason, "linked")
-  let assert Ok(Nil) = simplifile.delete(git <> "/refs/heads/linked")
-
-  // A link as the refs directory itself.
-  let assert Ok(Nil) = simplifile.delete_all([git <> "/refs/remotes"])
-  let assert Ok(Nil) =
-    simplifile.create_symlink(outside, git <> "/refs/remotes")
-  let assert vm_spec.Unreadable(reason) = vm_cli.read_inventory(scratch, "proj")
-  assert string.contains(reason, "is a link")
-  let assert Ok(Nil) = simplifile.delete(git <> "/refs/remotes")
-
-  // A link as `.git`, and as a directory above it.
-  let assert Ok(Nil) = simplifile.delete_all([git])
-  let assert Ok(Nil) = simplifile.create_symlink(outside, git)
-  let assert vm_spec.Unreadable(reason) = vm_cli.read_inventory(scratch, "proj")
-  assert string.contains(reason, "is a link")
-  let assert Ok(Nil) = simplifile.delete(git)
-  let assert Ok(Nil) =
-    simplifile.rename(
-      scratch <> "/root/srv/workspaces",
-      scratch <> "/elsewhere",
-    )
-  let assert Ok(Nil) =
-    simplifile.create_symlink(
-      scratch <> "/elsewhere",
-      scratch <> "/root/srv/workspaces",
-    )
-  let assert vm_spec.Unreadable(reason) = vm_cli.read_inventory(scratch, "proj")
-  assert string.contains(reason, "is a link")
-  let assert Ok(Nil) = simplifile.delete_all([scratch])
-}
-
-pub fn an_oversized_or_hostile_ref_tree_is_refused_test() {
-  let #(scratch, _, _) = scratch_root()
-  let git = copy_git(scratch)
-
-  // A ref file far larger than any object name.
-  let assert Ok(Nil) =
-    simplifile.write(git <> "/refs/heads/huge", string.repeat("a", 4096))
-  let assert vm_spec.Unreadable(reason) = vm_cli.read_inventory(scratch, "proj")
-  assert string.contains(reason, "huge")
-  let assert Ok(Nil) = simplifile.delete(git <> "/refs/heads/huge")
-
-  // Directories nested past the depth limit.
-  let deep = git <> "/refs/heads/" <> string.repeat("d/", 12)
-  let assert Ok(Nil) = simplifile.create_directory_all(deep)
-  let assert vm_spec.Unreadable(reason) = vm_cli.read_inventory(scratch, "proj")
-  assert string.contains(reason, "nested too deeply")
-  let assert Ok(Nil) = simplifile.delete_all([scratch])
+  assert string.contains(
+    vm_spec.removal_refusal("dev", Ok([])),
+    "no workspace copy",
+  )
+  assert string.contains(
+    vm_spec.removal_refusal("dev", Error("a link")),
+    "unreadable (a link)",
+  )
 }
 
 // --- undoing an enrolment ----------------------------------------------------
@@ -1513,4 +1361,54 @@ pub fn a_table_that_cannot_be_removed_by_line_refuses_the_rewrite_test() {
       "/h/loom.toml",
     )
   assert string.contains(reason, "is not valid TOML")
+}
+
+pub fn every_recorded_workspace_is_registered_once_test() {
+  assert vm_spec.registered_workspaces(["b", "a"], "c") == ["a", "b", "c"]
+  assert vm_spec.registered_workspaces(["a"], "a") == ["a"]
+
+  // A guest with no record registers the current copy, as before.
+  assert vm_spec.registered_workspaces([], "proj") == ["proj"]
+}
+
+pub fn the_guest_configuration_has_a_row_for_each_workspace_test() {
+  let #(_, executor) = bundles("dev")
+  let text = vm_spec.guest_config(executor, ["a", "b"], vm_spec.GitHubOff, [])
+  let assert Ok(document) = tom.parse(text)
+  let assert Ok("/srv/workspaces/a") =
+    tom.get_string(document, ["workspaces", "a", "root"])
+  let assert Ok("/srv/workspaces/b") =
+    tom.get_string(document, ["workspaces", "b", "root"])
+}
+
+pub fn logs_cap_their_bytes_before_the_capture_test() {
+  assert string.contains(vm_spec.log_tail_script(), "| tail -c 4194304 |")
+  assert string.contains(vm_spec.log_tail_script(), "tail -n \"$1\" \"$2\"")
+  assert string.contains(vm_spec.log_tail_script(), "iconv -c")
+}
+
+pub fn git_versions_are_read_from_their_output_test() {
+  assert vm_spec.git_version("git version 2.54.0 (Apple Git-155)\n")
+    == Ok(#(2, 54, 0))
+  assert vm_spec.git_version("git version 2.46.0.windows.1") == Ok(#(2, 46, 0))
+  assert vm_spec.git_version("git version 2.45") == Ok(#(2, 45, 0))
+  assert vm_spec.git_version("git version 2.47.0-rc1") == Ok(#(2, 47, 0))
+  assert vm_spec.git_version("not git") == Error(Nil)
+  assert vm_spec.git_version("git version next") == Error(Nil)
+}
+
+pub fn sync_needs_git_2_45_1_test() {
+  assert vm_spec.check_git_version("git version 2.45.1\n") == Ok(Nil)
+  assert vm_spec.check_git_version("git version 2.54.0 (Apple Git-155)")
+    == Ok(Nil)
+  assert vm_spec.check_git_version("git version 3.0.0") == Ok(Nil)
+
+  let assert Error(old) = vm_spec.check_git_version("git version 2.45.0")
+  assert string.contains(old, "git 2.45.0")
+  assert string.contains(old, "2.45.1")
+  let assert Error(old) = vm_spec.check_git_version("git version 2.39.5")
+  assert string.contains(old, "git 2.39.5")
+  let assert Error(unknown) = vm_spec.check_git_version("garbage\n")
+  assert string.contains(unknown, "garbage")
+  assert string.contains(unknown, "2.45.1")
 }

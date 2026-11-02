@@ -32,9 +32,9 @@
 //// - the daily verbs: what may be printed of text a guest wrote (`printable`),
 ////   the record of each workspace's developer checkout (`encode_checkouts`,
 ////   `decode_checkouts`), the Git command lines of `sync` (`fetch_arguments`,
-////   `bundle_arguments`), which branches a guest's copy holds that origin lacks
-////   (`packed_refs`, `loose_hash`, `unpushed_branches`) and what `rm` undoes in
-////   the user's `loom.toml` (`read_enrolment`, `plan_teardown`).
+////   `bundle_arguments`), the Git version `sync` requires (`git_version`,
+////   `check_git_version`) and what `rm` undoes in the user's `loom.toml`
+////   (`read_enrolment`, `plan_teardown`).
 ////
 //// ## Flow
 ////
@@ -51,7 +51,7 @@
 ////   the `--allow` list, and `provision_plan` and `boot_budget_ms` decide what
 ////   `--provision` does.
 //// - `printable`, `decode_checkouts`, `only_workspace`, `fetch_arguments`,
-////   `bundle_arguments` and `unpushed_branches` serve the commands that read a
+////   `bundle_arguments` and `check_git_version` serve the commands that read a
 ////   guest's root and sync it; `read_enrolment` and `plan_teardown` decide what
 ////   removing a guest takes out of the user's configuration.
 ////
@@ -1262,21 +1262,39 @@ pub fn guest_files() -> CredentialFiles {
   )
 }
 
-/// The executor's `loom.toml`, written with guest paths only.
-///
-/// The model table is one every daemon's configuration carries and an
-/// executor never uses: it opens no session. `workspace` is the name the copy
-/// is registered under; its root is `workspaces_dir/<workspace>`.
+/// The workspaces the guest's configuration registers: the ones the host's own
+/// `checkouts` record names whose copies are in the root (`recorded`), and the
+/// one this `up` copies, each once, sorted. The guest's root is never listed
+/// for this, because it is untrusted.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let text = vm_spec.guest_config(executor_bundle, "proj", vm_spec.GitHubOff, [])
+/// assert vm_spec.registered_workspaces(["b", "a"], "c") == ["a", "b", "c"]
+/// assert vm_spec.registered_workspaces(["a"], "a") == ["a"]
+/// ```
+pub fn registered_workspaces(
+  recorded: List(String),
+  current: String,
+) -> List(String) {
+  list.sort(list.unique([current, ..recorded]), string.compare)
+}
+
+/// The executor's `loom.toml`, written with guest paths only.
+///
+/// The model table is one every daemon's configuration carries and an
+/// executor never uses: it opens no session. Each of `workspaces` is a name a
+/// copy is registered under; its root is `workspaces_dir/<name>`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let text = vm_spec.guest_config(executor_bundle, ["proj"], vm_spec.GitHubOff, [])
 /// assert string.contains(text, "[workspaces.proj]")
 /// ```
 pub fn guest_config(
   bundle: Bundle,
-  workspace: String,
+  workspaces: List(String),
   github: GitHubAccess,
   allow: List(String),
 ) -> String {
@@ -1286,18 +1304,18 @@ pub fn guest_config(
 
   // The executor's own tables come from the bundle, so its node name, its
   // listen port and its trust in the orchestrator are what the plan said. The
-  // workspace row is the one thing the plan leaves to `up`.
+  // workspace rows are the one thing the plan leaves to `up`.
   string.join(
     list.flatten([
       [unused_model],
       tables,
-      [
+      list.map(workspaces, fn(workspace) {
         "[workspaces."
         <> distribution_bundle.toml_key(workspace)
         <> "]\nroot = "
         <> distribution_bundle.toml_string(workspaces_dir <> "/" <> workspace)
-        <> "\n",
-      ],
+        <> "\n"
+      }),
       tools_table(github, allow),
     ]),
     "\n",
@@ -2341,17 +2359,133 @@ pub fn fetch_arguments(checkout: String, copy: String) -> List(String) {
   ]
 }
 
-/// The `git` arguments that bundle every ref of the developer's checkout into
-/// `file`.
+/// The `git` arguments that bundle the local branches of the developer's
+/// checkout into `file`. `--branches` and not `--all`, so the stash,
+/// remote-tracking refs, notes and tags stay on the host.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// assert vm_spec.bundle_arguments("/src/proj", "/vm/x.bundle")
-///   == ["-C", "/src/proj", "bundle", "create", "--quiet", "/vm/x.bundle", "--all"]
+///   == ["-C", "/src/proj", "bundle", "create", "--quiet", "/vm/x.bundle", "--branches"]
 /// ```
 pub fn bundle_arguments(checkout: String, file: String) -> List(String) {
-  ["-C", checkout, "bundle", "create", "--quiet", file, "--all"]
+  ["-C", checkout, "bundle", "create", "--quiet", file, "--branches"]
+}
+
+/// The oldest Git `sync` fetches with. The fetch's `-c` settings do not reach
+/// `git-upload-pack`, because the local transport unsets
+/// `GIT_CONFIG_PARAMETERS` for it, so what stops a copy's planted
+/// `extensions.partialclone`, promisor remote and `core.sshCommand` from running
+/// a command on the host is upload-pack's own refusal to lazy fetch, which Git
+/// 2.45.1 added.
+pub const git_floor = #(2, 45, 1)
+
+/// The version in the output of `git version`, such as `git version 2.54.0
+/// (Apple Git-155)` or `git version 2.46.0.windows.1`: the first three numbers
+/// of the first word after `git version`, a missing patch being zero and a
+/// suffix such as `-rc1` ignored.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.git_version("git version 2.54.0 (Apple Git-155)\n") == Ok(#(2, 54, 0))
+/// ```
+pub fn git_version(output: String) -> Result(#(Int, Int, Int), Nil) {
+  use rest <- result.try(
+    string.split_once(string.trim(output), "git version ")
+    |> result.map(fn(parts) { parts.1 }),
+  )
+
+  // The version is the word after `git version`; a build suffix follows it.
+  let word = case string.split_once(rest, " ") {
+    Ok(#(first, _)) -> first
+    Error(Nil) -> rest
+  }
+
+  // Each dotted part contributes its leading digits.
+  case list.map(string.split(word, "."), leading_int) {
+    [Ok(major), Ok(minor), Ok(patch), ..] -> Ok(#(major, minor, patch))
+    [Ok(major), Ok(minor)] -> Ok(#(major, minor, 0))
+    _ -> Error(Nil)
+  }
+}
+
+/// A version as one number that orders as the version does, for a minor or
+/// patch below a thousand.
+fn rank(version: #(Int, Int, Int)) -> Int {
+  version.0 * 1_000_000 + version.1 * 1000 + version.2
+}
+
+/// The leading decimal digits of `text` as a number.
+fn leading_int(text: String) -> Result(Int, Nil) {
+  string.to_graphemes(text)
+  |> list.take_while(string.contains("0123456789", _))
+  |> string.concat
+  |> int.parse
+}
+
+/// Whether the output of `git version` names a Git that `sync` may fetch with:
+/// one line naming the version found and the one required otherwise.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.check_git_version("git version 2.45.1\n") == Ok(Nil)
+/// assert result.is_error(vm_spec.check_git_version("git version 2.45.0\n"))
+/// ```
+pub fn check_git_version(output: String) -> Result(Nil, String) {
+  let required = "2.45.1"
+  let found = printable(string.trim(output))
+
+  let floor = rank(git_floor)
+
+  // A version that cannot be read is refused as if it were old.
+  case git_version(output) {
+    Ok(#(major, minor, patch)) ->
+      case rank(#(major, minor, patch)) >= floor {
+        True -> Ok(Nil)
+        False ->
+          Error(
+            "git "
+            <> int.to_string(major)
+            <> "."
+            <> int.to_string(minor)
+            <> "."
+            <> int.to_string(patch)
+            <> " is too old for `loom vm sync`, which needs git "
+            <> required
+            <> " or newer to fetch from an untrusted repository safely",
+          )
+      }
+    Error(Nil) ->
+      Error(
+        "cannot read a version from \""
+        <> found
+        <> "\"; `loom vm sync` needs git "
+        <> required
+        <> " or newer",
+      )
+  }
+}
+
+/// The most bytes of the console log `logs` prints, taken from the end.
+pub const log_bytes_limit = 4_194_304
+
+/// The shell script `logs` runs with the line count as `$1` and the log as
+/// `$2`: the last lines, at most `log_bytes_limit` bytes of them, with what is
+/// not UTF-8 dropped. A guest writes the console, so one line may be any size,
+/// and the byte cap is applied before the text reaches the BEAM.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(vm_spec.log_tail_script(), "tail -c 4194304")
+/// ```
+pub fn log_tail_script() -> String {
+  "tail -n \"$1\" \"$2\" | tail -c "
+  <> int.to_string(log_bytes_limit)
+  <> " | iconv -c -f UTF-8 -t UTF-8 || true"
 }
 
 /// The workspace `sync` acts on: the one asked for when the guest holds it,
@@ -2399,138 +2533,23 @@ fn held_names(held: List(String)) -> String {
   }
 }
 
-// --- the branches a copy holds -----------------------------------------------
-
-/// What `rm` could learn of the branches in one workspace copy.
-pub type Inventory {
-  /// The local branches that origin lacks, or has at another commit. Empty
-  /// when every local branch is on origin.
-  Unpushed(branches: List(String))
-
-  /// The copy's refs could not be read, and why.
-  Unreadable(reason: String)
-}
-
-/// Whether text is a Git object name: 40 or 64 lowercase hexadecimal digits.
-fn object_name(text: String) -> Bool {
-  let size = string.byte_size(text)
-  { size == 40 || size == 64 }
-  && list.all(string.to_graphemes(text), string.contains("0123456789abcdef", _))
-}
-
-/// The refs a `packed-refs` file lists, as `(ref name, object name)`. A guest
-/// wrote the file, so every line that is not a well-formed `<object> refs/...`
-/// pair is skipped: comments, peeled lines and anything else.
+/// What `rm` says when it was not given `--yes`: the workspace copies that
+/// would be lost, and the way to go on. A listing that failed is said as such.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert vm_spec.packed_refs("# pack-refs\n" <> hash <> " refs/heads/main\n")
-///   == [#("refs/heads/main", hash)]
-/// ```
-pub fn packed_refs(text: String) -> List(#(String, String)) {
-  string.split(text, "\n")
-  |> list.filter_map(fn(line) {
-    case string.split_once(line, " ") {
-      Ok(#(hash, name)) ->
-        case object_name(hash) && string.starts_with(name, "refs/") {
-          True -> Ok(#(name, hash))
-          False -> Error(Nil)
-        }
-      Error(Nil) -> Error(Nil)
-    }
-  })
-}
-
-/// The object name a loose ref file holds, or an empty string for a symbolic
-/// ref or any other content, which never equals a real object name.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert vm_spec.loose_hash("ref: refs/heads/main\n") == ""
-/// ```
-pub fn loose_hash(text: String) -> String {
-  let line = string.trim(text)
-
-  // Anything but a bare object name is kept out of every comparison.
-  case object_name(line) {
-    True -> line
-    False -> ""
-  }
-}
-
-/// The local branches among `refs` that `refs/remotes/origin/*` does not hold
-/// at the same commit, sorted. A branch whose origin ref names another commit
-/// may be ahead of origin, so it is listed rather than assumed pushed. Refs
-/// that appear twice keep their last value, which is how a loose ref replaces
-/// a packed one when the caller lists packed refs first.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let refs = [#("refs/heads/a", h1), #("refs/remotes/origin/a", h1), #("refs/heads/b", h1)]
-/// assert vm_spec.unpushed_branches(refs) == ["b"]
-/// ```
-pub fn unpushed_branches(refs: List(#(String, String))) -> List(String) {
-  let latest =
-    list.fold(refs, dict.new(), fn(found, ref) {
-      dict.insert(found, ref.0, ref.1)
-    })
-
-  // A branch is pushed when origin's ref of the same name holds its commit.
-  dict.to_list(latest)
-  |> list.filter_map(fn(ref) { unpushed_branch(latest, ref.0, ref.1) })
-  |> list.sort(string.compare)
-}
-
-/// The branch name when `ref` is a local branch that origin does not hold at
-/// the same commit, and nothing for every other ref.
-fn unpushed_branch(
-  latest: dict.Dict(String, String),
-  ref: String,
-  hash: String,
-) -> Result(String, Nil) {
-  let local = "refs/heads/"
-  let name = string.drop_start(ref, string.length(local))
-
-  // A ref outside `refs/heads/` is not a branch, and a symbolic ref's empty
-  // hash never equals origin's, so it is listed.
-  case string.starts_with(ref, local), dict.get(latest, origin_ref(name)) {
-    False, _ -> Error(Nil)
-    True, Ok(pushed) if pushed == hash && hash != "" -> Error(Nil)
-    True, _ -> Ok(name)
-  }
-}
-
-/// The name of the ref origin would hold for the local branch `name`.
-fn origin_ref(name: String) -> String {
-  "refs/remotes/origin/" <> name
-}
-
-/// What `rm` says when it was not given `--yes`: what the guest holds that
-/// would be lost, and the way to go on.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert string.contains(
-///   vm_spec.removal_refusal("vm", [#("proj", vm_spec.Unpushed(["main"]))]),
-///   "--yes",
-/// )
+/// assert string.contains(vm_spec.removal_refusal("vm", Ok(["proj"])), "--yes")
 /// ```
 pub fn removal_refusal(
   name: String,
-  copies: List(#(String, Inventory)),
+  copies: Result(List(String), String),
 ) -> String {
-  // A guest with no copy says so rather than listing nothing.
+  // A guest with no copy, or whose copies cannot be listed, says so.
   let held = case copies {
-    [] -> ["  no workspace copy"]
-    _ ->
-      list.map(copies, fn(copy) {
-        let #(workspace, inventory) = copy
-        "  " <> printable(workspace) <> ": " <> describe_inventory(inventory)
-      })
+    Ok([]) -> ["  no workspace copy"]
+    Ok(names) -> list.map(names, fn(workspace) { "  " <> printable(workspace) })
+    Error(reason) -> ["  unreadable (" <> printable(reason) <> ")"]
   }
 
   string.join(
@@ -2544,26 +2563,12 @@ pub fn removal_refusal(
       ],
       held,
       [
-        "Fetch committed work first with `loom vm sync --name "
-        <> name
-        <> "`; uncommitted edits cannot be fetched. Run it again with --yes "
-        <> "to delete the guest.",
+        "Fetch committed work first with `loom vm sync`; uncommitted edits "
+        <> "cannot be fetched. Run again with --yes to delete it.",
       ],
     ]),
     "\n",
   )
-}
-
-/// One workspace copy's line in the refusal.
-fn describe_inventory(inventory: Inventory) -> String {
-  case inventory {
-    Unreadable(reason) ->
-      "its branches cannot be read (" <> printable(reason) <> ")"
-    Unpushed([]) -> "every local branch is on origin"
-    Unpushed(branches) ->
-      "not on origin at the same commit: "
-      <> string.join(list.map(branches, printable), ", ")
-  }
 }
 
 // --- undoing an enrolment ----------------------------------------------------

@@ -3144,10 +3144,9 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             its executor serves. The guest keeps running after this command
             exits. NAME defaults to vm. DIR defaults to the current directory;
             its copy, .git included, is registered in the guest under the
-            directory's own name, and only the latest up's copy is registered:
-            another directory's copy joins the guest's root but needs its own
-            up (with the guest stopped) before `loom --executor` can name it.
-            A linked Git worktree is copied too, and its
+            directory's own name. Every copy an earlier up recorded stays
+            registered, so a stopped guest brought up with another DIR serves
+            both (a running guest refuses up). A linked Git worktree is copied too, and its
             copy gets a repository of its own. With no artifacts installed it
             first runs `setup` for this release. --mem is the guest's memory in MiB (default
             2048) and --cpus its virtual CPUs (default 4). --config is the
@@ -3178,7 +3177,8 @@ Run one standing executor in a microVM and use it from `loom --executor`.
   status    Say whether the guest runs, where it is registered and what it
             holds.
   logs      Print the last lines of the guest's console log, loom-vm.log:
-            100, or --lines N. There is no follow mode.
+            100, or --lines N, and at most the last 4 MiB of them. There is
+            no follow mode.
   list      Print one line for each guest under the vm home: its name,
             whether it runs, and its workspaces.
   rm        Delete a stopped guest and undo its enrolment. It removes
@@ -3197,7 +3197,9 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             guest's root is untrusted, so Git runs in your checkout and only
             reads the copy as a remote. Uncommitted edits are not fetched.
             --workspace NAME picks the copy when the guest holds several.
-            --to-guest goes the other way: it bundles your checkout's refs into
+            It needs git 2.45.1 or newer. --to-guest goes the other way: it
+            bundles your checkout's local branches (not tags, remote-tracking
+            refs or the stash) into
             /srv/host-refs/NAME.bundle in the guest and prints the jailed
             command that fetches them as refs/remotes/host/*.
 

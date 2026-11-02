@@ -40,7 +40,7 @@
 //// terminal escape in it. The commands that read it never run `git` with a
 //// working directory inside it (`sync` fetches into the developer's checkout
 //// with the copy as the remote), read refs as plain bounded files without
-//// following a link (`read_inventory`), write only through `make_inside`, and
+//// following a link (`plain_chain`), write only through `make_inside`, and
 //// print what they read through `vm_spec.printable`.
 ////
 //// ## Where `loom-vm` comes from
@@ -93,7 +93,6 @@ import client/vm_spec.{
 }
 import core/json as core_json
 import filepath
-import gleam/bit_array
 import gleam/bool
 import gleam/int
 import gleam/io
@@ -139,10 +138,9 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             its executor serves. The guest keeps running after this command
             exits. NAME defaults to vm. DIR defaults to the current directory;
             its copy, .git included, is registered in the guest under the
-            directory's own name, and only the latest up's copy is registered:
-            another directory's copy joins the guest's root but needs its own
-            up (with the guest stopped) before `loom --executor` can name it.
-            A linked Git worktree is copied too, and its
+            directory's own name. Every copy an earlier up recorded stays
+            registered, so a stopped guest brought up with another DIR serves
+            both (a running guest refuses up). A linked Git worktree is copied too, and its
             copy gets a repository of its own. With no artifacts installed it
             first runs `setup` for this release. --mem is the guest's memory in MiB (default
             2048) and --cpus its virtual CPUs (default 4). --config is the
@@ -173,7 +171,8 @@ Run one standing executor in a microVM and use it from `loom --executor`.
   status    Say whether the guest runs, where it is registered and what it
             holds.
   logs      Print the last lines of the guest's console log, loom-vm.log:
-            100, or --lines N. There is no follow mode.
+            100, or --lines N, and at most the last 4 MiB of them. There is
+            no follow mode.
   list      Print one line for each guest under the vm home: its name,
             whether it runs, and its workspaces.
   rm        Delete a stopped guest and undo its enrolment. It removes
@@ -192,7 +191,9 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             guest's root is untrusted, so Git runs in your checkout and only
             reads the copy as a remote. Uncommitted edits are not fetched.
             --workspace NAME picks the copy when the guest holds several.
-            --to-guest goes the other way: it bundles your checkout's refs into
+            It needs git 2.45.1 or newer. --to-guest goes the other way: it
+            bundles your checkout's local branches (not tags, remote-tracking
+            refs or the stash) into
             /srv/host-refs/NAME.bundle in the guest and prints the jailed
             command that fetches them as refs/remotes/host/*.
 
@@ -1010,16 +1011,36 @@ fn stage(
   use platform <- result.try(vm_spec.platform_of(uname))
   use Nil <- result.try(prepare_root(manifest, guest, platform, options))
   use Nil <- result.try(record_allow(guest, options.allow))
+  let registered = registered_workspaces(guest, workspace)
   use Nil <- result.try(stage_node(
     guest.root,
     executor,
-    workspace.name,
+    registered,
     options.github,
     options.allow,
   ))
   use Nil <- result.try(stage_script(guest.root, plan))
   use copy <- result.try(copy_workspace(guest.root, workspace, platform))
   record_checkout(guest, workspace, copy)
+}
+
+/// The workspaces the guest's configuration registers: this `up`'s, and every
+/// one the host's own `checkouts` record names whose copy is in the root, so an
+/// earlier `up`'s copy still resolves. The names come from the record, which the
+/// host wrote, and never from a listing of the root, which the guest wrote. A
+/// guest with no usable record registers the current copy alone.
+fn registered_workspaces(
+  guest: Instance,
+  workspace: Workspace,
+) -> List(String) {
+  let recorded =
+    result.unwrap(read_checkouts(guest), [])
+    |> list.map(fn(entry) { entry.0 })
+    |> list.filter(fn(name) {
+      bootstrap.path_exists(guest.root <> vm_spec.workspaces_dir <> "/" <> name)
+    })
+
+  vm_spec.registered_workspaces(recorded, workspace.name)
 }
 
 /// Copies the developer's script into the guest root, where the init runs it
@@ -1168,7 +1189,7 @@ fn remove_root(guest: Instance) -> Result(Nil, String) {
 fn stage_node(
   root: String,
   executor: Bundle,
-  workspace: String,
+  workspaces: List(String),
   github: vm_spec.GitHubAccess,
   allow: List(String),
 ) -> Result(Nil, String) {
@@ -1190,7 +1211,7 @@ fn stage_node(
   ))
   write_private(
     node <> "/loom.toml",
-    vm_spec.guest_config(executor, workspace, github, allow),
+    vm_spec.guest_config(executor, workspaces, github, allow),
   )
 }
 
@@ -2076,12 +2097,14 @@ fn root_line(guest: Instance) -> String {
   }
 }
 
-/// The workspace copies the guest's root holds. Only the one the latest `up`
-/// registered in the guest's configuration is what `--workspace` can name to
-/// `loom --executor`; the others are copies on disk.
+/// The workspace copies the guest's root holds, which `loom --executor` names
+/// with `--workspace` when the host's `checkouts` record knows them.
 fn workspace_line(guest: Instance) -> String {
+  // A directory that cannot be read safely is not an empty one: `none` would
+  // tell the user the guest holds nothing.
   case workspace_names(guest) {
-    Ok([]) | Error(_) -> "none"
+    Ok([]) -> "none"
+    Error(_) -> "unreadable"
     Ok(names) -> string.join(names, ", ")
   }
 }
@@ -2200,11 +2223,6 @@ fn workspace_names(guest: Instance) -> Result(List(String), String) {
 
 // --- logs --------------------------------------------------------------------
 
-// The last lines of a file, with whatever is not UTF-8 dropped. The console is
-// the guest's own output, so it may hold any byte; `iconv -c` keeps the result
-// text, and `|| true` is there because it exits nonzero when it dropped some.
-const tail_script = "tail -n \"$1\" \"$2\" | iconv -c -f UTF-8 -t UTF-8 || true"
-
 /// Prints the last `lines` lines of the guest's console log.
 fn logs(name: String, lines: Int) -> Result(String, String) {
   use vm_home <- result.try(vm_home())
@@ -2224,7 +2242,7 @@ fn logs(name: String, lines: Int) -> Result(String, String) {
 
   use text <- result.try(tool(
     "sh",
-    ["-c", tail_script, "sh", int.to_string(lines), guest.log],
+    ["-c", vm_spec.log_tail_script(), "sh", int.to_string(lines), guest.log],
     within: quick_ms,
   ))
 
@@ -2310,17 +2328,6 @@ type RemovalPlan {
   )
 }
 
-// How many refs, how deep and how large a ref file `rm` reads from a copy that
-// a guest wrote. The limits are far above any real repository's branches and
-// exist so a hostile tree costs one refusal and not the host's memory.
-const refs_budget = 5000
-
-const refs_depth = 8
-
-const ref_file_limit = 512
-
-const packed_refs_limit = 4_194_304
-
 /// Deletes a stopped guest and undoes its enrolment.
 fn remove(
   name: String,
@@ -2358,12 +2365,12 @@ fn remove(
   )
   use plan <- result.try(removal_plan(guest, name, config, home))
 
-  // Nothing is changed until the user has said yes, and the refusal is the
-  // inventory of what the answer would lose.
+  // Nothing is changed until the user has said yes, and the refusal names the
+  // copies the answer would lose.
   case consent {
     vm_spec.Unconfirmed ->
       Error(
-        vm_spec.removal_refusal(name, inventory(guest))
+        vm_spec.removal_refusal(name, held_workspaces(guest))
         <> "\n"
         <> removal_preview(plan, home),
       )
@@ -2523,188 +2530,10 @@ fn enrolment_notice(plan: RemovalPlan) -> List(String) {
   }
 }
 
-/// The branches each workspace copy holds that origin lacks, read as plain
-/// files and never with `git`.
-fn inventory(guest: Instance) -> List(#(String, vm_spec.Inventory)) {
-  case workspace_names(guest) {
-    Error(reason) -> [#("(workspaces)", vm_spec.Unreadable(reason))]
-    Ok(names) ->
-      list.map(names, fn(name) {
-        #(name, read_inventory(guest.directory, name))
-      })
-  }
-}
-
-/// One copy's local branches that origin lacks at the same commit.
-///
-/// The copy is untrusted, so each directory on the way must be a plain
-/// directory, each ref a plain file of bounded size, and any link, special
-/// file or oversized tree makes the whole copy unreadable instead of partly
-/// read. Packed refs come first, so a loose ref replaces its packed value as
-/// Git reads them. `directory` is the guest's directory under the vm home.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // vm_cli.read_inventory("/vm/dev", "proj")
-/// ```
-@internal
-pub fn read_inventory(
-  directory: String,
-  workspace: String,
-) -> vm_spec.Inventory {
-  let read = {
-    use git <- result.try(
-      plain_chain(directory, ["root", "srv", "workspaces", workspace, ".git"]),
-    )
-    use packed <- result.try(packed_refs(git <> "/packed-refs"))
-    use heads <- result.try(loose_refs(git, ["refs", "heads"], "refs/heads"))
-    use origin <- result.try(loose_refs(
-      git,
-      ["refs", "remotes", "origin"],
-      "refs/remotes/origin",
-    ))
-    Ok(vm_spec.unpushed_branches(list.flatten([packed, heads, origin])))
-  }
-
-  // One unreadable ref makes the whole copy unreadable, and says why.
-  case read {
-    Ok(branches) -> vm_spec.Unpushed(branches)
-    Error(reason) -> vm_spec.Unreadable(reason)
-  }
-}
-
-/// The refs in a copy's `packed-refs`, none when it has no such file.
-fn packed_refs(path: String) -> Result(List(#(String, String)), String) {
-  case simplifile.link_info(path) {
-    Error(simplifile.Enoent) -> Ok([])
-    Error(error) ->
-      Error(
-        vm_spec.printable(path)
-        <> " is unreadable: "
-        <> simplifile.describe_error(error),
-      )
-    Ok(info) ->
-      case simplifile.file_info_type(info) {
-        simplifile.File -> {
-          use bytes <- result.try(
-            bootstrap.read_bounded(path, packed_refs_limit)
-            |> result.map_error(fn(reason) {
-              vm_spec.printable(path) <> ": " <> reason
-            }),
-          )
-          Ok(vm_spec.packed_refs(
-            bit_array.to_string(bytes) |> result.unwrap(""),
-          ))
-        }
-        simplifile.Directory | simplifile.Symlink | simplifile.Other ->
-          Error(vm_spec.printable(path) <> " is a link or not a plain file")
-      }
-  }
-}
-
-/// The loose refs below `segments` under a copy's `.git`, named from
-/// `prefix`. A directory that does not exist holds none, and a link anywhere on
-/// the way is refused: the walk would otherwise read the link's target.
-fn loose_refs(
-  git: String,
-  segments: List(String),
-  prefix: String,
-) -> Result(List(#(String, String)), String) {
-  use found <- result.try(present_chain(git, segments))
-
-  // A missing directory holds no refs, as a fresh repository has no remotes.
-  case found {
-    None -> Ok([])
-    Some(directory) ->
-      walk_refs(directory, prefix, refs_depth, refs_budget)
-      |> result.map(fn(read) { read.0 })
-  }
-}
-
-/// `plain_chain`, except that a component that does not exist ends the chain
-/// with `None` instead of an error.
-fn present_chain(
-  base: String,
-  segments: List(String),
-) -> Result(option.Option(String), String) {
-  list.try_fold(segments, Some(base), fn(found, segment) {
-    // Once a component is absent, everything below it is too.
-    case found {
-      None -> Ok(None)
-      Some(path) ->
-        case simplifile.link_info(path <> "/" <> segment) {
-          Error(simplifile.Enoent) -> Ok(None)
-          Ok(_) | Error(_) -> plain_chain(path, [segment]) |> result.map(Some)
-        }
-    }
-  })
-}
-
-/// Reads one directory of loose refs and the directories below it, and answers
-/// the refs with the entries left of the budget.
-fn walk_refs(
-  directory: String,
-  prefix: String,
-  depth: Int,
-  budget: Int,
-) -> Result(#(List(#(String, String)), Int), String) {
-  use <- bool.lazy_guard(depth < 0, fn() {
-    Error(vm_spec.printable(directory) <> " is nested too deeply")
-  })
-  use entries <- result.try(
-    bootstrap.list_directory_bounded(directory, budget)
-    |> result.map_error(fn(reason) {
-      vm_spec.printable(directory) <> ": " <> reason
-    }),
-  )
-
-  // Every entry spends one of the budget, so the walk as a whole is bounded,
-  // not only each directory.
-  list.try_fold(entries, #([], budget - list.length(entries)), fn(state, entry) {
-    let #(found, left) = state
-    let path = directory <> "/" <> entry
-    let ref = prefix <> "/" <> entry
-    read_ref_entry(path, ref, depth, left)
-    |> result.map(fn(read) { #(list.append(read.0, found), read.1) })
-  })
-}
-
-/// One entry of a refs directory: a plain file is a ref, a plain directory is
-/// walked, a lock file is a write in progress and skipped, and anything else
-/// refuses the copy.
-fn read_ref_entry(
-  path: String,
-  ref: String,
-  depth: Int,
-  left: Int,
-) -> Result(#(List(#(String, String)), Int), String) {
-  case simplifile.link_info(path) |> result.map(simplifile.file_info_type) {
-    Ok(simplifile.File) ->
-      case string.ends_with(path, ".lock") {
-        True -> Ok(#([], left))
-        False -> {
-          use bytes <- result.try(
-            bootstrap.read_bounded(path, ref_file_limit)
-            |> result.map_error(fn(reason) {
-              vm_spec.printable(path) <> ": " <> reason
-            }),
-          )
-          let hash =
-            vm_spec.loose_hash(bit_array.to_string(bytes) |> result.unwrap(""))
-          Ok(#([#(ref, hash)], left))
-        }
-      }
-    Ok(simplifile.Directory) -> walk_refs(path, ref, depth - 1, left)
-    Ok(simplifile.Symlink) | Ok(simplifile.Other) ->
-      Error(vm_spec.printable(path) <> " is a link or a special file")
-    Error(error) ->
-      Error(
-        vm_spec.printable(path)
-        <> " is unreadable: "
-        <> simplifile.describe_error(error),
-      )
-  }
+/// The workspace copies a guest holds, for the refusal, or why they cannot be
+/// listed.
+fn held_workspaces(guest: Instance) -> Result(List(String), String) {
+  workspace_names(guest)
 }
 
 // --- sync --------------------------------------------------------------------
@@ -2804,6 +2633,10 @@ fn fetch_from_guest(
   copy: String,
   checkout: String,
 ) -> Result(String, String) {
+  // The `-c` settings do not reach upload-pack, so the fetch relies on its own
+  // rules, which an old Git lacks.
+  use version <- result.try(run_git(["version"]))
+  use Nil <- result.try(vm_spec.check_git_version(version))
   use output <- result.try(run_git(vm_spec.fetch_arguments(checkout, copy)))
 
   // A fetch with nothing new prints nothing, which would read as a failure.
@@ -2897,9 +2730,18 @@ fn run_git(arguments: List(String)) -> Result(String, String) {
     ffi_os.find_executable("git")
     |> result.map_error(fn(_) { "git is not on PATH" }),
   )
+  use env <- result.try(
+    ffi_os.find_executable("env")
+    |> result.map_error(fn(_) { "env is not on PATH" }),
+  )
+
+  // `env` sets `GIT_NO_LAZY_FETCH` because neither runner takes an
+  // environment; it tells every Git process of the fetch, `git-upload-pack`
+  // included, not to run a promisor remote's fetch on a copy's behalf.
+  let wrapped = ["GIT_NO_LAZY_FETCH=1", git, ..arguments]
 
   // Only status zero is success, and the refusal shows Git's own words.
-  case bootstrap.run_captured(git, arguments, copy_budget_ms) {
+  case bootstrap.run_captured(env, wrapped, copy_budget_ms) {
     Ok(bootstrap.Captured(0, output)) -> Ok(output)
     Ok(bootstrap.Captured(status, output)) ->
       Error(

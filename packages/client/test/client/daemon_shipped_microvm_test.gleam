@@ -48,12 +48,13 @@
 ////   `uploadpack.packObjectsHook`, a credential helper, each a command that
 ////   touches a marker on the host), `vm sync` still succeeds and no marker
 ////   appears; a control repository shows the markers would have been writable.
-////   A host commit made after `up` reaches the guest through `vm sync
-////   --to-guest`, and a jailed `git fetch` of the bundle reads it back.
+////   A stopped guest brought up with a second directory registers both
+////   workspaces, and a session in each runs in its own copy. A host commit made
+////   after `up` reaches the guest through `vm sync --to-guest`, and a jailed `git fetch` of the bundle reads it back.
 //// - `vm rm` undoes an enrolment. A second guest in a home that holds another
 ////   deployment is refused naming `loom vm rm`, and removing it leaves the
 ////   other deployment's tables and cookie. Without `--yes` a removal lists the
-////   copy's branches that origin lacks and changes nothing. With it, the
+////   workspaces and changes nothing. With it, the
 ////   idle-daemon step's guest loses its `[executors.<name>]` and
 ////   `[distribution]` tables but keeps a cookie that is not its own, and the
 ////   failing-script step's guest, whose cookie is the home's, loses that too.
@@ -580,6 +581,14 @@ const fetch_answer = "fetched in the guest"
 
 // The command `vm sync --to-guest` prints for the copy this fixture's guest
 // holds, which the jailed call then runs word for word.
+const where_prompt_repo = "where is the first workspace"
+
+const where_answer_repo = "first workspace found"
+
+const where_prompt_other = "where is the second workspace"
+
+const where_answer_other = "second workspace found"
+
 const guest_fetch =
   "git fetch /srv/host-refs/repo.bundle '+refs/heads/*:refs/remotes/host/*'"
 
@@ -589,8 +598,11 @@ fn marker_dir(run: Run) -> String {
   run.directory <> "/hostile-markers"
 }
 
-// Where, inside the guest, the planted hooks directory is.
-const hostile_hooks = "/srv/workspaces/repo/.git/hostile-hooks"
+// The hooks directory `core.hooksPath` names: a host path, like every other
+// setting, whose `reference-transaction` hook touches a marker.
+fn hostile_hooks(run: Run) -> String {
+  run.directory <> "/hostile-hooks"
+}
 
 fn commit_command() -> String {
   let identity = "-c user.name=guest -c user.email=guest@loom.invalid "
@@ -609,18 +621,10 @@ fn commit_command() -> String {
 // marker there.
 fn hostile_command(run: Run) -> String {
   let mark = marker_dir(run)
-  "mkdir -p "
-  <> hostile_hooks
-  <> " && printf '#!/bin/sh\\ntouch "
-  <> mark
-  <> "/hook-reference-transaction\\nexit 0\\n' > "
-  <> hostile_hooks
-  <> "/reference-transaction && chmod +x "
-  <> hostile_hooks
-  <> "/reference-transaction && printf '[core]\\n\\tfsmonitor = touch "
+  "printf '[core]\\n\\tfsmonitor = touch "
   <> mark
   <> "/fsmonitor\\n\\thooksPath = "
-  <> hostile_hooks
+  <> hostile_hooks(run)
   <> "\\n\\tsshCommand = touch "
   <> mark
   <> "/ssh\\n\\tpager = touch "
@@ -630,6 +634,11 @@ fn hostile_command(run: Run) -> String {
   <> "/packhook\\n[credential]\\n\\thelper = !touch "
   <> mark
   <> "/credential\\n' >> .git/config; echo hostile_planted=$(grep -c touch .git/config); true"
+}
+
+// Names the copy the call runs in, and what it holds.
+fn where_command() -> String {
+  "echo \"cwd=$(pwd)\"; head -n 1 README.md; true"
 }
 
 fn fetch_command() -> String {
@@ -647,6 +656,10 @@ fn daily_exchanges(run: Run) -> List(provider.Exchange) {
     reply_after("hostile-call", hostile_answer),
     bash_exchange(fetch_prompt, "fetch-call", fetch_command()),
     reply_after("fetch-call", fetch_answer),
+    bash_exchange(where_prompt_repo, "where-repo-call", where_command()),
+    reply_after("where-repo-call", where_answer_repo),
+    bash_exchange(where_prompt_other, "where-other-call", where_command()),
+    reply_after("where-other-call", where_answer_other),
   ]
 }
 
@@ -676,18 +689,13 @@ fn jailed_turn(
   running: remote_daemons.Running,
   control: remote_daemons.Control,
   id: Int,
+  workspace: String,
   key: String,
   prompt: String,
   answer: String,
 ) -> Nil {
   let #(session, settled) =
-    remote_daemons.create_and_settle(
-      control,
-      id,
-      key,
-      run.name,
-      remote_pair.workspace_name,
-    )
+    remote_daemons.create_and_settle(control, id, key, run.name, workspace)
   assert remote_daemons.settled_state(settled) == "resident"
   remote_pair.converse_for(
     remote_pair.Opened(orchestrator: running, control:, session:),
@@ -714,6 +722,7 @@ fn daily_verbs(
     running,
     control,
     400,
+    remote_pair.workspace_name,
     "e2e-commit",
     commit_prompt,
     commit_answer,
@@ -742,6 +751,7 @@ fn daily_verbs(
     running,
     control,
     600,
+    remote_pair.workspace_name,
     "e2e-hostile",
     hostile_prompt,
     hostile_answer,
@@ -783,9 +793,69 @@ fn daily_verbs(
     running,
     control,
     800,
+    remote_pair.workspace_name,
     "e2e-fetch",
     fetch_prompt,
     fetch_answer,
+  )
+  both_workspaces(run, running, control)
+}
+
+// A stopped guest brought up with another directory serves both: the host's
+// `checkouts` record keeps the first copy registered, so a session in each
+// workspace settles and runs in its own copy.
+fn both_workspaces(
+  run: Run,
+  running: remote_daemons.Running,
+  control: remote_daemons.Control,
+) -> Nil {
+  let other = run.directory <> "/other"
+  let assert Ok(Nil) = simplifile.create_directory_all(other)
+    as "the second repository directory is created"
+  let assert Ok(Nil) = simplifile.write(other <> "/README.md", "the other\n")
+    as "the second repository has a file"
+  git_in(other, ["init", "-q", "-b", "main"])
+  git_in(other, ["add", "README.md"])
+  git_in(other, [
+    "-c",
+    "user.name=Loom Fixture",
+    "-c",
+    "user.email=fixture@loom.invalid",
+    "commit",
+    "-q",
+    "-m",
+    "initial",
+  ])
+
+  let down = vm(run, ["down", "--name", run.name])
+  assert string.contains(down.output, "Stopped the guest " <> run.name)
+  let resumed = up(run, ["--workspace", other])
+  assert string.contains(
+    resumed,
+    "loom --executor " <> run.name <> " --workspace other",
+  )
+  let status = expect_ok(vm(run, ["status", "--name", run.name]), "vm status")
+  assert string.contains(status, "workspaces: other, repo")
+
+  jailed_turn(
+    run,
+    running,
+    control,
+    1000,
+    remote_pair.workspace_name,
+    "e2e-ws-repo",
+    where_prompt_repo,
+    where_answer_repo,
+  )
+  jailed_turn(
+    run,
+    running,
+    control,
+    1200,
+    "other",
+    "e2e-ws-other",
+    where_prompt_other,
+    where_answer_other,
   )
   Nil
 }
@@ -849,6 +919,38 @@ fn assert_markers_would_fire(run: Run) -> Nil {
   assert simplifile.is_file(marker_dir(run) <> "/control") == Ok(True)
   let assert Ok(Nil) = simplifile.delete(marker_dir(run) <> "/control")
     as "the control marker is removed"
+
+  // The same for the hooks directory the hostile configuration names: a commit
+  // in the control repository runs its `reference-transaction` hook.
+  let hooks = hostile_hooks(run)
+  let assert Ok(Nil) = simplifile.create_directory_all(hooks)
+    as "the hostile hooks directory is created"
+  let hook = hooks <> "/reference-transaction"
+  let assert Ok(Nil) =
+    simplifile.write(
+      hook,
+      "#!/bin/sh\ntouch " <> marker_dir(run) <> "/hook-reference-transaction\n",
+    )
+    as "the hook is written"
+  let assert Ok(Nil) = simplifile.set_permissions_octal(hook, 0o755)
+    as "the hook is executable"
+  git_in(control, ["config", "--unset", "core.fsmonitor"])
+  git_in(control, ["config", "core.hooksPath", hooks])
+  git_in(control, [
+    "-c",
+    "user.name=Loom Fixture",
+    "-c",
+    "user.email=fixture@loom.invalid",
+    "commit",
+    "-q",
+    "--allow-empty",
+    "-m",
+    "control",
+  ])
+  let marker = marker_dir(run) <> "/hook-reference-transaction"
+  assert simplifile.is_file(marker) == Ok(True)
+  let assert Ok(Nil) = simplifile.delete(marker)
+    as "the control hook marker is removed"
   Nil
 }
 
@@ -875,10 +977,22 @@ fn assert_daily_results(
   let hostile = remote_daemons.result_text(requests, "hostile-call")
   assert line_value(hostile, "hostile_planted=") != "0"
 
+  // Each session ran in its own workspace's copy of the guest.
+  let in_repo = remote_daemons.result_text(requests, "where-repo-call")
+  assert string.contains(in_repo, "cwd=/srv/workspaces/repo")
+  assert string.contains(in_repo, "the host's checkout of the repository")
+  let in_other = remote_daemons.result_text(requests, "where-other-call")
+  assert string.contains(in_other, "cwd=/srv/workspaces/other")
+  assert string.contains(in_other, "the other")
+
   // The jail read the bundle under its default read scope and fetched the host
   // commit made after `up`.
   let fetched = remote_daemons.result_text(requests, "fetch-call")
   io.println_error(label <> " fetch tool result:\n" <> fetched)
+
+  // The planted configuration was live in the guest: Git there ran the
+  // `fsmonitor` command, which cannot touch a host path from inside the guest.
+  assert string.contains(fetched, "hostile-markers/fsmonitor")
   assert string.contains(fetched, "fetch_status=0")
   let host_sha =
     string.trim(git_output(run.repository, ["rev-parse", "refs/heads/main"]))
@@ -982,10 +1096,7 @@ fn guests_are_removed(run: Run) -> Nil {
       let refusal = vm(run, ["rm", "--name", run.idle_name])
       assert refusal.status != 0
       assert string.contains(refusal.output, "Deleting the guest")
-      assert string.contains(
-        refusal.output,
-        "repo: not on origin at the same commit: main",
-      )
+      assert string.contains(refusal.output, "It holds:\n  repo\n")
       assert string.contains(refusal.output, "--yes")
       assert simplifile.is_directory(guest(run.idle_name)) == Ok(True)
       assert read_file(config) == config_before
