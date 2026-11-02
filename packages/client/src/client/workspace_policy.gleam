@@ -1475,6 +1475,54 @@ pub fn protecting_state_root(
   )
 }
 
+/// The base policy with a project host's private files masked: each project's
+/// host repository, its ledger and its check trees.
+///
+/// The host repository is what the host's diff, check and push read, and it is
+/// the line a worker's clone is isolated behind (`client/project_repo`). It is
+/// in no session's writable roots, and this mask also keeps a session from
+/// reading it. The ledger holds every ticket's inbound text and the check trees
+/// hold built output, so a session has no use for either.
+///
+/// Only entries on disk are masked, because the jail refuses to mask a path
+/// that does not exist (`protecting`) and a policy lives as long as its
+/// session. That is why a ticket's clone is not masked, here or from the other
+/// workers: a clone is removed when its ticket ends, and a mask over a removed
+/// path would refuse every later call of the sessions that still held it. A
+/// worker can therefore read the other clones as it can read the rest of the
+/// host, and it can write none of them, since only its own workspace is
+/// writable.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace_policy.protecting_projects(base, "/home/o/.loom")
+/// ```
+pub fn protecting_projects(
+  base: policy.SandboxPolicy,
+  state_root: String,
+) -> policy.SandboxPolicy {
+  let projects = state_root <> "/projects"
+  let masks =
+    simplifile.read_directory(projects)
+    |> result.unwrap([])
+    |> list.sort(string.compare)
+    |> list.flat_map(fn(id) { project_masks(projects <> "/" <> id) })
+  protecting(base, always: masks, where_maskable: [])
+}
+
+/// The entries of one project's directory that a session must not reach, as
+/// they are on disk now: the host repository, the check trees, and the ledger
+/// with its SQLite side files.
+fn project_masks(directory: String) -> List(String) {
+  let ledger = directory <> "/ledger.db"
+  list.flatten([
+    [directory <> "/host.git", directory <> "/checks", ledger],
+    sqlite_side_files(ledger),
+  ])
+  |> list.filter(exists)
+}
+
 // The masked entries `client/daemon/root.directories` and the startup
 // that follows it have certainly created by the time any session policy
 // is built, so masking them costs no existence question.

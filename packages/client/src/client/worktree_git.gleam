@@ -491,6 +491,13 @@ fn policy_of(
 // Nothing here comes from a peer. Git reads no user or system configuration:
 // the repository's own is the only one in play, and a global file that names
 // a credential helper or an include has no business in a worktree command.
+//
+// `GIT_NO_REPLACE_OBJECTS` makes every read see the objects a commit really
+// names. A repository a worker wrote can carry `refs/replace/*` entries that
+// make one object read as another, and the project host decides from these
+// reads what is checked and what is pushed (protocol-change/106, "Done means
+// verified"). The environment is an allowlist, so `GIT_DIR` and its relatives
+// are absent by construction and cannot be inherited from the daemon.
 
 /// Establishes environment for the caller, keeping its validation and result policy at this boundary.
 fn environment() -> List(#(String, String)) {
@@ -501,6 +508,7 @@ fn environment() -> List(#(String, String)) {
     #("LC_ALL", "C"),
     #("GIT_CONFIG_NOSYSTEM", "1"),
     #("GIT_CONFIG_GLOBAL", "/dev/null"),
+    #("GIT_NO_REPLACE_OBJECTS", "1"),
     #("GIT_TERMINAL_PROMPT", "0"),
     #("GIT_OPTIONAL_LOCKS", "0"),
   ]

@@ -1236,13 +1236,14 @@ pub fn resolve_managed(
       domain_paths: Some(DomainPaths(selected.memory_path, selected.index_path)),
       codemode_sockets: codemode_socket_root(settings.base_policy, state_root),
       // The daemon's secrets, not the daemon's directory. Masking the
-      // whole state root also masked a workspace an operator had every
-      // right to open on it; see `state_root_mask_candidates` for the grain and
-      // the reason for each entry.
-      base_policy: workspace_policy.protecting_state_root(
-        settings.base_policy,
-        state_root,
-      ),
+        // whole state root also masked a workspace an operator had every
+        // right to open on it; see `state_root_mask_candidates` for the grain and
+        // the reason for each entry.
+        base_policy: workspace_policy.protecting_state_root(
+          settings.base_policy,
+          state_root,
+        )
+        |> workspace_policy.protecting_projects(state_root),
     ),
   )
 }

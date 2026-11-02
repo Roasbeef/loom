@@ -322,14 +322,39 @@ pub fn read(
   directory: String,
   arguments: List(String),
 ) -> Result(String, String) {
+  run_git(worktrees, directory, [], arguments, worktree_git.query_within_ms)
+}
+
+/// Runs a Git command in a directory, in the sandbox, with exactly the writable
+/// roots the caller names, and answers its standard output. A command that
+/// exits nonzero is an error with Git's message. Like `read` it takes no gate,
+/// so it is for repositories that no worktree administration touches: the
+/// project host's own repository and the clones it makes for its workers.
+///
+/// The jail reads the host and writes only `writable`, so a command given a
+/// hostile repository to read and one directory to write can change nothing
+/// else, whatever that repository's configuration says.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // worktrees.run_git(worktrees, host_git, [host_git], ["fetch", "--", clone, sha], 60_000)
+/// ```
+pub fn run_git(
+  worktrees: Worktrees,
+  directory: String,
+  writable: List(String),
+  arguments: List(String),
+  within_ms: Int,
+) -> Result(String, String) {
   use git <- result.try(option.to_result(
     worktrees.git,
     "the sandboxed Git is not running",
   ))
   use output <- result.try(worktree_git.run(
     git,
-    worktree_git.Run(directory:, writable: [], arguments:),
-    worktree_git.query_within_ms,
+    worktree_git.Run(directory:, writable:, arguments:),
+    within_ms,
   ))
 
   // Git that exits zero has answered, and any other exit is its message.
