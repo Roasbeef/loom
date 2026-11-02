@@ -1406,9 +1406,7 @@ fn activity_sessions(
   }
 }
 
-/// Decodes an optional integer revision sequence number.
 // A zero-based page number, defaulting to the first.
-
 /// Decodes the optional `page` field of a board read.
 fn page_field(fields: List(#(String, JsonValue))) -> Result(Int, String) {
   case list.key_find(fields, "page") {
@@ -1418,7 +1416,7 @@ fn page_field(fields: List(#(String, JsonValue))) -> Result(Int, String) {
   }
 }
 
-/// The optional revision step of this module.
+/// Decodes an optional integer revision sequence number.
 fn optional_revision(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(Int), String) {

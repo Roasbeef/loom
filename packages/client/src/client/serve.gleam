@@ -4911,6 +4911,9 @@ fn assemble_in(
   let child_history_reach = settings.remote_reach
   let first_prompt = settings.first_prompt
 
+  // Read here so the hub's closure holds the seat and not the whole settings.
+  let project_seat = settings.project
+
   // Project profile, spawner, remote reach, and memory settings for the hub.
   let profile_desk = settings.profile_desk
   let spawner_link = settings.spawner
@@ -5136,7 +5139,7 @@ fn assemble_in(
             |> with_spawner_link(spawner_link)
             |> hub.with_remote_reach(hub_remote_reach)
             |> hub.with_registry(tool_registry)
-            |> with_project_ceiling(settings.project)
+            |> with_project_ceiling(project_seat)
             |> hub.with_extension_refusals(extension_refusals)
             |> hub.with_skills(skills)
             |> with_evolution_control(evolution_wiring, core_control)

@@ -8,7 +8,7 @@ replayable state machine that turns outside events into units of authorized
 work. `engine.apply(state, event)` returns the next state and a list of
 effects, or a refusal that leaves the state untouched. `engine.replay` folds a
 list of events into a state, so the ledger stores events and nothing else.
-An actor in `client` (not built yet) holds the state, persists each accepted
+An actor in `client` (`client/daemon/project_host`) holds the state, persists each accepted
 event before acting, performs the effects, and feeds their outcomes back as
 events. The package performs no I/O and reads no clock; times are system
 milliseconds that the caller passes in.
