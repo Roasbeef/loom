@@ -8,12 +8,19 @@
 //// worker's own distress, which a person's later message clears. Last the
 //// states that need nobody: waiting for a session, idle, working.
 ////
+//// A review row stands only while the work is still. A worker is at work when
+//// its assignment is running and it has not reported `waiting`, `blocked`,
+//// `failed` or `dropped` since a person last spoke: a resumed assignment
+//// starts with no report, so it reads `working` while it changes work that a
+//// person was told to review. A worker at rest, an ended assignment and a
+//// pending one leave the review row in force.
+////
 //// | row | stage | condition |
 //// | --- | --- | --- |
 //// | 1 | `ended/<outcome>` | the ticket ended |
 //// | 2 | `person/delivery` | an input failed to reach the worker |
 //// | 3 | `person/answer` | an open question for a person |
-//// | 4 | `person/review` | awaiting review, or a pull request open on a ready or published ticket |
+//// | 4 | `person/review` | awaiting review, or a pull request open on a ready or published ticket, unless a running assignment's worker is at work |
 //// | 5 | `person/blocked`, `person/failed` | the latest report says so and no person has spoken since |
 //// | 6 | `queued` | never assigned, the assignment is pending, or a session is wanted |
 //// | 7 | `idle` | the latest report is `waiting`, or the latest assignment ended |
@@ -147,9 +154,46 @@ fn open_stage(facts: Facts) -> Stage {
   case facts.delivery, facts.question, facts.review {
     DeliveryFailed, _, _ -> PersonDelivery
     DeliveryClear, Asking(_), _ -> PersonAnswer
-    DeliveryClear, model.NoQuestion, InReview -> PersonReview
-    DeliveryClear, model.NoQuestion, PullRequestOpen -> PersonReview
+    DeliveryClear, model.NoQuestion, InReview -> review_stage(facts)
+    DeliveryClear, model.NoQuestion, PullRequestOpen -> review_stage(facts)
     DeliveryClear, model.NoQuestion, NotInReview -> distress_stage(facts)
+  }
+}
+
+/// Row 4: a person is asked to review unless the worker is still changing the
+/// work, in which case the ticket is working and the review waits for it.
+fn review_stage(facts: Facts) -> Stage {
+  case worker_at_work(facts) {
+    AtWork -> Working
+    AtRest -> PersonReview
+  }
+}
+
+/// Whether the work under review can still change.
+type Activity {
+  /// A running assignment's worker has not come to rest.
+  AtWork
+
+  /// No assignment is running, or its worker has reported that it waits.
+  AtRest
+}
+
+/// A worker is at work when its assignment is running and either a person has
+/// spoken since its latest report, which the worker is handling, or it has
+/// reported nothing yet or only progress. A resumed assignment begins with no
+/// report, so it is at work from its first moment.
+fn worker_at_work(facts: Facts) -> Activity {
+  case facts.assignment, facts.heard, facts.latest {
+    LatestLive, PersonHeard, _ -> AtWork
+    LatestLive, model.Silent, None -> AtWork
+    LatestLive, model.Silent, Some(model.Progress) -> AtWork
+    LatestLive, model.Silent, Some(Waiting(_)) -> AtRest
+    LatestLive, model.Silent, Some(Blocked) -> AtRest
+    LatestLive, model.Silent, Some(Failed) -> AtRest
+    LatestLive, model.Silent, Some(model.Dropped) -> AtRest
+    NeverAssigned, _, _ -> AtRest
+    LatestPending, _, _ -> AtRest
+    LatestEnded, _, _ -> AtRest
   }
 }
 

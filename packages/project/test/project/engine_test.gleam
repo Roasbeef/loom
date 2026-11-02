@@ -675,11 +675,24 @@ pub fn a_resumed_worker_rests_only_once_its_head_is_read_test() {
   assert ticket(resumed, ticket_of("c1")).latest == None
   assert state.active_assignment(ticket(resumed, ticket_of("c1"))) != None
 
+  // The review it was told to look at is still the ticket's readiness, and the
+  // worker is changing that work, so a person is not asked to review it yet.
+  assert ticket(resumed, ticket_of("c1")).readiness == readiness.AwaitingReview
+  assert state.stage_of(ticket(resumed, ticket_of("c1"))) == stage.Working
+  let progressing =
+    run(resumed, [
+      event.Reported(ticket_of("c1"), 2, model.Progress, model.NoHead),
+    ])
+  assert state.stage_of(ticket(progressing, ticket_of("c1"))) == stage.Working
+
   let idle =
     run(resumed, [
       event.Reported(ticket_of("c1"), 2, Waiting(NoQuestion), model.NoHead),
     ])
   assert state.active_assignment(ticket(idle, ticket_of("c1"))) != None
+
+  // Once the worker says it waits, the work is still, and the review stands.
+  assert state.stage_of(ticket(idle, ticket_of("c1"))) == stage.PersonReview
 
   // The same head again changes nothing, and the worker rests once more.
   let again =

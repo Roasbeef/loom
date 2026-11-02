@@ -40,6 +40,9 @@
 //// - `rest`: a ticket whose work waits for a person while its worker is idle
 ////   holds no slot, unless the host has yet to read the worker's head.
 //// - `ended`: a ticket that ended holds no slot, however it ended.
+//// - `working`: a ticket in review, ready or published whose running
+////   assignment's worker has reported nothing or only progress, or has been
+////   spoken to since its last report, reads `working`, not `person/review`.
 //// - `actions`: the actions a ticket lists are exactly those whose event the
 ////   engine accepts and acts on.
 //// - `stranded`: only a busy router holds candidates, so a turn that ends
@@ -70,6 +73,7 @@ import project/model.{
 import project/queue
 import project/readiness
 import project/snapshot
+import project/stage
 import project/state.{type State}
 import qcheck.{type Generator}
 import statem
@@ -936,6 +940,7 @@ fn check_tickets(sut: Sut) -> Result(Nil, statem.Violation) {
     use _ <- result.try(check_withdrawal(ticket))
     use _ <- result.try(check_rest(sut, ticket))
     use _ <- result.try(check_ended(ticket))
+    use _ <- result.try(check_working(ticket))
     use _ <- result.try(check_actions(sut, ticket))
     check_reserved(sut, ticket)
   })
@@ -1002,6 +1007,36 @@ fn check_ended(ticket: state.Ticket) -> Result(Nil, statem.Violation) {
     ok: ticket.outcome == None || state.active_assignment(ticket) == None,
     tag: "ended",
     detail: "an ended ticket still holds a slot",
+  )
+}
+
+// A person is not told to review work a running worker is still changing. The
+// worker is changing it when its assignment runs and either a person has spoken
+// to it since its last report, or it has reported nothing or only progress.
+// Whatever the ticket's readiness or pull request, such a ticket reads working,
+// unless an input failed to reach it or a question is open, which outrank both.
+fn check_working(ticket: state.Ticket) -> Result(Nil, statem.Violation) {
+  let running = case state.active_assignment(ticket) {
+    Some(assignment) -> assignment.status == state.AssignmentRunning
+    None -> False
+  }
+  let latest_is_open =
+    ticket.latest == None || ticket.latest == Some(model.Progress)
+  let changing =
+    running && { ticket.heard == model.PersonHeard || latest_is_open }
+  let facts = state.facts(ticket)
+  let in_review = facts.review != stage.NotInReview
+  let unobstructed =
+    ticket.outcome == None
+    && facts.delivery == stage.DeliveryClear
+    && ticket.question == model.NoQuestion
+
+  holds(
+    ok: !{ changing && in_review && unobstructed }
+      || state.stage_of(ticket) == stage.Working,
+    tag: "working",
+    detail: "a ticket is not working while its worker is at work on "
+      <> ticket.id.value,
   )
 }
 
@@ -1165,7 +1200,7 @@ const seed = 20_261_101
 
 fn config() -> statem.Config {
   statem.default_config(seed:)
-  |> statem.with_test_count(300)
+  |> statem.with_test_count(3000)
   |> statem.with_max_commands(70)
 }
 
@@ -1277,4 +1312,12 @@ pub fn the_generator_reaches_the_states_the_invariants_guard_test() {
     })
   })
     as "a protected head waiting for review"
+  assert any_state(fn(s) {
+    tickets(s, fn(t) {
+      state.facts(t).review != stage.NotInReview
+      && state.active_assignment(t) != None
+      && state.stage_of(t) == stage.Working
+    })
+  })
+    as "a ticket in review whose worker is at work"
 }

@@ -169,14 +169,64 @@ pub fn row_three_an_open_question_comes_before_review_test() {
   assert stage.of(facts) == stage.PersonAnswer
 }
 
+// A worker at rest: its assignment ended, or it reported that it waits.
+fn at_rest() -> Facts {
+  Facts(..base(), assignment: stage.LatestEnded)
+}
+
 pub fn row_four_review_covers_awaiting_review_and_an_open_pull_request_test() {
-  assert stage.of(Facts(..base(), review: stage.InReview)) == stage.PersonReview
-  assert stage.of(Facts(..base(), review: stage.PullRequestOpen))
+  assert stage.of(Facts(..at_rest(), review: stage.InReview))
+    == stage.PersonReview
+  assert stage.of(Facts(..at_rest(), review: stage.PullRequestOpen))
+    == stage.PersonReview
+  assert stage.of(
+      Facts(..base(), review: stage.InReview, latest: Some(Waiting(NoQuestion))),
+    )
     == stage.PersonReview
   assert stage.of(
       Facts(..base(), review: stage.InReview, latest: Some(model.Blocked)),
     )
     == stage.PersonReview
+}
+
+// The worker of a resumed assignment starts with no report. A person told to
+// review the work it is changing would be reading it as it moves.
+pub fn row_four_yields_while_a_running_worker_is_at_work_test() {
+  let reviews = [stage.InReview, stage.PullRequestOpen]
+  list.each(reviews, fn(review) {
+    // No report yet, and progress, both leave the worker at work.
+    assert stage.of(Facts(..base(), review:)) == stage.Working
+    assert stage.of(Facts(..base(), review:, latest: Some(model.Progress)))
+      == stage.Working
+
+    // A person speaking to a worker that reported anything hands it work.
+    let spoken = Facts(..base(), review:, heard: PersonHeard)
+    assert stage.of(Facts(..spoken, latest: Some(Waiting(NoQuestion))))
+      == stage.Working
+    assert stage.of(Facts(..spoken, latest: Some(model.Blocked)))
+      == stage.Working
+
+    // A pending assignment, an ended one and a worker that reported a stop
+    // change nothing, so the review stands.
+    assert stage.of(Facts(..base(), review:, assignment: stage.LatestPending))
+      == stage.PersonReview
+    assert stage.of(Facts(..base(), review:, assignment: stage.LatestEnded))
+      == stage.PersonReview
+    assert stage.of(Facts(..base(), review:, latest: Some(model.Failed)))
+      == stage.PersonReview
+    assert stage.of(Facts(..base(), review:, latest: Some(model.Dropped)))
+      == stage.PersonReview
+  })
+}
+
+// Rows 1 to 3 still outrank a working review.
+pub fn a_question_or_a_failed_input_outranks_a_worker_at_work_test() {
+  assert stage.of(Facts(..base(), review: stage.InReview, question: Asking(1)))
+    == stage.PersonAnswer
+  assert stage.of(
+      Facts(..base(), review: stage.InReview, delivery: stage.DeliveryFailed),
+    )
+    == stage.PersonDelivery
 }
 
 pub fn row_five_distress_stands_until_a_person_speaks_test() {
