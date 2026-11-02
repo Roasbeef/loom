@@ -10,6 +10,7 @@ gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_regexp = ">= 1.1.1 and < 2.0.0"
 simplifile = ">= 2.0.0 and < 3.0.0"
 lsp = { path = "../lsp" }
+project = { path = "../project" }
 
 [dev_dependencies]
 # The prelude generator in dev/ reads the package interface as JSON and takes

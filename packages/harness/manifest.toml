@@ -27,6 +27,7 @@ packages = [
   { name = "lsp", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_otp", "gleam_stdlib", "weft"], source = "local", path = "../lsp" },
   { name = "machine", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_stdlib"], source = "local", path = "../machine" },
   { name = "parrot", version = "2.3.0", build_tools = ["gleam"], requirements = ["argv", "envoy", "filepath", "gleam_crypto", "gleam_httpc", "gleam_json", "gleam_stdlib", "gleam_time", "glearray", "repeatedly", "simplifile", "tom"], otp_app = "parrot", source = "hex", outer_checksum = "236C3B20EF03468AFD665C3107C5E7D9128344D06A5950F55822FC5B3B35FBC3" },
+  { name = "project", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib"], source = "local", path = "../project" },
   { name = "provider", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_stdlib", "weft"], source = "local", path = "../provider" },
   { name = "repeatedly", version = "2.1.2", build_tools = ["gleam"], requirements = [], otp_app = "repeatedly", source = "hex", outer_checksum = "93AE1938DDE0DC0F7034F32C1BF0D4E89ACEBA82198A1FE21F604E849DA5F589" },
   { name = "runtime", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_otp", "gleam_stdlib", "machine", "provider", "session", "storage", "telemetry", "weft"], source = "local", path = "../runtime" },
@@ -37,7 +38,7 @@ packages = [
   { name = "storage", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_crypto", "gleam_erlang", "gleam_otp", "gleam_stdlib", "parrot", "simplifile", "sqlight_loom"], source = "local", path = "../storage" },
   { name = "telemetry", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_stdlib"], source = "local", path = "../telemetry" },
   { name = "tom", version = "2.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "gleam_time"], otp_app = "tom", source = "hex", outer_checksum = "DCF04CB7AB35D58CFC598C66EA2E1816D160759802C89B2BA6238780D59BC256" },
-  { name = "tools", version = "0.2.0", build_tools = ["gleam"], requirements = ["broker", "core", "gleam_erlang", "gleam_regexp", "gleam_stdlib", "lsp", "simplifile"], source = "local", path = "../tools" },
+  { name = "tools", version = "0.2.0", build_tools = ["gleam"], requirements = ["broker", "core", "gleam_erlang", "gleam_regexp", "gleam_stdlib", "lsp", "project", "simplifile"], source = "local", path = "../tools" },
   { name = "weft", version = "0.4.6", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], otp_app = "weft", source = "hex", outer_checksum = "836E64B55CC6C0527F6AEC70AE1C412C5B60F641824919F38BA229FA3524552D" },
 ]
 
