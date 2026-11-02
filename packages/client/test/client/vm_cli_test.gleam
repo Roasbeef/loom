@@ -10,6 +10,7 @@ import client/distribution_plan
 import client/distribution_provision
 import client/vm_cli
 import client/vm_spec.{Launch, Manifest, PidRecord}
+import core/json
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -65,7 +66,7 @@ pub fn down_and_status_take_only_a_name_test() {
 
 pub fn a_bad_command_line_is_refused_with_its_reason_test() {
   assert vm_spec.parse([])
-    == Error("loom vm needs a command: up, down or status")
+    == Error("loom vm needs a command: setup, up, down or status")
   assert vm_spec.parse(["sync"]) == Error("unknown loom vm command sync")
   assert vm_spec.parse(["up", "--bogus", "1"])
     == Error("unknown option --bogus")
@@ -197,7 +198,8 @@ pub fn another_release_is_refused_with_the_way_out_test() {
     vm_spec.check_revision(manifest("4c266dd"), "0123456789ab")
   assert string.contains(reason, "4c266dd")
   assert string.contains(reason, "crashes the host")
-  assert string.contains(reason, "loom-vm setup")
+  assert string.contains(reason, "loom vm setup")
+  assert string.contains(reason, "make vmm-install-dev")
 }
 
 pub fn an_unknown_running_build_matches_no_commit_test() {
@@ -564,4 +566,222 @@ pub fn the_orchestrator_listener_is_bound_to_loopback_test() {
   let chosen = "[distribution]\nlisten_address = \"127.0.0.2\"\n"
   assert vm_spec.with_loopback_listener(chosen) == chosen
   assert vm_spec.with_loopback_listener("[models.x]\n") == "[models.x]\n"
+}
+
+// --- setup -------------------------------------------------------------------
+
+pub fn setup_reads_its_source_test() {
+  assert vm_spec.parse(["setup"]) == Ok(vm_spec.Setup(vm_spec.OwnRelease))
+  assert vm_spec.parse(["setup", "--release", "v0.3.0"])
+    == Ok(vm_spec.Setup(vm_spec.ReleaseTag("v0.3.0")))
+  assert vm_spec.parse(["setup", "--from-build", "/b"])
+    == Ok(vm_spec.Setup(vm_spec.BuildTree("/b")))
+}
+
+pub fn setup_refuses_two_sources_and_stray_words_test() {
+  let both = "setup takes one of --release TAG and --from-build DIR"
+  assert vm_spec.parse(["setup", "--release", "v1", "--from-build", "/b"])
+    == Error(both)
+  assert vm_spec.parse(["setup", "--from-build", "/b", "--release", "v1"])
+    == Error(both)
+  assert vm_spec.parse(["setup", "--release", "v1", "--release", "v2"])
+    == Error(both)
+  assert vm_spec.parse(["setup", "--release"])
+    == Error("--release needs a value")
+  assert vm_spec.parse(["setup", "--bogus", "1"])
+    == Error("unknown option --bogus")
+  assert vm_spec.parse(["setup", "stray"]) == Error("unexpected argument stray")
+}
+
+fn nightly() -> String {
+  string.repeat("0123456789", 4)
+}
+
+pub fn a_release_build_tries_its_nightly_tag_then_its_version_tag_test() {
+  assert vm_spec.release_candidates("0.3.2", nightly())
+    == Ok(["commit-" <> nightly(), "v0.3.2"])
+}
+
+pub fn a_short_or_unknown_commit_names_no_nightly_test() {
+  assert vm_spec.release_candidates("0.3.2", "unknown") == Ok(["v0.3.2"])
+  assert vm_spec.release_candidates("0.3.2", "4c266dde") == Ok(["v0.3.2"])
+  assert vm_spec.release_candidates("0.3.2", string.repeat("a", 41))
+    == Ok(["v0.3.2"])
+  assert vm_spec.release_candidates("0.3.2", string.repeat("A", 40))
+    == Ok(["v0.3.2"])
+  assert vm_spec.release_candidates("0.3.2", "") == Ok(["v0.3.2"])
+}
+
+pub fn a_development_build_has_no_release_and_names_the_make_target_test() {
+  let assert Error(reason) = vm_spec.release_candidates("dev", nightly())
+  assert string.contains(reason, "make vmm-install-dev")
+  assert result.is_error(vm_spec.release_candidates("", nightly()))
+  assert result.is_error(vm_spec.setup_attempts(
+    vm_spec.OwnRelease,
+    "dev",
+    nightly(),
+    "/h/vm",
+  ))
+}
+
+pub fn the_running_builds_release_is_one_attempt_per_candidate_test() {
+  let assert Ok([first, second]) =
+    vm_spec.setup_attempts(vm_spec.OwnRelease, "0.3.2", nightly(), "/h/vm")
+  assert first.name == "commit-" <> nightly()
+  assert first.arguments
+    == ["setup", "--home", "/h/vm", "--release", "commit-" <> nightly()]
+  assert first.revision == vm_spec.MatchesRunningBuild
+  assert second.arguments == ["setup", "--home", "/h/vm", "--release", "v0.3.2"]
+  assert second.revision == vm_spec.MatchesRunningBuild
+}
+
+pub fn a_named_release_or_tree_is_one_unchecked_attempt_test() {
+  let assert Ok([release]) =
+    vm_spec.setup_attempts(vm_spec.ReleaseTag("v0.2.0"), "dev", "unknown", "/h")
+  assert release.arguments == ["setup", "--home", "/h", "--release", "v0.2.0"]
+  assert release.revision == vm_spec.AsInstalled
+
+  let assert Ok([tree]) =
+    vm_spec.setup_attempts(vm_spec.BuildTree("/b"), "dev", "unknown", "/h")
+  assert tree.arguments == ["setup", "--home", "/h", "--from-build", "/b"]
+}
+
+pub fn a_failed_setup_names_each_tag_with_its_reason_in_one_line_test() {
+  let text =
+    vm_spec.setup_failure(vm_spec.OwnRelease, [
+      #("commit-abc", "loom-vm setup exited with status 1\n"),
+      #("v0.3.2", "it holds revision def, not this build's abc"),
+    ])
+  assert string.contains(text, "commit-abc: loom-vm setup exited with status 1")
+  assert string.contains(text, "v0.3.2: it holds revision def")
+  assert string.contains(text, "may not be published for this build yet")
+  assert string.contains(text, "loom vm setup --release TAG")
+  assert !string.contains(text, "\n")
+
+  let named = vm_spec.setup_failure(vm_spec.ReleaseTag("v1"), [#("v1", "x")])
+  assert !string.contains(named, "may not be published")
+}
+
+pub fn a_missing_manifest_names_the_way_to_make_one_test() {
+  let release = vm_spec.missing_manifest("/h/manifest.json", "0.3.2")
+  assert string.contains(release, "/h/manifest.json does not exist")
+  assert string.contains(release, "`loom vm setup`")
+
+  let development = vm_spec.missing_manifest("/h/manifest.json", "dev")
+  assert string.contains(development, "make vmm-install-dev")
+  assert !string.contains(development, "`loom vm setup`")
+}
+
+// --- a linked worktree's repository ------------------------------------------
+
+fn commit() -> String {
+  string.repeat("ab", 20)
+}
+
+pub fn a_branch_head_keeps_its_ref_and_commit_test() {
+  assert vm_spec.head_target("refs/heads/feature/x\n", commit() <> "\n")
+    == Ok(vm_spec.OnBranch("refs/heads/feature/x", commit()))
+  assert vm_spec.head_arguments(vm_spec.OnBranch("refs/heads/m", commit()))
+    == [
+      ["update-ref", "refs/heads/m", commit()],
+      ["symbolic-ref", "HEAD", "refs/heads/m"],
+    ]
+}
+
+pub fn a_detached_head_keeps_its_commit_test() {
+  assert vm_spec.head_target("HEAD\n", commit())
+    == Ok(vm_spec.Detached(commit()))
+  assert vm_spec.head_arguments(vm_spec.Detached(commit()))
+    == [["update-ref", "--no-deref", "HEAD", commit()]]
+}
+
+pub fn an_odd_head_is_refused_not_passed_to_git_test() {
+  assert result.is_error(vm_spec.head_target("refs/tags/v1", commit()))
+  assert result.is_error(vm_spec.head_target("refs/heads/a b", commit()))
+  assert result.is_error(vm_spec.head_target("HEAD", "not-a-commit"))
+  assert result.is_error(vm_spec.head_target("HEAD", string.repeat("a", 39)))
+  assert result.is_error(vm_spec.head_target("HEAD", string.repeat("A", 40)))
+}
+
+pub fn the_clone_checks_out_nothing_and_links_nothing_test() {
+  assert vm_spec.clone_arguments("/w", "/s")
+    == ["clone", "--quiet", "--no-checkout", "--no-hardlinks", "/w", "/s"]
+}
+
+pub fn origin_is_the_sources_own_or_none_test() {
+  assert vm_spec.origin_arguments("https://github.com/o/r\n")
+    == ["remote", "set-url", "origin", "https://github.com/o/r"]
+  assert vm_spec.origin_arguments("\n") == ["remote", "remove", "origin"]
+  assert vm_spec.origin_arguments("") == ["remote", "remove", "origin"]
+}
+
+pub fn a_git_failure_is_one_line_that_names_the_worktree_test() {
+  let reason = vm_spec.git_refusal("/w/proj", "git exited with status 128")
+  assert string.contains(reason, "/w/proj")
+  assert string.contains(reason, "status 128")
+  assert !string.contains(reason, "\n")
+}
+
+// --- the daemon that was running ---------------------------------------------
+
+pub fn the_session_count_is_the_status_replys_occupied_test() {
+  assert vm_spec.occupied_sessions(
+      json.Object([#("resident", json.Int(0)), #("occupied", json.Int(3))]),
+    )
+    == Ok(3)
+  assert result.is_error(vm_spec.occupied_sessions(json.Object([])))
+  assert result.is_error(
+    vm_spec.occupied_sessions(json.Object([#("occupied", json.Int(-1))])),
+  )
+  assert result.is_error(
+    vm_spec.occupied_sessions(json.Object([#("occupied", json.String("2"))])),
+  )
+  assert result.is_error(vm_spec.occupied_sessions(json.Int(2)))
+}
+
+pub fn an_idle_daemon_that_stopped_is_said_to_restart_with_the_next_loom_test() {
+  let lines = vm_spec.daemon_note(vm_spec.Idle(7), vm_spec.Stopped)
+  let text = string.join(lines, "\n")
+  assert string.contains(text, "was stopped")
+  assert string.contains(text, "next `loom` command starts it")
+  assert !string.contains(text, "kill")
+}
+
+pub fn an_idle_daemon_that_would_not_stop_gets_the_command_test() {
+  let text =
+    vm_spec.daemon_note(vm_spec.Idle(7), vm_spec.NotStopped("still running"))
+    |> string.join("\n")
+  assert string.contains(text, "still running")
+  assert string.contains(text, "kill -TERM 7")
+}
+
+pub fn a_daemon_with_sessions_is_never_stopped_and_gets_the_command_test() {
+  // The attempt is `Stopped` here to show the state decides: a daemon that
+  // holds sessions is reported as left running whatever the attempt says.
+  let text =
+    vm_spec.daemon_note(vm_spec.Holding(7, 2), vm_spec.Stopped)
+    |> string.join("\n")
+  assert string.contains(text, "holds 2 sessions")
+  assert string.contains(text, "left running")
+  assert string.contains(text, "kill -TERM 7")
+  assert string.contains(
+    string.join(vm_spec.daemon_note(vm_spec.Holding(7, 1), vm_spec.Stopped), ""),
+    "holds 1 session,",
+  )
+}
+
+pub fn a_daemon_that_said_nothing_is_left_running_test() {
+  let text =
+    vm_spec.daemon_note(vm_spec.Unasked(9), vm_spec.NotStopped("not asked"))
+    |> string.join("\n")
+  assert string.contains(text, "left running")
+  assert string.contains(text, "kill -TERM 9")
+}
+
+pub fn no_daemon_means_the_next_loom_starts_one_test() {
+  let text =
+    vm_spec.daemon_note(vm_spec.NoDaemon, vm_spec.NotStopped("not asked"))
+    |> string.join("\n")
+  assert string.contains(text, "next `loom` command starts the daemon")
+  assert !string.contains(text, "kill")
 }

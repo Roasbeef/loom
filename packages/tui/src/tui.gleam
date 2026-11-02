@@ -2891,7 +2891,8 @@ fn launch_usage() -> String {
   <> "                      (init, provision, install, show). `dist` is short.\n"
   <> "  executor release SESSION\n"
   <> "                      Release a scope an executor will not reopen itself.\n"
-  <> "  vm up|down|status   Run a standing microVM executor.\n\n"
+  <> "  vm setup|up|down|status\n"
+  <> "                      Run a standing microVM executor.\n\n"
   <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
   <> "  --model-profile names a [profiles.<name>] table of that file whose\n"
   <> "       roles a newly created session uses; a resumed session keeps its own\n"
@@ -3114,20 +3115,32 @@ Example:
 
 /// The `loom vm` help, the same text `loomd vm --help` prints.
 fn vm_usage() -> String {
-  "usage: loom vm up [--name NAME] [--workspace DIR] [--mem MIB] [--cpus N]
+  "usage: loom vm setup [--release TAG | --from-build DIR]
+       loom vm up [--name NAME] [--workspace DIR] [--mem MIB] [--cpus N]
                   [--config PATH] [--github gh|env|off] [--fresh]
        loom vm down [--name NAME]
        loom vm status [--name NAME]
 
 Run one standing executor in a microVM and use it from `loom --executor`.
 
+  setup     Install the microVM artifacts the guest boots from and write their
+            manifest, with the `loom-vm` that ships beside loomd. With no flag
+            it installs the artifacts published for this build: the nightly
+            release commit-<sha> of its own commit when it is a nightly, then
+            v<version>, the first whose revision is this build's. --release
+            TAG installs only that release and --from-build DIR records a
+            build tree
+            (packages/vmm/build). A development build has no release: build
+            the artifacts in a checkout and run `make vmm-install-dev`.
   up        Provision a two-node deployment, enroll the orchestrator in your
             loom.toml as [executors.NAME], clone the guest root, copy the
             workspace into it, boot the guest with `loom-vm run` and wait until
             its executor serves. The guest keeps running after this command
             exits. NAME defaults to vm. DIR defaults to the current directory;
             its copy, .git included, is registered in the guest under the
-            directory's own name. --mem is the guest's memory in MiB (default
+            directory's own name. A linked Git worktree is copied too, and its
+            copy gets a repository of its own. With no artifacts installed it
+            first runs `setup` for this release. --mem is the guest's memory in MiB (default
             2048) and --cpus its virtual CPUs (default 4). --config is the
             loom.toml to enroll in (default ~/.loom/loom.toml).
             A loom.toml that already holds a different [distribution] table is
@@ -3144,7 +3157,7 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             holds.
 
 The artifacts come from `~/.loom/vm/manifest.json` ($LOOM_VM_HOME overrides
-~/.loom/vm), which `loom-vm setup` writes. They must be built from the release
+~/.loom/vm), which `loom vm setup` writes. They must be built from the release
 this loom is.
 
 Example:

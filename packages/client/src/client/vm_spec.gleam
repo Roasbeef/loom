@@ -1,4 +1,5 @@
-//// The decisions behind `loom vm up | down | status`, with no effect in them.
+//// The decisions behind `loom vm setup | up | down | status`, with no effect in
+//// them.
 ////
 //// `client/vm_cli` does the work: it provisions, copies, spawns and signals.
 //// Everything it needs to decide first lives here as a function of plain
@@ -12,8 +13,14 @@
 ////   (`deployment_plan`, `guest_config`);
 //// - the `loom-vm run` command line (`launch_arguments`) and the shell
 ////   command that clones a tree (`copy_arguments`);
+//// - which release `setup` installs and with what arguments (`release_candidates`,
+////   `setup_attempts`, `setup_failure`);
+//// - how a linked worktree's copy gets a repository of its own (`head_target`,
+////   `clone_arguments`, `head_arguments`, `origin_arguments`);
 //// - what a workspace copy may keep of its Git configuration
 ////   (`scrub_git_config`);
+//// - what to tell the user about a daemon that read its configuration before
+////   `up` changed it (`occupied_sessions`, `daemon_note`);
 //// - how to read the two small records the command leaves behind and consults
 ////   later: its pid file (`encode_pid`, `decode_pid`) and the host epmd's
 ////   listing (`registered_port`).
@@ -21,6 +28,8 @@
 //// ## Flow
 ////
 //// - `parse` turns `loom vm`'s words into a `Command`.
+//// - `release_candidates` and `setup_attempts` say what `loom-vm setup` is asked,
+////   and `setup_failure` what to say when none of it worked.
 //// - `decode_manifest` reads the artifact manifest and `check_revision`
 ////   compares it with the running build.
 //// - `names` derives the node names, `deployment_plan` the two-node plan, and
@@ -41,6 +50,7 @@
 import client/distribution.{type CredentialFiles, CredentialFiles}
 import client/distribution_bundle.{type Bundle}
 import client/distribution_plan.{type Plan, Executor, Node, Orchestrator, Plan}
+import core/json as core_json
 import gleam/bool
 import gleam/dynamic/decode
 import gleam/int
@@ -148,8 +158,24 @@ pub type Freshness {
   Fresh
 }
 
-/// One of the three commands.
+/// Where `setup` gets the microVM artifacts from.
+pub type SetupSource {
+  /// The release of the running build: its tag follows from its version, and a
+  /// development build has none.
+  OwnRelease
+
+  /// A named release tag, as `loom-vm setup --release` takes it.
+  ReleaseTag(tag: String)
+
+  /// A build tree, as `loom-vm setup --from-build` takes it.
+  BuildTree(directory: String)
+}
+
+/// One of the four commands.
 pub type Command {
+  /// Install the artifacts the guest boots from and write their manifest.
+  Setup(SetupSource)
+
   /// Provision, stage and boot the guest.
   Up(UpOptions)
 
@@ -171,6 +197,7 @@ pub fn parse(arguments: List(String)) -> Result(Command, String) {
   // The first word picks the command; only `up` has options beyond a name, and
   // each command checks the name it was given before anything runs.
   case arguments {
+    ["setup", ..flags] -> setup_flags(flags, OwnRelease) |> result.map(Setup)
     ["up", ..flags] -> {
       use options <- result.try(up_flags(flags, default_up()))
       use Nil <- result.try(valid_name(options.name))
@@ -178,8 +205,209 @@ pub fn parse(arguments: List(String)) -> Result(Command, String) {
     }
     ["down", ..flags] -> name_flag(flags) |> result.map(Down)
     ["status", ..flags] -> name_flag(flags) |> result.map(Status)
-    [] -> Error("loom vm needs a command: up, down or status")
+    [] -> Error("loom vm needs a command: setup, up, down or status")
     [word, ..] -> Error("unknown loom vm command " <> word)
+  }
+}
+
+/// Reads `setup`'s flags: at most one of `--release TAG` and `--from-build DIR`,
+/// and neither means the running build's own release.
+fn setup_flags(
+  arguments: List(String),
+  source: SetupSource,
+) -> Result(SetupSource, String) {
+  // The two sources exclude each other, so a second one is refused whichever
+  // order they come in; the same flag twice is refused as well.
+  case arguments, source {
+    [], _ -> Ok(source)
+    ["--release", tag, ..rest], OwnRelease -> setup_flags(rest, ReleaseTag(tag))
+    ["--from-build", directory, ..rest], OwnRelease ->
+      setup_flags(rest, BuildTree(directory))
+    ["--release", _, ..], _ | ["--from-build", _, ..], _ ->
+      Error("setup takes one of --release TAG and --from-build DIR")
+    [flag], _ ->
+      case string.starts_with(flag, "--") {
+        True -> Error(flag <> " needs a value")
+        False -> Error("unexpected argument " <> flag)
+      }
+    [word, ..], _ ->
+      case string.starts_with(word, "--") {
+        True -> Error("unknown option " <> word)
+        False -> Error("unexpected argument " <> word)
+      }
+  }
+}
+
+/// The release tags that can hold the artifacts for a build, in the order to
+/// try them, or the refusal a development build gets because it has no release
+/// to install from.
+///
+/// A nightly build reports its release's version and its own commit, and is
+/// published as the prerelease `commit-<full commit>`; the tagged release of
+/// the same version is a different commit. So a commit of 40 hexadecimal
+/// digits gives `commit-<commit>` first, and `v<version>` follows for a tagged
+/// release, whose commit the tag does not repeat. A short or `unknown` commit
+/// names no nightly.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.release_candidates("0.3.2", "unknown") == Ok(["v0.3.2"])
+/// assert result.is_error(vm_spec.release_candidates("dev", "unknown"))
+/// ```
+pub fn release_candidates(
+  version: String,
+  commit: String,
+) -> Result(List(String), String) {
+  // The development version is the launcher's word for "no release metadata",
+  // and an empty one is the same absence.
+  use <- bool.guard(
+    version == "dev" || version == "",
+    Error(development_refusal),
+  )
+
+  // Only a commit that names a whole commit can name a nightly's tag.
+  let nightly = case full_commit(commit) {
+    True -> ["commit-" <> commit]
+    False -> []
+  }
+
+  Ok(list.append(nightly, ["v" <> version]))
+}
+
+/// Whether text is a full SHA-1 commit name in lowercase hexadecimal.
+fn full_commit(text: String) -> Bool {
+  string.byte_size(text) == 40
+  && list.all(string.to_graphemes(text), string.contains("0123456789abcdef", _))
+}
+
+const development_refusal =
+  "this is a development build, which has no release to install the microVM artifacts from. Build them in a checkout of this tree and run `make vmm-install-dev`"
+
+/// Whether the installed manifest has to name the running build's commit.
+pub type RevisionCheck {
+  /// The tag was guessed from the running build, so an installation of another
+  /// commit is a wrong guess and the next tag is tried.
+  MatchesRunningBuild
+
+  /// The user named the source, so what it installs is what they asked for.
+  AsInstalled
+}
+
+/// One `loom-vm setup` run `setup` may make.
+pub type Attempt {
+  Attempt(
+    /// What the attempt installs, for the error that lists what was tried.
+    name: String,
+    /// The `loom-vm` arguments.
+    arguments: List(String),
+    /// Whether the manifest it writes is checked against the running build.
+    revision: RevisionCheck,
+  )
+}
+
+/// The `loom-vm setup` runs for a source, in the order to try them, with the
+/// guest home each writes to. A source naming a release or a tree is one
+/// attempt; the running build's own release is one for each candidate tag.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok([attempt]) =
+///   vm_spec.setup_attempts(vm_spec.ReleaseTag("v1"), "0.3.2", "unknown", "/h")
+/// assert attempt.arguments == ["setup", "--home", "/h", "--release", "v1"]
+/// ```
+pub fn setup_attempts(
+  source: SetupSource,
+  version: String,
+  commit: String,
+  home: String,
+) -> Result(List(Attempt), String) {
+  let base = ["setup", "--home", home]
+
+  // Only the running build's own release needs its identity; the other two
+  // sources name what to install.
+  case source {
+    OwnRelease ->
+      release_candidates(version, commit)
+      |> result.map(
+        list.map(_, fn(tag) {
+          Attempt(
+            tag,
+            list.append(base, ["--release", tag]),
+            MatchesRunningBuild,
+          )
+        }),
+      )
+    ReleaseTag(tag) ->
+      Ok([Attempt(tag, list.append(base, ["--release", tag]), AsInstalled)])
+    BuildTree(directory) ->
+      Ok([
+        Attempt(
+          directory,
+          list.append(base, ["--from-build", directory]),
+          AsInstalled,
+        ),
+      ])
+  }
+}
+
+/// The one-line error for a `setup` in which every attempt failed, naming each
+/// with its reason. For the running build's own release it says the artifacts
+/// may not be published yet and how to pick another release.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(
+///   vm_spec.setup_failure(vm_spec.OwnRelease, [#("v1", "status 1")]),
+///   "v1: status 1",
+/// )
+/// ```
+pub fn setup_failure(
+  source: SetupSource,
+  failures: List(#(String, String)),
+) -> String {
+  let tried =
+    failures
+    |> list.map(fn(failure) { failure.0 <> ": " <> one_line(failure.1) })
+    |> string.join("; ")
+
+  // Only a source chosen from the running build can be a wrong guess, so only
+  // it gets the advice about another release.
+  let hint = case source {
+    OwnRelease ->
+      ". The artifacts may not be published for this build yet; "
+      <> "`loom vm setup --release TAG` picks another release of the same "
+      <> "commit"
+    ReleaseTag(_) | BuildTree(_) -> ""
+  }
+
+  "could not install the microVM artifacts (tried " <> tried <> ")" <> hint
+}
+
+fn one_line(text: String) -> String {
+  text |> string.replace("\n", " ") |> string.trim
+}
+
+/// Why `up` or `status` found no manifest, with the way to make one. A
+/// development build cannot install a release, so its words name the make
+/// target instead of `loom vm setup`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(vm_spec.missing_manifest("/h/manifest.json", "0.3.2"), "loom vm setup")
+/// ```
+pub fn missing_manifest(path: String, version: String) -> String {
+  let installed =
+    path <> " does not exist, so the microVM artifacts are not installed. "
+
+  // A build with a release is told to install it; a development build is told
+  // where its artifacts come from instead.
+  case release_candidates(version, "unknown") {
+    Ok(_) -> installed <> "Run `loom vm setup`."
+    Error(reason) -> installed <> string.capitalise(reason) <> "."
   }
 }
 
@@ -512,9 +740,8 @@ pub fn check_revision(
         <> running
         <> ". A guest daemon from another release crashes the host on its "
         <> "first unmatched message, so `loom vm up` will not start one. "
-        <> "Fetch the artifacts for this release with `loom-vm setup --release TAG`, or "
-        <> "`make vmm vmm-runner vmm-firmware vmm-guest-root` in a checkout "
-        <> "of it.",
+        <> "Install the artifacts for this release with `loom vm setup`, or "
+        <> "with `make vmm-install-dev` in a checkout of it.",
       )
   }
 }
@@ -1103,6 +1330,257 @@ fn drops_key(section: Position, line: String) -> Bool {
     _, "extraheader" -> True
     Section("url"), "insteadof" | Section("url"), "pushinsteadof" -> True
     _, _ -> False
+  }
+}
+
+// --- a linked worktree's repository ------------------------------------------
+
+/// Where a linked worktree's `HEAD` points, which its standalone copy must
+/// keep pointing at.
+pub type HeadTarget {
+  /// A branch: the full ref name and the commit it holds.
+  OnBranch(ref: String, commit: String)
+
+  /// A commit with no branch.
+  Detached(commit: String)
+}
+
+/// What `git rev-parse --symbolic-full-name HEAD` and `git rev-parse --verify
+/// HEAD` said about a worktree, as the `HEAD` to give its copy.
+///
+/// The first answers `refs/heads/<branch>` on a branch and `HEAD` when
+/// detached. A ref outside `refs/heads/`, an object name that is not a full
+/// hexadecimal one, or a ref holding whitespace is refused rather than passed
+/// to Git as an argument.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let commit = string.repeat("a", 40)
+/// assert vm_spec.head_target("refs/heads/main\n", commit <> "\n")
+///   == Ok(vm_spec.OnBranch("refs/heads/main", commit))
+/// assert vm_spec.head_target("HEAD\n", commit) == Ok(vm_spec.Detached(commit))
+/// ```
+pub fn head_target(
+  symbolic: String,
+  commit: String,
+) -> Result(HeadTarget, String) {
+  let ref = string.trim(symbolic)
+  let commit = string.trim(commit)
+  let hexadecimal =
+    list.all(string.to_graphemes(commit), string.contains("0123456789abcdef", _))
+  let length = string.byte_size(commit)
+
+  // A SHA-1 or SHA-256 object name is the only commit text Git is handed.
+  use Nil <- result.try(case hexadecimal && { length == 40 || length == 64 } {
+    True -> Ok(Nil)
+    False -> Error("the worktree's HEAD is not a commit name")
+  })
+
+  // `HEAD` is Git's answer for a detached head; any other answer must be a
+  // branch ref of the plain kind.
+  case ref {
+    "HEAD" -> Ok(Detached(commit))
+    _ ->
+      case
+        string.starts_with(ref, "refs/heads/")
+        && !string.contains(ref, " ")
+        && !string.contains(ref, "\t")
+      {
+        True -> Ok(OnBranch(ref, commit))
+        False -> Error("the worktree's HEAD is not a branch or a commit")
+      }
+  }
+}
+
+/// The `git` arguments that make a standalone repository from a worktree
+/// without checking anything out: a local clone that links no object files
+/// with the source, so removing or rewriting either leaves the other whole.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.clone_arguments("/w", "/s")
+///   == ["clone", "--quiet", "--no-checkout", "--no-hardlinks", "/w", "/s"]
+/// ```
+pub fn clone_arguments(source: String, into: String) -> List(String) {
+  ["clone", "--quiet", "--no-checkout", "--no-hardlinks", source, into]
+}
+
+/// The `git` commands, each run in the copy, that point its `HEAD` where the
+/// worktree's pointed. The clone's `HEAD` is the source's own when the source
+/// has a branch, but a detached commit no branch holds is not fetched, so the
+/// copy is told rather than trusted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.head_arguments(vm_spec.Detached(commit))
+///   == [["update-ref", "--no-deref", "HEAD", commit]]
+/// ```
+pub fn head_arguments(target: HeadTarget) -> List(List(String)) {
+  case target {
+    Detached(commit) -> [["update-ref", "--no-deref", "HEAD", commit]]
+    OnBranch(ref, commit) -> [
+      ["update-ref", ref, commit],
+      ["symbolic-ref", "HEAD", ref],
+    ]
+  }
+}
+
+/// The `git` arguments that give the copy the worktree's own `origin`, or none.
+/// The clone made one that names the host path of the worktree, which the guest
+/// must not keep. The URL is the repository's configuration as written, and
+/// `scrub_git_config` removes any userinfo from it afterwards.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.origin_arguments("https://github.com/o/r\n")
+///   == ["remote", "set-url", "origin", "https://github.com/o/r"]
+/// assert vm_spec.origin_arguments("\n") == ["remote", "remove", "origin"]
+/// ```
+pub fn origin_arguments(url: String) -> List(String) {
+  case string.trim(url) {
+    "" -> ["remote", "remove", "origin"]
+    found -> ["remote", "set-url", "origin", found]
+  }
+}
+
+/// The refusal for a Git step that failed while a worktree's copy was being
+/// given a repository of its own: one line, with what was being done.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(vm_spec.git_refusal("/w", "git exited with status 128"), "/w")
+/// ```
+pub fn git_refusal(worktree: String, reason: String) -> String {
+  worktree
+  <> " is a Git worktree and its copy could not be given a repository of its "
+  <> "own: "
+  <> reason
+  <> ". Nothing was copied into the guest."
+}
+
+// --- the daemon that was running before `up` -----------------------------------
+
+/// What `up` found out about the user's daemon.
+pub type DaemonState {
+  /// No daemon is running, so the next `loom` command starts one.
+  NoDaemon
+
+  /// A daemon holds no session, so stopping it costs nothing.
+  Idle(pid: Int)
+
+  /// A daemon holds `sessions` resident, opening or stopping sessions.
+  Holding(pid: Int, sessions: Int)
+
+  /// A daemon runs and did not say how many sessions it holds.
+  Unasked(pid: Int)
+}
+
+/// The number of sessions a daemon's `status` reply says it holds: the ones
+/// resident, opening, stopping or blocked, which is its `occupied` count.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.occupied_sessions(json.Object([#("occupied", json.Int(2))])) == Ok(2)
+/// ```
+pub fn occupied_sessions(body: core_json.JsonValue) -> Result(Int, String) {
+  case body {
+    core_json.Object(fields) ->
+      case list.key_find(fields, "occupied") {
+        Ok(core_json.Int(count)) if count >= 0 -> Ok(count)
+        _ -> Error("the daemon's status has no session count")
+      }
+    _ -> Error("the daemon's status is not an object")
+  }
+}
+
+/// The `kill` command that asks the daemon with `pid` to stop gracefully.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.stop_command(4242) == "kill -TERM 4242"
+/// ```
+pub fn stop_command(pid: Int) -> String {
+  "kill -TERM " <> int.to_string(pid)
+}
+
+/// The lines `up` ends with about the daemon, given what it found and, for an
+/// idle daemon, whether stopping it worked.
+///
+/// A daemon that holds any session is never stopped for the user: the note
+/// names the exact command instead. A stopped daemon is started again by the
+/// next `loom` command, which renders the TLS options file the new
+/// `[distribution]` table needs (protocol-change/106).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert vm_spec.daemon_note(vm_spec.NoDaemon, vm_spec.NotStopped) != []
+/// ```
+pub fn daemon_note(state: DaemonState, stop: StopAttempt) -> List(String) {
+  let reason =
+    "It read its configuration before the [distribution] table was installed, "
+    <> "so it must restart to use the guest."
+
+  // The state decides what is said; the attempt matters only for an idle
+  // daemon, the one case in which `up` tried to stop anything.
+  case state, stop {
+    NoDaemon, _ -> [
+      "The next `loom` command starts the daemon with the table in effect.",
+      "",
+    ]
+    Idle(_), Stopped -> [
+      "Your daemon held no sessions, so it was stopped. The next `loom` "
+        <> "command starts it with the table in effect.",
+      "",
+    ]
+    Idle(pid), NotStopped(why) -> [
+      "Your daemon holds no sessions but did not stop ("
+        <> why
+        <> "). "
+        <> reason,
+      "Stop it with: " <> stop_command(pid),
+      "",
+    ]
+    Holding(pid, sessions), _ -> [
+      "Your daemon holds "
+        <> int.to_string(sessions)
+        <> " session"
+        <> plural(sessions)
+        <> ", so it was left running. "
+        <> reason,
+      "When they are finished, stop it with: " <> stop_command(pid),
+      "",
+    ]
+    Unasked(pid), _ -> [
+      "Your daemon is running and did not say whether it holds sessions, so "
+        <> "it was left running. "
+        <> reason,
+      "When it holds none, stop it with: " <> stop_command(pid),
+      "",
+    ]
+  }
+}
+
+/// Whether stopping an idle daemon worked.
+pub type StopAttempt {
+  /// The daemon asked to drain and its process is gone.
+  Stopped
+
+  /// The daemon was not stopped, for the reason given.
+  NotStopped(reason: String)
+}
+
+fn plural(count: Int) -> String {
+  case count {
+    1 -> ""
+    _ -> "s"
   }
 }
 

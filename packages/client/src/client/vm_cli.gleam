@@ -1,7 +1,7 @@
-//// `loom vm up | down | status`: one standing microVM executor.
+//// `loom vm setup | up | down | status`: one standing microVM executor.
 ////
-//// A developer with the microVM artifacts installed runs `loom vm up
-//// --workspace ~/src/proj` and gets a guest that runs an executor daemon named
+//// A developer with loom and libkrun installed runs `loom vm up` in a checkout,
+//// or with `--workspace ~/src/proj`, and gets a guest that runs an executor daemon named
 //// `vm` (or `--name`), enrolled as an ordinary `[executors.<name>]` row of
 //// their `loom.toml`. `loom --executor vm --workspace proj` then places a
 //// session's tools in the guest through the same remote placement every
@@ -14,12 +14,24 @@
 //// ## Flow
 ////
 //// - `run` dispatches on the command.
-//// - `up` reads and checks the manifest, finds the workspace, provisions the
+//// - `setup` runs the `loom-vm` that ships beside the daemon to install the
+////   artifacts for a release or a build tree, trying each tag the running
+////   build may be published under (`install_artifacts`).
+//// - `up` reads and checks the manifest, installing the running build's
+////   release first when there is none (`installed_manifest`), finds the
+////   workspace, provisions the
 ////   deployment (`deployment`), installs the orchestrator (`enroll`), stages the
 ////   guest root (`stage`) and boots it (`boot`).
 //// - `down` signals the recorded process and waits for it (`down`).
 //// - `status` reports what the pid file, the process table and the host epmd
 ////   say (`status`).
+////
+//// ## Where `loom-vm` comes from
+////
+//// A release ships `loom-vm` at `bin/loom-vm` in the server tree and the
+//// installer does not put it on `PATH`, so `setup` finds it through
+//// `client/install`. A development tree has none and `loom vm setup` refuses
+//// there, naming `make vmm-install-dev`.
 ////
 //// ## What `up` leaves where
 ////
@@ -55,11 +67,13 @@
 import client/distribution_bundle.{type Bundle}
 import client/distribution_install.{Options}
 import client/distribution_provision.{RefuseExisting, ReplaceExisting}
+import client/install
 import client/internal/ffi_os
 import client/vm_spec.{
   type Command, type Manifest, type PidRecord, type UpOptions, Down, Launch,
-  PidRecord, Status, Up,
+  PidRecord, Setup, Status, Up,
 }
+import core/json as core_json
 import filepath
 import gleam/bool
 import gleam/int
@@ -68,6 +82,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import host/access
 import host/bootstrap
 import host/build_identity
 import host/endpoint
@@ -76,20 +91,32 @@ import weft/poll
 
 /// Complete help for the vm operator command.
 pub const usage =
-  "usage: loom vm up [--name NAME] [--workspace DIR] [--mem MIB] [--cpus N]
+  "usage: loom vm setup [--release TAG | --from-build DIR]
+       loom vm up [--name NAME] [--workspace DIR] [--mem MIB] [--cpus N]
                   [--config PATH] [--github gh|env|off] [--fresh]
        loom vm down [--name NAME]
        loom vm status [--name NAME]
 
 Run one standing executor in a microVM and use it from `loom --executor`.
 
+  setup     Install the microVM artifacts the guest boots from and write their
+            manifest, with the `loom-vm` that ships beside loomd. With no flag
+            it installs the artifacts published for this build: the nightly
+            release commit-<sha> of its own commit when it is a nightly, then
+            v<version>, the first whose revision is this build's. --release
+            TAG installs only that release and --from-build DIR records a
+            build tree
+            (packages/vmm/build). A development build has no release: build
+            the artifacts in a checkout and run `make vmm-install-dev`.
   up        Provision a two-node deployment, enroll the orchestrator in your
             loom.toml as [executors.NAME], clone the guest root, copy the
             workspace into it, boot the guest with `loom-vm run` and wait until
             its executor serves. The guest keeps running after this command
             exits. NAME defaults to vm. DIR defaults to the current directory;
             its copy, .git included, is registered in the guest under the
-            directory's own name. --mem is the guest's memory in MiB (default
+            directory's own name. A linked Git worktree is copied too, and its
+            copy gets a repository of its own. With no artifacts installed it
+            first runs `setup` for this release. --mem is the guest's memory in MiB (default
             2048) and --cpus its virtual CPUs (default 4). --config is the
             loom.toml to enroll in (default ~/.loom/loom.toml).
             A loom.toml that already holds a different [distribution] table is
@@ -106,7 +133,7 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             holds.
 
 The artifacts come from `~/.loom/vm/manifest.json` ($LOOM_VM_HOME overrides
-~/.loom/vm), which `loom-vm setup` writes. They must be built from the release
+~/.loom/vm), which `loom vm setup` writes. They must be built from the release
 this loom is.
 
 Example:
@@ -150,8 +177,9 @@ pub fn run(arguments: List(String)) -> Result(String, String) {
 
 /// Runs the command `run` parsed, each in its own section below.
 fn dispatch(command: Command) -> Result(String, String) {
-  // The three commands share nothing but where a guest's files are.
+  // The commands share nothing but where a guest's files are.
   case command {
+    Setup(source) -> setup(source)
     Up(options) -> up(options)
     Down(name) -> down(name)
     Status(name) -> status(name)
@@ -206,25 +234,42 @@ fn instance(vm_home: String, name: String) -> Instance {
 /// Reads and decodes the artifact manifest, naming how to make one when it is
 /// missing.
 fn read_manifest(vm_home: String) -> Result(Manifest, String) {
-  let path = vm_home <> "/manifest.json"
+  use found <- result.try(read_manifest_if_present(vm_home))
 
-  // A missing manifest is the ordinary first-run state, and the way out is a
-  // command, so it gets its own words. Any other read error is the file's.
-  use text <- result.try(case simplifile.read(path) {
-    Ok(text) -> Ok(text)
-    Error(simplifile.Enoent) ->
-      Error(
-        path
-        <> " does not exist, so the microVM artifacts are not installed. Run "
-        <> "`loom-vm setup --release TAG`, or build them in a checkout with `make vmm "
-        <> "vmm-runner vmm-firmware vmm-guest-root`.",
-      )
+  // The words for a missing file depend on whether this build has a release
+  // to install, so they are built only when the file is missing.
+  case found {
+    Some(manifest) -> Ok(manifest)
+    None ->
+      Error(vm_spec.missing_manifest(
+        manifest_path(vm_home),
+        build_identity.current().version,
+      ))
+  }
+}
+
+/// Where `loom-vm setup` writes the manifest.
+fn manifest_path(vm_home: String) -> String {
+  vm_home <> "/manifest.json"
+}
+
+/// The decoded manifest, or `None` when there is not one yet.
+fn read_manifest_if_present(
+  vm_home: String,
+) -> Result(option.Option(Manifest), String) {
+  let path = manifest_path(vm_home)
+
+  // A missing manifest is the ordinary first-run state, and `up` answers it
+  // by installing the artifacts. Any other read error is the file's.
+  case simplifile.read(path) {
+    Error(simplifile.Enoent) -> Ok(None)
     Error(error) ->
       Error(path <> " is unreadable: " <> simplifile.describe_error(error))
-  })
-
-  vm_spec.decode_manifest(text)
-  |> result.map_error(fn(reason) { path <> ": " <> reason })
+    Ok(text) ->
+      vm_spec.decode_manifest(text)
+      |> result.map(Some)
+      |> result.map_error(fn(reason) { path <> ": " <> reason })
+  }
 }
 
 // --- running a program -------------------------------------------------------
@@ -258,12 +303,224 @@ const copy_budget_ms = 600_000
 
 const quick_ms = 10_000
 
+// --- setup -------------------------------------------------------------------
+
+// A release's guest image is several hundred megabytes, pulled from a
+// registry, so setup gets half an hour and not the seconds of a lookup.
+const setup_budget_ms = 1_800_000
+
+/// Installs the microVM artifacts and says where the manifest is.
+fn setup(source: vm_spec.SetupSource) -> Result(String, String) {
+  use vm_home <- result.try(vm_home())
+  use source <- result.try(absolute_source(source))
+  use manifest <- result.try(install_artifacts(vm_home, source))
+  Ok(
+    "Installed the microVM artifacts for revision "
+    <> manifest.revision
+    <> ". The manifest is "
+    <> manifest_path(vm_home)
+    <> ".",
+  )
+}
+
+/// Runs `loom-vm setup` for each attempt the source allows, in order, until
+/// one installs artifacts that are acceptable. A launcher run that fails, or
+/// one that installs another commit than the running build's when the tag was
+/// only a guess, counts as that attempt's failure and the next is tried.
+///
+/// `loom-vm setup` replaces the manifest after each success, so a guess that
+/// installed the wrong commit has replaced a good manifest by the time it is
+/// found out. When every attempt fails, the manifest that was there before is
+/// put back, or removed when there was none, so a failed setup changes nothing
+/// that `up` reads.
+fn install_artifacts(
+  vm_home: String,
+  source: vm_spec.SetupSource,
+) -> Result(Manifest, String) {
+  let identity = build_identity.current()
+  use attempts <- result.try(vm_spec.setup_attempts(
+    source,
+    identity.version,
+    identity.commit,
+    vm_home,
+  ))
+  let before = simplifile.read(manifest_path(vm_home))
+
+  // One success ends it. Every failure restores the earlier manifest first,
+  // because attempts that installed another commit replaced it.
+  case try_attempts(vm_home, attempts, identity.commit, []) {
+    Ok(manifest) -> Ok(manifest)
+    Error(failures) -> {
+      use Nil <- result.try(restore_manifest(vm_home, before))
+      Error(vm_spec.setup_failure(source, failures))
+    }
+  }
+}
+
+/// Tries the attempts in order. The error is the failure of each, in the order
+/// they were tried.
+fn try_attempts(
+  vm_home: String,
+  attempts: List(vm_spec.Attempt),
+  commit: String,
+  failures: List(#(String, String)),
+) -> Result(Manifest, List(#(String, String))) {
+  // The list is the order to try; an empty one is the end of the search.
+  case attempts {
+    [] -> Error(list.reverse(failures))
+    [attempt, ..rest] -> {
+      io.println_error(
+        "Installing the microVM artifacts for " <> attempt.name <> ".",
+      )
+
+      // A failed attempt is recorded and the next one tried; the first that
+      // installs acceptable artifacts ends the search.
+      case run_attempt(vm_home, attempt, commit) {
+        Ok(manifest) -> Ok(manifest)
+        Error(reason) ->
+          try_attempts(vm_home, rest, commit, [
+            #(attempt.name, reason),
+            ..failures
+          ])
+      }
+    }
+  }
+}
+
+/// One `loom-vm setup` run and the check of the manifest it wrote.
+fn run_attempt(
+  vm_home: String,
+  attempt: vm_spec.Attempt,
+  commit: String,
+) -> Result(Manifest, String) {
+  use Nil <- result.try(run_launcher(attempt.arguments))
+  use manifest <- result.try(installed_after_setup(vm_home))
+
+  // A tag guessed from the running build must hold the running build's
+  // commit, or `up` would refuse it for the same reason.
+  case attempt.revision {
+    vm_spec.AsInstalled -> Ok(manifest)
+    vm_spec.MatchesRunningBuild ->
+      vm_spec.check_revision(manifest, commit)
+      |> result.map(fn(_) { manifest })
+      |> result.map_error(fn(_) {
+        "it holds revision "
+        <> manifest.revision
+        <> ", not this build's "
+        <> commit
+      })
+  }
+}
+
+/// Puts the manifest read before a failed setup back, or removes the one a
+/// failed attempt wrote when there was none.
+fn restore_manifest(
+  vm_home: String,
+  before: Result(String, simplifile.FileError),
+) -> Result(Nil, String) {
+  let path = manifest_path(vm_home)
+
+  // A manifest that could not be read has nothing to put back, and the
+  // installed one is left as it is rather than guessed at.
+  case before {
+    Ok(text) -> write_private(path, text)
+    Error(simplifile.Enoent) ->
+      simplifile.delete(path)
+      |> result.try_recover(fn(error) {
+        case error {
+          simplifile.Enoent -> Ok(Nil)
+          _ -> Error(error)
+        }
+      })
+      |> result.map_error(fn(error) {
+        path <> " cannot be removed: " <> simplifile.describe_error(error)
+      })
+    Error(_) -> Ok(Nil)
+  }
+}
+
+/// A build tree named relatively is named from this directory, and the
+/// launcher resolves it from its own, so it is made absolute here.
+fn absolute_source(
+  source: vm_spec.SetupSource,
+) -> Result(vm_spec.SetupSource, String) {
+  case source {
+    vm_spec.BuildTree(directory) ->
+      bootstrap.absolute_path(directory) |> result.map(vm_spec.BuildTree)
+    vm_spec.OwnRelease | vm_spec.ReleaseTag(_) -> Ok(source)
+  }
+}
+
+/// Runs the shipped `loom-vm` with `arguments`. Its progress goes to this
+/// command's standard error, and its manifest on standard output is dropped:
+/// the file it wrote is what `up` reads.
+fn run_launcher(arguments: List(String)) -> Result(Nil, String) {
+  use launcher <- result.try(
+    install.bundled_launcher()
+    |> result.map_error(fn(_) {
+      install.launcher()
+      <> " does not exist. This installation was built without the microVM "
+      <> "launcher; install a release that ships it, or build the artifacts "
+      <> "in a checkout and run `make vmm-install-dev`."
+    }),
+  )
+
+  // Only status zero is success; the launcher's own refusal text went to
+  // standard error already.
+  case ffi_os.run_capture(launcher, arguments, setup_budget_ms) {
+    Ok(#(0, _)) -> Ok(Nil)
+    Ok(#(status, _)) ->
+      Error(
+        "loom-vm setup exited with status "
+        <> int.to_string(status)
+        <> "; the reason is above",
+      )
+    Error(reason) -> Error("loom-vm setup: " <> reason)
+  }
+}
+
+/// The manifest setup just wrote. A launcher that exited zero and left none is
+/// a broken installation, not a first run.
+fn installed_after_setup(vm_home: String) -> Result(Manifest, String) {
+  use found <- result.try(read_manifest_if_present(vm_home))
+  option.to_result(
+    found,
+    manifest_path(vm_home) <> " was not written by loom-vm setup",
+  )
+}
+
+/// The manifest `up` boots from. With none installed it installs the running
+/// build's release first and says so; a development build has no release, so
+/// it keeps the refusal that names the make target.
+fn installed_manifest(vm_home: String) -> Result(Manifest, String) {
+  use found <- result.try(read_manifest_if_present(vm_home))
+
+  // An installed manifest is used as it is; only its absence starts a setup.
+  case found {
+    Some(manifest) -> Ok(manifest)
+    None -> {
+      let identity = build_identity.current()
+      use _ <- result.try(
+        vm_spec.release_candidates(identity.version, identity.commit)
+        |> result.map_error(fn(_) {
+          vm_spec.missing_manifest(manifest_path(vm_home), identity.version)
+        }),
+      )
+      io.println_error(
+        "No microVM artifacts are installed; running `loom vm setup` for this "
+        <> "build.",
+      )
+      install_artifacts(vm_home, vm_spec.OwnRelease)
+    }
+  }
+}
+
 // --- up ----------------------------------------------------------------------
 
 /// Provisions, enrolls, stages and boots one guest.
 fn up(options: UpOptions) -> Result(String, String) {
   use vm_home <- result.try(vm_home())
-  use manifest <- result.try(read_manifest(vm_home))
+  use manifest <- result.try(installed_manifest(vm_home))
   use Nil <- result.try(vm_spec.check_revision(
     manifest,
     build_identity.current().commit,
@@ -286,9 +543,18 @@ fn up(options: UpOptions) -> Result(String, String) {
   report(options, workspace, port, enrolled)
 }
 
-// The directory to copy, canonical, and the name its copy has in the guest.
+// The directory to copy, canonical, the name its copy has in the guest, and
+// whether its `.git` is a directory of its own.
 type Workspace {
-  Workspace(path: String, name: String)
+  Workspace(path: String, name: String, checkout: Checkout)
+}
+
+// A checkout's `.git` is a directory the copy takes along, or a file that
+// points at a repository outside the directory (a linked worktree), which the
+// copy cannot take along.
+type Checkout {
+  Standalone
+  Linked
 }
 
 /// The directory `up` copies: `--workspace` or the current directory, resolved,
@@ -305,22 +571,15 @@ fn workspace_of(options: UpOptions) -> Result(Workspace, String) {
   )
   let name = filepath.base_name(path)
   use Nil <- result.try(vm_spec.valid_workspace_name(name))
-  let kind = bootstrap.path_kind(path <> "/.git")
 
   // A linked worktree's `.git` is a file that points at the main repository,
-  // outside the copy, so the guest would see no history at all.
-  use Nil <- result.try(case kind {
-    bootstrap.RegularFile ->
-      Error(
-        path
-        <> " is a linked Git worktree: its .git file points outside the "
-        <> "directory, so the copy in the guest would have no history. Use "
-        <> "the main checkout.",
-      )
-    _ -> Ok(Nil)
-  })
+  // outside the copy. `copy_workspace` gives its copy a repository of its own.
+  let checkout = case bootstrap.path_kind(path <> "/.git") {
+    bootstrap.RegularFile -> Linked
+    bootstrap.OtherEntry | bootstrap.NoEntry -> Standalone
+  }
 
-  Ok(Workspace(path:, name:))
+  Ok(Workspace(path:, name:, checkout:))
 }
 
 /// Refuses `up` for a guest whose process is still there.
@@ -454,7 +713,22 @@ fn bundle_named(
 
 // What installing the orchestrator did to the user's configuration.
 type Enrolled {
-  Enrolled(config: String)
+  Enrolled(config: String, daemon: DaemonImpact)
+}
+
+// Which daemon this `up` changed the configuration of. Only the daemon of the
+// default state directory can be found and stopped, and it reads only the
+// default file, so a `--config` run must never reach it: a private file, as a
+// test uses, would otherwise shut down the developer's own idle daemon.
+type DaemonImpact {
+  // A newly minted deployment went into the default daemon's configuration.
+  DefaultDaemonStale
+
+  // A newly minted deployment went into another file.
+  OtherConfigChanged
+
+  // A resumed guest installed nothing, so every daemon is still current.
+  NoDaemonChanged
 }
 
 /// Installs the orchestrator's bundle into the user's `loom.toml` the way
@@ -470,6 +744,9 @@ fn enroll(
       distribution_install.default_config(home)
     })
   use config <- result.try(bootstrap.absolute_path(config))
+  use default <- result.try(
+    bootstrap.absolute_path(distribution_install.default_config(home)),
+  )
 
   // A resumed guest's deployment is already installed. Installing it again
   // compares the whole [distribution] table, so a key the user added since,
@@ -477,7 +754,17 @@ fn enroll(
   // what has to still be there.
   case provisioned {
     Reused -> still_enrolled(orchestrator, config)
-    Minted -> install(orchestrator, config, home)
+    Minted ->
+      install(orchestrator, config, home, minted_impact(config, default))
+  }
+}
+
+/// Which daemon a newly minted deployment in `config` leaves out of date.
+fn minted_impact(config: String, default: String) -> DaemonImpact {
+  // Only the exact default file belongs to the daemon `up` can find.
+  case config == default {
+    True -> DefaultDaemonStale
+    False -> OtherConfigChanged
   }
 }
 
@@ -498,7 +785,7 @@ fn still_enrolled(
   // only the row it needs is checked, and a missing one is the operator's to
   // restore, since reinstalling would be refused as an existing deployment.
   case string.contains(text, row) {
-    True -> Ok(Enrolled(config:))
+    True -> Ok(Enrolled(config:, daemon: NoDaemonChanged))
     False ->
       Error(
         config
@@ -519,6 +806,7 @@ fn install(
   orchestrator: Bundle,
   config: String,
   home: String,
+  daemon: DaemonImpact,
 ) -> Result(Enrolled, String) {
   use _installed <- result.try(
     distribution_install.install(
@@ -548,7 +836,7 @@ fn install(
     config,
     vm_spec.with_loopback_listener(text),
   ))
-  Ok(Enrolled(config:))
+  Ok(Enrolled(config:, daemon:))
 }
 
 /// The `[executors.<name>]` table the orchestrator's bundle installed, as
@@ -767,7 +1055,115 @@ fn copy_workspace(
     within: copy_budget_ms,
   ))
   use _ <- result.try(tool("chmod", ["-R", "u+w", copy], within: copy_budget_ms))
+  use Nil <- result.try(own_repository(root, workspace, copy))
   scrub_config(copy <> "/.git/config")
+}
+
+/// Gives a linked worktree's copy a repository of its own. A standalone
+/// checkout's copy already has one.
+///
+/// A failure removes the copy. A later `up` keeps a copy that exists, so one
+/// left with a `.git` file that points at the host would be kept as it is.
+fn own_repository(
+  root: String,
+  workspace: Workspace,
+  copy: String,
+) -> Result(Nil, String) {
+  // A standalone checkout's copy already carries its own `.git` directory.
+  case workspace.checkout {
+    Standalone -> Ok(Nil)
+    Linked -> {
+      let staging = root <> vm_spec.node_dir <> "/git-staging"
+      let made = standalone_repository(workspace.path, copy, staging)
+      let _ = simplifile.delete_all([staging])
+
+      // The refusal is one line naming the worktree; the copy goes with it.
+      case made {
+        Ok(Nil) -> Ok(Nil)
+        Error(reason) -> {
+          let _ = remove_tree(copy)
+          Error(vm_spec.git_refusal(workspace.path, reason))
+        }
+      }
+    }
+  }
+}
+
+/// Clones the worktree's repository without a checkout into `staging`, moves
+/// its `.git` over the copy's `.git` file, and points the copy at the
+/// worktree's `HEAD` and `origin`. The copy's files are the worktree's files as
+/// they are, so uncommitted edits stay; its index is reset to `HEAD`, which
+/// makes them show as edits and not as a deleted and an untracked tree.
+fn standalone_repository(
+  worktree: String,
+  copy: String,
+  staging: String,
+) -> Result(Nil, String) {
+  use symbolic <- result.try(
+    git(worktree, [
+      "rev-parse",
+      "--symbolic-full-name",
+      "HEAD",
+    ]),
+  )
+  use commit <- result.try(git(worktree, ["rev-parse", "--verify", "HEAD"]))
+  use origin <- result.try(
+    git(worktree, [
+      "config",
+      "--default",
+      "",
+      "--get",
+      "remote.origin.url",
+    ]),
+  )
+  use target <- result.try(vm_spec.head_target(symbolic, commit))
+  use Nil <- result.try(
+    simplifile.delete_all([staging])
+    |> result.map_error(fn(error) {
+      staging <> " cannot be cleared: " <> simplifile.describe_error(error)
+    }),
+  )
+  use _ <- result.try(tool(
+    "git",
+    vm_spec.clone_arguments(worktree, staging),
+    within: copy_budget_ms,
+  ))
+
+  // The copy's `.git` is a file, and the rename needs its place empty.
+  use Nil <- result.try(
+    simplifile.delete(copy <> "/.git")
+    |> result.try(fn(_) {
+      simplifile.rename(staging <> "/.git", copy <> "/.git")
+    })
+    |> result.map_error(fn(error) {
+      copy <> "/.git cannot be replaced: " <> simplifile.describe_error(error)
+    }),
+  )
+  use Nil <- result.try(
+    list.try_each(vm_spec.head_arguments(target), fn(arguments) {
+      git(copy, arguments) |> result.replace(Nil)
+    }),
+  )
+  use _ <- result.try(git(copy, vm_spec.origin_arguments(origin)))
+  use _ <- result.try(git(copy, ["reset", "--quiet"]))
+
+  // The clone's object files are read-only, as every Git directory's are.
+  tool("chmod", ["-R", "u+w", copy <> "/.git"], within: copy_budget_ms)
+  |> result.replace(Nil)
+}
+
+/// Runs `git -C directory` with the arguments and answers its output.
+fn git(directory: String, arguments: List(String)) -> Result(String, String) {
+  tool("git", ["-C", directory, ..arguments], within: copy_budget_ms)
+}
+
+/// Removes a tree that may hold read-only files.
+fn remove_tree(path: String) -> Result(Nil, String) {
+  use _ <- result.try(tool("chmod", ["-R", "u+w", path], within: copy_budget_ms))
+  simplifile.delete_all([path])
+  |> result.map_error(fn(error) {
+    path <> " cannot be removed: " <> simplifile.describe_error(error)
+  })
 }
 
 /// Rewrites a copied `.git/config` without its credentials. A workspace that
@@ -986,55 +1382,159 @@ fn report(
           <> workspace.name,
         "",
       ],
-      daemon_note(),
+      daemon_lines(enrolled.daemon),
       ["Stop it with: loom vm down --name " <> options.name],
     ]),
     "\n",
   ))
 }
 
-/// A running daemon read its configuration before the `[distribution]` table
-/// existed, and the VM must be booted with the TLS flags, so only a restart
-/// reaches the guest. The `loom` client renders the TLS options file whenever
-/// it starts a daemon whose configuration has `[distribution]`
-/// (protocol-change/106), so starting `loom` is all a stopped daemon needs.
-/// Whether a daemon runs is the endpoint record's answer for the default
-/// state directory.
-fn daemon_note() -> List(String) {
-  // A running daemon must be restarted to read the new table; a stopped one
-  // picks it up the next time `loom` starts it.
-  case daemon_running() {
-    True -> [
-      "Your daemon is running, and it read its configuration before this "
-        <> "[distribution] table was installed. Restart it so the table takes "
-        <> "effect.",
+/// The lines about daemons, after doing what this `up` calls for.
+fn daemon_lines(impact: DaemonImpact) -> List(String) {
+  // Only the default daemon is ever observed or stopped.
+  case impact {
+    DefaultDaemonStale -> daemon_note()
+    OtherConfigChanged -> [
+      "A daemon already running with that file must restart to use the guest.",
       "",
     ]
-    False -> [
-      "The next `loom` command starts the daemon with the table in effect.",
-      "",
-    ]
+    NoDaemonChanged -> []
   }
 }
 
-/// Whether the default state directory's endpoint record names a daemon that
-/// is still there. Anything unreadable counts as no daemon, because the note
-/// it chooses is advice and not a decision.
-fn daemon_running() -> Bool {
-  let present = {
+/// What `up` does about the user's daemon, and the lines that say so.
+///
+/// A running daemon read its configuration before the `[distribution]` table
+/// existed, so only a restart reaches the guest. A daemon that holds no session
+/// is stopped here, and the next `loom` command starts it again with the table
+/// in effect: the `loom` client renders the TLS options file whenever it starts
+/// a daemon whose configuration has `[distribution]` (protocol-change/106). A
+/// daemon that holds any session is never stopped; the note names the command.
+fn daemon_note() -> List(String) {
+  let state = observe_daemon()
+
+  // Only a daemon that holds nothing is stopped. The others are left as they
+  // are, and the placeholder reason is never shown for them.
+  let stop = case state {
+    vm_spec.Idle(_) -> stop_daemon()
+    vm_spec.NoDaemon | vm_spec.Holding(..) | vm_spec.Unasked(_) ->
+      vm_spec.NotStopped("not asked")
+  }
+
+  vm_spec.daemon_note(state, stop)
+}
+
+/// The daemon the default state directory's endpoint record names, if its
+/// process is still there, and how many sessions it holds. Anything that
+/// cannot be read counts as no daemon, because the note it chooses is advice
+/// and not a decision; a daemon that answers no status is `Unasked`.
+fn observe_daemon() -> vm_spec.DaemonState {
+  let found = {
     use home <- result.try(home())
     use paths <- result.try(endpoint.paths(home <> "/.loom"))
     use found <- result.try(endpoint.load(paths))
     present_in(found)
   }
-  result.unwrap(present, False)
+
+  // A record with no live process is no daemon; a live one is asked how many
+  // sessions it holds, and an answer that cannot be read is not a count of zero.
+  case result.unwrap(found, None) {
+    None -> vm_spec.NoDaemon
+    Some(fence) ->
+      case ask_daemon("status") |> result.try(vm_spec.occupied_sessions) {
+        Ok(0) -> vm_spec.Idle(fence.pid)
+        Ok(sessions) -> vm_spec.Holding(fence.pid, sessions)
+        Error(_) -> vm_spec.Unasked(fence.pid)
+      }
+  }
 }
 
-/// Whether a loaded endpoint record's process is still there.
-fn present_in(found: option.Option(endpoint.Endpoint)) -> Result(Bool, String) {
+/// The fence of a loaded endpoint record whose process is still there.
+fn present_in(
+  found: option.Option(endpoint.Endpoint),
+) -> Result(option.Option(endpoint.Fence), String) {
+  // No record names no process, and a record names one only while that exact
+  // pid and birth marker are still there.
   case found {
-    Some(record) -> endpoint.is_present(record.fence)
-    None -> Ok(False)
+    Some(record) -> {
+      use there <- result.map(endpoint.is_present(record.fence))
+
+      // A recorded process that has gone is the same as no record.
+      case there {
+        True -> Some(record.fence)
+        False -> None
+      }
+    }
+    None -> Ok(None)
+  }
+}
+
+/// Sends one control command to the daemon of the default state directory,
+/// as the owner, and answers its reply body. The exchange never starts a
+/// daemon.
+fn ask_daemon(command: String) -> Result(core_json.JsonValue, String) {
+  use replies <- result.try(
+    access.execute(access.raw_request("", command, "", [])),
+  )
+
+  // Both commands answer one reply body; anything else is not their answer.
+  case replies {
+    [body] -> Ok(body)
+    _ -> Error("the daemon's reply to " <> command <> " is not one body")
+  }
+}
+
+// How long `up` waits for a drained daemon's process to go. The daemon's own
+// drain budget is longer than this in the worst case, in which case the
+// command to run is printed.
+const daemon_stop_within_ms = 60_000
+
+/// Asks an idle daemon to drain and waits for its process to go.
+fn stop_daemon() -> vm_spec.StopAttempt {
+  let stopped = {
+    use found <- result.try(daemon_fence())
+    use _ <- result.try(ask_daemon("daemon.shutdown"))
+    await_departure(found)
+  }
+
+  // A refusal or a timeout is a reason for the note, not a failed `up`: the
+  // guest is already running.
+  case stopped {
+    Ok(Nil) -> vm_spec.Stopped
+    Error(reason) -> vm_spec.NotStopped(reason)
+  }
+}
+
+/// The fence of the daemon the endpoint record names.
+fn daemon_fence() -> Result(endpoint.Fence, String) {
+  use home <- result.try(home())
+  use paths <- result.try(endpoint.paths(home <> "/.loom"))
+  use found <- result.try(endpoint.load(paths))
+  use present <- result.try(present_in(found))
+  option.to_result(present, "the daemon is gone")
+}
+
+/// Polls until the daemon's process, by pid and birth marker, is gone.
+fn await_departure(fence: endpoint.Fence) -> Result(Nil, String) {
+  let gone =
+    poll.until(within: daemon_stop_within_ms, every: 100, attempt: fn() {
+      case endpoint.is_present(fence) {
+        Ok(False) -> poll.Done(Nil)
+        Ok(True) -> poll.Retry
+        Error(reason) -> poll.Fail(reason)
+      }
+    })
+
+  // Each end of the wait is either the process gone or a reason it is not.
+  case gone {
+    poll.Answered(Nil) -> Ok(Nil)
+    poll.Failed(reason) -> Error(reason)
+    poll.Expired ->
+      Error(
+        "still running after "
+        <> int.to_string(daemon_stop_within_ms / 1000)
+        <> " s",
+      )
   }
 }
 
