@@ -3830,4 +3830,7 @@ line cells), `draw` (flowcharts) and `sequence`.
 `init`, `post <text>` and `board` for the repository in the working directory. They share
 one `ProjectsCommand`/`ProjectsReply` pair in `tui/daemon/protocol` and
 `daemon_selection.projects`, and the subcommand finds its project in `projects.list` by
-workspace. The wire forms are `docs/client-protocol.md` section 3.32.
+workspace. The wire forms are `docs/client-protocol.md` section 3.32. `launch_project`
+is the parser's test seam and `project_reply_text` builds what each subcommand prints
+from the reply alone, both `@internal` and tested in `project_command_test` without a
+daemon.

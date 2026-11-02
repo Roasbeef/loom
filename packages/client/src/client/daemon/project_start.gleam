@@ -255,14 +255,21 @@ pub fn ensure_running(
 /// Opens the project's router session. The request key reserves the session
 /// when the project is created, so this resumes it and never makes another.
 fn open_router(env: Env, project: catalogue.Project) -> Result(Nil, String) {
+  use found <- result.try(
+    manager.get(env.registry, project.router_session)
+    |> result.map_error(fn(error) { string.inspect(error) }),
+  )
+
   // Creating under the reserving request key opens the router, and repeating
-  // it finds the registration it made.
+  // it finds the registration it made. A repeat must carry what the
+  // reservation carried, the name `make_project` gave it included, or the
+  // registry refuses it as a conflicting request.
   manager.create_scoped(
     env.registry,
     manager.Creation(
       request_key: "project-router:" <> project.id,
       workspace: project.workspace,
-      name: "project",
+      name: found.registration.name,
       configuration: "",
       profile: None,
       model: None,

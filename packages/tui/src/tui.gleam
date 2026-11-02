@@ -1815,6 +1815,44 @@ pub fn launch_deployment(
   }
 }
 
+/// Classifies the words after `loom project` the way the launcher does,
+/// answering the parsed subcommand or the refusal. It is the test seam for the
+/// verbs, since the runner does not parse them again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.launch_project(["init"]) == Ok(tui.ProjectInit)
+/// assert tui.launch_project(["post", "fix it"]) == Ok(tui.ProjectPost("fix it"))
+/// ```
+@internal
+pub fn launch_project(
+  arguments: List(String),
+) -> Result(ProjectCommand, String) {
+  case parse_launch(["project", ..arguments]) {
+    Project(command:, ..) -> Ok(command)
+    Invalid(reason) -> Error(reason)
+    Version
+    | Demo
+    | Local(..)
+    | View(..)
+    | Remote(..)
+    | Forward(..)
+    | Update(..)
+    | Replay(..)
+    | ClaimAccess(..)
+    | Enroll(..)
+    | Access(..)
+    | Deployment(..)
+    | Directory(..)
+    | Run(..)
+    | RunRefused(..)
+    | Acp(..)
+    | AcpRefused(..)
+    | Sessions(..) -> Error("not a project launch")
+  }
+}
+
 /// Classifies the words after `loom directory` the way the launcher does,
 /// answering how the reply is to be printed when they name `status` and the
 /// refusal otherwise. It is the test seam for the verb and `--json`.
@@ -1916,12 +1954,7 @@ fn project_outcome(
           #("name", json.String(name)),
         ]),
       )
-      "project "
-      <> project_text(made, "project")
-      <> " ready for "
-      <> project_text(made, "workspace")
-      <> "; router session "
-      <> project_text(made, "router_session")
+      project_reply_text(command, made)
     }
     ProjectPost(text) -> {
       use id <- result.try(project_here(host, here))
@@ -1932,15 +1965,41 @@ fn project_outcome(
           #("text", json.String(text)),
         ]),
       )
-      "posted " <> project_text(posted, "trigger")
+      project_reply_text(command, posted)
     }
     ProjectBoard -> {
       use id <- result.try(project_here(host, here))
       use board <- result.map(
         project_request(host, "projects.board", [#("project", json.String(id))]),
       )
-      board_text(board)
+      project_reply_text(command, board)
     }
+  }
+}
+
+/// What a `loom project` subcommand prints for the reply it got. The text is
+/// built from the reply alone, so it can be tested without a daemon.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.project_reply_text(tui.ProjectBoard, json.Object([])) == "no tickets"
+/// ```
+@internal
+pub fn project_reply_text(
+  command: ProjectCommand,
+  reply: json.JsonValue,
+) -> String {
+  case command {
+    ProjectInit ->
+      "project "
+      <> project_text(reply, "project")
+      <> " ready for "
+      <> project_text(reply, "workspace")
+      <> "; router session "
+      <> project_text(reply, "router_session")
+    ProjectPost(_) -> "posted " <> project_text(reply, "trigger")
+    ProjectBoard -> board_text(reply)
   }
 }
 

@@ -10238,5 +10238,11 @@ ordinary top-level worker session per ticket assignment
   the base lacks. A kept tree is written as a `TreeKept` host record and appears on
   the ticket card as `kept_worktrees`. Nothing records a push yet, so any commit
   ahead of the base keeps the tree.
+- `project_daemon_test` is the daemon-level fixture: a real `root.start` with the
+  production session builder, a real catalogue, ledger and Git worktrees, the
+  control commands over a socket, and only the model scripted. It found that
+  `open_router` re-created the router under a different name than `make_project`
+  reserved it with, which the registry refuses as a conflicting request, so no
+  project could be created; it now reads the name from the registration.
 - Not built in this slice: the host check, pull requests, outbound delivery of
   replies, a Mandate-enforced broker policy.
