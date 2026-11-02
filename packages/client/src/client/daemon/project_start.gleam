@@ -79,6 +79,7 @@ import storage/catalogue
 import storage/domain
 import telemetry/field
 import telemetry/log.{type Logger}
+import weft/poll
 
 /// Everything project startup needs from the daemon.
 pub type Env {
@@ -430,11 +431,7 @@ fn ports_for(env: Env, project: catalogue.Project) -> project_host.Ports {
     remember_mandate: fn(ticket, mandate) {
       project_book.remember(env.book, project.id, ticket, mandate)
     },
-    open_session: fn(session) {
-      manager.open(env.registry, session)
-      |> result.replace(Nil)
-      |> result.map_error(fn(error) { string.inspect(error) })
-    },
+    open_session: fn(session) { open_and_wait(env.registry, session) },
     stop_session: fn(session) {
       manager.stop_session(env.registry, session)
       |> result.replace(Nil)
@@ -460,6 +457,66 @@ fn ports_for(env: Env, project: catalogue.Project) -> project_host.Ports {
     remote_url: fn() { option.from_result(project_repo.pinned_url(layout)) },
     logger: env.logger,
   )
+}
+
+/// How long an open may take to settle before its caller stops waiting, in
+/// milliseconds. A session that is slow to build is still opening afterwards,
+/// and the caller's next attempt finds it.
+const open_wait_ms = 5000
+
+/// Opens a saved session and waits until the open settles. The registry's open
+/// answers when it has accepted the request, and a build that fails afterwards,
+/// such as one that finds the session file's writer lease still held, is told
+/// only to whoever asks about that operation. Waiting here is what turns the
+/// registry's account of the failure into the error of the open, so the
+/// caller's retry has a reason to log, and a worker that never opens can be
+/// failed with it. A session that is already resident settles at once.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_start.open_and_wait(registry, session)
+/// ```
+pub fn open_and_wait(
+  registry: manager.Manager(serve.Resident),
+  session: String,
+) -> Result(Nil, String) {
+  case manager.open(registry, session) {
+    Error(error) -> Error(string.inspect(error))
+    Ok(manager.Resident(_)) -> Ok(Nil)
+    Ok(manager.Opening(operation)) -> settled(registry, session, operation)
+    Ok(other) -> Error("the session did not open: " <> string.inspect(other))
+  }
+}
+
+/// Polls one opening operation until it is resident or its build has failed.
+fn settled(
+  registry: manager.Manager(serve.Resident),
+  session: String,
+  operation: String,
+) -> Result(Nil, String) {
+  let waited =
+    poll.until(within: open_wait_ms, every: 25, attempt: fn() {
+      case manager.operation(registry, session, operation) {
+        Ok(manager.View(status: manager.Resident(_), ..)) -> poll.Done(Nil)
+        Ok(manager.View(status: manager.Opening(_), ..)) -> poll.Retry
+
+        // The registry keeps the words a refused build ended with, and an
+        // operation it no longer holds ended some other way.
+        Error(manager.StartFailed(reason)) -> poll.Fail(reason)
+        Error(error) -> poll.Fail(string.inspect(error))
+        Ok(manager.View(status: other, ..)) ->
+          poll.Fail("the session did not open: " <> string.inspect(other))
+      }
+    })
+
+  // A wait that ran out is not a refusal, and says so, since the session may
+  // be resident by the caller's next attempt.
+  case waited {
+    poll.Answered(Nil) -> Ok(Nil)
+    poll.Failed(reason) -> Error(reason)
+    poll.Expired -> Error("the session was still opening after the wait")
+  }
 }
 
 // --- finishing work ----------------------------------------------------------

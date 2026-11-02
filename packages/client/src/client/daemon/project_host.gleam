@@ -52,8 +52,8 @@ import client/project_poller
 import client/project_publish
 import client/project_records.{
   type Job, type Record, CheckJob, DeliverJob, Engine as EngineLine,
-  Host as HostLine, ObserveJob, OfferJob, PublishJob, RecoverJob, ReplyJob,
-  StartJob, StopJob,
+  Host as HostLine, ObserveJob, OfferJob, PublishJob, RecoverJob, ReopenJob,
+  ReplyJob, StartJob, StopJob,
 }
 import client/project_retention
 import client/project_settings.{PublishOff, PublishPullRequest}
@@ -943,7 +943,9 @@ fn boot(config: Config, inbox: Subject(Message)) -> Result(Host, String) {
   Ok(
     perform_due(
       configure_rules(
-        remember_mandates(recover_interrupted(rearm_router_clock(replayed))),
+        remember_mandates(
+          queue_reopens(recover_interrupted(rearm_router_clock(replayed))),
+        ),
       ),
     ),
   )
@@ -1226,25 +1228,9 @@ fn router_ran_out(host: Host, at_ms: Int) -> Host {
 /// out before it asks, which keeps the ledger free of refused events. A ticket
 /// that ended or was withdrawn refuses the event too, and stays as it is.
 fn session_lost(host: Host, session: String, why: String) -> Host {
-  let holder =
-    state.tickets_oldest_first(host.engine)
-    |> list.find_map(fn(ticket) {
-      use assignment <- result.try(option.to_result(
-        state.active_assignment(ticket),
-        Nil,
-      ))
-
-      // A ticket's active assignment is the only one that can hold a live
-      // session, and it counts only if it is bound to this one.
-      case assignment.session == Some(model.SessionId(session)) {
-        True -> Ok(#(ticket, assignment.seq))
-        False -> Error(Nil)
-      }
-    })
-
   // No holder is a session the project never assigned, or one whose assignment
   // already ended, and either leaves the host as it is.
-  case holder {
+  case slot_holder(host, session) {
     Error(Nil) -> host
     Ok(#(ticket, seq)) -> {
       log.warn(host.ports.logger, "project.worker_lost", [
@@ -1261,6 +1247,25 @@ fn session_lost(host: Host, session: String, why: String) -> Host {
       )
     }
   }
+}
+
+/// The ticket and assignment that hold a slot and are bound to `session`, if
+/// there are any.
+fn slot_holder(host: Host, session: String) -> Result(#(Ticket, Int), Nil) {
+  state.tickets_oldest_first(host.engine)
+  |> list.find_map(fn(ticket) {
+    use assignment <- result.try(option.to_result(
+      state.active_assignment(ticket),
+      Nil,
+    ))
+
+    // A ticket's active assignment is the only one that can hold a live
+    // session, and it counts only if it is bound to this one.
+    case assignment.session == Some(model.SessionId(session)) {
+      True -> Ok(#(ticket, assignment.seq))
+      False -> Error(Nil)
+    }
+  })
 }
 
 fn committed_or_same(host: Host, incoming: Event) -> Host {
@@ -2005,6 +2010,7 @@ fn perform(host: Host, row: project_ledger.Effect, job: Job) -> Host {
     OfferJob(triggers:) -> offer_to_router(host, row, triggers)
     StopJob(ticket:, seq:) -> stop_worker(host, row, ticket, seq)
     RecoverJob(ticket:, seq:) -> recover_worker(host, row, ticket, seq)
+    ReopenJob(session:) -> reopen_session(host, row, session)
     ObserveJob(ticket:, seq:) -> observe_head(host, row, ticket, seq)
     CheckJob(ticket:, commit:) -> start_check(host, row, ticket, commit)
     PublishJob(ticket:, commit:) -> start_publish(host, row, ticket, commit)
@@ -3064,10 +3070,116 @@ fn queue_recovery(host: Host, ticket: String, seq: Int) -> Host {
   }
 }
 
+/// How many failed attempts a reopen is worth, counted from zero: the ninth
+/// failure is the last. Under the usual back-off the nine attempts span about
+/// three minutes, three times the sixty seconds a killed daemon's writer lease
+/// on a session file can still hold, so a daemon restarted at once finds its
+/// sessions free before the attempts are spent. A second live daemon holds its
+/// leases for as long as it lives and is refused throughout.
+const last_reopen_attempt = 8
+
+/// Queues a reopen for the router and for the session of every assignment that
+/// still holds a slot. The registry's open at boot is a single try, and a
+/// session file can refuse it for as long as the previous daemon's lease lasts,
+/// which a kill leaves behind. The rows come due after the first tick, when the
+/// project's handle is in the table and a session builder can find it, and they
+/// repeat under the back-off until the lease has run out. The key is the
+/// session, so a restart that finds a row still queued does not add a second.
+fn queue_reopens(host: Host) -> Host {
+  let workers =
+    state.tickets_oldest_first(host.engine)
+    |> list.filter_map(fn(ticket) {
+      use assignment <- result.try(option.to_result(
+        state.active_assignment(ticket),
+        Nil,
+      ))
+      option.map(assignment.session, fn(session) { session.value })
+      |> option.to_result(Nil)
+    })
+  let due = host.ports.now_ms() + host.config.tick_ms
+
+  list.each([host.config.router_session, ..workers], fn(session) {
+    case
+      project_ledger.enqueue(
+        host.ledger,
+        project_records.reopen_draft(session, due),
+      )
+    {
+      Ok(Nil) -> Nil
+      Error(error) ->
+        log.warn(host.ports.logger, "project.reopen_unqueued", [
+          field.ident(key: "session", value: session),
+          field.text(key: "reason", value: string.inspect(error)),
+        ])
+    }
+  })
+  host
+}
+
+/// Opens a saved session of the project. A refusal is tried again under the
+/// back-off, and the last one is final: a worker whose session will not open
+/// has failed, with the refusal's words, and the router, which a later offer
+/// opens on demand, is only logged.
+fn reopen_session(
+  host: Host,
+  row: project_ledger.Effect,
+  session: String,
+) -> Host {
+  // A worker whose assignment ended while the row waited, by a stop, a close
+  // or a rest, is no longer wanted, and opening its session would undo that.
+  let wanted =
+    session == host.config.router_session
+    || result.is_ok(slot_holder(host, session))
+
+  // An unwanted session is dropped without an open. A wanted one is retried
+  // while the refusal may yet lift, and the last refusal ends the row with its
+  // consequence for the ticket.
+  case wanted {
+    False -> settle(host, row)
+    True ->
+      case host.ports.open_session(session) {
+        Ok(Nil) -> settle(host, row)
+        Error(reason) if row.attempts >= last_reopen_attempt ->
+          reopen_spent(host, session, reason) |> settle(row)
+        Error(_) -> defer(host, row)
+      }
+  }
+}
+
+/// What a spent reopen means for the session: a failed worker when an
+/// assignment holds it, and a line in the log otherwise.
+fn reopen_spent(host: Host, session: String, reason: String) -> Host {
+  // A holder is a worker the engine still counts as running, so it fails with
+  // the refusal. No holder is the router, or a worker that ended meanwhile.
+  case slot_holder(host, session) {
+    Ok(#(ticket, seq)) ->
+      committed_or_same(
+        host,
+        event.WorkerFailed(
+          ticket.id,
+          seq,
+          "the worker's session did not reopen after "
+            <> int.to_string(last_reopen_attempt + 1)
+            <> " attempts: "
+            <> reason,
+        ),
+      )
+    Error(Nil) -> {
+      log.warn(host.ports.logger, "project.session_not_reopened", [
+        field.ident(key: "session", value: session),
+        field.text(key: "reason", value: reason),
+      ])
+      host
+    }
+  }
+}
+
 /// Delivers the recovery note to the assignment's worker through the same
 /// admission as any trigger, so it arrives with the trigger origin and a
-/// harness source. A worker that cannot be reached after the usual attempts is
-/// left alone: the note is a courtesy to a model and nothing depends on it.
+/// harness source. The admission opens the saved session first, so this row
+/// outlasts a lease the way a reopen does. A worker that stays unreachable is
+/// left to the reopen row, which fails it with the reason: the note is a
+/// courtesy to a model, and the reopen row owns what happens to the ticket.
 fn recover_worker(
   host: Host,
   row: project_ledger.Effect,
@@ -3085,7 +3197,7 @@ fn recover_worker(
           let id = "recovery-" <> ticket <> "-" <> int.to_string(seq)
           let note =
             Trigger(source: "harness", actor: "loom", body: recovery_note)
-          admit(host, row, session, id, note, peer_mail.MayWake, fn(admitted) {
+          admit(host, session, id, note, peer_mail.MayWake, fn(admitted) {
             recovery_delivered(host, row, admitted)
           })
         }
@@ -3101,8 +3213,9 @@ fn recovery_delivered(
   admitted: Admitted,
 ) -> Host {
   case admitted {
-    Admitted | GaveUp -> settle(host, row)
-    NotYet -> defer(host, row)
+    Admitted -> settle(host, row)
+    NotYet(_) if row.attempts >= last_reopen_attempt -> settle(host, row)
+    NotYet(_) -> defer(host, row)
   }
 }
 
@@ -3132,7 +3245,7 @@ fn deliver_to_worker(
         // has bound the session; deferring it would cost a tick's wait.
         None -> host
         Some(session) ->
-          admit(host, row, session, trigger, text, peer_mail.MayWake, fn(ok) {
+          admit(host, session, trigger, text, peer_mail.MayWake, fn(ok) {
             delivered(host, row, ticket, trigger, ok)
           })
       }
@@ -3155,8 +3268,8 @@ fn delivered(
 ) -> Host {
   let id = model.TicketId(ticket)
 
-  // Admitted settles the row, NotYet backs it off, and GaveUp records the
-  // failure where a person will see it.
+  // Admitted settles the row, NotYet backs it off, and a fifth NotYet records
+  // the failure where a person will see it.
   case admitted {
     Admitted -> {
       let current = state.ticket(host.engine, id)
@@ -3181,10 +3294,12 @@ fn delivered(
 
       settle(next, row)
     }
-    NotYet -> defer(host, row)
-    GaveUp ->
+
+    // Five attempts, counted from zero, are all a delivery gets.
+    NotYet(_) if row.attempts >= 4 ->
       committed_or_same(host, event.InputFailed(id, model.TriggerId(trigger)))
       |> settle(row)
+    NotYet(_) -> defer(host, row)
   }
 }
 
@@ -3218,7 +3333,6 @@ fn offer_to_router(
           let receipt = trigger <> "~" <> int.to_string(offers)
           admit_as(
             host,
-            row,
             router,
             receipt,
             trigger,
@@ -3244,11 +3358,16 @@ fn offer_to_router(
   }
 }
 
-/// What a delivery attempt came to.
+/// What a delivery attempt came to. A failure carries the reason the session
+/// gave, and each caller decides how many attempts it will spend before it
+/// gives up, since a note to a model and a worker that must come back after a
+/// restart are not worth the same patience.
 type Admitted {
+  /// The message reached the session.
   Admitted
-  NotYet
-  GaveUp
+
+  /// The session did not take the message, for this reason.
+  NotYet(reason: String)
 }
 
 /// Delivers one stored trigger to a session over its peer endpoint. A saved
@@ -3258,7 +3377,6 @@ type Admitted {
 /// trigger and the target, so a repeat is an admission that already happened.
 fn admit(
   host: Host,
-  row: project_ledger.Effect,
   session: String,
   trigger: String,
   text: Trigger,
@@ -3266,14 +3384,13 @@ fn admit(
   finish: fn(Admitted) -> a,
 ) -> a {
   let receipt = trigger <> ":" <> session
-  admit_as(host, row, session, receipt, trigger, text, wake, finish)
+  admit_as(host, session, receipt, trigger, text, wake, finish)
 }
 
 /// `admit` with the receipt named by the caller, for a message that may
 /// legitimately be sent to the same session more than once.
 fn admit_as(
   host: Host,
-  row: project_ledger.Effect,
   session: String,
   receipt: String,
   trigger: String,
@@ -3311,8 +3428,8 @@ fn admit_as(
     other -> other
   }
 
-  // An answer admits the message. A failure is logged and reported as not yet
-  // or as given up, depending on how many attempts the row has had.
+  // An answer admits the message. A failure is logged and handed back with its
+  // reason, and the caller says how long the row is worth retrying.
   case answered {
     Ok(_) -> finish(Admitted)
     Error(failure) -> {
@@ -3320,12 +3437,7 @@ fn admit_as(
         field.ident(key: "session", value: session),
         field.text(key: "reason", value: peer_mail.reason(failure)),
       ])
-
-      // Five attempts, counted from zero, are all a delivery gets.
-      case row.attempts >= 4 {
-        True -> finish(GaveUp)
-        False -> finish(NotYet)
-      }
+      finish(NotYet(peer_mail.reason(failure)))
     }
   }
 }

@@ -17,6 +17,7 @@ import client/project_records
 import client/project_repo
 import client/worktrees
 import core/json
+import gleam/dict
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -1299,4 +1300,218 @@ pub fn a_loss_reported_after_a_restart_still_fails_the_ticket_test() {
   stop(again)
   let assert Ok(third) = project_host.start(rig.config) as "the actor restarts"
   assert board_json(third) == board
+}
+
+// --- a session that will not open ------------------------------------------------------
+
+// What a killed daemon's lease looks like to the actor: opens are refused for a
+// while with the registry's own words, then they succeed. The world is a process
+// that holds the clock the actor reads and counts the opens it was asked for, so
+// the test moves time by hand and says exactly which attempt is which.
+type World {
+  SetNow(Int)
+  GetNow(Subject(Int))
+  Attempt(String, Subject(Int))
+  Attempts(String, Subject(Int))
+  Crash
+  Alive(Subject(Bool))
+}
+
+// What the world keeps: the time, the opens asked of each session, and whether
+// the daemon whose sessions these are is still running.
+type Standing {
+  Standing(now: Int, counts: dict.Dict(String, Int), alive: Bool)
+}
+
+const lease_words = "another writer holds this session's lease until epoch ms 42"
+
+fn spawn_world() -> Subject(World) {
+  let ready = process.new_subject()
+  let _ =
+    process.spawn_unlinked(fn() {
+      let inbox = process.new_subject()
+      process.send(ready, inbox)
+      keep_world(inbox, Standing(1_793_613_000_000, dict.new(), True))
+    })
+  let assert Ok(inbox) = process.receive(ready, 1000) as "the world starts"
+  inbox
+}
+
+fn keep_world(inbox: Subject(World), standing: Standing) -> Nil {
+  let count = fn(session) {
+    result.unwrap(dict.get(standing.counts, session), 0)
+  }
+  case process.receive_forever(inbox) {
+    SetNow(next) -> keep_world(inbox, Standing(..standing, now: next))
+    GetNow(reply) -> {
+      process.send(reply, standing.now)
+      keep_world(inbox, standing)
+    }
+    Attempt(session, reply) -> {
+      let total = count(session) + 1
+      process.send(reply, total)
+      keep_world(
+        inbox,
+        Standing(
+          ..standing,
+          counts: dict.insert(standing.counts, session, total),
+        ),
+      )
+    }
+    Attempts(session, reply) -> {
+      process.send(reply, count(session))
+      keep_world(inbox, standing)
+    }
+    Crash -> keep_world(inbox, Standing(..standing, alive: False))
+    Alive(reply) -> {
+      process.send(reply, standing.alive)
+      keep_world(inbox, standing)
+    }
+  }
+}
+
+fn attempts(world: Subject(World), session: String) -> Int {
+  process.call(world, 1000, Attempts(session, _))
+}
+
+// A rig whose sessions refuse the first `refusals` opens of each and whose
+// clock only moves when the test moves it. The actor ticks quickly, and a row
+// that was deferred is due again only after the test advances the clock.
+fn leased(name: String, refusals: Int) -> #(Rig, Subject(World)) {
+  let base = rig(name)
+  let world = spawn_world()
+  let ports =
+    project_host.Ports(
+      ..project_ports.inert(),
+      now_ms: fn() { process.call(world, 1000, GetNow) },
+      start_session: fn(request: project_host.StartRequest) {
+        process.send(base.seen, Started(request.key))
+        Ok("session-" <> request.key)
+      },
+      open_session: fn(session) {
+        case process.call(world, 1000, Attempt(session, _)) > refusals {
+          True -> Ok(Nil)
+          False -> Error(lease_words)
+        }
+      },
+      // Every session is open while the first daemon runs. After it is killed
+      // a session is open once an open of it has been accepted.
+      endpoint_of: fn(session) {
+        let open =
+          process.call(world, 1000, Alive)
+          || attempts(world, session) > refusals
+        case open {
+          True ->
+            Ok(
+              peer_mail.Endpoint(session, fn(command) {
+                process.send(base.seen, Sent(session, command))
+                Ok(json.Null)
+              }),
+            )
+          False -> Error(peer_mail.NotOpen)
+        }
+      },
+    )
+  let config =
+    project_host.Config(..base.config, tick_ms: 50, ports: fn() { ports })
+  #(Rig(..base, config:), world)
+}
+
+// Moves the clock past the longest back-off, so every deferred row is due, and
+// gives the actor's ticks time to perform them.
+fn advance(world: Subject(World)) -> Nil {
+  process.send(world, SetNow(process.call(world, 1000, GetNow) + 70_000))
+  process.sleep(250)
+}
+
+// Advances the clock and waits until `session` was asked to open again.
+fn pass_time(world: Subject(World), session: String) -> Nil {
+  let before = attempts(world, session)
+  advance(world)
+  let assert Ok(Nil) = poll_until(fn() { attempts(world, session) > before })
+    as "an open was attempted"
+  Nil
+}
+
+// A restarted actor with a running worker, and the worker's session. The
+// daemon dies with the first actor, and its sessions with it.
+fn restarted_with_a_worker(
+  rig: Rig,
+  world: Subject(World),
+) -> #(project_host.Handle, String) {
+  let assert Ok(handle) = project_host.start(rig.config) as "the actor starts"
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+  let assert Ok([tools.Applied]) = project_host.route(handle, [accept("a")])
+
+  // The worker is running before the kill, and has been given its trigger.
+  let assert Ok(Nil) =
+    poll_until(fn() {
+      string.contains(ticket_text(handle), "\"status\":\"running\"")
+    })
+  process.sleep(200)
+  stop(handle)
+  process.send(world, Crash)
+  let assert Ok(again) = project_host.start(rig.config) as "the actor restarts"
+  #(again, "session-" <> first_key("t-a"))
+}
+
+// The worker's session cannot be opened for as long as a dead daemon's lease
+// lasts. That is a wait and not a death: the ticket is not failed, however many
+// opens are refused, until the reopen has spent its nine attempts. Then it is
+// failed with the registry's words, so a person sees the real reason.
+pub fn a_worker_whose_session_will_not_open_fails_when_the_reopen_is_spent_test() {
+  let #(rig, world) = leased("lease-spent", 1000)
+  let #(handle, worker) = restarted_with_a_worker(rig, world)
+  assert !string.contains(board_json(handle), failed_stage)
+
+  list.each(list.repeat(Nil, 8), fn(_) {
+    pass_time(world, worker)
+    assert !string.contains(board_json(handle), failed_stage)
+  })
+
+  pass_time(world, worker)
+  let assert Ok(Nil) =
+    poll_until(fn() { string.contains(board_json(handle), failed_stage) })
+  let board = board_json(handle)
+  assert string.contains(board, "did not reopen after 9 attempts")
+  assert string.contains(board, lease_words)
+  assert !string.contains(board, "the session was stopped")
+}
+
+// Once the lease has run out the worker is opened by the rows the actor queued
+// itself, with nobody to ask: it is told of the restart once, no session or
+// ticket is made twice, the router is opened too, and the ticket is never
+// failed on the way.
+pub fn a_worker_and_the_router_come_back_once_the_lease_runs_out_test() {
+  let #(rig, world) = leased("lease-expires", 3)
+  let #(handle, _worker) = restarted_with_a_worker(rig, world)
+  let router = "router-1"
+
+  // Time passes a lease's worth. The router is refused three times and then
+  // opens, and the ticket never reads failed while it is.
+  let assert Ok(Nil) =
+    poll_until(fn() {
+      advance(world)
+      assert !string.contains(board_json(handle), failed_stage)
+      attempts(world, router) > 3
+    })
+
+  // The router's row stopped when the open succeeded, and a later pass asks
+  // nothing more of it.
+  let settled = attempts(world, router)
+  advance(world)
+  advance(world)
+  assert attempts(world, router) == settled
+
+  // The worker was told of the restart once, its session was made once, and
+  // there is one ticket, which survives another restart.
+  let seen = drain(rig.seen)
+  assert list.length(recovery_notes(seen)) == 1
+  assert list.count(seen, fn(each) { each == Started(first_key("t-a")) }) == 1
+  let board = board_json(handle)
+  assert !string.contains(board, failed_stage)
+  assert list.length(string.split(board, "\"id\":\"t-")) == 2
+  stop(handle)
+  let assert Ok(third) = project_host.start(rig.config) as "the actor restarts"
+  assert !string.contains(board_json(third), failed_stage)
 }

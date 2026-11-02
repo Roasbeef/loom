@@ -63,6 +63,7 @@ import provider/http
 import provider/model
 import provider/secret
 import simplifile
+import sqlight
 import storage/catalogue
 import storage/domain as storage_domain
 import storage/exec_ledger
@@ -261,6 +262,256 @@ pub fn a_project_runs_two_tickets_and_survives_a_restart_test() {
   stop(third)
   assert project_rig.digest(repository) == owners
   process.trap_exits(False)
+}
+
+// A daemon killed with `kill -9` runs no release, so every session file it held
+// keeps a writer lease until it expires, and a daemon restarted inside that
+// window cannot open the sessions. The project must wait the lease out without
+// a person: the workers come back and are told, the router comes back, nothing
+// is made twice, and no ticket reads failed on the way. A lease that has not
+// expired still refuses a second writer.
+pub fn a_killed_daemons_lease_delays_the_reopen_without_failing_a_worker_test() {
+  let helper = here() <> "/../sandbox/loom-exec"
+  let assert Ok(True) = simplifile.is_file(helper)
+    as "packages/sandbox/loom-exec is missing: run make sandbox"
+
+  process.trap_exits(True)
+  let scratch = scratch("project-lease")
+  let repository = worktree_rig.repository(scratch <> "/repo")
+  let seen = process.new_subject()
+  let daemon = boot(scratch <> "/state", seen)
+  let created =
+    command(daemon, "projects.create", [
+      #("workspace", json.String(repository)),
+      #("name", json.String("repo")),
+    ])
+  let project = text_of(created, "project")
+  let router = text_of(created, "router_session")
+  let _ = post(daemon, project, "a", "fix a")
+  let _ = post(daemon, project, "b", "fix b")
+  let before =
+    await_tickets(daemon, project, fn(tickets) {
+      stage_of(tickets, "fix a") == "person/answer"
+      && stage_of(tickets, "fix b") == "working"
+    })
+  let assert [first, second] = ticket_sessions(before)
+  let held = [router, first, second]
+  let files = list.map(held, session_file(daemon, _))
+  let _ = drain(seen)
+  stop(daemon)
+
+  // The previous daemon is gone and its leases are not. They run out six
+  // seconds from now.
+  list.each(files, plant_lease(_, ffi_os.system_time_ms() + 6000))
+  let restarted = boot(scratch <> "/state", seen)
+  project_start.reopen(restarted.env)
+
+  // The leases are real: neither worker is resident yet.
+  assert !is_resident(session_status(restarted, first))
+  assert !is_resident(session_status(restarted, second))
+
+  // Nobody tells the project anything. Once the leases run out the workers are
+  // reopened and told that the harness restarted, and the router is open again.
+  // The board never shows a ticket as failed while it waits.
+  let told = watch_recovery(restarted, project, seen, [], 120)
+  assert list.sort(told, string.compare) == ["t-a", "t-b"]
+  let after = tickets_of(restarted, project)
+  assert ticket_titles(after) == ["fix a", "fix b"]
+  assert ticket_sessions(after) == [first, second]
+  assert session_count(restarted) == 3
+  assert poll.until(within: 20_000, every: 100, attempt: fn() {
+      case session_status(restarted, router) {
+        manager.Resident(_) -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    == poll.Answered(Nil)
+  stop(restarted)
+
+  // A lease that has not run out still refuses a writer, and the project does
+  // not call the worker lost for it. When the other writer lets go, it opens.
+  let assert [_, first_file, _] = files
+  plant_lease(first_file, ffi_os.system_time_ms() + 600_000)
+  let third = boot(scratch <> "/state", seen)
+  project_start.reopen(third.env)
+
+  // A refused open is the end of an attempt and not of a session, so the
+  // registry's end bell stays quiet for it. The bell here records what it is
+  // told, in place of the project's.
+  let rings = process.new_subject()
+  manager.on_session_ended(third.ready.registry, fn(session, why) {
+    process.send(rings, #(session, why))
+  })
+  let assert Error(refusal) =
+    project_start.open_and_wait(third.ready.registry, first)
+  assert string.contains(refusal, "another writer holds this session's lease")
+  process.sleep(3000)
+  assert !is_resident(session_status(third, first))
+  assert process.receive(rings, 0) == Error(Nil)
+  assert stage_of(tickets_of(third, project), "fix a") == "person/answer"
+
+  // Once the other writer lets go the session opens, and stopping a session
+  // that ran does ring.
+  clear_lease(first_file)
+  assert project_start.open_and_wait(third.ready.registry, first) == Ok(Nil)
+  let assert Ok(_) = manager.stop_session(third.ready.registry, first)
+  assert process.receive(rings, 10_000)
+    == Ok(#(first, "the session was stopped"))
+  stop(third)
+  process.trap_exits(False)
+}
+
+// A graceful stop reaches the registry while the project actors are still
+// alive, as it does in a real process, and a client may be attached to a worker
+// when it does. The existing restart test kills the actors first, so a bell
+// rung during the stop reached no one. Here it can reach them, and the test says
+// whether any ticket reads failed on the other side.
+pub fn a_graceful_stop_with_a_client_attached_fails_no_worker_test() {
+  let helper = here() <> "/../sandbox/loom-exec"
+  let assert Ok(True) = simplifile.is_file(helper)
+    as "packages/sandbox/loom-exec is missing: run make sandbox"
+
+  process.trap_exits(True)
+  let scratch = scratch("project-graceful")
+  let repository = worktree_rig.repository(scratch <> "/repo")
+  let seen = process.new_subject()
+  let daemon = boot(scratch <> "/state", seen)
+  let created =
+    command(daemon, "projects.create", [
+      #("workspace", json.String(repository)),
+      #("name", json.String("repo")),
+    ])
+  let project = text_of(created, "project")
+  let _ = post(daemon, project, "a", "fix a")
+  let _ = post(daemon, project, "b", "fix b")
+  let before =
+    await_tickets(daemon, project, fn(tickets) {
+      stage_of(tickets, "fix a") == "person/answer"
+      && stage_of(tickets, "fix b") == "working"
+    })
+  let assert [first, second] = ticket_sessions(before)
+
+  // A terminal is attached to each worker, as `loom` attaches to a session.
+  let #(socket_a, _) =
+    wire.connect(
+      daemon.port,
+      daemon.credential,
+      "/v2/sessions/" <> first <> "/ws",
+    )
+  let _ = wire.subscribe(socket_a, 1, first, within_ms: 10_000)
+  let #(socket_b, _) =
+    wire.connect(
+      daemon.port,
+      daemon.credential,
+      "/v2/sessions/" <> second <> "/ws",
+    )
+  let _ = wire.subscribe(socket_b, 1, second, within_ms: 10_000)
+
+  // The daemon stops with its project actors alive and its terminals attached.
+  assert root.shutdown(daemon.root, within: 20_000) == Ok(Nil)
+  let ledger = ledger_path(daemon, project)
+  list.each(project_book.all(daemon.env.book), fn(handle) {
+    case process.subject_owner(handle.commands) {
+      Ok(pid) -> {
+        process.unlink(pid)
+        process.kill(pid)
+      }
+      Error(Nil) -> Nil
+    }
+  })
+  process.kill(daemon.listener)
+  let _ = ffi_ws.tcp_close(socket_a)
+  let _ = ffi_ws.tcp_close(socket_b)
+  process.sleep(200)
+
+  // Nothing was recorded as lost, and the next daemon finds both tickets as
+  // they were.
+  let assert Ok(opened) = project_ledger.open(ledger)
+  let assert Ok(lines) = project_ledger.replay(opened, 0, 500)
+  let assert Ok(Nil) = project_ledger.close(opened)
+  let recorded = string.inspect(lines)
+  assert string.contains(recorded, "session_bound")
+    as "the ledger holds the assignments"
+  assert !string.contains(recorded, "worker_failed")
+  process.trap_exits(False)
+}
+
+// Follows the board until every worker has been told of the restart, and fails
+// the moment a ticket reads failed. A worker's note arrives when its session
+// opens and the worker answers, so this waits on the scripted model's record.
+fn watch_recovery(
+  daemon: Daemon,
+  project: String,
+  seen: Subject(Seen),
+  found: List(String),
+  turns: Int,
+) -> List(String) {
+  let failed =
+    list.filter(tickets_of(daemon, project), fn(each) {
+      text_of(each, "stage") == "person/failed"
+    })
+  assert failed == [] as "no ticket reads failed while the lease runs out"
+
+  case list.length(list.unique(found)) >= 2 || turns == 0 {
+    True -> list.unique(found)
+    False ->
+      case process.receive(seen, 250) {
+        Ok(Recovered(ticket)) ->
+          watch_recovery(daemon, project, seen, [ticket, ..found], turns - 1)
+        Ok(Advertised(..)) | Ok(Refused(_)) | Error(Nil) ->
+          watch_recovery(daemon, project, seen, found, turns - 1)
+      }
+  }
+}
+
+fn session_file(daemon: Daemon, session: String) -> String {
+  let assert Ok(manager.View(registration, _)) =
+    manager.get(daemon.ready.registry, session)
+    as "the session is registered"
+  registration.path
+}
+
+fn is_resident(status: manager.Status) -> Bool {
+  case status {
+    manager.Resident(_) -> True
+    manager.Reserved
+    | manager.FailedStart(..)
+    | manager.Saved
+    | manager.Opening(_)
+    | manager.Stopping(_)
+    | manager.RecoveryBlocked(_) -> False
+  }
+}
+
+fn session_status(daemon: Daemon, session: String) -> manager.Status {
+  let assert Ok(manager.View(_, status)) =
+    manager.get(daemon.ready.registry, session)
+    as "the session is registered"
+  status
+}
+
+// Leaves a writer lease in a session file as a daemon that was killed leaves
+// it: held by an owner that no longer exists, until `expires_ms`.
+fn plant_lease(path: String, expires_ms: Int) -> Nil {
+  let assert Ok(connection) = sqlight.open(path) as "the session file opens"
+  let assert Ok(Nil) =
+    sqlight.exec(
+      "DELETE FROM writer_lease; INSERT INTO writer_lease(owner_id, fence, expires_at_ms) VALUES ('loomd-killed', 1, "
+        <> int.to_string(expires_ms)
+        <> ")",
+      on: connection,
+    )
+    as "the stale lease is written"
+  let assert Ok(Nil) = sqlight.close(connection)
+  Nil
+}
+
+fn clear_lease(path: String) -> Nil {
+  let assert Ok(connection) = sqlight.open(path) as "the session file opens"
+  let assert Ok(Nil) = sqlight.exec("DELETE FROM writer_lease", on: connection)
+    as "the lease is released"
+  let assert Ok(Nil) = sqlight.close(connection)
+  Nil
 }
 
 // --- the daemon ---------------------------------------------------------------

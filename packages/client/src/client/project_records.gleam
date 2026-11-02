@@ -197,12 +197,21 @@ pub type Job {
     seq: Int,
   )
 
-  /// Tell a worker that a restart interrupted its assignment.
+  /// Tell a worker that a restart interrupted its assignment. The note goes
+  /// through the worker's endpoint, which opens the saved session first, so the
+  /// row is also what brings a worker back when the open must wait.
   RecoverJob(
     /// The ticket.
     ticket: String,
     /// The assignment.
     seq: Int,
+  )
+
+  /// Open a saved session of the project, trying again under the usual
+  /// back-off while it refuses. The router is the one it is queued for.
+  ReopenJob(
+    /// The session.
+    session: String,
   )
 
   /// Post a router's reply to a GitHub issue or pull request as a comment.
@@ -536,6 +545,22 @@ pub fn recovery_draft(
   )
 }
 
+/// The row that opens a saved session of the project, due at `due_ms`. The key
+/// is the session, so a project holds at most one such row per session and a
+/// restart queues no second.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_records.reopen_draft("0198", 5).key == "0198"
+/// ```
+pub fn reopen_draft(
+  session: String,
+  due_ms: Int,
+) -> project_ledger.EffectDraft {
+  row("reopen", session, [#("session", json.string(session))], due_ms)
+}
+
 /// The row that posts a router's reply to GitHub, due at once. Its key leads
 /// with the ledger position in twelve digits, so the rows of one thread sort
 /// in the order the replies were queued, and the performer posts them in that
@@ -667,6 +692,11 @@ pub fn job(found: project_ledger.Effect) -> Result(Job, String) {
         use ticket <- decode.field("ticket", decode.string)
         use seq <- decode.field("seq", decode.int)
         decode.success(RecoverJob(ticket:, seq:))
+      })
+    "reopen" ->
+      parse(payload, {
+        use session <- decode.field("session", decode.string)
+        decode.success(ReopenJob(session:))
       })
     "github_reply" ->
       parse(payload, {

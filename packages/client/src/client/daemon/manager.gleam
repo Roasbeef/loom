@@ -514,6 +514,8 @@ type Slot(instance) {
     operation: String,
     /// What the builder has done so far.
     phase: Occupancy(instance),
+    /// Whether the session ever ran, which decides if its end rings the bell.
+    residence: Residence,
     /// The original custody monitor. Its normal exit is the drain proof.
     watch: Monitor,
     /// The published instance, or the reason assembly refused.
@@ -5914,6 +5916,7 @@ fn prepare_domain_slot(
           host:,
           operation:,
           phase: WaitingForDomain,
+          residence: NeverRan,
           watch:,
           results:,
           faults:,
@@ -6522,7 +6525,7 @@ fn opened(
                 slots: dict.insert(
                   book.slots,
                   id,
-                  Slot(..slot, phase: Running(instance)),
+                  Slot(..slot, phase: Running(instance), residence: Ran),
                 ),
               )
           }
@@ -6663,6 +6666,39 @@ fn announce_end(
   }
 }
 
+/// Whether a slot's session ever ran.
+///
+/// A build that was refused, such as an open that finds the writer lease still
+/// held by a daemon that was killed, leaves a slot that closes and retires like
+/// any other. That retirement is the end of an attempt and not of a session, and
+/// a listener that took it for a session ending would record a worker as lost
+/// for a reopen that has not yet had its chance to succeed. `Closing` forgets
+/// which of the two it follows, so the slot keeps the fact apart from its phase.
+type Residence {
+  /// The builder has not published an instance, or never will.
+  NeverRan
+
+  /// The slot held a running instance at some point.
+  Ran
+}
+
+// A slot retires on the way out of a refused build as well as after a run, and
+// only the second is a session ending. The refused build reported its own
+// failure to whoever asked for the open, who can ask again.
+/// Reports a retired slot's end, when the slot ever held a running session.
+fn announce_retirement(
+  book: Book(instance),
+  phase: Phase,
+  slot: Slot(instance),
+  id: String,
+  why: String,
+) -> Nil {
+  case slot.residence {
+    Ran -> announce_end(book, phase, id, why)
+    NeverRan -> Nil
+  }
+}
+
 // A cleanup failure is the other half: its holder stays alive by design, so no
 // normal exit can ever arrive and the reservation is genuinely unrecoverable.
 /// Coordinates failed with the daemon manager’s session state and effects.
@@ -6707,8 +6743,9 @@ fn retired(
 
           // A drained slot is a session that is no longer running, whoever
           // asked it to stop. A fault rang first with its cause when there was
-          // one, and this ring is the only report of a plain stop.
-          announce_end(book, phase, id, "the session was stopped")
+          // one, and this ring is the only report of a plain stop. A slot
+          // whose build was refused never ran, so it has nothing to report.
+          announce_retirement(book, phase, slot, id, "the session was stopped")
           let book =
             Book(
               ..book,
@@ -6721,9 +6758,10 @@ fn retired(
         _ -> {
           // Custody was lost rather than drained, so the session is gone all
           // the same, and the slot stays reserved for an operator.
-          announce_end(
+          announce_retirement(
             book,
             phase,
+            slot,
             id,
             "the session's custody was lost: " <> string.inspect(reason),
           )
