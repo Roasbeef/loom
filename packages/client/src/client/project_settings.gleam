@@ -10,6 +10,10 @@
 ////
 //// - `check` is the command the host runs against a worker's head. Unset,
 ////   there is no check, and a ticket whose work is done waits for a person.
+//// - `setup` is the command that makes the project's template: the one step
+////   that runs with the network on, from the clean base commit, so that the
+////   offline check finds its dependencies. Unset, there is no template and
+////   each worker and check starts from a plain clone, as before.
 //// - `protected_paths` are the files whose change keeps the check from
 ////   running (`project/protect`). Unset, they are `protect.default_paths`.
 //// - `publish` says whether the host may push a verified branch and open a
@@ -57,6 +61,11 @@ pub type Settings {
     token_ceiling: Int,
     /// The check command, or `None` for a project with no check.
     check: Option(String),
+    /// The command that prepares the project's template, or `None` for a
+    /// project with no template (`client/project_template`). It runs once per
+    /// base commit, with the network on and in a jail, and fills the caches the
+    /// offline check then reads.
+    setup: Option(String),
     /// The protected path patterns, see `project/protect`.
     protected_paths: List(String),
     /// Whether the host may push and open pull requests.
@@ -78,6 +87,7 @@ pub const defaults =
     max_workers: 4,
     token_ceiling: 5_000_000,
     check: None,
+    setup: None,
     protected_paths: protect.default_paths,
     publish: PublishOff,
     sources: project_sources.none,
@@ -107,7 +117,7 @@ fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Settings, String) {
     list.try_map(dict.keys(fields), fn(key) {
       case key {
         "max_workers" | "token_ceiling" -> Ok(Nil)
-        "check" | "protected_paths" | "publish" -> Ok(Nil)
+        "check" | "setup" | "protected_paths" | "publish" -> Ok(Nil)
         "source" | "rule" | "queue_limit" | "attention_limit" -> Ok(Nil)
         _ -> Error("unknown key `" <> key <> "` in [project]")
       }
@@ -127,7 +137,8 @@ fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Settings, String) {
     1,
     1_000_000_000_000,
   ))
-  use check <- result.try(check_command(fields))
+  use check <- result.try(command(fields, "check"))
+  use setup <- result.try(command(fields, "setup"))
   use protected_paths <- result.try(paths(fields))
   use publish <- result.try(publish_mode(fields))
   use sources <- result.map(project_sources.from_fields(fields))
@@ -135,6 +146,7 @@ fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Settings, String) {
     max_workers:,
     token_ceiling:,
     check:,
+    setup:,
     protected_paths:,
     publish:,
     sources:,
@@ -156,26 +168,30 @@ fn bounded(
   }
 }
 
-/// The check command: a non-empty line of at most `max_check_bytes`, or none.
-fn check_command(
+/// A command key (`check` or `setup`): a non-empty line of at most
+/// `max_check_bytes`, or none.
+fn command(
   fields: Dict(String, tom.Toml),
+  key: String,
 ) -> Result(Option(String), String) {
-  // Absent is no check; a string is the command; anything else is refused.
-  case dict.get(fields, "check") {
+  // Absent is no command; a string is the command; anything else is refused.
+  case dict.get(fields, key) {
     Error(Nil) -> Ok(None)
-    Ok(tom.String(command)) -> {
-      let trimmed = string.trim(command)
+    Ok(tom.String(text)) -> {
+      let trimmed = string.trim(text)
 
       // A blank command would run nothing and pass, so it is refused instead.
       case trimmed != "" && string.byte_size(trimmed) <= max_check_bytes {
         True -> Ok(Some(trimmed))
         False ->
           Error(
-            "project.check must be a non-empty command of at most 4096 bytes",
+            "project."
+            <> key
+            <> " must be a non-empty command of at most 4096 bytes",
           )
       }
     }
-    Ok(_) -> Error("project.check must be a string")
+    Ok(_) -> Error("project." <> key <> " must be a string")
   }
 }
 

@@ -542,12 +542,41 @@ created, and opens a pull request through `gh api`. It never merges. A checkout 
 | `max_workers` | integer | `4` | 1 to 16 | General worker sessions a project runs at once. One more slot is kept for a ticket a person is waiting on. |
 | `token_ceiling` | integer | `5000000` | 1 or more | The token ceiling above which a project starts no new inferred work. Recorded in this slice; inferred work is off. |
 | `check` | string | none | a command of at most 4096 bytes | The command run against a worker's head, as `bash -c`. Unset, there is no check, and a ticket whose work is done waits for a person. A blank command is refused. The words of the command are protected paths too, so a worker cannot rewrite the script the check runs. |
+| `setup` | string | none | a command of at most 4096 bytes | The command that prepares the project's template, as `bash -c`, once per base commit. It runs in the sandbox on a clean checkout of the base commit with the network on, `HOME` inside that tree and only that tree writable, so a dependency download and every cache land in the template. Unset, there is no template: each worker and each check starts from a plain clone, offline, as before. A blank command is refused. See [The template](#the-template). |
 | `protected_paths` | array of strings | `["Makefile", "GNUmakefile", "makefile", ".github/**"]` | literal paths, or a directory followed by `/**` | Files whose change keeps the check from running. There is no other pattern syntax. Matching ignores case. An empty array protects only the files `check` names. |
 | `publish` | string | `off` | `off`, `pull_request` | `pull_request` lets the host push a verified commit and open a pull request with the owning machine's credentials and `gh`, and post the router's replies to a GitHub issue or pull request as comments. `off` sends nothing outward: the ticket waits for a person with the reason shown, and a reply stays a draft on the board. |
 | `queue_limit` | integer | `100` | 1 to 10000 | The most candidates one source may hold queued for the router. Past it, an arriving inferred candidate is shed and recorded as shed, and an arriving explicit one makes room by shedding the oldest inferred one. An explicit candidate is never dropped. |
 | `attention_limit` | integer | `5` | 0 to 1000 | A source stops inferring new work while more than this many of its open tickets wait on a person. |
 | `source` | array of tables | none | at most one, `kind = "github"` | An event source besides the composer. See [`[[project.source]]`](#projectsource). |
 | `rule` | array of tables | none | at most 32 | What an inferred trigger may become. See [`[[project.rule]]`](#projectrule). |
+
+### The template
+
+A check runs worker-authored code, so it runs with the network off, and a real repository's
+build needs its dependencies before that. `setup` is how they get there. The host makes a
+template at `<state>/projects/<id>/template`: a checkout of the recorded base commit, in which
+`setup` ran with the network on and `HOME` set to `<template>/.loom-check-home`, and in which
+`check` then ran once with the network off to show that it passes on the clean base. The
+template is built only from that clean commit and never from anything a worker wrote. A worker's
+clone and each check tree are then copies of the template (`git-cow copy` when the binary is
+installed, a plain recursive copy otherwise), moved to the commit they need. The caches that
+`setup` wrote are carried along, and the check finds them offline.
+
+- A ticket assigned while the template is being built waits, and nothing fails. If `setup` or
+  the base check fails, no worker starts: the board's sources list shows what failed, with the
+  last 4000 characters of its output, and says it is the project's setup and not any ticket. A
+  retry is `projects.retry` with the ticket `setup`.
+- When the owner's `HEAD` moves, the template is rebuilt in a new directory and swapped in only
+  on success. The host looks at most once every 10 minutes. A failed rebuild keeps the last good
+  template and shows a note. Workers and checks that are running are not affected.
+- The `PATH` that `setup` and `check` see is the daemon's own, read once when it starts. A tool
+  that is on the daemon's `PATH` is found by the check, and one that is not is not. When the
+  daemon has no `PATH`, the system directories (`/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin`)
+  stand in.
+- `setup` runs the repository's own scripts with the network on, in the same jail as a check, so
+  it can read the host and write only the template. Read it as you would read the build file of a
+  repository you are about to run. A dependency change in a worker's commit is not fetched: the
+  offline check fails, and a person decides.
 
 ## `[[project.source]]`
 
