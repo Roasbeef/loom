@@ -228,7 +228,180 @@ pub type Rule {
     labelled: Int,
     /// The labels a verdict needs.
     needed: Int,
+    /// The live verdict run for this rule, when the daemon holds one. It is
+    /// none before the first run and after a daemon restart, and also when
+    /// the daemon predates the field.
+    run: Option(Run),
   )
+}
+
+/// A live verdict run as the daemon reports it: in flight with its progress,
+/// or ended with its outcome. The daemon keeps it in memory only.
+pub type Run {
+  /// The run is going.
+  RunGoing(
+    /// The trials finished so far.
+    done: Int,
+    /// The trials the run will make in all.
+    of: Int,
+    /// The model calls made so far.
+    calls: Int,
+    /// The tokens spent so far.
+    tokens: Int,
+  )
+
+  /// The run is over.
+  RunOver(
+    /// `passed`, `failed`, `incomplete`, or a word this client does not know.
+    state: String,
+    /// The daemon's sentence about the outcome.
+    words: String,
+    /// The model calls the run made.
+    calls: Int,
+    /// The tokens the run spent.
+    tokens: Int,
+  )
+}
+
+/// The mode a rule is set to. The client offers all three and leaves it to
+/// the daemon to refuse `auto` without a current passing verdict.
+pub type RuleMode {
+  /// The rule matches nothing.
+  ModeOff
+
+  /// The rule records what it would have done and does nothing.
+  ModeObserve
+
+  /// The rule acts on its own.
+  ModeAuto
+}
+
+/// The word `projects.set_mode` takes for a mode.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_board.mode_word(project_board.ModeAuto) == "auto"
+/// ```
+pub fn mode_word(mode: RuleMode) -> String {
+  case mode {
+    ModeOff -> "off"
+    ModeObserve -> "observe"
+    ModeAuto -> "auto"
+  }
+}
+
+/// Reads a mode word typed on a command line. Only the three words the
+/// protocol takes are modes; anything else is none and is refused before a
+/// request is made.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_board.parse_mode("observe") == Ok(project_board.ModeObserve)
+/// assert project_board.parse_mode("on") == Error(Nil)
+/// ```
+pub fn parse_mode(word: String) -> Result(RuleMode, Nil) {
+  case word {
+    "off" -> Ok(ModeOff)
+    "observe" -> Ok(ModeObserve)
+    "auto" -> Ok(ModeAuto)
+    _ -> Error(Nil)
+  }
+}
+
+/// Which lane `projects.verdict` measures a rule in.
+pub type Lane {
+  /// The current gate over the recorded triggers. It costs nothing and does
+  /// not unlock `auto`.
+  Replay
+
+  /// The router's own model, three trials per labelled trigger. It spends
+  /// model calls and is the only lane that unlocks `auto`.
+  Live
+}
+
+/// The word `projects.verdict` takes for a lane.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_board.lane_word(project_board.Live) == "live"
+/// ```
+pub fn lane_word(lane: Lane) -> String {
+  case lane {
+    Replay -> "replay"
+    Live -> "live"
+  }
+}
+
+/// The trials a live run makes for each labelled trigger, as the protocol
+/// documents. It is used only to tell the owner what a live run will cost
+/// before it is confirmed.
+pub const live_trials_per_trigger = 3
+
+/// The first line of the confirmation of a live verdict: what the run is and
+/// that it spends model calls.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_board.live_warning_words("ci")
+///   == "A live verdict on ci spends real model calls."
+/// ```
+pub fn live_warning_words(rule: String) -> String {
+  "A live verdict on " <> rule <> " spends real model calls."
+}
+
+/// The second line of the confirmation: the labelled count and the number of
+/// model calls the run will make.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_board.live_count_words(30)
+///   == "30 labelled triggers, 3 trials each: about 90 calls."
+/// ```
+pub fn live_count_words(labelled: Int) -> String {
+  int.to_string(labelled)
+  <> " labelled triggers, "
+  <> int.to_string(live_trials_per_trigger)
+  <> " trials each: about "
+  <> int.to_string(labelled * live_trials_per_trigger)
+  <> " calls."
+}
+
+/// A run in words: progress while it goes, then the outcome in the daemon's
+/// own sentence.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_board.run_words(project_board.RunGoing(12, 90, 12, 5100))
+///   == "live run: 12 of 90 trials, 12 calls, 5100 tokens"
+/// ```
+pub fn run_words(run: Run) -> String {
+  case run {
+    RunGoing(done:, of:, calls:, tokens:) ->
+      "live run: "
+      <> int.to_string(done)
+      <> " of "
+      <> int.to_string(of)
+      <> " trials, "
+      <> int.to_string(calls)
+      <> " calls, "
+      <> int.to_string(tokens)
+      <> " tokens"
+    RunOver(state:, words:, calls:, tokens:) ->
+      "live run "
+      <> state
+      <> ", "
+      <> int.to_string(calls)
+      <> " calls, "
+      <> int.to_string(tokens)
+      <> " tokens: "
+      <> words
+  }
 }
 
 /// What the owner decided about a recorded trigger.
@@ -1101,7 +1274,81 @@ fn rule_row(value: JsonValue) -> Result(Rule, Nil) {
     words: safe_in(verdict, "words"),
     labelled: option.unwrap(int_in(verdict, "labelled"), 0),
     needed: option.unwrap(int_in(verdict, "needed"), 0),
+    run: run_in(fields),
   )
+}
+
+/// A rule's live run. The field is null before the first run and after a
+/// restart, and absent from a daemon that predates it; both read as none. A
+/// state other than `running` is an ended run, and its word is kept as sent.
+fn run_in(fields: List(#(String, JsonValue))) -> Option(Run) {
+  // Only an object can hold a run; a null, a missing key and any other shape
+  // all mean the rule has none to show.
+  case list.key_find(fields, "run") {
+    Ok(json.Object(inner)) -> {
+      let calls = option.unwrap(int_in(inner, "calls"), 0)
+      let tokens = option.unwrap(int_in(inner, "tokens"), 0)
+
+      // A run with no state cannot be told apart from a run that never
+      // happened, so it is drawn as none.
+      case text_in(inner, "state") {
+        None -> None
+        Some("running") ->
+          Some(RunGoing(
+            done: option.unwrap(int_in(inner, "done"), 0),
+            of: option.unwrap(int_in(inner, "of"), 0),
+            calls:,
+            tokens:,
+          ))
+        Some(state) ->
+          Some(RunOver(
+            state: text_hygiene.single_line(state),
+            words: safe_in(inner, "words"),
+            calls:,
+            tokens:,
+          ))
+      }
+    }
+    Ok(_) | Error(Nil) -> None
+  }
+}
+
+/// The notice for the reply of an accepted `projects.verdict`. A replay reply
+/// carries the finding and a live reply says the run started; both carry the
+/// daemon's `words`, which are shown as sent. A reply with no words gets a
+/// plain statement of what was asked.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let reply = json.Object([#("words", json.String("Started."))])
+/// assert project_board.verdict_reply_words(project_board.Live, "ci", reply)
+///   == "Live verdict on ci running. Started."
+/// ```
+pub fn verdict_reply_words(
+  lane: Lane,
+  rule: String,
+  reply: JsonValue,
+) -> String {
+  // A reply that is not an object carries no words, and the lead alone is the
+  // notice.
+  let words = case reply {
+    json.Object(fields) -> safe_in(fields, "words")
+    _ -> ""
+  }
+
+  // A live reply is `state: running`, not a finding, so it is not worded as
+  // one.
+  let lead = case lane {
+    Live -> "Live verdict on " <> rule <> " running."
+    Replay -> "Replay verdict on " <> rule <> " recorded."
+  }
+
+  // The daemon's sentence follows the lead when it sent one.
+  case words {
+    "" -> lead
+    sentence -> lead <> " " <> sentence
+  }
 }
 
 /// Reads the reply of `projects.labels`.

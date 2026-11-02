@@ -478,3 +478,128 @@ pub fn the_labels_reply_decodes_totally_and_cuts_its_text_test() {
   let assert Error(_) = board.decode_labels(json.Null)
   let assert Error(_) = board.decode_labels(json.Object([]))
 }
+
+// --- verdict runs ------------------------------------------------------------
+
+fn board_with_run(run: option.Option(json.JsonValue)) -> json.JsonValue {
+  let base = [#("name", json.String("ci")), #("mode", json.String("observe"))]
+  let fields = case run {
+    Some(found) -> list.append(base, [#("run", found)])
+    None -> base
+  }
+
+  json.Object([
+    #("project", json.String("p1")),
+    #("revision", json.Int(1)),
+    #(
+      "sources",
+      json.Array([
+        json.Object([#("rules", json.Array([json.Object(fields)]))]),
+      ]),
+    ),
+  ])
+}
+
+fn only_rule(document: json.JsonValue) -> board.Rule {
+  let assert Ok(decoded) = board.decode_board(document)
+  let assert [only] = decoded.rules
+  only
+}
+
+pub fn a_rule_with_no_run_field_or_a_null_run_has_none_test() {
+  assert only_rule(board_with_run(None)).run == None
+  assert only_rule(board_with_run(Some(json.Null))).run == None
+
+  // A run that is not an object, or names no state, is none and not a guess.
+  assert only_rule(board_with_run(Some(json.String("x")))).run == None
+  assert only_rule(board_with_run(Some(json.Object([])))).run == None
+}
+
+pub fn a_running_run_carries_progress_test() {
+  let run =
+    json.Object([
+      #("state", json.String("running")),
+      #("done", json.Int(12)),
+      #("of", json.Int(90)),
+      #("calls", json.Int(12)),
+      #("tokens", json.Int(5100)),
+      #("started_ms", json.Int(7)),
+    ])
+  let assert Some(found) = only_rule(board_with_run(Some(run))).run
+
+  assert found == board.RunGoing(done: 12, of: 90, calls: 12, tokens: 5100)
+  assert board.run_words(found)
+    == "live run: 12 of 90 trials, 12 calls, 5100 tokens"
+}
+
+pub fn an_ended_run_carries_its_outcome_in_the_daemons_words_test() {
+  let ended = fn(state) {
+    json.Object([
+      #("state", json.String(state)),
+      #("words", json.String("The interval stayed above the floor.")),
+      #("calls", json.Int(90)),
+      #("tokens", json.Int(41_000)),
+      #("ended_ms", json.Int(9)),
+    ])
+  }
+
+  // Each outcome the protocol names is kept as sent, and a word this client
+  // does not know is shown as sent and not mapped to one it does.
+  let words = fn(state) {
+    let assert Some(found) = only_rule(board_with_run(Some(ended(state)))).run
+    board.run_words(found)
+  }
+
+  assert words("passed")
+    == "live run passed, 90 calls, 41000 tokens: The interval stayed above the floor."
+  assert string.starts_with(words("failed"), "live run failed, 90 calls")
+  assert string.starts_with(
+    words("incomplete"),
+    "live run incomplete, 90 calls",
+  )
+  assert string.starts_with(
+    words("from-the-future"),
+    "live run from-the-future",
+  )
+}
+
+pub fn run_text_is_made_safe_like_every_other_string_test() {
+  let run =
+    json.Object([
+      #("state", json.String("failed")),
+      #("words", json.String("bad\u{1b}[31m\nline")),
+    ])
+  let assert Some(board.RunOver(words:, ..)) =
+    only_rule(board_with_run(Some(run))).run
+
+  assert !string.contains(words, "\u{1b}")
+  assert !string.contains(words, "\n")
+}
+
+pub fn the_live_confirmation_states_the_count_and_the_calls_test() {
+  assert board.live_warning_words("ci")
+    == "A live verdict on ci spends real model calls."
+  assert board.live_count_words(30)
+    == "30 labelled triggers, 3 trials each: about 90 calls."
+}
+
+pub fn the_words_for_a_mode_and_a_lane_are_the_wires_test() {
+  assert board.mode_word(board.ModeOff) == "off"
+  assert board.mode_word(board.ModeObserve) == "observe"
+  assert board.mode_word(board.ModeAuto) == "auto"
+  assert board.lane_word(board.Replay) == "replay"
+  assert board.lane_word(board.Live) == "live"
+}
+
+pub fn a_live_reply_is_worded_as_running_and_not_as_a_finding_test() {
+  let reply =
+    json.Object([
+      #("state", json.String("running")),
+      #("words", json.String("90 trials started.")),
+    ])
+
+  assert board.verdict_reply_words(board.Live, "ci", reply)
+    == "Live verdict on ci running. 90 trials started."
+  assert board.verdict_reply_words(board.Replay, "ci", json.Object([]))
+    == "Replay verdict on ci recorded."
+}
