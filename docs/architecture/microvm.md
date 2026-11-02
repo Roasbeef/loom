@@ -680,34 +680,43 @@ manifest's revision for a guest whose root was older.
 `<vm home>/<name>/root-revision`, beside the root and not in it
 (`vm_spec.encode_root_revision`). A root with no record, from an earlier build,
 counts as unknown. When the recorded revision differs from the manifest's, or is
-unknown, and neither is `dev`, `up` upgrades the guest in place and prints one
-line saying so (`vm_spec.root_step`, `upgrade_line`). A development tree
-rebuilds often, so `dev` on either side keeps today's behaviour: the root is
-booted as it is. The upgrade:
+unknown, and the manifest is not `dev`, `up` upgrades the guest in place and
+prints one line saying so (`vm_spec.root_step`, `upgrade_line`). A root
+recorded as `dev` under a release manifest is stale and is upgraded. A
+development tree rebuilds often, so a manifest revision of `dev` keeps today's
+behaviour: the root is booted as it is, whatever it was cloned from. The
+upgrade replaces everything in the old root except the workspaces and the
+state disk, such as `/home/loom`, `/work` and tools installed by hand. The steps:
 
 1. checks that `srv/workspaces` and every parent of it in the old root is a real
    directory, and otherwise refuses with a line naming `--fresh`, because a link
    there would be carried into the new root;
 2. clones the manifest's guest root into `<vm home>/<name>/root.next`, removing
-   a leftover `root.next` first;
+   a leftover `root.next` first, and removes any `srv/workspaces` the clone
+   brought (`clear_workspaces_slot`), whatever the exported guest root ships;
 3. moves `srv/workspaces` from the old root into the new one with one `rename`,
    so a link inside it stays a link and nothing is followed. This is the last
-   step that can fail;
+   step that can fail, and a failure is refused naming `--fresh`;
 4. deletes the old root, renames `root.next` to `root` and writes the record.
    `state.img` is not touched, and `stage` then runs on the new root as it does
    for any `up`, so provisioning runs again.
 
 An interrupted `up` can finish. Before step 3 the old root is whole, so the next
-`up` repeats the upgrade from a clean `root.next`. After it, the old root has no
-`srv/workspaces` and `root.next` exists, which the next `up` reads as an
-upgrade whose swap is left (`FinishUpgrade`) and completes. A crash between the
-swap and the record only makes the next `up` upgrade once more.
+`up` repeats the upgrade from a clean `root.next`. After it, `root.next/srv/workspaces`
+exists, which the next `up` reads as an upgrade whose swap is left
+(`FinishUpgrade`) and completes. That directory is the evidence because only the
+host writes `root.next` and step 2 guarantees it exists only after the rename;
+the old root's `srv/workspaces` is not consulted, since the guest writes it. A
+crash between the swap and the record only makes the next `up` upgrade once
+more.
 
 Provisioning needs the script, and the root is untrusted, so the script is never
 read back out of it. `up` keeps a host-owned copy at `<vm home>/<name>/provision`
 from the moment `--provision` is given, and stages from that copy into a root it
-has just cloned (`vm_spec.new_root_provision`). `--fresh` with no `--provision`
-removes the copy. A root provisioned by a loom that kept no copy cannot be
+has just cloned (`vm_spec.new_root_provision`), and an unfinished script is
+retried from the copy too (`provision_plan`), because the script staged in the
+root is whatever the previous boot left. The copy is written to a temporary
+file and renamed, mode 0600. `--fresh` with no `--provision` removes the copy. A root provisioned by a loom that kept no copy cannot be
 provisioned again, so its upgrade is refused with a line that says to give
 `--provision SCRIPT` or `--fresh`.
 
@@ -723,15 +732,21 @@ upgrade reads an old ledger, but a manifest older than the disk (a ledger versio
 newer than the executor knows) makes the executor refuse the file, and `up`
 reports the executor's failed boot and its log. That case needs `--fresh`.
 
-`up` also refuses when a runner of the guest is still alive. `loom-vm run` starts
+`up` and `rm` also refuse when a runner of the guest is still alive. `loom-vm run` starts
 the virtual machine monitor as a separate process. A launcher killed with SIGKILL
 leaves the pid file naming a process that is gone, so `status` correctly says
 `not running` and `down` has nothing to signal, but the runner continues with
 the root and `state.img` open. Measured on macOS, the runner survived
 the kill with parent 1, and an `up` then started a second guest on the same root
-and ext4 disk. `up` now lists processes (`ps`) and refuses when a command line
-holds this guest's `"root_path"` or state disk path in a runner's specification,
-naming each pid and `kill <pid>`. It stops nothing itself.
+and ext4 disk, and `rm --yes` would have deleted files a running VM holds.
+`up` and `rm` now list processes (`ps`) and refuse when a command line starts
+with the manifest's runner path and holds this guest's `"root_path"` or state
+disk path in its specification, naming each pid and `kill <pid>`. A jailed tool
+can put the same JSON in its own arguments, so the runner path is required when
+the manifest can be read; when it cannot (`rm`, `down` and `status` work without
+one), the JSON alone matches and the text says the process "may be" a runner.
+`down` with no launcher but a runner fails and names the pid instead of saying
+`not running`, and `status` adds a `runner:` line. None of them stops anything.
 
 The GitHub token is read once, when `loom-vm run` starts (`readGitHubToken` in
 `packages/vmm/cmd/loom-vm/github.go`) and held by the proxy for the guest's life,

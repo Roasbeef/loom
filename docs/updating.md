@@ -97,12 +97,15 @@ run `loom vm setup` (or `make vmm-install-dev` in a checkout) so the manifest
 names the new build, then `loom vm up`. When the root came from other artifacts,
 `up` prints one line, replaces the root in place, moves the guest's workspace
 copies into the new one, keeps its state disk and runs the provisioning script
-again from the copy `up` kept at `<vm home>/<name>/provision`. A guest started
+again from the copy `up` kept at `<vm home>/<name>/provision`. Everything else
+in the old root, such as /home/loom, /work and tools installed by hand, is
+replaced. A guest started
 by a loom that kept no such copy, and that was provisioned, needs
-`--provision SCRIPT` again or `--fresh`. A development manifest (`dev`) keeps
-the root as it is. After a GitHub token rotates, run `loom vm down` and `loom vm up`:
+`--provision SCRIPT` again or `--fresh`. A root recorded as `dev` under a
+release manifest is upgraded too; only a `dev` manifest keeps the root as it is. After a GitHub token rotates, run `loom vm down` and `loom vm up`:
 the token is read once at launch. A launcher killed with SIGKILL can leave its
-runner alive; `up` refuses and names the pid to stop. See
+runner alive; `up` and `rm` refuse, and `down` and `status` report it, naming the
+pid to stop. See
 [the microVM architecture](architecture/microvm.md).
 
 ## Install a source build

@@ -93,18 +93,26 @@ script runs). `vm_cli` records the list in `stage`, copies the script to
 
 A kept root cloned from other artifacts than the manifest names is upgraded in
 place (`vm_spec.root_step`, decided from `RootLayout`, the host's
-`<vm home>/<name>/root-revision` record and the manifest revision; `dev` on
-either side keeps the root). `vm_cli.build_next_root` clones into
+`<vm home>/<name>/root-revision` record and the manifest revision; only a `dev`
+manifest keeps a stale root, and a root recorded `dev` under a release manifest
+upgrades). `vm_cli.build_next_root` clones into
 `<vm home>/<name>/root.next`, then moves `srv/workspaces` with one `rename`
 (refused naming `--fresh` when it or a parent is a link), the last fallible
-step; `swap_roots` then deletes the root and renames `root.next` over it, and a
-`root.next` beside a root with no workspaces is finished by the next `up`
-(`FinishUpgrade`). `state.img` is kept. The host keeps the `--provision` script at
+step, refused naming `--fresh` when it fails; `clear_workspaces_slot` removes any
+`srv/workspaces` the clone brought first. `swap_roots` then deletes the root and
+renames `root.next` over it. `root.next/srv/workspaces` existing means the rename
+completed and the next `up` finishes the swap (`FinishUpgrade`); the guest-written
+old root is never consulted. `up` prints `upgrade_line` in `prepare_root`, just
+before `build_next_root`. `state.img` is kept. The host keeps the `--provision` script at
 `<vm home>/<name>/provision` (`record_provision_copy`; `--fresh` without the flag
 clears it) and a new root is provisioned from it (`vm_spec.new_root_provision`),
-never from the root. `refuse_stranded` lists processes and refuses `up` when a
-runner whose JSON specification names the guest's root or state disk survives
-(`vm_spec.stranded_runners`); it stops nothing.
+never from the root; an unfinished script is retried from it too
+(`provision_plan`'s `kept`), and the copy is written by temporary file and rename.
+`stranded_in` lists processes; `refuse_stranded` refuses `up` and `rm`, `down`'s
+not-running arm fails and `status` adds a `runner:` line when a runner survives
+whose command starts with the manifest's runner path (`Some`; without a readable
+manifest only the JSON matches and the text says "may be") and whose JSON names
+the guest's root or state disk (`vm_spec.stranded_runners`); none stops anything.
 
 `setup` runs `install.bundled_launcher()` (`bin/loom-vm` in the server tree)
 with `setup --home <vm home> --release TAG` (or `--from-build`), where with no
