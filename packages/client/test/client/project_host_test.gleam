@@ -653,22 +653,25 @@ pub fn an_answer_with_no_live_worker_goes_on_the_next_assignment_test() {
     project_host.answer(handle, "t-a", 5, "use sqlite", "owner")
   assert handed(drain(rig.seen), "s-1") == []
 
-  // A retry starts a new worker, and the answer is the first thing it is told.
+  // A retry starts a new worker. It is told what the ticket was opened for and
+  // then the answer, in that order, because the first worker's session took the
+  // opening message with it.
   let assert Ok(Nil) = project_host.retry(handle, "t-a", "owner")
   let worker = "session-" <> "project:p1:t-a:2"
   let delivered = process.new_subject()
   let assert Ok(Nil) =
     poll_until(fn() {
       case handed(drain(rig.seen), worker) {
-        [] -> False
-        [first, ..] -> {
-          process.send(delivered, first)
+        [first, second, ..] -> {
+          process.send(delivered, #(first, second))
           True
         }
+        _ -> False
       }
     })
-  let assert Ok(first) = process.receive(delivered, 0)
-  assert first
+  let assert Ok(#(first, second)) = process.receive(delivered, 0)
+  assert first == #("composer", "owner", "a", "fix a", peer_mail.MayWake)
+  assert second
     == #("owner", "owner", "a~t-a~5", "use sqlite", peer_mail.MayWake)
 }
 
