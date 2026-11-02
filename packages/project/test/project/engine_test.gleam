@@ -49,6 +49,15 @@ fn waiting_report(head: model.Head, question: model.Question) -> event.Event {
   event.Reported(ticket_of("c1"), 1, Waiting(question), head)
 }
 
+// A person asks for a worker on a ticket whose first one rested, and the
+// second assignment starts. Its events carry sequence number 2.
+fn second_worker() -> List(event.Event) {
+  [
+    event.RetryRequested(ticket_of("c1"), model.PrincipalId("owner")),
+    event.AssignmentLive(ticket_of("c1"), 2),
+  ]
+}
+
 fn head_at(commit: String, paths: model.PathScope) -> model.Head {
   Head(CommitId(commit), paths)
 }
@@ -549,6 +558,166 @@ pub fn the_reserved_slot_serves_a_persons_message_and_nothing_else_test() {
   assert ticket(with_fourth, ticket_of("c4")).assignments == []
 }
 
+// Three tickets whose first workers fill both general slots and the reserved
+// one, with a fourth in line.
+fn full_with_a_fourth_waiting() -> state.State {
+  run(fresh(), [
+    arrival(owner("c1")),
+    accept("c1"),
+    arrival(owner("c2")),
+    arrival(owner("c3")),
+    arrival(owner("c4")),
+    event.RouterTurnEnded,
+    accept("c2"),
+    accept("c3"),
+    accept("c4"),
+  ])
+}
+
+// A worker idle on a head that waits for a person.
+fn rests_in_review(ticket_name: String) -> event.Event {
+  event.Reported(
+    ticket_of(ticket_name),
+    1,
+    Waiting(NoQuestion),
+    head_at("a", ProtectedPathsTouched),
+  )
+}
+
+// A worker whose work is in review is idle, so its slot belongs to the next
+// ticket in line. The assignment ends with the engine's own word for it, and
+// the person still sees the ticket under review.
+pub fn a_worker_at_rest_in_review_frees_its_slot_test() {
+  let full = full_with_a_fourth_waiting()
+  assert state.active_assignment(ticket(full, ticket_of("c4"))) == None
+
+  let #(rested, effects) = step(full, rests_in_review("c1"))
+  let first = ticket(rested, ticket_of("c1"))
+  assert state.active_assignment(first) == None
+  assert list.map(first.assignments, fn(each) { each.status })
+    == [state.AssignmentDone(model.SessionRested)]
+  assert state.stage_of(first) == stage.PersonReview
+  assert list.any(effects, fn(effect) {
+    case effect {
+      StartSession(ticket, 1, _, _) -> ticket == ticket_of("c4")
+      _ -> False
+    }
+  })
+
+  // No stop is owed: the session and its clone stay for the next assignment.
+  assert !list.any(effects, fn(effect) {
+    case effect {
+      StopSession(..) -> True
+      _ -> False
+    }
+  })
+}
+
+// Finished work never fills the project. With every slot held by a ticket in
+// review or ready, new tickets still get workers.
+pub fn finished_tickets_never_hold_every_slot_test() {
+  let resting =
+    run(full_with_a_fourth_waiting(), [
+      rests_in_review("c1"),
+      rests_in_review("c2"),
+      rests_in_review("c3"),
+    ])
+  assert state.slots_used(resting, state.General)
+    + state.slots_used(resting, state.Reserved)
+    == 1
+  assert state.active_assignment(ticket(resting, ticket_of("c4"))) != None
+
+  let more =
+    run(resting, [arrival(owner("c5")), event.RouterTurnEnded, accept("c5")])
+  assert state.active_assignment(ticket(more, ticket_of("c5"))) != None
+}
+
+// A ticket whose check passed rests as well, and a worker that is still
+// answering a question or has been spoken to does not.
+pub fn only_an_idle_worker_with_work_for_a_person_rests_test() {
+  let ready =
+    run(working(), [
+      waiting_report(model.NoHead, NoQuestion),
+      observed_head("a", ProtectedPathsUntouched),
+    ])
+
+  // The check is out, so the worker is kept for a failure it would be told.
+  assert state.active_assignment(ticket(ready, ticket_of("c1"))) != None
+  let passed_check = run(ready, [passed("a")])
+  assert state.active_assignment(ticket(passed_check, ticket_of("c1"))) == None
+  assert ticket(passed_check, ticket_of("c1")).readiness != readiness.InProgress
+
+  // A question keeps the worker, however the head stands.
+  let asking =
+    run(working(), [
+      event.Reported(
+        ticket_of("c1"),
+        1,
+        Waiting(Asking(2)),
+        head_at("a", ProtectedPathsTouched),
+      ),
+    ])
+  assert state.active_assignment(ticket(asking, ticket_of("c1"))) != None
+}
+
+// A report with no head leaves the decision to the head the host reads, so a
+// worker that committed again is still assigned to hear a failed check.
+pub fn a_resumed_worker_rests_only_once_its_head_is_read_test() {
+  let rested = run(working(), [rests_in_review("c1")])
+  let resumed =
+    run(rested, [
+      event.RetryRequested(ticket_of("c1"), world_principal()),
+      event.AssignmentLive(ticket_of("c1"), 2),
+    ])
+
+  // The new worker has said nothing, so it is not taken for the idle one.
+  assert ticket(resumed, ticket_of("c1")).latest == None
+  assert state.active_assignment(ticket(resumed, ticket_of("c1"))) != None
+
+  let idle =
+    run(resumed, [
+      event.Reported(ticket_of("c1"), 2, Waiting(NoQuestion), model.NoHead),
+    ])
+  assert state.active_assignment(ticket(idle, ticket_of("c1"))) != None
+
+  // The same head again changes nothing, and the worker rests once more.
+  let again =
+    run(idle, [
+      event.HeadObserved(
+        ticket_of("c1"),
+        2,
+        head_at("a", ProtectedPathsTouched),
+      ),
+    ])
+  assert state.active_assignment(ticket(again, ticket_of("c1"))) == None
+
+  // A new head is a new check, and the worker stays for its verdict.
+  let moved =
+    run(idle, [
+      event.HeadObserved(
+        ticket_of("c1"),
+        2,
+        head_at("b", ProtectedPathsUntouched),
+      ),
+    ])
+  assert state.active_assignment(ticket(moved, ticket_of("c1"))) != None
+}
+
+// A person's message to a ticket in review starts a new assignment, and the
+// slot is taken again for as long as the worker works.
+pub fn a_message_to_a_ticket_in_review_starts_a_new_assignment_test() {
+  let rested = run(working(), [rests_in_review("c1")])
+  let #(woken, effects) =
+    step(rested, arrival(world.addressed("f1", "th-c1", "me")))
+  assert list.any(effects, fn(effect) {
+    case effect {
+      StartSession(ticket, 2, _, _) -> ticket == ticket_of("c1")
+      _ -> False
+    }
+  })
+  assert list.length(ticket(woken, ticket_of("c1")).assignments) == 2
+}
+
 pub fn a_freed_slot_goes_to_the_waiting_ticket_oldest_person_first_test() {
   let full =
     run(automated(), [
@@ -645,16 +814,31 @@ pub fn an_observed_head_is_stale_once_the_worker_moved_on_test() {
 // invalidates cannot reach a pull request.
 pub fn a_later_observed_commit_invalidates_ready_and_asks_for_a_new_check_test() {
   let ready =
-    run(working(), [
-      waiting_report(model.NoHead, NoQuestion),
-      observed_head("a", ProtectedPathsUntouched),
-      passed("a"),
-      waiting_report(model.NoHead, NoQuestion),
-    ])
+    run(
+      working(),
+      list.flatten([
+        [
+          waiting_report(model.NoHead, NoQuestion),
+          observed_head("a", ProtectedPathsUntouched),
+          passed("a"),
+        ],
+        second_worker(),
+        [
+          event.Reported(ticket_of("c1"), 2, Waiting(NoQuestion), model.NoHead),
+        ],
+      ]),
+    )
   assert readiness.vouches_for(ticket(ready, ticket_of("c1")).readiness)
     == Some(CommitId("a"))
   let #(moved, effects) =
-    step(ready, observed_head("b", ProtectedPathsUntouched))
+    step(
+      ready,
+      event.HeadObserved(
+        ticket_of("c1"),
+        2,
+        head_at("b", ProtectedPathsUntouched),
+      ),
+    )
   assert effects == [RequestCheck(ticket_of("c1"), CommitId("b"))]
   assert ticket(moved, ticket_of("c1")).readiness == readiness.InProgress
   assert engine.apply(moved, passed("a")) == Error(event.Stale(ticket_of("c1")))
@@ -692,10 +876,20 @@ pub fn a_review_request_holds_until_the_head_moves_test() {
 
   // A new commit clears the reason along with the pass.
   let moved =
-    run(asked, [
-      waiting_report(model.NoHead, NoQuestion),
-      observed_head("b", ProtectedPathsUntouched),
-    ])
+    run(
+      asked,
+      list.flatten([
+        second_worker(),
+        [
+          event.Reported(ticket_of("c1"), 2, Waiting(NoQuestion), model.NoHead),
+          event.HeadObserved(
+            ticket_of("c1"),
+            2,
+            head_at("b", ProtectedPathsUntouched),
+          ),
+        ],
+      ]),
+    )
   assert ticket(moved, ticket_of("c1")).review == None
 }
 
@@ -770,14 +964,17 @@ pub fn a_later_commit_invalidates_a_passed_check_test() {
       passed("a"),
     ])
   let moved =
-    run(ready, [
-      event.Reported(
-        ticket_of("c1"),
-        1,
-        model.Progress,
-        head_at("b", ProtectedPathsUntouched),
-      ),
-    ])
+    run(
+      ready,
+      list.append(second_worker(), [
+        event.Reported(
+          ticket_of("c1"),
+          2,
+          model.Progress,
+          head_at("b", ProtectedPathsUntouched),
+        ),
+      ]),
+    )
   assert ticket(moved, ticket_of("c1")).readiness == readiness.InProgress
   assert engine.apply(
       moved,

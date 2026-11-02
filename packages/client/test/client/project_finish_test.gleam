@@ -435,8 +435,11 @@ pub fn a_later_commit_invalidates_a_pass_and_is_checked_again_test() {
   idle(handle, worker)
   assert board_says(handle, "u-aaaaaaa")
 
-  // The worker commits again and goes idle: the old pass is gone, the new
-  // commit is checked, and its pull request is published in its turn.
+  // The ticket is ready, so its worker rested and its assignment ended. A
+  // person's message gives it a new assignment in the same session. The worker
+  // commits again and goes idle: the old pass is gone, the new commit is
+  // checked, and its pull request is published in its turn.
+  let assert Ok(Nil) = project_host.retry(handle, "t-a", "owner")
   write("bbbbbbb")
   idle(handle, worker)
   assert board_says(handle, "u-bbbbbbb")

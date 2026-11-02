@@ -420,7 +420,12 @@ and new router turns on inferred work, and the board says so. Explicit requests 
 reach the board while stopped.
 
 Worker capacity is a fixed number of slots with one reserved for a person's message, so
-queued work can't lock a person out of a running ticket. Executors admit 16 scopes and a
+queued work can't lock a person out of a running ticket. A slot is held only while the
+assignment's session is doing work. When a ticket's work waits for a person (in review,
+ready or published) and its worker is idle with its head read, the engine ends the
+assignment as rested: the slot is free for the next ticket, and the session and its clone
+stay. A person's message or a retry starts a new assignment, which the host seats in the
+same session and clone. Executors admit 16 scopes and a
 spawner's `max_sessions` caps at 16, so a larger backlog stays `queued` in the ledger.
 The peer outbox drainer gives up after an hour, so a ticket waiting on an offline
 executor holds its state in the ledger and doesn't lean on that retry.

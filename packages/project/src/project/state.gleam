@@ -256,7 +256,8 @@ pub type Ticket {
     failed_inputs: List(TriggerId),
     /// The open question, if any.
     question: Question,
-    /// The worker's latest report.
+    /// The worker's latest report. A new assignment clears it, because the
+    /// worker it described is gone and the new one has said nothing yet.
     latest: Option(Report),
     /// Whether a person spoke since that report.
     heard: Heard,

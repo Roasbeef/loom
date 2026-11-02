@@ -98,6 +98,18 @@ is `gleam_json`, which has both targets.
 - **Slots.** `max_workers` general slots plus one reserved for a ticket whose
   demand is `ByPerson`. `schedule.run` is the only place an assignment is
   made, and it skips withdrawn and ended tickets.
+- **A slot is held only while the session works.** When a ticket's work waits
+  for a person (`AwaitingReview`, `Ready` or `Published`) and its worker's
+  latest report is an idle `Waiting` with no question, no person's message
+  since and a head already read, `work.rest` ends the assignment as
+  `SessionRested`: the slot is free, no `StopSession` is owed, and the session
+  and clone stay. The next assignment of the ticket is seated in the same
+  session by the host. A report with no head leaves resting to
+  `HeadObserved`, because a worker told to look again may have committed. A
+  new assignment clears the ticket's latest report, so a worker that has just
+  started is never taken for the idle one before it. Ending the ticket
+  (`withdraw`, `end_ticket`) turns a rested assignment into an exited one and
+  stops the newest one's session. The statem tag is `rest`.
 - **Check rule.** `work.check_rule` requests a check only for a `Waiting`
   report with no question and a head that differs from `last_checked`; a diff
   touching protected paths goes to `AwaitingReview` and requests none. A

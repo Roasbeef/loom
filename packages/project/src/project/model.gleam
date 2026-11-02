@@ -647,6 +647,13 @@ pub type SessionEnd {
 
   /// The session crashed or was lost.
   SessionCrashed
+
+  /// The assignment was ended by the engine because its worker came to rest:
+  /// its work is waiting for a person and the worker is idle. Only the engine
+  /// ends an assignment this way, and the session and its clone stay. The next
+  /// assignment of the ticket may take the same session over, see
+  /// `work.rest`.
+  SessionRested
 }
 
 /// How a ticket ended, in the words the board shows after `ended/`.

@@ -37,6 +37,8 @@
 //// - `limbo`: a trigger waiting for the router is in the queue and one the
 ////   router holds is on its table, so no candidate, explicit or inferred,
 ////   falls out of both.
+//// - `rest`: a ticket whose work waits for a person while its worker is idle
+////   holds no slot, unless the host has yet to read the worker's head.
 //// - `replay`: replaying the accepted events rebuilds the final state.
 //// - `snapshot`: the final state reads back from its snapshot, as the state
 ////   that retention keeps, which never drops an open ticket or an unsettled
@@ -85,11 +87,12 @@ type Sut {
     passed: Dict(TicketId, List(CommitId)),
     stopped: List(TicketId),
     reached: List(TicketId),
+    awaiting_head: List(TicketId),
   )
 }
 
 fn fresh_sut() -> Sut {
-  Sut(project_state(), [], dict.new(), [], [])
+  Sut(project_state(), [], dict.new(), [], [], [])
 }
 
 fn violation(tag: String, detail: String) -> statem.Violation {
@@ -476,7 +479,7 @@ fn execute(
     Error(_) -> Ok(sut)
     Ok(#(next, effects)) -> {
       use _ <- result.try(check_step(sut, incoming, next, effects))
-      let after = shadow(sut, incoming, next)
+      let after = shadow(sut, incoming, next, effects)
       use _ <- result.try(check_state(after))
       Ok(after)
     }
@@ -532,8 +535,28 @@ fn unsettled_kept(before: State, after: State) -> Bool {
 }
 
 // What the shadow learns from an accepted event.
-fn shadow(sut: Sut, incoming: Event, next: State) -> Sut {
-  let logged = Sut(..sut, state: next, log: [incoming, ..sut.log])
+fn shadow(
+  sut: Sut,
+  incoming: Event,
+  next: State,
+  effects: List(Effect),
+) -> Sut {
+  // A request to read a worker's head is outstanding until the host's
+  // reading arrives, and the worker is kept until then.
+  let asked =
+    list.filter_map(effects, fn(effect) {
+      case effect {
+        event.ObserveHead(ticket, _) -> Ok(ticket)
+        _ -> Error(Nil)
+      }
+    })
+  let logged =
+    Sut(
+      ..sut,
+      state: next,
+      log: [incoming, ..sut.log],
+      awaiting_head: list.append(asked, sut.awaiting_head),
+    )
 
   case incoming {
     event.CheckFinished(ticket, event.CheckOk(proof)) ->
@@ -548,6 +571,13 @@ fn shadow(sut: Sut, incoming: Event, next: State) -> Sut {
       Sut(..logged, stopped: [ticket, ..sut.stopped])
     event.RoutedStop(_, ticket) ->
       Sut(..logged, stopped: [ticket, ..sut.stopped])
+    event.HeadObserved(ticket, _, _) ->
+      Sut(
+        ..logged,
+        awaiting_head: list.filter(logged.awaiting_head, fn(other) {
+          other != ticket
+        }),
+      )
     event.TriggerArrived(trigger, _) ->
       case explicit_in(next, trigger.id) {
         True ->
@@ -894,8 +924,32 @@ fn check_tickets(sut: Sut) -> Result(Nil, statem.Violation) {
   list.try_each(dict.values(sut.state.tickets), fn(ticket) {
     use _ <- result.try(check_readiness(sut, ticket))
     use _ <- result.try(check_withdrawal(ticket))
+    use _ <- result.try(check_rest(sut, ticket))
     check_reserved(sut, ticket)
   })
+}
+
+// A ticket in review, ready or published whose worker last reported idle with
+// no question, and who nobody has spoken to since, is not working, so its
+// assignment must have ended. The one exception is the moment between the idle
+// report and the host's reading of the head: the head may have moved, and the
+// worker stays to hear the verdict on the new one.
+fn check_rest(sut: Sut, ticket: state.Ticket) -> Result(Nil, statem.Violation) {
+  let waiting_for_person = ticket.readiness != readiness.InProgress
+  let idle =
+    ticket.latest == Some(model.Waiting(model.NoQuestion))
+    && ticket.question == model.NoQuestion
+    && ticket.heard == model.Silent
+  let open = ticket.outcome == None && ticket.authority == state.Granted
+  let resting = waiting_for_person && idle && open
+
+  holds(
+    ok: !resting
+      || state.active_assignment(ticket) == None
+      || list.contains(sut.awaiting_head, ticket.id),
+    tag: "rest",
+    detail: "an idle worker whose work waits for a person still holds a slot",
+  )
 }
 
 fn check_readiness(
@@ -1048,7 +1102,7 @@ pub fn the_engine_keeps_every_invariant_over_random_event_sequences_test() {
 // The generator must reach the states the invariants are about, or the check
 // above could pass without ever testing them.
 pub fn the_generator_reaches_the_states_the_invariants_guard_test() {
-  let runs = counted(600)
+  let runs = counted(1800)
   let finals =
     list.flat_map(runs, fn(run) {
       let commands = statem.commands(spec(), config(), run)
@@ -1124,6 +1178,14 @@ pub fn the_generator_reaches_the_states_the_invariants_guard_test() {
   })
     as "a branch to publish"
   assert any_state(fn(s) { state.unrouted(s) != [] }) as "an unrouted candidate"
+  assert any_state(fn(s) {
+    tickets(s, fn(t) {
+      list.any(t.assignments, fn(each) {
+        each.status == state.AssignmentDone(model.SessionRested)
+      })
+    })
+  })
+    as "a worker that came to rest"
   assert any_state(fn(s) {
     tickets(s, fn(t) { t.review != None && t.readiness != readiness.InProgress })
   })

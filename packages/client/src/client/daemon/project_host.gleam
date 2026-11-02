@@ -1750,14 +1750,71 @@ fn start_worker(
               title: model.title_text(found.title),
             )
 
-          // A started session is bound to the assignment. A failure counts as
-          // an attempt against the row.
-          case host.ports.start_session(request) {
-            Ok(session) -> started(host, row, found, seq, session)
-            Error(reason) -> start_failed(host, row, found, seq, reason)
+          // The assignment after a rested one takes the same session over, and
+          // with it the clone that holds the work. Any other start makes a
+          // session.
+          case rested_session(found, seq) {
+            Some(session) -> started(host, row, found, seq, session)
+            None -> new_session(host, row, found, seq, request)
           }
         }
       }
+  }
+}
+
+/// Asks the daemon for a session under the request's key. A started session is
+/// bound to the assignment, and a failure counts as an attempt against the row.
+fn new_session(
+  host: Host,
+  row: project_ledger.Effect,
+  ticket: Ticket,
+  seq: Int,
+  request: StartRequest,
+) -> Host {
+  case host.ports.start_session(request) {
+    Ok(session) -> started(host, row, ticket, seq, session)
+    Error(reason) -> start_failed(host, row, ticket, seq, reason)
+  }
+}
+
+/// The session of the assignment just before `seq`, when that assignment ended
+/// because its worker came to rest. The engine ends an assignment that way
+/// only while the ticket is open, so the session, its saved log and its clone
+/// are all still there.
+fn rested_session(ticket: Ticket, seq: Int) -> Option(String) {
+  case list.find(ticket.assignments, fn(each) { each.seq == seq - 1 }) {
+    Error(Nil) -> None
+    Ok(previous) ->
+      case previous.status {
+        state.AssignmentDone(model.SessionRested) ->
+          option.map(previous.session, fn(bound) { bound.value })
+        state.AssignmentPending
+        | state.AssignmentRunning
+        | state.AssignmentDone(model.SessionExited)
+        | state.AssignmentDone(model.SessionCrashed) -> None
+      }
+  }
+}
+
+/// The assignment whose clone assignment `seq` works in. A session taken over
+/// from a rested assignment keeps that assignment's clone, so the clone is
+/// named by the first assignment bound to the session.
+fn tree_seq(ticket: Ticket, seq: Int) -> Int {
+  let session = case
+    list.find(ticket.assignments, fn(each) { each.seq == seq })
+  {
+    Ok(found) -> found.session
+    Error(Nil) -> None
+  }
+
+  // Without a session the assignment has its own clone. With one, the clone
+  // belongs to the lowest assignment bound to the same session.
+  case session {
+    None -> seq
+    Some(_) ->
+      ticket.assignments
+      |> list.filter(fn(each) { each.session == session })
+      |> list.fold(seq, fn(lowest, each) { int.min(lowest, each.seq) })
   }
 }
 
@@ -1865,7 +1922,12 @@ fn release_tree(
   case ticket.outcome {
     None -> settle(host, row)
     Some(_) ->
-      case host.ports.release_worktree(ReleaseRequest(ticket.id.value, seq)) {
+      case
+        host.ports.release_worktree(ReleaseRequest(
+          ticket.id.value,
+          tree_seq(ticket, seq),
+        ))
+      {
         Ok(Removed) -> settle(host, row)
         Ok(Kept(path:, reason:)) ->
           record_kept_tree(host, ticket.id.value, seq, path, reason)
@@ -1979,8 +2041,10 @@ fn observe_head(
   // A ticket the engine lost has nothing to read.
   case state.ticket(host.engine, id) {
     Error(_) -> settle(host, row)
-    Ok(_) ->
-      case host.ports.observe_head(ObserveRequest(ticket, seq)) {
+    Ok(found) ->
+      case
+        host.ports.observe_head(ObserveRequest(ticket, tree_seq(found, seq)))
+      {
         Error(reason) -> observe_failed(host, row, ticket, reason)
         Ok(NotTaken(commit: named, why:)) ->
           intake_refused(host, row, id, seq, named, why)
@@ -3466,6 +3530,7 @@ fn assignment_json(assignment: state.Assignment) -> JsonValue {
     state.AssignmentRunning -> "running"
     state.AssignmentDone(model.SessionExited) -> "done/exited"
     state.AssignmentDone(model.SessionCrashed) -> "done/crashed"
+    state.AssignmentDone(model.SessionRested) -> "done/rested"
   }
 
   json.Object([

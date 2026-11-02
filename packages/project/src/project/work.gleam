@@ -13,6 +13,22 @@
 //// from the last checked commit, and a diff touching protected paths goes to
 //// review with no check. And `Ready` is reachable only through
 //// `readiness.check_passed`, which takes the host's `CheckPassed`.
+////
+//// ## Flow
+////
+//// `open` → `deliver_to` → `assignment_live` → `reported` → `head_observed` →
+//// `check_finished` → `rest` → `retry` → `withdraw`
+////
+//// 1. `open` builds a ticket from an admitted trigger, and `deliver_to` hands
+////    it that trigger and later ones.
+//// 2. `assignment_live` and `reported` follow the worker. An idle report with
+////    a head runs the check rule at once; one without a head waits for
+////    `head_observed`.
+//// 3. `check_finished` takes the host's verdict. Whenever a transition leaves
+////    the ticket's work waiting for a person and its worker idle, `rest` ends
+////    the assignment so the slot is free while the session stays.
+//// 4. `retry` gives a ticket with no worker a new one, and `withdraw` ends the
+////    ticket for good.
 
 import gleam/dict
 import gleam/list
@@ -243,22 +259,42 @@ pub fn withdraw(current: State, id: TicketId, by: state.Withdrawal) -> Step {
   }
 }
 
-/// An assignment as a stop leaves it. The stop is the only thing that ends a
-/// session of a ticket the person withdrew, and nothing else reports that
-/// session's exit, so without this the assignment stayed pending or running
-/// for good and kept holding its slot.
+/// An assignment as the end of its ticket leaves it. The end is the only thing
+/// that stops the session of a ticket the person withdrew or that concluded,
+/// and nothing else reports that session's exit, so without this the
+/// assignment stayed pending or running for good and kept holding its slot. A rested
+/// assignment holds no slot but names a session that is stopped now and a clone
+/// that is released, so it is marked exited as well: only a rested assignment
+/// of an open ticket may be taken over by the next one.
 fn released(assignment: Assignment) -> Assignment {
-  case state.holds_slot(assignment) {
-    True ->
+  case assignment.status {
+    AssignmentPending
+    | AssignmentRunning
+    | AssignmentDone(model.SessionRested) ->
       Assignment(..assignment, status: AssignmentDone(model.SessionExited))
-    False -> assignment
+    AssignmentDone(model.SessionExited)
+    | AssignmentDone(model.SessionCrashed) -> assignment
   }
 }
 
+/// The stops an ended ticket owes. Only the newest assignment can have a live
+/// session, a pending start or a rested one with a clone still in place, so
+/// that is the only one to stop. An assignment that exited or crashed has
+/// already been stopped.
 fn stop_sessions(ticket: Ticket) -> List(Effect) {
-  ticket.assignments
-  |> list.filter(state.holds_slot)
-  |> list.map(fn(assignment) { StopSession(ticket.id, assignment.seq) })
+  case ticket.assignments {
+    [] -> []
+    [newest, ..] ->
+      case newest.status {
+        AssignmentPending
+        | AssignmentRunning
+        | AssignmentDone(model.SessionRested) -> [
+          StopSession(ticket.id, newest.seq),
+        ]
+        AssignmentDone(model.SessionExited)
+        | AssignmentDone(model.SessionCrashed) -> []
+      }
+  }
 }
 
 /// A person's stop command.
@@ -316,7 +352,13 @@ fn end_ticket(
   outcome: model.Outcome,
 ) -> #(State, List(Effect)) {
   let ended =
-    state.Ticket(..ticket, outcome: Some(outcome), demand: Satisfied, inbox: [])
+    state.Ticket(
+      ..ticket,
+      assignments: list.map(ticket.assignments, released),
+      outcome: Some(outcome),
+      demand: Satisfied,
+      inbox: [],
+    )
   schedule_after(state.put_ticket(current, ended), stop_sessions(ticket))
 }
 
@@ -329,6 +371,81 @@ fn open_ticket(current: State, id: TicketId) -> Result(Ticket, Refusal) {
     Withdrawn(_), _ -> Error(event.TicketWithdrawn(id))
     Granted, Some(_) -> Error(event.TicketEnded(id))
     Granted, None -> Ok(ticket)
+  }
+}
+
+/// Let a transition's result end the assignment of a worker that came to
+/// rest, see `rest`.
+fn then_rest(step: Step, id: TicketId) -> Step {
+  use #(next, effects) <- result.map(step)
+  rest(next, id, effects)
+}
+
+/// A slot is held only while the assignment's session is doing work. When a
+/// ticket's work reaches a person (it awaits review, is ready, or a person
+/// published it) and its worker is idle, the assignment ends as
+/// `SessionRested`: the slot is free for the next ticket, and the session and
+/// its clone stay where they are. A person's message, a retry or a resume then
+/// starts a new assignment, which the host seats in the same session.
+///
+/// Idle means the worker's latest report is `Waiting` with no question, no
+/// person has spoken to it since, and the ticket is open. Each of those facts
+/// can change only by an event that calls this function afterwards, or by a
+/// report, which clears `heard` and so cannot leave a working worker looking
+/// idle. A new assignment clears the report, so a worker that has just
+/// started on a resting ticket is never taken for the idle one before it.
+fn rest(
+  current: State,
+  id: TicketId,
+  effects: List(Effect),
+) -> #(State, List(Effect)) {
+  case state.ticket(current, id) {
+    Error(_) -> #(current, effects)
+    Ok(ticket) ->
+      case at_rest(ticket) {
+        False -> #(current, effects)
+        True -> {
+          let rested =
+            state.Ticket(
+              ..ticket,
+              assignments: list.map(ticket.assignments, rested_assignment),
+            )
+          schedule_after(state.put_ticket(current, rested), effects)
+        }
+      }
+  }
+}
+
+/// Whether the ticket's work waits for a person while its worker is idle and
+/// still assigned.
+fn at_rest(ticket: Ticket) -> Bool {
+  let waiting_for_person = waits_for_person(ticket.readiness)
+  let idle =
+    ticket.latest == Some(Waiting(NoQuestion))
+    && ticket.question == NoQuestion
+    && ticket.heard == Silent
+  let open = ticket.outcome == None && ticket.authority == Granted
+
+  waiting_for_person && idle && open && state.active_assignment(ticket) != None
+}
+
+/// Whether a readiness hands the ticket to a person: only work still in
+/// progress does not.
+fn waits_for_person(current: readiness.Readiness) -> Bool {
+  case current {
+    readiness.InProgress -> False
+    readiness.AwaitingReview | readiness.Ready(_) | readiness.Published(_, _) ->
+      True
+  }
+}
+
+/// An assignment as a rest leaves it. A rest ends the assignment that holds
+/// the slot, which is the only one the ticket can have.
+fn rested_assignment(assignment: Assignment) -> Assignment {
+  case state.holds_slot(assignment) {
+    True ->
+      Assignment(..assignment, status: AssignmentDone(model.SessionRested))
+    False -> assignment
   }
 }
 
@@ -529,9 +646,17 @@ pub fn reported(
 
   // A report that ends the ticket frees its slot; any other leaves slots as
   // they were.
-  case settled.outcome {
+  let step = case settled.outcome {
     None -> Ok(#(state.put_ticket(current, settled), effects))
     Some(_) -> Ok(schedule_after(state.put_ticket(current, settled), effects))
+  }
+
+  // A report that carries no head leaves resting to the head the host reads
+  // next: a worker told to look again may have committed, and the commit
+  // would need the worker still assigned to hear a failed check.
+  case head {
+    NoHead -> step
+    Head(..) -> then_rest(step, id)
   }
 }
 
@@ -627,7 +752,7 @@ pub fn head_observed(
     Some(Waiting(NoQuestion)), NoQuestion -> {
       let moved = apply_head(ticket, head)
       let #(settled, effects) = check_rule(moved, seq, NoQuestion, head)
-      Ok(#(state.put_ticket(current, settled), effects))
+      then_rest(Ok(#(state.put_ticket(current, settled), effects)), id)
     }
     _, _ -> Error(event.Stale(id))
   }
@@ -667,6 +792,7 @@ pub fn review_requested(
           [],
         ),
       )
+      |> then_rest(id)
   }
 }
 
@@ -712,7 +838,7 @@ pub fn check_finished(
 
   // A rejection is recorded only for the current head.
   case finished {
-    CheckOk(proof) -> check_passed(current, ticket, proof)
+    CheckOk(proof) -> check_passed(current, ticket, proof) |> then_rest(id)
     CheckRejected(commit, digest) ->
       case ticket.head == Some(commit) {
         False -> Error(event.Stale(id))
@@ -782,6 +908,7 @@ pub fn person_published(
         ),
         commit,
       ))
+      |> then_rest(id)
   }
 }
 

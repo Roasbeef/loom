@@ -115,10 +115,16 @@ fn start_assignment(
   }
 
   let assignment = Assignment(seq, None, slot, wanted, AssignmentPending)
+
+  // The new worker has reported nothing, so the old report, which described
+  // a worker that is gone, goes with it. A ticket that rested after an idle
+  // report would otherwise read as idle again the moment its next worker
+  // started, before that worker had done anything.
   let started =
     state.Ticket(
       ..ticket,
       assignments: [assignment, ..ticket.assignments],
+      latest: None,
       demand: Satisfied,
       inbox: [],
     )

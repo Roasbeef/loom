@@ -758,3 +758,60 @@ pub fn a_candidate_the_router_never_decides_waits_on_the_board_for_a_person_test
       after.unrouted == []
     })
 }
+
+// --- a worker at rest ----------------------------------------------------------------
+
+// The ports with a worktree that has one commit, touching a protected path so
+// that the engine sends the ticket to a person at once, and a record of which
+// clone each reading was about.
+fn reading_ports(rig: Rig, readings: Subject(Int)) -> project_host.Ports {
+  project_host.Ports(
+    ..rig.config.ports(),
+    observe_head: fn(request: project_host.ObserveRequest) {
+      process.send(readings, request.seq)
+      Ok(project_host.Taken(project_host.Observed("abc", ["Makefile"])))
+    },
+  )
+}
+
+pub fn the_assignment_after_a_rested_one_takes_the_same_session_test() {
+  let rig = rig("rested")
+  let readings = process.new_subject()
+  let ports = reading_ports(rig, readings)
+  let config = project_host.Config(..rig.config, ports: fn() { ports })
+  let assert Ok(handle) = project_host.start(config) as "the actor starts"
+  let assert Ok(_) = project_host.post(handle, "a", "fix a")
+  let assert Ok([tools.Applied]) = project_host.route(handle, [accept("a")])
+  let worker = "session-" <> first_key("t-a")
+  let idle = tools.WorkerReport(tools.Waiting, None)
+
+  // The worker goes idle on work that waits for a person, and its assignment
+  // ends while its session stays.
+  let assert Ok(Nil) = project_host.report(handle, worker, idle)
+  let assert Ok(Nil) =
+    poll_until(fn() { string.contains(ticket_text(handle), "done/rested") })
+  assert string.contains(board_json(handle), "person/review")
+  assert process.receive(readings, 1000) == Ok(1)
+
+  // A retry gives the ticket a second assignment, which is bound to the same
+  // session: no session is created, and the clone read is still the first.
+  let _ = drain(rig.seen)
+  let assert Ok(Nil) = project_host.retry(handle, "t-a", "owner")
+  let assert Ok(Nil) =
+    poll_until(fn() { string.contains(ticket_text(handle), "\"seq\":2") })
+  let assert Ok(Nil) = project_host.report(handle, worker, idle)
+  assert process.receive(readings, 1000) == Ok(1)
+  assert !list.any(drain(rig.seen), fn(each) {
+    case each {
+      Started(key) -> key == "project:p1:t-a:2"
+      Sent(..) -> False
+    }
+  })
+}
+
+fn ticket_text(handle: project_host.Handle) -> String {
+  case project_host.ticket(handle, "t-a") {
+    Ok(detail) -> json.to_string(detail)
+    Error(Nil) -> ""
+  }
+}

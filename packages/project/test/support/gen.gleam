@@ -245,7 +245,7 @@ pub fn event() -> Generator(Event) {
     qcheck.map3(
       ticket_id(),
       seq,
-      one_of([model.SessionExited, model.SessionCrashed]),
+      one_of([model.SessionExited, model.SessionCrashed, model.SessionRested]),
       event.AssignmentEnded,
     ),
     qcheck.map4(ticket_id(), seq, report(), head(), event.Reported),

@@ -826,6 +826,7 @@ const ceilings: List(#(String, model.Ceiling)) = [
 const ends: List(#(String, model.SessionEnd)) = [
   #("exited", model.SessionExited),
   #("crashed", model.SessionCrashed),
+  #("rested", model.SessionRested),
 ]
 
 const outcomes: List(#(String, model.Outcome)) = [
