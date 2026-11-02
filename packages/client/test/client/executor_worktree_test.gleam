@@ -61,6 +61,7 @@ fn machine(rig: Rig) -> executor_plane.Machine {
     logger: log.discard(),
     mcp_servers: [],
     credentials: [],
+    check_path: "",
   )
 }
 

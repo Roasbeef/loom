@@ -558,6 +558,7 @@ fn boot(state: String, seen: Subject(Seen)) -> Daemon {
             ledger_path: ledger,
             helper_path: here() <> "/../sandbox/loom-exec",
             credentials: [],
+            path: "",
             demand: settings.demand,
             logger: log.discard(),
           ),

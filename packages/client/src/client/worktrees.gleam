@@ -95,6 +95,9 @@ pub type Config {
     demand: EnforcementDemand,
     /// The node's distribution key and cookie, masked from every Git call.
     credentials: List(String),
+    /// The daemon's own `PATH`, which a project's setup and check see. Empty
+    /// when the daemon has none, and the system directories stand in.
+    path: String,
     /// Where reconciliation and closes report.
     logger: Logger,
   )
@@ -252,6 +255,7 @@ pub fn start(
           state_root:,
           credentials: config.credentials,
           demand: config.demand,
+          path: config.path,
         )),
       )
 
@@ -267,6 +271,7 @@ pub fn start(
           state_root:,
           credentials: config.credentials,
           demand: config.demand,
+          path: config.path,
         )),
       )
       use gates <- result.map(
@@ -395,6 +400,56 @@ pub fn check_runner(
     "the sandboxed Git is not running",
   ))
   worktree_git.check_runner(checks, directory)
+}
+
+/// A runner for a project's `setup` command in the tree that becomes its
+/// template: the check's runner with the network on
+/// (`worktree_git.setup_runner`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // worktrees.setup_runner(worktrees, "/state/projects/p-1/.template.making")
+/// ```
+pub fn setup_runner(
+  worktrees: Worktrees,
+  directory: String,
+) -> Result(goalcheck.Runner, String) {
+  use checks <- result.map(option.to_result(
+    worktrees.checks,
+    "the sandboxed Git is not running",
+  ))
+  worktree_git.setup_runner(checks, directory)
+}
+
+/// Runs another program in the sandbox under a Git call's policy, with exactly
+/// the writable roots the caller names, and answers its exit code and both
+/// output streams. Unlike `run_git` it does not turn a nonzero exit into an
+/// error, because the caller tells a refusal from a failure by the code.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // worktrees.run_program(worktrees, "/usr/bin/cp", "/s/projects/p-1", [tickets], ["-Rp", template, dest], 600_000)
+/// ```
+pub fn run_program(
+  worktrees: Worktrees,
+  program: String,
+  directory: String,
+  writable: List(String),
+  arguments: List(String),
+  within_ms: Int,
+) -> Result(Output, String) {
+  use git <- result.try(option.to_result(
+    worktrees.git,
+    "the sandboxed Git is not running",
+  ))
+  worktree_git.run_program(
+    git,
+    program,
+    worktree_git.Run(directory:, writable:, arguments:),
+    within_ms,
+  )
 }
 
 /// Whether a workspace is in worktree mode.

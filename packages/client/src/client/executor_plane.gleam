@@ -197,6 +197,10 @@ pub type Machine {
     /// every jailed child has masked. Empty for a daemon with no
     /// `[distribution]` table.
     credentials: List(String),
+    /// The daemon's own `PATH`, read once when the machine is read. A project's
+    /// setup and check run with it, so they find the tools the daemon's
+    /// operator has. Empty when the daemon has none.
+    check_path: String,
     /// Where builds and closes report.
     logger: Logger,
   )
@@ -301,6 +305,7 @@ pub fn machine(
     home: workspace_policy.home_directory(),
     mcp_servers:,
     credentials:,
+    check_path: result.unwrap(workspace_policy.env_text("PATH"), ""),
     logger:,
   ))
 }
@@ -342,6 +347,7 @@ pub fn worktrees_of(
       helper_path: machine.helper_path,
       demand: machine.demand,
       credentials: machine.credentials,
+      path: machine.check_path,
       logger: machine.logger,
     ),
     configured,
