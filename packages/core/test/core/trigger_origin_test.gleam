@@ -199,12 +199,22 @@ pub fn a_run_of_equals_split_across_blocks_cannot_close_the_fence_test() {
 }
 
 pub fn trigger_fence_property_test() {
-  let body =
-    qcheck.string_from(
-      qcheck.codepoint_from_strings("=", [
-        "=", "=", "[", "]", " ", "e", "n", "d", "t", "r", "i", "g", "x", "\n",
-      ]),
+  // A body is a few fragments laid end to end: runs of equals signs of every
+  // short length, whole end lines of several lengths, and the pieces of one,
+  // so that adjacent fragments assemble end lines the generator never wrote.
+  let fragment =
+    qcheck.from_generators(
+      qcheck.constant("="),
+      list.map(
+        [
+          "==", "===", "====", "=====", "]", "x", "\n", "[end trigger text ",
+          "[end trigger text ===]", "[end trigger text ====]",
+          "[begin trigger text ===]",
+        ],
+        qcheck.constant,
+      ),
     )
+  let body = qcheck.list_from(fragment) |> qcheck.map(string.concat)
 
   qcheck.run(trigger_config(), qcheck.tuple2(body, body), fn(parts) {
     let #(first, second) = parts

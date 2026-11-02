@@ -420,6 +420,8 @@ fn longest_run(content: List(UserBlock)) -> Int {
     list.fold(string.to_utf_codepoints(joined), #(0, 0), fn(state, point) {
       let #(longest, current) = state
 
+      // An equals sign extends the run being counted and any other
+      // character ends it, so the longest run seen so far is carried along.
       case string.utf_codepoint_to_int(point) == 0x3D {
         True -> #(int.max(longest, current + 1), current + 1)
         False -> #(longest, 0)

@@ -200,6 +200,7 @@ fn trigger_rows(heading: String, body: String, width: Int) -> List(span.Line) {
     Ok(#(name, rest)) -> #(name, " · " <> rest)
     Error(Nil) -> #(heading, "")
   }
+
   let #(rest, clock) = split_clock(rest)
   let top =
     span.line_new(clipped(
