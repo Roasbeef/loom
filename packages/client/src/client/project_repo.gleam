@@ -140,6 +140,21 @@ pub fn tickets_path(layout: Layout) -> String {
   project_directory(layout) <> "/tickets"
 }
 
+/// Whether a path is a clone a project made for a worker: a directory under a
+/// project's `tickets` directory beneath a state root's `projects`. The host
+/// makes it for one assignment, so a list of folders to start a session in
+/// leaves it out.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_repo.is_clone_path("/s/projects/p-1/tickets/t-a-1")
+/// assert !project_repo.is_clone_path("/src/loom")
+/// ```
+pub fn is_clone_path(path: String) -> Bool {
+  string.contains(path, "/projects/p-") && string.contains(path, "/tickets/")
+}
+
 /// The workspace of one assignment's worker: the clone `name` names.
 ///
 /// ## Examples

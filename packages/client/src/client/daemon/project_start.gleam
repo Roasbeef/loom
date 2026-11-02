@@ -791,6 +791,41 @@ fn router_signal(
   }
 }
 
+/// The sessions among `ids` that belong to a project, with what each is to it,
+/// read in one registry turn. A session that belongs to none is left out, as is
+/// every session when the registry does not answer: a listing that cannot say
+/// is shown whole, and never hides what it could not check.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_start.standings(registry, ["0198..."])
+/// //   == [#("0198...", project_standing.Router("p-1"))]
+/// ```
+pub fn standings(
+  registry: manager.Manager(instance),
+  ids: List(String),
+) -> List(#(String, project_standing.Standing)) {
+  let read = fn(store) {
+    list.filter_map(ids, fn(id) {
+      case catalogue.project_standing(store, id) {
+        Ok(found) ->
+          case project_standing.from_catalogue(found) {
+            project_standing.Ordinary -> Error(Nil)
+            held -> Ok(#(id, held))
+          }
+        Error(_) -> Error(Nil)
+      }
+    })
+  }
+
+  // An unanswering registry reports nothing, which hides nothing.
+  case manager.with_catalogue(registry, read) {
+    Ok(found) -> found
+    Error(_) -> []
+  }
+}
+
 /// Only a worker has a log the project reads. A router's conversation is
 /// with the project through its tools, and an ordinary session is not the
 /// project's at all.

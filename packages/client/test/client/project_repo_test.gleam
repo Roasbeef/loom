@@ -737,3 +737,15 @@ pub fn the_policy_masks_each_projects_host_repository_ledger_and_checks_test() {
   assert !list.contains(masked.protected, clone)
   assert !list.contains(masked.protected, directory <> "/ledger.db-wal")
 }
+
+// A worker's clone is made for one assignment, so a list of folders to start a
+// session in leaves it out and keeps the owner's own folders.
+pub fn a_workers_clone_is_not_a_folder_to_start_again_in_test() {
+  assert project_repo.is_clone_path("/s/projects/p-1/tickets/t-a-1")
+  assert project_repo.is_clone_path(project_repo.clone_path(
+    project_repo.Layout("/s", "p-1", "/repo"),
+    "t-b-2",
+  ))
+  assert !project_repo.is_clone_path("/Users/me/src/loom")
+  assert !project_repo.is_clone_path("/Users/me/projects/tickets")
+}

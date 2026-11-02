@@ -36,6 +36,7 @@ import client/owned_assembly_test
 import client/peer_mail
 import client/project_records
 import client/project_repo
+import client/project_standing
 import client/roster
 import client/serve
 import client/session_directory
@@ -182,6 +183,19 @@ pub fn a_project_runs_two_tickets_and_survives_a_restart_test() {
   // The router cannot be given `bash` or `code_mode` by `set_config`.
   refuses_tools(daemon, router, ["bash"])
   refuses_tools(daemon, router, ["code_mode"])
+
+  // The router and the workers say what they are to the project, so a list
+  // can leave them out, and a session that belongs to none says nothing. The
+  // workers' clones are no folder to start a session in again.
+  let held =
+    project_start.standings(daemon.ready.registry, [router, first, second])
+  assert list.length(held) == 3
+  assert list.key_find(held, router) == Ok(project_standing.Router(project))
+  assert list.key_find(held, first)
+    == Ok(project_standing.Worker(project, "t-a", 1))
+  assert project_start.standings(daemon.ready.registry, ["no-such-session"])
+    == []
+  assert project_repo.is_clone_path(first_tree)
 
   // Stop the daemon. While it is down, a trigger the gate did not admit as
   // explicit arrives in the ledger, as a source would deliver it.

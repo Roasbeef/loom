@@ -84,6 +84,7 @@ import client/orchestrators
 import client/peer_mail
 import client/peers
 import client/pools
+import client/project_standing
 import client/remote/orchestrator_port
 import client/roster.{type Roster}
 import client/session_directory
@@ -4381,7 +4382,12 @@ fn dispatch_class(
         )
         |> result.map_error(error_code),
       )
-      let encode = listed_json(custodies)
+      let standings =
+        project_start.standings(
+          state.registry,
+          list.map(views, fn(view) { view.registration.id }),
+        )
+      let encode = listed_json(custodies, standings)
       use bounded <- result.try(page_prefix(views, 60_000, [], encode))
       Ok(#("sessions.list", page_body(bounded, current, encode)))
     }
@@ -5422,13 +5428,43 @@ fn custody_members(custody: catalogue.Custody) -> List(#(String, JsonValue)) {
 /// `custodies` is encoded as a plain view.
 fn listed_json(
   custodies: List(#(String, catalogue.Custody)),
+  standings: List(#(String, project_standing.Standing)),
 ) -> fn(manager.View) -> JsonValue {
   fn(view: manager.View) {
     // This branch resolves list key_find custodies view registration id before the operation continues.
-    case list.key_find(custodies, view.registration.id) {
+    let plain = case list.key_find(custodies, view.registration.id) {
       Ok(custody) -> with_custody_members(view_json(view), custody)
       Error(Nil) -> view_json(view)
     }
+
+    // A session that belongs to a project says so, and an ordinary session's
+    // record is byte for byte what it was.
+    case list.key_find(standings, view.registration.id), plain {
+      Ok(held), json.Object(fields) ->
+        json.Object(list.append(fields, [#("standing", standing_json(held))]))
+      Ok(_), _ | Error(Nil), _ -> plain
+    }
+  }
+}
+
+/// The `standing` member of a listed session that belongs to a project:
+/// `{"kind":"router","project"}` or `{"kind":"worker","project","ticket"}`. An
+/// ordinary session carries no such member.
+fn standing_json(held: project_standing.Standing) -> JsonValue {
+  case held {
+    project_standing.Router(project:) ->
+      json.Object([
+        #("kind", json.String("router")),
+        #("project", json.String(project)),
+      ])
+    project_standing.Worker(project:, ticket:, ..) ->
+      json.Object([
+        #("kind", json.String("worker")),
+        #("project", json.String(project)),
+        #("ticket", json.String(ticket)),
+      ])
+    project_standing.Ordinary ->
+      json.Object([#("kind", json.String("ordinary"))])
   }
 }
 

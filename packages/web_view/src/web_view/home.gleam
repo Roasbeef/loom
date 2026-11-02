@@ -4025,8 +4025,11 @@ fn closable(ticket: board.Ticket, model: Model) -> Option(Msg) {
 }
 
 /// The press that opens a worker's session: the row's own press when the page
-/// holds the row, so a running session opens and a saved one resumes, and none
-/// when the page does not hold it, so no button could only be refused.
+/// holds the row, so a running session opens and a saved one resumes. A
+/// session the lists do not hold is the project's own, and the ticket still
+/// reaches it: a resume for an operating page, which opens a running session
+/// as well, and an open for an observing one. A saved session an observer
+/// cannot resume has no button.
 fn worker_press(model: Model, session: String) -> Option(Msg) {
   case
     list.find(listing.entries(model.groups), fn(each) { each.id == session })
@@ -4037,7 +4040,15 @@ fn worker_press(model: Model, session: String) -> Option(Msg) {
         OperatorCeiling -> Some(Resuming(session))
         ObserverCeiling -> None
       }
-    Ok(_) | Error(Nil) -> None
+
+    // The list does not hold the row: a worker's session is the project's, and
+    // the lists leave it out. The ticket page still reaches it, and the daemon
+    // judges the press as it judges any other.
+    Ok(_) | Error(Nil) ->
+      case model.start.ceiling {
+        OperatorCeiling -> Some(Resuming(session))
+        ObserverCeiling -> Some(Opening(session))
+      }
   }
 }
 

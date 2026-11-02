@@ -180,6 +180,7 @@
 import broker/token
 import client/daemon/manager
 import client/daemon/new_folder
+import client/daemon/project_start
 import client/daemon/root
 import client/daemon/server
 import client/daemon/shareable
@@ -194,6 +195,7 @@ import client/daemon/ui_top
 import client/daemon/upgrade_log
 import client/gateway
 import client/peers
+import client/project_repo
 import client/protocol as session_protocol
 import client/remote/top_relay
 import client/remote_escalation
@@ -3835,7 +3837,11 @@ fn listed_recent(
   // This branch resolves manager recent_folders standing registry before the operation continues.
   case manager.recent_folders(standing.registry) {
     Ok(recent) ->
-      list.filter_map(recent, fn(entry) {
+      recent
+      // A worker's clone is made by the host for one assignment, so it is no
+      // folder a person starts a session in again.
+      |> list.filter(fn(entry) { !project_repo.is_clone_path(entry.workspace) })
+      |> list.filter_map(fn(entry) {
         creations.inside(home, entry.workspace)
         |> result.replace(creations.Recent(entry.id, entry.workspace))
       })
@@ -6782,13 +6788,32 @@ pub fn held_entries(
   registry: manager.Manager(instance),
   views: List(manager.View),
 ) -> List(sessions.Entry) {
-  let entries = list.map(views, listed_entry)
+  let entries = list.map(not_in_a_project(registry, views), listed_entry)
 
   // This branch resolves manager custodies registry list map entries fn entry entry id before the operation continues.
   case manager.custodies(registry, list.map(entries, fn(entry) { entry.id })) {
     Ok(custodies) -> with_moves(entries, custodies)
     Error(_) -> entries
   }
+}
+
+/// The views of the sessions a person lists, which leaves out the router and
+/// the workers of a project. They are the project's machinery and are reached
+/// from a ticket (`web_view/projects`), so listing them in the sidebar and the
+/// home would bury the conversations a person started under one worker for
+/// each ticket. The registry's own listing still returns every session.
+fn not_in_a_project(
+  registry: manager.Manager(instance),
+  views: List(manager.View),
+) -> List(manager.View) {
+  let kept =
+    project_start.standings(
+      registry,
+      list.map(views, fn(view) { view.registration.id }),
+    )
+  list.filter(views, fn(view) {
+    !list.any(kept, fn(found) { found.0 == view.registration.id })
+  })
 }
 
 /// The entries with their moves applied. A session this catalogue is handing to

@@ -1562,18 +1562,27 @@ fn page(body: json.JsonValue) {
   Ok(Page(revision, sessions, after))
 }
 
-// One record of a listing, or nothing for a session this daemon no longer
-// serves. A record that carries `moved` is the tombstone the source keeps for a
-// session another orchestrator owns now: the conversation is not here, nothing
-// here can open it, and its new owner lists it. It is not a row, so the page
-// leaves it out, and no consumer of a page has to remember to
-// (`protocol-change/085`). The member is read as present or absent, and its
-// destination is not needed, so a tombstone whose `to` is damaged is still not
-// listed as a session that can be opened.
+/// One record of a listing, or nothing for a session this daemon no longer
+/// serves. A record that carries `moved` is the tombstone the source keeps for a
+/// session another orchestrator owns now: the conversation is not here, nothing
+/// here can open it, and its new owner lists it. It is not a row, so the page
+/// leaves it out, and no consumer of a page has to remember to
+/// (`protocol-change/085`). The member is read as present or absent, and its
+/// destination is not needed, so a tombstone whose `to` is damaged is still not
+/// listed as a session that can be opened.
+///
+/// A session that carries a `standing` is a project's router or one of its
+/// workers (`protocol-change/106`). It is reached from its ticket, so the page
+/// leaves it out of the list a person picks a conversation from. The daemon
+/// still returns it to a script that reads the frame itself.
 fn listed(body: json.JsonValue) -> Result(Option(Session), String) {
-  case field(body, "moved") {
-    Ok(_) -> Ok(None)
-    Error(_) -> result.map(session(body), Some)
+  case field(body, "moved"), field(body, "standing") {
+    Ok(_), _ -> Ok(None)
+
+    // A session of a project, a router or a worker, is shown from its ticket
+    // and not in the list a person picks a conversation from.
+    Error(_), Ok(_) -> Ok(None)
+    Error(_), Error(_) -> result.map(session(body), Some)
   }
 }
 
