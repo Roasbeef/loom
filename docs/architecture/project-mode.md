@@ -64,7 +64,8 @@ A project is a catalogue row and a role over ordinary sessions, with no session 
 | `project_book` | A table of each project's `Handle` and each ticket's `Mandate` | Any decision: the table never calls into an actor |
 | `project_start` | Making a project, `ports_for`, `seat`, `reopen` | Ticket state |
 | `storage/project_ledger` | The SQLite file's schema and its transactions | A process: it runs in the actor |
-| `client/project_repo`, `project_publish` | `host.git`, per-ticket clones, check trees, the push and the pull request | Whether a commit may be published, which the engine decides |
+| `client/project_repo`, `project_publish` | `host.git`, the template, per-ticket clones, check trees, the push and the pull request | Whether a commit may be published, which the engine decides |
+| `client/project_template`, `template_state` | A template build (cut, `setup`, base check, swap) and the pure state of where the template stands | When a build runs, which the actor decides, and the sandbox, which `worktrees` provides |
 | `client/project_poller`, `project_watcher`, `project_github` | One bounded pass over GitHub, its schedule, and translation to triggers | Admission, which the gate decides |
 | `project/tape`, `judge`, `standing`, `client/project_judge`, `project_judge_session` | Recorded tapes, verdict arithmetic, scratch judgement sessions | The `auto` decision, which `state.verdict_of` reads from the engine |
 
@@ -361,17 +362,58 @@ The scratch session's `route` tool has the router's schema, and its executor rec
 
 ## Git layout
 
-A worker's clone is under the state root, not a linked worktree, because a linked worktree would give it write access to the owner's `.git`.
+A worker's clone is under the state root, not a linked worktree, because a linked worktree would give it write access to the owner's `.git`. A project with a `setup` command has a template, and every clone and check tree is a copy of it.
 
 | Path under `<state>/projects/<id>` | Written by | Read by |
 | --- | --- | --- |
 | `ledger.db` | The project actor | Masked from worker sessions |
 | `host.git` | Jailed Git run by host code, for `refresh_base` and `fetch_commit` | Jailed Git, and the push outside the jail. Masked from worker sessions |
 | `host.git/loom-origin-url` | The daemon, once, from the owner's checkout | The daemon |
+| `template` | Jailed `setup` and check, then renamed into place by the daemon. Built under `.template.making`, with the replaced one waiting in `.template.old` for a moment | The daemon, which copies it. Masked from sessions and checks like `host.git` |
 | `tickets/<name>` | The worker. The daemon on release | Its worker, and other workers, which can read it and not write it |
 | `checks/chk-<ticket>-<hex>` | Jailed Git, then the check. The daemon deletes it | The check |
 
-`project_repo.clone` builds under `tickets/.<name>.making` and renames, so the final name exists only for a whole clone, and a clone on disk is adopted and never replaced. `FromOwner` clones the owner's checkout with `--no-hardlinks` and removes `origin`. `FromCommit` runs `git init --template=` and fetches one commit from `host.git` by path, so nothing in its config names `host.git`. `release` removes a clone only when `status` is clean and every ref's commit is in `host.git`, and otherwise records `TreeKept`.
+`project_repo.clone_from` builds under `tickets/.<name>.making` and renames, so the final name exists only for a whole clone, and a clone on disk is adopted and never replaced. With a warm seed the clone is a copy of the template (`git-cow copy`, or `cp -RPp` when no binary is found or it fails for a reason other than refusing the template, which is an error), then a fetch of the commit from `host.git` and `git checkout -b`, which leaves the template's ignored files in place. A copy's `.git/config` holds only what `git init` wrote: no remote, URL or credential helper. `FromOwner` clones the owner's checkout with `--no-hardlinks` and removes `origin`. `FromCommit` runs `git init --template=` and fetches one commit from `host.git` by path, so nothing in its config names `host.git`. `release` removes a clone only when `status` is clean and every ref's commit is in `host.git`, and otherwise records `TreeKept`.
+
+## The template
+
+A check runs worker-authored code with the network off, and a real repository's build needs its dependencies first. The template is where the two meet. The host cuts a clean checkout of the recorded base commit from `host.git`, runs `[project].setup` in it with the network on, runs `check` once on it with the network off to show the clean base passes, and only then renames it to `<state>/projects/<id>/template`. `setup` never runs on anything a worker wrote. A project without `setup` has no template and keeps the behaviour of the sections above.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unmanaged: no setup command
+    [*] --> Preparing: setup command, first build queued
+    Preparing --> Ready: Built, TemplateBuilt recorded
+    Preparing --> Broken: Failed, TemplateFailed recorded
+    Broken --> Preparing: retry setup, or the next look
+    Ready --> Ready: look at the base, Unchanged
+    Ready --> Rebuilding: base moved, or retry setup
+    Rebuilding --> Ready: Built, swapped in
+    Rebuilding --> Stale: Failed, the last good template stays
+    Stale --> Rebuilding: retry setup, or the next look
+    Ready --> Preparing: the setup or check command changed
+```
+
+`Rebuilding` and `Stale` are the `upkeep` of a `Ready` state. `Broken` has two faces for a person: `failed` when `setup` failed (or the host could not cut the tree), and `base_check_red` when `check` failed on the clean base. A person reads them on the board's sources list, in a row whose `source` is `setup`, with the sentence that names the project's setup and not any ticket, and the last 4000 characters of the output. `template_state` holds the states and the moves; the actor holds one value and persists two records.
+
+```mermaid
+flowchart TD
+    Row["template row, key build"] --> Start["start_template: weft task"]
+    Start --> Base["base_commit: fetch the owner's HEAD"]
+    Base -- "equals the ready commit" --> Same["Unchanged"]
+    Base -- "moved, or no template" --> Cut["cut_template_tree under .template.making"]
+    Cut --> Setup["run_setup: network on, HOME in the tree"]
+    Setup -- "nonzero" --> Fail["Failed(Setup)"]
+    Setup --> Check["run_check: network off"]
+    Check -- "nonzero" --> Red["Failed(BaseCheck)"]
+    Check --> Seal["sound_template, exclude_untracked"]
+    Seal --> Swap["swap_template: two renames"]
+    Swap --> Built["Built(commit)"]
+```
+
+A `start` row for a new session is left untouched while the state is `Preparing` or `Broken`: it is neither settled nor deferred, so its attempts do not count and the ticket stays `queued`. A restart replays the two records and queues the build row again when no template is ready. The build removes `.template.making` before it cuts, so a half-built tree is never the template, and `restore_interrupted_swap` puts back a template that a swap left under its waiting name. The base is looked at every ten minutes (`template_look_ms`) and rebuilt only if it moved. A person retries with `projects.retry` and the ticket name `setup`.
+
+`setup` and `check` see the daemon's own `PATH`, read once when the machine is read (`executor_plane.Machine.check_path`). Their jails are the check's: the host readable with the state-root, credential and project-file masks, one writable root, and `HOME` at `<tree>/.loom-check-home`.
 
 ## Storage
 
@@ -455,4 +497,11 @@ This document rests on four reader summaries against `be5a7b58e`. Its constants 
 - A person stopping a worker session from outside the project fails its ticket.
 - The restart note is queued once per assignment, so a second restart of the same assignment reopens its session through the `reopen` row and doesn't tell the worker again.
 - One worker whose session had last been attached by a terminal read `worker_failed` after a graceful restart in a live drive. A graceful stop with terminals attached to two workers records no loss in `project_daemon_test`, and no cause is established. A refused build no longer rings, which closes one way a client's open of a project session could have failed an assignment. The control command `sessions.stop`, a page's stop and a session being made shareable each write a `daemon.session_stop` line with the principal, the session and the route (`control`, `page`, `shareable`), so the next occurrence can be attributed to a stop or ruled out. Stops by `top_host`, the session mover and the restart path write no such line.
+- A template that `git-cow` refuses (a socket or a link that `setup` left under `.git`, say) is found by the first worker that needs a copy, and that start fails as a start does, five attempts and then `WorkerFailed`. The build checks the things it can name cheaply (`sound_template`) and does not make a trial copy.
+- A copy that is reading the old template while a rebuild swaps it in can fail. The ticket's start retries, and a check's `DidNotFinish` is run again once. The window is the two renames of one swap, at most every ten minutes.
+- The session policy masks the template only if it exists when the policy is built (`protecting_projects` masks what is on disk), and the swap leaves `template` absent for the time between its two renames. A jailed call that starts in that window is refused with the mask error and the model sees a failed command.
+- `setup` has the network and the whole host readable minus the masks, and writes only the template. It runs the repository's scripts, so a malicious base commit can read what the host reads and send it anywhere. The recorded base is the owner's own `HEAD`, which is what makes this the owner's code and not a worker's.
+- Build output that the repository does not ignore is written to the template's `.git/info/exclude`, so `git status` in a clone does not report it. A worker file at one of those paths is invisible to the host's clean test (`uncommitted`, `unrecorded_work`).
+- Only the daemon's `PATH` reaches `setup` and `check`. A worker's own tools keep the session's `PATH`, so a tool on the daemon's `PATH` that the session does not see is found by the check and not by the worker.
+- `git-cow` is not shipped by `make dist`. The ladder looks beside the server first (`install.git_cow`) and then on `PATH`.
 - Remote workers depend on the #1137 bundle work, so workers run on the owning machine. Whether `active_tool_names` alone closes every effect path for a router on a remote executor hasn't been tested.

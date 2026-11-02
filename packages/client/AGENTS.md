@@ -198,7 +198,10 @@ adds them through `workspace_policy.protecting_node_credentials`, beside the
 state-root and blob masks, so a jailed child cannot print them into a tool
 result (ADR-022 D2 and its 2026-11-01 addendum). `worktrees.Config` and
 `worktree_git.Config` carry the same list, so the sandboxed Git that runs a
-repository's hooks during `git worktree add` masks them too. Both live outside the state
+repository's hooks during `git worktree add` masks them too. Both also carry
+`path`, the daemon's own `PATH` read once into `Machine.check_path`, which is the
+`PATH` a project's `setup` and `check` see (the system directories stand in when it
+is empty). Both live outside the state
 root, which is why the state-root masks never covered them. An absent path is
 skipped, as for every conditional mask. Every jail, a host session's
 included, also masks the state root's `vm` directory, the home's `.loom/vm`
@@ -10232,8 +10235,8 @@ ordinary top-level worker session per ticket assignment
   clone the host makes (`git clone --no-hardlinks`, `origin` removed, branch
   `loom/<ticket>-<seq>`) under `<state>/projects/<id>/tickets/`, with a real `.git`
   directory, so `workspace_policy` adds no writable root for it. A ticket with a
-  recorded head starts its next clone there instead (`project_repo.clone` takes a
-  `Start`: `FromOwner`, or `FromCommit`, a template-less repository that fetches
+  recorded head starts its next clone there instead (`project_repo.clone` and
+  `clone_from` take a `Start`: `FromOwner`, or `FromCommit`, a template-less repository that fetches
   the commit from `host.git` by path, so it has no remote at all, with hooks and
   `core.fsmonitor` off on the command line), unless the owner's `HEAD` already
   contains the head, as for a merged ticket the owner pulled. The host
@@ -10324,8 +10327,29 @@ ordinary top-level worker session per ticket assignment
   `ticket_read_for` and `answer_for`), and admits a click beneath
   `home.projects_path` for that page only (`ui_socket.home_event`).
   `[project]` is `client/project_settings` (`max_workers`, `token_ceiling`,
-  `check`, `protected_paths`, `publish`, `queue_limit`, `attention_limit`, and the
+  `check`, `setup`, `protected_paths`, `publish`, `queue_limit`, `attention_limit`, and the
   tables `source` and `rule`, read by `client/project_sources`).
+- The template (protocol-change/106, "The template") is two modules and a section of
+  `project_host`. `client/project_template` builds it: `base_commit` from the owner's `HEAD`,
+  `cut_template_tree` under `.template.making`, `run_setup` through `worktrees.setup_runner`
+  (the check's jail with the network on and the CPU and file-size limits lifted), `run_check`
+  on the clean base with the network off, `sound_template`, `exclude_untracked` and the
+  `swap_template` renames. `client/template_state` is the pure `Standing`
+  (`Unmanaged`, `Preparing`, `Ready` with an `Upkeep`, `Broken`) and its moves, with the
+  words the board shows. `project_host` holds one `Standing`, rebuilds it on replay from the
+  records `TemplateBuilt` and `TemplateFailed`, runs one `template` effect row (key `build`) in a
+  weft task, and leaves a `start` row for a new session untouched while `admits` is false, so
+  attempts do not count. Compaction keeps the latest of each record
+  (`project_retention.select_records`). `projects.retry` with the ticket `setup` is the person's
+  retry. `Ports.build_template` is `project_start`'s closure over `project_template.build`,
+  and `project_start.seed_of` makes the `Seed` (`Cold` without `setup`, `Warm` with it) that
+  `project_repo.clone_from`, `check_tree_from` and `project_start.run_check_from` take. Both
+  `project_repo.copy_template` runs (`git-cow copy`, else `cp -RPp`) go through
+  `worktrees.run_program` in the sandbox, writable only in the destination's parent, and exit 2 from
+  `git-cow` is an error and not a fallback. `install.git_cow` is the lookup ladder.
+  `workspace_policy.private_masks` masks `<project>/template` for sessions and checks.
+  The test pair is `project_template_test` (real sandbox, a loopback server for the network,
+  `git-cow` when installed) and `project_template_host_test` (fake build port).
 - The GitHub source is four modules and a section of `project_host`.
   `client/project_github` decodes REST answers totally and translates each item
   into the gate's inputs (sender class from the owner's literal lists, an exact
