@@ -564,7 +564,7 @@ Source: (`client/daemon/server.gleam:4780-4821`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:4178`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:4184`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
