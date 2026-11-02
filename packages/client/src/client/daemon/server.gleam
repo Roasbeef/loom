@@ -115,6 +115,9 @@ import storage/access
 import storage/catalogue
 import storage/domain
 import storage/snapshot as storage_snapshot
+import telemetry/field
+import telemetry/level
+import telemetry/log
 import web_view/elsewhere as page_elsewhere
 import web_view/ending.{type Ending}
 import web_view/image
@@ -4576,6 +4579,15 @@ fn dispatch_class(
     protocol.StopSession(id, supplied) -> {
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))
+
+      // A stop ends the session's slot for good, and a worker that was stopped
+      // reads as lost with no cause of its own. The line names who asked, so a
+      // stop that nobody remembers making can be attributed afterwards.
+      log.info(log.erlang(threshold: level.Info), "daemon.session_stop", [
+        field.ident("principal", principal.id),
+        field.ident("session", id),
+        field.ident("via", "control"),
+      ])
       manager.stop_session(state.registry, id)
       |> result.map_error(error_code)
       |> result.map(fn(status) { #("sessions.stop", status_json(status)) })

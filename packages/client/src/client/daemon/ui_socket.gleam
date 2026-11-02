@@ -4867,7 +4867,7 @@ pub fn manage_for(
         |> result.replace(actions.Done(action))
         |> result.map_error(move_refusal)
       actions.Stop ->
-        stop_for(standing.registry, target)
+        stop_for(standing, target)
         |> result.replace(actions.Done(action))
       actions.Archive ->
         archive_for(standing, epoch, target)
@@ -4880,7 +4880,7 @@ pub fn manage_for(
       // says the session is still running: the stop was made and the owner may
       // ask again.
       actions.StopArchive -> {
-        use _ <- result.try(stop_for(standing.registry, target))
+        use _ <- result.try(stop_for(standing, target))
         archive_for(standing, epoch, target)
         |> result.replace(actions.Done(action))
       }
@@ -4955,9 +4955,19 @@ fn archive_for(
 /// the session saved. A drain that outlasts the wait is still a stop that was
 /// made. A session the registry holds as recovering is not one a stop can end.
 fn stop_for(
-  registry: manager.Manager(instance),
+  standing: Standing(instance),
   target: String,
 ) -> Result(Nil, actions.Reason) {
+  let registry = standing.registry
+
+  // The line names the page's principal, so a stop that nobody remembers
+  // making can be attributed afterwards. It is an identifier the catalogue
+  // minted and carries no authority.
+  log.info(log.erlang(threshold: level.Info), "daemon.session_stop", [
+    field.ident("principal", standing.principal),
+    field.ident("session", target),
+    field.ident("via", "page"),
+  ])
   use status <- result.try(
     manager.stop_session(registry, target)
     |> result.map_error(fn(error) {
