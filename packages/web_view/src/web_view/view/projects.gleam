@@ -217,7 +217,36 @@ fn waiting(
       ])
   }
 
-  html.div([], list.append(waiting, would(held.would)))
+  html.div([], list.flatten([waiting, would(held.would), rules(held.rules)]))
+}
+
+/// The configured rules, each with its mode, where its verdict stands and the
+/// labelled count against what is needed, and under it the daemon's sentence
+/// about what that verdict claims. The page only shows this: a mode and a
+/// label are changed from the terminal. Every string is external text drawn
+/// as a text node.
+fn rules(rows: List(board.Rule)) -> List(Element(message)) {
+  case rows {
+    [] -> []
+    _ -> [
+      html.div([attribute.class("home-project-stage")], [
+        html.p([attribute.class("home-folder-path")], [html.text("RULES")]),
+        html.ul(
+          [attribute.class("home-list")],
+          list.map(rows, fn(each) {
+            html.li([attribute.class("home-folder")], [
+              html.span([attribute.class("home-folder-name")], [
+                html.text(board.rule_words(each)),
+              ]),
+              html.span([attribute.class("home-folder-path")], [
+                html.text(each.words),
+              ]),
+            ])
+          }),
+        ),
+      ]),
+    ]
+  }
 }
 
 /// What `observe` rules recorded as work they would have done, newest first.

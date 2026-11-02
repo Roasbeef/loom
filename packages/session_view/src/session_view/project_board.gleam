@@ -204,6 +204,82 @@ pub type Board {
     /// What `observe` rules recorded as work they would have done, newest
     /// first. The owner reads these to judge a rule before it acts.
     would: List(Would),
+    /// The configured rules with their modes and where each stands on its
+    /// verdict, in the order the owner wrote them.
+    rules: List(Rule),
+  )
+}
+
+/// One configured rule: its mode and where its verdict stands. A rule may
+/// run on its own only with a current passing verdict.
+pub type Rule {
+  Rule(
+    /// The rule's name.
+    name: String,
+    /// `off`, `observe`, `auto`, or a word this client does not know.
+    mode: String,
+    /// `none`, `failing`, `stale`, `current`, or a word this client does not
+    /// know.
+    verdict: String,
+    /// The daemon's sentence about the verdict, which says what a pass
+    /// claims.
+    words: String,
+    /// The triggers a person has labelled for the rule.
+    labelled: Int,
+    /// The labels a verdict needs.
+    needed: Int,
+  )
+}
+
+/// What the owner decided about a recorded trigger.
+pub type Judgement {
+  /// The project should have taken it on as work.
+  ShouldTake
+
+  /// The project should not have.
+  ShouldNotTake
+}
+
+/// The word `projects.label` takes for a judgement.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_board.judgement_word(project_board.ShouldTake) == "accept"
+/// ```
+pub fn judgement_word(judgement: Judgement) -> String {
+  case judgement {
+    ShouldTake -> "accept"
+    ShouldNotTake -> "reject"
+  }
+}
+
+/// A recorded trigger waiting for a person's label.
+pub type Candidate {
+  Candidate(
+    /// The trigger's id.
+    trigger: String,
+    /// Who wrote it.
+    actor: String,
+    /// The start of its text, on one line.
+    text: String,
+    /// What the project did with it: `took`, `declined`, `not_asked`, or a
+    /// word this client does not know.
+    recorded: String,
+  )
+}
+
+/// The triggers of one rule that want a label.
+pub type Labels {
+  Labels(
+    /// The rule.
+    rule: String,
+    /// The triggers already labelled.
+    labelled: Int,
+    /// The labels a verdict needs.
+    needed: Int,
+    /// The triggers to label, newest first.
+    candidates: List(Candidate),
   )
 }
 
@@ -732,6 +808,7 @@ fn board_of(fields: List(#(String, JsonValue))) -> Result(Board, String) {
         tickets:,
         unreadable: list.length(rows) - list.length(tickets),
         would: rows_in(fields, "would_have_done", would_row),
+        rules: rules_in(fields),
       ))
     }
     None, _ -> Error("the board named no project")
@@ -990,6 +1067,117 @@ fn would_row(value: JsonValue) -> Result(Would, Nil) {
       |> string.slice(0, would_text_limit),
     link: option.map(text_in(fields, "link"), text_hygiene.single_line),
   )
+}
+
+/// The rules of every source on the board, in the order sent. A source or a
+/// rule that does not decode is left out.
+fn rules_in(fields: List(#(String, JsonValue))) -> List(Rule) {
+  rows_in(fields, "sources", source_rules)
+  |> list.flatten
+}
+
+fn source_rules(value: JsonValue) -> Result(List(Rule), Nil) {
+  use fields <- result.map(fields_of(value))
+  rows_in(fields, "rules", rule_row)
+}
+
+/// One rule of a source. It needs a name to be shown, and every other field
+/// has a plain default, so a daemon that sends less still draws the rule.
+fn rule_row(value: JsonValue) -> Result(Rule, Nil) {
+  use fields <- result.try(fields_of(value))
+  use name <- result.map(option.to_result(text_in(fields, "name"), Nil))
+
+  // The verdict object is absent from a daemon that predates it, and then the
+  // rule shows no verdict rather than a guess.
+  let verdict = case list.key_find(fields, "verdict") {
+    Ok(json.Object(inner)) -> inner
+    Ok(_) | Error(Nil) -> []
+  }
+
+  Rule(
+    name: text_hygiene.single_line(name),
+    mode: safe_in(fields, "mode"),
+    verdict: safe_in(verdict, "state"),
+    words: safe_in(verdict, "words"),
+    labelled: option.unwrap(int_in(verdict, "labelled"), 0),
+    needed: option.unwrap(int_in(verdict, "needed"), 0),
+  )
+}
+
+/// Reads the reply of `projects.labels`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let labels = project_board.decode_labels(reply)
+/// ```
+pub fn decode_labels(value: JsonValue) -> Result(Labels, String) {
+  // A reply that is not an object, or that names no rule, cannot be filed
+  // against the page being labelled.
+  case value {
+    json.Object(fields) ->
+      case text_in(fields, "rule") {
+        None -> Error("the labels named no rule")
+        Some(rule) ->
+          Ok(Labels(
+            rule: text_hygiene.single_line(rule),
+            labelled: option.unwrap(int_in(fields, "labelled"), 0),
+            needed: option.unwrap(int_in(fields, "needed"), 0),
+            candidates: rows_in(fields, "triggers", candidate_row),
+          ))
+      }
+    _ -> Error("the labels were not an object")
+  }
+}
+
+/// One trigger waiting for a label. It needs an id to be judged, and its text
+/// is cut to one line, so a hostile message cannot take over the screen.
+fn candidate_row(value: JsonValue) -> Result(Candidate, Nil) {
+  use fields <- result.try(fields_of(value))
+  use trigger <- result.map(option.to_result(text_in(fields, "trigger"), Nil))
+  Candidate(
+    trigger: text_hygiene.single_line(trigger),
+    actor: safe_in(fields, "actor"),
+    text: text_hygiene.single_line(safe_in(fields, "text"))
+      |> string.slice(0, would_text_limit),
+    recorded: safe_in(fields, "recorded"),
+  )
+}
+
+/// A rule's line on the board: its name and mode, then where its verdict
+/// stands and the labelled count against what is needed. The sentence a pass
+/// makes is the daemon's, in `Rule.words`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let each = project_board.Rule("ci", "observe", "none", "No verdict yet.", 12, 30)
+/// assert project_board.rule_words(each)
+///   == "ci: observe, no verdict, 12 of 30 labelled"
+/// ```
+pub fn rule_words(each: Rule) -> String {
+  each.name
+  <> ": "
+  <> each.mode
+  <> ", "
+  <> verdict_words(each.verdict)
+  <> ", "
+  <> int.to_string(each.labelled)
+  <> " of "
+  <> int.to_string(each.needed)
+  <> " labelled"
+}
+
+/// A verdict state in words. A state this client does not know is shown as the
+/// daemon's word, never guessed.
+fn verdict_words(state: String) -> String {
+  case state {
+    "none" -> "no verdict"
+    "failing" -> "verdict failing"
+    "stale" -> "verdict stale"
+    "current" -> "verdict passing"
+    other -> "verdict " <> other
+  }
 }
 
 /// One input row.

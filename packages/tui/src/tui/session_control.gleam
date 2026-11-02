@@ -550,6 +550,7 @@ fn finish_control(model: Model, result) {
     Some(Ok(AccessChanged(document))) -> finish_access_change(model, document)
     Some(Ok(job.ProjectBoardLoaded(..) as outcome))
     | Some(Ok(job.ProjectTicketLoaded(..) as outcome))
+    | Some(Ok(job.ProjectLabelsLoaded(..) as outcome))
     | Some(Ok(job.ProjectChanged(..) as outcome)) ->
       project_control.finish(model, outcome)
     Some(Ok(SessionDeleted(id))) ->

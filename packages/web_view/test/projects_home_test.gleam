@@ -364,6 +364,53 @@ pub fn what_observe_would_have_done_is_listed_as_escaped_text_test() {
   assert !string.contains(html, "href=\"https://github.com/o/r/issues/5\"")
 }
 
+pub fn the_rule_list_shows_each_verdict_state_as_escaped_text_test() {
+  let rule =
+    json.Object([
+      #("name", json.String("deps")),
+      #("mode", json.String("observe")),
+      #(
+        "verdict",
+        json.Object([
+          #("state", json.String("stale")),
+          #(
+            "words",
+            json.String(
+              "Stale: the router prompt changed. <script>alert(1)</script>",
+            ),
+          ),
+          #("labelled", json.Int(30)),
+          #("needed", json.Int(30)),
+        ]),
+      ),
+    ])
+  let document =
+    json.Object([
+      #("project", json.String("p1")),
+      #("revision", json.Int(3)),
+      #("total", json.Int(1)),
+      #("tickets", json.Array([ticket("t-1", "working", 1, "quiet")])),
+      #(
+        "sources",
+        json.Array([
+          json.Object([
+            #("source", json.String("github")),
+            #("rules", json.Array([rule])),
+          ]),
+        ]),
+      ),
+    ])
+  let html = drawn(opened(serving(document).0))
+
+  assert string.contains(html, "RULES")
+  assert string.contains(
+    html,
+    "deps: observe, verdict stale, 30 of 30 labelled",
+  )
+  assert string.contains(html, "Stale: the router prompt changed.")
+  assert !string.contains(html, "<script>alert(1)")
+}
+
 pub fn a_project_whose_board_cannot_be_read_says_so_test() {
   let html = drawn(opened(serving(json.String("garbage")).0))
 

@@ -82,6 +82,28 @@ pub fn read_ticket(
   job.ProjectTicketLoaded(document)
 }
 
+/// Reads the triggers of one rule that want a label.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_jobs.read_labels(host, "p1", "ci")
+/// ```
+pub fn read_labels(
+  host: daemon_selection.Host,
+  project: String,
+  rule: String,
+) -> Result(job.ControlOutcome, String) {
+  use document <- result.map(
+    ask(host, "projects.labels", [
+      #("project", json.String(project)),
+      #("rule", json.String(rule)),
+    ]),
+  )
+
+  job.ProjectLabelsLoaded(document)
+}
+
 /// Sends a person's change. The daemon's refusal comes back as the outcome's
 /// code, and only a request that did not complete is an error.
 ///
@@ -109,6 +131,11 @@ pub fn change(
     job.RetryTicket(project:, ticket:) -> #("projects.retry", [
       #("project", json.String(project)),
       #("ticket", json.String(ticket)),
+    ])
+    job.LabelTrigger(project:, trigger:, judgement:) -> #("projects.label", [
+      #("project", json.String(project)),
+      #("trigger", json.String(trigger)),
+      #("label", json.String(project_board.judgement_word(judgement))),
     ])
   }
 

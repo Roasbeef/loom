@@ -168,6 +168,9 @@ pub fn act(
       change(model, state, closing(state, ticket))
     project_screen.Retry(state, ticket) ->
       change(model, state, retry(state, ticket))
+    project_screen.Label(state, _) -> shown(model, state) |> service
+    project_screen.Judge(state, trigger, judgement) ->
+      change(model, state, judged(state, trigger, judgement))
   }
 }
 
@@ -195,6 +198,20 @@ fn open_screen(model: Model) -> Option(project_screen.State) {
 /// is missing or older than the board, and otherwise the board when its rest
 /// has passed.
 fn wanted(state: project_screen.State, now_ms: Int) -> Option(job.ControlJob) {
+  // The labelling page needs its candidates before anything else, and reads
+  // them once: a label empties them, and the next read refills them.
+  case state.project, project_screen.labelling_rule(state), state.labels {
+    Some(project), Some(rule), None ->
+      Some(job.ReadProjectLabels(project, rule))
+    _, _, _ -> wanted_board(state, now_ms)
+  }
+}
+
+/// The ticket or board read the screen is due for.
+fn wanted_board(
+  state: project_screen.State,
+  now_ms: Int,
+) -> Option(job.ControlJob) {
   case state.project, project_screen.open_ticket(state), state.board {
     Some(project), Some(ticket), Some(held) ->
       case stale(state, held) {
@@ -296,6 +313,17 @@ fn closing(
   option.map(state.project, fn(project) { job.CloseTicket(project:, ticket:) })
 }
 
+/// The label a key sent, when the screen knows the project.
+fn judged(
+  state: project_screen.State,
+  trigger: String,
+  judgement: project_board.Judgement,
+) -> Option(job.ProjectChange) {
+  option.map(state.project, fn(project) {
+    job.LabelTrigger(project:, trigger:, judgement:)
+  })
+}
+
 /// The retry a key sent, when the screen knows the project.
 fn retry(
   state: project_screen.State,
@@ -324,6 +352,18 @@ fn filed(
         Ok(detail) -> project_screen.observed_ticket(state, detail)
         Error(reason) -> project_screen.failed(state, reason)
       }
+    job.ProjectLabelsLoaded(document) ->
+      case project_board.decode_labels(document) {
+        Ok(found) -> project_screen.observed_labels(state, found)
+        Error(reason) -> project_screen.failed(state, reason)
+      }
+    job.ProjectChanged(job.LabelTrigger(..), None) ->
+      project_screen.labelled(state)
+    job.ProjectChanged(job.LabelTrigger(..), Some(code)) ->
+      project_screen.failed(
+        state,
+        "The daemon refused the label (" <> code <> ").",
+      )
     job.ProjectChanged(job.AnswerTicket(..), None) ->
       project_screen.answered(state)
     job.ProjectChanged(job.AnswerTicket(..), Some(code)) ->

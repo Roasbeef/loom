@@ -370,3 +370,111 @@ pub fn the_would_have_done_list_decodes_totally_and_cuts_its_text_test() {
   let assert Ok(without) = board.decode_board(body([]))
   assert without.would == []
 }
+
+pub fn the_rule_list_carries_each_rules_mode_and_verdict_test() {
+  let rule = fn(name, mode, verdict) {
+    json.Object([
+      #("name", json.String(name)),
+      #("mode", json.String(mode)),
+      #("verdict", verdict),
+    ])
+  }
+  let verdict = fn(state, words, labelled) {
+    json.Object([
+      #("state", json.String(state)),
+      #("words", json.String(words)),
+      #("labelled", json.Int(labelled)),
+      #("needed", json.Int(30)),
+    ])
+  }
+  let with =
+    json.Object([
+      #("project", json.String("p1")),
+      #("revision", json.Int(1)),
+      #(
+        "sources",
+        json.Array([
+          json.Object([
+            #("source", json.String("github")),
+            #(
+              "rules",
+              json.Array([
+                rule("ci", "observe", verdict("none", "No verdict yet.", 12)),
+                rule(
+                  "deps",
+                  "auto",
+                  verdict("current", "Passing. Replay over 30.", 30),
+                ),
+                json.Object([#("mode", json.String("no name"))]),
+              ]),
+            ),
+          ]),
+          json.String("not a source"),
+        ]),
+      ),
+    ])
+  let assert Ok(decoded) = board.decode_board(with)
+  let assert [ci, deps] = decoded.rules
+  assert board.rule_words(ci) == "ci: observe, no verdict, 12 of 30 labelled"
+  assert board.rule_words(deps)
+    == "deps: auto, verdict passing, 30 of 30 labelled"
+  assert deps.words == "Passing. Replay over 30."
+
+  // A daemon that predates the verdict shows the rule with none.
+  let older =
+    json.Object([
+      #("project", json.String("p1")),
+      #("revision", json.Int(1)),
+      #(
+        "sources",
+        json.Array([
+          json.Object([
+            #(
+              "rules",
+              json.Array([
+                json.Object([
+                  #("name", json.String("ci")),
+                  #("mode", json.String("observe")),
+                ]),
+              ]),
+            ),
+          ]),
+        ]),
+      ),
+    ])
+  let assert Ok(plain) = board.decode_board(older)
+  let assert [only] = plain.rules
+  assert only.verdict == ""
+  assert only.needed == 0
+}
+
+pub fn the_labels_reply_decodes_totally_and_cuts_its_text_test() {
+  let long = string.repeat("y", 500)
+  let reply =
+    json.Object([
+      #("rule", json.String("deps")),
+      #("labelled", json.Int(4)),
+      #("needed", json.Int(30)),
+      #(
+        "triggers",
+        json.Array([
+          json.Object([
+            #("trigger", json.String("gh-c-7")),
+            #("actor", json.String("dependabot[bot]")),
+            #("text", json.String(long)),
+            #("recorded", json.String("took")),
+          ]),
+          json.Object([#("actor", json.String("no trigger"))]),
+        ]),
+      ),
+    ])
+  let assert Ok(decoded) = board.decode_labels(reply)
+  assert decoded.rule == "deps"
+  assert decoded.labelled == 4
+  let assert [one] = decoded.candidates
+  assert one.trigger == "gh-c-7"
+  assert string.length(one.text) == board.would_text_limit
+  assert one.recorded == "took"
+  let assert Error(_) = board.decode_labels(json.Null)
+  let assert Error(_) = board.decode_labels(json.Object([]))
+}

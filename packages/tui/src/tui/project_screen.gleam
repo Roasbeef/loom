@@ -101,6 +101,15 @@ pub type Page {
     /// The answer being typed.
     draft: String,
   )
+
+  /// The recorded triggers of one rule, one at a time, for the owner to judge.
+  /// A verdict needs about thirty labels, and this is where they are given.
+  Labelling(
+    /// The rule being labelled.
+    rule: String,
+    /// How many candidates the owner passed over, so the next one is shown.
+    skipped: Int,
+  )
 }
 
 /// Everything the screen knows. It holds what the daemon last said and what the
@@ -126,6 +135,10 @@ pub type State {
     notice: String,
     /// Whether the shell may read the board now.
     poll: Poll,
+    /// The triggers waiting for a label, as last read for the rule being
+    /// labelled. None until the read answers, and again after a label so the
+    /// list is read afresh.
+    labels: Option(board.Labels),
   )
 }
 
@@ -165,6 +178,12 @@ pub type Action {
 
   /// Open this worker session.
   Worker(session: String)
+
+  /// Show the labelling page for this rule. The shell reads its candidates.
+  Label(state: State, rule: String)
+
+  /// Record the owner's judgement of a recorded trigger.
+  Judge(state: State, trigger: String, judgement: board.Judgement)
 }
 
 /// The screen for a workspace, before any read has answered.
@@ -185,6 +204,7 @@ pub fn new(workspace: String) -> State {
     page: Listing,
     notice: "",
     poll: PollDue,
+    labels: None,
   )
 }
 
@@ -229,7 +249,60 @@ pub fn observed_ticket(state: State, detail: board.Detail) -> State {
   case state.page {
     Reading(ticket:, ..) if ticket == detail.ticket.id ->
       State(..state, detail: Some(detail))
+    Reading(..) | Listing | Labelling(..) -> state
+  }
+}
+
+/// Files a read of the triggers waiting for a label. It is kept only while the
+/// page is labelling that rule, so a slow reply for a page the owner has left
+/// changes nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_screen.observed_labels(state, decoded_labels)
+/// ```
+pub fn observed_labels(state: State, found: board.Labels) -> State {
+  case state.page {
+    Labelling(rule:, ..) if rule == found.rule ->
+      State(..state, labels: Some(found))
+    Labelling(..) | Reading(..) | Listing -> state
+  }
+}
+
+/// Records that a label was accepted. The candidates are read afresh and the
+/// board is due, so the rule's labelled count moves.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_screen.labelled(state)
+/// ```
+pub fn labelled(state: State) -> State {
+  case state.page {
+    Labelling(rule:, ..) ->
+      State(
+        ..state,
+        page: Labelling(rule:, skipped: 0),
+        labels: None,
+        notice: "Labelled.",
+        poll: PollDue,
+      )
     Reading(..) | Listing -> state
+  }
+}
+
+/// The rule the labelling page is on, when it is on one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_screen.labelling_rule(project_screen.new("/w")) == None
+/// ```
+pub fn labelling_rule(state: State) -> Option(String) {
+  case state.page {
+    Labelling(rule:, ..) -> Some(rule)
+    Reading(..) | Listing -> None
   }
 }
 
@@ -250,7 +323,7 @@ pub fn answered(state: State) -> State {
         notice: "Answer queued for the worker.",
         poll: PollDue,
       )
-    Listing -> state
+    Listing | Labelling(..) -> state
   }
 }
 
@@ -360,7 +433,7 @@ pub fn selected_ticket(state: State) -> Option(board.Ticket) {
 pub fn open_ticket(state: State) -> Option(String) {
   case state.page {
     Reading(ticket:, ..) -> Some(ticket)
-    Listing -> None
+    Listing | Labelling(..) -> None
   }
 }
 
@@ -377,6 +450,7 @@ pub fn update(key: keys.Key, state: State) -> Action {
     Listing -> listing(key, state)
     Reading(ticket:, focus:, draft:) ->
       reading(key, state, ticket, focus, draft)
+    Labelling(rule:, skipped:) -> labelling(key, state, rule, skipped)
   }
 }
 
@@ -394,7 +468,7 @@ pub fn update_pasted(pasted: String, state: State) -> Action {
   case state.page {
     Reading(ticket:, focus: Answering, draft:) ->
       answering(keys.Char(pasted), state, ticket, draft)
-    Reading(focus: Acting, ..) | Listing -> Continue(state)
+    Reading(focus: Acting, ..) | Listing | Labelling(..) -> Continue(state)
   }
 }
 
@@ -421,7 +495,82 @@ fn listing(key: keys.Key, state: State) -> Action {
     keys.Char("a") ->
       Continue(State(..state, scope: other_scope(state.scope), selected: 0))
     keys.Char("r") -> Continue(State(..state, poll: PollDue))
+    keys.Char("l") -> open_labelling(state)
     _ -> Continue(state)
+  }
+}
+
+/// Opens the labelling page on the first rule that still wants labels, or on
+/// the first rule when all have enough. A project with no rule has nothing to
+/// label, and the notice says so.
+fn open_labelling(state: State) -> Action {
+  // Before the first read there are no rules, which reads as none to label.
+  let rules = case state.board {
+    Some(held) -> held.rules
+    None -> []
+  }
+
+  let wanting =
+    list.find(rules, fn(each) { each.labelled < each.needed })
+    |> result.lazy_or(fn() { list.first(rules) })
+
+  // A rule found switches the page and asks the shell to read its candidates.
+  case wanting {
+    Ok(found) ->
+      Label(
+        State(
+          ..state,
+          page: Labelling(rule: found.name, skipped: 0),
+          labels: None,
+          notice: "",
+        ),
+        found.name,
+      )
+    Error(Nil) ->
+      Continue(State(..state, notice: "This project has no rule to label."))
+  }
+}
+
+/// Keys on the labelling page: judge the shown trigger, pass it over, or go
+/// back.
+fn labelling(
+  key: keys.Key,
+  state: State,
+  rule: String,
+  skipped: Int,
+) -> Action {
+  let shown = shown_candidate(state, skipped)
+
+  // A judgement needs a trigger on screen, so y, n and s do nothing until the
+  // candidates have been read. Escape always leaves.
+  case key, shown {
+    keys.Escape, _ ->
+      Continue(State(..state, page: Listing, labels: None, notice: ""))
+    keys.Char("y"), Some(found) -> Judge(state, found.trigger, board.ShouldTake)
+    keys.Char("n"), Some(found) ->
+      Judge(state, found.trigger, board.ShouldNotTake)
+    keys.Char("s"), Some(_) ->
+      Continue(State(..state, page: Labelling(rule:, skipped: skipped + 1)))
+    _, _ -> Continue(state)
+  }
+}
+
+/// The trigger the labelling page shows: the candidates are taken in order,
+/// and passing one over moves to the next, wrapping at the end.
+fn shown_candidate(state: State, skipped: Int) -> Option(board.Candidate) {
+  // Nothing is shown until the candidates have been read.
+  case state.labels {
+    None -> None
+    Some(found) ->
+      // An empty list shows nothing, and a longer one is indexed modulo its
+      // length so a pass over the last one returns to the first.
+      case list.length(found.candidates) {
+        0 -> None
+        count ->
+          list.drop(found.candidates, skipped % count)
+          |> list.first
+          |> option.from_result
+      }
   }
 }
 
@@ -653,6 +802,7 @@ fn title(state: State) -> String {
   case state.page {
     Listing -> " PROJECT · Esc back "
     Reading(..) -> " PROJECT · ticket · Esc back "
+    Labelling(..) -> " PROJECT · label · Esc back "
   }
 }
 
@@ -662,6 +812,81 @@ fn body_lines(state: State, width: Int, now_ms: Int) -> List(Drawn) {
     Listing -> list_lines(state, width, now_ms)
     Reading(ticket:, focus:, draft:) ->
       ticket_lines(state, ticket, focus, draft, width, now_ms)
+    Labelling(rule:, skipped:) -> labelling_lines(state, rule, skipped, width)
+  }
+}
+
+/// The labelling page: the rule and its count against what a verdict needs,
+/// then the trigger to judge. Its text is external and is drawn as text.
+fn labelling_lines(
+  state: State,
+  rule: String,
+  skipped: Int,
+  width: Int,
+) -> List(Drawn) {
+  let notice = notice_lines(state, width)
+
+  // The count is unknown until the candidates have been read.
+  let count = case state.labels {
+    Some(found) ->
+      int.to_string(found.labelled) <> " of " <> int.to_string(found.needed)
+    None -> "?"
+  }
+
+  let heading = [
+    plain(
+      text.truncate(
+        "RULE " <> rule <> " · " <> count <> " LABELLED",
+        width,
+        "…",
+      ),
+      theme.overlay_signal(),
+    ),
+    plain("", theme.overlay_plain()),
+  ]
+
+  // The page is reading, empty, or showing one trigger to judge.
+  let body = case state.labels, shown_candidate(state, skipped) {
+    None, _ -> [plain("Reading the triggers...", theme.overlay_quiet())]
+    Some(_), None -> [
+      plain(
+        "Nothing is waiting for a label. Run the verdict when enough are labelled.",
+        theme.overlay_quiet(),
+      ),
+    ]
+    Some(_), Some(found) ->
+      list.flatten([
+        [
+          plain(
+            text.truncate(
+              found.actor <> " · " <> recorded_words(found.recorded),
+              width,
+              "…",
+            ),
+            theme.overlay_quiet(),
+          ),
+        ],
+        wrapped(found.text, theme.overlay_plain(), width),
+        [
+          plain("", theme.overlay_plain()),
+          plain(
+            "Should the project have taken this on as work?",
+            theme.overlay_signal(),
+          ),
+        ],
+      ])
+  }
+
+  list.flatten([notice, heading, body])
+}
+
+/// What the project did with a recorded trigger, in words.
+fn recorded_words(recorded: String) -> String {
+  case recorded {
+    "took" -> "the project took it on"
+    "declined" -> "the router ignored it"
+    "not_asked" -> "it never reached the router"
+    other -> text_hygiene.single_line(other)
   }
 }
 
@@ -693,8 +918,32 @@ fn list_lines(state: State, width: Int, now_ms: Int) -> List(Drawn) {
         health,
         unreadable_lines(held, width),
         would_lines(held, width),
+        rule_lines(held, width),
       ])
     }
+  }
+}
+
+/// The configured rules, each with its mode and where its verdict stands, and
+/// below each the daemon's sentence about what that verdict claims. A rule may
+/// run on its own only after a passing verdict, so the owner reads this beside
+/// what the rule would have done.
+fn rule_lines(held: board.Board, width: Int) -> List(Drawn) {
+  case held.rules {
+    [] -> []
+    rows -> [
+      plain("", theme.overlay_plain()),
+      plain("RULES (l label)", theme.overlay_quiet()),
+      ..list.flat_map(rows, fn(each) {
+        [
+          plain(
+            text.truncate(board.rule_words(each), width, "…"),
+            theme.overlay_plain(),
+          ),
+          ..wrapped("  " <> each.words, theme.overlay_quiet(), width)
+        ]
+      })
+    ]
   }
 }
 
@@ -1102,6 +1351,7 @@ fn help_line(state: State, width: Int) -> span.Line {
         Everything -> "needs you only"
       }
       <> " · r refresh · Esc back"
+    Labelling(..) -> "y take it on · n not · s pass over · Esc back"
     Reading(focus: Answering, ..) ->
       "type an answer · Enter send · Tab actions · Esc clear or back"
     Reading(focus: Acting, ..) ->

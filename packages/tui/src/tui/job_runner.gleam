@@ -694,6 +694,7 @@ fn control_deadline(request: job.ControlJob) -> Int {
     | job.ChangeAccess(..)
     | job.ReadProjectBoard(..)
     | job.ReadProjectTicket(..)
+    | job.ReadProjectLabels(..)
     | job.ChangeProject(..) -> 12_000
   }
 }
@@ -724,6 +725,8 @@ fn control_work(
       job.ReadProjectBoard(target:) -> project_jobs.read_board(host, target)
       job.ReadProjectTicket(project:, ticket:) ->
         project_jobs.read_ticket(host, project, ticket)
+      job.ReadProjectLabels(project:, rule:) ->
+        project_jobs.read_labels(host, project, rule)
       job.ChangeProject(change:) -> project_jobs.change(host, change)
     }
   }

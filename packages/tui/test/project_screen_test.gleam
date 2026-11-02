@@ -347,6 +347,125 @@ pub fn what_observe_would_have_done_is_listed_for_the_owner_test() {
   assert !string.contains(painted(showing(healthy())), "WOULD HAVE DONE")
 }
 
+fn rule_document(labelled: Int, state: String) -> json.JsonValue {
+  json.Object([
+    #("project", json.String("p1")),
+    #("revision", json.Int(5)),
+    #("total", json.Int(0)),
+    #("tickets", json.Array([])),
+    #(
+      "sources",
+      json.Array([
+        json.Object([
+          #("source", json.String("github")),
+          #(
+            "rules",
+            json.Array([
+              json.Object([
+                #("name", json.String("deps")),
+                #("mode", json.String("observe")),
+                #(
+                  "verdict",
+                  json.Object([
+                    #("state", json.String(state)),
+                    #(
+                      "words",
+                      json.String(
+                        "No verdict yet. 12 of 30 triggers are labelled.",
+                      ),
+                    ),
+                    #("labelled", json.Int(labelled)),
+                    #("needed", json.Int(30)),
+                  ]),
+                ),
+              ]),
+            ]),
+          ),
+        ]),
+      ]),
+    ),
+  ])
+}
+
+// The rule list shows each rule's mode, its verdict state and the labelled
+// count against what is needed, and the daemon's sentence under it.
+pub fn the_rule_list_shows_the_verdict_state_and_the_count_test() {
+  let text = painted(showing(rule_document(12, "none")))
+
+  assert string.contains(text, "RULES")
+  assert string.contains(text, "deps: observe, no verdict, 12 of 30 labelled")
+  assert string.contains(
+    text,
+    "No verdict yet. 12 of 30 triggers are labelled.",
+  )
+  assert !string.contains(painted(showing(healthy())), "RULES")
+}
+
+pub fn l_opens_the_labelling_page_and_y_and_n_judge_the_shown_trigger_test() {
+  let model = showing(rule_document(12, "none"))
+  let assert project_screen.Label(opened, "deps") =
+    project_screen.update(keys.Char("l"), screen(model))
+  assert project_screen.labelling_rule(opened) == Some("deps")
+
+  // Nothing is judged before the candidates are read.
+  let assert project_screen.Continue(_) =
+    project_screen.update(keys.Char("y"), opened)
+
+  let candidates =
+    json.Object([
+      #("rule", json.String("deps")),
+      #("labelled", json.Int(12)),
+      #("needed", json.Int(30)),
+      #(
+        "triggers",
+        json.Array([
+          json.Object([
+            #("trigger", json.String("gh-c-1")),
+            #("actor", json.String("dependabot[bot]")),
+            #("text", json.String("bump left-pad \u{1b}[31mnow")),
+            #("recorded", json.String("took")),
+          ]),
+          json.Object([
+            #("trigger", json.String("gh-c-2")),
+            #("actor", json.String("alice")),
+            #("text", json.String("bump right-pad")),
+            #("recorded", json.String("not_asked")),
+          ]),
+        ]),
+      ),
+    ])
+  let assert Ok(read) = board.decode_labels(candidates)
+  let reading = project_screen.observed_labels(opened, read)
+
+  // `y` judges the shown trigger as one to take on, `n` as one not to, and `s`
+  // passes over it to the next.
+  let assert project_screen.Judge(_, "gh-c-1", board.ShouldTake) =
+    project_screen.update(keys.Char("y"), reading)
+  let assert project_screen.Judge(_, "gh-c-1", board.ShouldNotTake) =
+    project_screen.update(keys.Char("n"), reading)
+  let assert project_screen.Continue(passed) =
+    project_screen.update(keys.Char("s"), reading)
+  let assert project_screen.Judge(_, "gh-c-2", board.ShouldTake) =
+    project_screen.update(keys.Char("y"), passed)
+
+  // A label sent empties the candidates so they are read afresh, and Esc goes
+  // back to the board.
+  let after = project_screen.labelled(reading)
+  assert after.labels == None
+  assert project_screen.labelling_rule(after) == Some("deps")
+  let assert project_screen.Continue(back) =
+    project_screen.update(keys.Escape, reading)
+  assert project_screen.labelling_rule(back) == None
+}
+
+pub fn a_board_with_no_rule_has_nothing_to_label_test() {
+  let model = showing(healthy())
+  let assert project_screen.Continue(same) =
+    project_screen.update(keys.Char("l"), screen(model))
+  assert project_screen.labelling_rule(same) == None
+  assert string.contains(same.notice, "no rule to label")
+}
+
 pub fn a_widens_the_list_to_every_ticket_and_back_test() {
   let wide = press(showing(mixed()), "a")
   let text = painted(wide)

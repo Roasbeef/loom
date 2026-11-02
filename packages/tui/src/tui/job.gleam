@@ -42,6 +42,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option}
 import session_view/connection_event
+import session_view/project_board
 import session_view/snapshot
 import tui/bootstrap
 import tui/connection
@@ -262,6 +263,9 @@ pub type ControlOutcome {
   /// One `projects.ticket` body.
   ProjectTicketLoaded(document: json.JsonValue)
 
+  /// One `projects.labels` body: the triggers of a rule that want a label.
+  ProjectLabelsLoaded(document: json.JsonValue)
+
   /// What the daemon said to a person's change on a ticket. `refusal` is the
   /// error code when the daemon refused it, such as `conflict` for an answer
   /// to a question that has since changed, and none when it was accepted. A
@@ -291,6 +295,14 @@ pub type ProjectChange {
 
   /// A request for a new assignment on a stalled ticket.
   RetryTicket(project: String, ticket: String)
+
+  /// The owner's judgement of one recorded trigger, which counts toward the
+  /// verdict of the rule it matched.
+  LabelTrigger(
+    project: String,
+    trigger: String,
+    judgement: project_board.Judgement,
+  )
 }
 
 /// The ADT keeps a confirmed permanent deletion distinct from reversible
@@ -356,6 +368,9 @@ pub type ControlJob {
 
   /// Reads one ticket of a project.
   ReadProjectTicket(project: String, ticket: String)
+
+  /// Reads the triggers of one rule that want a label.
+  ReadProjectLabels(project: String, rule: String)
 
   /// Sends a person's change on a ticket.
   ChangeProject(change: ProjectChange)
