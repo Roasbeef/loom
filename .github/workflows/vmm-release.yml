@@ -52,7 +52,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to publish artifacts for (never a branch or commit).
+        description: Existing v* release tag to publish artifacts for. A commit-* tag only pre-builds its image; never a branch or commit.
         required: true
         type: string
   workflow_call:
@@ -144,7 +144,7 @@ jobs:
               grep -E 'Platform:[[:space:]]+linux/arm64' <<<"$inspected"
               grep -E 'Platform:[[:space:]]+linux/amd64' <<<"$inspected"
               image_exists=true
-            elif grep -iE 'not found|unknown|404|denied|unauthorized' <<<"$inspected" > /dev/null; then
+            elif grep -iE 'not found|denied|unauthorized' <<<"$inspected" > /dev/null; then
               # An absent tag, or a package the first push has yet to create.
               # A registry that denies a read would deny the push too.
               echo "no $image:$RELEASE_TAG yet"
@@ -339,6 +339,7 @@ jobs:
           name: vmm-assets
           path: assets/*
           if-no-files-found: error
+          overwrite: true
 
   # Only a version tag attaches here. A nightly's release does not exist until
   # release.yml publishes it with these files in the same command.
