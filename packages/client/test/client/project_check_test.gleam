@@ -29,6 +29,12 @@ import support/project_rig
 import support/worktree_rig
 import telemetry/log
 
+// A file standing in for this node's distribution cookie, which a check holds
+// no reason to read.
+fn node_cookie(rig: worktree_rig.Rig) -> String {
+  rig.root <> "/node-cookie"
+}
+
 fn trees(rig: worktree_rig.Rig) -> Worktrees {
   worktrees.stop(rig.trees)
   let assert Ok(here) = simplifile.current_directory()
@@ -39,6 +45,7 @@ fn trees(rig: worktree_rig.Rig) -> Worktrees {
         state_root: rig.state,
         ledger_path: rig.ledger_path,
         helper_path: here <> "/../sandbox/loom-exec",
+        credentials: [node_cookie(rig)],
         demand: exec.PlatformEnforcement,
         logger: log.discard(),
       ),
@@ -162,10 +169,11 @@ pub fn a_check_cannot_read_any_projects_host_repository_or_ledger_test() {
   worktree_rig.write(own <> "/ledger.db", "OWN-LEDGER")
   worktree_rig.write(other <> "/ledger.db", "OTHER-LEDGER")
   worktree_rig.write(other <> "/host.git/HEAD", "OTHER-HEAD")
+  worktree_rig.write(node_cookie(rig), "NODE-COOKIE")
   let host = project_repo.host_path(scene.layout)
 
   // Exit 9 says the tree could not be written, which would make the other
-  // lines pass for a reason that has nothing to do with the masks. Exits 5 to 8
+  // lines pass for a reason that has nothing to do with the masks. Exits 4 to 8
   // say a masked file was read.
   let command =
     string.join(
@@ -175,6 +183,7 @@ pub fn a_check_cannot_read_any_projects_host_repository_or_ledger_test() {
         "grep -q OTHER-LEDGER " <> other <> "/ledger.db && exit 6",
         "grep -q OTHER-HEAD " <> other <> "/host.git/HEAD && exit 7",
         "cat " <> host <> "/HEAD > /dev/null && exit 8",
+        "grep -q NODE-COOKIE " <> node_cookie(rig) <> " && exit 4",
         "exit 0",
       ],
       "\n",

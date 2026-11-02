@@ -265,6 +265,7 @@ pub fn start(
           helper_path: config.helper_path,
           scratch: state_root <> "/check",
           state_root:,
+          credentials: config.credentials,
           demand: config.demand,
         )),
       )

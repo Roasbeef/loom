@@ -304,6 +304,7 @@ pub fn check_runner(git: Git, directory: String) -> goalcheck.Runner {
     )
     |> workspace_policy.protecting_state_root(git.state_root)
     |> workspace_policy.protecting_project_files(git.state_root)
+    |> workspace_policy.protecting_node_credentials(git.credentials)
 
   goalcheck.Runner(
     clear_call: tool.broker_runner(
