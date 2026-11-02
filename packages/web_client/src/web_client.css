@@ -1637,6 +1637,50 @@
   button.admin-abandon:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
   code.admin-id{font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
   .home-peers{margin:0 0 8px 0;padding:6px 10px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  /* The Projects section and a ticket's page on the owner's home
+     (protocol-change/106, the addendum on the web view). The section is a tinted
+     box with a hairline border, and a ticket is a button that fills its row. No
+     shadow, no coloured edge. At phone width every target is at least 44px tall
+     and a ticket's title and age wrap onto two lines instead of overflowing. */
+  main.centre > .home-head{flex:0 0 auto;max-width:960px;margin:0 0 16px 0;}
+  .home-projects{padding:10px 12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);}
+  .home-project + .home-project{margin-top:12px;}
+  .home-project-stage{margin:8px 0 0 0;}
+  button.home-ticket{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:2px 12px;width:100%;min-height:36px;margin:0;padding:6px 8px;border:0;border-radius:6px;background:transparent;color:inherit;text-align:left;cursor:pointer;}
+  button.home-ticket:hover{background:var(--color-bg);}
+  button.home-ticket:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  button.home-ticket .home-folder-name{flex:1 1 12ch;min-width:0;overflow-wrap:anywhere;}
+  button.home-ticket .home-folder-path{flex:0 0 auto;}
+  li.home-folder:has(> button.home-ticket){padding:0;}
+  .home-ticket-page{max-width:720px;}
+  .home-ticket-page .home-card-fact{white-space:pre-wrap;}
+  @media (max-width:640px){
+    main.centre > .home-head{margin-bottom:12px;}
+    button.home-ticket{min-height:44px;}
+    .home-ticket-page button.home-new,.home-ticket-page button.place-send{min-height:44px;}
+  }
+  /* The Projects section and a ticket's page on the owner's home
+     (protocol-change/106, the addendum on the web view). The section is a tinted
+     box with a hairline border, and a ticket is a button that fills its row. No
+     shadow, no coloured edge. At phone width every target is at least 44px tall
+     and a ticket's title and age wrap onto two lines instead of overflowing. */
+  main.centre > .home-head{flex:0 0 auto;max-width:960px;margin:0 0 16px 0;}
+  .home-projects{padding:10px 12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);}
+  .home-project + .home-project{margin-top:12px;}
+  .home-project-stage{margin:8px 0 0 0;}
+  button.home-ticket{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:2px 12px;width:100%;min-height:36px;margin:0;padding:6px 8px;border:0;border-radius:6px;background:transparent;color:inherit;text-align:left;cursor:pointer;}
+  button.home-ticket:hover{background:var(--color-bg);}
+  button.home-ticket:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  button.home-ticket .home-folder-name{flex:1 1 12ch;min-width:0;overflow-wrap:anywhere;}
+  button.home-ticket .home-folder-path{flex:0 0 auto;}
+  li.home-folder:has(> button.home-ticket){padding:0;}
+  .home-ticket-page{max-width:720px;}
+  .home-ticket-page .home-card-fact{white-space:pre-wrap;}
+  @media (max-width:640px){
+    main.centre > .home-head{margin-bottom:12px;}
+    button.home-ticket{min-height:44px;}
+    .home-ticket-page button.home-new,.home-ticket-page button.place-send{min-height:44px;}
+  }
   .todo-total{margin-left:auto;color:var(--color-fg-quiet);font-variant-numeric:tabular-nums;}
   ul.todo-tasks{list-style:none;margin:0;padding:0;}
   li.todo-task{position:relative;padding-left:8px;}

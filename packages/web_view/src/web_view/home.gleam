@@ -281,13 +281,16 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import lustre
 import lustre/attribute
 import lustre/effect.{type Effect}
 import lustre/element.{type Element}
+import lustre/element/html
 import lustre/event
 import lustre/server_component
 import session_view/move_candidates
+import session_view/project_board as board
 import web_view/actions
 import web_view/composer
 import web_view/creations.{type Sharing}
@@ -298,6 +301,7 @@ import web_view/names
 import web_view/orchestrators
 import web_view/page
 import web_view/placements
+import web_view/projects as feed
 import web_view/relayed
 import web_view/relayed_session
 import web_view/renames
@@ -315,6 +319,7 @@ import web_view/view/home_bar
 import web_view/view/home_table.{type Note}
 import web_view/view/new_session
 import web_view/view/notice
+import web_view/view/projects as projects_view
 import web_view/view/relayed_session as relayed_view
 import web_view/view/resume.{type Resume}
 import web_view/view/shell
@@ -337,6 +342,14 @@ pub const sidebar_path = "0\t1"
 /// one running session's name, which asks the daemon for a ticket to open that
 /// session.
 pub const table_path = "0\t2\t1"
+
+/// The Lustre event path of the Projects section on the owner's home
+/// (protocol-change/106, the addendum on the web view): the centre's first
+/// child, above the body at `table_path`. Every handler beneath it is one
+/// ticket's button, which opens that ticket's page. The home's socket admits a
+/// click beneath it for the owner's operating page only, and
+/// `home_test` and `projects_home_test` fail if the view moves the region.
+pub const projects_path = "0\t2\t0"
 
 /// The Lustre event path of the sign-ins region on the home page, which is the
 /// account panel the person's name in the bar opens: the centre
@@ -507,6 +520,12 @@ pub type Start {
     /// page, its ceiling and the owner again whenever a read runs, whatever this
     /// page said.
     elsewhere: Option(Elsewhere),
+    /// Reads the owner's projects and answers a ticket's question
+    /// (protocol-change/106, the addendum on the web view). It is `Some` exactly
+    /// where `create` is, and a page with `None` draws no Projects section and
+    /// ignores the messages. The daemon checks the page, its ceiling and the
+    /// owner again whenever a read or an answer runs, whatever this page said.
+    projects: Option(Projects),
     /// Asks the daemon to rename the named session, for the owner's page that
     /// submitted a row's rename form (protocol-change/067): the daemon checks
     /// that the page is open and was minted to operate, that its credential
@@ -699,6 +718,26 @@ pub type Elsewhere {
   )
 }
 
+/// What the daemon lets the owner's page do with its projects
+/// (protocol-change/106). Each function returns at once and answers from the
+/// daemon's own task, which is a weft run that dies with the page, and the answer
+/// arrives as `BoardsRead`, `TicketRead` or `AnswerSettled`.
+pub type Projects {
+  Projects(
+    /// Starts the read of every project's first board page. It is asked after
+    /// each list that was not `Closed`, so a ticket that needs the owner reaches
+    /// an open page at its next read.
+    boards: fn(fn(feed.Read) -> Nil) -> Nil,
+    /// Starts the read of one ticket, named by the project's id and the ticket's,
+    /// both values the page took from a board it holds.
+    ticket: fn(String, String, fn(feed.TicketRead) -> Nil) -> Nil,
+    /// Sends an answer to a ticket's question: the project, the ticket, the
+    /// question's sequence number as the form was drawn with it, and the text.
+    /// The daemon refuses an answer whose number is no longer the open question's.
+    answer: fn(String, String, Int, String, fn(feed.Answer) -> Nil) -> Nil,
+  )
+}
+
 /// Where a device link stands on the page.
 pub type Link {
   /// No link has been asked for, or the last one was dismissed.
@@ -846,6 +885,31 @@ pub opaque type Model {
     /// The sidebar's refresh timer for the orchestrators' lists, known once the
     /// runtime has made it.
     side_timer: Option(Subject(Nil)),
+    /// The projects as the last read gave them, decoded. An answer replaces it
+    /// whole, and an answer that changes nothing leaves the model as it was.
+    boards: List(feed.Loaded),
+    /// How many reads of the boards have been started, which numbers the next as
+    /// `reads` does for the list: an answer a newer read overtook is dropped.
+    board_reads: Int,
+  )
+}
+
+/// A ticket the centre is showing: where it is, what the last read of it said,
+/// and where its answer stands.
+pub type OpenTicket {
+  OpenTicket(
+    /// The project's id, a value of a board the page holds.
+    project: String,
+    /// The ticket's id, a value of that board.
+    ticket: String,
+    /// The last read of the ticket; none until one has answered.
+    detail: Option(board.Detail),
+    /// Whether an answer is out.
+    asking: projects_view.Asking,
+    /// What the page last said about the answer.
+    notice: Option(projects_view.Note),
+    /// How many answers have been recorded, which keys the answer box.
+    answered: Int,
   )
 }
 
@@ -855,6 +919,10 @@ pub opaque type Model {
 /// not moved (rename, move, delete, the remembered folders, the other
 /// orchestrators' sessions).
 pub type Pane {
+  /// A ticket of a project (`view/projects`): why it was allowed, its question
+  /// with an answer box, and a link to the worker's session.
+  Ticketed(ticket: OpenTicket)
+
   /// The new-session composer (`view/new_session`).
   NewSession
 
@@ -995,6 +1063,29 @@ pub type Msg {
   /// it answers. It is the effect's own message, dispatched from the daemon's
   /// task, and no handler carries it, so a browser cannot put a row on the page.
   ElsewhereRead(serial: Int, read: elsewhere.Read)
+
+  /// A read of the projects' boards arrived, numbered by the read it answers. It
+  /// is the effect's own message, dispatched from the daemon's task, and no
+  /// handler carries it, so a browser cannot put a ticket on the page.
+  BoardsRead(serial: Int, read: feed.Read)
+
+  /// A ticket's button was pressed: show its page. The project and the ticket are
+  /// the board's, fixed when the tree was drawn, and the page honours the press
+  /// only for a pair it holds.
+  OpeningTicket(project: String, ticket: String)
+
+  /// A read of the open ticket arrived. It is the effect's own message.
+  TicketRead(project: String, ticket: String, read: feed.TicketRead)
+
+  /// The ticket page's Back button was pressed.
+  ClosingTicket
+
+  /// The answer form was submitted: the question's sequence number the form was
+  /// drawn with, and the one text field the browser supplies.
+  Answering(seq: Int, text: String)
+
+  /// The daemon answered an answer. It is the effect's own message.
+  AnswerSettled(project: String, ticket: String, answer: feed.Answer)
 
   /// A row's "Where" was pressed: open its detail. The orchestrator's key and
   /// the session are the group's and the row's, fixed when the tree was drawn,
@@ -1301,6 +1392,8 @@ pub fn new(start: Start) -> Model {
       None -> []
     },
     side_timer: None,
+    boards: [],
+    board_reads: 0,
   )
 }
 
@@ -1381,7 +1474,12 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       case serial == model.reads {
         True -> {
           let model = answered(model, listing)
-          let model = Model(..model, elsewhere_reads: model.elsewhere_reads + 1)
+          let model =
+            Model(
+              ..model,
+              elsewhere_reads: model.elsewhere_reads + 1,
+              board_reads: model.board_reads + 1,
+            )
           #(model, effect.batch([observing(model), following(model, listing)]))
         }
         False -> #(model, arming(model))
@@ -1763,6 +1861,101 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           effect.none(),
         )
         None -> #(model, effect.none())
+      }
+
+    // The projects' boards. An answer a newer read overtook is dropped, and so is
+    // one for a page that lists no projects; a read that could not ask keeps the
+    // boards the page has. A board with the revision the page already holds
+    // changes nothing, so the model is returned as it was and nothing is drawn
+    // again. A new one replaces the boards and, if a ticket is open, asks for the
+    // ticket again, because the board moved.
+    BoardsRead(serial:, read:) ->
+      case serial == model.board_reads, model.start.projects, read {
+        True, Some(_), feed.Heard(projects: listed) ->
+          boards_heard(model, feed.decode(listed))
+        True, Some(_), feed.Unread | True, None, _ | False, _, _ -> #(
+          model,
+          effect.none(),
+        )
+      }
+
+    // A ticket's button opens its page, on a page that lists projects and only
+    // for a pair the page holds. A press for a pair a read has since removed
+    // opens nothing.
+    OpeningTicket(project:, ticket:) ->
+      case
+        model.start.projects,
+        model.status,
+        feed.find(model.boards, project, ticket)
+      {
+        Some(_), Connected, Ok(_) ->
+          reading_ticket(
+            Model(
+              ..model,
+              pane: Ticketed(OpenTicket(
+                project:,
+                ticket:,
+                detail: None,
+                asking: projects_view.Ready,
+                notice: None,
+                answered: 0,
+              )),
+              note: None,
+            ),
+            project,
+            ticket,
+          )
+        Some(_), Connected, Error(Nil)
+        | Some(_), Connecting, _
+        | Some(_), Ended(_), _
+        | None, _, _
+        -> #(model, effect.none())
+      }
+
+    // A ticket read keeps its detail for the page that asked, and a ticket the
+    // project no longer holds sends the person back to where they came from.
+    TicketRead(project:, ticket:, read:) ->
+      case model.pane {
+        Ticketed(open) if open.project == project && open.ticket == ticket ->
+          ticket_heard(model, open, read)
+        Ticketed(_) | NewSession | SessionList | Relayed(_) -> #(
+          model,
+          effect.none(),
+        )
+      }
+
+    ClosingTicket -> #(Model(..model, pane: resting_pane(model)), effect.none())
+
+    // The form sends the sequence number it was drawn with and the text. An
+    // empty answer asks nothing, an answer past the box's limit is refused here
+    // in words, and a page already sending one asks nothing. The sequence number
+    // is not checked against the page's current question, because the daemon is
+    // the authority: an answer to a question that has since changed is refused
+    // there and the page says so.
+    Answering(seq:, text:) ->
+      case model.pane, model.start.projects, model.status {
+        Ticketed(open), Some(Projects(answer:, ..)), Connected ->
+          answering(model, open, answer, seq, text)
+        Ticketed(_), Some(_), Connecting
+        | Ticketed(_), Some(_), Ended(_)
+        | Ticketed(_), None, _
+        | NewSession, _, _
+        | SessionList, _, _
+        | Relayed(_), _, _
+        -> #(model, effect.none())
+      }
+
+    // The daemon's word on an answer. A recorded one leaves an empty box, and a
+    // refusal keeps the text and says why in words. Either way the ticket is read
+    // again, so the page shows the question the daemon now has.
+    AnswerSettled(project:, ticket:, answer:) ->
+      case model.pane {
+        Ticketed(open) if open.project == project && open.ticket == ticket ->
+          settled(model, open, answer)
+        Ticketed(_) | NewSession | SessionList | Relayed(_) -> #(
+          model,
+          effect.none(),
+        )
       }
 
     // The first pages of the other orchestrators. An answer a newer read
@@ -3082,10 +3275,11 @@ fn relay_reading(
 
       #(model, reading)
     }
-    Some(_), NewSession | Some(_), SessionList | None, _ -> #(
-      model,
-      effect.none(),
-    )
+    Some(_), NewSession
+    | Some(_), SessionList
+    | Some(_), Ticketed(_)
+    | None, _
+    -> #(model, effect.none())
   }
 }
 
@@ -3115,7 +3309,7 @@ fn relay_heard(model: Model, read: relayed.Read) -> Model {
         ..model,
         pane: Relayed(relayed_session.heard(state, read, model.start.now())),
       )
-    NewSession | SessionList -> model
+    NewSession | SessionList | Ticketed(_) -> model
   }
 }
 
@@ -3175,7 +3369,7 @@ fn relay_after(
   case model.pane {
     Relayed(state) ->
       relay_reading(Model(..model, pane: Relayed(apply(state))), RelayAnswered)
-    NewSession | SessionList -> #(model, effect.none())
+    NewSession | SessionList | Ticketed(_) -> #(model, effect.none())
   }
 }
 
@@ -3191,6 +3385,192 @@ fn refreshing(model: Model) -> #(Model, Effect(Msg)) {
     model.start.sessions(fn(listing) { dispatch(Refreshed(serial, listing)) })
   }
   #(model, effect)
+}
+
+/// The boards a read gave. A board set equal to the one held changes nothing; a
+/// new one replaces it, and an open ticket is read again when its project's board
+/// has moved past the revision its detail was read at.
+fn boards_heard(
+  model: Model,
+  boards: List(feed.Loaded),
+) -> #(Model, Effect(Msg)) {
+  // Equal boards mean the revision did not move, because a revision is part of
+  // what a decoded board holds.
+  case boards == model.boards {
+    True -> #(model, effect.none())
+    False -> {
+      let model = Model(..model, boards:)
+
+      // A ticket page is refreshed only when it is open and stale, so a board
+      // that moved elsewhere costs the open page nothing.
+      case model.pane {
+        Ticketed(open) ->
+          case ticket_is_stale(boards, open) {
+            True -> reading_ticket(model, open.project, open.ticket)
+            False -> #(model, effect.none())
+          }
+        NewSession | SessionList | Relayed(_) -> #(model, effect.none())
+      }
+    }
+  }
+}
+
+/// Whether the open ticket's detail is missing or older than its project's board.
+fn ticket_is_stale(boards: List(feed.Loaded), open: OpenTicket) -> Bool {
+  case open.detail {
+    None -> True
+    Some(detail) ->
+      case list.find(boards, fn(each) { each.id == open.project }) {
+        Ok(feed.Loaded(board: Some(held), ..)) ->
+          detail.revision < held.revision
+        Ok(feed.Loaded(board: None, ..)) | Error(Nil) -> False
+      }
+  }
+}
+
+/// Starts the read of one ticket from the daemon's own task.
+fn reading_ticket(
+  model: Model,
+  project: String,
+  ticket: String,
+) -> #(Model, Effect(Msg)) {
+  case model.start.projects {
+    Some(Projects(ticket: read, ..)) -> #(model, {
+      use dispatch <- effect.from
+      read(project, ticket, fn(heard) {
+        dispatch(TicketRead(project, ticket, heard))
+      })
+    })
+    None -> #(model, effect.none())
+  }
+}
+
+/// What a ticket read changes on the open page.
+fn ticket_heard(
+  model: Model,
+  open: OpenTicket,
+  read: feed.TicketRead,
+) -> #(Model, Effect(Msg)) {
+  case read {
+    feed.TicketHeard(detail: document) ->
+      case board.decode_detail(document) {
+        Ok(detail) -> #(
+          Model(
+            ..model,
+            pane: Ticketed(OpenTicket(..open, detail: Some(detail))),
+          ),
+          effect.none(),
+        )
+        Error(_) -> #(
+          Model(
+            ..model,
+            pane: Ticketed(
+              OpenTicket(
+                ..open,
+                notice: Some(projects_view.Refusal(
+                  "This ticket could not be read.",
+                )),
+              ),
+            ),
+          ),
+          effect.none(),
+        )
+      }
+    feed.TicketGone -> #(
+      Model(..model, pane: resting_pane(model)),
+      effect.none(),
+    )
+    feed.TicketUnread -> #(model, effect.none())
+  }
+}
+
+/// The centre the page returns to when a ticket page closes: the composer for the
+/// owner's operating page, and the list otherwise.
+fn resting_pane(model: Model) -> Pane {
+  case model.start.create {
+    Some(_) -> NewSession
+    None -> SessionList
+  }
+}
+
+/// Sends an answer, or says why it will not be sent.
+fn answering(
+  model: Model,
+  open: OpenTicket,
+  answer: fn(String, String, Int, String, fn(feed.Answer) -> Nil) -> Nil,
+  seq: Int,
+  text: String,
+) -> #(Model, Effect(Msg)) {
+  // Only an idle box with something in it, within the limit, asks the daemon.
+  case
+    open.asking,
+    string.trim(text),
+    string.length(text) > projects_view.answer_limit
+  {
+    projects_view.Sending, _, _ | projects_view.Ready, "", _ -> #(
+      model,
+      effect.none(),
+    )
+    projects_view.Ready, _, True -> #(
+      Model(
+        ..model,
+        pane: Ticketed(
+          OpenTicket(
+            ..open,
+            notice: Some(projects_view.Refusal(
+              "That answer is longer than the box allows.",
+            )),
+          ),
+        ),
+      ),
+      effect.none(),
+    )
+    projects_view.Ready, _, False -> #(
+      Model(
+        ..model,
+        pane: Ticketed(
+          OpenTicket(..open, asking: projects_view.Sending, notice: None),
+        ),
+      ),
+      {
+        use dispatch <- effect.from
+        answer(open.project, open.ticket, seq, text, fn(outcome) {
+          dispatch(AnswerSettled(open.project, open.ticket, outcome))
+        })
+      },
+    )
+  }
+}
+
+/// What the daemon's word on an answer changes, and the read that follows it.
+fn settled(
+  model: Model,
+  open: OpenTicket,
+  answer: feed.Answer,
+) -> #(Model, Effect(Msg)) {
+  // A recorded answer leaves an empty box and a refused one keeps the text, and
+  // both leave the box ready for the next, since the daemon has judged this one.
+  let next = case answer {
+    feed.Recorded ->
+      OpenTicket(
+        ..open,
+        asking: projects_view.Ready,
+        notice: Some(projects_view.Told("Answer recorded.")),
+        answered: open.answered + 1,
+      )
+    feed.Refused(code:) ->
+      OpenTicket(
+        ..open,
+        asking: projects_view.Ready,
+        notice: Some(projects_view.Refusal(board.answer_refusal_words(code))),
+      )
+  }
+
+  reading_ticket(
+    Model(..model, pane: Ticketed(next)),
+    open.project,
+    open.ticket,
+  )
 }
 
 // Arms the timer for the next read, when the runtime has made it.
@@ -3236,6 +3616,15 @@ fn following(model: Model, listing: Listing) -> Effect(Msg) {
             Some(Elsewhere(groups:, ..)) -> {
               let serial = model.elsewhere_reads
               groups(fn(read) { dispatch(ElsewhereRead(serial, read)) })
+            }
+            None -> Nil
+          }
+
+          // Refresh the projects' boards if the page lists them.
+          case model.start.projects {
+            Some(Projects(boards:, ..)) -> {
+              let serial = model.board_reads
+              boards(fn(read) { dispatch(BoardsRead(serial, read)) })
             }
             None -> Nil
           }
@@ -3293,6 +3682,18 @@ pub fn reads(model: Model) -> Int {
 /// ```
 pub fn elsewhere_reads(model: Model) -> Int {
   model.elsewhere_reads
+}
+
+/// How many reads of the projects' boards the page has started, which numbers
+/// the next. A test uses it to answer the read the page last asked for.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // home.update(model, home.BoardsRead(home.board_reads(model), read))
+/// ```
+pub fn board_reads(model: Model) -> Int {
+  model.board_reads
 }
 
 /// Returns the grouped sessions list currently held in model state.
@@ -3388,6 +3789,7 @@ pub fn view(model: Model) -> Element(Msg) {
       title: case model.pane {
         NewSession -> "New session"
         SessionList -> "Sessions"
+        Ticketed(_) -> "Ticket"
         Relayed(_) -> "Session"
       },
       who: home_bar.account(
@@ -3405,10 +3807,7 @@ pub fn view(model: Model) -> Element(Msg) {
       // The first child keeps the centre's body at `table_path`. It is the strip
       // that says the daemon lists a peer orchestrator, or an empty node, and the
       // composer has no use for it.
-      case model.pane {
-        NewSession | Relayed(_) -> element.none()
-        SessionList -> elsewhere_view.strip(elsewhere_offer(model))
-      },
+      centre_head(model),
       centre_body(model),
       signins_view.view(
         model.signins,
@@ -3433,6 +3832,108 @@ pub fn view(model: Model) -> Element(Msg) {
   )
 }
 
+/// The centre's first child, which sits above the body: the Projects section on
+/// the owner's page when it has one to draw, with the strip that says the daemon
+/// lists a peer orchestrator, and the strip alone, or nothing, otherwise. A page
+/// without projects draws exactly what it drew before this section existed. The
+/// section's buttons are beneath `projects_path`, which only the owner's socket
+/// admits.
+fn centre_head(model: Model) -> Element(Msg) {
+  // The peer strip belongs to the list alone, as it did before the section.
+  let strip = case model.pane {
+    NewSession | Relayed(_) | Ticketed(_) -> element.none()
+    SessionList -> elsewhere_view.strip(elsewhere_offer(model))
+  }
+
+  // The section is drawn above the composer and the list and not above a
+  // ticket's page or a relayed session, which are the centre's whole subject.
+  case projects_offer(model), model.pane {
+    projects_view.Hidden, _ -> strip
+    projects_view.Shown(..), Ticketed(_)
+    | projects_view.Shown(..), Relayed(_)
+    -> strip
+    offer, NewSession | offer, SessionList ->
+      html.div([attribute.class("home-head")], [
+        projects_view.section(offer),
+        strip,
+      ])
+  }
+}
+
+/// What the page offers for projects: the section on a page with
+/// `Start.projects` that has read at least one project, and nothing otherwise.
+fn projects_offer(model: Model) -> projects_view.Offer(Msg) {
+  case model.start.projects, model.boards {
+    Some(_), [_, ..] ->
+      projects_view.Shown(
+        projects: model.boards,
+        now: model.now,
+        open: OpeningTicket,
+      )
+    Some(_), [] | None, _ -> projects_view.Hidden
+  }
+}
+
+/// The open ticket's page, with the press that opens its worker's session when
+/// the page holds that session's row.
+fn ticket_page(model: Model, open: OpenTicket) -> Element(Msg) {
+  let held = feed.find(model.boards, open.project, open.ticket)
+
+  // The ticket read is newer than the board's row for it, so it wins when it has
+  // answered; before that the board's row draws the page.
+  let current = case open.detail, held {
+    Some(detail), _ -> Ok(detail.ticket)
+    None, Ok(found) -> Ok(found)
+    None, Error(Nil) -> Error(Nil)
+  }
+
+  // A ticket neither source holds is not drawn as a page; the person is told and
+  // offered the way back.
+  case current {
+    Error(Nil) ->
+      html.p([attribute.class("home-empty")], [
+        html.text("This ticket is not on the board."),
+        html.button(
+          [
+            attribute.type_("button"),
+            attribute.class("home-new"),
+            event.on_click(ClosingTicket),
+          ],
+          [html.text("Back")],
+        ),
+      ])
+    Ok(ticket) ->
+      projects_view.ticket_page(projects_view.Page(
+        ticket:,
+        detail: open.detail,
+        now: model.now,
+        asking: open.asking,
+        notice: open.notice,
+        answered: open.answered,
+        back: ClosingTicket,
+        answer: Answering,
+        worker: option.then(ticket.session, worker_press(model, _)),
+      ))
+  }
+}
+
+/// The press that opens a worker's session: the row's own press when the page
+/// holds the row, so a running session opens and a saved one resumes, and none
+/// when the page does not hold it, so no button could only be refused.
+fn worker_press(model: Model, session: String) -> Option(Msg) {
+  case
+    list.find(listing.entries(model.groups), fn(each) { each.id == session })
+  {
+    Ok(sessions.Entry(residency: Live, ..)) -> Some(Opening(session))
+    Ok(sessions.Entry(residency: sessions.Saved, ..)) ->
+      case model.start.ceiling {
+        OperatorCeiling -> Some(Resuming(session))
+        ObserverCeiling -> None
+      }
+    Ok(_) | Error(Nil) -> None
+  }
+}
+
 /// The centre's second child, which is the one region the socket admits a click,
 /// a submit and a typed search beneath: the composer for the owner while the pane
 /// is the new session's, and the list otherwise. Both sit at `table_path`, so the
@@ -3440,6 +3941,7 @@ pub fn view(model: Model) -> Element(Msg) {
 fn centre_body(model: Model) -> Element(Msg) {
   case model.pane, model.start.create {
     NewSession, Some(_) -> new_session.view(new_pane(model))
+    Ticketed(open), _ -> ticket_page(model, open)
     Relayed(state), _ -> relayed_view.view(state, relayed_presses())
     NewSession, None | SessionList, _ ->
       home_table.view(

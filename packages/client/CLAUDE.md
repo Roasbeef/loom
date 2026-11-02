@@ -10214,8 +10214,23 @@ ordinary top-level worker session per ticket assignment
 - `peer_mail.Trigger` admits a stored trigger with the trigger origin. The daemon is
   the caller, so no grant is checked; `orchestrator_port.served` answers `False` for
   it, which is what keeps it off the relay (tested in `peer_remote_test`).
-- Control: `projects.create|list|board|post|stop` in `daemon/protocol` and
-  `daemon/server` (`project_command`), classified in `control_use`.
+- Control: `projects.create|list|board|post|stop|ticket|answer|retry|requeue` in
+  `daemon/protocol` and `daemon/server` (`project_command`), classified in
+  `control_use`. `projects.ticket` is a read. `projects.answer` echoes the
+  question's `seq`; `project_host.answer` checks it against the open question
+  before it writes the text, and a stale one is `StaleQuestion`, which the control
+  command answers `conflict` and the page words as "the question changed". The
+  answer's text is stored in the ledger; relaying it to the worker is the
+  `AnswerJob` row, which the host still logs and settles without serving. The
+  board record gains `opened_ms` (the opening message's arrival time, or null), the
+  only source of an age.
+- `client/daemon/ui_projects` is the owner's home page's feed over the same actors
+  (`boards`, `ticket`, `answer`), returning the daemon's JSON for
+  `session_view/project_board` to decode; `board_body` is shared with
+  `projects.board`. The socket hands it to the owner's operating page alone
+  (`ui_socket.home_projects_capability`, repeated by `projects_for`,
+  `ticket_read_for` and `answer_for`), and admits a click beneath
+  `home.projects_path` for that page only (`ui_socket.home_event`).
   `[project]` is `client/project_settings` (`max_workers`, `token_ceiling`).
 - `client/project_scan` is a worker's commit scanner, modelled on `rulescan`: a
   restartable service subscribed by name through `writer.Routed`, started in

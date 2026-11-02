@@ -8,8 +8,11 @@
 //// nothing. The actor, the ledger and the engine are real; the daemon's side
 //// of session creation is replaced by a recorder, as in `project_host_test`.
 
+import client/daemon/project_book
 import client/daemon/project_host
+import client/daemon/project_start
 import client/daemon/protocol
+import client/daemon/ui_projects
 import client/internal/ffi_os
 import client/peer_mail
 import core/json
@@ -23,6 +26,7 @@ import project/model
 import simplifile
 import telemetry/log
 import tools/project as tools
+import web_view/projects as page_projects
 
 fn start(name: String) -> project_host.Handle {
   let directory =
@@ -211,5 +215,60 @@ pub fn retry_and_requeue_are_refused_by_the_engine_not_by_the_wire_test() {
   let assert Error(requeue_reason) =
     project_host.requeue(handle, "tr-none", "owner")
   assert string.contains(requeue_reason, "tr-none")
+  stop(handle)
+}
+
+// --- the page's feed ---------------------------------------------------------
+
+fn controlled(handle: project_host.Handle) -> project_start.Control {
+  let assert Ok(book) = project_book.start() as "the table starts"
+  project_book.put(book, handle)
+  project_start.Control(book:, create: fn(_, _) { Error("not used") })
+}
+
+pub fn a_daemon_with_no_project_table_has_no_feed_test() {
+  assert ui_projects.feed(None) == None
+}
+
+pub fn the_feed_reads_the_same_board_body_the_control_command_serves_test() {
+  let handle = start("feed-board")
+  let _ = asking(handle)
+  let assert Some(feed) = ui_projects.feed(Some(controlled(handle)))
+  let assert page_projects.Heard([listed]) = feed.boards()
+  let assert Ok(shown) = project_host.board(handle, 0)
+
+  assert listed.id == "p1"
+  assert listed.workspace == "/work/repo"
+  assert listed.board == ui_projects.board_body("p1", shown)
+  stop(handle)
+}
+
+pub fn the_feed_answers_conflict_for_a_stale_answer_and_records_nothing_test() {
+  let handle = start("feed-answer")
+  let seq = asking(handle)
+  let assert Some(feed) = ui_projects.feed(Some(controlled(handle)))
+  let assert Ok(before) = project_host.board(handle, 0)
+
+  assert feed.answer("p1", "t-a", seq + 1, "sqlite")
+    == page_projects.Refused("conflict")
+  let assert Ok(after) = project_host.board(handle, 0)
+  assert before.revision == after.revision
+
+  assert feed.answer("p1", "t-a", seq, "sqlite") == page_projects.Recorded
+  assert feed.answer("p1", "t-none", seq, "sqlite")
+    == page_projects.Refused("not_found")
+  assert feed.answer("p-none", "t-a", seq, "sqlite")
+    == page_projects.Refused("not_found")
+  stop(handle)
+}
+
+pub fn the_feed_reads_a_ticket_or_says_it_is_gone_test() {
+  let handle = start("feed-ticket")
+  let _ = asking(handle)
+  let assert Some(feed) = ui_projects.feed(Some(controlled(handle)))
+  let assert page_projects.TicketHeard(_) = feed.ticket("p1", "t-a")
+
+  assert feed.ticket("p1", "t-none") == page_projects.TicketGone
+  assert feed.ticket("p-none", "t-a") == page_projects.TicketGone
   stop(handle)
 }

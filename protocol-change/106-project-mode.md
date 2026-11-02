@@ -150,3 +150,44 @@ per project adds a store to back up and retain, and a state that crosses it and 
 can't commit atomically, so effects carry derived keys and the human-turn ledger is rebuilt from the
 log. Reopening at boot narrows "discovery is not execution" for owner-written rows, and each router
 adds a resident session's memory for as long as its project lives.
+
+## Addendum: the owner's board on the web view (2026-11-01)
+
+**Affects**: the home page's server component (`web_view/home`) and its socket
+(`client/daemon/ui_socket`) by one capability, one admitted click region and two page
+reads; `docs/client-protocol.md` section 3.32 by four commands. No new HTTP route, no
+new WebSocket route, no content security policy change, no new event class and no new
+daemon command beyond the four named below.
+
+**The commands.** `projects.ticket` (a read), `projects.answer`, `projects.retry` and
+`projects.requeue` finish the set the first version listed. `projects.answer` echoes the
+question's `seq`, and an answer whose `seq` is not the ticket's open question is refused
+`conflict` and records nothing. The board record gains `opened_ms`, the arrival time of the
+ticket's opening message, or null; a client shows an age only from it.
+
+**The page.** The owner's home draws a Projects section above its centre, and a ticket
+opens as a pane of the centre. Both are part of the home's existing socket, so they add
+no route. Their authority is the creation capability's own, stated here because each new
+reach needs it written down:
+
+| Reach | Who | How it is admitted | Checked again by |
+| --- | --- | --- | --- |
+| The section is drawn and the board is read | The daemon's owner, on a page minted to operate | `Start.projects` is `Some` only through `ui_socket.home_projects_capability` | `projects_for`, which repeats the owner check before it asks a project's actor |
+| A click on a ticket's button | The same page | A `click` beneath `home.projects_path` (`0\t2\t0`) is admitted by the `Submitting` and `Administering` rights and not by `Browsing` (`home_event`) | The component honours the press only for a project and ticket in the boards it holds |
+| A ticket is read | The same page | The press above | `ticket_read_for`, the owner check again |
+| An answer is sent | The same page | A `submit` beneath `home.table_path`, which the owner's socket already admits for its other forms | `answer_for`: the owner check, then the project's actor, which compares the echoed `seq` with the open question |
+
+An observer-ceiling page, a member's page and a page on a daemon with no project table get
+no capability, draw no section and ignore the messages. A forged frame at the region is
+dropped by the socket before it costs a render, and a forged message that survives it is
+ignored by the component. The browser supplies one value, the answer's text, from a form
+with exactly one field. Every ticket string is external text, passed through
+`text_hygiene` once by `session_view/project_board` and drawn as a text node: no class,
+attribute, key or address is built from one. The feed hands the page the daemon's JSON
+untouched (`client/daemon/ui_projects`), so the page and the control command read one
+body.
+
+**Not built.** The change doorbell, `set_mode` and `publish` controls, the host check,
+pull requests and the verdict view stay out; the ticket page has no control for them.
+Relaying an answer's text to the worker is still the `answer` effect row the host logs
+and settles without serving.

@@ -187,6 +187,7 @@ import client/daemon/ui_http
 import client/daemon/ui_login
 import client/daemon/ui_peers
 import client/daemon/ui_project
+import client/daemon/ui_projects
 import client/daemon/ui_relay
 import client/daemon/ui_sessions
 import client/daemon/ui_top
@@ -241,6 +242,7 @@ import web_view/orchestrators as relayed_roster
 import web_view/page
 import web_view/peer_links
 import web_view/placements
+import web_view/projects as page_projects
 import web_view/relayed
 import web_view/remembered
 import web_view/renames
@@ -992,6 +994,35 @@ pub fn upgrade_home(
       ),
     )
 
+  // The owner's projects (protocol-change/106, the addendum on the web view) are
+  // read and answered in tasks of the page's own, as the other orchestrators
+  // are. The section's buttons are clicks beneath `home.projects_path` and the
+  // answer form is a submit beneath `home.table_path`, both of which only the
+  // owner's socket admits (`home_event`), so the capability is what makes the
+  // section exist and `projects_for` is what decides each read and answer.
+  let projecting =
+    option.then(attachment.projects, fn(feed) {
+      home_projects_capability(
+        attachment.principal,
+        ceiling,
+        home.Projects(
+          boards: fn(deliver) {
+            read_task(deliver, fn() { projects_for(standing, open, feed) })
+          },
+          ticket: fn(project, ticket, deliver) {
+            read_task(deliver, fn() {
+              ticket_read_for(standing, open, feed, project, ticket)
+            })
+          },
+          answer: fn(project, ticket, seq, text, deliver) {
+            read_task(deliver, fn() {
+              answer_for(standing, open, feed, project, ticket, seq, text)
+            })
+          },
+        ),
+      )
+    })
+
   // The same fresh home may stop, archive and delete the sessions it lists
   // (protocol-change/065, the addendum on session actions). The click on a row's
   // button is beneath `home.table_path`, which every home's socket admits, so no
@@ -1110,6 +1141,7 @@ pub fn upgrade_home(
       placing,
       folders,
       elsewhere,
+      projecting,
       signing,
       administering,
       visiting,
@@ -1478,6 +1510,35 @@ pub fn home_elsewhere_capability(
   }
 }
 
+/// The capability to read the owner's projects and answer a ticket's question
+/// that a home page minted for `principal` with `ceiling` is handed
+/// (protocol-change/106, the addendum on the web view): `ask` for the daemon's
+/// owner on a page minted to operate, and none for any other, which is the
+/// creation capability's own rule. The daemon checks both facts again when a read
+/// or an answer runs (`projects_for`, `ticket_read_for`, `answer_for`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.home_projects_capability(member, access.Operator, reads) == None
+/// ```
+@internal
+pub fn home_projects_capability(
+  principal: access.Principal,
+  ceiling: access.Role,
+  reads: home.Projects,
+) -> Option(home.Projects) {
+  // The owner on a page minted to operate is the only page that may see a
+  // project, because a ticket carries text from people who are not the owner.
+  case principal.kind, ceiling {
+    access.OwnerPrincipal, access.Operator -> Some(reads)
+    access.OwnerPrincipal, access.Observer
+    | access.MemberPrincipal, access.Operator
+    | access.MemberPrincipal, access.Observer
+    -> None
+  }
+}
+
 /// The browser messages a home page takes: Lustre's `EventFired` for a
 /// `click`, alone or batched, at a path beneath `home.table_path`,
 /// `home.sidebar_path` or `home.signins_path`, where the home's only handlers
@@ -1579,8 +1640,12 @@ fn home_event(rights: HomeRights) -> decode.Decoder(Bool) {
 
       // This branch resolves name rights before the operation continues.
       decode.success(case name, rights {
-        "click", Administering -> home_row_path(path) || path == home.admin_path
-        "click", Browsing | "click", Submitting -> home_row_path(path)
+        "click", Administering ->
+          home_row_path(path)
+          || owner_projects_path(path)
+          || path == home.admin_path
+        "click", Submitting -> home_row_path(path) || owner_projects_path(path)
+        "click", Browsing -> home_row_path(path)
         "submit", Submitting | "submit", Administering ->
           string.starts_with(path, home.table_path <> "\t") || named_path(path)
         "submit", Browsing -> named_path(path)
@@ -1610,6 +1675,14 @@ fn home_event(rights: HomeRights) -> decode.Decoder(Bool) {
 // and nowhere else outside the owner's table forms.
 fn named_path(path: String) -> Bool {
   string.starts_with(path, home.signins_path <> "\t")
+}
+
+// A ticket's button is beneath the Projects section (protocol-change/106, the
+// addendum on the web view). Only the owner's socket admits it, so `Browsing`
+// never reaches this function, and the region's own path is not a button, so the
+// prefix includes the separator.
+fn owner_projects_path(path: String) -> Bool {
+  string.starts_with(path, home.projects_path <> "\t")
 }
 
 // A row's button is beneath the table's section or the sidebar's column. The
@@ -1648,6 +1721,7 @@ fn admit_home(
   placing: fn(fn(placements.Read) -> Nil) -> Nil,
   folders: Option(home.Folders),
   elsewhere: Option(home.Elsewhere),
+  projecting: Option(home.Projects),
   signing: Signing,
   administering: Option(fn(fn(sessions.Answer) -> Nil) -> Nil),
   visiting: Option(home.Visit),
@@ -1697,6 +1771,7 @@ fn admit_home(
       placements: placing,
       folders:,
       elsewhere:,
+      projects: projecting,
       signins: read_task_for(signing.read),
       login: signing.login,
       bookmark: signing.bookmark,
@@ -3646,6 +3721,79 @@ pub fn elsewhere_for(
   case authorized_owner(standing, open) {
     Ok(_) -> read(orchestrator, after)
     Error(_) -> page_elsewhere.Unread
+  }
+}
+
+/// Every project's first board page as the owner's home may draw it
+/// (protocol-change/106, the addendum on the web view). The same owner check as a
+/// creation runs first (`authorized_owner`), so a page that may not create is
+/// told of no project and no actor is asked for it, and so is a page whose
+/// registry did not answer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.projects_for(standing, open, feed)
+/// ```
+@internal
+pub fn projects_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  feed: ui_projects.Feed,
+) -> page_projects.Read {
+  // The owner check comes first, so a page that fails it reaches no actor.
+  case authorized_owner(standing, open) {
+    Ok(_) -> feed.boards()
+    Error(_) -> page_projects.Unread
+  }
+}
+
+/// One ticket as the owner's home may read it, after the same owner check.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.ticket_read_for(standing, open, feed, "p1", "t-a")
+/// ```
+@internal
+pub fn ticket_read_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  feed: ui_projects.Feed,
+  project: String,
+  ticket: String,
+) -> page_projects.TicketRead {
+  // A page that fails the owner check learns nothing of a ticket, not even
+  // whether it exists.
+  case authorized_owner(standing, open) {
+    Ok(_) -> feed.ticket(project, ticket)
+    Error(_) -> page_projects.TicketUnread
+  }
+}
+
+/// An answer to a ticket's question from the owner's home, after the same owner
+/// check. A page that fails it records nothing and is told `forbidden`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.answer_for(standing, open, feed, "p1", "t-a", 9, "use sqlite")
+/// ```
+@internal
+pub fn answer_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  feed: ui_projects.Feed,
+  project: String,
+  ticket: String,
+  seq: Int,
+  text: String,
+) -> page_projects.Answer {
+  // The check comes before the actor, so a page that may not answer writes
+  // nothing to a project's ledger.
+  case authorized_owner(standing, open) {
+    Ok(_) -> feed.answer(project, ticket, seq, text)
+    Error(_) -> page_projects.Refused("forbidden")
   }
 }
 

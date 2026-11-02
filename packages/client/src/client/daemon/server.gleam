@@ -67,6 +67,7 @@ import client/daemon/ui_assets
 import client/daemon/ui_http
 import client/daemon/ui_login
 import client/daemon/ui_origin
+import client/daemon/ui_projects
 import client/daemon/ui_relay
 import client/daemon/ui_result
 import client/daemon/ui_sessions
@@ -405,6 +406,12 @@ pub type HomeAttachment(instance) {
     /// from its runtime (`ui_socket.read_task`). A key outside the configuration
     /// is `Unread`, and nothing is dialled for it.
     elsewhere: fn(Option(String), Option(String)) -> page_elsewhere.Read,
+    /// What the owner's home may read of the daemon's projects and do with a
+    /// ticket's question (protocol-change/106, the addendum on the web view), or
+    /// nothing when the daemon started no project table. The reads run in tasks
+    /// of the page's own (`ui_socket.read_task`), and the socket hands them to
+    /// the owner's operating page alone.
+    projects: Option(ui_projects.Feed),
     /// The `[orchestrators.<name>]` keys of the daemon's configuration, in order,
     /// which the owner's page draws in its Agent chip and sidebar and asks
     /// through the relay (protocol-change/094). The relay dials none the page
@@ -888,6 +895,7 @@ fn home_upgrade(
             elsewhere: fn(orchestrator, after) {
               heard_elsewhere(config, orchestrator, after)
             },
+            projects: ui_projects.feed(config.projects),
             orchestrators: list.map(
               roster.rows(config.movers.orchestrators),
               fn(orchestrator) { orchestrator.name },
@@ -3334,17 +3342,7 @@ fn project_board(
   use shown <- result.map(
     project_host.board(handle, page) |> result.replace_error("unavailable"),
   )
-  #(
-    "projects.board",
-    json.Object([
-      #("project", json.String(project)),
-      #("revision", json.Int(shown.revision)),
-      #("page", json.Int(shown.page)),
-      #("total", json.Int(shown.total)),
-      #("tickets", json.Array(shown.tickets)),
-      #("replies", json.Array(shown.replies)),
-    ]),
-  )
+  #("projects.board", ui_projects.board_body(project, shown))
 }
 
 /// `projects.post`: the owner's text as an explicit trigger. The request id is
