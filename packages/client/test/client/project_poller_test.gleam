@@ -242,10 +242,14 @@ pub fn a_rate_limit_stops_the_pass_and_names_when_to_resume_test() {
     ["x-ratelimit-remaining: 0", "x-ratelimit-reset: 1793613600"],
     "{\"message\":\"rate limit exceeded\"}",
   )
-  let polled = project_poller.poll(request(fake, started()))
+  let base = request(fake, started())
+  let polled =
+    project_poller.poll(
+      project_poller.Request(..base, watched: [project_poller.Watched("t-a", 7)]),
+    )
 
   // The reset time is the header's, in milliseconds, and nothing else was
-  // asked after the limit.
+  // asked after the limit, not even a ticket's pull request.
   assert polled.health == Limited(1_793_613_600_000)
   assert polled.arrivals == []
   assert list.length(fake_gh.calls(fake)) == 1
