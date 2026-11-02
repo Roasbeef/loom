@@ -1814,6 +1814,41 @@ prints it, as text or, with `--json`, as the daemon sent it.
 
 ---
 
+### 3.32 `projects.*`
+
+Project mode's control commands (protocol-change/106, design note
+`docs/design-notes/project-mode.md`). All five are owner-only, and a daemon that
+started no project table answers every one `not_found`. A reply carries the
+engine's own spelling of a stage, and a client displays it and never derives it.
+
+| Command | Read | Body fields | Reply event |
+|---|---|---|---|
+| `projects.create` | no | `workspace` (string, required), `name` (string, required) | `projects.create` |
+| `projects.list` | yes | none | `projects.list` |
+| `projects.board` | yes | `project` (string, required), `page` (integer, optional, zero-based) | `projects.board` |
+| `projects.post` | no | `project`, `request_id` (at most 64 of letters, digits, `_`, `-`, `.`), `text` (string, required) | `projects.post` |
+| `projects.stop` | no | `project`, `ticket` (strings, required) | `projects.stop` |
+
+```json
+{"v":2,"id":9,"cmd":"projects.create","body":{"workspace":"/src/loom","name":"loom"}}
+```
+
+`projects.create` replies `{"project","workspace","router_session"}`. The project
+id is a function of the canonical workspace, so creating twice answers the first
+project. `projects.list` replies `{"projects":[{"id","workspace","router_session",
+"counts":{"<stage>":n}}]}`. `projects.board` replies `{"project","revision","page",
+"total","tickets":[...],"replies":[...]}` with at most 20 tickets a page,
+needs-a-person first, and `revision` is the project ledger's newest sequence number.
+A ticket is the record of protocol-change/106, `{id, project, title, stage, session,
+mandate, check, question, pull_request, ended}`, where `stage` is one of
+`person/delivery`, `person/answer`, `person/review`, `person/blocked`,
+`person/failed`, `queued`, `idle`, `working` or `ended/<outcome>`, `check` is always
+`null` in this slice, and `question` is `null` or `{seq, text, options}`. `replies`
+holds the router's queued replies on page zero. `projects.post` replies
+`{"trigger","repeated"}`; posting a `request_id` again changes nothing and answers
+`repeated: true`. Errors: `not_found` (no such project), `bad_request` (a refused
+post or stop), `forbidden` (a member principal), `unavailable`.
+
 ## 4. The session endpoint
 
 ### 4.1 Attachment and admission

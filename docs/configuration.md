@@ -181,6 +181,7 @@ name is always tried first. Every name must be defined in `[models]`.
 | `summarize` | array of strings | unrouted | model names | Structural summaries and the glance loop. Unrouted, summaries use `main`, and the glance tries `subagent` and then `main`. A cheap entry here controls what those cost. |
 | `vision` | array of strings | unrouted | model names, each reading images | Image-bearing requests whose strand model is text-only. An entry that declares `vision = false` is refused. |
 | `advisor` | array of strings | unrouted | model names | The advisor strand. With no `advisor` route there is no advisor. See [advisor](architecture/advisor.md). |
+| `router` | array of strings | unrouted | model names | A project's router session. Unrouted, it routes on `subagent` and then `main`. See [project mode](design-notes/project-mode.md). |
 
 ## `[profiles.<name>]`
 
@@ -223,6 +224,7 @@ names replaces the default chain whole. A role it omits keeps the default chain.
 | `summarize` | array of strings | the `[roles]` chain | model names | Replacement chain for `summarize`. |
 | `vision` | array of strings | the `[roles]` chain | model names, each reading images | Replacement chain for `vision`. |
 | `advisor` | array of strings | the `[roles]` chain | model names | Replacement chain for `advisor`. |
+| `router` | array of strings | the `[roles]` chain | model names | Replacement chain for `router`. |
 
 ### Choosing a model for one session
 
@@ -509,6 +511,19 @@ for explicit links.
 | --- | --- | --- | --- | --- |
 | `default_links` | string | `off` | `off`, `same_owner` | `same_owner` admits a `main` to `main` message between two different sessions that the owner holds alone and that have no recorded unlink. |
 | `default_wake` | string | `busy_only` | `busy_only`, `may_wake` | The wake permission of a default link. `busy_only` adds to a running strand and does nothing to an idle one. `may_wake` may start a run on the recipient's `main`. An explicit grant for the pair overrides it. |
+
+## `[project]`
+
+(From protocol-change 106.) Optional, read once when the daemon starts, like
+`[peers]`. Bounds the workers of every project the daemon runs. A project is made
+with `loom project init` and needs no table; the keys below only change its
+limits. A key from a later slice (the check command, protected paths, sources) is
+refused until that slice lands.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `max_workers` | integer | `4` | 1 to 16 | General worker sessions a project runs at once. One more slot is kept for a ticket a person is waiting on. |
+| `token_ceiling` | integer | `5000000` | 1 or more | The token ceiling above which a project starts no new inferred work. Recorded in this slice; inferred work is off. |
 
 ## `[distribution]`
 
