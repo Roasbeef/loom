@@ -5,7 +5,9 @@
 //// move. A worker reports `Waiting`; the host reads its head; and only a
 //// passing check built by the host (`host.CheckPassed`) can make the ticket
 //// `Ready`. A diff that touches protected paths skips the check and waits for
-//// a person (`AwaitingReview`), so edited build files never run on this path.
+//// a person (`AwaitingReview`), so an edit to a named build file is decided by
+//// a person and not by the check. The check's commands can still run worker
+//// code, which the check jail contains.
 //// A person may publish past a failing check, which is a recorded command
 //// (`Published`) and not a `Ready`, so the board can tell a verified ticket
 //// from one a person overrode. A later commit invalidates whatever came

@@ -283,7 +283,10 @@ A worker could edit a test or the Makefile and the check would still pass. So:
 2. If the diff, read in the host repository as `base...commit`, touches any of the
    project's `protected_paths` (by default the Makefile, CI configuration and the
    check's own definition), the ticket goes to `AwaitingReview` and the check doesn't
-   run, so edited build files never execute on this path.
+   run, so an edit to a named file is decided by a person and not by the check. The list is
+   not a closed set of what a check runs: `make test` still runs an included `.mk` file, the scripts
+   its recipes call and the worker's own tests. Worker code can run in a check, and what contains it
+   is the check jail, with no network, one writable root and the host's files masked.
 3. Otherwise the host runs the project's check command, which comes from policy, in a
    fresh repository cut from the host repository at that commit, in a jail the worker
    can't reach.

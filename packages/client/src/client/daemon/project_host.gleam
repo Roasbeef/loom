@@ -2316,8 +2316,11 @@ fn record_kept_tree(
 // An idle worker's head is read, checked and published here, in that order,
 // and the order is the design. The host reads the head and the paths it
 // changed (`observe_head`). A head that touches a protected path stops in the
-// engine, with no check requested, so nothing that a worker wrote into a build
-// file is ever run on this path. Any other head goes to `start_check`, which
+// engine, with no check requested, so an edit to a file the project names is
+// decided by a person and not by the check. That is not a promise that no
+// worker code runs: the check's own commands can still run a file nobody
+// named, such as an included makefile or a test, and the check jail is what
+// contains it. Any other head goes to `start_check`, which
 // runs the project's command in a task the actor does not wait on. Only the
 // engine's `CheckFinished` can make the ticket ready, and only a ready or
 // published ticket reaches `start_publish`.
