@@ -110,6 +110,9 @@ Invariants that break things when violated:
   would otherwise boot the export itself.
 - `--allow` never widens `--inject-host`: `launch_arguments` passes no
   `--inject-host`, and the allowed hosts are reachable, never credentialed.
+- A host write under `root/` goes through `make_inside`, which checks each
+  directory's canonical path against the canonical root and refuses a link the
+  guest left (naming `--fresh`). Never `create_directory_all` under the root.
 - Only `--provision` supplies a script. The workspace is never searched, and a
   script on a provisioned resume is refused rather than run again.
 - The workspace copy is made owner-writable. The guest's init cannot give a

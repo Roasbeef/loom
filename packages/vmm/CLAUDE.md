@@ -186,6 +186,11 @@ credential.
   line or staged file. `TestGuestFilesHoldNoToken` and
   `TestLogsNeverCarryTheTokenOrPlaceholderOrHeaders` pin it. Do not log a
   header value in `ghproxy`, and do not add a way to export the CA key.
+- **A host write under the guest root never follows a link out of it.** The
+  guest's user owns directories in the root, so `stageFile` refuses a target
+  whose resolved parent (or deepest existing ancestor) is outside the resolved
+  root before it creates or writes anything (`resolvedWithin`). `loom vm up`
+  does the same for its own writes (`vm_cli.make_inside`).
 - **A provisioning script runs once, as root, before the executor.** The
   marker is created only on exit zero. The script is staged by `loom vm up
   --provision` and nothing else; the init never looks in a workspace. With the

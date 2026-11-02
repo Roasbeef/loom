@@ -411,7 +411,7 @@ stateDiagram-v2
     Stopped --> [*]
 ```
 
-`guest.Stop` (`packages/vmm/machine/libkrun/libkrun.go:427`) is the one exit
+`guest.Stop` (`packages/vmm/machine/libkrun/libkrun.go:420`) is the one exit
 and it is idempotent. It stops the hosted provider first, so no packet leaves
 the guest while the VMM shuts down, then branches on who owns the root. An
 `extractedRoot`, which go-microvm unpacked from an image for this guest, goes
@@ -700,9 +700,28 @@ deb.debian.org --allow security.debian.org` on the guest image
 default `http://deb.debian.org` sources succeeded as root with no proxy and no
 configuration, and `make` ran. So apt needs no special approach: allow
 `deb.debian.org` and `security.debian.org` and port 80 works directly. The
-proxy's 443-only rule is unchanged and is not needed for it. A script that
+proxy's 443-only rule is unchanged and is not needed for it. The script's
+`PATH` is the system one, but the jail's is `/opt/loom/bin`, `/usr/local/bin`,
+`/usr/bin` and `/bin`. A package manager puts its tools in `/usr/bin`, which the
+jail sees (the live test installs `jq` with `apt-get` and runs it from a jailed
+call). A tool installed under `/root`, or in any directory off that list, is
+invisible to the jail: link it into `/usr/local/bin`. A script that
 installs from other registries allows their hosts, and a client that honours
 `HTTPS_PROXY` reaches them through the proxy or, with `--github off`, directly.
+
+### Host writes under the guest root
+
+The root is a directory the guest's `loom` user can write into, so a jail
+escape during one boot can leave a link where a directory belongs. `up` runs
+with the guest stopped, so this is a stale link and not a race, but a write
+through it would put the executor's TLS key and cookie, or the script, in a host
+directory. `vm_cli.make_inside` creates each directory under the root one
+component at a time and checks after each that its canonical path is the
+canonical root plus the same suffix, refusing with one line that names the path
+and `--fresh`. `stage_node` (`home`, `creds`, `state`), `stage_script`,
+`copy_workspace` and `own_repository`'s staging directory all go through it.
+`stageFile` in `libkrun.go` makes the same check on the resolved parent of each
+file `loom-vm` stages.
 
 ### Trust
 
