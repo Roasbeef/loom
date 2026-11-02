@@ -950,3 +950,25 @@ pub fn the_census_says_whether_the_executor_compiles_test() {
   assert identity.build != ""
   Nil
 }
+
+/// A daemon that serves no `[workspaces]` runs no executor host, and a
+/// project's workers still need the ledger the worktree service writes to. The
+/// first call opens and migrates a file that is empty, which is what the
+/// service left behind when it connected too early, and a second call finds a
+/// ledger that already connects and does not open it again.
+pub fn ensure_ledger_migrates_an_empty_file_once_test() {
+  let state = absolute(fixtures.scratch("ensure-ledger"))
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(state)
+    as "the state root is created"
+  let path = executor_plane.ledger_path(state)
+  let assert Ok(Nil) = simplifile.write(path, "")
+    as "an empty ledger file is left"
+  let assert Error(exec_ledger.Unsupported) = exec_ledger.connect(path)
+    as "the empty file does not connect"
+  let assert Ok(Nil) = executor_plane.ensure_ledger(state)
+  let assert Ok(ledger) = exec_ledger.connect(path)
+    as "the migrated ledger connects"
+  let _closed = exec_ledger.close(ledger)
+  let assert Ok(Nil) = executor_plane.ensure_ledger(state)
+  Nil
+}

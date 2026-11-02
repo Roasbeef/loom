@@ -3300,6 +3300,10 @@ pub fn project_env(
         config.state_root,
         logger,
       ))
+
+      // A daemon with no `[workspaces]` runs no executor host, so nothing has
+      // migrated the ledger the worktree service writes to.
+      use Nil <- result.try(executor_plane.ensure_ledger(machine.state_root))
       executor_plane.worktrees_of(machine, [workspace])
     },
     now_ms: ffi_os.system_time_ms,
