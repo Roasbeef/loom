@@ -411,6 +411,30 @@ fn pinned(version: String, prompt: String, router_model: String) -> model.Pin {
   model.Pin(version, prompt, router_model)
 }
 
+pub fn a_replay_pass_does_not_unlock_auto_test() {
+  let replay = model.Covers(model.Replay, 30, 1, 0, 0)
+  let found =
+    restart([
+      event.RouterPinSet("rev1", "m1"),
+      event.VerdictRecorded(
+        source,
+        world.rule,
+        pinned("v1", "rev1", "m1"),
+        model.VerdictPassed,
+        replay,
+      ),
+    ])
+
+  assert standing.of(found, source, world.rule) == standing.ReplayOnly(replay)
+  assert state.verdict_of(found, source, world.rule) == gate.VerdictMissing
+  let assert Error(_) =
+    engine.apply(found, event.ModeSet(source, world.rule, model.Auto))
+  assert string.contains(
+    standing.refusal(found, source, world.rule),
+    "only a live verdict",
+  )
+}
+
 // A pair that passed under v1, prompt rev1 and model m1, and is in auto.
 fn armed() -> List(Event) {
   [

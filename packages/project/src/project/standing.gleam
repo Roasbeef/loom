@@ -39,6 +39,13 @@ pub type Standing {
     why: String,
   )
 
+  /// The latest verdict passed on the replay lane, which never ran a router, so
+  /// it unlocks nothing.
+  ReplayOnly(
+    /// What it covered.
+    covers: Covers,
+  )
+
   /// A passing verdict under the pin in force.
   Current(
     /// What it covered.
@@ -61,8 +68,15 @@ pub fn of(current: State, source: SourceId, rule: RuleId) -> Standing {
       case found.outcome, state.verdict_of(current, source, rule) {
         model.VerdictFailed, _ -> Failing(found.covers)
         model.VerdictPassed, gate.VerdictCurrent -> Current(found.covers)
+
+        // A pass that gates nothing is stale when its pin moved. Under the pin
+        // in force, the only other reason is that it came from replay.
         model.VerdictPassed, gate.VerdictMissing ->
-          Stale(found.covers, changed(found.pin, state.pin_of(current)))
+          case found.pin == state.pin_of(current) {
+            True -> ReplayOnly(found.covers)
+            False ->
+              Stale(found.covers, changed(found.pin, state.pin_of(current)))
+          }
       }
   }
 }
@@ -108,7 +122,8 @@ fn join_pair(head: String, tail: String) -> String {
   }
 }
 
-/// The word a client matches on: `none`, `failing`, `stale` or `current`.
+/// The word a client matches on: `none`, `failing`, `stale`, `replay_only` or
+/// `current`.
 ///
 /// ## Examples
 ///
@@ -120,6 +135,7 @@ pub fn word(found: Standing) -> String {
     Unmeasured -> "none"
     Failing(_) -> "failing"
     Stale(..) -> "stale"
+    ReplayOnly(_) -> "replay_only"
     Current(_) -> "current"
   }
 }
@@ -181,6 +197,8 @@ pub fn words(found: Standing, labelled: Int) -> String {
       <> why
       <> ". The rule is back in observe until it is measured again. It last passed: "
       <> claim(covers)
+    ReplayOnly(covers) ->
+      "Replay passed, which does not unlock auto. " <> claim(covers)
     Current(covers) -> "Passing. " <> claim(covers)
   }
 }
@@ -232,6 +250,8 @@ pub fn refusal(current: State, source: SourceId, rule: RuleId) -> String {
       <> " triggers are labelled. Change what the rule admits or label more triggers, and run the verdict again."
     Stale(_, why) ->
       "its verdict is stale: " <> why <> ". Run the verdict again."
+    ReplayOnly(_) ->
+      "only a live verdict can judge the router, and its passing verdict came from replay, which serves the router's recorded answers back."
     Current(_) -> "it already holds a current passing verdict."
   }
 

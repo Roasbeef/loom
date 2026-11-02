@@ -99,6 +99,7 @@ fn lane_json(found: standing.Standing) -> JsonValue {
     standing.Unmeasured -> json.Null
     standing.Failing(covers) -> json.String(lane_word(covers.lane))
     standing.Stale(covers, _) -> json.String(lane_word(covers.lane))
+    standing.ReplayOnly(covers) -> json.String(lane_word(covers.lane))
     standing.Current(covers) -> json.String(lane_word(covers.lane))
   }
 }

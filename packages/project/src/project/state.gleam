@@ -670,10 +670,14 @@ pub fn verdict_of(
   let in_force = pin_of(state)
 
   // A pass counts only under exactly the pin in force. A pass measured under
-  // any other pin is a record of the past and gates nothing.
+  // any other pin is a record of the past and gates nothing. Only the live
+  // lane unlocks `auto`: replay serves the router's recorded answers back, so
+  // an unchanged gate always agrees with its own recording, whatever the
+  // labels say, and it would pass a router that was never judged.
   case dict.get(state.verdicts, #(source, rule)) {
-    Ok(Verdict(pin, model.VerdictPassed, _)) if pin == in_force ->
-      gate.VerdictCurrent
+    Ok(Verdict(pin, model.VerdictPassed, model.Covers(lane: model.Live, ..)))
+      if pin == in_force
+    -> gate.VerdictCurrent
     Ok(_) -> gate.VerdictMissing
     Error(Nil) -> gate.VerdictMissing
   }

@@ -1175,6 +1175,7 @@ fn verdict_words(state: String) -> String {
     "none" -> "no verdict"
     "failing" -> "verdict failing"
     "stale" -> "verdict stale"
+    "replay_only" -> "replay passed"
     "current" -> "verdict passing"
     other -> "verdict " <> other
   }

@@ -1966,7 +1966,8 @@ measures the rule's labelled triggers with the evaluation instrument and records
 replying `{rule, outcome, lane, triggers, trials, changed, bound_points, words}`. It is refused
 `bad_request`, with a sentence, below thirty labels. The `live` lane is refused in words until the
 daemon can start a scratch router session; `replay` runs the current gate over the recorded triggers,
-costs nothing, and says nothing about the router's prompt or model. A verdict is pinned to the policy
+costs nothing, and says nothing about the router's prompt or model, so its pass reads `replay_only`
+and does not unlock `auto`. Until the live lane runs, no rule can reach `auto`. A verdict is pinned to the policy
 version, the router prompt revision and the router model, and a change to any of them returns the
 rule to `observe`.
 

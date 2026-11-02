@@ -431,6 +431,11 @@ rule, in words that say which of the three changed and how many labels are missi
 as `auto` starts in `observe` unless a current verdict already exists. Explicit work never reads any of
 this.
 
+Only a live pass unlocks `auto` (`state.verdict_of`). A replay pass reads `replay_only` and unlocks
+nothing, because replay serves the router's recorded answers back: an unchanged gate agrees with its own
+recording whatever the labels say, so a replay pass would admit a router that was never judged. Since
+the daemon can't run the live lane yet, no rule can reach `auto` in this version.
+
 **What it costs.** The model in the pin is the registration's profile and model key, because the
 model a `[roles]` chain resolves to is chosen when the session opens and is not visible to the
 project. A change to that chain alone does not move the pin. The prompt revision is the router's

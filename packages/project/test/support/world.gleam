@@ -128,13 +128,13 @@ pub fn fresh() -> State {
   state.start(config())
 }
 
-/// What a replay verdict over thirty triggers covers, for fixtures that care
+/// What a live verdict over thirty triggers covers, for fixtures that care
 /// only that a verdict has some coverage.
 pub const covers =
   model.Covers(
-    lane: model.Replay,
+    lane: model.Live,
     triggers: 30,
-    trials: 1,
+    trials: 3,
     changed: 0,
     bound_points: 20,
   )

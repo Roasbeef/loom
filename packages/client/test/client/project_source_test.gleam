@@ -566,6 +566,12 @@ fn label_all(handle: project_host.Handle, triggers: List(String)) -> Nil {
   Nil
 }
 
+// A live lane whose router declines everything, which matches the labels on 28
+// of the 30 triggers `label_all` labels.
+fn agrees_with_most() -> project_verdict.Lane {
+  project_verdict.LiveLane(fn(_, _) { judge.Pass })
+}
+
 // Waits for the actor to hold the triggers a pass stored.
 fn stored(handle: project_host.Handle, triggers: List(String)) -> Nil {
   let last = list.last(triggers) |> result.unwrap("")
@@ -621,6 +627,13 @@ pub fn auto_needs_a_current_verdict_and_a_changed_pin_takes_it_away_test() {
   assert string.contains(words, "\"outcome\":\"passed\"")
   assert string.contains(words, "\"lane\":\"replay\"")
   assert string.contains(words, "says nothing about the router's prompt")
+
+  // That pass judged no router, so it does not unlock `auto`. A live pass does.
+  let assert Error(replayed) =
+    project_host.set_mode(handle, "deps", model.Auto, "owner")
+  assert string.contains(replayed, "only a live verdict")
+  let assert Ok(_) =
+    project_host.run_verdict(handle, "deps", agrees_with_most(), "owner")
   let assert Ok(Nil) =
     project_host.set_mode(handle, "deps", model.Auto, "owner")
   assert string.contains(
@@ -658,7 +671,7 @@ pub fn auto_needs_a_current_verdict_and_a_changed_pin_takes_it_away_test() {
   // Running the verdict again under the new prompt makes `auto` available,
   // and a model change takes it away again.
   let assert Ok(_) =
-    project_host.run_verdict(third, "deps", project_verdict.ReplayLane, "owner")
+    project_host.run_verdict(third, "deps", agrees_with_most(), "owner")
   let assert Ok(Nil) = project_host.set_mode(third, "deps", model.Auto, "owner")
   project_host.pin_router(third, "sha256:two", "profile:default model:b")
   let assert Error(moved) =
@@ -676,12 +689,7 @@ pub fn a_failing_live_verdict_returns_the_rule_to_observe_test() {
   stored(handle, triggers)
   label_all(handle, triggers)
   let assert Ok(_) =
-    project_host.run_verdict(
-      handle,
-      "deps",
-      project_verdict.ReplayLane,
-      "owner",
-    )
+    project_host.run_verdict(handle, "deps", agrees_with_most(), "owner")
   let assert Ok(Nil) =
     project_host.set_mode(handle, "deps", model.Auto, "owner")
 
