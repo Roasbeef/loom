@@ -536,21 +536,24 @@ through the same remote placement every executor has. The guest is a separate
 `loom vm setup [--release TAG | --from-build DIR]` runs the `loom-vm` that ships
 beside `loomd` (`install.launcher()`, `bin/loom-vm` in the server tree, which is
 `$PREFIX/lib/loom/server/bin/loom-vm` once installed and is not on `PATH`) as
-`loom-vm setup --home <vm home> ...`. With no flag it tries, in order, the tags the running
-build may be published under (`vm_spec.release_candidates`, from
+`loom-vm setup --home <vm home> ...`. With no flag it tries, in order, the tags
+the running build may be published under (`vm_spec.release_candidates`, from
 `build_identity.current()`): `commit-<commit>` when the commit is 40 lowercase
-hex digits, which is how a nightly is published (its version is its release's
-version, so `v<version>` would be a different commit), then `v<version>`. Each
-candidate runs `loom-vm setup --release`, and the manifest it wrote must pass
-`check_revision` for the running commit, or that candidate failed and the next
-is tried. `loom-vm` replaces the manifest after each success, so a candidate
-that installed another commit has already replaced the manifest; when every
-candidate fails, `setup` puts the earlier manifest back (or removes the one
-written, when there was none) and reports one line naming each tag with its
-reason, that the artifacts may not be published for this build yet, and that
-`--release TAG` picks another release of the same commit. `--release TAG` tries
-only that tag and `--from-build DIR` only the tree, and neither is checked
-against the running commit. A development build reports version `dev`, has no
+hex digits, then `v<version>`. A nightly build reports its release's version
+and its own commit, so `v<version>` alone would name a different commit.
+`vmm-release.yml` does not yet publish for `commit-*` tags. Each candidate runs
+`loom-vm setup --release TAG --revision <commit>`: `setup.Release` reads the
+guest image's labels first, straight after locating libkrun, and refuses an
+image built from another commit (`setup.Options.Revision`, a full commit or an
+abbreviation of seven characters or more) before it downloads the runner or
+firmware, stages anything or touches the manifest. A candidate that fails
+therefore changes nothing, and the next is tried. When every candidate fails,
+`setup` reports one line naming each tag with its reason, that the artifacts may
+not be published for this build yet, and that `--release TAG` picks another
+release of the same commit. A build whose commit is unknown or shorter than
+seven digits passes no `--revision`. `--release TAG` tries only that tag and
+`--from-build DIR` only the tree, and neither is checked against the running
+commit. A development build reports version `dev`, has no
 release, and is refused with a message that names `make vmm-install-dev`; the
 same refusal applies to a tree with no `bin/loom-vm`.
 
@@ -589,15 +592,18 @@ the refusal names `loom vm setup`. It then:
    `<root>/srv/workspaces/<directory name>` unless that copy exists. A linked
    worktree, whose `.git` is a file that points outside the directory, is copied
    the same way and then given a repository of its own. `git clone --no-checkout
-   --no-hardlinks <worktree>` runs into `<root>/srv/loom-node/git-staging`, and
-   its `.git` is moved over the copy's `.git` file. `HEAD` is set to the
+   --no-local <worktree>` runs into `<root>/srv/loom-node/git-staging`
+   (`--no-local` copies objects over Git's transport, so a source made with
+   `git clone --shared` brings no `objects/info/alternates` naming host paths),
+   and its `.git` is moved over the copy's `.git` file. `HEAD` is set to the
    worktree's branch (the ref is updated to the worktree's commit) or its
    detached commit, `origin` is set to the worktree's own `origin` URL (or
    removed when it has none, since the clone's `origin` is the host path), and
    `git reset` makes the index match `HEAD`, so uncommitted edits show as edits.
    The remote-tracking refs are the source repository's local branches, not
-   fetched state. A failed Git step removes the copy and refuses with one line,
-   so the next `up` copies again. The copy's
+   fetched state. A failed `cp`, `chmod`, Git step or config scrub removes the
+   copy, because a later `up` keeps a copy that exists; a Git failure refuses
+   with one line naming the worktree. The copy's
    `.git/config` loses its `[credential]` sections, its `insteadOf`,
    `pushInsteadOf` and `extraheader` keys, any `[url "..."]` section whose
    header carries userinfo, and the userinfo of every `url` and `pushurl`
@@ -617,7 +623,8 @@ deployment, so the guest's checkout can be read afterwards. `status` reports
 the process, the host port the host epmd lists for the executor's node name,
 the manifest's revision, the root and the guest's workspaces. A daemon that
 was running before `up` must be restarted to read the new `[distribution]`
-table. `up` asks that daemon, through the owner control connection
+table. When the guest's deployment is in the exact default `loom.toml` (a first
+`up` or a resume: a first `up` that failed at boot leaves the daemon unread), `up` asks that daemon, through the owner control connection
 (`host/access`, command `status`), how many sessions it holds (`occupied`:
 resident, opening, stopping and blocked). With none, it sends `daemon.shutdown`,
 waits for the process (pid and birth marker) to go, and says the next `loom`

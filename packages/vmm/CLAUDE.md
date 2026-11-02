@@ -51,11 +51,12 @@ registry client, gVisor's netstack) never enters the jail helper's module.
   `dev` for a build tree. Changing a key or its meaning needs a new
   `ManifestVersion`, because another program reads it.
 - `setup.Release` / `setup.FromBuild` / `setup.Doctor` — the two ways to
-  produce a manifest and the check on one. `Release` downloads the runner and
-  firmware from a GitHub release, verifies them against `vmm-SHA256SUMS`, on
-  macOS removes `com.apple.quarantine` and re-signs the runner ad hoc with
-  `vmm.RunnerEntitlements`, pulls `ghcr.io/<owner>/loom-guest:TAG` for the host
-  architecture, checks its revision and version labels, and unpacks it with
+  produce a manifest and the check on one. `Release` first pulls
+  `ghcr.io/<owner>/loom-guest:TAG` for the host architecture and checks its
+  revision and version labels (and `Options.Revision`), then downloads the
+  runner and firmware from a GitHub release, verifies them against
+  `vmm-SHA256SUMS`, on macOS removes `com.apple.quarantine` and re-signs the
+  runner ad hoc with `vmm.RunnerEntitlements`, and unpacks the image with
   `setup.ExtractRoot` into `cache/TAG/guest-root`. `FromBuild` records an
   existing build tree and copies nothing. `Doctor` checks each entry, the
   digests recorded at install (`installed.sums`, taken after the re-signing),
@@ -64,7 +65,7 @@ registry client, gVisor's netstack) never enters the jail helper's module.
 - `vmm.RunnerEntitlements` — `runner.entitlements`, embedded from the module
   root because `go:embed` cannot reach a parent directory. `make vmm-runner`
   signs with the same file.
-- `cmd/loom-vm` — `probe`, `setup (--release TAG | --from-build DIR)`,
+- `cmd/loom-vm` — `probe`, `setup (--release TAG [--revision SHA] | --from-build DIR [--revision SHA])`,
   `doctor` and `run [flags] -- INIT ARGS`. Native paths come
   from `--runner`, `--lib-dir`, `--firmware-dir` or `LOOM_VM_RUNNER`,
   `LOOM_VM_LIB_DIR`, `LOOM_VM_FIRMWARE_DIR`. `run` takes `--file`,
@@ -188,6 +189,16 @@ credential.
 - **The runner is version-locked.** Build it from this module's go-microvm
   version (`make vmm-runner`) and, on macOS, codesign it with
   `runner.entitlements`; an older runner fails at boot, not at probe.
+- **A wrong image changes nothing.** `Release` locates libkrun, then reads the
+  guest image's labels (`pullGuest`; layers are fetched later, at extraction)
+  before it downloads, stages or writes anything. A missing revision label, a
+  version label other than the tag, or, with `Options.Revision` /
+  `--revision SHA`, a revision that is neither equal to nor a prefix of
+  (seven characters or more) the requested one, refuses with no cache
+  directory, no download and no manifest change. `loom vm setup` passes
+  `--revision` with the running build's commit so that a guessed tag of another
+  commit is refused here and not found out after the manifest was replaced.
+  With `--from-build`, `--revision` is the revision to record (default `dev`).
 - **Nothing downloaded is used before it is verified, and nothing partial is
   visible.** `Release` locates libkrun first, checks each asset's SHA-256
   against `vmm-SHA256SUMS`, builds the whole install under

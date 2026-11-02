@@ -53,18 +53,23 @@ answers `/zen` 200 and `/user` 401 through the proxy.
 `setup` runs `install.bundled_launcher()` (`bin/loom-vm` in the server tree)
 with `setup --home <vm home> --release TAG` (or `--from-build`), where with no
 flag the tags are `vm_spec.release_candidates`: `commit-<commit>` for a 40-hex
-commit (a nightly), then `v<version>`, each kept only if the manifest it wrote
-passes `check_revision`; when all fail the earlier manifest is restored. A
+commit, then `v<version>`, each run with `--revision <commit>` so `loom-vm`
+refuses an image of another commit before it writes anything (`vmm-release.yml`
+does not publish `commit-*` tags yet). A failed attempt changes nothing, so
+nothing is restored. A
 development build (`build_identity` version `dev`) has no release and is
 refused naming `make vmm-install-dev`; `up` with no manifest runs the same
 setup first for a release build. A linked worktree (`.git` a file) is copied as
-a plain tree, then `own_repository` clones it `--no-checkout --no-hardlinks`
+a plain tree, then `own_repository` clones it `--no-checkout --no-local`
 into `<root>/srv/loom-node/git-staging`, moves that `.git` over the copy's,
 restores `HEAD` and `origin` from the worktree (`vm_spec.head_target`,
 `head_arguments`, `origin_arguments`), resets the index, and removes the copy if
-any step fails. At the end `up` asks the user's daemon how many sessions it
-holds: none means `daemon.shutdown` and a note that the next `loom` starts it;
-any means no stop and a `kill -TERM <pid>` line.
+any copy step fails. At the end, when the deployment is in the exact default
+`loom.toml` (a first `up` or a resume), `up` asks the user's daemon how many
+sessions it holds. `vm_spec.daemon_step` decides: a count of zero means
+`daemon.shutdown` and a note that the next `loom` starts it; any session, or no
+count, means no stop and a `kill -TERM <pid>` line. `daemon_shipped_microvm_test`
+proves the idle stop on its isolated home.
 
 Invariants that break things when violated:
 
@@ -78,7 +83,7 @@ Invariants that break things when violated:
 - The manifest's revision must be `dev` or the running build's commit.
 - `up` never stops a daemon that holds a session, and never starts one.
 - A linked worktree's copy never keeps a `.git` file or an `origin` that names
-  a host path; a failed conversion removes the copy, because a resumed `up`
+  a host path; any failed copy step removes the copy, because a resumed `up`
   keeps a copy that exists.
 - The pid file holds the process's birth marker, and `down` signals a pid only
   while it still has that marker.

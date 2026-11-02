@@ -1291,12 +1291,16 @@ built the artifacts runs `make vmm-install-dev`, which records the paths of
 
 `loom vm setup` runs this command for you with the `loom-vm` that ships beside
 `loomd`, so a user never types the long path: with no flag it installs the
-artifacts published for the running build. A nightly reports its release's
-version and its own commit and is published as `commit-<full commit>`, so setup
-tries that tag first when the commit is 40 hex digits, then `v<version>`, and
-keeps the first whose manifest revision is the running commit; if none is, it
-restores the earlier manifest and names every tag it tried. `--release TAG`
-tries only that tag and `--from-build DIR` passes through. `loom vm up` runs the same
+artifacts for the running build. A nightly build reports its release's version
+and its own commit, and the nightly itself is the prerelease `commit-<full
+commit>`, so setup tries that tag first when the commit is 40 hex digits, then
+`v<version>`. It passes the commit as `--revision`, so `loom-vm setup` reads the
+guest image's labels first and refuses an image built from another commit
+before it downloads or writes anything; the first tag that installs wins, and
+when none does the error names every tag tried. `vmm-release.yml` does not yet
+publish for `commit-*` tags, so a nightly's first candidate currently fails and
+its second is accepted only when it is the same commit. `--release TAG` tries
+only that tag and `--from-build DIR` passes through. `loom vm up` runs the same
 setup first when no manifest exists. A development build reports version `dev`,
 has no release and is refused with a message that names `make vmm-install-dev`.
 
