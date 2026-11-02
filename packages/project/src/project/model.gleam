@@ -156,6 +156,15 @@ pub type ReviewReason {
     /// What failed.
     why: String,
   )
+
+  /// The host repository would not take the worker's commit in: Git refused
+  /// an object, or what the host repository holds is not the commit the
+  /// worker's clone named. Nothing about the commit was checked or can be
+  /// published. The words are the host's description, capped.
+  IntakeRefused(
+    /// What was refused.
+    why: String,
+  )
 }
 
 /// A review reason for a failed publish, with the host's words capped at
@@ -169,6 +178,19 @@ pub type ReviewReason {
 /// ```
 pub fn publish_unavailable(why: String) -> ReviewReason {
   PublishUnavailable(capped(why))
+}
+
+/// A review reason for a commit the host repository refused, with the host's
+/// words capped at `max_reason_chars` code points.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert model.intake_refused("fsck: badTimezone")
+///   == model.IntakeRefused("fsck: badTimezone")
+/// ```
+pub fn intake_refused(why: String) -> ReviewReason {
+  IntakeRefused(capped(why))
 }
 
 /// A review reason for a check that gave no verdict, with the host's words

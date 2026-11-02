@@ -643,6 +643,11 @@ fn reason_json(reason: model.ReviewReason) -> Json {
         #("k", json.string("unavailable")),
         #("why", json.string(why)),
       ])
+    model.IntakeRefused(why) ->
+      json.object([
+        #("k", json.string("intake_refused")),
+        #("why", json.string(why)),
+      ])
   }
 }
 
@@ -662,6 +667,10 @@ fn reason_decoder() -> Decoder(model.ReviewReason) {
     "unavailable" -> {
       use why <- decode.field("why", decode.string)
       decode.success(model.publish_unavailable(why))
+    }
+    "intake_refused" -> {
+      use why <- decode.field("why", decode.string)
+      decode.success(model.intake_refused(why))
     }
     _ -> decode.failure(model.NoCheckConfigured, "ReviewReason")
   }

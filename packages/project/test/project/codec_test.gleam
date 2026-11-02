@@ -97,6 +97,12 @@ pub fn the_wire_form_of_the_host_facts_is_pinned_test() {
       model.PublishingOff,
     ))
     == "{\"t\":\"review_requested\",\"ticket\":\"t-c1\",\"commit\":\"abc\",\"reason\":{\"k\":\"publishing_off\"}}"
+  assert codec.encode(event.ReviewRequested(
+      TicketId("t-c1"),
+      CommitId("abc"),
+      model.intake_refused("fsck"),
+    ))
+    == "{\"t\":\"review_requested\",\"ticket\":\"t-c1\",\"commit\":\"abc\",\"reason\":{\"k\":\"intake_refused\",\"why\":\"fsck\"}}"
 }
 
 pub fn a_review_reason_longer_than_the_cap_is_cut_on_the_way_in_test() {
