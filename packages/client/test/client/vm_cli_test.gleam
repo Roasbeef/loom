@@ -1397,7 +1397,7 @@ pub fn git_versions_are_read_from_their_output_test() {
   assert vm_spec.git_version("git version next") == Error(Nil)
 }
 
-pub fn sync_needs_git_2_45_1_test() {
+pub fn sync_needs_a_git_with_the_lazy_fetch_fix_test() {
   assert vm_spec.check_git_version("git version 2.45.1\n") == Ok(Nil)
   assert vm_spec.check_git_version("git version 2.54.0 (Apple Git-155)")
     == Ok(Nil)
@@ -1406,8 +1406,13 @@ pub fn sync_needs_git_2_45_1_test() {
   let assert Error(old) = vm_spec.check_git_version("git version 2.45.0")
   assert string.contains(old, "git 2.45.0")
   assert string.contains(old, "2.45.1")
-  let assert Error(old) = vm_spec.check_git_version("git version 2.39.5")
-  assert string.contains(old, "git 2.39.5")
+  assert vm_spec.check_git_version("git version 2.39.5 (Apple Git-154)")
+    == Ok(Nil)
+  assert vm_spec.check_git_version("git version 2.44.1") == Ok(Nil)
+  assert vm_spec.check_git_version("git version 2.46.0") == Ok(Nil)
+  let assert Error(_) = vm_spec.check_git_version("git version 2.44.0")
+  let assert Error(old) = vm_spec.check_git_version("git version 2.39.3")
+  assert string.contains(old, "git 2.39.3")
   let assert Error(unknown) = vm_spec.check_git_version("garbage\n")
   assert string.contains(unknown, "garbage")
   assert string.contains(unknown, "2.45.1")

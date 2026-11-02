@@ -2373,13 +2373,15 @@ pub fn bundle_arguments(checkout: String, file: String) -> List(String) {
   ["-C", checkout, "bundle", "create", "--quiet", file, "--branches"]
 }
 
-/// The oldest Git `sync` fetches with. The fetch's `-c` settings do not reach
-/// `git-upload-pack`, because the local transport unsets
-/// `GIT_CONFIG_PARAMETERS` for it, so what stops a copy's planted
+/// The Git releases `sync` fetches with, as words for a refusal. The fetch's
+/// `-c` settings do not reach `git-upload-pack`, because the local transport
+/// unsets `GIT_CONFIG_PARAMETERS` for it, so what stops a copy's planted
 /// `extensions.partialclone`, promisor remote and `core.sshCommand` from running
-/// a command on the host is upload-pack's own refusal to lazy fetch, which Git
-/// 2.45.1 added.
-pub const git_floor = #(2, 45, 1)
+/// a command on the host is upload-pack's own refusal to lazy fetch. That is
+/// Git commit 7b70e9efb18c, which reached each maintained series at the patch
+/// `refuses_lazy_fetch` names.
+const git_required =
+  "2.45.1 or newer, or 2.39.4, 2.40.2, 2.41.1, 2.42.2, 2.43.4 or 2.44.1 in those series"
 
 /// The version in the output of `git version`, such as `git version 2.54.0
 /// (Apple Git-155)` or `git version 2.46.0.windows.1`: the first three numbers
@@ -2411,10 +2413,23 @@ pub fn git_version(output: String) -> Result(#(Int, Int, Int), Nil) {
   }
 }
 
-/// A version as one number that orders as the version does, for a minor or
-/// patch below a thousand.
-fn rank(version: #(Int, Int, Int)) -> Int {
-  version.0 * 1_000_000 + version.1 * 1000 + version.2
+/// Whether a Git release holds upload-pack's refusal to lazy fetch.
+fn refuses_lazy_fetch(version: #(Int, Int, Int)) -> Bool {
+  let #(major, minor, patch) = version
+
+  // The fix landed in 2.45.1 and was backported, so each older series has its
+  // own first release that holds it, and a series before 2.39 has none.
+  case major, minor {
+    2, 39 -> patch >= 4
+    2, 40 -> patch >= 2
+    2, 41 -> patch >= 1
+    2, 42 -> patch >= 2
+    2, 43 -> patch >= 4
+    2, 44 -> patch >= 1
+    2, 45 -> patch >= 1
+    2, _ -> minor > 45
+    _, _ -> major > 2
+  }
 }
 
 /// The leading decimal digits of `text` as a number.
@@ -2435,15 +2450,13 @@ fn leading_int(text: String) -> Result(Int, Nil) {
 /// assert result.is_error(vm_spec.check_git_version("git version 2.45.0\n"))
 /// ```
 pub fn check_git_version(output: String) -> Result(Nil, String) {
-  let required = "2.45.1"
+  let required = git_required
   let found = printable(string.trim(output))
-
-  let floor = rank(git_floor)
 
   // A version that cannot be read is refused as if it were old.
   case git_version(output) {
     Ok(#(major, minor, patch)) ->
-      case rank(#(major, minor, patch)) >= floor {
+      case refuses_lazy_fetch(#(major, minor, patch)) {
         True -> Ok(Nil)
         False ->
           Error(
@@ -2455,7 +2468,7 @@ pub fn check_git_version(output: String) -> Result(Nil, String) {
             <> int.to_string(patch)
             <> " is too old for `loom vm sync`, which needs git "
             <> required
-            <> " or newer to fetch from an untrusted repository safely",
+            <> " to fetch from an untrusted repository safely",
           )
       }
     Error(Nil) ->

@@ -75,8 +75,9 @@ through `make_inside` and a rename, and guest text printed through
 `rm` removes `[executors.<name>]`, and `[distribution]` and the home's cookie only
 when they are this guest's and no other executor remains
 (`distribution_install.without_tables`, `vm_spec.plan_teardown`), refuses a
-running guest, and without `--yes` only lists the workspaces. `sync` needs git
-2.45.1 or newer (`vm_spec.check_git_version`) and runs it with
+running guest, and without `--yes` only lists the workspaces. `sync` needs a
+Git release with upload-pack's lazy-fetch refusal, 2.45.1 or a backport
+(`vm_spec.check_git_version`) and runs it with
 `GIT_NO_LAZY_FETCH=1`, because the fetch's `-c` settings do not reach
 upload-pack; `--to-guest` bundles `--branches`; `logs` caps its output at 4 MiB;
 and `stage_node` registers every workspace the `checkouts` record names.

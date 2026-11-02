@@ -854,11 +854,10 @@ marker appeared. The `-c` settings above do not reach `git-upload-pack`: the loc
 unsets `GIT_CONFIG_PARAMETERS` for it. `sync` therefore relies on upload-pack's
 own rules, and in particular on its refusal to lazy fetch from a promisor remote,
 which is what stops a planted `extensions.partialclone`, a promisor `ssh://`
-remote and `core.sshCommand` from running a command on the host. Git 2.45.1
-added that refusal (the 2.45.1 release is from memory; `git help git-upload-pack`
-on 2.54.0 documents the behaviour, and the release notes were not on the machine),
-so `sync` runs `git version` first and refuses below 2.45.1, or when it cannot
-read the version (`vm_spec.check_git_version`), and runs Git with
+remote and `core.sshCommand` from running a command on the host. Git commit
+7b70e9efb18c added that refusal, and it is in 2.45.1 and the backports 2.39.4,
+2.40.2, 2.41.1, 2.42.2, 2.43.4 and 2.44.1, so `sync` runs `git version` first
+and refuses a release without it, or when it cannot read the version (`vm_spec.check_git_version`), and runs Git with
 `GIT_NO_LAZY_FETCH=1` through `env`, which `git help git` documents. A scratch
 copy with `extensions.partialclone`, a promisor `ssh://` remote, a
 `core.sshCommand` that touches a marker and a deleted blob was fetched from on

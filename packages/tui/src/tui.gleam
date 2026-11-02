@@ -3197,7 +3197,8 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             guest's root is untrusted, so Git runs in your checkout and only
             reads the copy as a remote. Uncommitted edits are not fetched.
             --workspace NAME picks the copy when the guest holds several.
-            It needs git 2.45.1 or newer. --to-guest goes the other way: it
+            It needs a Git with the 2024 upload-pack fix. --to-guest goes the
+            other way: it
             bundles your checkout's local branches (not tags, remote-tracking
             refs or the stash) into
             /srv/host-refs/NAME.bundle in the guest and prints the jailed
