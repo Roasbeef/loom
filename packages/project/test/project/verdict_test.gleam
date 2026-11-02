@@ -678,3 +678,44 @@ pub fn what_a_pass_claims_is_said_in_words_test() {
   assert string.contains(live, "rules out a drop of more than 19 points")
   assert string.contains(live, "does not show the router is as good as before")
 }
+
+pub fn a_pass_says_how_much_agreement_it_needed_test() {
+  let live = standing.claim(model.Covers(model.Live, 30, 3, 4, 19))
+  assert string.contains(
+    live,
+    "agreed with the labels on at least 75 percent of its trials",
+  )
+  let replay = standing.claim(model.Covers(model.Replay, 30, 1, 2, 28))
+  assert string.contains(replay, "at least 75 percent")
+}
+
+pub fn a_failure_names_each_reason_it_failed_for_test() {
+  let wrong_alike =
+    list.index_map(list.repeat(Nil, 30), fn(_, index) {
+      judge.Sample(TriggerId(id(index)), ShouldAccept, judge.Pass, [
+        judge.Pass,
+        judge.Pass,
+        judge.Pass,
+      ])
+    })
+  let assert Ok(floor_only) = judge.judge(wrong_alike, model.Live)
+  assert floor_only.outcome == model.VerdictFailed
+  assert standing.failure(floor_only)
+    == "It failed: it agreed with the labels on 0 percent of its trials, under the 75 a pass needs."
+
+  // A candidate whose change from the recording the interval cannot bound is
+  // named as that, and as the floor too when it also did not hold.
+  let unbounded =
+    list.index_map(list.repeat(Nil, 30), fn(_, index) {
+      judge.Sample(TriggerId(id(index)), ShouldAccept, judge.Take, [
+        judge.Pass,
+        judge.Pass,
+        judge.Pass,
+      ])
+    })
+  let assert Ok(wide) = judge.judge(unbounded, model.Live)
+  let words = standing.failure(wide)
+  assert string.contains(words, "could reach down 100 points")
+  assert string.contains(words, "over the 30 a pass allows")
+  assert string.contains(words, "under the 75 a pass needs")
+}

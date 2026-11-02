@@ -216,8 +216,17 @@ pub fn replay_choice(frame: Frame, classify: Classify) -> Choice {
   }
 }
 
-/// The labelled frames of a tape, in the tape's order.
-fn labelled_frames(
+/// The labelled frames of a tape, in the tape's order, each with its label. A
+/// host that decides the candidate's answers itself, in parallel and with
+/// failures, takes its work from this list and builds `Sample`s from what it
+/// gets back.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert judge.labelled_frames(tape.Tape(source, rule, []), dict.new()) == []
+/// ```
+pub fn labelled_frames(
   found: Tape,
   labels: Dict(TriggerId, Label),
 ) -> List(#(Frame, Label)) {

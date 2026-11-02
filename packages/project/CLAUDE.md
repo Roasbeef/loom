@@ -69,11 +69,15 @@ are `gleam_json` and `evalstat`, both of which have both targets.
 - `project/judge` turns labelled frames into `evalstat` rows (a trigger is a task,
   a trial passes when the decision matches the label) and asks the instrument for
   a verdict. `replay_samples` runs a gate function with the router's recorded
-  answers served back; `live_samples` takes a decision callback. `outcome_of`
-  passes a finding only when it is not `Harmed` and the instrument's interval stays
-  above a thirty-point drop. It adds no statistic.
+  answers served back; `live_samples` takes a decision callback, and
+  `labelled_frames` gives a host that decides in parallel its work. `outcome_of`
+  passes a finding only when it is not `Harmed`, the instrument's interval stays
+  above a thirty-point drop (`max_bound_points`), and the candidate's own agreement
+  with the labels reaches `min_agreement_points` (75), which `Finding.agreement_points`
+  carries. It adds no statistic.
 - `project/standing` words where a pair stands (`none`, `failing`, `stale`,
-  `current`), what a pass claims, and the refusal of `auto`, for every surface.
+  `current`), what a pass claims, why a verdict failed (`failure`), and the
+  refusal of `auto`, for every surface.
 
 ## Invariants that break things when violated
 

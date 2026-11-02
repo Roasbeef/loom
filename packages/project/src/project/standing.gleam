@@ -13,8 +13,11 @@
 //// show that the pair is as good as before. A replay pass says nothing about
 //// a router prompt or model, because no router ran.
 
+import evalstat/verdict as stat
 import gleam/dict
 import gleam/int
+import gleam/list
+import gleam/string
 import project/gate
 import project/judge
 import project/model.{type Covers, type RuleId, type SourceId}
@@ -162,7 +165,8 @@ pub fn claim(covers: Covers) -> String {
       <> int.to_string(covers.changed)
       <> " decided differently from the recording. The same inputs give these decisions, which says nothing about the router's prompt or model. It could rule out a change of more than "
       <> size
-      <> " in agreement with the labels, and not a smaller one."
+      <> " in agreement with the labels, and not a smaller one. "
+      <> agreement_clause()
     model.Live ->
       "Live over "
       <> triggers
@@ -170,7 +174,64 @@ pub fn claim(covers: Covers) -> String {
       <> int.to_string(covers.trials)
       <> " trials each: it rules out a drop of more than "
       <> size
-      <> " in agreement with the labels. It does not show the router is as good as before."
+      <> " in agreement with the labels. "
+      <> agreement_clause()
+      <> " It does not show the router is as good as before."
+  }
+}
+
+/// What every pass says about the candidate's own agreement with the labels,
+/// which `judge.min_agreement_points` holds a pass to.
+fn agreement_clause() -> String {
+  "The candidate agreed with the labels on at least "
+  <> int.to_string(judge.min_agreement_points)
+  <> " percent of its trials."
+}
+
+/// Why a verdict failed, in words, from the finding. Each reason a pass needs
+/// is named when it did not hold, so a person knows whether to label more, to
+/// change what the rule admits, or to change the router.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // standing.failure(finding) == "It failed: it agreed with the labels on 40 percent of its trials, under the 75 a pass needs."
+/// ```
+pub fn failure(finding: judge.Finding) -> String {
+  let reasons =
+    list.flatten([
+      case finding.measured {
+        stat.Harmed(..) -> ["the instrument found it worse than the recording"]
+        stat.Incomplete(_) -> ["the instrument could not pair the trials"]
+        _ -> []
+      },
+      case finding.covers.bound_points > judge.max_bound_points {
+        True -> [
+          "its change from the recording could reach down "
+          <> int.to_string(finding.covers.bound_points)
+          <> " points, over the "
+          <> int.to_string(judge.max_bound_points)
+          <> " a pass allows",
+        ]
+        False -> []
+      },
+      case finding.agreement_points < judge.min_agreement_points {
+        True -> [
+          "it agreed with the labels on "
+          <> int.to_string(finding.agreement_points)
+          <> " percent of its trials, under the "
+          <> int.to_string(judge.min_agreement_points)
+          <> " a pass needs",
+        ]
+        False -> []
+      },
+    ])
+
+  // A failure with no reason cannot come from `outcome_of`, but the words
+  // stay true if it does.
+  case reasons {
+    [] -> "It failed."
+    named -> "It failed: " <> string.join(named, "; ") <> "."
   }
 }
 
