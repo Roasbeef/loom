@@ -546,7 +546,15 @@ It then:
    second `up` reads the bundles back instead of minting new certificates;
 2. installs the orchestrator bundle into the user's `loom.toml` with
    `distribution_install.install`, which merges `[distribution]` and
-   `[executors.<name>]` and refuses a file that holds a different deployment;
+   `[executors.<name>]` and refuses a file that holds a different deployment.
+   A newly minted deployment's `[distribution]` table also gets
+   `listen_address = "127.0.0.1"` (protocol-change/106), since nothing dials
+   this orchestrator. A resumed `up` installs nothing and only checks the
+   `[executors.<name>]` row is still there. Because the line is not in the
+   bundle, a later `loom distribution install` of another bundle into the same
+   file sees a `[distribution]` table that differs and needs `--force`, which
+   replaces the table and drops the line; add it back if that daemon is
+   still dialled by nobody;
 3. clones the guest root to `~/.loom/vm/<name>/root` (`cp -cRp` on macOS,
    `cp -a --reflink=auto` on Linux) unless the guest ran before and `--fresh`
    was not given, in which case the root and `state.img` are kept. It resolves
@@ -555,9 +563,10 @@ It then:
    `<root>/srv/loom-node/`, rewriting its configuration and credentials, and
    copies the workspace, with its `.git` directory, to
    `<root>/srv/workspaces/<directory name>` unless that copy exists. The copy's
-   `.git/config` loses its `[credential]` sections and its `insteadOf`,
-   `pushInsteadOf` and `extraheader` keys, because the guest's default read
-   scope can read it;
+   `.git/config` loses its `[credential]` sections, its `insteadOf`,
+   `pushInsteadOf` and `extraheader` keys, any `[url "..."]` section whose
+   header carries userinfo, and the userinfo of every `url` and `pushurl`
+   value, because the guest's default read scope can read it;
 4. starts `loom-vm run --publish <short name>:<free host port>:4370 --state-disk
    state.img` detached through `host/bootstrap.spawn_server`, which records the
    process's birth marker in `loom-vm.pid` before the wrapper becomes

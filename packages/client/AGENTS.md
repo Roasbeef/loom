@@ -94,6 +94,8 @@ daemon's. A node key `loom distribution install` places outside the state
 root is still unmasked for host sessions. `loom vm up` installs a newly
 minted deployment with `listen_address = "127.0.0.1"`
 (`vm_spec.with_loopback_listener`) and, on resume, does not reinstall it.
+The line is not in the bundle, so a later `loom distribution install` into the
+same file needs `--force`, which drops it.
 `daemon_shipped_microvm_test` proves the mask from
 inside a libkrun guest it boots with `loom vm up` (see "Standing microVM guest");
 it needs `LOOM_VM`, `LOOM_VM_GUEST_ROOT`, `LOOM_VM_RUNNER`, `LOOM_VM_LIB_DIR` and
