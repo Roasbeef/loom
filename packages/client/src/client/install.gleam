@@ -150,6 +150,25 @@ pub fn bundled_launcher() -> Result(String, Nil) {
   existing_file(launcher())
 }
 
+/// The `git-cow` binary a project's template is copied with, if there is one:
+/// the copy shipped in the same tree as the running server (`<root>/bin/git-cow`)
+/// first, and the first `git-cow` on `PATH` after it. A release does not ship
+/// it yet, so a missing binary is the ordinary case, and the host then copies
+/// the template with a plain recursive copy.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let Error(Nil) = install.git_cow()
+/// ```
+///
+pub fn git_cow() -> Result(String, Nil) {
+  first_of([
+    fn() { existing_file(root() <> "/bin/git-cow") },
+    fn() { ffi_os.find_executable("git-cow") },
+  ])
+}
+
 /// Where a release keeps the bundled Gleam compiler: `<root>/bin/gleam`.
 ///
 /// ## Examples

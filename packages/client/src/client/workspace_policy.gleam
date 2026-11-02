@@ -1546,13 +1546,16 @@ fn project_directories(state_root: String) -> List(String) {
 }
 
 /// The files of one project's directory that neither a session nor a check has
-/// a use for, as they are on disk now: the host repository, and the ledger with
-/// its SQLite side files.
+/// a use for, as they are on disk now: the host repository, the template, and
+/// the ledger with its SQLite side files. The template is what repository
+/// scripts built with the network on, and only the host copies from it, so no
+/// session and no check reads it: a check tree is a copy of it and needs
+/// nothing from the original.
 fn private_masks(directory: String) -> List(String) {
   let ledger = directory <> "/ledger.db"
   existing(
     list.flatten([
-      [directory <> "/host.git", ledger],
+      [directory <> "/host.git", directory <> "/template", ledger],
       sqlite_side_files(ledger),
     ]),
   )

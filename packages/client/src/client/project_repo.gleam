@@ -139,6 +139,48 @@ pub type Withholding {
   UncommittedChanges
 }
 
+/// Where a new tree gets its files.
+pub type Seed {
+  /// From nothing but Git: a clone of the owner's checkout, or an empty
+  /// repository that fetches one commit from the host repository. A project
+  /// with no `setup` is always cold, and behaves as it did before templates.
+  Cold
+
+  /// From a copy of the project's template, moved to the commit it needs. The
+  /// copy carries every ignored file the template holds, so the caches
+  /// `setup` filled are there for the worker and the offline check.
+  Warm(
+    /// How the copy is made.
+    copier: Copier,
+  )
+}
+
+/// How a template is copied: with `git-cow` when the program is known, and
+/// by a plain recursive copy otherwise.
+pub type Copier {
+  Copier(
+    /// The `git-cow` binary, or `None` when none was found.
+    program: Option(String),
+    /// Told how each copy was made, so the daemon can log it.
+    report: fn(Method) -> Nil,
+  )
+}
+
+/// How one copy of the template was made.
+pub type Method {
+  /// `git-cow copy`, which shares disk blocks where the file system allows.
+  CopyOnWrite(
+    /// The binary that ran.
+    program: String,
+  )
+
+  /// A plain recursive copy: slower, and it behaves the same.
+  PlainCopy(
+    /// Why `git-cow` was not used.
+    why: String,
+  )
+}
+
 /// The most refs of a clone that a release will look at before it keeps the
 /// clone for a person. A worker can make as many as it likes.
 pub const max_refs_checked = 64
@@ -220,6 +262,40 @@ pub fn clone_path(layout: Layout, name: String) -> String {
 /// ```
 pub fn checks_path(layout: Layout) -> String {
   project_directory(layout) <> "/checks"
+}
+
+/// The project's template: a normal repository, made by the host from the
+/// recorded base commit, in which `setup` ran. Every worker clone and check
+/// tree is a copy of it. Only host code writes it, and the session and check
+/// policies mask it like `host.git`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_repo.template_path(project_repo.Layout("/s", "p-1", "/repo"))
+///   == "/s/projects/p-1/template"
+/// ```
+pub fn template_path(layout: Layout) -> String {
+  project_directory(layout) <> "/template"
+}
+
+/// The directory a new template is built in. It becomes `template` by a rename
+/// only after `setup` and the base check passed, so a partial template never
+/// has the template's name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_repo.template_making_path(project_repo.Layout("/s", "p-1", "/repo"))
+///   == "/s/projects/p-1/.template.making"
+/// ```
+pub fn template_making_path(layout: Layout) -> String {
+  project_directory(layout) <> "/.template.making"
+}
+
+// Where the template being replaced waits during a swap.
+fn template_old_path(layout: Layout) -> String {
+  project_directory(layout) <> "/.template.old"
 }
 
 /// The tree a check runs in: the ticket and the first twelve digits of the
@@ -466,6 +542,29 @@ pub fn clone(
   name: String,
   start: Start,
 ) -> Result(String, String) {
+  clone_from(trees, layout, name, start, Cold)
+}
+
+/// Makes the clone like `clone`, from the seed given. A `Warm` seed copies the
+/// project's template into place, fetches the commit `start` names from the
+/// host repository and branches `loom/<name>` there, so the worker begins with
+/// the template's ignored files and the same history a cold clone has. The
+/// copy's `.git/config` holds the keys `git init` wrote and nothing the owner
+/// has: no remote, no URL, no credential helper, because the template was made
+/// by fetching one commit from the host repository by its path.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_repo.clone_from(trees, layout, "t-a-1", project_repo.FromOwner, project_repo.Cold)
+/// ```
+pub fn clone_from(
+  trees: Worktrees,
+  layout: Layout,
+  name: String,
+  start: Start,
+  seed: Seed,
+) -> Result(String, String) {
   let tickets = tickets_path(layout)
   let final = clone_path(layout, name)
   use Nil <- result.try(bootstrap.ensure_private_directory(tickets))
@@ -477,7 +576,7 @@ pub fn clone(
     True -> result.replace(sound_clone(final), final)
     False -> {
       use settled <- result.try(settle_start(trees, layout, start))
-      make_clone(trees, layout, name, tickets, final, settled)
+      make_clone(trees, layout, name, tickets, final, settled, seed)
     }
   }
 }
@@ -527,15 +626,19 @@ fn make_clone(
   tickets: String,
   final: String,
   start: Start,
+  seed: Seed,
 ) -> Result(String, String) {
   let making = tickets <> "/." <> name <> ".making"
-  use Nil <- result.try(remove(making))
+  use Nil <- result.try(force_remove(trees, tickets, making))
 
   // The two starts differ only in where the objects come from. Both end with a
-  // clone that has no remote and a branch of the worker's own.
-  let made = case start {
-    FromOwner -> cut_from_owner(trees, layout, name, tickets, making)
-    FromCommit(commit:) ->
+  // clone that has no remote and a branch of the worker's own. A warm seed
+  // supplies the files and the starts differ only in the commit.
+  let made = case seed, start {
+    Warm(copier:), _ ->
+      cut_from_template(trees, layout, name, tickets, making, start, copier)
+    Cold, FromOwner -> cut_from_owner(trees, layout, name, tickets, making)
+    Cold, FromCommit(commit:) ->
       cut_from_commit(trees, layout, name, tickets, making, commit)
   }
 
@@ -543,7 +646,7 @@ fn make_clone(
   // directory goes.
   case made {
     Error(why) -> {
-      let _removed = remove(making)
+      let _removed = force_remove(trees, tickets, making)
       Error(why)
     }
     Ok(_) ->
@@ -622,6 +725,418 @@ fn cut_from_commit(
     [making],
     unhooked(["checkout", "--quiet", "-b", worktrees.branch_of(name), commit]),
   )
+}
+
+/// Cuts a clone from the template: a copy of it, then the commit the start
+/// names fetched from the host repository by path, and a branch of the worker's
+/// own checked out there. A checkout from the template's commit to the worker's
+/// leaves every untracked and ignored file in place, which is the point.
+///
+/// A start from the owner's checkout begins at the owner's `HEAD` as the host
+/// repository holds it now, which can be ahead of the template's commit by
+/// whatever was merged since the last rebuild.
+fn cut_from_template(
+  trees: Worktrees,
+  layout: Layout,
+  name: String,
+  tickets: String,
+  making: String,
+  start: Start,
+  copier: Copier,
+) -> Result(String, String) {
+  use commit <- result.try(case start {
+    FromOwner -> refresh_base(trees, layout)
+    FromCommit(commit:) -> Ok(commit)
+  })
+  use Nil <- result.try(copy_template(trees, layout, tickets, making, copier))
+  use _fetched <- result.try(fetch_into(trees, layout, making, commit))
+  change(
+    trees,
+    making,
+    [making],
+    unhooked(["checkout", "--quiet", "-b", worktrees.branch_of(name), commit]),
+  )
+}
+
+/// Fetches one commit of the host repository into a tree by the repository's
+/// path, which writes no remote, no `FETCH_HEAD` and no tag.
+fn fetch_into(
+  trees: Worktrees,
+  layout: Layout,
+  tree: String,
+  commit: String,
+) -> Result(String, String) {
+  change(
+    trees,
+    tree,
+    [tree],
+    unhooked([
+      "fetch",
+      "--quiet",
+      "--no-tags",
+      "--no-write-fetch-head",
+      "--",
+      host_path(layout),
+      commit,
+    ]),
+  )
+}
+
+/// How long a copy of the template may take. A plain copy of a large template
+/// is the slow case, and ten minutes is the bound a checkout gets.
+const copy_within_ms = 600_000
+
+/// Copies the template to `dest`, a name that does not exist yet in `parent`.
+///
+/// `git-cow copy` is tried first when a binary is known. It runs in the same
+/// sandbox as every other Git call, writable only in `parent`, because the
+/// template holds what repository scripts wrote and the host should read it no
+/// less jailed than a worker's clone. Exit 2 is its refusal of the template
+/// (a linked worktree, an alternates file, a symlink under `.git`, a socket),
+/// and it is an error: the template is wrong and a plain copy would hide that.
+/// Any other failure, and a missing binary, falls back to a plain recursive
+/// copy, which makes the same tree more slowly. The copier is told which
+/// method was used.
+fn copy_template(
+  trees: Worktrees,
+  layout: Layout,
+  parent: String,
+  dest: String,
+  copier: Copier,
+) -> Result(Nil, String) {
+  let template = template_path(layout)
+  case copier.program {
+    None ->
+      plain_copy(trees, parent, template, dest, copier, "git-cow not found")
+    Some(program) ->
+      case
+        worktrees.run_program(
+          trees,
+          program,
+          parent,
+          [parent],
+          ["copy", template, dest],
+          copy_within_ms,
+        )
+      {
+        Ok(output) if output.code == 0 -> {
+          copier.report(CopyOnWrite(program))
+          Ok(Nil)
+        }
+        Ok(output) if output.code == 2 ->
+          Error(
+            "git-cow refused the template: "
+            <> worktree_git.printable(output.stderr, 512),
+          )
+        Ok(output) -> {
+          let why =
+            "git-cow exited "
+            <> int.to_string(output.code)
+            <> ": "
+            <> worktree_git.printable(output.stderr, 256)
+          plain_copy(trees, parent, template, dest, copier, why)
+        }
+        Error(why) -> plain_copy(trees, parent, template, dest, copier, why)
+      }
+  }
+}
+
+/// The fallback copy: `cp -RPp` in the sandbox. A destination a failed `git-cow`
+/// left behind is removed first.
+fn plain_copy(
+  trees: Worktrees,
+  parent: String,
+  template: String,
+  dest: String,
+  copier: Copier,
+  why: String,
+) -> Result(Nil, String) {
+  use Nil <- result.try(force_remove(trees, parent, dest))
+  use output <- result.try(worktrees.run_program(
+    trees,
+    "/bin/cp",
+    parent,
+    [parent],
+    ["-RPp", template, dest],
+    copy_within_ms,
+  ))
+  case output.code {
+    0 -> {
+      copier.report(PlainCopy(why))
+      Ok(Nil)
+    }
+    code -> {
+      let _removed = force_remove(trees, parent, dest)
+      Error(
+        "the template was not copied: cp exited "
+        <> int.to_string(code)
+        <> ": "
+        <> worktree_git.printable(output.stderr, 512),
+      )
+    }
+  }
+}
+
+/// Removes a tree the host made, including one a build left read-only. A Go
+/// module cache is read-only by design, and an ordinary removal stops at its
+/// first directory, so a failed removal makes the tree writable in the sandbox
+/// and removes it again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_repo.force_remove(trees, "/s/projects/p-1", "/s/projects/p-1/.template.old")
+/// ```
+pub fn force_remove(
+  trees: Worktrees,
+  parent: String,
+  path: String,
+) -> Result(Nil, String) {
+  case remove(path) {
+    Ok(Nil) -> Ok(Nil)
+    Error(first) -> {
+      let writable =
+        worktrees.run_program(
+          trees,
+          "/bin/chmod",
+          parent,
+          [path],
+          ["-R", "u+w", path],
+          copy_within_ms,
+        )
+      case writable {
+        Ok(_) -> remove(path)
+        Error(_) -> Error(first)
+      }
+    }
+  }
+}
+
+/// Fetches the owner's `HEAD` into the host repository and answers its id: the
+/// commit a new template is built at, and the one a rebuild compares with.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_repo.base_commit(trees, layout)
+/// ```
+pub fn base_commit(trees: Worktrees, layout: Layout) -> Result(String, String) {
+  refresh_base(trees, layout)
+}
+
+/// Cuts the tree a template is built in, at a commit of the host repository:
+/// a new repository that fetches the one commit by path and checks it out
+/// detached. Whatever stood at the building name from an earlier, interrupted
+/// build is removed first, so a crash leaves nothing that could be taken for a
+/// finished template.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_repo.cut_template_tree(trees, layout, commit)
+/// ```
+pub fn cut_template_tree(
+  trees: Worktrees,
+  layout: Layout,
+  commit: String,
+) -> Result(String, String) {
+  use Nil <- result.try(commit_name(commit))
+  let directory = project_directory(layout)
+  let making = template_making_path(layout)
+  use Nil <- result.try(bootstrap.ensure_private_directory(directory))
+  use Nil <- result.try(force_remove(trees, directory, making))
+  cut_detached(trees, directory, making, layout, commit)
+  |> result.replace(making)
+}
+
+/// A swap that stopped between its two renames left the old template under its
+/// waiting name and nothing under the template's. The old one is the last good
+/// template, so it goes back. A build does this before it looks at anything
+/// else.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_repo.restore_interrupted_swap(layout)
+/// ```
+pub fn restore_interrupted_swap(layout: Layout) -> Result(Nil, String) {
+  let template = template_path(layout)
+  let old = template_old_path(layout)
+  case bootstrap.path_exists(template), bootstrap.path_exists(old) {
+    False, True ->
+      simplifile.rename(old, template)
+      |> result.map_error(fn(error) {
+        "the interrupted swap was not undone: "
+        <> simplifile.describe_error(error)
+      })
+    _, _ -> Ok(Nil)
+  }
+}
+
+/// Makes `path` a repository holding `commit` of the host repository, checked
+/// out detached. Check trees and template trees are cut this way.
+fn cut_detached(
+  trees: Worktrees,
+  parent: String,
+  path: String,
+  layout: Layout,
+  commit: String,
+) -> Result(String, String) {
+  use _made <- result.try(
+    change(trees, parent, [parent], [
+      "init", "--quiet", "--template=", "--", path,
+    ]),
+  )
+  use _fetched <- result.try(fetch_into(trees, layout, path, commit))
+  change(trees, path, [path], ["checkout", "--quiet", "--detach", commit])
+}
+
+/// Fails the template tree unless it can be copied as it stands: its `.git` is
+/// a real directory, it has no alternates file and it registers no linked
+/// worktree. They are the things `git-cow` refuses, and a plain copy would
+/// carry them to every worker, so they are looked for before the swap.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_repo.sound_template("/s/projects/p-1/.template.making")
+/// ```
+pub fn sound_template(path: String) -> Result(Nil, String) {
+  use Nil <- result.try(sound_clone(path))
+  case
+    bootstrap.path_exists(path <> "/.git/objects/info/alternates"),
+    bootstrap.path_exists(path <> "/.git/worktrees")
+  {
+    False, False -> Ok(Nil)
+    _, _ ->
+      Error(
+        "the template has an alternates file or a linked worktree, which a copy would carry to every worker",
+      )
+  }
+}
+
+/// Excludes every file the build left that Git would list as untracked, by
+/// writing it to the tree's `.git/info/exclude`. The caches `setup` and the
+/// base check wrote (`HOME` for one) are not in the repository and not
+/// ignored by it, and a worker's clone would otherwise read as holding changes
+/// no commit has. The write runs in the sandbox, because the tree is not the
+/// host's to trust: a link at `.git/info` would otherwise lead the host's own
+/// write elsewhere.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_repo.exclude_untracked(trees, "/s/projects/p-1/.template.making")
+/// ```
+pub fn exclude_untracked(
+  trees: Worktrees,
+  tree: String,
+) -> Result(Nil, String) {
+  use listing <- result.try(
+    query(trees, tree, [
+      "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z",
+      "--untracked-files=normal",
+    ]),
+  )
+  let patterns =
+    string.split(listing, "\u{0}")
+    |> list.filter_map(fn(entry) {
+      case string.starts_with(entry, "?? ") {
+        True -> Ok("/" <> escape_pattern(string.drop_start(entry, 3)))
+        False -> Error(Nil)
+      }
+    })
+  case patterns {
+    [] -> Ok(Nil)
+    _ ->
+      worktrees.run_program(
+        trees,
+        "/bin/sh",
+        tree,
+        [tree],
+        [
+          "-c",
+          "mkdir -p .git/info && for p; do printf '%s\\n' \"$p\" >> .git/info/exclude; done",
+          "exclude",
+          ..patterns
+        ],
+        copy_within_ms,
+      )
+      |> result.try(fn(output) {
+        case output.code {
+          0 -> Ok(Nil)
+          code ->
+            Error(
+              "the untracked files were not excluded: sh exited "
+              <> int.to_string(code),
+            )
+        }
+      })
+  }
+}
+
+// A path as an anchored ignore pattern: the characters Git reads as pattern
+// syntax are escaped, and a trailing slash stays so a directory matches.
+fn escape_pattern(path: String) -> String {
+  string.to_graphemes(path)
+  |> list.map(fn(each) {
+    case each {
+      "\\" | "*" | "?" | "[" | "]" | "!" | "#" | " " -> "\\" <> each
+      _ -> each
+    }
+  })
+  |> string.concat
+}
+
+/// Puts a finished template in place. The tree built under the building name
+/// replaces the template by two renames, the old one waiting under its own
+/// name in between, and the old one is removed last. A crash between the
+/// renames is undone by the next build (`restore_interrupted_swap`).
+///
+/// A copy that is reading the old template while this runs can fail, and the
+/// ticket that asked for it tries again. That is rare, because a rebuild is
+/// at most one swap every few minutes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_repo.swap_template(trees, layout)
+/// ```
+pub fn swap_template(trees: Worktrees, layout: Layout) -> Result(Nil, String) {
+  let directory = project_directory(layout)
+  let template = template_path(layout)
+  let old = template_old_path(layout)
+  let renamed = fn(from, to) {
+    simplifile.rename(from, to)
+    |> result.map_error(fn(error) {
+      "the template was not swapped in: " <> simplifile.describe_error(error)
+    })
+  }
+  use Nil <- result.try(force_remove(trees, directory, old))
+  use Nil <- result.try(case bootstrap.path_exists(template) {
+    True -> renamed(template, old)
+    False -> Ok(Nil)
+  })
+  use Nil <- result.try(renamed(template_making_path(layout), template))
+
+  // The old template is gone for good. A removal that fails leaves it under its
+  // waiting name, where the next swap removes it, and is not an error.
+  let _removed = force_remove(trees, directory, old)
+  Ok(Nil)
+}
+
+/// Removes a tree being built that is not going to be used, so a failed build
+/// leaves no disk behind.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_repo.discard_template_tree(trees, layout)
+/// ```
+pub fn discard_template_tree(trees: Worktrees, layout: Layout) -> Nil {
+  let _removed =
+    force_remove(trees, project_directory(layout), template_making_path(layout))
+  Nil
 }
 
 /// A Git command line with hooks and the file system monitor switched off for
@@ -846,36 +1361,46 @@ pub fn check_tree(
   ticket: String,
   commit: String,
 ) -> Result(String, String) {
+  check_tree_from(trees, layout, ticket, commit, Cold)
+}
+
+/// Cuts the check tree like `check_tree`, from the seed given. A warm seed
+/// copies the template and moves the copy to the commit, so the tree holds the
+/// template's ignored files and the offline check finds the dependencies
+/// `setup` fetched. The copy is made at the tree's own name, so a tree that
+/// stood there is removed first.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_repo.check_tree_from(trees, layout, "t-a", commit, project_repo.Cold)
+/// ```
+pub fn check_tree_from(
+  trees: Worktrees,
+  layout: Layout,
+  ticket: String,
+  commit: String,
+  seed: Seed,
+) -> Result(String, String) {
   use Nil <- result.try(commit_name(commit))
   let checks = checks_path(layout)
   let path = check_tree_path(layout, ticket, commit)
   use Nil <- result.try(bootstrap.ensure_private_directory(checks))
-  use Nil <- result.try(remove(path))
-  let cut = {
-    use _made <- result.try(
-      change(trees, checks, [checks], [
-        "init", "--quiet", "--template=", "--", path,
-      ]),
-    )
-    use _fetched <- result.try(
-      change(trees, path, [path], [
-        "fetch",
-        "--quiet",
-        "--no-tags",
-        "--no-write-fetch-head",
-        "--",
-        host_path(layout),
-        commit,
-      ]),
-    )
-    change(trees, path, [path], ["checkout", "--quiet", "--detach", commit])
+  use Nil <- result.try(force_remove(trees, checks, path))
+  let cut = case seed {
+    Cold -> cut_detached(trees, checks, path, layout, commit)
+    Warm(copier:) -> {
+      use Nil <- result.try(copy_template(trees, layout, checks, path, copier))
+      use _fetched <- result.try(fetch_into(trees, layout, path, commit))
+      change(trees, path, [path], ["checkout", "--quiet", "--detach", commit])
+    }
   }
 
   // A tree that was not cut whole goes, so the next attempt starts clean.
   case cut {
     Ok(_) -> Ok(path)
     Error(why) -> {
-      let _removed = remove(path)
+      let _removed = force_remove(trees, checks, path)
       Error(why)
     }
   }
@@ -919,23 +1444,25 @@ pub fn release(trees: Worktrees, layout: Layout, name: String) -> Closed {
     True ->
       case unrecorded_work(trees, layout, clone) {
         Error(why) -> worktrees.Kept("it could not be examined: " <> why)
-        Ok(held) -> settle_clone(clone, held)
+        Ok(held) -> settle_clone(trees, layout, clone, held)
       }
   }
 }
 
 /// Removes a clone that held nothing the host lacks, or keeps it for the
 /// reason given. A removal that fails keeps the clone too.
-fn settle_clone(clone: String, held: Option(String)) -> Closed {
+fn settle_clone(
+  trees: Worktrees,
+  layout: Layout,
+  clone: String,
+  held: Option(String),
+) -> Closed {
   case held {
     Some(reason) -> worktrees.Kept(reason)
     None ->
-      case simplifile.delete(clone) {
+      case force_remove(trees, tickets_path(layout), clone) {
         Ok(Nil) -> worktrees.Removed
-        Error(error) ->
-          worktrees.Kept(
-            "it could not be removed: " <> simplifile.describe_error(error),
-          )
+        Error(why) -> worktrees.Kept("it could not be removed: " <> why)
       }
   }
 }

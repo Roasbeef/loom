@@ -12,6 +12,7 @@ import client/daemon/project_host
 import client/goalstate
 import client/internal/ffi_os
 import client/peer_mail
+import client/project_template
 import core/json
 import gleam/erlang/process.{type Subject}
 import gleam/option.{None}
@@ -38,6 +39,12 @@ pub fn inert() -> project_host.Ports {
         output: "",
         ran_at_ms: 0,
       )
+    },
+    build_template: fn(_) {
+      project_template.Failed(project_template.Failure(
+        project_template.Cutting,
+        "this test has no sandbox",
+      ))
     },
     publish: fn(_) { project_host.Unavailable("this test has no remote") },
     gh_runner: fn() { None },

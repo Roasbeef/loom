@@ -3332,9 +3332,11 @@ pub fn project_env(
     max_workers: config.projects.settings.max_workers,
     policy: project_host.Policy(
       check: config.projects.settings.check,
+      setup: config.projects.settings.setup,
       protected_paths: config.projects.settings.protected_paths,
       publish: config.projects.settings.publish,
       check_wall_ms: project_host.idle_policy.check_wall_ms,
+      setup_wall_ms: project_host.idle_policy.setup_wall_ms,
       sources: config.projects.settings.sources,
     ),
     logger:,

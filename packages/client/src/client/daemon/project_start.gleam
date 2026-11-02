@@ -49,6 +49,7 @@ import client/daemon/project_book.{type Book}
 import client/daemon/project_host
 import client/goalcheck
 import client/goalstate
+import client/install
 import client/internal/ffi_os
 import client/peer_mail
 import client/project_jail
@@ -60,6 +61,7 @@ import client/project_publish
 import client/project_repo
 import client/project_scan
 import client/project_standing
+import client/project_template
 import client/projectseam
 import client/serve
 import client/workspaces
@@ -422,11 +424,12 @@ fn ports_for(env: Env, project: catalogue.Project) -> project_host.Ports {
     |> result.try(fn(found) {
       project_repo.ensure_host(found, layout) |> result.replace(found)
     })
+  let seed = seed_of(env)
   project_host.Ports(
     now_ms: env.now_ms,
     start_session: fn(request) {
       use trees <- result.try(trees)
-      start_worker(env, project, layout, trees, request)
+      start_worker(env, project, layout, trees, request, seed)
     },
     remember_mandate: fn(ticket, mandate) {
       project_book.remember(env.book, project.id, ticket, mandate)
@@ -451,12 +454,58 @@ fn ports_for(env: Env, project: catalogue.Project) -> project_host.Ports {
       use trees <- result.try(trees)
       observe(layout, trees, request)
     },
-    run_check: fn(request) { run_check(env.now_ms, layout, trees, request) },
+    run_check: fn(request) {
+      run_check_from(env.now_ms, layout, trees, seed, request)
+    },
+    build_template: fn(request) {
+      case trees {
+        Ok(found) -> project_template.build(found, layout, request)
+        Error(reason) ->
+          project_template.Failed(project_template.Failure(
+            project_template.Cutting,
+            reason,
+          ))
+      }
+    },
     publish: fn(request) { published(layout, request) },
     gh_runner: fn() { project_poller.runner(project_publish.tools()) },
     remote_url: fn() { option.from_result(project_repo.pinned_url(layout)) },
     logger: env.logger,
   )
+}
+
+/// Where the project's trees get their files. A project with no `setup` has no
+/// template and is cold, as it was before templates. One with it is warm: every
+/// worker clone and check tree is a copy of the template, made with `git-cow`
+/// when a binary is found and by a plain copy otherwise. Each copy logs which.
+fn seed_of(env: Env) -> project_repo.Seed {
+  case env.policy.setup {
+    None -> project_repo.Cold
+    Some(_) ->
+      project_repo.Warm(
+        project_repo.Copier(
+          program: option.from_result(install.git_cow()),
+          report: fn(method) { report_copy(env.logger, method) },
+        ),
+      )
+  }
+}
+
+/// Logs how a template was copied, so an operator can see whether `git-cow`
+/// ran or the plain copy stood in for it, and why.
+fn report_copy(logger: Logger, method: project_repo.Method) -> Nil {
+  case method {
+    project_repo.CopyOnWrite(program:) ->
+      log.info(logger, "project.template_copied", [
+        field.ident(key: "method", value: "git-cow"),
+        field.text(key: "program", value: program),
+      ])
+    project_repo.PlainCopy(why:) ->
+      log.info(logger, "project.template_copied", [
+        field.ident(key: "method", value: "plain"),
+        field.text(key: "why", value: why),
+      ])
+  }
 }
 
 /// How long an open may take to settle before its caller stops waiting, in
@@ -580,6 +629,25 @@ pub fn run_check(
   trees: Result(Worktrees, String),
   request: project_host.CheckRequest,
 ) -> goalstate.CheckResult {
+  run_check_from(now_ms, layout, trees, project_repo.Cold, request)
+}
+
+/// Runs the project's check like `run_check`, in a tree cut from the seed
+/// given. A warm seed makes the tree a copy of the template moved to the
+/// commit, so the offline check finds the dependencies `setup` fetched.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_start.run_check_from(clock, layout, trees, project_repo.Cold, request)
+/// ```
+pub fn run_check_from(
+  now_ms: fn() -> Int,
+  layout: project_repo.Layout,
+  trees: Result(Worktrees, String),
+  seed: project_repo.Seed,
+  request: project_host.CheckRequest,
+) -> goalstate.CheckResult {
   let unfinished = fn(reason) {
     goalstate.CheckResult(
       command: request.command,
@@ -597,7 +665,13 @@ pub fn run_check(
       // Without a tree there is nothing to check; with one, the tree goes
       // whatever the check does.
       case
-        project_repo.check_tree(trees, layout, request.ticket, request.commit)
+        project_repo.check_tree_from(
+          trees,
+          layout,
+          request.ticket,
+          request.commit,
+          seed,
+        )
       {
         Error(reason) -> unfinished("the check's tree was not made: " <> reason)
         Ok(path) -> {
@@ -610,7 +684,12 @@ pub fn run_check(
               )
           }
 
-          project_repo.discard_check_tree(path)
+          let _removed =
+            project_repo.force_remove(
+              trees,
+              project_repo.checks_path(layout),
+              path,
+            )
           outcome
         }
       }
@@ -666,8 +745,9 @@ fn start_worker(
   layout: project_repo.Layout,
   trees: Worktrees,
   request: project_host.StartRequest,
+  seed: project_repo.Seed,
 ) -> Result(String, String) {
-  use clone <- result.try(worker_clone(trees, layout, request))
+  use clone <- result.try(worker_clone_from(trees, layout, request, seed))
   let creation =
     manager.Creation(
       request_key: request.key,
@@ -730,6 +810,22 @@ pub fn worker_clone(
   layout: project_repo.Layout,
   request: project_host.StartRequest,
 ) -> Result(String, String) {
+  worker_clone_from(trees, layout, request, project_repo.Cold)
+}
+
+/// Makes the clone like `worker_clone`, from the seed given.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_start.worker_clone_from(trees, layout, request, project_repo.Cold)
+/// ```
+pub fn worker_clone_from(
+  trees: Worktrees,
+  layout: project_repo.Layout,
+  request: project_host.StartRequest,
+  seed: project_repo.Seed,
+) -> Result(String, String) {
   // A recorded head is a commit the host repository holds. No head means the
   // ticket has produced nothing, and the owner's checkout is the right start.
   let start = case request.head {
@@ -737,11 +833,12 @@ pub fn worker_clone(
     None -> project_repo.FromOwner
   }
 
-  project_repo.clone(
+  project_repo.clone_from(
     trees,
     layout,
     tree_name(request.ticket, request.seq),
     start,
+    seed,
   )
 }
 

@@ -53,12 +53,14 @@ import client/project_publish
 import client/project_records.{
   type Job, type Record, CheckJob, DeliverJob, Engine as EngineLine,
   Host as HostLine, ObserveJob, OfferJob, PublishJob, RecoverJob, ReopenJob,
-  ReplyJob, StartJob, StopJob,
+  ReplyJob, StartJob, StopJob, TemplateJob,
 }
 import client/project_retention
 import client/project_settings.{PublishOff, PublishPullRequest}
 import client/project_sources.{type Sources}
+import client/project_template
 import client/project_watcher
+import client/template_state
 import core/json.{type JsonValue}
 import gleam/bit_array
 import gleam/crypto
@@ -126,6 +128,11 @@ pub type Ports {
     /// the worker cannot reach, and answers how it ended. It blocks until the
     /// check ends, so the actor calls it only from a task of its own.
     run_check: fn(CheckRequest) -> goalstate.CheckResult,
+    /// Builds the project's template at the owner's current `HEAD`, or finds
+    /// that it already stands there: `setup` with the network on, then the
+    /// check on the clean base. It blocks for as long as `setup` takes, so the
+    /// actor calls it only from a task of its own.
+    build_template: fn(project_template.Request) -> project_template.Outcome,
     /// Pushes a commit to the remote and opens its pull request, or finds the
     /// one already open for it. It blocks, and the actor calls it only from a
     /// task of its own.
@@ -247,12 +254,17 @@ pub type Policy {
   Policy(
     /// The check command, or none.
     check: Option(String),
+    /// The command that makes the project's template, or none for a project
+    /// with no template (`client/project_template`).
+    setup: Option(String),
     /// The protected path patterns, see `project/protect`.
     protected_paths: List(String),
     /// Whether the host may push and open pull requests.
     publish: project_settings.PublishMode,
     /// The wall a check may take, in milliseconds.
     check_wall_ms: Int,
+    /// The wall `setup` may take, in milliseconds.
+    setup_wall_ms: Int,
     /// The event sources and their rules. With none, the composer is the only
     /// way work starts.
     sources: Sources,
@@ -264,9 +276,11 @@ pub type Policy {
 pub const idle_policy =
   Policy(
     check: None,
+    setup: None,
     protected_paths: protect.default_paths,
     publish: PublishOff,
     check_wall_ms: 600_000,
+    setup_wall_ms: project_template.default_setup_wall_ms,
     sources: project_sources.none,
   )
 
@@ -462,6 +476,10 @@ pub opaque type Message {
     outcome: Published,
   )
   PollSettled(polled: project_poller.Polled)
+
+  /// A template build's task ended: the commit it built, that the base had not
+  /// moved, or what failed.
+  TemplateSettled(outcome: project_template.Outcome)
   ReplySettled(key: String, thread: String, posting: project_poller.Posting)
   SetMode(
     rule: String,
@@ -526,6 +544,9 @@ type Host {
     /// started, running or over. It is memory only: a run never resumes, and a
     /// restart records nothing, so there is nothing to restore.
     runs: Dict(String, LiveRun),
+    /// Where the project's template stands. Replay rebuilds it from the two
+    /// records the ledger keeps, and the rest is memory.
+    template: template_state.Standing,
   )
 }
 
@@ -935,6 +956,7 @@ fn boot(config: Config, inbox: Subject(Message)) -> Result(Host, String) {
       compacted_ms: 0,
       compacted_seq: 0,
       runs: dict.new(),
+      template: template_state.Unmanaged,
     )
 
   // A compacted ledger starts from its snapshot and replays what follows.
@@ -942,13 +964,63 @@ fn boot(config: Config, inbox: Subject(Message)) -> Result(Host, String) {
   use replayed <- result.try(replay(restored, restored.last_seq))
   Ok(
     perform_due(
-      configure_rules(
-        remember_mandates(
-          queue_reopens(recover_interrupted(rearm_router_clock(replayed))),
+      queue_template(
+        configure_rules(
+          remember_mandates(
+            queue_reopens(recover_interrupted(rearm_router_clock(replayed))),
+          ),
         ),
       ),
     ),
   )
+}
+
+/// Settles where the template stands once the ledger is replayed, and queues a
+/// build when there is none to use. A build that was under way when the actor
+/// stopped left its row behind and its tree under the building name, and this
+/// asks for the same row again: the build removes that tree before it cuts a
+/// new one, so a half-built template is never the one in use.
+fn queue_template(host: Host) -> Host {
+  let now = host.ports.now_ms()
+  let standing =
+    template_state.after_replay(
+      host.template,
+      host.config.policy.setup,
+      template_digest(host),
+      now,
+    )
+  case standing {
+    template_state.Preparing(_) ->
+      ask_for_build(Host(..host, template: standing))
+    template_state.Unmanaged
+    | template_state.Ready(..)
+    | template_state.Broken(..) -> Host(..host, template: standing)
+  }
+}
+
+/// The digest of the commands a template is built with. A changed `setup` or
+/// `check` is a different digest, and the template built with the old ones is
+/// not used.
+fn template_digest(host: Host) -> String {
+  let policy = host.config.policy
+  let text =
+    option.unwrap(policy.setup, "") <> "\n" <> option.unwrap(policy.check, "")
+  { digest_of(text) }.value
+}
+
+/// Queues the build row, due at once. One key stands for every reason a build
+/// is wanted, so asking twice is asking once.
+fn ask_for_build(host: Host) -> Host {
+  let draft = project_records.template_draft(host.ports.now_ms())
+  case project_ledger.enqueue(host.ledger, draft) {
+    Ok(Nil) -> host
+    Error(error) -> {
+      log.warn(host.ports.logger, "project.template_unqueued", [
+        field.text(key: "reason", value: string.inspect(error)),
+      ])
+      host
+    }
+  }
 }
 
 /// A batch the router held when the actor stopped is still its own, and the
@@ -1141,6 +1213,8 @@ fn handle(host: Host, message: Message) -> actor.Next(Host, Message) {
       )
     PollSettled(polled:) ->
       actor.continue(perform_due(poll_settled(host, polled)))
+    TemplateSettled(outcome:) ->
+      actor.continue(perform_due(template_settled(host, outcome)))
     ReplySettled(key:, thread:, posting:) ->
       actor.continue(perform_due(reply_settled(host, key, thread, posting)))
     SetMode(rule:, mode:, by:, reply:) -> {
@@ -1195,7 +1269,7 @@ fn tick(host: Host) -> Host {
     False -> host
   }
 
-  perform_due(poll_when_due(compact_when_due(relieved)))
+  perform_due(poll_when_due(compact_when_due(template_when_due(relieved, now))))
 }
 
 /// A router's run ended. The turn ends only if a batch is out, it was delivered
@@ -1378,6 +1452,19 @@ fn keep_record(host: Host, written: Record) -> Host {
         kept_trees: dict.upsert(host.kept_trees, ticket, fn(found) {
           [KeptTree(seq:, path:, reason:), ..option.unwrap(found, [])]
         }),
+      )
+    project_records.TemplateBuilt(commit:, digest:) ->
+      Host(..host, template: template_state.recorded_build(commit, digest))
+    project_records.TemplateFailed(stage:, output:) ->
+      Host(
+        ..host,
+        template: template_state.recorded_failure(
+          host.template,
+          project_template.Failure(
+            project_template.stage_of_word(stage),
+            output,
+          ),
+        ),
       )
   }
 }
@@ -2011,6 +2098,7 @@ fn perform(host: Host, row: project_ledger.Effect, job: Job) -> Host {
     StopJob(ticket:, seq:) -> stop_worker(host, row, ticket, seq)
     RecoverJob(ticket:, seq:) -> recover_worker(host, row, ticket, seq)
     ReopenJob(session:) -> reopen_session(host, row, session)
+    TemplateJob -> start_template(host, row)
     ObserveJob(ticket:, seq:) -> observe_head(host, row, ticket, seq)
     CheckJob(ticket:, commit:) -> start_check(host, row, ticket, commit)
     PublishJob(ticket:, commit:) -> start_publish(host, row, ticket, commit)
@@ -2092,10 +2180,143 @@ fn new_session(
   seq: Int,
   request: StartRequest,
 ) -> Host {
-  case host.ports.start_session(request) {
-    Ok(session) -> started(host, row, ticket, seq, session)
-    Error(reason) -> start_failed(host, row, ticket, seq, reason)
+  // A project whose template is not ready makes no worker. The ticket stays
+  // queued and the row is left as it is: neither settled nor deferred, so its
+  // attempts stay where they were and a build that takes an hour fails nothing.
+  // The row stays due, which is what lets the build's answer start the worker
+  // in the turn that records it. A pass over the due rows reads it again and
+  // does nothing else, so a long build costs a read per round and no write.
+  case template_state.admits(host.template) {
+    False -> host
+    True ->
+      case host.ports.start_session(request) {
+        Ok(session) -> started(host, row, ticket, seq, session)
+        Error(reason) -> start_failed(host, row, ticket, seq, reason)
+      }
   }
+}
+
+// --- the template ------------------------------------------------------------
+
+/// How long the actor leaves the base commit alone between two looks. The look
+/// is one fetch from the owner's checkout when nothing moved, and a whole
+/// build when something did, so ten minutes keeps a busy repository from being
+/// rebuilt on every merge.
+const template_look_ms = 600_000
+
+/// The time past `setup` and the base check that a build's task is given: to
+/// cut the tree, to fetch, and to swap.
+const template_margin_ms = 300_000
+
+/// Asks for a build when the time for the next look has come.
+fn template_when_due(host: Host, now: Int) -> Host {
+  case template_state.looks_due(host.template, now) {
+    True -> ask_for_build(host)
+    False -> host
+  }
+}
+
+/// Starts a template build in a task of its own. The row stays, deferred past
+/// the task's deadline, until the task answers: a task that dies with the actor
+/// leaves the row, and the next boot builds again from a tree that is removed
+/// first. A build that gives no answer three times is recorded as failed.
+fn start_template(host: Host, row: project_ledger.Effect) -> Host {
+  case host.config.policy.setup {
+    None -> settle(host, row)
+    Some(setup) if row.attempts >= max_task_attempts ->
+      template_settled(
+        host,
+        project_template.Failed(project_template.Failure(
+          project_template.Cutting,
+          "the build gave no result "
+            <> int.to_string(row.attempts)
+            <> " times: "
+            <> setup,
+        )),
+      )
+    Some(setup) -> {
+      let policy = host.config.policy
+      let request =
+        project_template.Request(
+          setup:,
+          check: policy.check,
+          setup_wall_ms: policy.setup_wall_ms,
+          check_wall_ms: policy.check_wall_ms,
+          current: template_state.current(host.template, template_digest(host)),
+        )
+      let build = host.ports.build_template
+      let marked =
+        Host(
+          ..host,
+          template: template_state.building(host.template, host.ports.now_ms()),
+        )
+      in_task(
+        marked,
+        row,
+        policy.setup_wall_ms + policy.check_wall_ms + template_margin_ms,
+        fn() { TemplateSettled(outcome: build(request)) },
+      )
+    }
+  }
+}
+
+/// A build's answer. A finished one is written to the ledger first, and only
+/// then does the state become ready, so a restart that finds the record finds a
+/// template that was swapped in. A failed one is recorded too, so the board
+/// can say what failed after a restart, and a ready template stays in use with
+/// the failure beside it.
+fn template_settled(host: Host, outcome: project_template.Outcome) -> Host {
+  let now = host.ports.now_ms()
+  let next_look = now + template_look_ms
+  let digest = template_digest(host)
+  case outcome {
+    project_template.Built(commit:) ->
+      case record(host, project_records.TemplateBuilt(commit, digest)) {
+        Ok(recorded) ->
+          Host(
+            ..recorded,
+            template: template_state.built(commit, digest, next_look),
+          )
+          |> settle_key("template", "build")
+        Error(reason) -> template_unrecorded(host, reason)
+      }
+    project_template.Unchanged(commit: _) ->
+      Host(..host, template: template_state.unchanged(host.template, next_look))
+      |> settle_key("template", "build")
+    project_template.Failed(failure:) -> {
+      log.warn(host.ports.logger, "project.template_failed", [
+        field.ident(
+          key: "stage",
+          value: project_template.stage_word(failure.stage),
+        ),
+        field.text(key: "output", value: failure.output),
+      ])
+      let written =
+        project_records.TemplateFailed(
+          project_template.stage_word(failure.stage),
+          failure.output,
+        )
+      let recorded = case record(host, written) {
+        Ok(next) -> next
+        Error(_) -> host
+      }
+      Host(
+        ..recorded,
+        template: template_state.failed(host.template, failure, next_look),
+      )
+      |> settle_key("template", "build")
+    }
+  }
+}
+
+/// A finished build whose record the ledger would not take. The template is on
+/// disk, and the build runs again, finds the base where it stands and records
+/// it then.
+fn template_unrecorded(host: Host, reason: String) -> Host {
+  log.warn(host.ports.logger, "project.template_unrecorded", [
+    field.text(key: "reason", value: reason),
+  ])
+  defer_key(host, "template", "build", 0)
 }
 
 /// The session of the assignment just before `seq`, when that assignment ended
@@ -4248,6 +4469,38 @@ fn retry_now(
   ticket: String,
   by: String,
 ) -> #(Host, Result(Nil, String)) {
+  case ticket == setup_ticket {
+    True -> retry_setup(host)
+    False -> retry_ticket(host, ticket, by)
+  }
+}
+
+/// The name a person gives `projects.retry` to retry the project's setup. It is
+/// not a ticket id, which always begins `t-`, so it can never name a ticket.
+const setup_ticket = "setup"
+
+/// A person's retry of the project's setup: the template is built again now,
+/// without waiting for the next look. A build already under way is not started
+/// twice, and a project with no `setup` has nothing to retry.
+fn retry_setup(host: Host) -> #(Host, Result(Nil, String)) {
+  case host.template {
+    template_state.Unmanaged -> #(
+      host,
+      Error("this project has no setup command to retry"),
+    )
+    standing ->
+      case template_state.retryable(standing) {
+        True -> #(ask_for_build(host), Ok(Nil))
+        False -> #(host, Ok(Nil))
+      }
+  }
+}
+
+fn retry_ticket(
+  host: Host,
+  ticket: String,
+  by: String,
+) -> #(Host, Result(Nil, String)) {
   case
     commit(
       host,
@@ -5287,6 +5540,49 @@ fn count_fate(host: Host, decision: state.Decision) -> Int {
 /// next polls, what its last pass left to read, how many triggers were shed, and
 /// each rule's current mode.
 fn sources_json(host: Host) -> List(JsonValue) {
+  list.append(source_rows(host), template_rows(host))
+}
+
+/// The board's account of the project's template: its state, the commit it
+/// stands at, the sentence that says what is wrong and whose fault it is, and
+/// the end of what the failed step printed. A project with no `setup` has no
+/// row, and a ready template with nothing to say has a row with no note.
+fn template_rows(host: Host) -> List(JsonValue) {
+  case template_state.word(host.template) {
+    None -> []
+    Some(word) -> {
+      let failure = template_state.failure_of(host.template)
+      [
+        json.Object([
+          #("source", json.String("setup")),
+          #("state", json.String(word)),
+          #(
+            "commit",
+            json.String(case host.template {
+              template_state.Ready(commit:, ..) -> commit
+              template_state.Unmanaged
+              | template_state.Preparing(_)
+              | template_state.Broken(..) -> ""
+            }),
+          ),
+          #(
+            "note",
+            json.String(option.unwrap(template_state.note(host.template), "")),
+          ),
+          #(
+            "output",
+            json.String(case failure {
+              Some(found) -> found.output
+              None -> ""
+            }),
+          ),
+        ]),
+      ]
+    }
+  }
+}
+
+fn source_rows(host: Host) -> List(JsonValue) {
   // A project with no GitHub source has nothing to report.
   case host.config.policy.sources.github {
     None -> []

@@ -135,6 +135,26 @@ pub type Record {
     /// Why it stayed.
     reason: String,
   )
+
+  /// A build of the project's template finished at a commit. The record is
+  /// what makes the template ready again after a restart, with the digest of
+  /// the commands that built it so that a changed command builds again.
+  TemplateBuilt(
+    /// The base commit the template was built at.
+    commit: String,
+    /// The digest of the `setup` and `check` commands.
+    digest: String,
+  )
+
+  /// A build of the project's template failed. The record is what the board
+  /// shows after a restart, and what a rebuild that failed keeps beside the
+  /// last good template.
+  TemplateFailed(
+    /// The step that failed: `cutting`, `setup` or `base_check`.
+    stage: String,
+    /// The end of what the step printed, or why it could not run.
+    output: String,
+  )
 }
 
 /// What the actor does for one effect.
@@ -213,6 +233,10 @@ pub type Job {
     /// The session.
     session: String,
   )
+
+  /// Build the project's template, or look at whether the base moved and build
+  /// it again if so. One row at a time stands for it, keyed `build`.
+  TemplateJob
 
   /// Post a router's reply to a GitHub issue or pull request as a comment.
   ReplyJob(
@@ -327,6 +351,18 @@ fn record_json(record: Record) -> Json {
         #("path", json.string(path)),
         #("reason", json.string(reason)),
       ])
+    TemplateBuilt(commit:, digest:) ->
+      json.object([
+        #("host", json.string("template_built")),
+        #("commit", json.string(commit)),
+        #("digest", json.string(digest)),
+      ])
+    TemplateFailed(stage:, output:) ->
+      json.object([
+        #("host", json.string("template_failed")),
+        #("stage", json.string(stage)),
+        #("output", json.string(output)),
+      ])
   }
 }
 
@@ -416,6 +452,16 @@ fn host_decoder() -> decode.Decoder(Record) {
       use path <- decode.field("path", decode.string)
       use reason <- decode.field("reason", decode.string)
       decode.success(TreeKept(ticket:, seq:, path:, reason:))
+    }
+    "template_built" -> {
+      use commit <- decode.field("commit", decode.string)
+      use digest <- decode.field("digest", decode.string)
+      decode.success(TemplateBuilt(commit:, digest:))
+    }
+    "template_failed" -> {
+      use stage <- decode.field("stage", decode.string)
+      use output <- decode.field("output", decode.string)
+      decode.success(TemplateFailed(stage:, output:))
     }
     _ -> decode.failure(HandedBack("", "", ""), "a known host record")
   }
@@ -522,6 +568,19 @@ pub fn draft(
         now_ms,
       )
   }
+}
+
+/// The row that builds the project's template, or looks at whether the base
+/// moved, due at `due_ms`. There is one key, so a project holds at most one such
+/// row, and a restart, a tick and a person's retry all ask for the same build.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_records.template_draft(5).key == "build"
+/// ```
+pub fn template_draft(due_ms: Int) -> project_ledger.EffectDraft {
+  row("template", "build", [], due_ms)
 }
 
 /// The row that tells a worker its assignment was interrupted by a restart,
@@ -698,6 +757,7 @@ pub fn job(found: project_ledger.Effect) -> Result(Job, String) {
         use session <- decode.field("session", decode.string)
         decode.success(ReopenJob(session:))
       })
+    "template" -> Ok(TemplateJob)
     "github_reply" ->
       parse(payload, {
         use subject <- decode.field("subject", decode.string)
