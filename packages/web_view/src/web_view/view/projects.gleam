@@ -222,9 +222,11 @@ fn waiting(
 
 /// The configured rules, each with its mode, where its verdict stands and the
 /// labelled count against what is needed, and under it the daemon's sentence
-/// about what that verdict claims. The page only shows this: a mode and a
-/// label are changed from the terminal. Every string is external text drawn
-/// as a text node.
+/// about what that verdict claims, and under that the rule's live run when the
+/// daemon holds one. The page only shows this: a mode, a label and a verdict
+/// run are changed from the terminal, because a live verdict spends model
+/// calls and the terminal is where its confirmation is asked. Every string is
+/// external text drawn as a text node.
 fn rules(rows: List(board.Rule)) -> List(Element(message)) {
   case rows {
     [] -> []
@@ -241,11 +243,25 @@ fn rules(rows: List(board.Rule)) -> List(Element(message)) {
               html.span([attribute.class("home-folder-path")], [
                 html.text(each.words),
               ]),
+              run_line(each.run),
             ])
           }),
         ),
       ]),
     ]
+  }
+}
+
+/// A rule's live verdict run: its progress while it goes and its outcome in
+/// the daemon's words after. A rule with no run draws nothing. The words are
+/// external text and are drawn as a text node.
+fn run_line(run: Option(board.Run)) -> Element(message) {
+  case run {
+    None -> element.none()
+    Some(found) ->
+      html.span([attribute.class("home-folder-path")], [
+        html.text(board.run_words(found)),
+      ])
   }
 }
 

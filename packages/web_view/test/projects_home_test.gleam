@@ -411,6 +411,71 @@ pub fn the_rule_list_shows_each_verdict_state_as_escaped_text_test() {
   assert !string.contains(html, "<script>alert(1)")
 }
 
+// The web view only displays a run. Each state the daemon reports is drawn as
+// text on the rule's row, with the daemon's words escaped.
+pub fn the_rule_row_draws_each_run_state_as_escaped_text_test() {
+  let with_run = fn(run) {
+    let rule =
+      json.Object([
+        #("name", json.String("deps")),
+        #("mode", json.String("observe")),
+        #("run", run),
+      ])
+    json.Object([
+      #("project", json.String("p1")),
+      #("revision", json.Int(3)),
+      #("total", json.Int(1)),
+      #("tickets", json.Array([ticket("t-1", "working", 1, "quiet")])),
+      #(
+        "sources",
+        json.Array([
+          json.Object([
+            #("source", json.String("github")),
+            #("rules", json.Array([rule])),
+          ]),
+        ]),
+      ),
+    ])
+  }
+  let page = fn(run) { drawn(opened(serving(with_run(run)).0)) }
+
+  let going =
+    page(
+      json.Object([
+        #("state", json.String("running")),
+        #("done", json.Int(12)),
+        #("of", json.Int(90)),
+        #("calls", json.Int(12)),
+        #("tokens", json.Int(5100)),
+      ]),
+    )
+  assert string.contains(
+    going,
+    "live run: 12 of 90 trials, 12 calls, 5100 tokens",
+  )
+
+  list.each(["passed", "failed", "incomplete"], fn(state) {
+    let html =
+      page(
+        json.Object([
+          #("state", json.String(state)),
+          #("words", json.String("Outcome <b>" <> state <> "</b>.")),
+          #("calls", json.Int(90)),
+          #("tokens", json.Int(41_000)),
+        ]),
+      )
+
+    assert string.contains(
+      html,
+      "live run " <> state <> ", 90 calls, 41000 tokens",
+    )
+    assert !string.contains(html, "<b>" <> state)
+  })
+
+  // No run, and a null run, draw no run line.
+  assert !string.contains(page(json.Null), "live run")
+}
+
 pub fn a_project_whose_board_cannot_be_read_says_so_test() {
   let html = drawn(opened(serving(json.String("garbage")).0))
 
