@@ -2334,6 +2334,13 @@ const check_margin_ms = 300_000
 // A publish may push a large branch over a slow link.
 const publish_wall_ms = 300_000
 
+// The attempts a publish row may have spent before its next start reviews
+// instead. Starting the task counts one, and a failed push counts one more
+// when it brings the row's time forward, so a push that fails each time has
+// spent two per try: this allows three tries, and a task that never answers
+// gets five starts.
+const max_publish_attempts = 5
+
 // The time past its deadline that a task's row is deferred, so the row does
 // not come due while the task's last message is in flight.
 const task_grace_ms = 30_000
@@ -2863,7 +2870,7 @@ fn start_publish(
         Error(Nil), _ -> settle(host, row)
         Ok(_), PublishOff ->
           review(host, found, commit, model.PublishingOff) |> settle(row)
-        Ok(_), PublishPullRequest if row.attempts >= max_task_attempts ->
+        Ok(_), PublishPullRequest if row.attempts >= max_publish_attempts ->
           review(
             host,
             found,
@@ -2924,7 +2931,8 @@ fn publish_settled(
           review(host, found, commit, model.publish_unavailable(why))
           |> settle_key("publish", key)
         PublishFailed(why:) ->
-          case attempt >= 4 {
+          // The third try began with `attempt` at 4, counting two per try.
+          case attempt >= max_publish_attempts - 1 {
             True ->
               review(host, found, commit, model.publish_unavailable(why))
               |> settle_key("publish", key)

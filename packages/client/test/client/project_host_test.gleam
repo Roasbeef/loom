@@ -265,27 +265,6 @@ pub fn a_failed_start_retries_under_the_same_key_test() {
   assert list.all(keys, fn(key) { key == first_key("t-a") })
 }
 
-// A clock that moves a hundred seconds each time it is read, so that every
-// back-off the actor sets is already over by its next pass and five failed
-// starts take a moment and not fifteen seconds.
-fn racing_clock() -> fn() -> Int {
-  let made = process.new_subject()
-  process.spawn_unlinked(fn() {
-    let requests = process.new_subject()
-    process.send(made, requests)
-    race(requests, ffi_os.system_time_ms())
-  })
-  let assert Ok(requests) = process.receive(made, 1000)
-    as "the clock's process starts"
-  fn() { process.call(requests, 1000, fn(reply) { reply }) }
-}
-
-fn race(requests: Subject(Subject(Int)), now: Int) -> Nil {
-  let reply = process.receive_forever(requests)
-  process.send(reply, now)
-  race(requests, now + 100_000)
-}
-
 // The rows still queued for the project, read from a ledger file the actor is
 // no longer using.
 fn queued_kinds(rig: Rig) -> List(String) {
@@ -306,7 +285,7 @@ pub fn a_delivery_for_an_assignment_that_failed_to_start_is_settled_test() {
   let flaky =
     project_host.Ports(
       ..rig.config.ports(),
-      now_ms: racing_clock(),
+      now_ms: project_ports.racing_clock(),
       start_session: fn(_) { Error("registry busy") },
     )
   let config =
@@ -359,7 +338,7 @@ pub fn a_delivery_is_retried_as_long_as_a_reopen_is_test() {
   let leased =
     project_host.Ports(
       ..ports,
-      now_ms: racing_clock(),
+      now_ms: project_ports.racing_clock(),
       endpoint_of: fn(session) {
         case string.starts_with(session, "session-") && calls() <= 6 {
           True -> Error(peer_mail.Unreachable)

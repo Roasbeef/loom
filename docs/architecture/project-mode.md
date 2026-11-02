@@ -142,7 +142,7 @@ The row's key makes a repeat harmless. `start` carries `request_key`, `project:<
 | `offer` | `offer_to_router` | 10 attempts, then `RouterTurnEnded` |
 | `observe` | `observe_head` | 5 attempts |
 | `check` | `start_check` | `max_task_attempts` of 3, then a review |
-| `publish` | `start_publish` | 3 task starts, or 5 failed pushes, then a review |
+| `publish` | `start_publish` | 3 failed pushes, or 5 starts of a task that never answers, then a review. A failed push counts two on the row, one for the start and one for the deferral that brings its time forward |
 | `github_reply` | `start_reply` | `max_reply_attempts` of 5, leaving a draft |
 | `stop` | `stop_worker` | 5 attempts to release the clone, leaving the tree |
 | `reply` | none | Due at `never_ms`, so it stays a draft on the board |

@@ -13,6 +13,7 @@ import client/goalstate
 import client/internal/ffi_os
 import client/peer_mail
 import core/json
+import gleam/erlang/process.{type Subject}
 import gleam/option.{None}
 import telemetry/log
 
@@ -43,4 +44,32 @@ pub fn inert() -> project_host.Ports {
     remote_url: fn() { None },
     logger: log.discard(),
   )
+}
+
+/// A clock that moves a hundred seconds each time it is read, so that every
+/// back-off the actor sets is already over by its next pass and a row that
+/// takes nine attempts takes a moment and not minutes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let ports = project_host.Ports(..project_ports.inert(), now_ms: project_ports.racing_clock())
+/// ```
+pub fn racing_clock() -> fn() -> Int {
+  let made = process.new_subject()
+  process.spawn_unlinked(fn() {
+    let requests = process.new_subject()
+    process.send(made, requests)
+    race(requests, ffi_os.system_time_ms())
+  })
+  let assert Ok(requests) = process.receive(made, 1000)
+    as "the clock's process starts"
+  fn() { process.call(requests, 1000, fn(reply) { reply }) }
+}
+
+// Answers each read with the time and then moves the time on.
+fn race(requests: Subject(Subject(Int)), now: Int) -> Nil {
+  let reply = process.receive_forever(requests)
+  process.send(reply, now)
+  race(requests, now + 100_000)
 }

@@ -512,6 +512,40 @@ fn wait_until_open(gate: fn() -> String, commit: String) -> Nil {
   }
 }
 
+// A push that fails is tried again under the back-off, and the third failure
+// goes to a person with the push's own words. The row counts a failed push
+// twice, so a limit written for starts alone ended the tries at two and said
+// only that the pull request gave no result.
+pub fn a_push_that_keeps_failing_is_tried_three_times_then_reviewed_test() {
+  let failing = fn() {
+    Script(..script(), publish: project_host.PublishFailed("remote hung up"))
+  }
+  let slow =
+    rig(
+      "pushfail",
+      policy(Some("make check"), project_settings.PublishPullRequest),
+      failing,
+    )
+  let ports =
+    project_host.Ports(
+      ..slow.config.ports(),
+      now_ms: project_ports.racing_clock(),
+    )
+  let quick =
+    Rig(
+      ..slow,
+      config: project_host.Config(
+        ..slow.config,
+        tick_ms: 50,
+        ports: fn() { ports },
+      ),
+    )
+  let #(handle, worker) = with_worker(quick)
+  idle(handle, worker)
+  assert board_says(handle, "the branch was not published: remote hung up")
+  assert list.length(publishes(seen(quick))) == 3
+}
+
 pub fn a_publish_that_cannot_happen_says_why_and_does_not_crash_test() {
   let unavailable = fn() {
     Script(
