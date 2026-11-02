@@ -623,7 +623,7 @@ fn question_from(number: Option(Int)) -> Question {
   }
 }
 
-/// Write the host's snapshot of a worker's branch, or `null` for none.
+/// Write the commit the host read from a worker's branch, or `null` for none.
 fn head_json(head: Head) -> Json {
   case head {
     NoHead -> json.null()
@@ -678,6 +678,9 @@ pub fn reason_json(reason: model.ReviewReason) -> Json {
         #("k", json.string("intake_refused")),
         #("why", json.string(why)),
       ])
+    model.NoCommits -> json.object([#("k", json.string("no_commits"))])
+    model.UncommittedChanges ->
+      json.object([#("k", json.string("uncommitted"))])
   }
 }
 
@@ -695,6 +698,8 @@ pub fn reason_decoder() -> Decoder(model.ReviewReason) {
       decode.success(model.check_unfinished(why))
     }
     "publishing_off" -> decode.success(model.PublishingOff)
+    "no_commits" -> decode.success(model.NoCommits)
+    "uncommitted" -> decode.success(model.UncommittedChanges)
     "unavailable" -> {
       use why <- decode.field("why", decode.string)
       decode.success(model.publish_unavailable(why))

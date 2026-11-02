@@ -68,6 +68,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
+import project/model
 import storage/catalogue
 import storage/domain
 import telemetry/field
@@ -403,6 +404,11 @@ pub fn observe(
   case taken {
     project_repo.Accepted(commit:, changed:) ->
       project_host.Taken(project_host.Observed(commit:, changed:))
+    project_repo.Withheld(commit:, reason:) ->
+      project_host.Withheld(commit:, reason: case reason {
+        project_repo.NoCommits -> model.NoCommits
+        project_repo.UncommittedChanges -> model.UncommittedChanges
+      })
     project_repo.Declined(commit:, why:) -> project_host.NotTaken(commit:, why:)
   }
 }
@@ -741,6 +747,7 @@ pub fn seat(
               seam: projectseam.seam(handle, session),
               feed: scan_feed(standing, handle, session),
               run_ended: router_signal(standing, handle),
+              workspace: handle.workspace,
             )),
           )
         Error(Nil) -> Error("project " <> project <> " is not running")

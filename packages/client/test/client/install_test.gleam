@@ -302,3 +302,30 @@ pub fn a_directory_that_is_not_a_seed_does_not_outrank_the_bundled_one_test() {
     )
   assert chosen == "/release/share/codemode-seed"
 }
+
+// A worker works in a clone that has none of the owner's untracked build
+// output. Its seed is the settings' own when that works, and otherwise the one
+// beside the owner's checkout, which an ordinary session there would have
+// found. When neither works the settings' path stays, so the refusal names it.
+pub fn a_worker_finds_the_seed_beside_the_owners_checkout_test() {
+  let only_owner = fn(path: String) {
+    case path == "/owner/repo/build/codemode-seed" {
+      True -> Ok(path)
+      False -> Error(Nil)
+    }
+  }
+  assert serve.worker_seed(
+      "/clone/build/codemode-seed",
+      "/owner/repo",
+      only_owner,
+    )
+    == "/owner/repo/build/codemode-seed"
+
+  let both = fn(path: String) { Ok(path) }
+  assert serve.worker_seed("/release/seed", "/owner/repo", both)
+    == "/release/seed"
+
+  let neither = fn(_: String) { Error(Nil) }
+  assert serve.worker_seed("/clone/build/codemode-seed", "/owner/repo", neither)
+    == "/clone/build/codemode-seed"
+}

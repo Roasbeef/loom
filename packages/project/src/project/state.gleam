@@ -265,7 +265,7 @@ pub type Ticket {
     failure: Option(String),
     /// Whether a person spoke since that report.
     heard: Heard,
-    /// The worker's latest snapshot commit.
+    /// The commit the host last read from the worker's branch.
     head: Option(CommitId),
     /// The latest commit a check was requested or skipped for.
     last_checked: Option(CommitId),

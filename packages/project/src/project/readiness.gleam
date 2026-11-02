@@ -2,7 +2,7 @@
 //// changes.
 ////
 //// Readiness is the part of a ticket's life that a model must not be able to
-//// move. A worker reports `Waiting`; the host snapshots its head; and only a
+//// move. A worker reports `Waiting`; the host reads its head; and only a
 //// passing check built by the host (`host.CheckPassed`) can make the ticket
 //// `Ready`. A diff that touches protected paths skips the check and waits for
 //// a person (`AwaitingReview`), so edited build files never run on this path.

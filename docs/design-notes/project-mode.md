@@ -268,7 +268,13 @@ own workspace, and its result is evidence for the advisor, which makes the decis
 A worker could edit a test or the Makefile and the check would still pass. So:
 
 1. When a worker reports `waiting` with no open question and a head that hasn't been
-   checked yet, the host takes that head into the project's host repository: it fetches
+   checked yet, the host takes that head into the project's host repository. The head is
+   the clone's `HEAD` commit and nothing else: the host never reads or snapshots files that
+   no commit holds, so a worker has to commit its work, and its pack says so. A clone that
+   holds uncommitted changes beside its head, or a branch with no commit of its own beyond the
+   base, goes to `AwaitingReview` with the host's words (`the worker made no commit` or
+   `the worker's clone holds changes that no commit has`) and no check runs, because a pass
+   at that head would not be a pass of the worker's work. The host takes the commit in: it fetches
    exactly the commit the worker's clone names, in the sandbox, with the clone read-only
    and `transfer.fsckObjects` on, and requires the host repository to hold that same
    commit id afterwards. A refusal at any step sends the ticket to `AwaitingReview` with

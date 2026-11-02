@@ -186,6 +186,8 @@ pub fn review_reason() -> Generator(model.ReviewReason) {
     qcheck.map(text(), model.publish_unavailable),
     qcheck.map(text(), model.check_unfinished),
     qcheck.map(text(), model.intake_refused),
+    qcheck.return(model.NoCommits),
+    qcheck.return(model.UncommittedChanges),
   ])
 }
 

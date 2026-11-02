@@ -165,6 +165,15 @@ pub type ReviewReason {
     /// What was refused.
     why: String,
   )
+
+  /// The worker's branch has no commit of its own beyond the base it was cut
+  /// from, so there is no work for a check to vouch for.
+  NoCommits
+
+  /// The worker's clone holds changes that no commit has. The host reads the
+  /// clone's head and never the files beside it, so what the check would pass
+  /// is not what the worker left.
+  UncommittedChanges
 }
 
 /// A review reason for a failed publish, with the host's words capped at
@@ -644,9 +653,10 @@ pub type Head {
   /// The report carries no commit.
   NoHead
 
-  /// The host snapshotted the worker's head.
+  /// The host read the worker's head. It is the clone's `HEAD` commit and
+  /// nothing else: changes in the clone that no commit holds are not in it.
   Head(
-    /// The snapshot commit.
+    /// The commit.
     commit: CommitId,
     /// Whether its diff touches protected paths.
     paths: PathScope,

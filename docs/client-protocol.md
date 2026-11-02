@@ -1858,7 +1858,7 @@ host's check has judged the head and then `{commit, outcome}` with `outcome` one
 `failed` or `overridden` (a person published past the check), `review` is `null` or the host's
 sentence for why a ticket waits for a person although its work may be done (no check is
 configured, the check gave no result, publishing is off, the branch could not be published, the host
-repository would not take the worker's commit in, or the change touched a protected path), and `question` is `null` or `{seq, text, options}`.
+repository would not take the worker's commit in, the worker made no commit, its clone holds changes that no commit has, or the change touched a protected path), and `question` is `null` or `{seq, text, options}`.
 `failure` is `null`, or the host's sentence for why a worker's session was given up on before it
 reported anything (it did not start after five attempts); the stage is then `person/failed`, and a
 retry or a person's message clears it. `actions` lists what a person can do with the ticket now,

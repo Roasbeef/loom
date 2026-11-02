@@ -6473,8 +6473,40 @@ pub fn seat_project(
         pack: Some(project_packs.router()),
       )
     project_standing.Worker(..) ->
-      Settings(..seated, pack: Some(project_packs.worker()))
+      Settings(
+        ..seated,
+        pack: Some(project_packs.worker()),
+        codemode_seed: worker_seed(
+          settings.codemode_seed,
+          seat.workspace,
+          usable_seed,
+        ),
+      )
   }
+}
+
+/// The code-mode build seed a worker uses. An ordinary session finds its seed
+/// beside its workspace or in the daemon's release, and a worker's workspace is
+/// a clone the host cut from the owner's checkout, so the seed that sits
+/// untracked beside the checkout is not in it and the worker found none:
+/// `codemode.unavailable`. A seed that works where the settings point is kept,
+/// whether it came from a flag, the release or the clone. Otherwise the owner's
+/// workspace is tried, the same rung an ordinary session in that checkout
+/// would have found, and the settings' own path is what remains.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.worker_seed("/clone/build/codemode-seed", "/owner/repo", serve.usable_seed)
+/// ```
+pub fn worker_seed(
+  current: String,
+  owner: String,
+  usable: fn(String) -> Result(String, Nil),
+) -> String {
+  let beside_owner = owner <> "/" <> default_seed_directory
+  install.first_of([fn() { usable(current) }, fn() { usable(beside_owner) }])
+  |> result.unwrap(current)
 }
 
 /// The identity a router's strand is seeded with. Dispatch matches a strand to a

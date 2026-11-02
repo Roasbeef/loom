@@ -152,7 +152,7 @@ pub type Event {
     why: String,
   )
 
-  /// A worker reported. `head` is the host's snapshot of its branch when the
+  /// A worker reported. `head` is the commit the host read from its branch when the
   /// host had one to hand; a report committed from the worker's own call
   /// carries `NoHead`, and the host reads the branch afterwards when the
   /// engine asks (`ObserveHead`).
@@ -163,7 +163,7 @@ pub type Event {
     seq: Int,
     /// The worker's closed-set status.
     report: Report,
-    /// The branch snapshot.
+    /// The commit the host read from the branch.
     head: Head,
   )
 
@@ -175,7 +175,7 @@ pub type Event {
     ticket: TicketId,
     /// The assignment whose worktree was read.
     seq: Int,
-    /// The branch snapshot.
+    /// The commit the host read from the branch.
     head: Head,
   )
 

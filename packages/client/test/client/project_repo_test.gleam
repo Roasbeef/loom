@@ -749,3 +749,36 @@ pub fn a_workers_clone_is_not_a_folder_to_start_again_in_test() {
   assert !project_repo.is_clone_path("/Users/me/src/loom")
   assert !project_repo.is_clone_path("/Users/me/projects/tickets")
 }
+
+// A clone whose branch is still at the base made no work. A check at that head
+// would pass, and the pass would say nothing about the worker, so the host
+// withholds it from the check and a person is told why.
+pub fn a_branch_with_no_commit_of_its_own_is_withheld_from_the_check_test() {
+  let rig = worktree_rig.rig("intake-empty")
+  let layout = project_rig.started(rig)
+  let _clone = project_rig.cloned(rig, layout, "t-a-1")
+
+  let assert Ok(project_repo.Withheld(commit: _, reason: project_repo.NoCommits)) =
+    project_repo.intake(rig.trees, layout, "t-a", "t-a-1")
+}
+
+// The host reads the clone's HEAD and nothing beside it. Files that no commit
+// holds are not in what a check would run, so a commit with such files beside
+// it is withheld as well, whether the files are new or changed.
+pub fn changes_no_commit_holds_are_withheld_from_the_check_test() {
+  let rig = worktree_rig.rig("intake-dirty")
+  let layout = project_rig.started(rig)
+  let clone = project_rig.cloned(rig, layout, "t-a-1")
+  let _head = project_rig.commit(clone, [#("src/a.go", "package a\n")])
+  worktree_rig.write(clone <> "/notes.txt", "not committed\n")
+
+  let assert Ok(project_repo.Withheld(
+    commit: _,
+    reason: project_repo.UncommittedChanges,
+  )) = project_repo.intake(rig.trees, layout, "t-a", "t-a-1")
+
+  // Once the worker commits them, the head is checked like any other.
+  let _again = project_rig.commit(clone, [#("notes.txt", "committed\n")])
+  let assert Ok(project_repo.Accepted(..)) =
+    project_repo.intake(rig.trees, layout, "t-a", "t-a-1")
+}

@@ -156,6 +156,16 @@ pub type Intake {
   /// The host repository holds the commit, and the diff was read there.
   Taken(Observed)
 
+  /// The host repository holds the commit, but nothing is put to the check:
+  /// the branch made no commit, or the clone holds changes no commit has. A
+  /// person is told which.
+  Withheld(
+    /// The commit the clone's branch is at.
+    commit: String,
+    /// The host's reason, in the engine's words.
+    reason: model.ReviewReason,
+  )
+
   /// The host repository would not take the commit in, or holds something
   /// else under its name. The clone is not trusted: no check runs, and a
   /// person is told why.
@@ -2144,7 +2154,9 @@ fn observe_head(
       {
         Error(reason) -> observe_failed(host, row, ticket, reason)
         Ok(NotTaken(commit: named, why:)) ->
-          intake_refused(host, row, id, seq, named, why)
+          intake_refused(host, row, id, seq, named, model.intake_refused(why))
+        Ok(Withheld(commit: named, reason:)) ->
+          intake_refused(host, row, id, seq, named, reason)
         Ok(Taken(Observed(commit: found, changed:))) -> {
           let head =
             model.Head(
@@ -2175,7 +2187,7 @@ fn intake_refused(
   id: model.TicketId,
   seq: Int,
   commit_named: String,
-  why: String,
+  reason: model.ReviewReason,
 ) -> Host {
   let commit_id = model.CommitId(commit_named)
   let head = model.Head(commit_id, model.ProtectedPathsTouched)
@@ -2186,7 +2198,6 @@ fn intake_refused(
     Error(Refused(_)) -> settle(host, row)
     Error(WriteFailed(reason)) -> observe_failed(host, row, id.value, reason)
     Ok(next) -> {
-      let reason = model.intake_refused(why)
       let requested =
         committed_or_same(next, event.ReviewRequested(id, commit_id, reason))
       settle(requested, row)
@@ -3317,6 +3328,14 @@ fn review_json(ticket: Ticket) -> JsonValue {
       json.String("publishing is off for this project")
     Some(model.PublishUnavailable(why)), _ ->
       json.String("the branch was not published: " <> why)
+    Some(model.NoCommits), _ ->
+      json.String(
+        "the worker made no commit, so there is nothing to check; it needs to commit its work",
+      )
+    Some(model.UncommittedChanges), _ ->
+      json.String(
+        "the worker's clone holds changes that no commit has, so no check ran; it needs to commit them",
+      )
     Some(model.IntakeRefused(why)), _ ->
       json.String(
         "the host repository would not take the worker's commit in: " <> why,

@@ -57,6 +57,11 @@ pub type Seat {
     /// A worker's runs say nothing to the project this way: its reports and the
     /// scan of its log do.
     run_ended: Option(fn() -> Nil),
+    /// The owner's workspace the project is bound to. A worker's own workspace
+    /// is a clone the host made, which carries none of the owner's untracked
+    /// build output, so what a session looks for beside its workspace it looks
+    /// for beside this one.
+    workspace: String,
   )
 }
 

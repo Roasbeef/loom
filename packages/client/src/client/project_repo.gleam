@@ -86,6 +86,18 @@ pub type Intake {
     changed: List(String),
   )
 
+  /// The commit is in the host repository, but there is nothing for a check
+  /// to vouch for: the branch made no commit of its own, or the clone holds
+  /// changes that no commit has. The host reads the clone's `HEAD` and nothing
+  /// else, so a check at that commit would pass work that is not the worker's
+  /// work. A person is told which.
+  Withheld(
+    /// The commit, as the host repository holds it.
+    commit: String,
+    /// Why no check will run for it.
+    reason: Withholding,
+  )
+
   /// The host repository refused the commit, or what it holds is not what the
   /// clone said. A person is told why; nothing about the commit is trusted.
   Declined(
@@ -94,6 +106,17 @@ pub type Intake {
     /// The host's words for the refusal, cut to the wire's limit.
     why: String,
   )
+}
+
+/// Why a commit in the host repository is not put to the check.
+pub type Withholding {
+  /// The branch has no commit beyond the base it was cut from, so the head is
+  /// the base and a passing check would say nothing about the worker.
+  NoCommits
+
+  /// The clone has changes that no commit holds. The host reads only `HEAD`,
+  /// so it never sees them, and a person decides what they are.
+  UncommittedChanges
 }
 
 /// The most refs of a clone that a release will look at before it keeps the
@@ -490,17 +513,71 @@ pub fn intake(
 ) -> Result(Intake, String) {
   let clone = clone_path(layout, name)
   use head <- result.try(clone_head(trees, clone))
-  use base <- result.map(refresh_base(trees, layout))
+  use base <- result.try(refresh_base(trees, layout))
   let taken = {
     use Nil <- result.try(fetch_commit(trees, layout, ticket, clone, head))
     use Nil <- result.try(confirm_commit(trees, layout, ticket, head))
-    changed_paths(trees, layout, base, head)
+    use ahead <- result.try(commits_ahead(trees, layout, base, head))
+    use dirty <- result.try(uncommitted(trees, clone))
+    use changed <- result.map(changed_paths(trees, layout, base, head))
+    #(ahead, dirty, changed)
   }
 
-  // Any refusal past this point is the host declining the commit.
-  case taken {
-    Ok(changed) -> Accepted(commit: head, changed:)
+  // Any refusal past this point is the host declining the commit. A commit
+  // that is accepted still goes to the check only when it is the worker's own
+  // and the clone holds nothing else.
+  Ok(case taken {
+    Ok(#(0, _, _)) -> Withheld(commit: head, reason: NoCommits)
+    Ok(#(_, Unsaved, _)) -> Withheld(commit: head, reason: UncommittedChanges)
+    Ok(#(_, Saved, changed)) -> Accepted(commit: head, changed:)
     Error(why) -> Declined(commit: head, why:)
+  })
+}
+
+/// Whether a clone holds changes that no commit has.
+type Tree {
+  Saved
+  Unsaved
+}
+
+/// How many commits the branch has that the base lacks, which is the work the
+/// worker did. It is read in the host repository, where both are held.
+fn commits_ahead(
+  trees: Worktrees,
+  layout: Layout,
+  base: String,
+  commit: String,
+) -> Result(Int, String) {
+  use text <- result.try(
+    query(trees, host_path(layout), [
+      "rev-list",
+      "--count",
+      base <> ".." <> commit,
+    ]),
+  )
+  int.parse(string.trim(text))
+  |> result.replace_error("the host could not count the branch's commits")
+}
+
+/// Whether the clone has modified, staged or untracked files. The command is
+/// read only and runs in the sandbox, and the clone's own `core.fsmonitor` is
+/// overridden on the command line, because that setting makes `status` run a
+/// program of the worker's choosing.
+fn uncommitted(trees: Worktrees, clone: String) -> Result(Tree, String) {
+  use text <- result.map(
+    query(trees, clone, [
+      "-c",
+      "core.fsmonitor=false",
+      "status",
+      "--porcelain",
+      "--untracked-files=normal",
+    ]),
+  )
+
+  // Any line of status output is a change that no commit holds.
+  case string.trim(text) {
+    "" -> Saved
+    _ -> Unsaved
   }
 }
 

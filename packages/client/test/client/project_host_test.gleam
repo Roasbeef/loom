@@ -874,6 +874,42 @@ fn reading_ports(rig: Rig, readings: Subject(Int)) -> project_host.Ports {
   )
 }
 
+// A head with no commit of the worker's own, or with changes beside it that no
+// commit holds, goes to a person with the host's words and never to the check.
+pub fn a_head_with_no_work_in_it_goes_to_a_person_and_runs_no_check_test() {
+  list.each(
+    [
+      #(model.NoCommits, "made no commit"),
+      #(model.UncommittedChanges, "no commit has"),
+    ],
+    fn(case_) {
+      let rig = rig("withheld")
+      let ports =
+        project_host.Ports(
+          ..rig.config.ports(),
+          observe_head: fn(_) {
+            Ok(project_host.Withheld(commit: "abc", reason: case_.0))
+          },
+          run_check: fn(_) { panic as "a withheld head must not be checked" },
+        )
+      let config = project_host.Config(..rig.config, ports: fn() { ports })
+      let assert Ok(handle) = project_host.start(config) as "the actor starts"
+      let assert Ok(_) = project_host.post(handle, "a", "fix a")
+      let assert Ok([tools.Applied]) = project_host.route(handle, [accept("a")])
+      let worker = "session-" <> first_key("t-a")
+      let assert Ok(Nil) =
+        project_host.report(
+          handle,
+          worker,
+          tools.WorkerReport(tools.Waiting, None),
+        )
+      let assert Ok(Nil) =
+        poll_until(fn() { string.contains(board_json(handle), case_.1) })
+      assert string.contains(board_json(handle), "person/review")
+    },
+  )
+}
+
 pub fn the_assignment_after_a_rested_one_takes_the_same_session_test() {
   let rig = rig("rested")
   let readings = process.new_subject()
