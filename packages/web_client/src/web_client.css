@@ -1284,9 +1284,9 @@
     .pc-call-args{display:none;}
     .pc-bar{grid-column:2 / -1;grid-row:2;}
   }
-  article.nudge,article.peer-card,article.sibling-card{background:var(--color-bg-raised);border-radius:10px;padding:9px 12px;min-width:0;}
+  article.nudge,article.peer-card,article.sibling-card,article.trigger-card{background:var(--color-bg-raised);border-radius:10px;padding:9px 12px;min-width:0;}
   article.nudge{border:1px solid var(--color-advisor);}
-  article.sibling-card{border:1px solid var(--color-divider);}
+  article.sibling-card,article.trigger-card{border:1px solid var(--color-divider);}
   article.peer-card{border:1px solid color-mix(in srgb,var(--color-peer) 40%,var(--color-divider));}
   .card-head{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;margin:0 0 4px 0; font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);}
   article.peer-card .card-head{color:var(--color-peer-text);}

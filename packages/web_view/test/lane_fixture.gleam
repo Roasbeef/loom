@@ -709,6 +709,33 @@ pub fn siblings() -> session_channel.Update {
   )
 }
 
+/// A capture of `main` holding a prompt and then one message delivered
+/// through a trigger from `github`, trigger `trg-1`, actor `octocat`, whose
+/// words are `body`. A second message with the same words and no origin
+/// follows it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.trigger_saying("opened issue 7")
+/// ```
+pub fn trigger_saying(body: String) -> session_channel.Update {
+  capture_of(
+    [
+      item(1, 10_000, said("start", Some(message.Origin("p", "Alice")))),
+      item(
+        2,
+        11_000,
+        said(body, Some(message.TriggerOrigin("github", "trg-1", "octocat"))),
+      ),
+      item(3, 12_000, said(body, None)),
+    ],
+    None,
+    [],
+    [],
+  )
+}
+
 /// A capture of `main` holding a prompt and then one message from the strand
 /// `sub:main/x`, framed as the Agency frames it, whose words are `body`.
 ///
@@ -1889,6 +1916,7 @@ pub fn opened(model: component.Model(socket)) -> component.Model(socket) {
         | turns.Nudged(..)
         | turns.Peer(..)
         | turns.Sibling(..)
+        | turns.Trigger(..)
         | turns.Missed(..)
         | turns.Decided(..)
         | turns.Commentary(..) -> page

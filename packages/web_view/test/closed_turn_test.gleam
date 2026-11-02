@@ -68,6 +68,7 @@ fn keys(page) -> List(String) {
       | turns.Nudged(key:, ..)
       | turns.Peer(key:, ..)
       | turns.Sibling(key:, ..)
+      | turns.Trigger(key:, ..)
       | turns.Missed(key:, ..)
       | turns.Decided(key:, ..) -> Ok(key)
     }
