@@ -144,6 +144,8 @@ import client/peer_outbox_drain
 import client/peers
 import client/permissions
 import client/profile_switch
+import client/project_packs
+import client/project_standing
 import client/proposals
 import client/relayed_session
 import client/remote/owner_port
@@ -234,6 +236,7 @@ import tools/agent.{type Agency}
 import tools/codemode as codemode_tool
 import tools/evolution as evolution_tool
 import tools/history as history_tool
+import tools/project as project_tools
 import tools/remember
 import tools/tool
 import weft/actor as owned_actor
@@ -592,6 +595,12 @@ pub type Settings {
     /// because a path is an environment read in disguise and a trial's jail
     /// could not see it anyway. A `system` override still bypasses the pack.
     pack: Option(String),
+    /// The session's part in a project and the tool seam built for it, or
+    /// `None` for an ordinary session. A router session gets a registry of
+    /// exactly its three tools, a worker's loses the peer and `agent_*`
+    /// tools and gains its two, and the router's tool ceiling reaches the
+    /// gateway so `set_config` cannot widen it.
+    project: Option(project_standing.Seat),
     /// The operator's home directory, where the global `AGENTS.md`
     /// default is looked for when the workspace has none of its own.
     /// `resolve` fills it from `HOME`, and `None` records that `HOME`
@@ -1609,6 +1618,7 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       gateway:,
       evolution_role: Source,
       pack: None,
+      project: None,
       catalog: catalogue,
       secrets: secret_store,
       secret_failures:,
@@ -4446,6 +4456,7 @@ fn assemble_in(
           contributions.BuiltIn,
           list.append(skill_tool.tools(skills), peers.tools(peer_wiring)),
         ),
+        // A project worker or router is shaped after the others are in, below.
         // `advise` is registered for the whole session because a registry
         // is per session rather than per strand; `configuration` below
         // withholds it from the primary's active list, and
@@ -4470,6 +4481,7 @@ fn assemble_in(
     // comes to stand in for a built-in one: the built-in is gone, so
     // there is no collision to refuse and no override to perform.
     |> contributions.deactivate(settings.deactivated_tools)
+    |> project_shaped(settings.project, peers.tools(peer_wiring))
     |> contributions.registry
     |> result.map_error(contributions.collision_message),
   )
@@ -4579,7 +4591,7 @@ fn assemble_in(
     wiring.Config(
       observe_output: owner_api.output,
       gateway:,
-      role: model.Main,
+      role: project_role(settings.project),
       facts: catalogue_facts(settings.catalog),
       system: Some(assembled.text),
       api: settings.api,
@@ -5124,6 +5136,7 @@ fn assemble_in(
             |> with_spawner_link(spawner_link)
             |> hub.with_remote_reach(hub_remote_reach)
             |> hub.with_registry(tool_registry)
+            |> with_project_ceiling(settings.project)
             |> hub.with_extension_refusals(extension_refusals)
             |> hub.with_skills(skills)
             |> with_evolution_control(evolution_wiring, core_control)
@@ -6322,6 +6335,120 @@ fn render_prompt(
       warnings: list.append(notes, rendered.warnings),
     ),
   )
+}
+
+/// Shapes the registry's contributions for a project session. An ordinary
+/// session is left as it was. A router is given a registry of its three tools
+/// alone, which removes `bash`, `code_mode` and every extension at the source:
+/// a tool that was never registered cannot be activated, called, or reached by
+/// a capability. A worker keeps the rest and loses the peer tools and the
+/// `agent_*` tools, because it talks to the project through its report and to
+/// nothing else, and gains its two project tools.
+fn project_shaped(
+  found: List(contributions.Contribution),
+  project: Option(project_standing.Seat),
+  peer_tools: List(tool.Tool),
+) -> List(contributions.Contribution) {
+  case project {
+    None -> found
+    Some(project_standing.Seat(standing:, seam:)) ->
+      case standing {
+        project_standing.Ordinary -> found
+        project_standing.Router(..) -> [
+          contributions.Contribution(
+            contributions.BuiltIn,
+            project_tools.router_tools(seam),
+          ),
+        ]
+        project_standing.Worker(..) -> {
+          let refused =
+            list.append(
+              list.map(peer_tools, fn(each) { each.name }),
+              list.filter(agent.tool_names, project_standing.worker_excludes),
+            )
+          list.append(contributions.deactivate(found, refused), [
+            contributions.Contribution(
+              contributions.BuiltIn,
+              project_tools.worker_tools(seam),
+            ),
+          ])
+        }
+      }
+  }
+}
+
+/// The role the session's requests are routed by. A router routes on the
+/// `router` role, which falls back to the subagent route and then main; every
+/// other session routes on main, as it always did.
+fn project_role(project: Option(project_standing.Seat)) -> model.Role {
+  case project {
+    Some(project_standing.Seat(standing: project_standing.Router(..), ..)) ->
+      catalog.router_role
+    Some(project_standing.Seat(standing: project_standing.Worker(..), ..))
+    | Some(project_standing.Seat(standing: project_standing.Ordinary, ..))
+    | None -> model.Main
+  }
+}
+
+/// Gives the gateway the router's tool ceiling, so an operator's `set_config`
+/// cannot name a tool above it. Other sessions have no ceiling.
+fn with_project_ceiling(
+  options: hub.Options,
+  project: Option(project_standing.Seat),
+) -> hub.Options {
+  case
+    option.map(project, fn(seat) {
+      project_standing.tool_ceiling(seat.standing)
+    })
+  {
+    Some(Ok(ceiling)) -> hub.with_tool_ceiling(options, ceiling)
+    Some(Error(Nil)) | None -> options
+  }
+}
+
+/// Settles a session's settings for its project standing: the seat itself, a
+/// router's model (the head of the `router` role, else `subagent`, else the
+/// model main routes), and the prompt pack of its kind.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.seat_project(settings, seat)
+/// ```
+pub fn seat_project(
+  settings: Settings,
+  seat: project_standing.Seat,
+) -> Settings {
+  let seated = Settings(..settings, project: Some(seat))
+  case seat.standing {
+    project_standing.Ordinary -> settings
+    project_standing.Router(..) ->
+      Settings(
+        ..seated,
+        model: routed_identity(settings),
+        pack: Some(project_packs.router()),
+      )
+    project_standing.Worker(..) ->
+      Settings(..seated, pack: Some(project_packs.worker()))
+  }
+}
+
+// The identity a router's strand is seeded with. Dispatch matches a strand to a
+// role by its model, so the strand must hold the head of the role it routes on.
+fn routed_identity(settings: Settings) -> machine_strand.ModelIdentity {
+  let resolved =
+    [catalog.router_role, model.Subagent]
+    |> list.find_map(fn(role) {
+      provider_gateway.resolve(settings.gateway, role)
+    })
+  case resolved {
+    Ok(found) ->
+      machine_strand.ModelIdentity(
+        provider: found.provider,
+        model_id: found.model_id,
+      )
+    Error(Nil) -> settings.model
+  }
 }
 
 /// Chooses the pack source this boot renders. A pack handed in through

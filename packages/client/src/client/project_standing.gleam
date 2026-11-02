@@ -40,6 +40,17 @@ pub type Standing {
   )
 }
 
+/// A session's standing together with the tool seam it was built with, which
+/// the session builder reads to shape the registry, the prompt and the model.
+pub type Seat {
+  Seat(
+    /// What the session is to its project.
+    standing: Standing,
+    /// The host half of the project tools, filled for this session.
+    seam: project_tools.Projects,
+  )
+}
+
 /// How a session may be asked to leave its place.
 pub type Mobility {
   /// The session may move or be archived as any other.
