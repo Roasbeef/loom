@@ -1745,6 +1745,7 @@ fn project_usage() -> String {
   <> "  configuration: inferred work stays off and you are its only source."
 }
 
+/// The parse project step of this module.
 fn parse_project(arguments: List(String)) -> Launch {
   case arguments {
     ["init", ..flags] -> project_launch(flags, ProjectInit)
@@ -1761,6 +1762,7 @@ fn project_launch(flags: List(String), command: ProjectCommand) -> Launch {
   }
 }
 
+/// The directory usage step of this module.
 fn directory_usage() -> String {
   "usage: loom directory status [--json] [--state-dir <path>] [--server <path>]\n"
   <> "  status shows the session directory's cluster as the daemon you are\n"
@@ -1873,6 +1875,7 @@ fn run_deployment(
 
 /// Establishes and coordinates run directory operations for the TUI runtime.
 fn run_project(options: bootstrap.Options, command: ProjectCommand) -> Nil {
+  // In run_project, the arms below are the outcomes of `sessions_host(options)`.
   case sessions_host(options) {
     Error(reason) -> command_failed("project", reason)
     Ok(#(control, host)) -> {
@@ -1883,8 +1886,8 @@ fn run_project(options: bootstrap.Options, command: ProjectCommand) -> Nil {
   }
 }
 
-// One round trip per subcommand, except that `post` and `board` first find the
-// project of the working directory in `projects.list`.
+/// One round trip per subcommand, except that `post` and `board` first find the
+/// project of the working directory in `projects.list`.
 fn project_outcome(
   host: daemon_selection.Host,
   command: ProjectCommand,
@@ -1893,12 +1896,16 @@ fn project_outcome(
     simplifile.current_directory()
     |> result.replace_error("the working directory cannot be read"),
   )
+
+  // In project_outcome, the arms below are the outcomes of `command`.
   case command {
     ProjectInit -> {
+      // In project_outcome, the arms below are the outcomes of `let name = case list.last(string.split(here, "/"))`.
       let name = case list.last(string.split(here, "/")) {
         Ok(last) if last != "" -> last
         _ -> "project"
       }
+
       use made <- result.map(
         project_request(host, "projects.create", [
           #("workspace", json.String(here)),
@@ -1933,6 +1940,7 @@ fn project_outcome(
   }
 }
 
+/// The project request step of this module.
 fn project_request(
   host: daemon_selection.Host,
   name: String,
@@ -1941,12 +1949,14 @@ fn project_request(
   daemon_selection.projects(host, name, fields)
 }
 
-// The project whose workspace is the working directory, from the list.
+/// The project whose workspace is the working directory, from the list.
 fn project_here(
   host: daemon_selection.Host,
   here: String,
 ) -> Result(String, String) {
   use listed <- result.try(project_request(host, "projects.list", []))
+
+  // In project_here, the arms below are the outcomes of `listed`.
   case listed {
     json.Object(fields) ->
       case list.key_find(fields, "projects") {
@@ -1966,6 +1976,7 @@ fn project_here(
   }
 }
 
+/// The project text step of this module.
 fn project_text(document: json.JsonValue, key: String) -> String {
   case document {
     json.Object(fields) ->
@@ -1977,9 +1988,10 @@ fn project_text(document: json.JsonValue, key: String) -> String {
   }
 }
 
-// Each ticket is one line: its stage as the engine spells it, its id and its
-// title. The daemon sends needs-a-person tickets first, and the order is kept.
+/// Each ticket is one line: its stage as the engine spells it, its id and its
+/// title. The daemon sends needs-a-person tickets first, and the order is kept.
 fn board_text(board: json.JsonValue) -> String {
+  // In board_text, the arms below are the outcomes of `let tickets = case board`.
   let tickets = case board {
     json.Object(fields) ->
       case list.key_find(fields, "tickets") {
@@ -1988,6 +2000,8 @@ fn board_text(board: json.JsonValue) -> String {
       }
     _ -> []
   }
+
+  // In board_text, the arms below are the outcomes of `tickets`.
   case tickets {
     [] -> "no tickets"
     _ ->
@@ -2012,6 +2026,7 @@ fn fresh_request_id() -> String {
   "cli-" <> int.to_string(seconds) <> "-" <> int.to_string(nanoseconds)
 }
 
+/// The run directory step of this module.
 fn run_directory(options: bootstrap.Options, output: Output) -> Nil {
   // Handle run directory branch dispatch.
   case sessions_host(options) {

@@ -10172,3 +10172,52 @@ and the id round-trips through `ids.parse_session_id`; anything else is `Unknown
   socket admission, the visit reaching the upgrade, the create allowance and the
   capability) and `ui_top_test` (real ports on this node, including the offers
   conversion, the listing and `found`).
+
+## Project mode (slice 1, protocol-change/106)
+
+The daemon runs projects: a catalogue row, a `router` role session and one
+ordinary top-level worker session per ticket assignment
+([design note](../../docs/design-notes/project-mode.md)).
+
+- `client/project_standing.Standing` is `Ordinary | Router(project) |
+  Worker(project, ticket, seq)`, lifted from `catalogue.project_standing`. The
+  deciding sites match it with no catch-all: `manager.project_free` (move and
+  archive, and the delegate sweeps) goes through `mobility`, `serve.project_shaped`
+  through the standing, and the gateway ceiling through `tool_ceiling`. It is
+  separate from `spawners.Standing` and `session_directory.Standing`, and delegates
+  are not on it. `Seat` pairs a standing with the tool seam built for the session.
+- `client/daemon/project_host` is the actor, on `weft/actor`, one per active project
+  and the sole writer of its ledger. `commit` asks `engine.apply`, appends the
+  event with its effect rows in one `append_with_effects`, and keeps the new
+  state only after the append; `perform_due` then runs the queued rows, bounded to
+  eight rounds a message. Effects are idempotent by key: `StartJob` by the engine's
+  `request_key` (never randomise it), `DeliverJob` by the receipt of
+  `peer_mail.Trigger` keyed on `trigger:session`. Triggers, questions and replies
+  are host records (`client/project_records`, a `host` field no engine event has)
+  in the same ordered history. A report that asks for a check logs a row that nothing
+  serves (`CheckJob`): `ReadyWithCheck` is unreachable in this slice. Times are
+  `Ports.now_ms`, system time.
+- `client/daemon/project_start` fills the actor's `Ports` from the registry:
+  `create` (project id is `p-` and twelve hex of the workspace's SHA-256),
+  `ensure_running`, `start_worker` (worktree named from `<ticket>-<seq>`, then
+  `manager.reserve`, `catalogue.bind_worker`, `manager.create_scoped`, in that order
+  so the session's builder reads its standing), and `reopen` at boot.
+  `client/daemon/project_book` is the table of handles the builder reads. A worker's
+  memory domain stays its own worktree's: `domain.Scope` has only `WorkspacePrivate`
+  and `SessionOnly`, and the id derives from the canonical workspace path.
+- `client/projectseam` fills `tools/project`'s closures over the actor. `serve.Settings`
+  gains `project`; a router's registry is exactly `route`, `project_read` and
+  `reply` (no `bash`, no `code_mode`, no extension), a worker's loses the peer and
+  `agent_*` tools, and `gateway.Options.tool_ceiling` makes `set_config` refuse a
+  name above the router's list. `client/project_packs` derives the router and
+  worker packs from `prompt/default` by replacing the `delegation` section.
+- `peer_mail.Trigger` admits a stored trigger with the trigger origin. The daemon is
+  the caller, so no grant is checked; `orchestrator_port.served` answers `False` for
+  it, which is what keeps it off the relay (tested in `peer_remote_test`).
+- Control: `projects.create|list|board|post|stop` in `daemon/protocol` and
+  `daemon/server` (`project_command`), classified in `control_use`.
+  `[project]` is `client/project_settings` (`max_workers`, `token_ceiling`).
+- Not built in this slice: the commit scanner for human turns typed into a worker
+  and missed-report replay (`project_host.human_turn` is the entry point and is
+  tested, nothing subscribes to it yet), the host check, pull requests, outbound
+  delivery of replies, a Mandate-enforced broker policy.

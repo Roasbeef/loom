@@ -3824,3 +3824,10 @@ line cells), `draw` (flowcharts) and `sequence`.
   `mermaid_property_test` (qcheck on a fixed seed, and every directed graph on
   three nodes in all four directions read back from the text) and
   `mermaid_markdown_test`.
+
+## `loom project`
+
+`init`, `post <text>` and `board` for the repository in the working directory. They share
+one `ProjectsCommand`/`ProjectsReply` pair in `tui/daemon/protocol` and
+`daemon_selection.projects`, and the subcommand finds its project in `projects.list` by
+workspace. The wire forms are `docs/client-protocol.md` section 3.32.

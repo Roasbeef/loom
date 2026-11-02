@@ -146,10 +146,13 @@ pub fn create(
     })
     |> result.map_error(catalogue_text),
   )
+
+  // A workspace that already has a project keeps it.
   use found <- result.try(case existing {
     Some(found) -> Ok(found)
     None -> make_project(env, id, canonical, name)
   })
+
   use handle <- result.try(ensure_running(env, found))
   use Nil <- result.map(open_router(env, found))
   Created(
@@ -159,9 +162,9 @@ pub fn create(
   )
 }
 
-// The router's registration is reserved and the row written before the actor
-// starts, and the session is opened last: the session's builder looks up the
-// project's handle and its standing as it builds.
+/// The router's registration is reserved and the row written before the actor
+/// starts, and the session is opened last: the session's builder looks up the
+/// project's handle and its standing as it builds.
 fn make_project(
   env: Env,
   id: String,
@@ -223,6 +226,7 @@ pub fn ensure_running(
   env: Env,
   project: catalogue.Project,
 ) -> Result(project_host.Handle, String) {
+  // In ensure_running, the arms below are the outcomes of `project_book.get(env.book, project.id)`.
   case project_book.get(env.book, project.id) {
     Ok(running) -> Ok(running)
     Error(Nil) -> {
@@ -246,6 +250,7 @@ pub fn ensure_running(
   }
 }
 
+/// The open router step of this module.
 fn open_router(env: Env, project: catalogue.Project) -> Result(Nil, String) {
   // Creating under the reserving request key opens the router, and repeating
   // it finds the registration it made.
@@ -272,6 +277,7 @@ fn open_router(env: Env, project: catalogue.Project) -> Result(Nil, String) {
 
 // --- ports -------------------------------------------------------------------
 
+/// The ports for step of this module.
 fn ports_for(env: Env, project: catalogue.Project) -> project_host.Ports {
   let tree_workspace =
     workspaces.Workspace(
@@ -308,11 +314,11 @@ fn ports_for(env: Env, project: catalogue.Project) -> project_host.Ports {
   )
 }
 
-// A worker session in a linked worktree. Creating the tree twice adopts it,
-// reserving twice finds the registration, binding twice is refused as a
-// conflict that is accepted when the standing already is this assignment, and
-// creating twice finds the session. A restart anywhere in the sequence
-// therefore ends with one session and one tree.
+/// A worker session in a linked worktree. Creating the tree twice adopts it,
+/// reserving twice finds the registration, binding twice is refused as a
+/// conflict that is accepted when the standing already is this assignment, and
+/// creating twice finds the session. A restart anywhere in the sequence
+/// therefore ends with one session and one tree.
 fn start_worker(
   env: Env,
   project: catalogue.Project,
@@ -366,12 +372,14 @@ fn start_worker(
   registration.id
 }
 
-// Binding is refused as a conflict when the session already has a standing, so
-// a repeat after a restart reads the standing and accepts it when it is this
-// very assignment.
+/// Binding is refused as a conflict when the session already has a standing, so
+/// a repeat after a restart reads the standing and accepts it when it is this
+/// very assignment.
 fn bind(env: Env, worker: catalogue.ProjectWorker) -> Result(Nil, String) {
   let bound =
     in_catalogue(env, fn(store) { catalogue.bind_worker(store, worker) })
+
+  // In bind, the arms below are the outcomes of `bound`.
   case bound {
     Ok(Nil) -> Ok(Nil)
     Error(first) -> {
@@ -379,6 +387,8 @@ fn bind(env: Env, worker: catalogue.ProjectWorker) -> Result(Nil, String) {
         in_catalogue(env, fn(store) {
           catalogue.project_standing(store, worker.session_id)
         })
+
+      // In bind, the arms below are the outcomes of `standing`.
       case standing {
         Ok(catalogue.WorkerOf(project:, ticket:, seq:))
           if project == worker.project
@@ -429,7 +439,9 @@ pub fn reopen(env: Env) -> Nil {
   }
 }
 
+/// The reopen one step of this module.
 fn reopen_one(env: Env, project: catalogue.Project) -> Nil {
+  // In reopen_one, the arms below are the outcomes of `ensure_running(env, project)`.
   case ensure_running(env, project) {
     Error(reason) ->
       log.warn(env.logger, "project.start_failed", [
@@ -449,6 +461,7 @@ fn reopen_one(env: Env, project: catalogue.Project) -> Nil {
 
 // --- helpers -----------------------------------------------------------------
 
+/// The in catalogue step of this module.
 fn in_catalogue(
   env: Env,
   run: fn(catalogue.Catalogue) -> Result(a, catalogue.Error),
@@ -480,6 +493,8 @@ pub fn seat(
   book: Book,
   session: String,
 ) -> Result(Option(project_standing.Seat), String) {
+  // The catalogue is read in the registry's own turn, and an unanswering
+  // registry is a failure of the read, not an ordinary session.
   use found <- result.try(
     case
       manager.with_catalogue(registry, fn(store) {
@@ -490,7 +505,10 @@ pub fn seat(
       Error(_) -> Error("the session registry is not answering")
     },
   )
+
   let standing = project_standing.from_catalogue(found)
+
+  // In seat, the arms below are the outcomes of `project_standing.project_of(standing)`.
   case project_standing.project_of(standing) {
     None -> Ok(None)
     Some(project) ->

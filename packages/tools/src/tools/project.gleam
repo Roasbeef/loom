@@ -290,6 +290,7 @@ pub fn worker_tools(seam: Projects) -> List(Tool) {
 
 // --- route -------------------------------------------------------------------
 
+/// The route tool step of this module.
 fn route_tool(
   route: fn(Ctx, List(Item)) -> Result(List(ItemOutcome), Refusal),
 ) -> Tool {
@@ -341,6 +342,7 @@ fn route_tool(
   )
 }
 
+/// The item schema step of this module.
 fn item_schema() -> JsonValue {
   tool.object_schema(
     [
@@ -406,6 +408,7 @@ fn item_schema() -> JsonValue {
   )
 }
 
+/// The run route step of this module.
 fn run_route(
   route: fn(Ctx, List(Item)) -> Result(List(ItemOutcome), Refusal),
   ctx: Ctx,
@@ -441,8 +444,11 @@ fn outcome_text(outcome: ItemOutcome) -> String {
   }
 }
 
+/// The outcome json step of this module.
 fn outcome_json(item: Item, outcome: ItemOutcome) -> JsonValue {
   let base = [#("trigger", json.String(item.trigger.value))]
+
+  // In outcome_json, the arms below are the outcomes of `outcome`.
   case outcome {
     Applied ->
       json.Object(list.append(base, [#("result", json.String("applied"))]))
@@ -461,12 +467,15 @@ fn outcome_json(item: Item, outcome: ItemOutcome) -> JsonValue {
 /// judge alone.
 fn decode_items(args: JsonValue) -> Result(List(Item), String) {
   use raw <- result.try(tool.optional_value(args, "items"))
+
+  // In decode_items, the arms below are the outcomes of `raw`.
   case raw {
     Some(json.Array(items)) -> decode_item_list(items)
     Some(_) | None -> Error("`items` must be an array")
   }
 }
 
+/// The decode item list step of this module.
 fn decode_item_list(items: List(JsonValue)) -> Result(List(Item), String) {
   case list.length(items) {
     0 -> Error("give at least one item")
@@ -478,6 +487,7 @@ fn decode_item_list(items: List(JsonValue)) -> Result(List(Item), String) {
   }
 }
 
+/// The decode item step of this module.
 fn decode_item(raw: JsonValue) -> Result(Item, String) {
   use trigger <- result.try(tool.required_string(raw, "trigger"))
   use action_word <- result.try(tool.required_string(raw, "action"))
@@ -497,6 +507,7 @@ fn decode_item(raw: JsonValue) -> Result(Item, String) {
   ))
 }
 
+/// The decode action step of this module.
 fn decode_action(
   word: String,
   title: Option(String),
@@ -521,10 +532,13 @@ fn decode_action(
   }
 }
 
+/// The decode related step of this module.
 fn decode_related(
   raw: JsonValue,
 ) -> Result(List(#(model.TicketId, model.Relation)), String) {
   use found <- result.try(tool.optional_value(raw, "related"))
+
+  // In decode_related, the arms below are the outcomes of `found`.
   case found {
     None | Some(json.Null) -> Ok([])
     Some(json.Array(entries)) -> list.try_map(entries, decode_relation)
@@ -532,11 +546,14 @@ fn decode_related(
   }
 }
 
+/// The decode relation step of this module.
 fn decode_relation(
   entry: JsonValue,
 ) -> Result(#(model.TicketId, model.Relation), String) {
   use ticket <- result.try(tool.required_string(entry, "ticket"))
   use word <- result.try(tool.required_string(entry, "relation"))
+
+  // In decode_relation, the arms below are the outcomes of `word`.
   case word {
     "duplicate" -> Ok(#(model.TicketId(ticket), model.Duplicate))
     "blocks" -> Ok(#(model.TicketId(ticket), model.Blocks))
@@ -547,6 +564,7 @@ fn decode_relation(
 
 // --- project_read ------------------------------------------------------------
 
+/// The read tool step of this module.
 fn read_tool(read: fn(Ctx, Resource) -> Result(JsonValue, Refusal)) -> Tool {
   tool.Tool(
     name: read_tool_name,
@@ -571,6 +589,7 @@ fn read_tool(read: fn(Ctx, Resource) -> Result(JsonValue, Refusal)) -> Tool {
   )
 }
 
+/// The run read step of this module.
 fn run_read(
   read: fn(Ctx, Resource) -> Result(JsonValue, Refusal),
   ctx: Ctx,
@@ -617,6 +636,7 @@ pub fn parse_resource(text: String) -> Result(Resource, String) {
   }
 }
 
+/// The named step of this module.
 fn named(
   id: String,
   build: fn(String) -> Resource,
@@ -629,6 +649,7 @@ fn named(
 
 // --- reply -------------------------------------------------------------------
 
+/// The reply tool step of this module.
 fn reply_tool(reply: fn(Ctx, Reply) -> Result(Nil, Refusal)) -> Tool {
   tool.Tool(
     name: reply_tool_name,
@@ -662,6 +683,7 @@ fn reply_tool(reply: fn(Ctx, Reply) -> Result(Nil, Refusal)) -> Tool {
   )
 }
 
+/// The run reply step of this module.
 fn run_reply(
   reply: fn(Ctx, Reply) -> Result(Nil, Refusal),
   ctx: Ctx,
@@ -676,8 +698,11 @@ fn run_reply(
   tool.success("queued the reply to " <> subject <> ".")
 }
 
+/// The decode purpose step of this module.
 fn decode_purpose(args: JsonValue) -> Result(Purpose, String) {
   use word <- result.try(tool.required_string(args, "purpose"))
+
+  // In decode_purpose, the arms below are the outcomes of `word`.
   case word {
     "acknowledge" -> Ok(Acknowledge)
     "clarify" -> Ok(Clarify)
@@ -686,8 +711,11 @@ fn decode_purpose(args: JsonValue) -> Result(Purpose, String) {
   }
 }
 
+/// The within words step of this module.
 fn within_words(text: String) -> Result(String, String) {
   let words = string.split(text, " ") |> list.filter(fn(word) { word != "" })
+
+  // In within_words, the arms below are the outcomes of `list.length(words) <= max_reply_words`.
   case list.length(words) <= max_reply_words {
     True -> Ok(text)
     False ->
@@ -701,6 +729,7 @@ fn within_words(text: String) -> Result(String, String) {
 
 // --- project_report and project_handback ------------------------------------
 
+/// The report tool step of this module.
 fn report_tool(report: fn(Ctx, WorkerReport) -> Result(Nil, Refusal)) -> Tool {
   tool.Tool(
     name: report_tool_name,
@@ -744,6 +773,7 @@ fn report_tool(report: fn(Ctx, WorkerReport) -> Result(Nil, Refusal)) -> Tool {
   )
 }
 
+/// The run report step of this module.
 fn run_report(
   report: fn(Ctx, WorkerReport) -> Result(Nil, Refusal),
   ctx: Ctx,
@@ -754,17 +784,21 @@ fn run_report(
   tool.success("recorded.")
 }
 
+/// The decode report step of this module.
 fn decode_report(args: JsonValue) -> Result(WorkerReport, String) {
   use word <- result.try(tool.required_string(args, "status"))
   use question <- result.try(tool.optional_string(args, "question"))
   use status <- result.try(decode_status(word))
   use question <- result.try(capped(question))
+
+  // In decode_report, the arms below are the outcomes of `status, question`.
   case status, question {
     Waiting, _ | _, None -> Ok(WorkerReport(status:, question:))
     _, Some(_) -> Error("a `question` goes only beside `waiting`")
   }
 }
 
+/// The decode status step of this module.
 fn decode_status(word: String) -> Result(Status, String) {
   case word {
     "progress" -> Ok(Progress)
@@ -776,6 +810,7 @@ fn decode_status(word: String) -> Result(Status, String) {
   }
 }
 
+/// The capped step of this module.
 fn capped(text: Option(String)) -> Result(Option(String), String) {
   case text {
     Some(value) ->
@@ -792,6 +827,7 @@ fn capped(text: Option(String)) -> Result(Option(String), String) {
   }
 }
 
+/// The handback tool step of this module.
 fn handback_tool(handback: fn(Ctx, Handback) -> Result(Nil, Refusal)) -> Tool {
   tool.Tool(
     name: handback_tool_name,
@@ -814,6 +850,7 @@ fn handback_tool(handback: fn(Ctx, Handback) -> Result(Nil, Refusal)) -> Tool {
   )
 }
 
+/// The run handback step of this module.
 fn run_handback(
   handback: fn(Ctx, Handback) -> Result(Nil, Refusal),
   ctx: Ctx,
@@ -835,11 +872,13 @@ fn run_handback(
 
 /// The model's answer to a refused call. The reason is worded by the seam.
 fn refusal_outcome(refusal: Refusal) -> ToolOutcome {
+  // In refusal_outcome, the arms below are the outcomes of `let #(code, reason) = case refusal`.
   let #(code, reason) = case refusal {
     NotPermitted(reason:) -> #("not_permitted", reason)
     NotFound(reason:) -> #("not_found", reason)
     Unavailable(reason:) -> #("project_unavailable", reason)
   }
+
   tool.failure(reason)
   |> tool.with_details(
     json.Object([

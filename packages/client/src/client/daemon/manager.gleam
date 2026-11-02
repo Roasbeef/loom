@@ -3319,10 +3319,13 @@ fn handle(
         })
 
         use Nil <- result.try(refuse_moved(book, id))
+
+        // Archiving a session that a live project holds in place is refused.
         use Nil <- result.try(case visibility {
           catalogue.Archived -> project_free(book, id)
           catalogue.Active -> Ok(Nil)
         })
+
         use record <- result.map(
           catalogue.set_visibility(book.catalogue, id, visibility)
           |> result.map_error(AdminMetadata),
@@ -4273,6 +4276,8 @@ fn project_free(book: Book(instance), id: String) -> Result(Nil, AdminError) {
     |> result.map_error(AdminMetadata),
   )
   let standing = project_standing.from_catalogue(found)
+
+  // In project_free, the arms below are the outcomes of `case`.
   case
     project_standing.mobility(standing),
     project_standing.project_of(standing)

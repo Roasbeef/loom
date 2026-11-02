@@ -53,6 +53,7 @@ pub fn from_document(
   }
 }
 
+/// The from fields step of this module.
 fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Settings, String) {
   use _ <- result.try(
     list.try_map(dict.keys(fields), fn(key) {
@@ -79,7 +80,7 @@ fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Settings, String) {
   Settings(max_workers:, token_ceiling:)
 }
 
-// An integer in `low` to `high`, or the default when the key is absent.
+/// An integer in `low` to `high`, or the default when the key is absent.
 fn bounded(
   fields: Dict(String, tom.Toml),
   key: String,

@@ -814,6 +814,7 @@ fn trigger(
   body: String,
   wake: Wake,
 ) -> Result(JsonValue, String) {
+  // The same bounds a peer message has, so a trigger cannot carry more.
   use Nil <- result.try(
     case
       string.byte_size(id) > 0
@@ -824,6 +825,7 @@ fn trigger(
       False -> Error("message id or body exceeds its bound")
     },
   )
+
   use trigger_origin <- result.try(
     origin.validate_trigger(from.source, from.trigger, from.actor)
     |> result.map_error(fn(_) { "invalid trigger attribution" }),
@@ -860,6 +862,8 @@ fn trigger(
           origin: Some(trigger_origin),
         )
       let mark = api.GuardedMark(key, receipt, [])
+
+      // In trigger, the arms below are the outcomes of `let accepted = case wake`.
       let accepted = case wake {
         BusyOnly ->
           api.steer_marking(api.on_strand(runtime, target), payload, mark)

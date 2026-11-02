@@ -891,6 +891,8 @@ pub fn projects(
     )
     |> result.map_error(failure),
   )
+
+  // In projects, the arms below are the outcomes of `reply`.
   case reply {
     protocol.ProjectsReply(document) -> Ok(document)
     _other -> Error(name <> " returned an unexpected control reply")

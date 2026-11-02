@@ -70,11 +70,13 @@ not work. A message that is not yours goes back with `project_handback`.
 You have no access to GitHub and no credentials. Do not try to push or to
 open a pull request: the host does that when the work passes its check."
 
-// Replaces the body of `name`, which runs from its header line to the next
-// section header or the end of the pack. A pack without the section is
-// returned as it was, and the pack decoder's own check then reports it.
+/// Replaces the body of `name`, which runs from its header line to the next
+/// section header or the end of the pack. A pack without the section is
+/// returned as it was, and the pack decoder's own check then reports it.
 fn with_section(source: String, name: String, body: String) -> String {
   let header = "%% section " <> name <> "\n"
+
+  // In with_section, the arms below are the outcomes of `string.split_once(source, header)`.
   case string.split_once(source, header) {
     Error(Nil) -> source
     Ok(#(before, after)) ->

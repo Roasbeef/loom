@@ -3235,8 +3235,8 @@ fn dispatch(
   }
 }
 
-// The owner gate and the daemon's project control, once, for the five project
-// commands. A daemon that started no project table answers `not_found`.
+/// The owner gate and the daemon's project control, once, for the five project
+/// commands. A daemon that started no project table answers `not_found`.
 fn project_command(
   config: Config(instance),
   principal: access.Principal,
@@ -3250,6 +3250,7 @@ fn project_command(
   run(control) |> result.map_error(control_refusal)
 }
 
+/// The project create step of this module.
 fn project_create(
   control: project_start.Control,
   workspace: String,
@@ -3269,6 +3270,7 @@ fn project_create(
   })
 }
 
+/// The project list step of this module.
 fn project_list(
   control: project_start.Control,
 ) -> Result(#(String, JsonValue), String) {
@@ -3291,6 +3293,7 @@ fn project_list(
   Ok(#("projects.list", json.Object([#("projects", json.Array(rows))])))
 }
 
+/// The project board step of this module.
 fn project_board(
   control: project_start.Control,
   project: String,
@@ -3316,6 +3319,7 @@ fn project_board(
   )
 }
 
+/// The project post step of this module.
 fn project_post(
   control: project_start.Control,
   project: String,
@@ -3330,10 +3334,13 @@ fn project_post(
     project_host.post(handle, request, text)
     |> result.replace_error("bad_request"),
   )
+
+  // In project_post, the arms below are the outcomes of `let #(trigger, repeated) = case posted`.
   let #(trigger, repeated) = case posted {
     project_host.Posted(trigger) -> #(trigger, False)
     project_host.Repeated(trigger) -> #(trigger, True)
   }
+
   #(
     "projects.post",
     json.Object([
@@ -3343,6 +3350,7 @@ fn project_post(
   )
 }
 
+/// The project stop step of this module.
 fn project_stop(
   control: project_start.Control,
   project: String,

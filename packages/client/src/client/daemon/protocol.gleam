@@ -1418,6 +1418,7 @@ fn page_field(fields: List(#(String, JsonValue))) -> Result(Int, String) {
   }
 }
 
+/// The optional revision step of this module.
 fn optional_revision(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(Int), String) {

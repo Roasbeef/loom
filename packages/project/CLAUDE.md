@@ -101,4 +101,5 @@ readiness and names; `test/project/codec_test.gleam` the codec properties.
 ## Dependencies
 
 `gleam_stdlib` and `gleam_json`; `gleeunit`, `qcheck` and `statem` for tests.
-Nothing in Loom depends on it yet.
+`client` and `tools` depend on it (types and the codec); the engine's actor is
+`client/daemon/project_host`.

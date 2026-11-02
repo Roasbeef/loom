@@ -6420,6 +6420,8 @@ pub fn seat_project(
   seat: project_standing.Seat,
 ) -> Settings {
   let seated = Settings(..settings, project: Some(seat))
+
+  // In seat_project, the arms below are the outcomes of `seat.standing`.
   case seat.standing {
     project_standing.Ordinary -> settings
     project_standing.Router(..) ->
@@ -6433,14 +6435,16 @@ pub fn seat_project(
   }
 }
 
-// The identity a router's strand is seeded with. Dispatch matches a strand to a
-// role by its model, so the strand must hold the head of the role it routes on.
+/// The identity a router's strand is seeded with. Dispatch matches a strand to a
+/// role by its model, so the strand must hold the head of the role it routes on.
 fn routed_identity(settings: Settings) -> machine_strand.ModelIdentity {
   let resolved =
     [catalog.router_role, model.Subagent]
     |> list.find_map(fn(role) {
       provider_gateway.resolve(settings.gateway, role)
     })
+
+  // In routed_identity, the arms below are the outcomes of `resolved`.
   case resolved {
     Ok(found) ->
       machine_strand.ModelIdentity(

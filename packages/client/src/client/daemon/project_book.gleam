@@ -45,10 +45,12 @@ pub fn start() -> Result(Book, String) {
   |> result.replace_error("the project table did not start")
 }
 
+/// The handle step of this module.
 fn handle(
   table: Dict(String, Handle),
   message: Message,
 ) -> actor.Next(Dict(String, Handle), Message) {
+  // In handle, the arms below are the outcomes of `message`.
   case message {
     Put(found) -> actor.continue(dict.insert(table, found.project, found))
     Get(project, reply) -> {

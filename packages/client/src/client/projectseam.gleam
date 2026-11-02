@@ -39,7 +39,7 @@ pub fn seam(handle: Handle, session: String) -> tools.Projects {
   )
 }
 
-// The router's tools answer the router and no one else.
+/// The router's tools answer the router and no one else.
 fn as_router(
   handle: Handle,
   session: String,

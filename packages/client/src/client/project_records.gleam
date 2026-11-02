@@ -164,6 +164,7 @@ pub fn encode_record(record: Record) -> String {
   record_json(record) |> json.to_string
 }
 
+/// The record json step of this module.
 fn record_json(record: Record) -> Json {
   case record {
     TriggerText(trigger:, source:, actor:, body:) ->
@@ -218,8 +219,11 @@ pub fn decode_line(text: String) -> Result(Line, String) {
   }
 }
 
+/// The host decoder step of this module.
 fn host_decoder() -> decode.Decoder(Record) {
   use kind <- decode.field("host", decode.string)
+
+  // In host_decoder, the arms below are the outcomes of `kind`.
   case kind {
     "text" -> {
       use trigger <- decode.field("trigger", decode.string)
@@ -266,6 +270,7 @@ pub fn draft(
   now_ms: Int,
   effect: Effect,
 ) -> project_ledger.EffectDraft {
+  // In draft, the arms below are the outcomes of `effect`.
   case effect {
     event.StartSession(ticket:, seq: assignment, key:, mandate:) -> {
       let recorded = policy.for_mandate(mandate)
@@ -345,6 +350,7 @@ pub fn draft(
   }
 }
 
+/// The row step of this module.
 fn row(
   kind: String,
   key: String,
@@ -359,18 +365,22 @@ fn row(
   )
 }
 
-// The policy the Mandate derived, recorded with the start so a reader of the
-// ledger sees what the worker was meant to get. Enforcement by the broker is a
-// later slice; this slice records the result and does not apply it.
+/// The policy the Mandate derived, recorded with the start so a reader of the
+/// ledger sees what the worker was meant to get. Enforcement by the broker is a
+/// later slice; this slice records the result and does not apply it.
 fn policy_text(found: policy.WorkerPolicy) -> String {
+  // In policy_text, the arms below are the outcomes of `let network = case found.network`.
   let network = case found.network {
     policy.RegistriesOnly -> "registries_only"
     policy.OwnerSessionPolicy -> "owner_session_policy"
   }
+
+  // In policy_text, the arms below are the outcomes of `let approvals = case found.approvals`.
   let approvals = case found.approvals {
     policy.ApprovalsRefused -> "refused"
     policy.ApprovalsToPerson -> "to_person"
   }
+
   "network=" <> network <> " credentials=none approvals=" <> approvals
 }
 
@@ -384,6 +394,8 @@ fn policy_text(found: policy.WorkerPolicy) -> String {
 /// ```
 pub fn job(found: project_ledger.Effect) -> Result(Job, String) {
   let payload = found.payload_json
+
+  // In job, the arms below are the outcomes of `found.kind`.
   case found.kind {
     "start" ->
       parse(payload, {

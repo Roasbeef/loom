@@ -3215,18 +3215,21 @@ fn captured_domain_configuration(
   }
 }
 
-// The settings of a session shaped by its project standing, or the settings
-// unchanged for an ordinary session.
+/// The settings of a session shaped by its project standing, or the settings
+/// unchanged for an ordinary session.
 fn seated(
   config: Config,
   registry: manager.Manager(serve.Resident),
   session: String,
   settings: serve.Settings,
 ) -> Result(serve.Settings, String) {
+  // In seated, the arms below are the outcomes of `config.projects.book`.
   case config.projects.book {
     None -> Ok(settings)
     Some(book) -> {
       use seat <- result.map(project_start.seat(registry, book, session))
+
+      // In seated, the arms below are the outcomes of `seat`.
       case seat {
         Some(found) -> serve.seat_project(settings, found)
         None -> settings
@@ -3235,8 +3238,8 @@ fn seated(
   }
 }
 
-// The control commands' view of project mode, or none for a daemon whose
-// startup did not make the table.
+/// The control commands' view of project mode, or none for a daemon whose
+/// startup did not make the table.
 fn project_control(
   config: Config,
   ready: root.Ready(serve.Resident),
@@ -3317,6 +3320,7 @@ pub fn reopen_projects(
   daemon: root.Root(serve.Resident),
   logger: Logger,
 ) -> Result(Nil, String) {
+  // In reopen_projects, the arms below are the outcomes of `config.projects.book`.
   case config.projects.book {
     None -> Ok(Nil)
     Some(book) -> {
