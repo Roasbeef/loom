@@ -538,3 +538,22 @@ host cannot publish it by any path. `PersonPublished` still does, with readiness
 What it costs is a person's click on every inferred ticket that would otherwise have opened a
 pull request by itself.
 
+**Inferred text does not steer an explicit ticket.** `intake.takes` gave an inferred comment on a
+followed thread to any open ticket when the comment's rule pair was in `auto`, whatever the ticket's
+own Mandate. A stranger's matching comment could then steer a worker that holds the owner's network,
+and the host publishes that worker's commit after a pass, which is the case the inferred worker's jail
+and the person-publishes rule exist to stop. Considered: marking the ticket inferred once such text
+reaches it, which changes a Mandate after it is written and breaks its immutability; and keeping the
+delivery but withholding publication, which still lets the text drive a worker with the owner's
+network. Decided: an inferred trigger reaches a ticket only when that ticket's Mandate is inferred.
+`intake.takes` refuses it for an explicit ticket in every mode and the trigger goes to the router.
+`route.route` refuses `attach` and `resume` of an inferred trigger onto an explicit ticket with a new
+`Refusal`, `InferredOntoExplicit(trigger, ticket)`, which changes nothing, while `accept` still opens
+an inferred ticket. `work.retry` keeps the same rule when it rebuilds the inbox from the origin
+thread. No wire field, command or `loom.toml` key changes, and the refusal is a sentence on the
+router's result. What it costs: a CI failure on an explicit ticket's pull request is inferred, so under
+`auto` it no longer reaches that ticket's worker and becomes a candidate for a new inferred ticket,
+which a person must publish; and a follow-up that only a bot or a non-addressing person wrote no
+longer reaches the worker it was about. A person who wants the worker to act on such text addresses the
+agent on the thread, which is an explicit trigger.
+

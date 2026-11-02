@@ -228,9 +228,17 @@ expressions, and no model. It sets a trigger's strength.
 | The owner's composer | explicit | no |
 | An allowed person addressing the agent | explicit | no |
 | An allowed person following up on their ticket's thread | explicit | no, goes to that ticket's worker |
-| An allowed person not addressing the agent | inferred | yes |
-| A listed bot, or a CI failure | inferred | yes |
-| Anyone not listed | ignored by default | yes, if a rule admits them |
+| An allowed person not addressing the agent | inferred | yes, goes to the router |
+| A listed bot, or a CI failure | inferred | yes, goes to the router |
+| Anyone not listed | ignored by default | yes, if a rule admits them, goes to the router |
+
+Inferred text never reaches a worker with wider authority than an inferred Mandate. A
+ticket with an explicit Mandate takes no inferred trigger from its thread, whatever the
+mode, and the router cannot attach or resume one onto it. The trigger is a candidate
+for the router like any other, and an accept opens an inferred ticket with its own jail
+and a person's publish. A CI failure on an explicit ticket's pull request is inferred,
+so under `auto` it becomes a candidate for a new inferred ticket and does not reach
+the explicit worker through the thread.
 
 A source drops the bot's own messages before they enter the system. A trigger that
 descends from the project's own output carries a generation count, and the gate
@@ -249,9 +257,10 @@ output by type.
 | Approvals | Go to a person | Refused unless a rule grants them |
 
 A worker holds no credential at either strength, since the host does every push and
-pull request. An explicit ticket can still receive hostile text through its thread,
-which is why strength alone doesn't justify a credential, and why subscriptions
-deliver only admitted triggers. The credential proxy
+pull request. An explicit ticket can still receive hostile text through a
+person's follow-up, which is why strength alone doesn't justify a credential, and why
+subscriptions deliver only admitted triggers and give an explicit ticket no inferred
+ones. The credential proxy
 on `microvm/dev-experience` stays independent, and project mode doesn't depend on
 it. If per-ticket scope is wanted later, it's an optional layer that takes a plain
 scope value, and Mandate types stay on this side. Its owner asks for a message

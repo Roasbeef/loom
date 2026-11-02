@@ -105,6 +105,11 @@ are `gleam_json` and `evalstat`, both of which have both targets.
   `gate.Proceed`; `Observe` records `WouldAccept` and changes nothing else.
 - **Only admitted triggers travel.** A non-admitted trigger is recorded on
   its thread and has no `Deliver` or `OfferCandidates` effect.
+- **Inferred text never steers an explicit ticket.** `intake.takes` gives an
+  inferred trigger only to a ticket whose own mandate is inferred, `route`
+  refuses `Attach` and `Resume` of one onto an explicit ticket
+  (`InferredOntoExplicit`), and `work.retry` leaves inferred entries out of an
+  explicit ticket's rebuilt inbox. `accept` still opens an inferred ticket.
 - **A person's stop is final.** `work.withdraw` ends the ticket as
   `StoppedByPerson`, clears its demand and inbox, and every other transition
   refuses a withdrawn ticket. Stop is reachable only from `PersonStopped` or

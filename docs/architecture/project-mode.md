@@ -161,7 +161,7 @@ flowchart TD
     Own -- "yes" --> OwnMsg["Decided(OwnMessage)"]
     Own -- "no" --> Classify["gate.classify"]
     Classify -- "NotAdmitted" --> Recorded["Decided(RecordedOnly)<br/>noted on the thread, never delivered"]
-    Classify -- "Admitted" --> Sub{"a subscribed open ticket takes it?"}
+    Classify -- "Admitted" --> Sub{"a subscribed open ticket takes it?<br/>inferred text: only an inferred ticket"}
     Sub -- "yes" --> Delivered["Decided(Delivered)<br/>Deliver or inbox"]
     Sub -- "no" --> Consider["queue.consider"]
     Consider -- "gate refuses" --> HeldGate["Held(HeldByGate)"]
@@ -174,11 +174,15 @@ flowchart TD
 | Sender and relation | `gate.classify` | Needs `auto` |
 | --- | --- | --- |
 | `Owner` | `Explicit` | No |
-| `Person`, addressing the agent or following up on their own ticket | `Explicit` | No |
-| `Person`, not addressing it | `Inferred` | Yes |
-| `ListedBot`, `CiFailure` | `Inferred`, not past `max_generation` of 2 | Yes |
-| `Unlisted`, with a matching rule | `Inferred` | Yes |
+| `Person`, addressing the agent or following up on their own ticket | `Explicit`, reaches that ticket's worker | No |
+| `Person`, not addressing it | `Inferred`, goes to the router | Yes |
+| `ListedBot`, `CiFailure` | `Inferred`, not past `max_generation` of 2, goes to the router | Yes |
+| `Unlisted`, with a matching rule | `Inferred`, goes to the router | Yes |
 | `Unlisted`, no rule | `NotAdmitted(SenderUnlisted)` | |
+
+Inferred text never reaches a worker with wider authority than an inferred Mandate. `intake.takes` gives an inferred trigger to a subscribed ticket only when that ticket's own Mandate is inferred and the gate would accept it. A ticket with an explicit Mandate never takes one, in any mode, so the trigger goes to `queue.consider` and the router like any other inferred candidate. `route.route` enforces the same rule on the router's side: `attach` or `resume` of an inferred trigger onto an explicit ticket is refused with `InferredOntoExplicit`, which changes nothing, and `accept` opens an inferred ticket with its own jail and a person's publish. An explicit trigger is unaffected, so a person following up on their own ticket still reaches its worker. `work.retry` rebuilds the inbox from the origin thread's received entries and keeps only those a worker of that Mandate may take, so a retry on an explicit ticket does not queue an inferred entry either.
+
+The other paths that put thread text in front of a worker were checked and hold the rule without a change. A worker is handed text by `Deliver` effects and by the inbox `schedule.run` emits when a session starts. The effects come from `work.deliver_to`, which only `intake` and `route.hand_over` call, and from `work.answered`, which carries a person's answer. The inbox is filled by `work.open`, `work.deliver_to`, `work.answered` and `work.retry`. The host's recovery note and its check-failure note are the host's own fixed or fenced text and not thread text, and a person's turn typed into a worker is an `Owner` trigger, which is explicit. `project_read` is one of the router's three tools and a worker session does not hold it, and the board's thread view is the owner's. One consequence follows from the rule. A CI failure on an explicit ticket's pull request is inferred, so under `auto` it no longer reaches that ticket's worker through the thread and becomes a candidate for the router, which may accept it as a new inferred ticket. The worker still hears of its own failing check from the host's check-failure note.
 
 1. **Offer.** `queue.offer` sends at most `max_offer` (20) candidates, explicit first, when the router is `RouterIdle`, and sets it `RouterBusy`. `offer_to_router` delivers each under a receipt holding its offer count, so a re-offer wakes the session.
 2. **Route.** The router's `route` tool carries a trigger id, a capped title and typed relations, and no free text for a worker. `route_now` commits each item alone, so a refused item doesn't undo the others. `route.route` refuses a trigger that isn't `Offered`, a reference it doesn't hold, and anything the gate refuses.
@@ -442,7 +446,6 @@ This document rests on four reader summaries against `be5a7b58e`. Its constants 
 - A session that dies between `create_scoped` returning and `SessionBound` being recorded rings before the assignment is bound, so that assignment looks running.
 - `project_book` starts actors with restart `Temporary`, so a crashed project actor isn't restarted, and its stale `Handle` stays until the next boot or `Put`. Calls then fail after the 10 s `ask` wait.
 - `project_settings` parses `token_ceiling`, and no reader found a consumer of it. The engine handles `CeilingChanged`, and nothing in the daemon emits it, so the ceiling never engages outside tests.
-- An explicit ticket whose rule pair is in `auto` takes an inferred comment on its thread (`intake.takes`), and its Mandate stays explicit. A stranger's text that matched a rule can therefore steer that worker, and the commit it writes is published after a pass. The Mandate's strength is fixed at open, so `work.vouched` does not see the inferred input.
 - A router's `clarify` or `decline` reply to an inferred trigger is posted to that trigger's GitHub thread when publishing is on. Its text is the router's, which has read the stranger's text, and `reply_body` removes `@ < > #` and invisible characters and nothing else, so it can carry a link. It goes to one thread, under the owner's account, and is limited by the router's tools (`project_read`, `reply`, `route`).
 - The check runner's policy has `readable_roots ["/"]`, with the state-root masks and each project's `host.git`, `ledger.db` and its SQLite side files masked (`protecting_project_files`). Worker-authored code in a check can still read what is not masked, such as the other clones, and up to 4000 characters of its failing output go back to the worker. Like `protecting_projects`, the mask covers what exists when the check starts.
 - `protecting_projects` masks only what exists when a session's policy is built, so a `checks/` directory made later isn't masked for that session.
