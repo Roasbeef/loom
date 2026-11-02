@@ -1581,17 +1581,32 @@ fn lazy_masks(state_root: String) -> List(String) {
   ])
 }
 
-// The node secrets a distributed daemon keeps under the user's home rather
-// than its state root. The cookie must be the VM's `$HOME/.erlang.cookie`
-// (the emulator reads it from nowhere else), and `loom vm up` keeps its
-// guests in `$HOME/.loom/vm` whatever `--state-dir` the daemon runs with.
-// A jailed process that read the cookie and a key could connect to this
-// daemon's distribution listener as a pinned peer.
+/// The node secrets a distributed daemon keeps under the user's home rather
+/// than its state root. The cookie must be the VM's `$HOME/.erlang.cookie`
+/// (the emulator reads it from nowhere else), and `loom vm up` keeps its
+/// guests in `$HOME/.loom/vm` whatever `--state-dir` the daemon runs with.
+/// A jailed process that read the cookie and a key could connect to this
+/// daemon's distribution listener as a pinned peer.
 fn node_home_masks() -> List(String) {
   // A daemon with no `HOME` has neither file to mask.
   case home_directory() {
-    Some(home) -> [home <> "/.erlang.cookie", home <> "/.loom/vm"]
+    Some(home) -> list.append(existing_cookie(home), [home <> "/.loom/vm"])
     None -> []
+  }
+}
+
+/// The home's cookie, only when it is already a file. A missing path under a
+/// writable root would otherwise be masked with a tmpfs, and bwrap creates
+/// the mountpoint as a directory in the real home, where it outlives the jail
+/// and breaks every later distributed boot, which reads that path as the
+/// cookie. A stray directory at `.loom/vm` has no such consequence.
+fn existing_cookie(home: String) -> List(String) {
+  let cookie = home <> "/.erlang.cookie"
+
+  // An unreadable answer is treated as no cookie: there is no file to mask.
+  case simplifile.is_file(cookie) {
+    Ok(True) -> [cookie]
+    _ -> []
   }
 }
 
