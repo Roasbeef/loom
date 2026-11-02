@@ -356,7 +356,7 @@ should reimplement it.
 |---|---|
 | `person/delivery` | An input failed to reach the worker |
 | `person/answer` | An open question for a person |
-| `person/review` | `AwaitingReview`, or `Ready` with its pull request open |
+| `person/review` | `AwaitingReview`, or `Ready` with its pull request open, unless a running worker is still changing the work |
 | `person/blocked`, `person/failed` | The latest report says so, and no person's message since |
 | `queued` | Never assigned, or the assignment is pending |
 | `idle` | The latest report is `waiting`, or the latest assignment ended |

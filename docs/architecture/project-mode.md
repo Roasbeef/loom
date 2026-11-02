@@ -93,7 +93,7 @@ sequenceDiagram
             Host-->>Start: start fails, naming the line
             Note over Start: logs project.start_failed, skips this project
         else replayed
-            Host->>Host: rearm_router_clock, recover_interrupted
+            Host->>Host: rearm_router_clock, recover_interrupted, queue_reopens
             Host->>Book: remember_mandates
             Host->>Host: configure_rules, perform_due
             Start->>Host: pin_router(prompt digest, model)
@@ -106,6 +106,8 @@ sequenceDiagram
 ```
 
 Mandates reach the book before `perform_due` because performing can start or open a worker, and that worker's builder runs in the registry while the actor waits for it, so it can't ask the actor. `pin_router` writes nothing when the digest and model are unchanged, and a change returns any `auto` rule to `observe` in that same event.
+
+The opens at the end of boot are one try each, and a session file can refuse them. A daemon killed with `kill -9` runs no release, so its writer lease on each session file lasts until it expires (60 seconds from the last renewal), and a daemon restarted inside that window is refused with `lease_held`. A second live daemon is refused the same way for as long as it lives, and nothing here weakens that. `queue_reopens` therefore writes a `reopen` row for the router and one for each session that holds a slot, due after the first tick, which is when the project's handle is in the table and a session builder can find it. The row calls `open_session`, which waits for the open to settle (`project_start.open_and_wait`) so that a refusal comes back with the registry's own words. A refusal defers the row under the usual back-off, and the ninth failure, about three minutes in, is final. A worker is then failed with `the worker's session did not reopen after 9 attempts: <reason>`, and the router, which the next offer opens on demand, is logged. A `reopen` row for a session whose assignment has since ended is settled without opening it. The `recover` row for the restart note goes through the same open and has the same nine attempts, so the note reaches the worker as soon as the lease is gone, with nobody to ask.
 
 ## Commit, then perform
 
@@ -134,7 +136,9 @@ The row's key makes a repeat harmless. `start` carries `request_key`, `project:<
 | Kind | Performer | Gives up |
 | --- | --- | --- |
 | `start` | `start_worker` | 5 attempts, then `WorkerFailed` with the failure's text |
-| `deliver`, `recover` | `deliver_to_worker` | 5 attempts, then `InputFailed` and stage `person/delivery` |
+| `deliver` | `deliver_to_worker` | 5 attempts, then `InputFailed` and stage `person/delivery` |
+| `recover` | `recover_worker` | 9 attempts, then settled: the `reopen` row owns the ticket |
+| `reopen` | `reopen_session` | 9 attempts, then `WorkerFailed` with the refusal's text for a worker, a log line for the router |
 | `offer` | `offer_to_router` | 10 attempts, then `RouterTurnEnded` |
 | `observe` | `observe_head` | 5 attempts |
 | `check` | `start_check` | `max_task_attempts` of 3, then a review |
@@ -225,7 +229,7 @@ flowchart TD
 2. **Protected paths.** `protected_patterns` joins `[project]` settings, `protect.default_paths` (`Makefile`, `GNUmakefile`, `makefile`, `.github/**`) and every word of the check command that isn't a flag or an assignment. A match sends the ticket to a person, so an edited build file never runs on this path.
 3. **Check.** `check_tree` builds a new repository under `checks/`, fetches the commit from `host.git`, and runs `bash -o pipefail -c <command>` through `worktrees.check_runner`. The network is off and the tree is its only writable root. The tree is removed afterwards whatever happened.
 4. **Record.** A pass writes `CheckRecorded` first, because `CheckPassed` names the ledger entry that holds the result.
-5. **Publish.** `project_publish.publish` runs `git -C host.git push --no-verify` with hooks off and no force, to the URL pinned in `loom-origin-url` when the project was created. It then looks for an open pull request on `project/<ticket>` and creates one only if there's none, so a crash between the two doesn't open a second. The push and `gh` run in the daemon process, outside any jail, and the owner's global Git config applies to them, because that's where the owner's credentials are configured.
+5. **Publish.** `project_publish.publish` runs `git -C host.git push --no-verify` with hooks off and no force, to the URL pinned in `loom-origin-url` when the project was created. It then looks for an open pull request on `project/<ticket>` and creates one only if there's none, so a crash between the two doesn't open a second. The push and `gh` run in the daemon process, outside any jail, and the owner's global Git config applies to them, because that's where the owner's credentials are configured. Only a pinned GitHub URL is published: for any other origin the publish is unavailable and neither the push nor `gh` runs.
 
 A later report with no head goes through `ObserveHead` again, and a new commit returns readiness to `InProgress`.
 
@@ -251,6 +255,19 @@ stateDiagram-v2
 
 `stage.of` takes the first match: `ended/<outcome>`, `person/delivery`, `person/answer`, `person/review`, `person/blocked`, `person/failed`, `queued`, then `idle` or `working`.
 
+| Row | Stage | Condition |
+| --- | --- | --- |
+| 1 | `ended/<outcome>` | The ticket ended |
+| 2 | `person/delivery` | An input failed to reach the worker |
+| 3 | `person/answer` | An open question for a person |
+| 4 | `person/review` | Awaiting review, or a pull request open on a ready or published ticket, unless a running assignment's worker is at work |
+| 5 | `person/blocked`, `person/failed` | The latest report says so and no person has spoken since |
+| 6 | `queued` | Never assigned, the assignment is pending, or a session is wanted |
+| 7 | `idle` | The latest report is `waiting`, or the latest assignment ended |
+| 8 | `working` | Otherwise |
+
+A worker is at work when its latest assignment is running and a person has spoken since its latest report, or it has reported nothing or only progress. A resumed assignment starts with no report, so a ticket that was in review reads `working` for as long as the new worker changes the work, and `person/review` again when that worker reports `waiting`. A pending assignment, an ended one and a worker whose latest report is `waiting`, `blocked`, `failed` or `dropped` leave the review row in force, and a question or a failed input still outranks it.
+
 | Event | `outcome` | `authority` | Can resume |
 | --- | --- | --- | --- |
 | `PersonClosed` | `Closed` | `Granted` | Yes, by a router `resume` |
@@ -260,7 +277,7 @@ stateDiagram-v2
 
 All four stop the newest session and free the slot. A resume starts a new assignment. Its clone starts from the ticket's recorded head, fetched from `host.git`, unless the owner's `HEAD` already contains that commit, and a later push then fast-forwards.
 
-A session that ends unreported ends the assignment too. The registry's `on_session_ended` reaches every actor as `SessionGone`, and `session_lost` commits `WorkerFailed` for an assignment that still holds its slot and is bound to that session. It ignores rested workers and sessions the host stopped, and the registry doesn't ring during its own shutdown.
+A session that ends unreported ends the assignment too. The registry's `on_session_ended` reaches every actor as `SessionGone`, and `session_lost` commits `WorkerFailed` for an assignment that still holds its slot and is bound to that session. It ignores rested workers and sessions the host stopped, and the registry doesn't ring during its own shutdown. The registry rings only for a session that was running: a build that was refused, such as an open that finds the writer lease still held, retires its slot without a ring, because that is the end of an attempt and not of a session.
 
 ## The GitHub source
 
@@ -283,7 +300,7 @@ flowchart TD
     Conc --> Cursors["store_cursors: scanner_cursor src:key"]
 ```
 
-- **Scope.** It reads the repository the pinned URL names and nothing else. A stream with no cursor stores the present and fetches nothing, so earlier history is never read. The query asks for the oldest `page_size` (100) items since the cursor, and a repeat of an equal timestamp is dropped by the engine's id check.
+- **Scope.** It reads the repository the pinned URL names and nothing else. Only a GitHub URL names one: `https://github.com/o/n`, `git@github.com:o/n` and `ssh://git@github.com/o/n`, each with an optional `.git`, and with the host in any letter case (`project_publish.repository_of`). A local path, another host, a user, a port or an extra path part names none, and the board's source note says `the project's origin is not a GitHub URL, so its source is not read`. Nothing is polled and no pull request is opened for such an origin, and the push still goes to the pinned URL. GitHub Enterprise hosts aren't recognised. A stream with no cursor stores the present and fetches nothing, so earlier history is never read. The query asks for the oldest `page_size` (100) items since the cursor, and a repeat of an equal timestamp is dropped by the engine's id check.
 - **Senders.** A login in `allow` is `Person`, in `bots` is `ListedBot`, and anything else is `Unlisted`. GitHub never produces `Owner`. Addressing needs an exact `@account` token, and the agent's own account is dropped at the poller and again at `intake.arrive`.
 - **Text.** The body is stored up to `stored_chars` (32768), delivered up to `inline_chars` (4000) with a pointer to `project_read`, and delivered under `TriggerOrigin`, whose fence the body can't close.
 - **Back-off.** `limit_until` honours `retry-after`, then `x-ratelimit-reset`, clamped by `longest_wait_ms`. A remaining allowance at or below `low_remaining` (5) defers the next pass, and a broken pass doubles the wait up to `longest_backoff_ms` (one hour).
@@ -431,4 +448,7 @@ This document rests on four reader summaries against `be5a7b58e`. Its constants 
 - `project_github.Page.own` is counted and never read, and `release` excludes `.codemode` from its clean test, so a clone with changes only there is removed.
 - The live lane asks the router directly and doesn't apply `gate.classify`, so its trials can differ from what `auto` would admit.
 - A person stopping a worker session from outside the project fails its ticket.
+- The restart note is queued once per assignment, so a second restart of the same assignment reopens its session through the `reopen` row and doesn't tell the worker again.
+- A `deliver` row gives up after 5 attempts, about 15 seconds, which is shorter than a writer lease. An input that was queued for a worker when the daemon was killed can become `person/delivery` while the lease runs out, where the restart note and the reopen wait it out.
+- One worker whose session had last been attached by a terminal read `worker_failed` after a graceful restart in a live drive. A graceful stop with terminals attached to two workers records no loss in `project_daemon_test`, and no cause is established. A refused build no longer rings, which closes one way a client's open of a project session could have failed an assignment.
 - Remote workers depend on the #1137 bundle work, so workers run on the owning machine. Whether `active_tool_names` alone closes every effect path for a router on a remote executor hasn't been tested.
