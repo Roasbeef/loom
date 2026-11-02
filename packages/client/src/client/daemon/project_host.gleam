@@ -47,6 +47,7 @@ import client/goalstate
 import client/notes
 import client/peer_mail
 import client/project_github
+import client/project_judge
 import client/project_poller
 import client/project_publish
 import client/project_records.{
@@ -75,6 +76,7 @@ import project/action
 import project/engine
 import project/event.{type Event, type Refusal}
 import project/host as proof
+import project/judge
 import project/model
 import project/protect
 import project/readiness
@@ -485,6 +487,17 @@ pub opaque type Message {
     reply: Subject(Result(JsonValue, String)),
   )
   PinRouter(prompt_revision: String, router_model: String)
+
+  /// A trial of a live verdict ended, with what it spent. It comes from the
+  /// run's task and changes only what the rule's row reports.
+  VerdictProgress(rule: String, spent: project_judge.Spend)
+
+  /// A live verdict's task ended: the samples it measured, or why it has none.
+  VerdictMeasured(
+    rule: String,
+    by: String,
+    measured: Result(project_judge.Measured, String),
+  )
   Tick
 }
 
@@ -508,6 +521,31 @@ type Host {
     gone: List(project_retention.Gone),
     compacted_ms: Int,
     compacted_seq: Int,
+    /// The live verdict run of each rule that has had one since the actor
+    /// started, running or over. It is memory only: a run never resumes, and a
+    /// restart records nothing, so there is nothing to restore.
+    runs: Dict(String, LiveRun),
+  )
+}
+
+/// A live verdict run, as the rule's row reports it.
+type LiveRun {
+  /// The run's task is going. The plan is kept to conclude with, and `done`
+  /// counts trials that ended, whether they decided or failed.
+  Going(
+    plan: project_verdict.Plan,
+    started_ms: Int,
+    done: Int,
+    spent: project_judge.Spend,
+  )
+
+  /// The run is over. `outcome` is `passed`, `failed` or `incomplete`, and the
+  /// words say what happened and what it cost.
+  Over(
+    outcome: String,
+    words: String,
+    ended_ms: Int,
+    spent: project_judge.Spend,
   )
 }
 
@@ -895,6 +933,7 @@ fn boot(config: Config, inbox: Subject(Message)) -> Result(Host, String) {
       gone: [],
       compacted_ms: 0,
       compacted_seq: 0,
+      runs: dict.new(),
     )
 
   // A compacted ledger starts from its snapshot and replays what follows.
@@ -1127,6 +1166,10 @@ fn handle(host: Host, message: Message) -> actor.Next(Host, Message) {
     }
     PinRouter(prompt_revision:, router_model:) ->
       actor.continue(pin_now(host, prompt_revision, router_model))
+    VerdictProgress(rule:, spent:) ->
+      actor.continue(progressed(host, rule, spent))
+    VerdictMeasured(rule:, by:, measured:) ->
+      actor.continue(perform_due(measured_now(host, rule, by, measured)))
     Tick -> actor.continue(tick(host))
   }
 }
@@ -4236,27 +4279,264 @@ fn verdict_now(
 ) -> #(Host, Result(JsonValue, String)) {
   let judged = {
     use found <- result.try(configured_rule(host, rule))
-    project_verdict.run(host.engine, found.0, found.1, lane, fn(id) {
+    project_verdict.start(host.engine, found.0, found.1, lane, fn(id) {
       text_body(host, id.value)
     })
   }
 
-  // A finding is recorded only after the engine accepts the event. The
-  // engine's acceptance is also what demotes a pair left without a current
-  // passing verdict, so recording and demotion are one ledger line.
+  // A replay finding is in hand and is recorded now. A live run still has to
+  // ask the model, which takes minutes, so it starts in a task and the actor
+  // goes on serving the project while it runs.
   case judged {
     Error(words) -> #(host, Error(words))
-    Ok(#(recorded, body)) ->
-      case commit(host, recorded) {
-        Ok(next) -> {
-          log.info(host.ports.logger, "project.verdict_recorded", [
-            field.ident(key: "rule", value: rule),
-            field.ident(key: "by", value: by),
-          ])
-          #(next, Ok(body))
-        }
-        Error(failure) -> #(host, Error(not_committed_text(failure)))
+    Ok(project_verdict.Recorded(recorded, body)) ->
+      record_verdict(host, rule, by, recorded, body)
+    Ok(project_verdict.Measuring(plan)) -> begin_live(host, rule, by, plan)
+  }
+}
+
+/// Records a verdict event. A finding is recorded only after the engine
+/// accepts the event. The engine's acceptance is also what demotes a pair left
+/// without a current passing verdict, so recording and demotion are one ledger
+/// line.
+fn record_verdict(
+  host: Host,
+  rule: String,
+  by: String,
+  recorded: Event,
+  body: JsonValue,
+) -> #(Host, Result(JsonValue, String)) {
+  // The engine accepts the event or says why not, and only an accepted one is
+  // in the ledger.
+  case commit(host, recorded) {
+    Ok(next) -> {
+      log.info(host.ports.logger, "project.verdict_recorded", [
+        field.ident(key: "rule", value: rule),
+        field.ident(key: "by", value: by),
+      ])
+      #(next, Ok(body))
+    }
+    Error(failure) -> #(host, Error(not_committed_text(failure)))
+  }
+}
+
+/// How long past the run's own wall limit its task may live. The run bounds
+/// itself, and its task is killed and joined when the wall limit expires, so
+/// this only keeps a task that somehow outlived that from outliving the actor's
+/// notion of the run.
+const run_backstop_ms = 60_000
+
+/// Starts a live run in a task, and answers the owner at once. Only one run
+/// per rule may go at a time: two would spend twice for one answer, and the
+/// second to finish would record over the first. The task measures with the
+/// plan's judge and sends the actor each trial's spend and then the result, so
+/// the ledger is still written by this actor alone.
+///
+/// The task is linked to the actor through its witnessed scope, so an actor
+/// that stops ends the run and every scratch session the run opened, and a
+/// restarted actor has no run to resume. Nothing about a live run is in the
+/// ledger until it is concluded.
+fn begin_live(
+  host: Host,
+  rule: String,
+  by: String,
+  plan: project_verdict.Plan,
+) -> #(Host, Result(JsonValue, String)) {
+  // A rule whose run is still going refuses a second. One whose run is over, or
+  // that never had one, starts afresh and replaces the old report.
+  case dict.get(host.runs, rule) {
+    Ok(Going(done:, plan: going, ..)) -> #(
+      host,
+      Error(already_going(rule, going, done)),
+    )
+    Ok(Over(..)) | Error(Nil) -> {
+      let inbox = host.inbox
+      let judge = plan.judge
+      let work = plan.work
+      let _witnessed =
+        weft.new([
+          fn() {
+            let measured =
+              project_judge.measure(work, judge, judge_trials, fn(spent) {
+                process.send(inbox, VerdictProgress(rule, spent))
+              })
+            process.send(inbox, VerdictMeasured(rule, by, measured))
+            Ok(Nil)
+          },
+        ])
+        |> weft.deadline(judge.limits.wall_ms + run_backstop_ms)
+        |> weft.start_witnessed
+
+      log.info(host.ports.logger, "project.verdict_started", [
+        field.ident(key: "rule", value: rule),
+        field.ident(key: "by", value: by),
+        field.count("triggers", list.length(work)),
+      ])
+      let going =
+        Going(
+          plan:,
+          started_ms: host.ports.now_ms(),
+          done: 0,
+          spent: project_judge.no_spend,
+        )
+      #(
+        Host(..host, runs: dict.insert(host.runs, rule, going)),
+        Ok(project_verdict.started_json(plan)),
+      )
+    }
+  }
+}
+
+/// The trials of each trigger in a live run.
+const judge_trials = judge.live_trials
+
+/// The refusal of a second run on a rule whose run is still going.
+fn already_going(
+  rule: String,
+  going: project_verdict.Plan,
+  done: Int,
+) -> String {
+  "a live verdict for rule "
+  <> rule
+  <> " is already running, with "
+  <> int.to_string(done)
+  <> " of "
+  <> int.to_string(list.length(going.work) * judge_trials)
+  <> " trials done. Wait for it to finish, then run it again if you need to."
+}
+
+/// Counts one trial that ended, and what it spent, on the rule's run. A
+/// message for a run that is over, or for none, changes nothing.
+fn progressed(host: Host, rule: String, spent: project_judge.Spend) -> Host {
+  case dict.get(host.runs, rule) {
+    Ok(Going(..) as going) ->
+      Host(
+        ..host,
+        runs: dict.insert(
+          host.runs,
+          rule,
+          Going(
+            ..going,
+            done: going.done + 1,
+            spent: project_judge.add(going.spent, spent),
+          ),
+        ),
+      )
+    Ok(Over(..)) | Error(Nil) -> host
+  }
+}
+
+/// Takes in a live run's result. Samples that cover every trial are concluded
+/// into a verdict event and committed like a replay finding. Anything else
+/// leaves the ledger as it was: a run that failed, was cut off by its wall
+/// limit, or began under a pin that has since moved records no pass, and the
+/// rule's row says why and what the run spent.
+fn measured_now(
+  host: Host,
+  rule: String,
+  by: String,
+  measured: Result(project_judge.Measured, String),
+) -> Host {
+  // A result is taken in only for a run that is still going. One for a run
+  // that is over, or for none, is a stale message and changes nothing.
+  case dict.get(host.runs, rule) {
+    Ok(Going(plan:, spent:, ..)) -> {
+      let #(next, how, words) = conclude_run(host, rule, by, plan, measured)
+      ended(next, rule, how, words, spent)
+    }
+    Ok(Over(..)) | Error(Nil) -> host
+  }
+}
+
+/// Concludes a run's result into the ledger, and answers how the run ended and
+/// in what words: the verdict's own outcome and claim when it was recorded, and
+/// `incomplete` with the reason when it was not.
+fn conclude_run(
+  host: Host,
+  rule: String,
+  by: String,
+  plan: project_verdict.Plan,
+  measured: Result(project_judge.Measured, String),
+) -> #(Host, String, String) {
+  let concluded = {
+    use found <- result.try(measured)
+    project_verdict.conclude(host.engine, plan, found)
+  }
+
+  // A run with no samples, or whose pin moved, is a sentence and no event.
+  case concluded {
+    Error(words) -> #(host, "incomplete", words)
+    Ok(#(recorded, body)) -> {
+      let #(next, committed) = record_verdict(host, rule, by, recorded, body)
+
+      // The engine may still refuse the event, which is the last way a run
+      // can end without a verdict.
+      case committed {
+        Ok(_) -> #(next, text_of(body, "outcome"), text_of(body, "words"))
+        Error(words) -> #(next, "incomplete", words)
       }
+    }
+  }
+}
+
+/// Marks a rule's run over, with how it ended and what it cost.
+fn ended(
+  host: Host,
+  rule: String,
+  outcome: String,
+  words: String,
+  spent: project_judge.Spend,
+) -> Host {
+  log.info(host.ports.logger, "project.verdict_ended", [
+    field.ident(key: "rule", value: rule),
+    field.ident(key: "outcome", value: outcome),
+    field.count("calls", spent.calls),
+    field.count("tokens", spent.tokens),
+  ])
+  let over =
+    Over(
+      outcome:,
+      words: words <> " It spent " <> project_verdict.spend_words(spent) <> ".",
+      ended_ms: host.ports.now_ms(),
+      spent:,
+    )
+  Host(..host, runs: dict.insert(host.runs, rule, over))
+}
+
+/// A text field of a reply body, or empty when there is none.
+fn text_of(body: JsonValue, key: String) -> String {
+  case body {
+    json.Object(fields) ->
+      case list.key_find(fields, key) {
+        Ok(json.String(text)) -> text
+        _ -> ""
+      }
+    _ -> ""
+  }
+}
+
+/// A rule's live run as its row reports it: running with its progress, or over
+/// with how it ended. A rule that never had one reports null.
+fn run_json(host: Host, rule: String) -> JsonValue {
+  case dict.get(host.runs, rule) {
+    Error(Nil) -> json.Null
+    Ok(Going(plan:, started_ms:, done:, spent:)) ->
+      json.Object([
+        #("state", json.String("running")),
+        #("done", json.Int(done)),
+        #("of", json.Int(list.length(plan.work) * judge_trials)),
+        #("calls", json.Int(spent.calls)),
+        #("tokens", json.Int(spent.tokens)),
+        #("started_ms", json.Int(started_ms)),
+      ])
+    Ok(Over(outcome:, words:, ended_ms:, spent:)) ->
+      json.Object([
+        #("state", json.String(outcome)),
+        #("words", json.String(words)),
+        #("calls", json.Int(spent.calls)),
+        #("tokens", json.Int(spent.tokens)),
+        #("ended_ms", json.Int(ended_ms)),
+      ])
   }
 }
 
@@ -4831,6 +5111,7 @@ fn sources_json(host: Host) -> List(JsonValue) {
                     model.RuleId(rule.name),
                   ),
                 ),
+                #("run", run_json(host, rule.name)),
               ])
             }),
           ),

@@ -295,7 +295,11 @@ pub fn the_feed_closes_a_ticket_and_says_so_when_it_cannot_test() {
 fn controlled(handle: project_host.Handle) -> project_start.Control {
   let assert Ok(book) = project_book.start() as "the table starts"
   project_book.put(book, handle)
-  project_start.Control(book:, create: fn(_, _) { Error("not used") })
+  project_start.Control(
+    book:,
+    create: fn(_, _) { Error("not used") },
+    judge: fn(_) { Error("not used") },
+  )
 }
 
 pub fn a_daemon_with_no_project_table_has_no_feed_test() {

@@ -3665,9 +3665,12 @@ fn project_labels(
   #("projects.labels", body)
 }
 
-/// The `projects.verdict` step: run a verdict for one rule on a lane and
-/// record it. A lane the daemon cannot run, and too few labels, are
-/// `bad_request` with the sentence saying what is missing.
+/// The `projects.verdict` step: run a verdict for one rule on a lane. A replay
+/// run is recorded and answered with its finding. A live run is started and
+/// answered with `state: running`, and its finding is recorded when its trials
+/// are done. A lane the daemon cannot run, a run already going for the rule,
+/// and too few labels are `bad_request` with the sentence saying what is
+/// missing.
 fn project_verdict(
   control: project_start.Control,
   project: String,
@@ -3679,7 +3682,7 @@ fn project_verdict(
     |> result.map_error(fn(_) { control_refusal("not_found") }),
   )
   use chosen <- result.try(
-    project_verdict.lane_of(lane)
+    project_verdict.lane_of(lane, fn() { control.judge(project) })
     |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
   )
 

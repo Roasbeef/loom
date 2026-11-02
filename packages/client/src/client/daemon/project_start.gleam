@@ -52,6 +52,8 @@ import client/goalstate
 import client/internal/ffi_os
 import client/peer_mail
 import client/project_jail
+import client/project_judge
+import client/project_judge_session
 import client/project_packs
 import client/project_poller
 import client/project_publish
@@ -117,6 +119,11 @@ pub type Control {
     book: Book,
     /// Creates a project for a workspace and a name, or finds the existing one.
     create: fn(String, String) -> Result(Created, String),
+    /// The judge a live verdict of a project runs: how a scratch session of its
+    /// router's prompt and model decides a trial, and what bounds the run. It
+    /// is asked for only when a live verdict is, and answers a sentence when
+    /// the router's model cannot be resolved.
+    judge: fn(String) -> Result(project_judge.Judge, String),
   )
 }
 
@@ -186,6 +193,46 @@ pub fn create(
     project: handle.project,
     workspace: found.workspace,
     router_session: found.router_session,
+  )
+}
+
+/// The judge a live verdict of a project runs. It reads the router
+/// registration's settings the way the router's own session would be opened
+/// with them (`settings_of`, which the daemon supplies because only it holds
+/// the session defaults), and builds a scratch session's ground from them. The
+/// router is not opened or touched: its registration is only read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_start.judge(env, settings_of, "p-0123456789ab")
+/// ```
+pub fn judge(
+  env: Env,
+  settings_of: fn(catalogue.Registration, domain.Domain) ->
+    Result(serve.Settings, String),
+  project: String,
+) -> Result(project_judge.Judge, String) {
+  use handle <- result.try(
+    project_book.get(env.book, project)
+    |> result.map_error(fn(_) { "project " <> project <> " is not running" }),
+  )
+  use view <- result.try(
+    manager.get(env.registry, handle.router_session)
+    |> result.map_error(fn(error) { string.inspect(error) }),
+  )
+  use selected <- result.try(
+    manager.session_domain(env.registry, handle.router_session)
+    |> result.map_error(fn(error) { string.inspect(error) }),
+  )
+  use settings <- result.try(settings_of(view.registration, selected))
+  use ground <- result.map(project_judge_session.ground_of(settings))
+  project_judge_session.judge_for(
+    ground,
+    project_judge.Limits(
+      concurrency: project_judge.default_concurrency,
+      wall_ms: project_judge.default_wall_ms,
+    ),
   )
 }
 

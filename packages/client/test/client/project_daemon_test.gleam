@@ -318,9 +318,11 @@ fn boot(state: String, seen: Subject(Seen)) -> Daemon {
       logger: log.discard(),
     )
   let control =
-    project_start.Control(book:, create: fn(workspace, name) {
-      project_start.create(env, workspace, name)
-    })
+    project_start.Control(
+      book:,
+      create: fn(workspace, name) { project_start.create(env, workspace, name) },
+      judge: fn(_) { Error("not used") },
+    )
   let config =
     server.Config(
       peer_endpoint: fn(resident: serve.Resident) { Some(resident.peer) },

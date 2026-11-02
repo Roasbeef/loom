@@ -3260,9 +3260,26 @@ fn project_control(
         Error(_) -> None
         Ok(env) ->
           Some(
-            project_start.Control(book:, create: fn(workspace, name) {
-              project_start.create(env, workspace, name)
-            }),
+            project_start.Control(
+              book:,
+              create: fn(workspace, name) {
+                project_start.create(env, workspace, name)
+              },
+              judge: fn(project) {
+                project_start.judge(
+                  env,
+                  fn(registration, selected) {
+                    serve.resolve_managed(
+                      config.session_defaults,
+                      registration,
+                      selected,
+                      ready.state_root,
+                    )
+                  },
+                  project,
+                )
+              },
+            ),
           )
       }
   }

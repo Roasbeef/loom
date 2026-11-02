@@ -14,6 +14,8 @@ import client/daemon/project_verdict
 import client/goalstate
 import client/internal/ffi_os
 import client/peer_mail
+import client/project_judge
+import client/project_judge_session as scratch
 import client/project_poller
 import client/project_settings
 import client/project_sources
@@ -29,10 +31,13 @@ import gleam/string
 import host/bootstrap
 import project/judge
 import project/model
+import project/tape
+import runtime/api
 import simplifile
 import storage/project_ledger
 import support/fake_gh.{type Fake}
 import support/project_ports
+import support/scripted_router
 import tools/project as tools
 import weft/poll
 
@@ -566,10 +571,92 @@ fn label_all(handle: project_host.Handle, triggers: List(String)) -> Nil {
   Nil
 }
 
+// A live lane whose decision is the test's own function, with no session and no
+// spend. The fan-out, the limits and the actor's handling of a run are the real
+// ones, so what differs from the daemon is only where a choice comes from.
+fn scripted(
+  decide: fn(tape.Frame, Int) -> judge.Choice,
+) -> project_verdict.Lane {
+  project_verdict.LiveLane(project_judge.Judge(
+    decide: fn(frame, index, _custody) {
+      Ok(project_judge.Decision(
+        choice: decide(frame, index),
+        routing: project_judge.Routed,
+        spend: project_judge.no_spend,
+      ))
+    },
+    limits: project_judge.Limits(concurrency: 4, wall_ms: 60_000),
+  ))
+}
+
 // A live lane whose router declines everything, which matches the labels on 28
 // of the 30 triggers `label_all` labels.
 fn agrees_with_most() -> project_verdict.Lane {
-  project_verdict.LiveLane(fn(_, _) { judge.Pass })
+  scripted(fn(_, _) { judge.Pass })
+}
+
+// Runs a live verdict and waits for the rule's run to end, then answers the
+// run as the board reports it. The command answers at once with `running`, so
+// the wait is on the board.
+fn live_run(
+  handle: project_host.Handle,
+  rule: String,
+  lane: project_verdict.Lane,
+) -> String {
+  let assert Ok(started) = project_host.run_verdict(handle, rule, lane, "owner")
+  assert string.contains(json.to_string(started), "\"state\":\"running\"")
+  await_run(handle, rule)
+}
+
+// Waits until the rule's run is over, and answers its row. A run that has not
+// started reads as null, and a running one as `"state":"running"`.
+fn await_run(handle: project_host.Handle, rule: String) -> String {
+  let outcome =
+    poll.until(within: 30_000, every: 25, attempt: fn() {
+      let row = run_row(handle, rule)
+      case string.contains(row, "\"state\":\"running\""), row {
+        False, "null" -> poll.Retry
+        False, _ -> poll.Done(row)
+        True, _ -> poll.Retry
+      }
+    })
+  let assert poll.Answered(row) = outcome as "the run ends in time"
+  row
+}
+
+// The `run` object of a rule's row, as JSON text.
+fn run_row(handle: project_host.Handle, rule: String) -> String {
+  let shown = board(handle)
+  let found =
+    list.find_map(shown.sources, fn(source) {
+      case source {
+        json.Object(fields) ->
+          list.key_find(fields, "rules")
+          |> result.try(fn(rules) {
+            case rules {
+              json.Array(each) -> Ok(each)
+              _ -> Error(Nil)
+            }
+          })
+        _ -> Error(Nil)
+      }
+    })
+  let assert Ok(rules) = found as "the board lists the rules"
+  let row =
+    list.find_map(rules, fn(each) {
+      case each {
+        json.Object(fields) ->
+          case list.key_find(fields, "name") == Ok(json.String(rule)) {
+            True -> list.key_find(fields, "run")
+            False -> Error(Nil)
+          }
+        _ -> Error(Nil)
+      }
+    })
+  case row {
+    Ok(value) -> json.to_string(value)
+    Error(Nil) -> "null"
+  }
 }
 
 // Waits for the actor to hold the triggers a pass stored.
@@ -632,8 +719,8 @@ pub fn auto_needs_a_current_verdict_and_a_changed_pin_takes_it_away_test() {
   let assert Error(replayed) =
     project_host.set_mode(handle, "deps", model.Auto, "owner")
   assert string.contains(replayed, "only a live verdict")
-  let assert Ok(_) =
-    project_host.run_verdict(handle, "deps", agrees_with_most(), "owner")
+  let passed = live_run(handle, "deps", agrees_with_most())
+  assert string.contains(passed, "\"state\":\"passed\"")
   let assert Ok(Nil) =
     project_host.set_mode(handle, "deps", model.Auto, "owner")
   assert string.contains(
@@ -670,8 +757,8 @@ pub fn auto_needs_a_current_verdict_and_a_changed_pin_takes_it_away_test() {
 
   // Running the verdict again under the new prompt makes `auto` available,
   // and a model change takes it away again.
-  let assert Ok(_) =
-    project_host.run_verdict(third, "deps", agrees_with_most(), "owner")
+  let again_passed = live_run(third, "deps", agrees_with_most())
+  assert string.contains(again_passed, "\"state\":\"passed\"")
   let assert Ok(Nil) = project_host.set_mode(third, "deps", model.Auto, "owner")
   project_host.pin_router(third, "sha256:two", "profile:default model:b")
   let assert Error(moved) =
@@ -688,18 +775,18 @@ pub fn a_failing_live_verdict_returns_the_rule_to_observe_test() {
   next_pass(rig, handle)
   stored(handle, triggers)
   label_all(handle, triggers)
-  let assert Ok(_) =
-    project_host.run_verdict(handle, "deps", agrees_with_most(), "owner")
+  let passed = live_run(handle, "deps", agrees_with_most())
+  assert string.contains(passed, "\"state\":\"passed\"")
   let assert Ok(Nil) =
     project_host.set_mode(handle, "deps", model.Auto, "owner")
 
   // A router that takes everything on disagrees with the labels on 28 of 30
   // triggers. The lane's arithmetic is the same as the replay lane's, with the
   // decision supplied by the caller.
-  let takes_everything = project_verdict.LiveLane(fn(_, _) { judge.Take })
-  let assert Ok(report) =
-    project_host.run_verdict(handle, "deps", takes_everything, "owner")
-  assert string.contains(json.to_string(report), "\"outcome\":\"failed\"")
+  let takes_everything = scripted(fn(_, _) { judge.Take })
+  let report = live_run(handle, "deps", takes_everything)
+  assert string.contains(report, "\"state\":\"failed\"")
+  assert string.contains(report, "agreed with the labels on 6 percent")
   assert string.contains(
     board_text(handle),
     "{\"name\":\"deps\",\"mode\":\"observe\",\"verdict\":{\"state\":\"failing\"",
@@ -709,11 +796,342 @@ pub fn a_failing_live_verdict_returns_the_rule_to_observe_test() {
   assert string.contains(refused, "its latest verdict failed")
 }
 
-pub fn the_live_lane_is_refused_in_words_when_there_is_no_scratch_router_test() {
-  let assert Error(words) = project_verdict.lane_of(Some("live"))
-  assert string.contains(words, "scratch router")
-  assert project_verdict.lane_of(None) == Ok(project_verdict.ReplayLane)
-  let assert Error(_) = project_verdict.lane_of(Some("sideways"))
+pub fn the_live_lane_asks_for_its_judge_and_the_replay_lane_does_not_test() {
+  let unused = fn() { Error("no judge") }
+  assert project_verdict.lane_of(None, unused) == Ok(project_verdict.ReplayLane)
+  assert project_verdict.lane_of(Some("replay"), unused)
+    == Ok(project_verdict.ReplayLane)
+
+  // A daemon whose router has no model says so in words, and the live lane is
+  // otherwise whatever judge it is given.
+  let assert Error(words) = project_verdict.lane_of(Some("live"), unused)
+  assert words == "no judge"
+  let assert Ok(project_verdict.LiveLane(_)) =
+    project_verdict.lane_of(Some("live"), fn() {
+      let assert project_verdict.LiveLane(chosen) =
+        scripted(fn(_, _) { judge.Pass })
+      Ok(chosen)
+    })
+  let assert Error(_) = project_verdict.lane_of(Some("sideways"), unused)
+}
+
+// --- the live lane over a scratch router session ---------------------------------
+
+// The thirty bumps are `gh-c-3001` to `gh-c-3030`, and `label_all` says the first
+// two should have been taken on.
+fn should_take(id: String) -> Bool {
+  id == "gh-c-3001" || id == "gh-c-3002"
+}
+
+// A live lane whose decisions come from a scratch session over a scripted model:
+// the real judge the daemon builds, below the point where the model answers.
+// Beside it are the requests the model received and the root of every session
+// the run opened.
+fn scratch_lane(
+  behave: fn(scripted_router.Request) -> scripted_router.Reply,
+  limits: project_judge.Limits,
+) -> #(
+  project_verdict.Lane,
+  Subject(scripted_router.Request),
+  Subject(process.Pid),
+) {
+  let seen = process.new_subject()
+  let roots = process.new_subject()
+  let assert Ok(found) =
+    scratch.ground_of(scripted_router.settings(behave, seen))
+    as "the router's ground resolves"
+  let ground =
+    scratch.Ground(..found, opened: fn(runtime: api.Runtime) {
+      process.send(roots, runtime.tree.supervisor)
+    })
+  #(project_verdict.LiveLane(scratch.judge_for(ground, limits)), seen, roots)
+}
+
+fn roomy() -> project_judge.Limits {
+  project_judge.Limits(concurrency: 4, wall_ms: 120_000)
+}
+
+// A router that does what the labels say.
+fn agreeing(request: scripted_router.Request) -> scripted_router.Reply {
+  let id = scripted_router.candidate_of(request)
+  case should_take(id) {
+    True -> scripted_router.Route([#(id, "accept")])
+    False -> scripted_router.Route([#(id, "ignore")])
+  }
+}
+
+// A rule with thirty labelled triggers, ready for a verdict.
+fn labelled_rig(name: String) -> #(Rig, project_host.Handle, List(String)) {
+  let rig = watching(name)
+  let handle = start(rig)
+  project_host.pin_router(handle, "sha256:one", "profile:default model:a")
+  first_pass(handle)
+  let triggers = thirty_bumps(rig)
+  next_pass(rig, handle)
+  stored(handle, triggers)
+  label_all(handle, triggers)
+  #(rig, handle, triggers)
+}
+
+// The kinds of every engine event in the project's ledger, which must be read
+// while no actor holds the ledger.
+fn ledger_kinds(rig: Rig) -> List(String) {
+  let assert Ok(ledger) = project_ledger.open(rig.config.ledger_path)
+    as "the ledger opens"
+  let assert Ok(stored) =
+    project_ledger.replay(ledger, 0, project_ledger.replay_page_limit)
+    as "the ledger replays"
+  let assert Ok(Nil) = project_ledger.close(ledger) as "the ledger closes"
+  list.filter_map(stored, fn(each) {
+    case string.split_once(each.event_json, "\"t\":\"") {
+      Ok(#(_, rest)) ->
+        case string.split_once(rest, "\"") {
+          Ok(#(kind, _)) -> Ok(kind)
+          Error(Nil) -> Error(Nil)
+        }
+      Error(Nil) -> Error(Nil)
+    }
+  })
+}
+
+// Everything the router's decision could write if it reached the engine.
+const routing_kinds = [
+  "routed", "routed_stop", "routed_ignore", "requeued", "session_bound",
+  "assignment_live", "assignment_ended", "reported", "worker_failed",
+]
+
+// The root of each session a run opened so far.
+fn opened_roots(roots: Subject(process.Pid)) -> List(process.Pid) {
+  case process.receive(roots, 200) {
+    Ok(root) -> [root, ..opened_roots(roots)]
+    Error(Nil) -> []
+  }
+}
+
+fn all_stopped(found: List(process.Pid)) -> Nil {
+  list.each(found, fn(root) { eventually(fn() { !process.is_alive(root) }) })
+}
+
+pub fn a_live_verdict_over_a_scratch_router_unlocks_auto_and_feeds_nothing_to_the_project_test() {
+  let #(rig, handle, _) = labelled_rig("live-agrees")
+  let #(lane, seen, roots) = scratch_lane(agreeing, roomy())
+
+  // Nothing the project's own router was sent before the run counts against it.
+  let _before = drain(rig.seen)
+  let row = live_run(handle, "deps", lane)
+  assert string.contains(row, "\"state\":\"passed\"")
+  assert string.contains(row, "agreed with the labels on at least 75 percent")
+
+  // Thirty triggers at three trials each is ninety model calls, and the row
+  // says so, with the tokens they cost.
+  assert string.contains(row, "\"calls\":90")
+  assert !string.contains(row, "\"tokens\":0")
+  assert string.contains(row, "It spent 90 calls and ")
+
+  // The pass unlocks `auto`.
+  let assert Ok(Nil) =
+    project_host.set_mode(handle, "deps", model.Auto, "owner")
+
+  // The router the project runs was sent nothing, no ticket is open, and the
+  // ledger holds the verdict and not one routing, ticket or assignment. Every
+  // request the scratch model received offered `route` alone, to the router's
+  // model.
+  assert drain(rig.seen) == []
+  assert string.contains(board_text(handle), "\"tickets\":[]")
+  stop(handle)
+  let kinds = ledger_kinds(rig)
+  assert list.contains(kinds, "verdict_recorded")
+  assert list.all(routing_kinds, fn(kind) { !list.contains(kinds, kind) })
+  let requests = drain_requests(seen)
+  assert list.length(requests) == 90
+  assert list.all(requests, fn(request) {
+    request.tools == ["route"] && request.model == scripted_router.router_model
+  })
+
+  // Every scratch session is gone.
+  let found = opened_roots(roots)
+  assert list.length(found) == 90
+  all_stopped(found)
+}
+
+fn drain_requests(
+  seen: Subject(scripted_router.Request),
+) -> List(scripted_router.Request) {
+  case process.receive(seen, 100) {
+    Ok(request) -> [request, ..drain_requests(seen)]
+    Error(Nil) -> []
+  }
+}
+
+pub fn a_scratch_router_that_takes_everything_fails_the_pair_test() {
+  let #(_, handle, _) = labelled_rig("live-takes-all")
+  let #(lane, _, _) =
+    scratch_lane(
+      fn(request) {
+        scripted_router.Route([
+          #(scripted_router.candidate_of(request), "accept"),
+        ])
+      },
+      roomy(),
+    )
+  let row = live_run(handle, "deps", lane)
+  assert string.contains(row, "\"state\":\"failed\"")
+  assert string.contains(row, "agreed with the labels on 6 percent")
+  let assert Error(refused) =
+    project_host.set_mode(handle, "deps", model.Auto, "owner")
+  assert string.contains(refused, "its latest verdict failed")
+}
+
+pub fn a_router_that_disagrees_with_the_labels_on_both_arms_fails_on_the_floor_test() {
+  let rig = watching("live-floor")
+  let handle = start(rig)
+  project_host.pin_router(handle, "sha256:one", "profile:default model:a")
+  first_pass(handle)
+  let triggers = thirty_bumps(rig)
+  next_pass(rig, handle)
+  stored(handle, triggers)
+
+  // The person says to take twenty-eight of the thirty on. The project, which
+  // took none on, and a router that declines every one, are wrong on the same
+  // twenty-eight, so the candidate has not regressed against the recording.
+  list.index_map(triggers, fn(trigger, position) {
+    let label = case position < 28 {
+      True -> model.ShouldAccept
+      False -> model.ShouldNotAccept
+    }
+    let assert Ok(Nil) = project_host.label(handle, trigger, label, "owner")
+  })
+  let #(lane, _, _) =
+    scratch_lane(
+      fn(request) {
+        scripted_router.Route([
+          #(scripted_router.candidate_of(request), "ignore"),
+        ])
+      },
+      roomy(),
+    )
+  let row = live_run(handle, "deps", lane)
+  assert string.contains(row, "\"state\":\"failed\"")
+  assert string.contains(row, "agreed with the labels on 6 percent")
+  assert string.contains(row, "under the 75 a pass needs")
+  assert !string.contains(row, "worse than the recording")
+  assert !string.contains(row, "could reach down")
+  let assert Error(_) =
+    project_host.set_mode(handle, "deps", model.Auto, "owner")
+}
+
+pub fn a_second_run_is_refused_while_one_goes_and_a_restart_leaves_no_session_or_pass_test() {
+  let #(rig, handle, _) = labelled_rig("live-restart")
+  let #(lane, _, roots) = scratch_lane(fn(_) { scripted_router.Hang }, roomy())
+  let assert Ok(started) =
+    project_host.run_verdict(handle, "deps", lane, "owner")
+  assert string.contains(json.to_string(started), "\"state\":\"running\"")
+
+  // The model never answers, so the run stays going. A second run on the same
+  // rule is refused in words, and the row shows the progress.
+  let assert Error(refused) =
+    project_host.run_verdict(handle, "deps", lane, "owner")
+  assert string.contains(refused, "already running")
+  assert string.contains(refused, "0 of 90 trials done")
+  assert string.contains(run_row(handle, "deps"), "\"done\":0,\"of\":90")
+
+  // Four trials are in flight, each in a session of its own.
+  let first = first_root(roots)
+  let found = [first, ..opened_roots(roots)]
+  assert list.length(found) == 4
+
+  // The daemon stopping, as a restart does: the project's actor ends, the run
+  // ends with it, and every session it opened stops.
+  stop(handle)
+  all_stopped(found)
+
+  // The restarted actor has no run, no verdict, and no pass.
+  let again = start(rig)
+  assert run_row(again, "deps") == "null"
+  assert string.contains(board_text(again), "\"verdict\":{\"state\":\"none\"")
+  stop(again)
+  assert !list.contains(ledger_kinds(rig), "verdict_recorded")
+}
+
+fn first_root(roots: Subject(process.Pid)) -> process.Pid {
+  let assert Ok(root) = process.receive(roots, 5000)
+  root
+}
+
+pub fn a_run_cut_off_by_its_wall_limit_records_no_pass_and_says_what_it_spent_test() {
+  let #(rig, handle, _) = labelled_rig("live-wall")
+  let #(lane, _, roots) =
+    scratch_lane(
+      fn(_) { scripted_router.Hang },
+      project_judge.Limits(concurrency: 4, wall_ms: 1500),
+    )
+  let row = live_run(handle, "deps", lane)
+  assert string.contains(row, "\"state\":\"incomplete\"")
+  assert string.contains(row, "wall limit of 1 seconds")
+  assert string.contains(row, "records no verdict")
+  assert string.contains(row, "\"calls\":0")
+  all_stopped(opened_roots(roots))
+
+  // No pass was recorded, so `auto` is still refused.
+  let assert Error(_) =
+    project_host.set_mode(handle, "deps", model.Auto, "owner")
+  stop(handle)
+  assert !list.contains(ledger_kinds(rig), "verdict_recorded")
+}
+
+pub fn a_run_keeps_to_its_concurrency_cap_test() {
+  let #(_, handle, _) = labelled_rig("live-cap")
+  let gauge = start_gauge()
+  let #(lane, _, _) =
+    scratch_lane(
+      fn(request) {
+        // Each request holds its place long enough for the others in flight to
+        // overlap with it, so a run that exceeded its cap would show it.
+        process.call(gauge, 1000, Enter)
+        process.sleep(60)
+        process.send(gauge, Leave)
+        agreeing(request)
+      },
+      project_judge.Limits(concurrency: 2, wall_ms: 120_000),
+    )
+  let row = live_run(handle, "deps", lane)
+  assert string.contains(row, "\"state\":\"passed\"")
+  let peak = process.call(gauge, 1000, Peak)
+  assert peak <= 2
+  assert peak == 2
+}
+
+type GaugeMessage {
+  Enter(reply: Subject(Nil))
+  Leave
+  Peak(reply: Subject(Int))
+}
+
+// Counts requests in flight and keeps the most there were at once.
+fn start_gauge() -> Subject(GaugeMessage) {
+  let ready = process.new_subject()
+  let _ =
+    process.spawn_unlinked(fn() {
+      let inbox = process.new_subject()
+      process.send(ready, inbox)
+      count_flight(inbox, 0, 0)
+    })
+  let assert Ok(inbox) = process.receive(ready, 1000) as "the gauge starts"
+  inbox
+}
+
+fn count_flight(inbox: Subject(GaugeMessage), now: Int, peak: Int) -> Nil {
+  case process.receive_forever(inbox) {
+    Enter(reply) -> {
+      process.send(reply, Nil)
+      count_flight(inbox, now + 1, int.max(peak, now + 1))
+    }
+    Leave -> count_flight(inbox, now - 1, peak)
+    Peak(reply) -> {
+      process.send(reply, peak)
+      count_flight(inbox, now, peak)
+    }
+  }
 }
 
 // --- restarts and failures -------------------------------------------------------
