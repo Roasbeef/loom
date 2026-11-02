@@ -6,7 +6,10 @@
 ////
 //// ## What it proves
 ////
-//// - `loom vm up` provisions the two-node deployment, installs the
+//// - `loom vm up` provisions the two-node deployment in ledger mode (the
+////   installed `[distribution]` table carries `ledger =` and no peer, the guest
+////   root holds the ledger beside its credentials), seals the authority key
+////   under `<vm home>/authority/<id>` with a passphrase file, and installs the
 ////   orchestrator's half into a `loom.toml`, clones the guest root, boots
 ////   `loom-vm run` and reports that the executor serves, with nothing in the
 ////   fixture standing in for any of those steps.
@@ -116,7 +119,10 @@
 ////   assertions.
 
 import broker/token
+import client/authority_key
+import client/distribution_bundle
 import client/tui_e2e_test.{type EunitTest, Timeout}
+import client/vm_spec
 import core/json
 import gleam/bit_array
 import gleam/int
@@ -208,8 +214,10 @@ type Run {
     idle_name: String,
     /// The name of the guest whose provisioning script fails.
     failing_name: String,
-    /// The name of a third guest, refused for want of a home of its own.
+    /// The name of a third guest, refused while its home's daemon is down.
     third_name: String,
+    /// The name of the guest that joins the idle guest's deployment.
+    join_name: String,
   )
 }
 
@@ -370,6 +378,7 @@ fn fixture(artifacts: Artifacts) -> Nil {
       idle_name: guest_prefix <> hex(3),
       failing_name: guest_prefix <> hex(3),
       third_name: guest_prefix <> hex(3),
+      join_name: guest_prefix <> hex(3),
     )
 
   let outcomes =
@@ -387,6 +396,7 @@ fn fixture(artifacts: Artifacts) -> Nil {
   let _stopped = vm(run, ["down", "--name", run.name])
   let _idle_stopped = vm(run, ["down", "--name", run.idle_name])
   let _failing_stopped = vm(run, ["down", "--name", run.failing_name])
+  let _joined_stopped = vm(run, ["down", "--name", run.join_name])
   retire_default_daemon(run)
   remote_daemons.retire(run.orchestrator.paths)
   let assert [weft.Completed(0, Nil)] = outcomes
@@ -449,6 +459,7 @@ fn drive(run: Run) -> Nil {
       let orchestrator = run.orchestrator
       let assert Ok(installed) = simplifile.read(orchestrator.config)
         as "vm up installed the orchestrator's configuration"
+      assert_ledger_deployment(run, installed)
       let assert Ok(Nil) =
         simplifile.write(
           orchestrator.config,
@@ -482,6 +493,10 @@ fn drive(run: Run) -> Nil {
       let status = vm(run, ["status", "--name", run.name])
       assert string.contains(status.output, "process:    not running")
       assert string.contains(status.output, "epmd:       not registered")
+
+      // The guest is stopped, so its root is quiet while it is searched.
+      let assert [id] = sealed_keys(run)
+      assert_authority_stays_on_host(run, run.name, id)
 
       // The guest was provisioned, so a script given now is refused before
       // anything changes, and the refusal names the way to run a new one.
@@ -556,6 +571,7 @@ fn drive(run: Run) -> Nil {
 
   // Last, because it replaces the cookie the assertions above compare with.
   idle_daemon_is_stopped(run)
+  second_guest_joins(run)
   failing_script_fails_up(run)
   guests_are_removed(run)
 }
@@ -1349,6 +1365,427 @@ fn git_output(directory: String, arguments: List(String)) -> String {
   output
 }
 
+// --- the ledger deployment ---------------------------------------------------
+
+// The deployment directories under `<vm home>/authority`, sorted.
+fn sealed_keys(run: Run) -> List(String) {
+  case simplifile.read_directory(run.vm_home <> "/authority") {
+    Ok(entries) -> list.sort(entries, string.compare)
+    Error(_) -> []
+  }
+}
+
+// `vm up` mints in ledger mode: the table it installed names a ledger and no
+// peer, the executor row is still written, and the guest holds the ledger
+// beside its credentials, which its configuration names.
+fn assert_ledger_deployment(run: Run, installed: String) -> Nil {
+  assert string.contains(installed, "[distribution]")
+  assert string.contains(installed, "ledger = ")
+  assert !string.contains(installed, "[[distribution.peers]]")
+  assert string.contains(installed, "[executors." <> run.name <> "]")
+
+  let guest = run.vm_home <> "/" <> run.name
+  assert simplifile.is_file(guest <> "/deploy/ledger.log") == Ok(True)
+  assert simplifile.is_file(guest <> "/orch/ledger.log") == Ok(True)
+  assert simplifile.is_file(guest <> "/root" <> node_dir <> "/creds/ledger.log")
+    == Ok(True)
+  let configuration = read_file(guest <> "/root" <> node_dir <> "/loom.toml")
+  assert string.contains(
+    configuration,
+    "ledger = \"" <> node_dir <> "/creds/ledger.log\"",
+  )
+  assert !string.contains(configuration, "[[distribution.peers]]")
+
+  // One key is sealed for the guest, with its passphrase file.
+  let assert [id] = sealed_keys(run)
+  let directory = run.vm_home <> "/authority/" <> id
+  assert simplifile.is_file(directory <> "/key.enc") == Ok(True)
+  assert simplifile.is_file(directory <> "/passphrase") == Ok(True)
+  Nil
+}
+
+// Neither the passphrase nor the authority key reaches a guest root. The root
+// is searched for the passphrase's bytes, for a body line of the key (which the
+// test opens with the passphrase file) and for the key file's name. The search
+// is `grep` and `find` over the files; no Git runs in a guest root.
+fn assert_authority_stays_on_host(run: Run, guest: String, id: String) -> Nil {
+  let directory = run.vm_home <> "/authority/" <> id
+  let root = run.vm_home <> "/" <> guest <> "/root"
+  let assert Ok(passphrase) =
+    authority_key.passphrase_from_file(directory <> "/passphrase")
+    as "the passphrase file is private and readable without a terminal"
+  let assert Ok(key) = authority_key.load(directory, id, passphrase)
+    as "the passphrase opens the sealed key"
+  let text = string.trim(read_file(directory <> "/passphrase"))
+  let assert [_, body, ..] = string.split(key, "\n")
+
+  let assert Ok(grep) = ffi_proc.which("grep") as "grep is on PATH"
+  list.each([text, body], fn(needle) {
+    let assert Ok(#(status, output)) =
+      ffi_proc.run(grep, ["-rFla", needle, root], in: run.directory)
+      as "grep runs over the guest's root"
+    assert output == ""
+    assert status == 1
+  })
+
+  let assert Ok(find) = ffi_proc.which("find") as "find is on PATH"
+  let assert Ok(#(0, found)) =
+    ffi_proc.run(find, [root, "-name", "key.enc"], in: run.directory)
+    as "find runs over the guest's root"
+  assert found == ""
+  Nil
+}
+
+// --- a second guest joins the deployment ------------------------------------
+
+const node_prompt_idle = "which guest runs this"
+
+const node_answer_idle = "the idle guest"
+
+const node_prompt_join = "which guest runs this one"
+
+const node_answer_join = "the joined guest"
+
+const node_prompt_again = "which guest still runs this"
+
+const node_answer_again = "the idle guest again"
+
+// The executor node line of the configuration inside whichever guest the jailed
+// call runs in. The file holds no secret.
+fn node_command() -> String {
+  "grep -m1 '^node = ' " <> node_dir <> "/loom.toml; true"
+}
+
+fn join_exchanges() -> List(provider.Exchange) {
+  [
+    bash_exchange(node_prompt_idle, "node-idle", node_command()),
+    reply_after("node-idle", node_answer_idle),
+    bash_exchange(node_prompt_join, "node-join", node_command()),
+    reply_after("node-join", node_answer_join),
+    bash_exchange(node_prompt_again, "node-again", node_command()),
+    reply_after("node-again", node_answer_again),
+  ]
+}
+
+// One session on `executor`, one scripted turn, and the session stopped again.
+fn placed_turn(
+  running: remote_daemons.Running,
+  control: remote_daemons.Control,
+  id: Int,
+  executor: String,
+  key: String,
+  prompt: String,
+  answer: String,
+) -> String {
+  let #(session, settled) =
+    remote_daemons.create_and_settle(
+      control,
+      id,
+      key,
+      executor,
+      remote_pair.workspace_name,
+    )
+  assert remote_daemons.settled_state(settled) == "resident"
+  remote_pair.converse_for(
+    remote_pair.Opened(orchestrator: running, control:, session:),
+    prompt,
+    [answer],
+  )
+  remote_daemons.stop_session(running, control, id + 100, session)
+  session
+}
+
+// The idle step's guest has a ledger deployment in the isolated home's default
+// configuration. A second guest joins it. The refusals come first, while the
+// daemon is down: its absence, a static configuration and a key that is not on
+// this machine each leave nothing behind. Then the daemon runs, the idle guest
+// resumes, and `up` for a second guest enrols it through the daemon: the
+// configuration does not change by a byte, the daemon derives the executor row
+// without a restart, a session is placed on each guest and runs in its own,
+// `rm` revokes the second guest, and the first still works.
+fn second_guest_joins(run: Run) -> Nil {
+  case isolated_home(run) {
+    Error(reason) -> io.println_error("SKIP " <> label <> " join: " <> reason)
+    Ok(home) -> {
+      let config = home <> "/.loom/loom.toml"
+      let guest = fn(name) { run.vm_home <> "/" <> name }
+      let flags = [
+        "--name",
+        run.join_name,
+        "--workspace",
+        run.repository,
+        "--github",
+        "off",
+        "--mem",
+        "1024",
+        "--cpus",
+        "2",
+      ]
+      let before = read_file(config)
+      let keys = sealed_keys(run)
+
+      // The daemon of the configuration is not running.
+      let down = vm(run, ["up", ..flags])
+      assert down.status != 0
+      assert string.contains(down.output, "is not running")
+      assert string.contains(down.output, "loom deployment status")
+      assert read_file(config) == before
+      assert simplifile.is_directory(guest(run.join_name)) == Ok(False)
+      assert sealed_keys(run) == keys
+
+      // A static deployment has no key to enrol with.
+      let static_config = run.directory <> "/static.toml"
+      let static_text =
+        "[distribution]\nnode = \"static@127.0.0.1\"\nca = \"/x/ca.pem\"\n"
+        <> "certificate = \"/x/cert.pem\"\nkey = \"/x/key.pem\"\n"
+        <> "cookie = \"/x/cookie\"\n\n[[distribution.peers]]\n"
+        <> "node = \"peer@127.0.0.1\"\nsha256 = \""
+        <> string.repeat("ab", 32)
+        <> "\"\n"
+      let assert Ok(Nil) = simplifile.write(static_config, static_text)
+      let static_refused =
+        vm(run, ["up", ..list.append(flags, ["--config", static_config])])
+      assert static_refused.status != 0
+      assert string.contains(static_refused.output, "static deployment")
+      assert string.contains(static_refused.output, "ledger mode")
+      assert read_file(static_config) == static_text
+      assert simplifile.is_directory(guest(run.join_name)) == Ok(False)
+
+      // A key that is not on this machine is named by its deployment, with the
+      // command for the operator who holds it.
+      let away = run.directory <> "/authority-away"
+      let assert Ok(Nil) = simplifile.rename(run.vm_home <> "/authority", away)
+      let missing = vm(run, ["up", ..flags])
+      let assert Ok(Nil) = simplifile.rename(away, run.vm_home <> "/authority")
+      assert missing.status != 0
+      assert string.contains(missing.output, "loom distribution enroll")
+      assert list.any(keys, fn(id) { string.contains(missing.output, id) })
+      assert simplifile.is_directory(guest(run.join_name)) == Ok(False)
+      assert read_file(config) == before
+
+      // The happy path. The model table points at the scripted provider before
+      // the daemon starts, and the idle guest resumes with its own flags.
+      let #(Nil, report) =
+        provider.with_server_for(
+          join_exchanges(),
+          provider.OnlySuccessful,
+          600_000,
+          fn(url) {
+            // The idle step's configuration already has a model table, which
+            // pointed at a port nobody serves; it now points at the provider.
+            let assert Ok(Nil) =
+              simplifile.write(
+                config,
+                string.replace(before, "http://127.0.0.1:9", url),
+              )
+            let resumed =
+              expect_ok(
+                vm(run, [
+                  "up",
+                  "--name",
+                  run.idle_name,
+                  "--workspace",
+                  run.repository,
+                  "--github",
+                  "off",
+                  "--mem",
+                  "1024",
+                  "--cpus",
+                  "2",
+                ]),
+                "loom vm up resumes the idle guest",
+              )
+            assert string.contains(resumed, "serves")
+
+            let layout =
+              remote_daemons.Layout(
+                ..run.orchestrator,
+                label: "join",
+                paths: default_paths(home),
+                config:,
+                options: run.directory <> "/join.options",
+              )
+            remote_daemons.write_options(layout)
+            let running = remote_daemons.start(layout)
+            let control = remote_daemons.open_control(running)
+            let _idle_session =
+              placed_turn(
+                running,
+                control,
+                1,
+                run.idle_name,
+                "join-idle",
+                node_prompt_idle,
+                node_answer_idle,
+              )
+
+            // The join: the file is byte for byte what it was, the daemon is
+            // not stopped, and the row is derived.
+            let configured = read_file(config)
+            let joined = expect_ok(vm(run, ["up", ..flags]), "loom vm up joins")
+            io.println_error(label <> " vm up (join):\n" <> joined)
+            assert read_file(config) == configured
+            assert string.contains(joined, "derives [executors.")
+            assert !string.contains(joined, "Your daemon")
+            assert !string.contains(joined, "so it was stopped")
+            assert !string.contains(joined, "must restart")
+            assert !string.contains(configured, "executors." <> run.join_name)
+            let assert endpoint.Ready(fence:, ..) = running.connected.record
+              as "the daemon published its endpoint"
+            let assert Ok(True) = endpoint.is_present(fence)
+              as "the daemon still runs after the join"
+
+            // The joined guest's bundle holds its own key, the CA and the
+            // cookie, and nothing of the authority.
+            let bundle =
+              read_file(
+                guest(run.join_name)
+                <> "/deploy/"
+                <> run.join_name
+                <> ".loombundle",
+              )
+            let directory = authority_dir_of(run)
+            let assert Ok(passphrase) =
+              authority_key.passphrase_from_file(directory <> "/passphrase")
+            let id = case list.last(string.split(directory, "/")) {
+              Ok(segment) -> segment
+              Error(Nil) -> ""
+            }
+            let assert Ok(key) = authority_key.load(directory, id, passphrase)
+            assert !string.contains(bundle, string.trim(key))
+            assert !string.contains(
+              bundle,
+              string.trim(read_file(directory <> "/passphrase")),
+            )
+            assert simplifile.is_directory(guest(run.join_name) <> "/orch")
+              == Ok(False)
+            assert sealed_keys(run) == keys
+
+            // Both members are in the deployment's status.
+            let status =
+              remote_daemons.command(
+                control,
+                20,
+                "deployment.status",
+                json.Object([]),
+              )
+            let shown = string.inspect(status)
+            assert string.contains(shown, run.idle_name)
+            assert string.contains(shown, run.join_name)
+
+            // A session on the new guest, with no restart, and one on the old.
+            let join_session =
+              placed_turn(
+                running,
+                control,
+                30,
+                run.join_name,
+                "join-new",
+                node_prompt_join,
+                node_answer_join,
+              )
+            assert_authority_stays_on_host(run, run.join_name, id)
+
+            // Removing it revokes it with the key, and the first still works.
+            let stopped = vm(run, ["down", "--name", run.join_name])
+            assert string.contains(stopped.output, "Stopped the guest")
+            let refused = vm(run, ["rm", "--name", run.join_name])
+            assert refused.status != 0
+            assert string.contains(refused.output, "revokes")
+
+            // A session saved on the guest still counts as placed on it, so the
+            // revoke is refused, nothing is signed and nothing is removed.
+            let blocked = vm(run, ["rm", "--name", run.join_name, "--yes"])
+            assert blocked.status != 0
+            assert string.contains(blocked.output, "may strand sessions")
+            assert string.contains(blocked.output, "Nothing was signed")
+            assert simplifile.is_directory(guest(run.join_name)) == Ok(True)
+
+            // Deleting the session releases it.
+            let deleted =
+              remote_daemons.command(
+                control,
+                60,
+                "sessions.delete",
+                json.Object([
+                  #("session_id", json.String(join_session)),
+                  #("epoch", json.String(control.epoch)),
+                ]),
+              )
+            assert remote_daemons.field(deleted, "event")
+              == json.String("sessions.delete")
+            let removed =
+              expect_ok(
+                vm(run, ["rm", "--name", run.join_name, "--yes"]),
+                "loom vm rm of the joined guest",
+              )
+            io.println_error(label <> " vm rm (joined):\n" <> removed)
+            assert string.contains(removed, "Revoked " <> run.join_name)
+            assert simplifile.is_directory(guest(run.join_name)) == Ok(False)
+            assert read_file(config) == configured
+            assert sealed_keys(run) == keys
+            let _again_session =
+              placed_turn(
+                running,
+                control,
+                50,
+                run.idle_name,
+                "join-again",
+                node_prompt_again,
+                node_answer_again,
+              )
+            let after =
+              string.inspect(remote_daemons.command(
+                control,
+                70,
+                "deployment.status",
+                json.Object([]),
+              ))
+            assert !string.contains(after, run.join_name)
+            remote_pair.close_daemons([running])
+            // Closing the connection leaves the daemon; the refusals that follow
+            // need it gone.
+            remote_daemons.retire(layout.paths)
+            let idle_down = vm(run, ["down", "--name", run.idle_name])
+            assert string.contains(idle_down.output, "Stopped the guest")
+            Nil
+          },
+        )
+      let assert Ok(requests) = report as "the three scripted turns completed"
+      let idle_node = "loom_vm_" <> run.idle_name <> "_exec"
+      let join_node = "loom_vm_" <> run.join_name <> "_exec"
+      let on_idle = remote_daemons.result_text(requests, "node-idle")
+      let on_join = remote_daemons.result_text(requests, "node-join")
+      let on_again = remote_daemons.result_text(requests, "node-again")
+      assert string.contains(on_idle, idle_node)
+      assert !string.contains(on_idle, join_node)
+      assert string.contains(on_join, join_node)
+      assert !string.contains(on_join, idle_node)
+      assert string.contains(on_again, idle_node)
+      Nil
+    }
+  }
+}
+
+// The authority directory of the idle guest's deployment, found from the id its
+// own bundle's ledger carries.
+fn authority_dir_of(run: Run) -> String {
+  let text =
+    read_file(
+      run.vm_home
+      <> "/"
+      <> run.idle_name
+      <> "/deploy/"
+      <> run.idle_name
+      <> ".loombundle",
+    )
+  let assert Ok(bundle) = distribution_bundle.decode(text)
+    as "the idle guest's bundle decodes"
+  let assert Ok(id) = vm_spec.bundle_deployment(bundle)
+    as "the idle guest's bundle carries a ledger"
+  run.vm_home <> "/authority/" <> id
+}
+
 // --- removing guests ---------------------------------------------------------
 
 fn read_file(path: String) -> String {
@@ -1375,10 +1812,13 @@ fn guests_are_removed(run: Run) -> Nil {
       assert string.contains(listed, run.idle_name <> "  stopped")
       assert string.contains(listed, run.failing_name <> "  stopped")
 
-      // The home holds the idle guest's deployment, so a third guest mints its
-      // own and is refused, with words that name the way out.
+      // The home holds the idle guest's ledger deployment and its daemon is
+      // down, so a third guest, which would be enrolled through that daemon, is
+      // refused before anything is minted or written, with the command that
+      // starts it.
       let config_before = read_file(config)
       let cookie_before = read_file(cookie)
+      let sealed_before = sealed_keys(run)
       let third =
         vm(run, [
           "up",
@@ -1389,21 +1829,14 @@ fn guests_are_removed(run: Run) -> Nil {
           "--github",
           "off",
         ])
+      io.println_error(label <> " third up:\n" <> third.output)
       assert third.status != 0
-      assert string.contains(third.output, "loom vm rm")
-      assert string.contains(third.output, "only one guest per home")
-      assert read_file(config) == config_before
-
-      // Removing it takes its directory and nothing of the other deployment.
-      let removed_third =
-        expect_ok(
-          vm(run, ["rm", "--name", run.third_name, "--yes"]),
-          "rm third",
-        )
-      assert string.contains(removed_third, "Left in place: [distribution]")
-      assert simplifile.is_directory(guest(run.third_name)) == Ok(False)
+      assert string.contains(third.output, "is not running")
+      assert string.contains(third.output, "loom deployment status")
       assert read_file(config) == config_before
       assert read_file(cookie) == cookie_before
+      assert simplifile.is_directory(guest(run.third_name)) == Ok(False)
+      assert sealed_keys(run) == sealed_before
 
       // Without `--yes` the idle guest's removal lists what it would lose and
       // changes nothing.

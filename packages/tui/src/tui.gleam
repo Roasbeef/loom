@@ -3139,9 +3139,13 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             --from-build DIR records a build tree (packages/vmm/build). A
             development build has no release: build the artifacts in a
             checkout and run `make vmm-install-dev`.
-  up        Provision a two-node deployment, enroll the orchestrator in your
-            loom.toml as [executors.NAME], clone the guest root, copy the
-            workspace into it, boot the guest with `loom-vm run` and wait until
+  up        Make the guest a member of your daemon's deployment. A loom.toml
+            with no deployment gets a two-node ledger deployment, with the
+            orchestrator enrolled as [executors.NAME]. A loom.toml that holds a
+            ledger deployment gets the guest enrolled in it through the running
+            daemon, which derives [executors.NAME] from the ledger with no
+            restart and no change to the file. Then clone the guest root, copy
+            the workspace into it, boot the guest with `loom-vm run` and wait until
             its executor serves. The guest keeps running after this command
             exits. NAME defaults to vm. DIR defaults to the current directory;
             its copy, .git included, is registered in the guest under the
@@ -3152,8 +3156,9 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             first runs `setup` for this release. --mem is the guest's memory in MiB (default
             2048) and --cpus its virtual CPUs (default 4). --config is the
             loom.toml to enroll in (default ~/.loom/loom.toml).
-            A loom.toml that already holds a different [distribution] table is
-            refused, not replaced.
+            A static deployment is refused, and so is a ledger deployment when
+            its daemon is not running or its authority key is not on this
+            machine. Each guest has its own NAME, so several can run at once.
             A guest that ran before keeps its root, the checkouts in it and its
             state disk, so `down` and `up` resume where it stopped. --fresh
             replaces all three.
@@ -3187,7 +3192,9 @@ Run one standing executor in a microVM and use it from `loom --executor`.
             ~/.loom/loom.toml), and the [distribution] table and the home's
             .erlang.cookie only when they are this guest's deployment's and no
             other [executors.*] table remains; otherwise it leaves them and
-            says so. Every other line of loom.toml is kept. A running guest is
+            says so. A guest that joined a ledger deployment is revoked with
+            the key, when it is on this machine, and otherwise rm prints the
+            revoke to run. A guest that others joined is removed last. Every other line of loom.toml is kept. A running guest is
             refused: run `loom vm down` first. Deleting a guest is permanent
             and work that is not pushed is lost, so without --yes it only lists
             the workspaces and the local branches that origin lacks.

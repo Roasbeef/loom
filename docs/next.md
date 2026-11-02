@@ -36,6 +36,20 @@ ADR-022's "developer path" addendum. Neither has a hosted CI run.
   agent pushes from the guest through the credential proxy, superseding
   #214's no-injection line and #1137's owner-pushes ruling for this tier; a
   persistent state disk per guest. `loom vm sync` is #1155.
+- **Several guests, one deployment (2026-11-02):** `loom vm up` mints in ledger
+  mode and seals the authority key under `<vm home>/authority/<id>/`. A
+  `loom.toml` that holds a ledger deployment gets a new guest enrolled through
+  the running daemon (`vm_spec.deployment_state`, `vm_cli.join`,
+  `ledger_cli.enroll_member`); `rm` revokes it (`ledger_cli.revoke_member`) and
+  removes the minting guest last. A static deployment is refused, and so is a
+  join with the daemon down or the key elsewhere. The live test joins a second
+  guest and places a session on each. A guest is reached only from the
+  orchestrators of its host; executor-to-executor placement is #1137. Not done:
+  a join whose entry was signed but whose bundle could not be written has to be
+  finished with `loom distribution renew`. A join the daemon did not take
+  fails with the bundle kept, and `up` resumes from it after the operator's
+  `loom distribution import`; that path is covered by pure tests and has no
+  live step.
 - **Unverified:** `.github/workflows/vmm-release.yml` has never run; the GHCR
   package must be made public once by hand after the first publish;
   `setup --release` has never downloaded a real release; Linux/KVM has not

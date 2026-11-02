@@ -6,18 +6,29 @@
 
 import broker/token
 import client
+import client/authority_key
+import client/daemon/admin
+import client/daemon/ledger_cli
+import client/distribution
 import client/distribution_bundle
 import client/distribution_install
 import client/distribution_plan
 import client/distribution_provision
+import client/ledger_operator
+import client/ledger_sync
+import client/membership_entry
+import client/membership_ledger
+import client/membership_signing
 import client/vm_cli
 import client/vm_spec.{Launch, Manifest, PidRecord}
 import core/json
 import gleam/bit_array
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import gleam/time/timestamp
 import simplifile
 import tom
 
@@ -1233,6 +1244,607 @@ pub fn the_removal_refusal_lists_the_workspaces_test() {
     vm_spec.removal_refusal("dev", Error("a link")),
     "unreadable (a link)",
   )
+}
+
+// --- the deployment is a membership ledger -----------------------------------
+
+fn minted_ledger(name: String) -> distribution_provision.Provisioned {
+  let assert Ok(made) =
+    distribution_provision.provision_ledger(
+      plan_of(name),
+      timestamp.system_time(),
+    )
+  made
+}
+
+fn bundle_of(
+  made: distribution_provision.Provisioned,
+  name: String,
+) -> distribution_bundle.Bundle {
+  let assert Ok(bundle) =
+    list.find(made.deployment.bundles, fn(bundle) { bundle.name == name })
+  bundle
+}
+
+fn installed_files(directory: String) -> distribution.CredentialFiles {
+  distribution.CredentialFiles(
+    ca: directory <> "/ca.pem",
+    certificate: directory <> "/cert.pem",
+    key: directory <> "/key.pem",
+    cookie: "/h/.erlang.cookie",
+  )
+}
+
+pub fn no_distribution_table_is_no_deployment_test() {
+  assert vm_spec.deployment_state("") == Ok(vm_spec.NoDeployment)
+  assert vm_spec.deployment_state("[models.m]\nmodel_id = \"x\"\n")
+    == Ok(vm_spec.NoDeployment)
+
+  // A commented header is not a table, which a substring match would miss.
+  assert vm_spec.deployment_state("# [distribution]\nledger = \"/x\"\n")
+    == Ok(vm_spec.NoDeployment)
+}
+
+pub fn a_ledger_key_makes_a_ledger_deployment_test() {
+  let made = minted_ledger("dev")
+  let orchestrator = bundle_of(made, "dev-host")
+  let text =
+    distribution_bundle.config_text(
+      orchestrator,
+      installed_files("/vm/dev/orch"),
+    )
+  assert vm_spec.deployment_state(text)
+    == Ok(vm_spec.LedgerDeployment("/vm/dev/orch/ledger.log"))
+}
+
+pub fn listed_peers_make_a_static_deployment_test() {
+  let #(orchestrator, _) = bundles("dev")
+  let text =
+    distribution_bundle.config_text(
+      orchestrator,
+      installed_files("/vm/dev/orch"),
+    )
+  assert string.contains(text, "[[distribution.peers]]")
+  assert vm_spec.deployment_state(text) == Ok(vm_spec.StaticDeployment)
+}
+
+pub fn a_table_the_daemon_would_refuse_is_an_error_test() {
+  assert result.is_error(vm_spec.deployment_state("[distribution\n"))
+  assert result.is_error(vm_spec.deployment_state(
+    "[distribution]\nnode = \"not a node\"\n",
+  ))
+}
+
+pub fn the_guest_enrols_as_an_executor_linked_to_the_orchestrator_test() {
+  let request = vm_spec.guest_enrollment(vm_spec.names("dev"), "laptop")
+  assert request.name == "dev"
+  assert request.node == "loom_vm_dev_exec@127.0.0.1"
+  assert request.role == distribution_plan.Executor
+  assert request.host == Some("127.0.0.1")
+  assert request.listen_port == Some(vm_spec.guest_port)
+  assert request.links == ["laptop"]
+  assert request.workspaces == []
+  assert request.bundle_dir == None
+  assert request.directory == membership_entry.NotInDirectory
+  assert ledger_operator.check_enrollment(request) == Ok(Nil)
+}
+
+pub fn an_enrolment_without_the_orchestrator_link_is_refused_test() {
+  let request = vm_spec.guest_enrollment(vm_spec.names("dev"), "laptop")
+  let linkless = ledger_operator.Enrollment(..request, links: [])
+  assert result.is_error(ledger_operator.check_enrollment(linkless))
+}
+
+pub fn a_ledger_deployment_installs_a_ledger_table_test() {
+  let made = minted_ledger("dev")
+  let orchestrator = bundle_of(made, "dev-host")
+  assert orchestrator.trust != distribution_bundle.StaticPeers([])
+  let assert distribution_bundle.SignedLedger(lines) = orchestrator.trust
+  assert lines != []
+
+  // The table names the ledger and lists no peer, and the executor row the
+  // plan gave the orchestrator is still written.
+  let text =
+    distribution_bundle.config_text(
+      orchestrator,
+      installed_files("/vm/dev/orch"),
+    )
+  assert string.contains(text, "ledger = \"/vm/dev/orch/ledger.log\"")
+  assert !string.contains(text, "[[distribution.peers]]")
+  let assert Ok(document) = tom.parse(text)
+  assert tom.get_string(document, ["executors", "dev", "node"])
+    == Ok("loom_vm_dev_exec@127.0.0.1")
+
+  // The loopback listener lands in the same table and the daemon still reads
+  // it as a ledger table.
+  let bound = vm_spec.with_loopback_listener(text)
+  let assert Ok(bound_document) = tom.parse(bound)
+  assert tom.get_string(bound_document, ["distribution", "listen_address"])
+    == Ok("127.0.0.1")
+  assert vm_spec.deployment_state(bound)
+    == Ok(vm_spec.LedgerDeployment("/vm/dev/orch/ledger.log"))
+}
+
+pub fn the_guest_configuration_names_the_ledger_beside_its_credentials_test() {
+  let made = minted_ledger("dev")
+  let text =
+    vm_spec.guest_config(
+      bundle_of(made, "dev"),
+      ["proj"],
+      vm_spec.GitHubOff,
+      [],
+    )
+  let assert Ok(document) = tom.parse(text)
+  assert tom.get_string(document, ["distribution", "ledger"])
+    == Ok("/srv/loom-node/creds/ledger.log")
+  assert result.is_error(tom.get_array(document, ["distribution", "peers"]))
+}
+
+pub fn no_bundle_holds_the_authority_key_test() {
+  let made = minted_ledger("dev")
+  assert string.contains(made.authority.key, "PRIVATE KEY")
+  list.each(made.deployment.bundles, fn(bundle) {
+    let text = distribution_bundle.encode(bundle)
+    assert !string.contains(text, made.authority.key)
+    assert !string.contains(text, string.trim(made.authority.key))
+  })
+
+  // The executor's configuration, which goes into the guest, holds neither.
+  let configuration =
+    vm_spec.guest_config(bundle_of(made, "dev"), [], vm_spec.GitHubOff, [])
+  assert !string.contains(configuration, "PRIVATE KEY")
+}
+
+pub fn a_bundle_names_its_deployment_only_in_ledger_mode_test() {
+  let made = minted_ledger("dev")
+  assert vm_spec.bundle_deployment(bundle_of(made, "dev"))
+    == Ok(made.authority.deployment)
+  let #(_, static) = bundles("dev")
+  assert vm_spec.bundle_deployment(static) == Error(Nil)
+}
+
+pub fn a_guest_cannot_be_called_authority_test() {
+  assert result.is_error(vm_spec.valid_name(vm_spec.authority_dir))
+  assert result.is_error(vm_spec.parse(["up", "--name", "authority"]))
+  assert vm_spec.authority_directory("/h/vm", "3f9c") == "/h/vm/authority/3f9c"
+}
+
+// A scratch vm home below /var/tmp, which no jail replaces.
+fn scratch_home() -> String {
+  let name =
+    token.production_entropy()(4) |> bit_array.base16_encode |> string.lowercase
+  let home = "/var/tmp/loom-vm-home-" <> name
+  let assert Ok(Nil) = simplifile.create_directory_all(home)
+  home
+}
+
+pub fn the_key_is_sealed_under_a_generated_passphrase_file_test() {
+  let home = scratch_home()
+  let made = minted_ledger("dev")
+  let directory = vm_spec.authority_directory(home, made.authority.deployment)
+  assert vm_cli.seal_authority(directory, made) == Ok(Nil)
+
+  // The passphrase file is private to its owner and a terminal is not needed
+  // to read it back and open the key.
+  let file = directory <> "/" <> vm_spec.passphrase_file
+  let assert Ok(info) = simplifile.file_info(file)
+  assert int.bitwise_and(simplifile.file_info_permissions_octal(info), 0o777)
+    == 0o600
+  let assert Ok(passphrase) = authority_key.passphrase_from_file(file)
+  assert authority_key.load(directory, made.authority.deployment, passphrase)
+    == Ok(made.authority.key)
+
+  // The ledger copy and the cookie are kept beside the key.
+  assert authority_key.is_kept(directory)
+  assert authority_key.cookie(directory) == Ok(made.authority.cookie)
+
+  // A second guest gets a passphrase of its own.
+  let other = minted_ledger("dev")
+  let other_directory =
+    vm_spec.authority_directory(home, other.authority.deployment)
+  assert vm_cli.seal_authority(other_directory, other) == Ok(Nil)
+  let assert Ok(first) = simplifile.read(file)
+  let assert Ok(second) =
+    simplifile.read(other_directory <> "/" <> vm_spec.passphrase_file)
+  assert first != second
+  let assert Ok(Nil) = simplifile.delete_all([home])
+}
+
+fn write_guest(
+  home: String,
+  name: String,
+  deployment: distribution_provision.Deployment,
+) -> Nil {
+  let assert Ok(_) =
+    distribution_provision.write(
+      deployment,
+      home <> "/" <> name <> "/deploy",
+      distribution_provision.RefuseExisting,
+    )
+  Nil
+}
+
+pub fn removing_a_guest_finds_the_key_it_sealed_test() {
+  let home = scratch_home()
+  let made = minted_ledger("dev")
+  let directory = vm_spec.authority_directory(home, made.authority.deployment)
+  write_guest(home, "dev", made.deployment)
+  assert vm_cli.removable_authority(home, "dev") == None
+  assert vm_cli.seal_authority(directory, made) == Ok(Nil)
+  assert vm_cli.removable_authority(home, "dev") == Some(directory)
+
+  // Another guest with its own deployment does not hold it, and a guest with
+  // no bundles has nothing.
+  let other = minted_ledger("other")
+  write_guest(home, "other", other.deployment)
+  assert vm_cli.removable_authority(home, "dev") == Some(directory)
+  assert vm_cli.removable_authority(home, "absent") == None
+  let assert Ok(Nil) = simplifile.delete_all([home])
+}
+
+pub fn a_guest_minted_statically_has_no_key_to_remove_test() {
+  let home = scratch_home()
+  let assert Ok(static) = distribution_provision.provision(plan_of("dev"))
+  write_guest(home, "dev", static)
+  assert vm_cli.removable_authority(home, "dev") == None
+  let assert Ok(Nil) = simplifile.delete_all([home])
+}
+
+pub fn the_ledger_is_staged_once_beside_the_credentials_test() {
+  let #(scratch, root, _) = scratch_root()
+  let made = minted_ledger("dev")
+  let executor = bundle_of(made, "dev")
+  let assert Ok(Nil) = vm_cli.make_inside(root, "/srv/loom-node/creds")
+  let path = root <> "/srv/loom-node/creds/ledger.log"
+  let assert distribution_bundle.SignedLedger(lines) = executor.trust
+
+  assert vm_cli.stage_ledger(root, executor, None) == Ok(Nil)
+  assert simplifile.read(path) == Ok(string.join(lines, "\n") <> "\n")
+
+  // A file the executor has since extended is never written over.
+  let assert Ok(Nil) = simplifile.write(path, "synced\n")
+  assert vm_cli.stage_ledger(root, executor, None) == Ok(Nil)
+  assert simplifile.read(path) == Ok("synced\n")
+
+  // A static bundle stages no ledger.
+  let #(_, static) = bundles("dev")
+  let assert Ok(Nil) = simplifile.delete(path)
+  assert vm_cli.stage_ledger(root, static, None) == Ok(Nil)
+  assert simplifile.is_file(path) == Ok(False)
+  let assert Ok(Nil) = simplifile.delete_all([scratch])
+}
+
+// --- joining a deployment ----------------------------------------------------
+
+pub fn the_daemon_is_found_in_the_installed_ledger_test() {
+  let made = minted_ledger("dev")
+  let assert Ok(membership) =
+    vm_spec.orchestrator_membership(
+      made.authority.certificate,
+      made.ledger,
+      "loom_vm_dev_orch@127.0.0.1",
+    )
+  assert membership.deployment == made.authority.deployment
+  assert membership.member == "dev-host"
+
+  // The executor is a member too, but a guest links to an orchestrator.
+  let assert Error(reason) =
+    vm_spec.orchestrator_membership(
+      made.authority.certificate,
+      made.ledger,
+      "loom_vm_dev_exec@127.0.0.1",
+    )
+  assert string.contains(reason, "only an orchestrator")
+  assert result.is_error(vm_spec.orchestrator_membership(
+    made.authority.certificate,
+    made.ledger,
+    "nobody@127.0.0.1",
+  ))
+
+  // A ledger of another authority does not replay.
+  let other = minted_ledger("dev")
+  assert result.is_error(vm_spec.orchestrator_membership(
+    other.authority.certificate,
+    made.ledger,
+    "loom_vm_dev_orch@127.0.0.1",
+  ))
+}
+
+pub fn a_joined_guest_takes_nothing_from_the_configuration_test() {
+  let teardown = vm_spec.joined_teardown()
+  assert teardown.tables == []
+  assert teardown.cookie == vm_spec.KeepCookie
+  let assert [line] = teardown.left
+  assert string.contains(line, "[distribution] and the cookie")
+}
+
+// A deployment with two executors, `dev` (which also minted it) and `other`,
+// both written under the vm home the way a mint and a join leave them.
+fn two_guest_deployment() -> distribution_provision.Provisioned {
+  let dev = vm_spec.names("dev")
+  let other = vm_spec.names("other")
+  let node = fn(name, role, erlang_node, port, uses) {
+    distribution_plan.Node(
+      name:,
+      role:,
+      erlang_node:,
+      host: "127.0.0.1",
+      listen_port: port,
+      bundle_dir: None,
+      executors: uses,
+      workspaces: [],
+    )
+  }
+  let assert Ok(plan) =
+    distribution_plan.validate(
+      distribution_plan.Plan(
+        nodes: [
+          node(
+            dev.orchestrator,
+            distribution_plan.Orchestrator,
+            dev.orchestrator_node,
+            None,
+            ["dev", "other"],
+          ),
+          node(
+            "dev",
+            distribution_plan.Executor,
+            dev.executor_node,
+            Some(4370),
+            [],
+          ),
+          node(
+            "other",
+            distribution_plan.Executor,
+            other.executor_node,
+            Some(4371),
+            [],
+          ),
+        ],
+        directory: [],
+      ),
+    )
+  let assert Ok(made) =
+    distribution_provision.provision_ledger(plan, timestamp.system_time())
+  made
+}
+
+pub fn the_key_stays_while_a_guest_of_its_deployment_remains_test() {
+  let home = scratch_home()
+  let made = two_guest_deployment()
+  let directory = vm_spec.authority_directory(home, made.authority.deployment)
+  write_guest(home, "dev", made.deployment)
+  write_guest(home, "other", made.deployment)
+  assert vm_cli.seal_authority(directory, made) == Ok(Nil)
+
+  // Each guest's executor bundle names the same deployment, so neither takes
+  // the key with it while the other is there.
+  assert vm_cli.removable_authority(home, "dev") == None
+  assert vm_cli.removable_authority(home, "other") == None
+
+  // The last one takes it.
+  let assert Ok(Nil) = simplifile.delete_all([home <> "/dev"])
+  assert vm_cli.removable_authority(home, "other") == Some(directory)
+  let assert Ok(Nil) = simplifile.delete_all([home])
+}
+
+// Runs the first `count` steps of an upgrade in a scratch directory whose old
+// root holds the real workspace and whose clone holds a shipped one, and says
+// where the workspace is and what `up` would do next.
+fn upgrade_stopped_after(count: Int) -> #(Bool, Bool, vm_spec.RootStep) {
+  let #(scratch, root, _) = scratch_root()
+  let building = scratch <> "/root.building"
+  let next = scratch <> "/root.next"
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(root <> "/srv/workspaces/real")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(building <> "/srv/workspaces/shipped")
+  let steps = vm_cli.upgrade_steps(root <> "/srv/workspaces", building, next)
+  list.take(steps, count)
+  |> list.each(fn(step) {
+    assert step() == Ok(Nil)
+  })
+
+  let in_old =
+    simplifile.is_directory(root <> "/srv/workspaces/real") == Ok(True)
+  let in_next =
+    simplifile.is_directory(next <> "/srv/workspaces/real") == Ok(True)
+
+  // What `up` reads: the layout is the evidence that the workspaces moved.
+  let moved = case simplifile.is_directory(next <> "/srv/workspaces") {
+    Ok(True) -> vm_spec.Present
+    _ -> vm_spec.Absent
+  }
+  let step =
+    vm_spec.root_step(
+      vm_spec.Resume,
+      vm_spec.RootLayout(vm_spec.Present, moved),
+      Some("aaaaaaa"),
+      "bbbbbbb",
+    )
+  let assert Ok(Nil) = simplifile.delete_all([scratch])
+  #(in_old, in_next, step)
+}
+
+pub fn an_upgrade_never_strands_the_workspaces_between_steps_test() {
+  // Stopped after each step, the workspaces are in the old root or in the new
+  // one, never in the directory the clone is built in, and `up` finishes only
+  // once they are in the new root. The old order moved them into the clone
+  // first, so a stop after that step had them in neither place.
+  list.each([0, 1, 2, 3], fn(count) {
+    let #(in_old, in_next, step) = upgrade_stopped_after(count)
+    assert in_old != in_next
+    assert step == vm_spec.UpgradeRoot(Some("aaaaaaa"))
+  })
+  let #(in_old, in_next, step) = upgrade_stopped_after(4)
+  assert !in_old
+  assert in_next
+  assert step == vm_spec.FinishUpgrade
+}
+
+pub fn a_stop_after_the_clone_is_an_upgrade_again_not_a_finish_test() {
+  // `root.next` is absent while the clone is `root.building`, so the layout
+  // is the one of a root that has not moved its workspaces.
+  let layout = vm_spec.RootLayout(vm_spec.Present, vm_spec.Absent)
+  assert vm_spec.root_step(vm_spec.Resume, layout, Some("aaaaaaa"), "bbbbbbb")
+    == vm_spec.UpgradeRoot(Some("aaaaaaa"))
+  let moved = vm_spec.RootLayout(vm_spec.Present, vm_spec.Present)
+  assert vm_spec.root_step(vm_spec.Resume, moved, Some("aaaaaaa"), "bbbbbbb")
+    == vm_spec.FinishUpgrade
+}
+
+pub fn a_host_copy_with_no_staged_script_is_staged_again_test() {
+  // The root has neither marker nor script but the host keeps a copy: `up`
+  // stopped between the clone and the staging.
+  assert vm_spec.provision_plan(
+      None,
+      vm_spec.NeverProvisioned,
+      Some("/vm/provision"),
+    )
+    == Ok(vm_spec.StageScript("/vm/provision"))
+  assert vm_spec.provision_plan(None, vm_spec.NeverProvisioned, None)
+    == Ok(vm_spec.NoScript)
+  assert vm_spec.provision_plan(
+      None,
+      vm_spec.AlreadyProvisioned,
+      Some("/vm/provision"),
+    )
+    == Ok(vm_spec.NoScript)
+}
+
+pub fn the_daemons_installed_ledger_is_staged_only_when_it_vouches_for_the_guest_test() {
+  let made = minted_ledger("dev")
+  let executor = bundle_of(made, "dev")
+  let assert distribution_bundle.SignedLedger(lines) = executor.trust
+
+  // Nothing installed, or the same ledger, gives the bundle's lines.
+  assert vm_spec.ledger_to_stage(executor, None) == lines
+  assert vm_spec.ledger_to_stage(executor, Some(made.ledger)) == lines
+
+  // A ledger of another authority does not replay against the guest's, so the
+  // bundle's lines are kept.
+  let other = minted_ledger("dev")
+  assert vm_spec.ledger_to_stage(executor, Some(other.ledger)) == lines
+
+  // A static bundle stages nothing.
+  let #(_, static) = bundles("dev")
+  assert vm_spec.ledger_to_stage(static, Some(made.ledger)) == []
+}
+
+pub fn a_guests_standing_is_read_from_a_ledger_test() {
+  let made = minted_ledger("dev")
+  let ca = made.authority.certificate
+  assert vm_spec.standing(ca, made.ledger, "dev")
+    == Ok(membership_ledger.Enrolled(member_of(made, "dev")))
+  assert vm_spec.standing(ca, made.ledger, "nobody")
+    == Ok(membership_ledger.NotEnrolled)
+  let other = minted_ledger("dev")
+  assert vm_spec.standing(other.authority.certificate, made.ledger, "dev")
+    == Error(Nil)
+}
+
+fn member_of(
+  made: distribution_provision.Provisioned,
+  name: String,
+) -> membership_entry.Member {
+  let assert Ok(verifier) =
+    membership_signing.verifier(made.authority.certificate)
+  let lines =
+    string.split(made.ledger, "\n")
+    |> list.filter(fn(line) { line != "" })
+    |> list.map(bit_array.from_string)
+  let assert Ok(ledger) = membership_ledger.replay(lines, verifier)
+  let assert Ok(member) = membership_ledger.member(ledger, name)
+  member
+}
+
+pub fn removal_words_its_revoke_refusal_without_force_test() {
+  let refusal =
+    "revoking x may strand sessions:\n  1 session\n"
+    <> "Nothing was signed. Pass --force to revoke anyway."
+  let worded = vm_spec.rm_revoke_refusal(refusal)
+  assert !string.contains(worded, "--force")
+  assert string.ends_with(worded, "Nothing was signed and nothing was removed.")
+}
+
+pub fn an_undelivered_entry_fails_the_join_and_names_the_way_on_test() {
+  assert vm_spec.undelivered_refusal(
+      Ok("the daemon"),
+      "/b/vm2.loombundle",
+      "vm2",
+    )
+    == Ok(Nil)
+  let assert Error(reason) =
+    vm_spec.undelivered_refusal(
+      Error("no daemon took entry 3; run `loom distribution import FILE`."),
+      "/b/vm2.loombundle",
+      "vm2",
+    )
+  assert string.contains(reason, "/b/vm2.loombundle")
+  assert string.contains(reason, "loom distribution import")
+  assert string.contains(reason, "loom vm up --name vm2")
+  assert string.contains(reason, "No guest was booted")
+}
+
+pub fn a_guest_the_daemon_has_not_learned_or_has_revoked_does_not_resume_test() {
+  let enrolled =
+    membership_ledger.Enrolled(member: member_of(minted_ledger("dev"), "dev"))
+  assert vm_spec.resume_refusal("vm2", "/h/loom.toml", Ok(enrolled)) == Ok(Nil)
+  assert vm_spec.resume_refusal("vm2", "/h/loom.toml", Error(Nil)) == Ok(Nil)
+
+  let assert Error(revoked) =
+    vm_spec.resume_refusal("vm2", "/h/loom.toml", Ok(membership_ledger.Revoked))
+  assert string.contains(revoked, "loom vm rm --name vm2")
+
+  // The entry never reached the daemon: import, then up again.
+  let assert Error(unknown) =
+    vm_spec.resume_refusal(
+      "vm2",
+      "/h/loom.toml",
+      Ok(membership_ledger.NotEnrolled),
+    )
+  assert string.contains(unknown, "loom distribution import")
+  assert string.contains(unknown, "loom vm up --name vm2")
+}
+
+pub fn a_member_the_copy_records_as_revoked_is_done_test() {
+  let home = scratch_home()
+  let made = two_guest_deployment()
+  let directory = vm_spec.authority_directory(home, made.authority.deployment)
+  assert vm_cli.seal_authority(directory, made) == Ok(Nil)
+  let assert Ok(authority) =
+    ledger_cli.unlock_at(directory, Some(directory <> "/passphrase"))
+  assert !ledger_cli.is_revoked(authority, "other")
+
+  // A daemon that answers nothing: the entry goes to the copy alone.
+  let silent = fn(_) {
+    ledger_sync.Daemon(
+      status: fn() { Error("no daemon") },
+      entries: fn(_, _) { Error("no daemon") },
+      append: fn(_) { Error("no daemon") },
+      holdings: fn() { Error("no daemon") },
+    )
+  }
+  let assert Ok(_) =
+    ledger_cli.revoke_member(
+      authority,
+      "other",
+      "test",
+      ledger_cli.Forced,
+      admin.ThisHost(""),
+      silent,
+    )
+  assert ledger_cli.is_revoked(authority, "other")
+  assert !ledger_cli.is_revoked(authority, "dev")
+
+  // The copy's text, read the way the daemon's installed ledger is, says the
+  // same: revoked for the one, enrolled for the other.
+  let assert Ok(text) = simplifile.read(directory <> "/ledger.log")
+  assert vm_spec.standing(made.authority.certificate, text, "other")
+    == Ok(membership_ledger.Revoked)
+  let assert Ok(membership_ledger.Enrolled(..)) =
+    vm_spec.standing(made.authority.certificate, text, "dev")
+  let assert Ok(Nil) = simplifile.delete_all([home])
 }
 
 // --- undoing an enrolment ----------------------------------------------------

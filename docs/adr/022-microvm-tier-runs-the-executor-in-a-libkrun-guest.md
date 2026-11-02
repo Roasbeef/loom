@@ -290,3 +290,35 @@ entitlement and clears quarantine, since the project has no Developer ID.
 `loom vm up` refuses a manifest whose revision differs from the running build,
 because the executor protocol is exact-revision and a mismatched guest daemon
 crashes the host on its first unmatched message.
+
+## Addendum, 2026-11-02: guests mint and join in ledger mode
+
+*Added 2026-11-02. The decisions above are unchanged; this records how a
+standing guest joins a deployment, which the developer-path addendum left as
+one static two-node deployment per guest.*
+
+`loom vm up` mints a new deployment in ledger mode (protocol-change/086), not
+as the static two-node deployment of protocol-change/078, and keeps the
+authority key sealed under `<vm home>/authority/<deployment id>/` beside a
+passphrase file `up` generates, because a standing guest has no terminal. A
+`loom.toml` that already holds a ledger deployment gets the guest enrolled as an
+executor member through the running daemon, with no edit to the file, no
+loopback line, no restart and no change to the cookie; the daemon derives the
+`[executors.<name>]` row from its pin table. A static deployment is refused,
+since no key remains to enrol with. This is why one home now holds several
+guests. No protocol change was needed: the bundle format, the ledger entries,
+the `[distribution]` keys and the wire are as before.
+
+Three consequences are recorded here so they are not rediscovered.
+
+- A guest is reached only from orchestrators on its own host. Its executor
+  listens on a loopback port that `loom-vm run --publish` forwards, and its
+  members' links are to the orchestrators of that host. Another machine uses
+  the guest by spawning on that host's orchestrator.
+- A session move changes the session's orchestrator and leaves its executor
+  where it is. Moving a session's tools from one executor to another is
+  executor-to-executor placement, which is #1137 and out of scope here.
+- The authority key and its passphrase are in the vm home, not in a guest root
+  or in any bundle that reaches a guest. The daemon's jails mask `~/.loom/vm`
+  and the state root's `vm`, so the key is out of reach of jailed tools there; a
+  `LOOM_VM_HOME` elsewhere is not masked.
