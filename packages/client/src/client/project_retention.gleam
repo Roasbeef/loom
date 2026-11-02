@@ -109,7 +109,9 @@ pub type Document {
 ///
 /// A record stays when the ticket or trigger it is about stays. The router's
 /// queued replies are kept to the newest `max_replies`, and of the notes about
-/// a source only the latest stays. The marker a compaction writes about itself
+/// a source only the latest stays. Of the template's records the latest build
+/// and the latest failure stay, in their order, which is all a replay needs to
+/// know whether the template is ready and whether a rebuild has failed since. The marker a compaction writes about itself
 /// does not.
 ///
 /// ## Examples
@@ -128,11 +130,18 @@ pub fn select_records(lines: List(String), kept: State) -> List(String) {
   let stays = list.filter(parsed, fn(entry) { stays(entry.1, kept) })
   let replies = latest(stays, is_reply, max_replies)
   let notes = latest(stays, is_note, 1)
+  let builds = latest(stays, is_template_build, 1)
+  let failures = latest(stays, is_template_failure, 1)
   list.filter(stays, fn(entry) {
     case is_reply(entry.1), is_note(entry.1) {
       True, _ -> list.contains(replies, entry.0)
       _, True -> list.contains(notes, entry.0)
-      False, False -> True
+      False, False ->
+        case is_template_build(entry.1), is_template_failure(entry.1) {
+          True, _ -> list.contains(builds, entry.0)
+          _, True -> list.contains(failures, entry.0)
+          False, False -> True
+        }
     }
   })
   |> list.map(fn(entry) { entry.0 })
@@ -149,6 +158,8 @@ fn stays(record: Record, kept: State) -> Bool {
     project_records.TreeKept(ticket:, ..) -> ticket_stays(ticket, kept)
     project_records.ReplyQueued(..) -> True
     project_records.SourceNote(..) -> True
+    project_records.TemplateBuilt(..) -> True
+    project_records.TemplateFailed(..) -> True
     project_records.Retention(..) -> False
   }
 }
@@ -186,6 +197,8 @@ fn is_reply(record: Record) -> Bool {
     | project_records.CheckRecorded(..)
     | project_records.SourceNote(..)
     | project_records.TreeKept(..)
+    | project_records.TemplateBuilt(..)
+    | project_records.TemplateFailed(..)
     | project_records.Retention(..) -> False
   }
 }
@@ -201,7 +214,25 @@ fn is_note(record: Record) -> Bool {
     | project_records.CheckRecorded(..)
     | project_records.ReplyQueued(..)
     | project_records.TreeKept(..)
+    | project_records.TemplateBuilt(..)
+    | project_records.TemplateFailed(..)
     | project_records.Retention(..) -> False
+  }
+}
+
+/// Whether a record says the template was built.
+fn is_template_build(record: Record) -> Bool {
+  case record {
+    project_records.TemplateBuilt(..) -> True
+    _ -> False
+  }
+}
+
+/// Whether a record says a template build failed.
+fn is_template_failure(record: Record) -> Bool {
+  case record {
+    project_records.TemplateFailed(..) -> True
+    _ -> False
   }
 }
 
