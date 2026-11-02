@@ -101,8 +101,6 @@ pub type Page {
     newest: Option(String),
     /// Items that did not decode, or whose login or time was not plain.
     skipped: Int,
-    /// Items the agent wrote itself, dropped before the engine saw them.
-    own: Int,
   )
 }
 
@@ -259,10 +257,8 @@ fn page(
   let fresh =
     list.filter(good, fn(note) { at_or_after(note.created_at, since) })
   let newest = newest_of(good)
-  let own =
-    list.count(fresh, fn(note) { same_login(note.login, context.account) })
   let arrivals = list.filter_map(fresh, fn(note) { arrival(context, note) })
-  Page(arrivals:, newest:, skipped:, own:)
+  Page(arrivals:, newest:, skipped:)
 }
 
 /// Whether a `created_at` is at or after the cursor. With no cursor every item

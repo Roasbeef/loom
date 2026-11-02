@@ -447,7 +447,7 @@ This document rests on four reader summaries against `be5a7b58e`. Its constants 
 - The check runner's policy has `readable_roots ["/"]` with the state-root masks and without the per-project masks a worker session gets. Worker-authored code in a check can therefore read other projects' files, and up to 4000 characters of its failing output go back to the worker.
 - `protecting_projects` masks only what exists when a session's policy is built, so a `checks/` directory made later isn't masked for that session.
 - `fetch_commit` runs against a worker-writable clone with `host.git` writable to that jailed Git. Whether the clone's repository config can affect `upload-pack` there wasn't verified.
-- `project_github.Page.own` is counted and never read, and `release` excludes `.codemode` from its clean test, so a clone with changes only there is removed.
+- `release` excludes `.codemode` from its clean test, so a clone with changes only there is removed.
 - The live lane asks the router directly and doesn't apply `gate.classify`, so its trials can differ from what `auto` would admit.
 - A person stopping a worker session from outside the project fails its ticket.
 - The restart note is queued once per assignment, so a second restart of the same assignment reopens its session through the `reopen` row and doesn't tell the worker again.
