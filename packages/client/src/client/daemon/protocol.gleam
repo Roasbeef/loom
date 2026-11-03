@@ -233,6 +233,10 @@ pub type Command {
   /// A person's request for a new assignment on a stalled ticket. Owner-only.
   RetryTicket(project: String, ticket: String)
 
+  /// A person's request that the check run again on the commit it already
+  /// judged, because it failed there or gave no result. Owner-only.
+  RecheckTicket(project: String, ticket: String)
+
   /// A person's request that a stored trigger be evaluated afresh. Owner-only.
   RequeueTrigger(project: String, trigger: String)
 
@@ -741,6 +745,11 @@ fn decode_fields(
       use project <- result.try(text_field(fields, "project", 64))
       use ticket <- result.map(text_field(fields, "ticket", 128))
       RetryTicket(project, ticket)
+    }
+    "projects.recheck" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use ticket <- result.map(text_field(fields, "ticket", 128))
+      RecheckTicket(project, ticket)
     }
     "projects.publish" -> {
       use project <- result.try(text_field(fields, "project", 64))
