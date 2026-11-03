@@ -360,11 +360,27 @@ pub fn setup_runner(git: Git, directory: String) -> goalcheck.Runner {
     directory,
     policy.SandboxPolicy(
       ..base,
-      limits: policy.Limits(..base.limits, cpu_s: 0, fsize_bytes: 0),
+      limits: policy.Limits(
+        ..base.limits,
+        cpu_s: 0,
+        wall_s: 0,
+        fsize_bytes: 0,
+        mem_bytes: setup_mem_bytes,
+        pids: setup_pids,
+      ),
     ),
     policy.NetworkFull,
   )
 }
+
+// The memory and process ceilings of a setup. A first build compiles a whole
+// project and starts a process or a thread per core, so the check's 2 GiB and
+// 512 would stop it half way. The wall is the caller's own timeout: the base
+// leaves it at zero, which lets the call's requirement set it, where a base of
+// 600 s would refuse any setup that asked for longer.
+const setup_mem_bytes = 8_589_934_592
+
+const setup_pids = 4096
 
 /// The runner a check and a setup share. They differ in the network and the
 /// limits, which the caller chooses, and in nothing the masks or the
