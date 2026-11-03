@@ -920,6 +920,8 @@ pub fn mutates(command: Command) -> Bool {
     | ProjectsCommand("projects.list", _)
     | AttentionCommand(ReadAttentionFeed(..))
     | AttentionCommand(ReadAttentionRecord(..))
+    | ProjectsCommand("projects.settings", _)
+    | ProjectsCommand("projects.propose", _)
     | SessionActivity(..) -> False
     ProjectsCommand(..) -> True
     AttentionCommand(AnswerAttentionAsk(..))
@@ -1567,6 +1569,9 @@ fn decode_reply(event: String, body: json.JsonValue) {
     | "projects.close"
     | "projects.retry"
     | "projects.recheck"
+    | "projects.settings"
+    | "projects.set_settings"
+    | "projects.propose"
     | "projects.publish"
     | "projects.requeue"
     | "projects.set_mode"
