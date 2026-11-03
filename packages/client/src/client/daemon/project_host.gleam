@@ -60,6 +60,7 @@ import client/notes
 import client/peer_mail
 import client/project_github
 import client/project_judge
+import client/project_overrides.{type Change, type View}
 import client/project_poller
 import client/project_publish
 import client/project_records.{
@@ -492,7 +493,19 @@ pub opaque type Message {
 
   /// A template build's task ended: the commit it built, that the base had not
   /// moved, or what failed.
-  TemplateSettled(outcome: project_template.Outcome)
+  TemplateSettled(outcome: project_template.Outcome, digest: String)
+
+  /// The owner reads the project's settings.
+  ReadSettings(reply: Subject(View))
+
+  /// The owner changes the project's settings, naming the revision it read.
+  ChangeSettings(
+    revision: Int,
+    changes: List(Change),
+    publishing_to: Option(String),
+    by: String,
+    reply: Subject(Result(View, SettingsFailure)),
+  )
   ReplySettled(key: String, thread: String, posting: project_poller.Posting)
   SetMode(
     rule: String,
@@ -565,6 +578,22 @@ type Host {
     /// the same result. The engine knows a check failed and who has the
     /// failure; this is the words and the output a person reads about it.
     checks: Dict(String, LastCheck),
+    /// What `[project]` and the built-in defaults give this project, which is
+    /// what `config` held when the actor started. `config.policy` and the
+    /// engine's worker slots are the *effective* values: these with `held` on
+    /// top.
+    file_values: project_overrides.Values,
+    /// The values the project holds for itself, rebuilt from the ledger's
+    /// `SettingChanged` records.
+    held: project_overrides.Overrides,
+    /// Who last changed each key the project holds, and when.
+    changed: Dict(String, #(String, Int)),
+    /// How many changes the project's settings have had.
+    revision: Int,
+    /// The digest of the commands the running template build was started
+    /// with, or none when no build runs. A build that ends under other
+    /// commands than the project has now is not recorded.
+    building: Option(String),
   )
 }
 
@@ -993,6 +1022,17 @@ fn boot(config: Config, inbox: Subject(Message)) -> Result(Host, String) {
       runs: dict.new(),
       template: template_state.Unmanaged,
       checks: dict.new(),
+      file_values: project_overrides.Values(
+        check: config.policy.check,
+        setup: config.policy.setup,
+        publish: config.policy.publish,
+        max_workers: config.max_workers,
+        protected_paths: config.policy.protected_paths,
+      ),
+      held: project_overrides.none,
+      changed: dict.new(),
+      revision: 0,
+      building: None,
     )
 
   // A compacted ledger starts from its snapshot and replays what follows.
@@ -1259,8 +1299,18 @@ fn handle(host: Host, message: Message) -> actor.Next(Host, Message) {
       )
     PollSettled(polled:) ->
       actor.continue(perform_due(poll_settled(host, polled)))
-    TemplateSettled(outcome:) ->
-      actor.continue(perform_due(template_settled(host, outcome)))
+    TemplateSettled(outcome:, digest:) ->
+      actor.continue(perform_due(template_settled(host, outcome, digest)))
+    ReadSettings(reply:) -> {
+      process.send(reply, settings_view(host))
+      actor.continue(host)
+    }
+    ChangeSettings(revision:, changes:, publishing_to:, by:, reply:) -> {
+      let #(next, answer) =
+        change_settings_now(host, revision, changes, publishing_to, by)
+      process.send(reply, answer)
+      actor.continue(next)
+    }
     ReplySettled(key:, thread:, posting:) ->
       actor.continue(perform_due(reply_settled(host, key, thread, posting)))
     SetMode(rule:, mode:, by:, reply:) -> {
@@ -1527,6 +1577,224 @@ fn keep_record(host: Host, written: Record) -> Host {
           ),
         ),
       )
+    project_records.SettingChanged(key:, values:, by:, at_ms:) ->
+      hold_setting(host, key, values, #(by, at_ms))
+  }
+}
+
+/// Folds one `SettingChanged` record into what the project holds, and
+/// recomputes what is in force. A key this build does not know, or a value it
+/// would now refuse, is skipped: the file is the owner's, a ledger line is
+/// history, and a line a newer or older build wrote must not stop a project
+/// from starting.
+fn hold_setting(
+  host: Host,
+  key: String,
+  values: Option(List(String)),
+  by: #(String, Int),
+) -> Host {
+  let next = {
+    use found <- result.try(project_overrides.key_from_word(key))
+    case values {
+      None -> Ok(#(found, project_overrides.without(host.held, found)))
+      Some(words) ->
+        project_overrides.parse(found, words)
+        |> result.map(fn(override) {
+          #(found, project_overrides.with(host.held, override))
+        })
+    }
+  }
+
+  // Only a value that checked is held, and it counts as one change.
+  case next {
+    Error(_) -> host
+    Ok(#(_, held)) ->
+      Host(
+        ..host,
+        held:,
+        changed: dict.insert(host.changed, key, by),
+        revision: host.revision + 1,
+      )
+      |> in_force
+  }
+}
+
+/// Makes the values in force the project's own over the file's: the policy the
+/// actor reads everywhere, and the engine's worker slots. Workers already
+/// running are not touched, since slots are counted when a worker is
+/// scheduled and nothing records the number they were scheduled under.
+fn in_force(host: Host) -> Host {
+  let values = project_overrides.effective(host.file_values, host.held)
+  let policy =
+    Policy(
+      ..host.config.policy,
+      check: values.check,
+      setup: values.setup,
+      publish: values.publish,
+      protected_paths: values.protected_paths,
+    )
+  let engine_config =
+    state.Config(..host.engine.config, max_workers: values.max_workers)
+  Host(
+    ..host,
+    config: Config(..host.config, policy:, max_workers: values.max_workers),
+    engine: state.State(..host.engine, config: engine_config),
+  )
+}
+
+// --- settings ----------------------------------------------------------------
+
+/// The project's settings as a client reads them: the value in force for each
+/// key and where it came from.
+fn settings_view(host: Host) -> View {
+  let values = project_overrides.effective(host.file_values, host.held)
+  project_overrides.View(
+    revision: host.revision,
+    entries: list.map(project_overrides.keys, fn(key) {
+      project_overrides.Entry(
+        key:,
+        values: project_overrides.value_words(values, key),
+        source: project_overrides.source_of(host.file_values, host.held, key),
+        changed: dict.get(host.changed, project_overrides.key_word(key))
+          |> option.from_result,
+      )
+    }),
+    publish_url: host.ports.remote_url(),
+  )
+}
+
+/// Applies the owner's changes to the project's settings, all or none of the
+/// checks first and then one ledger record for each key that actually moves.
+///
+/// A write that read an older revision is stale, so two clients cannot
+/// overwrite each other unseen. Turning `publish` on is refused unless the
+/// request names the URL the host would publish to, so no write that happens
+/// to carry the key can start sending branches outward. A change that leaves
+/// a key as it is writes nothing.
+fn change_settings_now(
+  host: Host,
+  revision: Int,
+  changes: List(Change),
+  publishing_to: Option(String),
+  by: String,
+) -> #(Host, Result(View, SettingsFailure)) {
+  let moving = list.filter(changes, fn(change) { moves(host, change) })
+
+  // The revision is checked first, then the publish rule, and then the
+  // changes are written one record each.
+  case revision == host.revision, publish_refusal(host, moving, publishing_to) {
+    False, _ -> #(host, Error(StaleSettings))
+    True, Some(words) -> #(host, Error(RefusedSettings(words)))
+    True, None -> {
+      let now = host.ports.now_ms()
+      let written =
+        list.try_fold(moving, host, fn(acc, change) {
+          let #(key, values) = case change {
+            project_overrides.Hold(override) -> {
+              let #(key, words) = project_overrides.words(override)
+              #(key, Some(words))
+            }
+            project_overrides.Release(key) -> #(key, None)
+          }
+          record(
+            acc,
+            project_records.SettingChanged(
+              key: project_overrides.key_word(key),
+              values:,
+              by:,
+              at_ms: now,
+            ),
+          )
+        })
+
+      // A write the ledger refused part way leaves the changes before it in
+      // force, since each one is a record, and says which came to nothing.
+      case written {
+        Error(reason) -> #(
+          host,
+          Error(RefusedSettings(
+            "the project's ledger did not take the change: " <> reason,
+          )),
+        )
+        Ok(next) -> {
+          let settled = retemplate(host, next) |> perform_due
+          log.info(host.ports.logger, "project.settings_changed", [
+            field.count(key: "changes", value: list.length(moving)),
+            field.ident(key: "by", value: by),
+          ])
+          #(settled, Ok(settings_view(settled)))
+        }
+      }
+    }
+  }
+}
+
+/// Whether a change would alter what the project holds.
+fn moves(host: Host, change: Change) -> Bool {
+  case change {
+    project_overrides.Hold(override) ->
+      project_overrides.with(host.held, override) != host.held
+    project_overrides.Release(key) ->
+      project_overrides.without(host.held, key) != host.held
+  }
+}
+
+/// The sentence that refuses turning `publish` on without naming where it
+/// publishes, or nothing when the changes do not turn it on or do name it.
+fn publish_refusal(
+  host: Host,
+  changes: List(Change),
+  publishing_to: Option(String),
+) -> Option(String) {
+  let turns_on =
+    list.any(changes, fn(change) {
+      case change {
+        project_overrides.Hold(project_overrides.PublishIs(PublishPullRequest)) ->
+          host.config.policy.publish == PublishOff
+        _ -> False
+      }
+    })
+
+  // Only a change from `off` to `pull_request` needs naming.
+  case turns_on, host.ports.remote_url(), publishing_to {
+    False, _, _ -> None
+    True, None, _ ->
+      Some("this project has no remote, so there is nowhere to publish to")
+    True, Some(url), Some(named) if named == url -> None
+    True, Some(url), _ ->
+      Some(
+        "turning publish on lets the host push verified branches to "
+        <> url
+        <> " and open pull requests there; name that URL in publish_to to "
+        <> "confirm",
+      )
+  }
+}
+
+/// The template after a change of settings. A changed `setup` or `check` is a
+/// different digest, so the template built with the old commands is not used:
+/// new workers wait for a build with the new ones, and the workers already
+/// running keep the clones they have. A build that is under way is not
+/// started over. It ends, finds its digest is out of date, and asks for the
+/// build that is wanted.
+fn retemplate(before: Host, after: Host) -> Host {
+  case template_digest(before) == template_digest(after) {
+    True -> after
+    False ->
+      case after.config.policy.setup, after.building {
+        None, _ -> Host(..after, template: template_state.Unmanaged)
+        Some(_), Some(_) ->
+          Host(
+            ..after,
+            template: template_state.Preparing(after.ports.now_ms()),
+          )
+        Some(_), None ->
+          Host(
+            ..after,
+            template: template_state.Preparing(after.ports.now_ms()),
+          )
+          |> ask_for_build
+      }
   }
 }
 
@@ -2288,7 +2556,7 @@ fn start_template(host: Host, row: project_ledger.Effect) -> Host {
   case host.config.policy.setup {
     None -> settle(host, row)
     Some(setup) if row.attempts >= max_task_attempts ->
-      template_settled(
+      template_outcome(
         host,
         project_template.Failed(project_template.Failure(
           project_template.Cutting,
@@ -2309,16 +2577,18 @@ fn start_template(host: Host, row: project_ledger.Effect) -> Host {
           current: template_state.current(host.template, template_digest(host)),
         )
       let build = host.ports.build_template
+      let digest = template_digest(host)
       let marked =
         Host(
           ..host,
           template: template_state.building(host.template, host.ports.now_ms()),
+          building: Some(digest),
         )
       in_task(
         marked,
         row,
         policy.setup_wall_ms + policy.check_wall_ms + template_margin_ms,
-        fn() { TemplateSettled(outcome: build(request)) },
+        fn() { TemplateSettled(outcome: build(request), digest:) },
       )
     }
   }
@@ -2329,7 +2599,23 @@ fn start_template(host: Host, row: project_ledger.Effect) -> Host {
 /// template that was swapped in. A failed one is recorded too, so the board
 /// can say what failed after a restart, and a ready template stays in use with
 /// the failure beside it.
-fn template_settled(host: Host, outcome: project_template.Outcome) -> Host {
+fn template_settled(
+  host: Host,
+  outcome: project_template.Outcome,
+  built_with: String,
+) -> Host {
+  // A build that was started under other commands than the project has now
+  // says nothing about the template it wants. Its result is dropped, and the
+  // build that is wanted is asked for.
+  case built_with == template_digest(host) {
+    True -> template_outcome(Host(..host, building: None), outcome)
+    False -> ask_for_build(Host(..host, building: None))
+  }
+}
+
+/// A build's answer once it is known to be for the commands in force. See
+/// `template_settled`.
+fn template_outcome(host: Host, outcome: project_template.Outcome) -> Host {
   let now = host.ports.now_ms()
   let next_look = now + template_look_ms
   let digest = template_digest(host)
@@ -4877,6 +5163,57 @@ pub fn set_mode(
   by: String,
 ) -> Result(Nil, String) {
   ask(handle, SetMode(rule, mode, by, _))
+  |> result.flatten
+}
+
+/// Why a change of settings did not happen.
+pub type SettingsFailure {
+  /// The request read an older revision than the project has now, so another
+  /// client changed the settings since. Nothing was written.
+  StaleSettings
+
+  /// The change was refused, in the host's words. Nothing was written, or the
+  /// ledger failed part way and the words say so.
+  RefusedSettings(
+    /// The sentence a person reads.
+    words: String,
+  )
+}
+
+/// The project's settings: the value in force for each of the five keys and
+/// where it came from. Only the owner reaches this, through the control
+/// command.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_host.settings(handle)
+/// ```
+pub fn settings(handle: Handle) -> Result(View, String) {
+  ask(handle, ReadSettings)
+}
+
+/// Changes the project's own settings. The owner names the revision it read,
+/// and turning `publish` on names the URL the host will publish to.
+///
+/// The change takes effect with no restart. A changed `check` or `setup`
+/// rebuilds the template and proves the check again on the clean base, new
+/// workers wait for that, and running workers are not touched.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_host.change_settings(handle, 0, [Hold(CheckIs("make check"))], None, "owner")
+/// ```
+pub fn change_settings(
+  handle: Handle,
+  revision: Int,
+  changes: List(Change),
+  publishing_to: Option(String),
+  by: String,
+) -> Result(View, SettingsFailure) {
+  ask(handle, ChangeSettings(revision, changes, publishing_to, by, _))
+  |> result.map_error(RefusedSettings)
   |> result.flatten
 }
 
