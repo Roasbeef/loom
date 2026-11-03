@@ -1661,6 +1661,8 @@
   li.home-folder:has(> button.home-ticket){padding:0;}
   .home-ticket-page{max-width:780px;}
   .home-ticket-page .home-card-fact{white-space:pre-wrap;}
+  /* A check's output is a process's text. It wraps at any character and a long log scrolls inside its own box, so at phone width nothing runs past the edge and nothing is cut off. */
+  .home-ticket-page pre.home-check-output{box-sizing:border-box;max-width:100%;max-height:24rem;margin:0 0 12px 0;padding:8px 10px;overflow:auto;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg);font:12px/1.4 var(--font-mono);white-space:pre-wrap;overflow-wrap:anywhere;}
   @media (max-width:640px){
     main.centre > .home-head{margin-bottom:12px;}
     button.home-ticket{min-height:44px;}
@@ -1683,6 +1685,8 @@
   li.home-folder:has(> button.home-ticket){padding:0;}
   .home-ticket-page{max-width:780px;}
   .home-ticket-page .home-card-fact{white-space:pre-wrap;}
+  /* A check's output is a process's text. It wraps at any character and a long log scrolls inside its own box, so at phone width nothing runs past the edge and nothing is cut off. */
+  .home-ticket-page pre.home-check-output{box-sizing:border-box;max-width:100%;max-height:24rem;margin:0 0 12px 0;padding:8px 10px;overflow:auto;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg);font:12px/1.4 var(--font-mono);white-space:pre-wrap;overflow-wrap:anywhere;}
   @media (max-width:640px){
     main.centre > .home-head{margin-bottom:12px;}
     button.home-ticket{min-height:44px;}

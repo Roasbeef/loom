@@ -874,3 +874,123 @@ fn drain(asked: Subject(Asked)) -> List(Asked) {
     Error(Nil) -> []
   }
 }
+
+// --- a failed check ----------------------------------------------------------
+
+fn checking(output: String) -> json.JsonValue {
+  json.Object([
+    #("id", json.String("t-chk")),
+    #("title", json.String("fix the build")),
+    #("stage", json.String("person/check")),
+    #("session", json.Null),
+    #("opened_ms", json.Int(1000)),
+    #("question", json.Null),
+    #(
+      "check",
+      json.Object([
+        #("commit", json.String("0123456789abcdef")),
+        #("outcome", json.String("failed")),
+        #("at_ms", json.Int(now - 180_000)),
+        #("command", json.String("make check")),
+        #("output", json.String(output)),
+        #("cause", json.String("environment")),
+        #("handling", json.String("person")),
+      ]),
+    ),
+    #("actions", json.Array([json.String("close"), json.String("recheck")])),
+  ])
+}
+
+fn serving_check(output: String) -> home.Model {
+  let ticket = checking(output)
+  let projects =
+    home.Projects(
+      boards: fn(deliver) { deliver(listed(board_body(12, [ticket]))) },
+      ticket: fn(_, _, deliver) {
+        deliver(
+          feed.TicketHeard(
+            json.Object([
+              #("project", json.String("p1")),
+              #("revision", json.Int(12)),
+              #("ticket", ticket),
+              #("assignments", json.Array([])),
+              #("inputs", json.Array([])),
+            ]),
+          ),
+        )
+      },
+      answer: fn(_, _, _, _, deliver) { deliver(feed.Recorded) },
+      close: fn(_, _, deliver) { deliver(feed.Closed) },
+    )
+  run(opened(start_with(Some(projects))), home.OpeningTicket("p1", "t-chk"))
+}
+
+// The board never says nothing needs the owner while a check is failing and no
+// worker has it, and the ticket page says what the check did.
+pub fn a_failed_check_is_listed_as_needing_the_owner_and_its_output_is_drawn_test() {
+  let listing =
+    drawn(
+      opened(
+        start_with(
+          Some(
+            projects_with(
+              process.new_subject(),
+              fn() { listed(board_body(12, [checking("exit status 127")])) },
+              fn(_, _) { feed.TicketHeard(detail(9)) },
+              fn(_, _, _, _) { feed.Recorded },
+            ),
+          ),
+        ),
+      ),
+    )
+  assert string.contains(listing, "fix the build")
+  assert string.contains(listing, "CHECK FAILED (1)")
+  assert !string.contains(listing, "Nothing needs you")
+
+  let page =
+    drawn(serving_check("exit status 127\nmake: go: command not found"))
+  assert string.contains(page, "The check failed at 0123456789ab, 3m ago.")
+  assert string.contains(page, "the worker was not told")
+  assert string.contains(page, "home-check-output")
+  assert string.contains(page, "make: go: command not found")
+}
+
+// The output is a process's, so it is text in a `pre` and never markup. A long
+// log is the stylesheet's to wrap and scroll, and the markup gives it a box of
+// its own to do that in.
+pub fn the_checks_output_is_escaped_text_in_its_own_scrolling_box_test() {
+  let evil = "<img src=x onerror=alert(1)>\u{1b}]52;c;AAAA\u{7}</pre><b>x</b>"
+  let page = drawn(serving_check(evil))
+
+  assert !string.contains(page, "<img src=x")
+  assert !string.contains(page, "<b>x</b>")
+  assert string.contains(page, "&lt;img src=x onerror=alert(1)&gt;")
+  assert string.contains(page, "&lt;/pre&gt;&lt;b&gt;x&lt;/b&gt;")
+  assert !string.contains(page, "\u{1b}")
+
+  // One box holds the whole output, however long it is.
+  let long = string.repeat("a_very_long_unbroken_word_", 400)
+  let wide = drawn(serving_check(long))
+  assert at(wide, "<pre class=\"home-check-output\">")
+    < at(wide, "a_very_long_unbroken_word_")
+  assert string.contains(wide, string.repeat("a_very_long_unbroken_word_", 400))
+}
+
+// The result stays on screen. A `home-note` fades after four seconds, and a
+// check's account must not.
+pub fn the_checks_sentence_does_not_fade_test() {
+  let page = drawn(serving_check("exit status 1"))
+  let sentence = string.split(page, "The check failed")
+  let assert [before, _, ..] = sentence
+  let tag = string.split(before, "<p ") |> list.last
+  let assert Ok(opening) = tag
+  assert string.contains(opening, "home-check")
+  assert !string.contains(opening, "home-note")
+}
+
+// This slice draws the result and no new control for it.
+pub fn the_page_has_no_recheck_or_publish_control_yet_test() {
+  let page = drawn(serving_check("exit status 1"))
+  assert !string.contains(page, "Run the check again")
+  assert !string.contains(page, "Publish")
+}
