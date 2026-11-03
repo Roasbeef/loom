@@ -239,6 +239,25 @@ if [ "$SMOKE" = 1 ]; then
   grep -q 'bundled helper found; explicit missing helper refused' "$REL_ROOT/smoke/probe.log" || {
     echo "release.sh: managed helper resolution was not verified" >&2; exit 1; }
 
+  # The shipped git-cow is found beside the helper, and it makes a real copy
+  # with nothing of ours on PATH. The probe above proves the server's lookup
+  # answers with `<root>/bin/git-cow`; this proves the file is a working
+  # binary by copying a one-commit repository the way a template is copied,
+  # and that the copy is an independent repository that reads clean.
+  grep -q 'bundled git-cow found' "$REL_ROOT/smoke/probe.log" || {
+    echo "release.sh: the bundled git-cow was not found by the server's lookup" >&2; exit 1; }
+  COW="$REL_ROOT/smoke/cow"
+  rm -rf "$COW"; mkdir -p "$COW/template"
+  ( cd "$COW/template" && env -i HOME="$COW" PATH=/usr/bin:/bin git init -q \
+      && env -i HOME="$COW" PATH=/usr/bin:/bin git -c user.name=smoke -c user.email=smoke@example.invalid \
+           commit -q --allow-empty -m smoke ) >/dev/null 2>&1 || {
+    echo "release.sh: could not make the git-cow smoke repository (is git on PATH?)" >&2; exit 1; }
+  env -i HOME="$COW" PATH=/usr/bin:/bin "$REL/bin/git-cow" copy "$COW/template" "$COW/copy" >/dev/null 2>"$COW/copy.err" || {
+    echo "release.sh: the shipped git-cow could not copy a repository:" >&2
+    sed 's/^/    /' "$COW/copy.err" >&2; exit 1; }
+  [ -d "$COW/copy/.git" ] || {
+    echo "release.sh: git-cow's copy has no .git directory" >&2; exit 1; }
+
   # #102. `server.tools` is the registry this boot actually built. Code
   # mode registers only when discover() found a compiler, an emulator and
   # a seed it verified — so this line failing is the whole bug, and
@@ -333,6 +352,7 @@ if [ "$SMOKE" = 1 ]; then
   echo "            metadata-only startup, two explicitly admitted sessions,"
   echo "            clean close on SIGTERM,"
   echo "            the helper found beside the binary with no --helper injected,"
+  echo "            git-cow found beside it and copying a repository with none on PATH,"
   echo "            and an explicit --helper still winning"
   echo "            plus native ChatGPT status reporting logged out without credentials"
   if [ -d "$REL/share/codemode-seed" ]; then
@@ -620,6 +640,13 @@ rm -f "$REL/bin/loom"
 echo "==> building the sandbox helper"
 scripts/go-build.sh "$ROOT/packages/sandbox" ./cmd/loom-exec "$REL/bin/loom-exec"
 
+# The copier a project's template is copied with. `client/install` looks for
+# it at `bin/git-cow` before it looks on PATH, so a release copies on write on
+# a machine that has never heard of it. The source is a pinned commit with its
+# module hash checked; see the script for why it is fetched and not vendored.
+echo "==> building git-cow"
+scripts/build-git-cow.sh "$REL/bin/git-cow"
+
 # The microVM launcher (ADR-022). Unlike the helper it is not tied to the
 # kernel it was built on, and unlike the ERTS it carries no native code of the
 # host's: with cgo off it is one Go program with no build-host inputs, so the
@@ -687,7 +714,7 @@ echo "release: $REL"
 # One `du` per path: GNU du skips a directory it has already descended
 # into, so a single call with the tree and its own subdirectories reports
 # the tree and nothing else.
-sizes="$REL $REL/erts-$ERTS_VSN $REL/lib $REL/bin/loom-exec"
+sizes="$REL $REL/erts-$ERTS_VSN $REL/lib $REL/bin/loom-exec $REL/bin/git-cow"
 [ "$CODEMODE" = 1 ] && sizes="$sizes $REL/bin/gleam $REL/share/codemode-seed"
 [ "$VM" = 1 ] && sizes="$sizes $REL/bin/loom-vm"
 for p in $sizes; do

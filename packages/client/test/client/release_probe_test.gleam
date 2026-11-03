@@ -137,6 +137,11 @@ fn verify_helper(directory, workspace, configuration, id) {
   io.println(
     "release probe: bundled helper found; explicit missing helper refused",
   )
+
+  // The copier a project's template is copied with is shipped beside the
+  // helper, and found there before anything on PATH.
+  assert install.git_cow() == Ok(install.root() <> "/bin/git-cow")
+  io.println("release probe: bundled git-cow found")
 }
 
 fn await_state(socket, inbox, id, expected) -> Nil {
