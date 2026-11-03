@@ -11,6 +11,7 @@ import client/goalstate
 import client/internal/ffi_os
 import client/peer_mail
 import client/project_settings
+import client/project_template
 import core/json
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -129,13 +130,14 @@ fn rig(
           command: request.command,
           ending: now.check,
           output: now.output,
-          ran_at_ms: 0,
+          ran_at_ms: ffi_os.system_time_ms(),
         )
       },
       publish: fn(request) {
         process.send(work, Published(request))
         current().publish
       },
+      build_template: fn(_) { project_template.Built("bbbbbbbbbbbb") },
     )
   Rig(
     config: project_host.Config(
@@ -172,8 +174,20 @@ fn with_worker(rig: Rig) -> #(project_host.Handle, String) {
 }
 
 fn idle(handle: project_host.Handle, worker: String) -> Nil {
-  let assert Ok(Nil) =
-    project_host.report(handle, worker, tools.WorkerReport(tools.Waiting, None))
+  let assert poll.Answered(Nil) =
+    poll.until(within: 20_000, every: 25, attempt: fn() {
+      case
+        project_host.report(
+          handle,
+          worker,
+          tools.WorkerReport(tools.Waiting, None),
+        )
+      {
+        Ok(Nil) -> poll.Done(Nil)
+        Error(_) -> poll.Retry
+      }
+    })
+    as "the worker's session exists"
   Nil
 }
 
@@ -564,4 +578,288 @@ pub fn a_publish_that_cannot_happen_says_why_and_does_not_crash_test() {
   idle(handle, worker)
   assert board_says(handle, "no remote named origin")
   assert string.contains(board(handle), "\"stage\":\"person/review\"")
+}
+
+// --- a failed check is seen, and sends no worker after the environment ---------
+
+// The notes the check told a session, oldest first.
+fn notes(work: List(Work), session: String) -> List(String) {
+  list.filter_map(work, fn(each) {
+    case each {
+      Told(found, "check", text) if found == session -> Ok(text)
+      Told(..) | Read(_) | Checked(..) | Published(_) -> Error(Nil)
+    }
+  })
+}
+
+// The ticket's detail, as `projects.ticket` carries it.
+fn ticket_text(handle: project_host.Handle) -> String {
+  let assert Ok(detail) = project_host.ticket(handle, "t-a")
+    as "the ticket is known"
+  json.to_string(detail)
+}
+
+fn failing_with(status: Int, output: String) -> fn() -> Script {
+  fn() { Script(..script(), check: goalstate.Exited(status:), output:) }
+}
+
+fn with_template(policy: project_host.Policy) -> project_host.Policy {
+  project_host.Policy(..policy, setup: Some("make deps"))
+}
+
+// A failure the worker's commit could not have caused is on the ticket for a
+// person, with the check's own output, and the worker is never told of it.
+pub fn an_environment_failure_goes_to_a_person_and_not_to_the_worker_test() {
+  list.each(
+    [
+      #(127, "make: go: command not found"),
+      #(126, "bash: ./run: Permission denied"),
+      #(2, "exec: \"go\": executable file not found in $PATH"),
+    ],
+    fn(failure) {
+      let rig =
+        rig(
+          "environment",
+          policy(Some("make check"), project_settings.PublishPullRequest),
+          failing_with(failure.0, failure.1),
+        )
+      let #(handle, worker) = with_worker(rig)
+      idle(handle, worker)
+
+      assert board_says(handle, "\"stage\":\"person/check\"")
+      let work = seen(rig)
+      assert notes(work, worker) == []
+      assert publishes(work) == []
+
+      // The ticket carries what ran, what it printed and why nobody else has
+      // it, and lists the re-run as something a person can do.
+      let detail = ticket_text(handle)
+      assert string.contains(detail, "\"cause\":\"environment\"")
+      assert string.contains(detail, "\"handling\":\"person\"")
+      assert string.contains(detail, failure.1 |> json_escaped)
+      assert string.contains(detail, "\"command\":\"make check\"")
+      assert !string.contains(detail, "\"at_ms\":null")
+      assert string.contains(detail, "\"recheck\"")
+    },
+  )
+}
+
+fn json_escaped(text: String) -> String {
+  text
+  |> string.replace("\\", "\\\\")
+  |> string.replace("\"", "\\\"")
+}
+
+// A failure of the work goes back to the worker once, and when the worker comes
+// back with the same commit, nobody is left to handle it but a person.
+pub fn a_failing_test_goes_to_the_worker_and_then_to_a_person_test() {
+  let rig =
+    rig(
+      "test-failure",
+      policy(Some("make check"), project_settings.PublishPullRequest),
+      failing_with(1, "--- FAIL: TestSum"),
+    )
+  let #(handle, worker) = with_worker(rig)
+  idle(handle, worker)
+
+  // Sent back: the board says the worker has it, and asks nothing of a person.
+  assert board_says(handle, "\"outcome\":\"failed\"")
+  assert string.contains(board(handle), "\"stage\":\"working\"")
+  assert string.contains(ticket_text(handle), "\"handling\":\"worker\"")
+  let first = seen(rig)
+  assert checks(first) == ["aaaaaaa"]
+  assert list.length(notes(first, worker)) == 1
+
+  // It reports idle again with the commit unchanged. The same commit is not
+  // checked again, and the ticket now reads as a person's.
+  idle(handle, worker)
+  assert board_says(handle, "\"stage\":\"person/check\"")
+  let later = seen(rig)
+  assert checks(later) == []
+  assert notes(later, worker) == []
+  assert string.contains(ticket_text(handle), "\"recheck\"")
+}
+
+// The note says what the host knows about the environment, and nothing the
+// check printed is outside the fence.
+pub fn the_note_says_the_same_check_passed_on_the_clean_base_when_it_did_test() {
+  let rig =
+    rig(
+      "note-template",
+      with_template(policy(
+        Some("make check"),
+        project_settings.PublishPullRequest,
+      )),
+      failing_with(1, "FAIL"),
+    )
+  let #(handle, worker) = with_worker(rig)
+  idle(handle, worker)
+  assert board_says(handle, "\"outcome\":\"failed\"")
+  let assert [note] = notes(seen(rig), worker)
+  assert string.contains(
+    note,
+    "passed on the clean base at commit bbbbbbbbbbbb",
+  )
+  assert string.contains(note, "offline")
+  assert string.contains(note, "cannot fetch anything")
+  assert string.contains(note, "ask a person with a question")
+  assert string.contains(note, "Do not install tools")
+  assert string.contains(note, "```text\nFAIL\n```")
+}
+
+pub fn the_note_says_the_environment_was_not_proven_without_a_setup_test() {
+  let rig =
+    rig(
+      "note-bare",
+      policy(Some("make check"), project_settings.PublishPullRequest),
+      failing_with(1, "FAIL"),
+    )
+  let #(handle, worker) = with_worker(rig)
+  idle(handle, worker)
+  assert board_says(handle, "\"outcome\":\"failed\"")
+  let assert [note] = notes(seen(rig), worker)
+  assert string.contains(note, "never shown to pass on the clean base")
+  assert string.contains(note, "report it to a person")
+  assert !string.contains(note, "passed on the clean base")
+}
+
+// After three failing heads in a row the worker is no longer sent back, and the
+// fourth goes to a person.
+pub fn the_worker_is_sent_back_for_three_failing_heads_and_then_a_person_has_it_test() {
+  let #(read, write) = cell("c1")
+  let moving = fn() {
+    Script(
+      ..script(),
+      commit: read(),
+      check: goalstate.Exited(status: 1),
+      output: "FAIL " <> read(),
+    )
+  }
+  let rig =
+    rig(
+      "limit",
+      policy(Some("make check"), project_settings.PublishPullRequest),
+      moving,
+    )
+  let #(handle, worker) = with_worker(rig)
+  idle(handle, worker)
+  assert board_says(handle, "FAIL c1")
+
+  // Each new head fails and is told to the worker, up to three.
+  write("c2")
+  idle(handle, worker)
+  assert board_says(handle, "FAIL c2")
+  write("c3")
+  idle(handle, worker)
+  assert board_says(handle, "FAIL c3")
+  assert list.length(notes(seen(rig), worker)) == 3
+
+  // The fourth is the person's. No note goes out, and the ticket says so.
+  write("c4")
+  idle(handle, worker)
+  assert board_says(handle, "FAIL c4")
+  assert board_says(handle, "\"stage\":\"person/check\"")
+  assert notes(seen(rig), worker) == []
+}
+
+// A person's re-run checks the same commit again, and a pass then counts.
+pub fn a_person_may_run_the_check_again_on_the_same_commit_test() {
+  let #(read, write) = cell("make: go: command not found")
+  let mending = fn() {
+    let output = read()
+    Script(
+      ..script(),
+      check: case output {
+        "ok" -> goalstate.Exited(status: 0)
+        _ -> goalstate.Exited(status: 127)
+      },
+      output:,
+    )
+  }
+  let rig =
+    rig(
+      "recheck",
+      policy(Some("make check"), project_settings.PublishPullRequest),
+      mending,
+    )
+  let #(handle, worker) = with_worker(rig)
+  idle(handle, worker)
+  assert board_says(handle, "\"stage\":\"person/check\"")
+
+  // The person fixed the environment, then asks for the check again.
+  write("ok")
+  let assert Ok(Nil) = project_host.recheck(handle, "t-a", "owner")
+  assert board_says(handle, "https://example.test/o/r/pull/1")
+  assert checks(seen(rig)) == ["aaaaaaa", "aaaaaaa"]
+  assert string.contains(board(handle), "\"outcome\":\"passed\"")
+
+  // With nothing failed, there is nothing to run again, and the refusal says so.
+  let assert Error(refusal) = project_host.recheck(handle, "t-a", "owner")
+  assert string.contains(refusal, "no check to run again")
+}
+
+// Publishing past a failed check is the person's, and the project's setting
+// still decides whether anything leaves.
+pub fn a_person_publishes_past_a_failed_check_and_the_project_may_refuse_test() {
+  let off =
+    rig(
+      "publish-off",
+      policy(Some("make check"), project_settings.PublishOff),
+      failing_with(127, "make: go: command not found"),
+    )
+  let #(handle, worker) = with_worker(off)
+  idle(handle, worker)
+  assert board_says(handle, "\"stage\":\"person/check\"")
+  let assert Error(refusal) = project_host.publish(handle, "t-a", "owner")
+  assert string.contains(refusal, "publishing is off for this project")
+  assert publishes(seen(off)) == []
+}
+
+// A template whose base check has not passed cannot say whether a failure is
+// the commit's, so the commit is not run against it. The ticket says why it
+// waits, and the check runs when the template can vouch for it.
+pub fn a_check_waits_for_a_template_that_cannot_vouch_for_it_test() {
+  let rig =
+    rig(
+      "unproved",
+      with_template(policy(
+        Some("make check"),
+        project_settings.PublishPullRequest,
+      )),
+      script,
+    )
+  let #(first, worker) = with_worker(rig)
+  assert board_says(first, "work on a")
+
+  // The actor restarts under a changed check command, so the template built
+  // for the old one is not trusted, and its rebuild fails on the base.
+  let assert Ok(pid) = process.subject_owner(first.commands)
+  process.unlink(pid)
+  process.kill(pid)
+  process.sleep(50)
+  let ports =
+    project_host.Ports(..rig.config.ports(), build_template: fn(_) {
+      project_template.Failed(project_template.Failure(
+        project_template.BaseCheck,
+        "exit status 1",
+      ))
+    })
+  let changed =
+    project_host.Config(
+      ..rig.config,
+      policy: with_template(policy(
+        Some("make check2"),
+        project_settings.PublishPullRequest,
+      )),
+      ports: fn() { ports },
+    )
+  let assert Ok(handle) = project_host.start(changed) as "the actor restarts"
+  idle(handle, worker)
+
+  assert board_says(handle, "\"outcome\":\"waiting\"")
+  assert string.contains(
+    ticket_text(handle),
+    "the check is red on the clean base",
+  )
+  assert checks(seen(rig)) == []
 }

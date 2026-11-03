@@ -102,6 +102,9 @@ pub type Record {
     outcome: String,
     /// The bounded tail of what the check printed, or why it did not finish.
     detail: String,
+    /// When the check ran, in milliseconds since the epoch. Zero in a record
+    /// written before the time was kept, which a client reads as unknown.
+    at_ms: Int,
   )
 
   /// What a source's last pass left for a person to read: a rate limit's end,
@@ -323,7 +326,7 @@ fn record_json(record: Record) -> Json {
         #("ticket", json.string(ticket)),
         #("seq", json.int(seq)),
       ])
-    CheckRecorded(ticket:, commit:, command:, outcome:, detail:) ->
+    CheckRecorded(ticket:, commit:, command:, outcome:, detail:, at_ms:) ->
       json.object([
         #("host", json.string("check")),
         #("ticket", json.string(ticket)),
@@ -331,6 +334,7 @@ fn record_json(record: Record) -> Json {
         #("command", json.string(command)),
         #("outcome", json.string(outcome)),
         #("detail", json.string(detail)),
+        #("at_ms", json.int(at_ms)),
       ])
     Retention(dropped:) ->
       json.object([
@@ -429,12 +433,14 @@ fn host_decoder() -> decode.Decoder(Record) {
       use command <- decode.field("command", decode.string)
       use outcome <- decode.field("outcome", decode.string)
       use detail <- decode.field("detail", decode.string)
+      use at_ms <- decode.optional_field("at_ms", 0, decode.int)
       decode.success(CheckRecorded(
         ticket:,
         commit:,
         command:,
         outcome:,
         detail:,
+        at_ms:,
       ))
     }
     "retention" -> {
