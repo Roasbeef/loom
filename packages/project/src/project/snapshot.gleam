@@ -714,6 +714,8 @@ fn commit_decoder() -> Decoder(model.CommitId) {
   decode.map(decode.string, CommitId)
 }
 
+/// A failed check as the snapshot keeps it: the commit and digest, why it failed and
+/// whether the worker was sent back.
 fn rejected_json(rejected: model.Rejection) -> Json {
   json.object([
     #("commit", json.string(rejected.commit.value)),
@@ -723,6 +725,8 @@ fn rejected_json(rejected: model.Rejection) -> Json {
   ])
 }
 
+/// Reads a failed check. A snapshot written before the cause and the handling were
+/// kept reads as a test failure that a person has, which is what every rejection then was.
 fn rejected_decoder() -> Decoder(model.Rejection) {
   use commit <- decode.field("commit", commit_decoder())
   use digest <- decode.field("digest", decode.map(decode.string, CommandDigest))

@@ -420,23 +420,30 @@ pub fn requested(state: State, words: String) -> State {
 /// // project_screen.published(state)
 /// ```
 pub fn published(state: State) -> State {
+  // The words come from the check the page showed when the person asked, which
+  // the publish has not yet changed.
   let past = case state.page {
-    Reading(ticket:, ..) ->
-      case current(state, ticket) {
-        Some(board.Ticket(check: Some(check), ..)) ->
-          case check.outcome {
-            board.CheckPassed -> "Published. Its check had passed."
-            board.CheckFailed -> "Published past a failed check."
-            board.CheckOverridden
-            | board.CheckUnfinished
-            | board.CheckWaiting
-            | board.CheckUnknown(_) -> "Published without a passing check."
-          }
-        Some(_) | None -> "Published without a passing check."
-      }
+    Reading(ticket:, ..) -> published_words(current(state, ticket))
     Listing | Labelling(..) | Confirming(..) -> "Published."
   }
+
   State(..state, notice: past, poll: PollDue)
+}
+
+/// What a publish went past, for the ticket as the page showed it.
+fn published_words(shown: Option(board.Ticket)) -> String {
+  case shown {
+    Some(board.Ticket(check: Some(check), ..)) ->
+      case check.outcome {
+        board.CheckPassed -> "Published. Its check had passed."
+        board.CheckFailed -> "Published past a failed check."
+        board.CheckOverridden
+        | board.CheckUnfinished
+        | board.CheckWaiting
+        | board.CheckUnknown(_) -> "Published without a passing check."
+      }
+    Some(_) | None -> "Published without a passing check."
+  }
 }
 
 /// Records a failure the screen cannot act on, such as a lost connection.
@@ -1421,26 +1428,38 @@ const check_output_lines = 14
 /// long line takes more rows, and a long output keeps its end and says how much
 /// came before.
 fn check_lines(ticket: board.Ticket, width: Int, now_ms: Int) -> List(Drawn) {
+  // A ticket whose check has made nothing draws nothing.
   case ticket.check {
     None -> []
     Some(check) -> {
-      let appearance = case check.outcome {
-        board.CheckPassed | board.CheckOverridden -> theme.overlay_plain()
-        board.CheckFailed
-        | board.CheckUnfinished
-        | board.CheckWaiting
-        | board.CheckUnknown(_) -> theme.overlay_signal()
-      }
+      // The output is drawn under the sentence when the daemon recorded it.
       let output = case check.output {
         Some(shown) -> output_lines(shown, width)
         None -> []
       }
+
       list.flatten([
-        wrapped(board.check_words(check, now_ms), appearance, width),
+        wrapped(
+          board.check_words(check, now_ms),
+          check_appearance(check.outcome),
+          width,
+        ),
         output,
         [plain("", theme.overlay_plain())],
       ])
     }
+  }
+}
+
+/// A result that went well is drawn plainly, and anything else in the signal
+/// style, so a failure is not mistaken for a pass at a glance.
+fn check_appearance(outcome: board.CheckOutcome) -> style.Style {
+  case outcome {
+    board.CheckPassed | board.CheckOverridden -> theme.overlay_plain()
+    board.CheckFailed
+    | board.CheckUnfinished
+    | board.CheckWaiting
+    | board.CheckUnknown(_) -> theme.overlay_signal()
   }
 }
 
@@ -1450,6 +1469,8 @@ fn output_lines(output: String, width: Int) -> List(Drawn) {
   let lines = string.split(output, "\n")
   let omitted = list.length(lines) - check_output_lines
   let kept = list.drop(lines, int.max(0, omitted))
+
+  // A log longer than the page keeps its end and says how much came before.
   let note = case omitted > 0 {
     True -> [
       plain(
@@ -1459,6 +1480,7 @@ fn output_lines(output: String, width: Int) -> List(Drawn) {
     ]
     False -> []
   }
+
   list.append(
     note,
     wrapped(indented(string.join(kept, "\n")), theme.overlay_quiet(), width),

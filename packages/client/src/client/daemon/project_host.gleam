@@ -3035,6 +3035,8 @@ fn check_unrecorded(
 fn failure_cause(status: Int, output: String) -> model.FailureCause {
   let text = string.lowercase(output)
 
+  // Either the shell's own statuses or the words of a tool that was not found
+  // put the failure on the environment, and anything else on the work.
   case
     status == 126
     || status == 127
@@ -4144,6 +4146,8 @@ fn checked(
   outcome: String,
   extra: List(#(String, JsonValue)),
 ) -> JsonValue {
+  // The record of the run is shown only for the commit the word is about, so a
+  // result is never labelled with another commit's output.
   let ran = case dict.get(host.checks, ticket.id.value) {
     Ok(last) if last.commit == commit.value && last.outcome != "unfinished" -> [
       #("at_ms", case last.at_ms {
