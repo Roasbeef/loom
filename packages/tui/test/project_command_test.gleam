@@ -8,6 +8,7 @@ import gleam/list
 import gleam/string
 import session_view/project_board as board
 import tui
+import tui/daemon/protocol
 
 fn reply(fields: List(#(String, String))) -> json.JsonValue {
   json.Object(list.map(fields, fn(each) { #(each.0, json.String(each.1)) }))
@@ -264,4 +265,37 @@ pub fn the_board_line_carries_the_checks_account_test() {
     ])
   assert tui.project_reply_text(tui.ProjectBoard, board)
     == "person/check  t-a  fix a\n  The check failed at 0123456789ab. No worker is handling it."
+}
+
+// Every reply a ticket command can draw is one the terminal's decoder knows. A
+// reply it did not know came back as "unknown outcome", though the daemon had
+// taken the request; the first live run of a re-run found it.
+pub fn the_daemons_ticket_replies_all_decode_test() {
+  list.each(
+    [
+      "projects.stop",
+      "projects.close",
+      "projects.retry",
+      "projects.recheck",
+      "projects.publish",
+      "projects.answer",
+    ],
+    fn(event) {
+      let frame =
+        json.to_string(
+          json.Object([
+            #("v", json.Int(2)),
+            #("event", json.String(event)),
+            #("reply_to", json.Int(7)),
+            #("body", json.Object([#("ticket", json.String("t-a"))])),
+          ]),
+        )
+      assert protocol.decode(frame)
+        == Ok(protocol.Answer(
+          7,
+          event,
+          protocol.ProjectsReply(json.Object([#("ticket", json.String("t-a"))])),
+        ))
+    },
+  )
 }
