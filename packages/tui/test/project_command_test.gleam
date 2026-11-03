@@ -5,6 +5,7 @@
 
 import core/json
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/string
 import session_view/project_board as board
 import tui
@@ -19,7 +20,7 @@ fn ticket(stage: String, id: String, title: String) -> json.JsonValue {
 }
 
 pub fn the_three_subcommands_parse_test() {
-  assert tui.launch_project(["init"]) == Ok(tui.ProjectInit)
+  assert tui.launch_project(["init"]) == Ok(tui.ProjectInit(None, None))
   assert tui.launch_project(["board"]) == Ok(tui.ProjectBoard)
   assert tui.launch_project(["post", "fix the flaky test"])
     == Ok(tui.ProjectPost("fix the flaky test"))
@@ -27,7 +28,7 @@ pub fn the_three_subcommands_parse_test() {
 
 pub fn the_flags_every_local_command_takes_are_accepted_test() {
   assert tui.launch_project(["init", "--config", "loom.toml"])
-    == Ok(tui.ProjectInit)
+    == Ok(tui.ProjectInit(None, None))
   assert tui.launch_project(["post", "fix it", "--config", "loom.toml"])
     == Ok(tui.ProjectPost("fix it"))
 }
@@ -52,7 +53,7 @@ pub fn init_prints_the_project_and_its_router_test() {
       #("workspace", "/work/repo"),
       #("router_session", "01a1-router"),
     ])
-  assert tui.project_reply_text(tui.ProjectInit, created)
+  assert tui.project_reply_text(tui.ProjectInit(None, None), created)
     == "project p-1a2b3c ready for /work/repo; router session 01a1-router"
 }
 
