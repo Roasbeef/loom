@@ -31,10 +31,13 @@ pub fn view_json(project: String, view: View) -> JsonValue {
 
 /// One key of the settings.
 fn entry_json(entry: Entry) -> JsonValue {
+  // A key the project never changed has no author and no time, and says so
+  // with nulls instead of a zero.
   let #(by, at) = case entry.changed {
     Some(#(who, when)) -> #(json.String(who), json.Int(when))
     None -> #(json.Null, json.Null)
   }
+
   json.Object([
     #("key", json.String(project_overrides.key_word(entry.key))),
     #("value", json.Array(list.map(entry.values, json.String))),

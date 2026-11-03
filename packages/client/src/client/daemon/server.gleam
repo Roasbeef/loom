@@ -3684,6 +3684,8 @@ fn setting_change(
   change: protocol.SettingChange,
 ) -> Result(project_overrides.Change, String) {
   use key <- result.try(project_overrides.key_from_word(change.key))
+
+  // No words is a release, and words must pass the file's rules.
   case change.values {
     None -> Ok(project_overrides.Release(key))
     Some(words) ->

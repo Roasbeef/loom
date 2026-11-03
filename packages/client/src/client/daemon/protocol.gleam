@@ -792,10 +792,7 @@ fn decode_fields(
       text_field(fields, "project", 64) |> result.map(ProposeProject)
     "projects.set_settings" -> {
       use project <- result.try(text_field(fields, "project", 64))
-      use revision <- result.try(case list.key_find(fields, "revision") {
-        Ok(json.Int(revision)) if revision >= 0 -> Ok(revision)
-        _ -> Error("expected the nonnegative revision the settings reply gave")
-      })
+      use revision <- result.try(revision_field(fields))
       use changes <- result.try(setting_changes_field(fields))
       use publish_to <- result.map(optional_text_field(
         fields,
@@ -1215,29 +1212,57 @@ fn setting_changes_field(
   fields: List(#(String, JsonValue)),
 ) -> Result(List(SettingChange), String) {
   use value <- result.try(required(fields, "changes"))
+
+  // An array within the bound is judged item by item.
   case value {
-    json.Array(items) ->
-      case list.length(items) <= max_setting_changes {
-        True -> list.try_map(items, setting_change)
-        False -> Error("a settings request holds at most five changes")
-      }
+    json.Array(items) -> bounded_changes(items)
     _ -> Error("expected changes to be an array")
+  }
+}
+
+/// The settings revision a write read, echoed back. Only a nonnegative integer
+/// can be one the daemon sent.
+fn revision_field(fields: List(#(String, JsonValue))) -> Result(Int, String) {
+  // Anything else is refused, so a write that never read cannot pass.
+  case list.key_find(fields, "revision") {
+    Ok(json.Int(revision)) if revision >= 0 -> Ok(revision)
+    _ -> Error("expected the nonnegative revision the settings reply gave")
+  }
+}
+
+/// The items of a `changes` array, when there are no more than one for each
+/// key.
+fn bounded_changes(
+  items: List(JsonValue),
+) -> Result(List(SettingChange), String) {
+  case list.length(items) <= max_setting_changes {
+    True -> list.try_map(items, setting_change)
+    False -> Error("a settings request holds at most five changes")
   }
 }
 
 /// One `{key, value}` change.
 fn setting_change(item: JsonValue) -> Result(SettingChange, String) {
+  // Each change is an object, and its value is words or null.
   case item {
     json.Object(fields) -> {
       use key <- result.try(text_field(fields, "key", 64))
-      use values <- result.map(case list.key_find(fields, "value") {
-        Ok(json.Null) -> Ok(None)
-        Ok(json.Array(words)) -> setting_words(words) |> result.map(Some)
-        _ -> Error("expected value to be an array of text, or null")
-      })
+      use values <- result.map(setting_value(fields))
       SettingChange(key:, values:)
     }
     _ -> Error("expected each change to be an object")
+  }
+}
+
+/// The new value of a change: its words, or none for a release.
+fn setting_value(
+  fields: List(#(String, JsonValue)),
+) -> Result(Option(List(String)), String) {
+  // Null gives the key back to the file, and an array holds words.
+  case list.key_find(fields, "value") {
+    Ok(json.Null) -> Ok(None)
+    Ok(json.Array(words)) -> setting_words(words) |> result.map(Some)
+    _ -> Error("expected value to be an array of text, or null")
   }
 }
 

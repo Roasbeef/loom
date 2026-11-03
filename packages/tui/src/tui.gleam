@@ -1871,18 +1871,7 @@ fn parse_project(arguments: List(String)) -> Launch {
     }
     ["settings", ..flags] -> project_launch(flags, ProjectSettings)
     ["unset", key, ..flags] -> project_launch(flags, ProjectUnset(key))
-    ["set", key, ..rest] -> {
-      // The value is the words before the first flag, so a path list needs no
-      // quoting. `--publish-to` names the URL that turning publish on needs.
-      let #(url, rest) = take_flag(rest, "--publish-to")
-      let values =
-        list.take_while(rest, fn(each) { !string.starts_with(each, "--") })
-      let flags = list.drop(rest, list.length(values))
-      case values {
-        [] -> Invalid("set needs a value\n" <> project_usage())
-        _ -> project_launch(flags, ProjectSet(key, values, non_empty(url)))
-      }
-    }
+    ["set", key, ..rest] -> parse_project_set(key, rest)
     ["board", ..flags] ->
       case list.contains(flags, "--watch") {
         True -> watch_launch(list.filter(flags, fn(each) { each != "--watch" }))
@@ -1926,6 +1915,22 @@ fn parse_project(arguments: List(String)) -> Launch {
       )
     }
     _unknown -> Invalid(project_usage())
+  }
+}
+
+/// `loom project set <key> <value>...`. The value is the words before the first
+/// flag, so a list of paths needs no quoting, and `--publish-to` names the URL
+/// that turning publish on needs.
+fn parse_project_set(key: String, rest: List(String)) -> Launch {
+  let #(url, rest) = take_flag(rest, "--publish-to")
+  let values =
+    list.take_while(rest, fn(each) { !string.starts_with(each, "--") })
+  let flags = list.drop(rest, list.length(values))
+
+  // A key with no value is a mistake, not a release; `unset` releases.
+  case values {
+    [] -> Invalid("set needs a value\n" <> project_usage())
+    _ -> project_launch(flags, ProjectSet(key, values, non_empty(url)))
   }
 }
 
@@ -2423,15 +2428,18 @@ fn project_here(
   }
 }
 
-/// A string field of a reply, flattened to one line because the daemon's text
-/// is shown in a terminal. A missing or non-string field reads as empty.
+/// A flag's value, or none when the flag was not given and the value is
+/// empty.
 fn non_empty(text: String) -> Option(String) {
+  // An absent flag reads as the empty string.
   case text {
     "" -> None
     found -> Some(found)
   }
 }
 
+/// A string field of a reply, flattened to one line because the daemon's text
+/// is shown in a terminal. A missing or non-string field reads as empty.
 fn project_text(document: json.JsonValue, key: String) -> String {
   case document {
     json.Object(fields) ->

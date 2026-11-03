@@ -1595,6 +1595,9 @@ fn hold_setting(
 ) -> Host {
   let next = {
     use found <- result.try(project_overrides.key_from_word(key))
+
+    // No words is a release of the key. Words must pass the rules the file's
+    // values pass, since a line written by another build may not.
     case values {
       None -> Ok(#(found, project_overrides.without(host.held, found)))
       Some(words) ->
@@ -1689,22 +1692,7 @@ fn change_settings_now(
       let now = host.ports.now_ms()
       let written =
         list.try_fold(moving, host, fn(acc, change) {
-          let #(key, values) = case change {
-            project_overrides.Hold(override) -> {
-              let #(key, words) = project_overrides.words(override)
-              #(key, Some(words))
-            }
-            project_overrides.Release(key) -> #(key, None)
-          }
-          record(
-            acc,
-            project_records.SettingChanged(
-              key: project_overrides.key_word(key),
-              values:,
-              by:,
-              at_ms: now,
-            ),
-          )
+          record(acc, setting_record(change, by, now))
         })
 
       // A write the ledger refused part way leaves the changes before it in
@@ -1727,6 +1715,26 @@ fn change_settings_now(
       }
     }
   }
+}
+
+/// The ledger record of one change: the key and its new words, or no words
+/// for a key given back to the file.
+fn setting_record(change: Change, by: String, at_ms: Int) -> Record {
+  // A held value writes the words it was parsed from, and a release writes none.
+  let #(key, values) = case change {
+    project_overrides.Hold(override) -> {
+      let #(key, words) = project_overrides.words(override)
+      #(key, Some(words))
+    }
+    project_overrides.Release(key) -> #(key, None)
+  }
+
+  project_records.SettingChanged(
+    key: project_overrides.key_word(key),
+    values:,
+    by:,
+    at_ms:,
+  )
 }
 
 /// Whether a change would alter what the project holds.

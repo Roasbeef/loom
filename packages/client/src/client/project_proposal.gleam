@@ -20,7 +20,7 @@
 ////
 //// ## Flow
 ////
-//// `read` → `propose` → `Proposal`
+//// `read` → `propose` → `make_targets` → `valid_target`
 ////
 //// 1. `read` loads the marker files that exist as regular files within the
 ////    size bound, and records those it refused and why.
@@ -200,6 +200,8 @@ fn from_manifests(files: Dict(String, String), want: Want) -> Option(Proposal) {
   ])
 }
 
+/// A Go module: `go.mod` is the whole evidence, and the commands are the
+/// toolchain's own download and test.
 fn go_module(files: Dict(String, String), want: Want) -> Option(Proposal) {
   case dict.has_key(files, "go.mod"), want {
     True, Setup -> Some(Proposal("go mod download", "go.mod"))
@@ -208,6 +210,7 @@ fn go_module(files: Dict(String, String), want: Want) -> Option(Proposal) {
   }
 }
 
+/// A Gleam project: `gleam.toml` is the whole evidence.
 fn gleam_project(files: Dict(String, String), want: Want) -> Option(Proposal) {
   case dict.has_key(files, "gleam.toml"), want {
     True, Setup -> Some(Proposal("gleam deps download", "gleam.toml"))
@@ -216,6 +219,8 @@ fn gleam_project(files: Dict(String, String), want: Want) -> Option(Proposal) {
   }
 }
 
+/// A Rust crate. The check runs offline, so it says so: `cargo test` would
+/// otherwise try to reach the registry for an index it already fetched.
 fn cargo_crate(files: Dict(String, String), want: Want) -> Option(Proposal) {
   case dict.has_key(files, "Cargo.toml"), want {
     True, Setup -> Some(Proposal("cargo fetch", "Cargo.toml"))
@@ -244,7 +249,10 @@ fn node_package(files: Dict(String, String), want: Want) -> Option(Proposal) {
   }
 }
 
+/// The installer a Node package's lock file chooses. A lock file means the
+/// versions are fixed, so the installer is told not to move them.
 fn node_install(files: Dict(String, String)) -> Proposal {
+  // The first lock file present wins, and no lock file means a plain install.
   case
     dict.has_key(files, "pnpm-lock.yaml"),
     dict.has_key(files, "yarn.lock"),
@@ -281,6 +289,8 @@ fn python_project(files: Dict(String, String), want: Want) -> Option(Proposal) {
 fn script_names(text: String) -> List(String) {
   let decoder =
     decode.at(["scripts"], decode.dict(decode.string, decode.dynamic))
+
+  // Text that is not an object with a `scripts` object names no script.
   case json.parse(text, decoder) {
     Ok(scripts) -> dict.keys(scripts)
     Error(_) -> []
@@ -343,6 +353,8 @@ fn target_names(line: String) -> List(String) {
 /// ```
 pub fn valid_target(name: String) -> Bool {
   let letters = string.to_graphemes(name)
+
+  // The first letter opens a name, and the rest are bounded and plain.
   case letters {
     [first, ..rest] ->
       is_lower(first)

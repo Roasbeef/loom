@@ -313,6 +313,9 @@ pub fn effective(file: Values, held: Overrides) -> Values {
 /// ```
 pub fn source_of(file: Values, held: Overrides, key: Key) -> Source {
   let defaults = file_values(project_settings.defaults)
+
+  // For the key asked about: whether the project holds it, and whether the
+  // file sets it to something other than the default.
   let #(own, file_differs) = case key {
     CheckKey -> #(option.is_some(held.check), file.check != defaults.check)
     SetupKey -> #(option.is_some(held.setup), file.setup != defaults.setup)

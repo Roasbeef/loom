@@ -134,6 +134,9 @@ pub fn decode_proposed(value: JsonValue) -> Result(Proposed, String) {
   }
 }
 
+/// The settings of a reply object. A reply with no project, no revision or no
+/// rows is not settings, because a write needs the revision and a page needs
+/// the rows, and neither is guessed.
 fn settings_of(fields: List(#(String, JsonValue))) -> Result(Settings, String) {
   use project <- result.try(
     text_in(fields, "project")
@@ -143,10 +146,7 @@ fn settings_of(fields: List(#(String, JsonValue))) -> Result(Settings, String) {
     int_in(fields, "revision")
     |> option.to_result("the settings carried no revision"),
   )
-  use rows <- result.map(case list.key_find(fields, "settings") {
-    Ok(json.Array(rows)) -> Ok(rows)
-    _ -> Error("the settings carried no keys")
-  })
+  use rows <- result.map(rows_of(fields))
   Settings(
     project: text_hygiene.single_line(project),
     revision:,
@@ -156,8 +156,20 @@ fn settings_of(fields: List(#(String, JsonValue))) -> Result(Settings, String) {
   )
 }
 
+/// The rows of the `settings` array.
+fn rows_of(
+  fields: List(#(String, JsonValue)),
+) -> Result(List(JsonValue), String) {
+  // Only an array carries rows.
+  case list.key_find(fields, "settings") {
+    Ok(json.Array(rows)) -> Ok(rows)
+    _ -> Error("the settings carried no keys")
+  }
+}
+
 /// One key's row, or nothing for a row with no usable key.
 fn setting_of(row: JsonValue) -> Result(Setting, Nil) {
+  // A row is an object, and it needs a key to be addressed.
   case row {
     json.Object(fields) -> {
       use key <- result.map(option.to_result(text_in(fields, "key"), Nil))
@@ -261,11 +273,19 @@ pub fn lines(settings: Settings) -> List(String) {
       <> changed_words(setting)
       <> ")"
     })
-  let url = case settings.publish_url {
+  list.append(rows, [
+    publish_words(settings.publish_url),
+    "revision " <> int.to_string(settings.revision),
+  ])
+}
+
+/// The line that says where publishing would go.
+fn publish_words(url: Option(String)) -> String {
+  // A project with no remote has nowhere to publish.
+  case url {
     Some(found) -> "publish would go to " <> found
     None -> "this project has no remote to publish to"
   }
-  list.append(rows, [url, "revision " <> int.to_string(settings.revision)])
 }
 
 fn changed_words(setting: Setting) -> String {
@@ -291,7 +311,10 @@ pub fn proposal_lines(proposed: Proposed) -> List(String) {
   ])
 }
 
+/// One key's line of a proposal: the command and why, or that nothing
+/// suggested one.
 fn suggestion_line(key: String, found: Option(Suggestion)) -> String {
+  // Only a key the daemon proposed for has a command to show.
   case found {
     Some(suggestion) ->
       key <> " = " <> suggestion.command <> "  (" <> suggestion.because <> ")"
