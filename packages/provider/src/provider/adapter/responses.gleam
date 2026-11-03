@@ -22,12 +22,13 @@
 //// 5. `dispatch` gives every supported event its own transition: `add_item`,
 ////    `add_part`, `change_part`, `close_part`, `add_annotation`, `arguments`
 ////    and `close_item`; an unknown event goes to `malformed`.
-//// 6. `close_item` checks the finished item with `verify_item` against the
-////    provider's canonical copy.
+//// 6. `close_item` reconciles reasoning parts with `reconcile_and_verify_item`
+////    and checks the finished item with `verify_item` against the provider's
+////    canonical copy.
 //// 7. `terminal` compares the final response with every item witnessed so
 ////    far, maps the status to a stop reason, and `settle` builds the one
-////    assistant message. `fail` and `malformed` move the machine to
-////    `Terminal` so only one terminal event ever escapes.
+////    assistant message with `order_blocks`. `fail` and `malformed` move the
+////    machine to `Terminal` so only one terminal event ever escapes.
 
 import core/accounting
 import core/corruption
@@ -1268,8 +1269,9 @@ fn part_text(value: JsonValue, kind: PartKind) -> String {
   )
 }
 
-// A text-done event compares exact bytes and emits nothing. Only an open part
-// accepts deltas, so duplicate completion cannot append content twice.
+// A text-done event compares exact bytes for assistant messages and accepts
+// suffix snapshots for reasoning parts. Only an open part accepts deltas, so
+// duplicate completion cannot append content twice.
 /// Updates content part text or marks part as text-done.
 fn change_part(
   acc: Accumulator,
@@ -1279,46 +1281,37 @@ fn change_part(
   use item <- or_malformed(find_item(acc, value), acc, "text_item")
   use index <- or_malformed(part_index(event, value), acc, "text_index")
 
-  // Find the matching open part in the active output item.
+  // Find the matching open part or initialize the next contiguous summary part.
   let kind = event_part_kind(event)
-  use part <- or_malformed(
-    list.find(item.parts, fn(part) {
-      part.index == index && part.kind == kind && part.closure == Open
-    }),
+  use #(acc, item, part) <- or_malformed(
+    open_text_part(acc, item, kind, index),
     acc,
     "text_part",
   )
 
-  // Check whether this event completes the active text part.
-  let done =
-    list.contains(
-      [
-        "response.output_text.done",
-        "response.refusal.done",
-        "response.reasoning_summary_text.done",
-        "response.reasoning_text.done",
-      ],
-      event,
-    )
+  // Determine whether this event appends a delta or completes the text part.
+  let closure = case event {
+    "response.output_text.done"
+    | "response.refusal.done"
+    | "response.reasoning_summary_text.done"
+    | "response.reasoning_text.done" -> TextDone
+    _ -> Open
+  }
+
   use text <- or_malformed(
-    wire.string_field(value, case done, kind {
-      False, _ -> "delta"
-      True, Refusal -> "refusal"
-      True, _ -> "text"
+    wire.string_field(value, case closure, kind {
+      Open, _ -> "delta"
+      _, Refusal -> "refusal"
+      _, _ -> "text"
     }),
     acc,
     "text_field",
   )
-  use <- bool.lazy_guard(done && text != part.text, fn() {
-    malformed(acc, "text_done_witness")
-  })
-
-  // Update the matched part and reassemble the parent item.
-  let next = case done {
-    True -> Part(..part, closure: TextDone)
-    False -> Part(..part, text: part.text <> text)
-  }
-
+  use #(next, events) <- or_malformed(
+    apply_part_text(part, kind, text, closure),
+    acc,
+    "text_done_witness",
+  )
   let item =
     Item(
       ..item,
@@ -1329,19 +1322,99 @@ fn change_part(
         }
       }),
     )
-
-  // Emit text or thinking delta if not done.
-  let events = case done, kind {
-    True, _ -> []
-    False, OutputText | False, Refusal -> [
-      stream.Delta(stream.TextDelta(part.block, text)),
-    ]
-    False, Summary | False, Reasoning -> [
-      stream.Delta(stream.ThinkingDelta(part.block, text)),
-    ]
-  }
-
   #(replace(acc, item), events)
+}
+
+// Sequential-cutoff reasoning summaries can emit summary text events without a
+// preceding reasoning_summary_part.added frame when the index appends in order.
+/// Finds an existing open part or allocates the next contiguous summary part.
+fn open_text_part(
+  acc: Accumulator,
+  item: Item,
+  kind: PartKind,
+  index: Int,
+) -> Result(#(Accumulator, Item, Part), Nil) {
+  // Reuse an already opened part when present in the active item.
+  case
+    list.find(item.parts, fn(part) {
+      part.index == index && part.kind == kind && part.closure == Open
+    })
+  {
+    Ok(part) -> Ok(#(acc, item, part))
+    Error(Nil) -> {
+      let namespace_count =
+        list.count(item.parts, fn(part) { part.kind == kind })
+      use <- bool.guard(
+        item.kind != Thought
+          || index != namespace_count
+          || !list.all(item.parts, fn(part) {
+          part.kind != kind || part.index < index
+        }),
+        Error(Nil),
+      )
+      let part =
+        Part(
+          index:,
+          block: acc.next_block,
+          kind:,
+          text: "",
+          annotations: [],
+          closure: Open,
+        )
+      let item = Item(..item, parts: [part, ..item.parts])
+      Ok(#(
+        Accumulator(..replace(acc, item), next_block: acc.next_block + 1),
+        item,
+        part,
+      ))
+    }
+  }
+}
+
+// Reasoning text-done events can deliver the first snapshot or a final suffix,
+// while assistant message parts still require exact byte agreement with deltas.
+/// Applies a text delta or validates and closes a text-done witness.
+fn apply_part_text(
+  part: Part,
+  kind: PartKind,
+  text: String,
+  closure: Closure,
+) -> Result(#(Part, List(StreamEvent)), Nil) {
+  // Handle delta append or done witness verification by part kind.
+  case closure, kind {
+    Open, OutputText | Open, Refusal ->
+      Ok(
+        #(Part(..part, text: part.text <> text), [
+          stream.Delta(stream.TextDelta(part.block, text)),
+        ]),
+      )
+    Open, Summary | Open, Reasoning ->
+      Ok(
+        #(Part(..part, text: part.text <> text), [
+          stream.Delta(stream.ThinkingDelta(part.block, text)),
+        ]),
+      )
+    _, OutputText | _, Refusal -> {
+      use <- bool.guard(text != part.text, Error(Nil))
+      Ok(#(Part(..part, closure: TextDone), []))
+    }
+    _, Summary | _, Reasoning -> {
+      use <- bool.guard(!string.starts_with(text, part.text), Error(Nil))
+      let suffix = string.remove_prefix(text, part.text)
+      Ok(#(
+        Part(..part, text:, closure: TextDone),
+        thinking_delta(part.block, suffix),
+      ))
+    }
+  }
+}
+
+/// Emits a thinking delta only when the reconciled suffix is non-empty.
+fn thinking_delta(block: Int, text: String) -> List(StreamEvent) {
+  case text {
+    "" -> []
+    _ -> [stream.Delta(stream.ThinkingDelta(block, text))]
+  }
 }
 
 /// Encodes a Part record into its wire JSON representation.
@@ -1388,10 +1461,8 @@ fn close_part(
       != { event == "response.reasoning_summary_part.done" },
     fn() { malformed(acc, "part_done_namespace") },
   )
-  use part <- or_malformed(
-    list.find(item.parts, fn(part) {
-      part.index == index && part.closure == TextDone && part_value(part) == raw
-    }),
+  use #(acc, item, closed, events) <- or_malformed(
+    close_matching_part(acc, item, index, raw),
     acc,
     "part_done_witness",
   )
@@ -1401,15 +1472,63 @@ fn close_part(
       Item(
         ..item,
         parts: list.map(item.parts, fn(old) {
-          case old.block == part.block {
-            True -> Part(..old, closure: Closed)
+          case old.block == closed.block {
+            True -> closed
             False -> old
           }
         }),
       ),
     ),
-    [],
+    events,
   )
+}
+
+// Reasoning parts can close directly from Open when the provider omits the
+// intermediate text-done event, provided the final part extends streamed bytes.
+/// Finds and closes the matching part against its canonical part witness.
+fn close_matching_part(
+  acc: Accumulator,
+  item: Item,
+  index: Int,
+  raw: JsonValue,
+) -> Result(#(Accumulator, Item, Part, List(StreamEvent)), Nil) {
+  let is_summary = wire.string_field(raw, "type") == Ok("summary_text")
+  let existing =
+    list.find(item.parts, fn(part) {
+      part.index == index
+      && { part.kind == Summary } == is_summary
+      && part.closure != Closed
+    })
+  use #(acc, item, part) <- result.try(
+    result.lazy_or(result.map(existing, fn(part) { #(acc, item, part) }), fn() {
+      // Select the reasoning part namespace from the canonical part type.
+      let kind = case is_summary {
+        True -> Summary
+        False -> Reasoning
+      }
+
+      open_text_part(acc, item, kind, index)
+    }),
+  )
+
+  // Verify exact text-done agreement or reconcile an open reasoning part.
+  case part.closure, item.kind {
+    TextDone, _ -> {
+      use <- bool.guard(part_value(part) != raw, Error(Nil))
+      Ok(#(acc, item, Part(..part, closure: Closed), []))
+    }
+    Open, Thought -> {
+      let target = part_text(raw, part.kind)
+      let candidate = Part(..part, text: target, closure: Closed)
+      use <- bool.guard(
+        !string.starts_with(target, part.text) || part_value(candidate) != raw,
+        Error(Nil),
+      )
+      let suffix = string.remove_prefix(target, part.text)
+      Ok(#(acc, item, candidate, thinking_delta(part.block, suffix)))
+    }
+    _, _ -> Error(Nil)
+  }
 }
 
 // An annotation is a bounded replay field, not a new text delta. Its index
@@ -1591,8 +1710,8 @@ fn close_item(
     acc,
     "item_done_lookup",
   )
-  use Nil <- or_item_validation(
-    verify_item(item, canonical),
+  use #(acc, item, events) <- or_item_validation(
+    reconcile_and_verify_item(acc, item, canonical),
     acc,
     item,
     canonical,
@@ -1609,8 +1728,209 @@ fn close_item(
       ..replace(acc, Item(..item, done: Some(canonical), empty_block:)),
       next_block:,
     ),
-    [],
+    events,
   )
+}
+
+// Reasoning summaries are generated concurrently and may omit part-done events
+// or drop an unfinished summary section when the reasoning item completes.
+/// Reconciles reasoning parts when needed and verifies completed item witnesses.
+fn reconcile_and_verify_item(
+  acc: Accumulator,
+  item: Item,
+  canonical: JsonValue,
+) -> Result(#(Accumulator, Item, List(StreamEvent)), ItemValidationError) {
+  // Reconcile unclosed reasoning parts before checking final item equality.
+  case item.kind {
+    Thought -> {
+      use #(acc, item, events) <- result.try(reconcile_thought_item(
+        acc,
+        item,
+        canonical,
+      ))
+      use Nil <- result.map(verify_item(item, canonical))
+      #(acc, item, events)
+    }
+    Message | Function(..) -> {
+      use Nil <- result.map(verify_item(item, canonical))
+      #(acc, item, [])
+    }
+  }
+}
+
+/// Reconciles a reasoning item's summary and content parts against canonical output.
+fn reconcile_thought_item(
+  acc: Accumulator,
+  item: Item,
+  canonical: JsonValue,
+) -> Result(#(Accumulator, Item, List(StreamEvent)), ItemValidationError) {
+  use <- bool.guard(
+    wire.string_field(canonical, "status") == Ok("in_progress"),
+    Error(InvalidItem("item_status_in_progress")),
+  )
+  let parts = list.sort(item.parts, fn(a, b) { int.compare(a.index, b.index) })
+  let summary = list.filter(parts, fn(part) { part.kind == Summary })
+  let content = list.filter(parts, fn(part) { part.kind != Summary })
+  use <- bool.guard(
+    !contiguous(summary) || !contiguous(content),
+    Error(InvalidItem("item_parts_noncontiguous")),
+  )
+  use <- bool.guard(
+    wire.string_field(canonical, "type") != Ok("reasoning"),
+    Error(InvalidItem("item_reasoning_mismatch")),
+  )
+  let canonical_summary =
+    result.unwrap(wire.array_field(canonical, "summary"), [])
+  let canonical_content =
+    result.unwrap(wire.array_field(canonical, "content"), [])
+  use #(summary_parts, summary_events, next_block) <- result.try(
+    reconcile_thought_parts(
+      summary,
+      canonical_summary,
+      Summary,
+      0,
+      acc.next_block,
+    )
+    |> result.replace_error(InvalidItem("item_reasoning_mismatch")),
+  )
+  use #(content_parts, content_events, next_block) <- result.map(
+    reconcile_thought_parts(
+      content,
+      canonical_content,
+      Reasoning,
+      0,
+      next_block,
+    )
+    |> result.replace_error(InvalidItem("item_reasoning_mismatch")),
+  )
+  #(
+    Accumulator(..acc, next_block:),
+    Item(..item, parts: list.append(summary_parts, content_parts)),
+    list.append(summary_events, content_events),
+  )
+}
+
+/// Reconciles streamed reasoning or summary parts with canonical item parts.
+fn reconcile_thought_parts(
+  streamed: List(Part),
+  canonical: List(JsonValue),
+  kind: PartKind,
+  index: Int,
+  next_block: Int,
+) -> Result(#(List(Part), List(StreamEvent), Int), Nil) {
+  // Match remaining streamed and canonical parts in index order.
+  case streamed, canonical {
+    [], [] -> Ok(#([], [], next_block))
+    [], [raw, ..rest_canonical] ->
+      append_canonical_thought_part(
+        raw,
+        rest_canonical,
+        kind,
+        index,
+        next_block,
+      )
+    [part, ..rest_streamed], [] -> {
+      use <- bool.guard(part.closure != Open, Error(Nil))
+      reconcile_thought_parts(rest_streamed, [], kind, index, next_block)
+    }
+    [part, ..rest_streamed], [raw, ..rest_canonical] ->
+      reconcile_thought_pair(
+        part,
+        rest_streamed,
+        raw,
+        rest_canonical,
+        kind,
+        index,
+        next_block,
+      )
+  }
+}
+
+/// Allocates a closed part for a canonical reasoning block with no part-added event.
+fn append_canonical_thought_part(
+  raw: JsonValue,
+  rest_canonical: List(JsonValue),
+  kind: PartKind,
+  index: Int,
+  next_block: Int,
+) -> Result(#(List(Part), List(StreamEvent), Int), Nil) {
+  let target = part_text(raw, kind)
+  let part =
+    Part(
+      index:,
+      block: next_block,
+      kind:,
+      text: target,
+      annotations: [],
+      closure: Closed,
+    )
+  use <- bool.guard(part_value(part) != raw, Error(Nil))
+  use #(tail_parts, tail_events, final_block) <- result.map(
+    reconcile_thought_parts([], rest_canonical, kind, index + 1, next_block + 1),
+  )
+  #(
+    [part, ..tail_parts],
+    list.append(thinking_delta(next_block, target), tail_events),
+    final_block,
+  )
+}
+
+/// Reconciles one streamed reasoning part against the current canonical part.
+fn reconcile_thought_pair(
+  part: Part,
+  rest_streamed: List(Part),
+  raw: JsonValue,
+  rest_canonical: List(JsonValue),
+  kind: PartKind,
+  index: Int,
+  next_block: Int,
+) -> Result(#(List(Part), List(StreamEvent), Int), Nil) {
+  // Closed witnesses must match verbatim; open parts must be a prefix of the
+  // canonical part at the same index.
+  case part.closure {
+    Closed | TextDone -> {
+      let candidate = Part(..part, closure: Closed)
+      use <- bool.guard(
+        part.index != index || part_value(candidate) != raw,
+        Error(Nil),
+      )
+      use #(tail_parts, tail_events, final_block) <- result.map(
+        reconcile_thought_parts(
+          rest_streamed,
+          rest_canonical,
+          kind,
+          index + 1,
+          next_block,
+        ),
+      )
+      #([candidate, ..tail_parts], tail_events, final_block)
+    }
+    Open -> {
+      let target = part_text(raw, kind)
+      let candidate = Part(..part, text: target, closure: Closed)
+      use <- bool.guard(
+        part.index != index
+          || !string.starts_with(target, part.text)
+          || part_value(candidate) != raw,
+        Error(Nil),
+      )
+      let suffix = string.remove_prefix(target, part.text)
+      use #(tail_parts, tail_events, final_block) <- result.map(
+        reconcile_thought_parts(
+          rest_streamed,
+          rest_canonical,
+          kind,
+          index + 1,
+          next_block,
+        ),
+      )
+      #(
+        [candidate, ..tail_parts],
+        list.append(thinking_delta(part.block, suffix), tail_events),
+        final_block,
+      )
+    }
+  }
 }
 
 // Part arrays are indexed arrays, not sparse maps. Summary and content arrays
@@ -1688,15 +2008,15 @@ fn verify_item_rest(item: Item, canonical: JsonValue) -> Result(Nil, String) {
 
 /// Preserves the validation variant without inspecting a diagnostic string.
 fn or_item_validation(
-  value: Result(Nil, ItemValidationError),
+  value: Result(a, ItemValidationError),
   acc: Accumulator,
   item: Item,
   canonical: JsonValue,
-  then: fn(Nil) -> #(Accumulator, List(StreamEvent)),
+  then: fn(a) -> #(Accumulator, List(StreamEvent)),
 ) -> #(Accumulator, List(StreamEvent)) {
   // Only the missing part witness selects the bounded recovery class.
   case value {
-    Ok(Nil) -> then(Nil)
+    Ok(result) -> then(result)
     Error(InvalidItem(reason)) -> malformed(acc, reason)
     Error(UnclosedParts) -> {
       let open = list.filter(item.parts, fn(part) { part.closure != Closed })
@@ -1971,11 +2291,8 @@ fn settle(
   }
 
   let ordered = list.sort(acc.items, fn(a, b) { int.compare(a.index, b.index) })
-  let order = list.flat_map(ordered, block_order)
-  let content =
-    list.zip(order, items.blocks(output))
-    |> list.sort(fn(a, b) { int.compare(a.0, b.0) })
-    |> list.map(fn(pair) { pair.1 })
+  let #(content, order) =
+    order_blocks(list.flat_map(ordered, block_order), items.blocks(output))
   let diagnostics =
     json.Object([
       #(
@@ -2056,6 +2373,26 @@ fn returned_access(response: JsonValue) -> List(#(String, JsonValue)) {
 // Wire output order and delta arrival order can differ under interleaving.
 // This permutation keeps durable block indices equal to the emitted indices,
 // while the compact replay template restores the provider's own item order.
+/// Orders durable assistant blocks by delta index and normalizes replay ranks.
+fn order_blocks(
+  order: List(Int),
+  blocks: List(message.AssistantBlock),
+) -> #(List(message.AssistantBlock), List(Int)) {
+  let sorted =
+    list.zip(order, blocks)
+    |> list.index_map(fn(pair, provider_index) {
+      #(pair.0, provider_index, pair.1)
+    })
+    |> list.sort(fn(left, right) { int.compare(left.0, right.0) })
+  let content = list.map(sorted, fn(entry) { entry.2 })
+  let dense_order =
+    sorted
+    |> list.index_map(fn(entry, content_index) { #(entry.1, content_index) })
+    |> list.sort(fn(left, right) { int.compare(left.0, right.0) })
+    |> list.map(fn(pair) { pair.1 })
+  #(content, dense_order)
+}
+
 /// Returns the emitted block indices for a completed item.
 fn block_order(item: Item) -> List(Int) {
   let parts = list.sort(item.parts, fn(a, b) { int.compare(a.index, b.index) })

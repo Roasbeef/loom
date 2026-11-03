@@ -76,7 +76,14 @@ when it extends the bytes already streamed. It emits the missing suffix once,
 including the full argument string when no deltas arrived, then records the
 text closure. Item identity, canonical item closure and terminal output still
 must agree before settlement. Conflicting or shortened snapshots still fail
-with `arguments_done_witness`.
+with `arguments_done_witness`. Reasoning summary and content parts follow the
+same prefix-extension rule across `change_part`, `close_part` and `close_item`:
+when the provider omits intermediate `.done` events, delivers sequential-cutoff
+summary completions, or drops an unfinished open summary section at item
+completion, `reconcile_thought_item` reconciles open parts against the canonical
+reasoning item, emits any missing thinking suffix once, and `order_blocks`
+normalizes surviving block ranks for replay while still rejecting conflicting or
+dropped closed witnesses.
 
 A settled message keeps the requested alias in `model` and the served model
 in `response_model`. Nonempty `openai-model` headers of at most 256 bytes take
