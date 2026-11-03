@@ -62,6 +62,10 @@ pub type Request {
     /// The commit the template stands at now, if there is a usable one. A
     /// build whose base is that commit does nothing.
     current: Option(String),
+    /// The `git-cow` binary the project's copies will be made with, or none
+    /// when copies are plain. A tree it refuses fails the build as a setup
+    /// failure, so the refusal is on the board when the template is built.
+    copier: Option(String),
   )
 }
 
@@ -166,6 +170,7 @@ fn build_to_swap(
       use Nil <- result.try(run_setup(trees, tree, request))
       use Nil <- result.try(run_check(trees, tree, request))
       use Nil <- result.try(seal(trees, tree))
+      use Nil <- result.try(try_copy(trees, layout, request))
       use Nil <- result.map(
         project_repo.swap_template(trees, layout) |> result.map_error(cutting),
       )
@@ -243,6 +248,24 @@ fn verdict(done: goalstate.CheckResult, stage: Stage) -> Result(Nil, Outcome) {
           "did not finish: " <> reason <> "\n" <> tail(done.output),
         )),
       )
+  }
+}
+
+// Copies the built tree once to a scratch name with the copier the project's
+// workers will use, and removes the copy. The copier's refusal of the tree is
+// the owner's to see now, as a setup failure: what setup left in the tree is
+// what the copier does not accept, and the build ends before the swap, so the
+// last good template stays in place.
+fn try_copy(
+  trees: Worktrees,
+  layout: Layout,
+  request: Request,
+) -> Result(Nil, Outcome) {
+  case request.copier {
+    None -> Ok(Nil)
+    Some(program) ->
+      project_repo.probe_copy(trees, layout, program)
+      |> result.map_error(fn(why) { Failed(Failure(Setup, tail(why))) })
   }
 }
 
