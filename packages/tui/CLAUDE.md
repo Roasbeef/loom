@@ -2907,7 +2907,12 @@ chain does not grow), `finish` and `act`. The reads and the answer run as
 `job.ReadProjectBoard`, `job.ReadProjectTicket` and `job.ChangeProject` in the
 terminal's one control-job slot (`tui/project_jobs` runs them). The board's
 ordering, stage words, ages and the mandate sentence come from
-`session_view/project_board`, which the web view uses too.
+`session_view/project_board`, which the web view uses too. A ticket page draws the check's
+sentence and its output as wrapped text, the tail only with a count of the lines left out.
+On a ticket page `k` runs the check again, `P` publishes (the notice says when that went past a
+failed check) and `x` stops, each only when the daemon lists the action. `job.RetryTicket`,
+`RecheckTicket`, `PublishTicket` and `StopTicket` carry the daemon's sentence in a refusal, where an
+answer and a close carry its code (`project_jobs.refusal`).
 
 Four things break if changed carelessly.
 
@@ -3865,7 +3870,9 @@ line cells), `draw` (flowcharts) and `sequence`.
 `init`, `post <text>` and `board` for the repository in the working directory. They share
 one `ProjectsCommand`/`ProjectsReply` pair in `tui/daemon/protocol` and
 `daemon_selection.projects`, and the subcommand finds its project in `projects.list` by
-workspace. The wire forms are `docs/client-protocol.md` section 3.32. `launch_project`
+workspace. `publish`, `retry`, `recheck`, `close`, `stop` (each `<ticket>`) and `answer <ticket> <text>`
+act on one ticket by the id `board` prints; the ticket is read first, for the open question's `seq` and
+so that `publish_text` can say what check a publish went past. The wire forms are `docs/client-protocol.md` section 3.32. `launch_project`
 is the parser's test seam and `project_reply_text` builds what each subcommand prints
 from the reply alone, both `@internal` and tested in `project_command_test` without a
 daemon.

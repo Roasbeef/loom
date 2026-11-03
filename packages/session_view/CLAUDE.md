@@ -1199,6 +1199,9 @@ and count it in `Board.unreadable`, and pass every string through
 `text_hygiene` once. `ordered` puts needs-a-person stages first, by urgency and
 then newest first, and does not depend on the order the daemon sent. `groups`,
 `health_words`, `age_words` (an absent time is `?`, never zero),
-`mandate_words` and `answer_refusal_words` are the sentences. `command.Surface`
+`mandate_words` and `answer_refusal_words` are the sentences. A ticket carries the daemon's
+`check` as a `Check` (commit, `CheckOutcome`, time, command, output, cause, who has it, note),
+with the output made safe as several lines; `check_words` and `check_words_untimed` are its
+sentence, and `person/check` and the `recheck` action are known words. `command.Surface`
 has a `Project` variant for `/project`; the terminal opens its board screen for
 it.

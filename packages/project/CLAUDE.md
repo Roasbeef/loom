@@ -145,6 +145,22 @@ are `gleam_json` and `evalstat`, both of which have both targets.
   started is never taken for the idle one before it. Ending the ticket
   (`withdraw`, `end_ticket`) turns a rested assignment into an exited one and
   stops the newest one's session. The statem tag is `rest`.
+- **A failed check is seen, and no open ticket is stuck.** `work.check_finished`
+  keeps a `model.Rejection` on the ticket (commit, digest, `cause`, `handling`)
+  and counts `failed_heads`, the different heads in a row that failed. The worker
+  is `WorkerTold` only for a `TestFailure` with a live assignment and at most
+  `work.max_failing_heads` (3) heads; an `EnvironmentFailure` and the fourth head are
+  `PersonNeeded`. A worker's next report ends `WorkerTold`. `state.check_fact` feeds
+  `stage` row 6, `person/check`: a failure at the head, readiness `InProgress`, and
+  nobody handling it. The same commit seen again is not checked again; a person
+  re-runs it with `RecheckRequested` (`work.recheck`, listed as `action.Recheck`
+  through `state.recheckable`), which clears the rejection while the check runs
+  so the action is not offered twice. A person's answer, a pass and a re-run reset
+  `failed_heads`. A session that a person has just answered reads `working`, not
+  `idle`. The statem tag `stuck` says that no open ticket reads `idle` without the
+  host owing it a head reading, a verdict or a publish; the one exemption is an
+  assignment ended as exited or crashed with nothing owed, which the host never
+  sends (`machine_test.check_next_step` says so).
 - **A worker that never reported is failed, not idle.** The host's
   `WorkerFailed` ends the assignment as crashed, sets the latest report to
   `Failed` and keeps the host's reason in `Ticket.failure`; a new assignment

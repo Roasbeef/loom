@@ -10342,7 +10342,12 @@ ordinary top-level worker session per ticket assignment
   weft task, and leaves a `start` row for a new session untouched while `admits` is false, so
   attempts do not count. Compaction keeps the latest of each record
   (`project_retention.select_records`). `projects.retry` with the ticket `setup` is the person's
-  retry. `Ports.build_template` is `project_start`'s closure over `project_template.build`,
+  retry. `project_host` keeps the latest `CheckRecorded` of each ticket (`checks`, rebuilt on
+  replay, with the time) for the ticket's `check` object. `check_failed` classifies the cause
+  (`failure_cause`: status 126 or 127, or `command not found` in the output) and tells the worker
+  only when the engine's `Rejection.handling` is `WorkerTold`; `failure_note` states whether the same
+  check passed on the clean base (`BaseProof`). `start_check` leaves its row untouched while
+  `template_state.admits` is false. `projects.recheck` is `project_host.recheck`. `Ports.build_template` is `project_start`'s closure over `project_template.build`,
   and `project_start.seed_of` makes the `Seed` (`Cold` without `setup`, `Warm` with it) that
   `project_repo.clone_from`, `check_tree_from` and `project_start.run_check_from` take. Both
   `project_repo.copy_template` runs (`git-cow copy`, else `cp -RPp`) go through

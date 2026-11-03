@@ -565,7 +565,7 @@ Source: (`client/daemon/server.gleam:4780-4821`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:4512`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:4537`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -1247,7 +1247,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1459`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1468`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -1818,7 +1818,7 @@ prints it, as text or, with `--json`, as the daemon sent it.
 ### 3.32 `projects.*`
 
 Project mode's control commands (protocol-change/106, design note
-`docs/design-notes/project-mode.md`). All eleven are owner-only, and a daemon that
+`docs/design-notes/project-mode.md`). All are owner-only, and a daemon that
 started no project table answers every one `not_found`. A reply carries the
 engine's own spelling of a stage, and a client displays it and never derives it.
 
@@ -1833,6 +1833,7 @@ engine's own spelling of a stage, and a client displays it and never derives it.
 | `projects.ticket` | yes | `project`, `ticket` (strings, required) | `projects.ticket` |
 | `projects.answer` | no | `project`, `ticket` (strings), `seq` (integer, required), `text` (string, required, at most 32768 bytes) | `projects.answer` |
 | `projects.retry` | no | `project`, `ticket` (strings, required) | `projects.retry` |
+| `projects.recheck` | no | `project`, `ticket` (strings, required) | `projects.recheck` |
 | `projects.requeue` | no | `project`, `trigger` (strings, required) | `projects.requeue` |
 | `projects.publish` | no | `project`, `ticket` (strings, required) | `projects.publish` |
 | `projects.set_mode` | no | `project`, `rule` (strings, required), `mode` (`off`, `observe` or `auto`) | `projects.set_mode` |
@@ -1856,16 +1857,16 @@ the ticket's opening message arrived in Unix milliseconds, or `null` when the en
 longer holds that message (a client shows an age from it and never from when it first
 saw the ticket), where `stage` is one of
 `person/delivery`, `person/answer`, `person/review`, `person/blocked`,
-`person/failed`, `queued`, `idle`, `working` or `ended/<outcome>`, `check` is `null` until the
-host's check has judged the head and then `{commit, outcome}` with `outcome` one of `passed`,
-`failed` or `overridden` (a person published past the check), `review` is `null` or the host's
+`person/check`, `person/failed`, `queued`, `idle`, `working` or `ended/<outcome>`, `check` is `null` until the
+host's check has judged the head and then `{commit, outcome, at_ms, command, output, cause, handling, note}` with `outcome` one of `passed`,
+`failed`, `overridden` (a person published past the check), `unfinished` (no result) or `waiting` (the template could not vouch for the environment), where `at_ms`, `command` and `output` (the last 4000 characters, led by the exit status, external text) are the host's record of the run and absent without one, `cause` (`test` or `environment`) and `handling` (`worker` or `person`) are present for `failed`, and `note` is the host's sentence for `unfinished` and `waiting`, `review` is `null` or the host's
 sentence for why a ticket waits for a person although its work may be done (no check is
 configured, the check gave no result, publishing is off, the branch could not be published, the host
 repository would not take the worker's commit in, the worker made no commit, its clone holds changes that no commit has, or the change touched a protected path), and `question` is `null` or `{seq, text, options}`.
 `failure` is `null`, or the host's sentence for why a worker's session was given up on before it
 reported anything (it did not start after five attempts); the stage is then `person/failed`, and a
 retry or a person's message clears it. `actions` lists what a person can do with the ticket now,
-from `answer`, `close`, `retry`, `publish` and `stop`, in that order. It is the engine's own rule: an
+from `answer`, `close`, `retry`, `recheck`, `publish` and `stop`, in that order. It is the engine's own rule: an
 action is listed exactly when its command would be accepted and would change the ticket, so a client
 shows a control for each word listed and derives none from the stage. `publish` is also dropped while
 `[project].publish` is `off`, and `retry` is not listed for a ticket that has a session or is already
@@ -1999,6 +2000,13 @@ ticket with no commit, and when the engine refuses the commit as out of date. Th
 pull request it asks for are the host's: `git push` to `refs/heads/project/<ticket>` of the
 `origin` remote, and `gh api` (REST only) to look for an open pull request from that branch and
 open one when there is none. The ticket's `pull_request` carries the URL once it is recorded.
+
+`projects.recheck` asks for the project's check to run again on the commit it already judged. It
+replies an echo and is refused `bad_request` for a ticket whose check has not failed, or given no result,
+at its latest commit. It is the way to move a ticket that reads `person/check` once the cause is
+mended. `projects.stop`, `projects.close`, `projects.retry`, `projects.recheck` and `projects.publish`
+carry the project's own sentence in a refusal's `message`, such as `publishing is off for this project`,
+and a client shows it as sent.
 
 ## 4. The session endpoint
 
