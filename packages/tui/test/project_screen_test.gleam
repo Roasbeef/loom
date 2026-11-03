@@ -13,6 +13,7 @@ import etui/keys
 import etui/widgets/textarea
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -1295,4 +1296,173 @@ pub fn board_with_watch_keeps_the_board_open_and_without_it_prints_once_test() {
   let assert Error(_) = tui.launch_project_watch(["project", "board"])
   let assert Error(_) = tui.launch_project_watch(["project", "init"])
   let assert Error(_) = tui.launch_project_watch([])
+}
+
+// --- a failed check -----------------------------------------------------------
+
+fn failed_check(output: String) -> json.JsonValue {
+  json.Object([
+    #("commit", json.String("0123456789abcdef")),
+    #("outcome", json.String("failed")),
+    #("at_ms", json.Int(1000)),
+    #("command", json.String("make check")),
+    #("output", json.String(output)),
+    #("cause", json.String("environment")),
+    #("handling", json.String("person")),
+  ])
+}
+
+// A ticket whose check failed and which nobody is handling, as the daemon lists
+// it, with the actions it offers.
+fn checking(output: String) -> json.JsonValue {
+  json.Object([
+    #("project", json.String("p1")),
+    #("revision", json.Int(12)),
+    #(
+      "ticket",
+      json.Object([
+        #("id", json.String("t-chk")),
+        #("title", json.String("fix the build")),
+        #("stage", json.String("person/check")),
+        #("session", json.String("s_01")),
+        #("opened_ms", json.Int(1000)),
+        #("question", json.Null),
+        #("check", failed_check(output)),
+        #(
+          "actions",
+          json.Array([
+            json.String("close"),
+            json.String("recheck"),
+            json.String("publish"),
+            json.String("stop"),
+          ]),
+        ),
+      ]),
+    ),
+    #("assignments", json.Array([])),
+    #("inputs", json.Array([])),
+  ])
+}
+
+fn on_checking(output: String) -> tui_model.Model {
+  let opened =
+    press(
+      showing(
+        body(12, [
+          ticket("t-chk", "person/check", 1000, "fix the build"),
+        ]),
+      ),
+      "enter",
+    )
+  deliver(opened, job.ProjectTicketLoaded(checking(output)))
+}
+
+pub fn a_failed_check_is_a_stage_that_needs_you_and_its_output_is_drawn_test() {
+  let board =
+    showing(body(12, [ticket("t-chk", "person/check", 1000, "fix the build")]))
+  let listed = painted(board)
+  assert string.contains(listed, "CHECK FAILED (1)")
+  assert !string.contains(listed, "Nothing needs you")
+
+  let page =
+    painted(on_checking("exit status 127\nmake: go: command not found"))
+  assert string.contains(page, "The check failed at 0123456789ab")
+  assert string.contains(page, "the worker was not told")
+  assert string.contains(page, "exit status 127")
+  assert string.contains(page, "make: go: command not found")
+}
+
+// Output is text. A long line wraps instead of running past the edge, and a
+// long output keeps its end.
+pub fn a_long_output_wraps_and_keeps_its_end_test() {
+  let long_line = string.repeat("word ", 60)
+  let many =
+    int.range(from: 1, to: 41, with: [], run: fn(all, n) { [n, ..all] })
+    |> list.reverse
+    |> list.map(fn(n) { "line " <> int.to_string(n) })
+    |> string.join("\n")
+  let page = painted(on_checking(long_line <> "\n" <> many))
+
+  // The last line is there and the first lines are counted, not silently gone.
+  assert string.contains(page, "line 40")
+  assert string.contains(page, "earlier lines not shown")
+
+  // No drawn row is wider than the frame, so nothing is clipped at the edge.
+  let widest =
+    string.split(page, "\n")
+    |> list.map(string.length)
+    |> list.fold(0, int.max)
+  assert widest <= 120
+}
+
+pub fn the_checks_output_cannot_inject_into_the_terminal_test() {
+  let page =
+    painted(on_checking("\u{1b}[2J\u{1b}]0;owned\u{7}<b>bold</b> done"))
+  assert !string.contains(page, "\u{1b}")
+  assert !string.contains(page, "owned\u{7}")
+  assert string.contains(page, "<b>bold</b> done")
+}
+
+// k, P and x send what the daemon lists, and the publish says what it went past.
+pub fn the_keys_recheck_publish_and_stop_follow_the_daemons_list_test() {
+  let acting = on_checking("exit status 1")
+  let assert Some(daemon) = acting.view.daemon_host
+
+  let #(_, recheck) = stepping.step(backend.KeyPress("k"), acting)
+  assert control_jobs(recheck)
+    == [
+      job.Control(
+        daemon.control,
+        job.ChangeProject(job.RecheckTicket("p1", "t-chk")),
+      ),
+    ]
+  let #(published, publish) = stepping.step(backend.KeyPress("P"), acting)
+  assert control_jobs(publish)
+    == [
+      job.Control(
+        daemon.control,
+        job.ChangeProject(job.PublishTicket("p1", "t-chk")),
+      ),
+    ]
+  let settled =
+    deliver(
+      published,
+      job.ProjectChanged(job.PublishTicket("p1", "t-chk"), None),
+    )
+  assert string.contains(painted(settled), "Published past a failed check.")
+  let #(_, stop) = stepping.step(backend.KeyPress("x"), acting)
+  assert control_jobs(stop)
+    == [
+      job.Control(
+        daemon.control,
+        job.ChangeProject(job.StopTicket("p1", "t-chk")),
+      ),
+    ]
+}
+
+pub fn a_key_the_daemon_does_not_list_sends_nothing_test() {
+  let opened =
+    press(showing(body(12, [asking("t-ask", 9, "which database?")])), "enter")
+  let acting =
+    press(deliver(opened, job.ProjectTicketLoaded(in_review())), "tab")
+  let #(refused, recheck) = stepping.step(backend.KeyPress("k"), acting)
+  assert control_jobs(recheck) == []
+  assert string.contains(painted(refused), "no failed check to run again")
+  let #(_, publish) = stepping.step(backend.KeyPress("P"), acting)
+  assert control_jobs(publish) == []
+}
+
+// A refusal is the daemon's sentence, shown as sent.
+pub fn a_refused_publish_shows_the_daemons_words_test() {
+  let acting = on_checking("exit status 1")
+  let #(sent, _) = stepping.step(backend.KeyPress("P"), acting)
+  let refused =
+    deliver(
+      sent,
+      job.ProjectChanged(
+        job.PublishTicket("p1", "t-chk"),
+        Some("publishing is off for this project"),
+      ),
+    )
+  assert string.contains(painted(refused), "publishing is off for this project")
 }

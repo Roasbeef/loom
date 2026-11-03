@@ -196,6 +196,15 @@ pub type Action {
   /// Ask for a new assignment on the ticket.
   Retry(state: State, ticket: String)
 
+  /// Run the check again on the commit it already judged.
+  Recheck(state: State, ticket: String)
+
+  /// Publish the ticket's latest commit, past its check if that did not pass.
+  Publish(state: State, ticket: String)
+
+  /// Withdraw the ticket's mandate for good.
+  Stop(state: State, ticket: String)
+
   /// Open this worker session.
   Worker(session: String)
 
@@ -387,6 +396,47 @@ pub fn answered(state: State) -> State {
 /// ```
 pub fn answer_refused(state: State, code: String) -> State {
   State(..state, notice: board.answer_refusal_words(code), poll: PollDue)
+}
+
+/// Records that a request the daemon took will show on the next read, and
+/// asks for that read at once.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_screen.requested(state, "The check will run again.")
+/// ```
+pub fn requested(state: State, words: String) -> State {
+  State(..state, notice: text_hygiene.single_line(words), poll: PollDue)
+}
+
+/// Records a publish the daemon took. It says what the ticket's check had made
+/// of the commit, from the page the person was looking at when they asked, so a
+/// publish past a failed check is never silent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_screen.published(state)
+/// ```
+pub fn published(state: State) -> State {
+  let past = case state.page {
+    Reading(ticket:, ..) ->
+      case current(state, ticket) {
+        Some(board.Ticket(check: Some(check), ..)) ->
+          case check.outcome {
+            board.CheckPassed -> "Published. Its check had passed."
+            board.CheckFailed -> "Published past a failed check."
+            board.CheckOverridden
+            | board.CheckUnfinished
+            | board.CheckWaiting
+            | board.CheckUnknown(_) -> "Published without a passing check."
+          }
+        Some(_) | None -> "Published without a passing check."
+      }
+    Listing | Labelling(..) | Confirming(..) -> "Published."
+  }
+  State(..state, notice: past, poll: PollDue)
 }
 
 /// Records a failure the screen cannot act on, such as a lost connection.
@@ -785,6 +835,31 @@ fn acting(key: keys.Key, state: State, ticket: String) -> Action {
         True -> Retry(state, ticket)
         False ->
           Continue(State(..state, notice: "That ticket cannot be retried now."))
+      }
+    keys.Char("k"), Some(found) ->
+      case board.offers(found, board.CanRecheck) {
+        True -> Recheck(state, ticket)
+        False ->
+          Continue(
+            State(
+              ..state,
+              notice: "That ticket has no failed check to run again.",
+            ),
+          )
+      }
+    keys.Char("P"), Some(found) ->
+      case board.offers(found, board.CanPublish) {
+        True -> Publish(state, ticket)
+        False ->
+          Continue(
+            State(..state, notice: "That ticket has no commit to publish."),
+          )
+      }
+    keys.Char("x"), Some(found) ->
+      case board.offers(found, board.CanStop) {
+        True -> Stop(state, ticket)
+        False ->
+          Continue(State(..state, notice: "That ticket cannot be stopped now."))
       }
     _, _ -> Continue(state)
   }
@@ -1307,6 +1382,7 @@ fn ticket_lines(
       list.flatten([
         notice_lines(state, width),
         head_lines(found, width, now_ms),
+        check_lines(found, width, now_ms),
         question_lines(found, focus, draft, width),
         worker_lines(found, state, width),
         input_lines(state, ticket, width),
@@ -1334,6 +1410,59 @@ fn head_lines(ticket: board.Ticket, width: Int, now_ms: Int) -> List(Drawn) {
     wrapped(board.mandate_words(ticket.mandate), theme.overlay_plain(), width),
     [plain("", theme.overlay_plain())],
   ])
+}
+
+/// The most lines of a check's output the page draws. The end of a build log
+/// is where the failure is, so the tail is kept.
+const check_output_lines = 14
+
+/// What the check made of the latest commit and, for a failure, its output as
+/// text. Each line of output is wrapped to the width and none is cut off: a
+/// long line takes more rows, and a long output keeps its end and says how much
+/// came before.
+fn check_lines(ticket: board.Ticket, width: Int, now_ms: Int) -> List(Drawn) {
+  case ticket.check {
+    None -> []
+    Some(check) -> {
+      let appearance = case check.outcome {
+        board.CheckPassed | board.CheckOverridden -> theme.overlay_plain()
+        board.CheckFailed
+        | board.CheckUnfinished
+        | board.CheckWaiting
+        | board.CheckUnknown(_) -> theme.overlay_signal()
+      }
+      let output = case check.output {
+        Some(shown) -> output_lines(shown, width)
+        None -> []
+      }
+      list.flatten([
+        wrapped(board.check_words(check, now_ms), appearance, width),
+        output,
+        [plain("", theme.overlay_plain())],
+      ])
+    }
+  }
+}
+
+/// The tail of a check's output, wrapped, with a line saying how much was left
+/// out when the output is longer than the page draws.
+fn output_lines(output: String, width: Int) -> List(Drawn) {
+  let lines = string.split(output, "\n")
+  let omitted = list.length(lines) - check_output_lines
+  let kept = list.drop(lines, int.max(0, omitted))
+  let note = case omitted > 0 {
+    True -> [
+      plain(
+        "  … " <> int.to_string(omitted) <> " earlier lines not shown",
+        theme.overlay_quiet(),
+      ),
+    ]
+    False -> []
+  }
+  list.append(
+    note,
+    wrapped(indented(string.join(kept, "\n")), theme.overlay_quiet(), width),
+  )
 }
 
 /// The worker's question and the answer input. A ticket with no open question
@@ -1550,7 +1679,7 @@ fn help_line(state: State, width: Int) -> span.Line {
     Reading(focus: Answering, ..) ->
       "type an answer · Enter send · Tab actions · Esc clear or back"
     Reading(focus: Acting, ..) ->
-      "o open worker · c close · t retry · Tab answer · Esc back"
+      "o worker · c close · t retry · k check again · P publish · x stop · Tab answer · Esc back"
   }
 
   span.line_new([

@@ -1034,7 +1034,6 @@ pub fn delivery_words(delivery: Delivery) -> String {
 /// // "The check failed at 1234abcd5678, 3m ago. The check could not run as written, so the commit did not cause it, and the worker was not told."
 /// ```
 pub fn check_words(check: Check, now_ms: Int) -> String {
-  let at = string.slice(check.commit, 0, 12)
   let when = case check.at_ms {
     Some(ran) ->
       case age_words(Some(ran), now_ms) {
@@ -1043,6 +1042,26 @@ pub fn check_words(check: Check, now_ms: Int) -> String {
       }
     None -> ""
   }
+  check_sentence(check, when)
+}
+
+/// `check_words` without the time, for a host that prints once and has no clock
+/// to measure the age against. A line that said `just now` for a check that ran
+/// an hour ago would be worse than one that said nothing of when.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_board.check_words_untimed(check)
+/// // "The check failed at 1234abcd5678. No worker is handling it."
+/// ```
+pub fn check_words_untimed(check: Check) -> String {
+  check_sentence(check, "")
+}
+
+/// The sentence, with the phrase for when the check ran or none.
+fn check_sentence(check: Check, when: String) -> String {
+  let at = string.slice(check.commit, 0, 12)
 
   case check.outcome {
     CheckPassed -> "The check passed at " <> at <> when <> "."
@@ -1167,11 +1186,26 @@ fn ticket_row(value: JsonValue) -> Result(Ticket, Nil) {
   )
 }
 
-/// The check result of a ticket record, when it has one that is an object. A
-/// result with no commit is no result: the words about it would name nothing.
+/// The check result of a ticket record, when it has one that is an object.
 fn check_in(fields: List(#(String, JsonValue))) -> Option(Check) {
   case list.key_find(fields, "check") {
-    Ok(json.Object(inner)) ->
+    Ok(found) -> decode_check(found)
+    Error(Nil) -> None
+  }
+}
+
+/// Decodes one `check` object of a ticket record. A result with no commit is no
+/// result: the words about it would name nothing, and neither would an object
+/// that is not one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_board.decode_check(json.Null) == None
+/// ```
+pub fn decode_check(value: JsonValue) -> Option(Check) {
+  case value {
+    json.Object(inner) ->
       case text_in(inner, "commit") {
         Some(commit) ->
           Some(Check(
@@ -1192,7 +1226,12 @@ fn check_in(fields: List(#(String, JsonValue))) -> Option(Check) {
           ))
         None -> None
       }
-    Ok(_) | Error(Nil) -> None
+    json.Array(_)
+    | json.String(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Bool(_)
+    | json.Null -> None
   }
 }
 
