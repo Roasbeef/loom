@@ -392,3 +392,20 @@ fn short(commit: String) -> String {
     other -> string.slice(other, 0, 12)
   }
 }
+
+/// When the build now under way was asked for, or none when none is. A person
+/// reads the build's duration off this and the time it ends.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert template_state.began_ms(template_state.Preparing(7)) == Some(7)
+/// assert template_state.began_ms(template_state.Unmanaged) == None
+/// ```
+pub fn began_ms(standing: Standing) -> Option(Int) {
+  case standing {
+    Preparing(since_ms:) | Ready(upkeep: Rebuilding(since_ms:), ..) ->
+      Some(since_ms)
+    Unmanaged | Ready(..) | Broken(..) -> None
+  }
+}

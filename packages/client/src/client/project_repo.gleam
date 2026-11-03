@@ -57,6 +57,7 @@
 //// holds is that commit's id. The environment disables replacement objects, so
 //// a `refs/replace` entry in a clone changes nothing the host sees.
 
+import client/internal/ffi_os
 import client/worktree_git
 import client/worktrees.{type Closed, type Worktrees}
 import gleam/int
@@ -161,8 +162,9 @@ pub type Copier {
   Copier(
     /// The `git-cow` binary, or `None` when none was found.
     program: Option(String),
-    /// Told how each copy was made, so the daemon can log it.
-    report: fn(Method) -> Nil,
+    /// Told how each copy was made and how many milliseconds it took, so the
+    /// daemon can log both.
+    report: fn(Method, Int) -> Nil,
   )
 }
 
@@ -808,12 +810,21 @@ fn copy_template(
   copier: Copier,
 ) -> Result(Nil, String) {
   let template = template_path(layout)
+  let started = ffi_os.system_time_ms()
 
   // A copier with a known program tries it first, and one without goes
   // straight to the plain copy.
   case copier.program {
     None ->
-      plain_copy(trees, parent, template, dest, copier, "git-cow not found")
+      plain_copy(
+        trees,
+        parent,
+        template,
+        dest,
+        copier,
+        "git-cow not found",
+        started,
+      )
     Some(program) ->
       case
         worktrees.run_program(
@@ -826,7 +837,7 @@ fn copy_template(
         )
       {
         Ok(output) if output.code == 0 -> {
-          copier.report(CopyOnWrite(program))
+          copier.report(CopyOnWrite(program), ffi_os.system_time_ms() - started)
           Ok(Nil)
         }
         Ok(output) if output.code == 2 ->
@@ -840,9 +851,10 @@ fn copy_template(
             <> int.to_string(output.code)
             <> ": "
             <> worktree_git.printable(output.stderr, 256)
-          plain_copy(trees, parent, template, dest, copier, why)
+          plain_copy(trees, parent, template, dest, copier, why, started)
         }
-        Error(why) -> plain_copy(trees, parent, template, dest, copier, why)
+        Error(why) ->
+          plain_copy(trees, parent, template, dest, copier, why, started)
       }
   }
 }
@@ -856,6 +868,7 @@ fn plain_copy(
   dest: String,
   copier: Copier,
   why: String,
+  started: Int,
 ) -> Result(Nil, String) {
   use Nil <- result.try(force_remove(trees, parent, dest))
   use output <- result.try(worktrees.run_program(
@@ -870,7 +883,7 @@ fn plain_copy(
   // A zero exit is a finished copy. Any other exit removes what it left.
   case output.code {
     0 -> {
-      copier.report(PlainCopy(why))
+      copier.report(PlainCopy(why), ffi_os.system_time_ms() - started)
       Ok(Nil)
     }
     code -> {
