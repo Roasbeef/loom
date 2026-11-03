@@ -12,8 +12,9 @@
 //// A ticket's page is the centre while a ticket is open. It says why the ticket
 //// was allowed, shows the worker's question with an answer box, lists the
 //// messages the worker was given, and links to the worker's session when the
-//// page holds that session's row. Nothing here is a control for a mode or for
-//// publishing, which are not built.
+//// page holds that session's row. It draws what the check made of the latest
+//// commit. Nothing here is a control for a mode, a re-run or publishing, which
+//// are not built.
 ////
 //// ## What is drawn
 ////
@@ -414,6 +415,7 @@ pub fn ticket_page(page: Page(message)) -> Element(message) {
         ]),
       ],
       failure(ticket),
+      check(ticket, page.now),
       noticed(page.notice),
       question(page),
       closer(page),
@@ -432,6 +434,47 @@ fn failure(ticket: board.Ticket) -> List(Element(message)) {
         html.text("The worker failed: " <> why),
       ]),
     ]
+  }
+}
+
+/// What the check made of the latest commit, as a sentence and, when the
+/// daemon recorded it, the check's output.
+///
+/// The output is what a process printed while running the worker's code, so it
+/// is drawn as one text node inside a `pre` and nowhere else: it can hold
+/// markup, and the text node escapes it. The `pre` wraps long lines and scrolls
+/// a long log inside a box of its own (`.home-check-output`), so at phone width
+/// nothing runs past the screen's edge and nothing is cut off. A failure is
+/// drawn in the signal colour and any other result in the plain one. The sentence
+/// is not a `home-note`, which fades after four seconds: the result stays.
+fn check(ticket: board.Ticket, now: Int) -> List(Element(message)) {
+  case ticket.check {
+    None -> []
+    Some(found) -> {
+      let failing = case found.outcome {
+        board.CheckFailed
+        | board.CheckUnfinished
+        | board.CheckWaiting
+        | board.CheckUnknown(_) -> [attribute.class("warn")]
+        board.CheckPassed | board.CheckOverridden -> []
+      }
+      let sentence =
+        html.p(
+          [
+            attribute.class("home-card-fact"),
+            attribute.class("home-check"),
+            ..failing
+          ],
+          [html.text(board.check_words(found, now))],
+        )
+      case found.output {
+        Some(printed) -> [
+          sentence,
+          html.pre([attribute.class("home-check-output")], [html.text(printed)]),
+        ]
+        None -> [sentence]
+      }
+    }
   }
 }
 
