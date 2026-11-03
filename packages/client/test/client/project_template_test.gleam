@@ -119,7 +119,7 @@ fn request(
   project_template.Request(
     setup:,
     check:,
-    setup_wall_ms: 120_000,
+    setup_wall_ms: project_template.default_setup_wall_ms,
     check_wall_ms: 60_000,
     current: None,
   )
