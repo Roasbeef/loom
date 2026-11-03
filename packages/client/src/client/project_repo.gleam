@@ -892,6 +892,9 @@ pub fn probe_copy(
 
   // The scratch copy is removed whatever the copier said.
   let _removed = force_remove(trees, parent, scratch)
+
+  // Exit 2 is the copier's refusal of the tree. A copier that failed or could
+  // not run says nothing about the tree.
   case ran {
     Ok(output) if output.code == 2 ->
       Error(

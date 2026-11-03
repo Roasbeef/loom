@@ -103,6 +103,7 @@ pub fn init_settings(
   check: Option(String),
   setup: Option(String),
 ) -> Result(String, String) {
+  // Neither flag means the person is to be asked, and any flag is the answer.
   case check, setup {
     None, None -> propose_and_confirm(request, ask, project)
     _, _ -> {
@@ -141,6 +142,8 @@ fn propose_and_confirm(
     })
   let words = list.flat_map(asked, fn(each) { each.1 })
   let notes = list.map(proposed.notes, fn(note) { "note: " <> note })
+
+  // Nothing confirmed means nothing is sent, and the lines say why.
   case chosen {
     [] -> Ok(string.join(list.append(words, notes), "\n"))
     _ -> {
@@ -159,41 +162,59 @@ fn confirm_key(
   key: String,
   found: Option(view.Suggestion),
 ) -> #(Option(#(String, Option(List(String)))), List(String)) {
+  // A key with no proposal has nothing to confirm.
   case found {
     None -> #(None, [
       key
       <> ": nothing in this repository suggests one; set it with "
       <> set_command(key, "<command>"),
     ])
-    Some(suggestion) -> {
-      let prompt =
-        key
-        <> " = `"
-        <> suggestion.command
-        <> "` ("
-        <> suggestion.because
-        <> "). Use it? [Y/n, or type another command] "
-      case ask(prompt) {
-        Error(_) -> #(None, [
-          key
-          <> ": would use `"
-          <> suggestion.command
-          <> "` ("
-          <> suggestion.because
-          <> "); set it with "
-          <> set_command(key, suggestion.command),
-        ])
-        Ok(reply) ->
-          case string.trim(reply) {
-            "" | "y" | "Y" | "yes" -> #(
-              Some(#(key, Some([suggestion.command]))),
-              [],
-            )
-            "n" | "N" | "no" -> #(None, [key <> ": left as it was"])
-            own -> #(Some(#(key, Some([own]))), [])
-          }
-      }
-    }
+    Some(suggestion) -> ask_about(ask, key, suggestion)
+  }
+}
+
+/// Asks about one proposal. A caller no one can answer gets the sentence that
+/// says what the proposal was and what to run.
+fn ask_about(
+  ask: Ask,
+  key: String,
+  suggestion: view.Suggestion,
+) -> #(Option(#(String, Option(List(String)))), List(String)) {
+  let prompt =
+    key
+    <> " = `"
+    <> suggestion.command
+    <> "` ("
+    <> suggestion.because
+    <> "). Use it? [Y/n, or type another command] "
+
+  // A refusal to ask is not an answer, so nothing is held.
+  case ask(prompt) {
+    Error(_) -> #(None, [
+      key
+      <> ": would use `"
+      <> suggestion.command
+      <> "` ("
+      <> suggestion.because
+      <> "); set it with "
+      <> set_command(key, suggestion.command),
+    ])
+    Ok(reply) -> answered(key, suggestion, reply)
+  }
+}
+
+/// What a person's reply to a proposal holds: yes (or nothing) the proposal, no
+/// leaves the key, and anything else is the command they typed.
+fn answered(
+  key: String,
+  suggestion: view.Suggestion,
+  reply: String,
+) -> #(Option(#(String, Option(List(String)))), List(String)) {
+  // The words of a yes and a no are the only ones with a fixed meaning.
+  case string.trim(reply) {
+    "" | "y" | "Y" | "yes" -> #(Some(#(key, Some([suggestion.command]))), [])
+    "n" | "N" | "no" -> #(None, [key <> ": left as it was"])
+    own -> #(Some(#(key, Some([own]))), [])
   }
 }
 
@@ -216,6 +237,9 @@ fn confirm_publish(
     list.any(settings.settings, fn(each) {
       each.key == "publish" && each.value == ["off"]
     })
+
+  // Only the change from off to on needs the URL named; the daemon checks it
+  // again, so this refusal is for the person, not the safety.
   case key == "publish" && on && off_now, settings.publish_url, publish_to {
     False, _, _ -> Ok(Nil)
     True, None, _ ->

@@ -251,16 +251,17 @@ fn verdict(done: goalstate.CheckResult, stage: Stage) -> Result(Nil, Outcome) {
   }
 }
 
-// Copies the built tree once to a scratch name with the copier the project's
-// workers will use, and removes the copy. The copier's refusal of the tree is
-// the owner's to see now, as a setup failure: what setup left in the tree is
-// what the copier does not accept, and the build ends before the swap, so the
-// last good template stays in place.
+/// Copies the built tree once to a scratch name with the copier the project's
+/// workers will use, and removes the copy. The copier's refusal of the tree is
+/// the owner's to see now, as a setup failure: what setup left in the tree is
+/// what the copier does not accept, and the build ends before the swap, so the
+/// last good template stays in place.
 fn try_copy(
   trees: Worktrees,
   layout: Layout,
   request: Request,
 ) -> Result(Nil, Outcome) {
+  // A project with plain copies has no copier to ask.
   case request.copier {
     None -> Ok(Nil)
     Some(program) ->
