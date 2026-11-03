@@ -18,6 +18,7 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/json.{type Json}
 import gleam/list
+import gleam/option.{type Option}
 import gleam/string
 import project/codec
 import project/event.{type Effect, type Event}
@@ -157,6 +158,22 @@ pub type Record {
     stage: String,
     /// The end of what the step printed, or why it could not run.
     output: String,
+  )
+
+  /// The owner changed one of the project's own settings. The record is the
+  /// settings' whole history: replay folds them in order, so the values in
+  /// force after a restart are the ones before it, and each says who changed
+  /// what and when. Compaction keeps every one.
+  SettingChanged(
+    /// The key, as `project_overrides.key_word` spells it.
+    key: String,
+    /// The words of the new value, or none when the project gave the key back
+    /// to the `[project]` table.
+    values: Option(List(String)),
+    /// Who changed it, the owner's principal.
+    by: String,
+    /// When, in milliseconds since the epoch.
+    at_ms: Int,
   )
 }
 
@@ -367,6 +384,14 @@ fn record_json(record: Record) -> Json {
         #("stage", json.string(stage)),
         #("output", json.string(output)),
       ])
+    SettingChanged(key:, values:, by:, at_ms:) ->
+      json.object([
+        #("host", json.string("setting")),
+        #("key", json.string(key)),
+        #("values", json.nullable(values, json.array(_, json.string))),
+        #("by", json.string(by)),
+        #("at_ms", json.int(at_ms)),
+      ])
   }
 }
 
@@ -468,6 +493,16 @@ fn host_decoder() -> decode.Decoder(Record) {
       use stage <- decode.field("stage", decode.string)
       use output <- decode.field("output", decode.string)
       decode.success(TemplateFailed(stage:, output:))
+    }
+    "setting" -> {
+      use key <- decode.field("key", decode.string)
+      use values <- decode.field(
+        "values",
+        decode.optional(decode.list(decode.string)),
+      )
+      use by <- decode.field("by", decode.string)
+      use at_ms <- decode.field("at_ms", decode.int)
+      decode.success(SettingChanged(key:, values:, by:, at_ms:))
     }
     _ -> decode.failure(HandedBack("", "", ""), "a known host record")
   }

@@ -168,6 +168,7 @@ fn survives(entry: #(String, Record), newest: Newest) -> Bool {
     | project_records.Recovered(..)
     | project_records.CheckRecorded(..)
     | project_records.TreeKept(..)
+    | project_records.SettingChanged(..)
     | project_records.Retention(..) -> True
   }
 }
@@ -185,6 +186,7 @@ fn stays(record: Record, kept: State) -> Bool {
     project_records.SourceNote(..) -> True
     project_records.TemplateBuilt(..) -> True
     project_records.TemplateFailed(..) -> True
+    project_records.SettingChanged(..) -> True
     project_records.Retention(..) -> False
   }
 }
@@ -224,6 +226,7 @@ fn is_reply(record: Record) -> Bool {
     | project_records.TreeKept(..)
     | project_records.TemplateBuilt(..)
     | project_records.TemplateFailed(..)
+    | project_records.SettingChanged(..)
     | project_records.Retention(..) -> False
   }
 }
@@ -241,6 +244,7 @@ fn is_note(record: Record) -> Bool {
     | project_records.TreeKept(..)
     | project_records.TemplateBuilt(..)
     | project_records.TemplateFailed(..)
+    | project_records.SettingChanged(..)
     | project_records.Retention(..) -> False
   }
 }
