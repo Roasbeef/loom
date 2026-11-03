@@ -406,6 +406,9 @@ pub fn prepare_home(git: Git, directory: String) -> Result(Nil, String) {
     ]),
     query_within_ms,
   ))
+
+  // A zero exit means both directories stand, and `mkdir -p` makes no
+  // complaint about one that was already there.
   case output.code {
     0 -> Ok(Nil)
     code ->
