@@ -557,3 +557,67 @@ which a person must publish; and a follow-up that only a bot or a non-addressing
 longer reaches the worker it was about. A person who wants the worker to act on such text addresses the
 agent on the thread, which is an explicit trigger.
 
+
+## Addendum: the template (2026-11-02)
+
+**Affects**: one new `[project]` key, `setup`, and a new row on a project's board; one new host ledger
+record pair, `template_built` and `template_failed`, and one new effect-row kind, `template`, which a
+reader that predates them settles as an unknown job and reads as no template. `projects.retry` accepts
+the ticket name `setup`. The check's `PATH` is the daemon's own. No engine event, no frozen interface
+and no wire field changes.
+
+**The problem.** Measured on a real Loom task, a check ran in a fresh clone with a fixed `PATH`, `HOME`
+set to a directory in the tree, and the network off. `go` was not found, the system `python3` was too old,
+and neither hex packages, Go modules nor Git dependencies could be fetched. The check has to stay offline,
+because it runs code a worker wrote. A worker's clone was also a 228 MiB `git clone --no-hardlinks` each.
+
+**What was considered.** Turning the network on for the check: rejected, because a worker's code would
+then run with the network on and with the repository's own secrets in reach. A shared dependency cache
+outside the trees that every check mounts read-only: rejected, because the cache has to be filled by
+something with the network on, which is the same step, and a mount of the host's cache into a jail widens
+what the jail reads. Fetching in the clone before the worker starts: rejected, because it runs the
+repository's scripts in a tree the worker is about to write. Decided: a template.
+
+**The decision.** `setup`, an optional command of at most 4096 bytes, is run once per base commit by the
+host, on a clean checkout of the recorded base that the host cut from `host.git`, in the check's jail with
+the network on. The jail is the check's with two differences: the network is on and the CPU, wall and file-size
+limits are lifted (the caller's timeout is the wall), with memory raised to 8 GiB and processes to 4096.
+Its only writable root is the tree, `HOME` is `<tree>/.loom-check-home`, `TMPDIR` is `$HOME/tmp` (the jail
+leaves no other place to write, so a toolchain's work directory goes there), the state-root
+and credential masks apply as for a check, and the environment carries only the daemon's `PATH` and the
+check's fixed variables. Then `check` runs once on the same tree with the network off, to show it passes on
+the clean base. Only then is the tree renamed to `<state>/projects/<id>/template`. It is a normal
+non-bare repository holding no linked worktree, alternates file or link under `.git`, and its
+`.git/config` holds only what `git init` writes, because it was made by fetching one commit from
+`host.git` by path: no remote, no URL, no credential helper. It is masked from sessions and checks as
+`host.git` is.
+
+Each worker clone and each check tree is `git-cow copy <template> <dest>`, or `cp -RPp` when no
+`git-cow` is found or it fails for any reason but refusing the template, moved to its commit by a fetch
+from `host.git` and a checkout that keeps ignored files. Exit 2 from `git-cow` is a refusal of the
+template and is an error. The copy runs in the sandbox, writable only in the destination's parent. A
+copy of a template carries no credential, and nothing a worker writes reaches the template, `host.git` or
+the owner's `.git`. Files the build left untracked are listed in the template's `.git/info/exclude`, so
+a clone reads clean.
+
+The daemon's own `PATH`, read once when the machine is read, is what `setup` and `check` see. The system
+directories are the fallback when it has none. A project's worker jails do not share it.
+
+The lifecycle is a pure state in the project actor: preparing, ready at a commit, failed, or base check red.
+A build is one durable `template` row run in a weft task, its two outcomes are host records, and replay
+rebuilds the state. A new assignment waits, its attempts untouched, until the template is ready, so
+tickets queue and nothing fails. If `setup` or the base check fails, no worker starts and the board's
+sources list carries a row for the setup that says it is the project's setup and not any ticket, with the
+last 4000 characters of the output. The base is looked at every ten minutes and rebuilt only if it
+moved, in a new directory swapped in on success, so a failed rebuild keeps the last good template and shows a
+note. A build interrupted by a crash is cleaned up and redone, and a swap that stopped between its two
+renames is undone before anything else.
+
+**What it costs.** A dependency change in a worker's commit is not fetched: the offline check fails,
+and a person decides. `setup` runs the repository's own scripts with the network on, jailed: it can
+read what the host reads minus the masks, write only the template, and reach any host on the network, so
+reading `setup` is reading the build file of a repository about to be run. A rebuild uses CPU and disk, up
+to one per ten minutes. A copy that is reading the old template while a rebuild swaps it can fail, and the
+ticket tries again. Build output that is not ignored by the repository is excluded from the clone's
+`git status`, so a worker's file at one of those paths is invisible to the host's clean test. The template
+is a second copy of the build on disk, and the copies are cheap only where `git-cow` can clone.

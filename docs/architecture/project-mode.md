@@ -413,7 +413,7 @@ flowchart TD
 
 A `start` row for a new session is left untouched while the state is `Preparing` or `Broken`: it is neither settled nor deferred, so its attempts do not count and the ticket stays `queued`. A restart replays the two records and queues the build row again when no template is ready. The build removes `.template.making` before it cuts, so a half-built tree is never the template, and `restore_interrupted_swap` puts back a template that a swap left under its waiting name. The base is looked at every ten minutes (`template_look_ms`) and rebuilt only if it moved. A person retries with `projects.retry` and the ticket name `setup`.
 
-`setup` and `check` see the daemon's own `PATH`, read once when the machine is read (`executor_plane.Machine.check_path`). Their jails are the check's: the host readable with the state-root, credential and project-file masks, one writable root, and `HOME` at `<tree>/.loom-check-home`.
+`setup` and `check` see the daemon's own `PATH`, read once when the machine is read (`executor_plane.Machine.check_path`). Their jails are the check's: the host readable with the state-root, credential and project-file masks, one writable root, and `HOME` at `<tree>/.loom-check-home` with `TMPDIR` under it. The host makes both directories in the sandbox before a command runs (`worktrees.prepare_home`), because the jail leaves `/tmp` unwritable and Go fails there. A setup's limits are lifted (`worktree_git.setup_runner`): the base leaves the wall to the caller's timeout, and memory and processes are 8 GiB and 4096.
 
 ## Storage
 
