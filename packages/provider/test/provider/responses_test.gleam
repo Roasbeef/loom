@@ -1922,7 +1922,7 @@ pub fn responses_cyber_access_is_explicit_and_defaults_are_omitted_test() {
               request,
               Some(access),
             ),
-            Error(Nil),
+            Ok(json.Object([#("cyber", json.String(value))])),
           ),
         ],
         fn(pair) {
@@ -2218,7 +2218,7 @@ pub fn responses_service_tier_is_explicit_and_omission_is_preserved_test() {
               Some(model.DaybreakBlue),
               Some(tier),
             ),
-            Error(Nil),
+            Ok(json.Object([#("cyber", json.String("daybreak_blue"))])),
           ),
         ],
         fn(pair) {
