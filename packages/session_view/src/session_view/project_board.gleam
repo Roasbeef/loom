@@ -79,6 +79,10 @@ pub type Stage {
   /// The worker reported failure. `person/failed`.
   PersonFailed
 
+  /// The check failed at the ticket's latest commit and nobody is handling it.
+  /// `person/check`.
+  PersonCheck
+
   /// Waiting for a session. `queued`.
   Queued
 
@@ -114,6 +118,9 @@ pub type Action {
   /// Ask for a new worker.
   CanRetry
 
+  /// Run the check again on the commit it already judged.
+  CanRecheck
+
   /// Publish the ticket's head.
   CanPublish
 
@@ -125,6 +132,57 @@ pub type Action {
   UnknownAction(
     /// The action word, made safe to draw.
     word: String,
+  )
+}
+
+/// What the daemon's check made of a ticket's latest commit.
+pub type CheckOutcome {
+  /// The check passed. `passed`.
+  CheckPassed
+
+  /// The check failed. `failed`.
+  CheckFailed
+
+  /// A person published past the check. `overridden`.
+  CheckOverridden
+
+  /// The check ran and gave no result. `unfinished`.
+  CheckUnfinished
+
+  /// The check has not run, because the project's template cannot vouch for
+  /// the environment yet. `waiting`.
+  CheckWaiting
+
+  /// An outcome this client does not know, kept as the daemon sent it.
+  CheckUnknown(
+    /// The word, made safe to draw.
+    word: String,
+  )
+}
+
+/// The result of the daemon's check for one commit. Everything in it is the
+/// daemon's or the check's: `output` is what a process printed while running
+/// the worker's code, and is drawn as text and never as markup.
+pub type Check {
+  Check(
+    /// The commit the check is about.
+    commit: String,
+    /// What it made of the commit.
+    outcome: CheckOutcome,
+    /// When it ran, in Unix milliseconds. None is unknown.
+    at_ms: Option(Int),
+    /// The command that ran, when the daemon recorded it.
+    command: Option(String),
+    /// The bounded tail of what it printed, led by its exit status, when the
+    /// daemon recorded it. Several lines.
+    output: Option(String),
+    /// `test` or `environment` for a failure, when the daemon said.
+    cause: Option(String),
+    /// `worker` when the worker was sent back to a failure, `person` when
+    /// nobody was, when the daemon said.
+    handling: Option(String),
+    /// The daemon's own sentence, such as why a check is waiting.
+    note: Option(String),
   )
 }
 
@@ -184,6 +242,8 @@ pub type Ticket {
     /// What a person can do with the ticket now, as the daemon listed it. A
     /// daemon that sends none offers none.
     actions: List(Action),
+    /// What the check made of the latest commit, once it made anything.
+    check: Option(Check),
   )
 }
 
@@ -585,6 +645,7 @@ pub fn parse_stage(word: String) -> Stage {
     "person/review" -> PersonReview
     "person/blocked" -> PersonBlocked
     "person/failed" -> PersonFailed
+    "person/check" -> PersonCheck
     "queued" -> Queued
     "idle" -> Idle
     "working" -> Working
@@ -611,6 +672,7 @@ pub fn stage_word(stage: Stage) -> String {
     PersonReview -> "review"
     PersonBlocked -> "blocked"
     PersonFailed -> "failed"
+    PersonCheck -> "check failed"
     Queued -> "queued"
     Idle -> "idle"
     Working -> "working"
@@ -642,7 +704,8 @@ pub fn attention(stage: Stage) -> Attention {
     | PersonAnswer
     | PersonReview
     | PersonBlocked
-    | PersonFailed -> NeedsPerson
+    | PersonFailed
+    | PersonCheck -> NeedsPerson
     Queued | Idle | Working | Ended(_) -> NeedsNobody
     UnknownStage(word) ->
       case string.starts_with(word, "person/") {
@@ -960,6 +1023,55 @@ pub fn delivery_words(delivery: Delivery) -> String {
   }
 }
 
+/// The sentence that says what a ticket's check made of its latest commit and,
+/// for a failure, who has it. It names the commit by its first twelve
+/// characters and says when it ran if the daemon knew.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_board.check_words(check, now_ms)
+/// // "The check failed at 1234abcd5678, 3m ago. The check could not run as written, so the commit did not cause it, and the worker was not told."
+/// ```
+pub fn check_words(check: Check, now_ms: Int) -> String {
+  let at = string.slice(check.commit, 0, 12)
+  let when = case check.at_ms {
+    Some(ran) ->
+      case age_words(Some(ran), now_ms) {
+        "now" -> ", just now"
+        age -> ", " <> age <> " ago"
+      }
+    None -> ""
+  }
+
+  case check.outcome {
+    CheckPassed -> "The check passed at " <> at <> when <> "."
+    CheckOverridden ->
+      "A person published " <> at <> " past the check" <> when <> "."
+    CheckUnfinished ->
+      "The check gave no result at "
+      <> at
+      <> ". "
+      <> option.unwrap(check.note, "")
+    CheckWaiting ->
+      "The check has not run at " <> at <> ". " <> option.unwrap(check.note, "")
+    CheckFailed ->
+      "The check failed at " <> at <> when <> ". " <> handling_words(check)
+    CheckUnknown(word) -> "The check reported " <> word <> " at " <> at <> "."
+  }
+}
+
+/// Who has a failed check, in a sentence.
+fn handling_words(check: Check) -> String {
+  case check.cause, check.handling {
+    Some("environment"), _ ->
+      "The check could not run as written, so the commit did not cause it, and the worker was not told."
+    _, Some("worker") -> "The worker was sent back to it."
+    _, Some("person") -> "No worker is handling it."
+    _, _ -> ""
+  }
+}
+
 // --- decoding ----------------------------------------------------------------
 
 /// Builds a board from the fields of a body.
@@ -1051,7 +1163,55 @@ fn ticket_row(value: JsonValue) -> Result(Ticket, Nil) {
     ),
     failure: option.map(text_in(fields, "failure"), text_hygiene.single_line),
     actions: actions_in(fields),
+    check: check_in(fields),
   )
+}
+
+/// The check result of a ticket record, when it has one that is an object. A
+/// result with no commit is no result: the words about it would name nothing.
+fn check_in(fields: List(#(String, JsonValue))) -> Option(Check) {
+  case list.key_find(fields, "check") {
+    Ok(json.Object(inner)) ->
+      case text_in(inner, "commit") {
+        Some(commit) ->
+          Some(Check(
+            commit: text_hygiene.single_line(commit),
+            outcome: check_outcome(safe_in(inner, "outcome")),
+            at_ms: int_in(inner, "at_ms"),
+            command: option.map(
+              text_in(inner, "command"),
+              text_hygiene.single_line,
+            ),
+            output: option.map(text_in(inner, "output"), text_hygiene.multiline),
+            cause: option.map(text_in(inner, "cause"), text_hygiene.single_line),
+            handling: option.map(
+              text_in(inner, "handling"),
+              text_hygiene.single_line,
+            ),
+            note: option.map(text_in(inner, "note"), text_hygiene.single_line),
+          ))
+        None -> None
+      }
+    Ok(_) | Error(Nil) -> None
+  }
+}
+
+/// Reads a check outcome's word.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_board.check_outcome("failed") == project_board.CheckFailed
+/// ```
+pub fn check_outcome(word: String) -> CheckOutcome {
+  case word {
+    "passed" -> CheckPassed
+    "failed" -> CheckFailed
+    "overridden" -> CheckOverridden
+    "unfinished" -> CheckUnfinished
+    "waiting" -> CheckWaiting
+    other -> CheckUnknown(text_hygiene.single_line(other))
+  }
 }
 
 /// The actions a ticket lists. A field that is missing or is not a list of
@@ -1086,6 +1246,7 @@ pub fn parse_action(word: String) -> Action {
     "answer" -> CanAnswer
     "close" -> CanClose
     "retry" -> CanRetry
+    "recheck" -> CanRecheck
     "publish" -> CanPublish
     "stop" -> CanStop
     other -> UnknownAction(text_hygiene.single_line(other))
@@ -1533,17 +1694,18 @@ fn rank(stage: Stage) -> Int {
     PersonDelivery -> 0
     PersonAnswer -> 1
     PersonReview -> 2
-    PersonBlocked -> 3
-    PersonFailed -> 4
+    PersonCheck -> 3
+    PersonBlocked -> 4
+    PersonFailed -> 5
     UnknownStage(_) ->
       case attention(stage) {
-        NeedsPerson -> 5
-        NeedsNobody -> 10
+        NeedsPerson -> 6
+        NeedsNobody -> 11
       }
-    Queued -> 6
-    Idle -> 7
-    Working -> 8
-    Ended(_) -> 9
+    Queued -> 7
+    Idle -> 8
+    Working -> 9
+    Ended(_) -> 10
   }
 }
 

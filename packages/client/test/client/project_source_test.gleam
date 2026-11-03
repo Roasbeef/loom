@@ -261,6 +261,23 @@ fn board_text(handle: project_host.Handle) -> String {
   )
 }
 
+// What the ledger keeps for a person to read: the board without the source
+// rows. A source row carries when the watcher last and next polls, which is
+// the actor's memory and moves whenever a tick lands, so a test that compares a
+// board across a time change or a restart compares this instead. The watcher's
+// clock is exactly what such a test moves, and a tick landing between the two
+// reads changes `last_poll_ms` with nothing wrong.
+fn kept_text(handle: project_host.Handle) -> String {
+  let shown = board(handle)
+  json.to_string(
+    json.Object([
+      #("would", json.Array(shown.would_have_done)),
+      #("replies", json.Array(shown.replies)),
+      #("tickets", json.Array(shown.tickets)),
+    ]),
+  )
+}
+
 // The first pass of a source only sets its cursors, so a test waits for it and
 // then serves its fixtures.
 fn first_pass(handle: project_host.Handle) -> Nil {
@@ -1744,17 +1761,17 @@ pub fn an_open_ticket_and_its_text_survive_a_compaction_and_a_restart_test() {
       worker,
       tools.WorkerReport(tools.Waiting, Some("which database?")),
     )
-  let shown = board_text(handle)
+  let shown = kept_text(handle)
 
   // The ticket is open, so nothing it names is old enough to drop, however
   // long ago it began.
   process.send(rig.clock, SetTime(t0 + forty_days))
   let assert Ok(0) = project_host.compact(handle)
-  assert board_text(handle) == shown
+  assert kept_text(handle) == shown
 
   stop(handle)
   let again = start(rig)
-  assert board_text(again) == shown
+  assert kept_text(again) == shown
   let assert Ok(card) =
     project_host.read(again, tools.TriggerCard(model.TriggerId("a")))
   assert string.contains(json.to_string(card), "fix a, carefully")

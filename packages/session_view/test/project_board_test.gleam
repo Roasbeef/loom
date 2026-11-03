@@ -651,3 +651,123 @@ pub fn a_live_reply_is_worded_as_running_and_not_as_a_finding_test() {
   assert board.verdict_reply_words(board.Replay, "ci", json.Object([]))
     == "Replay verdict on ci recorded."
 }
+
+// --- a ticket's check result ----------------------------------------------------
+
+fn with_check(check: json.JsonValue) -> board.Ticket {
+  let assert Ok(decoded) =
+    body([
+      json.Object([
+        #("id", json.String("t-a")),
+        #("stage", json.String("person/check")),
+        #("check", check),
+        #(
+          "actions",
+          json.Array([json.String("recheck"), json.String("publish")]),
+        ),
+      ]),
+    ])
+    |> board.decode_board
+  let assert [found] = decoded.tickets
+  found
+}
+
+pub fn a_failed_check_needs_a_person_and_offers_the_rerun_test() {
+  let found =
+    with_check(
+      json.Object([
+        #("commit", json.String("0123456789abcdef")),
+        #("outcome", json.String("failed")),
+        #("at_ms", json.Int(1000)),
+        #("command", json.String("make check")),
+        #("output", json.String("exit status 127\nmake: go: command not found")),
+        #("cause", json.String("environment")),
+        #("handling", json.String("person")),
+      ]),
+    )
+  assert found.stage == board.PersonCheck
+  assert board.attention(found.stage) == board.NeedsPerson
+  assert board.stage_word(found.stage) == "check failed"
+  assert board.offers(found, board.CanRecheck)
+  let assert Some(check) = found.check
+  assert check.outcome == board.CheckFailed
+  assert check.output == Some("exit status 127\nmake: go: command not found")
+  assert board.check_words(check, 181_000)
+    == "The check failed at 0123456789ab, 3m ago. The check could not run as written, so the commit did not cause it, and the worker was not told."
+}
+
+pub fn a_failed_check_ranks_among_the_stages_that_need_a_person_test() {
+  let tickets = [
+    ticket("t-queued", "queued", 1, "q"),
+    ticket("t-check", "person/check", 2, "c"),
+    ticket("t-failed", "person/failed", 3, "f"),
+    ticket("t-review", "person/review", 4, "r"),
+  ]
+  let assert Ok(decoded) = body(tickets) |> board.decode_board
+  assert ids(board.ordered(decoded.tickets))
+    == ["t-review", "t-check", "t-failed", "t-queued"]
+}
+
+pub fn the_checks_output_is_inert_and_a_missing_one_is_unknown_test() {
+  let hostile =
+    with_check(
+      json.Object([
+        #("commit", json.String("abc")),
+        #("outcome", json.String("failed")),
+        #("output", json.String("\u{1b}[31m<script>alert(1)</script>\u{7}")),
+        #("command", json.String("make\u{1b}[0m check")),
+      ]),
+    )
+  let assert Some(check) = hostile.check
+  let assert Some(output) = check.output
+  assert !string.contains(output, "\u{1b}")
+  assert !string.contains(output, "\u{7}")
+
+  // Markup passes through as the text it is: the hosts draw text, not HTML.
+  assert string.contains(output, "<script>alert(1)</script>")
+  let assert Some(command) = check.command
+  assert !string.contains(command, "\u{1b}")
+
+  // No time, output or command is unknown and not empty.
+  let bare =
+    with_check(
+      json.Object([
+        #("commit", json.String("abc")),
+        #("outcome", json.String("passed")),
+      ]),
+    )
+  let assert Some(passed) = bare.check
+  assert passed.at_ms == None
+  assert passed.output == None
+  assert board.check_words(passed, 0) == "The check passed at abc."
+}
+
+pub fn a_check_without_a_commit_or_an_outcome_this_client_knows_is_handled_test() {
+  assert with_check(json.Object([#("outcome", json.String("failed"))])).check
+    == None
+  assert with_check(json.Null).check == None
+  let odd =
+    with_check(
+      json.Object([
+        #("commit", json.String("abc")),
+        #("outcome", json.String("exploded")),
+      ]),
+    )
+  let assert Some(check) = odd.check
+  assert check.outcome == board.CheckUnknown("exploded")
+  assert board.check_words(check, 0) == "The check reported exploded at abc."
+}
+
+pub fn a_waiting_check_carries_the_daemons_reason_test() {
+  let waiting =
+    with_check(
+      json.Object([
+        #("commit", json.String("abc")),
+        #("outcome", json.String("waiting")),
+        #("note", json.String("The project's setup failed.")),
+      ]),
+    )
+  let assert Some(check) = waiting.check
+  assert board.check_words(check, 0)
+    == "The check has not run at abc. The project's setup failed."
+}
