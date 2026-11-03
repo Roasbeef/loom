@@ -323,6 +323,7 @@ fn ticket_events(current: State) -> Generator(Event) {
         qcheck.map(seq, fn(s) { event.WorkerFailed(ticket, s, "no session") }),
       ),
       #(2, qcheck.map(by, event.RetryRequested(ticket, _))),
+      #(3, qcheck.map(by, event.RecheckRequested(ticket, _))),
       #(
         2,
         qcheck.return(event.PullRequestOpened(ticket, model.PullRequestRef("u"))),
@@ -346,11 +347,13 @@ fn ticket_events(current: State) -> Generator(Event) {
 type Verdict {
   Pass
   Fail
+  FailEnvironment
 }
 
 fn passes() -> Generator(Verdict) {
   qcheck.from_weighted_generators(#(3, qcheck.return(Pass)), [
     #(1, qcheck.return(Fail)),
+    #(1, qcheck.return(FailEnvironment)),
   ])
 }
 
@@ -368,7 +371,16 @@ fn check(ticket: TicketId, commit: CommitId, verdict: Verdict) -> Event {
     Fail ->
       event.CheckFinished(
         ticket,
-        event.CheckRejected(commit, model.CommandDigest("d")),
+        event.CheckRejected(commit, model.CommandDigest("d"), model.TestFailure),
+      )
+    FailEnvironment ->
+      event.CheckFinished(
+        ticket,
+        event.CheckRejected(
+          commit,
+          model.CommandDigest("d"),
+          model.EnvironmentFailure,
+        ),
       )
   }
 }
@@ -778,8 +790,21 @@ fn check_check_rule(
       }
     })
 
-  case idle_head(incoming) {
-    Some(#(ticket, commit)) -> {
+  case incoming, idle_head(incoming) {
+    // A person's re-run asks for the check of the commit that already failed,
+    // and only the head's.
+    event.RecheckRequested(ticket, _), _ ->
+      holds(
+        ok: case state.ticket(sut.state, ticket) {
+          Ok(found) ->
+            requested
+            == [#(ticket, option.unwrap(found.head, CommitId("none")))]
+          Error(_) -> False
+        },
+        tag: "check",
+        detail: "a re-run asked for something other than the head's check",
+      )
+    _, Some(#(ticket, commit)) -> {
       let unchecked = case state.ticket(sut.state, ticket) {
         Ok(found) -> found.last_checked != Some(commit)
         Error(_) -> False
@@ -794,7 +819,7 @@ fn check_check_rule(
         detail: "a check was requested, or skipped, against the rule",
       )
     }
-    None ->
+    _, None ->
       holds(
         ok: requested == [],
         tag: "check",
@@ -965,9 +990,85 @@ fn check_tickets(sut: Sut) -> Result(Nil, statem.Violation) {
     use _ <- result.try(check_ended(ticket))
     use _ <- result.try(check_working(ticket))
     use _ <- result.try(check_actions(sut, ticket))
+    use _ <- result.try(check_next_step(sut, ticket))
     use _ <- result.try(check_inbox(sut.state, ticket))
     check_reserved(sut, ticket)
   })
+}
+
+// No open ticket is stuck: whatever state the engine reaches, an unfinished
+// ticket has somebody to take its next step. That is a worker (`queued`, or
+// `working`), a person (the stage needs one, so the board says so), or the
+// host, which owes the ticket a head reading, a check verdict or a publish.
+// The host's debts are read off the state and the shadow, because each is a
+// ledger row that is kept until it is settled: a head read is outstanding in
+// `awaiting_head`, a check is owed while the head was requested and nothing
+// has judged it, and a vouched ticket's publish or pull request is the
+// host's. What this cannot say is that the host will honour its debt, which
+// is the host's tests' to show; it says that no state exists in which nobody
+// is named.
+//
+// One state is exempt, and the exemption is the limit of this check. An
+// assignment ended by `AssignmentEnded` as exited or crashed, with the worker
+// idle and nothing owed, reads `idle` and nobody owes it anything. The host
+// never sends that event: a session that dies goes through `WorkerFailed`,
+// which reads `person/failed`, and a session at rest is ended by the engine
+// itself. So the state is reachable only by an event nothing produces, and the
+// check does not hold the engine to it.
+fn check_next_step(
+  sut: Sut,
+  ticket: state.Ticket,
+) -> Result(Nil, statem.Violation) {
+  let open = ticket.outcome == None && ticket.authority == state.Granted
+  let stage = state.stage_of(ticket)
+  let somebody = case stage {
+    stage.Queued | stage.Working -> True
+    stage.Idle -> host_owes(sut, ticket) || ended_unreported(ticket)
+    stage.PersonDelivery
+    | stage.PersonAnswer
+    | stage.PersonReview
+    | stage.PersonBlocked
+    | stage.PersonFailed
+    | stage.PersonCheck -> True
+    stage.StageEnded(_) -> True
+  }
+  holds(
+    ok: !open || somebody,
+    tag: "stuck",
+    detail: "the open ticket "
+      <> ticket.id.value
+      <> " reads "
+      <> stage.to_string(stage)
+      <> " and nobody owes it a next step",
+  )
+}
+
+// Whether the latest assignment ended as the host never ends one.
+fn ended_unreported(ticket: state.Ticket) -> Bool {
+  case ticket.assignments {
+    [latest, ..] ->
+      latest.status == state.AssignmentDone(model.SessionExited)
+      || latest.status == state.AssignmentDone(model.SessionCrashed)
+    [] -> False
+  }
+}
+
+// Whether the host owes an idle ticket a reading, a verdict or a publish.
+fn host_owes(sut: Sut, ticket: state.Ticket) -> Bool {
+  let reading = list.contains(sut.awaiting_head, ticket.id)
+  let verdict = case ticket.head {
+    Some(head) ->
+      ticket.readiness == readiness.InProgress
+      && ticket.last_checked == Some(head)
+      && ticket.rejected == None
+      && ticket.review == None
+    None -> False
+  }
+  let vouched = case ticket.readiness {
+    readiness.Ready(_) | readiness.Published(_, _) -> True
+    readiness.InProgress | readiness.AwaitingReview -> False
+  }
+  reading || verdict || vouched
 }
 
 // An explicit ticket's inbox never holds inferred text, so a worker that starts
@@ -997,6 +1098,7 @@ fn check_actions(
     action.Answer,
     action.Close,
     action.Retry,
+    action.Recheck,
     action.Publish,
     action.Stop,
   ]
@@ -1028,6 +1130,7 @@ fn event_for(ticket: state.Ticket, each: action.Action) -> Event {
       }
     action.Close -> event.PersonClosed(ticket.id, person)
     action.Retry -> event.RetryRequested(ticket.id, person)
+    action.Recheck -> event.RecheckRequested(ticket.id, person)
     action.Publish ->
       event.PersonPublished(
         ticket.id,
@@ -1349,6 +1452,19 @@ pub fn the_generator_reaches_the_states_the_invariants_guard_test() {
     }
   })
     as "a branch to publish"
+  assert any_state(fn(s) {
+    tickets(s, fn(t) { state.stage_of(t) == stage.PersonCheck })
+  })
+    as "a failed check that waits for a person"
+  assert any_state(fn(s) {
+    tickets(s, fn(t) {
+      case t.rejected {
+        Some(found) -> found.handling == model.WorkerTold
+        None -> False
+      }
+    })
+  })
+    as "a failed check handed to its worker"
   assert any_state(fn(s) { state.unrouted(s) != [] }) as "an unrouted candidate"
   assert any_state(fn(s) {
     tickets(s, fn(t) {

@@ -223,9 +223,10 @@ pub fn check_result() -> Generator(event.CheckResult) {
       fn(c, d, e) { event.CheckOk(host.passed(c, d, e)) },
     ),
     [
-      qcheck.map2(
+      qcheck.map3(
         commit(),
         qcheck.map(text(), CommandDigest),
+        one_of([model.TestFailure, model.EnvironmentFailure]),
         event.CheckRejected,
       ),
     ],
@@ -297,6 +298,7 @@ pub fn event() -> Generator(Event) {
     qcheck.map2(ticket_id(), principal(), event.PersonStopped),
     qcheck.map2(ticket_id(), principal(), event.PersonClosed),
     qcheck.map2(ticket_id(), principal(), event.RetryRequested),
+    qcheck.map2(ticket_id(), principal(), event.RecheckRequested),
     qcheck.map2(
       ticket_id(),
       qcheck.map(text(), model.PullRequestRef),

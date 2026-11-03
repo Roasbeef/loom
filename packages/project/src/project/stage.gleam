@@ -22,9 +22,18 @@
 //// | 3 | `person/answer` | an open question for a person |
 //// | 4 | `person/review` | awaiting review, or a pull request open on a ready or published ticket, unless a running assignment's worker is at work |
 //// | 5 | `person/blocked`, `person/failed` | the latest report says so and no person has spoken since |
-//// | 6 | `queued` | never assigned, the assignment is pending, or a session is wanted |
-//// | 7 | `idle` | the latest report is `waiting`, or the latest assignment ended |
-//// | 8 | `working` | otherwise |
+//// | 6 | `person/check` | the check failed at the head and nobody is handling it: no worker is at work, none was sent back to it and no session is on its way |
+//// | 7 | `queued` | never assigned, the assignment is pending, or a session is wanted |
+//// | 8 | `idle` | the latest report is `waiting` and no person has spoken since, or the latest assignment ended |
+//// | 9 | `working` | otherwise |
+////
+//// Row 6 is its own stage because the two rows that could have held it say
+//// something else. `person/review` stands on a readiness that a failed check
+//// never reaches (`InProgress`), and a review is the question of whether to
+//// publish work that passed or was never checked. `person/blocked` is the
+//// worker's own report. A failed check that a worker is fixing reads
+//// `working`, since somebody is handling it; one that is not being handled
+//// must not read `idle`, which the board draws as needing nobody.
 
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -53,6 +62,18 @@ pub type ReviewFact {
 
   /// A ready or published ticket whose pull request is open.
   PullRequestOpen
+}
+
+/// Whether the check failed at the head, and who is handling it.
+pub type CheckFact {
+  /// No failed check stands at the head.
+  CheckClear
+
+  /// A failed check stands at the head.
+  CheckFailing(
+    /// Whether the worker was sent back to it.
+    handling: model.Handling,
+  )
 }
 
 /// What the ticket's latest assignment is doing.
@@ -89,6 +110,8 @@ pub type Facts {
     assignment: AssignmentFact,
     /// Whether the ticket awaits a session.
     demand: Demand,
+    /// Whether the check failed at the head, and who is handling it.
+    check: CheckFact,
   )
 }
 
@@ -115,6 +138,9 @@ pub type Stage {
   /// The worker's attempt failed.
   PersonFailed
 
+  /// The check failed at the head and nobody is handling it.
+  PersonCheck
+
   /// The ticket waits for a session.
   Queued
 
@@ -139,6 +165,7 @@ pub type Stage {
 ///   heard: model.Silent,
 ///   assignment: stage.NeverAssigned,
 ///   demand: model.Satisfied,
+///   check: stage.CheckClear,
 /// )
 /// assert stage.of(facts) == stage.Queued
 /// ```
@@ -197,19 +224,48 @@ fn worker_at_work(facts: Facts) -> Activity {
   }
 }
 
-/// Rows 5 to 8: the worker's own report, then the states needing nobody.
+/// Rows 5 to 9: the worker's own report, then the failed check, then the
+/// states needing nobody.
 fn distress_stage(facts: Facts) -> Stage {
   case facts.heard {
-    PersonHeard -> quiet_stage(facts)
+    PersonHeard -> check_stage(facts)
     model.Silent ->
       case facts.latest {
         Some(Blocked) -> PersonBlocked
         Some(Failed) -> PersonFailed
-        Some(model.Progress) -> quiet_stage(facts)
-        Some(Waiting(_)) -> quiet_stage(facts)
-        Some(model.Dropped) -> quiet_stage(facts)
-        None -> quiet_stage(facts)
+        Some(model.Progress) -> check_stage(facts)
+        Some(Waiting(_)) -> check_stage(facts)
+        Some(model.Dropped) -> check_stage(facts)
+        None -> check_stage(facts)
       }
+  }
+}
+
+/// Row 6: a failed check at the head. A session on its way is somebody
+/// handling it, a worker at work is, and a worker that was sent back to it is
+/// until its first report. Otherwise a person is.
+fn check_stage(facts: Facts) -> Stage {
+  case facts.check {
+    CheckClear -> quiet_stage(facts)
+    CheckFailing(handling) ->
+      case facts.assignment, facts.demand {
+        LatestPending, _ -> Queued
+        LatestLive, Wanting(_) -> Queued
+        LatestEnded, Wanting(_) -> Queued
+        NeverAssigned, _ -> PersonCheck
+        LatestLive, Satisfied -> live_check_stage(facts, handling)
+        LatestEnded, Satisfied -> PersonCheck
+      }
+  }
+}
+
+/// A live worker handles a failed check while it is at work or has just been
+/// sent back to it.
+fn live_check_stage(facts: Facts, handling: model.Handling) -> Stage {
+  case worker_at_work(facts), handling {
+    AtWork, _ -> Working
+    AtRest, model.WorkerTold -> Working
+    AtRest, model.PersonNeeded -> PersonCheck
   }
 }
 
@@ -225,12 +281,17 @@ fn quiet_stage(facts: Facts) -> Stage {
   }
 }
 
-/// A running session is idle when its latest report is `waiting`.
+/// A running session is idle when its latest report is `waiting` and nobody
+/// has spoken to it since. A person's answer or message after that report is
+/// work the session has been handed, so it reads `working` until the worker
+/// reports again. Without that, an answered ticket read `idle` with a worker on
+/// it that had been given something to do.
 fn live_stage(facts: Facts) -> Stage {
-  case facts.latest {
-    Some(Waiting(_)) -> Idle
-    Some(_) -> Working
-    None -> Working
+  case facts.latest, facts.heard {
+    Some(Waiting(_)), model.Silent -> Idle
+    Some(Waiting(_)), PersonHeard -> Working
+    Some(_), _ -> Working
+    None, _ -> Working
   }
 }
 
@@ -249,6 +310,7 @@ pub fn needs_person(stage: Stage) -> Bool {
     PersonReview -> True
     PersonBlocked -> True
     PersonFailed -> True
+    PersonCheck -> True
     StageEnded(_) -> False
     Queued -> False
     Idle -> False
@@ -272,6 +334,7 @@ pub fn to_string(stage: Stage) -> String {
     PersonReview -> "person/review"
     PersonBlocked -> "person/blocked"
     PersonFailed -> "person/failed"
+    PersonCheck -> "person/check"
     Queued -> "queued"
     Idle -> "idle"
     Working -> "working"
@@ -293,6 +356,7 @@ pub fn parse(text: String) -> Result(Stage, Nil) {
     "person/review" -> Ok(PersonReview)
     "person/blocked" -> Ok(PersonBlocked)
     "person/failed" -> Ok(PersonFailed)
+    "person/check" -> Ok(PersonCheck)
     "queued" -> Ok(Queued)
     "idle" -> Ok(Idle)
     "working" -> Ok(Working)

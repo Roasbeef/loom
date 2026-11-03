@@ -138,6 +138,7 @@ fn base() -> Facts {
     heard: Silent,
     assignment: stage.LatestLive,
     demand: Satisfied,
+    check: stage.CheckClear,
   )
 }
 
@@ -240,7 +241,59 @@ pub fn row_five_distress_stands_until_a_person_speaks_test() {
     == stage.Working
 }
 
-pub fn row_six_queued_covers_never_assigned_pending_and_wanting_test() {
+// A failed check at the head, with the worker's session not at work: nobody
+// handles it but a person.
+fn failing() -> Facts {
+  Facts(
+    ..base(),
+    latest: Some(Waiting(NoQuestion)),
+    check: stage.CheckFailing(model.PersonNeeded),
+  )
+}
+
+pub fn row_six_a_failed_check_nobody_handles_needs_a_person_test() {
+  // An idle live worker that was not sent back, and an ended assignment.
+  assert stage.of(failing()) == stage.PersonCheck
+  assert stage.of(Facts(..failing(), assignment: stage.LatestEnded))
+    == stage.PersonCheck
+  assert stage.needs_person(stage.PersonCheck)
+  assert stage.to_string(stage.PersonCheck) == "person/check"
+}
+
+pub fn row_six_a_failed_check_a_worker_is_handling_does_not_ask_for_a_person_test() {
+  // Sent back to it: working from the moment of the note, before any report.
+  let told = stage.CheckFailing(model.WorkerTold)
+  assert stage.of(Facts(..failing(), check: told)) == stage.Working
+
+  // At work after a person's word, or on progress, whatever the note said.
+  assert stage.of(Facts(..failing(), heard: PersonHeard)) == stage.Working
+  assert stage.of(Facts(..failing(), latest: Some(model.Progress)))
+    == stage.Working
+
+  // A session on its way is somebody on it.
+  assert stage.of(Facts(..failing(), assignment: stage.LatestPending))
+    == stage.Queued
+  assert stage.of(
+      Facts(
+        ..failing(),
+        assignment: stage.LatestEnded,
+        demand: Wanting(model.ByRouting),
+      ),
+    )
+    == stage.Queued
+}
+
+pub fn row_six_yields_to_the_rows_above_it_test() {
+  assert stage.of(Facts(..failing(), question: Asking(1))) == stage.PersonAnswer
+  assert stage.of(Facts(..failing(), delivery: stage.DeliveryFailed))
+    == stage.PersonDelivery
+  assert stage.of(Facts(..failing(), latest: Some(model.Blocked)))
+    == stage.PersonBlocked
+  assert stage.of(Facts(..failing(), outcome: Some(Merged)))
+    == stage.StageEnded(Merged)
+}
+
+pub fn row_seven_queued_covers_never_assigned_pending_and_wanting_test() {
   assert stage.of(Facts(..base(), assignment: stage.NeverAssigned))
     == stage.Queued
   assert stage.of(Facts(..base(), assignment: stage.LatestPending))
@@ -255,13 +308,13 @@ pub fn row_six_queued_covers_never_assigned_pending_and_wanting_test() {
     == stage.Queued
 }
 
-pub fn row_seven_idle_is_a_waiting_report_or_an_ended_assignment_test() {
+pub fn row_eight_idle_is_a_waiting_report_or_an_ended_assignment_test() {
   assert stage.of(Facts(..base(), latest: Some(Waiting(NoQuestion))))
     == stage.Idle
   assert stage.of(Facts(..base(), assignment: stage.LatestEnded)) == stage.Idle
 }
 
-pub fn row_eight_working_is_everything_else_test() {
+pub fn row_nine_working_is_everything_else_test() {
   assert stage.of(base()) == stage.Working
   assert stage.of(Facts(..base(), latest: Some(model.Progress)))
     == stage.Working
@@ -274,6 +327,7 @@ pub fn the_wire_spelling_round_trips_for_every_stage_test() {
     stage.PersonReview,
     stage.PersonBlocked,
     stage.PersonFailed,
+    stage.PersonCheck,
     stage.Queued,
     stage.Idle,
     stage.Working,
