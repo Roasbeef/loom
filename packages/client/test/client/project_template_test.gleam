@@ -144,7 +144,7 @@ fn copier(
   program: option.Option(String),
   seen: process.Subject(project_repo.Method),
 ) -> project_repo.Copier {
-  project_repo.Copier(program:, report: fn(method) {
+  project_repo.Copier(program:, report: fn(method, _elapsed_ms) {
     process.send(seen, method)
   })
 }

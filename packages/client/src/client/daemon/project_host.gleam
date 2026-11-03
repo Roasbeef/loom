@@ -2296,12 +2296,21 @@ fn template_settled(host: Host, outcome: project_template.Outcome) -> Host {
   case outcome {
     project_template.Built(commit:) ->
       case record(host, project_records.TemplateBuilt(commit, digest)) {
-        Ok(recorded) ->
+        Ok(recorded) -> {
+          log.info(host.ports.logger, "project.template_built", [
+            field.ident(key: "commit", value: commit),
+            field.count(
+              key: "elapsed_ms",
+              value: now
+                - option.unwrap(template_state.began_ms(host.template), now),
+            ),
+          ])
           Host(
             ..recorded,
             template: template_state.built(commit, digest, next_look),
           )
           |> settle_key("template", "build")
+        }
         Error(reason) -> template_unrecorded(host, reason)
       }
     project_template.Unchanged(commit: _) ->

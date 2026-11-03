@@ -485,7 +485,9 @@ fn seed_of(env: Env) -> project_repo.Seed {
       project_repo.Warm(
         project_repo.Copier(
           program: option.from_result(install.git_cow()),
-          report: fn(method) { report_copy(env.logger, method) },
+          report: fn(method, elapsed_ms) {
+            report_copy(env.logger, method, elapsed_ms)
+          },
         ),
       )
   }
@@ -493,17 +495,23 @@ fn seed_of(env: Env) -> project_repo.Seed {
 
 /// Logs how a template was copied, so an operator can see whether `git-cow`
 /// ran or the plain copy stood in for it, and why.
-fn report_copy(logger: Logger, method: project_repo.Method) -> Nil {
+fn report_copy(
+  logger: Logger,
+  method: project_repo.Method,
+  elapsed_ms: Int,
+) -> Nil {
   case method {
     project_repo.CopyOnWrite(program:) ->
       log.info(logger, "project.template_copied", [
         field.ident(key: "method", value: "git-cow"),
         field.text(key: "program", value: program),
+        field.count(key: "elapsed_ms", value: elapsed_ms),
       ])
     project_repo.PlainCopy(why:) ->
       log.info(logger, "project.template_copied", [
         field.ident(key: "method", value: "plain"),
         field.text(key: "why", value: why),
+        field.count(key: "elapsed_ms", value: elapsed_ms),
       ])
   }
 }
