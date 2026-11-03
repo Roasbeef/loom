@@ -21,12 +21,11 @@ import gleam/string
 import project/event.{type Effect, type Refusal}
 import project/gate
 import project/model.{
-  type Ceiling, type CommandDigest, type CommitId, type Demand, type Heard,
-  type Mandate, type Mode, type Outcome, type ProjectId, type PullRequestRef,
-  type Question, type Report, type Routing, type RuleId, type SessionEnd,
-  type SessionId, type SourceId, type Subscription, type Thread, type ThreadId,
-  type TicketId, type TicketTitle, type Trigger, type TriggerId,
-  type VerdictOutcome, CeilingClear,
+  type Ceiling, type CommitId, type Demand, type Heard, type Mandate, type Mode,
+  type Outcome, type ProjectId, type PullRequestRef, type Question, type Report,
+  type Routing, type RuleId, type SessionEnd, type SessionId, type SourceId,
+  type Subscription, type Thread, type ThreadId, type TicketId, type TicketTitle,
+  type Trigger, type TriggerId, type VerdictOutcome, CeilingClear,
 }
 import project/readiness.{type Readiness}
 import project/stage
@@ -269,8 +268,14 @@ pub type Ticket {
     head: Option(CommitId),
     /// The latest commit a check was requested or skipped for.
     last_checked: Option(CommitId),
-    /// The latest failed check, if any.
-    rejected: Option(#(CommitId, CommandDigest)),
+    /// The latest failed check, if any. A new head clears it, and so does a
+    /// pass.
+    rejected: Option(model.Rejection),
+    /// How many different heads in a row have failed the check, counted until
+    /// a check passes or a person answers or asks for a re-run. A re-run of
+    /// the same commit does not count twice. The engine stops sending the
+    /// worker back at `work.max_failing_heads`.
+    failed_heads: Int,
     /// Where its work stands for a person.
     readiness: Readiness,
     /// Why the host would not go on by itself at the current head, if it
@@ -529,6 +534,7 @@ pub fn facts(ticket: Ticket) -> stage.Facts {
     heard: ticket.heard,
     assignment: assignment_fact(ticket),
     demand: ticket.demand,
+    check: check_fact(ticket),
   )
 }
 
@@ -541,6 +547,24 @@ pub fn facts(ticket: Ticket) -> stage.Facts {
 /// ```
 pub fn stage_of(ticket: Ticket) -> stage.Stage {
   stage.of(facts(ticket))
+}
+
+/// A failed check counts while it is about the head and no person has
+/// published past it: a new head clears `rejected`, and a pass or a publish
+/// moves the readiness out of `InProgress`.
+fn check_fact(ticket: Ticket) -> stage.CheckFact {
+  case ticket.rejected, ticket.readiness {
+    Some(rejected), readiness.InProgress ->
+      case ticket.head == Some(rejected.commit) {
+        True -> stage.CheckFailing(rejected.handling)
+        False -> stage.CheckClear
+      }
+    Some(_), readiness.AwaitingReview
+    | Some(_), readiness.Ready(_)
+    | Some(_), readiness.Published(_, _)
+    | None, _
+    -> stage.CheckClear
+  }
 }
 
 fn delivery_fact(ticket: Ticket) -> stage.Delivery {
@@ -735,6 +759,38 @@ pub fn waiting_on_person(state: State, source: SourceId) -> Int {
   |> list.count(fn(ticket) {
     ticket.mandate.source == source && stage.needs_person(stage_of(ticket))
   })
+}
+
+/// The commit a person can have checked again: the head, when the check
+/// failed at it, or gave no result for it. A check that passed, a commit that
+/// no check was asked about and a head a person published past have nothing
+/// to run again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> option.None for a ticket whose check has not failed
+/// ```
+pub fn recheckable(ticket: Ticket) -> Option(CommitId) {
+  let open = ticket.authority == Granted && ticket.outcome == None
+  case open, ticket.head, ticket.rejected, ticket.readiness, ticket.review {
+    True, Some(head), Some(rejected), readiness.InProgress, _ ->
+      case rejected.commit == head {
+        True -> Some(head)
+        False -> None
+      }
+    True,
+      Some(head),
+      _,
+      readiness.AwaitingReview,
+      Some(model.CheckUnfinished(_))
+    ->
+      case ticket.last_checked == Some(head) {
+        True -> Some(head)
+        False -> None
+      }
+    _, _, _, _, _ -> None
+  }
 }
 
 /// The commit a ticket's current readiness vouches for.

@@ -113,6 +113,7 @@ pub fn open(
           head: None,
           last_checked: None,
           rejected: None,
+          failed_heads: 0,
           readiness: readiness.InProgress,
           review: None,
           pull_request: None,
@@ -650,6 +651,46 @@ pub fn retry(current: State, id: TicketId) -> Step {
   }
 }
 
+/// A person asked for the check to run again on the commit it already judged.
+/// The commit is the head: a different one is not what the check failed on. The
+/// ticket goes back to waiting for a verdict, the failed head count starts
+/// again, and the host is asked for a check. The record of the failure is
+/// cleared while the check runs, so the ticket does not ask for a person
+/// that the check is about to answer, and so the action is not offered a
+/// second time before the verdict arrives.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // -> Error(NothingToRecheck(id)) unless a check failed at the head, or
+/// // gave no result
+/// ```
+pub fn recheck(current: State, id: TicketId) -> Step {
+  use ticket <- result.try(open_ticket(current, id))
+
+  // Only a check that failed at the head, or never gave a verdict, is run
+  // again. A passing one has nothing to repeat.
+  case state.recheckable(ticket) {
+    None -> Error(event.NothingToRecheck(id))
+    Some(commit) -> {
+      let waiting =
+        state.Ticket(
+          ..ticket,
+          readiness: readiness.new_commit(ticket.readiness),
+          review: None,
+          rejected: None,
+          failed_heads: 0,
+          last_checked: Some(commit),
+        )
+      Ok(
+        #(state.put_ticket(current, waiting), [
+          RequestCheck(ticket.id, commit),
+        ]),
+      )
+    }
+  }
+}
+
 /// Whether a message on the thread may reach this ticket's worker. An inferred
 /// message never reaches a worker whose mandate is explicit, the same rule
 /// `intake` applies when the message first arrives, so a retry cannot deliver
@@ -719,8 +760,16 @@ pub fn reported(
     }),
   )
 
+  // The worker's first word after a failed check ends the rejection's
+  // "sent back" status, since the report now says what the worker is doing.
   let heard_from =
-    state.Ticket(..live, latest: Some(report), failure: None, heard: Silent)
+    state.Ticket(
+      ..live,
+      latest: Some(report),
+      failure: None,
+      heard: Silent,
+      rejected: option.map(live.rejected, report_ends_handling),
+    )
   let moved = apply_head(heard_from, head)
   let #(settled, effects) = apply_report(moved, seq, report, head)
 
@@ -742,6 +791,12 @@ pub fn reported(
     NoHead -> step
     Head(..) -> then_rest(step, id)
   }
+}
+
+/// A rejection after the worker has spoken: whatever the worker was sent back
+/// to, its own report is the better account of what it does now.
+fn report_ends_handling(rejected: model.Rejection) -> model.Rejection {
+  model.Rejection(..rejected, handling: model.PersonNeeded)
 }
 
 /// A new commit invalidates whatever the old one earned: a passed check, a
@@ -923,21 +978,58 @@ pub fn check_finished(
   // A rejection is recorded only for the current head.
   case finished {
     CheckOk(proof) -> check_passed(current, ticket, proof) |> then_rest(id)
-    CheckRejected(commit, digest) ->
+    CheckRejected(commit, digest, cause) ->
       case ticket.head == Some(commit) {
         False -> Error(event.Stale(id))
-        True ->
-          Ok(
-            #(
-              state.put_ticket(
-                current,
-                state.Ticket(..ticket, rejected: Some(#(commit, digest))),
-              ),
-              [],
-            ),
-          )
+        True -> Ok(rejected(current, ticket, commit, digest, cause))
       }
   }
+}
+
+/// The most different heads in a row that the engine sends a worker back to.
+/// A fourth failing head goes to a person instead, because a worker that has
+/// failed three times against a check is more likely misreading the check than
+/// one commit short of passing it. The count is of heads and not of runs: a
+/// person's re-run of the same commit does not use one up. A pass, a person's
+/// answer or a person's re-run starts the count again.
+pub const max_failing_heads = 3
+
+/// Record a failed check at the head, and decide whether the worker is sent
+/// back to it. The worker is sent back only when a session is live, the
+/// failure could be the work's (an `EnvironmentFailure` could not be), and the
+/// ticket has not already used up its failing heads. The host acts on the
+/// answer by handing the worker its note, so the decision is in the ledger
+/// with the failure and the stage can say who has the ticket.
+fn rejected(
+  current: State,
+  ticket: Ticket,
+  commit: CommitId,
+  digest: model.CommandDigest,
+  cause: model.FailureCause,
+) -> #(State, List(Effect)) {
+  // A re-run of the commit that already failed is not another head.
+  let heads = case ticket.rejected {
+    Some(before) if before.commit == commit -> ticket.failed_heads
+    Some(_) | None -> ticket.failed_heads + 1
+  }
+  let handling = case
+    cause,
+    heads <= max_failing_heads,
+    state.active_assignment(ticket)
+  {
+    model.TestFailure, True, Some(_) -> model.WorkerTold
+    model.TestFailure, False, _
+    | model.TestFailure, True, None
+    | model.EnvironmentFailure, _, _
+    -> model.PersonNeeded
+  }
+  let failed =
+    state.Ticket(
+      ..ticket,
+      rejected: Some(model.Rejection(commit, digest, cause, handling)),
+      failed_heads: heads,
+    )
+  #(state.put_ticket(current, failed), [])
 }
 
 /// Make the ticket ready when the passing check was requested for the current
@@ -957,7 +1049,12 @@ fn check_passed(
     True, Ok(ready) ->
       Ok(vouched(
         current,
-        state.Ticket(..ticket, readiness: ready, rejected: None),
+        state.Ticket(
+          ..ticket,
+          readiness: ready,
+          rejected: None,
+          failed_heads: 0,
+        ),
         commit,
       ))
     True, Error(Nil) -> Error(event.Stale(ticket.id))
@@ -1097,7 +1194,12 @@ pub fn answered(current: State, id: TicketId, question: Int) -> Step {
     False -> Error(event.StaleAnswer(id))
     True -> {
       let answered_ticket =
-        state.Ticket(..ticket, question: NoQuestion, heard: PersonHeard)
+        state.Ticket(
+          ..ticket,
+          question: NoQuestion,
+          heard: PersonHeard,
+          failed_heads: 0,
+        )
       Ok(relay(current, answered_ticket, question))
     }
   }

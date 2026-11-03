@@ -612,6 +612,7 @@ fn ticket_json(ticket: Ticket) -> Json {
     #("head", json.nullable(ticket.head, commit_name)),
     #("last_checked", json.nullable(ticket.last_checked, commit_name)),
     #("rejected", json.nullable(ticket.rejected, rejected_json)),
+    #("failed_heads", json.int(ticket.failed_heads)),
     #("readiness", readiness_json(ticket.readiness)),
     #("review", json.nullable(ticket.review, codec.reason_json)),
     #(
@@ -657,6 +658,7 @@ fn ticket_decoder() -> Decoder(Ticket) {
     decode.optional(commit_decoder()),
   )
   use rejected <- decode.field("rejected", decode.optional(rejected_decoder()))
+  use failed_heads <- decode.optional_field("failed_heads", 0, decode.int)
   use readiness <- decode.field("readiness", readiness_decoder())
   use review <- decode.field("review", decode.optional(codec.reason_decoder()))
   use pull_request <- decode.field(
@@ -688,6 +690,7 @@ fn ticket_decoder() -> Decoder(Ticket) {
     head:,
     last_checked:,
     rejected:,
+    failed_heads:,
     readiness:,
     review:,
     pull_request:,
@@ -711,17 +714,29 @@ fn commit_decoder() -> Decoder(model.CommitId) {
   decode.map(decode.string, CommitId)
 }
 
-fn rejected_json(rejected: #(model.CommitId, model.CommandDigest)) -> Json {
+fn rejected_json(rejected: model.Rejection) -> Json {
   json.object([
-    #("commit", json.string({ rejected.0 }.value)),
-    #("digest", json.string({ rejected.1 }.value)),
+    #("commit", json.string(rejected.commit.value)),
+    #("digest", json.string(rejected.digest.value)),
+    #("cause", json.string(codec.cause_word(rejected.cause))),
+    #("handling", word(handlings, rejected.handling)),
   ])
 }
 
-fn rejected_decoder() -> Decoder(#(model.CommitId, model.CommandDigest)) {
+fn rejected_decoder() -> Decoder(model.Rejection) {
   use commit <- decode.field("commit", commit_decoder())
   use digest <- decode.field("digest", decode.map(decode.string, CommandDigest))
-  decode.success(#(commit, digest))
+  use cause <- decode.optional_field(
+    "cause",
+    model.TestFailure,
+    codec.cause_decoder(),
+  )
+  use handling <- decode.optional_field(
+    "handling",
+    model.PersonNeeded,
+    word_decoder(handlings, model.PersonNeeded, "Handling"),
+  )
+  decode.success(model.Rejection(commit:, digest:, cause:, handling:))
 }
 
 /// What a ticket was authorized to do. It holds no model output, and neither
@@ -1190,6 +1205,11 @@ const ceilings: List(#(String, model.Ceiling)) = [
 const heards: List(#(String, model.Heard)) = [
   #("silent", model.Silent),
   #("person_heard", model.PersonHeard),
+]
+
+const handlings: List(#(String, model.Handling)) = [
+  #("worker_told", model.WorkerTold),
+  #("person_needed", model.PersonNeeded),
 ]
 
 const slots: List(#(String, state.SlotKind)) = [

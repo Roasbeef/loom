@@ -22,6 +22,7 @@ import project/queue
 import project/readiness
 import project/stage
 import project/state
+import project/work
 import support/world.{
   accept, arrival, attach, automated, fresh, owner, run, step, ticket, ticket_of,
 }
@@ -1337,7 +1338,11 @@ pub fn a_person_may_publish_past_a_failing_check_test() {
       waiting_report(head_at("a", ProtectedPathsUntouched), NoQuestion),
       event.CheckFinished(
         ticket_of("c1"),
-        event.CheckRejected(CommitId("a"), model.CommandDigest("d")),
+        event.CheckRejected(
+          CommitId("a"),
+          model.CommandDigest("d"),
+          model.TestFailure,
+        ),
       ),
     ])
   let by = world_principal()
@@ -1450,7 +1455,8 @@ pub fn an_answer_must_echo_the_open_question_test() {
     step(asking, event.Answered(ticket_of("c1"), 4, world_principal()))
   assert effects
     == [event.Deliver(ticket_of("c1"), 1, model.answer_id(ticket_of("c1"), 4))]
-  assert state.stage_of(ticket(answered, ticket_of("c1"))) == stage.Idle
+  // The worker has been handed the answer, so it is at work and not idle.
+  assert state.stage_of(ticket(answered, ticket_of("c1"))) == stage.Working
 }
 
 // --- an answer reaches the worker --------------------------------------------------------
@@ -1689,4 +1695,157 @@ pub fn a_pull_request_opens_a_thread_the_ticket_follows_test() {
     opened.subscriptions,
     model.Subscription(ticket_of("c1"), model.ThreadId("gh-7")),
   )
+}
+
+// --- a failed check is visible and never leaves the ticket stuck ---------------
+
+fn rejected(commit: String, cause: model.FailureCause) -> event.Event {
+  event.CheckFinished(
+    ticket_of("c1"),
+    event.CheckRejected(CommitId(commit), model.CommandDigest("d"), cause),
+  )
+}
+
+// A ticket whose worker reported idle at commit `a`, and whose check failed
+// there for the given cause.
+fn failed_at_a(cause: model.FailureCause) -> state.State {
+  run(working(), [
+    waiting_report(head_at("a", ProtectedPathsUntouched), NoQuestion),
+    rejected("a", cause),
+  ])
+}
+
+fn stage_of_c1(current: state.State) -> stage.Stage {
+  state.stage_of(ticket(current, ticket_of("c1")))
+}
+
+pub fn a_test_failure_sends_the_live_worker_back_and_reads_working_test() {
+  let failed = failed_at_a(model.TestFailure)
+  assert stage_of_c1(failed) == stage.Working
+  let assert Some(found) = ticket(failed, ticket_of("c1")).rejected
+  assert found.handling == model.WorkerTold
+}
+
+pub fn the_workers_first_word_after_the_note_ends_the_sending_back_test() {
+  // Idle again at the same commit: the worker had nothing to add, and a person
+  // is now the only one who can move the ticket.
+  let again =
+    run(failed_at_a(model.TestFailure), [
+      waiting_report(head_at("a", ProtectedPathsUntouched), NoQuestion),
+    ])
+  assert stage_of_c1(again) == stage.PersonCheck
+  assert list.contains(
+    action.available(ticket(again, ticket_of("c1"))),
+    action.Recheck,
+  )
+}
+
+pub fn an_environment_failure_goes_to_a_person_and_not_the_worker_test() {
+  let failed = failed_at_a(model.EnvironmentFailure)
+  assert stage_of_c1(failed) == stage.PersonCheck
+  let assert Some(found) = ticket(failed, ticket_of("c1")).rejected
+  assert found.handling == model.PersonNeeded
+}
+
+pub fn the_worker_is_sent_back_for_three_failing_heads_and_no_more_test() {
+  // Each new head fails in turn. The first `max_failing_heads` are sent back.
+  let handled =
+    list.fold(["a", "b", "c", "d"], #(working(), []), fn(acc, commit) {
+      let next =
+        run(acc.0, [
+          waiting_report(head_at(commit, ProtectedPathsUntouched), NoQuestion),
+          rejected(commit, model.TestFailure),
+        ])
+      let assert Some(found) = ticket(next, ticket_of("c1")).rejected
+      #(next, [found.handling, ..acc.1])
+    })
+  assert list.reverse(handled.1)
+    == [
+      model.WorkerTold,
+      model.WorkerTold,
+      model.WorkerTold,
+      model.PersonNeeded,
+    ]
+  assert work.max_failing_heads == 3
+}
+
+pub fn a_rerun_of_the_same_commit_is_not_another_failing_head_test() {
+  let rerun =
+    run(failed_at_a(model.TestFailure), [
+      event.RecheckRequested(ticket_of("c1"), world_principal()),
+      rejected("a", model.TestFailure),
+    ])
+  assert ticket(rerun, ticket_of("c1")).failed_heads == 1
+}
+
+pub fn a_person_may_run_the_check_again_on_the_same_commit_test() {
+  let held = failed_at_a(model.EnvironmentFailure)
+  let #(next, effects) =
+    step(held, event.RecheckRequested(ticket_of("c1"), world_principal()))
+  assert effects == [RequestCheck(ticket_of("c1"), CommitId("a"))]
+
+  // The failure is cleared while the check runs, so the action is not
+  // offered twice and the ticket does not ask for a person the check is about
+  // to answer.
+  assert ticket(next, ticket_of("c1")).rejected == None
+  assert engine.apply(
+      next,
+      event.RecheckRequested(ticket_of("c1"), world_principal()),
+    )
+    == Error(event.NothingToRecheck(ticket_of("c1")))
+
+  // A pass at the same commit makes the ticket ready.
+  let ready = run(next, [passed("a")])
+  assert ticket(ready, ticket_of("c1")).readiness != readiness.InProgress
+}
+
+pub fn there_is_nothing_to_recheck_before_a_check_has_failed_test() {
+  assert engine.apply(
+      working(),
+      event.RecheckRequested(ticket_of("c1"), world_principal()),
+    )
+    == Error(event.NothingToRecheck(ticket_of("c1")))
+}
+
+pub fn an_answer_after_a_failed_check_leaves_the_ticket_a_next_step_test() {
+  // The worker was sent back, asked a question, and was answered.
+  let asked =
+    run(failed_at_a(model.TestFailure), [
+      event.Reported(
+        ticket_of("c1"),
+        1,
+        Waiting(Asking(1)),
+        head_at("a", ProtectedPathsUntouched),
+      ),
+    ])
+  assert stage_of_c1(asked) == stage.PersonAnswer
+  let answered =
+    run(asked, [event.Answered(ticket_of("c1"), 1, world_principal())])
+
+  // The worker has the answer, so it is working on it.
+  assert stage_of_c1(answered) == stage.Working
+
+  // It comes back idle with the same commit. No check is queued for a commit
+  // that already failed, so the ticket reads `person/check` with the re-run
+  // on offer, and not `idle`.
+  let #(again, effects) =
+    step(
+      answered,
+      waiting_report(head_at("a", ProtectedPathsUntouched), NoQuestion),
+    )
+  assert effects == []
+  assert stage_of_c1(again) == stage.PersonCheck
+  assert list.contains(
+    action.available(ticket(again, ticket_of("c1"))),
+    action.Recheck,
+  )
+}
+
+pub fn a_new_head_clears_the_failure_and_is_checked_test() {
+  let fixed =
+    run(failed_at_a(model.TestFailure), [
+      waiting_report(head_at("b", ProtectedPathsUntouched), NoQuestion),
+    ])
+  assert ticket(fixed, ticket_of("c1")).rejected == None
+  assert stage_of_c1(fixed) == stage.Idle
 }

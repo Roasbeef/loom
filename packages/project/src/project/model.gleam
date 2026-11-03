@@ -730,6 +730,47 @@ pub type Heard {
   PersonHeard
 }
 
+// --- failed checks -----------------------------------------------------------
+
+/// What the host made of a failed check, in the one distinction the engine
+/// acts on. The host classifies from the exit status and the output; the
+/// engine takes the word and never reads the output itself.
+pub type FailureCause {
+  /// The check ran and reported a failure of the work, such as a failing test.
+  /// The worker can be asked to fix it.
+  TestFailure
+
+  /// The check could not run as written: the shell could not start it, or a
+  /// command it names was not found. Nothing in the worker's commit could have
+  /// caused it, so only a person can mend it.
+  EnvironmentFailure
+}
+
+/// Whether the worker was sent back to a failed check. The word is about one
+/// rejection: the first report the worker makes afterwards ends it, because
+/// after that the worker's state says what it is doing.
+pub type Handling {
+  /// The host handed the failure to the live worker, which is now handling it.
+  WorkerTold
+
+  /// Nobody is handling the failure, so a person has to.
+  PersonNeeded
+}
+
+/// A failed check, kept on the ticket until its head moves or a check passes.
+pub type Rejection {
+  Rejection(
+    /// The commit the check ran against.
+    commit: CommitId,
+    /// The digest of the command that ran.
+    digest: CommandDigest,
+    /// What kind of failure it was.
+    cause: FailureCause,
+    /// Whether the worker was sent back.
+    handling: Handling,
+  )
+}
+
 // --- routing -----------------------------------------------------------------
 
 /// How a trigger relates to another ticket.
