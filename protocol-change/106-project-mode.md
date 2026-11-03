@@ -712,3 +712,110 @@ action leaves the list at once, but two re-runs on different clients in the same
 the second verdict is stale. A ticket whose assignment ended without the host ever sending
 `AssignmentEnded` as exited or crashed (a sequence nothing produces) can still read `idle`, and the
 model-based test says so.
+
+## Addendum: settings held per project, and git-cow in the release (2026-11-02)
+
+**Affects**: `[project]` by meaning, not by key: it becomes the default for every project. Three new
+`projects.*` commands (`settings`, `set_settings`, `propose`). One new host record in the project ledger,
+`setting`. One new field on the template build request. `loom project` gains `settings`, `set` and
+`unset`, and `init` gains `--check` and `--setup`. A release gains `bin/git-cow`. No engine event, no
+frozen interface, no catalogue or ledger schema, and no SQL changes: a host record is a JSON line in the
+ledger, and a reader that predates it reads the line as a record it does not know and keeps its
+defaults.
+
+**The problem.** `[project]` was daemon-wide and read once at boot. Two repositories on one daemon shared
+one `check` and one `setup`, and any change meant editing `loom.toml` and restarting the daemon. A person
+setting a project up had to know the commands and where to write them.
+
+**What was considered.**
+
+- Writing the settings back into `loom.toml`: rejected. The file is the owner's, comments and ordering
+  included, and a daemon that rewrites it races an editor and loses a diff the owner meant to keep.
+- A column or table in the catalogue: rejected. A setting is project history (who changed what, when),
+  and the project's ledger already is the ordered, replayable record of a project. Putting it in the
+  catalogue would add a store and a migration for no property the ledger lacks.
+- Per-project `[project.<id>]` tables in the file: rejected. They need the project's id, which exists
+  only after the project is made, and they still need a restart.
+- A write that replaces all five keys: rejected. A client that read an old copy would overwrite a newer
+  change unseen, and `publish` could be switched on by a write that was about something else.
+- Letting the router propose settings: rejected. Repository text is untrusted, and a setting is a
+  command the host runs. The owner confirms every value.
+
+**The decision.**
+
+- *Precedence.* The effective value of a key is the project's own, else the `[project]` file value, else
+  the built-in default. The project holds `check`, `setup`, `publish`, `max_workers` and
+  `protected_paths`. `token_ceiling` and the event sources stay daemon-wide. A key the project never set
+  follows the file, including a file that changes while the daemon is down.
+- *Storage.* Each change is one host record, `{"host":"setting","key","values","by","at_ms"}`, where
+  `values` is the new words (one for a command, the mode or the count; any number for `protected_paths`)
+  or `null` to give the key back to the file. Replay folds the records in order and so rebuilds what the
+  project holds, with who changed it and when. Compaction keeps every record. A record this build cannot
+  read is skipped, since a ledger line is history and must not stop a project from starting.
+- *The same rules as the file.* A value is parsed by the functions `client/project_settings` checks the
+  file with, so it is refused for the same reason and in the same words.
+- *No restart.* The actor replaces its policy and the engine's `max_workers` when a record is written.
+  A changed `check` or `setup` changes the template digest: the template built with the old commands is
+  not used, a build with the new ones is queued, and new workers wait for it while workers already
+  running keep their clones and are not stopped. A build that was in flight under the old commands ends,
+  has its answer dropped because it carries the digest it started with, and the wanted build is asked
+  for. A change to `publish`, `max_workers` or `protected_paths` rebuilds nothing.
+- *Authority.* The three commands are the owner's alone, checked per request like every `projects.*`
+  mutation. The router has `route`, `project_read` and `reply`; a worker has `project_report` and
+  `project_handback`. None of them reaches a setting and `project_read` has no resource for one, so no
+  model, no worker and no GitHub text can change a value. A test pins the tool lists.
+- *Conflict.* `projects.settings` replies a `revision`, the number of changes the project has had.
+  `projects.set_settings` echoes it, and a write that read an older one is `conflict` and writes nothing.
+- *Publish.* Turning `publish` from `off` to `pull_request` is refused unless the request carries
+  `publish_to` equal to the URL the settings reply showed (`publish_url`, the origin that was pinned when
+  the project was made). The refusal states that URL. The check covers the whole write, so a write that
+  carries other keys beside it is refused whole, and a project with no remote cannot turn it on. Turning
+  it off needs nothing. Inferred-work rules and `auto` are untouched.
+- *Proposals.* `projects.propose` reads a short list of files in the root of the project's workspace
+  (`Makefile`, `go.mod`, `gleam.toml`, `Cargo.toml`, `package.json`, `pyproject.toml` and the lock files
+  that choose an installer) and answers `{check, setup, notes}`, each proposal `{command, because}`. It
+  runs nothing. A file is read only if it is a regular file reached without a symbolic link and within
+  256 KiB; a `Makefile` is read for target names matching `[a-z][a-z0-9_-]{0,31}` in its first 5000
+  lines, and a `package.json` for script names. Every command is one of the table's fixed strings,
+  chosen by the presence of an allow-listed name (`check`, `test`, `unit`, `lint` for a check; `deps`,
+  `setup`, `bootstrap`, `vendor` for a setup), so no text from the repository reaches a proposal. A
+  marker that was present and not read is a `note`. Nothing is applied by the command.
+- *Wire shape.* `projects.settings` and `projects.set_settings` reply `{project, revision, publish_url,
+  settings:[{key, value:[…], source:"project"|"file"|"default", changed_by, changed_ms}]}`. A page can
+  draw it as it is. `session_view/project_settings_view` holds the decoders both hosts use.
+- *CLI.* `loom project settings` prints each key with its value and where it came from. `set <key>
+  <value>…` and `unset <key>` change one key for the project of the working directory. `init` makes the
+  project, then either takes `--check` and `--setup`, or asks the daemon for a proposal and asks the
+  person at the terminal to confirm each key or type another command. With no terminal it prints what it
+  would use and the command that sets it, and sets nothing. Turning publish on takes `--publish-to`.
+- *A refused template is caught when it is built.* After the tree is sealed and before it is swapped in,
+  the build copies it once with the copier the project's workers will use, to a scratch name that is then
+  removed. Only the copier's own refusal (exit 2) fails the build, as a setup failure with the copier's
+  words, and the last good template stays. A copier that is missing or fails otherwise says nothing about
+  the tree, because every real copy falls back to a plain one in that case.
+- *git-cow in the release.* See below.
+
+**git-cow ships.** `scripts/build-git-cow.sh` builds `github.com/roasbeef/git-cow` at the commit
+`186b2e6f5c89` and `scripts/release.sh` puts the binary at `bin/git-cow`, beside `loom-exec`, where
+`client/install` already looks first. The commit and the module hash of its source (`h1:Lo7cR7…`) are
+pinned in the script, and it refuses to build if Go's hash of what it downloaded differs. Go also checks
+the download against the public checksum database. The source is fetched and not vendored: building a
+release already needs the network for the Go module cache (the sandbox helper and the microVM launcher
+are built from `go.sum` the same way), so a fetch adds no new requirement, and a vendored copy would be a
+second place a fix has to land. Moving the pin is a one-line change to a commit and a hash, reviewed as
+the diff between two commits of a small repository. `make release-smoke` now proves the shipped binary:
+the server's lookup answers `<root>/bin/git-cow`, and with only `/usr/bin:/bin` on `PATH` it copies a
+repository into an independent one with its own `.git`. The module's `go.mod` declares the lower-case
+path `github.com/roasbeef/git-cow`, and the Go module proxy is case-sensitive, so the capitalised
+`Roasbeef/git-cow` address that GitHub accepts is refused by `go install`; the script uses the declared
+path.
+
+**What it costs.** The owner can now change what the host runs for a project, so the command is a
+credential in the sense that matters: a wrong `setup` runs with the network on. That is why the daemon
+accepts the change only from the owner, why a proposal is never text from a file, and why `publish` needs
+its URL named. A changed `setup` or `check` holds new workers until its template builds, which can be as
+long as a dependency download. Two clients that write in the same moment get one `conflict` and a second
+read. The ledger gains a line per change, kept for good. A release is about 2.9 MB larger and its build
+needs the network for one more module, which it already needed for two. The probe copy of a template
+costs one git-cow copy once per build, which copies the bytes where the file system cannot clone.
+`token_ceiling` and the sources still need the file and a restart.

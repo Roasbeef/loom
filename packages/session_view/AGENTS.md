@@ -1189,6 +1189,17 @@ the earliest staging poll or deadline, the instant a requested read is owed, and
 the instant a watched board goes stale, or `None` when detached or idle. A past
 instant means a tick is owed now.
 
+## Project settings (protocol-change/106)
+
+`session_view/project_settings_view` is the total decoder and the words for `projects.settings`,
+`projects.set_settings` and `projects.propose`, shared by `loom project settings` and the page that
+draws the same body. `decode_settings` reads the project, the `revision` a write must echo, the
+`publish_url` and one `Setting` for each key (value words, `Source`, who changed it and when). A
+source it does not know is kept as `UnknownSource` text, a row with no key is dropped, and every
+string goes through `text_hygiene`. `lines` and `proposal_lines` are the terminal's text and
+`source_words` the one phrase for where a value came from. Like the rest of the package it holds no
+`@external`.
+
 ## Project board (protocol-change/106)
 
 `session_view/project_board` is the total decoder and the words for

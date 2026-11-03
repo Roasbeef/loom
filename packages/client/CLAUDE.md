@@ -10356,6 +10356,27 @@ ordinary top-level worker session per ticket assignment
   `workspace_policy.private_masks` masks `<project>/template` for sessions and checks.
   The test pair is `project_template_test` (real sandbox, a loopback server for the network,
   `git-cow` when installed) and `project_template_host_test` (fake build port).
+- Settings held per project (protocol-change/106, "settings held per project"): `[project]` is the
+  daemon's default and `check`, `setup`, `publish`, `max_workers` and `protected_paths` are also
+  held in each project's ledger. `client/project_overrides` is pure: `Key`, `Override` (only
+  `parse` builds one, through `project_settings.command_text`, `path_patterns`, `publish_word` and
+  `worker_count`, the functions the file is checked with), `Overrides`, `Values`, `effective` and
+  `source_of`. `project_host` keeps `file_values`, `held`, `changed` and `revision`;
+  `keep_record(SettingChanged)` goes through `hold_setting` and `in_force`, which rewrite
+  `config.policy`, `config.max_workers` and the engine's `max_workers`, so replay and a write take
+  one path. `ChangeSettings` checks the revision, then `publish_refusal` (off to `pull_request`
+  needs `publish_to` equal to `ports.remote_url`), then writes one record per key that moves,
+  then `retemplate`: a moved `template_digest` makes the template `Preparing` and asks for a build,
+  unless one runs (`Host.building`), whose `TemplateSettled(outcome, digest)` is dropped when its digest is
+  not the current one. The three wire commands are `project_settings_wire` bodies served by
+  `server.project_settings_read`, `project_settings_write` and `project_propose` through
+  `project_command_in_words`. `client/project_proposal` is the fixed table: `read` takes regular files
+  only (no link, 256 KiB), `propose` is pure, and no proposal is text from a file. `project_template.Request.copier`
+  makes the build copy the sealed tree once with `project_repo.probe_copy` before the swap; exit 2 is
+  `Failed(Setup)`. A release ships `bin/git-cow` (`scripts/build-git-cow.sh`, pinned commit and hash).
+  Tests: `project_settings_host_test` (real actor and ledger, fake build), `project_overrides_test`,
+  `project_proposal_test` (fixtures, a symlinked and a huge `Makefile`), `project_template_test`
+  (the refused template) and `daemon_server_test` (a member is `forbidden`).
 - The GitHub source is four modules and a section of `project_host`.
   `client/project_github` decodes REST answers totally and translates each item
   into the gate's inputs (sender class from the owner's literal lists, an exact

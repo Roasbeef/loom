@@ -63,6 +63,7 @@ A project is a catalogue row and a role over ordinary sessions, with no session 
 | `project_host` (`Host`) | The engine state in memory, the ledger connection, `Watcher`, the in-memory `runs` | The catalogue, sessions, Git and GitHub, reached through `Ports` |
 | `project_book` | A table of each project's `Handle` and each ticket's `Mandate` | Any decision: the table never calls into an actor |
 | `project_start` | Making a project, `ports_for`, `seat`, `reopen` | Ticket state |
+| `client/project_overrides`, `project_proposal` | The five keys a project holds, their precedence over `[project]`, and the table that proposes `setup` and `check` | Persistence, which `project_host` does, and any command run |
 | `storage/project_ledger` | The SQLite file's schema and its transactions | A process: it runs in the actor |
 | `client/project_repo`, `project_publish` | `host.git`, the template, per-ticket clones, check trees, the push and the pull request | Whether a commit may be published, which the engine decides |
 | `client/project_template`, `template_state` | A template build (cut, `setup`, base check, swap) and the pure state of where the template stands | When a build runs, which the actor decides, and the sandbox, which `worktrees` provides |
@@ -425,13 +426,47 @@ flowchart TD
     Setup --> Check["run_check: network off"]
     Check -- "nonzero" --> Red["Failed(BaseCheck)"]
     Check --> Seal["sound_template, exclude_untracked"]
-    Seal --> Swap["swap_template: two renames"]
+    Seal --> Probe["probe_copy: git-cow copy to a scratch name, removed"]
+    Probe -- "exit 2, the copier refuses the tree" --> Refused["Failed(Setup), last good template stays"]
+    Probe --> Swap["swap_template: two renames"]
     Swap --> Built["Built(commit)"]
 ```
 
 A `start` row for a new session is left untouched while the state is `Preparing` or `Broken`: it is neither settled nor deferred, so its attempts do not count and the ticket stays `queued`. A restart replays the two records and queues the build row again when no template is ready. The build removes `.template.making` before it cuts, so a half-built tree is never the template, and `restore_interrupted_swap` puts back a template that a swap left under its waiting name. The base is looked at every ten minutes (`template_look_ms`) and rebuilt only if it moved. A person retries with `projects.retry` and the ticket name `setup`.
 
 `setup` and `check` see the daemon's own `PATH`, read once when the machine is read (`executor_plane.Machine.check_path`). Their jails are the check's: the host readable with the state-root, credential and project-file masks, one writable root, and `HOME` at `<tree>/.loom-check-home` with `TMPDIR` under it. The host makes both directories in the sandbox before a command runs (`worktrees.prepare_home`), because the jail leaves `/tmp` unwritable and Go fails there. A setup's limits are lifted (`worktree_git.setup_runner`): the base leaves the wall to the caller's timeout, and memory and processes are 8 GiB and 4096.
+
+## Settings
+
+`[project]` is the daemon's default. A project holds its own `check`, `setup`, `publish`, `max_workers` and `protected_paths` in its ledger, and the value in force is the project's own, else the file's, else the built-in default. `client/project_overrides` is the pure part: the five keys, `parse` (which calls the same functions `client/project_settings` validates the file with), the precedence, and `source_of`. `project_host` holds the rest, in four fields of `Host`: `file_values` (what the file gave at boot), `held` (what the project holds), `changed` (who and when, by key) and `revision`. `config.policy` and the engine's `max_workers` are always the values in force, recomputed by `in_force` whenever a `SettingChanged` record is folded, whether that is at replay or at a write.
+
+```mermaid
+flowchart TD
+    Cmd["projects.set_settings<br/>owner, per request"] --> Parse["project_overrides.parse<br/>the file's rules, the file's words"]
+    Parse --> Rev{"revision echoed<br/>equals the project's?"}
+    Rev -- "no" --> Conflict["conflict, nothing written"]
+    Rev -- "yes" --> Pub{"publish off to pull_request?"}
+    Pub -- "publish_to is not the remote's URL" --> Refuse["bad_request, states the URL, the whole write refused"]
+    Pub -- "named, or not turned on" --> Rec["one SettingChanged record per key that moves"]
+    Rec --> Fold["keep_record: hold_setting, in_force"]
+    Fold --> Digest{"template digest<br/>of setup + check moved?"}
+    Digest -- "no" --> Done["reply the settings in force"]
+    Digest -- "yes, no build running" --> Ask["Preparing, ask_for_build"]
+    Digest -- "yes, a build is running" --> Mark["Preparing, the stale answer re-asks"]
+    Ask --> Done
+    Mark --> Done
+```
+
+| Question | Answer |
+| --- | --- |
+| Where is a setting stored? | A `{"host":"setting","key","values","by","at_ms"}` line in the project's ledger. No schema, catalogue or SQL change: a host record is a JSON line, and retention keeps every one. |
+| What does replay do with a line it cannot use? | Skips it. A key this build does not know, or a value it would now refuse, is history and must not stop a project from starting. |
+| What happens to a build in flight when `setup` changes? | `TemplateSettled` carries the digest the build started with. A different digest is dropped without being recorded, `building` clears, and the build that is wanted is queued. The row is not requeued while one runs, so two builds never share `.template.making`. |
+| What does a running worker see? | Nothing. Its session, clone and jail are untouched. A changed `max_workers` changes only how many new workers are scheduled. |
+| Who can reach a setting? | The owner, through three commands that `project_command_in_words` checks on every request. The router's tools are `route`, `project_read` and `reply`, a worker's are `project_report` and `project_handback`, and none has a settings seam. |
+| Why must a publish turn-on name its URL? | So a write that is about something else cannot start sending branches outward. The sentence that refuses it states the URL, and the check is on the whole write. |
+
+`client/project_proposal` is the derive-before-asking half. It reads at most twelve named files in the workspace root, as regular files, not through a link, within 256 KiB (`read`), then `propose` answers from a table that is pure over the files so that it is tested on fixtures. A `Makefile` is read for target names matching `[a-z][a-z0-9_-]{0,31}` in its first 5000 lines, and a `package.json` for script names; every command in a proposal is one of the module's own strings, picked by the presence of an allow-listed name. Repository text is untrusted and never reaches a proposal. `projects.propose` is a read: the owner confirms by sending `projects.set_settings`.
 
 ## Storage
 
@@ -515,7 +550,10 @@ This document rests on four reader summaries against `be5a7b58e`. Its constants 
 - A person stopping a worker session from outside the project fails its ticket.
 - The restart note is queued once per assignment, so a second restart of the same assignment reopens its session through the `reopen` row and doesn't tell the worker again.
 - One worker whose session had last been attached by a terminal read `worker_failed` after a graceful restart in a live drive. A graceful stop with terminals attached to two workers records no loss in `project_daemon_test`, and no cause is established. A refused build no longer rings, which closes one way a client's open of a project session could have failed an assignment. The control command `sessions.stop`, a page's stop and a session being made shareable each write a `daemon.session_stop` line with the principal, the session and the route (`control`, `page`, `shareable`), so the next occurrence can be attributed to a stop or ruled out. Stops by `top_host`, the session mover and the restart path write no such line.
-- A template that `git-cow` refuses (a socket or a link that `setup` left under `.git`, say) is found by the first worker that needs a copy, and that start fails as a start does, five attempts and then `WorkerFailed`. The build checks the things it can name cheaply (`sound_template`) and does not make a trial copy.
+- A template that `git-cow` refuses (a socket or a link that `setup` left under `.git`, say) is found when the template is built: `probe_copy` copies the sealed tree once, with the copier the project's workers will use, to a scratch name before the swap, and exit 2 fails the build as a setup failure. A development tree with no `git-cow` has no copier to ask, and a plain copy accepts any tree.
+- `token_ceiling`, `queue_limit`, `attention_limit` and the sources are daemon-wide and need `loom.toml` and a restart. Only five keys are held per project.
+- Two clients that read the settings and write in the same moment get a `conflict` for the second. A write the ledger takes only in part (a failure after the first record) leaves the earlier records in force and the actor's memory at the state before the write, until the next restart replays them.
+- A project whose `setup` is cleared has no template, but the directory a former setup built stays on disk until the project is removed.
 - A copy that is reading the old template while a rebuild swaps it in can fail. The ticket's start retries, and a check's `DidNotFinish` is run again once. The window is the two renames of one swap, at most every ten minutes.
 - The session policy masks the template only if it exists when the policy is built (`protecting_projects` masks what is on disk), and the swap leaves `template` absent for the time between its two renames. A jailed call that starts in that window is refused with the mask error and the model sees a failed command.
 - `setup` has the network and the whole host readable minus the masks, and writes only the template. It runs the repository's scripts, so a malicious base commit can read what the host reads and send it anywhere. The recorded base is the owner's own `HEAD`, which is what makes this the owner's code and not a worker's.
@@ -524,5 +562,5 @@ This document rests on four reader summaries against `be5a7b58e`. Its constants 
 - The environment heuristic (`project_host.failure_cause`) reaches only what a check prints in words: status 126 or 127, `command not found` and `executable file not found`. A missing library, a refused network call, a wrong tool version and output in another language read as a test failure and go back to the worker. A test that prints `command not found` for its own reasons goes to a person.
 - A re-run (`projects.recheck`) while another client's re-run is in flight starts a second check, and the second verdict is stale. The engine cannot see the host's pending check row.
 - A session that ended with `AssignmentEnded` as exited or crashed, with nothing owed, reads `idle`. The host never sends that event (a session that dies is `WorkerFailed`), so the state is reachable only from a ledger written by another producer, and the `stuck` invariant of the model-based test exempts it.
-- `git-cow` is not shipped by `make dist`. The ladder looks beside the server first (`install.git_cow`) and then on `PATH`.
+- `git-cow` is built from a pinned commit by `make release` (`scripts/build-git-cow.sh`) and lands at `bin/git-cow`; the ladder looks there first (`install.git_cow`) and then on `PATH`. A release is built with the network, as it already is for the Go module cache.
 - Remote workers depend on the #1137 bundle work, so workers run on the owning machine. Whether `active_tool_names` alone closes every effect path for a router on a remote executor hasn't been tested.

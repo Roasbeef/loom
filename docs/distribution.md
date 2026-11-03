@@ -220,6 +220,43 @@ What the release does instead:
   selftest`'s ENFORCED/SKIPPED verdict evidence about the *shipped*
   helper rather than about a development build of it.
 
+## git-cow ships beside the helper
+
+Project mode copies a project's template for every worker and every check
+(`docs/architecture/project-mode.md`). The copy is `git-cow copy`, which
+shares disk blocks where the file system can clone them and copies the bytes
+where it cannot, or a plain recursive copy when no `git-cow` is found. Both
+make the same tree, and a release without the binary pays the slow price on
+every ticket without saying so. So the release carries it: `bin/git-cow`, next
+to `bin/loom-exec`, found by `client/install` before `PATH` is asked.
+
+- **Fetched at a pinned commit, not vendored.** `scripts/build-git-cow.sh`
+  builds `github.com/roasbeef/git-cow` at one commit. The script holds the
+  commit and the module hash (`h1:`) of the source at that commit, and refuses
+  to build if the hash Go computed for what it downloaded differs. Go also checks
+  the download against the public checksum database. A release already needs
+  the network to fill the Go module cache for the sandbox helper and the
+  microVM launcher, so the fetch adds no requirement of its own, and a vendored
+  copy would be a second place a fix has to land. The cost is one more module
+  in that cache, and that a release cannot be built on a machine with no route
+  to the module proxy and no warm cache, which was already true. Moving the pin
+  is a change to two lines, reviewed as the diff between two commits of a small
+  repository.
+- **Not offline-hostile.** Nothing is fetched when the release runs. The binary
+  is one of the files the tarball puts there, listed in `SHA256SUMS` with the
+  other executables.
+- **Built with the helper's flags** (`-trimpath -ldflags="-s -w"`), so two
+  builders with the same Go toolchain make the same bytes. It is about 2.9 MB.
+- **The module path is lower-case.** The repository's address on GitHub is
+  `Roasbeef/git-cow`, GitHub ignores case, and its `go.mod` declares
+  `github.com/roasbeef/git-cow`. The module proxy does not ignore case and
+  refuses the capitalised path, so the script uses the declared one.
+- **`make git-cow`** builds the same binary into `build/git-cow` for a
+  development tree that wants copy-on-write copies. `make release-smoke`
+  checks that the server's lookup answers `<root>/bin/git-cow`, and that with
+  only `/usr/bin:/bin` on `PATH` the shipped binary copies a repository into an
+  independent one.
+
 ## The installation anchor: `code:root_dir()`
 
 Four of the release's own components are looked for by the running

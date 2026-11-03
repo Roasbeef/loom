@@ -1203,6 +1203,15 @@ the launcher's own command, for fetching the artifacts. `main`
   one external is `tui/internal/ffi_herdr.exchange`, a deadline-bounded
   `gen_tcp` unix-domain round trip, because no stdlib or weft surface opens
   one.
+- `tui/project_settings_cli` is `loom project settings`, `set`, `unset` and the setting half of
+  `init` (protocol-change/106, "settings held per project"). It takes the daemon as a `Request`
+  function and the terminal as an `Ask` function (`ffi_terminal.read_console_reply`, which refuses a
+  caller that is not a terminal), so it is tested against a stand-in. Every write reads the settings
+  first for the `revision` and echoes it; turning `publish` on without `--publish-to` is refused with
+  the URL before anything is sent. `init` with neither `--check` nor `--setup` asks for
+  `projects.propose` and asks the person to confirm each key, and where no one can be asked prints
+  what it would use and the `loom project set` that sets it. The decoders are
+  `session_view/project_settings_view`. Tests: `project_settings_command_test`.
 - `tui/frame` renders a `Buffer` as rows of text, folding a wide glyph's
   continuation cell into the glyph and dropping the trailing blanks a
   full-rectangle paint always leaves. It is what a golden file holds and what
