@@ -169,6 +169,14 @@ case "${1:-}" in
 		exit 1
 	fi
 
+	# Upstream's Makefile builds the kernel for the host's architecture, and
+	# the only dylib linked so far serves an arm64 guest. An x86_64 kernel
+	# links into it without complaint and fails only when a guest boots.
+	if [ "$(uname -m)" != aarch64 ]; then
+		echo "build-libkrunfw.sh: --kernel builds for this machine, which is $(uname -m); the guest kernel must be aarch64" >&2
+		exit 1
+	fi
+
 	out=$(absolute "${2:?usage: build-libkrunfw.sh --kernel OUTPUT_DIR}")
 	work=$(absolute "${WORK_DIR:-${out}/../firmware-work}")
 	fetch_sources "${work}"

@@ -255,11 +255,14 @@ jobs:
 
   # The Landlock kernel is built on Linux, because the kernel build needs a
   # Linux userland, and linked into a dylib on macOS, because the dylib is a
-  # Mach-O. kernel.c is the hand-off between them (build-libkrunfw.sh).
+  # Mach-O. kernel.c is the hand-off between them (build-libkrunfw.sh). The
+  # kernel is built for the machine it is built on, and the dylib serves an
+  # arm64 guest, so the job runs on an arm64 runner; an x86_64 kernel inside
+  # the arm64 dylib makes the runner exit as soon as the guest starts.
   firmware-kernel:
     needs: prepare
     if: ${{ needs.prepare.outputs.skip != 'true' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
