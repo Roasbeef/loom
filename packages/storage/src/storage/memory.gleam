@@ -52,8 +52,9 @@ import core/tx.{
   CommitResult, Corruption, DeleteRegister, Expect, Faulted, InsertEntry,
   InsertUsage, SetRegister, StaleExpectation,
 }
-import gleam/bool
 import gleam/dict.{type Dict}
+import gleam/dynamic/decode
+import gleam/erlang/atom
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -747,9 +748,8 @@ fn take_limit(rows: List(row), limit: Option(Int)) -> List(row) {
 /// Opens a fresh in-memory session wrapped in an actor and returns the
 /// uniform `Storage` handle. Commit timestamps come from the injected
 /// clock, which the actor threads so stepping fixtures advance. Calls
-/// block until the actor replies (and panic if the actor process has
-/// died, which only happens if the owning supervisor killed it — the
-/// storage code itself never crashes the actor).
+/// block until the actor replies or its monitored process exits, returning an
+/// error value rather than exiting the caller if the actor is gone.
 ///
 /// ## Examples
 ///
@@ -881,16 +881,12 @@ pub fn retire_closed(handle: Subject(Message)) -> Result(Nil, StorageError) {
   }
 }
 
-/// Retires the actor at `owner`, after confirming it is still running.
-///
-/// A pid that is already dead means an earlier retirement finished, which is
-/// the idempotent case. The check precedes the monitor so a DOWN carrying
-/// `noproc` is never mistaken for a lost proof.
+/// Retires the actor at `owner`, treating a `noproc` monitor notification as
+/// the idempotent already-gone case.
 fn retire_live(
   handle: Subject(Message),
   owner: process.Pid,
 ) -> Result(Nil, StorageError) {
-  use <- bool.guard(when: !process.is_alive(owner), return: Ok(Nil))
   let watch = process.monitor(owner)
   let answer = process.new_subject()
   process.send(handle, Retire(answer))
@@ -936,7 +932,17 @@ type RetireStep {
 fn exit_proof(down: process.Down) -> Result(Nil, StorageError) {
   case down {
     process.ProcessDown(reason: process.Normal, ..) -> Ok(Nil)
-    process.ProcessDown(reason:, ..) | process.PortDown(reason:, ..) ->
+    process.ProcessDown(reason: process.Abnormal(reason), ..) ->
+      case decode.run(reason, atom.decoder()) == Ok(atom.create("noproc")) {
+        True -> Ok(Nil)
+        False ->
+          Error(BackendFault(
+            "memory retirement lost proof: " <> string.inspect(reason),
+          ))
+      }
+    process.ProcessDown(reason: process.Killed, ..) ->
+      Error(BackendFault("memory retirement lost proof: killed"))
+    process.PortDown(reason:, ..) ->
       Error(BackendFault(
         "memory retirement lost proof: " <> string.inspect(reason),
       ))

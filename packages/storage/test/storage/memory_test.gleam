@@ -8,6 +8,8 @@ import core/tx.{
   Tx,
 }
 import gleam/dict
+import gleam/erlang/process
+import gleam/list
 import gleam/option.{None, Some}
 import storage/memory
 import storage/storage
@@ -137,4 +139,17 @@ pub fn retire_refuses_an_unsealed_actor_and_stops_a_sealed_one_test() {
   assert memory.retire_closed(store.handle) == Ok(Nil)
   assert storage.stats(store) == Error(storage.HandleClosed)
   assert storage.close(store) == Ok(Nil)
+}
+
+pub fn concurrent_retirement_is_idempotent_test() {
+  let assert Ok(store) = memory.open(clock.fixed(1000)) as "memory opens"
+  assert storage.close(store) == Ok(Nil)
+  let results = process.new_subject()
+  list.each([1, 2], fn(_) {
+    process.spawn(fn() {
+      process.send(results, memory.retire_closed(store.handle))
+    })
+  })
+  assert process.receive(results, 5000) == Ok(Ok(Nil))
+  assert process.receive(results, 5000) == Ok(Ok(Nil))
 }
