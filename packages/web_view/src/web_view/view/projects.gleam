@@ -448,25 +448,22 @@ fn failure(ticket: board.Ticket) -> List(Element(message)) {
 /// drawn in the signal colour and any other result in the plain one. The sentence
 /// is not a `home-note`, which fades after four seconds: the result stays.
 fn check(ticket: board.Ticket, now: Int) -> List(Element(message)) {
+  // A ticket whose check has made nothing draws nothing.
   case ticket.check {
     None -> []
     Some(found) -> {
-      let failing = case found.outcome {
-        board.CheckFailed
-        | board.CheckUnfinished
-        | board.CheckWaiting
-        | board.CheckUnknown(_) -> [attribute.class("warn")]
-        board.CheckPassed | board.CheckOverridden -> []
-      }
       let sentence =
         html.p(
           [
             attribute.class("home-card-fact"),
             attribute.class("home-check"),
-            ..failing
+            ..check_marks(found.outcome)
           ],
           [html.text(board.check_words(found, now))],
         )
+
+      // The output, when the daemon recorded it, is one text node in a box of
+      // its own below the sentence.
       case found.output {
         Some(printed) -> [
           sentence,
@@ -475,6 +472,20 @@ fn check(ticket: board.Ticket, now: Int) -> List(Element(message)) {
         None -> [sentence]
       }
     }
+  }
+}
+
+/// The class that marks a result that did not go well, so a failure is not
+/// mistaken for a pass at a glance. A pass or an override adds none.
+fn check_marks(
+  outcome: board.CheckOutcome,
+) -> List(attribute.Attribute(message)) {
+  case outcome {
+    board.CheckFailed
+    | board.CheckUnfinished
+    | board.CheckWaiting
+    | board.CheckUnknown(_) -> [attribute.class("warn")]
+    board.CheckPassed | board.CheckOverridden -> []
   }
 }
 

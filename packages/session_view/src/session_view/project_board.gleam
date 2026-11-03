@@ -1034,6 +1034,8 @@ pub fn delivery_words(delivery: Delivery) -> String {
 /// // "The check failed at 1234abcd5678, 3m ago. The check could not run as written, so the commit did not cause it, and the worker was not told."
 /// ```
 pub fn check_words(check: Check, now_ms: Int) -> String {
+  // A check the daemon gave no time for is described without one, and not as
+  // having just run.
   let when = case check.at_ms {
     Some(ran) ->
       case age_words(Some(ran), now_ms) {
@@ -1042,6 +1044,7 @@ pub fn check_words(check: Check, now_ms: Int) -> String {
       }
     None -> ""
   }
+
   check_sentence(check, when)
 }
 
@@ -1063,6 +1066,8 @@ pub fn check_words_untimed(check: Check) -> String {
 fn check_sentence(check: Check, when: String) -> String {
   let at = string.slice(check.commit, 0, 12)
 
+  // Each outcome the daemon names has a sentence of its own. One this client
+  // does not know is quoted as sent and never guessed at.
   case check.outcome {
     CheckPassed -> "The check passed at " <> at <> when <> "."
     CheckOverridden ->

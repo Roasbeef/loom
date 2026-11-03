@@ -2147,6 +2147,7 @@ fn project_ticket_outcome(
   use read <- result.try(project_request(host, "projects.ticket", named))
   let detail = project_board.decode_detail(read)
 
+  // Each verb is one daemon command and one line of text for the terminal.
   case verb {
     Publish -> {
       use published <- result.map(project_request(
@@ -2371,20 +2372,25 @@ fn board_text(board: json.JsonValue) -> String {
   }
 }
 
-// The line under a ticket that says what its check made of the latest commit,
-// or nothing when it made nothing yet. It is the one sentence both hosts use.
+/// The line under a ticket that says what its check made of the latest commit,
+/// or nothing when it made nothing yet. It is the one sentence both hosts use.
 fn check_line(row: json.JsonValue) -> String {
+  // A row without a check, or with one that names no commit, has no line.
   case row {
     json.Object(fields) ->
       case list.key_find(fields, "check") {
-        Ok(found) ->
-          case project_board.decode_check(found) {
-            Some(check) -> "\n  " <> project_board.check_words_untimed(check)
-            None -> ""
-          }
+        Ok(found) -> checked_line(found)
         Error(Nil) -> ""
       }
     _ -> ""
+  }
+}
+
+/// The line for one `check` object, or nothing when it names no commit.
+fn checked_line(found: json.JsonValue) -> String {
+  case project_board.decode_check(found) {
+    Some(check) -> "\n  " <> project_board.check_words_untimed(check)
+    None -> ""
   }
 }
 

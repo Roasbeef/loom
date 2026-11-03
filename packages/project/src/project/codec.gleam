@@ -15,6 +15,18 @@
 ////
 //// Only `gleam/json` and `gleam/dynamic/decode` are used, which keeps the
 //// package off the Erlang-only dependencies lint R6 forbids.
+////
+//// ## Flow
+////
+//// `encode` → `decode`
+////
+//// 1. `encode` writes an event as a tagged object, and `decode` reads one back
+////    totally.
+//// 2. `check_json` and `check_decoder` carry a check's result, rebuilding a
+////    pass through `host.passed` and reading a rejection's cause, which a
+////    ledger written before it was kept reads as a test failure.
+//// 3. `report_json`, `reason_json` and `routing_json`, with their decoders, are
+////    the pieces the snapshot reuses.
 
 import gleam/dynamic/decode.{type Decoder}
 import gleam/json.{type Json}
@@ -810,6 +822,8 @@ pub fn cause_word(cause: model.FailureCause) -> String {
 /// Reads a failure cause's word.
 pub fn cause_decoder() -> Decoder(model.FailureCause) {
   use word <- decode.then(decode.string)
+
+  // Only the two words the encoder writes name a cause.
   case word {
     "test" -> decode.success(model.TestFailure)
     "environment" -> decode.success(model.EnvironmentFailure)

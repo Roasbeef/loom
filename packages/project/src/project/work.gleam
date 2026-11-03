@@ -1012,6 +1012,9 @@ fn rejected(
     Some(before) if before.commit == commit -> ticket.failed_heads
     Some(_) | None -> ticket.failed_heads + 1
   }
+
+  // Only a failure of the work, with a worker to hear it and heads to spare,
+  // sends the worker back. Every other row is a person's.
   let handling = case
     cause,
     heads <= max_failing_heads,
@@ -1023,6 +1026,7 @@ fn rejected(
     | model.EnvironmentFailure, _, _
     -> model.PersonNeeded
   }
+
   let failed =
     state.Ticket(
       ..ticket,

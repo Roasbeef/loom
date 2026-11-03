@@ -773,6 +773,9 @@ pub fn waiting_on_person(state: State, source: SourceId) -> Int {
 /// ```
 pub fn recheckable(ticket: Ticket) -> Option(CommitId) {
   let open = ticket.authority == Granted && ticket.outcome == None
+
+  // A failure at the head, or a check that gave no result for the commit it
+  // was asked about, can be run again. Anything else has nothing to repeat.
   case open, ticket.head, ticket.rejected, ticket.readiness, ticket.review {
     True, Some(head), Some(rejected), readiness.InProgress, _ ->
       case rejected.commit == head {
