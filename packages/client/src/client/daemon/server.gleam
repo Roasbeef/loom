@@ -60,6 +60,7 @@ import client/daemon/manager
 import client/daemon/profiles
 import client/daemon/project_book
 import client/daemon/project_host
+import client/daemon/project_settings_wire
 import client/daemon/project_start
 import client/daemon/project_verdict
 import client/daemon/protocol
@@ -85,6 +86,8 @@ import client/orchestrators
 import client/peer_mail
 import client/peers
 import client/pools
+import client/project_overrides
+import client/project_proposal
 import client/project_standing
 import client/remote/orchestrator_port
 import client/roster.{type Roster}
@@ -3012,6 +3015,9 @@ fn control(
             | protocol.CloseTicket(..)
             | protocol.RetryTicket(..)
             | protocol.RecheckTicket(..)
+            | protocol.ProjectSettings(..)
+            | protocol.SetProjectSettings(..)
+            | protocol.ProposeProject(..)
             | protocol.RequeueTrigger(..)
             | protocol.SetProjectMode(..)
             | protocol.LabelTrigger(..)
@@ -3073,6 +3079,8 @@ fn control_use(command: protocol.Command) {
     | protocol.ListProjects
     | protocol.ProjectBoard(..)
     | protocol.ProjectTicket(..)
+    | protocol.ProjectSettings(..)
+    | protocol.ProposeProject(..)
     | protocol.ProjectLabels(..)
     | protocol.DirectoryStatus
     | protocol.DeploymentStatus(_)
@@ -3104,6 +3112,7 @@ fn control_use(command: protocol.Command) {
     | protocol.CloseTicket(..)
     | protocol.RetryTicket(..)
     | protocol.RecheckTicket(..)
+    | protocol.SetProjectSettings(..)
     | protocol.RequeueTrigger(..)
     | protocol.SetProjectMode(..)
     | protocol.LabelTrigger(..)
@@ -3288,6 +3297,18 @@ fn dispatch(
     protocol.PublishTicket(project, ticket) ->
       project_command_in_words(config, principal, fn(control) {
         project_publish(control, project, ticket)
+      })
+    protocol.ProjectSettings(project) ->
+      project_command_in_words(config, principal, fn(control) {
+        project_settings_read(control, project)
+      })
+    protocol.SetProjectSettings(project, revision, changes, publish_to) ->
+      project_command_in_words(config, principal, fn(control) {
+        project_settings_write(control, project, revision, changes, publish_to)
+      })
+    protocol.ProposeProject(project) ->
+      project_command_in_words(config, principal, fn(control) {
+        project_propose(control, project)
       })
     protocol.RequeueTrigger(project, trigger) ->
       project_command(config, principal, fn(control) {
@@ -3602,6 +3623,90 @@ fn project_command_in_words(
     |> result.map_error(fn(_) { control_refusal("not_found") }),
   )
   run(control)
+}
+
+/// The `projects.settings` step: the value in force for each of the project's
+/// five keys, where it came from, and the revision a write must echo.
+fn project_settings_read(
+  control: project_start.Control,
+  project: String,
+) -> Result(#(String, JsonValue), Refused) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
+  )
+  use view <- result.map(
+    project_host.settings(handle)
+    |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
+  )
+  #("projects.settings", project_settings_wire.view_json(project, view))
+}
+
+/// The `projects.set_settings` step: the owner changes the project's own
+/// settings. Every value is checked by the rules the file is checked by. A
+/// stale revision is `conflict`, and turning `publish` on without naming its
+/// URL is `bad_request` with the sentence that states the URL.
+fn project_settings_write(
+  control: project_start.Control,
+  project: String,
+  revision: Int,
+  changes: List(protocol.SettingChange),
+  publish_to: Option(String),
+) -> Result(#(String, JsonValue), Refused) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
+  )
+  use parsed <- result.try(
+    list.try_map(changes, setting_change)
+    |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
+  )
+  use view <- result.map(
+    project_host.change_settings(handle, revision, parsed, publish_to, "owner")
+    |> result.map_error(fn(failure) {
+      case failure {
+        project_host.StaleSettings ->
+          Refused(
+            "conflict",
+            "the settings changed since you read them; read them again",
+            [],
+          )
+        project_host.RefusedSettings(words) -> Refused("bad_request", words, [])
+      }
+    }),
+  )
+  #("projects.set_settings", project_settings_wire.view_json(project, view))
+}
+
+/// One requested change as the settings code takes it. A key and a value are
+/// checked by `project_overrides`, so the refusal is the file's own.
+fn setting_change(
+  change: protocol.SettingChange,
+) -> Result(project_overrides.Change, String) {
+  use key <- result.try(project_overrides.key_from_word(change.key))
+  case change.values {
+    None -> Ok(project_overrides.Release(key))
+    Some(words) ->
+      project_overrides.parse(key, words) |> result.map(project_overrides.Hold)
+  }
+}
+
+/// The `projects.propose` step: what the table in `project_proposal` reads from
+/// the project's repository. Nothing is applied.
+fn project_propose(
+  control: project_start.Control,
+  project: String,
+) -> Result(#(String, JsonValue), Refused) {
+  use handle <- result.map(
+    project_book.get(control.book, project)
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
+  )
+  let proposals =
+    project_proposal.read(handle.workspace) |> project_proposal.propose
+  #(
+    "projects.propose",
+    project_settings_wire.proposals_json(project, proposals),
+  )
 }
 
 /// The `projects.set_mode` step: the owner sets one rule's mode. An unknown
@@ -4756,6 +4861,9 @@ fn dispatch_class(
     | protocol.CloseTicket(..)
     | protocol.RetryTicket(..)
     | protocol.RecheckTicket(..)
+    | protocol.ProjectSettings(..)
+    | protocol.SetProjectSettings(..)
+    | protocol.ProposeProject(..)
     | protocol.RequeueTrigger(..)
     | protocol.SetProjectMode(..)
     | protocol.LabelTrigger(..)

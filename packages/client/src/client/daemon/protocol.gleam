@@ -56,6 +56,18 @@ pub type Remembering {
   Forget
 }
 
+/// One key of a project's settings as a client asks to change it. The words
+/// are checked by `project_overrides.parse`, so the wire's rule and the file's
+/// are the same.
+pub type SettingChange {
+  SettingChange(
+    /// The key's word, such as `check` or `max_workers`.
+    key: String,
+    /// The new value's words, or none to give the key back to the file.
+    values: Option(List(String)),
+  )
+}
+
 pub type Command {
   /// Reads both directions of one resident strand's operator peer grants.
   InspectPeers(
@@ -236,6 +248,24 @@ pub type Command {
   /// A person's request that the check run again on the commit it already
   /// judged, because it failed there or gave no result. Owner-only.
   RecheckTicket(project: String, ticket: String)
+
+  /// A read of the project's settings: the value in force for each key and
+  /// where it came from. Owner-only.
+  ProjectSettings(project: String)
+
+  /// A change of the project's own settings, naming the revision the caller
+  /// read. Turning `publish` on names, in `publish_to`, the URL the settings
+  /// reply showed. Owner-only.
+  SetProjectSettings(
+    project: String,
+    revision: Int,
+    changes: List(SettingChange),
+    publish_to: Option(String),
+  )
+
+  /// A proposal of `setup` and `check` read from the project's repository.
+  /// Nothing is applied. Owner-only.
+  ProposeProject(project: String)
 
   /// A person's request that a stored trigger be evaluated afresh. Owner-only.
   RequeueTrigger(project: String, trigger: String)
@@ -756,6 +786,24 @@ fn decode_fields(
       use ticket <- result.map(text_field(fields, "ticket", 128))
       PublishTicket(project, ticket)
     }
+    "projects.settings" ->
+      text_field(fields, "project", 64) |> result.map(ProjectSettings)
+    "projects.propose" ->
+      text_field(fields, "project", 64) |> result.map(ProposeProject)
+    "projects.set_settings" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use revision <- result.try(case list.key_find(fields, "revision") {
+        Ok(json.Int(revision)) if revision >= 0 -> Ok(revision)
+        _ -> Error("expected the nonnegative revision the settings reply gave")
+      })
+      use changes <- result.try(setting_changes_field(fields))
+      use publish_to <- result.map(optional_text_field(
+        fields,
+        "publish_to",
+        2048,
+      ))
+      SetProjectSettings(project, revision, changes, publish_to)
+    }
     "projects.requeue" -> {
       use project <- result.try(text_field(fields, "project", 64))
       use trigger <- result.map(text_field(fields, "trigger", 128))
@@ -1150,6 +1198,64 @@ fn name_field(fields: List(#(String, JsonValue))) -> Result(String, String) {
         False -> Error("text field exceeds its byte limit")
       }
     _other -> Error("expected name to be text")
+  }
+}
+
+/// The most changes one settings request carries: one for each key.
+const max_setting_changes = 5
+
+/// The most words one changed value carries, which bounds `protected_paths`.
+const max_setting_words = 64
+
+/// The changes of a settings request: an array of `{key, value}` where `value`
+/// is an array of strings, or null to give the key back to the file. Only the
+/// shape and the bounds are checked here. Whether a value is allowed is
+/// `project_overrides.parse`'s to say, so the wire never has a rule of its own.
+fn setting_changes_field(
+  fields: List(#(String, JsonValue)),
+) -> Result(List(SettingChange), String) {
+  use value <- result.try(required(fields, "changes"))
+  case value {
+    json.Array(items) ->
+      case list.length(items) <= max_setting_changes {
+        True -> list.try_map(items, setting_change)
+        False -> Error("a settings request holds at most five changes")
+      }
+    _ -> Error("expected changes to be an array")
+  }
+}
+
+/// One `{key, value}` change.
+fn setting_change(item: JsonValue) -> Result(SettingChange, String) {
+  case item {
+    json.Object(fields) -> {
+      use key <- result.try(text_field(fields, "key", 64))
+      use values <- result.map(case list.key_find(fields, "value") {
+        Ok(json.Null) -> Ok(None)
+        Ok(json.Array(words)) -> setting_words(words) |> result.map(Some)
+        _ -> Error("expected value to be an array of text, or null")
+      })
+      SettingChange(key:, values:)
+    }
+    _ -> Error("expected each change to be an object")
+  }
+}
+
+/// The words of one value: text of at most 4096 bytes each.
+fn setting_words(words: List(JsonValue)) -> Result(List(String), String) {
+  case list.length(words) <= max_setting_words {
+    False -> Error("a setting holds at most 64 values")
+    True ->
+      list.try_map(words, fn(word) {
+        case word {
+          json.String(text) ->
+            case bit_array.byte_size(bit_array.from_string(text)) <= 4096 {
+              True -> Ok(text)
+              False -> Error("a setting value exceeds 4096 bytes")
+            }
+          _ -> Error("expected each value to be text")
+        }
+      })
   }
 }
 

@@ -669,6 +669,37 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
       assert field(field(denied, "body"), "code") == json.String("forbidden")
         as "session membership cannot mutate peer communication authority"
     })
+
+    // A project's settings are the owner's alone: a member is refused before
+    // the project is looked up, for the read, the write and the proposal.
+    let project_fields = [
+      #("project", json.String("p-0123456789ab")),
+      #("revision", json.Int(0)),
+      #(
+        "changes",
+        json.Array([
+          json.Object([
+            #("key", json.String("check")),
+            #("value", json.Array([json.String("make check")])),
+          ]),
+        ]),
+      ),
+    ]
+    list.each(
+      ["projects.settings", "projects.set_settings", "projects.propose"],
+      fn(command) {
+        let denied =
+          send(
+            socket,
+            32,
+            command,
+            json.Object(project_fields),
+            within_ms: 1000,
+          )
+        assert field(field(denied, "body"), "code") == json.String("forbidden")
+          as "a member cannot read or change a project's settings"
+      },
+    )
     assert access.revoke_credential(store, digest) == Ok(Nil)
     let revoked = send(socket, 4, "status", json.Object([]), within_ms: 1000)
     assert field(field(revoked, "body"), "code") == json.String("unauthorized")

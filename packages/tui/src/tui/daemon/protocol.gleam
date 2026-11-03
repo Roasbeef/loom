@@ -865,6 +865,8 @@ pub fn mutates(command: Command) -> Bool {
     | ProjectsCommand("projects.board", _)
     | ProjectsCommand("projects.ticket", _)
     | ProjectsCommand("projects.list", _)
+    | ProjectsCommand("projects.settings", _)
+    | ProjectsCommand("projects.propose", _)
     | SessionActivity(..) -> False
     ProjectsCommand(..) -> True
     SetDefault(..)
@@ -1447,6 +1449,9 @@ fn decode_reply(event: String, body: json.JsonValue) {
     | "projects.close"
     | "projects.retry"
     | "projects.recheck"
+    | "projects.settings"
+    | "projects.set_settings"
+    | "projects.propose"
     | "projects.publish"
     | "projects.requeue"
     | "projects.set_mode"
