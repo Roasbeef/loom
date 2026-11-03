@@ -177,21 +177,32 @@ fn command(
   // Absent is no command; a string is the command; anything else is refused.
   case dict.get(fields, key) {
     Error(Nil) -> Ok(None)
-    Ok(tom.String(text)) -> {
-      let trimmed = string.trim(text)
-
-      // A blank command would run nothing and pass, so it is refused instead.
-      case trimmed != "" && string.byte_size(trimmed) <= max_check_bytes {
-        True -> Ok(Some(trimmed))
-        False ->
-          Error(
-            "project."
-            <> key
-            <> " must be a non-empty command of at most 4096 bytes",
-          )
-      }
-    }
+    Ok(tom.String(text)) -> command_text(key, text) |> result.map(Some)
     Ok(_) -> Error("project." <> key <> " must be a string")
+  }
+}
+
+/// The one rule for a command, whether the owner wrote it in the file or set
+/// it for a project: trimmed, not blank, and at most `max_check_bytes`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_settings.command_text("check", "  make check ") == Ok("make check")
+/// assert result.is_error(project_settings.command_text("check", "   "))
+/// ```
+pub fn command_text(key: String, text: String) -> Result(String, String) {
+  let trimmed = string.trim(text)
+
+  // A blank command would run nothing and pass, so it is refused instead.
+  case trimmed != "" && string.byte_size(trimmed) <= max_check_bytes {
+    True -> Ok(trimmed)
+    False ->
+      Error(
+        "project."
+        <> key
+        <> " must be a non-empty command of at most 4096 bytes",
+      )
   }
 }
 
@@ -203,11 +214,27 @@ fn paths(fields: Dict(String, tom.Toml)) -> Result(List(String), String) {
     Ok(tom.Array(items)) ->
       list.try_map(items, fn(item) {
         case item {
-          tom.String(pattern) if pattern != "" -> Ok(pattern)
+          tom.String(pattern) -> Ok(pattern)
           _ -> Error("project.protected_paths must hold non-empty strings")
         }
       })
+      |> result.try(path_patterns)
     Ok(_) -> Error("project.protected_paths must be an array of strings")
+  }
+}
+
+/// The one rule for protected paths: every pattern is non-empty.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_settings.path_patterns(["Makefile"]) == Ok(["Makefile"])
+/// assert result.is_error(project_settings.path_patterns([""]))
+/// ```
+pub fn path_patterns(patterns: List(String)) -> Result(List(String), String) {
+  case list.all(patterns, fn(pattern) { pattern != "" }) {
+    True -> Ok(patterns)
+    False -> Error("project.protected_paths must hold non-empty strings")
   }
 }
 
@@ -215,8 +242,53 @@ fn paths(fields: Dict(String, tom.Toml)) -> Result(List(String), String) {
 fn publish_mode(fields: Dict(String, tom.Toml)) -> Result(PublishMode, String) {
   case dict.get(fields, "publish") {
     Error(Nil) -> Ok(PublishOff)
-    Ok(tom.String("off")) -> Ok(PublishOff)
-    Ok(tom.String("pull_request")) -> Ok(PublishPullRequest)
-    Ok(_) -> Error("project.publish must be \"off\" or \"pull_request\"")
+    Ok(tom.String(word)) -> publish_word(word)
+    Ok(_) -> Error(publish_refusal)
+  }
+}
+
+const publish_refusal = "project.publish must be \"off\" or \"pull_request\""
+
+/// The one rule for the publish word.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_settings.publish_word("off") == Ok(project_settings.PublishOff)
+/// ```
+pub fn publish_word(word: String) -> Result(PublishMode, String) {
+  case word {
+    "off" -> Ok(PublishOff)
+    "pull_request" -> Ok(PublishPullRequest)
+    _ -> Error(publish_refusal)
+  }
+}
+
+/// The word for a publish mode, as the file and the wire spell it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_settings.publish_mode_word(project_settings.PublishOff) == "off"
+/// ```
+pub fn publish_mode_word(mode: PublishMode) -> String {
+  case mode {
+    PublishOff -> "off"
+    PublishPullRequest -> "pull_request"
+  }
+}
+
+/// The one rule for the worker count.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert project_settings.worker_count(4) == Ok(4)
+/// assert result.is_error(project_settings.worker_count(0))
+/// ```
+pub fn worker_count(count: Int) -> Result(Int, String) {
+  case count >= 1 && count <= 16 {
+    True -> Ok(count)
+    False -> Error("project.max_workers must be an integer in range")
   }
 }
