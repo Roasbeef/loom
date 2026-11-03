@@ -459,7 +459,15 @@ fn ports_for(env: Env, project: catalogue.Project) -> project_host.Ports {
     },
     build_template: fn(request) {
       case trees {
-        Ok(found) -> project_template.build(found, layout, request)
+        Ok(found) ->
+          project_template.build(
+            found,
+            layout,
+            project_template.Request(
+              ..request,
+              copier: option.from_result(install.git_cow()),
+            ),
+          )
         Error(reason) ->
           project_template.Failed(project_template.Failure(
             project_template.Cutting,

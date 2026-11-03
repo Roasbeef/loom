@@ -859,6 +859,49 @@ fn copy_template(
   }
 }
 
+/// Tries `git-cow copy` on a template that is still being built, into a scratch
+/// destination that is removed again, so a template the copier refuses is found
+/// when it is built and not by the first worker that needs a copy.
+///
+/// Only exit 2, the copier's refusal of the tree, is an error. A copier that
+/// fails for another reason, or cannot run, says nothing about the tree, and
+/// every real copy falls back to a plain one in that case, so this passes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // project_repo.probe_copy(trees, layout, "/opt/loom/bin/git-cow")
+/// ```
+pub fn probe_copy(
+  trees: Worktrees,
+  layout: Layout,
+  program: String,
+) -> Result(Nil, String) {
+  let parent = project_directory(layout)
+  let scratch = parent <> "/.copy-probe"
+  use Nil <- result.try(force_remove(trees, parent, scratch))
+  let ran =
+    worktrees.run_program(
+      trees,
+      program,
+      parent,
+      [parent],
+      ["copy", template_making_path(layout), scratch],
+      copy_within_ms,
+    )
+
+  // The scratch copy is removed whatever the copier said.
+  let _removed = force_remove(trees, parent, scratch)
+  case ran {
+    Ok(output) if output.code == 2 ->
+      Error(
+        "git-cow refused the template: "
+        <> worktree_git.printable(output.stderr, 512),
+      )
+    Ok(_) | Error(_) -> Ok(Nil)
+  }
+}
+
 /// The fallback copy: `cp -RPp` in the sandbox. A destination a failed `git-cow`
 /// left behind is removed first.
 fn plain_copy(

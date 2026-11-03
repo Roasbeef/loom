@@ -122,6 +122,7 @@ fn request(
     setup_wall_ms: project_template.default_setup_wall_ms,
     check_wall_ms: 60_000,
     current: None,
+    copier: None,
   )
 }
 
@@ -665,6 +666,79 @@ pub fn git_cow_makes_the_copy_when_it_is_installed_and_refuses_a_bad_template_te
           )
         }
       }
+    }
+  }
+}
+
+// A stand-in for `git-cow` that says what a script in it says, so the refusal
+// path runs on any machine.
+fn fake_copier(scene: Scene, script: String) -> String {
+  let path = project_repo.project_directory(scene.layout) <> "/fake-cow"
+  worktree_rig.write(path, "#!/bin/sh\n" <> script <> "\n")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o755)
+  path
+}
+
+pub fn a_template_the_copier_refuses_fails_the_build_as_a_setup_failure_test() {
+  let scene = scene("tpl-refused")
+  let refusing = fake_copier(scene, "echo 'a socket under .git' >&2; exit 2")
+  let outcome =
+    project_template.build(
+      scene.trees,
+      scene.layout,
+      project_template.Request(..request("true", None), copier: Some(refusing)),
+    )
+  case degraded(outcome) {
+    True -> skip("the sandbox could not run the setup command")
+    False -> {
+      // The refusal is found now, as a setup failure, and nothing is swapped
+      // in for a worker to find it later.
+      let assert project_template.Failed(project_template.Failure(
+        project_template.Setup,
+        output,
+      )) = outcome
+      assert string.contains(output, "git-cow refused the template")
+      assert string.contains(output, "a socket under .git")
+      assert !worktree_rig.exists(project_repo.template_path(scene.layout))
+      assert !worktree_rig.exists(project_repo.template_making_path(
+        scene.layout,
+      ))
+      assert !worktree_rig.exists(
+        project_repo.project_directory(scene.layout) <> "/.copy-probe",
+      )
+    }
+  }
+}
+
+pub fn a_copier_that_accepts_or_cannot_run_does_not_fail_the_build_test() {
+  let scene = scene("tpl-accepted")
+  let accepting = fake_copier(scene, "mkdir -p \"$3\"; exit 0")
+  let outcome =
+    project_template.build(
+      scene.trees,
+      scene.layout,
+      project_template.Request(..request("true", None), copier: Some(accepting)),
+    )
+  case degraded(outcome) {
+    True -> skip("the sandbox could not run the setup command")
+    False -> {
+      let assert project_template.Built(_) = outcome
+      assert !worktree_rig.exists(
+        project_repo.project_directory(scene.layout) <> "/.copy-probe",
+      )
+
+      // A copier that is not there says nothing about the tree.
+      let missing =
+        project_template.build(
+          scene.trees,
+          scene.layout,
+          project_template.Request(
+            ..request("true", None),
+            copier: Some("/nonexistent/git-cow"),
+          ),
+        )
+      let assert project_template.Built(_) = missing
+      Nil
     }
   }
 }

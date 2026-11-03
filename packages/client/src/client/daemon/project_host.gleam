@@ -2575,6 +2575,7 @@ fn start_template(host: Host, row: project_ledger.Effect) -> Host {
           setup_wall_ms: policy.setup_wall_ms,
           check_wall_ms: policy.check_wall_ms,
           current: template_state.current(host.template, template_digest(host)),
+          copier: None,
         )
       let build = host.ports.build_template
       let digest = template_digest(host)
