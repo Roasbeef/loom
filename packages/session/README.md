@@ -40,7 +40,9 @@ have the same type. Everything above this package — the runtime writer,
 the client gateway, the conformance store — is written once and never
 names a backend.
 
-`open_memory` and `open_sqlite` are the two constructors.
+`open_memory` and `open_sqlite` are the two constructors. `open_memory_owned`
+also returns a capability that stops the memory storage actor, for an
+embedder outside loom's supervision tree; `close` alone only seals it.
 `open_sqlite` runs `migration_chain()` under the open: an ordered list
 of `sqlite.Migration` steps, each upgrading one storage version. The
 chain is empty today because version 1 is the only version that has

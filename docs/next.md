@@ -1,5 +1,20 @@
 # Current handoff
 
+## Owned memory sessions (PR #1171)
+
+Embedders outside Loom's supervision tree can use
+`session.open_memory_owned` to obtain a session and a separate retirement
+callback. The owner drains runtime work and readers before invoking it. The
+callback seals the store, requests an orderly stop, and waits for the storage
+actor to exit. Ordinary `open_memory` and `close` retain their seal-only
+lifetime.
+
+Retirement installs its monitor without a separate liveness check. A `noproc`
+notification means the actor is already absent and cleanup is complete; other
+observed abnormal exits remain faults. Sequential and concurrent retirement
+are covered in the storage tests. The concurrent test exercises competing
+callers but does not force the original check-to-monitor scheduling window.
+
 ## Project mode (draft PR #1164)
 
 One router session decides what becomes work for a repository, and each piece

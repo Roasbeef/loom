@@ -504,6 +504,11 @@ independent test oracle, including Unicode rejection and length boundaries.
   children index, registers, the usage ledger, the stats projection, next
   seq). Every mutation is a pure function over it, so the conformance suite
   can drive the model with no process involved.
+- `storage/memory.retire_closed` stops a sealed memory actor with a normal
+  exit; an unsealed handle is refused, and a handle whose actor is gone
+  returns `Ok(Nil)`. The memory `Storage` operations monitor the actor, so a
+  call on a retired handle returns `HandleClosed` (`Faulted` for commit)
+  instead of exiting the caller.
 - `storage/sqlite.{Config, OpenError, Segment}` — file path, lease owner,
   lease TTL, busy timeout; the segmented branch-index window type.
   `OpenError.UnsupportedVersion(found, supported)` is the fail-closed
