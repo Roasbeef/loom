@@ -314,6 +314,41 @@ pub type ProjectCommand {
     /// The lane to measure in.
     lane: project_board.Lane,
   )
+
+  /// Do something to one ticket that the board lists as a person's to do. The
+  /// daemon decides whether it may be done now and refuses in words when not.
+  ProjectTicket(
+    /// The ticket's id, as `board` prints it.
+    ticket: String,
+    /// What to do.
+    verb: TicketVerb,
+  )
+}
+
+/// What `loom project` can do to a ticket, one for each action the board lists.
+@internal
+pub type TicketVerb {
+  /// Publish the ticket's latest commit. It is the way past a failed check, and
+  /// the project's `publish` setting still decides whether anything leaves.
+  Publish
+
+  /// Ask for a new worker.
+  Retry
+
+  /// Run the check again on the commit it already judged.
+  Recheck
+
+  /// Accept the ticket's work and close it.
+  Close
+
+  /// Withdraw the ticket's mandate for good.
+  Stop
+
+  /// Answer the worker's open question.
+  Answer(
+    /// The answer.
+    text: String,
+  )
 }
 
 /// The `loom sessions` subcommands.
@@ -1764,6 +1799,7 @@ fn parse_directory(arguments: List(String)) -> Launch {
 /// Establishes and coordinates directory usage operations for the TUI runtime.
 fn project_usage() -> String {
   "usage: loom project init | post <text> | board [--watch] "
+  <> "| publish|retry|recheck|close|stop <ticket> | answer <ticket> <text> "
   <> "| mode <rule> off|observe|auto | verdict <rule> [--live] "
   <> "[--state-dir <path>] [--config <loom.toml>] [--server <path>]\n"
   <> "  init makes a project for the repository in the working directory, with\n"
@@ -1775,7 +1811,13 @@ fn project_usage() -> String {
   <> "  mode sets a rule to off, observe or auto; the daemon refuses auto without\n"
   <> "  a current passing verdict. verdict measures a rule's labelled triggers: a\n"
   <> "  replay is free, and --live spends about three model calls per labelled\n"
-  <> "  trigger, starts the run and returns; watch it with board --watch."
+  <> "  trigger, starts the run and returns; watch it with board --watch.\n"
+  <> "  publish, retry, recheck, close, stop and answer act on one ticket, by the\n"
+  <> "  id board prints. publish sends the ticket's latest commit past a failed\n"
+  <> "  check, and says so; it is refused while the project's publish setting is\n"
+  <> "  off. retry asks for a new worker, recheck runs the check again on the\n"
+  <> "  commit it judged, close accepts the work, stop withdraws the ticket, and\n"
+  <> "  answer replies to the worker's open question."
 }
 
 /// Parses the words after `loom project`. `post` takes its text as the first
@@ -1792,6 +1834,18 @@ fn parse_project(arguments: List(String)) -> Launch {
         False -> project_launch(flags, ProjectBoard)
       }
     ["post", text, ..flags] -> project_launch(flags, ProjectPost(text))
+    ["publish", ticket, ..flags] ->
+      project_launch(flags, ProjectTicket(ticket, Publish))
+    ["retry", ticket, ..flags] ->
+      project_launch(flags, ProjectTicket(ticket, Retry))
+    ["recheck", ticket, ..flags] ->
+      project_launch(flags, ProjectTicket(ticket, Recheck))
+    ["close", ticket, ..flags] ->
+      project_launch(flags, ProjectTicket(ticket, Close))
+    ["stop", ticket, ..flags] ->
+      project_launch(flags, ProjectTicket(ticket, Stop))
+    ["answer", ticket, text, ..flags] ->
+      project_launch(flags, ProjectTicket(ticket, Answer(text)))
     ["mode", rule, word, ..flags] ->
       case project_board.parse_mode(word) {
         Ok(mode) -> project_launch(flags, ProjectMode(rule, mode))
@@ -2048,6 +2102,10 @@ fn project_outcome(
       )
       project_reply_text(command, board)
     }
+    ProjectTicket(ticket, verb) -> {
+      use id <- result.try(project_here(host, here))
+      project_ticket_outcome(host, id, ticket, verb)
+    }
     ProjectMode(rule, mode) -> {
       use id <- result.try(project_here(host, here))
       use set <- result.map(
@@ -2070,6 +2128,122 @@ fn project_outcome(
       )
       project_reply_text(command, measured)
     }
+  }
+}
+
+/// Does one thing to one ticket and says what it did. The ticket is read first,
+/// because an answer needs the open question's number and a publish has to say
+/// what check it went past. A refusal is the daemon's own sentence.
+fn project_ticket_outcome(
+  host: daemon_selection.Host,
+  project: String,
+  ticket: String,
+  verb: TicketVerb,
+) -> Result(String, String) {
+  let named = [
+    #("project", json.String(project)),
+    #("ticket", json.String(ticket)),
+  ]
+  use read <- result.try(project_request(host, "projects.ticket", named))
+  let detail = project_board.decode_detail(read)
+
+  case verb {
+    Publish -> {
+      use published <- result.map(project_request(
+        host,
+        "projects.publish",
+        named,
+      ))
+      publish_text(ticket, published, detail)
+    }
+    Retry -> {
+      use _ <- result.map(project_request(host, "projects.retry", named))
+      "asked for a new worker on " <> text_hygiene.single_line(ticket)
+    }
+    Recheck -> {
+      use _ <- result.map(project_request(host, "projects.recheck", named))
+      "asked for the check to run again on " <> text_hygiene.single_line(ticket)
+    }
+    Close -> {
+      use _ <- result.map(project_request(host, "projects.close", named))
+      "closed " <> text_hygiene.single_line(ticket)
+    }
+    Stop -> {
+      use _ <- result.map(project_request(host, "projects.stop", named))
+      "stopped " <> text_hygiene.single_line(ticket)
+    }
+    Answer(text) -> {
+      use seq <- result.try(open_question(ticket, detail))
+      use _ <- result.map(
+        project_request(host, "projects.answer", [
+          #("seq", json.Int(seq)),
+          #("text", json.String(text)),
+          ..named
+        ]),
+      )
+      "answered " <> text_hygiene.single_line(ticket)
+    }
+  }
+}
+
+/// The number of the ticket's open question, which an answer must echo.
+fn open_question(
+  ticket: String,
+  detail: Result(project_board.Detail, String),
+) -> Result(Int, String) {
+  case detail {
+    Ok(project_board.Detail(ticket: found, ..)) ->
+      case found.question {
+        Some(question) -> Ok(question.seq)
+        None ->
+          Error(text_hygiene.single_line(ticket) <> " has no open question")
+      }
+    Error(reason) -> Error(text_hygiene.single_line(reason))
+  }
+}
+
+/// What a publish printed. It says which commit left, and when the ticket's
+/// check had not passed it says that too, with the check's own account, so that
+/// publishing past a failed check is never silent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.publish_text("t-a", reply, detail)
+/// // -> "published 0123456789ab of t-a past a failed check. The check failed at ..."
+/// ```
+@internal
+pub fn publish_text(
+  ticket: String,
+  reply: json.JsonValue,
+  detail: Result(project_board.Detail, String),
+) -> String {
+  let commit = string.slice(project_text(reply, "commit"), 0, 12)
+  let published =
+    "published " <> commit <> " of " <> text_hygiene.single_line(ticket)
+
+  // The check as it stood when the person asked, before the publish changed it.
+  case detail {
+    Ok(project_board.Detail(
+      ticket: project_board.Ticket(check: Some(check), ..),
+      ..,
+    )) ->
+      case check.outcome {
+        project_board.CheckPassed -> published <> ", whose check passed"
+        project_board.CheckFailed ->
+          published
+          <> " past a failed check. "
+          <> project_board.check_words_untimed(check)
+        project_board.CheckOverridden
+        | project_board.CheckUnfinished
+        | project_board.CheckWaiting
+        | project_board.CheckUnknown(_) ->
+          published
+          <> " without a passing check. "
+          <> project_board.check_words_untimed(check)
+      }
+    Ok(project_board.Detail(ticket: project_board.Ticket(check: None, ..), ..))
+    | Error(_) -> published <> " without a passing check"
   }
 }
 
@@ -2097,6 +2271,7 @@ pub fn project_reply_text(
       <> project_text(reply, "router_session")
     ProjectPost(_) -> "posted " <> project_text(reply, "trigger")
     ProjectBoard -> board_text(reply)
+    ProjectTicket(ticket, _) -> "done " <> text_hygiene.single_line(ticket)
     ProjectMode(rule, mode) ->
       "rule "
       <> text_hygiene.single_line(rule)
@@ -2190,8 +2365,26 @@ fn board_text(board: json.JsonValue) -> String {
         <> project_text(row, "id")
         <> "  "
         <> project_text(row, "title")
+        <> check_line(row)
       })
       |> string.join("\n")
+  }
+}
+
+// The line under a ticket that says what its check made of the latest commit,
+// or nothing when it made nothing yet. It is the one sentence both hosts use.
+fn check_line(row: json.JsonValue) -> String {
+  case row {
+    json.Object(fields) ->
+      case list.key_find(fields, "check") {
+        Ok(found) ->
+          case project_board.decode_check(found) {
+            Some(check) -> "\n  " <> project_board.check_words_untimed(check)
+            None -> ""
+          }
+        Error(Nil) -> ""
+      }
+    _ -> ""
   }
 }
 

@@ -168,6 +168,12 @@ pub fn act(
       change(model, state, closing(state, ticket))
     project_screen.Retry(state, ticket) ->
       change(model, state, retry(state, ticket))
+    project_screen.Recheck(state, ticket) ->
+      change(model, state, rechecking(state, ticket))
+    project_screen.Publish(state, ticket) ->
+      change(model, state, publishing(state, ticket))
+    project_screen.Stop(state, ticket) ->
+      change(model, state, stopping(state, ticket))
     project_screen.Label(state, _) -> shown(model, state) |> service
     project_screen.Judge(state, trigger, judgement) ->
       change(model, state, judged(state, trigger, judgement))
@@ -381,6 +387,30 @@ fn retry(
   option.map(state.project, fn(project) { job.RetryTicket(project:, ticket:) })
 }
 
+/// The re-run a key sent, when the screen knows the project.
+fn rechecking(
+  state: project_screen.State,
+  ticket: String,
+) -> Option(job.ProjectChange) {
+  option.map(state.project, fn(project) { job.RecheckTicket(project:, ticket:) })
+}
+
+/// The publish a key sent, when the screen knows the project.
+fn publishing(
+  state: project_screen.State,
+  ticket: String,
+) -> Option(job.ProjectChange) {
+  option.map(state.project, fn(project) { job.PublishTicket(project:, ticket:) })
+}
+
+/// The stop a key sent, when the screen knows the project.
+fn stopping(
+  state: project_screen.State,
+  ticket: String,
+) -> Option(job.ProjectChange) {
+  option.map(state.project, fn(project) { job.StopTicket(project:, ticket:) })
+}
+
 // --- replies -----------------------------------------------------------------
 
 /// The state after an outcome. An outcome of another kind of job cannot reach
@@ -440,12 +470,21 @@ fn filed(
         "The daemon refused the close (" <> code <> ").",
       )
     job.ProjectChanged(job.RetryTicket(..), None) ->
-      project_screen.failed(state, "Retry requested.")
-    job.ProjectChanged(job.RetryTicket(..), Some(code)) ->
-      project_screen.failed(
-        state,
-        "The daemon refused the retry (" <> code <> ").",
-      )
+      project_screen.requested(state, "A new worker was asked for.")
+    job.ProjectChanged(job.RecheckTicket(..), None) ->
+      project_screen.requested(state, "The check will run again.")
+    job.ProjectChanged(job.PublishTicket(..), None) ->
+      project_screen.published(state)
+    job.ProjectChanged(job.StopTicket(..), None) ->
+      project_screen.requested(state, "Ticket stopped.")
+
+    // The daemon's own sentence says why it refused, and the screen shows it
+    // as sent.
+    job.ProjectChanged(job.RetryTicket(..), Some(sentence))
+    | job.ProjectChanged(job.RecheckTicket(..), Some(sentence))
+    | job.ProjectChanged(job.PublishTicket(..), Some(sentence))
+    | job.ProjectChanged(job.StopTicket(..), Some(sentence)) ->
+      project_screen.failed(state, sentence)
     job.PageLoaded(..)
     | job.SessionDeleted(..)
     | job.SessionArchived(..)

@@ -157,3 +157,111 @@ pub fn an_empty_board_says_so_test() {
     )
     == "no tickets"
 }
+
+// --- what a person can do to a ticket --------------------------------------------
+
+pub fn the_ticket_verbs_parse_with_their_ticket_test() {
+  assert tui.launch_project(["publish", "t-a"])
+    == Ok(tui.ProjectTicket("t-a", tui.Publish))
+  assert tui.launch_project(["retry", "t-a"])
+    == Ok(tui.ProjectTicket("t-a", tui.Retry))
+  assert tui.launch_project(["recheck", "t-a"])
+    == Ok(tui.ProjectTicket("t-a", tui.Recheck))
+  assert tui.launch_project(["close", "t-a", "--config", "loom.toml"])
+    == Ok(tui.ProjectTicket("t-a", tui.Close))
+  assert tui.launch_project(["stop", "t-a"])
+    == Ok(tui.ProjectTicket("t-a", tui.Stop))
+  assert tui.launch_project(["answer", "t-a", "use sqlite"])
+    == Ok(tui.ProjectTicket("t-a", tui.Answer("use sqlite")))
+}
+
+pub fn a_ticket_verb_without_its_ticket_is_refused_with_the_usage_test() {
+  let assert Error(bare) = tui.launch_project(["publish"])
+  assert string.contains(bare, "usage: loom project")
+  assert string.contains(bare, "publish|retry|recheck|close|stop <ticket>")
+  let assert Error(unanswered) = tui.launch_project(["answer", "t-a"])
+  assert string.contains(unanswered, "usage: loom project")
+}
+
+fn detail_with(check: json.JsonValue) -> Result(board.Detail, String) {
+  board.decode_detail(
+    json.Object([
+      #("project", json.String("p1")),
+      #("revision", json.Int(3)),
+      #(
+        "ticket",
+        json.Object([
+          #("id", json.String("t-a")),
+          #("stage", json.String("person/check")),
+          #("check", check),
+        ]),
+      ),
+    ]),
+  )
+}
+
+fn published() -> json.JsonValue {
+  json.Object([
+    #("ticket", json.String("t-a")),
+    #("commit", json.String("0123456789abcdef")),
+  ])
+}
+
+// Publishing past a check that did not pass says so, with the check's account
+// of itself, and never prints as though the work had been verified.
+pub fn publishing_past_a_failed_check_says_so_test() {
+  let failed =
+    detail_with(
+      json.Object([
+        #("commit", json.String("0123456789abcdef")),
+        #("outcome", json.String("failed")),
+        #("cause", json.String("environment")),
+      ]),
+    )
+  let said = tui.publish_text("t-a", published(), failed)
+  assert string.starts_with(
+    said,
+    "published 0123456789ab of t-a past a failed check.",
+  )
+  assert string.contains(said, "did not cause it")
+
+  let passed =
+    detail_with(
+      json.Object([
+        #("commit", json.String("0123456789abcdef")),
+        #("outcome", json.String("passed")),
+      ]),
+    )
+  assert tui.publish_text("t-a", published(), passed)
+    == "published 0123456789ab of t-a, whose check passed"
+  assert tui.publish_text("t-a", published(), detail_with(json.Null))
+    == "published 0123456789ab of t-a without a passing check"
+  assert tui.publish_text("t-a", published(), Error("no detail"))
+    == "published 0123456789ab of t-a without a passing check"
+}
+
+pub fn the_board_line_carries_the_checks_account_test() {
+  let board =
+    json.Object([
+      #(
+        "tickets",
+        json.Array([
+          json.Object([
+            #("stage", json.String("person/check")),
+            #("id", json.String("t-a")),
+            #("title", json.String("fix a")),
+            #(
+              "check",
+              json.Object([
+                #("commit", json.String("0123456789abcdef")),
+                #("outcome", json.String("failed")),
+                #("handling", json.String("person")),
+              ]),
+            ),
+          ]),
+        ]),
+      ),
+    ])
+  assert tui.project_reply_text(tui.ProjectBoard, board)
+    == "person/check  t-a  fix a\n  The check failed at 0123456789ab. No worker is handling it."
+}

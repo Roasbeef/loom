@@ -309,8 +309,21 @@ pub type ProjectChange {
   /// closed and its mandate stands, so a later message can resume it.
   CloseTicket(project: String, ticket: String)
 
-  /// A request for a new assignment on a stalled ticket.
+  /// A request for a new assignment on a stalled ticket. Its refusal, like
+  /// those of `RecheckTicket`, `PublishTicket` and `StopTicket`, is the
+  /// daemon's own sentence and not a code.
   RetryTicket(project: String, ticket: String)
+
+  /// A request that the check run again on the commit it already judged.
+  RecheckTicket(project: String, ticket: String)
+
+  /// The owner publishes the ticket's latest commit, past a failed check if
+  /// that is where it stands. The daemon refuses while the project keeps
+  /// `publish` off, and says so.
+  PublishTicket(project: String, ticket: String)
+
+  /// The owner withdraws the ticket's mandate for good.
+  StopTicket(project: String, ticket: String)
 
   /// The owner's judgement of one recorded trigger, which counts toward the
   /// verdict of the rule it matched.
