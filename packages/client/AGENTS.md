@@ -10348,7 +10348,7 @@ ordinary top-level worker session per ticket assignment
   only when the engine's `Rejection.handling` is `WorkerTold`; `failure_note` states whether the same
   check passed on the clean base (`BaseProof`). `start_check` leaves its row untouched while
   `template_state.admits` is false. `projects.recheck` is `project_host.recheck`. `Ports.build_template` is `project_start`'s closure over `project_template.build`,
-  and `project_start.seed_of` makes the `Seed` (`Cold` without `setup`, `Warm` with it) that
+  and `project_start.seed_for` makes the `Seed` (`Cold` without `setup`, `Warm` with it) that
   `project_repo.clone_from`, `check_tree_from` and `project_start.run_check_from` take. Both
   `project_repo.copy_template` runs (`git-cow copy`, else `cp -RPp`) go through
   `worktrees.run_program` in the sandbox, writable only in the destination's parent, and exit 2 from

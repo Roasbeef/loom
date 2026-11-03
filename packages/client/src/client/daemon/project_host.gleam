@@ -211,6 +211,8 @@ pub type Intake {
 /// A request to run the project's check.
 pub type CheckRequest {
   CheckRequest(
+    /// Where the check's tree is cut from.
+    cut: Cut,
     /// The ticket.
     ticket: String,
     /// The commit to check out and check.
@@ -297,9 +299,22 @@ pub const idle_policy =
     sources: project_sources.none,
   )
 
+/// Where a tree is cut from. It follows the commands in force when the request
+/// is made, so a project that gains or loses a `setup` changes it with no
+/// restart.
+pub type Cut {
+  /// A copy of the project's template, moved to the commit it needs.
+  FromTemplate
+
+  /// A plain clone of the host repository, for a project with no `setup`.
+  FromClone
+}
+
 /// A request to create a worker session.
 pub type StartRequest {
   StartRequest(
+    /// Where the worker's clone is cut from.
+    cut: Cut,
     /// The engine's request key.
     key: String,
     /// The ticket.
@@ -2484,6 +2499,7 @@ fn start_worker(
         None -> {
           let request =
             StartRequest(
+              cut: cut_of(host),
               key:,
               ticket:,
               seq:,
@@ -2544,6 +2560,19 @@ const template_look_ms = 600_000
 /// The time past `setup` and the base check that a build's task is given: to
 /// cut the tree, to fetch, and to swap.
 const template_margin_ms = 300_000
+
+/// Where a tree is cut from now: the template when the project has a `setup`
+/// in force, a plain clone when it has none. The daemon's file cannot say,
+/// since a project may hold a `setup` the file lacks.
+fn cut_of(host: Host) -> Cut {
+  // `Unmanaged` is exactly the state of a project with no `setup`.
+  case host.template {
+    template_state.Unmanaged -> FromClone
+    template_state.Preparing(_)
+    | template_state.Ready(..)
+    | template_state.Broken(..) -> FromTemplate
+  }
+}
 
 /// Asks for a build when the time for the next look has come.
 fn template_when_due(host: Host, now: Int) -> Host {
@@ -3116,7 +3145,14 @@ fn start_check(
         True, Some(_) if !proved -> host
         True, Some(command) -> {
           let wall = host.config.policy.check_wall_ms
-          let request = CheckRequest(ticket:, commit:, command:, wall_ms: wall)
+          let request =
+            CheckRequest(
+              cut: cut_of(host),
+              ticket:,
+              commit:,
+              command:,
+              wall_ms: wall,
+            )
           let run = host.ports.run_check
           let key = row.key
           let attempt = row.attempts

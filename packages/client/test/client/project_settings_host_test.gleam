@@ -30,6 +30,7 @@ type Seen {
   Built(setup: String, check: Option(String))
   Started(key: String)
   Stopped
+  Cutting(project_host.Cut)
 }
 
 const url = "https://github.com/o/r"
@@ -116,6 +117,7 @@ fn config(
     project_host.Ports(
       ..project_ports.inert(),
       start_session: fn(request: project_host.StartRequest) {
+        process.send(seen, Cutting(request.cut))
         process.send(seen, Started(request.key))
         Ok("session-" <> request.key)
       },
@@ -227,7 +229,7 @@ fn saw(seen: Subject(Seen), wanted: Seen, ms: Int) -> Bool {
 fn quiet_of_workers(seen: Subject(Seen)) -> Bool {
   case process.receive(seen, 300) {
     Ok(Started(_)) | Ok(Stopped) -> False
-    Ok(Built(..)) -> quiet_of_workers(seen)
+    Ok(Built(..)) | Ok(Cutting(_)) -> quiet_of_workers(seen)
     Error(Nil) -> True
   }
 }
@@ -494,6 +496,30 @@ pub fn a_build_that_ends_under_old_commands_is_not_recorded_test() {
   process.send(holder, Put(Open))
   assert saw(seen, Built("own setup", Some("file check")), 10_000)
   assert eventually(fn() { sources(handle) }, "\"ready\"")
+  stop(handle)
+}
+
+pub fn a_setup_the_project_holds_and_the_file_lacks_makes_its_trees_template_copies_test() {
+  // The daemon's file has no setup, so only the project's own value can make
+  // its worker clones copies of a template. Found in a live drive: the clones
+  // were plain, and the offline check could not find its dependencies.
+  let path = directory("cut")
+  let seen = process.new_subject()
+  let holder = hold(Open)
+  let no_setup =
+    project_host.Policy(
+      ..project_host.idle_policy,
+      check: Some("file check"),
+      check_wall_ms: 5000,
+      setup_wall_ms: 5000,
+    )
+  let handle = start(config(path, seen, holder, no_setup, None))
+  want_worker(handle, "a")
+  assert saw(seen, Cutting(project_host.FromClone), 10_000)
+  let assert Ok(_) = hold_value(handle, overrides.SetupKey, ["own setup"])
+  assert eventually(fn() { sources(handle) }, "\"ready\"")
+  want_worker(handle, "b")
+  assert saw(seen, Cutting(project_host.FromTemplate), 10_000)
   stop(handle)
 }
 

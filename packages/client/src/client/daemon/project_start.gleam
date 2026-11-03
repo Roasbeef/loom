@@ -424,12 +424,18 @@ fn ports_for(env: Env, project: catalogue.Project) -> project_host.Ports {
     |> result.try(fn(found) {
       project_repo.ensure_host(found, layout) |> result.replace(found)
     })
-  let seed = seed_of(env)
   project_host.Ports(
     now_ms: env.now_ms,
     start_session: fn(request) {
       use trees <- result.try(trees)
-      start_worker(env, project, layout, trees, request, seed)
+      start_worker(
+        env,
+        project,
+        layout,
+        trees,
+        request,
+        seed_for(env, request.cut),
+      )
     },
     remember_mandate: fn(ticket, mandate) {
       project_book.remember(env.book, project.id, ticket, mandate)
@@ -455,7 +461,13 @@ fn ports_for(env: Env, project: catalogue.Project) -> project_host.Ports {
       observe(layout, trees, request)
     },
     run_check: fn(request) {
-      run_check_from(env.now_ms, layout, trees, seed, request)
+      run_check_from(
+        env.now_ms,
+        layout,
+        trees,
+        seed_for(env, request.cut),
+        request,
+      )
     },
     build_template: fn(request) {
       case trees {
@@ -486,10 +498,12 @@ fn ports_for(env: Env, project: catalogue.Project) -> project_host.Ports {
 /// template and is cold, as it was before templates. One with it is warm: every
 /// worker clone and check tree is a copy of the template, made with `git-cow`
 /// when a binary is found and by a plain copy otherwise. Each copy logs which.
-fn seed_of(env: Env) -> project_repo.Seed {
-  case env.policy.setup {
-    None -> project_repo.Cold
-    Some(_) ->
+fn seed_for(env: Env, cut: project_host.Cut) -> project_repo.Seed {
+  // The project's own commands decide, not the daemon's file, so the actor
+  // names the cut on each request.
+  case cut {
+    project_host.FromClone -> project_repo.Cold
+    project_host.FromTemplate ->
       project_repo.Warm(
         project_repo.Copier(
           program: option.from_result(install.git_cow()),

@@ -158,7 +158,13 @@ fn warm(
 }
 
 fn check_request(commit: String, command: String) -> project_host.CheckRequest {
-  project_host.CheckRequest(ticket: "t-a", commit:, command:, wall_ms: 60_000)
+  project_host.CheckRequest(
+    cut: project_host.FromTemplate,
+    ticket: "t-a",
+    commit:,
+    command:,
+    wall_ms: 60_000,
+  )
 }
 
 fn head(scene: Scene) -> String {
