@@ -422,6 +422,25 @@ pub fn setup_runner(
   worktree_git.setup_runner(checks, directory)
 }
 
+/// Makes the `HOME` and `TMPDIR` a check or a setup runs with, inside its tree
+/// (`worktree_git.prepare_home`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // worktrees.prepare_home(worktrees, "/state/projects/p-1/checks/chk-t-a-0123456789ab")
+/// ```
+pub fn prepare_home(
+  worktrees: Worktrees,
+  directory: String,
+) -> Result(Nil, String) {
+  use checks <- result.try(option.to_result(
+    worktrees.checks,
+    "the sandboxed Git is not running",
+  ))
+  worktree_git.prepare_home(checks, directory)
+}
+
 /// Runs another program in the sandbox under a Git call's policy, with exactly
 /// the writable roots the caller names, and answers its exit code and both
 /// output streams. Unlike `run_git` it does not turn a nonzero exit into an

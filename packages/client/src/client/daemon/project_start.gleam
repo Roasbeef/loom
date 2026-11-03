@@ -684,9 +684,12 @@ pub fn run_check_from(
         Error(reason) -> unfinished("the check's tree was not made: " <> reason)
         Ok(path) -> {
           // A runner that cannot be built is a check that never started.
-          let outcome = case worktrees.check_runner(trees, path) {
-            Error(reason) -> unfinished(reason)
-            Ok(runner) ->
+          let outcome = case
+            worktrees.prepare_home(trees, path),
+            worktrees.check_runner(trees, path)
+          {
+            Error(reason), _ | _, Error(reason) -> unfinished(reason)
+            Ok(Nil), Ok(runner) ->
               { goalcheck.wiring(runner, timeout_ms: request.wall_ms) }.run(
                 request.command,
               )

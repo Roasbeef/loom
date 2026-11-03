@@ -683,3 +683,45 @@ pub fn a_tree_that_is_not_a_template_is_refused_before_the_swap_test() {
   worktree_rig.write(tree <> "/.git/objects/info/alternates", "/x\n")
   let assert Error(_) = project_repo.sound_template(tree)
 }
+
+// --- the environment ---------------------------------------------------------------
+
+// The jail makes the tree the only place a command may write, so `/tmp` is not
+// one. A toolchain that makes a work directory there (Go does) failed with
+// "operation not permitted" in a live drive, until `TMPDIR` named a directory
+// in the tree that the host had made.
+pub fn a_check_and_a_setup_have_a_temporary_directory_inside_the_tree_test() {
+  let scene = scene("tpl-tmpdir")
+  let commit = taken(scene, [#("src/a.go", "package a\n")])
+  let command = "test -d \"$TMPDIR\" && touch \"$TMPDIR/work\" && pwd"
+  let result =
+    project_start.run_check(
+      ffi_os.system_time_ms,
+      scene.layout,
+      Ok(scene.trees),
+      check_request(commit, command),
+    )
+  case result.ending {
+    goalstate.Exited(status: 0) -> {
+      let tree = project_repo.check_tree_path(scene.layout, "t-a", commit)
+      assert string.contains(result.output, tree)
+    }
+    goalstate.Exited(_) -> panic as "the check could not use its TMPDIR"
+    goalstate.DidNotFinish(reason:) -> skip(reason)
+  }
+
+  // And a setup, which runs the same way beside the network.
+  let built =
+    project_template.build(
+      scene.trees,
+      scene.layout,
+      request("test -d \"$TMPDIR\" && touch \"$TMPDIR/work\"", None),
+    )
+  case degraded(built) {
+    True -> skip("the sandbox could not run the setup command")
+    False -> {
+      let assert project_template.Built(_) = built
+      Nil
+    }
+  }
+}

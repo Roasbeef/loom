@@ -373,6 +373,48 @@ pub fn setup_runner(git: Git, directory: String) -> goalcheck.Runner {
   )
 }
 
+/// The directory a check or a setup uses as `HOME`, inside its tree, so that
+/// whatever a toolchain caches there is discarded with the tree or kept with
+/// the template.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert worktree_git.home_of("/s/projects/p-1/template") == "/s/projects/p-1/template/.loom-check-home"
+/// ```
+pub fn home_of(directory: String) -> String {
+  directory <> "/.loom-check-home"
+}
+
+/// Makes a tree's `HOME` and the `TMPDIR` inside it, in the sandbox. The jail
+/// makes the tree the only place a command may write, so `/tmp` is not one,
+/// and a toolchain that makes a work directory there (Go does) fails unless
+/// `TMPDIR` names a directory that exists.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // worktree_git.prepare_home(git, "/s/projects/p-1/.template.making")
+/// ```
+pub fn prepare_home(git: Git, directory: String) -> Result(Nil, String) {
+  use output <- result.try(run_program(
+    git,
+    "/bin/mkdir",
+    Run(directory:, writable: [directory], arguments: [
+      "-p",
+      home_of(directory) <> "/tmp",
+    ]),
+    query_within_ms,
+  ))
+  case output.code {
+    0 -> Ok(Nil)
+    code ->
+      Error(
+        "the check's home was not made: mkdir exited " <> int.to_string(code),
+      )
+  }
+}
+
 // The memory and process ceilings of a setup. A first build compiles a whole
 // project and starts a process or a thread per core, so the check's 2 GiB and
 // 512 would stop it half way. The wall is the caller's own timeout: the base
@@ -395,7 +437,8 @@ fn runner(
     ids.mint_op(ids.generator(wall_clock(), seed: random_seed()))
   let environment = [
     #("PATH", git.path),
-    #("HOME", directory <> "/.loom-check-home"),
+    #("HOME", home_of(directory)),
+    #("TMPDIR", home_of(directory) <> "/tmp"),
     #("LANG", "C"),
     #("LC_ALL", "C"),
     #("GIT_CONFIG_NOSYSTEM", "1"),
