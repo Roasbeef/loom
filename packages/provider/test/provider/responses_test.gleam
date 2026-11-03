@@ -16,6 +16,7 @@ import gleam/string
 import provider/adapter/responses
 import provider/fixture
 import provider/internal/diagnostic
+import provider/internal/responses_items as items
 import provider/internal/responses_request
 import provider/internal/wire
 import provider/model
@@ -2362,4 +2363,369 @@ pub fn responses_transport_failure_uses_safe_state_and_stays_once_only_test() {
     as "A valid terminal still settles normally."
   assert machine.on_end(terminal) == []
   assert machine.on_failure(terminal, "private-canary") == []
+}
+
+pub fn responses_reasoning_summary_reconciles_unclosed_parts_and_replays_test() {
+  let keys = [
+    #("output_index", json.Int(0)),
+    #("item_id", json.String("rs_fixture")),
+  ]
+  let summary_keys = fn(index) { [#("summary_index", json.Int(index)), ..keys] }
+  let start = [
+    created(),
+    event("response.in_progress", [#("response", response("in_progress", []))]),
+    event("response.output_item.added", [
+      #("output_index", json.Int(0)),
+      #("item", reasoning_item([], "")),
+    ]),
+  ]
+  let closed_part = fn(index, text) {
+    let item_keys = summary_keys(index)
+    [
+      event("response.reasoning_summary_part.added", [
+        #("part", part("summary_text", "")),
+        ..item_keys
+      ]),
+      event("response.reasoning_summary_text.delta", [
+        #("delta", json.String(text)),
+        ..item_keys
+      ]),
+      event("response.reasoning_summary_text.done", [
+        #("text", json.String(text)),
+        ..item_keys
+      ]),
+      event("response.reasoning_summary_part.done", [
+        #("part", part("summary_text", text)),
+        ..item_keys
+      ]),
+    ]
+  }
+  let open_part = fn(index, text) {
+    let item_keys = summary_keys(index)
+    [
+      event("response.reasoning_summary_part.added", [
+        #("part", part("summary_text", "")),
+        ..item_keys
+      ]),
+      event("response.reasoning_summary_text.delta", [
+        #("delta", json.String(text)),
+        ..item_keys
+      ]),
+    ]
+  }
+  let two_part_item =
+    reasoning_item(
+      [part("summary_text", "first"), part("summary_text", "second")],
+      "cipher-two",
+    )
+  let three_part_item =
+    reasoning_item(
+      [
+        part("summary_text", "first"),
+        part("summary_text", "second"),
+        part("summary_text", "third complete"),
+      ],
+      "cipher-three",
+    )
+  let cutoff_item =
+    reasoning_item([part("summary_text", "first")], "cipher-cut")
+  let answer_item = text_item("completed", [part("output_text", "Done.")])
+  let answer_events = [
+    event("response.output_item.added", [
+      #("output_index", json.Int(1)),
+      #("item", text_item("in_progress", [])),
+    ]),
+    event("response.content_part.added", [
+      #("output_index", json.Int(1)),
+      #("item_id", json.String("msg_fixture")),
+      #("content_index", json.Int(0)),
+      #("part", part("output_text", "")),
+    ]),
+    event("response.output_text.delta", [
+      #("output_index", json.Int(1)),
+      #("item_id", json.String("msg_fixture")),
+      #("content_index", json.Int(0)),
+      #("delta", json.String("Done.")),
+    ]),
+    event("response.output_text.done", [
+      #("output_index", json.Int(1)),
+      #("item_id", json.String("msg_fixture")),
+      #("content_index", json.Int(0)),
+      #("text", json.String("Done.")),
+    ]),
+    event("response.content_part.done", [
+      #("output_index", json.Int(1)),
+      #("item_id", json.String("msg_fixture")),
+      #("content_index", json.Int(0)),
+      #("part", part("output_text", "Done.")),
+    ]),
+    event("response.output_item.done", [
+      #("output_index", json.Int(1)),
+      #("item", answer_item),
+    ]),
+  ]
+  let scenarios = [
+    #(
+      list.flatten([
+        start,
+        closed_part(0, "first"),
+        open_part(1, "second"),
+        [
+          event("response.output_item.done", [
+            #("output_index", json.Int(0)),
+            #("item", two_part_item),
+          ]),
+          completed([two_part_item]),
+        ],
+      ]),
+      [
+        stream.Delta(stream.ThinkingDelta(0, "first")),
+        stream.Delta(stream.ThinkingDelta(1, "second")),
+      ],
+      [
+        message.AssistantThinking("first", Some("cipher-two"), False),
+        message.AssistantThinking("second", None, False),
+      ],
+      [two_part_item],
+    ),
+    #(
+      list.flatten([
+        start,
+        open_part(0, "first"),
+        open_part(1, "second"),
+        open_part(2, "third"),
+        [
+          event("response.output_item.done", [
+            #("output_index", json.Int(0)),
+            #("item", three_part_item),
+          ]),
+          completed([three_part_item]),
+        ],
+      ]),
+      [
+        stream.Delta(stream.ThinkingDelta(0, "first")),
+        stream.Delta(stream.ThinkingDelta(1, "second")),
+        stream.Delta(stream.ThinkingDelta(2, "third")),
+        stream.Delta(stream.ThinkingDelta(2, " complete")),
+      ],
+      [
+        message.AssistantThinking("first", Some("cipher-three"), False),
+        message.AssistantThinking("second", None, False),
+        message.AssistantThinking("third complete", None, False),
+      ],
+      [three_part_item],
+    ),
+    #(
+      list.flatten([
+        start,
+        [
+          event("response.reasoning_summary_text.done", [
+            #("text", json.String("first")),
+            ..summary_keys(0)
+          ]),
+          event("response.reasoning_summary_text.done", [
+            #("text", json.String("second")),
+            ..summary_keys(1)
+          ]),
+          event("response.output_item.done", [
+            #("output_index", json.Int(0)),
+            #("item", two_part_item),
+          ]),
+          completed([two_part_item]),
+        ],
+      ]),
+      [
+        stream.Delta(stream.ThinkingDelta(0, "first")),
+        stream.Delta(stream.ThinkingDelta(1, "second")),
+      ],
+      [
+        message.AssistantThinking("first", Some("cipher-two"), False),
+        message.AssistantThinking("second", None, False),
+      ],
+      [two_part_item],
+    ),
+    #(
+      list.flatten([
+        start,
+        closed_part(0, "first"),
+        [
+          event("response.reasoning_summary_part.added", [
+            #("part", part("summary_text", "")),
+            ..summary_keys(1)
+          ]),
+          event("response.output_item.done", [
+            #("output_index", json.Int(0)),
+            #("item", cutoff_item),
+          ]),
+        ],
+        answer_events,
+        [completed([cutoff_item, answer_item])],
+      ]),
+      [
+        stream.Delta(stream.ThinkingDelta(0, "first")),
+        stream.Delta(stream.TextDelta(2, "Done.")),
+      ],
+      [
+        message.AssistantThinking("first", Some("cipher-cut"), False),
+        message.AssistantText("Done.", None),
+      ],
+      [cutoff_item, answer_item],
+    ),
+  ]
+  list.each(scenarios, fn(scenario) {
+    let #(transcript, expected_deltas, expected_content, expected_replay) =
+      scenario
+    let numbered =
+      list.index_map(transcript, fn(frame, index) {
+        string.replace(
+          frame,
+          "data: {",
+          "data: {\"sequence_number\":" <> int.to_string(index) <> ",",
+        )
+      })
+    let body = string.concat(numbered)
+    list.each(
+      [machine(), responses.subscription_response_machine(resolved(), 123)],
+      fn(adapter) {
+        let events = fixture.drive_ok(adapter, body)
+        assert list.take(events, list.length(expected_deltas))
+          == expected_deltas
+        assert list.length(events) == list.length(expected_deltas) + 1
+        let assistant = settled(events)
+        let assert message.AssistantMessage(content:, ..) = assistant
+          as "reconciled reasoning settles"
+        assert content == expected_content
+        assert fixture.drive(
+            adapter,
+            200,
+            [],
+            fixture.chunked(bit_array.from_string(body), 1),
+          )
+          == events
+        let request =
+          model.ProviderRequest(..fixture.request_for(resolved()), messages: [
+            assistant,
+          ])
+        let assert Ok(replayed) =
+          json.parse(responses_request.body(resolved(), request))
+          as "replayed body is JSON"
+        let assert Ok(input) = wire.array_field(replayed, "input")
+          as "replayed request has input array"
+        assert list.try_map(input, items.item)
+          == list.try_map(expected_replay, items.item)
+      },
+    )
+  })
+}
+
+pub fn responses_reasoning_summary_rejects_conflicting_witnesses_test() {
+  let keys = [
+    #("output_index", json.Int(0)),
+    #("item_id", json.String("rs_fixture")),
+    #("summary_index", json.Int(0)),
+  ]
+  let start = [
+    created(),
+    event("response.output_item.added", [
+      #("output_index", json.Int(0)),
+      #("item", reasoning_item([], "")),
+    ]),
+    event("response.reasoning_summary_part.added", [
+      #("part", part("summary_text", "")),
+      ..keys
+    ]),
+    event("response.reasoning_summary_text.delta", [
+      #("delta", json.String("original")),
+      ..keys
+    ]),
+  ]
+  let text_conflict =
+    failure_report(
+      run(
+        list.append(start, [
+          event("response.reasoning_summary_text.done", [
+            #("text", json.String("changed")),
+            ..keys
+          ]),
+        ]),
+      ),
+    )
+  assert string.contains(text_conflict.context, "reason=text_done_witness;")
+  let part_conflict =
+    failure_report(
+      run(
+        list.append(start, [
+          event("response.reasoning_summary_part.done", [
+            #("part", part("summary_text", "changed")),
+            ..keys
+          ]),
+        ]),
+      ),
+    )
+  assert string.contains(part_conflict.context, "reason=part_done_witness;")
+  let item_conflict =
+    failure_report(
+      run(
+        list.append(start, [
+          event("response.output_item.done", [
+            #("output_index", json.Int(0)),
+            #(
+              "item",
+              reasoning_item([part("summary_text", "changed")], "cipher"),
+            ),
+          ]),
+        ]),
+      ),
+    )
+  assert string.contains(
+    item_conflict.context,
+    "reason=item_reasoning_mismatch;",
+  )
+  let closed_dropped =
+    failure_report(
+      run(
+        list.append(start, [
+          event("response.reasoning_summary_text.done", [
+            #("text", json.String("original")),
+            ..keys
+          ]),
+          event("response.reasoning_summary_part.done", [
+            #("part", part("summary_text", "original")),
+            ..keys
+          ]),
+          event("response.output_item.done", [
+            #("output_index", json.Int(0)),
+            #("item", reasoning_item([], "cipher")),
+          ]),
+        ]),
+      ),
+    )
+  assert string.contains(
+    closed_dropped.context,
+    "reason=item_reasoning_mismatch;",
+  )
+  let shifted_conflict =
+    failure_report(
+      run(
+        list.append(start, [
+          event("response.reasoning_summary_part.added", [
+            #("output_index", json.Int(0)),
+            #("item_id", json.String("rs_fixture")),
+            #("summary_index", json.Int(1)),
+            #("part", part("summary_text", "")),
+          ]),
+          event("response.output_item.done", [
+            #("output_index", json.Int(0)),
+            #(
+              "item",
+              reasoning_item([part("summary_text", "changed")], "cipher"),
+            ),
+          ]),
+        ]),
+      ),
+    )
+  assert string.contains(
+    shifted_conflict.context,
+    "reason=item_reasoning_mismatch;",
+  )
 }
