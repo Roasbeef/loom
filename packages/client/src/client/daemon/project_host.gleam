@@ -36,6 +36,18 @@
 //// a repeat admits nothing. Neither relies on the actor remembering anything
 //// beyond the ledger.
 ////
+//// ## The template
+////
+//// A project whose owner wrote a `setup` command has a template
+//// (`client/project_template`), and a worker cannot be started until it is
+//// ready. The actor holds one `template_state.Standing`, queues one `template`
+//// row to build it, and runs the build in a weft task like a check, because
+//// `setup` can take as long as a dependency download. A `start` row that finds
+//// the template not ready is left as it is, neither settled nor deferred, so
+//// its attempts do not count and the ticket stays queued. The build's two
+//// outcomes are host records, so a restart replays them into the same state,
+//// and a build that was under way when the actor stopped is queued again.
+////
 //// ## Time
 ////
 //// Every time is system time from `Ports.now_ms`. The monotonic clock is
