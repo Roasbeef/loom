@@ -992,7 +992,7 @@ boundaries and the split's measurements under Invariants.
   A block of at least 512 bytes may carry a summarizer label (protocol 050):
   it then renders as a `SummarizedReasoning` header row, `∴ Reasoning
   (summarized)` with the hint or with its line count and elapsed time
-  while live, and the label beneath as dim text of at most three rows.
+  while live, and the label beneath as dim text of at most five rows.
   Compact tool rows retain every call while folding arguments and results.
   Unresolved code-mode calls retain a syntax-highlighted preview of six
   submitted source lines, with an omission marker. Confirmed success replaces
@@ -2050,7 +2050,7 @@ untouched.
   and the expand hint pushed it onto a second row. The rule holds for a
   block without a summary. A summarized block (`SummarizedReasoning`) is
   deliberately taller: a clipped header row plus at most
-  `transcript_lines.summary_rows` (3) dim rows, laid out by
+  `transcript_lines.summary_rows` (5) dim rows, laid out by
   `render.summarized_rows` and exempt from the outer wrap. A settled block
   borrows its stream's live label until its own arrives, so a block that
   showed a summary while live settles into the same rows; a label arriving
