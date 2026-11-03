@@ -1859,6 +1859,9 @@ engine's own spelling of a stage, and a client displays it and never derives it.
 | `projects.answer` | no | `project`, `ticket` (strings), `seq` (integer, required), `text` (string, required, at most 32768 bytes) | `projects.answer` |
 | `projects.retry` | no | `project`, `ticket` (strings, required) | `projects.retry` |
 | `projects.requeue` | no | `project`, `trigger` (strings, required) | `projects.requeue` |
+| `projects.settings` | yes | `project` (string, required) | `projects.settings` |
+| `projects.set_settings` | no | `project` (string), `revision` (integer, required), `changes` (array of at most five `{key, value}`), `publish_to` (string, optional) | `projects.set_settings` |
+| `projects.propose` | yes | `project` (string, required) | `projects.propose` |
 | `projects.publish` | no | `project`, `ticket` (strings, required) | `projects.publish` |
 | `projects.set_mode` | no | `project`, `rule` (strings, required), `mode` (`off`, `observe` or `auto`) | `projects.set_mode` |
 | `projects.labels` | yes | `project`, `rule` (strings, required) | `projects.labels` |
@@ -2283,6 +2286,40 @@ credential's workspace reads, counted with the web view's Changes tab, were
 spent, or the observation failed or ran past its deadline, in fixed words that
 never carry the repository's own). The read waits up to 14 s. The home page
 reads the same review in process (`server.home_review`).
+
+`projects.settings` reads the settings a project holds for itself over the daemon's `[project]`
+defaults (protocol-change/106, "settings held per project"). It replies:
+
+```json
+{"project":"p-…","revision":3,"publish_url":"https://github.com/o/r",
+ "settings":[{"key":"check","value":["make check"],"source":"project","changed_by":"owner","changed_ms":1767312000000},
+             {"key":"setup","value":[],"source":"default","changed_by":null,"changed_ms":null}]}
+```
+
+There is a row for each of `check`, `setup`, `publish`, `max_workers` and `protected_paths`, in
+that order. `value` is the words in force: one for a command, the mode or the count, any number for
+`protected_paths`, and none for a `check` or `setup` that nobody set. `source` is `project` (the
+project holds it), `file` (`[project]` sets it) or `default`, and a client keeps a source it does
+not know as text. `publish_url` is the URL a published branch would go to, or null when the project
+has no remote. `revision` counts the changes the project has had.
+
+`projects.set_settings` changes keys for the project. `changes` is an array of `{"key","value"}`
+where `value` is an array of strings, or `null` to give the key back to the file. Every value is
+checked by the rules `loom.toml` is checked by and is refused `bad_request` in the file's words.
+A `revision` older than the project's is refused `conflict` and nothing is written, so a client
+reads, then writes. A change that leaves a key as it is writes nothing. Turning `publish` from
+`off` to `pull_request` is refused `bad_request` unless `publish_to` equals the `publish_url` the
+read showed; the message states that URL, and a write that carries other keys beside it is
+refused whole. The reply is the settings now in force. A changed `check` or `setup` takes effect
+with no restart: the template is rebuilt and the base check proved again, new workers wait for
+it, and workers already running are not stopped. The commands are the owner's alone, checked on
+every request, and a member is `forbidden`.
+
+`projects.propose` reads the project's repository and replies `{"project","check","setup","notes"}`.
+`check` and `setup` are each null or `{"command","because"}`, where `command` is one of the table's
+fixed strings and `because` names the marker, such as `Makefile target unit`. `notes` lists marker
+files that were present and not read (a symbolic link, a file over 256 KiB). Nothing is applied: a
+client shows the proposal and sends `projects.set_settings` when the person confirms.
 
 ## 4. The session endpoint
 
