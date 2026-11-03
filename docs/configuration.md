@@ -555,7 +555,7 @@ created, and opens a pull request through `gh api`. It never merges. A checkout 
 A check runs worker-authored code, so it runs with the network off, and a real repository's
 build needs its dependencies before that. `setup` is how they get there. The host makes a
 template at `<state>/projects/<id>/template`: a checkout of the recorded base commit, in which
-`setup` ran with the network on and `HOME` set to `<template>/.loom-check-home`, and in which
+`setup` ran with the network on and `HOME` set to `<template>/.loom-check-home` and `TMPDIR` under it, and in which
 `check` then ran once with the network off to show that it passes on the clean base. The
 template is built only from that clean commit and never from anything a worker wrote. A worker's
 clone and each check tree are then copies of the template (`git-cow copy` when the binary is

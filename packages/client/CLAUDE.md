@@ -10332,7 +10332,8 @@ ordinary top-level worker session per ticket assignment
 - The template (protocol-change/106, "The template") is two modules and a section of
   `project_host`. `client/project_template` builds it: `base_commit` from the owner's `HEAD`,
   `cut_template_tree` under `.template.making`, `run_setup` through `worktrees.setup_runner`
-  (the check's jail with the network on and the CPU and file-size limits lifted), `run_check`
+  (the check's jail with the network on and the CPU, wall and file-size limits lifted; both
+  runners get a `TMPDIR` under `HOME`, made first by `worktrees.prepare_home`), `run_check`
   on the clean base with the network off, `sound_template`, `exclude_untracked` and the
   `swap_template` renames. `client/template_state` is the pure `Standing`
   (`Unmanaged`, `Preparing`, `Ready` with an `Upkeep`, `Broken`) and its moves, with the
