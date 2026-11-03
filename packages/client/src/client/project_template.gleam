@@ -185,6 +185,9 @@ fn run_setup(
   tree: String,
   request: Request,
 ) -> Result(Nil, Outcome) {
+  use Nil <- result.try(
+    worktrees.prepare_home(trees, tree) |> result.map_error(cutting),
+  )
   use runner <- result.try(
     worktrees.setup_runner(trees, tree) |> result.map_error(cutting),
   )
@@ -206,6 +209,9 @@ fn run_check(
   case request.check {
     None -> Ok(Nil)
     Some(command) -> {
+      use Nil <- result.try(
+        worktrees.prepare_home(trees, tree) |> result.map_error(cutting),
+      )
       use runner <- result.try(
         worktrees.check_runner(trees, tree) |> result.map_error(cutting),
       )
