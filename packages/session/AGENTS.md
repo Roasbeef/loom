@@ -44,6 +44,13 @@ the rewrite exists for. WP-C plus WP-C-full.
   `open_sqlite` runs `migration_chain()`, the ordered migrate-on-open seam
   every schema bump extends (empty today — storage version 1 is the only
   version that has existed).
+- `session/session.open_memory_owned` returns a memory session and a separate
+  capability that seals the store and stops its storage actor with an orderly
+  exit (`storage/memory.retire_closed`), for an embedder that opens memory
+  sessions outside loom's supervision tree. `open_memory` is unchanged: its
+  actor stays alive after `close`. After retirement every call on the handle
+  returns an error value, `close` returns `Ok(Nil)`, and retiring again is a
+  no-op.
 - `session/session.open_sqlite_owned` returns a session and a separate
   close-and-retire capability. The custodian retains that capability until
   every writer, reader and external effect has drained; a failed close

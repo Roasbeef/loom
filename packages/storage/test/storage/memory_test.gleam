@@ -1,5 +1,6 @@
 //// Unit tests driving the pure MemoryState functions directly.
 
+import core/clock
 import core/json
 import core/register
 import core/tx.{
@@ -125,4 +126,15 @@ pub fn children_index_tracks_parents_test() {
     )
   assert memory.children_of(state, Some(a.id)) == [b.id, c.id]
   assert memory.children_of(state, None) == [a.id]
+}
+
+pub fn retire_refuses_an_unsealed_actor_and_stops_a_sealed_one_test() {
+  let assert Ok(store) = memory.open(clock.fixed(1000)) as "memory opens"
+  let assert Error(storage.BackendFault(_)) = memory.retire_closed(store.handle)
+  assert storage.stats(store) == Ok(storage.empty_stats())
+  assert storage.close(store) == Ok(Nil)
+  assert memory.retire_closed(store.handle) == Ok(Nil)
+  assert memory.retire_closed(store.handle) == Ok(Nil)
+  assert storage.stats(store) == Error(storage.HandleClosed)
+  assert storage.close(store) == Ok(Nil)
 }

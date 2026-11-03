@@ -26,7 +26,8 @@
 ////
 //// `open_sqlite` → `ensure_id` → `ensure_strand` → `strand_state` → `project` → `project_entries` → `heal_orphan_calls`
 ////
-//// 1. `open_memory` and `open_sqlite` (with `open_sqlite_owned` and
+//// 1. `open_memory` and `open_sqlite` (with `open_memory_owned` for embedders
+////    outside loom's supervision tree, and `open_sqlite_owned` and
 ////    `open_sqlite_custody` for the daemon's custody paths) build a `Session`
 ////    around a store whose handle type `erase` hides; SQLite opens run
 ////    `migration_chain` first.
@@ -123,17 +124,52 @@ pub type SessionError {
 /// ```
 ///
 pub fn open_memory(clock: Clock) -> Result(Session, OpenError) {
+  open_memory_owned(clock)
+  |> result.map(fn(owned) { owned.0 })
+}
+
+/// Opens an in-memory session with a separate capability to stop its actor.
+///
+/// `session.close` only seals the session; the storage actor stays alive so
+/// late callers receive error values, and loom's daemon reclaims it through
+/// its owning supervisor. An embedder that opens memory sessions outside any
+/// such tree would otherwise leak one actor, and its log, per session. The
+/// returned capability seals the store and then stops the actor with an
+/// orderly exit, so nothing is reported as a crash. Afterwards the session
+/// handle still answers every call with an error value, and `close` stays
+/// idempotent. Calling the capability again returns `Ok(Nil)`. Invoke it only
+/// after all runtime work and readers have drained.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(#(session, retire)) =
+/// //   session.open_memory_owned(clock.fixed(at: 1000))
+/// // let assert Ok(Nil) = retire()
+/// ```
+pub fn open_memory_owned(
+  clock: Clock,
+) -> Result(#(Session, fn() -> Result(Nil, StorageError)), OpenError) {
+  // The retire capability closes first, then reclaims the storage actor.
   case memory.open(clock) {
-    Ok(store) ->
-      Ok(Session(
-        store: erase(store),
-        snapshot_reader: memory.snapshot_reader(store.handle),
-        renew_lease: fn() { Ok(Nil) },
-        lease_interval_ms: None,
-        // No catalog row to project onto: for a memory session the
-        // `session/id` cell is the whole of its identity.
-        record_identity: fn(_id, _parent) { Ok(Nil) },
-      ))
+    Ok(store) -> {
+      let opened =
+        Session(
+          store: erase(store),
+          snapshot_reader: memory.snapshot_reader(store.handle),
+          renew_lease: fn() { Ok(Nil) },
+          lease_interval_ms: None,
+          // No catalog row to project onto: for a memory session the
+          // `session/id` cell is the whole of its identity.
+          record_identity: fn(_id, _parent) { Ok(Nil) },
+        )
+      Ok(
+        #(opened, fn() {
+          use Nil <- result.try(storage.close(store))
+          memory.retire_closed(store.handle)
+        }),
+      )
+    }
     Error(error) -> Error(MemoryOpenFailed(error:))
   }
 }
