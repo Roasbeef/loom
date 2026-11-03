@@ -5,7 +5,7 @@
 
 import core/json
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{None}
 import gleam/string
 import session_view/project_board as board
 import tui
