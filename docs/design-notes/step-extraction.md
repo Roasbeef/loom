@@ -184,7 +184,7 @@ terminal, 4 handles, 3 split.
 | `captured` | a | The last cut and its view. |
 | `last_capture`, `notices` | a | Live-delivery witnesses the fixtures read. |
 | `daemon_host` | b | The control connection's key and build. |
-| `control_request`, `activity_poll`, `reconnect`, `creation_key`, `configuring` | b | Daemon-control job slots; their replies are `weft.Pulled` values (`tui/job.gleam:487` (`ControlReply`)), which R6 keeps out of `session_view`. |
+| `control_request`, `activity_poll`, `reconnect`, `creation_key`, `configuring` | b | Daemon-control job slots; their replies are `weft.Pulled` values (`tui/job.gleam:500` (`ControlReply`)), which R6 keeps out of `session_view`. |
 | `approvals` | a | Pending and settled reviews; both hosts project them. |
 | `prompted_approvals`, `inspecting_approval` | b | Which questions the terminal's inspector has opened; the page draws every pending record as a card. |
 | `unconfirmed` | a | The last mutation with a lost reply. |
