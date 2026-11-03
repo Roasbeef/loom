@@ -148,12 +148,31 @@ pub fn the_answer_is_bounded_to_one_label_test() {
   assert string.ends_with(cut, "word…")
 }
 
-// The prompt asks for an active-voice headline that leads with the finding
-// and forbids opening with a subject such as "The agent", and fences the
-// text it summarizes as data.
-pub fn the_request_asks_for_a_headline_test() {
+// A label of about sixty words, the length the prompt asks for, is kept
+// whole rather than cut.
+pub fn a_sixty_word_label_is_kept_whole_test() {
+  let answer = string.trim(string.repeat("Checks the merge. ", 20))
+
+  assert blocksummary.parse(answer) == Ok(answer)
+}
+
+// Control characters other than whitespace become word breaks too, so a
+// stored label holds none, which is what bounds a label's JSON encoding to
+// twice its bytes.
+pub fn control_characters_become_word_breaks_test() {
+  assert blocksummary.parse("Finds\u{0001}the\r\nbug.\u{007F}")
+    == Ok("Finds the bug.")
+}
+
+// The prompt asks for two or three sentences that say what the text worked
+// through and what it concluded, refuses a bare title, forbids opening with
+// a subject such as "The agent", and fences the text it summarizes as data.
+pub fn the_request_asks_for_a_short_summary_test() {
   let asked = blocksummary.request(blocksummarybook.Reasoning, "the text")
-  assert string.contains(asked, "Write a headline")
+  assert string.contains(asked, "Summarize a block of reasoning")
+  assert string.contains(asked, "two or three sentences, about sixty words")
+  assert string.contains(asked, "what the text worked through and what it")
+  assert string.contains(asked, "Do not answer with a short title")
   assert string.contains(asked, "active voice and the present tense")
   assert string.contains(asked, "never with a subject such as \"The agent\"")
   assert string.contains(asked, "<text>\nthe text\n</text>")

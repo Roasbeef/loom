@@ -2116,7 +2116,7 @@ catalogue without opening runtimes. Explicit admission invokes
   request_timeout_ms, max_answer_tokens, request_deadline_ms,
   max_summary_bytes, source_limit_bytes, scan_limit}` — the block
   summarizer (protocol 050), one **`weft/state_machine`** per session
-  that asks the `summarize` role for a one- or two-sentence summary of
+  that asks the `summarize` role for a two- or three-sentence summary of
   each long reasoning block and each long delivered advice or nudges
   message. `route` resolves the `summarize` role's first identity and
   pins it (`ForResolved`, thinking off, `max_answer_tokens`) with **no
