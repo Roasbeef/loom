@@ -29,11 +29,18 @@ registration name, never an operator-selected network host.
 
 The optional `cyber_access` catalogue setting is a typed operator selection of
 `access_programs.cyber`. The opaque gateway stores it under the provider name;
-API-key Responses attempts emit that entry's selection. Subscription requests
-always omit the override, even for existing configured entries, because the
-private endpoint can return standard access when sent a Daybreak selection.
-Omission preserves the server's entitlement-aware default. Approval and model
-compatibility remain remote; an access denial remains a failed request.
+API-key and subscription attempts both emit that entry's selection. An entry
+that names no program still omits `access_programs`, which is correct for a
+model without a Cyber tier and wrong for a Blue-tier one: the public Responses
+contract makes omission a selection rather than neutrality, since the API
+resolves an unset program from the model's Cyber tier and a Blue-tier model
+then falls back to Standard safeguards. Daybreak's permissive classification
+is exactly what an omitted selection discards, and a defensive-security
+request then fails with the permanent `cyber_policy` code. A Blue-tier entry
+must therefore name `cyber_access`, as `codex-sol-6-blue` does. Sending the
+explicit program keeps Loom aligned with Codex, which forwards it for ChatGPT
+auth. Approval and model compatibility remain remote; an access denial remains
+a failed request.
 
 The settled assistant keeps the served model in `response_model`
 and a bounded terminal `access_programs.cyber` observation in the existing

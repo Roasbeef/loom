@@ -91,6 +91,42 @@ ADR-022's "developer path" addendum. Neither has a hosted CI run.
   sessions (the cookie is masked); the Linux half of the firmware build and a
   Linux runner download; Firecracker.
 
+## Correction: a Blue-tier entry must name its cyber access program
+
+A `codex-subscription` session against `gpt-daybreak-blue-latest` began failing
+with `provider stream error (cyber_policy)` at `seq=3` after several days of
+working. The failing session's header read `codex-daybreak-blue`, and
+`[profiles.codex-blue]` routes `main` to that entry. The session store is a
+protected path, so this is header and catalogue evidence rather than a read
+transcript.
+
+That model is Blue-tier: it gets Daybreak Blue only when the program is
+selected, and otherwise falls back to Standard safeguards
+(`AccessProgramsParam.cyber`). Standard safeguards refuse ordinary
+defensive-security work, and `cyber_policy` is a permanent code, so the attempt
+is terminal: never retried, never walked to another target. The entry named no
+`cyber_access`, so it requested Standard guards by omission.
+
+The trigger was not a Loom commit. `6a2d8f4b4` dropped `access_programs` from
+subscription bodies, but only an entry that configures `cyber_access` ever
+attaches a selection, and this entry configured none: its wire bytes were
+identical before and after that commit. The change is in how the endpoint
+resolves an omitted program, which is consistent with the same week's Codex
+work making Daybreak an explicit opt-in. That reading stays a hypothesis: no
+comparison request was made, and nothing here dates the server change.
+
+`6a2d8f4b4` was still a real and separate hazard. It silently discarded a
+selection from any entry that did configure one, such as `codex-sol-6-blue`,
+and its rationale inverted the contract. Subscription bodies forward the
+operator's selection again, and both regression tests assert the forwarded
+program. Entries that configure no selection still omit, which is correct for
+a model without a Cyber tier and wrong for a Blue-tier one.
+
+So the fix has two halves and only this tree carries one. A `codex-subscription`
+entry for a Blue-tier model must also name its program, as
+`cyber_access = "daybreak_blue"`. That is per-user configuration in
+`loom.toml`, outside this workspace, and is recorded here rather than applied.
+
 ## JSON string cursor allocation
 
 The [profile follow-up](review/json-cursor-2026-10-30.md) keeps one origin cursor
@@ -292,11 +328,9 @@ documents the reproduction, native parser comparison and remaining gates.
 
 Function-argument done snapshots may supply the whole payload or extend the
 streamed prefix. Only the missing suffix is emitted; conflicts still fail and
-canonical item/terminal closure remains required. Subscription requests omit
-`access_programs`, including existing configured overrides. API-key Responses
-requests keep their explicit selection. Served-model headers and bounded
-terminal access observations use the existing message fields and diagnostics;
-neither can change replay options or the requested identity.
+canonical item/terminal closure remains required. Subscription requests forward
+`access_programs` as API-key requests do; the original omission was reverted.
+Served-model headers and bounded
 
 The final provider gate passed all 343 tests, the Responses suite passed 62,
 and the catalogue suite passed 137. Eight semantic mutants were killed, and
