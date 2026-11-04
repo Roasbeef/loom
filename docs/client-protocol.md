@@ -297,7 +297,7 @@ submitting principal. Sections 4.9.17 and 4.9.18 define those narrower checks.
 
 On the control endpoint, owner authority is required for
 `sessions.create`, `sessions.default`, `sessions.set_default`,
-`sessions.stop`, `sessions.invite`, `credentials.rotate` and
+`sessions.stop`, `sessions.invite`, `credentials.rotate`, `models.list` and
 `daemon.shutdown`; a member principal receives `forbidden`.
 Source: (`client/daemon/server.gleam:495-500`).
 
@@ -1085,7 +1085,7 @@ it (section 3.27).
 While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
-`principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
+`principals.list`, `principals.memberships`, `ui.link` and `models.list`. Every mutating control command is refused. Source:
 `control_use` (`client/daemon/server.gleam:2971-1130`).
 
 That includes `sessions.delete`, which is a mutation like any other.
@@ -2008,6 +2008,49 @@ ticket with no commit, and when the engine refuses the commit as out of date. Th
 pull request it asks for are the host's: `git push` to `refs/heads/project/<ticket>` of the
 `origin` remote, and `gh api` (REST only) to look for an open pull request from that branch and
 open one when there is none. The ticket's `pull_request` carries the URL once it is recorded.
+
+### 3.33 `models.list`
+
+Owner-only. Lists the model entries and profile names of a configuration file,
+so a new-session form can offer per-role pins (`sessions.create`'s `roles`)
+before any session exists. It reserves and writes nothing, reads the file on
+every request, and is a read, so a draining daemon serves it (section 3.17).
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `configuration` | string | required | Configuration file path, 1 to 4096 bytes. Canonicalized by the server as `sessions.create` canonicalizes it. An absent, empty, over-long or non-string value is refused as malformed and is never read as the daemon's own file. |
+
+```json
+{"v":2,"id":6,"cmd":"models.list","body":{"configuration":"/src/loom/loom.toml"}}
+{"v":2,"reply_to":6,"event":"models.list","body":{"models":[{"key":"opus","model_id":"claude-opus-5","dialect":"anthropic","vision":true,"roles":["main"]}],"profiles":["codex","review"]}}
+```
+
+The reply body has two members.
+
+| Member | Type | Meaning |
+|---|---|---|
+| `models` | array | One row for every `[models.<key>]` entry whose key a pin accepts (1 to 64 bytes, as `model` in section 3.7), in key order. |
+| `profiles` | array | The `[profiles.<name>]` names, in name order; empty when the file defines none. |
+
+A row has these members, all always present.
+
+| Member | Type | Meaning |
+|---|---|---|
+| `key` | string | The `[models.<key>]` key, which is what `sessions.create` takes. |
+| `model_id` | string | The provider's model identifier. |
+| `dialect` | string | The adapter dialect, spelled as the `models` snapshot spells it (section 5.4). |
+| `vision` | boolean | True exactly when the entry reads images, which is every entry that does not declare `vision = false`. A `vision` pin to an entry where this is false is refused `unsuitable_model`. |
+| `roles` | array of string | The default roles whose chain lists the key, in canonical role order, as the session `models` snapshot reports for the same file with no profile and no pin. |
+
+No base URL, key variable, price or limit is returned. The order is the
+catalogue's, sorted by key and by name, and not the order of the file.
+
+Errors: `forbidden` for a member principal, before the path is looked at;
+`bad_request` for a missing or malformed `configuration`;
+`invalid_configuration` (message `request refused`) when the path cannot be
+canonicalized; `unusable_configuration` when the file cannot be read or does
+not parse, whose `message` is the daemon's startup wording, as for
+`sessions.create`. See [protocol-change/109](../protocol-change/109-control-models-list.md).
 
 ## 4. The session endpoint
 

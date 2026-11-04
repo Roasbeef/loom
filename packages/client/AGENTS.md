@@ -243,6 +243,23 @@ refuses totals over 511 rather than returning a prefix. The existing
 cross-page and oversized-domain registry fixtures remain, and corrupt source
 metadata refuses the entire enumeration through the same error channel.
 
+## Model listing
+
+Protocol-change/109. The control command `models.list` takes one required
+`configuration` path (`protocol.ModelsList`, decoded with the same non-empty,
+4096-byte `text_field` bound as every required path) and answers the models and
+profile names of that file before any session exists. `server.models_list` is
+served from `dispatch`, not `dispatch_class`, because its refusals carry the
+parser's words: it checks the owner first, canonicalizes the path as
+`create_session` does (`invalid_configuration` is the same `request refused`),
+and reads the file through `profiles.listing`, whose failure is
+`unusable_configuration` with `parse_file`'s startup wording. `profiles.Offered`
+carries `catalog.ImageReading` and `server.offered_json` turns it into the
+always-present boolean `vision`, so the reply's flag and
+`catalog.vision_model_keys` cannot disagree. Rows and profile names come out in
+catalogue order (sorted), not file order. The command is `root.ControlRead`, so
+a draining daemon still serves it; it reserves and caches nothing.
+
 ## Role pins
 
 Protocol-change/107. `sessions.create` takes an optional `roles` object, and
