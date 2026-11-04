@@ -755,11 +755,18 @@ whose member was revoked, or that this node is not linked to, is logged and skip
 as an executor that is down is. A ledger executor declares nothing, so a pool that
 sets a requirement skips it until you write its `[executors.<name>]` table.
 
-The daemon picks the executor when the session first opens. It tries the pool's
-executors in the order listed, after dropping the ones that do not satisfy the
-pool's requirements, and it goes to the next executor only when the first could
-not have created a scope: the machine could not be reached, or it answered that
-it already holds its maximum number of scopes. Any other failure fails the open.
+The daemon picks the executor when the session first opens. It drops the
+executors that do not satisfy the pool's requirements, then spreads the sessions
+it places. It tries first the executor on which this daemon has the fewest open
+sessions, and the order the pool lists them breaks ties. A pool that none of
+this daemon's sessions is using is therefore tried in the order listed, and eight
+sessions opened one after another in a pool of four executors end up two on
+each. The count is the daemon's own and says nothing about load or about the
+scopes other orchestrators hold on the same machines. Sessions that open at the
+same moment may not see one another yet, and can choose the same executor. The
+daemon goes to the next executor only when the first could not have created a
+scope: the machine could not be reached, or it answered that it already holds
+its maximum number of scopes. Any other failure fails the open.
 The chosen executor is recorded with the session and is never chosen again: a
 session that is stopped and opened again goes back to the same executor, and
 when that executor is full or down the open fails with `executor_unavailable:`
@@ -773,7 +780,7 @@ is skipped, because the daemon would be guessing.
 
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |
-| `executors` | array of strings | required | one or more distinct names of `[executors.<name>]` tables | The executors of the pool, in the order they are tried. |
+| `executors` | array of strings | required | one or more distinct names of `[executors.<name>]` tables | The executors of the pool. A new session goes to the one with the fewest open sessions of this daemon, and the order listed breaks ties. |
 | `platform` | string | no requirement | `<os>/<architecture>` | Admit only executors that declared this platform. |
 | `enforcement` | string | no requirement | `enforced` or `degraded` | Admit only executors that declared this enforcement. |
 | `toolchains` | array of strings | no requirement | distinct lowercase names | Admit only executors that declared all of these toolchains. |

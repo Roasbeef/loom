@@ -8257,10 +8257,19 @@ the session first opens and then never again.
   claims. `executors.contradiction(row, observed)` compares them with what an
   attach census says and words both values; a row that declares nothing, or that
   provides more than it declared, is never contradicted. `client/pools` reads
-  `[pools.<name>]` (`executors` in trial order, plus the same three keys as
+  `[pools.<name>]` (`executors` in listed order, plus the same three keys as
   requirements) and `pools.candidates(pool, configured)` is the whole filter, a
   pure function of configuration: an executor that declared nothing cannot
   satisfy a requirement. `catalog.parse` validates both tables.
+  `pools.spread(candidates, open)` is the only ordering: it sorts the candidates
+  by the open scopes this orchestrator holds on each, fewest first, and the listed
+  order breaks ties, so a pool nothing uses is first-fit. `workspace.pooled` takes
+  the counts as a `placed` thunk, asked once per first open, which
+  `daemon/main` fills with `ledger_holdings.resident_by_name` (the resident count
+  of `placements`, by executor name; an unknown tally is an empty dict and so the
+  listed order). Down and full executors stay in the list and the attach skips
+  them. Opens that run at the same moment can read the same counts, because a
+  session counts only once it is resident.
 - `workspace.attach` is the placement loop (read its module doc for the order of
   steps). The scope record names the executor, and it is written after the
   connection and before `Attach` is sent. That one ordering is what makes "a
@@ -9405,7 +9414,7 @@ reports; the 2026-10-16 addendum of 085 records the spellings it chose.
   `Member(voter, leader)` (the asking daemon to each directory member it lists;
   what another orchestrator serves is only its `serves` list),
   each with the asking daemon's own `Option(Link)`. Placements are `ready`,
-  `degraded`, `full` or `down`; a pool lists `pools.candidates` in its trial order
+  `degraded`, `full` or `down`; a pool lists `pools.candidates` in its listed order
   with `eligible` the executors neither down nor full, and the pool is never
   reordered by health. The `directory` block is `directory_json`
   (`directory_status_json`, moved here from `server`, plus `copy`) and `moves`
