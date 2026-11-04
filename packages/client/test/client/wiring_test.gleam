@@ -26,6 +26,7 @@ import client/grants
 import client/permissions
 import client/tool_holder
 import client/wiring
+import client/workspace_gate
 import core/clock
 import core/ids
 import core/json
@@ -59,6 +60,7 @@ import support/provider as provider_test
 import support/tool_registry
 import tools/directory_access
 import tools/tool
+import weft/registry
 
 // --- fixtures --------------------------------------------------------------
 
@@ -1432,6 +1434,53 @@ pub fn an_owner_side_call_never_reaches_the_plane_test() {
   let outcome = routed(named_run("agent_spawn"))
   assert text_of(outcome) == "ran on the owner"
   assert process.receive(reached, 0) == Error(Nil)
+}
+
+/// An extension's or an MCP server's tool is placed nowhere and may write the
+/// workspace, so it runs on the shared side of the gate: it waits while a capture
+/// holds the workspace and runs once the capture lets go. `agent_spawn`, which asks
+/// the capture, is owner-side and is not held up by it.
+pub fn an_unplaced_call_waits_at_the_gate_while_a_capture_holds_it_test() {
+  let assert Ok(names) = registry.start()
+  let assert Ok(gate) = workspace_gate.start_at(registry.new_address(names))
+  let ran = process.new_subject()
+  let assert Ok(workspace) =
+    tool_holder.start(fn(run: effects.ToolRun, _authority: wiring.Authority) {
+      wiring.run_tool(config(), run)
+    })
+  let routed =
+    wiring.run_gated(
+      fn(run: effects.ToolRun) {
+        process.send(ran, run.call.name)
+        wiring.run_tool(config(), run)
+      },
+      workspace,
+      memory_session(),
+      clock.fixed(at: 0),
+      Some(gate),
+    )
+
+  // A capture holds the workspace.
+  let held = process.new_subject()
+  let _capture =
+    process.spawn(fn() {
+      let _ =
+        workspace_gate.exclusive(gate, 1000, 5000, fn() {
+          process.send(held, Nil)
+          process.sleep(700)
+        })
+      Nil
+    })
+  let assert Ok(Nil) = process.receive(held, 2000)
+
+  // The extension's call waits behind it, and the owner-side spawn does not.
+  let _call = process.spawn(fn() { routed(named_run("websearch")) })
+  assert process.receive(ran, 150) == Error(Nil)
+  let _spawn = process.spawn(fn() { routed(named_run("agent_spawn")) })
+  assert process.receive(ran, 300) == Ok("agent_spawn")
+
+  // Once the capture lets go, the call runs.
+  assert process.receive(ran, 2000) == Ok("websearch")
 }
 
 /// An extension's tool is placed nowhere, so a session with a local

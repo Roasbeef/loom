@@ -1488,7 +1488,13 @@ pub fn run_gated(
     case tool_placement.placement(run.call.name) {
       Ok(tool_placement.WorkspaceSide) ->
         run_on_workspace(workspace, session, clock, gate, run)
-      Ok(tool_placement.OwnerSide) | Error(Nil) -> owner(run)
+      Ok(tool_placement.OwnerSide) -> owner(run)
+
+      // A tool with no placement is an extension's or an MCP server's, and it
+      // may write the workspace as freely as `bash` does, so it runs inside the
+      // gate's shared side too. `agent_spawn`, which asks the capture, is placed
+      // on the owner and is not held up by it.
+      Error(Nil) -> through_gate(gate, clock, run, fn() { owner(run) })
     }
   }
 }
