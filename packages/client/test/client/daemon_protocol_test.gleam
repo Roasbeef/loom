@@ -216,6 +216,11 @@ pub fn every_control_command_has_one_typed_decode_test() {
       protocol.MoveSession(id, "laptop", "epoch"),
     ),
     #("directory.status", [], protocol.DirectoryStatus),
+    #(
+      "models.list",
+      [#("configuration", json.String("/home/o/loom.toml"))],
+      protocol.ModelsList("/home/o/loom.toml"),
+    ),
     #("deployment.status", [], protocol.DeploymentStatus(None)),
     #(
       "deployment.status",
@@ -1081,5 +1086,21 @@ pub fn malformed_roles_are_refused_and_never_read_as_no_choice_test() {
         creation_with([#("roles", value)])
         as "a malformed roles value is refused"
     },
+  )
+}
+
+pub fn a_models_list_must_name_its_configuration_test() {
+  let listed = fn(fields) {
+    protocol.decode(envelope(1, "models.list", fields))
+  }
+
+  // The path is required: an absent, empty, over-long or mistyped value is a
+  // malformed request, and is never read as the daemon's own configuration.
+  assert result.is_error(listed([]))
+  assert result.is_error(listed([#("configuration", json.String(""))]))
+  assert result.is_error(listed([#("configuration", json.Int(7))]))
+  assert result.is_error(listed([#("configuration", json.Null)]))
+  assert result.is_error(
+    listed([#("configuration", json.String(string.repeat("a", 4097)))]),
   )
 }

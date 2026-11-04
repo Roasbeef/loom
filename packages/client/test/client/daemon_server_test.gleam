@@ -629,6 +629,15 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
         within_ms: 1000,
       )
     assert field(field(denied, "body"), "code") == json.String("forbidden")
+    let denied =
+      send(
+        socket,
+        4,
+        "models.list",
+        json.Object([#("configuration", json.String(ready.state_root))]),
+        within_ms: 1000,
+      )
+    assert field(field(denied, "body"), "code") == json.String("forbidden")
     let listing =
       send(
         socket,
@@ -2922,4 +2931,119 @@ pub fn a_pin_the_configuration_cannot_honour_is_refused_and_stores_nothing_test(
 fn catalogue_page(ready: root.Ready(String)) {
   manager.page(ready.registry, after: "")
   |> result.map(fn(page) { page.1 })
+}
+
+// --- listing a configuration's models (protocol-change/109) -----------------
+
+const listing_catalogue =
+  "
+[models.base]
+dialect = \"anthropic\"
+api_key_env = \"UNUSED_TEST_KEY\"
+model_id = \"base-model\"
+context_window = 1000
+max_output_tokens = 100
+vision = false
+[models.eyes]
+dialect = \"gemini\"
+api_key_env = \"UNUSED_TEST_KEY\"
+model_id = \"eyes-model\"
+context_window = 3000
+max_output_tokens = 300
+vision = true
+[models.spare]
+dialect = \"openai\"
+api_key_env = \"UNUSED_TEST_KEY\"
+model_id = \"spare-model\"
+context_window = 2000
+max_output_tokens = 200
+[roles]
+main = [\"base\"]
+plan = [\"eyes\", \"base\"]
+[profiles.review.roles]
+main = [\"eyes\"]
+[profiles.codex.roles]
+main = [\"spare\"]
+"
+
+pub fn models_list_offers_a_files_models_and_profiles_before_any_session_test() {
+  fixture(fn(_, ready, port, credential) {
+    let path = ready.state_root <> "/listing.toml"
+    assert simplifile.write(path, listing_catalogue) == Ok(Nil)
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let reply =
+      send(
+        socket,
+        1,
+        "models.list",
+        json.Object([#("configuration", json.String(path))]),
+        within_ms: 1000,
+      )
+    assert field(reply, "event") == json.String("models.list")
+    let body = field(reply, "body")
+    let row = fn(key, model_id, dialect, vision, roles) {
+      json.Object([
+        #("key", json.String(key)),
+        #("model_id", json.String(model_id)),
+        #("dialect", json.String(dialect)),
+        #("vision", json.Bool(vision)),
+        #("roles", json.Array(list.map(roles, json.String))),
+      ])
+    }
+
+    // Vision is a boolean on every row, and a role is listed on each entry its
+    // chain names, fallbacks included.
+    assert field(body, "models")
+      == json.Array([
+        row("base", "base-model", "anthropic", False, ["main", "plan"]),
+        row("eyes", "eyes-model", "gemini", True, ["plan"]),
+        row("spare", "spare-model", "openai", True, []),
+      ])
+    assert field(body, "profiles")
+      == json.Array([json.String("codex"), json.String("review")])
+
+    // Nothing was reserved by asking.
+    let assert Ok(page) = catalogue_page(ready)
+    assert page == []
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn models_list_refuses_as_session_creation_does_test() {
+  fixture(fn(_, ready, port, credential) {
+    let broken = ready.state_root <> "/broken.toml"
+    assert simplifile.write(broken, "this is [not toml") == Ok(Nil)
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let refusal = fn(request_id, path) {
+      let reply =
+        send(
+          socket,
+          request_id,
+          "models.list",
+          json.Object([#("configuration", json.String(path))]),
+          within_ms: 1000,
+        )
+      let body = field(reply, "body")
+      #(field(body, "code"), field(body, "message"))
+    }
+
+    // A path the host cannot canonicalize is not a configuration at all.
+    assert refusal(1, ready.state_root <> "/missing.toml")
+      == #(json.String("invalid_configuration"), json.String("request refused"))
+
+    // A file that does not load is the configuration's fault and says why.
+    let #(code, message) = refusal(2, broken)
+    assert code == json.String("unusable_configuration")
+    let assert json.String(words) = message
+    assert string.contains(words, "broken.toml")
+
+    // A missing path is a malformed request.
+    let reply = send(socket, 3, "models.list", json.Object([]), within_ms: 1000)
+    assert field(field(reply, "body"), "code") == json.String("bad_request")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
 }

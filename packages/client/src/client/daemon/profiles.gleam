@@ -21,7 +21,7 @@
 //// ## Flow
 ////
 //// `effective` → `names` → `check` → `model_keys` → `check_pins` → `check_choice`
-//// → `load`
+//// → `load` → `listing`
 ////
 //// 1. `effective` picks the configuration path a creation will load: the one it
 ////    names, or else the daemon's own.
@@ -302,4 +302,61 @@ pub fn load(
       |> result.map_error(UnknownProfile)
     }
   }
+}
+
+/// One `[models.<key>]` entry as `models.list` offers it to a form that has no
+/// session yet (protocol-change/109). The facts are the ones a person chooses
+/// by and nothing that locates or pays for the endpoint: no base URL, key
+/// variable or pricing.
+pub type Offered {
+  Offered(
+    /// The entry's key, which satisfies `storage/catalogue.is_model_key`.
+    key: String,
+    /// The provider's own model identifier.
+    model_id: String,
+    /// The adapter dialect, spelled as the `models` snapshot spells it.
+    dialect: String,
+    /// Whether the entry reads images, which decides whether a form may offer
+    /// it for the `vision` role.
+    vision: catalog.ImageReading,
+    /// The default roles whose chain lists the key, as the session `models`
+    /// snapshot reports them.
+    roles: List(String),
+  )
+}
+
+/// What a configuration offers a new-session form: its model entries and its
+/// profile names, both in the order the catalogue keeps (sorted by name).
+pub type Listing {
+  Listing(models: List(Offered), profiles: List(String))
+}
+
+/// Reads the configuration file and lists the entries and profiles it defines.
+/// An entry whose key is too long or empty to be remembered with a session
+/// (`storage/catalogue.is_model_key`) is left out, as `model_keys` leaves it
+/// out, so everything listed can be pinned. A file that cannot be read or does
+/// not parse is an error worded as `names` words it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // profiles.listing("/home/o/.loom/loom.toml")
+/// //   -> Ok(Listing([Offered("opus", "claude-opus-5", "anthropic", ReadsImages, ["main"])], ["review"]))
+/// ```
+pub fn listing(configuration: String) -> Result(Listing, String) {
+  use parsed <- result.map(parse_file(configuration))
+  let models =
+    parsed.models
+    |> list.filter(fn(entry) { catalogue.is_model_key(entry.name) })
+    |> list.map(fn(entry) {
+      Offered(
+        key: entry.name,
+        model_id: entry.model_id,
+        dialect: catalog.dialect_to_string(entry.dialect),
+        vision: entry.vision,
+        roles: catalog.routed_roles(parsed, entry.name),
+      )
+    })
+
+  Listing(models:, profiles: catalog.profile_names(parsed))
 }

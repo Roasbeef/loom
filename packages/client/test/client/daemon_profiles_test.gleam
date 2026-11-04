@@ -8,6 +8,7 @@ import client/daemon/profiles
 import gleam/bit_array
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import provider/model
 import simplifile
@@ -96,4 +97,21 @@ pub fn a_file_that_cannot_be_read_is_the_configurations_fault_test() {
   let assert Error(profiles.UnusableConfiguration(reason)) =
     profiles.load("/absent/loom.toml", Some("alt"))
   assert string.contains(reason, "is unreadable")
+}
+
+pub fn a_listing_carries_each_entrys_facts_and_the_profile_names_test() {
+  let assert Ok(listing) = profiles.listing(written())
+  assert listing.profiles == ["alt", "other"]
+  assert listing.models
+    == [
+      profiles.Offered("alt", "alt-model", "openai", catalog.ReadsImages, []),
+      profiles.Offered("base", "base-model", "anthropic", catalog.ReadsImages, [
+        "main",
+        "summarize",
+      ]),
+    ]
+}
+
+pub fn a_listing_of_an_unreadable_file_is_the_configurations_fault_test() {
+  assert result.is_error(profiles.listing("build/test_db/no-such-file.toml"))
 }

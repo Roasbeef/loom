@@ -343,6 +343,12 @@ pub type Command {
   /// (protocol-change/083). Owner-only.
   DirectoryStatus
 
+  /// Lists the model entries and profile names of the configuration file at
+  /// `configuration`, so a new-session form can offer per-role pins before any
+  /// session exists (protocol-change/109). The path is required and is
+  /// canonicalized as `sessions.create` canonicalizes it. Owner-only.
+  ModelsList(configuration: String)
+
   /// Reports which of the nodes this daemon is configured with answer its own
   /// connection attempts, and the executors and pools a session may be placed
   /// on (protocol-change/085). Owner-only. The optional `node` is a key of the
@@ -863,6 +869,8 @@ fn decode_fields(
     }
     "daemon.shutdown" -> result.map(text_field(fields, "epoch", 256), Shutdown)
     "directory.status" -> Ok(DirectoryStatus)
+    "models.list" ->
+      result.map(text_field(fields, "configuration", 4096), ModelsList)
     "deployment.status" -> result.map(node_field(fields), DeploymentStatus)
     "sessions.elsewhere" -> elsewhere_request(fields)
     "ledger.append" -> result.map(ledger_lines(fields), LedgerAppend)

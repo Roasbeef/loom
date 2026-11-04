@@ -56,6 +56,7 @@
 ////    `move_refusal_code` words a refusal for the control socket.
 
 import broker/token
+import client/catalog
 import client/daemon/manager
 import client/daemon/profiles
 import client/daemon/project_book
@@ -2990,6 +2991,7 @@ fn control(
           let after = case request.command {
             protocol.Shutdown(_) -> DrainDaemon
             protocol.DirectoryStatus -> KeepServing
+            protocol.ModelsList(_) -> KeepServing
             protocol.DeploymentStatus(_) -> KeepServing
             protocol.SessionsElsewhere(..) -> KeepServing
             protocol.LedgerAppend(..)
@@ -3082,6 +3084,7 @@ fn control_use(command: protocol.Command) {
     | protocol.ProjectTicket(..)
     | protocol.ProjectLabels(..)
     | protocol.DirectoryStatus
+    | protocol.ModelsList(_)
     | protocol.DeploymentStatus(_)
     | protocol.SessionsElsewhere(..)
     | protocol.LedgerEntries(..)
@@ -3311,10 +3314,70 @@ fn dispatch(
       project_command_in_words(config, principal, fn(control) {
         project_verdict(control, project, rule, lane)
       })
+
+    // A configuration's models and profiles are read from a file and refuse in
+    // the file's own words, which the string codes of `dispatch_class` cannot
+    // carry, so the command is served here.
+    protocol.ModelsList(configuration) -> models_list(principal, configuration)
     _ ->
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(control_refusal)
   }
+}
+
+/// The control command `models.list` (protocol-change/109): the model entries
+/// and profile names of the configuration file the caller names, for a
+/// new-session form that has no session to ask yet. Only the owner may name a
+/// path on this host. The path is canonicalized as `sessions.create`
+/// canonicalizes a configuration, and the refusals are that command's:
+/// `invalid_configuration` for a path the host cannot canonicalize and
+/// `unusable_configuration`, with the daemon's startup wording, for a file that
+/// is unreadable or does not parse.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // models_list(owner, "/home/o/.loom/loom.toml")
+/// //   -> Ok(#("models.list", json.Object([#("models", ...), #("profiles", ...)])))
+/// ```
+fn models_list(
+  principal: access.Principal,
+  configuration: String,
+) -> Result(#(String, JsonValue), Refused) {
+  use Nil <- result.try(owner(principal) |> result.map_error(control_refusal))
+  use canonical <- result.try(
+    bootstrap.canonical_path(configuration)
+    |> result.map_error(fn(_) { control_refusal("invalid_configuration") }),
+  )
+  use listing <- result.map(
+    profiles.listing(canonical)
+    |> result.map_error(fn(words) {
+      Refused(unusable_configuration_code, words, [])
+    }),
+  )
+  #("models.list", offered_json(listing))
+}
+
+/// The `models.list` reply body. `vision` is always present and is a JSON
+/// boolean, so a client never has to read an absent field as an answer.
+fn offered_json(listing: profiles.Listing) -> JsonValue {
+  json.Object([
+    #(
+      "models",
+      json.Array(
+        list.map(listing.models, fn(offered) {
+          json.Object([
+            #("key", json.String(offered.key)),
+            #("model_id", json.String(offered.model_id)),
+            #("dialect", json.String(offered.dialect)),
+            #("vision", json.Bool(offered.vision == catalog.ReadsImages)),
+            #("roles", json.Array(list.map(offered.roles, json.String))),
+          ])
+        }),
+      ),
+    ),
+    #("profiles", json.Array(list.map(listing.profiles, json.String))),
+  ])
 }
 
 /// The owner gate and the daemon's project control, once, for the five project
@@ -4752,6 +4815,10 @@ fn dispatch_class(
     | protocol.ProjectLabels(..)
     | protocol.RunProjectVerdict(..)
     | protocol.PublishTicket(..) -> Error("unavailable")
+
+    // `models.list` is served by `models_list` in `dispatch`, because its
+    // refusal carries the parser's words. It never reaches here.
+    protocol.ModelsList(_) -> Error("unavailable")
     protocol.Shutdown(supplied) -> {
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))
