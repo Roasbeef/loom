@@ -1296,8 +1296,9 @@ build is not byte-identical to the first.
 What this adds to each nightly: two native image builds, one per architecture
 and in parallel (the 11-minute guest-root build is the measured figure for one;
 the arm64 runner's time and the cost of a registry push are not measured); the
-Landlock kernel build on `ubuntu-24.04` (7 minutes, measured locally, and the
-hosted time is not measured); and one `macos-15` job that links the dylib,
+Landlock kernel build on `ubuntu-24.04-arm`, because the kernel is built for the
+runner's architecture and the guest is arm64 (7 minutes, measured locally, and
+the hosted time is not measured); and one `macos-15` job that links the dylib,
 installs libkrun from Homebrew and builds and signs the runner (not measured).
 The job timeouts are 90, 60 and 45 minutes and are limits, not measurements.
 Because the nightly waits for these files before it runs `release.yml`, its

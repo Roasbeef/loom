@@ -89,7 +89,9 @@ registry client, gVisor's netstack) never enters the jail helper's module.
   kernel build in a podman container and writes
   `build/firmware/libkrunfw.5.dylib`, which `--firmware-dir` selects. The
   script has a mode per half: `--kernel OUTPUT_DIR` runs the Linux half
-  natively (CI's `firmware-kernel` job) and leaves `kernel.c`, and `--link
+  natively (CI's `firmware-kernel` job, on an arm64 runner; the mode refuses
+  any machine but aarch64, since the kernel is built for the host's
+  architecture) and leaves `kernel.c`, and `--link
   KERNEL_C OUTPUT_DIR` links the dylib on macOS (CI's `macos-assets` job).
 - `guest/Dockerfile` and `guest/loom-guest-init` — the linux/arm64 guest root.
   `make vmm-guest-root` builds the image natively in the arm64 podman machine
