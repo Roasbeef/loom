@@ -308,3 +308,46 @@ pub fn returned_work_is_two_optional_members_that_are_read_together_test() {
     ))
     == Ok(plain)
 }
+
+fn line_of(agent: remote_agent.RemoteAgent) -> agent_roster.Line {
+  let roster = agent_roster.observe_remote(agent_roster.new(), [agent], 0)
+  agent_roster.describe(roster, agent_roster.remote_row(agent))
+}
+
+// A child whose commits came back has them on its line, and a child that
+// returned nothing has none, so a strip draws nothing more for it.
+pub fn a_remote_childs_returned_work_reaches_its_line_test() {
+  let plain = remote(remote_agent.Completed, "done", None)
+  assert line_of(plain).returned == None
+
+  let ref = "refs/loom/children/fix-cache/01234567"
+  let back =
+    remote_agent.RemoteAgent(..plain, commits: Some(2), returned_ref: Some(ref))
+  assert line_of(back).returned
+    == Some(agent_roster.Returned(commits: 2, ref: ref))
+
+  // A count without its ref, or a ref without its count, is not half drawn.
+  let count_only = remote_agent.RemoteAgent(..plain, commits: Some(2))
+  assert line_of(count_only).returned == None
+  let ref_only = remote_agent.RemoteAgent(..plain, returned_ref: Some(ref))
+  assert line_of(ref_only).returned == None
+}
+
+// The ref is a remote machine's text, so a line break or a terminal sequence in
+// it cannot split the line it is drawn on.
+pub fn a_returned_ref_is_made_one_line_test() {
+  let agent =
+    remote_agent.RemoteAgent(
+      ..remote(remote_agent.Completed, "done", None),
+      commits: Some(1),
+      returned_ref: Some("refs/loom/children/x/01234567\nmore\u{1b}[31m"),
+    )
+  let assert Some(agent_roster.Returned(ref:, ..)) = line_of(agent).returned
+  assert ref == "refs/loom/children/x/01234567 more"
+}
+
+pub fn returned_commits_are_counted_in_words_test() {
+  assert agent_roster.returned_words(1) == "1 commit returned"
+  assert agent_roster.returned_words(3) == "3 commits returned"
+  assert agent_roster.returned_words(0) == "0 commits returned"
+}

@@ -266,7 +266,18 @@ pub fn navigation_follows_the_drawn_order_test() {
 
 fn strip_lines() -> List(agent_roster.Line) {
   let line = fn(id, name, status, text, elapsed, tokens) {
-    agent_roster.Line(id, name, status, text, "", elapsed, tokens, None, None)
+    agent_roster.Line(
+      id,
+      name,
+      status,
+      text,
+      "",
+      elapsed,
+      tokens,
+      None,
+      None,
+      None,
+    )
   }
   [
     line(

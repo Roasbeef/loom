@@ -67,6 +67,11 @@ fn page() -> remote_transcript.Page {
 fn remote_children(
   child: remote_agent.RemoteAgent,
 ) -> connection_event.Message {
+  pushed([remote_agent.encode(child)])
+}
+
+// The same push for entries already on the wire, so a test can damage one.
+fn pushed(entries: List(json.JsonValue)) -> connection_event.Message {
   connection_event.Incoming(
     json.to_string(
       json.Object([
@@ -76,7 +81,7 @@ fn remote_children(
           "body",
           json.Object([
             #("mode", json.String("remote_children")),
-            #("remote_children", json.Array([remote_agent.encode(child)])),
+            #("remote_children", json.Array(entries)),
           ]),
         ),
       ]),
@@ -248,4 +253,77 @@ pub fn a_refused_remote_card_shows_its_reason_as_text_test() {
   assert !string.contains(drawn, "compiling the tests")
   assert !string.contains(drawn, "<script>")
   assert !string.contains(drawn, "\u{1b}")
+}
+
+// The page as the daemon's push of `child` draws it.
+fn page_of(child: remote_agent.RemoteAgent) -> String {
+  let wire = process.new_subject()
+  page_fixture.ready(wire, "observer")
+  |> page_fixture.run(component.update, [
+    component.Arrived([remote_children(child)]),
+    component.Ticked,
+  ])
+  |> component.view
+  |> element.to_string
+}
+
+// A child whose commits came back to the parent's repository says how many and
+// where they are, through the real wire decoder and page reducer. The ref is a
+// name a remote orchestrator chose, so markup in it reaches the page escaped,
+// as a text node and as the tooltip, and nothing else of it is an attribute.
+pub fn a_card_names_the_commits_that_came_back_and_their_ref_test() {
+  let ref = "refs/loom/children/build-1a2b/0123abcd<script>alert(1)</script>"
+  let drawn =
+    page_of(
+      remote_agent.RemoteAgent(
+        ..agent(),
+        standing: remote_agent.Completed,
+        summary: "",
+        commits: Some(3),
+        returned_ref: Some(ref),
+      ),
+    )
+  assert string.contains(drawn, "3 commits returned")
+  assert string.contains(
+    drawn,
+    "<span class=\"chip-model\" title=\"refs/loom/children/build-1a2b/0123abcd&lt;script&gt;alert(1)&lt;/script&gt;\">refs/loom/children/build-1a2b/0123abcd&lt;script&gt;alert(1)&lt;/script&gt;</span>",
+  )
+  assert !string.contains(drawn, "<script>")
+}
+
+pub fn one_returned_commit_is_singular_test() {
+  let drawn =
+    page_of(
+      remote_agent.RemoteAgent(
+        ..agent(),
+        commits: Some(1),
+        returned_ref: Some("refs/loom/children/build-1a2b/0123abcd"),
+      ),
+    )
+  assert string.contains(drawn, "1 commit returned")
+  assert !string.contains(drawn, "1 commits returned")
+}
+
+// A child that returned nothing, or whose pair is incomplete on the wire, is
+// drawn exactly as it was before the members existed: no count, no ref.
+pub fn a_card_without_returned_work_draws_neither_line_test() {
+  let drawn = page_of(agent())
+  assert string.contains(drawn, "build @ box")
+  assert !string.contains(drawn, "returned")
+  assert !string.contains(drawn, "refs/loom")
+
+  // The count alone is not a pair, so the decoder drops it and the card
+  // shows nothing of it.
+  let assert json.Object(members) = remote_agent.encode(agent())
+  let half = json.Object(list.key_set(members, "commits", json.Int(4)))
+  let wire = process.new_subject()
+  let model =
+    page_fixture.ready(wire, "observer")
+    |> page_fixture.run(component.update, [
+      component.Arrived([pushed([half])]),
+      component.Ticked,
+    ])
+  let drawn = element.to_string(component.view(model))
+  assert string.contains(drawn, "build @ box")
+  assert !string.contains(drawn, "returned")
 }

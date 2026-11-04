@@ -17,7 +17,9 @@
 //// decision reads `Needs approval`, in the attention colour. The approval
 //// card that answers it is drawn in the dock and only for the strand on
 //// screen, so the strand's card is a button that focuses the strand, which
-//// draws the approval card, and carries no control that decides.
+//// draws the approval card, and carries no control that decides. The card of a
+//// remote child whose commits came back to the parent's repository has two
+//// more lines: how many commits, and the ref that holds them (`returned`).
 ////
 //// Each card carries `data-loom-card`, its position among the cards as drawn
 //// (the listed chips in order, then the advisor's), a number and never a
@@ -379,17 +381,47 @@ fn chip_element(
       ],
       [
         ring(chip, Card),
-        html.span([attribute.class("chip-text")], [
-          html.span([attribute.class("chip-name")], [
-            html.text(agent_roster.placed_name(line, line.name)),
+        html.span(
+          [attribute.class("chip-text")],
+          list.flatten([
+            [
+              html.span([attribute.class("chip-name")], [
+                html.text(agent_roster.placed_name(line, line.name)),
+              ]),
+              status(line),
+              seen(line),
+            ],
+            returned(line),
+            [own_model(chip.own_model)],
           ]),
-          status(line),
-          seen(line),
-          own_model(chip.own_model),
-        ]),
+        ),
       ],
     ),
   ])
+}
+
+/// What a remote child's commits became in the parent's repository, as two
+/// quiet lines under the status: how many came back, and the ref that holds
+/// them, which is where the parent reads them (`git log <ref>`). The ref is a
+/// name a remote orchestrator chose, so it is bounded and made one line before
+/// it reaches the line, and it is a text node; the same text is the second
+/// line's `title`, because the line is cut at the card's edge and the end of a
+/// ref, its tip, is the part that tells two apart. The page has a copy element
+/// (`<loom-copy>`), but it copies only the sign-in commands the page composes
+/// itself, and a card is one button, so the ref is plain text to select from
+/// the tooltip. A child that returned nothing leaves the card as it was.
+fn returned(line: agent_roster.Line) -> List(Element(message)) {
+  case line.returned {
+    Some(agent_roster.Returned(commits:, ref:)) -> [
+      html.span([attribute.class("chip-seen")], [
+        html.text(agent_roster.returned_words(commits)),
+      ]),
+      html.span([attribute.class("chip-model"), attribute.title(ref)], [
+        html.text(ref),
+      ]),
+    ]
+    None -> []
+  }
 }
 
 // How long a remote child's glance has not changed, once that is worth

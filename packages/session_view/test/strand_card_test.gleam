@@ -19,6 +19,7 @@ fn line(status: agent_view.Status, text: String, elapsed: Option(Int)) -> Line {
     tokens: None,
     placement: None,
     age_s: None,
+    returned: None,
   )
 }
 

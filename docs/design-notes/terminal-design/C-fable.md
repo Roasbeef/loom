@@ -173,7 +173,7 @@ heading.
 whose `Status` (`session_view/agent_view.gleam:52`) carries the glyph and
 `label` (`session_view/agent_view.gleam:607`) the word, and from `Line`
 (`session_view/agent_roster.gleam:84`), which adds elapsed time and context
-size; `lines` (`session_view/agent_roster.gleam:538`) is the order. The task,
+size; `lines` (`session_view/agent_roster.gleam:571`) is the order. The task,
 activity, latest update, pending input, recent tools and approvals are the
 `Row`'s own fields. Sent messages are `Item`
 (`session_view/agent_messages.gleam:52`), held in `agent_messages`
@@ -731,7 +731,7 @@ No single key sends a decision.
 | Timeline gutter | each row's strand and hue | derivable | `pieces` (`session_view/turns.gleam:374`), `hue` (`session_view/turns.gleam:308`); new hue constants in `tui/theme.gleam` |
 | Counted repeated rows | consecutive identical calls and errors | derivable | the grouping in `project` (`session_view/tool_activity.gleam:55`) gains a run-length fold; shared with the web view |
 | Harness notes | `[loom]`-prefixed inputs, hook and job notices | partly | `harness_message_lines` (`session_view/transcript_lines.gleam:2907`) recognises advisor frames; `memory_context_lines` (`session_view/composer.gleam:378`) the memory context; the `[loom]` job and hook notices need the same recogniser extended, no wire change |
-| Strands tab, strip, workspace list | one row per strand | yes | `lines` (`session_view/agent_roster.gleam:538`), `Line` (`session_view/agent_roster.gleam:103`), `status_line` (`session_view/strand_card.gleam:45`), `status_mark` (`tui/agents.gleam:1434`) |
+| Strands tab, strip, workspace list | one row per strand | yes | `lines` (`session_view/agent_roster.gleam:571`), `Line` (`session_view/agent_roster.gleam:103`), `status_line` (`session_view/strand_card.gleam:45`), `status_mark` (`tui/agents.gleam:1434`) |
 | Strand detail | task, now, update, pending, recent, approvals | yes | `Row` (`session_view/agent_view.gleam:79`) |
 | Strand detail: messages out | sends with state | yes | `Item` (`session_view/agent_messages.gleam:52`) |
 | Strand detail: messages in, inbox | received messages, unread count | no | section 9.2; a strand origin on the admitted message and an inbox read need a protocol change |
