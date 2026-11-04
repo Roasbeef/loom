@@ -34,7 +34,7 @@
 %% own entry does not seat it in the directory publishes an empty list, and
 %% connects hidden to everyone.
 -module(client_distribution_ffi).
--export([options/2, start/5, peer/2, link/2, connect/2, verify/4,
+-export([options/2, launch_setting/0, validate/4, start/5, peer/2, link/2, connect/2, verify/4,
          ensure_epmd/0, publish_pins/1, publish_directory/1]).
 -include_lib("kernel/include/file.hrl").
 -include_lib("public_key/include/public_key.hrl").
@@ -146,11 +146,46 @@ exact_node_san(#'OTPCertificate'{tbsCertificate = Tbs}, Name) ->
         _ -> false
     end.
 
+%% Capture emulator arguments, including arguments injected through ERL_FLAGS.
+%% An unrepresentable distribution flag leaves no recoverable launch setting.
+launch_setting() ->
+    Forbidden = [ssl_dist_opt, name, sname, setcookie, nocookie, hidden,
+                 start_epmd, epmd_port],
+    Env = ["ERL_EPMD_PORT", "ERL_EPMD_ADDRESS"],
+    Clean = lists:all(fun(Flag) -> init:get_argument(Flag) =:= error end,
+                      Forbidden) andalso
+            lists:all(fun(Name) -> os:getenv(Name) =:= false end, Env),
+    case {Clean, init:get_argument(proto_dist),
+          init:get_argument(ssl_dist_optfile), init:get_argument(kernel)} of
+        {true, error, error, error} -> {ok, none};
+        {true, {ok, [["inet_tls"]]}, {ok, [[Path]]},
+         {ok, [["connect_all", "false"]]}} ->
+            case unicode:characters_to_binary(Path) of
+                Binary when is_binary(Binary) -> {ok, {some, Binary}};
+                _ -> {error, nil}
+            end;
+        _ -> {error, nil}
+    end.
+
 %% Boot preconditions come first and name what failed, because the operator
 %% has to act on it. Only then are credentials read and distribution started.
 start(Local, Peers, Files, Listen, Members) ->
+    case validate_checked(Local, Peers, Files, Members) of
+        {ok, CookieBytes} -> start_checked(Local, Peers, CookieBytes, Listen, Members);
+        {error, Refusal} -> {error, Refusal}
+    end.
+
+%% Validation performs only bounded reads and emulator argument inspection.
+%% Startup repeats it immediately before any distribution side effects.
+validate(Local, Peers, Files, Members) ->
+    case validate_checked(Local, Peers, Files, Members) of
+        {ok, _CookieBytes} -> {ok, nil};
+        {error, Refusal} -> {error, Refusal}
+    end.
+
+validate_checked(Local, Peers, Files, Members) ->
     case boot_refusal(Peers, Files, Members) of
-        none -> start_checked(Local, Peers, Files, Listen, Members);
+        none -> validate_credentials(Local, Files);
         Refusal -> {error, Refusal}
     end.
 
@@ -191,13 +226,12 @@ options_match(Peers, Files) ->
     catch _:_ -> false
     end.
 
-start_checked(Local, Peers, {credential_files, Ca, Cert, Key, Cookie}, Listen,
-              Members) ->
+validate_credentials(Local, {credential_files, Ca, Cert, Key, Cookie}) ->
     try
         %% Finite reads and private modes are checked before the listener starts.
-        _ = bounded_file(Ca, 262144, public),
+        CaPem = bounded_file(Ca, 262144, public),
         CertPem = bounded_file(Cert, 262144, public),
-        _ = bounded_file(Key, 32768, private),
+        KeyPem = bounded_file(Key, 32768, private),
         CookieBytes = bounded_file(Cookie, 128, private),
         %% The emulator reads its cookie from the init home at listener start,
         %% so the configured file must be that file, never another one.
@@ -211,6 +245,46 @@ start_checked(Local, Peers, {credential_files, Ca, Cert, Key, Cookie}, Listen,
         [{'Certificate', Der, not_encrypted} | _] = public_key:pem_decode(CertPem),
         true = exact_node_san(public_key:pkix_decode_cert(Der, otp),
                               binary_to_list(Local)),
+        true = valid_ca_certificates(CaPem),
+        true = private_key_matches(KeyPem, Der),
+        {ok, CookieBytes}
+    catch
+        _:_ -> {error, invalid_credentials}
+    end.
+
+%% SSL accepts a bundle of CA certificates. Decode every certificate without
+%% requiring the local leaf to chain to a trust store for remote peers.
+valid_ca_certificates(Pem) ->
+    Certificates = [Der || {'Certificate', Der, not_encrypted} <-
+                                public_key:pem_decode(Pem)],
+    Certificates =/= [] andalso lists:all(fun(Der) ->
+        _ = public_key:pkix_decode_cert(Der, otp), true
+    end, Certificates).
+
+%% Decode the same key-entry types and default empty password SSL accepts.
+%% Prove possession against the certificate's public key using OTP primitives,
+%% rather than assuming that a readable private key belongs to this leaf.
+private_key_matches(Pem, CertDer) ->
+    Entries = [Entry || Entry = {Type, _, _} <- public_key:pem_decode(Pem),
+                        lists:member(Type, ['RSAPrivateKey', 'DSAPrivateKey',
+                                            'ECPrivateKey', 'PrivateKeyInfo'])],
+    [Entry] = Entries,
+    Private = public_key:pem_entry_decode(Entry, ""),
+    #'Certificate'{tbsCertificate = Tbs} = public_key:der_decode('Certificate', CertDer),
+    Spki = Tbs#'TBSCertificate'.subjectPublicKeyInfo,
+    SpkiDer = public_key:der_encode('SubjectPublicKeyInfo', Spki),
+    Public = public_key:pem_entry_decode({'SubjectPublicKeyInfo', SpkiDer, not_encrypted}),
+    Message = <<"loom distribution credential validation">>,
+    lists:any(fun(Hash) ->
+        try
+            Signature = public_key:sign(Message, Hash, Private),
+            public_key:verify(Message, Hash, Signature, Public)
+        catch _:_ -> false
+        end
+    end, [sha256, sha, none]).
+
+start_checked(Local, Peers, CookieBytes, Listen, Members) ->
+    try
         ok = application:set_env(kernel, dist_auto_connect, never),
         ok = application:set_env(kernel, net_setuptime, 5),
         ok = set_listen(Listen),

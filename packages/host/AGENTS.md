@@ -36,6 +36,11 @@ callers own launch timing, authentication policy, and application messages.
   fresh state or an observed departed native identity. `claim` adopts only
   the matching paused-wrapper reservation; `publish_ready` replaces that exact
   reservation with the actual listener port and daemon epoch.
+- `host/launch_metadata.Record` stores a native `endpoint.Fence`, authenticated
+  epoch, canonical config source or absence, and local or TLS options mode.
+  Its private eight-field JSON schema is bounded to 4,096 bytes. The record is
+  a consistency witness, not authority to stop a daemon. Unrepresentable values
+  omit the record for that epoch; filesystem write failures still propagate.
 - Private-file operations validate ownership and permissions, bound reads,
   and atomically replace a file after flushing its complete contents.
 - `host/claim` is the shape of a claim token (protocol-change/053) shared by

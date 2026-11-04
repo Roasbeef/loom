@@ -34,6 +34,7 @@ import support/remote_fixtures
 import telemetry/level
 import telemetry/log
 import telemetry/record
+import tom
 
 const plan_text =
   "[[node]]
@@ -102,6 +103,42 @@ fn loaded(text: String, node: String) -> ledger_reference.Loaded {
       node,
     )
   opened
+}
+
+pub fn read_only_launch_validation_refuses_missing_and_corrupt_ledger_test() {
+  let text = configuration("loom@laptop.example")
+  let assert Ok(document) = tom.parse(text)
+  let assert Ok(Some(settings)) = distribution.parse(text)
+  let assert Some(path) = distribution.ledger_path(settings)
+  let assert Ok(original) = simplifile.read(path)
+  let assert Ok(_) = main.validate_launch_distribution(document, "/fixture")
+  let assert Ok(ghost) =
+    tom.parse(text <> "\n[executors.ghost]\nnode = \"loom@ghost.example\"\n")
+  let assert Error(ghost_reason) =
+    main.validate_launch_distribution(ghost, "/fixture")
+  assert string.contains(ghost_reason, "ghost")
+  let unknown =
+    string.replace(text, "loom@laptop.example", "loom@unknown.example")
+  let assert Ok(unknown_document) = tom.parse(unknown)
+  let assert Error(unknown_reason) =
+    main.validate_launch_distribution(unknown_document, "/fixture")
+  assert string.contains(unknown_reason, "not an active member")
+  let other_text = configuration("loom@laptop.example")
+  let assert Ok(Some(other_settings)) = distribution.parse(other_text)
+  let ca = distribution.credential_files(settings).ca
+  let other_ca = distribution.credential_files(other_settings).ca
+  let assert Ok(original_ca) = simplifile.read(ca)
+  let assert Ok(other_ca_text) = simplifile.read(other_ca)
+  assert simplifile.write(ca, other_ca_text) == Ok(Nil)
+  let assert Error(_) = main.validate_launch_distribution(document, "/fixture")
+  assert simplifile.write(ca, original_ca) == Ok(Nil)
+  assert simplifile.write(path, original <> "torn") == Ok(Nil)
+  let assert Ok(_) = main.validate_launch_distribution(document, "/fixture")
+  assert simplifile.read(path) == Ok(original <> "torn")
+  assert simplifile.write(path, original <> "invalid\n") == Ok(Nil)
+  let assert Error(_) = main.validate_launch_distribution(document, "/fixture")
+  assert simplifile.delete(path) == Ok(Nil)
+  let assert Error(_) = main.validate_launch_distribution(document, "/fixture")
 }
 
 const minimal =

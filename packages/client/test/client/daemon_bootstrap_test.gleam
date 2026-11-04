@@ -15,10 +15,13 @@ import gleam/erlang/process
 import gleam/http/response
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import host/bootstrap as host
 import host/endpoint
+import host/launch_metadata
 import mist
 import simplifile
+import telemetry/log
 import tui/bootstrap
 import tui/daemon
 import tui/daemon/bootstrap as daemon_bootstrap
@@ -62,6 +65,92 @@ fn claimed_listener() {
     as "root retains a real listener before publishing Ready"
   assert entrypoint.publish_endpoint(config, serving, paths, fence) == Ok(Nil)
   #(config, paths, serving)
+}
+
+pub fn config_alias_switch_keeps_the_original_startup_identity_test() {
+  let paths = paths()
+  let original = paths.root <> "/original.toml"
+  let replacement = paths.root <> "/replacement.toml"
+  let alias = paths.root <> "/config.alias"
+  assert simplifile.write(original, "[daemon]\nmax_connections = 7\n")
+    == Ok(Nil)
+  assert simplifile.write(replacement, "[daemon]\nmax_connections = 9\n")
+    == Ok(Nil)
+  assert simplifile.create_symlink(original, alias) == Ok(Nil)
+  let assert Ok(config) =
+    entrypoint.parse(["--state-dir", paths.root, "--config", alias])
+  let assert Ok(#(config, paths, fence)) = entrypoint.claim_endpoint(config)
+  let assert Ok(#(config, daemon)) =
+    entrypoint.prepare_startup(config, log.discard())
+    as "startup reads the original canonical config before the alias changes"
+
+  // The alias is switched after startup returns and before Ready publication.
+  assert simplifile.delete(alias) == Ok(Nil)
+  assert simplifile.create_symlink(replacement, alias) == Ok(Nil)
+  let assert Ok(serving) =
+    entrypoint.listen(config, daemon, fn(_, _) {
+      response.new(501)
+      |> response.set_body(mist.Bytes(bytes_tree.from_string("unused")))
+    })
+  assert entrypoint.publish_endpoint(config, serving, paths, fence) == Ok(Nil)
+  let assert Ok(Some(metadata)) = launch_metadata.load(paths)
+    as "representable local startup publishes its original config identity"
+  assert metadata.config == Some(original)
+  assert metadata.mode == launch_metadata.LocalOnly
+  assert metadata.fence == fence
+  assert metadata.epoch == serving.ready.epoch
+  let assert Ok(Nil) = root.shutdown(daemon, within: 5000)
+}
+
+pub fn unreproduced_launch_overrides_leave_no_metadata_test() {
+  let overrides = [
+    ["--ui"],
+    ["--bind", "127.0.0.1:0"],
+    ["--capacity", "9"],
+    ["--owner-name", "Else"],
+    ["--network", "off"],
+    ["--helper", "/missing/custom-helper"],
+  ]
+  list.each(overrides, fn(flags) {
+    let paths = paths()
+    let assert Ok(config) =
+      entrypoint.parse(["--state-dir", paths.root, ..flags])
+    let assert Ok(#(config, paths, fence)) = entrypoint.claim_endpoint(config)
+    let assert Ok(#(config, daemon)) =
+      entrypoint.prepare_startup(config, log.discard())
+    assert config.launch_setting == None
+    let assert Ok(serving) =
+      entrypoint.listen(config, daemon, fn(_, _) {
+        response.new(501)
+        |> response.set_body(mist.Bytes(bytes_tree.from_string("unused")))
+      })
+    assert entrypoint.publish_endpoint(config, serving, paths, fence) == Ok(Nil)
+    assert launch_metadata.load(paths) == Ok(None)
+    let assert Ok(Nil) = root.shutdown(daemon, within: 5000)
+  })
+}
+
+pub fn oversized_launch_metadata_does_not_block_readiness_test() {
+  let paths = paths()
+  let assert Ok(config) = entrypoint.parse(["--state-dir", paths.root])
+  let assert Ok(#(config, paths, fence)) = entrypoint.claim_endpoint(config)
+  let assert Ok(#(config, daemon)) =
+    entrypoint.prepare_startup(config, log.discard())
+  let long_path = "/" <> string.repeat("\"", 2047)
+  let config =
+    entrypoint.Config(
+      ..config,
+      launch_setting: Some(#(Some(long_path), launch_metadata.LocalOnly)),
+    )
+  let assert Ok(serving) =
+    entrypoint.listen(config, daemon, fn(_, _) {
+      response.new(501)
+      |> response.set_body(mist.Bytes(bytes_tree.from_string("unused")))
+    })
+  assert entrypoint.publish_endpoint(config, serving, paths, fence) == Ok(Nil)
+  assert launch_metadata.load(paths) == Ok(None)
+  let assert Ok(Some(endpoint.Ready(_, _, _, _, _))) = endpoint.load(paths)
+  let assert Ok(Nil) = root.shutdown(daemon, within: 5000)
 }
 
 fn options(paths: endpoint.Paths, workspace) {
@@ -172,8 +261,7 @@ fn native_launch(paths: endpoint.Paths) {
   let arguments =
     list.append(["-pa", ..code_paths], [
       "-noshell", "-eval", "client@@main:run(client)", "-extra", "--state-dir",
-      paths.root, "--bind", "127.0.0.1:0", "--config", configuration, "--helper",
-      "/missing/lazy/helper",
+      paths.root, "--config", configuration,
     ])
   Ok(daemon_bootstrap.Launch(erl, arguments))
 }
@@ -201,6 +289,14 @@ pub fn daemon_bootstrap_native_child_lock_handoff_and_two_workspace_reuse_test()
       panic as reason
     }
     Ok(first) -> {
+      let assert Ok(Some(metadata)) = launch_metadata.load(paths)
+        as "the daemon records its original launch before readiness"
+      let assert Ok(source) = host.canonical_path(paths.root <> ".toml")
+        as "the recorded configuration has a canonical identity"
+      assert metadata.fence == first.record.fence
+      assert metadata.config == Some(source)
+      assert metadata.mode == launch_metadata.LocalOnly
+      assert protocol.Epoch(metadata.epoch) == daemon.hello(first.control).epoch
       assert first.record.fence.pid != host.current_process_id()
       let second =
         bootstrap.resolve_daemon(

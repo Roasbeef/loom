@@ -131,6 +131,15 @@ cat > "$state/default-config/loom.toml" <<'EOF'
 [daemon]
 profile = true
 EOF
+# Explicit absence must not read the profiling state default or create a cookie.
+rm -f "$PROFILE_READER_PATH"
+loom_profile_consume daemon --config "" --state-dir "$state/default-config"
+[[ "$LOOM_PROFILE_ENABLED" == 0 ]]
+[[ ! -e "$PROFILE_READER_PATH" ]]
+[[ ${#LOOM_PROFILE_ARGS[@]} == 4 ]]
+[[ "${LOOM_PROFILE_ARGS[0]}" == --config && -z "${LOOM_PROFILE_ARGS[1]}" ]]
+[[ "${LOOM_PROFILE_ARGS[2]}" == --state-dir && "${LOOM_PROFILE_ARGS[3]}" == "$state/default-config" ]]
+
 loom_profile_consume daemon --state-dir "$state/default-config"
 [[ "$LOOM_PROFILE_ENABLED" == 1 ]]
 [[ "${LOOM_PROFILE_ARGS[*]}" == "--state-dir $state/default-config" ]]
@@ -294,18 +303,21 @@ exit_state="$state/exit-only"
 for invocation in \
   "daemon --help" "daemon -h" "daemon help" "daemon access list" "daemon peer list" \
   "daemon ext list" "daemon access --help" "daemon --state-dir $exit_state --help" \
+  "daemon __launch_preflight local" "daemon __launch_preflight tls $profile_config" \
   "client --help" "client -h" "client help" "client --profile --help" \
   "client access list" "client claim --profile" "client enroll" "client update" \
   "client sessions" "client replay x.jsonl" "client ui" "client --ui" \
   "client --state-dir $exit_state --ui"; do
   read -r -a words <<< "$invocation"
   role="${words[0]}"
+  rm -f "$PROFILE_READER_PATH"
   banner="$(loom_profile_consume "$role" "${words[@]:1}" --state-dir "$exit_state" --config "$profile_config" 2>&1)"
   loom_profile_consume "$role" "${words[@]:1}" --state-dir "$exit_state" --config "$profile_config" 2>/dev/null
   [[ "$LOOM_PROFILE_ENABLED" == 0 ]]
   [[ -z "$LOOM_PROFILE_NODE" && -z "$LOOM_PROFILE_COOKIE_HOME" ]]
   [[ -z "$banner" ]]
   [[ ! -e "$exit_state/tokens" ]]
+  [[ ! -e "$PROFILE_READER_PATH" ]]
 done
 
 # A daemon launch with the same configuration still profiles, so the rule is

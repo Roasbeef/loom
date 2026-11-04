@@ -47,6 +47,29 @@
 //// The credentials are four operator-provisioned files. The cookie file must
 //// be the VM's own `$HOME/.erlang.cookie`, because the emulator reads the
 //// cookie from there when it opens its listener.
+////
+//// ## Flow
+////
+//// `parse` → `tls_options` → `boot_arguments` → `start` → `peer` → `connect`;
+//// `validate`
+////
+//// 1. `parse` (and `from_document`, for a document the caller already read)
+////    turns the `[distribution]` table into a `Config`, refusing a bad name,
+////    path, address, port or pin before anything touches the VM.
+//// 2. `tls_options` renders the options file from that same `Config`, and
+////    `boot_arguments` names the emulator flags that point at it. The launcher
+////    boots the VM with both, so what the node runs is what the file says.
+//// 3. `start` checks the boot against the `Config`, applies the listen address
+////    and port, and answers a `Membership`. It checks again whatever
+////    `validate` checked, because the files can change between the two.
+//// 4. `peer` resolves a configured name to a `Peer` and nothing else, so
+////    network input never reaches the atom table.
+//// 5. `connect` dials one `Peer`, hidden or visible as the node's `Cluster`
+////    membership decides.
+////
+//// `validate` runs the boot and credential checks of step 3 without opening
+//// distribution or starting epmd, which is what the staged launch validation
+//// in `client/daemon/launch_preflight` reads.
 
 import client/internal/ffi_distribution.{Listen, Live}
 import client/internal/ffi_nodes
@@ -492,6 +515,49 @@ pub fn start(config: Config, cluster: Cluster) -> Result(Membership, Fault) {
         listen(config),
         members,
       )
+  }
+  |> result.map_error(fault)
+}
+
+/// Captures the reproducible emulator distribution setting, including flags
+/// supplied by the environment before the VM started.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // distribution.launch_setting()
+/// ```
+@internal
+pub fn launch_setting() -> Result(Option(String), Nil) {
+  ffi_distribution.launch_setting()
+}
+
+/// Checks the same boot and credential conditions as startup without opening
+/// distribution or starting epmd. Startup checks them again before acting.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // distribution.validate(config, distribution.NotMember)
+/// ```
+pub fn validate(config: Config, cluster: Cluster) -> Result(Nil, Fault) {
+  // The visible directory membership determines the boot isolation check.
+  let members = case cluster {
+    NotMember -> None
+    Member(members:) -> Some(members)
+  }
+
+  // The options file is checked against the configured trust mode.
+  case config.trust {
+    Pinned(peers:) ->
+      ffi_distribution.validate(
+        config.local,
+        pairs(peers),
+        config.files,
+        members,
+      )
+    Ledgered(..) ->
+      ffi_distribution.validate_live(config.local, Live, config.files, members)
   }
   |> result.map_error(fault)
 }

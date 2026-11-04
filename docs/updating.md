@@ -23,6 +23,22 @@ loom update --commit FULL_COMMIT    # Require a published commit build.
 loom update --install-only          # Leave daemon lifecycle to the operator.
 ```
 
+For a running daemon, automatic replacement requires private launch metadata
+matching its authenticated epoch and native process identity. The updater runs
+the staged server's exit-only preflight against the original canonical config
+and TLS options before requesting shutdown. An explicit `--config` must name
+the same source. Missing, stale or unrepresentable metadata, changed settings,
+or invalid credentials cause a refusal while the old daemon remains running.
+Older daemons and launches with unsupported command-line overrides can lack the
+record; stop and restart them deliberately with reproducible settings before
+retrying. A changed local `daemon.profile = true` is also refused before stop.
+
+Preflight reads current files, not a frozen configuration, and cannot guarantee
+that they or runtime resources remain unchanged through restart. The updater
+rechecks the authenticated epoch and native identity before retirement, then
+waits for the old process identity to depart and authenticates the replacement's
+new epoch and build.
+
 `--nightly` captures GitHub's `main` head and selects the first commit in its
 recent history with a published `commit-<full-sha>` release. A newer unpublished
 head, draft or failed build leaves the previous published build selectable.

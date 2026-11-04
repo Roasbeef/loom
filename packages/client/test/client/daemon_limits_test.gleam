@@ -34,6 +34,9 @@ pub fn invalid_connection_limits_are_refused_by_both_parsers_test() {
       let expected = "daemon." <> key <> " must be a positive integer"
       assert limits.parse(text) == Error(expected)
       assert catalog.parse(text) == Error(expected)
+      let assert Ok(document) = tom.parse(text)
+      assert entrypoint.validate_launch_document(document, "/fixture")
+        == Error("/fixture: " <> expected)
     })
   })
   assert limits.parse("[daemon]\nmax_connection = 4\n")

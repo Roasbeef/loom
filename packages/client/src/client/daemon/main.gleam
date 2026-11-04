@@ -88,6 +88,7 @@ import client/distribution_plan
 import client/executor_plane
 import client/executors
 import client/host
+import client/install
 import client/internal/ffi_os
 import client/ledger_boot
 import client/ledger_control
@@ -135,6 +136,7 @@ import core/clock
 import core/glance
 import core/ids
 import core/json.{type JsonValue}
+import gleam/bool
 import gleam/dict
 import gleam/erlang/atom
 import gleam/erlang/node
@@ -150,6 +152,7 @@ import gleam/string
 import host/bootstrap
 import host/build_identity
 import host/endpoint
+import host/launch_metadata
 import mist
 import runtime/effects
 import simplifile
@@ -182,6 +185,8 @@ pub type Config {
     owner_display_name: String,
     /// Helper/configuration/enforcement flags understood by serve's resolver.
     session_defaults: List(String),
+    /// Original config and emulator setting captured before startup reads them.
+    launch_setting: Option(#(Option(String), launch_metadata.Mode)),
     /// Whether the listener serves the web view (`--ui` or daemon.ui).
     view: WebView,
     /// Whether sessions are linked to each other without a grant, read from
@@ -416,7 +421,53 @@ pub fn publish_endpoint(
 ) -> Result(Nil, String) {
   use _still_ready <- result.try(root.ready(serving.daemon, within: 1000))
   use lock <- result.try(acquire_launch_lock(paths))
-  let published =
+  let published = {
+    use current <- result.try(endpoint.load(paths))
+
+    // The record is useful only for this exact native reservation.
+    use Nil <- result.try(case current {
+      Some(endpoint.Starting(found)) if found == fence -> Ok(Nil)
+      None | Some(endpoint.Starting(_)) | Some(endpoint.Ready(..)) ->
+        Error("daemon endpoint reservation changed before readiness")
+    })
+
+    // Unsupported original settings leave no record for this epoch. They do
+    // not prevent serving, but automatic replacement must refuse them.
+    use Nil <- result.try(case config.launch_setting, config.membership {
+      Some(#(source, launch_metadata.LocalOnly)), None ->
+        launch_metadata.write_representable(
+          paths,
+          launch_metadata.Record(
+            fence,
+            serving.ready.epoch,
+            source,
+            launch_metadata.LocalOnly,
+          ),
+        )
+      Some(#(Some(source), launch_metadata.Tls(path))), Some(_) -> {
+        // A symlink which moved while startup read the options cannot name
+        // the original file reliably, so leave this epoch unrepresentable.
+        case same_options_path(path) {
+          True ->
+            launch_metadata.write_representable(
+              paths,
+              launch_metadata.Record(
+                fence,
+                serving.ready.epoch,
+                Some(source),
+                launch_metadata.Tls(path),
+              ),
+            )
+          False -> Ok(Nil)
+        }
+      }
+      None, _
+      | Some(#(None, launch_metadata.Tls(_))), _
+      | Some(#(_, launch_metadata.LocalOnly)), Some(_)
+      | Some(#(Some(_), launch_metadata.Tls(_))), None
+      -> Ok(Nil)
+    })
+
     endpoint.publish_ready(
       paths,
       fence,
@@ -425,8 +476,82 @@ pub fn publish_endpoint(
       serving.ready.epoch,
       Some(build_identity.current()),
     )
+  }
   bootstrap.release_launch_lock(lock)
   published
+}
+
+/// Checks that the boot option still resolves to the captured file identity.
+fn same_options_path(captured: String) -> Bool {
+  let current = {
+    use setting <- result.try(distribution.launch_setting())
+    use path <- result.try(option.to_result(setting, Nil))
+    bootstrap.canonical_path(path) |> result.replace_error(Nil)
+  }
+  current == Ok(captured)
+}
+
+/// Captures the actual startup sources before reading their contents.
+fn capture_launch_setting(configuration: String, config: Config) {
+  let captured = {
+    use Nil <- result.try(reproducible_arguments(config))
+    use setting <- result.try(distribution.launch_setting())
+
+    // Configuration absence is distinct from an existing canonical file.
+    use source <- result.try(case configuration {
+      "" -> Ok(None)
+      path ->
+        bootstrap.canonical_path(path)
+        |> result.map(Some)
+        |> result.replace_error(Nil)
+    })
+
+    // The TLS options identity comes from the VM's actual boot arguments.
+    use mode <- result.try(case setting {
+      None -> Ok(launch_metadata.LocalOnly)
+      Some(path) ->
+        bootstrap.canonical_path(path)
+        |> result.map(launch_metadata.Tls)
+        |> result.replace_error(Nil)
+    })
+
+    Ok(#(source, mode))
+  }
+  captured |> result.map(Some) |> result.unwrap(None)
+}
+
+/// Refuses launch overrides the updater cannot reproduce from metadata.
+fn reproducible_arguments(config: Config) -> Result(Nil, Nil) {
+  case
+    config.bind_source,
+    config.view,
+    config.capacity,
+    config.owner_display_name
+  {
+    BindDefault, ViewOff, 8, "Owner" ->
+      reproducible_defaults(config.session_defaults)
+    _, _, _, _ -> Error(Nil)
+  }
+}
+
+/// The launcher may pass only config and its own adjacent bundled helper.
+fn reproducible_defaults(arguments: List(String)) -> Result(Nil, Nil) {
+  // Every other session override would be lost during replacement.
+  case arguments {
+    [] -> Ok(Nil)
+    ["--config", _, ..rest] -> reproducible_defaults(rest)
+    ["--helper", path, ..rest] -> {
+      use actual <- result.try(
+        bootstrap.canonical_path(path) |> result.replace_error(Nil),
+      )
+      use bundled <- result.try(
+        bootstrap.canonical_path(install.helper()) |> result.replace_error(Nil),
+      )
+      use <- bool.guard(actual != bundled, Error(Nil))
+      reproducible_defaults(rest)
+    }
+    [_, ..] -> Error(Nil)
+  }
 }
 
 /// Acquires an exclusive file lock to prevent concurrent daemon launches.
@@ -464,6 +589,7 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
       8,
       "Owner",
       [],
+      None,
       ViewOff,
       peer_defaults.off,
       [],
@@ -2236,6 +2362,16 @@ pub fn prepare_startup(
     "",
   ))
 
+  // Capture path identity before either the config or TLS options are read.
+  // A setting that cannot be represented leaves automatic update unavailable.
+  let captured = capture_launch_setting(configuration, config)
+
+  // Read the canonical path whose identity will be recorded for the updater.
+  let configuration = case captured {
+    Some(#(Some(path), _)) -> path
+    None | Some(#(None, _)) -> configuration
+  }
+
   // Decode the optional daemon web-view configuration.
   use document <- result.try(case configuration {
     "" -> Ok(dict.new())
@@ -2256,103 +2392,17 @@ pub fn prepare_startup(
     }
   })
 
-  use connection_limits <- result.try(
-    limits.from_document(document)
-    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  use #(config, connection_limits, project_numbers) <- result.try(
+    decode_startup(config, document, configuration, logger),
   )
+  let executors = config.executors
+  let pools = config.pools
+  let orchestrators = config.orchestrators
+  let directory = config.directory
+  let spawners = config.spawners
 
-  // The limits read above has already validated `[daemon] bind`, so this
-  // read fails only on the same words with the path in front. The address
-  // is captured once here and never reread, so a changed `bind` needs a
-  // restart.
-  use file_address <- result.try(
-    listen_address.from_document(document)
-    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
-  )
-  let config = with_file_address(config, file_address)
-
-  // Validation above makes a missing or false UI setting the only other
-  // possibility. The command-line opt-in remains authoritative over the file.
-  let view = case dict.get(document, "daemon") {
-    Ok(tom.Table(fields)) ->
-      case dict.get(fields, "ui") {
-        Ok(tom.Bool(True)) -> ViewOn(origins: [])
-        _ -> config.view
-      }
-    _ -> config.view
-  }
-
-  // The listed origins belong to the view, so a list on a daemon that does
-  // not serve it is refused rather than ignored: the owner who wrote it
-  // expects a page there (protocol-change/052).
-  use origins <- result.try(
-    ui_origin.from_document(document)
-    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
-  )
-
-  // Validate that a requested view mode has a compatible origin set.
-  use view <- result.try(case view, origins {
-    ViewOff, [] -> Ok(ViewOff)
-    ViewOff, [_, ..] ->
-      Error(
-        configuration
-        <> ": daemon."
-        <> ui_origin.key
-        <> " needs the web view; set daemon.ui = true or pass --ui",
-      )
-    ViewOn(_), _ -> Ok(ViewOn(origins:))
-  })
-
-  use peer_policy <- result.try(
-    peer_defaults.from_document(document)
-    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
-  )
-  use executors <- result.try(
-    executors.from_document(document)
-    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
-  )
-  use pools <- result.try(
-    pools.from_document(document)
-    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
-  )
-  use workspaces <- result.try(
-    workspaces.from_document(document)
-    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
-  )
-  use Nil <- result.try(
-    existing_roots(workspaces)
-    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
-  )
-  use orchestrators <- result.try(
-    orchestrators.from_document(document)
-    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
-  )
-  use directory <- result.try(
-    directory_settings.from_document(document)
-    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
-  )
-
-  // Validate session directory configuration requirements.
-  case directory {
-    Some(found) ->
-      case directory_settings.even(found) {
-        True ->
-          log.warn(logger, "daemon.directory_even_members", [
-            field.count("members", list.length(found.members)),
-          ])
-        False -> Nil
-      }
-    None -> Nil
-  }
-
-  use spawners <- result.try(
-    spawners.from_document(document)
-    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
-  )
-  use project_numbers <- result.try(
-    project_settings.from_document(document)
-    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
-  )
+  // The project book is a running table, so only startup creates it; staged
+  // validation reads the same numbers and starts nothing.
   use project_table <- result.try(project_book.start())
   use booted <- result.try(start_distribution(
     document,
@@ -2385,14 +2435,8 @@ pub fn prepare_startup(
   let config =
     Config(
       ..config,
-      view:,
-      peer_policy:,
-      executors:,
-      pools:,
-      workspaces:,
-      orchestrators:,
+      launch_setting: captured,
       directory:,
-      spawners:,
       membership: option.map(booted, fn(started) { started.membership }),
       ledger:,
       projects: Projects(book: Some(project_table), settings: project_numbers),
@@ -2547,10 +2591,224 @@ pub fn prepare_startup(
   |> result.map(fn(daemon) { #(config, daemon) })
 }
 
+/// Validates every read-only daemon startup setting without starting resources.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.validate_launch_document(document, path)
+/// ```
+@internal
+pub fn validate_launch_document(
+  document: dict.Dict(String, tom.Toml),
+  path: String,
+) -> Result(Nil, String) {
+  use config <- result.try(parse(["--state-dir", "/"]))
+  decode_startup(config, document, path, log.discard()) |> result.replace(Nil)
+}
+
+/// Replays a configured ledger without repair or an actor, and applies the
+/// same directory and reference checks startup makes before it serves.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.validate_launch_distribution(document, path)
+/// ```
+@internal
+pub fn validate_launch_distribution(
+  document: dict.Dict(String, tom.Toml),
+  path: String,
+) -> Result(distribution.Cluster, String) {
+  use initial <- result.try(parse(["--state-dir", "/"]))
+  use #(config, _, _) <- result.try(decode_startup(
+    initial,
+    document,
+    path,
+    log.discard(),
+  ))
+  use found <- result.try(distribution.from_document(document))
+
+  // Static settings need no ledger, but ledger mode must reproduce its checks.
+  case found {
+    None -> Ok(distribution.NotMember)
+    Some(settings) -> {
+      // A static peer list has no ledger to inspect.
+      case distribution.ledger_path(settings) {
+        None -> Ok(directory_settings.cluster(config.directory))
+        Some(ledger_path) -> {
+          // Directory membership in ledger mode has one source of truth.
+          use Nil <- result.try(case config.directory {
+            None -> Ok(Nil)
+            Some(_) ->
+              Error("[directory] cannot be combined with [distribution] ledger")
+          })
+
+          let local = distribution.local_node(settings)
+          use loaded <- result.try(ledger_reference.inspect(
+            ledger_path,
+            distribution.credential_files(settings).ca,
+            local,
+          ))
+          let directory = directory_settings.from_ledger(loaded.ledger, local)
+
+          // A seated node must keep every configured orchestrator in the directory.
+          use Nil <- result.try(case directory {
+            None -> Ok(Nil)
+            Some(found) ->
+              directory_settings.require_orchestrators(
+                config.orchestrators,
+                found.members,
+              )
+          })
+
+          use _ <- result.try(ledger_reference.audit(
+            loaded.ledger,
+            local,
+            ledger_path,
+            reference_rows(
+              config.executors,
+              config.orchestrators,
+              config.spawners,
+            ),
+          ))
+          use _ <- result.try(ledger_reference.audit_names(
+            loaded.ledger,
+            local,
+            ledger_path,
+            list.map(config.executors, fn(row) { row.name }),
+            reference_names(config.pools, config.spawners),
+          ))
+          Ok(directory_settings.cluster(directory))
+        }
+      }
+    }
+  }
+}
+
+/// Decodes the same configuration for startup and staged validation.
+fn decode_startup(
+  config: Config,
+  document: dict.Dict(String, tom.Toml),
+  configuration: String,
+  logger: Logger,
+) {
+  use connection_limits <- result.try(
+    limits.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+
+  // The limits read above has already validated `[daemon] bind`, so this
+  // read fails only on the same words with the path in front. The address
+  // is captured once here and never reread, so a changed `bind` needs a
+  // restart.
+  use file_address <- result.try(
+    listen_address.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  let config = with_file_address(config, file_address)
+
+  // Validation above makes a missing or false UI setting the only other
+  // possibility. The command-line opt-in remains authoritative over the file.
+  let view = case dict.get(document, "daemon") {
+    Ok(tom.Table(fields)) ->
+      case dict.get(fields, "ui") {
+        Ok(tom.Bool(True)) -> ViewOn(origins: [])
+        _ -> config.view
+      }
+    _ -> config.view
+  }
+
+  // The listed origins belong to the view, so a list on a daemon that does
+  // not serve it is refused rather than ignored: the owner who wrote it
+  // expects a page there (protocol-change/052).
+  use origins <- result.try(
+    ui_origin.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+
+  // Validate that a requested view mode has a compatible origin set.
+  use view <- result.try(case view, origins {
+    ViewOff, [] -> Ok(ViewOff)
+    ViewOff, [_, ..] ->
+      Error(
+        configuration
+        <> ": daemon."
+        <> ui_origin.key
+        <> " needs the web view; set daemon.ui = true or pass --ui",
+      )
+    ViewOn(_), _ -> Ok(ViewOn(origins:))
+  })
+
+  use peer_policy <- result.try(
+    peer_defaults.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  use executors <- result.try(
+    executors.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  use pools <- result.try(
+    pools.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  use workspaces <- result.try(
+    workspaces.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  use Nil <- result.try(
+    existing_roots(workspaces)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  use orchestrators <- result.try(
+    orchestrators.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  use directory <- result.try(
+    directory_settings.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+
+  // Validate session directory configuration requirements.
+  case directory {
+    Some(found) ->
+      case directory_settings.even(found) {
+        True ->
+          log.warn(logger, "daemon.directory_even_members", [
+            field.count("members", list.length(found.members)),
+          ])
+        False -> Nil
+      }
+    None -> Nil
+  }
+
+  use spawners <- result.try(
+    spawners.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  use project_numbers <- result.try(
+    project_settings.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  Ok(#(
+    Config(
+      ..config,
+      view:,
+      peer_policy:,
+      executors:,
+      pools:,
+      workspaces:,
+      orchestrators:,
+      directory:,
+      spawners:,
+    ),
+    connection_limits,
+    project_numbers,
+  ))
+}
+
 /// An explicit `--bind` outranks the file, so the file's address replaces only
-/// the built-in default. The resolved address is written back into the
-/// `Config`, which is what the listener binds and `publish_endpoint` records
-/// for clients to discover.
+/// the built-in default. The listener binds and publishes the resolved address.
 fn with_file_address(
   config: Config,
   file_address: Option(listen_address.Address),

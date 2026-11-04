@@ -73,8 +73,8 @@ pub type Tail {
   /// The file ended in a complete line, or was empty after the last one.
   Clean
 
-  /// The file ended in a line with no `\n`. The line was dropped from memory
-  /// and from disk, and `bytes` is how many bytes it had.
+  /// The file ended in a line with no `\n`. `open` removes it from disk;
+  /// `inspect` reports the same `bytes` without modifying the file.
   Repaired(bytes: Int)
 }
 
@@ -127,6 +127,27 @@ pub type AppendError {
 ///   membership_store.open("/home/me/.loom/ledger.log", verifier)
 /// ```
 pub fn open(path: String, verifier: Verifier) -> Result(Opened, OpenError) {
+  use opened <- result.try(inspect(path, verifier))
+
+  // Only the actual startup owner repairs a torn tail after replay succeeds.
+  case opened.tail {
+    Clean -> Ok(opened)
+    Repaired(_) ->
+      bootstrap.atomic_write_private(opened.store.path, opened.store.text)
+      |> result.map(fn(_) { opened })
+      |> result.map_error(RepairFailed)
+  }
+}
+
+/// Reads and replays the same complete records as `open` without repairing the
+/// file. A torn final line is observed but never written by this read-only path.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // membership_store.inspect(path, verifier)
+/// ```
+pub fn inspect(path: String, verifier: Verifier) -> Result(Opened, OpenError) {
   use bytes <- result.try(
     bootstrap.read_bounded(path, max_file_bytes)
     |> result.map_error(Unreadable),
@@ -147,7 +168,13 @@ pub fn open(path: String, verifier: Verifier) -> Result(Opened, OpenError) {
     }),
   )
   let store = from_lines(path, complete)
-  use tail <- result.try(repair(store, torn))
+
+  // Record the repair startup would perform without changing the file.
+  let tail = case torn {
+    "" -> Clean
+    _ -> Repaired(bytes: string.byte_size(torn))
+  }
+
   Ok(Opened(store:, ledger:, tail:))
 }
 
@@ -190,19 +217,6 @@ fn from_lines(path: String, complete: List(String)) -> Store {
 
 fn terminated(lines: List(String)) -> String {
   string.concat(list.map(lines, fn(line) { line <> "\n" }))
-}
-
-// A torn tail is cut from the file before the node writes anything after it,
-// or the next append would join its line to the fragment.
-/// Repairs only the permitted incomplete trailing record at the file boundary.
-fn repair(store: Store, torn: String) -> Result(Tail, OpenError) {
-  case torn {
-    "" -> Ok(Clean)
-    _ ->
-      bootstrap.atomic_write_private(store.path, store.text)
-      |> result.map(fn(_) { Repaired(bytes: string.byte_size(torn)) })
-      |> result.map_error(RepairFailed)
-  }
 }
 
 /// Makes an applied entry durable: the file holds its line, flushed, before

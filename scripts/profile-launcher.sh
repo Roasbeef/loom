@@ -82,7 +82,7 @@ loom_profile_is_exit_only() {
     client:help | client:ui | client:ext | client:replay | client:sessions | client:version | client:--version | client:claim | client:enroll | client:access | client:update)
       return 0
       ;;
-    daemon:help | daemon:access | daemon:peer | daemon:ext | daemon:codex)
+    daemon:help | daemon:access | daemon:peer | daemon:ext | daemon:codex | daemon:__launch_preflight)
       return 0
       ;;
     *)
@@ -191,6 +191,7 @@ loom_profile_consume() {
 
   local state_root=""
   local config_path=""
+  local config_supplied=0
   local parsing=1
   local option=""
 
@@ -225,6 +226,7 @@ loom_profile_consume() {
         shift
         ;;
       --config)
+        config_supplied=1
         LOOM_PROFILE_ARGS+=("$option")
         if (( $# == 0 )); then
           continue
@@ -247,7 +249,8 @@ loom_profile_consume() {
     state_root="${HOME:+$HOME/.loom}"
   fi
 
-  if [[ -z "$config_path" && -n "$state_root" ]]; then
+  # An explicit empty config is absence, not a request for the state default.
+  if (( config_supplied == 0 )) && [[ -n "$state_root" ]]; then
     config_path="$state_root/loom.toml"
   fi
 
