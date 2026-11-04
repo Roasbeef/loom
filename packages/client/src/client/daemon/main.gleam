@@ -2892,7 +2892,22 @@ pub fn prepare_startup(
                 chosen,
               ),
             )
-          _, pool ->
+          _, pool -> {
+            // The roster is read once and serves both the candidates and the
+            // counts, so they cannot disagree about which executors exist.
+            let rows = roster.rows(executor_roster(config))
+
+            // The counts of resident sessions are read here and the sessions
+            // still being built are added by the registry, in the same turn
+            // that records this session's claim.
+            let claim = fn(choose) {
+              manager.claim_placement(
+                directory,
+                session_id,
+                ledger_holdings.resident_by_name(directory, roster.fixed(rows)),
+                choose,
+              )
+            }
             serve.assemble_registered(
               settings,
               identity,
@@ -2901,18 +2916,14 @@ pub fn prepare_startup(
               Some(services),
               workspace.pooled(
                 config.membership,
-                roster.rows(executor_roster(config)),
+                rows,
                 config.pools,
                 pool,
-                fn() {
-                  ledger_holdings.resident_by_name(
-                    directory,
-                    executor_roster(config),
-                  )
-                },
+                claim,
                 chosen,
               ),
             )
+          }
         }
         |> diagnose_start(logger, identity, RuntimeAssembly)
         |> result.map(serve.resident)

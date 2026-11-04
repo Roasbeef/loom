@@ -29,7 +29,9 @@
 //// reorders the candidates by how many open scopes this orchestrator has
 //// already placed on each, fewest first, and the configured order breaks a
 //// tie. The sessions one orchestrator places therefore go round the pool, and no
-//// executor holds a second before each has one. The counts are the orchestrator's own
+//// executor holds a second before each has one. A session still being opened
+//// counts for the executor it was sent to (`manager.claim_placement`), so opens
+//// that run together see one another. The counts are the orchestrator's own
 //// bookkeeping and say nothing about load or about what the executor holds for
 //// other orchestrators; whether an executor is up or has room is still learned
 //// at the attach, which skips to the next candidate. With no open scopes the

@@ -8264,12 +8264,22 @@ the session first opens and then never again.
   `pools.spread(candidates, open)` is the only ordering: it sorts the candidates
   by the open scopes this orchestrator holds on each, fewest first, and the listed
   order breaks ties, so a pool nothing uses is first-fit. `workspace.pooled` takes
-  the counts as a `placed` thunk, asked once per first open, which
-  `daemon/main` fills with `ledger_holdings.resident_by_name` (the resident count
-  of `placements`, by executor name; an unknown tally is an empty dict and so the
-  listed order). Down and full executors stay in the list and the attach skips
-  them. Opens that run at the same moment can read the same counts, because a
-  session counts only once it is resident.
+  a `claim` function, called once per first open with a chooser from the counts
+  to the executor names in order. `daemon/main` implements it with
+  `manager.claim_placement(registry, session, resident, choose)`, where
+  `resident` is `ledger_holdings.resident_by_name` (the resident count of
+  `placements`, by executor name; an unknown tally is an empty dict and so the
+  listed order). A session is resident only after its attach, so the registry's
+  `Book.claims` (session to executor) adds one count per session still being
+  built, runs `choose` and stores the head of its answer, all in the one
+  `ClaimPlacement` turn, which is what makes concurrent opens see each other. A
+  claim is live only while its session's slot is waiting or building
+  (`live_claims`), so nothing releases it: a resident, failed, closing or removed
+  slot stops counting, and each claim prunes the dead entries. `seed_executor`
+  re-points a claim at the executor that took the scope. Asking twice replaces
+  the session's claim. Down and full executors stay in the list and the attach
+  skips them (`placement_claim_test` runs eight concurrent claims over four
+  executors).
 - `workspace.attach` is the placement loop (read its module doc for the order of
   steps). The scope record names the executor, and it is written after the
   connection and before `Attach` is sent. That one ordering is what makes "a

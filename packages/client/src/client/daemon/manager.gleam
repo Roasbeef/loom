@@ -958,6 +958,18 @@ type Message(instance) {
   /// writing their owner records as lookup hints (protocol-change/083).
   LocalSessions(Subject(Result(List(String), Error)))
 
+  /// A session being built asks which executors of a pool to try, in order. The
+  /// registry adds the executors that sessions still being built have been told
+  /// to try first to the resident counts it is given, hands the sum to the
+  /// chooser, and records the head of the answer as the session's claim, all in
+  /// one turn so that concurrent askers see one another.
+  ClaimPlacement(
+    String,
+    Dict(String, Int),
+    fn(Dict(String, Int)) -> List(String),
+    Subject(List(String)),
+  )
+
   WorkspaceDefault(String, Subject(Result(View, Error)))
   SetDefault(String, String, Subject(Result(View, Error)))
   Open(String, Subject(Result(Status, Error)))
@@ -1000,6 +1012,14 @@ type Book(instance) {
     // entry per session, capped at `limit`, cleared when that session opens
     // again; see `remember_failure`.
     failed_operations: Dict(String, #(String, String)),
+    // The executor each session that is still being built has been told to try
+    // first (`claim_placement`), keyed by session. An entry counts only while
+    // that session's slot is waiting or building: the session is not yet
+    // resident, so the resident figure cannot see it, and once it is resident,
+    // failed or gone the figure or nothing else speaks for it. Nothing
+    // releases an entry, because the slot's phase is what makes it live, and
+    // each claim prunes the entries that are no longer.
+    claims: Dict(String, String),
     domains: Dict(String, DomainSlot),
     commands: Subject(Message(instance)),
     parent: Pid,
@@ -1572,6 +1592,45 @@ pub fn seed_executor(
   process.send(manager.commands, SeedExecutor(id, executor))
 }
 
+/// Asks, for a session being built, which executors of a pool to try and in
+/// what order, and claims the first for the session.
+///
+/// `resident` is how many open scopes this orchestrator holds on each executor
+/// by name, read by the caller from the catalogue. The registry adds one for each
+/// other session that is still being built and has claimed that executor, calls
+/// `choose` with the sum, and keeps the head of its answer as this session's
+/// claim. All of it is one turn of the registry, so sessions that are built at the
+/// same moment each see the claims of those before them, which the resident
+/// figure alone cannot show them: a session is resident only after its attach.
+///
+/// A claim lasts while the session's slot is waiting or building. The
+/// session's own attach replaces it with the executor that took the scope
+/// (`seed_executor`), and it stops counting by itself once the session is
+/// resident, failed or removed. A second call for the same session replaces its
+/// claim and never adds to it. A registry that does not answer in five seconds
+/// leaves the session unclaimed and `choose` is applied to `resident` alone.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.claim_placement(registry, session_id, resident, fn(held) { ["box", "spare"] })
+/// ```
+@internal
+pub fn claim_placement(
+  manager: Manager(instance),
+  id: String,
+  resident: Dict(String, Int),
+  choose: fn(Dict(String, Int)) -> List(String),
+) -> List(String) {
+  call.try_call(manager.commands, waiting: 5000, sending: ClaimPlacement(
+    id,
+    resident,
+    choose,
+    _,
+  ))
+  |> result.lazy_unwrap(fn() { choose(resident) })
+}
+
 /// Remembers a folder a session was just created in, without waiting
 /// (protocol-change/074).
 ///
@@ -1808,6 +1867,7 @@ pub fn start(
             next: 0,
             slots: dict.new(),
             failed_operations: dict.new(),
+            claims: dict.new(),
             domains: dict.new(),
             commands:,
             parent:,
@@ -3299,7 +3359,16 @@ fn handle(
     }
     SeedExecutor(id, executor) -> {
       let _written = catalogue.seed_executor(book.catalogue, id, executor)
-      sm.keep(book)
+
+      // A session that claimed an executor now says which one took its scope,
+      // which differs from the claim when the claimed executor declined.
+      sm.keep(Book(..book, claims: reclaimed(book.claims, id, executor)))
+    }
+    ClaimPlacement(id, resident, choose, reply) -> {
+      let live = live_claims(book)
+      let ordered = choose(held_by(resident, live, id))
+      process.send(reply, ordered)
+      sm.keep(Book(..book, claims: claimed(live, id, ordered)))
     }
     RememberFolder(workspace) -> {
       let _written = catalogue.remember_folder(book.catalogue, workspace)
@@ -4577,6 +4646,66 @@ fn remote_registrations_in(
     |> result.map(fn(custody) { #(record, custody) })
   })
   |> result.map_error(Catalogue)
+}
+
+// The claims whose session is still being built. A slot that has become
+// resident, closing or blocked, or has been removed, no longer has a claim:
+// resident sessions are in the figure the caller reads from the catalogue, and
+// the rest hold no scope.
+/// Keeps the claims of sessions whose slot is still waiting or building.
+fn live_claims(book: Book(instance)) -> Dict(String, String) {
+  dict.filter(book.claims, fn(id, _executor) {
+    case dict.get(book.slots, id) {
+      Ok(Slot(phase: WaitingForDomain, ..)) | Ok(Slot(phase: Building, ..)) ->
+        True
+      Ok(Slot(phase: Running(_), ..))
+      | Ok(Slot(phase: Closing, ..))
+      | Ok(Slot(phase: Blocked(_), ..))
+      | Error(Nil) -> False
+    }
+  })
+}
+
+// The resident counts plus one for each live claim of a session other than the
+// asker, so that asking twice never counts the asker's own earlier claim.
+/// Adds the claims of the other sessions being built to the resident counts.
+fn held_by(
+  resident: Dict(String, Int),
+  live: Dict(String, String),
+  asker: String,
+) -> Dict(String, Int) {
+  dict.fold(live, resident, fn(held, id, executor) {
+    case id == asker {
+      True -> held
+      False ->
+        dict.upsert(held, executor, fn(seen) { option.unwrap(seen, 0) + 1 })
+    }
+  })
+}
+
+/// Records the head of the answer as the session's claim, or drops the claim
+/// when the answer names no executor.
+fn claimed(
+  live: Dict(String, String),
+  id: String,
+  ordered: List(String),
+) -> Dict(String, String) {
+  case ordered {
+    [first, ..] -> dict.insert(live, id, first)
+    [] -> dict.delete(live, id)
+  }
+}
+
+/// Points an existing claim at the executor that took the scope.
+fn reclaimed(
+  claims: Dict(String, String),
+  id: String,
+  executor: String,
+) -> Dict(String, String) {
+  case dict.has_key(claims, id) {
+    True -> dict.insert(claims, id, executor)
+    False -> claims
+  }
 }
 
 // A reserved registration has no session yet to find. While its builder still

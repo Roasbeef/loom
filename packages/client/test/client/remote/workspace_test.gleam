@@ -770,7 +770,7 @@ pub fn a_pool_that_is_not_configured_refuses_the_first_open_test() {
   // The counts are read only for candidates that exist, so a pool that cannot
   // be resolved never asks for them.
   let placement =
-    workspace.pooled(None, [], [], "ghost", fn() { panic as "asked" }, fn(_) {
+    workspace.pooled(None, [], [], "ghost", fn(_) { panic as "asked" }, fn(_) {
       Nil
     })
 
@@ -785,7 +785,7 @@ pub fn a_pool_no_executor_satisfies_refuses_the_first_open_test() {
       [executors.plain("box", "box@10.0.0.2")],
       [demanding_pool()],
       "linux",
-      fn() { panic as "asked" },
+      fn(_) { panic as "asked" },
       fn(_) { Nil },
     )
 

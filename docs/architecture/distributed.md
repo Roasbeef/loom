@@ -999,9 +999,12 @@ an executor that declared nothing cannot satisfy a requirement, and no message
 asks a machine what it has. The balance is the orchestrator's own count, not
 load: `pools.spread` puts first the candidate on which this orchestrator has the
 fewest resident sessions (`ledger_holdings.resident_by_name`), and the order the
-pool lists breaks ties, so an unused pool is tried in listed order. The count
-says nothing of what other orchestrators hold on the same machines, and opens
-that run at the same moment may not see one another.
+pool lists breaks ties, so an unused pool is tried in listed order. A session is
+resident only after its attach, so the registry also keeps a claim for each
+session still being built: `manager.claim_placement` adds the claims to the
+resident counts, runs `pools.spread` and records the session's first choice in
+one registry turn, and sessions that open together therefore see one another.
+The count says nothing of what other orchestrators hold on the same machines.
 
 The rule that matters is that a session's checkout exists only where its scope
 record says. `remote/workspace` writes the record, naming the executor, after

@@ -758,13 +758,12 @@ sets a requirement skips it until you write its `[executors.<name>]` table.
 The daemon picks the executor when the session first opens. It drops the
 executors that do not satisfy the pool's requirements, then spreads the sessions
 it places. It tries first the executor on which this daemon has the fewest open
-sessions, and the order the pool lists them breaks ties. A pool that none of
-this daemon's sessions is using is therefore tried in the order listed, and eight
-sessions opened one after another in a pool of four executors end up two on
-each. The count is the daemon's own and says nothing about load or about the
-scopes other orchestrators hold on the same machines. Sessions that open at the
-same moment may not see one another yet, and can choose the same executor. The
-daemon goes to the next executor only when the first could not have created a
+sessions, and the order the pool lists them breaks ties. A session that is still
+opening counts for the executor it was sent to, so eight sessions opened at once
+in a pool of four executors end up two on each. A pool that none of this
+daemon's sessions is using is tried in the order listed. The count is the
+daemon's own and says nothing about load or about the scopes other orchestrators
+hold on the same machines. The daemon goes to the next executor only when the first could not have created a
 scope: the machine could not be reached, or it answered that it already holds
 its maximum number of scopes. Any other failure fails the open.
 The chosen executor is recorded with the session and is never chosen again: a
