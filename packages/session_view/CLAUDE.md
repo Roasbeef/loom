@@ -986,7 +986,15 @@ keeps the list and the host clock at its arrival. `agent_roster.remote_rows`
 turns each entry into an `agent_view.Row` whose new `placement` is the
 orchestrator (`remote_row`); a placed `Line` carries the glance's tokens and
 `age_s`, and `placed_name` and `seen_words` are the words both hosts draw
-(`<child> @ <orchestrator>`, `seen 2m 05s ago` from `stale_after_s`).
+(`<child> @ <orchestrator>`, `seen 2m 05s ago` from `stale_after_s`). A placed
+`Line` also carries `returned: Option(Returned)`, the commit count and the
+`refs/loom/children/<child>/<tip8>` ref of a child whose work came back, made
+one line, with `returned_words` for the count (`1 commit returned`); a line
+without it is drawn as before. A refused spawn's reason is already the
+`summary` of its entry, which `strand_card.status_line` words as
+`Failed · <reason>`. The reason of a failed `agent_spawn` call that names no child
+is `turns.Spawned.refusal`, read from the failed result's `reason` detail, made
+one line and cut to `turns.refusal_limit` characters.
 `remote_named` finds a child by its short or whole name.
 
 `remote_transcript` is a page of a remote child's branch: `page_of` (the box

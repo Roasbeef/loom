@@ -740,3 +740,34 @@ end and the join, a Git identity on the laptop for the child's commits (the exec
 identity path of slice 2 does not apply to a `directory` placement), and the box's session
 to be outside a code-mode program when it waits, since a program holds the gate's shared
 side.
+
+## Addendum: slice 5, the page says what happened (2026-11-04)
+
+Slice 5 draws what slice 3b records, and says why a remote spawn failed. No wire member,
+constructor or version changed: both pieces read fields the `remote_children` snapshot and
+the agency's failed result already carry.
+
+**The returned work.** A card of a remote child whose entry has the `commits` and
+`returned_ref` pair gains two quiet lines, `N commits returned` (`1 commit returned`) and the
+ref. `agent_roster.Line` carries the pair as one `Option(Returned)`, so a line has both or
+neither, and the ref is made one line there. The page draws the count and the ref as text
+nodes, and the ref is also the `title` of its line, because a card cuts a line at its edge and
+the end of a ref is the part that tells two apart. A child that returned nothing draws the
+card exactly as before. The ref is plain text and not a copy control: `<loom-copy>` copies
+only the sign-in commands the page composes itself, and teaching it a ref is a larger change
+than this slice.
+
+**The reason of a failed spawn.** A refused remote child already showed its reason on its
+card (`Failed · <reason>`, from the entry's `summary`). What had no reason was the
+transcript's spawn line of a call that failed, which read `Spawned · failed` because the
+failed result's details were not read. `turns.Spawned` gains `refusal`, the `reason` detail
+of the agency's refusal outcome, made one line and cut to 300 characters, and the line reads
+`Spawned · Failed: <reason>`. A failure that recorded no reason reads as it did. The reason
+may quote what a remote orchestrator said, so it is a text node like every other word from
+another machine.
+
+**The wording of a slow read.** A read of a slow orchestrator no longer claims an unknown
+mutation outcome: `ui_top.read_failure` words silence as "the orchestrator did not answer"
+for every read, and `top_relay.describe`'s "not known whether it happened" is kept for the
+calls that change something. This was done before this slice (`8a793e6ef`) and is recorded
+here so the next reader does not look for it.

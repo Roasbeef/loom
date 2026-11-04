@@ -902,7 +902,9 @@ page keys and nonces, and the relay into the session's gateway.
   `operator` wins when a principal holds both, as a terminal and a page do) and
   `turns.attributed` sets it on that principal's messages in
   `component.relaned`. A sender with no such attachment shows the name alone,
-  so an observer's page and an operator's draw the same words for a message. A spawn is a line (`Spawned <tag> · purpose`)
+  so an observer's page and an operator's draw the same words for a message. A spawn is a line (`Spawned <tag> · purpose`;
+  a call that failed names no child and reads `Spawned · Failed: <reason>` when its
+  result recorded one, `Spawned · failed` when not)
   and a result is a line naming the child (`<tag> finished`) with the first
   line of the report, opened to the whole report when it runs longer
   (`fold_row.reading`); neither is a card. Reviews of the advisor that follow
@@ -1615,7 +1617,10 @@ is `panel_with_remote` with no entries, and `component.heading` passes
 
 `component.strip_of` lists `agent_roster.remote_rows` after the session's rows,
 and `view/strip` names a placed card `<child> @ <orchestrator>` with a quiet
-`chip-seen` line once its glance is a minute old. `focus_at` sends a remote
+`chip-seen` line once its glance is a minute old. A child whose commits came
+back (protocol-change/107, "Return") gains two more lines, `N commits returned`
+and the ref as a text node and `title` (`strip.returned`); a card without
+`Line.returned` is drawn as before. `focus_at` sends a remote
 child's card to `peek_at`, which runs `command.Peek` through `commanded` as a
 control (`msg.Control`), and every other card to `focus_strand_at` after
 closing any peek. `detail` draws `view/peek` while `shared.peek` is open: the
