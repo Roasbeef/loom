@@ -1250,6 +1250,45 @@ clean close, as it does on a stop. Memberships, claims and the memory domain
 stay on the source, and a client reconnects to the receiver and catches up from
 there.
 
+## Repository states
+
+**Status: slice 1 of [protocol-change/107](../../protocol-change/107-state-transport.md)
+is built, the local half. Nothing crosses a link yet and no production caller
+exists.** A state is a Git bundle named by the SHA-256 of its bytes. It is
+described by `hash`, `size`, `tip`, `base` and `dirty`, which `client/state_object`
+encodes as JSON. Three modules carry a state on one node.
+
+| Step | Module | What it does |
+|---|---|---|
+| Capture | `client/repository_snapshot` | Builds the tip from the working bytes in a private stage and bundles it. `capture_against` takes a basis, full or thin against a commit the receiver reported holding, and verifies the bundle in a fresh repository that holds only that base. A tree that adds nothing to `HEAD` delivers `HEAD`. |
+| Keep | `client/state_store` | Holds bundles under `<state root>/states/<hash>.bundle` with a record beside each. A size limit for one bundle, a cap for the directory and a retention period bound the disk, and a sweep enforces the last. |
+| Apply | `client/state_apply` | Compares the state with the bundle file, then in the sandbox unpacks it, creates `refs/loom/in/<hash8>` and makes a worktree on `loom/<session>` or a new repository. |
+
+The sender offers `HEAD`, its first-parent chain to 16 commits and the merge base
+with the upstream branch (`repository_snapshot.base_candidates`). The receiver
+answers with the ones it holds, and `state_object.choose_basis` picks the newest,
+or a full bundle when there is none. A thin bundle lists the base's boundary as
+prerequisites, which can be more than the base after a merge, so the receiver
+checks that it holds the base and Git checks the prerequisites.
+
+The store is the only bound on what this adds to the disk, because the
+free-space check before a capture is an observation and not a reservation.
+Defaults are 256 MiB for a bundle, 1 GiB for the directory and seven days. A
+bundle that does not fit is refused with a reason, and nothing is evicted, since
+an entry that has not expired may be one a peer is fetching. A rename is not a
+flush, so a read checks the bundle's size and hash against its record every time.
+
+Apply runs no hook and moves no ref. It never fetches, because a fetch reads the
+repository's `url.<base>.insteadOf` and `protocol.*` settings, which can turn a
+path into a command; it unpacks with `git bundle unbundle`, walks the tip's
+history to prove every object arrived, and creates the incoming ref expecting it
+absent. Every call overrides `core.hooksPath` and `core.fsmonitor`. Its writes
+are the repository's `.git`, the destination's parent and the new branch, and the
+caller serializes applies to one repository as the worktree gate does. The
+sandboxed Git that reads the bundle shares `protecting_state_root` with session
+jails, so the slice that masks `states` from sessions has to leave the runner able
+to read it.
+
 ## Background code mode and MCP on a remote session
 
 **Status: built, introduced at protocol version 3 (the current version is 5).** The rules are in the protocol-change/078
@@ -1872,6 +1911,12 @@ The directory holds no state of its own, so it has no model.
   destination and leave a moved one out. The receiver's row is listed on the
   receiver, and the source daemon's `sessions.elsewhere` lists it under its
   owner.
+- **Repository states stay on one node.** The store, thin capture and apply of
+  protocol-change/107 slice 1 have no message that carries a state to another
+  machine, no spawn that sends one and no return of a child's commits. Capture
+  still needs a drained, serialized source, and no caller enforces that yet. A
+  thin bundle needs the receiver to hold the base, and a repository whose full
+  bundle exceeds 256 MiB is refused, not degraded.
 - **Membership changes are eventual, and some are not checked.** `enroll`,
   `revoke` and `renew` change a running deployment without reprovisioning, and
   a member that is off learns an entry when it next connects to one that has it.
@@ -1909,6 +1954,7 @@ The directory holds no state of its own, so it has no model.
 | `client/session_directory`, `client/remote/orchestrator_port` | Two orchestrators: lookup and the answering port |
 | `client/remote/remote_peer`, `client/peers`, `client/peer_outbox`, `client/peer_outbox_drain` | Peer mail across orchestrators |
 | `client/session_move`, `client/session_mover`, `client/session_movers`, `client/session_importer` | Moving a session |
+| `client/state_object`, `client/state_store`, `client/state_apply`; `client/repository_snapshot` | Repository states: the description and its checks, the bounded store, apply into a worktree or a new repository, and thin capture |
 | `client/deployment`; `tui/deployment_view`, `tui.run_deployment` | Reading the deployment: `deployment.status` and `loom deployment` |
 | `client/spawners`, `client/remote_spawn`; `daemon/main.spawn_host` | The `[spawners]` table, the subagent messages' vocabulary and the daemon's spawn host |
 | `client/delegate_host`, `client/child_usage`; `agency.delegate_spawn`, `delegate_join`, `delegate_run_ended`, `delegate_release`; `manager.delegate_session`, `release_delegate`; `storage/catalogue.claim_delegate` | The delegate session of a (spawner, parent session) pair: finding or creating it, the Agency's side of a remote parent, a child's usage, and the catalogue record |
