@@ -118,7 +118,8 @@ callers own launch timing, authentication policy, and application messages.
   retaining another chunk. `host/bootstrap` and `host_bootstrap_ffi.erl` hold
   the remaining operations no Gleam package reaches: cross-process advisory locking through a helper port,
   `open_port` process launch and release, a positioned bounded read
-  (`read_prefix`/`read_bounded`), an exclusive-create atomic rename,
+  (`read_prefix`/`read_range`/`read_bounded`, where `read_range` is a
+  `file:pread/3` of one piece for the state store), an exclusive-create atomic rename,
   `realpath`, `os:find_executable`, `os:getpid`, `id -u`, procfs and Darwin
   `ps` birth identity, the loopback-port reservation the legacy v1
   launcher still uses, and `run_captured`, a bounded run of one executable that

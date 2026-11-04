@@ -515,3 +515,86 @@ pub fn the_last_piece_is_served_for_an_offset_past_the_end_test() {
   assert state_store.read_piece(store, stored.hash, -1, 262_144)
     == Error("the piece lies outside the bundle")
 }
+
+// --- a ranged read -----------------------------------------------------------------
+
+// Bytes that differ from one position to the next, so a piece read from the wrong
+// place cannot equal the piece that was asked for.
+fn numbered(length: Int) -> BitArray {
+  let text =
+    list.repeat(Nil, length / 4 + 1)
+    |> list.index_map(fn(_, index) {
+      string.pad_start(int.to_string(index), 4, "0")
+    })
+    |> string.concat
+  let assert Ok(cut) = bit_array.slice(bit_array.from_string(text), 0, length)
+  cut
+}
+
+fn slice_of(bytes: BitArray, offset: Int, length: Int) -> BitArray {
+  let assert Ok(cut) = bit_array.slice(bytes, offset, length)
+  cut
+}
+
+pub fn a_piece_is_read_from_where_it_starts_test() {
+  let #(store, root) =
+    open(
+      "range",
+      Limits(size_limit: 2_000_000, total_cap: 6_000_000, retain_s: 3600),
+    )
+  let size = 655_360
+  let chunk = 262_144
+  let bytes = numbered(size)
+  let path = root <> "/bundle"
+  let assert Ok(Nil) = simplifile.write_bits(path, bytes)
+  let assert Ok(stored) =
+    state_store.put(
+      store,
+      path,
+      tip: tip,
+      base: None,
+      dirty: Clean,
+      now_s: now(),
+    )
+
+  // The first piece, one in the middle that starts off any boundary, the last
+  // short piece and the last byte are each exactly the bytes at that place.
+  let piece = fn(offset) {
+    let assert Ok(Some(#(_state, at, served))) =
+      state_store.read_piece(store, stored.hash, offset, chunk)
+    #(at, served)
+  }
+  assert piece(0) == #(0, slice_of(bytes, 0, chunk))
+  assert piece(chunk) == #(chunk, slice_of(bytes, chunk, chunk))
+  assert piece(300_001) == #(300_001, slice_of(bytes, 300_001, chunk))
+  assert piece(2 * chunk)
+    == #(2 * chunk, slice_of(bytes, 2 * chunk, size - 2 * chunk))
+  assert piece(size - 1) == #(size - 1, slice_of(bytes, size - 1, 1))
+
+  // Past the end it is the last byte's piece, and below zero it is refused.
+  assert piece(size + 10) == #(size - 1, slice_of(bytes, size - 1, 1))
+  assert state_store.read_piece(store, stored.hash, -1, chunk)
+    == Error("the piece lies outside the bundle")
+}
+
+pub fn a_range_read_answers_what_exists_and_refuses_what_is_out_of_bounds_test() {
+  let root = scratch("range-ffi")
+  let path = root <> "/file"
+  let assert Ok(Nil) = simplifile.write(path, "0123456789")
+
+  assert bootstrap.read_range(path, 3, 4) == Ok(<<"3456":utf8>>)
+
+  // A read that runs off the end gets what exists, and one that starts at or past
+  // the end gets nothing.
+  assert bootstrap.read_range(path, 8, 100) == Ok(<<"89":utf8>>)
+  assert bootstrap.read_range(path, 10, 4) == Ok(<<>>)
+  assert bootstrap.read_range(path, 500, 4) == Ok(<<>>)
+  assert bootstrap.read_range(path, 2, 0) == Ok(<<>>)
+
+  // Anything else is a failure with a reason.
+  let assert Error(_) = bootstrap.read_range(path, -1, 4)
+  let assert Error(_) = bootstrap.read_range(path, 0, -1)
+  let assert Error(_) = bootstrap.read_range(path, 0, 16_777_217)
+  let assert Error(_) = bootstrap.read_range(root, 0, 4)
+  let assert Error(_) = bootstrap.read_range(root <> "/missing", 0, 4)
+}

@@ -7,7 +7,7 @@
 %% used to live here too; they are now Gleam in `host/bootstrap` over
 %% `gleam_time`, `gleam_crypto`, `envoy` and `simplifile`, which is why this
 %% list is shorter than the module's history suggests.
--export([read_prefix/2, read_bounded/2,
+-export([read_prefix/2, read_range/3, read_bounded/2,
          current_process_id/0, current_uid/0,
          canonical_directory/1, canonical_path/1,
          try_launch_lock/1, release_launch_lock/1,
@@ -50,6 +50,42 @@ read_prefix(Path, Bytes) ->
         {error, Reason} ->
             {error, describe(Reason)}
     end.
+
+%% A positioned read of one regular file: `Bytes` bytes starting at `Offset`.
+%% `simplifile` and `file:read/2` after `read_prefix` can only read from the
+%% start, and a library read has no way to take the middle of a file, so a caller
+%% that serves a large file in pieces would read each prefix to reach its piece.
+%% `file:pread/3` is the one call that seeks and reads together, which is why no
+%% pure alternative exists. The same discipline as `read_prefix`: the file must be
+%% regular, the offset and the length must be non-negative integers and the length
+%% at most ?RANGE_LIMIT, a read that starts past the end or runs off it returns
+%% what exists (possibly nothing), and any other error is a typed failure.
+-define(RANGE_LIMIT, 16777216).
+
+read_range(Path, Offset, Bytes)
+  when is_integer(Offset), is_integer(Bytes), Offset >= 0, Bytes >= 0,
+       Bytes =< ?RANGE_LIMIT ->
+    case file:open(Path, [read, binary, raw]) of
+        {ok, Handle} ->
+            Result = case file:read_file_info(Handle) of
+                {ok, #file_info{type = regular}} ->
+                    case file:pread(Handle, Offset, Bytes) of
+                        {ok, Data} -> {ok, Data};
+                        eof -> {ok, <<>>};
+                        {error, Reason} -> {error, describe(Reason)}
+                    end;
+                {ok, _} ->
+                    {error, <<"not a regular file">>};
+                {error, Reason} ->
+                    {error, describe(Reason)}
+            end,
+            _ = file:close(Handle),
+            Result;
+        {error, Reason} ->
+            {error, describe(Reason)}
+    end;
+read_range(_Path, _Offset, _Bytes) ->
+    {error, <<"the range is outside the bounds of a ranged read">>}.
 
 read_bounded(Path, Limit) ->
     case file:open(Path, [read, binary, raw]) of

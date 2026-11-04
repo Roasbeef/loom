@@ -615,9 +615,8 @@ pub fn discard_part(store: Store, hash: String) -> Nil {
 /// record's, which catches a short file, but its hash is not recomputed for each
 /// piece, because that would read the whole bundle for every piece. A damaged
 /// bundle is caught by the receiver, which compares the hash when the last piece
-/// lands. The read takes a prefix of the file up to the end of the piece, so
-/// serving a bundle from start to finish reads each prefix once: the cost grows
-/// with the square of the bundle's size in pieces, bounded by `size_limit`.
+/// lands. The read is positioned (`bootstrap.read_range`), so a piece costs the
+/// piece and serving a bundle from start to finish reads it once.
 ///
 /// ## Examples
 ///
@@ -680,13 +679,18 @@ fn piece_of(
     return: Error("the piece lies outside the bundle"),
   )
   let at = int.min(offset, state.size - 1)
-  use prefix <- result.try(bootstrap.read_prefix(
+  use bytes <- result.try(bootstrap.read_range(
     path,
-    int.min(state.size, at + length),
+    at,
+    int.min(length, state.size - at),
   ))
-  bit_array.slice(prefix, at, bit_array.byte_size(prefix) - at)
-  |> result.map(fn(bytes) { #(at, bytes) })
-  |> result.replace_error("the stored bundle is shorter than its record")
+
+  // A bundle whose size matched its record and that answers nothing here is
+  // shorter than the record says, and an empty piece is never served.
+  case bytes {
+    <<>> -> Error("the stored bundle is shorter than its record")
+    _ -> Ok(#(at, bytes))
+  }
 }
 
 // --- files ----------------------------------------------------------------------
