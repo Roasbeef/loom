@@ -530,20 +530,76 @@ executor starts with none, and the orchestrator stages a session's selection
 again when the session is opened. An executor that cannot compile gives its
 sessions doors that refuse with its reason.
 
+Version 6 added the repository state transport of protocol-change/107, in two
+parts that share the bump.
+
+**Moving a state.** A state is a Git bundle named by the SHA-256 of its bytes
+(`client/state_object`), kept in a node's store (`client/state_store`) and moved
+in pieces of at most 256 KiB by `client/state_transfer`. A piece carries the
+state's description and its offset, and every piece is answered with the number
+of bytes the receiver now holds, so a sender that lost its connection asks and
+continues there. The receiver judges a piece before it touches the disk (a
+malformed description, a size over the store's limit and a piece outside the
+declared size are refused with nothing written), appends only at the end of what
+it holds, accepts a repeat without writing it, refuses a gap with the offset it
+expects, and makes the state only if the whole bundle's size and SHA-256 match
+the description. A mismatch discards the half-written file and stores nothing.
+`send`, `relay` and `pull` are one bounded loop over a different source and
+destination, so the orchestrator copies a state from an executor's store to a
+target's one piece at a time and holds no bundle.
+
+Both carriers speak the same three questions. `HostMessage` gained `StateChunk`,
+`StateStatus` and `StateFetch`, and `orchestrator_port.Message` gained the same
+three. Neither carries a fence: the store is the node's and a piece is judged by
+its hash. `HostMessage` also gained `StateCapture`, which reads a scope's
+workspace and writes the store, so it is held to the scope's incarnation and
+token as an evolution write is, and a plane with no capture answers the new
+refusal `NoStates`. `RemoteCensus.states` says whether the executor has what
+capture and apply need, Git and a helper that enforces. No production plane
+carries a capture yet, so `StateCapture` answers `NoStates` until the slice that
+wires a spawn.
+
+A node's store has no lock, so `client/state_service` is the one process that
+owns it and both carriers answer through the endpoint it builds. A daemon that is
+orchestrator and executor at once starts one service for both. Each carrier
+serves a piece in a run of its own that dies with the requester, because the last
+piece of a large state is read and hashed whole.
+
+**The commit author.** `OwnerMessage` gained `AskGitIdentity`, which the
+executor's host sends once per scope build after the version check, as it sends
+`AskMcpPlan`. The answer is an optional `GitIdentity`: two lines of printable
+text, trimmed, non-empty, at most 256 bytes and free of control characters, as
+`protocol.git_identity_of` judges them on both sides of the link. The owner sends
+none for an identity that is incomplete or fails the check, and the host treats
+silence as none and never fails a build over it. An executor that receives one
+publishes it through `git_identity.publish` in place of its own global identity
+and adds `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and
+`GIT_COMMITTER_EMAIL` to every tool's environment, where Git reads them before
+any configuration file. A repository's `.git/config` and a tool-home gitconfig
+the model overwrote then cannot change the author. `catalog.parse_tools` and the
+language server profiles refuse the four names. `amend` and `rebase` keep an
+existing author under the pin, because the author of a replayed commit comes from
+the commit, and the pinned name becomes the committer. A session with no
+identity, and every local session, behaves as before. The orchestrator has no
+source for the identity of a session whose workspace is remote yet (see
+`serve.gleam`, where `Registered.git_identity` is `None`), so an executor hears
+none until that is settled.
+
 The messages between nodes are values of closed custom types: `HostMessage` to
 the executor host, `OwnerMessage` to the owner port, and `orchestrator_port`'s
 `Message` between orchestrators. They hold only plain data and subjects, and no
 function, port or atom built from a peer's input. The owner port serves only
 the two reserved fact prefixes, and the orchestrator port serves only five of
-peer mail's commands, one read of the catalogue, the session-move messages and
-the three subagent messages, so a peer cannot read a session's conversation
+peer mail's commands, one read of the catalogue, the session-move messages, the
+three subagent messages and the three state messages (protocol-change/107), so a
+peer cannot read a session's conversation
 through them. Those limits are scope hygiene: they keep each port to its job. They are
 not a security boundary, because a peer that wanted more could call any
 function on the node directly.
 
 Because the peers are trusted, a message is a typed Erlang term matched
 directly, not decoded from untrusted bytes. The only guard on its shape is
-`Attach.version` (`protocol.version`, 5 today). `Attach` keeps the shape it had
+`Attach.version` (`protocol.version`, 6 today). `Attach` keeps the shape it had
 in version 2, so a peer of any version reaches that check, and the host
 refuses a different version with `VersionMismatch`, creates nothing and stays
 up. Anything newer a peer needs at attach, such as the MCP plan, is asked for
@@ -703,7 +759,7 @@ There is no cancel message. The runtime aborts a call by killing its effect
 process, and the host monitors the process that owns each `Run`'s reply subject.
 A `DOWN` with any reason except `noconnection` means someone asked to stop, and
 when the run's last waiter is gone the host cancels it
-(`cancels_run`, `remote/host.gleam:533`). A `noconnection` `DOWN` means only
+(`cancels_run`, `remote/host.gleam:575`). A `noconnection` `DOWN` means only
 that the orchestrator is unreachable. The run continues to completion or to its
 own deadline, which is built on the executor's clock, and its outcome waits in
 the ledger. An abort issued during a partition arrives only as `noconnection`,

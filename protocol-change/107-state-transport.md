@@ -366,3 +366,66 @@ with no token on the remote machine.
 - Whether `loom vm sync` (#1155) should be rebuilt on this transport. It fetches
   a guest's committed work to the host, and with `--to-guest` the other way, by
   its own path, and it cannot carry uncommitted edits.
+
+## Addendum: slice 2 built (2026-11-03)
+
+Slice 2 is built: the chunk messages on both vocabularies, `AskGitIdentity`,
+`protocol.version` 5 to 6, and the P model case for a drop and a restart of either
+end. This addendum records what it settled and where it differs from the text
+above. Nothing above is edited.
+
+**Settled: `amend` and `rebase` under the pinned environment.** Both keep an
+existing author. The test runs real commits in the jail with `GIT_AUTHOR_*` and
+`GIT_COMMITTER_*` pinned: a commit made with `--author` and then amended keeps its
+author and takes the pinned committer, and a commit replayed by `rebase` does the
+same. The pinned name is therefore the committer of every commit made or replayed
+there, and the author of every commit that did not name one. A `.git/config` that
+sets `user.name` and a tool-home gitconfig overwritten by the model do not change
+either.
+
+**Settled: the store's numbers.** `size_limit` stays 256 MiB for one bundle,
+`total_cap` 1 GiB for the directory and `retain_s` seven days. The cap is checked
+on every piece and not only at admission, because transfers in flight share the
+directory, and a piece that does not fit removes its half-written file.
+
+**Differences from the text above.**
+
+- *Where the checks live.* "Wire" and "Git identity on an executor" put the total
+  decoders in `peer_codec`. The messages are typed Erlang terms matched directly,
+  and `peer_codec` is the JSON of the stable peer exchange (protocol 105), which
+  none of them crosses. The bounds are in the vocabulary instead:
+  `protocol.git_identity_of` for the author, and `state_transfer.take` for a
+  piece, which judges the description, the size against the store's limit, the
+  piece's length and its place in the declared size before the disk is touched.
+- *The thin basis has no message yet.* "Capture" says a first send asks the
+  receiver which of a few commits it holds. The proposal names no message for
+  that question, and slice 2 adds none: `StateCapture` takes a `Basis`, `Full` or
+  `Thin(base)`, and the caller chooses it. The question needs an owner in the
+  loop that can ask a node, so it belongs with the first caller, in slice 3.
+- *Capture is not wired on an executor.* `HostMessage.StateCapture` is fenced
+  like an evolution write and served by the plane's optional `Capturing`.
+  No production plane carries one, so it answers `NoStates`. `RemoteCensus.states`
+  reports whether Git and an enforcing helper are present, which is what a plane
+  will need to carry one.
+- *The node's store has one owner.* `client/state_service` owns the directory and
+  both carriers answer through it, because the store has no lock and a daemon can
+  be orchestrator and executor at once.
+- *Serving costs more than receiving.* There is no ranged read without new FFI,
+  so `StateFetch` reads a prefix of the bundle up to the end of the piece. A whole
+  bundle served that way reads the square of its size in pieces, bounded by
+  `size_limit`. A ranged read is a `host/bootstrap` change if it ever matters.
+
+**Open, found by building it.** `AskGitIdentity` has the message, the check and
+the executor's pinning, and the owner answers none today. 107 says the owner
+answers from `git_identity.resolve`, and `resolve` runs Git through a sandbox
+broker with a `worktree_diff.Wiring`, which an orchestrator holds only for a
+workspace it runs locally. A session whose workspace is on an executor, which is
+the only session that asks, has no broker on the orchestrator to resolve through,
+and running Git in the daemon's VM against the operator's configuration is not
+what Rule Zero allows. `Registered.git_identity` and `owner_port.Config` are the
+seam. The choice is between a sandboxed resolver on the orchestrator that does not
+need a workspace, reading the global files without Git, and the
+`[executors.<name>]` key that "Open" declined to add.
+
+**Slices.** Slice 2 is done as above, except that the owner's answer waits on the
+choice just named. Slices 3 to 5 are unchanged.

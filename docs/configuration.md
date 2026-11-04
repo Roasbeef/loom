@@ -287,7 +287,7 @@ beyond the project. See [lsp](architecture/lsp.md).
 | `project` | string | `read-only` | `read-only`, `writable` | Whether the server may write the project. `gleam lsp` writes `manifest.toml` and `build/`, so it needs `writable`. |
 | `readable` | array of strings | none | absolute, `~/<path>`, or `<cache>/<path>` | Extra roots the server may read. Relative paths, `..` and a bare `~/` or `<cache>/` are refused. |
 | `writable` | array of strings | none | absolute, `~/<path>`, or `<cache>/<path>` | Extra roots the server may write. Same rules as `readable`. |
-| `env` | array of strings | none | names matching `[A-Z_][A-Z0-9_]*` | Variable names passed through from the daemon's environment. `PATH`, `HOME`, `TMPDIR`, `LOOM_SCRATCH_DIR` and `GIT_CONFIG_GLOBAL` are refused. |
+| `env` | array of strings | none | names matching `[A-Z_][A-Z0-9_]*` | Variable names passed through from the daemon's environment. `PATH`, `HOME`, `TMPDIR`, `LOOM_SCRATCH_DIR`, `GIT_CONFIG_GLOBAL` and the Git author names `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` are refused. |
 | `cache_env` | table | none | variable name to relative directory | Private caches: each variable is set to `<cache>/loom/lsp/<server>/<dir>`, a directory Loom creates and grants writable. The directory has no `.` or `..` component and is not inside another entry's. A name may not also be in `env`. |
 | `language_id` | string | the first extension without its dot | `[a-z0-9][a-z0-9+._-]*`, at most 40 characters | The `languageId` documents are opened with. |
 | `qualifier_separators` | array of strings | `["."]` | non-empty strings, never `/` | What a qualified symbol is split on, such as `["::"]` for Rust. The longest listed is tried first. |
@@ -380,8 +380,12 @@ Optional. What the session's jailed shell may reach and carry in its environment
 Every name here is a variable name, and values are read from the daemon's own
 environment at boot, the same discipline as `api_key_env`. A name the host has not
 set is skipped with one warning line, not a boot failure. `PATH`, `HOME`, `TMPDIR`,
-`LOOM_SCRATCH_DIR` and `GIT_CONFIG_GLOBAL` are server-owned and refused in `env`
-and in `[tools.set]`. A name may be in `env` or `[tools.set]`, not both.
+`LOOM_SCRATCH_DIR`, `GIT_CONFIG_GLOBAL` and the four Git author names
+(`GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`,
+`GIT_COMMITTER_EMAIL`) are server-owned and refused in `env` and in
+`[tools.set]`. The author names are set only on an executor whose session owner
+sent an identity, and they are refused everywhere so that a table does not start
+failing on a machine that has one to pin. A name may be in `env` or `[tools.set]`, not both.
 `loomd --network` overrides `network`. See
 [effects](architecture/effects.md#the-shell-tools-the-operators-tools-table).
 

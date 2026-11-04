@@ -157,8 +157,8 @@ import tools/tool
 /// carries the same three piece messages in its own closed type
 /// (`client/remote/orchestrator_port`), which has no version of its own and is
 /// served by peers of the same build. The step from 5 changes the shape of the
-/// census an `Attached` carries as well as adding messages, so every executor
-/// must upgrade with its orchestrators.
+/// census that an attach reply carries as well as adding messages, so every
+/// executor must upgrade with its orchestrators.
 ///
 /// `Attach` must keep the shape it had in version 2. It is the first
 /// message a peer of any version sends, and the host matches the term it
