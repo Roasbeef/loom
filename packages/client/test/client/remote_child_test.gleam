@@ -10,6 +10,7 @@
 
 import client/remote_child.{Placed, Stub}
 import client/remote_spawn
+import client/state_object
 import core/clock
 import core/glance
 import core/ids
@@ -36,6 +37,7 @@ fn a_request() -> remote_spawn.Request {
     within_ms: None,
     result_schema: None,
     detach: remote_spawn.Attached,
+    state: None,
   )
 }
 
@@ -130,8 +132,36 @@ pub fn every_optional_part_of_the_request_survives_test() {
       within_ms: Some(1_800_000),
       result_schema: Some(schema),
       detach: remote_spawn.Detached,
+      state: None,
     )
   round_trips(Stub(..a_stub(remote_child.Requested), request: full))
+}
+
+fn a_state() -> state_object.State {
+  state_object.State(
+    hash: string.repeat("ab", 32),
+    size: 4096,
+    tip: string.repeat("1", 40),
+    base: Some(string.repeat("2", 40)),
+    dirty: state_object.Dirty,
+  )
+}
+
+// The stub is what a resend is built from, so the state the request names has
+// to come back with it, or the resend would start the child with no checkout.
+pub fn the_state_a_request_names_survives_the_stub_test() {
+  let request = remote_spawn.Request(..a_request(), state: Some(a_state()))
+  round_trips(Stub(..a_stub(remote_child.Requested), request:))
+}
+
+// A request that names no state encodes exactly as it did before states
+// existed: no member is added, so a spawner that never seeds writes the bytes it
+// always wrote, and a stub an older build wrote reads back with no state.
+pub fn a_request_with_no_state_adds_no_member_to_the_stub_test() {
+  let assert json.Object(fields) =
+    remote_child.encode(a_stub(remote_child.Requested))
+  let assert Ok(json.Object(request)) = list.key_find(fields, "request")
+  assert !list.any(request, fn(member) { member.0 == "state" })
 }
 
 // A code-mode program's spawn is minted under its ordinal, and the ordinal has to
@@ -182,6 +212,21 @@ pub fn a_spawned_stub_stops_being_live_at_its_childs_deadline_test() {
 pub fn a_message_about_a_stub_names_this_session_and_the_parent_strand_test() {
   assert remote_child.parent_of(a_stub(remote_child.Requested), "sess-1")
     == remote_spawn.Parent(session: "sess-1", strand: "main")
+}
+
+// A state is read by the one codec that validates a description, so a stub whose
+// state was damaged fails to decode and is left out of the roster instead of
+// starting a child from a checkout nobody described.
+pub fn a_stub_with_a_damaged_state_does_not_decode_test() {
+  let request = remote_spawn.Request(..a_request(), state: Some(a_state()))
+  let assert json.Object(fields) =
+    remote_child.encode(Stub(..a_stub(remote_child.Requested), request:))
+  let assert Ok(json.Object(members)) = list.key_find(fields, "request")
+  let damaged_members =
+    list.key_set(members, "state", json.String("{\"hash\":\"nope\"}"))
+  let damaged =
+    json.Object(list.key_set(fields, "request", json.Object(damaged_members)))
+  let assert Error(_) = remote_child.decode(damaged)
 }
 
 pub fn a_payload_that_does_not_decode_is_an_error_not_a_crash_test() {

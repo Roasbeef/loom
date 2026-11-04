@@ -5112,6 +5112,7 @@ fn remote_request(purpose: String) -> remote_spawn.Request {
     within_ms: None,
     result_schema: None,
     detach: remote_spawn.Attached,
+    state: None,
   )
 }
 

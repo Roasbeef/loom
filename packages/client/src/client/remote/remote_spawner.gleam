@@ -473,6 +473,8 @@ pub fn send_answer(
     | Ok(Error(remote_spawn.InvalidArgument(_)))
     | Ok(Error(remote_spawn.NameAlreadyMinted))
     | Ok(Error(remote_spawn.NotYetOpen(_)))
+    | Ok(Error(remote_spawn.StateMissing(..)))
+    | Ok(Error(remote_spawn.StateRefused(_)))
     | Ok(Error(remote_spawn.TranscriptHidden)) -> answer(heard)
   }
 }
@@ -504,6 +506,8 @@ pub fn resolve_answer(
     | Ok(Error(remote_spawn.ToolOutsideCeiling(_)))
     | Ok(Error(remote_spawn.InvalidArgument(_)))
     | Ok(Error(remote_spawn.NameAlreadyMinted))
+    | Ok(Error(remote_spawn.StateMissing(..)))
+    | Ok(Error(remote_spawn.StateRefused(_)))
     | Ok(Error(remote_spawn.TranscriptHidden)) -> answer(heard)
   }
 }
@@ -535,6 +539,10 @@ pub fn answer(
   case heard {
     Ok(Ok(value)) -> Ok(value)
     Ok(Error(remote_spawn.NotYetOpen(..))) -> Error(peer_mail.Unreachable)
+
+    // A state that is not all there yet is a reason to send more and ask again,
+    // never a refusal that settles the stub.
+    Ok(Error(remote_spawn.StateMissing(..))) -> Error(peer_mail.Unreachable)
     Ok(Error(refusal)) ->
       Error(peer_mail.Refused(remote_spawn.describe_refusal(refusal)))
     Error(Nil) -> Error(peer_mail.Unreachable)

@@ -4381,6 +4381,7 @@ fn remote_request(request: agent.SpawnRequest) -> remote_spawn.Request {
     within_ms: request.within_ms,
     result_schema: request.result_schema,
     detach: remote_spawn.Detached,
+    state: None,
   )
 }
 
@@ -4785,6 +4786,7 @@ fn settle_entry(
       notes:,
       usage:,
       owed:,
+      ..,
     ) -> {
       // State what the branch decides before dispatching.
       case list.find(targets, fn(target) { target.handle == handle }) {
@@ -4940,6 +4942,7 @@ fn joined(
           notes:,
           usage: usage_of(usage, handle.strand),
           owed: undelivered(owing, handle.strand),
+          state: None,
         )
       Pending(handle:, waited_ms:, ..) ->
         remote_spawn.Pending(handle:, waited_ms:)

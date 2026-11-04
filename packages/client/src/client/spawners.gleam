@@ -67,6 +67,19 @@
 //// branch. The box owner decides, because the transcript is recorded here and
 //// may hold what this machine's tools returned.
 ////
+//// ## Seeding
+////
+//// `seed` says whether a child of this spawner may start from the spawning
+//// orchestrator's workspace (protocol-change/107). `"none"`, the default, is how
+//// every spawner behaved before the key existed: a spawn that names a state is
+//// refused with `StateRefused` and a reason that names this key, and nothing is
+//// stored. `"workspace"` lets the spawner send the state of the workspace its
+//// parent session works in, which this machine applies into a checkout of its
+//// own before the child starts. The owner of this machine decides, because the
+//// state is applied here, into a directory this machine's owner configured, and
+//// held in this machine's state store for a week. The model on the spawning side
+//// may ask for less than the key allows and never for more.
+////
 //// ## Depth
 ////
 //// `max_depth` counts from the strand a human talks to on the spawning
@@ -96,7 +109,7 @@
 //// ## Flow
 ////
 //// `from_document` → `row` → `placement_of` → `tools_of` → `windows` →
-//// `transcript_of` → `top_level_of`
+//// `transcript_of` → `seed_of` → `top_level_of`
 ////
 //// 1. `from_document` reads the table and requires the distribution table.
 //// 2. `row` validates one entry: its name, its keys, its node and its profile.
@@ -107,8 +120,9 @@
 //// 5. `windows` checks the three durations against each other, and
 ////    `budget_of` reads one of the three optional metering keys.
 //// 6. `transcript_of` reads whether children's transcripts may be read from
-////    the spawning orchestrator, and `top_level_of` reads the table that lets
-////    its page start sessions here.
+////    the spawning orchestrator, `seed_of` reads whether it may send a
+////    workspace with a spawn, and `top_level_of` reads the table that lets its
+////    page start sessions here.
 //// 7. `standing` tells the sweep what a session's spawner allows, or that it
 ////    was removed. `find` and `by_node` resolve a configured spawner by name or by the node
 ////    a message came from.
@@ -160,6 +174,17 @@ pub type Transcript {
 
   /// It may read one bounded page of a child's branch at a time.
   Visible
+}
+
+/// Whether a spawner may send the workspace its parent works in with a child.
+pub type Seed {
+  /// It may not. A spawn that names a state is refused with a reason that names
+  /// the `seed` key. This is the default.
+  NoSeed
+
+  /// It may send the state of its parent session's workspace, which this
+  /// machine applies into a checkout for the child.
+  WorkspaceSeed
 }
 
 /// Which folders on this machine a spawner's page may start a session in.
@@ -288,6 +313,9 @@ pub type Spawner {
     approval_ceiling: Option(Ceiling),
     /// Whether the spawner may read its children's transcripts here.
     transcript: Transcript,
+    /// Whether the spawner may send its parent's workspace with a child
+    /// (protocol-change/107).
+    seed: Seed,
     /// The `[orchestrators.<name>]` keys of this daemon on which a child of
     /// this spawner may start children of its own (protocol-change/084, phase
     /// 4). Empty, the default, means none, and a grandchild may still run in
@@ -558,7 +586,7 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
           "tools", "max_depth", "max_sessions", "max_within_s",
           "default_within_s", "retain_s", "idle_close_s", "token_budget_per_day",
           "child_token_budget", "max_per_day", "approval_ceiling", "transcript",
-          "spawn_on", "top_level",
+          "seed", "spawn_on", "top_level",
         ],
         "[spawners." <> name <> "]",
       ))
@@ -618,6 +646,7 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
       use max_per_day <- result.try(budget_of(fields, place, "max_per_day"))
       use approval_ceiling <- result.try(ceiling_of(fields, place))
       use transcript <- result.try(transcript_of(fields, place))
+      use seed <- result.try(seed_of(fields, place))
       use top_level <- result.try(top_level_of(fields, place, known))
       use Nil <- result.map(windows(
         place,
@@ -642,6 +671,7 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
         max_per_day:,
         approval_ceiling:,
         transcript:,
+        seed:,
         spawn_on:,
         top_level:,
       )
@@ -1244,6 +1274,25 @@ fn transcript_of(
     None | Some("hidden") -> Ok(Hidden)
     Some("visible") -> Ok(Visible)
     Some(_) -> Error(place <> ".transcript must be \"visible\" or \"hidden\"")
+  }
+}
+
+// The `seed` key: `"none"` when absent, and one of the two words when present.
+// Anything else is refused, so a typo never turns on sending a checkout to this
+// machine.
+
+/// Reads whether the spawner may send its parent's workspace with a child.
+fn seed_of(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(Seed, String) {
+  use word <- result.try(optional_string(fields, place, "seed"))
+
+  // An absent key is the owner leaving the ceiling where it was.
+  case word {
+    None | Some("none") -> Ok(NoSeed)
+    Some("workspace") -> Ok(WorkspaceSeed)
+    Some(_) -> Error(place <> ".seed must be \"none\" or \"workspace\"")
   }
 }
 

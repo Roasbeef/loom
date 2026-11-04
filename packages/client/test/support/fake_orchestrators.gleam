@@ -591,6 +591,7 @@ fn join(
                   cost: 0.5,
                 ),
                 owed: state.owed,
+                state: None,
               )
             False -> remote_spawn.Pending(handle:, waited_ms: window_ms)
           }

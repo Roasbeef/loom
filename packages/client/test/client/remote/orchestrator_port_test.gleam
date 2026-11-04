@@ -393,6 +393,7 @@ fn request() -> remote_spawn.Request {
     within_ms: Some(60_000),
     result_schema: None,
     detach: Attached,
+    state: None,
   )
 }
 
@@ -425,6 +426,7 @@ fn ready(handle: agent.Handle) -> remote_spawn.Joined {
       cost: 0.5,
     ),
     owed: 0,
+    state: None,
   )
 }
 
