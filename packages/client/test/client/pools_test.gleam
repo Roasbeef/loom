@@ -7,9 +7,11 @@ import client/catalog
 import client/executors
 import client/pools.{type Pool, Pool}
 import gleam/dict
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import qcheck
 
 const distribution =
   "[distribution]
@@ -253,4 +255,138 @@ pub fn a_pools_wait_is_bounded_like_an_executors_test() {
     "\n[pools.big]\nexecutors = [\"alpha\"]\nattach_within_s = 901\n",
     "pools.big.attach_within_s must be a whole number of seconds from 1 to 900",
   )
+}
+
+// --- spreading the sessions a pool places ---------------------------------------
+
+fn boxes(count: Int) -> List(executors.Executor) {
+  list.repeat(Nil, count)
+  |> list.index_map(fn(_each, number) {
+    let name = "e" <> int.to_string(number)
+    executors.plain(name, name <> "@10.0.0." <> int.to_string(number + 2))
+  })
+}
+
+pub fn with_nothing_open_the_candidates_keep_their_order_test() {
+  // This is exactly the first-fit order, so a pool nobody has used behaves as
+  // it did before sessions were spread.
+  assert names(pools.spread(boxes(4), dict.new())) == ["e0", "e1", "e2", "e3"]
+  assert names(pools.spread([], dict.from_list([#("e0", 3)]))) == []
+}
+
+pub fn the_executor_with_the_fewest_open_scopes_comes_first_test() {
+  let open = dict.from_list([#("e0", 2), #("e1", 0), #("e2", 1), #("e3", 1)])
+
+  // An executor the counts do not name holds none, and equal counts keep the
+  // pool's order.
+  assert names(pools.spread(boxes(5), open)) == ["e1", "e4", "e2", "e3", "e0"]
+}
+
+pub fn a_pool_of_one_executor_is_unchanged_test() {
+  assert names(pools.spread(boxes(1), dict.from_list([#("e0", 9)]))) == ["e0"]
+}
+
+pub fn a_full_or_down_executor_is_ordered_like_any_other_test() {
+  // Nothing here says whether an executor is up or has room. The attach learns
+  // that and moves on, so a pool whose members are all full still yields every
+  // member, and the open ends with the reasons it always gave.
+  let full = dict.from_list([#("e0", 16), #("e1", 16), #("e2", 16)])
+
+  assert names(pools.spread(boxes(3), full)) == ["e0", "e1", "e2"]
+}
+
+pub fn eight_sessions_placed_in_turn_fill_the_pool_evenly_test() {
+  // Place each session on the first candidate, as the open does when the
+  // executors have room, and count it before placing the next.
+  let placed =
+    list.repeat(Nil, 8)
+    |> list.fold(dict.new(), fn(open, _session) {
+      let assert [first, ..] = pools.spread(boxes(4), open)
+      dict.upsert(open, first.name, fn(held) { option.unwrap(held, 0) + 1 })
+    })
+
+  assert list.sort(dict.values(placed), int.compare) == [2, 2, 2, 2]
+}
+
+// The seed the spreading properties are drawn from, and how many cases each
+// checks. The seed is fixed so that a red run is the same red run everywhere.
+const spread_seed = 1171
+
+const spread_cases = 200
+
+// A pool of up to six executors and the open scopes held on each, drawn
+// together so that a shrink shortens the pool and lowers the counts at once.
+fn pool_and_counts() -> qcheck.Generator(#(Int, List(Int))) {
+  qcheck.tuple2(
+    qcheck.bounded_int(0, 6),
+    qcheck.fixed_length_list_from(qcheck.bounded_int(0, 3), 6),
+  )
+}
+
+fn spread_property(
+  check: fn(List(executors.Executor), dict.Dict(String, Int)) -> Nil,
+) -> Nil {
+  qcheck.default_config()
+  |> qcheck.with_test_count(spread_cases)
+  |> qcheck.with_seed(qcheck.seed(spread_seed))
+  |> qcheck.run(pool_and_counts(), fn(drawn) {
+    let #(size, counts) = drawn
+    let open =
+      list.index_map(counts, fn(held, number) {
+        #("e" <> int.to_string(number), held)
+      })
+      |> dict.from_list
+    check(boxes(size), open)
+  })
+}
+
+fn held_by(
+  found: List(executors.Executor),
+  open: dict.Dict(String, Int),
+) -> List(Int) {
+  list.map(found, fn(executor) {
+    let assert Ok(held) = dict.get(open, executor.name)
+    held
+  })
+}
+
+pub fn spreading_only_reorders_the_candidates_test() {
+  spread_property(fn(pool, open) {
+    let found = pools.spread(pool, open)
+
+    assert list.sort(names(found), string.compare)
+      == list.sort(names(pool), string.compare)
+  })
+}
+
+pub fn the_counts_never_decrease_along_the_result_test() {
+  spread_property(fn(pool, open) {
+    let held = held_by(pools.spread(pool, open), open)
+
+    assert held == list.sort(held, int.compare)
+  })
+}
+
+pub fn executors_with_equal_counts_keep_the_pools_order_test() {
+  spread_property(fn(pool, open) {
+    let found = pools.spread(pool, open)
+
+    // For every count, the executors holding it appear in their input order.
+    list.each([0, 1, 2, 3], fn(level) {
+      let at_level = fn(each: executors.Executor) {
+        dict.get(open, each.name) == Ok(level)
+      }
+
+      assert names(list.filter(found, at_level))
+        == names(list.filter(pool, at_level))
+    })
+  })
+}
+
+pub fn a_pool_with_equal_counts_is_never_reordered_test() {
+  spread_property(fn(pool, open) {
+    let flat = dict.map_values(open, fn(_name, _held) { 1 })
+
+    assert names(pools.spread(pool, flat)) == names(pool)
+  })
 }

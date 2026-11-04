@@ -107,6 +107,7 @@ import core/clock.{type Clock}
 import core/ids
 import core/json.{type JsonValue}
 import core/register
+import gleam/dict.{type Dict}
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -758,22 +759,32 @@ pub fn fixed(
 }
 
 /// The placement of a session created in a pool: the pool's executors that
-/// satisfy its requirements, in the order the configuration lists them, with
-/// the executors that cannot be reached left to the open to skip.
+/// satisfy its requirements, ordered by how many open scopes this orchestrator
+/// holds on each, fewest first, and by the configuration's order among equals
+/// (`pools.spread`), with the executors that cannot be reached left to the open
+/// to skip.
 ///
-/// A pool that is not configured, or that no executor satisfies, is a reason
-/// the first open fails; a session that already has a scope record never asks.
+/// `claim` is how the open asks for its order. It is called once, when a first
+/// open needs its candidates, with a chooser that takes the open scopes held on
+/// each executor by name and returns the executors' names in the order to try
+/// them. The daemon supplies the counts, adds those of sessions still being
+/// built, runs the chooser and remembers its first choice for the session in one
+/// step (`manager.claim_placement`), so that sessions opened together do not
+/// all see an empty pool. A pool that is not configured, or that no executor
+/// satisfies, is a reason the first open fails and never calls `claim`; a
+/// session that already has a scope record never asks.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // workspace.pooled(Some(membership), configured, pools, "linux", record_choice)
+/// // workspace.pooled(Some(membership), configured, pools, "linux", claim, record_choice)
 /// ```
 pub fn pooled(
   membership: Option(distribution.Membership),
   configured: List(executors.Executor),
   available: List(pools.Pool),
   pool: String,
+  claim: fn(fn(Dict(String, Int)) -> List(String)) -> List(String),
   chosen: fn(String) -> Nil,
 ) -> Placement {
   Placement(
@@ -797,8 +808,12 @@ pub fn pooled(
             <> ")",
           ))
         admitted ->
-          list.try_map(admitted, fn(executor) {
-            candidate(membership, configured, executor.name)
+          claim(fn(held) {
+            pools.spread(admitted, held)
+            |> list.map(fn(executor) { executor.name })
+          })
+          |> list.try_map(fn(name) {
+            candidate(membership, configured, name)
             |> result.map(waiting_as_pool(_, found))
           })
       }

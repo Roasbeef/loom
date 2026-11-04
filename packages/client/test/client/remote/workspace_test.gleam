@@ -7,8 +7,10 @@
 //// and that one open attaches once.
 
 import client/evolution/record
+import client/executors
 import client/extension/hooks as extension_hooks
 import client/jobstate
+import client/pools
 import client/remote/owner_port
 import client/remote/protocol
 import client/remote/scope
@@ -750,6 +752,48 @@ pub fn a_compiling_executor_gives_the_open_an_evolution_link_test() {
   assert link.identity == evolution_identity()
   assert link.authority() == Ok(fixtures.authority())
   rig.stop(executor)
+}
+
+// A pool that lists one executor and requires a platform it did not declare.
+fn demanding_pool() -> pools.Pool {
+  pools.Pool(
+    name: "linux",
+    executors: ["box"],
+    platform: Some("linux/x86_64"),
+    enforcement: None,
+    toolchains: [],
+    attach_within_s: None,
+  )
+}
+
+pub fn a_pool_that_is_not_configured_refuses_the_first_open_test() {
+  // The counts are read only for candidates that exist, so a pool that cannot
+  // be resolved never asks for them.
+  let placement =
+    workspace.pooled(None, [], [], "ghost", fn(_) { panic as "asked" }, fn(_) {
+      Nil
+    })
+
+  assert placement.first()
+    == Error("executor_unavailable: no pool named ghost is configured")
+}
+
+pub fn a_pool_no_executor_satisfies_refuses_the_first_open_test() {
+  let placement =
+    workspace.pooled(
+      None,
+      [executors.plain("box", "box@10.0.0.2")],
+      [demanding_pool()],
+      "linux",
+      fn(_) { panic as "asked" },
+      fn(_) { Nil },
+    )
+
+  assert placement.first()
+    == Error(
+      "executor_unavailable: no executor of pool linux satisfies its "
+      <> "requirements (platform linux/x86_64)",
+    )
 }
 
 pub fn an_executor_that_cannot_compile_gives_no_link_and_one_notice_test() {

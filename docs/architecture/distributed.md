@@ -991,12 +991,20 @@ executor's sessions are not masked from one another.
 ## Pools and placement
 
 A session can name a pool instead of an executor (`sessions.create` with
-`pool`). `[pools.<name>]` lists executors in the order they are tried, and may
+`pool`). `[pools.<name>]` lists executors, and may
 require a `platform`, an `enforcement` level and `toolchains`. Each
 `[executors.<name>]` row may declare the same three. The declarations are the
 operator's claims, and `pools.candidates` is a pure function of configuration:
 an executor that declared nothing cannot satisfy a requirement, and no message
-asks a machine what it has. The balance is order, not load.
+asks a machine what it has. The balance is the orchestrator's own count, not
+load: `pools.spread` puts first the candidate on which this orchestrator has the
+fewest resident sessions (`ledger_holdings.resident_by_name`), and the order the
+pool lists breaks ties, so an unused pool is tried in listed order. A session is
+resident only after its attach, so the registry also keeps a claim for each
+session still being built: `manager.claim_placement` adds the claims to the
+resident counts, runs `pools.spread` and records the session's first choice in
+one registry turn, and sessions that open together therefore see one another.
+The count says nothing of what other orchestrators hold on the same machines.
 
 The rule that matters is that a session's checkout exists only where its scope
 record says. `remote/workspace` writes the record, naming the executor, after
