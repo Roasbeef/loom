@@ -192,8 +192,8 @@ pub fn a_state_is_sent_to_a_host_and_held_there_test() {
 
   // The host also serves what it holds, so the orchestrator can relay it on.
   let pulled = open(scratch("host-pulled"))
-  assert state_transfer.pull(pulled, state.hash, from: link, now_s: now())
-    == Delivered
+  let endpoint = state_transfer.endpoint(pulled, now)
+  assert state_transfer.pull(endpoint, state.hash, from: link) == Delivered
   assert contents(pulled, state.hash) == payload(size)
 }
 

@@ -551,21 +551,22 @@ fn fetching(hash: String, from: Link) -> Source {
 /// store already holds. This is the parent's part when it pulls what a child's
 /// node captured.
 ///
+/// The store is reached through the node's `Endpoint`, the one that
+/// `client/state_service` builds, and never directly. `pull` writes, and a store
+/// has one writing process: a pull that held the `Store` itself would be a second
+/// writer beside the service the carriers answer through. `send` takes the store
+/// because it only reads, from files that are written whole.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // state_transfer.pull(store, hash, from: link, now_s: now)
+/// // state_transfer.pull(state_service.endpoint(service), hash, from: link)
 /// ```
-pub fn pull(
-  store: Store,
-  hash: String,
-  from from: Link,
-  now_s now_s: Int,
-) -> Outcome {
+pub fn pull(local: Endpoint, hash: String, from from: Link) -> Outcome {
   transfer(
-    fn() { stage(store, hash) |> result.replace_error(Nil) },
+    fn() { local.stage(hash) |> result.replace_error(Nil) },
     fetching(hash, from),
-    fn(piece) { Ok(take(store, piece, now_s)) },
+    fn(piece) { Ok(local.take(piece)) },
   )
 }
 

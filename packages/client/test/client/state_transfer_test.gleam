@@ -444,15 +444,10 @@ pub fn a_state_is_pulled_and_a_pull_resumes_test() {
         False -> Ok(state_transfer.serve(source, hash, offset))
       }
     })
-  assert state_transfer.pull(target, state.hash, from: cut, now_s: now())
-    == Silent
+  let endpoint = state_transfer.endpoint(target, now)
+  assert state_transfer.pull(endpoint, state.hash, from: cut) == Silent
   assert state_transfer.stage(target, state.hash) == Ok(Partial(chunk))
-  assert state_transfer.pull(
-      target,
-      state.hash,
-      from: local(source),
-      now_s: now(),
-    )
+  assert state_transfer.pull(endpoint, state.hash, from: local(source))
     == Delivered
   assert contents(target, state.hash) == bytes
 }
@@ -464,8 +459,8 @@ pub fn a_source_that_does_not_hold_the_state_is_a_fault_test() {
   let target = open(to_root, limits())
   let hash = state_object.hash_of(<<"never captured">>)
 
-  let outcome =
-    state_transfer.pull(target, hash, from: local(source), now_s: now())
+  let endpoint = state_transfer.endpoint(target, now)
+  let outcome = state_transfer.pull(endpoint, hash, from: local(source))
   assert outcome == Faulted("the source does not hold the state")
 }
 
@@ -639,4 +634,22 @@ pub fn a_full_part_that_cannot_be_finished_is_discarded_by_the_next_piece_test()
     state_transfer.take(receiver, piece_of(state, bytes, 0, chunk), now())
   let assert state_transfer.Failed(_) = verdict
   assert state_store.staged_bytes(receiver, state.hash) == Ok(0)
+}
+
+pub fn a_full_part_is_finished_by_a_pull_through_the_endpoint_test() {
+  let from_root = scratch("pull-full-from")
+  let to_root = scratch("pull-full-to")
+  let source = open(from_root, limits())
+  let target = open(to_root, limits())
+  let bytes = payload(size)
+  let state = held(source, from_root, bytes)
+  crashed_before_finishing(target, state, bytes)
+
+  // The destination reports every byte held. The source serves the last byte's
+  // piece for the offset at the end, and the destination finishes on it.
+  let endpoint = state_transfer.endpoint(target, now)
+  assert state_transfer.pull(endpoint, state.hash, from: local(source))
+    == Delivered
+  assert contents(target, state.hash) == bytes
+  assert state_store.staged_bytes(target, state.hash) == Ok(0)
 }
