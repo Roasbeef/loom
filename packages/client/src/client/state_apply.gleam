@@ -18,11 +18,18 @@
 //// that already names the state's tip is the state having been applied before,
 //// which is how two children of one parent share an import. The session's
 //// branch is created with `git worktree add -b` or `git checkout -b`, and Git
-//// refuses a name that exists. No transport is used. A fetch from a path reads
-//// the repository's `url.<base>.insteadOf` and `protocol.*` settings, which can
-//// turn a bundle path into a command, so the bundle is unpacked with
-//// `git bundle unbundle`, checked for connectivity, and given its ref by
-//// `git update-ref`.
+//// refuses a name that exists. No transport is used by apply itself. A fetch
+//// from a path reads the repository's `url.<base>.insteadOf` and `protocol.*`
+//// settings, which can turn a bundle path into a command, so the bundle is
+//// unpacked with `git bundle unbundle`, checked for connectivity, and given its
+//// ref by `git update-ref`.
+////
+//// Git can still start a transport on its own: a repository whose config names a
+//// promisor remote fetches a missing object lazily, and a transport that runs a
+//// command would run it during the base check, the unpack or the connectivity
+//// walk. `worktree_git` sets `GIT_NO_LAZY_FETCH` in the environment of every
+//// call, which is what stops that. The sandbox's lack of network does not,
+//// because the command is a program on the machine.
 ////
 //// Every Git call carries `-c core.hooksPath=/dev/null`, so no hook runs
 //// whatever `.git/hooks` or `core.hooksPath` hold, and
@@ -368,12 +375,13 @@ fn branch_of(session: String) -> Result(String, String) {
 
 /// A registered workspace's repository must be a canonical primary checkout:
 /// the common directory this module writes through is `<root>/.git`, and in a
-/// linked worktree `.git` is a file that points somewhere else.
+/// linked worktree `.git` is a file that points somewhere else. The `.git`
+/// entry itself must be a directory and not a link to one, because the writable
+/// root named from it is resolved when the sandbox grants it.
 fn check_repository(repository: String) -> Result(Nil, String) {
   use canonical <- result.try(bootstrap.canonical_directory(repository))
   use <- bool.lazy_guard(
-    when: canonical != repository
-      || simplifile.is_directory(repository <> "/.git") != Ok(True),
+    when: canonical != repository || !is_plain_directory(repository <> "/.git"),
     return: fn() {
       Error(
         "the repository is not a canonical primary checkout: " <> repository,
@@ -383,14 +391,23 @@ fn check_repository(repository: String) -> Result(Nil, String) {
   Ok(Nil)
 }
 
+/// Whether the path itself is a directory. A link is not one, whatever it
+/// points at.
+fn is_plain_directory(path: String) -> Bool {
+  case simplifile.link_info(path) {
+    Ok(info) -> simplifile.file_info_type(info) == simplifile.Directory
+    Error(_) -> False
+  }
+}
+
 /// A destination must be an absolute path that does not exist yet, under a
 /// parent that is a canonical directory. The parent is the writable root, so a
-/// link in it would move the grant.
+/// link or a `..` in it would move the grant, and the canonical comparison
+/// refuses both.
 fn check_destination(destination: String) -> Result(Nil, String) {
   let parent = filepath.directory_name(destination)
   use <- bool.guard(
     when: !string.starts_with(destination, "/")
-      || list.contains(string.split(destination, "/"), "..")
       || bootstrap.path_exists(destination),
     return: Error("the destination exists or is not an absolute path"),
   )

@@ -15,6 +15,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap
 import simplifile
+import support/internal/ffi_proc
 import support/state_rig.{type Rig}
 import support/worktree_rig
 
@@ -43,7 +44,14 @@ fn now() -> Int {
 fn scenario(name: String) -> Scenario {
   let rig = state_rig.rig(name)
   let c1 = worktree_rig.git(rig.root, ["rev-parse", "HEAD"])
-  let base = state_rig.commit_file(rig.root, "two", "two\n", "second")
+  // The base commit's subject is not ASCII. It travels in the bundle header.
+  let base =
+    state_rig.commit_file(
+      rig.root,
+      "two",
+      "two\n",
+      "Fix \u{2014} the \u{e9} thing",
+    )
   let receiver = state_rig.clone(rig, "receiver")
   let third = state_rig.commit_file(rig.root, "README", "three\n", "third")
   worktree_rig.write(rig.root <> "/README", "dirty\n")
@@ -56,6 +64,29 @@ fn scenario(name: String) -> Scenario {
   let snapshot = state_rig.capture(rig, "thin", basis)
   let #(state, bundle) = stored(rig, snapshot)
   Scenario(rig:, receiver:, state:, bundle:, base:, third:)
+}
+
+// A source whose last commit merges a side branch that forked from the first
+// commit, thin against the second. The receiver holds the first two, and the
+// bundle's prerequisites are the second commit and the first. The first is
+// read by the unpack and not by the check that the base is held.
+fn merge_scenario(name: String) -> Scenario {
+  let rig = state_rig.rig(name)
+  let c1 = worktree_rig.git(rig.root, ["rev-parse", "HEAD"])
+  let c2 = state_rig.commit_file(rig.root, "two", "two\n", "second")
+  let receiver = state_rig.clone(rig, "receiver")
+  let _ = worktree_rig.git(rig.root, ["checkout", "--quiet", "-b", "side", c1])
+  let _ = state_rig.commit_file(rig.root, "side", "side\n", "side work")
+  let _ = worktree_rig.git(rig.root, ["checkout", "--quiet", "main"])
+  let _ =
+    worktree_rig.git(rig.root, [
+      "merge", "--quiet", "--no-ff", "side", "-m", "merge",
+    ])
+  let merged = worktree_rig.git(rig.root, ["rev-parse", "HEAD"])
+  worktree_rig.write(rig.root <> "/README", "dirty\n")
+  let snapshot = state_rig.capture(rig, "thin", Thin(c2))
+  let #(state, bundle) = stored(rig, snapshot)
+  Scenario(rig:, receiver:, state:, bundle:, base: c2, third: merged)
 }
 
 // Admits a snapshot's bundle to the node's store and reads it back, which is
@@ -503,7 +534,7 @@ pub fn placements_that_could_reach_beyond_their_grant_are_refused_test() {
       rig.state <> "/worktrees/receiver/../x",
       session,
     ))
-    == Error("the destination exists or is not an absolute path")
+    == Error("the destination's parent is not a canonical directory")
   assert apply(Worktree(
       scenario.receiver,
       scenario.receiver <> "/inside",
@@ -537,6 +568,128 @@ pub fn a_linked_worktree_is_not_a_repository_to_apply_into_test() {
       Worktree(linked, destination(rig, 1), session),
     )
   assert string.contains(reason, "not a canonical primary checkout")
+  state_rig.stop(rig)
+}
+
+pub fn a_repository_whose_dot_git_is_a_link_is_refused_test() {
+  let scenario = scenario("apply-dotgit-link")
+  let rig = scenario.rig
+  let before = state_rig.refs(scenario.receiver)
+
+  // A directory that is canonical and whose `.git` points at the receiver's:
+  // the writable root named from it would be resolved to somewhere else.
+  let lookalike = rig.scratch <> "/lookalike"
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(lookalike)
+  let assert Ok(Nil) =
+    simplifile.create_symlink(
+      scenario.receiver <> "/.git",
+      lookalike <> "/.git",
+    )
+  let assert Ok(lookalike) = bootstrap.canonical_directory(lookalike)
+  let assert Error(reason) =
+    state_apply.apply(
+      rig.git,
+      scenario.bundle,
+      scenario.state,
+      Worktree(lookalike, destination(rig, 1), worktree_rig.session(1)),
+    )
+  assert string.contains(reason, "not a canonical primary checkout")
+  assert state_rig.refs(scenario.receiver) == before
+  assert simplifile.is_directory(destination(rig, 1)) == Ok(False)
+  state_rig.stop(rig)
+}
+
+pub fn a_missing_object_never_starts_a_promisor_transport_test() {
+  let scenario = merge_scenario("apply-promisor")
+  let rig = scenario.rig
+  let repository = scenario.receiver
+  let canary = repository <> "/.git/promisor-ran"
+  let first =
+    worktree_rig.git(repository, ["rev-list", "--max-parents=0", "HEAD"])
+
+  // A receiver whose objects are loose, so that one can be deleted, and whose
+  // config names a promisor remote reached by a command. The command writes a
+  // canary into the one place the sandbox lets Git write, which is the
+  // repository's `.git` for the unpack. The object deleted is the first commit,
+  // which the bundle lists as a prerequisite and the base check never reads.
+  let objects = repository <> "/.git/objects/pack"
+  let held = rig.scratch <> "/held-packs"
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(held)
+  let assert Ok(names) = simplifile.read_directory(objects)
+  list.each(names, fn(name) {
+    let assert Ok(Nil) =
+      simplifile.rename(objects <> "/" <> name, held <> "/" <> name)
+  })
+  let assert Ok(program) = ffi_proc.which("git")
+  list.filter(names, string.ends_with(_, ".pack"))
+  |> list.each(fn(name) {
+    let assert Ok(#(0, _)) =
+      ffi_proc.run(
+        "/bin/sh",
+        [
+          "-c",
+          "exec \"$0\" unpack-objects -q < \"$1\"",
+          program,
+          held <> "/" <> name,
+        ],
+        in: repository,
+      )
+  })
+  let missing =
+    repository
+    <> "/.git/objects/"
+    <> string.slice(first, 0, 2)
+    <> "/"
+    <> string.drop_start(first, 2)
+  let assert Ok(Nil) = simplifile.delete(missing)
+
+  let transport = repository <> "/.git/evil-transport"
+  worktree_rig.write(
+    transport,
+    "#!/bin/sh\nprintf ran > '" <> canary <> "'\nexit 1\n",
+  )
+  let assert Ok(Nil) = simplifile.set_permissions_octal(transport, 0o755)
+  let _ =
+    worktree_rig.git(repository, ["config", "core.repositoryformatversion", "1"])
+  let _ =
+    worktree_rig.git(repository, ["config", "extensions.partialClone", "evil"])
+  let _ =
+    worktree_rig.git(repository, [
+      "config",
+      "remote.evil.url",
+      "ext::" <> transport,
+    ])
+  let _ =
+    worktree_rig.git(repository, ["config", "remote.evil.promisor", "true"])
+  let _ =
+    worktree_rig.git(repository, [
+      "config",
+      "remote.evil.partialclonefilter",
+      "blob:none",
+    ])
+  let _ =
+    worktree_rig.git(repository, ["config", "protocol.ext.allow", "always"])
+
+  // Control: an ordinary Git that unpacks the bundle reads the missing
+  // prerequisite and starts the transport.
+  let #(code, _) =
+    worktree_rig.git_status(repository, ["bundle", "unbundle", scenario.bundle])
+  assert code != 0
+  assert simplifile.is_file(canary) == Ok(True)
+  let assert Ok(Nil) = simplifile.delete(canary)
+
+  // Apply reads the same missing object. The base it checks is held, so it gets
+  // as far as the unpack, which Git refuses, and the transport never runs.
+  let assert Error(reason) =
+    state_apply.apply(
+      rig.git,
+      scenario.bundle,
+      scenario.state,
+      placement(scenario, 1),
+    )
+  assert string.contains(reason, "git bundle")
+  assert simplifile.is_file(canary) == Ok(False)
+  assert simplifile.is_directory(destination(rig, 1)) == Ok(False)
   state_rig.stop(rig)
 }
 
