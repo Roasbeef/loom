@@ -580,10 +580,19 @@ the model overwrote then cannot change the author. `catalog.parse_tools` and the
 language server profiles refuse the four names. `amend` and `rebase` keep an
 existing author under the pin, because the author of a replayed commit comes from
 the commit, and the pinned name becomes the committer. A session with no
-identity, and every local session, behaves as before. The orchestrator has no
-source for the identity of a session whose workspace is remote yet (see
-`serve.gleam`, where `Registered.git_identity` is `None`), so an executor hears
-none until that is settled.
+identity, and every local session, behaves as before.
+
+The identity the owner sends is the operator's global `user.name` and
+`user.email` on the orchestrator's machine. An orchestrator has no sandbox broker
+for a workspace it does not run, so `client/owner_identity` reads them through a
+sandboxed Git runner of the daemon's own (`worktree_git.read_global_config`),
+which the daemon starts when it has a `[distribution]` table. The read has the
+operator's `HOME` and their own `XDG_CONFIG_HOME` and `GIT_CONFIG_GLOBAL`, no
+network and nothing writable, and takes nothing else of the daemon's environment.
+It is held for a minute, a failure included, so a session build never waits on
+Git more than once a minute, and `serve` puts the result in the session's
+registration. An orchestrator with no global identity, or with no runner,
+answers none and the executor behaves as before.
 
 The messages between nodes are values of closed custom types: `HostMessage` to
 the executor host, `OwnerMessage` to the owner port, and `orchestrator_port`'s

@@ -1475,15 +1475,27 @@ the answer on `AttachSpec.git_identity`. `executor_plane` passes it as
 `git_identity.author_environment` to `Census.env`. `workspace_policy.
 allowing_tool_tmpdir` lets the four names through the environment narrowing, and
 `lsp/profile.not_server_owned` refuses them in every configuration.
-`serve.gleam` sets `Registered.git_identity` to `None`: `git_identity.resolve`
-runs Git through a sandbox broker on the workspace's own machine, and a session
-whose workspace is remote has none on the orchestrator. Closing that is the next
-change.
+`owner_identity` is where the owner's identity comes from. A session whose
+workspace is remote has no sandbox broker on the orchestrator, and the identity
+is the operator's anyway, so `resolve` reads the global `user.name` and
+`user.email` through a `worktree_git.Git` of the daemon's own with
+`worktree_git.read_global_config` (the runner's fixed environment, the operator's
+`HOME`, and their `XDG_CONFIG_HOME` and `GIT_CONFIG_GLOBAL` from
+`git_identity.operator_overrides`; no network, nothing writable). The answer is
+read by `git_identity.identity_of_query`, which `git_identity.configured_identity`
+also uses. One holder process, started by `daemon/main.start_owner_identity` when
+the daemon has a `[distribution]` table, keeps the answer for `keep_ms` (a minute),
+a failure included, and `lookup` waits at most the time it is given; a holder that
+is not running answers none at once. `serve.gleam` sets `Registered.git_identity`
+from `lookup`, and the owner port still sends none for an incomplete identity.
 
 Tests: `state_transfer_test` drives two real stores through a scripted link (a
 drop, a lost verdict, a restart of either end, a mismatch, an oversize announce, a
 gap, a duplicate, the cap) and one captured bundle that still verifies after it
-crosses. `remote/state_wire_test` sends states through a host and a port started
+crosses. `owner_identity_test` reads a real global gitconfig through the real
+runner (include, none, hostile programs, a moved `GIT_CONFIG_GLOBAL`, an empty or
+tab-bearing value, a stopped runner) and follows one identity from the gitconfig
+to a workspace's tool environment. `remote/state_wire_test` sends states through a host and a port started
 over a real `state_service`, and checks the version 5 attach refusal and the
 capture fence. `remote/identity_wire_test` covers the identity check, the owner's
 answer and the host handing it to the factory. `workspace_plane_test` runs real

@@ -415,17 +415,24 @@ directory, and a piece that does not fit removes its half-written file.
   bundle served that way reads the square of its size in pieces, bounded by
   `size_limit`. A ranged read is a `host/bootstrap` change if it ever matters.
 
-**Open, found by building it.** `AskGitIdentity` has the message, the check and
-the executor's pinning, and the owner answers none today. 107 says the owner
-answers from `git_identity.resolve`, and `resolve` runs Git through a sandbox
-broker with a `worktree_diff.Wiring`, which an orchestrator holds only for a
-workspace it runs locally. A session whose workspace is on an executor, which is
-the only session that asks, has no broker on the orchestrator to resolve through,
-and running Git in the daemon's VM against the operator's configuration is not
-what Rule Zero allows. `Registered.git_identity` and `owner_port.Config` are the
-seam. The choice is between a sandboxed resolver on the orchestrator that does not
-need a workspace, reading the global files without Git, and the
-`[executors.<name>]` key that "Open" declined to add.
+**Found by building it, and settled: where the owner's identity comes from.**
+107 says the owner answers from `git_identity.resolve`. `resolve` runs Git
+through a sandbox broker with a `worktree_diff.Wiring`, which an orchestrator
+holds only for a workspace it runs locally, and the only session that asks has
+its workspace on an executor. The identity an executor needs is the operator's
+global `user.name` and `user.email` on the orchestrator's machine, not anything
+of the session, so it is read once for all sessions by `client/owner_identity`
+through a sandboxed Git runner (`client/worktree_git`) that the daemon starts
+when it has a `[distribution]` table. `worktree_git.read_global_config` runs
+`git config --global --includes --null --get-regexp` with the runner's fixed
+environment, the operator's `HOME`, and the operator's own `XDG_CONFIG_HOME` and
+`GIT_CONFIG_GLOBAL` if set; no network, nothing writable, the state root and node
+credentials masked. The host stays readable, as for every call of that runner,
+because an include may name any path. `git_identity` is factored so the query
+arguments and `identity_of_query` are shared with a session's own query. The
+result is held for a minute, a failure included, so a session build waits at most
+the lookup's 5 s once and a Git that hangs delays one build and no more. The owner
+port still sends none for an incomplete identity or one that fails
+`protocol.git_identity_of`. No new key, no new FFI and no wire change.
 
-**Slices.** Slice 2 is done as above, except that the owner's answer waits on the
-choice just named. Slices 3 to 5 are unchanged.
+**Slices.** Slice 2 is done as above. Slices 3 to 5 are unchanged.
