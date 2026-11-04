@@ -294,6 +294,58 @@ pub fn a_bundle_thin_against_anything_but_the_sent_tip_is_refused_test() {
   state_rig.stop(rig)
 }
 
+pub fn a_tip_that_does_not_descend_from_the_sent_tip_is_refused_test() {
+  let scenario = scenario("return-unrelated", state_object.Dirty)
+  let rig = scenario.rig
+  let child = scenario.child
+
+  // An unrelated root commit, bundled whole, and then given the header line a
+  // genuine thin bundle would have: the sent tip as its one prerequisite. The
+  // size, the hash, the one ref and the prerequisite all agree with the
+  // description, so only the ancestry of the tip can tell it is not the child's.
+  let _ =
+    worktree_rig.git(child, ["checkout", "--quiet", "--orphan", "unrelated"])
+  let tip =
+    state_rig.commit_file(child, "alien.txt", "alien\n", "unrelated history")
+  let _ = worktree_rig.git(child, ["update-ref", state_object.bundle_ref, tip])
+  let path = rig.scratch <> "/unrelated.bundle"
+  let _ =
+    worktree_rig.git(child, ["bundle", "create", path, state_object.bundle_ref])
+  let assert Ok(bytes) = simplifile.read_bits(path)
+  let assert <<"# v2 git bundle\n":utf8, rest:bits>> = bytes
+  let sent_tip = scenario.sent.state.tip
+  let forged = <<
+    "# v2 git bundle\n-":utf8,
+    sent_tip:utf8,
+    " sent\n":utf8,
+    rest:bits,
+  >>
+  let forged_path = rig.scratch <> "/forged.bundle"
+  let assert Ok(Nil) = simplifile.write_bits(forged_path, forged)
+  let described =
+    State(
+      hash: state_object.hash_of(forged),
+      size: bit_array.byte_size(forged),
+      tip:,
+      base: Some(sent_tip),
+      dirty: state_object.Clean,
+    )
+  let before = state_rig.refs(rig.root)
+
+  let assert Error(reason) =
+    state_apply.apply_returned(
+      rig.git,
+      rig.root,
+      child_name(),
+      scenario.sent,
+      forged_path,
+      described,
+    )
+  assert string.contains(reason, "not built on the state that was sent")
+  assert state_rig.refs(rig.root) == before
+  state_rig.stop(rig)
+}
+
 pub fn a_description_that_does_not_match_the_bytes_is_refused_early_test() {
   let scenario = scenario("return-lies", state_object.Dirty)
   let rig = scenario.rig

@@ -285,7 +285,7 @@ pub fn apply_returned(
     Some(_) -> Error(ref <> " already names a different commit")
     None -> {
       use Nil <- result.try(hold_sent(git, repository, sent))
-      create_child_ref(git, repository, bundle, returned, ref)
+      create_child_ref(git, repository, bundle, returned, sent.state.tip, ref)
     }
   })
 
@@ -383,6 +383,7 @@ fn create_child_ref(
   repository: String,
   bundle: String,
   returned: State,
+  sent_tip: String,
   ref: String,
 ) -> Result(Creation, String) {
   let writable = [repository <> "/.git"]
@@ -398,6 +399,7 @@ fn create_child_ref(
       "rev-list", "--objects", "--quiet", returned.tip, "--not", "--all",
     ]),
   )
+  use Nil <- result.try(descends_from(git, repository, sent_tip, returned.tip))
   let made =
     git_ok(git, repository, writable, [
       "update-ref",
@@ -418,6 +420,33 @@ fn create_child_ref(
         Some(_) | None -> Error(reason)
       }
     }
+  }
+}
+
+/// Requires the returned tip to descend from the sent tip. The header says what
+/// the bundle needs and not what its tip is built on, so a bundle that lists the
+/// sent tip as its prerequisite and carries a tip of unrelated history passes every
+/// check made before the unpack. Git answers by exit code, and anything but zero
+/// refuses with one constant reason, before any ref is written.
+fn descends_from(
+  git: Git,
+  repository: String,
+  sent_tip: String,
+  tip: String,
+) -> Result(Nil, String) {
+  use output <- result.try(
+    git_run(git, repository, [], [
+      "merge-base",
+      "--is-ancestor",
+      sent_tip,
+      tip,
+    ]),
+  )
+
+  // Zero is the only yes.
+  case output.code {
+    0 -> Ok(Nil)
+    _ -> Error("the returned commits are not built on the state that was sent")
   }
 }
 
