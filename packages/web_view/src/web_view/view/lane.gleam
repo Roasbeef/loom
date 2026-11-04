@@ -774,8 +774,9 @@ fn piece_element(
     // use, the child's tag, and the purpose it was given. The tag is the
     // name the child's card carries (`agent_roster.short_name`), so one
     // strand has one name on the page. The purpose is the
-    // model's text, a text node.
-    turns.Spawned(child:, purpose:, hue:, standing:, ..) ->
+    // model's text, a text node. A call that failed has no child to name, so
+    // the line says how it failed, and why when the result recorded a reason.
+    turns.Spawned(child:, purpose:, hue:, standing:, refusal:, ..) ->
       html.p(
         [attribute.class("who"), attribute.class("spawn"), strip.hue_class(hue)],
         [
@@ -786,7 +787,7 @@ fn piece_element(
                 html.text(" "),
                 tag(agent_roster.short_name(child), position(marks, child)),
               ]
-              None -> [html.text(" · " <> standing_text(standing))]
+              None -> [html.text(" · " <> spawn_standing(standing, refusal))]
             },
             case purpose {
               "" -> []
@@ -1181,6 +1182,20 @@ fn item_element(
         }
       }
     }
+  }
+}
+
+/// What a spawn line says when it has no child to name. A failed call that
+/// recorded a reason says `failed: <reason>`, the same word as without one, where the reason is the one
+/// bounded line `session_view/turns` kept, drawn by the caller as a text node.
+/// Every other standing keeps the plain word, so a failure without a reason
+/// reads as it did before reasons were carried.
+fn spawn_standing(standing: turns.Standing, refusal: Option(String)) -> String {
+  // Only a failed call has a reason to say; the plain word serves the rest.
+  case standing, refusal {
+    turns.Failed, Some(reason) -> standing_text(standing) <> ": " <> reason
+    turns.Failed, None | turns.Pending, _ | turns.Done, _ ->
+      standing_text(standing)
   }
 }
 

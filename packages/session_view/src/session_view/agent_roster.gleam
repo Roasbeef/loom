@@ -123,7 +123,40 @@ pub type Line {
     /// roster's last tick, or `None` for a local strand and a remote child
     /// with no glance yet.
     age_s: Option(Int),
+    /// The commits a remote child made that came back to this session's
+    /// repository, and `None` for a strand of this session and for a remote
+    /// child that returned nothing.
+    returned: Option(Returned),
   )
+}
+
+/// The work a remote child's commits became in the parent's repository
+/// (protocol-change/107, "Return"). The two members always come together, so a
+/// line has either both or neither.
+pub type Returned {
+  Returned(
+    /// How many commits the child made on top of the workspace it was handed.
+    commits: Int,
+    /// The ref in the parent's repository that holds them, as one line. It is
+    /// a ref of `refs/loom/children/<child>/<tip8>`, which `remote_agent`
+    /// decodes only in that shape and within its bound.
+    ref: String,
+  )
+}
+
+/// The words a host draws for returned commits: the count, singular for one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert agent_roster.returned_words(1) == "1 commit returned"
+/// assert agent_roster.returned_words(3) == "3 commits returned"
+/// ```
+pub fn returned_words(commits: Int) -> String {
+  case commits {
+    1 -> "1 commit returned"
+    count -> int.to_string(count) <> " commits returned"
+  }
 }
 
 /// Whether a tick moved anything a strip draws.
@@ -712,7 +745,21 @@ fn line(roster: Roster, row: agent_view.Row) -> Line {
     tokens:,
     placement: row.placement,
     age_s:,
+    returned: option.then(remote, returned_of),
   )
+}
+
+// The work a remote child's entry reports, when it reports any. The entry
+// decodes the two members together, so either both are here or neither is.
+// The ref is made one line like every other word of a remote row, because the
+// entry's own bound is on bytes and not on what the bytes are.
+/// The returned work of one remote agent entry, when it has some.
+fn returned_of(agent: RemoteAgent) -> Option(Returned) {
+  case agent.commits, agent.returned_ref {
+    Some(commits), Some(ref) ->
+      Some(Returned(commits:, ref: text_hygiene.single_line(ref)))
+    Some(_), None | None, Some(_) | None, None -> None
+  }
 }
 
 /// How long a strand's current operation has run, in milliseconds as of

@@ -77,6 +77,7 @@ fn chip(id: String, status: agent_view.Status) -> strip.Chip {
       tokens: None,
       placement: None,
       age_s: None,
+      returned: None,
     ),
     hue: turns.Sub(0),
     cache: None,

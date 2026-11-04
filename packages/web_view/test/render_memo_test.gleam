@@ -107,6 +107,7 @@ fn chip() -> strip.Chip {
       tokens: None,
       placement: None,
       age_s: None,
+      returned: None,
     ),
     hue: turns.Sub(0),
     cache: None,

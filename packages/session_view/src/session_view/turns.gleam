@@ -300,13 +300,18 @@ pub type Piece {
   )
 
   /// An `agent_spawn` call: the child it started, once its result names one,
-  /// and the purpose it was started for.
+  /// and the purpose it was started for. `refusal` is the reason a failed
+  /// call carries, in one line cut to `refusal_limit`: the harness's own
+  /// sentence about the refusal, which may quote the reason a remote
+  /// orchestrator gave. It is `None` for a call that did not fail and for a
+  /// failure whose result recorded no reason.
   Spawned(
     key: String,
     child: Option(String),
     purpose: String,
     hue: Hue,
     standing: Standing,
+    refusal: Option(String),
   )
 
   /// A child's result, as an `agent_wait` returned it.
@@ -1304,6 +1309,9 @@ fn entry_kind(
         False -> Done
       }
 
+      // The reason of a failed spawn is read before the payload is cleared.
+      let reason = refusal_of(details, outcome)
+
       // Clear details payload if execution resulted in error.
       let details = case is_error {
         True -> None
@@ -1314,7 +1322,7 @@ fn entry_kind(
       case dict.has_key(joined.asked, tool_call_id), tool_name {
         True, _ -> []
         False, "agent_spawn" -> [
-          Outside(spawned(block.key, None, details, outcome, strands)),
+          Outside(spawned(block.key, None, details, outcome, reason, strands)),
         ]
         False, "agent_wait" -> [
           Doing(Narrated(block, dict.new(), None), at, 1, [], Finished),
@@ -1589,6 +1597,7 @@ fn spawned(
   call: Option(message.ToolCall),
   details: Option(json.JsonValue),
   standing: Standing,
+  refusal: Option(String),
   strands: List(protocol.Strand),
 ) -> Piece {
   let child = option.then(details, field_text(_, "strand"))
@@ -1600,7 +1609,65 @@ fn spawned(
       |> option.unwrap(""),
     option.map(child, hue(strands, _)) |> option.unwrap(Unplaced),
     standing,
+    refusal,
   )
+}
+
+/// The most characters of a failed spawn's reason that a piece keeps. The
+/// harness's sentence is short, but it quotes the reason a remote orchestrator
+/// gave, and a piece is sized for the lane, so the cut is made here once and
+/// not by each host.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert turns.refusal_limit == 300
+/// ```
+pub const refusal_limit = 300
+
+// The reason a failed spawn recorded. The agency's refusal outcome puts the
+// sentence the model read in the result's `reason` detail; a failure that
+// recorded none, or a call that did not fail, has no reason to draw. The words
+// are made one line and cut, because a remote orchestrator's reason is data
+// from another machine.
+/// The one-line, bounded reason of a failed spawn result, when it has one.
+fn refusal_of(
+  details: Option(json.JsonValue),
+  standing: Standing,
+) -> Option(String) {
+  case standing {
+    Pending | Done -> None
+    Failed ->
+      details
+      |> option.then(field_text(_, "reason"))
+      |> option.map(fn(reason) {
+        reason |> text_hygiene.single_line |> string.trim |> cut_reason
+      })
+      |> option.then(fn(reason) {
+        case reason {
+          "" -> None
+          _ -> Some(reason)
+        }
+      })
+  }
+}
+
+/// The details a call's result recorded, whether or not it failed.
+fn recorded_details(
+  outcome: Option(message.AgentMessage),
+) -> Option(json.JsonValue) {
+  case outcome {
+    Some(message.ToolResultMessage(details:, ..)) -> details
+    Some(_) | None -> None
+  }
+}
+
+/// A reason cut to `refusal_limit` characters, marking the cut with `…`.
+fn cut_reason(reason: String) -> String {
+  case string.length(reason) > refusal_limit {
+    True -> string.slice(reason, 0, refusal_limit - 1) <> "…"
+    False -> reason
+  }
 }
 
 /// One call, of a compact tool group or of a narrative response, with its
@@ -1633,6 +1700,7 @@ fn called(
         Some(call.invocation),
         details(call.outcome),
         standing,
+        refusal_of(recorded_details(call.outcome), standing),
         strands,
       )),
     ]

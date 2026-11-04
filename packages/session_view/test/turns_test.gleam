@@ -414,6 +414,106 @@ pub fn a_spawn_and_its_result_carry_the_childs_hue_test() {
   assert outcome == "completed"
 }
 
+// A turn that asks for one spawn and gets the agency's refusal, whose result
+// is an error carrying `details`.
+fn refused_spawn(details: Option(json.JsonValue)) -> List(snapshot.Item) {
+  [
+    item(1, 10_000, said("start a build", None)),
+    item(
+      2,
+      11_000,
+      assistant([
+        call(
+          "c1",
+          "agent_spawn",
+          json.Object([#("purpose", json.String("build it"))]),
+        ),
+      ]),
+    ),
+    item(
+      3,
+      12_000,
+      message.ToolResultMessage(
+        "c1",
+        "agent_spawn",
+        [message.ToolResultText("refused", None)],
+        details,
+        None,
+        None,
+        True,
+        12_000,
+      ),
+    ),
+  ]
+}
+
+fn refusal_of(items: List(snapshot.Item)) -> Option(String) {
+  let assert Ok(turns.Spawned(refusal:, standing:, ..)) =
+    list.find(pieces_of(items, []), fn(piece) {
+      case piece {
+        turns.Spawned(..) -> True
+        _ -> False
+      }
+    })
+  assert standing == turns.Failed
+  refusal
+}
+
+fn agency_refusal(reason: String) -> Option(json.JsonValue) {
+  Some(
+    json.Object([
+      #("error", json.String("agency_refused")),
+      #("reason", json.String(reason)),
+    ]),
+  )
+}
+
+// The reason the agency recorded on the failed result reaches the piece, in
+// the words the model read.
+pub fn a_failed_spawn_carries_the_reason_its_result_recorded_test() {
+  let reason =
+    "the orchestrator `box` refused the spawn, and nothing was started: "
+    <> "the spawner has no `[spawners.laptop] seed`"
+  assert refusal_of(refused_spawn(agency_refusal(reason))) == Some(reason)
+}
+
+// The reason is data from another machine: terminal sequences are gone, line
+// breaks are spaces, and the length is bounded with a mark where it was cut.
+pub fn a_spawn_reason_is_one_bounded_line_test() {
+  let assert Some(plain) =
+    refusal_of(refused_spawn(agency_refusal("line one\nline two\u{1b}[31m")))
+  assert plain == "line one line two"
+
+  let long = string.repeat("x", turns.refusal_limit + 50)
+  let assert Some(cut) = refusal_of(refused_spawn(agency_refusal(long)))
+  assert string.length(cut) == turns.refusal_limit
+  assert string.ends_with(cut, "…")
+}
+
+// A failure that recorded no reason, an empty one, or a reason that is not text
+// leaves the piece as it was before reasons were carried.
+pub fn a_failed_spawn_without_a_reason_has_none_test() {
+  assert refusal_of(refused_spawn(None)) == None
+  assert refusal_of(refused_spawn(agency_refusal(" \n "))) == None
+  assert refusal_of(
+      refused_spawn(Some(json.Object([#("reason", json.Int(3))]))),
+    )
+    == None
+}
+
+// A spawn that succeeded is not given a reason, whatever its details hold.
+pub fn a_spawn_that_succeeded_has_no_refusal_test() {
+  let assert Ok(turns.Spawned(refusal:, standing:, ..)) =
+    list.find(pieces([]), fn(piece) {
+      case piece {
+        turns.Spawned(..) -> True
+        _ -> False
+      }
+    })
+  assert standing == turns.Done
+  assert refusal == None
+}
+
 pub fn a_peer_message_and_a_nudge_stay_outside_any_fold_test() {
   let laid = pieces([])
   let assert Ok(turns.Peer(strand:, text:, ..)) =
