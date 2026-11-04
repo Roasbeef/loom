@@ -12,7 +12,9 @@ import client/remote/host
 import client/remote/orchestrator_port
 import client/remote/protocol
 import client/remote/state_link
-import client/state_object.{type State, Clean, Full, State, Thin}
+import client/state_object.{
+  type State, Clean, CommittedOnly, Dirty, Full, State, Thin, WithWorkingTree,
+}
 import client/state_service
 import client/state_store.{type Store}
 import client/state_transfer.{
@@ -21,7 +23,7 @@ import client/state_transfer.{
 import gleam/bit_array
 import gleam/erlang/node
 import gleam/erlang/process
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import host/bootstrap
 import simplifile
@@ -154,14 +156,46 @@ fn capture(
   at: Address(protocol.HostMessage(String)),
   token: BitArray,
   basis: state_object.Basis,
-) -> Result(State, protocol.Refusal) {
+) -> Result(Option(State), protocol.Refusal) {
+  capture_content(at, token, basis, WithWorkingTree)
+}
+
+fn capture_content(
+  at: Address(protocol.HostMessage(String)),
+  token: BitArray,
+  basis: state_object.Basis,
+  content: state_object.Content,
+) -> Result(Option(State), protocol.Refusal) {
   let reply = process.new_subject()
   address.deliver(
     at,
-    protocol.StateCapture(session: "s1", incarnation: 0, token:, basis:, reply:),
+    protocol.StateCapture(
+      session: "s1",
+      incarnation: 0,
+      token:,
+      basis:,
+      content:,
+      reply:,
+    ),
   )
   let assert Ok(answer) = process.receive(reply, 5000)
     as "the host answers a capture"
+  answer
+}
+
+fn apply(
+  at: Address(protocol.HostMessage(String)),
+  incarnation: Int,
+  token: BitArray,
+  state: State,
+) -> Result(protocol.ApplyAnswer, protocol.Refusal) {
+  let reply = process.new_subject()
+  address.deliver(
+    at,
+    protocol.StateApply(session: "s1", incarnation:, token:, state:, reply:),
+  )
+  let assert Ok(answer) = process.receive(reply, 5000)
+    as "the host answers an apply"
   answer
 }
 
@@ -282,12 +316,22 @@ pub fn a_capture_is_fenced_and_runs_the_planes_capture_test() {
   // The plane's capture answers the description for a thin basis it is given,
   // and refuses the workspace for a full one.
   let capturing =
-    host.Capturing(capture: fn(basis) {
-      case basis {
-        Thin(base:) -> Ok(State(..described, base: Some(base)))
-        Full -> Error("the repository has a submodule")
-      }
-    })
+    host.Capturing(
+      capture: fn(basis, content) {
+        case basis, content {
+          Thin(base:), WithWorkingTree ->
+            Ok(Some(State(..described, base: Some(base))))
+          Thin(..), CommittedOnly -> Ok(None)
+          Full, _ -> Error("the repository has a submodule")
+        }
+      },
+      apply: fn(state) {
+        case state.dirty {
+          Clean -> Ok(state.tip)
+          Dirty -> Error("the tree holds changes")
+        }
+      },
+    )
   let factory = fn(spec) {
     case base(spec) {
       Ok(plane) -> Ok(host.Plane(..plane, state: Some(capturing)))
@@ -304,14 +348,80 @@ pub fn a_capture_is_fenced_and_runs_the_planes_capture_test() {
       <<1>>,
       Thin(base: "89abcdef0123456789abcdef0123456789abcdef"),
     )
-    == Ok(
+    == Ok(Some(
       State(..described, base: Some("89abcdef0123456789abcdef0123456789abcdef")),
-    )
+    ))
   assert capture(at, <<1>>, Full)
     == Error(protocol.ExecutorFault("the repository has a submodule"))
 
+  // The content reaches the plane, and a capture of commits with nothing beyond
+  // its base is an answer of no state, not a refusal.
+  assert capture_content(
+      at,
+      <<1>>,
+      Thin(base: "89abcdef0123456789abcdef0123456789abcdef"),
+      CommittedOnly,
+    )
+    == Ok(None)
+
   // A request under another attach's token is from a dead runtime.
   assert capture(at, <<2>>, Full) == Error(protocol.StaleToken)
+  assert capture_content(at, <<2>>, Full, CommittedOnly)
+    == Error(protocol.StaleToken)
+}
+
+pub fn an_apply_for_a_scope_with_no_plane_apply_is_refused_test() {
+  let at = started(state_transfer.declining(), plain_factory())
+  let wanted = a_state()
+
+  // Before any attach the scope does not exist, and after one this plane has
+  // no means of applying.
+  let assert Error(_nothing) = apply(at, 0, <<1>>, wanted)
+  let assert Ok(_attached) = attach(at, 6, <<1>>)
+  let assert Error(protocol.NoStates(_)) = apply(at, 0, <<1>>, wanted)
+}
+
+pub fn an_apply_is_fenced_and_runs_the_planes_apply_test() {
+  let probe = fixtures.probe(fixtures.Open)
+  let base = fixtures.factory(probe, fixtures.AsksNothing, protocol.AllRetired)
+  let capturing =
+    host.Capturing(capture: fn(_basis, _content) { Ok(None) }, apply: fn(state) {
+      case state.dirty {
+        Clean -> Ok(state.tip)
+        Dirty -> Error("the tree holds changes")
+      }
+    })
+  let factory = fn(spec) {
+    case base(spec) {
+      Ok(plane) -> Ok(host.Plane(..plane, state: Some(capturing)))
+      Error(failure) -> Error(failure)
+    }
+  }
+  let at = started(state_transfer.declining(), factory)
+  let wanted = a_state()
+  let assert Ok(_attached) = attach(at, 6, <<1>>)
+
+  // The plane's tip is the answer, and its refusal is a refusal of the state
+  // and not of the request.
+  assert apply(at, 0, <<1>>, wanted) == Ok(protocol.Applied(wanted.tip))
+  assert apply(at, 0, <<1>>, State(..wanted, dirty: Dirty))
+    == Ok(protocol.Refused("the tree holds changes"))
+
+  // A request under another attach's token, or another incarnation, is from a
+  // dead runtime, and the plane is never asked.
+  assert apply(at, 0, <<2>>, wanted) == Error(protocol.StaleToken)
+  let assert Error(protocol.StaleIncarnation(stored: 0)) =
+    apply(at, 1, <<1>>, wanted)
+}
+
+fn a_state() -> State {
+  State(
+    hash: state_object.hash_of(<<"bundle">>),
+    size: 6,
+    tip: "0123456789abcdef0123456789abcdef01234567",
+    base: None,
+    dirty: Clean,
+  )
 }
 
 // --- the port ---------------------------------------------------------------

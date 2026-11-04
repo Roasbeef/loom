@@ -137,9 +137,11 @@ import client/owner_services
 import client/remote/host
 import client/remote/protocol
 import client/remote/remote_census.{RemoteCensus}
+import client/repository_snapshot
 import client/secrets
 import client/serve
 import client/state_capture
+import client/state_object
 import client/workspace_plane
 import client/workspace_policy
 import client/workspaces.{type Workspace}
@@ -488,7 +490,8 @@ fn build(
         worktrees.open(trees, workspace, spec.session)
         |> result.map_error(host.WorktreeNotMade),
       )
-      let custody = Some(Custody(trees:, workspace:, branch: tree.branch))
+      let custody =
+        Some(Custody(trees:, workspace:, repository: root, branch: tree.branch))
 
       // The tree exists from here on, so a build that fails must settle it:
       // a tree that nothing uses and nothing holds changes in is removed, and
@@ -506,8 +509,18 @@ fn build(
 
 // The checkout a scope's tree belongs to, held by the plane so that its close
 // can settle the tree.
+//
+// `repository` is the workspace's canonical root, the primary checkout the tree
+// is linked to. The tree's `.git` is a file the session can rewrite, so what a
+// capture or an apply accepts as "this scope's repository" comes from here and
+// not from the tree.
 type Custody {
-  Custody(trees: Worktrees, workspace: Workspace, branch: String)
+  Custody(
+    trees: Worktrees,
+    workspace: Workspace,
+    repository: String,
+    branch: String,
+  )
 }
 
 // The part of a build that is the same for both modes: the blob store, the
@@ -737,7 +750,13 @@ fn start(
               code_mode:,
               mcp: mcp.statuses,
               evolving:,
-              capturing: capturing_of(capturer, root, author_of(spec)),
+              capturing: capturing_of(
+                capturer,
+                root,
+                custody,
+                spec,
+                author_of(spec),
+              ),
             ),
             list.append(cleanups, evolving.cleanups),
           )
@@ -1170,25 +1189,86 @@ type Built {
   )
 }
 
-// How a scope captures its workspace, when the executor can. The directory is
-// the one the scope's tools work in, and the author is the one the owner sent, so
-// a snapshot of uncommitted work is made by the same name the scope's commits are.
-/// The scope's capture, when this executor has a capturer.
+// How a scope captures its workspace and takes a state into it, when the
+// executor can. The directory is the one the scope's tools work in, and the author
+// is the one the owner sent, so a snapshot of uncommitted work is made by the same
+// name the scope's commits are.
+/// The scope's capture and apply, when this executor has a capturer.
 fn capturing_of(
   capturer: Option(state_capture.Capturer),
   directory: String,
+  custody: Option(Custody),
+  spec: host.AttachSpec,
   author: Option(git_identity.Identity),
 ) -> Option(host.Capturing) {
   option.map(capturer, fn(capturer) {
-    host.Capturing(capture: fn(basis) {
-      state_capture.capture(
-        capturer,
-        directory,
-        option.unwrap(author, git_identity.Identity(None, None)),
-        basis,
-      )
-    })
+    host.Capturing(
+      capture: fn(basis, content) {
+        case content {
+          state_object.WithWorkingTree ->
+            state_capture.capture(
+              capturer,
+              directory,
+              option.unwrap(author, git_identity.Identity(None, None)),
+              basis,
+            )
+            |> result.map(Some)
+          state_object.CommittedOnly ->
+            state_capture.capture_committed(
+              capturer,
+              directory,
+              checkout_of(custody),
+              basis,
+            )
+        }
+      },
+      apply: fn(state) { applying(capturer, directory, custody, spec, state) },
+    )
   })
+}
+
+// Where a scope's repository must be found from its directory. A worktree
+// scope's tree is a linked worktree of the workspace's root, which the
+// configuration fixes, and a shared scope works in the root itself.
+/// The kind of checkout a scope's directory has to be.
+fn checkout_of(custody: Option(Custody)) -> repository_snapshot.Checkout {
+  case custody {
+    Some(held) -> repository_snapshot.LinkedTo(held.repository <> "/.git")
+    None -> repository_snapshot.Primary
+  }
+}
+
+// A state goes only into a scope's own tree. A shared workspace has none: its
+// sessions all work in the root, so moving a branch there would move it under
+// every other session, and the request is refused with the mode in the words.
+/// Applies a state of the node's store in the scope's worktree, or says why not.
+fn applying(
+  capturer: state_capture.Capturer,
+  directory: String,
+  custody: Option(Custody),
+  spec: host.AttachSpec,
+  state: state_object.State,
+) -> Result(String, String) {
+  case custody {
+    None ->
+      Error(
+        "the workspace `"
+        <> spec.workspace
+        <> "` has mode = \""
+        <> workspaces.mode_word(workspaces.Shared)
+        <> "\", and a state is applied only into a workspace with mode = \""
+        <> workspaces.mode_word(workspaces.Worktree(workspaces.default_base))
+        <> "\"",
+      )
+    Some(held) ->
+      state_capture.apply(
+        capturer,
+        state,
+        held.repository,
+        directory,
+        spec.session,
+      )
+  }
 }
 
 // The host's view of a started plane. The prompt facts are read once, here,
