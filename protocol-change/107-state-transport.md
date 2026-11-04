@@ -713,6 +713,20 @@ a `Ready` carrying a state always means the bundle is already in the parent's st
   has no sweep beyond clearing claims at start.
 - An executor or pool placement takes no copy and so returns nothing, as in the send
   direction.
+- For a dirty workspace, `hold_sent` writes the snapshot commit, which holds the
+  parent's tracked and untracked working bytes at spawn time, into the parent's `.git`,
+  and the child's ref makes it reachable for good. `git log --all`, `git push --mirror`
+  and `git bundle create --all` therefore carry it. The ref is the only one made, but it
+  is a ref like any other once it exists.
+- When the 330 s exclusive hold lapses while an apply is still running, the gate admits
+  tool calls again, and a `git gc --prune=now` between the walk of the returned tip and
+  `update-ref` could leave the ref naming a pruned commit. It needs an apply of over
+  330 s and a prune in a narrow window, and is accepted.
+- Added after review: the apply also requires the returned tip to descend from the sent
+  tip (`merge-base --is-ancestor`, constant reason, no ref written), because a header
+  that lists the sent tip as its prerequisite does not say what the tip is built on. A
+  refused or faulted capture reaches the parent as a fixed sentence and the detail goes to
+  the receiver's log, since Git's words can name the receiver's directories.
 
 **What the live drive of exit criterion 1 still needs.** Nothing here was run over a real
 TLS distribution link, under bubblewrap and Landlock, or by a model. The drive is a box

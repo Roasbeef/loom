@@ -1592,7 +1592,9 @@ The return (slice 3b). A child that was handed a state has its commits come back
 only its commits.
 
 - *Capture, on the child's machine.* `spawn_host_seeding` takes a `spawn_return.Returning`
-  (`spawn_return.over(state_node, remote_spawner.state_link_to(membership))`, or `none()`).
+  (`spawn_return.over(state_node, remote_spawner.state_link_to(membership), logger)`, or
+  `none()`; a refused capture or a store fault reaches the parent as a fixed sentence and
+  the detail goes to the receiver's log).
   Its `remember` runs when a spawn that carried a state has started a child and writes
   `<state root>/seed-returns/<key>.copy` (the copy's name and the sent tip, no path;
   `key` is a digest of spawner, parent session and strand). Its `settle` is applied to each
