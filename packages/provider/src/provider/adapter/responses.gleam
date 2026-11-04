@@ -670,7 +670,11 @@ fn model_header(headers: JsonValue) -> Result(String, Nil) {
   }
 
   list.find_map(fields, fn(header) {
-    use <- bool.guard(string.lowercase(header.0) != "openai-model", Error(Nil))
+    let name = string.lowercase(header.0)
+    use <- bool.guard(
+      name != "openai-model" && name != "x-openai-model",
+      Error(Nil),
+    )
 
     // Arrays follow the native parser's first-value convention.
     let model = case header.1 {
@@ -1078,10 +1082,7 @@ fn add_item(
         Ok(Message)
       }
       "reasoning" -> {
-        use <- bool.guard(
-          wire.array_field(value, "summary") != Ok([]),
-          Error(Nil),
-        )
+        use <- bool.guard(!valid_reasoning_start(value), Error(Nil))
         Ok(Thought)
       }
       "function_call" -> {
@@ -1150,6 +1151,58 @@ fn add_item(
   )
 }
 
+/// Checks that initial reasoning summary and content fields are absent or empty placeholders.
+fn valid_reasoning_start(value: JsonValue) -> Bool {
+  empty_reasoning_parts(value, "summary", ["summary_text"])
+  && empty_reasoning_parts(value, "content", ["reasoning_text", "text"])
+}
+
+/// Validates an optional initial reasoning part array contains only empty text entries.
+fn empty_reasoning_parts(
+  value: JsonValue,
+  field: String,
+  kinds: List(String),
+) -> Bool {
+  // Accept omitted arrays or arrays whose entries are empty parts of the expected kind.
+  case wire.field(value, field) {
+    Error(Nil) -> True
+    Ok(json.Array(parts)) ->
+      list.all(parts, fn(raw) {
+        case
+          wire.string_field(raw, "type"),
+          items.part(normalize_thought_part(Thought, raw))
+        {
+          Ok(kind), Ok(decoded) ->
+            list.contains(kinds, kind)
+            && wire.string_field(decoded, "text") == Ok("")
+          _, _ -> False
+        }
+      })
+    Ok(_) -> False
+  }
+}
+
+/// Normalizes legacy text-typed reasoning content parts to reasoning_text.
+fn normalize_thought_part(kind: ItemKind, raw: JsonValue) -> JsonValue {
+  // Rewrite type=text to type=reasoning_text only on reasoning items.
+  case kind, raw {
+    Thought, json.Object(fields) ->
+      case wire.string_field(raw, "type") {
+        Ok("text") ->
+          json.Object(
+            list.map(fields, fn(field) {
+              case field.0 {
+                "type" -> #("type", json.String("reasoning_text"))
+                _ -> field
+              }
+            }),
+          )
+        _ -> raw
+      }
+    _, _ -> raw
+  }
+}
+
 // Both provider keys must name the same live item. A late fragment cannot
 // reopen an item whose closing witness has already been accepted.
 /// Locates matching unclosed item by output index and item ID.
@@ -1158,6 +1211,17 @@ fn find_item(acc: Accumulator, value: JsonValue) -> Result(Item, Nil) {
   use id <- result.try(items.nonempty(value, "item_id"))
   list.find(acc.items, fn(item) {
     item.index == index && item.id == id && item.done == None
+  })
+}
+
+/// Locates an item for a part event, allowing closed reasoning items to drop late events.
+fn find_part_item(acc: Accumulator, value: JsonValue) -> Result(Item, Nil) {
+  use index <- result.try(wire.int_field(value, "output_index"))
+  use id <- result.try(items.nonempty(value, "item_id"))
+  list.find(acc.items, fn(item) {
+    item.index == index
+    && item.id == id
+    && { item.done == None || item.kind == Thought }
   })
 }
 
@@ -1194,10 +1258,14 @@ fn add_part(
   event: String,
   value: JsonValue,
 ) -> #(Accumulator, List(StreamEvent)) {
-  use item <- or_malformed(find_item(acc, value), acc, "part_item")
+  use item <- or_malformed(find_part_item(acc, value), acc, "part_item")
   use index <- or_malformed(part_index(event, value), acc, "part_index")
   use raw <- or_malformed(wire.field(value, "part"), acc, "part_field")
-  use raw <- or_malformed(items.part(raw), acc, "part_decode")
+  use raw <- or_malformed(
+    items.part(normalize_thought_part(item.kind, raw)),
+    acc,
+    "part_decode",
+  )
 
   // Determine part kind based on wire type and parent item kind.
   use kind <- or_malformed(
@@ -1214,13 +1282,19 @@ fn add_part(
 
   use <- bool.lazy_guard(
     index < 0
-      || list.any(item.parts, fn(part) {
-      part.index == index && same_namespace(part.kind, kind)
-    })
       || { kind == Summary }
       != { event == "response.reasoning_summary_part.added" }
       || part_text(raw, kind) != ""
       || result.unwrap(wire.array_field(raw, "annotations"), []) != [],
+    fn() { malformed(acc, "part_start") },
+  )
+
+  // Late reasoning part-added events after item cutoff are ignored.
+  use <- bool.guard(item.done != None, #(acc, []))
+  use <- bool.lazy_guard(
+    list.any(item.parts, fn(part) {
+      part.index == index && same_namespace(part.kind, kind)
+    }),
     fn() { malformed(acc, "part_start") },
   )
   let part =
@@ -1278,16 +1352,9 @@ fn change_part(
   event: String,
   value: JsonValue,
 ) -> #(Accumulator, List(StreamEvent)) {
-  use item <- or_malformed(find_item(acc, value), acc, "text_item")
+  use item <- or_malformed(find_part_item(acc, value), acc, "text_item")
   use index <- or_malformed(part_index(event, value), acc, "text_index")
-
-  // Find the matching open part or initialize the next contiguous summary part.
   let kind = event_part_kind(event)
-  use #(acc, item, part) <- or_malformed(
-    open_text_part(acc, item, kind, index),
-    acc,
-    "text_part",
-  )
 
   // Determine whether this event appends a delta or completes the text part.
   let closure = case event {
@@ -1298,6 +1365,41 @@ fn change_part(
     _ -> Open
   }
 
+  // Ignore late reasoning text events arriving after the reasoning item closed.
+  case item.done {
+    Some(_) -> {
+      use <- bool.lazy_guard(
+        index < 0 || { kind != Summary && kind != Reasoning },
+        fn() { malformed(acc, "text_part") },
+      )
+      use _ <- or_malformed(
+        wire.string_field(value, case closure {
+          Open -> "delta"
+          _ -> "text"
+        }),
+        acc,
+        "text_field",
+      )
+      #(acc, [])
+    }
+    None -> change_open_item_part(acc, item, kind, index, closure, value)
+  }
+}
+
+/// Applies a text delta or done snapshot to an active unclosed item.
+fn change_open_item_part(
+  acc: Accumulator,
+  item: Item,
+  kind: PartKind,
+  index: Int,
+  closure: Closure,
+  value: JsonValue,
+) -> #(Accumulator, List(StreamEvent)) {
+  use #(acc, item, part) <- or_malformed(
+    open_text_part(acc, item, kind, index),
+    acc,
+    "text_part",
+  )
   use text <- or_malformed(
     wire.string_field(value, case closure, kind {
       Open, _ -> "delta"
@@ -1346,6 +1448,7 @@ fn open_text_part(
         list.count(item.parts, fn(part) { part.kind == kind })
       use <- bool.guard(
         item.kind != Thought
+          || { kind != Summary && kind != Reasoning }
           || index != namespace_count
           || !list.all(item.parts, fn(part) {
           part.kind != kind || part.index < index
@@ -1452,15 +1555,29 @@ fn close_part(
   event: String,
   value: JsonValue,
 ) -> #(Accumulator, List(StreamEvent)) {
-  use item <- or_malformed(find_item(acc, value), acc, "part_done_item")
+  use item <- or_malformed(find_part_item(acc, value), acc, "part_done_item")
   use index <- or_malformed(part_index(event, value), acc, "part_done_index")
   use raw <- or_malformed(wire.field(value, "part"), acc, "part_done_field")
-  use raw <- or_malformed(items.part(raw), acc, "part_done_decode")
+  use raw <- or_malformed(
+    items.part(normalize_thought_part(item.kind, raw)),
+    acc,
+    "part_done_decode",
+  )
   use <- bool.lazy_guard(
     { wire.string_field(raw, "type") == Ok("summary_text") }
       != { event == "response.reasoning_summary_part.done" },
     fn() { malformed(acc, "part_done_namespace") },
   )
+  let raw_kind = wire.string_field(raw, "type")
+  use <- bool.lazy_guard(
+    item.done != None
+      && {
+      index < 0
+      || { raw_kind != Ok("summary_text") && raw_kind != Ok("reasoning_text") }
+    },
+    fn() { malformed(acc, "part_done_witness") },
+  )
+  use <- bool.guard(item.done != None, #(acc, []))
   use #(acc, item, closed, events) <- or_malformed(
     close_matching_part(acc, item, index, raw),
     acc,
@@ -1710,6 +1827,7 @@ fn close_item(
     acc,
     "item_done_lookup",
   )
+  let initial_block = first_part_block(item.parts)
   use #(acc, item, events) <- or_item_validation(
     reconcile_and_verify_item(acc, item, canonical),
     acc,
@@ -1717,10 +1835,11 @@ fn close_item(
     canonical,
   )
 
-  // Allocate empty thinking block if item is an empty thought.
-  let #(empty_block, next_block) = case item.kind, item.parts {
-    Thought, [] -> #(Some(acc.next_block), acc.next_block + 1)
-    _, _ -> #(None, acc.next_block)
+  // Reuse an earlier cut-off part block or allocate a new empty thinking block.
+  let #(empty_block, next_block) = case item.kind, item.parts, initial_block {
+    Thought, [], Some(block) -> #(Some(block), acc.next_block)
+    Thought, [], None -> #(Some(acc.next_block), acc.next_block + 1)
+    _, _, _ -> #(None, acc.next_block)
   }
 
   #(
@@ -1730,6 +1849,17 @@ fn close_item(
     ),
     events,
   )
+}
+
+/// Returns the earliest allocated block index among an item's parts, if any.
+fn first_part_block(parts: List(Part)) -> Option(Int) {
+  list.fold(parts, None, fn(earliest, part) {
+    // Retain the minimum block index observed across all parts.
+    case earliest {
+      None -> Some(part.block)
+      Some(previous) -> Some(int.min(previous, part.block))
+    }
+  })
 }
 
 // Reasoning summaries are generated concurrently and may omit part-done events
@@ -2201,20 +2331,18 @@ fn terminal(
       list.any(item.parts, fn(part) { part.kind == Refusal })
     })
 
+  // Select tool-use or normal stop reason from completed item kinds.
+  let default_stop = case has_calls {
+    True -> message.ToolUse
+    False -> message.Stop
+  }
+
   // Determine stop reason from terminal event and status.
   let stop = case event, status {
-    "response.completed", "completed" ->
-      Ok(#(
-        case has_calls {
-          True -> message.ToolUse
-          False -> message.Stop
-        },
-        "completed",
-        None,
-      ))
+    "response.completed", "completed" -> Ok(#(default_stop, "completed", None))
     "response.cancelled", "cancelled" ->
       Ok(#(message.Aborted, "cancelled", None))
-    "response.incomplete", "incomplete" -> incomplete(response)
+    "response.incomplete", "incomplete" -> incomplete(response, default_stop)
     _, _ -> Error("invalid_status")
   }
 
@@ -2247,6 +2375,7 @@ fn terminal(
 /// Maps incomplete details reason string to stop reason and error text.
 fn incomplete(
   response: JsonValue,
+  default_stop: message.StopReason,
 ) -> Result(#(message.StopReason, String, Option(String)), String) {
   let reason =
     response
@@ -2259,6 +2388,7 @@ fn incomplete(
     "max_output_tokens" -> Ok(#(message.Length, reason, None))
     "content_filter" ->
       Ok(#(message.Errored, reason, Some("Responses provider content filter")))
+    "interrupted" -> Ok(#(default_stop, reason, None))
     _ -> Error(reason)
   }
 }
@@ -2328,13 +2458,26 @@ fn settle(
       deferred: None,
       error_message: error,
       raw_stop_reason: Some(raw),
-      end_turn: Some(stop == message.Stop),
+      end_turn: Some(settled_end_turn(response, stop, raw)),
       timestamp: acc.now,
     )
   use settled <- or_malformed(stream.settle(assistant), acc, "settled_message")
   #(Accumulator(..acc, life: Terminal), [
     stream.Settled(settled, accounting.from_usage(usage)),
   ])
+}
+
+/// Resolves whether the settled turn ended normally or expects follow-up.
+fn settled_end_turn(
+  response: JsonValue,
+  stop: message.StopReason,
+  raw: String,
+) -> Bool {
+  // Explicit false end_turn or interrupted incomplete status keeps the turn open.
+  case wire.field(response, "end_turn") {
+    Ok(json.Bool(False)) -> False
+    _ -> stop == message.Stop && raw != "interrupted"
+  }
 }
 
 // This terminal observation is advisory, never a request option or a grant.
