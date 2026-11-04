@@ -456,3 +456,95 @@ request serializes in the one owner's turn, and the work is bounded by the
 read above, which the owner approved. The sender's `resyncs` bound is unchanged.
 
 **Slices.** Slice 2 is done as above. Slices 3 to 5 are unchanged.
+
+## Addendum: slice 3, the send direction (2026-11-04)
+
+Slice 3 is built in two pieces. This one is the send: a delegated remote child can
+start from the parent's workspace. The return of the child's commits (`Joined.state`
+filled in, the pull, the ref in the parent's repository) is the next piece and is
+not built. This addendum records what was settled and where the build differs from
+the text above. Nothing above is edited.
+
+**Settled: the quiescence lock.** The open question prefers a lock, and a look at
+how workspace effects are serialized shows half of one. `agent_spawn` is an
+`Exclusive` tool, and the strand driver starts an `Exclusive` call only when none
+of that strand's other calls is running, so a spawn already drains the parent's
+own turn. It does not drain the session's other strands. `client/workspace_gate`
+is the missing half: every workspace-side tool call of a session runs inside its
+shared side (`wiring.run_gated`), and a capture runs inside `exclusive`. A capture
+asks for the workspace, new calls wait at the gate, the calls in flight finish
+within 30 seconds or the capture is refused (`NotQuiet`) and the gate reopens, and
+the gate is held for at most 330 seconds, after which it reopens under the capture
+and the capture's late answer is `Lapsed`, so its result is discarded. A call that
+waits at a closed gate gives up in band after 340 seconds. A background process a
+tool left running (`bash` with `&`, a code-mode execution) is not a call in flight
+and is outside the gate; capture is a snapshot of the working bytes and the spawn
+says so. A code-mode program's own `agent_spawn` cannot ask for the workspace,
+because the program is a tool call that holds the gate its capture would wait for.
+
+**Settled: how the parent asks.** `agent_spawn` gains no argument. `context`, which
+already says what a child starts with, gains a third word, `my_workspace`, offered
+only where `on` is. It starts the child with a fresh conversation and a copy of the
+workspace. The spawner's `seed` key is the owner's ceiling on the receiving
+machine, as 107 says, and the sending side has no switch of its own: the sender
+cannot read the receiver's table, so the receiver's refusal, which names the key, is
+how a model learns the ceiling. The text above says the model "may narrow this to
+none"; with the ask explicit and off by default there is nothing to narrow.
+
+**Differences from the text above.**
+
+- *The child shares its session's workspace.* 107 says the receiver applies into
+  "the child's workspace" and starts the child there. A remote child is a strand in
+  the delegate session of its (spawner, parent) pair, which has one workspace, and
+  the Agency has no per-strand directory. The copy is therefore a repository at
+  `seeds/<name>` under the spawner's `directory`, the name is a digest of the call
+  site and the state, and the child's brief is told where the copy is and which
+  branch it is on. The child is still a strand that can read the rest of the
+  workspace.
+- *Only a `directory` placement takes a copy.* A spawner placed on an `executor` or
+  a `pool` has its workspace on another machine, and applying a state there needs an
+  apply message in the executor vocabulary that 107 does not list. Adding one is a
+  second change to the version 6 vocabulary, so the receiver refuses with
+  `StateRefused` and says why. `Worktree` apply stays unused by a spawn.
+- *The copy is made in a stage and renamed in.* `into_clone` makes
+  `destination` and `destination/.git` writable roots after `git init`, which in a
+  session's workspace would let a concurrent child swap them. The apply runs in
+  `<state root>/seed-staging`, which no session can write, and the finished
+  repository is moved into the workspace with one rename. A copy at its final name
+  is whole, which also makes a resent spawn idempotent. The stage cannot be under
+  `repository-snapshots` because a mask wins over a write grant inside it, and the
+  rename needs the spawner's directory and the state root on one filesystem. A
+  failure to rename is a `StateRefused` that says so.
+- *The `states` mask.* `workspace_policy.established_masks` names
+  `<state root>/states` and the daemon root makes it before any session is admitted.
+  The sandboxed Git runner shares the mask and lifts it for one call,
+  `git bundle unbundle`, through `worktree_git.run_reading_store`; every other call of
+  the runner and every session tool finds the store masked.
+- *No thin basis.* 107 and the slice 2 addendum leave the question "which of these
+  commits do you hold" for the first caller. Asking it needs an owner that can run
+  Git where the receiver's repository is, which for a `directory` placement is a
+  repository that does not exist yet. Every state a spawn sends is full, and the
+  `Basis` that `StateCapture` and `capture_against` accept stays for the slice that
+  returns a child's work, where the sender holds the base.
+- *The sender holds the state.* A state captured on an executor would have to be
+  relayed into the orchestrator's store for the outbox to resend it. That relay is
+  `state_transfer.pull`, which exists, and the executor's `Capturing` is wired
+  (`executor_plane.factory_capturing`) and tested through the real host. The session
+  assembly does not use them yet: a session whose workspace is on an executor asks
+  for a copy and is refused with a reason that says so. A session with a workspace on
+  the orchestrator's machine captures it directly, through the same
+  `client/state_capture`.
+- *`Joined.state` is a field and nothing fills it.* It is `None` until the return.
+
+**Safety checks settled.** A hostile `.git/config` on the parent (an fsmonitor
+program and a clean filter) is neither run by the capture nor by the apply; the test
+plants a canary the programs would create. The spawner's directory is the only path
+an apply can write into, and it comes from the table; the copy's name is a digest
+and no peer text reaches a path. A spawner with `seed = "none"` is refused before a
+session is found or a byte is stored.
+
+**What the live drive still needs.** A session on the box with a `[distribution]`
+table, a `[spawners.box]` on the laptop with `directory` and `seed = "workspace"`,
+and a model call `agent_spawn(on: "laptop", context: "my_workspace")` from a session
+whose workspace is on the box. The transfer over a real TLS distribution link, and
+the capture under Linux's bubblewrap and Landlock, were not exercised here.

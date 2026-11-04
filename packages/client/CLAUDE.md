@@ -1346,8 +1346,7 @@ Space preflight is an observation, not a reservation or aggregate quota.
 
 Slice 1 of protocol-change/107 turns a capture into a state, a bundle named by
 the SHA-256 of its bytes, and gives a receiving node somewhere to keep one and
-a way to apply one. It adds no wire message and no production caller; slice 3
-is where a spawn calls these.
+a way to apply one. It adds no wire message; slice 3 is where a spawn calls these.
 
 `state_object` is pure. `State` holds `hash`, `size`, `tip`, `base` and `dirty`
 (a `Dirtiness`, `Clean` or `Dirty`, never a `Bool`). `encode` and `decode` are
@@ -1377,11 +1376,10 @@ rename is not a flush and a crash can leave a short file. `sweep` takes the time
 as an argument, decides each entry by its record's modification time, and
 removes a record and its bundle together. `default_limits` are 256 MiB, 1 GiB
 and seven days. The store has no lock: one process owns the directory and
-serializes its calls. The directory is not masked from session jails yet.
-`workspace_policy.protecting_state_root` masks the state root for session jails
-and for the sandboxed Git alike, and apply has that Git read the bundle by path,
-so masking `states` there would stop apply from reading it. Slice 3, which first
-wires the store in, has to give the runner the one grant a session does not get.
+serializes its calls. The directory is masked from every session jail
+(`workspace_policy.established_masks`, made by the daemon root before the first
+session), and the sandboxed Git that applies a bundle gets the one grant a session
+does not: `worktree_git.run_reading_store`, used for `git bundle unbundle` alone.
 
 `repository_snapshot.capture_against` takes a `Basis`; `capture` is the full
 case. `base_candidates` lists `HEAD`, its first-parent chain to 16 commits and
@@ -1421,8 +1419,8 @@ canary afterwards is the apply's doing.
 ## Repository states: pieces on the wire and the commit author
 
 Slice 2 of protocol-change/107 moves a state across a link and adds the identity
-message, in one `protocol.version` bump from 5 to 6. It wires no capture or apply
-into a spawn or a session move; that is slice 3.
+message, in one `protocol.version` bump from 5 to 6. Slice 3 wires capture and apply
+into a spawn (below); a session move's checkout step is slice 4.
 
 `state_store` gained the files a peer's pieces need. `append_part` extends
 `<hash>.part` at its end: the first piece validates the description, checks the
@@ -1516,6 +1514,71 @@ of the drop and restart cases.
 projects only those two values through the existing descriptor-confined helper.
 Ordinary session `prepare` still queries global defaults and permits repository
 overrides. Missing identity is never replaced with a generated host identity.
+
+## Repository states: a spawn that carries the parent's workspace
+
+Slice 3, send direction, of protocol-change/107. A parent calls `agent_spawn` with
+`on` and `context: "my_workspace"` (`tools/agent.MyWorkspace`); the child starts with a
+fresh conversation and a copy of the workspace. The return of the child's commits is
+not built: `Joined.state` is a field that nothing fills.
+
+`remote_spawn.Request.state` and `Joined.state` are optional `state_object.State`s, and
+`SpawnRefusal` has `StateMissing(hash, have)` (send more and ask again; the sender
+never settles a stub on it) and `StateRefused(reason)` (final, with a reason in words).
+A request with no state encodes in the stub exactly as before: `remote_child` adds the
+`state` member only when there is one, as the text `state_object.encode` writes, and
+reads it with `state_object.decode`. `spawners.Spawner.seed` (`NoSeed`,
+`WorkspaceSeed`) is the owner's ceiling, the `seed` key of `[spawners.<name>]`, read
+totally.
+
+The sender. `agency.Config.seeding` is `Seeding(capture)`, `unseeded()` by default.
+`spawn_elsewhere` runs `seeded` on the caller's own process before `AdmitRemote`: a
+`MyWorkspace` spawn from a tool call captures and writes the state into the stub
+through `write_stub`; from a program it is refused, because the program's call holds the
+gate its capture would wait for; a local spawn with it is refused. `serve.seeding_of`
+builds the capture for a session whose workspace is on this machine: it calls the
+daemon's `Reach.capture` (`main.local_capture`, over `state_node.capturer`) inside
+`workspace_gate.exclusive`. A session whose workspace is on an executor is refused with
+a reason. The gate is a supervised child of the services tree found by
+`address.new_address`, and `wiring.run_gated` runs every workspace-side call inside its
+shared side. `remote_spawner.asked_with_state` is `ask_spawn` plus the send: on
+`StateMissing` for the request's own hash it runs `state_transfer.send` from
+`Reach.states`, the daemon's store handle, bounded by a `weft.deadline` at the attempt's
+window, and asks again; a silence is `Error(Nil)` and the outbox drainer's resend
+continues at the receiver's offset; a transfer the receiver declines, or a state the
+store no longer holds, is `StateRefused`.
+
+`workspace_gate` is a `weft/state_machine`: `Open`, `Draining(ticket)`, `Held(ticket)`.
+Entries and later closes that arrive while it is closed are postponed and dropped on
+replay if their deadline has passed. Bounds: `drain_ms` 30 s, `hold_ms` 330 s,
+`entry_wait_ms` 340 s. A hold that outlives its timer reopens the gate and records the
+ticket as lapsed, so the capture's `Reopen` is answered `Lost` and `exclusive` returns
+`Lapsed`. A gate that is not running lets work through.
+
+`state_capture.capture(capturer, directory, identity, basis)` builds the capture call
+(host readable, state root and node credentials masked), runs
+`repository_snapshot.capture_against`, describes the bundle from its bytes, deposits it
+through the store's endpoint (`state_transfer.deposit`) and removes the stage.
+`state_node.StateNode` is what the daemon holds (endpoint, store handle, sandboxed Git,
+state root, credentials); `main.start_states` builds it before the root, and
+`prepare_startup` puts it in `Config.state_node`. `executor_plane.factory_capturing`
+gives every plane a `host.Capturing` over the scope's directory with the owner's author.
+
+The receiver. `main.spawn_host_seeding` judges `seeded` before it finds or creates a
+delegate session. `spawn_seed.receive` passes a request with no state through,
+and otherwise: `permitted` (ceiling, placement, description, size), `held` (the whole
+bundle in the store, else `StateMissing`), `applied` (the copy at
+`<directory>/seeds/<name>`, made in `<state root>/seed-staging` and renamed in), and
+`briefed` (the words appended to the brief). Only an `InDirectory` placement takes a
+copy. `name_of` is a digest of the call site and the state hash.
+
+Tests: `workspace_gate_test` (overlap, concurrent file writes, drain refusal, stuck
+capture released and refused, dead holders), `state_capture_test` and
+`executor_capture_test` (real repository, real helper, real host), `spawn_seed_test`
+(judging and applying, resume, the ceiling, hostile `.git/config`), `seeded_spawn_test`
+(the sender's step against a real port and two stores), the `agency_test` cases for
+`my_workspace`, and the jail assertion in `daemon_state_masks_test` that a session tool
+cannot read `states/`.
 
 ## Key Types
 
