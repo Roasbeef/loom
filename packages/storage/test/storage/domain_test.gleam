@@ -60,7 +60,7 @@ fn registration(seed) {
     request_key: id,
     state: catalogue.Reserved,
     profile: option.None,
-    model: option.None,
+    pins: [],
     executor: "",
     pool: "",
     subtitle: option.None,

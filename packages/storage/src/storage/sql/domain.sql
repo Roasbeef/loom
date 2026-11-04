@@ -25,7 +25,7 @@ ON CONFLICT(session_id) DO UPDATE SET domain_id = excluded.domain_id;
 
 -- name: DomainSources :many
 SELECT r.session_id, r.path, r.workspace, r.name, n.name AS display_name,
-       r.configuration, r.created_at, r.request_key, r.state, r.profile, r.model,
+       r.configuration, r.created_at, r.request_key, r.state, r.profile, r.pins,
        r.executor, r.pool, t.subtitle
 FROM catalogue_domain_sessions AS s
 JOIN catalogue_sessions AS r ON r.session_id = s.session_id

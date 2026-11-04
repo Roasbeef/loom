@@ -263,7 +263,7 @@ fn make_project(
         name: "project " <> name,
         configuration: "",
         profile: None,
-        model: None,
+        pins: [],
         executor: "",
         pool: "",
       ),
@@ -354,7 +354,7 @@ fn pin_router(
       "profile:"
       <> option.unwrap(found.registration.profile, "default")
       <> " model:"
-      <> option.unwrap(found.registration.model, "default")
+      <> pinned_models(found.registration.pins)
     Error(_) -> "unknown"
   }
 
@@ -381,7 +381,7 @@ fn open_router(env: Env, project: catalogue.Project) -> Result(Nil, String) {
       name: found.registration.name,
       configuration: "",
       profile: None,
-      model: None,
+      pins: [],
       executor: "",
       pool: "",
     ),
@@ -675,7 +675,7 @@ fn start_worker(
       name: request.title,
       configuration: "",
       profile: None,
-      model: None,
+      pins: [],
       executor: "",
       pool: "",
     )
@@ -1074,5 +1074,24 @@ fn scan_feed(
   case standing {
     project_standing.Worker(..) -> Some(projectseam.feed(handle, session))
     project_standing.Router(..) | project_standing.Ordinary -> None
+  }
+}
+
+// The models a router's roles are pinned to, as the verdict pin names them: the
+// `main` key alone, as before role pins existed, and `role=key` for any other
+// role, or `default` when nothing is pinned.
+/// Words the pinned models of a registration for the router pin.
+fn pinned_models(pins: List(#(catalogue.PinnedRole, String))) -> String {
+  case pins {
+    [] -> "default"
+    pins ->
+      pins
+      |> list.map(fn(pin) {
+        case pin.0 {
+          catalogue.PinMain -> pin.1
+          role -> catalogue.pinned_role_name(role) <> "=" <> pin.1
+        }
+      })
+      |> string.join(",")
   }
 }

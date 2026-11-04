@@ -3288,7 +3288,8 @@ pub fn create_with(
       name,
       "",
       roles.profile,
-      roles.model,
+      option.map(roles.model, fn(key) { [#(catalogue.PinMain, key)] })
+        |> option.unwrap([]),
       executor_of(place),
       pool_of(place),
     )

@@ -456,7 +456,7 @@ fn with_daemon_instance(run) {
               "Fixture",
               "",
               None,
-              None,
+              [],
               "",
               "",
             ),

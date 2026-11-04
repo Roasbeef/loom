@@ -58,7 +58,7 @@ fn registered(
       request_key: "request-" <> int.to_string(seed),
       state: catalogue.Reserved,
       profile: option.None,
-      model: option.None,
+      pins: [],
       executor: "",
       pool: "",
       subtitle: option.None,

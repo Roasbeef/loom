@@ -275,6 +275,7 @@ import session_view/remote_agent
 import session_view/remote_usage
 import session_view/snapshot_view
 import storage/access
+import storage/catalogue
 import storage/snapshot
 import storage/storage.{type EntryHead}
 import telemetry/owner
@@ -8937,9 +8938,19 @@ fn read_profile(state: State, connection: Int, id: Int) -> State {
       current: desk.current,
       available: names,
       switched: None,
+      pins: pin_words(desk.pins),
     )),
   )
   state
+}
+
+// The session's pins as the `profile` snapshot words them: role name and key,
+// in the fixed role order the registration keeps them in.
+/// Words role pins as role name and model key pairs.
+fn pin_words(
+  pins: List(#(catalogue.PinnedRole, String)),
+) -> List(#(String, String)) {
+  list.map(pins, fn(pin) { #(catalogue.pinned_role_name(pin.0), pin.1) })
 }
 
 /// Resolves the model switching profile desk from gateway state.
@@ -9059,6 +9070,7 @@ fn set_profile(
           current: profile,
           available: names,
           switched: Some(list.length(moves)),
+          pins: pin_words(desk.pins),
         )),
       )
       desk.restart()

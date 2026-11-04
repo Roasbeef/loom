@@ -167,7 +167,7 @@ pub fn creation(
     name: "delegate " <> spawner.name <> " " <> parent.session,
     configuration: "",
     profile: Some(spawner.profile),
-    model: None,
+    pins: [],
     executor:,
     pool:,
   )

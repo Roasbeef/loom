@@ -1,10 +1,12 @@
 //// Real resolution preserves catalogue paths without starting native effects.
 
+import client/catalog
 import client/owned_assembly_test
 import client/serve
 import core/clock
 import core/ids
 import filepath
+import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import provider/gateway as provider_gateway
@@ -57,7 +59,7 @@ main = [\"session_b\"]
       "resolution",
       catalogue.Saved,
       profile: option.None,
-      model: option.None,
+      pins: [],
       executor: "",
       pool: "",
       subtitle: option.None,
@@ -126,6 +128,19 @@ fn resolve_profiled(
   profile: option.Option(String),
   model: option.Option(String),
 ) -> Result(serve.Settings, String) {
+  resolve_pinned(seed, config_text, profile, case model {
+    option.None -> []
+    option.Some(key) -> [#(catalogue.PinMain, key)]
+  })
+}
+
+// The same, for a registration with any role pins (protocol-change/107).
+fn resolve_pinned(
+  seed: Int,
+  config_text: String,
+  profile: option.Option(String),
+  pins: List(#(catalogue.PinnedRole, String)),
+) -> Result(serve.Settings, String) {
   let fixture = owned_assembly_test.settings()
   let state = filepath.directory_name(fixture.session_path)
   let assert Ok(Nil) = simplifile.create_directory_all(state)
@@ -146,7 +161,7 @@ fn resolve_profiled(
       "profiled-" <> id,
       catalogue.Saved,
       profile:,
-      model:,
+      pins:,
       executor: "",
       pool: "",
       subtitle: option.None,
@@ -214,7 +229,7 @@ pub fn a_session_with_a_profile_needs_a_config_file_test() {
       "profiled-" <> id,
       catalogue.Saved,
       profile: option.Some("alt"),
-      model: option.None,
+      pins: [],
       executor: "",
       pool: "",
       subtitle: option.None,
@@ -259,7 +274,7 @@ fn stored_registration(
       name: "Switched",
       configuration: config,
       profile:,
-      model: option.None,
+      pins: [],
       executor: "",
       pool: "",
       created_at: 1,
@@ -394,6 +409,100 @@ pub fn a_session_whose_model_was_removed_is_refused_not_defaulted_test() {
   )
 }
 
+// --- role pins (protocol-change/107) ----------------------------------------
+
+const pinning_config =
+  "
+[models.base]
+dialect = \"anthropic\"
+api_key_env = \"UNUSED_TEST_KEY\"
+model_id = \"base-model\"
+context_window = 1000
+max_output_tokens = 100
+vision = false
+[models.alt]
+dialect = \"openai\"
+api_key_env = \"UNUSED_TEST_KEY\"
+model_id = \"alt-model\"
+context_window = 2000
+max_output_tokens = 200
+[models.eyes]
+dialect = \"gemini\"
+api_key_env = \"UNUSED_TEST_KEY\"
+model_id = \"eyes-model\"
+context_window = 3000
+max_output_tokens = 300
+vision = true
+[roles]
+main = [\"base\"]
+subagent = [\"base\"]
+summarize = [\"base\"]
+[profiles.alt.roles]
+main = [\"alt\"]
+subagent = [\"alt\"]
+"
+
+pub fn a_pinned_vision_role_routes_beside_a_text_only_main_test() {
+  let assert Ok(settings) =
+    resolve_pinned(810, pinning_config, option.None, [
+      #(catalogue.PinVision, "eyes"),
+    ])
+
+  // The text-only main stays, and an image has a route that reads it.
+  let assert Ok(main) = provider_gateway.resolve(settings.gateway, model.Main)
+  let assert Ok(vision) =
+    provider_gateway.resolve(settings.gateway, model.Vision)
+  assert main.provider == "base"
+  assert vision.provider == "eyes"
+}
+
+pub fn pins_resolve_again_at_every_open_test() {
+  let pins = [#(catalogue.PinMain, "alt"), #(catalogue.PinVision, "eyes")]
+  let assert Ok(first) = resolve_pinned(811, pinning_config, option.None, pins)
+  let assert Ok(second) = resolve_pinned(811, pinning_config, option.None, pins)
+  assert first.catalog.roles == second.catalog.roles
+  assert list.key_find(first.catalog.roles, model.Main) == Ok(["alt"])
+  assert list.key_find(first.catalog.roles, model.Vision) == Ok(["eyes"])
+}
+
+pub fn a_session_whose_pinned_entry_was_removed_is_refused_naming_the_role_test() {
+  let without_eyes =
+    string.replace(pinning_config, "[models.eyes]", "[models.glasses]")
+  let assert Error(reason) =
+    resolve_pinned(812, without_eyes, option.None, [
+      #(catalogue.PinVision, "eyes"),
+    ])
+  assert string.contains(
+    reason,
+    "unknown model \"eyes\" for role \"vision\"; the configuration defines:",
+  )
+}
+
+pub fn a_session_whose_pinned_vision_entry_became_text_only_is_refused_test() {
+  let blinded =
+    string.replace(pinning_config, "vision = true", "vision = false")
+  let assert Error(reason) =
+    resolve_pinned(813, blinded, option.None, [#(catalogue.PinVision, "eyes")])
+  assert string.contains(
+    reason,
+    "model \"eyes\" cannot serve role \"vision\": it declares vision = false",
+  )
+}
+
+pub fn a_profile_switch_leaves_a_pinned_role_where_it_is_test() {
+  let pins = [#(catalogue.PinMain, "base"), #(catalogue.PinVision, "eyes")]
+  let assert Ok(leaving) =
+    resolve_pinned(814, pinning_config, option.None, pins)
+  let assert Ok(entering) =
+    resolve_pinned(814, pinning_config, option.Some("alt"), pins)
+
+  // `main` is pinned to `base` on both sides, so its strands stay. `subagent`
+  // follows the profile and its strands move.
+  let moved = catalog.retargets(leaving.catalog, entering.catalog)
+  assert list.map(moved, fn(retarget) { retarget.role }) == [model.Subagent]
+  assert list.key_find(entering.catalog.roles, model.Vision) == Ok(["eyes"])
+}
+
 pub fn a_session_with_a_model_needs_a_config_file_test() {
   let fixture = owned_assembly_test.settings()
   let state = filepath.directory_name(fixture.session_path)
@@ -410,7 +519,7 @@ pub fn a_session_with_a_model_needs_a_config_file_test() {
       "pinned-" <> id,
       catalogue.Saved,
       profile: option.None,
-      model: option.Some("alt"),
+      pins: [#(catalogue.PinMain, "alt")],
       executor: "",
       pool: "",
       subtitle: option.None,

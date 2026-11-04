@@ -92,7 +92,7 @@ fn resident(epoch: String) -> Resident {
         "reader",
         "",
         None,
-        None,
+        [],
         "",
         "",
       ),

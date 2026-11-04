@@ -156,7 +156,7 @@ fn fixture_serving(
         "socket",
         "",
         None,
-        None,
+        [],
         "",
         "",
       ),

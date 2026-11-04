@@ -207,7 +207,7 @@ fn manifest() -> session_move.Manifest {
     workspace: "repo",
     name: "moved session",
     profile: None,
-    model: Some("fast"),
+    pins: [#(catalogue.PinMain, "fast")],
     executor: "box",
     pool: "",
     subtitle: Some("first words"),
@@ -446,7 +446,7 @@ pub fn a_verified_copy_becomes_the_session_and_a_repeat_answers_again_test() {
   assert view.registration.workspace == "repo"
   assert view.registration.name == "moved session"
   assert view.registration.executor == "box"
-  assert view.registration.model == Some("fast")
+  assert view.registration.pins == [#(catalogue.PinMain, "fast")]
   assert view.registration.configuration == ""
   assert view.registration.subtitle == Some("first words")
   let placed = rig.directory <> "/sessions/" <> copy.session <> ".db"
@@ -732,7 +732,7 @@ pub fn a_session_held_here_in_any_other_state_is_a_conflict_test() {
       name: "already here",
       configuration: "",
       profile: None,
-      model: None,
+      pins: [],
       executor: "box",
       pool: "",
       created_at: 1,
@@ -774,7 +774,7 @@ pub fn a_session_that_comes_back_is_taken_in_over_its_tombstone_test() {
       name: "went away",
       configuration: "",
       profile: None,
-      model: None,
+      pins: [],
       executor: "box",
       pool: "",
       created_at: 1,

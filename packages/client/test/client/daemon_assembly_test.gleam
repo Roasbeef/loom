@@ -123,7 +123,7 @@ fn create(
       name: "session " <> string.inspect(seed),
       configuration: "",
       profile: None,
-      model: None,
+      pins: [],
       executor: "",
       pool: "",
     )

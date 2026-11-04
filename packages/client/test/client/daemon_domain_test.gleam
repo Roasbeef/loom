@@ -23,7 +23,7 @@ fn create(registry, key, workspace, scope) {
       "Session",
       "",
       option.None,
-      option.None,
+      [],
       "",
       "",
     ),

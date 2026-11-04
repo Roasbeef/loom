@@ -419,11 +419,12 @@ fn create(
   use place <- result.try(placed(context, table, placement))
   use Nil <- result.try(profile_allowed(context, table, profile))
   use Nil <- result.try(model_known(context, model))
+  let pins = model_pins(model)
   use Nil <- result.try(
     profiles.check_choice(
       profiles.effective("", context.domain_configuration),
       Some(profile),
-      model,
+      pins,
     )
     |> result.map_error(fn(refusal) {
       remote_top.InvalidArgument(reason: choice_words(refusal))
@@ -436,7 +437,7 @@ fn create(
       name: spawner.name <> " session",
       configuration: "",
       profile: Some(profile),
-      model:,
+      pins:,
       executor: place.executor,
       pool: place.pool,
     )
@@ -635,11 +636,22 @@ fn model_known(
   }
 }
 
+// The remote spawner still sends one model, which is the pin `main`.
+/// Words the spawner's one model as role pins.
+fn model_pins(model: Option(String)) -> List(#(catalogue.PinnedRole, String)) {
+  // No model is no pin.
+  case model {
+    None -> []
+    Some(key) -> [#(catalogue.PinMain, key)]
+  }
+}
+
 /// Establishes choice words for the caller, keeping its validation and result policy at this boundary.
 fn choice_words(refusal: profiles.Refusal) -> String {
   case refusal {
     profiles.UnknownProfile(words) -> words
     profiles.UnknownModel(words) -> words
+    profiles.UnsuitableModel(words) -> words
     profiles.UnusableConfiguration(words) -> words
   }
 }

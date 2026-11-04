@@ -3209,10 +3209,10 @@ fn dispatch(
       })
       |> result.map(fn(view) { #("operations.get", view_json(view)) })
     }
-    protocol.CreateSession(_, _, _, configuration, profile, model, _, _, _) ->
+    protocol.CreateSession(_, _, _, configuration, profile, pins, _, _, _) ->
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(fn(code) {
-        choice_refusal(config, configuration, profile, model, code)
+        choice_refusal(config, configuration, profile, pins, code)
       })
 
     // A session this daemon's catalogue does not hold may be one that another
@@ -3991,6 +3991,11 @@ pub const unknown_profile_code = "unknown_profile"
 /// one its configuration defines (protocol-change/080).
 pub const unknown_model_code = "unknown_model"
 
+/// The code `create_session` answers when a creation pins a role to an entry
+/// the configuration defines but that cannot serve the role, such as a text-only
+/// entry for `vision` (protocol-change/107).
+pub const unsuitable_model_code = "unsuitable_model"
+
 /// The code `create_session` answers when a creation names an executor that
 /// the daemon's configuration does not define (protocol-change/078).
 pub const executor_unknown_code = "executor_unknown"
@@ -4017,12 +4022,15 @@ fn choice_refusal(
   config: Config(instance),
   configuration: String,
   profile: Option(String),
-  model: Option(String),
+  pins: List(#(catalogue.PinnedRole, String)),
   code: String,
 ) -> Refused {
   // This branch resolves code before the operation continues.
   case code {
-    "unknown_profile" | "unknown_model" | "unusable_configuration" -> {
+    "unknown_profile"
+    | "unknown_model"
+    | "unsuitable_model"
+    | "unusable_configuration" -> {
       // This branch resolves configuration before the operation continues.
       let canonical = case configuration {
         "" -> ""
@@ -4034,7 +4042,7 @@ fn choice_refusal(
         profiles.check_choice(
           profiles.effective(canonical, config.domain_configuration),
           profile,
-          model,
+          pins,
         )
       {
         Error(refusal) -> profiles.refusal_message(refusal)
@@ -4545,7 +4553,7 @@ fn dispatch_class(
       name,
       configuration,
       profile,
-      model,
+      pins,
       executor,
       pool,
       scope,
@@ -4561,7 +4569,7 @@ fn dispatch_class(
           name,
           configuration,
           profile,
-          model,
+          pins,
           option.unwrap(executor, ""),
           option.unwrap(pool, ""),
         ),
@@ -5271,13 +5279,14 @@ pub fn create_session(
     profiles.check_choice(
       profiles.effective(configuration, config.domain_configuration),
       request.profile,
-      request.model,
+      request.pins,
     )
     |> result.map_error(fn(refusal) {
       // This branch resolves refusal before the operation continues.
       case refusal {
         profiles.UnknownProfile(_) -> unknown_profile_code
         profiles.UnknownModel(_) -> unknown_model_code
+        profiles.UnsuitableModel(_) -> unsuitable_model_code
         profiles.UnusableConfiguration(_) -> unusable_configuration_code
       }
     }),

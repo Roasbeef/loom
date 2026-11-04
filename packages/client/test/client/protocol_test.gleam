@@ -768,13 +768,26 @@ pub fn a_profile_snapshot_round_trips_and_omits_the_default_test() {
         current: Some("codex"),
         available: ["codex", "codex-blue"],
         switched: None,
+        pins: [],
       ),
       protocol.ProfileSnapshot(
         current: None,
         available: ["codex"],
         switched: Some(2),
+        pins: [],
       ),
-      protocol.ProfileSnapshot(current: None, available: [], switched: None),
+      protocol.ProfileSnapshot(
+        current: None,
+        available: [],
+        switched: None,
+        pins: [],
+      ),
+      protocol.ProfileSnapshot(
+        current: Some("codex"),
+        available: ["codex"],
+        switched: None,
+        pins: [#("main", "flash"), #("vision", "eyes")],
+      ),
     ],
     fn(snapshot) {
       let event = protocol.SnapshotEvent(snapshot)
@@ -792,12 +805,17 @@ pub fn a_profile_snapshot_round_trips_and_omits_the_default_test() {
     protocol.encode_event(protocol.EventEnvelope(
       reply_to: Some(51),
       seq: None,
-      event: protocol.SnapshotEvent(protocol.ProfileSnapshot(
-        current: None,
-        available: ["codex"],
-        switched: Some(1),
-      )),
+      event: protocol.SnapshotEvent(
+        protocol.ProfileSnapshot(
+          current: None,
+          available: ["codex"],
+          switched: Some(1),
+          pins: [],
+        ),
+      ),
     ))
+  assert !string.contains(encoded, "\"pins\":")
+    as "no pins is the absence of the field"
   assert !string.contains(encoded, "\"profile\":")
     as "the default roles are the absence of the field"
   assert string.contains(encoded, "\"moved\":1")

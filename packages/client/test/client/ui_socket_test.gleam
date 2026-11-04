@@ -563,7 +563,7 @@ fn view(status: manager.Status) -> manager.View {
       request_key: "request-key",
       state: catalogue.Saved,
       profile: option.None,
-      model: option.None,
+      pins: [],
       executor: "",
       pool: "",
       subtitle: option.None,

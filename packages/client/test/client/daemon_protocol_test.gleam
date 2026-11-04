@@ -13,6 +13,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import storage/access
+import storage/catalogue
 import storage/domain
 
 fn session_id() -> String {
@@ -55,7 +56,7 @@ pub fn creation_configuration_preserves_defaults_and_rejects_invalid_fields_test
         "name",
         "",
         None,
-        None,
+        [],
         None,
         None,
         domain.WorkspacePrivate,
@@ -180,7 +181,7 @@ pub fn every_control_command_has_one_typed_decode_test() {
         "name",
         "/config",
         None,
-        None,
+        [],
         None,
         None,
         domain.WorkspacePrivate,
@@ -670,7 +671,7 @@ pub fn creation_profile_is_optional_and_must_be_a_profile_name_test() {
         "name",
         "",
         Some("deepseek"),
-        None,
+        [],
         None,
         None,
         domain.WorkspacePrivate,
@@ -722,7 +723,7 @@ pub fn creation_executor_is_optional_and_makes_the_workspace_a_name_test() {
         "name",
         "",
         None,
-        None,
+        [],
         Some("build-box"),
         None,
         domain.SessionOnly,
@@ -809,7 +810,7 @@ pub fn creation_pool_is_optional_exclusive_with_an_executor_and_makes_the_worksp
         "name",
         "",
         None,
-        None,
+        [],
         None,
         Some("builders"),
         domain.SessionOnly,
@@ -871,7 +872,7 @@ pub fn session_creation_decodes_an_optional_model_key_test() {
         "name",
         "",
         None,
-        Some("baseten-glm-5-3"),
+        [#(catalogue.PinMain, "baseten-glm-5-3")],
         None,
         None,
         domain.WorkspacePrivate,
@@ -882,7 +883,7 @@ pub fn session_creation_decodes_an_optional_model_key_test() {
   // is carried through and the daemon's catalogue is what judges it.
   let assert Ok(protocol.Request(
     _,
-    protocol.CreateSession(model: Some("opus 4.8"), ..),
+    protocol.CreateSession(pins: [#(catalogue.PinMain, "opus 4.8")], ..),
   )) =
     protocol.decode(
       envelope(1, "sessions.create", [
@@ -934,7 +935,7 @@ pub fn creation_model_composes_with_an_executor_and_a_pool_test() {
         "name",
         "",
         None,
-        Some("fast"),
+        [#(catalogue.PinMain, "fast")],
         Some("build-box"),
         None,
         domain.SessionOnly,
@@ -949,7 +950,7 @@ pub fn creation_model_composes_with_an_executor_and_a_pool_test() {
         "name",
         "",
         None,
-        Some("fast"),
+        [#(catalogue.PinMain, "fast")],
         None,
         Some("builders"),
         domain.SessionOnly,
@@ -982,4 +983,103 @@ pub fn an_elsewhere_read_names_its_group_and_its_cursor_as_the_lists_do_test() {
   )
   assert result.is_error(read([#("orchestrator", json.Null)]))
   assert result.is_ok(read([key, #("after", json.String(""))]))
+}
+
+// --- role pins (protocol-change/107) ----------------------------------------
+
+fn creation_with(extra: List(#(String, json.JsonValue))) {
+  protocol.decode(
+    envelope(1, "sessions.create", [
+      #("request_key", json.String("key")),
+      #("workspace", json.String("/workspace")),
+      #("name", json.String("name")),
+      #("configuration", json.String("")),
+      ..extra
+    ]),
+  )
+}
+
+fn pins_of(
+  decoded: Result(protocol.Request, protocol.Fault),
+) -> List(#(catalogue.PinnedRole, String)) {
+  let assert Ok(protocol.Request(_, protocol.CreateSession(pins:, ..))) =
+    decoded
+    as "the creation decodes"
+  pins
+}
+
+pub fn a_roles_object_decodes_to_pins_in_the_fixed_role_order_test() {
+  let roles =
+    json.Object([
+      #("vision", json.String("eyes")),
+      #("main", json.String("fast")),
+      #("router", json.String("r")),
+    ])
+  assert pins_of(creation_with([#("roles", roles)]))
+    == [
+      #(catalogue.PinMain, "fast"),
+      #(catalogue.PinVision, "eyes"),
+      #(catalogue.PinRouter, "r"),
+    ]
+}
+
+pub fn an_empty_roles_object_is_no_pins_test() {
+  assert pins_of(creation_with([#("roles", json.Object([]))])) == []
+  assert pins_of(creation_with([])) == []
+}
+
+pub fn model_and_roles_main_are_one_pin_when_they_agree_test() {
+  let roles = json.Object([#("main", json.String("a"))])
+  assert pins_of(
+      creation_with([#("model", json.String("a")), #("roles", roles)]),
+    )
+    == [#(catalogue.PinMain, "a")]
+  assert pins_of(creation_with([#("model", json.String("a"))]))
+    == pins_of(creation_with([#("roles", roles)]))
+}
+
+pub fn model_and_roles_main_naming_different_keys_are_refused_test() {
+  let roles = json.Object([#("main", json.String("b"))])
+  let assert Error(protocol.Fault(_, "bad_request", reason)) =
+    creation_with([#("model", json.String("a")), #("roles", roles)])
+  assert string.contains(reason, "\"a\"")
+  assert string.contains(reason, "\"b\"")
+}
+
+pub fn model_beside_other_roles_merges_test() {
+  let roles = json.Object([#("vision", json.String("eyes"))])
+  assert pins_of(
+      creation_with([#("model", json.String("a")), #("roles", roles)]),
+    )
+    == [#(catalogue.PinMain, "a"), #(catalogue.PinVision, "eyes")]
+}
+
+pub fn malformed_roles_are_refused_and_never_read_as_no_choice_test() {
+  list.each(
+    [
+      json.Null,
+      json.String("main"),
+      json.Int(1),
+      json.Array([]),
+      json.Object([#("custom", json.String("a"))]),
+      json.Object([#("Main", json.String("a"))]),
+      json.Object([#("main", json.Null)]),
+      json.Object([#("main", json.Int(1))]),
+      json.Object([#("main", json.String(""))]),
+      json.Object([#("main", json.String(string.repeat("k", 65)))]),
+      json.Object([
+        #("main", json.String("a")),
+        #("main", json.String("b")),
+      ]),
+      json.Object([
+        #("vision", json.String("a")),
+        #("vision", json.String("a")),
+      ]),
+    ],
+    fn(value) {
+      let assert Error(protocol.Fault(_, _, _)) =
+        creation_with([#("roles", value)])
+        as "a malformed roles value is refused"
+    },
+  )
 }

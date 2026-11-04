@@ -48,7 +48,7 @@ fn saved(store: catalogue.Catalogue, seed: Int) -> String {
       name: "Saved",
       configuration: "",
       profile: None,
-      model: None,
+      pins: [],
       executor: "",
       pool: "",
       created_at: 0,

@@ -8,6 +8,7 @@ import gleam/int
 import gleam/option.{None, Some}
 import gleam/string
 import simplifile
+import storage/catalogue
 
 // Two models whose secrets-bearing fields carry markers the tests look for, and
 // one profile.
@@ -20,6 +21,7 @@ api_key_env = \"SECRET_KEY_VARIABLE\"
 model_id = \"secret-upstream-id\"
 context_window = 1000
 max_output_tokens = 100
+vision = false
 
 [models.alpha]
 dialect = \"anthropic\"
@@ -80,33 +82,48 @@ pub fn an_unreadable_or_unparseable_file_is_an_error_not_an_empty_list_test() {
   assert string.contains(unparsed, "unknown key `retry2` in the top level")
 }
 
-pub fn a_model_check_names_the_keys_that_exist_test() {
+pub fn a_pin_check_names_the_keys_that_exist_test() {
   let path = written("check", config_text)
-  assert profiles.check_model(path, "zeta") == Ok(Nil)
-  assert profiles.check_model(path, "zetaa")
+  assert profiles.check_pins(path, [#(catalogue.PinMain, "zeta")]) == Ok(Nil)
+  assert profiles.check_pins(path, [#(catalogue.PinMain, "zetaa")])
     == Error(profiles.UnknownModel(
       "unknown model \"zetaa\"; the configuration defines: alpha, zeta",
     ))
-  assert profiles.check_model("", "zeta")
+  assert profiles.check_pins("", [#(catalogue.PinMain, "zeta")])
     == Error(profiles.UnknownModel(
       "unknown model \"zeta\"; the configuration defines no models",
     ))
+
+  // Another role names itself, and a text-only entry cannot be the vision role.
+  assert profiles.check_pins(path, [#(catalogue.PinPlan, "zetaa")])
+    == Error(profiles.UnknownModel(
+      "unknown model \"zetaa\" for role \"plan\"; the configuration defines: alpha, zeta",
+    ))
+  let assert Error(profiles.UnsuitableModel(words)) =
+    profiles.check_pins(path, [#(catalogue.PinVision, "zeta")])
+  assert string.contains(words, "cannot serve role \"vision\"")
 }
 
-pub fn a_creation_is_judged_for_its_profile_before_its_model_test() {
+pub fn a_creation_is_judged_for_its_profile_before_its_pins_test() {
   let path = written("choice", config_text)
-  assert profiles.check_choice(path, None, None) == Ok(Nil)
-  assert profiles.check_choice(path, Some("quick"), Some("alpha")) == Ok(Nil)
-  assert profiles.check_choice(path, None, Some("alpha")) == Ok(Nil)
+  assert profiles.check_choice(path, None, []) == Ok(Nil)
+  assert profiles.check_choice(path, Some("quick"), [
+      #(catalogue.PinMain, "alpha"),
+    ])
+    == Ok(Nil)
+  assert profiles.check_choice(path, None, [#(catalogue.PinMain, "alpha")])
+    == Ok(Nil)
   let assert Error(profiles.UnknownProfile(_)) =
-    profiles.check_choice(path, Some("slow"), Some("nope"))
+    profiles.check_choice(path, Some("slow"), [#(catalogue.PinMain, "nope")])
   let assert Error(profiles.UnknownModel(_)) =
-    profiles.check_choice(path, Some("quick"), Some("nope"))
+    profiles.check_choice(path, Some("quick"), [#(catalogue.PinMain, "nope")])
 
   // A creation that chose nothing reads no file, so an unusable path is not an
   // error for it.
-  assert profiles.check_choice("/definitely/not/a/loom.toml", None, None)
+  assert profiles.check_choice("/definitely/not/a/loom.toml", None, [])
     == Ok(Nil)
   let assert Error(profiles.UnusableConfiguration(_)) =
-    profiles.check_choice("/definitely/not/a/loom.toml", None, Some("alpha"))
+    profiles.check_choice("/definitely/not/a/loom.toml", None, [
+      #(catalogue.PinMain, "alpha"),
+    ])
 }

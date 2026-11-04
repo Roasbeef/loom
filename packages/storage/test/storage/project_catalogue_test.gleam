@@ -31,7 +31,7 @@ fn registration(seed: Int) -> catalogue.Registration {
     request_key: "project-test-" <> int.to_string(seed),
     state: catalogue.Reserved,
     profile: None,
-    model: None,
+    pins: [],
     executor: "",
     pool: "",
     subtitle: None,
@@ -103,10 +103,10 @@ fn user_version(path: String) -> List(Int) {
 }
 
 pub fn the_catalogue_is_at_version_twenty_test() {
-  assert catalogue.current_version == 20
+  assert catalogue.current_version == 21
   let #(path, store, _) = catalogue_with("project-version", [])
   assert catalogue.close(store) == Ok(Nil)
-  assert user_version(path) == [20]
+  assert user_version(path) == [21]
 }
 
 pub fn version_nineteen_catalogue_gains_the_project_tables_test() {
@@ -120,7 +120,7 @@ pub fn version_nineteen_catalogue_gains_the_project_tables_test() {
   let assert Ok(Nil) =
     raw(
       path,
-      "DROP TABLE catalogue_project_workers; DROP TABLE catalogue_projects; PRAGMA user_version=19",
+      "ALTER TABLE catalogue_sessions ADD COLUMN model TEXT NOT NULL DEFAULT ''; UPDATE catalogue_sessions SET model = CASE WHEN pins = '' THEN '' ELSE coalesce(json_extract(pins, '$.main'), '') END; ALTER TABLE catalogue_sessions DROP COLUMN pins; DROP TABLE catalogue_project_workers; DROP TABLE catalogue_projects; PRAGMA user_version=19",
     )
     |> result.replace_error(Nil)
   assert user_version(path) == [19]
@@ -137,7 +137,7 @@ pub fn version_nineteen_catalogue_gains_the_project_tables_test() {
     })
     == Ok(Nil)
   assert catalogue.close(migrated) == Ok(Nil)
-  assert user_version(path) == [20]
+  assert user_version(path) == [21]
 }
 
 pub fn the_schema_refuses_what_the_wrappers_would_also_refuse_test() {

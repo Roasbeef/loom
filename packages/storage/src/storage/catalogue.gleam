@@ -59,8 +59,10 @@
 
 import core/ids
 import gleam/bit_array
+import gleam/dict
 import gleam/dynamic/decode
 import gleam/int
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -77,6 +79,7 @@ import storage/catalogue_logins_schema
 import storage/catalogue_models_schema
 import storage/catalogue_moves_schema
 import storage/catalogue_names_schema
+import storage/catalogue_pins_schema
 import storage/catalogue_pools_schema
 import storage/catalogue_profiles_schema
 import storage/catalogue_projects_schema
@@ -130,13 +133,14 @@ pub type Registration {
     /// the roles it resolved to: the daemon resolves it again each time the
     /// session opens (protocol-change/076).
     profile: Option(String),
-    /// The `[models.<key>]` entry the session's `main` role was pinned to at
-    /// creation, by key, or `None` for the chain the profile or the
-    /// configuration gives. Like `profile` it is part of the immutable creation
-    /// request and is a key rather than the role set it resolved to, so the
-    /// daemon resolves it again each time the session opens
-    /// (protocol-change/080).
-    model: Option(String),
+    /// The `[models.<key>]` entries the session's roles were pinned to at
+    /// creation, in the fixed role order of `pinned_roles`, or `[]` for the
+    /// chains the profile or the configuration gives. A pinned role's chain is
+    /// that one entry. Like `profile` the pins are part of the immutable
+    /// creation request and are keys rather than the role set they resolved
+    /// to, so the daemon resolves them again each time the session opens
+    /// (protocol-change/107, which generalizes the `main` pin of 080).
+    pins: List(#(PinnedRole, String)),
     /// The executor the session's workspace is registered on, by its
     /// `[executors.<name>]` key, or the empty string for a session whose
     /// workspace is a path on this host. For a session created with an
@@ -304,7 +308,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 /// raise this fails `migrations_end_at_the_current_version_test` rather than
 /// leaving a catalogue that claims a version whose migration never ran.
 @internal
-pub const current_version = 20
+pub const current_version = 21
 
 /// The migration schemas in version order, each applied to a catalogue that
 /// lacks its version.
@@ -330,6 +334,7 @@ pub fn migrations() -> List(#(Int, String)) {
     #(18, catalogue_start_failures_schema.schema),
     #(19, catalogue_relayed_schema.schema),
     #(20, catalogue_projects_schema.schema),
+    #(21, catalogue_pins_schema.schema),
   ]
 }
 
@@ -442,7 +447,7 @@ fn insert(
       created_at: record.created_at,
       request_key: record.request_key,
       profile: option.unwrap(record.profile, ""),
-      model: option.unwrap(record.model, ""),
+      pins: encode_pins(record.pins),
       executor: record.executor,
       pool: record.pool,
     ),
@@ -542,6 +547,8 @@ pub fn domain_source_records(
 ) -> Result(List(Registration), Error) {
   use rows <- result.try(query(catalogue, sql.domain_sources(domain_id, after)))
   list.try_map(rows, fn(row) {
+    use pins <- result.try(stored_pins(row.pins))
+
     decoded(
       Registration(
         id: row.session_id,
@@ -553,7 +560,7 @@ pub fn domain_source_records(
         request_key: row.request_key,
         state: Reserved,
         profile: stored_profile(row.profile),
-        model: stored_model(row.model),
+        pins:,
         executor: row.executor,
         pool: row.pool,
         subtitle: option.then(row.subtitle, stored_subtitle),
@@ -2958,6 +2965,8 @@ fn page_for(
     ))
     use records <- result.try(
       list.try_map(rows, fn(row) {
+        use pins <- result.try(stored_pins(row.pins))
+
         decoded(
           Registration(
             id: row.session_id,
@@ -2969,7 +2978,7 @@ fn page_for(
             request_key: row.request_key,
             state: Reserved,
             profile: stored_profile(row.profile),
-            model: stored_model(row.model),
+            pins:,
             executor: row.executor,
             pool: row.pool,
             subtitle: option.then(row.subtitle, stored_subtitle),
@@ -3019,6 +3028,8 @@ pub fn member_page(
     ))
     use records <- result.try(
       list.try_map(rows, fn(row) {
+        use pins <- result.try(stored_pins(row.pins))
+
         decoded(
           Registration(
             id: row.session_id,
@@ -3030,7 +3041,7 @@ pub fn member_page(
             request_key: row.request_key,
             state: Reserved,
             profile: stored_profile(row.profile),
-            model: stored_model(row.model),
+            pins:,
             executor: row.executor,
             pool: row.pool,
             subtitle: option.then(row.subtitle, stored_subtitle),
@@ -3137,6 +3148,8 @@ fn find(catalogue: Catalogue, id: String, request_key: String, path: String) {
     sql.find_registrations(id, request_key, path),
   ))
   list.try_map(rows, fn(row) {
+    use pins <- result.try(stored_pins(row.pins))
+
     decoded(
       Registration(
         id: row.session_id,
@@ -3148,7 +3161,7 @@ fn find(catalogue: Catalogue, id: String, request_key: String, path: String) {
         request_key: row.request_key,
         state: Reserved,
         profile: stored_profile(row.profile),
-        model: stored_model(row.model),
+        pins:,
         executor: row.executor,
         pool: row.pool,
         subtitle: None,
@@ -3270,15 +3283,8 @@ fn validate(record: Registration) -> Result(Nil, Error) {
           }
       })
 
-      // Validate optional model key syntax.
-      case record.model {
-        None -> Ok(Nil)
-        Some(key) ->
-          case is_model_key(key) {
-            True -> Ok(Nil)
-            False -> Error(Invalid("registration model is not a model key"))
-          }
-      }
+      // Validate the pinned roles and keys.
+      validate_pins(record.pins)
     }
     False ->
       Error(Invalid(
@@ -3359,6 +3365,159 @@ pub fn is_model_key(text: String) -> Bool {
   size >= 1 && size <= model_key_limit
 }
 
+/// The roles a session may be created with a pinned model for
+/// (protocol-change/107): the closed set `client/catalog` routes, named here
+/// because the catalogue sits below the packages that define a role.
+pub type PinnedRole {
+  PinMain
+  PinSubagent
+  PinPlan
+  PinSummarize
+  PinVision
+  PinAdvisor
+  PinRouter
+}
+
+/// Every pinnable role in the fixed order a registration keeps its pins in, the
+/// order the stored object is written in and the order the daemon checks them
+/// in.
+pub const pinned_roles = [
+  PinMain,
+  PinSubagent,
+  PinPlan,
+  PinSummarize,
+  PinVision,
+  PinAdvisor,
+  PinRouter,
+]
+
+/// The role's name as the wire and the stored object spell it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalogue.pinned_role_name(catalogue.PinVision) == "vision"
+/// ```
+pub fn pinned_role_name(role: PinnedRole) -> String {
+  case role {
+    PinMain -> "main"
+    PinSubagent -> "subagent"
+    PinPlan -> "plan"
+    PinSummarize -> "summarize"
+    PinVision -> "vision"
+    PinAdvisor -> "advisor"
+    PinRouter -> "router"
+  }
+}
+
+/// The role a name spells, or `Error(Nil)` for a name outside the closed set.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalogue.parse_pinned_role("vision") == Ok(catalogue.PinVision)
+/// assert catalogue.parse_pinned_role("custom") == Error(Nil)
+/// ```
+pub fn parse_pinned_role(name: String) -> Result(PinnedRole, Nil) {
+  list.find(pinned_roles, fn(role) { pinned_role_name(role) == name })
+}
+
+/// The longest stored pins object, in bytes. It is the catalogue column's
+/// bound and holds seven pairs with a 64-byte key each.
+pub const pins_limit = 1024
+
+/// The stored form of a set of pins: the empty string for none, otherwise a
+/// JSON object from role name to key with the names in `pinned_roles` order. A
+/// caller passes pins already in that order, which `validate` enforces.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalogue.encode_pins([]) == ""
+/// assert catalogue.encode_pins([#(catalogue.PinMain, "a")])
+///   == "{\"main\":\"a\"}"
+/// ```
+pub fn encode_pins(pins: List(#(PinnedRole, String))) -> String {
+  case pins {
+    [] -> ""
+    pins ->
+      pins
+      |> list.map(fn(pin) { #(pinned_role_name(pin.0), json.string(pin.1)) })
+      |> json.object
+      |> json.to_string
+  }
+}
+
+/// The pins a stored object holds, or `Error(Nil)` for text that is not the
+/// canonical form `encode_pins` writes: not an object, a name outside the
+/// closed set, a repeated or misordered name, or an invalid key. The empty
+/// string is no pins.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalogue.decode_pins("") == Ok([])
+/// assert catalogue.decode_pins("{\"main\":\"a\"}")
+///   == Ok([#(catalogue.PinMain, "a")])
+/// assert catalogue.decode_pins("{\"nope\":\"a\"}") == Error(Nil)
+/// ```
+pub fn decode_pins(text: String) -> Result(List(#(PinnedRole, String)), Nil) {
+  // The empty string is no pins; anything else must be the canonical object.
+  case text {
+    "" -> Ok([])
+    text -> {
+      use named <- result.try(
+        json.parse(text, decode.dict(decode.string, decode.string))
+        |> result.replace_error(Nil),
+      )
+      use pins <- result.try(
+        list.try_map(pinned_roles, fn(role) {
+          case dict.get(named, pinned_role_name(role)) {
+            Ok(key) -> Ok([#(role, key)])
+            Error(Nil) -> Ok([])
+          }
+        }),
+      )
+      let pins = list.flatten(pins)
+
+      // Re-encoding must reproduce the stored text. That refuses a name outside
+      // the closed set (it is not re-emitted), a repeated name, an order other
+      // than the fixed one, and any other spelling of the same object.
+      case encode_pins(pins) == text && validate_pins(pins) == Ok(Nil) {
+        True -> Ok(pins)
+        False -> Error(Nil)
+      }
+    }
+  }
+}
+
+// The pins column follows the profile column's rule: the empty string means no
+// pins, and any other text must decode or the read fails, so a damaged value
+// never opens the session on the default roles.
+fn stored_pins(text: String) -> Result(List(#(PinnedRole, String)), Error) {
+  decode_pins(text)
+  |> result.replace_error(Invalid("registration pins are not a pins object"))
+}
+
+// Pins are in the fixed role order without repeats, each key passes
+// `is_model_key`, and the stored object fits its column.
+/// Whether the pins are in the fixed role order, without repeats, with valid keys
+/// that fit the column.
+fn validate_pins(pins: List(#(PinnedRole, String))) -> Result(Nil, Error) {
+  let roles = list.map(pins, fn(pin) { pin.0 })
+  let ordered =
+    list.filter(pinned_roles, fn(role) { list.contains(roles, role) })
+  let keys_fit = list.all(pins, fn(pin) { is_model_key(pin.1) })
+  let fits =
+    bit_array.byte_size(bit_array.from_string(encode_pins(pins))) <= pins_limit
+
+  // Every condition must hold; the first three cannot be told apart by a reader.
+  case ordered == roles && keys_fit && fits {
+    True -> Ok(Nil)
+    False -> Error(Invalid("registration pins are not valid role pins"))
+  }
+}
+
 fn is_letter(grapheme: String) -> Bool {
   list.contains(string.to_graphemes("abcdefghijklmnopqrstuvwxyz"), grapheme)
 }
@@ -3427,17 +3586,6 @@ fn stored_profile(text: String) -> Option(String) {
   case text {
     "" -> None
     name -> Some(name)
-  }
-}
-
-// The model column follows the profile column's rule: the default, the empty
-// string, means no choice, and any other text is kept as stored and judged by
-// `validate`, so a damaged value fails the read instead of opening the session
-// on the default model.
-fn stored_model(text: String) -> Option(String) {
-  case text {
-    "" -> None
-    key -> Some(key)
   }
 }
 

@@ -20,14 +20,14 @@
 ////
 //// ## Flow
 ////
-//// `effective` → `names` → `check` → `model_keys` → `check_model` → `check_choice`
+//// `effective` → `names` → `check` → `model_keys` → `check_pins` → `check_choice`
 //// → `load`
 ////
 //// 1. `effective` picks the configuration path a creation will load: the one it
 ////    names, or else the daemon's own.
 //// 2. `names` reads that file and returns the profile names it defines, sorted.
 //// 3. `check` is `names` plus the refusal that names the profiles that exist.
-//// 4. `model_keys` and `check_model` are the same two steps for the model keys
+//// 4. `model_keys` and `check_pins` are the same two steps for the model keys
 ////    a creation may pin the main role to. Both reads go through one private `read`,
 ////    so a file is judged the same way whichever question asks.
 //// 5. `check_choice` is what a creation asks: the profile it chose, if any, and
@@ -42,6 +42,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import simplifile
+import storage/catalogue
 
 /// The configuration path a session created with `requested` loads: the path
 /// the creation named, or the daemon's own when it named none. The empty string
@@ -132,6 +133,10 @@ pub type Refusal {
   /// names the keys that exist.
   UnknownModel(message: String)
 
+  /// The configuration defines the model key, but the entry cannot serve the
+  /// role it was pinned to (protocol-change/107).
+  UnsuitableModel(message: String)
+
   /// The configuration cannot be read or does not parse, so no profile or model
   /// can be looked up in it. The message is the daemon's own startup wording,
   /// and names the offending key when that is the cause.
@@ -149,6 +154,7 @@ pub fn refusal_message(refusal: Refusal) -> String {
   case refusal {
     UnknownProfile(message:)
     | UnknownModel(message:)
+    | UnsuitableModel(message:)
     | UnusableConfiguration(message:) -> message
   }
 }
@@ -178,45 +184,61 @@ pub fn check(configuration: String, name: String) -> Result(Nil, Refusal) {
   }
 }
 
-/// Whether the configuration defines the named model key, answered as `check`
-/// answers it for a profile.
+/// Whether the configuration defines every pinned key and each entry can serve
+/// the role it is pinned to, checked in the order given (the fixed role order)
+/// and answered as `check` answers it for a profile. No pins are accepted
+/// without the file being read.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert profiles.check_model("", "flash")
+/// assert profiles.check_pins("", [#(catalogue.PinMain, "flash")])
 ///   == Error(profiles.UnknownModel(
 ///     "unknown model \"flash\"; the configuration defines no models",
 ///   ))
 /// ```
-pub fn check_model(configuration: String, key: String) -> Result(Nil, Refusal) {
-  use known <- result.try(
-    model_keys(configuration) |> result.map_error(UnusableConfiguration),
-  )
-
-  // Check if the requested model key exists in the configuration.
-  case list.contains(known, key) {
-    True -> Ok(Nil)
-    False -> Error(UnknownModel(catalog.unknown_model(known, key)))
+pub fn check_pins(
+  configuration: String,
+  pins: List(#(catalogue.PinnedRole, String)),
+) -> Result(Nil, Refusal) {
+  // No pins need no file; pins with no file name no model; otherwise the parsed
+  // file judges them.
+  case pins, configuration {
+    [], _ -> Ok(Nil)
+    [first, ..], "" -> Error(UnknownModel(catalog.unknown_pin([], pins, first)))
+    pins, path -> {
+      use parsed <- result.try(
+        parse_file(path) |> result.map_error(UnusableConfiguration),
+      )
+      catalog.select_roles(parsed, pins)
+      |> result.replace(Nil)
+      |> result.map_error(fn(refusal) {
+        // The catalogue's two refusals keep their separate codes here.
+        case refusal {
+          catalog.UnknownPin(message) -> UnknownModel(message)
+          catalog.UnsuitablePin(message) -> UnsuitableModel(message)
+        }
+      })
+    }
   }
 }
 
 /// Whether the configuration defines everything a creation chose: the profile if
-/// it named one, then the model if it named one. A creation that chose neither
-/// is accepted without the file being read, as a creation always was. The first
-/// refusal is returned, so the profile is reported before the model.
+/// it named one, then each pin in the fixed role order. A creation that chose
+/// neither is accepted without the file being read, as a creation always was.
+/// The first refusal is returned, so the profile is reported before the pins.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert profiles.check_choice("", None, None) == Ok(Nil)
-/// assert profiles.check_choice("", Some("deepseek"), Some("flash"))
+/// assert profiles.check_choice("", None, []) == Ok(Nil)
+/// assert profiles.check_choice("", Some("deepseek"), [#(catalogue.PinMain, "flash")])
 ///   == profiles.check("", "deepseek")
 /// ```
 pub fn check_choice(
   configuration: String,
   profile: Option(String),
-  model: Option(String),
+  pins: List(#(catalogue.PinnedRole, String)),
 ) -> Result(Nil, Refusal) {
   // Verify the profile choice if one was explicitly supplied.
   use Nil <- result.try(case profile {
@@ -224,11 +246,7 @@ pub fn check_choice(
     Some(name) -> check(configuration, name)
   })
 
-  // Verify the model choice if one was explicitly supplied.
-  case model {
-    None -> Ok(Nil)
-    Some(key) -> check_model(configuration, key)
-  }
+  check_pins(configuration, pins)
 }
 
 /// The catalogue a session routes by when it runs under `profile`: the whole

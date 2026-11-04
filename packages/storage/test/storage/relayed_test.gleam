@@ -35,7 +35,7 @@ fn registration(seed: Int, spawner: String, request_id: String) {
     request_key: catalogue.relayed_key(spawner, request_id),
     state: catalogue.Reserved,
     profile: None,
-    model: None,
+    pins: [],
     executor: "",
     pool: "",
     subtitle: None,
@@ -372,7 +372,7 @@ pub fn version_eighteen_catalogue_gains_the_relayed_table_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_project_workers; DROP TABLE catalogue_projects; DROP TABLE catalogue_relayed_sessions; PRAGMA user_version=18",
+      "ALTER TABLE catalogue_sessions ADD COLUMN model TEXT NOT NULL DEFAULT ''; UPDATE catalogue_sessions SET model = CASE WHEN pins = '' THEN '' ELSE coalesce(json_extract(pins, '$.main'), '') END; ALTER TABLE catalogue_sessions DROP COLUMN pins; DROP TABLE catalogue_project_workers; DROP TABLE catalogue_projects; DROP TABLE catalogue_relayed_sessions; PRAGMA user_version=18",
       on: old,
     )
     == Ok(Nil)
