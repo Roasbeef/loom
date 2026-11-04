@@ -13,15 +13,6 @@
 //// A node that moves no states holds `none`: an endpoint that declines every
 //// piece, no store and no Git. Every user of the record treats the absent parts
 //// as "this node cannot", and answers a refusal that says so.
-////
-//// ## Flow
-////
-//// `none` → `capturer`
-////
-//// 1. `none` is the record of a node that keeps no store.
-//// 2. `capturer` binds the record's Git, endpoint and masks into the capture
-////    step (`client/state_capture`), or says the node has no Git to capture
-////    with.
 
 import client/state_capture.{type Capturer}
 import client/state_store.{type Store}

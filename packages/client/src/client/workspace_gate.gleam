@@ -32,9 +32,11 @@
 ////
 //// ## Flow
 ////
-//// `start` → `shared` → `exclusive` → `handle`
+//// `at` → `supervised` → `shared` → `exclusive` → `handle`
 ////
-//// 1. `start` starts the machine, which is `Open`, `Draining` or `Held`.
+//// 1. `at` finds a session's gate by its address, and `supervised` is the child
+////    the session's service tree starts there. The machine is `Open`, `Draining`
+////    or `Held`.
 //// 2. `shared` is what a tool call runs inside: it enters, does its work and
 ////    leaves. A call that cannot enter in time is `Busy`.
 //// 3. `exclusive` is what a capture runs inside: it asks to close, waits for the
@@ -278,12 +280,15 @@ fn answered(
     Ok(pid) -> process.monitor(pid)
     Error(Nil) -> process.monitor(process.self())
   }
+
   let heard =
     process.new_selector()
     |> process.select_map(reply, Heard)
     |> process.select_specific_monitor(watch, fn(_down) { GateGone })
     |> process.selector_receive(within_ms)
   process.demonitor_process(watch)
+
+  // The answer, the gate's death, or silence.
   case heard {
     Ok(found) -> found
     Error(Nil) -> Silent
@@ -437,6 +442,7 @@ fn admitted(
   deadline: Int,
   reply: Subject(Admitted),
 ) -> sm.Next(Phase, Data, Message) {
+  // A caller past its deadline has stopped waiting, and is not admitted.
   case bootstrap.monotonic_time_ms() > deadline {
     True -> sm.keep(data)
     False -> {
@@ -477,6 +483,7 @@ fn closing(
   deadline: Int,
   reply: Subject(Closing),
 ) -> sm.Next(Phase, Data, Message) {
+  // A request past its deadline has a caller that is gone, and is dropped.
   case bootstrap.monotonic_time_ms() > deadline {
     True -> sm.keep(data)
     False -> {
@@ -496,6 +503,7 @@ fn closing(
 
 /// Holds the gate for the capture of `epoch` and tells it so.
 fn held(data: Data, epoch: Int) -> sm.Next(Phase, Data, Message) {
+  // A capture that is no longer asking has nothing to be told.
   case dict.get(data.asking, epoch) {
     Error(Nil) -> sm.transition(to: Open, data:)
     Ok(capture) -> {
@@ -509,10 +517,12 @@ fn held(data: Data, epoch: Int) -> sm.Next(Phase, Data, Message) {
 /// The drain ran out: the capture is refused and the gate reopens, which replays
 /// the calls that waited.
 fn timed_out_draining(data: Data, epoch: Int) -> sm.Next(Phase, Data, Message) {
+  // The capture that asked is told the workspace did not go quiet.
   case dict.get(data.asking, epoch) {
     Ok(capture) -> process.send(capture.reply, NoQuiet)
     Error(Nil) -> Nil
   }
+
   sm.transition(to: Open, data: finished(data, epoch))
 }
 
@@ -523,6 +533,7 @@ fn reopening(
   ticket: Int,
   reply: Subject(Reopened),
 ) -> sm.Next(Phase, Data, Message) {
+  // Only the capture that holds the gate releases it.
   case held == ticket {
     True -> {
       process.send(reply, Intact)
@@ -546,10 +557,12 @@ fn answer_for(data: Data, ticket: Int) -> Reopened {
 
 /// Forgets a capture that has ended and stops watching its caller.
 fn finished(data: Data, epoch: Int) -> Data {
+  // The capture's caller is no longer watched.
   case dict.get(data.asking, epoch) {
     Ok(capture) -> process.demonitor_process(capture.who)
     Error(Nil) -> Nil
   }
+
   Data(..data, asking: dict.delete(data.asking, epoch))
 }
 

@@ -87,6 +87,7 @@ import client/distribution
 import client/distribution_plan
 import client/executor_plane
 import client/executors
+import client/git_identity
 import client/host
 import client/install
 import client/internal/ffi_os
@@ -128,8 +129,11 @@ import client/session_importer
 import client/session_move
 import client/session_mover
 import client/session_movers
+import client/spawn_seed
 import client/spawners
+import client/state_capture
 import client/state_node.{type StateNode}
+import client/state_object
 import client/state_service
 import client/state_store
 import client/state_transfer
@@ -1479,11 +1483,14 @@ pub fn start_orchestrator_port(
           peer_command(ready.registry, peer_endpoint),
           server.local_description(ready.registry),
           importer,
-          spawn_host(
+          spawn_host_seeding(
             config.spawners,
             delegate_host.resolver(delegates),
             delegate_host.releaser(delegates),
             delegate_host.existing_endpoint(delegates),
+            fn(spawner, site, request) {
+              spawn_seed.receive(config.state_node, spawner, site, request)
+            },
             logger,
           ),
           child_host(orchestrator_roster(config), ready.registry, child_inbox),
@@ -1883,6 +1890,43 @@ pub fn spawn_host(
     Result(Option(agency.DelegateEndpoint), remote_spawn.SpawnRefusal),
   logger: Logger,
 ) -> orchestrator_port.SpawnHost {
+  spawn_host_seeding(
+    configured,
+    delegates,
+    releasing,
+    existing,
+    fn(spawner, site, request) {
+      spawn_seed.receive(state_node.none(), spawner, site, request)
+    },
+    logger,
+  )
+}
+
+/// `spawn_host` for a daemon that takes a workspace with a spawn
+/// (protocol-change/107). `seeded` judges a request before any delegate session
+/// is found or made for it: it passes a request with no state through untouched,
+/// refuses one the spawner's `seed` does not allow, answers `StateMissing` when the
+/// state is not all in the store, and otherwise makes the copy and returns the
+/// request the Agency serves (`client/spawn_seed.receive`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.spawn_host_seeding([], delegates, releasing, existing, seeded, logger)
+/// ```
+@internal
+pub fn spawn_host_seeding(
+  configured: List(spawners.Spawner),
+  delegates: fn(spawners.Spawner, remote_spawn.Parent) ->
+    Result(agency.DelegateEndpoint, remote_spawn.SpawnRefusal),
+  releasing: fn(spawners.Spawner, remote_spawn.Parent) ->
+    Result(Int, remote_spawn.SpawnRefusal),
+  existing: fn(spawners.Spawner, remote_spawn.Parent) ->
+    Result(Option(agency.DelegateEndpoint), remote_spawn.SpawnRefusal),
+  seeded: fn(spawners.Spawner, remote_spawn.CallSite, remote_spawn.Request) ->
+    Result(remote_spawn.Request, remote_spawn.SpawnRefusal),
+  logger: Logger,
+) -> orchestrator_port.SpawnHost {
   let spawner_of = fn(origin: remote_spawn.Origin) {
     spawners.by_node(configured, origin.node)
     |> result.replace_error(remote_spawn.UnknownSpawner(node: origin.node))
@@ -1912,6 +1956,10 @@ pub fn spawn_host(
   orchestrator_port.SpawnHost(
     spawn: fn(origin, call_site, depth, parent_tools, request) {
       let outcome = {
+        // A state is judged first, so a spawner that may not send one leaves no
+        // session and no copy behind.
+        use spawner <- result.try(spawner_of(origin))
+        use request <- result.try(seeded(spawner, call_site, request))
         use #(spawner, endpoint) <- result.try(serving(origin))
         endpoint.spawn(
           remote_spawn.Delegation(
@@ -2132,6 +2180,8 @@ fn reach_of(
         config.keepers,
         session,
         fn() { list.contains(manager.unshared_sessions(registry), session) },
+        config.state_node.store,
+        local_capture(config),
         logger,
       ))
     Some(membership), Ok(Some(marker)) ->
@@ -2144,12 +2194,37 @@ fn reach_of(
           config.keepers,
           session,
           fn() { True },
+          config.state_node.store,
+          local_capture(config),
           logger,
         )
         |> remote_reach.restricted(spawner.spawn_on)
       })
     Some(_), Error(_) -> None
   }
+}
+
+/// How a session of this daemon captures a workspace on this machine into the
+/// daemon's state store (protocol-change/107), or `None` when the daemon keeps no
+/// store or could not start a sandboxed Git.
+///
+/// The commit author of a snapshot of uncommitted work is the operator's own
+/// global identity (`client/owner_identity`), so the snapshot is made by the name
+/// the operator's commits are. A daemon with no identity captures a clean
+/// workspace and refuses a dirty one, rather than invent an author.
+fn local_capture(
+  config: Config,
+) -> Option(fn(String) -> Result(state_object.State, String)) {
+  option.map(state_node.capturer(config.state_node), fn(capturer) {
+    fn(directory) {
+      let identity =
+        option.unwrap(
+          owner_identity.lookup(owner_identity.default(), 5000),
+          git_identity.Identity(None, None),
+        )
+      state_capture.capture(capturer, directory, identity, state_object.Full)
+    }
+  })
 }
 
 /// The deepest spawn a session's Agency admits, or `None` for the Agency's own

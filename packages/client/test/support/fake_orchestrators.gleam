@@ -284,6 +284,8 @@ pub fn voting(
         False -> Error(remote_reach.not_configured(name))
       }
     },
+    states: None,
+    capture: None,
     keep: fn(name, vote) { process.send(votes, #(name, vote)) },
   )
 }

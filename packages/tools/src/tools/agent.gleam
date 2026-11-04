@@ -315,6 +315,11 @@ pub type Provenance {
   /// At the caller's current leaf, copying the caller's entire
   /// conversation into the child's context window.
   MyConversation
+
+  /// At the root of the tree, as `Fresh`, with a copy of the caller's workspace
+  /// as it is now, uncommitted work included, for a child that runs on another
+  /// orchestrator (protocol-change/107). The conversation is not copied.
+  MyWorkspace
 }
 
 /// The shape a parent may demand of a child's terminal result.
@@ -1684,15 +1689,7 @@ pub fn spawn_tool(
             <> "child",
           ),
         ),
-        #(
-          "context",
-          tool.enum_property(
-            ["fresh", "my_conversation"],
-            "fresh (default) starts the child at the root of the tree. "
-              <> "my_conversation forks at your current leaf, copying your "
-              <> "entire conversation into the child's context window",
-          ),
-        ),
+        #("context", context_property(orchestrator_names)),
         #(
           "detach",
           tool.boolean_property(
@@ -1708,6 +1705,33 @@ pub fn spawn_tool(
     requirements: empty_requirements,
     run: fn(ctx, args) { run_spawn(spawn, ctx, args) },
   )
+}
+
+/// The `context` property. `my_workspace` is offered only where `on` is, because
+/// it sends a copy of the workspace to another orchestrator and has no meaning
+/// for a strand of this session.
+fn context_property(orchestrator_names: List(String)) -> JsonValue {
+  let base =
+    "fresh (default) starts the child at the root of the tree. "
+    <> "my_conversation forks at your current leaf, copying your "
+    <> "entire conversation into the child's context window"
+
+  // The third word needs a place to send the workspace.
+  case orchestrator_names {
+    [] -> tool.enum_property(["fresh", "my_conversation"], base)
+    [_, ..] ->
+      tool.enum_property(
+        ["fresh", "my_conversation", "my_workspace"],
+        base
+          <> ". my_workspace, only with `on`, starts the child with a fresh "
+          <> "conversation and a copy of your workspace as it is now, "
+          <> "uncommitted edits and new files included, in a checkout of its "
+          <> "own under that orchestrator's workspace; your own checkout is "
+          <> "not touched and nothing is pushed. The orchestrator's owner "
+          <> "decides whether it takes a workspace, and a refusal names the "
+          <> "setting. While the copy is made, your other tool calls wait",
+      )
+  }
 }
 
 /// Renders the schema property for remote orchestrator placement when available.
@@ -1867,8 +1891,13 @@ fn decode_provenance(args: JsonValue) -> Result(Provenance, String) {
     Ok(None) -> Ok(Fresh)
     Ok(Some("fresh")) -> Ok(Fresh)
     Ok(Some("my_conversation")) -> Ok(MyConversation)
+    Ok(Some("my_workspace")) -> Ok(MyWorkspace)
     Ok(Some(other)) ->
-      Error("`context` must be fresh or my_conversation, not `" <> other <> "`")
+      Error(
+        "`context` must be fresh or my_conversation (or my_workspace, with `on`), not `"
+        <> other
+        <> "`",
+      )
   }
 }
 

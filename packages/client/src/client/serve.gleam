@@ -172,10 +172,12 @@ import client/secrets
 import client/server
 import client/session_git
 import client/skill_tool
+import client/state_object
 import client/system_prompt
 import client/tool_holder
 import client/upgrade/control as upgrade_control
 import client/wiring
+import client/workspace_gate
 import client/workspace_plane
 import client/workspace_policy
 import client/worktree_diff
@@ -3425,6 +3427,71 @@ pub fn storage_open_refusal(error: session.OpenError) -> String {
   }
 }
 
+// The words a spawn that asks for the workspace is refused with when the
+// workspace is not on this machine.
+const remote_workspace_refusal =
+  "this session's workspace is on an executor, and a copy of it cannot be sent with a spawn yet: the executor can capture it, but the relay into this orchestrator's store is not built. Start the child without `context: my_workspace`, or work in a session whose workspace is on this machine"
+
+// How a session captures the workspace its remote children start from
+// (protocol-change/107). A workspace on this machine is captured by this node's
+// own sandboxed Git, behind the gate, into this node's store; one on an executor
+// is refused with the reason, and so is a node that keeps no store or has no
+// sandboxed Git to run the capture in.
+/// The session's way of capturing its workspace for a spawn.
+fn seeding_of(
+  home: Home,
+  workspace: String,
+  gate: workspace_gate.Gate,
+  capture: Option(fn(String) -> Result(state_object.State, String)),
+) -> agency.Seeding {
+  case home, capture {
+    There(..), _ ->
+      agency.Seeding(capture: fn() { Error(remote_workspace_refusal) })
+    Here(..), None ->
+      agency.Seeding(capture: fn() {
+        Error(
+          "this orchestrator cannot capture a workspace: it keeps no state store or has no sandboxed Git",
+        )
+      })
+    Here(..), Some(capture) ->
+      agency.Seeding(capture: fn() { captured(capture, workspace, gate) })
+  }
+}
+
+// The capture itself: the gate is closed to the session's workspace tools, the
+// workspace is captured whole into the store, and the gate opens again. A gate
+// that would not close, or that lapsed under the capture, is a refusal in words
+// for the model, and nothing is stored that the spawn could name.
+/// Captures a local workspace behind its gate.
+fn captured(
+  capture: fn(String) -> Result(state_object.State, String),
+  workspace: String,
+  gate: workspace_gate.Gate,
+) -> Result(state_object.State, String) {
+  case
+    workspace_gate.exclusive(
+      gate,
+      workspace_gate.drain_ms,
+      workspace_gate.hold_ms,
+      fn() { capture(workspace) },
+    )
+  {
+    Ok(made) -> made
+    Error(workspace_gate.NotQuiet) ->
+      Error(
+        "the workspace did not go quiet: a tool call was still running after "
+        <> int.to_string(workspace_gate.drain_ms / 1000)
+        <> " seconds. Try again when it has finished",
+      )
+    Error(workspace_gate.Lapsed) ->
+      Error(
+        "the copy of the workspace took too long and was discarded, because the workspace may have changed while it was made. Try again",
+      )
+    Error(workspace_gate.Unavailable) ->
+      Error("the workspace's gate did not answer")
+  }
+}
+
 // Where the workspace half of the session in this assembly is, once chosen.
 type Home {
   Here(prepared: workspace_plane.Prepared)
@@ -3880,9 +3947,22 @@ fn assemble_in(
 
   // A delegate session's depth cap is its spawner's `max_depth`; every other
   let agency_base = agency.default_config(agency_name, clock)
+
+  // The workspace's gate, which a copy of the workspace for a child on another
+  // orchestrator is made behind (protocol-change/107). It is a supervised child
+  // of the services tree below, found by this address, so the Agency's spawn and
+  // the tool calls that must wait for it can name it before it exists.
+  let gate_address = address.new_address(namespace)
+  let gate = workspace_gate.at(gate_address)
   let agency_config =
     agency.Config(
       ..agency_base,
+      seeding: seeding_of(
+        home,
+        settings.workspace,
+        gate,
+        option.then(settings.remote_reach, fn(reach) { reach.capture }),
+      ),
       depth_cap: option.unwrap(settings.depth_cap, agency_base.depth_cap),
       peer_defaults: option.unwrap(
         settings.peer_defaults,
@@ -4678,7 +4758,13 @@ fn assemble_in(
       ..held,
       tools: effects.ToolSurface(
         ..held.tools,
-        run: wiring.run_placed(held.tools.run, run_holder, opened, clock),
+        run: wiring.run_gated(
+          held.tools.run,
+          run_holder,
+          opened,
+          clock,
+          Some(gate),
+        ),
         // A workspace on an executor keeps a record of the calls it ran, which
         // the runtime asks about an orphaned one. A local workspace has none.
         recover: half.recover,
@@ -5023,6 +5109,7 @@ fn assemble_in(
     )
     // Before the Agency's holder, so a reap it runs at start finds the name bound.
     |> sup.add(effect_abort.supervised(effect_abort_name, abort_op_effects))
+    |> sup.add(workspace_gate.supervised(gate_address))
     |> sup.add(
       supervision.worker(fn() { agency.start(agency_config, runtime) }),
     )

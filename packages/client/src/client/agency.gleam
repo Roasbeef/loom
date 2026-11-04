@@ -325,6 +325,7 @@ import client/remote_mail
 import client/remote_reach
 import client/remote_send
 import client/remote_spawn
+import client/state_object
 import client/workflow_ledger
 import core/clock.{type Clock}
 import core/entry
@@ -448,6 +449,9 @@ pub type Config {
     /// ask them (protocol-change/084). `remote_reach.none` is every host that
     /// reaches none, and `agent_spawn` then offers no `on`.
     remote: remote_reach.Reach,
+    /// How a spawn that asks for `context: my_workspace` captures the workspace
+    /// its child starts from (protocol-change/107).
+    seeding: Seeding,
     /// Called once after a record of a remote child is left for the second
     /// drainer instance to act on (a spawn that was not answered, or a child
     /// that is running and may finish unwaited), so that instance arms its retry
@@ -546,6 +550,7 @@ pub fn default_config(name: address.Address(Message), clock: Clock) -> Config {
     peer_defaults: peer_mail.no_defaults,
     outbox_queued: fn() { Nil },
     remote: remote_reach.none(""),
+    seeding: unseeded(),
     remote_queued: fn() { Nil },
     deadline_tick_ms: None,
     abort_effects: fn(_operation) { Nil },
@@ -592,6 +597,9 @@ pub type Message {
     caller: Caller,
     request: agent.SpawnRequest,
     orchestrator: String,
+    /// The state of the workspace the child starts from, captured before the
+    /// stub is written so that the stub names it for every resend.
+    state: Option(state_object.State),
     reply: Subject(Result(#(String, remote_child.Stub), Refusal)),
   )
 
@@ -707,10 +715,10 @@ pub fn start(
         )
         actor.continue(state)
       }
-      AdmitRemote(caller:, request:, orchestrator:, reply:) -> {
+      AdmitRemote(caller:, request:, orchestrator:, state: seed, reply:) -> {
         process.send(
           reply,
-          admit_remote(config, state, caller, request, orchestrator),
+          admit_remote(config, state, caller, request, orchestrator, seed),
         )
         actor.continue(state)
       }
@@ -1931,6 +1939,10 @@ fn create(
       |> result.map_error(fn(error) {
         agent.PlaneFailed(reason: describe_api(error))
       })
+
+    // A child of this session already works in this session's workspace.
+    agent.MyWorkspace ->
+      Error(agent.InvalidArgument(reason: local_workspace_refusal))
   })
 
   // State what the branch decides before dispatching.
@@ -4149,6 +4161,71 @@ const remote_last_pause_ms = 2000
 // milliseconds. Each task bounds itself; this only stops a task that does not.
 const remote_join_slack_ms = 10_000
 
+// --- the workspace a child starts from ----------------------------------------
+
+/// How a session captures the workspace a child on another orchestrator starts
+/// from (protocol-change/107). The session's assembly supplies it, because only
+/// the assembly knows whether the workspace is on this machine or on an executor,
+/// and holds the gate that keeps it quiet.
+pub type Seeding {
+  Seeding(
+    /// Captures the workspace into this node's state store and answers the
+    /// state's description, or why it cannot, in words for the parent's model.
+    /// It holds the workspace's gate while it works and gives it up within a
+    /// deadline, so it may take minutes and never hangs.
+    capture: fn() -> Result(state_object.State, String),
+  )
+}
+
+/// The seeding of a session that has no workspace it can send: embedded hosts and
+/// any session the assembly did not equip. A spawn that asks for a workspace is
+/// refused with the reason.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Error(_) = agency.unseeded().capture()
+/// ```
+pub fn unseeded() -> Seeding {
+  Seeding(capture: fn() {
+    Error("this session has no workspace it can send to another orchestrator")
+  })
+}
+
+// The words a local spawn that asks for the workspace is refused with.
+const local_workspace_refusal =
+  "`context: my_workspace` is for a child on another orchestrator (`on`); a child of this session already works in this workspace"
+
+// The words a program's spawn that asks for the workspace is refused with: the
+// program's own call holds the workspace, so the copy could never be made.
+const program_workspace_refusal =
+  "a program cannot start a child with `context: my_workspace`: the program is a tool call that holds the workspace the copy would wait for. Start the child from a tool call instead"
+
+/// The state of the workspace a remote spawn starts its child from, or nothing
+/// when it asks for none.
+///
+/// The capture runs here, on the caller's own process and before the holder is
+/// asked to write the stub, so the stub records the state and every resend names
+/// the same bytes. It runs for a call site the holder has already seen too, which
+/// costs a second capture after a crash and leaves the first state to the store's
+/// retention; the stub of the first attempt is the one that wins and names its
+/// own state.
+fn seeded(
+  config: Config,
+  caller: Caller,
+  request: agent.SpawnRequest,
+) -> Result(Option(state_object.State), Refusal) {
+  case request.context, caller.minter {
+    agent.MyWorkspace, agent.Program(..) ->
+      Error(agent.InvalidArgument(reason: program_workspace_refusal))
+    agent.MyWorkspace, agent.ToolCall ->
+      config.seeding.capture()
+      |> result.map(Some)
+      |> result.map_error(fn(reason) { agent.InvalidArgument(reason:) })
+    agent.Fresh, _ | agent.MyConversation, _ -> Ok(None)
+  }
+}
+
 /// resumes asking, one already answered returns what it recorded.
 /// holder. Replaying the same call site finds its stub: one still `Requested`
 /// long part, the network, runs here on the caller's own process, never in the
@@ -4169,9 +4246,10 @@ fn spawn_elsewhere(
     orchestrator,
     custody,
   ))
+  use seed <- result.try(seeded(config, caller, request))
   use #(key, stub) <- result.try(
     process.call(subject, config.holder_timeout_ms, fn(reply) {
-      AdmitRemote(caller:, request:, orchestrator:, reply:)
+      AdmitRemote(caller:, request:, orchestrator:, state: seed, reply:)
     }),
   )
 
@@ -4247,6 +4325,7 @@ fn admit_remote(
   caller: Caller,
   request: agent.SpawnRequest,
   orchestrator: String,
+  seed: Option(state_object.State),
 ) -> Result(#(String, remote_child.Stub), Refusal) {
   use ledger <- result.try(read_ledger(runtime))
   use <- bool.guard(
@@ -4281,7 +4360,7 @@ fn admit_remote(
         None,
         now,
       ))
-      write_stub(config, runtime, ledger, caller, request, orchestrator)
+      write_stub(config, runtime, ledger, caller, request, orchestrator, seed)
     }
   }
 }
@@ -4302,6 +4381,7 @@ fn write_stub(
   caller: Caller,
   request: agent.SpawnRequest,
   orchestrator: String,
+  seed: Option(state_object.State),
 ) -> Result(#(String, remote_child.Stub), Refusal) {
   let key = remote_child.stub_key(agent.call_site_digest(caller))
   use Nil <- result.try(check_capacity(config, runtime, ledger, caller))
@@ -4326,7 +4406,7 @@ fn write_stub(
       ),
       depth: parent_depth(ledger, caller),
       parent_tools: configuration.active_tool_names,
-      request: remote_request(request),
+      request: remote_request(request, seed),
       name:,
       glance: None,
       glance_seen_ms: 0,
@@ -4372,7 +4452,10 @@ fn is_same_call(
 /// orchestrator.
 /// because a remote child's is always fresh, and the placement is the stub's own
 /// The request as the other orchestrator is sent it. The context is dropped,
-fn remote_request(request: agent.SpawnRequest) -> remote_spawn.Request {
+fn remote_request(
+  request: agent.SpawnRequest,
+  seed: Option(state_object.State),
+) -> remote_spawn.Request {
   remote_spawn.Request(
     purpose: request.purpose,
     brief: request.brief,
@@ -4381,7 +4464,7 @@ fn remote_request(request: agent.SpawnRequest) -> remote_spawn.Request {
     within_ms: request.within_ms,
     result_schema: request.result_schema,
     detach: remote_spawn.Detached,
-    state: None,
+    state: seed,
   )
 }
 

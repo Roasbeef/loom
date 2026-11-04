@@ -53,23 +53,30 @@ import client/peer_mail.{type Failure}
 import client/remote/address
 import client/remote/link_keeper.{type Keepers}
 import client/remote/orchestrator_port
+import client/remote/state_link
 import client/remote_escalation
 import client/remote_mail
 import client/remote_reach.{type Reach}
 import client/remote_spawn.{type Parent, type SpawnRefusal}
 import client/roster.{type Roster}
+import client/state_object
+import client/state_store.{type Store}
+import client/state_transfer
 import core/ids
 import core/json.{type JsonValue}
 import gleam/dict
 import gleam/erlang/atom
 import gleam/erlang/node
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import host/bootstrap
 import session_view/remote_transcript
 import telemetry/field
 import telemetry/log.{type Logger}
 import tools/agent
+import weft
 
 // How much longer than the window it asks the receiver to wait a join's own
 // deadline is, so the receiver's answer for a window that ran out is not itself
@@ -134,6 +141,8 @@ pub fn over_distribution(
   keepers: Keepers,
   session: String,
   offered: fn() -> Bool,
+  states: Option(Store),
+  capture: Option(fn(String) -> Result(state_object.State, String)),
   logger: Logger,
 ) -> Reach {
   remote_reach.Reach(
@@ -149,7 +158,8 @@ pub fn over_distribution(
         Error(failure) -> spawn_answer(Error(failure), logger, site, None)
         Ok(at) -> {
           let peer = atom.to_string(node.name(at.node))
-          orchestrator_port.ask_spawn(
+          asked_with_state(
+            states,
             at,
             parent,
             site,
@@ -218,6 +228,8 @@ pub fn over_distribution(
         peer_mail.Refused("its page could not be read: " <> reason)
       })
     },
+    states:,
+    capture:,
     keep: fn(name, vote) {
       // This match resolves dict.get(keepers, name) before the surrounding protocol step continues.
       // This match resolves dict.get(keepers, name) before the enclosing validation continues.
@@ -232,6 +244,138 @@ pub fn over_distribution(
       }
     },
   )
+}
+
+/// How long one question of a state transfer waits for the peer, in milliseconds.
+const state_question_ms = 15_000
+
+/// Asks the receiver to start a child, and sends the state the request names
+/// when the receiver says it does not hold it (protocol-change/107).
+///
+/// A request with no state is one `ask_spawn`, exactly as before. A request that
+/// names a state is asked first as it is: the receiver answers `StateMissing`
+/// with the bytes it holds, this node sends the rest from its own store, and the
+/// same request is asked again. A spawn is safe to repeat, so a resend after any
+/// failure starts at whatever the receiver holds, and the outbox drainer's
+/// ordinary retry carries a transfer that did not finish: one attempt moves what
+/// it can inside `within_ms`, and silence is the answer when the state did not
+/// all arrive. A refusal of the transfer, or a store that no longer holds the
+/// state, is final and reaches the parent as `StateRefused`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_spawner.asked_with_state(states, at, parent, site, 0, tools, request, 30_000)
+/// ```
+@internal
+pub fn asked_with_state(
+  states: Option(Store),
+  at: address.Address(orchestrator_port.Message),
+  parent: Parent,
+  site: remote_spawn.CallSite,
+  depth: Int,
+  tools: List(String),
+  request: remote_spawn.Request,
+  within_ms: Int,
+) -> Result(Result(remote_spawn.Spawned, SpawnRefusal), Nil) {
+  let started = bootstrap.monotonic_time_ms()
+  let ask = fn(left) {
+    orchestrator_port.ask_spawn(at, parent, site, depth, tools, request, left)
+  }
+
+  // The receiver says what it holds, and only a request that names a state can
+  // be told it is missing.
+  case ask(within_ms), request.state {
+    Ok(Error(remote_spawn.StateMissing(hash:, have: _))), Some(state)
+      if state.hash == hash
+    ->
+      case sent(states, at, state, within_ms) {
+        Ok(Nil) ->
+          ask(int.max(
+            1,
+            within_ms - { bootstrap.monotonic_time_ms() - started },
+          ))
+        Error(Held(refused)) -> Ok(Error(refused))
+        Error(NotAll) -> Error(Nil)
+      }
+    heard, _ -> heard
+  }
+}
+
+// Why a transfer did not end the question: the state is refused for good, or it
+// did not all arrive in time and the same call asks again.
+type Unsent {
+  Held(refused: SpawnRefusal)
+  NotAll
+}
+
+/// Sends a state from this node's store to the receiver's, for at most
+/// `within_ms`. The work is bounded by a deadline that cancels it, so one attempt
+/// never outlasts the window the caller has and the next attempt resumes at the
+/// receiver's offset.
+fn sent(
+  states: Option(Store),
+  at: address.Address(orchestrator_port.Message),
+  state: state_object.State,
+  within_ms: Int,
+) -> Result(Nil, Unsent) {
+  // A node with no store has nothing to send from, and a resend cannot change it.
+  case states {
+    None ->
+      Error(
+        Held(remote_spawn.StateRefused(
+          reason: "this orchestrator keeps no state store to send the state from",
+        )),
+      )
+    Some(store) -> {
+      let link = state_link.via_port(at, state_question_ms)
+
+      // Delivered ends the question; a refusal or a lost state is final; silence
+      // and a window that ran out leave the rest to the next attempt.
+      case
+        bounded(within_ms, fn() { state_transfer.send(store, state.hash, link) })
+      {
+        Ok(state_transfer.Delivered) -> Ok(Nil)
+        Ok(state_transfer.Declined(refusal:)) ->
+          Error(
+            Held(remote_spawn.StateRefused(
+              reason: "the receiver declined the state: "
+              <> state_transfer.describe(refusal),
+            )),
+          )
+
+        // The store lost the state, which retention can do after a week: no
+        // resend can make it again, so the parent is told.
+        Ok(state_transfer.Faulted(reason:)) ->
+          Error(Held(remote_spawn.StateRefused(reason:)))
+        Ok(state_transfer.Silent) | Ok(state_transfer.Stalled) | Error(Nil) ->
+          Error(NotAll)
+      }
+    }
+  }
+}
+
+/// Runs work for at most `ms` milliseconds, in a run that cancels it at the
+/// deadline and joins it before returning.
+fn bounded(ms: Int, work: fn() -> a) -> Result(a, Nil) {
+  let outcomes =
+    weft.new([fn() { Ok(work()) }])
+    |> weft.deadline(ms)
+    |> weft.start
+
+  // Only a task that finished has a value; every other end is the window
+  // closing on the work.
+  case outcomes {
+    [weft.Completed(value:, ..)] -> Ok(value)
+    [weft.Failed(..)]
+    | [weft.Crashed(..)]
+    | [weft.Abandoned(..)]
+    | [weft.NeverStarted(..)]
+    | [weft.DrainProofLost(..)]
+    | [weft.CancellationUnconfirmed(..)]
+    | []
+    | [_, _, ..] -> Error(Nil)
+  }
 }
 
 /// The sender of a delegate session: how a child's mail and progress reach the
