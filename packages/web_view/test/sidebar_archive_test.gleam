@@ -103,6 +103,7 @@ fn home_start(manage: Option(Ask)) -> home.Start {
     projects: None,
     profiles: [],
     models: [],
+    readers: [],
     signins: fn(deliver) { deliver(signins.Listed([])) },
     login: None,
     bookmark: None,

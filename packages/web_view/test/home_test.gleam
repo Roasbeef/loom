@@ -84,6 +84,7 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     projects: None,
     profiles: [],
     models: [],
+    readers: [],
     signins: fn(deliver) { deliver(signins.Listed([])) },
     login: None,
     bookmark: None,
@@ -2702,13 +2703,13 @@ pub fn a_creation_carries_the_profile_the_form_chose_test() {
         "/src/loom",
         "",
         creations.Private,
-        creations.Roles(option.Some("deepseek"), None),
+        creations.Roles(option.Some("deepseek"), None, option.None),
       ),
     )
   assert process.receive(asked, 0)
     == Ok(#(
       creations.Drawn("/src/loom"),
-      creations.Roles(option.Some("deepseek"), None),
+      creations.Roles(option.Some("deepseek"), None, option.None),
     ))
 
   // The typed folder's form carries it too, and the default roles are None.
@@ -2741,7 +2742,7 @@ pub fn a_profile_the_daemon_did_not_list_asks_nothing_test() {
         "/src/loom",
         "",
         creations.Private,
-        creations.Roles(option.Some("other"), None),
+        creations.Roles(option.Some("other"), None, option.None),
       ),
     )
   assert process.receive(asked, 0) == Error(Nil)
@@ -2778,13 +2779,14 @@ pub fn the_forms_offer_a_model_select_only_when_models_exist_test() {
 
 pub fn a_creation_carries_the_model_the_form_chose_test() {
   let asked = process.new_subject()
-  let roles = creations.Roles(option.Some("deepseek"), option.Some("fast"))
+  let roles =
+    creations.Roles(option.Some("deepseek"), option.Some("fast"), option.None)
   let #(model, _) = opened(chosen(["deepseek"], ["fast"], asked))
   let model = run(model, home.Choosing("/src/loom"))
   let _ = run(model, home.Creating("/src/loom", "", creations.Private, roles))
   assert process.receive(asked, 0) == Ok(#(creations.Drawn("/src/loom"), roles))
 
-  let only_model = creations.Roles(None, option.Some("fast"))
+  let only_model = creations.Roles(None, option.Some("fast"), None)
   let #(model, _) = opened(chosen([], ["fast"], asked))
   let model = run(model, home.OpeningElsewhere)
   let _ =
@@ -2810,7 +2812,7 @@ pub fn a_model_the_daemon_did_not_list_asks_nothing_test() {
         "/src/loom",
         "",
         creations.Private,
-        creations.Roles(None, option.Some("deepseek")),
+        creations.Roles(None, option.Some("deepseek"), None),
       ),
     )
   assert process.receive(asked, 0) == Error(Nil)
@@ -2824,7 +2826,7 @@ pub fn a_model_the_daemon_did_not_list_asks_nothing_test() {
         "~/app",
         "",
         creations.Private,
-        creations.Roles(None, option.Some("other")),
+        creations.Roles(None, option.Some("other"), None),
       ),
     )
   assert process.receive(asked, 0) == Error(Nil)

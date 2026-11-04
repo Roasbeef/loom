@@ -1145,9 +1145,9 @@ type Flags {
     // line flag: only a managed session has one, from its registration, so
     // `resolve_managed` is the one place that sets it.
     profile: Option(String),
-    // The model the session's `main` role is pinned to, for the same reason and
-    // from the same place (protocol-change/080).
-    model: Option(String),
+    // The models the session's roles are pinned to, for the same reason and
+    // from the same place (protocol-change/108).
+    pins: List(#(catalogue.PinnedRole, String)),
     codemode_seed: Option(String),
     codemode_seams: Option(String),
     demand: Option(EnforcementDemand),
@@ -1168,7 +1168,7 @@ fn parse(arguments: List(String)) -> Result(Flags, String) {
       helper: None,
       config: None,
       profile: None,
-      model: None,
+      pins: [],
       codemode_seed: None,
       codemode_seams: None,
       demand: None,
@@ -1217,7 +1217,7 @@ pub fn resolve_managed(
       workspace: Some(registration.workspace),
       config: configuration,
       profile: registration.profile,
-      model: registration.model,
+      pins: registration.pins,
     ),
     placement,
   ))
@@ -1311,7 +1311,7 @@ pub fn build_domain(
     path -> Some(path)
   }
 
-  use _loaded <- result.try(load_config(configuration, None, None))
+  use _loaded <- result.try(load_config(configuration, None, []))
   use Nil <- result.try(
     bootstrap.ensure_private_directory(filepath.directory_name(
       selected.memory_path,
@@ -1541,7 +1541,7 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       workspace_config,
       advisor_config,
     )
-  <- result.try(load_config(flags.config, flags.profile, flags.model))
+  <- result.try(load_config(flags.config, flags.profile, flags.pins))
 
   // parse guarantees a routed, resolvable main chain, and the env
   // catalogue routes one by construction; the check stays for
@@ -1891,7 +1891,7 @@ type Loaded =
 fn load_config(
   flag: Option(String),
   profile: Option(String),
-  model: Option(String),
+  pins: List(#(catalogue.PinnedRole, String)),
 ) -> Result(Loaded, String) {
   // Decide how to handle flag {.
   case flag {
@@ -1899,8 +1899,8 @@ fn load_config(
       // The environment surface defines no profiles and no model keys, so a
       // session that was created under either cannot be served without the
       // file that names it.
-      use catalogue <- result.try(case profile, model {
-        None, None -> Ok(env_catalog())
+      use catalogue <- result.try(case profile, pins {
+        None, [] -> Ok(env_catalog())
         Some(name), _ ->
           Error(
             "profile \""
@@ -1909,10 +1909,15 @@ fn load_config(
             <> name
             <> ".roles] table, and this host has none",
           )
-        None, Some(key) ->
+        None, [#(role, key), ..] ->
           Error(
             "model \""
             <> key
+            <> case role {
+              catalogue.PinMain -> ""
+              other ->
+                "\" pinned to role \"" <> catalogue.pinned_role_name(other)
+            }
             <> "\" needs a config file with a [models."
             <> key
             <> "] table, and this host has none",
@@ -1943,7 +1948,7 @@ fn load_config(
           <> string.inspect(error)
         }),
       )
-      parse_config(path, text, profile, model)
+      parse_config(path, text, profile, pins)
     }
   }
 }
@@ -1967,9 +1972,9 @@ pub fn check_config(
   path: String,
   text: String,
   profile: Option(String),
-  model: Option(String),
+  pins: List(#(catalogue.PinnedRole, String)),
 ) -> Result(Nil, String) {
-  parse_config(path, text, profile, model) |> result.replace(Nil)
+  parse_config(path, text, profile, pins) |> result.replace(Nil)
 }
 
 /// Establishes parse config for the caller, keeping its validation and result policy at this boundary.
@@ -1977,7 +1982,7 @@ fn parse_config(
   path: String,
   text: String,
   profile: Option(String),
-  model: Option(String),
+  pins: List(#(catalogue.PinnedRole, String)),
 ) -> Result(Loaded, String) {
   let named = fn(reason) { path <> ": " <> reason }
   use #(parsed, document) <- result.try(
@@ -1989,7 +1994,7 @@ fn parse_config(
   // file no longer defines refuses here, in the file's own words, where
   // the alternative is opening a session on roles it was not created with.
   use catalogue <- result.try(
-    with_choice(parsed, profile, model) |> result.map_error(named),
+    with_choice(parsed, profile, pins) |> result.map_error(named),
   )
   use rule_list <- result.try(
     rules.from_document(document) |> result.map_error(named),
@@ -2037,15 +2042,15 @@ fn parse_config(
 }
 
 // The catalogue a session routes by: the default one, or the one carrying the
-// named profile's roles, with `main` then pinned to the named model. The profile
+// named profile's roles, with each pinned role then set to its model. The profile
 // goes first because the model is laid over whatever role set results
-// (protocol-change/080).
+// (protocol-change/080, generalized by 107).
 
 /// Establishes with choice for the caller, keeping its validation and result policy at this boundary.
 fn with_choice(
   catalogue: catalog.Catalog,
   profile: Option(String),
-  model: Option(String),
+  pins: List(#(catalogue.PinnedRole, String)),
 ) -> Result(catalog.Catalog, String) {
   // Decide how to handle use profiled <- result.try( profile {.
   use profiled <- result.try(case profile {
@@ -2053,10 +2058,13 @@ fn with_choice(
     Some(name) -> catalog.select_profile(catalogue, name)
   })
 
-  // Decide how to handle model {.
-  case model {
-    None -> Ok(profiled)
-    Some(key) -> catalog.select_model(profiled, key)
+  // The pins are laid over whatever role set the profile gave. No pins leave
+  // the catalogue as it was.
+  case pins {
+    [] -> Ok(profiled)
+    pins ->
+      catalog.select_roles(profiled, pins)
+      |> result.map_error(catalog.pin_refusal_message)
   }
 }
 

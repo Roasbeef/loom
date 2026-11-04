@@ -24,6 +24,7 @@ fn offers() -> Offers {
     cards: placements.listed(["exec", "gpu"], ["linux"]),
     profiles: ["fast"],
     models: ["glm"],
+    readers: [],
     agent: composer.Here,
     here: "laptop",
     agents: [
@@ -160,13 +161,30 @@ pub fn a_profile_or_model_the_daemon_did_not_list_asks_nothing_test() {
   assert after.roles.profile == Some("fast")
 
   let #(state, _) = update(state, composer.ChoseModel(Some("glm")), offers())
-  assert state.roles == creations.Roles(Some("fast"), Some("glm"))
+  assert state.roles == creations.Roles(Some("fast"), Some("glm"), None)
 
   let #(after, _) = update(state, composer.ChoseModel(Some("other")), offers())
   assert after.roles == state.roles
 
   let #(state, _) = update(state, composer.ChoseModel(None), offers())
   assert state.roles.model == None
+}
+
+// The vision role is pinned only to a model the daemon said reads images, and
+// the chip's words name the pin after the others.
+pub fn a_vision_pin_needs_a_model_that_reads_images_test() {
+  let readers = Offers(..offers(), readers: ["glm"])
+  let state = composer.new()
+
+  let #(pinned, _) = update(state, composer.ChoseVision(Some("glm")), readers)
+  assert pinned.roles == creations.Roles(None, None, Some("glm"))
+  assert composer.role_words(pinned.roles) == "default · eyes glm"
+
+  let #(refused, _) = update(state, composer.ChoseVision(Some("glm")), offers())
+  assert refused.roles == creations.default_roles
+
+  let #(cleared, _) = update(pinned, composer.ChoseVision(None), readers)
+  assert cleared.roles.vision == None
 }
 
 // Search text applies only while the Code list is open, drops control characters
@@ -373,7 +391,7 @@ pub fn the_chip_words_say_what_is_chosen_test() {
     == "linux pool · repo"
   assert composer.target_words(composer.TypedFolder) == "a folder you type"
   assert composer.role_words(creations.default_roles) == "default"
-  assert composer.role_words(creations.Roles(None, Some("glm")))
+  assert composer.role_words(creations.Roles(None, Some("glm"), None))
     == "default · glm"
   assert composer.hint(["a", "b", "c", "d"]) == "a, 3 more"
   assert composer.hint(["a", "b"]) == "a, b"
@@ -650,7 +668,7 @@ pub fn a_switch_keeps_what_the_new_machine_offers_test() {
     composer.State(
       ..composer.new(),
       target: Some(composer.OnExecutor("exec", Some("repo"))),
-      roles: creations.Roles(Some("fast"), Some("glm")),
+      roles: creations.Roles(Some("fast"), Some("glm"), None),
     )
   let held =
     Offers(
@@ -661,7 +679,7 @@ pub fn a_switch_keeps_what_the_new_machine_offers_test() {
     )
   let kept = composer.kept(on_exec, held)
   assert kept.target == Some(composer.OnExecutor("exec", Some("repo")))
-  assert kept.roles == creations.Roles(Some("fast"), None)
+  assert kept.roles == creations.Roles(Some("fast"), None, None)
 
   let on_folder =
     composer.State(..composer.new(), target: Some(composer.Folder("/srv/app")))
@@ -698,7 +716,7 @@ pub fn a_switch_to_a_box_names_its_first_profile_test() {
   assert composer.kept(fresh, box_offers()).roles.profile == Some("default")
 
   let chosen =
-    composer.State(..fresh, roles: creations.Roles(Some("fast"), None))
+    composer.State(..fresh, roles: creations.Roles(Some("fast"), None, None))
   let two = Offers(..box_offers(), profiles: ["default", "fast"])
   assert composer.kept(chosen, two).roles.profile == Some("fast")
 

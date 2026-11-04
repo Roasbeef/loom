@@ -212,8 +212,8 @@ pub fn apply_event(
     }
     protocol.SchedulesSnapshot(schedules:) ->
       append_schedules(shared, schedules)
-    protocol.ProfileSnapshot(current:, available:, switched:) ->
-      append_profile(shared, current, available, switched)
+    protocol.ProfileSnapshot(current:, available:, switched:, pins:) ->
+      append_profile(shared, current, available, switched, pins)
 
     // The page's own read of what the session remembers, so the board is kept
     // for the host to draw and nothing is written to the transcript.
@@ -745,6 +745,7 @@ fn append_profile(
   current: Option(String),
   available: List(String),
   switched: Option(Int),
+  pins: List(#(String, String)),
 ) -> Shared(socket, recorder, source, replay_source) {
   let name = option.unwrap(current, "default roles")
 
@@ -758,6 +759,7 @@ fn append_profile(
         <> int.to_string(moved)
         <> " strand(s) moved · restarting the session to apply it"
       session_model.append_system(shared, summary)
+      |> append_pins(pins)
       |> shared_set.notice("model profile: " <> name)
     }
     None -> {
@@ -768,8 +770,31 @@ fn append_profile(
         <> string.join(names, ", ")
         <> " · /profile <name> switches the session",
       )
+      |> append_pins(pins)
       |> shared_set.notice("model profile: " <> name)
     }
+  }
+}
+
+/// The line that names the models a session was created with a role pinned to,
+/// as `pinned: main=opus, vision=eyes`, or nothing when it has none. A profile
+/// switch leaves the pins in place (protocol-change/108), so the line follows
+/// both the read and the switch's reply.
+fn append_pins(
+  shared: Shared(socket, recorder, source, replay_source),
+  pins: List(#(String, String)),
+) -> Shared(socket, recorder, source, replay_source) {
+  case pins {
+    [] -> shared
+    _ ->
+      session_model.append_system(
+        shared,
+        "pinned: "
+          <> string.join(
+          list.map(pins, fn(pin) { pin.0 <> "=" <> pin.1 }),
+          ", ",
+        ),
+      )
   }
 }
 

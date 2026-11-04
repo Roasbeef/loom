@@ -12,6 +12,7 @@ import gleam/erlang/process
 import gleam/float
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import mcp/name
 import provider/gateway as provider_gateway
@@ -21,7 +22,9 @@ import provider/model
 import provider/pricing
 import provider/secret
 import provider/stream
+import qcheck
 import simplifile
+import storage/catalogue as stored_catalogue
 import support/provider as provider_test
 
 // The example the docs ship is itself a fixture: it must always parse,
@@ -2374,6 +2377,158 @@ pub fn an_unknown_model_names_the_known_keys_test() {
     )
   assert catalog.unknown_model([], "x")
     == "unknown model \"x\"; the configuration defines no models"
+}
+
+// --- role pins (protocol-change/108) ----------------------------------------
+
+// The profiles fixture plus one entry that declares it cannot read images.
+const with_text_only =
+  "
+[models.blind]
+dialect = \"anthropic\"
+api_key_env = \"KEY\"
+model_id = \"m-blind\"
+context_window = 1000
+max_output_tokens = 100
+vision = false
+"
+
+fn pinning_catalogue() -> catalog.Catalog {
+  let assert Ok(parsed) = catalog.parse(with_profiles <> with_text_only)
+    as "the fixture with a text-only entry parses"
+  parsed
+}
+
+// The keys a `vision` pin accepts are the model keys less any entry that
+// declares `vision = false`, in the same order, so the form never offers a
+// text-only entry for the role.
+pub fn vision_model_keys_leave_out_a_text_only_entry_test() {
+  let parsed = pinning_catalogue()
+  assert list.contains(catalog.model_keys(parsed), "blind")
+  assert !list.contains(catalog.vision_model_keys(parsed), "blind")
+  assert catalog.vision_model_keys(parsed)
+    == list.filter(catalog.model_keys(parsed), fn(key) { key != "blind" })
+}
+
+pub fn pinned_roles_change_and_unpinned_roles_keep_their_chains_test() {
+  let assert Ok(parsed) = catalog.parse(with_profiles)
+  let assert Ok(pinned) =
+    catalog.select_roles(parsed, [
+      #(stored_catalogue.PinMain, "fast"),
+      #(stored_catalogue.PinVision, "eyes"),
+      #(stored_catalogue.PinAdvisor, "slow"),
+    ])
+
+  // `main` loses its fallback, `plan` and `summarize` are as they were, and the
+  // advisor, which the file does not route, gains the route the pin gives it.
+  assert pinned.roles
+    == [
+      #(model.Main, ["fast"]),
+      #(model.Plan, ["slow"]),
+      #(model.Summarize, ["slow"]),
+      #(model.Vision, ["eyes"]),
+      #(catalog.advisor_role, ["slow"]),
+    ]
+  assert pinned.models == parsed.models
+  assert catalog.select_roles(parsed, []) == Ok(parsed)
+}
+
+pub fn pins_are_laid_over_a_profile_test() {
+  let assert Ok(parsed) = catalog.parse(with_profiles)
+  let assert Ok(quick) = catalog.select_profile(parsed, "quick")
+  let assert Ok(pinned) =
+    catalog.select_roles(quick, [#(stored_catalogue.PinPlan, "fast")])
+  assert pinned.roles
+    == [
+      #(model.Main, ["fast"]),
+      #(model.Plan, ["fast"]),
+      #(model.Summarize, ["fast", "slow"]),
+      #(model.Vision, ["eyes"]),
+    ]
+}
+
+pub fn a_one_pin_main_is_select_model_test() {
+  let assert Ok(parsed) = catalog.parse(with_profiles)
+  assert catalog.select_roles(parsed, [#(stored_catalogue.PinMain, "eyes")])
+    |> result.map_error(catalog.pin_refusal_message)
+    == catalog.select_model(parsed, "eyes")
+}
+
+pub fn an_unknown_pin_names_the_role_unless_it_is_a_lone_main_test() {
+  let assert Ok(parsed) = catalog.parse(with_profiles)
+  assert catalog.select_roles(parsed, [#(stored_catalogue.PinVision, "nope")])
+    == Error(catalog.UnknownPin(
+      "unknown model \"nope\" for role \"vision\"; the configuration defines: eyes, fast, slow",
+    ))
+  assert catalog.select_roles(parsed, [#(stored_catalogue.PinMain, "nope")])
+    == Error(catalog.UnknownPin(
+      "unknown model \"nope\"; the configuration defines: eyes, fast, slow",
+    ))
+
+  // Main beside another pin is no longer the 080 request, so it names its role.
+  let assert Error(catalog.UnknownPin(words)) =
+    catalog.select_roles(parsed, [
+      #(stored_catalogue.PinMain, "nope"),
+      #(stored_catalogue.PinVision, "eyes"),
+    ])
+  assert string.contains(words, "for role \"main\"")
+}
+
+pub fn a_text_only_entry_cannot_be_pinned_to_vision_test() {
+  let parsed = pinning_catalogue()
+  assert catalog.select_roles(parsed, [#(stored_catalogue.PinVision, "blind")])
+    == Error(catalog.UnsuitablePin(
+      "model \"blind\" cannot serve role \"vision\": it declares vision = false; a vision role must name an entry that reads images",
+    ))
+
+  // A text-only entry serves every other role, `main` included.
+  let assert Ok(_) =
+    catalog.select_roles(parsed, [
+      #(stored_catalogue.PinMain, "blind"),
+      #(stored_catalogue.PinSubagent, "blind"),
+    ])
+}
+
+pub fn the_first_failing_pin_is_the_refusal_test() {
+  let parsed = pinning_catalogue()
+  let assert Error(catalog.UnknownPin(_)) =
+    catalog.select_roles(parsed, [
+      #(stored_catalogue.PinMain, "nope"),
+      #(stored_catalogue.PinVision, "blind"),
+    ])
+  let assert Error(catalog.UnsuitablePin(_)) =
+    catalog.select_roles(parsed, [
+      #(stored_catalogue.PinVision, "blind"),
+      #(stored_catalogue.PinRouter, "nope"),
+    ])
+}
+
+pub fn pinning_any_subset_changes_only_the_pinned_roles_test() {
+  let assert Ok(parsed) = catalog.parse(with_profiles)
+  let masks =
+    qcheck.generic_list(
+      elements_from: qcheck.bounded_int(from: 0, to: 1),
+      length_from: qcheck.return(7),
+    )
+
+  qcheck.default_config()
+  |> qcheck.with_test_count(300)
+  |> qcheck.with_seed(qcheck.seed(1071))
+  |> qcheck.run(masks, fn(mask) {
+    let pins =
+      list.zip(stored_catalogue.pinned_roles, mask)
+      |> list.filter(fn(pair) { pair.1 == 1 })
+      |> list.map(fn(pair) { #(pair.0, "eyes") })
+    let assert Ok(pinned) = catalog.select_roles(parsed, pins)
+    list.each(stored_catalogue.pinned_roles, fn(role) {
+      let routable = catalog.pinned_role(role)
+      let expected = case list.key_find(pins, role) {
+        Ok(_) -> Ok(["eyes"])
+        Error(Nil) -> list.key_find(parsed.roles, routable)
+      }
+      assert list.key_find(pinned.roles, routable) == expected
+    })
+  })
 }
 
 pub fn an_mcp_server_is_placed_by_runs_on_test() {

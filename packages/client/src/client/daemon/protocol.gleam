@@ -295,10 +295,11 @@ pub type Command {
     /// The model profile to create the session under, or `None` for the
     /// configuration's default roles (protocol-change/076).
     profile: Option(String),
-    /// The `[models.<key>]` entry to pin the session's `main` role to, or
-    /// `None` for the chain the profile or configuration gives
-    /// (protocol-change/080).
-    model: Option(String),
+    /// The `[models.<key>]` entries to pin the session's roles to, in the fixed
+    /// role order, or `[]` for the chains the profile or configuration gives.
+    /// The wire's `model` is the pin `main` and is merged with `roles`
+    /// (protocol-change/108, which generalizes 080).
+    pins: List(#(catalogue.PinnedRole, String)),
     /// The executor `workspace` is registered on, or `None` when `workspace`
     /// is a path on this host. When it is present `workspace` is a registered
     /// workspace name and the scope is session-only (protocol-change/078).
@@ -815,7 +816,7 @@ fn decode_fields(
       use name <- result.try(text_field(fields, "name", 256))
       use configuration <- result.try(configuration_field(fields))
       use profile <- result.try(profile_field(fields))
-      use model <- result.try(model_field(fields))
+      use pins <- result.try(pins_field(fields))
       use scope <- result.map(domain_scope(fields, placed))
       CreateSession(
         key,
@@ -823,7 +824,7 @@ fn decode_fields(
         name,
         configuration,
         profile,
-        model,
+        pins,
         executor,
         pool,
         scope,
@@ -1350,6 +1351,99 @@ fn node_field(
 }
 
 const model_words = "model must be a model key of 1 to 64 bytes"
+
+const roles_words = "roles must be an object from role name to a model key"
+
+// The role pins of a creation (protocol-change/108): `model`, which is the pin
+// `main`, and the optional `roles` object, merged into one list in the fixed
+// role order. Every malformed shape is refused as a bad request and none is
+// read as no choice, so a misspelled role cannot create a session whose pin did
+// nothing. An empty object is no pins, so a retry cannot differ from the
+// original by spelling. `model` and `roles.main` naming different keys is
+// refused naming both; neither wins.
+/// Extracts the merged role pins of a creation from payload fields.
+fn pins_field(
+  fields: List(#(String, JsonValue)),
+) -> Result(List(#(catalogue.PinnedRole, String)), String) {
+  use model <- result.try(model_field(fields))
+
+  // An absent `roles` is no pins; a present one must be an object.
+  use named <- result.try(case list.key_find(fields, "roles") {
+    Error(Nil) -> Ok([])
+    Ok(json.Object(pairs)) -> role_pairs(pairs, [])
+    Ok(_other) -> Error(roles_words)
+  })
+
+  // `model` is another spelling of the pin `main`. Agreeing spellings are one
+  // pin, and two different answers are refused so that neither wins silently.
+  use merged <- result.try(case model, list.key_find(named, catalogue.PinMain) {
+    None, _ -> Ok(named)
+    Some(key), Error(Nil) -> Ok([#(catalogue.PinMain, key), ..named])
+    Some(key), Ok(same) if key == same -> Ok(named)
+    Some(key), Ok(other) ->
+      Error(
+        "model \""
+        <> key
+        <> "\" and roles.main \""
+        <> other
+        <> "\" name different models; send one",
+      )
+  })
+
+  Ok(
+    list.filter_map(catalogue.pinned_roles, fn(role) {
+      list.key_find(merged, role) |> result.map(fn(key) { #(role, key) })
+    }),
+  )
+}
+
+// The pairs of a `roles` object, each a known role name with a model key. A
+// role named twice is refused, since an object with a repeated name has no
+// single meaning.
+/// Reads the pairs of a roles object into typed role pins.
+fn role_pairs(
+  pairs: List(#(String, JsonValue)),
+  seen: List(#(catalogue.PinnedRole, String)),
+) -> Result(List(#(catalogue.PinnedRole, String)), String) {
+  // Each pair is read in turn; the first malformed one is the refusal.
+  case pairs {
+    [] -> Ok(seen)
+    [#(name, value), ..rest] -> {
+      use role <- result.try(
+        catalogue.parse_pinned_role(name)
+        |> result.map_error(fn(_unknown) {
+          "roles names \""
+          <> name
+          <> "\", which is not a role (main, subagent, plan, summarize,"
+          <> " vision, advisor, router)"
+        }),
+      )
+      use key <- result.try(role_key(name, value))
+
+      // A repeated role has no single meaning, so it is refused.
+      case list.key_find(seen, role) {
+        Ok(_) -> Error("roles names \"" <> name <> "\" more than once")
+        Error(Nil) -> role_pairs(rest, [#(role, key), ..seen])
+      }
+    }
+  }
+}
+
+// The model key a roles pair holds: text within the key bound.
+/// Reads one value of a roles object as a model key.
+fn role_key(name: String, value: JsonValue) -> Result(String, String) {
+  let words = "roles." <> name <> " must be a model key of 1 to 64 bytes"
+
+  // Only text can be a key, and it must also fit the bound.
+  case value {
+    json.String(key) ->
+      case catalogue.is_model_key(key) {
+        True -> Ok(key)
+        False -> Error(words)
+      }
+    _ -> Error(words)
+  }
+}
 
 // The optional model key of a creation. An absent field leaves the main chain
 // as the profile or configuration gives it; a field that is present must be a

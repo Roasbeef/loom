@@ -45,7 +45,7 @@ fn registration(seed: Int) -> catalogue.Registration {
     request_key: "request-" <> int.to_string(seed),
     state: catalogue.Reserved,
     profile: option.None,
-    model: option.None,
+    pins: [],
     executor: "",
     pool: "",
     subtitle: option.None,
@@ -158,7 +158,7 @@ pub fn rename_requires_owner_epoch_and_preserves_residency_test() {
         record.name,
         record.configuration,
         option.None,
-        option.None,
+        [],
         "",
         "",
       ),
@@ -233,7 +233,7 @@ pub fn archive_requires_owner_and_stopped_custody_test() {
         record.name,
         record.configuration,
         option.None,
-        option.None,
+        [],
         "",
         "",
       ),
@@ -380,7 +380,7 @@ pub fn domain_configuration_is_selected_at_creation_not_open_test() {
             "Session",
             example.2,
             option.None,
-            option.None,
+            [],
             "",
             "",
           ),
@@ -692,7 +692,7 @@ pub fn creation_retry_preserves_reservation_before_and_after_assembly_test() {
       "first",
       "",
       option.None,
-      option.None,
+      [],
       "",
       "",
     )
@@ -730,7 +730,7 @@ pub fn creation_retry_preserves_reservation_before_and_after_assembly_test() {
   // retry that changes any of them is another request under the same key.
   list.each(
     [
-      manager.Creation(..request, model: option.Some("fast")),
+      manager.Creation(..request, pins: [#(catalogue.PinMain, "fast")]),
       manager.Creation(..request, executor: "box"),
       manager.Creation(..request, pool: "fleet"),
     ],
@@ -794,7 +794,7 @@ pub fn reserved_creation_requires_explicit_retry_after_capacity_refusal_test() {
       "second",
       "",
       option.None,
-      option.None,
+      [],
       "",
       "",
     )
@@ -2102,7 +2102,7 @@ pub fn every_open_builds_from_the_model_the_registration_stores_test() {
     catalogue.Registration(
       ..registration(921),
       profile: option.Some("alt"),
-      model: option.Some("fast"),
+      pins: [#(catalogue.PinMain, "fast")],
     )
   assert catalogue.reserve(store, pinned) == Ok(pinned)
   let assert Ok(pinned) = catalogue.confirm(store, pinned.id)
@@ -2120,7 +2120,7 @@ pub fn every_open_builds_from_the_model_the_registration_stores_test() {
   let built = process.new_subject()
   let registry =
     start(store, 1, fn(record, _) {
-      process.send(built, #(record.profile, record.model))
+      process.send(built, #(record.profile, record.pins))
       Ok(record.id)
     })
 
@@ -2130,7 +2130,7 @@ pub fn every_open_builds_from_the_model_the_registration_stores_test() {
   let assert Ok(manager.Opening(first)) = manager.open(registry, pinned.id)
     as "the first open admits the session"
   assert process.receive(built, 2000)
-    == Ok(#(option.Some("alt"), option.Some("fast")))
+    == Ok(#(option.Some("alt"), [#(catalogue.PinMain, "fast")]))
   await_status(registry, pinned.id, manager.Resident(first))
   let assert Ok(_) = manager.stop_session(registry, pinned.id)
     as "the session is stopped"
@@ -2138,7 +2138,7 @@ pub fn every_open_builds_from_the_model_the_registration_stores_test() {
   let assert Ok(manager.Opening(second)) = manager.open(registry, pinned.id)
     as "the resume admits the session again"
   assert process.receive(built, 2000)
-    == Ok(#(option.Some("alt"), option.Some("fast")))
+    == Ok(#(option.Some("alt"), [#(catalogue.PinMain, "fast")]))
   await_status(registry, pinned.id, manager.Resident(second))
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
@@ -2654,7 +2654,7 @@ fn delegate_request(
       name: "delegate " <> spawner <> " " <> parent_session,
       configuration: "",
       profile: option.Some("cheap"),
-      model: option.None,
+      pins: [],
       executor: "box",
       pool: "",
     ),
@@ -2825,7 +2825,7 @@ pub fn local_census_waits_for_a_creation_assembling_its_domain_test() {
         "local",
         "",
         option.None,
-        option.None,
+        [],
         "",
         "",
       ),
@@ -2853,7 +2853,7 @@ pub fn local_census_waits_for_a_creation_assembling_its_domain_test() {
         "remote",
         "",
         option.None,
-        option.None,
+        [],
         "box",
         "",
       ),
@@ -2915,7 +2915,7 @@ pub fn failed_and_inactive_reservations_do_not_block_local_census_test() {
         "failed",
         "",
         option.None,
-        option.None,
+        [],
         "",
         "",
       ),

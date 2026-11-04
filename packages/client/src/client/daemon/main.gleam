@@ -3124,10 +3124,18 @@ fn profile_desk(
   let id = registration.id
   profile_switch.Desk(
     current: registration.profile,
+    pins: registration.pins,
     names: fn() { profiles.names(configuration) },
     load: fn(profile) {
-      profiles.load(configuration, profile)
-      |> result.map_error(profiles.refusal_message)
+      // The entering catalogue carries the session's pins, as the one the
+      // session opened with does, so a pinned role compares equal on both sides
+      // of a switch and its strands stay where they are.
+      use loaded <- result.try(
+        profiles.load(configuration, profile)
+        |> result.map_error(profiles.refusal_message),
+      )
+      catalog.select_roles(loaded, registration.pins)
+      |> result.map_error(catalog.pin_refusal_message)
     },
     save: fn(profile) {
       manager.set_profile(registry, id, profile)
@@ -3148,10 +3156,10 @@ fn profile_desk(
       "" -> None
       path -> {
         let profile = registration.profile
-        let model = registration.model
+        let pins = registration.pins
         Some(
           config_watch.Source(path:, baseline:, check: fn(text) {
-            serve.check_config(path, text, profile, model)
+            serve.check_config(path, text, profile, pins)
           }),
         )
       }

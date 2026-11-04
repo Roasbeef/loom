@@ -532,6 +532,9 @@ pub type Snapshot {
     available: List(String),
     /// How many strands a switch moved; `None` for a read.
     switched: Option(Int),
+    /// The roles the session was created with a pinned model for, as role name
+    /// and `[models]` key in the fixed role order, or `[]` (protocol-change/108).
+    pins: List(#(String, String)),
   )
 }
 
@@ -2131,7 +2134,7 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
       json.Object([#("mode", json.String("proposals")), #("board", board)])
     MemorySnapshot(board:) ->
       json.Object([#("mode", json.String("memory")), #("board", board)])
-    ProfileSnapshot(current:, available:, switched:) ->
+    ProfileSnapshot(current:, available:, switched:, pins:) ->
       json.Object(
         list.flatten([
           [#("mode", json.String("profile"))],
@@ -2142,6 +2145,19 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
             None -> []
           },
           [#("available", json.Array(list.map(available, json.String)))],
+
+          // No pins is the absence of the field, as for the profile.
+          case pins {
+            [] -> []
+            pins -> [
+              #(
+                "pins",
+                json.Object(
+                  list.map(pins, fn(pin) { #(pin.0, json.String(pin.1)) }),
+                ),
+              ),
+            ]
+          },
 
           // This match resolves switched before the surrounding protocol step continues.
           case switched {
@@ -2977,7 +2993,8 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
       })
 
       use switched <- result.try(optional_int(fields, "moved"))
-      Ok(SnapshotEvent(ProfileSnapshot(current:, available:, switched:)))
+      use pins <- result.try(snapshot_pins(fields))
+      Ok(SnapshotEvent(ProfileSnapshot(current:, available:, switched:, pins:)))
     }
     other -> Error("unknown snapshot mode: " <> other)
   }
@@ -3937,5 +3954,25 @@ fn place_decimal_point(
           <> "."
           <> string.slice(digits, at_index: point, length: total - point)
       }
+  }
+}
+
+// The optional `pins` object of a `profile` snapshot, as role name and key
+// pairs. Absence is no pins; a present value must be an object of strings.
+/// Reads the pins of a profile snapshot's fields.
+fn snapshot_pins(
+  fields: List(#(String, JsonValue)),
+) -> Result(List(#(String, String)), String) {
+  // Absent is none; an object must hold only text values.
+  case list.key_find(fields, "pins") {
+    Error(Nil) -> Ok([])
+    Ok(json.Object(pairs)) ->
+      list.try_map(pairs, fn(pair) {
+        case pair.1 {
+          json.String(key) -> Ok(#(pair.0, key))
+          _ -> Error("pins must map role names to model keys")
+        }
+      })
+    Ok(_) -> Error("pins must be an object")
   }
 }

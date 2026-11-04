@@ -483,6 +483,12 @@ pub type Start {
     /// daemon checks the key against its configuration again when the creation
     /// runs, whatever this page said.
     models: List(String),
+    /// The keys among `models` that read images, as the daemon read them when
+    /// the page opened (protocol-change/108). The composer offers them beside
+    /// the `vision` role, and a creation carries a vision key only if it is in
+    /// this list. It is `[]` unless `create` is `Some`. The old forms draw no
+    /// vision select, so they never carry one.
+    readers: List(String),
     /// The executor names the daemon's configuration defines, as the daemon
     /// knew them when the page opened (protocol-change/078). The section for
     /// folders offers a panel for a workspace registered on one of them or in
@@ -2881,6 +2887,7 @@ fn offers(model: Model, entries: List(Entry)) -> composer.Offers {
         cards: model.cards,
         profiles: model.start.profiles,
         models: model.start.models,
+        readers: model.start.readers,
         agent: composer.Here,
         here:,
         agents:,
@@ -2895,6 +2902,7 @@ fn offers(model: Model, entries: List(Entry)) -> composer.Offers {
             cards: held.cards,
             profiles: held.profiles,
             models: held.models,
+            readers: [],
             agent:,
             here:,
             agents:,
@@ -2907,6 +2915,7 @@ fn offers(model: Model, entries: List(Entry)) -> composer.Offers {
             cards: placements.listed([], []),
             profiles: [],
             models: [],
+            readers: [],
             agent:,
             here:,
             agents:,
@@ -3177,6 +3186,7 @@ fn creating(
 fn offered_roles(model: Model, roles: creations.Roles) -> Bool {
   offered(model.start.profiles, roles.profile)
   && offered(model.start.models, roles.model)
+  && offered(model.start.readers, roles.vision)
 }
 
 // Whether a submitted workspace is one the form could have sent for the place
@@ -4114,6 +4124,7 @@ fn new_pane(model: Model) -> new_session.Pane(Msg) {
       choose: fn(target) { Composed(composer.ChoseTarget(target)) },
       profile: fn(profile) { Composed(composer.ChoseProfile(profile)) },
       model: fn(model) { Composed(composer.ChoseModel(model)) },
+      vision: fn(vision) { Composed(composer.ChoseVision(vision)) },
       search: fn(text) { Composed(composer.Searched(text)) },
       start: fn(name, typed) { Composed(composer.Started(name, typed)) },
       open: Opening,

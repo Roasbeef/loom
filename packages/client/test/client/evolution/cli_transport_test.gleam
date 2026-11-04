@@ -95,7 +95,7 @@ fn exercise() {
               "CLI",
               "",
               option.None,
-              option.None,
+              [],
               "",
               "",
             ),

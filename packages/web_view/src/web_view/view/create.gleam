@@ -1301,7 +1301,7 @@ fn chosen_roles(
     list.filter(listed, fn(field) { field.0 == "model" }),
     models,
   ))
-  #(rest, creations.Roles(profile:, model:))
+  #(rest, creations.Roles(profile:, model:, vision: None))
 }
 
 /// The text a form's entries for one select choose: none sent is the default, one

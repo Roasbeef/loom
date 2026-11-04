@@ -243,6 +243,25 @@ refuses totals over 511 rather than returning a prefix. The existing
 cross-page and oversized-domain registry fixtures remain, and corrupt source
 metadata refuses the entire enumeration through the same error channel.
 
+## Role pins
+
+Protocol-change/107. `sessions.create` takes an optional `roles` object, and
+`daemon/protocol.pins_field` merges it with `model` (the pin `main`) into
+`CreateSession.pins` in the fixed role order, refusing every malformed shape and
+two different answers for `main`. `manager.Creation.pins` and the stored
+`Registration.pins` replace the old `model` option, and a retry compares them.
+`profiles.check_choice` judges the profile and then `check_pins`, which is
+`catalog.select_roles` over the parsed file, so `unknown_model` and the new
+`unsuitable_model` come from the one function that also builds the session's
+catalogue: `serve.with_choice` applies `select_profile` and then `select_roles`
+at every open. A lone `main` pin keeps 080's refusal wording; any other set names
+the role. `profile_switch.Desk.pins` carries the stored pins; the desk's `load`
+applies them to the entering catalogue so `catalog.retargets` leaves a pinned
+role's strands in place, and the `profile` snapshot reports them as `pins`
+(role name and key, absent when empty). The remote spawner (`top_host`) and the
+web home still send one `model` and map it to the pin `main`; the web form does
+not yet offer other roles.
+
 ## Configuration parsing on session open
 
 `catalog.parse_with_document` validates the catalogue and returns its TOML
@@ -7047,8 +7066,13 @@ opens on the default model; with no config file it fails like a profile does.
 `unknown_model`, and the control dispatch words it with the keys that exist.
 `HomeAttachment.models` reads `profiles.model_keys` for the web form once at page
 open and, as for profiles, only for a page that holds the creation capability.
-`ui_socket.create_for` and `create_task` take a `creations.Roles` in place of a
-bare profile and map `unknown_model` to `creations.UnknownModel`. The observer
+`HomeAttachment.readers` is the subset of those keys that read images
+(`profiles.vision_model_keys`, from `catalog.vision_model_keys`, which leaves out
+an entry declaring `vision = false`); the page offers only these beside the
+`vision` role (protocol-change/108). `ui_socket.create_for` and `create_task` take a
+`creations.Roles` (`profile`, `model`, `vision`) in place of a bare profile and
+map `model` to the pin `main` and `vision` to the pin `vision` (`pins_of`), and
+map `unknown_model` to `creations.UnknownModel`. The observer
 socket's admission is untouched: the form's existing submit carries the field.
 
 The model composes with a session's place (protocol 078): `manager.Creation` and

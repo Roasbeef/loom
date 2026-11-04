@@ -168,7 +168,9 @@ pub fn catalogue_then_choice_precedes_other_table_errors_test() {
   let bad_rule = "rule = 0\n"
   let #(record, selected, state) = fixture(bad_rule <> models)
   let both_missing =
-    catalogue.Registration(..record, profile: Some("gone"), model: Some("gone"))
+    catalogue.Registration(..record, profile: Some("gone"), pins: [
+      #(catalogue.PinMain, "gone"),
+    ])
   let assert Ok(parsed) = catalog.parse(models) as "catalogue is valid"
   let assert Error(profile_error) = catalog.select_profile(parsed, "gone")
     as "profile is absent"
@@ -295,7 +297,7 @@ fn fixture(text: String) -> #(catalogue.Registration, domain.Domain, String) {
       request_key: "configuration-document",
       state: catalogue.Saved,
       profile: None,
-      model: None,
+      pins: [],
       executor: "fixture-executor",
       pool: "",
       subtitle: None,

@@ -464,10 +464,15 @@ to its configuration file: `client/config_watch` notices a settled change that
 loads, and the hub reopens the session once no strand is running
 ([protocol 092](../../protocol-change/092-config-proposals.md)).
 
-It likewise stores the key of the `[models.<key>]` entry the session's `main`
-role was pinned to, or none ([protocol 080](../../protocol-change/080-session-model-choice.md)).
-The key is resolved again at every open, after the profile, and a key the file
-no longer defines refuses the open.
+It likewise stores the keys of the `[models.<key>]` entries the session's roles
+were pinned to, or none, as the `pins` object of the registration
+([protocol 108](../../protocol-change/108-session-role-pins.md), which
+generalizes the `main` pin of [protocol 080](../../protocol-change/080-session-model-choice.md)).
+The keys are resolved again at every open, after the profile, by
+`catalog.select_roles`: a key the file no longer defines, or a pinned `vision`
+entry the file now declares text-only, refuses the open. `profile_set` loads the
+entering catalogue with the same pins, so a pinned role compares equal on both
+sides of a switch and its strands stay on the pinned entry.
 
 Only saved registrations appear in paged domain source enumeration.
 Reserved registrations are excluded before the page limit is applied, so

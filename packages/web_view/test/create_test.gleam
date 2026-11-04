@@ -169,13 +169,17 @@ pub fn a_submitted_position_becomes_the_offered_name_test() {
       offered,
       [],
     )
-    == Ok(#("x", creations.Private, creations.Roles(Some("gemini"), None)))
+    == Ok(#("x", creations.Private, creations.Roles(Some("gemini"), None, None)))
   assert create.fields_with_roles(
       [#("profile", "0"), #("name", "x"), #("shareable", "on")],
       offered,
       [],
     )
-    == Ok(#("x", creations.Shareable, creations.Roles(Some("deepseek"), None)))
+    == Ok(#(
+      "x",
+      creations.Shareable,
+      creations.Roles(Some("deepseek"), None, None),
+    ))
   assert create.fields_with_roles(
       [#("name", "x"), #("profile", "")],
       offered,
@@ -194,7 +198,7 @@ pub fn a_submitted_position_becomes_the_offered_name_test() {
       "~/app",
       "",
       creations.Private,
-      creations.Roles(Some("gemini"), None),
+      creations.Roles(Some("gemini"), None, None),
     ))
 }
 
@@ -202,7 +206,7 @@ pub fn a_submitted_position_becomes_the_offered_name_test() {
 pub fn a_submitted_position_becomes_the_offered_model_key_test() {
   let models = ["fast", "slow"]
   assert create.fields_with_roles([#("name", "x"), #("model", "1")], [], models)
-    == Ok(#("x", creations.Private, creations.Roles(None, Some("slow"))))
+    == Ok(#("x", creations.Private, creations.Roles(None, Some("slow"), None)))
   assert create.fields_with_roles(
       [#("model", "0"), #("name", "x"), #("profile", "0")],
       ["deepseek"],
@@ -211,7 +215,7 @@ pub fn a_submitted_position_becomes_the_offered_model_key_test() {
     == Ok(#(
       "x",
       creations.Private,
-      creations.Roles(Some("deepseek"), Some("fast")),
+      creations.Roles(Some("deepseek"), Some("fast"), None),
     ))
   assert create.fields_with_roles(
       [#("name", "x"), #("model", "")],
@@ -225,7 +229,12 @@ pub fn a_submitted_position_becomes_the_offered_model_key_test() {
       models,
       [],
     )
-    == Ok(#("~/app", "", creations.Private, creations.Roles(None, Some("slow"))))
+    == Ok(#(
+      "~/app",
+      "",
+      creations.Private,
+      creations.Roles(None, Some("slow"), None),
+    ))
 }
 
 // The browser can choose among the names the page drew and name no other: a

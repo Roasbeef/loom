@@ -79,6 +79,7 @@ fn start(read: fn() -> signins.Listing) -> home.Start {
     projects: None,
     profiles: [],
     models: [],
+    readers: [],
     signins: fn(deliver) { deliver(read()) },
     login: None,
     bookmark: None,

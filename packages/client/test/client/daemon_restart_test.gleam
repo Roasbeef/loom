@@ -38,7 +38,7 @@ fn saved(store: catalogue.Catalogue, seed: Int) -> catalogue.Registration {
       request_key: "request-" <> int.to_string(seed),
       state: catalogue.Reserved,
       profile: None,
-      model: None,
+      pins: [],
       executor: "",
       pool: "",
       subtitle: None,

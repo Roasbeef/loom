@@ -348,7 +348,7 @@ fn start_owned(
       name: "the moving session",
       configuration: "",
       profile: None,
-      model: None,
+      pins: [],
       executor: "box",
       pool: "",
       created_at: 1_700_000_000_000,

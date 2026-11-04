@@ -76,6 +76,7 @@ import session_view/notes_view as terminal_notes
 import session_view/remembered as session_remembered
 import simplifile
 import storage/access
+import storage/catalogue
 import storage/storage
 import support/addresses
 import support/fake_orchestrators
@@ -7396,10 +7397,23 @@ fn profile_harness(
   saving: Result(Nil, String),
   provider: Provider,
 ) -> #(Harness, Subject(Desked)) {
+  pinned_profile_harness(current, [], loading, saving, provider)
+}
+
+// `profile_harness` for a session created with role pins, which the desk
+// reports in its `profile` snapshot (protocol-change/108).
+fn pinned_profile_harness(
+  current: Option(String),
+  pins: List(#(catalogue.PinnedRole, String)),
+  loading: fn(Option(String)) -> Result(catalog.Catalog, String),
+  saving: Result(Nil, String),
+  provider: Provider,
+) -> #(Harness, Subject(Desked)) {
   let reported = process.new_subject()
   let desk =
     profile_switch.Desk(
       current:,
+      pins:,
       names: fn() { Ok(["fast", "slow"]) },
       load: loading,
       save: fn(profile) {
@@ -7438,6 +7452,7 @@ fn profile_snapshot(
     current:,
     available:,
     switched:,
+    ..,
   )) = envelope.event
     as "a profile snapshot was expected"
   #(current, available, switched)
@@ -7467,6 +7482,41 @@ pub fn profile_get_names_the_current_profile_and_the_defined_ones_test() {
   assert profile_snapshot(harness, 2) == #(Some("slow"), ["fast", "slow"], None)
   assert process.receive(reported, within: 50) == Error(Nil)
     as "a read saves nothing and restarts nothing"
+}
+
+pub fn the_profile_snapshot_reports_the_pins_before_and_after_a_switch_test() {
+  let pins = [
+    #(catalogue.PinMain, "acme"),
+    #(catalogue.PinVision, "fallback"),
+  ]
+  let #(harness, _reported) =
+    pinned_profile_harness(
+      None,
+      pins,
+      entering_fallback,
+      Ok(Nil),
+      SettlingProvider,
+    )
+  subscribe(harness)
+  send(harness, 2, protocol.ProfileGet)
+  let read = next_reply(harness, 2, 8)
+  let assert protocol.SnapshotEvent(protocol.ProfileSnapshot(
+    pins: read_pins,
+    ..,
+  )) = read.event
+    as "a profile snapshot was expected"
+  assert read_pins == [#("main", "acme"), #("vision", "fallback")]
+
+  // A switch leaves the pins in the reply, as it leaves them in storage.
+  send(harness, 3, protocol.ProfileSet(profile: Some("fast")))
+  let switched = next_reply(harness, 3, 8)
+  let assert protocol.SnapshotEvent(protocol.ProfileSnapshot(
+    pins: kept_pins,
+    switched: Some(_),
+    ..,
+  )) = switched.event
+    as "a switch reply was expected"
+  assert kept_pins == read_pins
 }
 
 pub fn profile_set_saves_moves_a_following_strand_and_restarts_test() {

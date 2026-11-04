@@ -222,7 +222,7 @@ fn activation() -> session_move.Activation {
       workspace: "repo",
       name: "n",
       profile: option.None,
-      model: option.None,
+      pins: [],
       executor: "box",
       pool: "",
       subtitle: option.None,

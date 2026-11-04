@@ -213,11 +213,12 @@ pub type Creation {
     /// configuration's default roles. It is retained with the registration and
     /// resolved again by every open (protocol-change/076).
     profile: Option(String),
-    /// The `[models.<key>]` entry the session's `main` role is pinned to, or
-    /// `None` for the chain the profile or configuration gives. It is retained
+    /// The `[models.<key>]` entries the session's roles are pinned to, in the
+    /// fixed role order, or `[]` for the chains the profile or configuration
+    /// gives. It is retained
     /// with the registration and resolved again by every open
-    /// (protocol-change/080).
-    model: Option(String),
+    /// (protocol-change/108).
+    pins: List(#(catalogue.PinnedRole, String)),
     /// The executor the workspace is registered on, or the empty string for a
     /// workspace on this host (protocol-change/078).
     executor: String,
@@ -5606,7 +5607,7 @@ fn new_registration(
     request_key: request.request_key,
     state: catalogue.Reserved,
     profile: request.profile,
-    model: request.model,
+    pins: request.pins,
     executor: request.executor,
     pool: request.pool,
     subtitle: option.None,
@@ -5632,7 +5633,7 @@ fn reserve_creation(
         && record.name == request.name
         && record.configuration == request.configuration
         && record.profile == request.profile
-        && record.model == request.model
+        && record.pins == request.pins
         && record.pool == request.pool
         && named_same_executor(record, request)
       {

@@ -262,6 +262,10 @@ pub type Msg {
   /// A main model of the Model chip's list was pressed, or the default.
   ChoseModel(model: Option(String))
 
+  /// A vision model of the Model chip's list, or the default. It is honoured
+  /// only for a key that reads images (protocol-change/108).
+  ChoseVision(vision: Option(String))
+
   /// The code picker's search text changed.
   Searched(text: String)
 
@@ -345,6 +349,10 @@ pub type Offers {
     profiles: List(String),
     /// The model keys the agent's machine's configuration offers.
     models: List(String),
+    /// The keys among `models` that read images, which are the ones the
+    /// `vision` role may be pinned to (protocol-change/108). It is empty for
+    /// another orchestrator, which does not tell the page.
+    readers: List(String),
     /// The agent these lists are for, which is the one in force.
     agent: Agent,
     /// The name of the daemon serving the page, which is what "the folders on the
@@ -428,6 +436,7 @@ pub fn update(
     ChoseTarget(target:) -> #(chose_target(state, offers, target), Stay)
     ChoseProfile(profile:) -> #(chose_profile(state, offers, profile), Stay)
     ChoseModel(model:) -> #(chose_model(state, offers, model), Stay)
+    ChoseVision(vision:) -> #(chose_vision(state, offers, vision), Stay)
     Searched(text:) -> #(searched(state, text), Stay)
     Started(prompt:, typed:) -> started(state, offers, recent, prompt, typed)
     OpenedUnsent ->
@@ -707,14 +716,23 @@ pub fn target_words(target: Target) -> String {
 ///
 /// ```gleam
 /// assert composer.role_words(creations.default_roles) == "default"
-/// assert composer.role_words(creations.Roles(Some("fast"), Some("glm"))) == "fast · glm"
+/// assert composer.role_words(creations.Roles(Some("fast"), Some("glm"), None)) == "fast · glm"
+/// assert composer.role_words(creations.Roles(None, None, Some("eyes"))) == "default · eyes eyes"
 /// ```
 pub fn role_words(roles: creations.Roles) -> String {
-  case roles.profile, roles.model {
+  // The profile and the main model come first, as the chip always said them.
+  let base = case roles.profile, roles.model {
     None, None -> "default"
     Some(profile), None -> profile
     None, Some(model) -> "default · " <> model
     Some(profile), Some(model) -> profile <> " · " <> model
+  }
+
+  // A vision pin is named after the others, so a chip that held no vision pin
+  // reads as it always did.
+  case roles.vision {
+    None -> base
+    Some(vision) -> base <> " · eyes " <> vision
   }
 }
 
@@ -898,6 +916,10 @@ pub fn kept(state: State, offers: Offers) -> State {
         True -> state.roles.model
         False -> None
       },
+      vision: case in_list(offers.readers, state.roles.vision) {
+        True -> state.roles.vision
+        False -> None
+      },
     )
 
   State(..state, target:, roles:)
@@ -950,6 +972,20 @@ fn chose_profile(
   }
 }
 
+/// A vision model of the Model chip's list: honoured only for a key of
+/// `offers.readers`, so a text-only entry can never be chosen for the role.
+fn chose_vision(state: State, offers: Offers, vision: Option(String)) -> State {
+  case in_list(offers.readers, vision) {
+    True ->
+      State(
+        ..state,
+        roles: creations.Roles(..state.roles, vision:),
+        refusal: None,
+      )
+    False -> state
+  }
+}
+
 /// A main model of the Model chip's list, held as a profile is.
 fn chose_model(state: State, offers: Offers, model: Option(String)) -> State {
   case in_list(offers.models, model) {
@@ -992,7 +1028,8 @@ fn started(
     Ready, Some(target), True ->
       case
         in_list(offers.profiles, state.roles.profile)
-        && in_list(offers.models, state.roles.model),
+        && in_list(offers.models, state.roles.model)
+        && in_list(offers.readers, state.roles.vision),
         string.byte_size(prompt) > prompt_limit,
         place(target, typed)
       {

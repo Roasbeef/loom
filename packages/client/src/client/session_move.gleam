@@ -126,11 +126,11 @@ pub type Manifest {
     name: String,
     /// The model profile the session was created under, or `None`.
     profile: Option(String),
-    /// The `[models.<key>]` the session's main role was pinned to at creation,
-    /// or `None`. It is part of the creation request like the profile, so a
+    /// The `[models.<key>]` entries the session's roles were pinned to at
+    /// creation, or `[]`. It is part of the creation request like the profile, so a
     /// session that moves keeps the choice its owner made
     /// (protocol-change/080).
-    model: Option(String),
+    pins: List(#(catalogue.PinnedRole, String)),
     /// The `[executors.<name>]` that holds the session's scope.
     executor: String,
     /// The `[pools.<name>]` the session was created in, or the empty string.
@@ -154,7 +154,7 @@ pub fn manifest_of(registration: catalogue.Registration) -> Manifest {
     workspace: registration.workspace,
     name: registration.name,
     profile: registration.profile,
-    model: registration.model,
+    pins: registration.pins,
     executor: registration.executor,
     pool: registration.pool,
     subtitle: registration.subtitle,

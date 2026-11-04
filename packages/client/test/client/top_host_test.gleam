@@ -804,7 +804,7 @@ pub fn a_folder_create_remembers_the_folder_and_tells_the_movers_test() {
     manager.get(rig.registry, session)
   assert registration.workspace == "/srv/work"
   assert registration.executor == ""
-  assert registration.model == Some("fast")
+  assert registration.pins == [#(catalogue.PinMain, "fast")]
   assert lines(rig.world) |> list.contains("covered")
   assert lines(rig.world)
     |> list.filter(string.starts_with(_, "record"))
@@ -857,7 +857,7 @@ pub fn a_create_resent_after_the_transaction_and_before_the_store_finishes_it_te
       name: "laptop session",
       configuration: "",
       profile: Some("alt"),
-      model: None,
+      pins: [],
       executor: "exec",
       pool: "",
     )
@@ -1265,7 +1265,7 @@ fn owner_session(rig: Rig) -> String {
         name: "owner",
         configuration: "",
         profile: None,
-        model: None,
+        pins: [],
         executor: "exec",
         pool: "",
       ),
@@ -1285,7 +1285,7 @@ fn other_spawner_session(rig: Rig) -> String {
       name: "desk session",
       configuration: "",
       profile: None,
-      model: None,
+      pins: [],
       executor: "exec",
       pool: "",
     )

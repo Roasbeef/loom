@@ -42,6 +42,7 @@
 import client/catalog
 import client/config_watch
 import gleam/option.{type Option}
+import storage/catalogue
 
 /// What a hub needs from the daemon to read and switch its session's profile.
 ///
@@ -55,12 +56,18 @@ pub type Desk {
     /// The profile the session routes its roles by, or `None` for the
     /// configuration's default roles.
     current: Option(String),
+    /// The models the session's roles were pinned to at creation, in the fixed
+    /// role order, or `[]`. A pin is laid over whatever profile the session
+    /// routes by, so a switch leaves it in place, and the `profile` snapshot
+    /// reports it (protocol-change/108).
+    pins: List(#(catalogue.PinnedRole, String)),
     /// The profile names the configuration defines now, sorted, or why the
     /// configuration cannot be read.
     names: fn() -> Result(List(String), String),
     /// The catalogue that choosing this profile (`None` for the default roles)
-    /// would route by, or the worded refusal: an unknown name lists the ones
-    /// that exist, and an unreadable configuration says so.
+    /// would route by with the session's pins applied, or the worded refusal:
+    /// an unknown name lists the ones that exist, and an unreadable
+    /// configuration says so.
     load: fn(Option(String)) -> Result(catalog.Catalog, String),
     /// Stores the choice with the session's registration, so the next open
     /// resolves it.

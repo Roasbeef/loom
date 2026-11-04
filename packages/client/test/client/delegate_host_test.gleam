@@ -267,7 +267,7 @@ pub fn an_executor_placement_creates_a_session_on_that_executor_test() {
   assert made.pool == ""
   assert made.workspace == "loom"
   assert made.profile == Some("cheap-review")
-  assert made.model == None
+  assert made.pins == []
   assert made.configuration == ""
 }
 

@@ -175,6 +175,7 @@ fn owner(orchestrating: option.Option(home.Orchestrators)) -> home.Start {
     projects: None,
     profiles: ["fast"],
     models: ["glm"],
+    readers: [],
     signins: fn(deliver) { deliver(signins.Listed([])) },
     login: None,
     bookmark: None,
@@ -428,7 +429,7 @@ pub fn the_default_place_on_a_box_is_its_first_folder_test() {
     == Ok(#(
       "box",
       creations.Drawn("/srv/app"),
-      creations.Roles(Some("default"), None),
+      creations.Roles(Some("default"), None, None),
       "hello",
     ))
 }

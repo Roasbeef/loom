@@ -758,7 +758,7 @@ fn creating_from_home(
         place,
         name,
         sharing,
-        creations.Roles(profile:, model:),
+        creations.Roles(profile:, model:, vision: None),
         "",
         fn(answer) { process.send(answers, answer) },
       )
@@ -1558,7 +1558,7 @@ fn create_session(ready: root.Ready(String), key: String, seed: Int) -> String {
   let assert Ok(created) =
     manager.create(
       ready.registry,
-      manager.Creation(key, ready.state_root, key, "", None, None, "", ""),
+      manager.Creation(key, ready.state_root, key, "", None, [], "", ""),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(0), seed),
     )
@@ -3842,7 +3842,7 @@ fn create_shared_session(
   let assert Ok(created) =
     manager.create_scoped(
       ready.registry,
-      manager.Creation(key, ready.state_root, key, "", None, None, "", ""),
+      manager.Creation(key, ready.state_root, key, "", None, [], "", ""),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(0), seed),
       scope: domain.SessionOnly,
@@ -7612,7 +7612,7 @@ pub fn the_admin_read_says_whether_the_chosen_session_may_be_shared_test() {
           "admin-scope-private",
           "",
           None,
-          None,
+          [],
           "",
           "",
         ),
@@ -7653,7 +7653,7 @@ pub fn the_admin_read_summarises_each_listed_session_test() {
           "admin-rows-private",
           "",
           None,
-          None,
+          [],
           "",
           "",
         ),
@@ -9596,14 +9596,14 @@ pub fn a_page_creation_carries_the_chosen_profile_to_the_registry_test() {
         within: 2000,
       )
     }
-    let _ = attempt(creations.Roles(Some("deepseek"), None))
+    let _ = attempt(creations.Roles(Some("deepseek"), None, None))
     let assert Ok(named) = process.receive(asked, 0)
     assert named.profile == Some("deepseek")
-    assert named.model == None
+    assert named.pins == []
     let _ = attempt(creations.default_roles)
     let assert Ok(plain) = process.receive(asked, 0)
     assert plain.profile == None
-    assert plain.model == None
+    assert plain.pins == []
   })
 }
 
@@ -9631,14 +9631,21 @@ pub fn a_page_creation_carries_the_chosen_model_to_the_registry_test() {
         within: 2000,
       )
     }
-    let _ = attempt(creations.Roles(None, Some("fast")))
+    let _ = attempt(creations.Roles(None, Some("fast"), None))
     let assert Ok(pinned) = process.receive(asked, 0)
-    assert pinned.model == Some("fast")
+    assert pinned.pins == [#(catalogue.PinMain, "fast")]
     assert pinned.profile == None
-    let _ = attempt(creations.Roles(Some("deepseek"), Some("fast")))
+    let _ = attempt(creations.Roles(Some("deepseek"), Some("fast"), None))
     let assert Ok(both) = process.receive(asked, 0)
-    assert both.model == Some("fast")
+    assert both.pins == [#(catalogue.PinMain, "fast")]
     assert both.profile == Some("deepseek")
+    let _ = attempt(creations.Roles(None, Some("fast"), Some("eyes")))
+    let assert Ok(eyed) = process.receive(asked, 0)
+    assert eyed.pins
+      == [#(catalogue.PinMain, "fast"), #(catalogue.PinVision, "eyes")]
+    let _ = attempt(creations.Roles(None, None, Some("eyes")))
+    let assert Ok(only_eyes) = process.receive(asked, 0)
+    assert only_eyes.pins == [#(catalogue.PinVision, "eyes")]
   })
 }
 
@@ -9660,7 +9667,7 @@ pub fn an_unknown_model_is_declined_in_its_own_words_test() {
         creations.Drawn(ready.state_root),
         "x",
         creations.Private,
-        creations.Roles(None, Some("nope")),
+        creations.Roles(None, Some("nope"), None),
         within: 2000,
       )
       == creations.Declined(creations.UnknownModel)
@@ -9685,7 +9692,7 @@ pub fn an_unknown_profile_is_declined_in_its_own_words_test() {
         creations.Drawn(ready.state_root),
         "x",
         creations.Private,
-        creations.Roles(Some("nope"), None),
+        creations.Roles(Some("nope"), None, None),
         within: 2000,
       )
       == creations.Declined(creations.UnknownProfile)

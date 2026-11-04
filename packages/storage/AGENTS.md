@@ -38,7 +38,7 @@ independent test oracle, including Unicode rejection and length boundaries.
 
 ## Key Types
 
-- The catalogue is at `user_version` 20. Each later version has its own embedded
+- The catalogue is at `user_version` 21. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
   `catalogue_claims_schema`, `catalogue_subtitles_schema`,
   `catalogue_credential_kinds_schema`, `catalogue_logins_schema`,
@@ -48,7 +48,8 @@ independent test oracle, including Unicode rejection and length boundaries.
   `catalogue_deletions_schema`,
   `catalogue_delegates_schema`, `catalogue_releases_schema`,
   `catalogue_spend_schema`, `catalogue_start_failures_schema`,
-  `catalogue_relayed_schema`, `catalogue_projects_schema`), and
+  `catalogue_relayed_schema`, `catalogue_projects_schema`,
+  `catalogue_pins_schema`), and
   `initialize_schema` applies every
   schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
@@ -77,14 +78,21 @@ independent test oracle, including Unicode rejection and length boundaries.
   configuration file and the wire. A stored value that is not a name fails the
   read with `Invalid` and is never read as "no profile", because that would open
   a profiled session under the default roles.
-- `Registration.model: Option(String)` is the `[models.<key>]` key the session's
-  `main` role was pinned to at creation (protocol-change/080), stored as version
-  10's `model` column (`NOT NULL DEFAULT ''`, empty meaning none) and carried,
-  compared on a retry and read exactly as `profile` is. `is_model_key` is the
-  whole grammar: 1 to `model_key_limit` (64) bytes, the column's own bound, since
-  a `[models.<key>]` key is any TOML key. Because the column cannot hold more than
-  the limit, a stored value is always a key, and there is no damaged-model read to
-  refuse.
+- `Registration.pins: List(#(PinnedRole, String))` are the `[models.<key>]` keys
+  the session's roles were pinned to at creation (protocol-change/108, which
+  replaced 080's single `main` key). `PinnedRole` is the closed set `main`,
+  `subagent`, `plan`, `summarize`, `vision`, `advisor`, `router`, defined here
+  because the catalogue sits below the packages that define a role;
+  `client/catalog.pinned_role` maps it to the routable role. Version 21 adds the
+  `pins` column (`NOT NULL DEFAULT ''`, at most 1024 bytes) and drops v10's
+  `model` after copying each value into the pin `main`. The column is empty for
+  none, otherwise the JSON object `encode_pins` writes with the names in
+  `pinned_roles` order. `decode_pins` accepts only text that re-encodes to itself,
+  so a stored name outside the set, a repeat or a misorder fails the read with
+  `Invalid` and is never read as "no pins". `validate` holds a written value to
+  the same order and to `is_model_key` (1 to `model_key_limit` (64) bytes, since
+  a `[models.<key>]` key is any TOML key). Pins are carried and compared on a
+  retry as `profile` is, and `profile_set` leaves them alone.
 - `Registration.executor: String` names the `[executors.<name>]` a session's
   workspace is registered on, empty for a local session (protocol-change/078).
   Version 11 adds it as a `NOT NULL DEFAULT ''` column of `catalogue_sessions`,
@@ -610,7 +618,8 @@ independent test oracle, including Unicode rejection and length boundaries.
   corruption), `sqlight` (the SQLite binding, ADR-002), `simplifile` (the
   rewrite's copy/rename/unlink), `gleam_erlang` + `gleam_otp` (both
   backends are actors), `parrot` (typed catalogue queries, ADR-004),
-  `gleam_crypto` (the execution ledger's SHA-256 outcome digest).
+  `gleam_crypto` (the execution ledger's SHA-256 outcome digest), `gleam_json` (the
+  encoding of a registration's pins).
 - **Depended on by**: `session` (wraps one open handle; owns the migration
   chain and drives the rewrite), `runtime` (the StorageWriter owns it),
   `events` (projections and the search service scan sessions through the

@@ -585,7 +585,7 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
           "Visible",
           "",
           None,
-          None,
+          [],
           "",
           "",
         ),
@@ -602,7 +602,7 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
           "Hidden",
           "",
           None,
-          None,
+          [],
           "",
           "",
         ),
@@ -1001,7 +1001,7 @@ pub fn a_member_cannot_delete_a_session_it_can_read_test() {
           "Visible",
           "",
           None,
-          None,
+          [],
           "",
           "",
         ),
@@ -1061,7 +1061,7 @@ pub fn a_failed_start_is_listed_as_reserved_with_its_failure_test() {
         "wire-failed-start",
         catalogue.Reserved,
         profile: option.None,
-        model: option.None,
+        pins: [],
         executor: "",
         pool: "",
         subtitle: option.None,
@@ -1150,7 +1150,7 @@ pub fn owner_archives_and_restores_through_the_control_socket_test() {
         "wire-archive",
         catalogue.Reserved,
         profile: option.None,
-        model: option.None,
+        pins: [],
         executor: "",
         pool: "",
         subtitle: option.None,
@@ -1321,7 +1321,7 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_and_queues_s
           "Source",
           "",
           None,
-          None,
+          [],
           "",
           "",
         ),
@@ -1338,7 +1338,7 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_and_queues_s
           "Target",
           "",
           None,
-          None,
+          [],
           "",
           "",
         ),
@@ -1535,7 +1535,7 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           "Source",
           "",
           None,
-          None,
+          [],
           "",
           "",
         ),
@@ -1552,7 +1552,7 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           "Target",
           "",
           None,
-          None,
+          [],
           "",
           "",
         ),
@@ -1733,7 +1733,7 @@ pub fn peer_cli_collects_bounded_inspection_pages_test() {
           "Source",
           "",
           None,
-          None,
+          [],
           "",
           "",
         ),
@@ -1807,7 +1807,7 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
             pair.0,
             "",
             None,
-            None,
+            [],
             "",
             "",
           ),
@@ -1938,7 +1938,7 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
           other_id,
           "",
           None,
-          None,
+          [],
           "",
           "",
         ),
@@ -2116,7 +2116,7 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
               pair.0,
               "",
               None,
-              None,
+              [],
               "",
               "",
             ),
@@ -2302,7 +2302,7 @@ pub fn a_browser_row_authenticates_on_no_v2_route_test() {
           "Visible",
           "",
           None,
-          None,
+          [],
           "",
           "",
         ),
@@ -2566,7 +2566,7 @@ pub fn a_creation_stores_its_model_beside_its_profile_and_a_retry_must_repeat_bo
     let assert Ok(saved) = manager.get(ready.registry, id)
       as "the creation reply follows durable registration"
     assert saved.registration.profile == Some("alt")
-    assert saved.registration.model == Some("base")
+    assert saved.registration.pins == [#(catalogue.PinMain, "base")]
 
     // The same request is the same session. A different model, or none, under
     // the same key is a different request.
@@ -2724,6 +2724,196 @@ pub fn a_model_with_no_config_file_is_refused_as_unknown_test() {
       == json.String(
         "unknown model \"base\"; the configuration defines no models",
       )
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+// --- role pins (protocol-change/108) ----------------------------------------
+
+const pinning_catalogue =
+  "
+[models.base]
+dialect = \"anthropic\"
+api_key_env = \"UNUSED_TEST_KEY\"
+model_id = \"base-model\"
+context_window = 1000
+max_output_tokens = 100
+vision = false
+[models.alt]
+dialect = \"openai\"
+api_key_env = \"UNUSED_TEST_KEY\"
+model_id = \"alt-model\"
+context_window = 2000
+max_output_tokens = 200
+[models.eyes]
+dialect = \"gemini\"
+api_key_env = \"UNUSED_TEST_KEY\"
+model_id = \"eyes-model\"
+context_window = 3000
+max_output_tokens = 300
+vision = true
+[roles]
+main = [\"base\"]
+"
+
+fn roles_object(pairs: List(#(String, String))) -> json.JsonValue {
+  json.Object(list.map(pairs, fn(pair) { #(pair.0, json.String(pair.1)) }))
+}
+
+pub fn a_creation_stores_its_role_pins_and_a_retry_must_repeat_them_test() {
+  fixture(fn(_, ready, port, credential) {
+    assert simplifile.write(
+        ready.state_root <> "/profiled.toml",
+        pinning_catalogue,
+      )
+      == Ok(Nil)
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let pinned =
+      profiled_creation(ready, "role-pins", [
+        #("roles", roles_object([#("vision", "eyes"), #("main", "alt")])),
+      ])
+    let created = send(socket, 1, "sessions.create", pinned, within_ms: 1000)
+    assert field(created, "event") == json.String("sessions.create")
+    let assert json.String(id) = field(field(created, "body"), "session_id")
+      as "creation exposes its identity"
+    let assert Ok(saved) = manager.get(ready.registry, id)
+      as "the creation reply follows durable registration"
+
+    // The pins are kept by key in the fixed role order.
+    assert saved.registration.pins
+      == [#(catalogue.PinMain, "alt"), #(catalogue.PinVision, "eyes")]
+
+    // The same request is the same session, whatever order or spelling carried
+    // it: `model` is the pin `main`.
+    let spelled =
+      profiled_creation(ready, "role-pins", [
+        #("model", json.String("alt")),
+        #("roles", roles_object([#("vision", "eyes")])),
+      ])
+    let retried = send(socket, 2, "sessions.create", spelled, within_ms: 1000)
+    assert field(field(retried, "body"), "session_id") == json.String(id)
+
+    // One pin more, one fewer or another key is a different request.
+    let conflicting = fn(request_id, pairs) {
+      let reply =
+        send(
+          socket,
+          request_id,
+          "sessions.create",
+          profiled_creation(ready, "role-pins", [
+            #("roles", roles_object(pairs)),
+          ]),
+          within_ms: 1000,
+        )
+      field(field(reply, "body"), "code")
+    }
+    assert conflicting(3, [#("main", "alt")]) == json.String("conflict")
+    assert conflicting(4, [
+        #("main", "alt"),
+        #("vision", "eyes"),
+        #("router", "alt"),
+      ])
+      == json.String("conflict")
+    assert conflicting(5, [#("main", "alt"), #("vision", "alt")])
+      == json.String("conflict")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn a_pin_the_configuration_cannot_honour_is_refused_and_stores_nothing_test() {
+  fixture(fn(_, ready, port, credential) {
+    assert simplifile.write(
+        ready.state_root <> "/profiled.toml",
+        pinning_catalogue,
+      )
+      == Ok(Nil)
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let refusal = fn(request_id, extra) {
+      let reply =
+        send(
+          socket,
+          request_id,
+          "sessions.create",
+          profiled_creation(
+            ready,
+            "refused-" <> string.inspect(request_id),
+            extra,
+          ),
+          within_ms: 1000,
+        )
+      let body = field(reply, "body")
+      #(field(body, "code"), field(body, "message"))
+    }
+
+    // An unknown key names its role; a lone `main` keeps 080's wording.
+    assert refusal(1, [#("roles", roles_object([#("vision", "nope")]))])
+      == #(
+        json.String("unknown_model"),
+        json.String(
+          "unknown model \"nope\" for role \"vision\"; the configuration defines: alt, base, eyes",
+        ),
+      )
+    assert refusal(2, [#("roles", roles_object([#("main", "nope")]))])
+      == #(
+        json.String("unknown_model"),
+        json.String(
+          "unknown model \"nope\"; the configuration defines: alt, base, eyes",
+        ),
+      )
+
+    // A text-only entry cannot be the vision role.
+    assert refusal(3, [#("roles", roles_object([#("vision", "base")]))])
+      == #(
+        json.String("unsuitable_model"),
+        json.String(
+          "model \"base\" cannot serve role \"vision\": it declares vision = false; a vision role must name an entry that reads images",
+        ),
+      )
+
+    // The profile is judged first and then the pins in role order, so a request
+    // with two mistakes is told of one: vision precedes router.
+    assert refusal(4, [
+        #("profile", json.String("nope")),
+        #("roles", roles_object([#("vision", "base")])),
+      ]).0
+      == json.String("unknown_profile")
+    assert refusal(5, [
+        #("roles", roles_object([#("router", "nope"), #("vision", "base")])),
+      ]).0
+      == json.String("unsuitable_model")
+
+    // Nothing was reserved for any of them.
+    let assert Ok(page) = catalogue_page(ready)
+    assert page == []
+
+    // Malformed shapes are bad requests and never read as no choice.
+    list.each(
+      [
+        json.Null,
+        json.String("main"),
+        roles_object([#("custom", "alt")]),
+        json.Object([#("main", json.Int(1))]),
+        roles_object([#("main", "")]),
+      ],
+      fn(value) {
+        assert refusal(6, [#("roles", value)]).0 == json.String("bad_request")
+      },
+    )
+
+    // `model` and `roles.main` naming different keys are refused naming both.
+    let #(code, message) =
+      refusal(7, [
+        #("model", json.String("alt")),
+        #("roles", roles_object([#("main", "eyes")])),
+      ])
+    assert code == json.String("bad_request")
+    let assert json.String(words) = message
+    assert string.contains(words, "\"alt\"")
+    assert string.contains(words, "\"eyes\"")
     let _ = ffi_ws.tcp_close(socket)
     Nil
   })

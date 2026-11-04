@@ -242,7 +242,7 @@ fn create(serving: daemon_main.Serving(serve.Instance), workspace, seed) {
         "Soak",
         "",
         None,
-        None,
+        [],
         "",
         "",
       ),

@@ -76,7 +76,7 @@ fn register(
       name: "a session",
       configuration: "",
       profile: None,
-      model: None,
+      pins: [],
       executor:,
       pool: "",
       created_at: 1_700_000_000_000,

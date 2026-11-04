@@ -1654,7 +1654,13 @@ together as one `creations.Roles(profile, model)` (`creations.default_roles` is
 neither): `home.Creating`, `home.CreatingElsewhere`, the `Start.create` closure
 and `create.Offered`'s submits all take it, and `home.offered_roles` checks both
 fields against the page's lists. Only the key string reaches the page; no URL,
-key variable, upstream identifier or pricing does. A key removed since the page
+key variable, upstream identifier or pricing does. A creation also carries
+`Roles.vision`, a key of `Start.readers` (the models among `Start.models` that read
+images, protocol-change/108); the composer's Model list draws a "Vision model"
+section from `Offers.readers` only when it is not empty, `composer.ChoseVision`
+honours only a listed reader, and `offered_roles` checks the key again. The old
+forms draw no vision select, and another orchestrator names no readers, so a
+creation there carries none. A key removed since the page
 opened is `creations.UnknownModel`, whose fixed words say to reload the page.
 
 ## Sessions on an executor (protocol 078)

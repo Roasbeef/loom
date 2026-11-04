@@ -168,7 +168,7 @@ fn registration(slot: Int) -> catalogue.Registration {
     request_key: "model-request-" <> int.to_string(slot % 3),
     state: catalogue.Reserved,
     profile: None,
-    model: None,
+    pins: [],
     executor: "",
     pool: "",
     subtitle: None,

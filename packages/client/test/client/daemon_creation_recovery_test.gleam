@@ -46,7 +46,7 @@ fn request(key: String) {
     "saved draft",
     "",
     option.None,
-    option.None,
+    [],
     "",
     "",
   )

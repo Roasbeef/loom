@@ -420,7 +420,7 @@ fn resolved_with(
       "masking",
       catalogue.Saved,
       profile: option.None,
-      model: option.None,
+      pins: [],
       executor: "",
       pool: "",
       subtitle: option.None,

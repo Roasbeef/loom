@@ -985,7 +985,7 @@ fn boot(settings: serve.Settings) -> Result(Booted, String) {
         "terminal",
         "",
         None,
-        None,
+        [],
         "",
         "",
       ),

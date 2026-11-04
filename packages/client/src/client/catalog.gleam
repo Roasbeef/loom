@@ -18,7 +18,7 @@
 //// ## Flow
 ////
 //// `parse` → `parse_models` → `parse_roles` → `parse_profiles` → `parse_mcp_servers`
-//// → `select_profile` → `select_model` → `gateway`
+//// → `select_profile` → `select_roles` → `gateway`
 ////
 //// 1. `parse` uses `parse_with_document` to read the TOML and check the
 ////    top-level keys with `known_keys`, requiring `[models]` and `[roles]`.
@@ -37,11 +37,13 @@
 ////    text readers; `tools_from_document`, `workspace_from_document` and
 ////    `advisor_from_document` let the host share its already parsed document.
 //// 7. `find`, `main_model`, `routed_roles`, `profile_names`, `model_keys`,
-////    `select_profile` and `select_model` answer lookups over the result.
+////    `select_profile`, `select_roles` and `select_model` answer lookups over
+////    the result.
 ////    `select_profile` is how a session takes a profile: it returns the
 ////    catalogue with that profile's roles in place of the default ones.
-////    `select_model` is applied after it for a session pinned to one model
-////    (protocol-change/080): it replaces the main role's chain with that entry alone.
+////    `select_roles` is applied after it for a session with role pins
+////    (protocol-change/108): it replaces each pinned role's chain with that
+////    entry alone, and `select_model` is the one-pin case for the main role of 080.
 ////    `retargets` compares two such catalogues and says which strand-bearing
 ////    roles changed their head, through `role_head`, which is what a live
 ////    profile switch moves strands by (protocol-change/082).
@@ -3215,15 +3217,140 @@ pub fn model_keys(catalog: Catalog) -> List(String) {
   |> list.filter(stored_catalogue.is_model_key)
 }
 
-/// The catalogue a session pinned to the named model routes by: the same
-/// entries, servers and profiles, with the `main` role replaced by the one-entry
-/// chain `[key]` and every other role as it was. It is applied after
-/// `select_profile`, so a profile's roles are the base the model is laid over
-/// (protocol-change/080).
+/// The keys of the `[models.<key>]` entries a `vision` pin accepts: those of
+/// `model_keys` that read images, which is every entry unless it declares
+/// `vision = false`. The new-session form offers only these beside the
+/// `vision` role, so a refusal at creation is the rare answer to a stale page
+/// and not the usual one (protocol-change/108).
 ///
-/// The `main` chain has no fallbacks afterwards: the session runs on the chosen
-/// entry or fails. The refusal names the keys that exist, as `select_profile`'s
-/// names the profiles.
+/// ## Examples
+///
+/// ```gleam
+/// // catalog.vision_model_keys(catalogue) -> ["anthropic-opus"]
+/// ```
+///
+pub fn vision_model_keys(catalog: Catalog) -> List(String) {
+  catalog.models
+  |> list.filter(fn(entry) { entry.vision == ReadsImages })
+  |> list.map(fn(entry) { entry.name })
+  |> list.filter(stored_catalogue.is_model_key)
+}
+
+/// Why a role pin cannot be applied, which decides the code the daemon answers
+/// with (protocol-change/108). The message is the sentence a person reads.
+pub type PinRefusal {
+  /// The configuration does not define the pinned key.
+  UnknownPin(message: String)
+
+  /// The configuration defines the key, but the entry cannot serve the role.
+  UnsuitablePin(message: String)
+}
+
+/// The sentence a person reads for a pin refusal.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.pin_refusal_message(catalog.UnknownPin("no such")) == "no such"
+/// ```
+///
+pub fn pin_refusal_message(refusal: PinRefusal) -> String {
+  case refusal {
+    UnknownPin(message:) | UnsuitablePin(message:) -> message
+  }
+}
+
+/// The routable role a pinned role names.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.pinned_role(stored_catalogue.PinVision) == model.Vision
+/// ```
+///
+pub fn pinned_role(role: stored_catalogue.PinnedRole) -> model.Role {
+  case role {
+    stored_catalogue.PinMain -> model.Main
+    stored_catalogue.PinSubagent -> model.Subagent
+    stored_catalogue.PinPlan -> model.Plan
+    stored_catalogue.PinSummarize -> model.Summarize
+    stored_catalogue.PinVision -> model.Vision
+    stored_catalogue.PinAdvisor -> advisor_role
+    stored_catalogue.PinRouter -> router_role
+  }
+}
+
+/// The catalogue a session with role pins routes by: the same entries, servers
+/// and profiles, with each pinned role replaced by the one-entry chain `[key]`
+/// and every other role as it was. It is applied after `select_profile`, so a
+/// profile's roles are the base the pins are laid over (protocol-change/108).
+///
+/// A pinned chain has no fallbacks afterwards: the role runs on the chosen
+/// entry or fails. The pins are checked in the order given, which callers keep
+/// in the fixed role order, and the first failure is the refusal. A key the
+/// configuration does not define is `UnknownPin`; a `vision` pin whose entry
+/// declares `vision = false` is `UnsuitablePin`. The check is applied here and
+/// not only at creation because `override_roles` bypasses the parse-time check
+/// of a `vision` chain.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalog.select_roles(catalogue, [#(PinMain, "flash")])
+/// // -> Ok(catalog.Catalog(..catalogue, roles: [#(model.Main, ["flash"]), ..]))
+/// ```
+///
+/// ```gleam
+/// // catalog.select_roles(catalogue, [#(PinVision, "text-only")])
+/// // -> Error(catalog.UnsuitablePin("model \"text-only\" cannot serve role ..."))
+/// ```
+///
+pub fn select_roles(
+  catalog: Catalog,
+  pins: List(#(stored_catalogue.PinnedRole, String)),
+) -> Result(Catalog, PinRefusal) {
+  use replaced <- result.try(
+    list.try_map(pins, fn(pin) {
+      let #(pinned, key) = pin
+      let role = pinned_role(pinned)
+      use entry <- result.try(
+        find(catalog, key)
+        |> result.map_error(fn(_missing) {
+          UnknownPin(unknown_pin(model_keys(catalog), pins, pin))
+        }),
+      )
+      use Nil <- result.try(pin_serves(role, entry, key))
+      Ok(#(role, [key]))
+    }),
+  )
+
+  Ok(Catalog(..catalog, roles: override_roles(catalog.roles, replaced)))
+}
+
+// The one capability a pin can be refused for. A role routes images through
+// `vision`, so that role alone needs an entry that declares it reads them; a
+// text-only entry serves every other role, `main` included.
+/// Whether the entry can serve the role it is pinned to.
+fn pin_serves(
+  role: model.Role,
+  entry: CatalogModel,
+  key: String,
+) -> Result(Nil, PinRefusal) {
+  // A text-only entry is refused for `vision` and accepted for any other role.
+  case role, entry.vision {
+    model.Vision, TextOnly ->
+      Error(UnsuitablePin(
+        "model \""
+        <> key
+        <> "\" cannot serve role \"vision\": it declares vision = false;"
+        <> " a vision role must name an entry that reads images",
+      ))
+    _, _ -> Ok(Nil)
+  }
+}
+
+/// The catalogue a session pinned to the named model routes by: `select_roles`
+/// with the one pin `main` (protocol-change/080).
 ///
 /// ## Examples
 ///
@@ -3238,15 +3365,64 @@ pub fn model_keys(catalog: Catalog) -> List(String) {
 /// ```
 ///
 pub fn select_model(catalog: Catalog, key: String) -> Result(Catalog, String) {
-  case find(catalog, key) {
-    Ok(_entry) ->
-      Ok(
-        Catalog(
-          ..catalog,
-          roles: override_roles(catalog.roles, [#(model.Main, [key])]),
-        ),
+  select_roles(catalog, [#(stored_catalogue.PinMain, key)])
+  |> result.map_error(pin_refusal_message)
+}
+
+/// The refusal for a pin whose key the configuration does not define. A lone
+/// `main` pin is `model` of protocol-change/080, whose refusal never named a
+/// role, so it keeps that wording; any other pin set names the role.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.unknown_pin([], [#(stored_catalogue.PinMain, "x")], #(stored_catalogue.PinMain, "x"))
+///   == "unknown model \"x\"; the configuration defines no models"
+/// ```
+///
+pub fn unknown_pin(
+  known: List(String),
+  pins: List(#(stored_catalogue.PinnedRole, String)),
+  pin: #(stored_catalogue.PinnedRole, String),
+) -> String {
+  case pins {
+    [#(stored_catalogue.PinMain, _)] -> unknown_model(known, pin.1)
+    _ ->
+      unknown_model_for_role(
+        known,
+        pin.1,
+        stored_catalogue.pinned_role_name(pin.0),
       )
-    Error(Nil) -> Error(unknown_model(model_keys(catalog), key))
+  }
+}
+
+/// The refusal for a model key pinned to a named role that the configuration
+/// does not define, naming the keys it does (protocol-change/108). It is
+/// `unknown_model` with the role added.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.unknown_model_for_role([], "x", "vision")
+///   == "unknown model \"x\" for role \"vision\"; the configuration defines no models"
+/// ```
+///
+pub fn unknown_model_for_role(
+  known: List(String),
+  key: String,
+  role: String,
+) -> String {
+  let prefix =
+    "unknown model \""
+    <> key
+    <> "\" for role \""
+    <> role
+    <> "\"; the configuration defines"
+
+  // No known keys is worded apart from a list of them.
+  case known {
+    [] -> prefix <> " no models"
+    known -> prefix <> ": " <> string.join(known, ", ")
   }
 }
 
