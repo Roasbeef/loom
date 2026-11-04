@@ -1331,7 +1331,8 @@ not yet connect snapshots to spawning, peer transfer, result custody or movement
 
 `Source`, `Inventory` and `WorkingEntries` retain canonical metadata, the
 HEAD/index/untracked union and admitted current entries. `Snapshot` returns the
-private stage, child and WIP OID. Ignore discovery uses the parent's server-owned
+private stage, child, the commit the bundle delivers, the bundle file, the base
+it is thin against and whether the commit records uncommitted work. Ignore discovery uses the parent's server-owned
 tool HOME and identity configuration. Unreadable ignore rules refuse capture.
 Private Git retains no source global configuration, and effective content
 transformations are refused before staging. Gitlink/LFS, conflicting, unborn,
@@ -1340,6 +1341,82 @@ The ordinary daemon creates and masks `repository-snapshots` before admission;
 a dedicated narrow capture scope can reach its own stage, retaining every other
 mask. Failed stages stay private until native custody is known to have drained.
 Space preflight is an observation, not a reservation or aggregate quota.
+
+## Repository states: store, thin bundles and apply
+
+Slice 1 of protocol-change/107 turns a capture into a state, a bundle named by
+the SHA-256 of its bytes, and gives a receiving node somewhere to keep one and
+a way to apply one. It adds no wire message and no production caller; slice 3
+is where a spawn calls these.
+
+`state_object` is pure. `State` holds `hash`, `size`, `tip`, `base` and `dirty`
+(a `Dirtiness`, `Clean` or `Dirty`, never a `Bool`). `encode` and `decode` are
+the JSON codec, and `decode` runs `validate`, so a decoded state has a 64-digit
+lower-case hash, a positive size and full object ids, which is what makes it
+safe to build a path or a Git argument from. `choose_basis` takes the commits a
+sender offered and the ones the receiver reported holding and answers `Thin` at
+the newest held one or `Full`. `parse_header` reads the lines before a bundle's
+pack, and `verify_bundle` compares a state with a file's bytes: size, then
+SHA-256, then the header, which must carry exactly one ref, `bundle_ref`, at
+the tip, with prerequisites exactly when the state names a base. The header
+cannot name the base itself, because a bundle lists every boundary commit and a
+merge can make that more than one. `parse_header` works on bytes: a prerequisite
+line is the commit's id and then its subject in whatever encoding the author
+used, so only the id is read, while a ref line must be UTF-8.
+
+`state_store` keeps `<state root>/states/<hash>.bundle` and `<hash>.json`, the
+record written last. Its limits are the only bound on the disk this feature
+uses, because the free-space check in `repository_snapshot` is an observation:
+`size_limit` for one bundle (at most `state_object.size_limit`, which `open`
+enforces), `total_cap` for every file in the directory, counting the new entry's
+record as well as its bundle, and `retain_s` for age. A bundle that does not fit is refused with a reason and
+nothing is evicted. `put` hashes the bytes, answers the existing entry when the
+same bytes are held whole, and otherwise sweeps, checks the cap and writes. `get`
+reads the whole bundle and compares its size and hash with the record, because a
+rename is not a flush and a crash can leave a short file. `sweep` takes the time
+as an argument, decides each entry by its record's modification time, and
+removes a record and its bundle together. `default_limits` are 256 MiB, 1 GiB
+and seven days. The store has no lock: one process owns the directory and
+serializes its calls. The directory is not masked from session jails yet.
+`workspace_policy.protecting_state_root` masks the state root for session jails
+and for the sandboxed Git alike, and apply has that Git read the bundle by path,
+so masking `states` there would stop apply from reading it. Slice 3, which first
+wires the store in, has to give the runner the one grant a session does not get.
+
+`repository_snapshot.capture_against` takes a `Basis`; `capture` is the full
+case. `base_candidates` lists `HEAD`, its first-parent chain to 16 commits and
+the merge base with the upstream branch. A thin base is checked before any stage
+exists: a full object id, a commit, an ancestor of `HEAD`. The verification
+child of a thin bundle is seeded with a bundle of the base alone, so the thin
+bundle must need nothing the base's history does not supply. A tree that adds
+nothing to `HEAD` delivers `HEAD` and makes no snapshot commit, so it needs no
+identity, and a thin base equal to it is refused because Git makes no empty
+bundle.
+
+`state_apply.apply` verifies the state against the bundle file before it opens a
+repository, then runs Git through `worktree_git.run` in the sandbox with
+`core.hooksPath` and `core.fsmonitor` overridden on every call and the
+autocrlf and sparse settings forced off. `worktree_git` sets `GIT_NO_LAZY_FETCH`
+for every call, so a repository whose config names a promisor remote reached by
+a command cannot start it when an object is missing. The repository's `.git`
+must be a directory and not a link to one. It unpacks with `git bundle unbundle`,
+walks the tip's history to prove every object arrived, and creates
+`refs/loom/in/<hash8>` with the zero object id as the expected old value, so an
+existing ref is never moved; one that already names the tip is the state having
+been applied before and is reused. It does not fetch, because a fetch reads the
+repository's `url.<base>.insteadOf` and `protocol.*` settings. `Worktree` adds
+`git worktree add -b loom/<session>` for a primary checkout, with writable roots
+of the repository's `.git` and the destination's parent. `Clone` makes a new
+repository with an empty template, imports and checks out the branch, and
+refuses a thin state because a new repository holds no base. The caller
+serializes applies to one repository, as the `worktrees` gate does, and owns any
+ledger row for the new tree.
+
+Tests: `state_object_test` and `state_store_test` need no repository.
+`repository_snapshot_thin_test` and `state_apply_test` use real repositories,
+the real helper and `support/state_rig`. `state_apply_test` fires a hostile
+hook, fsmonitor program and ext transport rewrite natively first, so a missing
+canary afterwards is the apply's doing.
 
 `git_identity.resolve` reads the source's effective name/email, while `publish`
 projects only those two values through the existing descriptor-confined helper.

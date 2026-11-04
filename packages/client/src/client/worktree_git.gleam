@@ -469,7 +469,7 @@ fn valid_context(context: CaptureContext) -> Bool {
 /// Builds only the fixed Git environment and the selected metadata context.
 fn capture_environment(call: Capture) -> List(#(String, String)) {
   // Source reads retain only the tool context; private writes inherit none.
-  let context = case call.context {
+  case call.context {
     SourceContext -> {
       let home = workspace_policy.tool_home_directory(call.directory)
 
@@ -495,8 +495,6 @@ fn capture_environment(call: Capture) -> List(#(String, String)) {
       ..environment()
     ]
   }
-
-  [#("GIT_NO_LAZY_FETCH", "1"), ..context]
 }
 
 /// A runner for the operator's check command in a fresh tree, built over this
@@ -741,7 +739,13 @@ fn policy_of(
 // names. A repository a worker wrote can carry `refs/replace/*` entries that
 // make one object read as another, and the project host decides from these
 // reads what is checked and what is pushed (protocol-change/106, "Done means
-// verified"). The environment is an allowlist, so `GIT_DIR` and its relatives
+// verified").
+//
+// `GIT_NO_LAZY_FETCH` stops a missing object from starting a fetch. A
+// repository whose config names a promisor remote, with a transport that runs a
+// command, would otherwise run that command whenever a read finds an object
+// absent, and every call here reads a repository the model may have written.
+// The environment is an allowlist, so `GIT_DIR` and its relatives
 // are absent by construction and cannot be inherited from the daemon.
 
 /// Establishes environment for the caller, keeping its validation and result policy at this boundary.
@@ -754,6 +758,7 @@ fn environment() -> List(#(String, String)) {
     #("GIT_CONFIG_NOSYSTEM", "1"),
     #("GIT_CONFIG_GLOBAL", "/dev/null"),
     #("GIT_NO_REPLACE_OBJECTS", "1"),
+    #("GIT_NO_LAZY_FETCH", "1"),
     #("GIT_TERMINAL_PROMPT", "0"),
     #("GIT_OPTIONAL_LOCKS", "0"),
   ]
