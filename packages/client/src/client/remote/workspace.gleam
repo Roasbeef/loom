@@ -89,6 +89,7 @@ import broker/broker
 import client/distribution
 import client/evolution/machine/remote as remote_machine
 import client/executors
+import client/git_identity
 import client/jobs
 import client/jobstate
 import client/owner_services.{type OwnerServices}
@@ -193,6 +194,10 @@ pub type Registered {
     /// servers this orchestrator runs, and the names it expects the executor
     /// to run.
     mcp: protocol.McpPlan,
+    /// The author the orchestrator resolved for the session's commits, which the
+    /// owner port answers when the executor asks for it while building the
+    /// scope's plane (protocol-change/107), or `None` when there is none.
+    git_identity: Option(git_identity.Identity),
     /// Where the open reports that the executor offers no evolution.
     logger: Logger,
   )
@@ -381,6 +386,7 @@ fn attach_to(
       reconcile_every_ms: registered.reconcile_every_ms,
       executions: registered.executions,
       mcp: registered.mcp,
+      git_identity: registered.git_identity,
     ))
     |> result.map_error(fn(reason) { Failed(unavailable(reason)) }),
   )

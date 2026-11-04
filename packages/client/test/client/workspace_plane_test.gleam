@@ -7,9 +7,12 @@
 //// reaches the owner only through them, and that is the property under test.
 
 import broker/broker
+import broker/budget
 import broker/executor
 import client/escalate
+import client/git_identity
 import client/hookserve
+import client/internal/ffi_os
 import client/internal/instance_owner as custody
 import client/owned_assembly_test
 import client/owner_services
@@ -33,6 +36,7 @@ import runtime/effects
 import simplifile
 import telemetry/log
 import tools/directory_access
+import tools/tool
 import weft/registry as address
 
 // The owner's side of the seam as a test can state it: every function is the
@@ -60,10 +64,20 @@ fn files(settings: serve.Settings) -> workspace_policy.OwnerFiles {
 }
 
 fn prepared(settings: serve.Settings) -> workspace_plane.Prepared {
+  prepared_as(settings, None)
+}
+
+// The same, for a workspace whose owner on another machine sent the author its
+// commits carry (protocol-change/107).
+fn prepared_as(
+  settings: serve.Settings,
+  author: option.Option(git_identity.Identity),
+) -> workspace_plane.Prepared {
   let assert Ok(blob_root) = serve.session_blob_root(settings)
+  let spec = serve.workspace_spec(settings, Some(files(settings)), blob_root)
   let assert Ok(prepared) =
     workspace_plane.prepare(
-      serve.workspace_spec(settings, Some(files(settings)), blob_root),
+      workspace_plane.WorkspaceSpec(..spec, author:),
       reading: workspace_policy.env_text,
     )
     as "a workspace with no toolchain still prepares"
@@ -117,7 +131,17 @@ fn with_started(
   body: fn(workspace_plane.Prepared, workspace_plane.Local, List(Published)) ->
     Nil,
 ) -> Nil {
-  let prepared = prepared(settings)
+  with_started_as(settings, None, body)
+}
+
+// The same, for a workspace that has an author from its owner.
+fn with_started_as(
+  settings: serve.Settings,
+  author: option.Option(git_identity.Identity),
+  body: fn(workspace_plane.Prepared, workspace_plane.Local, List(Published)) ->
+    Nil,
+) -> Nil {
+  let prepared = prepared_as(settings, author)
   let published = process.new_subject()
   let assert Ok(namespace) = address.start() as "a namespace for the plane"
   let assert Ok(local) =
@@ -398,4 +422,178 @@ fn text_of(outcome: effects.ToolOutcome) -> String {
     }
   })
   |> string.join(with: "\n")
+}
+
+// --- an owner's author (protocol-change/107) -------------------------------------
+
+fn owners_author() -> git_identity.Identity {
+  git_identity.Identity(Some("Session Owner"), Some("owner@example.invalid"))
+}
+
+// Runs a shell script in the workspace's jail, under the environment the plane
+// built and the policy it composed, and answers what it printed. This is the
+// call the `bash` tool makes without the tool's own context, which this fixture
+// does not wire. The program the script names for Git is the one the machine
+// resolved, so it does not depend on how a shim behaves under the jail.
+fn shell(
+  prepared: workspace_plane.Prepared,
+  local: workspace_plane.Local,
+  script: String,
+) -> String {
+  let census = prepared.census
+  let wall = clock.from_function(ffi_os.system_time_ms)
+  let #(now, _) = clock.read(wall)
+  let #(operation, _) =
+    ids.mint_op(ids.generator(wall, seed: ffi_os.unique_positive_integer()))
+  let events = process.new_subject()
+  let assert Ok(call) =
+    broker.clear_call(
+      local.started.plane.broker,
+      broker.CallSpec(
+        op_id: operation,
+        step_id: "author-fixture",
+        base_policy: census.base_policy,
+        requirements: census.base_policy,
+        grants: [],
+        response: broker.RefuseNarrowed,
+        demand: prepared.spec.demand,
+        argv: [census.shell, "-c", script],
+        env: census.env,
+        cwd: census.workspace,
+        budget: budget.Budget(1, now + 30_000),
+      ),
+      events:,
+      waiting: 5000,
+    )
+    as "the fixture script is admitted"
+  broker.stdin(local.started.plane.broker, call, data: <<>>, eof: True)
+  let assert Ok(collected) = tool.collect_events(events, waiting: 35_000)
+    as "the fixture script settles"
+  let assert Ok(printed) = bit_array.to_string(collected.stdout)
+    as "the script prints text"
+  let assert Ok(complaint) = bit_array.to_string(collected.stderr)
+    as "the script's errors are text"
+  printed <> complaint
+}
+
+pub fn an_owners_author_is_pinned_in_the_environment_of_every_tool_test() {
+  let settings = owned_assembly_test.settings()
+  let pinned = prepared_as(settings, Some(owners_author())).census.env
+
+  assert list.key_find(pinned, "GIT_AUTHOR_NAME") == Ok("Session Owner")
+  assert list.key_find(pinned, "GIT_AUTHOR_EMAIL")
+    == Ok("owner@example.invalid")
+  assert list.key_find(pinned, "GIT_COMMITTER_NAME") == Ok("Session Owner")
+  assert list.key_find(pinned, "GIT_COMMITTER_EMAIL")
+    == Ok("owner@example.invalid")
+}
+
+pub fn a_workspace_with_no_owner_author_pins_nothing_test() {
+  let settings = owned_assembly_test.settings()
+  let env = prepared(settings).census.env
+
+  assert list.all(git_identity.author_names, fn(name) {
+    list.key_find(env, name) == Error(Nil)
+  })
+}
+
+// A repository whose `.git/config` names another author, and a tool home whose
+// published configuration was overwritten with one, cannot change who the
+// commit is by. The tool home is writable by the model, so overwriting what
+// `GIT_CONFIG_GLOBAL` names is the planted `~/.gitconfig` of this layout.
+pub fn hostile_configuration_cannot_change_the_author_of_a_commit_test() {
+  let settings = owned_assembly_test.settings()
+  use prepared, local, _parts <- with_started_as(
+    settings,
+    Some(owners_author()),
+  )
+  let program = prepared.census.git
+  let script =
+    string.join(
+      [
+        "set -e",
+        program <> " init -q -b main .",
+        program <> " config user.name Evil",
+        program <> " config user.email evil@example.invalid",
+        "printf '[user]\\n\\tname = Planted\\n\\temail = planted@example.invalid\\n' > \"$GIT_CONFIG_GLOBAL\"",
+        program <> " commit --allow-empty -q -m one",
+        program <> " log -1 --format='author=%an <%ae> committer=%cn <%ce>'",
+      ],
+      "\n",
+    )
+  let printed = shell(prepared, local, script)
+
+  assert string.contains(
+    printed,
+    "author=Session Owner <owner@example.invalid> committer=Session Owner <owner@example.invalid>",
+  )
+  assert !string.contains(printed, "Evil")
+  assert !string.contains(printed, "Planted")
+}
+
+// 107 left open whether `--amend` and a rebase keep an existing author under the
+// pinned environment. Git does: the author of a commit that is amended or
+// replayed comes from the commit itself, and the pinned name is only the
+// committer. A commit someone else wrote stays theirs.
+pub fn amend_and_rebase_keep_an_existing_author_under_the_pin_test() {
+  let settings = owned_assembly_test.settings()
+  use prepared, local, _parts <- with_started_as(
+    settings,
+    Some(owners_author()),
+  )
+  let program = prepared.census.git
+  let script =
+    string.join(
+      [
+        "set -e",
+        program <> " init -q -b main .",
+        program <> " commit --allow-empty -q -m base",
+        program
+          <> " commit --allow-empty -q -m alice --author='Alice <alice@example.invalid>'",
+        program <> " commit --amend --allow-empty --no-edit -q",
+        program <> " log -1 --format='amended=%an <%ae> | %cn <%ce>'",
+        program <> " checkout -q -b side HEAD~1",
+        program
+          <> " commit --allow-empty -q -m bob --author='Bob <bob@example.invalid>'",
+        program <> " rebase -q main",
+        program <> " log -1 --format='rebased=%an <%ae> | %cn <%ce>'",
+      ],
+      "\n",
+    )
+  let printed = shell(prepared, local, script)
+
+  assert string.contains(
+    printed,
+    "amended=Alice <alice@example.invalid> | Session Owner <owner@example.invalid>",
+  )
+  assert string.contains(
+    printed,
+    "rebased=Bob <bob@example.invalid> | Session Owner <owner@example.invalid>",
+  )
+}
+
+// The control for the test above, and the promise that a session with no owner
+// author is unchanged: with nothing pinned, the repository's own `user.*` wins
+// as it always has, so the pin is what changed the result and not the fixture.
+pub fn without_an_owner_author_the_repositorys_own_identity_still_wins_test() {
+  let settings = owned_assembly_test.settings()
+  use prepared, local, _parts <- with_started(settings)
+  let program = prepared.census.git
+  let script =
+    string.join(
+      [
+        "set -e",
+        program <> " init -q -b main .",
+        program <> " config user.name Repository",
+        program <> " config user.email repository@example.invalid",
+        program <> " commit --allow-empty -q -m one",
+        program <> " log -1 --format='author=%an <%ae>'",
+      ],
+      "\n",
+    )
+
+  assert string.contains(
+    shell(prepared, local, script),
+    "author=Repository <repository@example.invalid>",
+  )
 }

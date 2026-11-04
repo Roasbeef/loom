@@ -197,6 +197,11 @@ pub type AttachSpec {
     /// the orchestrator runs, and the names of the ones it expects this
     /// executor to run from its own configuration. Fixed for the plane's life.
     mcp: protocol.McpPlan,
+    /// The author the owner sent for the session's commits, or `None` when it
+    /// had none to give (protocol-change/107). The plane pins it in every tool's
+    /// environment, so neither the repository's configuration nor this
+    /// executor's own can choose the author. Fixed for the plane's life.
+    git_identity: Option(protocol.GitIdentity),
   )
 }
 
@@ -1260,6 +1265,11 @@ fn build_plane(
             use mcp <- result.try(
               owner_link.mcp_plan(link) |> result.map_error(NoPlaneBuilt),
             )
+
+            // The identity never fails a build: an owner with none, or one that
+            // does not answer, leaves the session as it was before the message.
+            let git_identity =
+              owner_link.git_identity(link, owner_link.identity_wait_ms)
             factory(AttachSpec(
               session:,
               workspace:,
@@ -1267,6 +1277,7 @@ fn build_plane(
               owner:,
               clock:,
               mcp:,
+              git_identity:,
             ))
           }
           Ok(PlaneBuilt(built))

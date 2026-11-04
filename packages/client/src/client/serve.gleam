@@ -2602,6 +2602,7 @@ pub fn workspace_spec(
     lsp_servers: settings.catalog.lsp_servers,
     jobs_policy: settings.jobs_policy,
     owner_files: files,
+    author: None,
   )
 }
 
@@ -4174,6 +4175,15 @@ fn assemble_in(
             session: settings.session_id,
           ),
           mcp: mcp_plan,
+          // The orchestrator resolves no identity for a session whose workspace
+          // is on another machine: `git_identity.resolve` runs through a sandbox
+          // broker on the workspace's own machine, and the owner has none of
+          // those for a remote placement. The message, the executor's pinning
+          // and this seam are in place, and an owner that learns a way to
+          // resolve the operator's identity without running Git in the daemon's
+          // VM supplies it here. Until then an executor hears `None` and its
+          // session behaves as it did before protocol version 6.
+          git_identity: None,
           logger:,
         ),
         owner,

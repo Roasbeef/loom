@@ -97,6 +97,7 @@ fn serve(rig: Rig) -> Plane {
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
       mcp: protocol.McpPlan(served: [], expected: []),
+      git_identity: option.None,
     ))
     as "the owner port starts"
   Plane(rig:, host_pid: started.pid, address: started.data, port:)

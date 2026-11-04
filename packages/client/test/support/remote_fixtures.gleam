@@ -487,9 +487,9 @@ pub fn scratch(name: String) -> String {
   directory
 }
 
-/// An owner port that answers only the executor's request for the MCP plan,
-/// with no servers, and leaves every other request unanswered, as a bare
-/// subject would. A host asks for the plan while it builds a scope's plane.
+/// An owner port that answers only the executor's two requests made while it
+/// builds a scope's plane, the MCP plan (no servers) and the commit author (none),
+/// and leaves every other request unanswered, as a bare subject would.
 pub fn plan_port() -> Subject(protocol.OwnerMessage) {
   let handed = process.new_subject()
   process.spawn(fn() {
@@ -505,6 +505,7 @@ fn answer_plans(inbox: Subject(protocol.OwnerMessage)) -> Nil {
   case process.receive_forever(inbox) {
     protocol.AskMcpPlan(reply:) ->
       process.send(reply, protocol.McpPlan(served: [], expected: []))
+    protocol.AskGitIdentity(reply:) -> process.send(reply, None)
     _unanswered -> Nil
   }
   answer_plans(inbox)

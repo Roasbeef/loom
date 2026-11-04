@@ -1443,6 +1443,28 @@ pub fn a_server_owned_name_is_refused_from_set_test() {
     catalog.parse_tools(with_tools("[tools.set]\nLOOM_SCRATCH_DIR = \"/tmp\""))
 }
 
+pub fn the_four_author_names_are_refused_from_env_and_set_test() {
+  // The names an owner's identity pins on an executor (protocol-change/107).
+  // They are refused on every machine, so a table that loads on one does not
+  // start failing on another that has an identity to pin.
+  list.each(
+    [
+      "GIT_AUTHOR_NAME",
+      "GIT_AUTHOR_EMAIL",
+      "GIT_COMMITTER_NAME",
+      "GIT_COMMITTER_EMAIL",
+    ],
+    fn(name) {
+      let assert Error("tools.env may not name " <> in_env) =
+        catalog.parse_tools(with_tools("env = [\"" <> name <> "\"]"))
+      assert string.starts_with(in_env, name)
+      let assert Error("tools.set may not name " <> in_set) =
+        catalog.parse_tools(with_tools("[tools.set]\n" <> name <> " = \"Evil\""))
+      assert string.starts_with(in_set, name)
+    },
+  )
+}
+
 pub fn a_scalar_tools_key_is_refused_test() {
   // Prefixed rather than appended: `minimal` ends inside its [roles]
   // table, so a key written after it would be `roles.tools`.

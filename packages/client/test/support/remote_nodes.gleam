@@ -141,6 +141,7 @@ pub fn orchestrate(
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
       mcp: protocol.McpPlan(served: [], expected: []),
+      git_identity: option.None,
     )),
   )
   use attachment <- result.try(
@@ -380,6 +381,7 @@ pub fn orchestrate_worktrees(peer: distribution.Peer) -> Result(Nil, String) {
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
       mcp: protocol.McpPlan(served: [], expected: []),
+      git_identity: option.None,
     )),
   )
   let attach = fn(session) {
@@ -518,6 +520,7 @@ pub fn orchestrate_workspace(peer: distribution.Peer) -> Result(Nil, String) {
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
       mcp: protocol.McpPlan(served: [], expected: []),
+      git_identity: option.None,
     )),
   )
   use attachment <- result.try(

@@ -19,6 +19,7 @@ import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
 import gleam/list
+import gleam/option
 import gleam/string
 import machine/operation
 import runtime/effects.{type ToolRun}
@@ -48,6 +49,7 @@ fn rig(gate: fixtures.Gate, asks: fixtures.Asks) -> Rig {
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
       mcp: protocol.McpPlan(served: [], expected: []),
+      git_identity: option.None,
     ))
     as "the port starts"
   Rig(host_pid: started.pid, address: started.data, probe:, port:, path:)
@@ -275,6 +277,7 @@ pub fn the_owner_port_dying_settles_a_parked_escalation_promptly_test() {
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
       mcp: protocol.McpPlan(served: [], expected: []),
+      git_identity: option.None,
     ))
     as "the parked port starts"
   let remote = attached(Rig(..rig, port: parked_port), 1)
@@ -321,6 +324,7 @@ pub fn the_survivors_of_a_replaced_port_serve_the_new_one_test() {
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
       mcp: protocol.McpPlan(served: [], expected: []),
+      git_identity: option.None,
     ))
     as "the second port starts"
   let second = attached(Rig(..rig, port: second_port), 2)

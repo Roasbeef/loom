@@ -1094,16 +1094,26 @@ fn env_name(at: String, name: String) -> Result(Nil, String) {
 // own dotfiles from inside the jail. LOOM_SCRATCH_DIR is filled by the
 // helper only after the execution's scratch has been prepared. The Git
 // global path selects the identity-only defaults prepared before model work.
+// The four author names pin who a commit is by when the session's owner sent
+// an identity to an executor (protocol-change/107). They are refused in every
+// configuration, whether or not the session has an identity, so a table that
+// works on one machine cannot start failing on another. `client/git_identity`
+// holds the same four as `author_names`, and its tests keep the two in step.
 const server_owned_names = [
   "PATH",
   "HOME",
   "TMPDIR",
   "LOOM_SCRATCH_DIR",
   "GIT_CONFIG_GLOBAL",
+  "GIT_AUTHOR_NAME",
+  "GIT_AUTHOR_EMAIL",
+  "GIT_COMMITTER_NAME",
+  "GIT_COMMITTER_EMAIL",
 ]
 
 /// Refuses an environment name the harness owns in every jailed child:
-/// `PATH`, `HOME`, `TMPDIR`, `LOOM_SCRATCH_DIR` and `GIT_CONFIG_GLOBAL`.
+/// `PATH`, `HOME`, `TMPDIR`, `LOOM_SCRATCH_DIR`, `GIT_CONFIG_GLOBAL` and the four
+/// Git author and committer names.
 /// `place` is the key being decoded, for the refusal to name.
 ///
 /// A profile's `env` and the catalogue's `[tools] env` and `[tools.set]`
@@ -1129,9 +1139,10 @@ pub fn not_server_owned(place: String, name: String) -> Result(Nil, String) {
         place
         <> " may not name "
         <> name
-        <> ": PATH, HOME, TMPDIR, LOOM_SCRATCH_DIR and GIT_CONFIG_GLOBAL are owned by the"
+        <> ": PATH, HOME, TMPDIR, LOOM_SCRATCH_DIR, GIT_CONFIG_GLOBAL and the"
+        <> " GIT_AUTHOR_* and GIT_COMMITTER_* names are owned by the"
         <> " server and jail helper so tools use the selected toolchain,"
-        <> " workspace and scratch directory",
+        <> " workspace, scratch directory and commit author",
       )
   }
 }

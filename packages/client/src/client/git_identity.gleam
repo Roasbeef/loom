@@ -29,6 +29,19 @@ import tools/tool
 /// The server selects the generated global configuration for every tool.
 pub const environment_name = "GIT_CONFIG_GLOBAL"
 
+/// The four environment names that pin who a commit is by. Git reads them before
+/// any configuration file, so a repository's `.git/config` and a home
+/// directory's `.gitconfig` cannot change the author while they are set. The
+/// server owns them in every jailed child that has an identity from its owner
+/// (protocol-change/107), and `client/lsp/profile` refuses a configuration that
+/// names one.
+pub const author_names = [
+  "GIT_AUTHOR_NAME",
+  "GIT_AUTHOR_EMAIL",
+  "GIT_COMMITTER_NAME",
+  "GIT_COMMITTER_EMAIL",
+]
+
 /// The resolved identity values copied into a child's isolated tool home.
 ///
 /// These values are convenience configuration, not an authentication authority.
@@ -39,6 +52,40 @@ pub type Identity {
     /// The last configured user.email, if present.
     email: Option(String),
   )
+}
+
+/// The environment entries that pin the author and the committer to an
+/// identity, or none when the identity lacks a name or an email.
+///
+/// An incomplete identity pins nothing: pinning a name beside an email Git would
+/// guess is the guess this module exists to prevent. The values are not
+/// validated here. The executor receives an identity only through
+/// `remote/protocol.git_identity_of`, which bounds and cleans it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert git_identity.author_environment(
+///     git_identity.Identity(Some("Ada"), Some("ada@example.invalid")),
+///   )
+///   == [
+///     #("GIT_AUTHOR_NAME", "Ada"),
+///     #("GIT_AUTHOR_EMAIL", "ada@example.invalid"),
+///     #("GIT_COMMITTER_NAME", "Ada"),
+///     #("GIT_COMMITTER_EMAIL", "ada@example.invalid"),
+///   ]
+/// ```
+pub fn author_environment(identity: Identity) -> List(#(String, String)) {
+  // Only a complete identity is pinned.
+  case identity {
+    Identity(Some(name), Some(email)) -> [
+      #("GIT_AUTHOR_NAME", name),
+      #("GIT_AUTHOR_EMAIL", email),
+      #("GIT_COMMITTER_NAME", name),
+      #("GIT_COMMITTER_EMAIL", email),
+    ]
+    Identity(..) -> []
+  }
 }
 
 /// Resolves the parent's effective identity under its existing read policy.
