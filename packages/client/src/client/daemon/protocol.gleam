@@ -199,6 +199,65 @@ pub type Command {
   /// Lists authorized metadata after one canonical identity.
   ListSessions(after: String, revision: Option(Int))
 
+  /// Creates a project for a workspace, with its router session
+  /// (protocol-change/106). Owner-only.
+  CreateProject(workspace: String, name: String)
+
+  /// Lists the projects with their counts by stage. Owner-only.
+  ListProjects
+
+  /// One page of a project's board, needs-a-person first. Owner-only.
+  ProjectBoard(project: String, page: Int)
+
+  /// Adds the owner's text to a project as an explicit trigger, keyed by a
+  /// request id so a repeat changes nothing. Owner-only.
+  PostToProject(project: String, request: String, text: String)
+
+  /// A person's stop of one ticket, which withdraws its mandate. Owner-only.
+  StopTicket(project: String, ticket: String)
+
+  /// One ticket with its Mandate, assignments, inputs, session id and
+  /// question. Owner-only.
+  ProjectTicket(project: String, ticket: String)
+
+  /// A person's answer to the ticket's open question, echoing the question's
+  /// sequence number so an answer to a question that has since changed is
+  /// refused. Owner-only.
+  AnswerQuestion(project: String, ticket: String, seq: Int, text: String)
+
+  /// A person's close of a ticket whose work they accepted. The ticket ends as
+  /// `closed` and its mandate stands, so a later message can resume it, unlike
+  /// a stop. Owner-only.
+  CloseTicket(project: String, ticket: String)
+
+  /// A person's request for a new assignment on a stalled ticket. Owner-only.
+  RetryTicket(project: String, ticket: String)
+
+  /// A person's request that a stored trigger be evaluated afresh. Owner-only.
+  RequeueTrigger(project: String, trigger: String)
+
+  /// A person's mode for one configured rule: `off`, `observe` or `auto`.
+  /// `auto` is refused until a rule has a passing verdict. Owner-only.
+  SetProjectMode(project: String, rule: String, mode: String)
+
+  /// A person's label of one recorded trigger: `accept` when the project
+  /// should have taken it on as work and `reject` when it should not. Counts
+  /// toward the verdict of the rule the trigger matched. Owner-only.
+  LabelTrigger(project: String, trigger: String, label: String)
+
+  /// The recorded triggers of one rule that want a label, newest first, with
+  /// the labelled count against what a verdict needs. Owner-only.
+  ProjectLabels(project: String, rule: String)
+
+  /// Runs a verdict for one rule on a lane, `replay` or `live`, and records
+  /// it. Owner-only.
+  RunProjectVerdict(project: String, rule: String, lane: Option(String))
+
+  /// A person's publish of a ticket's current commit past a failing or missing
+  /// check, recorded with the principal. Owner-only, and refused while the
+  /// project keeps `publish` off.
+  PublishTicket(project: String, ticket: String)
+
   /// Asks the named resident sessions what they are doing
   /// (`protocol-change/050`). Owner-only; saved sessions are never opened.
   SessionActivity(
@@ -639,6 +698,83 @@ fn decode_fields(
         PageLink, _, _ -> Ok(UiLink(id, page, remember))
       }
     }
+    "projects.create" -> {
+      use workspace <- result.try(text_field(fields, "workspace", 4096))
+      use name <- result.map(text_field(fields, "name", 256))
+      CreateProject(workspace, name)
+    }
+    "projects.list" -> Ok(ListProjects)
+    "projects.board" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use page <- result.map(page_field(fields))
+      ProjectBoard(project, page)
+    }
+    "projects.post" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use request <- result.try(text_field(fields, "request_id", 64))
+      use text <- result.map(text_field(fields, "text", 32_768))
+      PostToProject(project, request, text)
+    }
+    "projects.stop" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use ticket <- result.map(text_field(fields, "ticket", 128))
+      StopTicket(project, ticket)
+    }
+    "projects.ticket" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use ticket <- result.map(text_field(fields, "ticket", 128))
+      ProjectTicket(project, ticket)
+    }
+    "projects.answer" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use ticket <- result.try(text_field(fields, "ticket", 128))
+      use seq <- result.try(question_seq_field(fields))
+      use text <- result.map(text_field(fields, "text", 32_768))
+      AnswerQuestion(project, ticket, seq, text)
+    }
+    "projects.close" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use ticket <- result.map(text_field(fields, "ticket", 128))
+      CloseTicket(project, ticket)
+    }
+    "projects.retry" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use ticket <- result.map(text_field(fields, "ticket", 128))
+      RetryTicket(project, ticket)
+    }
+    "projects.publish" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use ticket <- result.map(text_field(fields, "ticket", 128))
+      PublishTicket(project, ticket)
+    }
+    "projects.requeue" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use trigger <- result.map(text_field(fields, "trigger", 128))
+      RequeueTrigger(project, trigger)
+    }
+    "projects.set_mode" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use rule <- result.try(text_field(fields, "rule", 64))
+      use mode <- result.map(text_field(fields, "mode", 16))
+      SetProjectMode(project, rule, mode)
+    }
+    "projects.label" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use trigger <- result.try(text_field(fields, "trigger", 128))
+      use label <- result.map(text_field(fields, "label", 16))
+      LabelTrigger(project, trigger, label)
+    }
+    "projects.labels" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use rule <- result.map(text_field(fields, "rule", 64))
+      ProjectLabels(project, rule)
+    }
+    "projects.verdict" -> {
+      use project <- result.try(text_field(fields, "project", 64))
+      use rule <- result.try(text_field(fields, "rule", 64))
+      use lane <- result.map(optional_text_field(fields, "lane", 16))
+      RunProjectVerdict(project, rule, lane)
+    }
     "sessions.list" -> {
       use after <- result.try(cursor(fields))
       use revision <- result.try(optional_revision(fields))
@@ -1008,6 +1144,21 @@ fn name_field(fields: List(#(String, JsonValue))) -> Result(String, String) {
   }
 }
 
+/// Extracts an optional nonempty text field within a byte limit. An absent key
+/// is none, and a present key must satisfy `text_field`, so a field that is
+/// sent is never silently read as absent.
+fn optional_text_field(
+  fields: List(#(String, JsonValue)),
+  key: String,
+  limit: Int,
+) -> Result(Option(String), String) {
+  // Absence is the only way to send no value.
+  case list.key_find(fields, key) {
+    Error(Nil) -> Ok(None)
+    Ok(_) -> text_field(fields, key, limit) |> result.map(Some)
+  }
+}
+
 /// Extracts an optional pagination cursor from payload fields.
 fn optional_after(
   fields: List(#(String, JsonValue)),
@@ -1364,6 +1515,31 @@ fn activity_sessions(
   case list.length(list.unique(sessions)) == list.length(sessions) {
     True -> Ok(sessions)
     False -> Error("sessions repeats an identity")
+  }
+}
+
+// A zero-based page number, defaulting to the first.
+/// Decodes the optional `page` field of a board read.
+fn page_field(fields: List(#(String, JsonValue))) -> Result(Int, String) {
+  case list.key_find(fields, "page") {
+    Error(Nil) -> Ok(0)
+    Ok(json.Int(page)) if page >= 0 && page <= 100_000 -> Ok(page)
+    Ok(_) -> Error("expected a nonnegative page number")
+  }
+}
+
+/// The sequence number a `projects.answer` echoes. It is required, because an
+/// answer with no sequence number could not be told apart from one given to an
+/// earlier question.
+fn question_seq_field(
+  fields: List(#(String, JsonValue)),
+) -> Result(Int, String) {
+  use value <- result.try(required(fields, "seq"))
+
+  // Only a nonnegative integer can echo a sequence number the daemon assigned.
+  case value {
+    json.Int(seq) if seq >= 0 -> Ok(seq)
+    _other -> Error("expected a nonnegative question sequence number")
   }
 }
 

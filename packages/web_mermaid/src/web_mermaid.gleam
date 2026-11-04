@@ -4,7 +4,7 @@
 //// empty and mounted in a separate hidden node, so a controller update cannot
 //// reconcile away the SVG that the vendor generated. The pure controller
 //// decides which effects may run; this module interprets them in order over
-//// the minimal browser/vendor binding. It never forwards SVG or diagnostics.
+//// the minimal browser/vendor binding. It never forwards SVG or exception objects.
 ////
 //// The fixed bootstrap injects the pinned vendor object. Neither request data
 //// nor the session page can choose an implementation or change these calls.
@@ -152,7 +152,7 @@ fn begin(
   // Report render outcome back to the controller.
   case began {
     Ok(Nil) -> Nil
-    Error(Nil) -> dispatch(controller.Rendered(revision, Error(Nil)))
+    Error(Nil) -> dispatch(controller.Rendered(revision, Error("")))
   }
 }
 

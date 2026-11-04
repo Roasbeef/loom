@@ -227,6 +227,60 @@ pub fn commits_survive_a_clean_close_and_return_at_the_next_open_test() {
   assert row(rig, 1) == Ok(exec_ledger.Present)
 }
 
+// The close a project worker's tree gets when its ticket ends.
+fn close_guarding(rig: Rig, n: Int) -> worktrees.Closed {
+  worktrees.close_guarding_commits(rig.trees, rig.workspace, session(n))
+}
+
+fn commit_feature(path: String) -> Nil {
+  write(path <> "/feature.txt", "done\n")
+  git(path, ["add", "feature.txt"])
+  git(path, ["commit", "--quiet", "-m", "feature"])
+  Nil
+}
+
+pub fn a_guarded_close_keeps_a_clean_tree_that_holds_commits_test() {
+  let rig = worktree_rig.rig("guarded-ahead")
+  let tree = opened(rig, 1)
+  commit_feature(tree.path)
+
+  // The tree is clean, which an ordinary close would remove. Its commit is
+  // absent from the base, so the guarded close leaves it and says why.
+  let assert worktrees.Kept(reason) = close_guarding(rig, 1)
+  assert reason == "it holds 1 commit absent from the base"
+  assert exists(tree.path <> "/feature.txt")
+  assert row(rig, 1) == Ok(exec_ledger.Kept)
+}
+
+pub fn a_guarded_close_removes_a_clean_tree_with_no_commits_test() {
+  let rig = worktree_rig.rig("guarded-none")
+  let tree = opened(rig, 1)
+
+  assert close_guarding(rig, 1) == worktrees.Removed
+  assert !exists(tree.path)
+  assert row(rig, 1) == Ok(exec_ledger.Removed)
+}
+
+pub fn a_guarded_close_removes_a_tree_whose_commits_the_base_already_has_test() {
+  let rig = worktree_rig.rig("guarded-merged")
+  let tree = opened(rig, 1)
+  commit_feature(tree.path)
+
+  // The work reached the base, so there is nothing left for the tree to hold.
+  git(rig.root, ["merge", "--quiet", "--ff-only", tree.branch])
+  assert close_guarding(rig, 1) == worktrees.Removed
+  assert !exists(tree.path)
+}
+
+pub fn a_guarded_close_still_keeps_a_tree_with_changes_test() {
+  let rig = worktree_rig.rig("guarded-dirty")
+  let tree = opened(rig, 1)
+  write(tree.path <> "/README", "edited\n")
+
+  let assert worktrees.Kept(reason) = close_guarding(rig, 1)
+  assert string.contains(reason, "changes")
+}
+
 pub fn a_directory_removed_out_of_band_is_recreated_from_the_branch_test() {
   let rig = worktree_rig.rig("oob")
   let tree = opened(rig, 1)
@@ -458,6 +512,7 @@ pub fn a_root_that_is_a_linked_worktree_is_refused_at_start_test() {
         ledger_path: rig.ledger_path,
         helper_path: "unused",
         demand: exec.BestEffort,
+        credentials: [],
         logger: log.discard(),
       ),
       [workspace],
@@ -474,6 +529,7 @@ pub fn a_shared_configuration_starts_nothing_test() {
         ledger_path: rig.ledger_path,
         helper_path: "does-not-exist",
         demand: exec.BestEffort,
+        credentials: [],
         logger: log.discard(),
       ),
       [workspaces.shared("repo", rig.root)],

@@ -120,8 +120,10 @@ callers own launch timing, authentication policy, and application messages.
   `open_port` process launch and release, a positioned bounded read
   (`read_prefix`/`read_bounded`), an exclusive-create atomic rename,
   `realpath`, `os:find_executable`, `os:getpid`, `id -u`, procfs and Darwin
-  `ps` birth identity, and the loopback-port reservation the legacy v1
-  launcher still uses. Clocks, digests, the environment, `stat`, directory
+  `ps` birth identity, the loopback-port reservation the legacy v1
+  launcher still uses, and `run_captured`, a bounded run of one executable that
+  returns its status and merged output as a value (the launcher uses it to run
+  `loomd distribution options` without printing over a terminal). Clocks, digests, the environment, `stat`, directory
   listing and permission bits are Gleam over the packages above. OTP's port
   monitor is called directly from `host/bootstrap` because `gleam_erlang`
   exposes `process.PortDown` but no public port-monitor constructor.

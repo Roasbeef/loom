@@ -114,6 +114,7 @@ fn owner(asked: Asked) -> home.Start {
     create: Some(recording(asked)),
     folders: None,
     elsewhere: None,
+    projects: None,
     profiles: ["fast"],
     models: ["glm"],
     signins: fn(deliver) { deliver(signins.Listed([])) },

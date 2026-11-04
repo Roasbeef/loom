@@ -98,14 +98,14 @@ two-line preview of the highlighted row sits above the help line. An empty
 filter says what to press next and keeps the counts.
 
 **Data.** Everything drawn exists today except one figure. Rows come from
-`Session` (`tui/daemon/protocol.gleam:525`) and the page from `Page`
+`Session` (`tui/daemon/protocol.gleam:537`) and the page from `Page`
 (`tui/daemon/protocol.gleam:412`). The state phrase, counts, last message,
 model and the strand rows come from `Activity`
 (`tui/daemon/protocol.gleam:300`) with its `ActivityState`
 (`tui/daemon/protocol.gleam:325`) and `GlanceLine`
 (`tui/daemon/protocol.gleam:352`), which `observe`
 (`tui/session_selector.gleam:405`) folds in from the `sessions.activity` poll
-that `service_activity` (`tui/session_control.gleam:1497`) runs while the
+that `service_activity` (`tui/session_control.gleam:1513`) runs while the
 picker is open. The filter tabs are `Filter` (`tui/session_selector.gleam:75`)
 and the glyphs are `Presence` (`tui/session_selector.gleam:73`). The one
 figure that does not exist is an age for a resident session's last activity:
@@ -207,7 +207,7 @@ What changes:
    narrow, the strip under the footer is the same rows (`lines`,
    `session_view/agent_roster.gleam:355`). Nothing is drawn twice.
 3. **Columns are folds.** `Shift+Tab` shows or hides the panel, as it toggles
-   the rail today (`toggle_agent_rail`, `tui/interaction.gleam:1883`). A column
+   the rail today (`toggle_agent_rail`, `tui/interaction.gleam:1897`). A column
    that does not fit is not drawn, and the preference is kept, as the rail's
    is today. The sessions column exists only from 180 columns and is pinned
    with `/layout sessions`.
@@ -328,7 +328,7 @@ on the owner's correction: `←` keeps the picker.
 | Tabbed right panel | yes | Four tabs on the panel's top border; one is active; digits pick one while the panel has focus. |
 | Strand cards with a cache ring | partly | One row per strand (name, status line, elapsed, context); the ring becomes the words the footer already shows (`cache ≤3m`), on the selected strand's card. |
 | Timeline dots and strand tags | yes | A one-cell gutter in the strand's hue and a `●` at a crossing; tags are the strand's name in its hue. |
-| Breadcrumb and `Esc` back to `main` | no | `Esc` in the composer is the interrupt (`interrupt_active`, `tui/interaction.gleam:1881`) and must stay so. The transcript heading reads `transcript / main ▸ sub:tests · ^O strands · /strand main`, and the way back is `Enter` on `main` in the Strands list, which is always its first row, or `/strand main`. |
+| Breadcrumb and `Esc` back to `main` | no | `Esc` in the composer is the interrupt (`interrupt_active`, `tui/interaction.gleam:1895`) and must stay so. The transcript heading reads `transcript / main ▸ sub:tests · ^O strands · /strand main`, and the way back is `Enter` on `main` in the Strands list, which is always its first row, or `/strand main`. |
 | `⌘B` / `⌘⌥B` toggles | no | `Ctrl+B` is tmux's prefix and `Ctrl+Alt` chords do not survive every terminal. `Shift+Tab` toggles the panel, as it toggles the rail today; `/layout sessions` pins the sessions column. |
 | Detail view of a strand inside the Strands tab | yes, differently | The cursor row's detail is always drawn below the list; there is no list-or-detail state, because browsing must not cost a focus. |
 | Approval card in the dock | yes | Kept in the dock, as a full-width block under a rule. The panel carries no decision control. |
@@ -388,7 +388,7 @@ when a strand needs a decision (`needing`,
 `session_view/strand_card.gleam:69`). The panel has keyboard focus or the
 composer does; the panel's border is drawn in the signal colour while it has
 focus, and the composer's top rule says what the keys do, as it does for the
-strip today (`input_title_keys`, `tui/render.gleam:2197`).
+strip today (`input_title_keys`, `tui/render.gleam:2205`).
 
 | Key, panel focused | Does |
 |---|---|
@@ -408,8 +408,8 @@ strip today (`input_title_keys`, `tui/render.gleam:2197`).
 |---|---|---|
 | `Shift+Tab` | show or hide the panel | toggles the rail (`toggle_agent_rail`, `tui/submit.gleam:441`) |
 | `Ctrl+O`, `F2` | show the panel on Strands and give it the keyboard; at < 100 columns, open the workspace over the transcript | opens the workspace (`open_agents`, `tui/submit.gleam:60`) |
-| `↓` on an idle composer | enter the Strands list (the strip when the panel is hidden) | enters the strip (`down_from_composer`, `tui/interaction.gleam:1721`) |
-| `Ctrl+D` | focus the Changes tab's navigator | toggles the diff navigator's focus (`tui/interaction.gleam:1608`, the `worktree` focus) |
+| `↓` on an idle composer | enter the Strands list (the strip when the panel is hidden) | enters the strip (`down_from_composer`, `tui/interaction.gleam:1735`) |
+| `Ctrl+D` | focus the Changes tab's navigator | toggles the diff navigator's focus (`tui/interaction.gleam:1622`, the `worktree` focus) |
 | `/diff` | show the panel on Changes and request the worktree read | opens the changes pane |
 | `/summary`, `/context`, `/goal` | show the panel on Session, scrolled to the row | each opens its own surface |
 | `/notes` | the Strands detail's `NOTES` section for the active strand; the full notes browser stays reachable from it with `Enter` | opens the notes browser over the transcript |
@@ -468,7 +468,7 @@ colours a strand by its position among the captured strands and never by its
 name, with `hues` (`session_view/turns.gleam:91`) sub-agent hues before they
 repeat. The terminal's row projection would carry a hue beside each row the
 way it carries anchors (`refresh_render_cache`, `tui/projection.gleam:79`),
-derived from `pieces` (`session_view/turns.gleam:360`), which already decides
+derived from `pieces` (`session_view/turns.gleam:374`), which already decides
 which strand a spawn, result, nudge or peer row belongs to. `tui/theme.gleam`
 needs five strand hue constants beside `advisor` (`tui/theme.gleam:17`),
 `signal` (`tui/theme.gleam:29`) and `current` (`tui/theme.gleam:32`), with
@@ -506,7 +506,7 @@ error on a `└` line, and the row reads `7 calls · 1 failed`. That frame is
 labelled as needing the change, in the frame itself and in its name.
 
 **Data.** The program source and its name come from the invocation's
-arguments (`code_mode_program`, `session_view/transcript_lines.gleam:3875`).
+arguments (`code_mode_program`, `session_view/transcript_lines.gleam:3916`).
 The state and the result come from the result's `status`, `value`, `message`,
 `failure` and `rejections` fields (`execution_value`,
 `tools/codemode.gleam:1336`), and the sandbox's enforcement report
@@ -701,18 +701,18 @@ queue surfaces have their own handlers (`update_diff_key` at
 
 | Key | Today | In this concept | Collision |
 |---|---|---|---|
-| `Enter`, `Tab`, `Esc` in the composer | send; queue/steer; interrupt (`toggle_submission_mode` at `tui/interaction.gleam:1882`) | unchanged | none; `Esc` is never "back to main" |
-| `←` on an empty composer | opens the picker (`open_session_selector`, `tui/interaction.gleam:1920`) | unchanged; with the sessions column pinned it focuses the column instead | none |
-| `↓` on an idle composer | enters the strip (`down_from_composer`, `tui/interaction.gleam:1721`) | enters the Strands list, which is the strip when the panel is hidden | none |
-| `↑` | prompt history (`navigate_history`, `tui/interaction.gleam:1744`) | unchanged | none |
-| `Shift+Tab` | toggles the rail (`toggle_agent_rail`, `tui/interaction.gleam:1883`) | toggles the panel | same key, wider meaning |
-| `Ctrl+O`, `F2` | open the agent workspace (`open_agents`, `tui/interaction.gleam:1611`) | the panel on Strands with the keyboard; the workspace when the panel cannot fit | same habit |
-| `Ctrl+g` | details (`toggle_details`, `tui/interaction.gleam:1831`) | unchanged, and expands counted rows and code-mode boxes | none |
-| `Ctrl+D` while the diff is shown | diff navigator focus (`tui/interaction.gleam:1608`, the `worktree` focus) | focus the Changes tab | same |
-| `Alt+q` | queue inspector (`open_queue`, `tui/interaction.gleam:1597`) | unchanged | none |
-| `Alt+<char>` | interrupt and insert (`interrupt_and_insert`, `tui/interaction.gleam:1962`) | unchanged; the concept adds no Alt chord | none, by design |
-| `PgUp` `PgDn` | scroll the transcript (`scroll_reading_panel`, `tui/interaction.gleam:1857`) | unchanged; scroll the panel while it has focus | none |
-| `End` on an empty composer | back to the tail (`scroll_transcript`, `tui/interaction.gleam:1951`) | unchanged | none |
+| `Enter`, `Tab`, `Esc` in the composer | send; queue/steer; interrupt (`toggle_submission_mode` at `tui/interaction.gleam:1896`) | unchanged | none; `Esc` is never "back to main" |
+| `←` on an empty composer | opens the picker (`open_session_selector`, `tui/interaction.gleam:1934`) | unchanged; with the sessions column pinned it focuses the column instead | none |
+| `↓` on an idle composer | enters the strip (`down_from_composer`, `tui/interaction.gleam:1735`) | enters the Strands list, which is the strip when the panel is hidden | none |
+| `↑` | prompt history (`navigate_history`, `tui/interaction.gleam:1758`) | unchanged | none |
+| `Shift+Tab` | toggles the rail (`toggle_agent_rail`, `tui/interaction.gleam:1897`) | toggles the panel | same key, wider meaning |
+| `Ctrl+O`, `F2` | open the agent workspace (`open_agents`, `tui/interaction.gleam:1625`) | the panel on Strands with the keyboard; the workspace when the panel cannot fit | same habit |
+| `Ctrl+g` | details (`toggle_details`, `tui/interaction.gleam:1845`) | unchanged, and expands counted rows and code-mode boxes | none |
+| `Ctrl+D` while the diff is shown | diff navigator focus (`tui/interaction.gleam:1622`, the `worktree` focus) | focus the Changes tab | same |
+| `Alt+q` | queue inspector (`open_queue`, `tui/interaction.gleam:1611`) | unchanged | none |
+| `Alt+<char>` | interrupt and insert (`interrupt_and_insert`, `tui/interaction.gleam:1976`) | unchanged; the concept adds no Alt chord | none, by design |
+| `PgUp` `PgDn` | scroll the transcript (`scroll_reading_panel`, `tui/interaction.gleam:1871`) | unchanged; scroll the panel while it has focus | none |
+| `End` on an empty composer | back to the tail (`scroll_transcript`, `tui/interaction.gleam:1965`) | unchanged | none |
 | `1`–`4` | inspector details, inspector focused | tabs, panel focused; the inspector's details become the detail's sections, `←`/`→` | moved within one focus owner |
 | `[` `]` | select a message or note in the inspector | unchanged inside `MESSAGES` and `NOTES` | none |
 | `x`, `a`, `n`, `p`, `r` | strip and inspector keys | the same letters in the Strands list | none |
@@ -728,17 +728,17 @@ No single key sends a decision.
 | Region | Data | Exists | Where |
 |---|---|---|---|
 | Header | session title, workspace, model | yes | `render_header`, `tui/render.gleam:520` |
-| Timeline gutter | each row's strand and hue | derivable | `pieces` (`session_view/turns.gleam:360`), `hue` (`session_view/turns.gleam:308`); new hue constants in `tui/theme.gleam` |
+| Timeline gutter | each row's strand and hue | derivable | `pieces` (`session_view/turns.gleam:374`), `hue` (`session_view/turns.gleam:308`); new hue constants in `tui/theme.gleam` |
 | Counted repeated rows | consecutive identical calls and errors | derivable | the grouping in `project` (`session_view/tool_activity.gleam:55`) gains a run-length fold; shared with the web view |
 | Harness notes | `[loom]`-prefixed inputs, hook and job notices | partly | `harness_message_lines` (`session_view/transcript_lines.gleam:2907`) recognises advisor frames; `memory_context_lines` (`session_view/composer.gleam:378`) the memory context; the `[loom]` job and hook notices need the same recogniser extended, no wire change |
 | Strands tab, strip, workspace list | one row per strand | yes | `lines` (`session_view/agent_roster.gleam:538`), `Line` (`session_view/agent_roster.gleam:103`), `status_line` (`session_view/strand_card.gleam:45`), `status_mark` (`tui/agents.gleam:1434`) |
 | Strand detail | task, now, update, pending, recent, approvals | yes | `Row` (`session_view/agent_view.gleam:79`) |
 | Strand detail: messages out | sends with state | yes | `Item` (`session_view/agent_messages.gleam:52`) |
 | Strand detail: messages in, inbox | received messages, unread count | no | section 9.2; a strand origin on the admitted message and an inbox read need a protocol change |
-| Strand detail: cache | the cache outlook words | yes | `outlook_label` (`session_view/cache_miss.gleam:441`), today in `cache_outlook` (`tui/model.gleam:479`) |
+| Strand detail: cache | the cache outlook words | yes | `outlook_label` (`session_view/cache_miss.gleam:441`), today in `cache_outlook` (`tui/model.gleam:485`) |
 | Nudge count on the advisor row | pending nudges | yes | `Board` (`session_view/advisor_pending.gleam:51`), `nudges` (`session_view/model.gleam:308`) |
 | Changes tab | worktree observation, navigator, patch | yes | `State` (`session_view/worktree_view.gleam:98`), `layout` (`tui/diff_panel.gleam:33`), with `fold` (`session_view/changes_view.gleam:210`) as the labelled fallback |
-| Trace tab, code-mode box | program, result, status | yes | `code_mode_program` (`session_view/transcript_lines.gleam:3875`), `execution_value` (`tools/codemode.gleam:1584`) |
+| Trace tab, code-mode box | program, result, status | yes | `code_mode_program` (`session_view/transcript_lines.gleam:3916`), `execution_value` (`tools/codemode.gleam:1584`) |
 | Trace tab, code-mode box | the capability call list | no | protocol change (section 9.1, with #656) |
 | Session tab: goal | the goal board | yes | `row` (`session_view/goal_view.gleam:553`), `goal` (`session_view/model.gleam:320`) |
 | Session tab: jobs | the live jobs board | yes | `jobs` (`session_view/session_summary.gleam:99`), `lines` (`session_view/live_jobs.gleam:107`) |

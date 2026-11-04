@@ -203,6 +203,16 @@ executor therefore needs two inbound ports (`epmd` and its fixed
 and can run without a reachable listener; in a deployment with two, each is
 dialled by the other.
 
+The listener binds every interface unless `[distribution] listen_address` names a
+loopback address ([protocol-change/106](../../protocol-change/106-distribution-launch-and-listen-address.md)).
+An orchestrator that nobody dials sets it and opens no port on the network; an
+executor must not, because its orchestrator's connections arrive from another
+machine or, for a microVM guest, from the virtual gateway at 192.168.127.1, and a
+loopback listener refuses both. The address is applied as the kernel parameter
+`inet_dist_use_interface` when `distribution.start` runs, alongside
+`listen_port`, so it is not part of the options file and the boot comparison
+below is unaffected.
+
 ### Staged launch validation
 
 Before retiring a running daemon, the updater can invoke the staged server's
@@ -448,6 +458,28 @@ configuration and is private, and no `-name`, `-sname`, `-setcookie`,
 `LOOM_DISTRIBUTION_OPTFILE` is set and changes nothing otherwise. A daemon with
 no `[distribution]` table never starts `net_kernel`, and its sessions never
 consult a ledger.
+
+**Who sets the variable.** `loom` does, for a daemon it starts
+([protocol-change/106](../../protocol-change/106-distribution-launch-and-listen-address.md)).
+`tui/bootstrap.daemon_launch` runs inside the launch callback, which is reached
+only for a vacant endpoint under the launch lock. If the configuration the daemon
+will load has a `[distribution]` key and the launcher's environment does not
+already set a non-empty `LOOM_DISTRIBUTION_OPTFILE`, it deletes
+`<state>/distribution-launch.options`, runs `loomd distribution options` to write
+it again, and spawns `env LOOM_DISTRIBUTION_OPTFILE=<that file> loomd ...`.
+Rendering on every start is what keeps the file from going stale, and shelling to
+`loomd` is what keeps one function producing both the file and the text that
+`distribution.start` compares against it. A refused render fails the start with
+the renderer's message. An explicit variable is left as the operator set it.
+
+A daemon started directly through `bin/loomd` is not covered, on purpose. The
+launcher is a shell script that runs before any Gleam does and cannot read TOML;
+making it find `--config` and `--state-dir` and boot a second VM to render would
+cost every use of the launcher, `loomd access` and `loomd ext` included, a VM
+boot, and would be written twice, since `make server-shipment` and
+`scripts/release.sh` each generate a launcher. Such a daemon still needs the
+variable, and its refusal says how to set it. `loom distribution install` prints
+the command that does.
 
 ### How `epmd` is found or started
 

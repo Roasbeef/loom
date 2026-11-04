@@ -63,7 +63,7 @@ pub type Msg {
   Refused(revision: Int)
 
   /// Vendor completion; success carries SVG only inside the isolated frame.
-  Rendered(revision: Int, result: Result(String, Nil))
+  Rendered(revision: Int, result: Result(String, String))
 
   /// DOM validation and installation completion with measured height.
   Published(revision: Int, result: Result(Float, Nil))
@@ -83,8 +83,8 @@ pub type Reply {
   /// A successful render and its bounded integer height.
   RenderedReply(revision: Int, height: Int)
 
-  /// A fixed failure status without source, SVG, or vendor diagnostics.
-  FailedReply(revision: Int)
+  /// A failure with bounded plain text, never SVG or an exception object.
+  FailedReply(revision: Int, diagnostic: String)
 }
 
 /// Work that the thin browser adapter must perform.
@@ -193,7 +193,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, List(Effect)) {
 
           #(Model(latest: revision, phase:, shown: None, width: model.width), [
             Clear,
-            ReplyToParent(FailedReply(revision)),
+            ReplyToParent(FailedReply(revision, "")),
           ])
         }
       }
@@ -322,7 +322,7 @@ pub fn color_scheme(theme: Theme) -> String {
   }
 }
 
-/// Encodes only fixed parent protocol response fields.
+/// Encodes status fields and at most 2,000 code points of diagnostic text.
 ///
 /// ## Examples
 /// ```gleam
@@ -337,10 +337,19 @@ pub fn reply_json(reply: Reply) -> String {
         #("revision", json.int(revision)),
         #("height", json.int(height)),
       ])
-    FailedReply(revision) ->
+    FailedReply(revision, diagnostic) ->
       json.object([
         #("kind", json.string("failed")),
         #("revision", json.int(revision)),
+        #(
+          "diagnostic",
+          json.string(
+            diagnostic
+            |> string.to_utf_codepoints
+            |> list.take(2000)
+            |> string.from_utf_codepoints,
+          ),
+        ),
       ])
   }
   |> json.to_string
@@ -524,7 +533,7 @@ fn accept(model: Model, request: Request) -> #(Model, List(Effect)) {
 fn rendered(
   model: Model,
   revision: Int,
-  result: Result(String, Nil),
+  result: Result(String, String),
 ) -> #(Model, List(Effect)) {
   case model.phase {
     Busy(Drawing, request, queued) ->
@@ -534,8 +543,11 @@ fn rendered(
           Model(..model, phase: Busy(Checking, request, queued)),
           [Inspect(revision, svg)],
         )
-        True, True, Error(_) ->
-          retire(model, queued, [Clear, ReplyToParent(FailedReply(revision))])
+        True, True, Error(diagnostic) ->
+          retire(model, queued, [
+            Clear,
+            ReplyToParent(FailedReply(revision, diagnostic)),
+          ])
         True, False, _ -> retire(model, queued, [])
       }
     _ -> #(model, [])
@@ -557,7 +569,10 @@ fn published(
             height_reply(revision, height),
           ])
         True, True, Error(_) ->
-          retire(model, queued, [Clear, ReplyToParent(FailedReply(revision))])
+          retire(model, queued, [
+            Clear,
+            ReplyToParent(FailedReply(revision, "")),
+          ])
         True, False, _ -> retire(model, queued, [])
       }
     _ -> #(model, [])

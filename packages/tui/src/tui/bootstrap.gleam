@@ -27,7 +27,10 @@
 ////    until a probe succeeds.
 //// 5. The per-user daemon takes the sibling path: `resolve_daemon` and
 ////    `resolve_viewing_daemon` share `resolve_daemon_with`, which hands
-////    `daemon_launch_arguments` and `resolve_config` to the daemon resolver.
+////    `daemon_launch` and `resolve_config` to the daemon resolver.
+////    `daemon_launch` builds the arguments with `daemon_launch_arguments` and,
+////    for a configuration with a `[distribution]` table, renders the TLS
+////    options file first (`tui/distribution_launch`).
 
 import core/json
 import filepath
@@ -43,6 +46,7 @@ import session_view/connection_event
 import session_view/protocol
 import tui/connection
 import tui/daemon/bootstrap as daemon_bootstrap
+import tui/distribution_launch
 import tui/placement.{type Placement}
 import weft/poll
 
@@ -122,15 +126,55 @@ fn resolve_daemon_with(
     fn() {
       use server <- result.try(find_server(options.server))
       use config <- result.try(resolve_config(options.config, paths.root))
-      Ok(daemon_bootstrap.Launch(
+      daemon_launch(
+        paths.root,
         server,
-        daemon_launch_arguments(paths.root, server, config)
-          |> daemon_profile_arguments
-          |> list.append(extra),
-      ))
+        config,
+        extra,
+        host.getenv(distribution_launch.variable),
+      )
     },
     within_ms,
   )
+}
+
+/// Builds the program and arguments that start the daemon, after preparing
+/// anything its configuration needs before the VM boots.
+///
+/// A configuration with a `[distribution]` table needs its TLS options file
+/// rendered and named in `LOOM_DISTRIBUTION_OPTFILE`
+/// (`distribution_launch`), unless the caller's environment already names one;
+/// `inherited` is that environment's value.
+/// The render runs here, inside the launch callback, so it happens only for a
+/// vacant endpoint, under the launch lock, and never for a daemon that is
+/// already running.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // bootstrap.daemon_launch("/state", "/usr/local/bin/loomd", "", [], Error(Nil))
+/// ```
+@internal
+pub fn daemon_launch(
+  state: String,
+  server: String,
+  config: String,
+  extra: List(String),
+  inherited: Result(String, Nil),
+) -> Result(daemon_bootstrap.Launch, String) {
+  use environment <- result.map(distribution_launch.prepare(
+    server,
+    config,
+    state,
+    inherited,
+  ))
+  let arguments =
+    daemon_launch_arguments(state, server, config)
+    |> daemon_profile_arguments
+    |> list.append(extra)
+  let #(executable, arguments) =
+    distribution_launch.command(server, arguments, environment)
+  daemon_bootstrap.Launch(executable, arguments)
 }
 
 /// Builds only global daemon flags from trusted launcher configuration.

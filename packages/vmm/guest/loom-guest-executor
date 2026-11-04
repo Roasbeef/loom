@@ -1,0 +1,122 @@
+#!/bin/sh
+# loom-guest-executor: start a Loom executor daemon inside a microVM guest.
+#
+#   loom-guest-executor NODE_DIR [--state-device DEV]
+#
+# The launcher stages one directory per executor node into the guest root
+# before boot (ADR-022 D1: copied in, never shared). NODE_DIR holds:
+#
+#   loom.toml          the executor's configuration, written with guest paths
+#   home/.erlang.cookie the cluster cookie; the node's HOME is NODE_DIR/home
+#   creds/             the authority certificate and this node's leaf and key
+#   state/             an empty directory the state root is mounted on
+#
+# The script runs in two phases. The first runs as root, as libkrun starts the
+# guest's init: it mounts the state root on DEV, formatting it as ext4 on
+# its first boot, or on a tmpfs when no device is given. Either way the
+# executor's SQLite ledger and code mode's AF_UNIX socket get a real local
+# filesystem
+# and the guest root is a virtio-fs share; it gives NODE_DIR to the `loom`
+# user, since staged files arrive owned by root; and it hands over to
+# loom-guest-init, which configures networking and the delegated cgroup and
+# runs the second phase as `loom`. The second phase renders the distribution
+# options file inside the guest, because the daemon compares that file with
+# what its own configuration renders, guest paths included, and refuses to
+# boot on any difference. It then starts the daemon and prints
+# LOOM-EXECUTOR-READY on the console once the node has registered with the
+# guest's epmd, so its distribution listener accepts, and the daemon has
+# logged daemon.executor_serving, so its executor host can take an attach.
+# The daemon logs to its standard output, which is state/loomd.log here; a
+# LOOM_LOG_LEVEL above info would hide that line, and the guest sets none.
+#
+# What keeps the node's key and cookie from model code, which runs as the
+# same user, is the daemon's own mask (protecting_node_credentials), not the
+# location. /srv lies outside the jail's minimal base view, but under the
+# default host read scope the jail sees the whole guest, /srv included. The
+# other files here are readable to model code and hold no secret: loom.toml
+# names paths and models, state/dist.options names the credential paths, and
+# state/loomd.log is the daemon's standard output.
+set -eu
+
+loom_home=${LOOM_HOME:-/opt/loom}
+init=${LOOM_GUEST_INIT:-/usr/local/sbin/loom-guest-init}
+
+case "${1:-}" in
+--serve)
+	node=$2
+
+	# Render the TLS options from the configuration this daemon boots with.
+	"$loom_home/bin/loomd" distribution options "$node/loom.toml" \
+		"$node/state/dist.options"
+
+	HOME="$node/home"
+	LOOM_DISTRIBUTION_OPTFILE="$node/state/dist.options"
+	export HOME LOOM_DISTRIBUTION_OPTFILE
+
+	"$loom_home/bin/loomd" --state-dir "$node/state/root" \
+		--config "$node/loom.toml" --helper "$loom_home/bin/loom-exec" \
+		>"$node/state/loomd.log" 2>&1 &
+	daemon=$!
+
+	# The short name is the part of [distribution].node before the "@".
+	short=$(sed -n 's/^node = "\([^@"]*\)@.*/\1/p' "$node/loom.toml" | head -n 1)
+	epmd=$(find "$loom_home" -type f -name epmd -perm -u+x | head -n 1)
+
+	# Wait for the daemon's node to register and its executor host to serve,
+	# or for the daemon to die, in which case its log is the only account of
+	# why. The node registers during configuration load, well before the
+	# executor host starts, so the registration alone is not readiness.
+	while :; do
+		if ! kill -0 "$daemon" 2>/dev/null; then
+			echo "LOOM-EXECUTOR-FAILED"
+			cat "$node/state/loomd.log"
+			exit 1
+		fi
+
+		if "$epmd" -names 2>/dev/null | grep -q "^name $short " &&
+			grep -qs 'daemon.executor_serving' "$node/state/loomd.log"; then
+			echo "LOOM-EXECUTOR-READY $short"
+			break
+		fi
+
+		sleep 0.2
+	done
+
+	wait "$daemon"
+	;;
+
+*)
+	node=${1:?usage: loom-guest-executor NODE_DIR [--state-device DEV]}
+	device=
+	if [ "${2:-}" = --state-device ]; then
+		device=${3:?--state-device needs a device}
+	fi
+
+	# A state device keeps the executor's ledger, scopes and logs across
+	# guest restarts, so a standing executor comes back with the sessions
+	# it held. A device with no filesystem is new and is formatted once;
+	# one that has a filesystem is never formatted again. Without a device
+	# the state lives on a tmpfs and a restart starts the executor empty.
+	if [ -n "$device" ]; then
+		if ! blkid "$device" >/dev/null 2>&1; then
+			mkfs.ext4 -q -L loom-state "$device"
+		fi
+		mount -t ext4 "$device" "$node/state"
+		chmod 0700 "$node/state"
+	else
+		mount -t tmpfs -o mode=0700,size=512m tmpfs "$node/state"
+	fi
+	mkdir -p "$node/state/root"
+
+	chown -R loom:loom "$node"
+	chmod 0700 "$node" "$node/home" "$node/creds"
+	chmod 0600 "$node/home/.erlang.cookie" "$node/creds/key.pem"
+
+	# Every staged workspace belongs to the executor's user as well.
+	for workspace in /srv/workspaces/*; do
+		[ -e "$workspace" ] && chown -R loom:loom "$workspace"
+	done
+
+	exec "$init" "$0" --serve "$node"
+	;;
+esac

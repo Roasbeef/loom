@@ -42,6 +42,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option}
 import session_view/connection_event
+import session_view/project_board
 import session_view/snapshot
 import tui/bootstrap
 import tui/connection
@@ -255,6 +256,69 @@ pub type ControlOutcome {
 
   /// The daemon acknowledged one access change.
   AccessChanged(document: json.JsonValue)
+
+  /// One `projects.board` body, with the id of the project it belongs to.
+  ProjectBoardLoaded(document: json.JsonValue)
+
+  /// One `projects.ticket` body.
+  ProjectTicketLoaded(document: json.JsonValue)
+
+  /// One `projects.labels` body: the triggers of a rule that want a label.
+  ProjectLabelsLoaded(document: json.JsonValue)
+
+  /// What the daemon said to a person's change on a ticket. `refusal` is the
+  /// error code when the daemon refused it, such as `conflict` for an answer
+  /// to a question that has since changed, and none when it was accepted. A
+  /// refusal is an outcome here and not a failed job, because the screen
+  /// shows it in words and keeps the person's draft.
+  ProjectChanged(change: ProjectChange, refusal: Option(String))
+
+  /// What the daemon said to a change on a rule. An accepted change carries
+  /// the reply body. A refusal carries the daemon's own sentence, because the
+  /// reason a rule cannot go to `auto` is a sentence and the generic code says
+  /// nothing about it; the screen shows it as sent.
+  ProjectRuled(change: RuleChange, reply: Result(json.JsonValue, String))
+}
+
+/// A change a person asked for on one rule of a project.
+pub type RuleChange {
+  /// Sets the rule's mode. The daemon decides whether `auto` is allowed.
+  SetRuleMode(project: String, rule: String, mode: project_board.RuleMode)
+
+  /// Measures the rule's labelled triggers. A live run replies at once with
+  /// `state: running`.
+  RunVerdict(project: String, rule: String, lane: project_board.Lane)
+}
+
+/// Which project a board read is for.
+pub type ProjectTarget {
+  /// The project whose workspace is this directory, found with
+  /// `projects.list` in the same job.
+  InWorkspace(path: String)
+
+  /// A project already named by an earlier read.
+  ProjectId(id: String)
+}
+
+/// A change a person asked for on one ticket.
+pub type ProjectChange {
+  /// An answer to the ticket's open question, echoing its sequence number.
+  AnswerTicket(project: String, ticket: String, seq: Int, text: String)
+
+  /// The person accepted the ticket's work and closes it. The ticket ends as
+  /// closed and its mandate stands, so a later message can resume it.
+  CloseTicket(project: String, ticket: String)
+
+  /// A request for a new assignment on a stalled ticket.
+  RetryTicket(project: String, ticket: String)
+
+  /// The owner's judgement of one recorded trigger, which counts toward the
+  /// verdict of the rule it matched.
+  LabelTrigger(
+    project: String,
+    trigger: String,
+    judgement: project_board.Judgement,
+  )
 }
 
 /// The ADT keeps a confirmed permanent deletion distinct from reversible
@@ -313,6 +377,22 @@ pub type ControlJob {
   /// Sends one access change: `SetMemberRole`, `RevokeMembership` or
   /// `RevokeCredentials`.
   ChangeAccess(command: control_protocol.Command)
+
+  /// Reads a project's board, finding the project first when the target is a
+  /// workspace.
+  ReadProjectBoard(target: ProjectTarget)
+
+  /// Reads one ticket of a project.
+  ReadProjectTicket(project: String, ticket: String)
+
+  /// Reads the triggers of one rule that want a label.
+  ReadProjectLabels(project: String, rule: String)
+
+  /// Sends a person's change on a ticket.
+  ChangeProject(change: ProjectChange)
+
+  /// Sends a person's change on a rule: its mode, or a verdict run.
+  ChangeRule(change: RuleChange)
 }
 
 /// Which job to start. The runtime turns each variant into a weft task.

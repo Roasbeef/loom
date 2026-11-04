@@ -7,6 +7,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
 SHA = 'a' * 40
+VMM_FILES = ('go-microvm-runner-darwin-arm64', 'libkrunfw-landlock-darwin-arm64.5.dylib',
+             'vmm-SHA256SUMS')
 
 
 def workflow_step(name):
@@ -20,7 +22,7 @@ def workflow_step(name):
 
 
 class PublicationTest(unittest.TestCase):
-    def run_step(self, name, nightly=True, **extra):
+    def run_step(self, name, nightly=True, vmm_files=(), **extra):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             gh = root / 'gh'
@@ -42,13 +44,16 @@ case "$1" in
   rev-parse) case "$2" in *^{commit}) printf '%s\\n' "${TAG_ACTUAL:-$ACTUAL}" ;; *) printf '%s\\n' "$ACTUAL" ;; esac ;;
 esac
 ''')
+            for asset in vmm_files:
+                (root / 'vmm').mkdir(exist_ok=True)
+                (root / 'vmm' / asset).write_text('asset')
             gh.chmod(0o755)
             git.chmod(0o755)
             env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH'],
                        CALLS=str(root / 'calls'), GITHUB_OUTPUT=str(root / 'output'),
                        GH_REPO='Roasbeef/loom', SOURCE_COMMIT=SHA, ACTUAL=SHA,
                        RELEASE_TAG='commit-' + SHA if nightly else 'v0.2.0',
-                       NIGHTLY_COMMIT=SHA if nightly else '')
+                       NIGHTLY_COMMIT=SHA if nightly else '', VMM_ASSETS='')
             env.update(extra)
             # The identity step selects nightlies from SOURCE_COMMIT; stable
             # publication is tested separately without executing tag tooling.
@@ -65,6 +70,25 @@ esac
         self.assertIn('"--prerelease"', calls)
         self.assertIn('"--latest=false"', calls)
         self.assertNotIn('"--draft"', calls)
+
+    def test_nightly_attaches_microvm_assets_only_when_they_were_built(self):
+        name = 'Publish the immutable release'
+        result, calls, _ = self.run_step(name, VMM_ASSETS='false')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('vmm/', calls)
+        result, calls, _ = self.run_step(name, VMM_ASSETS='true', vmm_files=VMM_FILES)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for asset in VMM_FILES:
+            self.assertIn('"vmm/' + asset + '"', calls)
+        # A successful build that lost a file is a workflow bug, and it must
+        # not publish an immutable release missing that file.
+        result, calls, _ = self.run_step(name, VMM_ASSETS='true', vmm_files=VMM_FILES[:2])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('"release", "create"', calls)
+        result, calls, _ = self.run_step(name, nightly=False, VMM_ASSETS='true',
+                                         vmm_files=VMM_FILES)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('"release", "create"', calls)
 
     def test_stable_still_requires_tag_binding_and_creates_draft(self):
         result, calls, _ = self.run_step('Publish the immutable release', nightly=False)

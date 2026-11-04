@@ -53,8 +53,8 @@ export function render(vendor, id, source, host, done) {
     .then(() => vendor.render(id, source, host))
     .then(result => {
       const svg = result?.svg;
-      return typeof svg === "string" ? new Ok(svg) : new Error(undefined);
+      return typeof svg === "string" ? new Ok(svg) : new Error("");
     })
-    .catch(() => new Error(undefined))
+    .catch(error => new Error(typeof error?.message === "string" ? error.message : ""))
     .then(done);
 }

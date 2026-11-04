@@ -1,6 +1,7 @@
 //// Revision ownership, source bounds and total frame-message decoding.
 //// Browser identity checks and DOM cleanup are covered by the browser fixture.
 
+import gleam/json
 import gleam/list
 import gleam/string
 import web_client/mermaid_rule as rule
@@ -36,7 +37,7 @@ pub fn stale_results_and_failures_cannot_replace_a_new_source_test() {
   let old = rendering()
   let latest = rule.read(old, "sequenceDiagram\nA->>B: hi", rule.Dark, 24)
   list.each(
-    [rule.Rendered(old.revision, 400), rule.Failed(old.revision)],
+    [rule.Rendered(old.revision, 400), rule.Failed(old.revision, "")],
     fn(reply) {
       assert rule.receive(latest, reply) == latest
     },
@@ -62,10 +63,10 @@ pub fn timeout_and_failure_keep_source_and_do_not_accept_late_success_test() {
   list.each(
     [
       rule.expire(state, state.revision),
-      rule.receive(state, rule.Failed(state.revision)),
+      rule.receive(state, rule.Failed(state.revision, "")),
     ],
     fn(failed) {
-      assert failed.phase == rule.Unavailable
+      assert failed.phase == rule.Unavailable("")
       assert failed.source == state.source
       assert rule.receive(failed, rule.Rendered(state.revision, 300)) == failed
     },
@@ -85,13 +86,16 @@ pub fn empty_and_oversized_sources_never_begin_rendering_test() {
 
 pub fn frame_messages_are_totally_decoded_with_integer_fields_test() {
   assert rule.reply(
-      "{\"kind\":\"ready\",\"padding\":\"" <> string.repeat("x", 600) <> "\"}",
+      "{\"kind\":\"ready\",\"padding\":\""
+      <> string.repeat("x", 12_513)
+      <> "\"}",
     )
     == rule.Ignored
   assert rule.reply("{\"kind\":\"ready\"}") == rule.Ready
   assert rule.reply("{\"kind\":\"rendered\",\"revision\":2,\"height\":120}")
     == rule.Rendered(2, 120)
-  assert rule.reply("{\"kind\":\"failed\",\"revision\":3}") == rule.Failed(3)
+  assert rule.reply("{\"kind\":\"failed\",\"revision\":3}")
+    == rule.Failed(3, "")
   list.each(
     [
       "",
@@ -114,4 +118,55 @@ pub fn requests_encode_hostile_source_only_as_json_data_test() {
   assert string.contains(request, "\"theme\":\"default\"")
   assert string.contains(request, "\\n\\\"quoted\\\"")
   assert string.contains(rule.request(waiting()), "\"theme\":\"dark\"")
+}
+
+/// Shows only the matching failure, and clears it when source or theme changes.
+pub fn diagnostics_follow_the_render_revision_and_clear_on_reread_test() {
+  let state = rendering()
+  let diagnostic = "Parse error on line 8:\nExpected ACTOR, got loop"
+  let failed = rule.receive(state, rule.Failed(state.revision, diagnostic))
+  assert failed.phase == rule.Unavailable(diagnostic)
+  assert failed.source == state.source
+  assert rule.receive(state, rule.Failed(state.revision - 1, diagnostic))
+    == state
+  assert rule.receive(failed, rule.Failed(state.revision, "late")) == failed
+  assert rule.receive(failed, rule.Rendered(state.revision, 300)) == failed
+  let expired = rule.expire(state, state.revision)
+  assert rule.receive(expired, rule.Failed(state.revision, diagnostic))
+    == expired
+
+  // A new revision has no error to display while waiting for its own result.
+  assert rule.read(failed, "sequenceDiagram\nA->>B: hi", rule.Dark, 24).phase
+    == rule.Waiting
+  assert rule.read(failed, state.source, rule.Light, 15).phase == rule.Waiting
+}
+
+/// Decodes bounded literal diagnostics and retains older failure replies.
+pub fn diagnostic_messages_are_bounded_plain_text_test() {
+  let diagnostic = "<img src=x onerror=alert(1)>\nExpected 'ACTOR'"
+  assert rule.reply(failure_json(diagnostic)) == rule.Failed(1, diagnostic)
+  assert rule.reply("{\"kind\":\"failed\",\"revision\":1}")
+    == rule.Failed(1, "")
+  assert rule.reply("{\"kind\":\"failed\",\"revision\":1,\"diagnostic\":false}")
+    == rule.Ignored
+  let oversized = failure_json(string.repeat("x", 12_513))
+  assert rule.reply(oversized) == rule.Ignored
+  list.each(["💜", "\u{0}", "e\u{301}"], fn(point) {
+    let text = string.repeat(point, 2001)
+    let expected =
+      text
+      |> string.to_utf_codepoints
+      |> list.take(2000)
+      |> string.from_utf_codepoints
+    assert rule.reply(failure_json(text)) == rule.Failed(1, expected)
+  })
+}
+
+fn failure_json(diagnostic: String) -> String {
+  json.object([
+    #("kind", json.string("failed")),
+    #("revision", json.int(1)),
+    #("diagnostic", json.string(diagnostic)),
+  ])
+  |> json.to_string
 }

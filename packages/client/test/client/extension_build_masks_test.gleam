@@ -66,8 +66,10 @@ pub fn the_build_plane_masks_no_blob_store_test() {
   // A state root no daemon has written is a set of paths that do not
   // exist under a parent the build may not write, which is the shape
   // bwrap refuses. The filter is what keeps an install on a fresh host
-  // working at all.
-  assert masks == [] as "an unwritten state root contributes no mask"
+  // working at all. The developer's own `$HOME/.erlang.cookie`, when they
+  // have one, is masked too, so this looks only at the state root's entries.
+  assert !list.any(masks, string.starts_with(_, state_root))
+    as "an unwritten state root contributes no mask"
 
   // And the plane starts on it, which is the check `start_build_plane`
   // makes before it spawns anything.

@@ -92,7 +92,7 @@ import session_view/transcript_line.{
   ProgramFailure, ProgramRunning, ProgramSettled, Reasoning, ReasoningDigest,
   SentMessage, Spacer, StrandMessage, SummarizedAdvice, SummarizedReasoning,
   System, ToolCall, ToolDetail, ToolFailure, ToolGroup, ToolPatch, ToolResult,
-  User,
+  TriggerMessage, User,
 }
 import session_view/transcript_lines
 import session_view/worktree_view
@@ -114,7 +114,7 @@ import tui/message_rows
 import tui/model.{
   type Model, AccessManager, AgentInspector, ApprovalInspector, DaemonSelector,
   EvolutionReview, FrameCache, GoalInspector, MemoryOverview, Model,
-  ModelSelector, NoOverlay, PeerLinkManager, ProposalReview,
+  ModelSelector, NoOverlay, PeerLinkManager, ProjectScreen, ProposalReview,
 } as tui_model
 
 import tui/evolution_panel
@@ -123,6 +123,7 @@ import tui/model_selector
 import tui/note_panel
 import tui/peer_links
 import tui/program_rows
+import tui/project_screen
 import tui/proposal_panel
 import tui/queue_editor
 import tui/queue_panel
@@ -314,6 +315,8 @@ pub fn render_frame(
         model.shared.memory,
         model.shared.memory_notice,
       )
+    ProjectScreen(state) ->
+      project_screen.render(base, screen, state, model.view.wall_ms)
     ApprovalInspector(panel) ->
       approval_panel.render(
         base,
@@ -389,6 +392,7 @@ pub fn render_frame(
     | ProposalReview(_), _
     | EvolutionReview(_), _
     | MemoryOverview(_), _
+    | ProjectScreen(_), _
     | ApprovalInspector(_), _
     -> Error(Nil)
   }
@@ -889,7 +893,7 @@ pub fn render_line(line: Line, width: Int, strand: String) -> List(span.Line) {
     // span is a bar painted in the margin, outside the row's width; a second
     // wrap would count that bar against the pane. The operator's turn wraps
     // each typed line under its mark, which a second wrap would undo.
-    SentMessage | StrandMessage | PeerMessage | User ->
+    SentMessage | StrandMessage | PeerMessage | TriggerMessage | User ->
       speaker_rows(line, width, strand)
 
     // A program block cuts every row to its box; a wrap could only break
@@ -1013,6 +1017,7 @@ pub fn finish_markdown_rows(
     | SentMessage
     | StrandMessage
     | PeerMessage
+    | TriggerMessage
     | ProgramRunning
     | ProgramFailure
     | ProgramSettled
@@ -1093,6 +1098,7 @@ fn speaker_mark(speaker: Speaker, text: String) -> #(String, style.Style) {
     | SentMessage
     | StrandMessage
     | PeerMessage
+    | TriggerMessage
     | ProgramRunning
     | ProgramFailure
     | ProgramSettled -> #("", theme.quiet_text())
@@ -1177,7 +1183,7 @@ fn speaker_rows(line: Line, width: Int, strand: String) -> List(span.Line) {
 
     // A message between agents draws its heading from the speaker and its
     // body as body (`message_rows`).
-    SentMessage | StrandMessage | PeerMessage ->
+    SentMessage | StrandMessage | PeerMessage | TriggerMessage ->
       message_rows.rows(line.speaker, line.text, width)
 
     // A program awaiting its result, one that failed and one that completed
@@ -1588,6 +1594,7 @@ fn note_context(model: Model, target: String) -> List(String) {
             | ProposalReview(_)
             | EvolutionReview(_)
             | MemoryOverview(_)
+            | ProjectScreen(_)
             | ApprovalInspector(_) -> ["No observed notes for " <> target]
           }
       }
@@ -1609,6 +1616,7 @@ fn missing_note_context(model: Model, target: String) -> List(String) {
     | ProposalReview(_)
     | EvolutionReview(_)
     | MemoryOverview(_)
+    | ProjectScreen(_)
     | ApprovalInspector(_) -> ["No observed notes for " <> target]
   }
 }
@@ -2259,6 +2267,7 @@ fn render_command_palette(
     | _, ProposalReview(_)
     | _, EvolutionReview(_)
     | _, MemoryOverview(_)
+    | _, ProjectScreen(_)
     | _, ApprovalInspector(_)
     -> buf
     _, NoOverlay -> {

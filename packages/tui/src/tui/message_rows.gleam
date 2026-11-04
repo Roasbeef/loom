@@ -31,7 +31,8 @@ import session_view/transcript_line.{
   type Speaker, Assistant, Failure, ImageRow, PeerMessage, ProgramFailure,
   ProgramRunning, ProgramSettled, Reasoning, ReasoningDigest, SentMessage,
   Spacer, StrandMessage, SummarizedAdvice, SummarizedReasoning, System, ToolCall,
-  ToolDetail, ToolFailure, ToolGroup, ToolPatch, ToolResult, User,
+  ToolDetail, ToolFailure, ToolGroup, ToolPatch, ToolResult, TriggerMessage,
+  User,
 }
 import session_view/transcript_lines
 import tui/markdown
@@ -72,8 +73,9 @@ pub fn rows(speaker: Speaker, text: String, width: Int) -> List(span.Line) {
     PeerMessage -> peer_rows(heading, body, width)
     SentMessage -> thread_rows("→ to ", heading, body, width)
     StrandMessage -> thread_rows("← from ", heading, body, width)
+    TriggerMessage -> trigger_rows(heading, body, width)
 
-    // Only the three message speakers reach this module; any other line
+    // Only the four message speakers reach this module; any other line
     // drawn here is its text as body rows, which is the safe reading.
     System
     | ToolGroup
@@ -181,6 +183,37 @@ fn peer_rows(heading: String, body: String, width: Int) -> List(span.Line) {
       "┃ ",
       style.new(theme.advisor, style.Default, style.none()),
     )
+  [top, ..body_rows(body, [span.span_plain("  "), bar], width - 4)]
+}
+
+/// A trigger message: a band whose heading names the source, the actor and
+/// the trigger in the signal accent, and the body behind a bar two cells in.
+/// Unlike a peer heading it carries no check, because nothing verified the
+/// text. The heading arrives built from the origin's validated fields, which
+/// admit no ` · `, so splitting on that separator cannot cut a field. The
+/// body's words are rows under the heading and never become one.
+fn trigger_rows(heading: String, body: String, width: Int) -> List(span.Line) {
+  let band = fn(color, modifier) { style.new(color, theme.raised, modifier) }
+
+  // The source is the heading's first segment, with the flag and the verb.
+  let #(name, rest) = case string.split_once(heading, " · ") {
+    Ok(#(name, rest)) -> #(name, " · " <> rest)
+    Error(Nil) -> #(heading, "")
+  }
+
+  let #(rest, clock) = split_clock(rest)
+  let top =
+    span.line_new(clipped(
+      [
+        #(name, band(theme.signal, style.bold())),
+        #(rest, band(theme.quiet, style.none())),
+        #(clock, band(theme.quiet, style.none())),
+      ],
+      width,
+    ))
+  let bar =
+    span.span_styled("┃ ", style.new(theme.signal, style.Default, style.none()))
+
   [top, ..body_rows(body, [span.span_plain("  "), bar], width - 4)]
 }
 

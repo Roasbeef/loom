@@ -134,6 +134,7 @@ fn start(visiting: option.Option(home.Visit)) -> home.Start {
     create: None,
     folders: None,
     elsewhere: None,
+    projects: None,
     profiles: [],
     models: [],
     signins: fn(deliver) { deliver(signins.Listed([])) },

@@ -116,7 +116,7 @@ run(<<"launch_symlink_switch">>, Root) ->
     OptionsAlias = filename:join(Root, "options-dir.alias"),
     ok = file:make_symlink(filename:dirname(OriginalOptions), OptionsAlias),
     #{name := Name, files := {credential_files, Ca, Cert, Key, Cookie}} = Node0,
-    {config, _, {pinned, [{peer_pin, Peer, Pin}]}, _, _} = Config,
+    {config, _, {pinned, [{peer_pin, Peer, Pin}]}, _, _, _} = Config,
     HexPin = string:lowercase(binary_to_list(binary:encode_hex(Pin))),
     Text = io_lib:format("[distribution]~nnode = ~tp~nca = ~tp~ncertificate = ~tp~nkey = ~tp~ncookie = ~tp~n[[distribution.peers]]~nnode = ~tp~nsha256 = \"~s\"~n", [str(Name), str(Ca), str(Cert), str(Key), str(Cookie), str(Peer), HexPin]),
     ConfigTarget = filename:join(Root, "original.toml"),
@@ -566,6 +566,15 @@ run(<<"start_failed">>, Root) ->
         end)
     after gen_tcp:close(Taken) end;
 
+%% The listener binds the interface `listen_address` names, and every interface
+%% when the key is absent. The node reads its configuration through the
+%% production TOML reader, so the key is decoded the way a daemon decodes it, and
+%% the child then looks at the address its distribution listener is bound to.
+run(<<"listen_loopback">>, Root) ->
+    listen_scenario(Root, {some, <<"127.0.0.1">>}, {127,0,0,1});
+run(<<"listen_all">>, Root) ->
+    listen_scenario(Root, none, {0,0,0,0});
+
 %% Remote tool calls over real TLS distribution (client/remote). The executor
 %% emulator runs the real host over a fake workspace plane, and the orchestrator
 %% emulator attaches a real surface and runs one call. The Gleam roles live in
@@ -772,6 +781,37 @@ free_port() ->
     {ok, Port} = inet:port(Socket),
     ok = gen_tcp:close(Socket),
     Port.
+
+%% Boots one node whose `[distribution]` table is read from TOML text, with
+%% `Address` as its `listen_address`, and checks the address of its listener.
+listen_scenario(Root, Address, Expected) ->
+    Ca = root_cert("fixture ca"),
+    Cookie = cookie("shared"),
+    A = provision(Root, "owner", Ca, name("owner"), same, Cookie),
+    B = provision(Root, "executor", Ca, name("executor"), same, Cookie),
+    Config = config_from_toml(A, B, Address),
+    private_epmd(fun(Port) ->
+        write_options(A, Config),
+        Aux = #{epmd_port => Port, expected_bind => Expected},
+        Child = open_vm(A, Config, listen_bound, Aux, []),
+        try await_complete(Child, <<>>) after close_port(Child) end
+    end).
+
+config_from_toml(#{name := Local, files := {credential_files, Ca, Cert, Key, Cookie}},
+                 Peer, Address) ->
+    Line = case Address of
+        none -> <<>>;
+        {some, Text} -> <<"listen_address = \"", Text/binary, "\"\n">>
+    end,
+    Pin = binary:encode_hex(crypto:hash(sha256, cert_of(Peer)), lowercase),
+    Toml = iolist_to_binary([
+        "[distribution]\nnode = \"", Local, "\"\nca = \"", Ca,
+        "\"\ncertificate = \"", Cert, "\"\nkey = \"", Key,
+        "\"\ncookie = \"", Cookie, "\"\n", Line,
+        "\n[[distribution.peers]]\nnode = \"", name_of(Peer),
+        "\"\nsha256 = \"", Pin, "\"\n"]),
+    {ok, {some, Config}} = ?DIST:parse(Toml),
+    Config.
 
 %% One provisioned node and a configuration that pins an unstarted peer.
 lone_node(Root, Listen) ->
@@ -1110,6 +1150,18 @@ role(epmd_registered, Config, _Aux) ->
     [Short | _] = string:split(atom_to_list(node()), "@"),
     {ok, Names} = erl_epmd:names({127,0,0,1}),
     {Short, _} = lists:keyfind(Short, 1, Names);
+role(listen_bound, Config, #{expected_bind := Expected}) ->
+    {ok, _} = ?DIST:start(Config, not_member),
+    [Short | _] = string:split(atom_to_list(node()), "@"),
+    {ok, Names} = erl_epmd:names({127,0,0,1}),
+    {Short, DistPort} = lists:keyfind(Short, 1, Names),
+    %% Only the listener is bound to the distribution port, because no peer has
+    %% connected, so the one socket on that port is the one under test.
+    Bound = [Address || Port <- erlang:ports(),
+                        {name, "tcp_inet"} =:= erlang:port_info(Port, name),
+                        {ok, {Address, Bound1}} <- [inet:sockname(Port)],
+                        Bound1 =:= DistPort],
+    [Expected] = Bound;
 role(expect, Config, #{expected := Expected}) ->
     %% Preflight cannot reserve runtime ports or start epmd. Those failures
     %% belong to startup; their boot and credentials remain valid here.

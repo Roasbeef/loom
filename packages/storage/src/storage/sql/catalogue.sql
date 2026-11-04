@@ -272,3 +272,34 @@ WHERE r.spawner = ? AND r.session_id < ?
                   WHERE h.session_id = r.session_id)
 ORDER BY r.session_id DESC
 LIMIT ?;
+
+-- name: ProjectById :many
+SELECT project_id, workspace, router_session, ledger_path, state, created_ms
+FROM catalogue_projects WHERE project_id = ?;
+
+-- name: ProjectByWorkspace :many
+SELECT project_id, workspace, router_session, ledger_path, state, created_ms
+FROM catalogue_projects WHERE workspace = ?;
+
+-- name: AllProjects :many
+SELECT project_id, workspace, router_session, ledger_path, state, created_ms
+FROM catalogue_projects ORDER BY project_id;
+
+-- name: InsertProject :exec
+INSERT INTO catalogue_projects (project_id, workspace, router_session, ledger_path, state, created_ms)
+VALUES (?, ?, ?, ?, ?, ?);
+
+-- name: SetProjectState :exec
+UPDATE catalogue_projects SET state = ? WHERE project_id = ?;
+
+-- name: InsertProjectWorker :exec
+INSERT INTO catalogue_project_workers (session_id, project_id, ticket_id, assignment_seq)
+VALUES (?, ?, ?, ?);
+
+-- name: ProjectStandingOfSession :many
+SELECT CAST('router' AS TEXT) AS role, project_id, CAST('' AS TEXT) AS ticket_id,
+       CAST(0 AS INTEGER) AS assignment_seq
+FROM catalogue_projects WHERE router_session = ?
+UNION ALL
+SELECT CAST('worker' AS TEXT) AS role, project_id, ticket_id, assignment_seq
+FROM catalogue_project_workers WHERE session_id = ?;

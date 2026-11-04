@@ -36,11 +36,19 @@
 //// MCP servers. They boot with `-proto_dist none` and never see the
 //// credential files or the options file.
 ////
+//// The listener binds every interface by default, because an executor in a
+//// microVM is dialled through the virtual gateway and a remote executor over
+//// the network. A node that nobody dials, such as an orchestrator with no peer
+//// orchestrators, can set `listen_address` to a loopback address and open no
+//// port on the network. The address and `listen_port` are applied as kernel
+//// parameters when `start` runs, so neither is part of the options file or of
+//// the boot-argument comparison.
+////
 //// The credentials are four operator-provisioned files. The cookie file must
 //// be the VM's own `$HOME/.erlang.cookie`, because the emulator reads the
 //// cookie from there when it opens its listener.
 
-import client/internal/ffi_distribution.{Live}
+import client/internal/ffi_distribution.{Listen, Live}
 import client/internal/ffi_nodes
 import gleam/bit_array
 import gleam/dict.{type Dict}
@@ -107,6 +115,7 @@ pub opaque type Config {
     trust: Trust,
     files: CredentialFiles,
     listen_port: Option(Int),
+    listen_address: Option(#(Int, Int, Int, Int)),
   )
 }
 
@@ -211,7 +220,13 @@ pub fn configure(
   use Nil <- result.try(valid_files(files))
   use Nil <- result.try(valid_peers(local, peers))
   use Nil <- result.try(valid_port(listen_port))
-  Ok(Config(local:, trust: Pinned(peers:), files:, listen_port:))
+  Ok(Config(
+    local:,
+    trust: Pinned(peers:),
+    files:,
+    listen_port:,
+    listen_address: None,
+  ))
 }
 
 /// Validates the identity and credentials of a node that takes its peers from
@@ -242,7 +257,13 @@ pub fn configure_ledger(
     False -> Error("distribution.ledger must be an absolute path")
   })
 
-  Ok(Config(local:, trust: Ledgered(path:), files:, listen_port:))
+  Ok(Config(
+    local:,
+    trust: Ledgered(path:),
+    files:,
+    listen_port:,
+    listen_address: None,
+  ))
 }
 
 /// Reads the `[distribution]` table of a configuration document, or `None`
@@ -400,6 +421,24 @@ pub fn boot_arguments(options_path: String) -> List(String) {
   ]
 }
 
+/// The loopback address the distribution listener binds, when the
+/// configuration names one, as the text it was written in.
+///
+/// ## Examples
+///
+/// ```gleam
+/// distribution.listen_address(config) // -> Some("127.0.0.1")
+/// ```
+pub fn listen_address(config: Config) -> Option(String) {
+  use #(a, b, c, d) <- option.map(config.listen_address)
+  string.join(list.map([a, b, c, d], int.to_string), ".")
+}
+
+/// Where the listener of `config` binds, in the shape the foreign boot takes.
+fn listen(config: Config) -> ffi_distribution.Listen {
+  Listen(port: config.listen_port, interface: config.listen_address)
+}
+
 /// Starts TLS distribution on a VM booted with `boot_arguments`: hidden for a
 /// `NotMember`, visible for a directory `Member`, whose VM must also run with
 /// `connect_all` off.
@@ -442,7 +481,7 @@ pub fn start(config: Config, cluster: Cluster) -> Result(Membership, Fault) {
         config.local,
         pairs(peers),
         config.files,
-        config.listen_port,
+        listen(config),
         members,
       )
     Ledgered(..) ->
@@ -450,7 +489,7 @@ pub fn start(config: Config, cluster: Cluster) -> Result(Membership, Fault) {
         config.local,
         Live,
         config.files,
-        config.listen_port,
+        listen(config),
         members,
       )
   }
@@ -620,8 +659,9 @@ pub fn describe(failure: Fault) -> String {
     StartFailed ->
       "OTP could not start distribution although epmd answers; check that "
       <> "[distribution].listen_port is free, that no other VM on this "
-      <> "machine runs the same node name, and that the node name's host "
-      <> "resolves here"
+      <> "machine runs the same node name, that the node name's host "
+      <> "resolves here, and that [distribution].listen_address, if set, is "
+      <> "an address of this machine"
     Unavailable ->
       "OTP could not start distribution or reach the peer; check that epmd is "
       <> "reachable, the listen port is free, and the peer pins and "
@@ -633,8 +673,9 @@ pub fn describe(failure: Fault) -> String {
 /// Renders descriptive diagnosis and remediation advice for distribution boot errors.
 fn describe_boot(refusal: BootRefusal) -> String {
   let remedy =
-    "; generate the options file with `loomd distribution options` and start "
-    <> "the daemon through bin/loomd with "
+    "; a daemon that `loom` starts gets the file automatically, and for one "
+    <> "you start yourself, generate it with `loomd distribution options` and "
+    <> "start the daemon through bin/loomd with "
     <> launcher_variable
     <> " set to it"
 
@@ -692,8 +733,8 @@ fn table(fields: Dict(String, tom.Toml)) -> Result(Config, String) {
   use Nil <- result.try(known_keys(
     dict.keys(fields),
     [
-      "node", "ca", "certificate", "key", "cookie", "listen_port", "ledger",
-      "peers",
+      "node", "ca", "certificate", "key", "cookie", "listen_port",
+      "listen_address", "ledger", "peers",
     ],
     "[distribution]",
   ))
@@ -707,11 +748,12 @@ fn table(fields: Dict(String, tom.Toml)) -> Result(Config, String) {
   use key <- result.try(string_key(fields, "key", "distribution"))
   use cookie <- result.try(string_key(fields, "cookie", "distribution"))
   use listen_port <- result.try(port_key(fields))
+  use listen_address <- result.try(address_key(fields))
   let files = CredentialFiles(ca:, certificate:, key:, cookie:)
   use ledger <- result.try(ledger_key(fields))
 
   // Branch between ledger-backed membership and statically pinned peer definitions.
-  case ledger, dict.has_key(fields, "peers") {
+  use config <- result.map(case ledger, dict.has_key(fields, "peers") {
     Some(path), False -> configure_ledger(local, files, listen_port, path)
     Some(_), True ->
       Error(
@@ -723,6 +765,76 @@ fn table(fields: Dict(String, tom.Toml)) -> Result(Config, String) {
       use peers <- result.try(peer_rows(fields))
       configure(local, peers, files, listen_port)
     }
+  })
+
+  // The address is independent of how trust is configured, so it is applied to
+  // whichever mode was built rather than threaded through both constructors.
+  Config(..config, listen_address:)
+}
+
+/// Decodes the optional `listen_address` key into the octets of a loopback
+/// address, and refuses every other value with a sentence naming the key.
+fn address_key(
+  fields: Dict(String, tom.Toml),
+) -> Result(Option(#(Int, Int, Int, Int)), String) {
+  case dict.get(fields, "listen_address") {
+    Error(Nil) -> Ok(None)
+    Ok(tom.String(text)) -> parse_loopback(text) |> result.map(Some)
+    Ok(_) -> Error("distribution.listen_address must be a string")
+  }
+}
+
+/// Parses an IPv4 loopback address: four decimal octets with no sign, no
+/// leading zero and no whitespace, the first of them 127.
+///
+/// Only a loopback address is accepted, because the key exists to keep a
+/// listener off the network. An address that names an interface of the host
+/// would pass a looser check on one machine and fail to bind on the next, and
+/// `::1` is refused because the distribution carrier here is IPv4.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert distribution.parse_loopback("127.0.0.1") == Ok(#(127, 0, 0, 1))
+/// assert result.is_error(distribution.parse_loopback("0.0.0.0"))
+/// ```
+pub fn parse_loopback(text: String) -> Result(#(Int, Int, Int, Int), String) {
+  let refusal =
+    "distribution.listen_address must be an IPv4 loopback address "
+    <> "(127.a.b.c, for example 127.0.0.1), got "
+    <> string.inspect(text)
+
+  // A canonical octet is the decimal spelling of an integer in 0..255, so a
+  // sign or a leading zero, which some parsers read differently, is refused.
+  let octet = fn(part: String) {
+    // Parsing succeeds for `+1` and `01`, so the round trip through the
+    // canonical spelling is the check that rejects them.
+    case int.parse(part) {
+      Ok(value) if value >= 0 && value <= 255 ->
+        case int.to_string(value) == part {
+          True -> Ok(value)
+          False -> Error(refusal)
+        }
+      _ -> Error(refusal)
+    }
+  }
+
+  // Exactly four dot-separated parts, the first of which is 127. A different
+  // count, such as `127.0.0` or an address with a port, matches the last arm.
+  case string.split(text, ".") {
+    [first, second, third, fourth] -> {
+      use a <- result.try(octet(first))
+      use b <- result.try(octet(second))
+      use c <- result.try(octet(third))
+      use d <- result.try(octet(fourth))
+
+      // Every address in 127.0.0.0/8 is loopback on the hosts Loom supports.
+      case a {
+        127 -> Ok(#(a, b, c, d))
+        _ -> Error(refusal)
+      }
+    }
+    _ -> Error(refusal)
   }
 }
 

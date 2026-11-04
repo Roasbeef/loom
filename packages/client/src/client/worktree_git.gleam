@@ -42,6 +42,7 @@ import broker/exec.{type EnforcementDemand}
 import broker/executor as service
 import broker/policy
 import broker/token
+import client/goalcheck
 import client/host_git
 import client/internal/ffi_os
 import client/workspace_policy
@@ -68,6 +69,10 @@ pub type Config {
     scratch: String,
     /// The daemon's state root, whose secrets every call masks.
     state_root: String,
+    /// The node's distribution key and cookie, which every call also masks.
+    /// They live outside the state root, and Git runs the repository's hooks
+    /// under this policy, so a hook the model wrote would otherwise read them.
+    credentials: List(String),
     /// Enforcement strictness for every call.
     demand: EnforcementDemand,
   )
@@ -82,6 +87,7 @@ pub opaque type Git {
     program: String,
     scratch: String,
     state_root: String,
+    credentials: List(String),
     demand: EnforcementDemand,
     incarnation: Int,
   )
@@ -129,7 +135,7 @@ pub const query_within_ms = 60_000
 /// ## Examples
 ///
 /// ```gleam
-/// // worktree_git.start(Config(helper, state <> "/git", state, exec.PlatformEnforcement))
+/// // worktree_git.start(Config(helper, state <> "/git", state, [], exec.PlatformEnforcement))
 /// ```
 pub fn start(config: Config) -> Result(Git, String) {
   use Nil <- result.try(
@@ -188,6 +194,7 @@ pub fn start(config: Config) -> Result(Git, String) {
     program: host_git.program(),
     scratch: config.scratch,
     state_root: config.state_root,
+    credentials: config.credentials,
     demand: config.demand,
     incarnation:,
   )
@@ -252,6 +259,70 @@ pub fn run(git: Git, call: Run, within_ms: Int) -> Result(Output, String) {
   )
   settled(collected)
 }
+
+/// A runner for the operator's check command in a fresh tree, built over this
+/// Git's broker so the command is cleared as a goal check is
+/// (`client/goalcheck`): through `tools/tool.broker_runner`, with the same
+/// refusals and the same enforcement demand.
+///
+/// The policy is the check's own and not a session's. The host is readable, as
+/// it is for a session's tools, and the state root's secrets are masked
+/// (`workspace_policy.protecting_state_root`), so a check cannot read a
+/// session's store, the owner's token or the catalogue. Each project's host
+/// repository and ledger are masked as well (`protecting_project_files`),
+/// because a check is worker-authored code and part of its output goes back to
+/// the worker. The check trees are not, since the tree it runs in is one of
+/// them. The network is off. The
+/// only writable root is the tree, because a build writes its output there, and
+/// `HOME` is a directory inside it so a toolchain's cache has somewhere to go
+/// that is discarded with the tree. The environment is built here and carries
+/// nothing of the daemon's: no credential, no token.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // worktree_git.check_runner(git, "/state/worktrees/p1/chk-t-a-0123456789ab")
+/// ```
+pub fn check_runner(git: Git, directory: String) -> goalcheck.Runner {
+  let #(op_id, _) =
+    ids.mint_op(ids.generator(wall_clock(), seed: random_seed()))
+  let environment = [
+    #("PATH", "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"),
+    #("HOME", directory <> "/.loom-check-home"),
+    #("LANG", "C"),
+    #("LC_ALL", "C"),
+    #("GIT_CONFIG_NOSYSTEM", "1"),
+    #("GIT_CONFIG_GLOBAL", "/dev/null"),
+    #("GIT_TERMINAL_PROMPT", "0"),
+  ]
+  let base =
+    policy.SandboxPolicy(
+      ..policy.workspace_default(directory),
+      readable_roots: ["/"],
+      network: policy.NetworkOff,
+      env_allow: list.map(environment, fn(pair) { pair.0 }),
+    )
+    |> workspace_policy.protecting_state_root(git.state_root)
+    |> workspace_policy.protecting_project_files(git.state_root)
+    |> workspace_policy.protecting_node_credentials(git.credentials)
+
+  goalcheck.Runner(
+    clear_call: tool.broker_runner(
+      broker: git.broker,
+      waiting: check_clearance_ms,
+    ),
+    base_policy: base,
+    demand: git.demand,
+    env: environment,
+    workspace: directory,
+    clock: wall_clock(),
+    op_id:,
+    clearance_ms: check_clearance_ms,
+  )
+}
+
+// How long a check waits for the broker to clear it.
+const check_clearance_ms = 15_000
 
 /// Stops the broker and the service, which closes the helper pool. The answer
 /// is whether the pool confirmed its helpers gone.
@@ -420,11 +491,19 @@ fn policy_of(
     env_allow: allowed,
   )
   |> workspace_policy.protecting_state_root(git.state_root)
+  |> workspace_policy.protecting_node_credentials(git.credentials)
 }
 
 // Nothing here comes from a peer. Git reads no user or system configuration:
 // the repository's own is the only one in play, and a global file that names
 // a credential helper or an include has no business in a worktree command.
+//
+// `GIT_NO_REPLACE_OBJECTS` makes every read see the objects a commit really
+// names. A repository a worker wrote can carry `refs/replace/*` entries that
+// make one object read as another, and the project host decides from these
+// reads what is checked and what is pushed (protocol-change/106, "Done means
+// verified"). The environment is an allowlist, so `GIT_DIR` and its relatives
+// are absent by construction and cannot be inherited from the daemon.
 
 /// Establishes environment for the caller, keeping its validation and result policy at this boundary.
 fn environment() -> List(#(String, String)) {
@@ -435,6 +514,7 @@ fn environment() -> List(#(String, String)) {
     #("LC_ALL", "C"),
     #("GIT_CONFIG_NOSYSTEM", "1"),
     #("GIT_CONFIG_GLOBAL", "/dev/null"),
+    #("GIT_NO_REPLACE_OBJECTS", "1"),
     #("GIT_TERMINAL_PROMPT", "0"),
     #("GIT_OPTIONAL_LOCKS", "0"),
   ]

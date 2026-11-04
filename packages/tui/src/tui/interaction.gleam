@@ -91,12 +91,14 @@ import tui/model.{
   ApprovalInspector, Caches, DaemonSelector, DiffHidden, DiffVisible,
   EvolutionReview, FrameCache, GoalInspector, MemoryOverview, Model,
   ModelSelector, Newer, NoClipboard, NoOverlay, Older, PeerLinkManager,
-  ProposalReview, ReconnectAttempting, ReconnectIdle, ReconnectSpent,
-  TerminalClipboard, View,
+  ProjectScreen, ProposalReview, ReconnectAttempting, ReconnectIdle,
+  ReconnectSpent, TerminalClipboard, View,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
 import tui/peer_links
+import tui/project_control
+import tui/project_screen
 import tui/projection
 import tui/proposal_panel
 import tui/queue_editor
@@ -136,6 +138,12 @@ pub fn handle_paste(
     PeerLinkManager(
       peer_links.State(prompt: peer_links.EditingTargetStrand, ..) as state,
     ) -> session_control.update_peer_link_manager(keys.Char(text), model, state)
+    ProjectScreen(state) ->
+      project_control.act(
+        project_screen.update_pasted(text, state),
+        model,
+        session_control.open_chosen,
+      )
     AgentInspector(_)
     | ModelSelector(_)
     | GoalInspector(_)
@@ -608,6 +616,12 @@ fn update_normal_key(key: keys.Key, model: Model) -> Model {
         ProposalReview(state) -> update_proposal_review(key, model, state)
         EvolutionReview(state) -> update_evolution_review(key, model, state)
         MemoryOverview(state) -> update_memory_overview(key, model, state)
+        ProjectScreen(state) ->
+          project_control.act(
+            project_screen.update(key, state),
+            model,
+            session_control.open_chosen,
+          )
         ApprovalInspector(panel) ->
           case approval_panel.update(key, panel) {
             approval_panel.Close ->

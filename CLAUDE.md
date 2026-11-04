@@ -117,6 +117,10 @@ literate register", gives the complete conventions and examples.
   evaluation instrument's statistics, is held to it because the governed
   verdict and a future web report both call it and its one mathematical
   piece must stay property-testable without processes on either target.
+  `project`, the project-mode engine, is held to it because its event
+  space is explored by a model-based test with no processes and its ledger
+  codec must read the same events on either target. It decides and returns
+  effects as data; the actor that holds it lives in `client`.
   `gepa`, the reflective prompt search as a library, is held to it because
   it is meant to be embedded in projects that are not Loom and its state
   machine is property-tested on both targets.
@@ -186,7 +190,7 @@ runs at the end of `make check`. Twenty-three rules: R0 unparseable source, R1
 eager fallbacks, R2 `case` nesting depth, R3 catch-all patterns, R4
 `panic` and `let assert` in `src`, R5 O(n) answers to bounded questions,
 R6 the portable subset `core`, `machine`, `prompt`, `statem`,
-`session_view`, `evalstat` and `gepa` are held to, R7 a `let assert` carrying no `as "message"`, R8 a one-caller function wide
+`session_view`, `evalstat`, `gepa` and `project` are held to, R7 a `let assert` carrying no `as "message"`, R8 a one-caller function wide
 enough to be a moved pyramid, R9 a naked `Bool` in a parameter or field,
 R10 a comment with no blank line above it, R11 a body written as one
 undivided block, R12 a closure that captures a whole outer value only to
@@ -295,14 +299,15 @@ one.
   `docs/loom-implementation-spec.md`, `docs/spec-gaps.md`.
 - **Architecture, per plane and subsystem** — `docs/architecture/`.
   The three planes: `durability`, `orchestration`, `effects` (with
-  `executor`, the execution service over its helper pool). The
+  `executor`, the execution service over its helper pool, and `microvm`, an
+  executor inside a libkrun guest). The
   process and its sessions: `daemon`, `sessions`, `distributed` (a
   session's runtime on an orchestrator and its tool calls on an
   executor), `client`, `terminal`, `acp`, `web-view`, `multiplayer`. What the model sees and does: `prompt`,
   `tools`, `lsp`, `approvals`, `models`, `compaction`, `memory`.
   Programs and extensions: `code-mode`, `extensions`, `mcp`,
   `async-collaboration`. Strands and automation: `messaging`,
-  `advisor`, `goals`, `automation`, `hooks-compat`. Observation and
+  `advisor`, `goals`, `automation`, `hooks-compat`, `project-mode`. Observation and
   testing: `events`, `telemetry`, `simulation`, and `evaluation`, the
   instrument that measures prompt, tool and model changes.
 - **Harbor** — `integrations/harbor/README.md`: Loom as a Harbor (Terminal-Bench)

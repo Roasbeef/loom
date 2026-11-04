@@ -138,6 +138,7 @@ import tui/msg
 import tui/note_panel
 import tui/pacing
 import tui/peer_links
+import tui/project_screen
 import tui/proposal_panel
 import tui/queue_editor
 import tui/recording
@@ -199,6 +200,7 @@ pub type Overlay {
   ProposalReview(proposal_panel.State)
   EvolutionReview(evolution_panel.State)
   MemoryOverview(memory_panel.State)
+  ProjectScreen(project_screen.State)
 }
 
 /// What Enter does to a draft while an operation is live.

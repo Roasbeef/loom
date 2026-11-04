@@ -229,6 +229,51 @@ pub fn install(text: String, options: Options) -> Result(Installed, String) {
   ))
 }
 
+/// `text` without the named tables and the tables below them, every other line
+/// kept as it was. This is the removal `loom vm rm` applies to the tables an
+/// install added, with the care the install takes in the other direction: text
+/// that is not valid TOML is refused before anything is judged, and the result
+/// is parsed again to prove every named table is gone, so a table spelled in a
+/// way the line-based removal cannot reach (a dotted key at the top of the file,
+/// an inline table) is refused rather than left behind.
+///
+/// ## Examples
+///
+/// ```gleam
+/// distribution_install.without_tables(text, [["executors", "vm"]], "/h/loom.toml")
+/// ```
+pub fn without_tables(
+  text: String,
+  paths: List(List(String)),
+  file: String,
+) -> Result(String, String) {
+  use _ <- result.try(parse_document(text, file))
+
+  // Nothing to remove leaves the text exactly as it is.
+  case paths {
+    [] -> Ok(text)
+    _ -> {
+      let kept = remove_sections(text, paths)
+      use document <- result.try(parse_document(kept, file))
+      use Nil <- result.try(
+        list.try_each(paths, fn(path) {
+          case lookup(document, path) {
+            Error(Nil) -> Ok(Nil)
+            Ok(_) ->
+              Error(
+                file
+                <> " could not be rewritten without ["
+                <> string.join(path, ".")
+                <> "]; remove it by hand",
+              )
+          }
+        }),
+      )
+      Ok(kept)
+    }
+  }
+}
+
 // --- what is already on the machine -----------------------------------------
 
 // One destination with the exact bytes it should hold. Every destination is

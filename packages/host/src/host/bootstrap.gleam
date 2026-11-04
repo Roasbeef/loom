@@ -643,6 +643,65 @@ fn current_log_tail_bytes(
   limit: Int,
 ) -> Result(BitArray, Nil)
 
+/// A finished child: its exit status and everything it wrote, stdout and
+/// stderr interleaved as the child wrote them.
+pub type Captured {
+  Captured(
+    /// The exit status the child returned.
+    status: Int,
+    /// What it printed, or a fixed note when the bytes were not text.
+    output: String,
+  )
+}
+
+/// Runs one executable to completion and returns its status and output,
+/// without writing anything to this process's standard output.
+///
+/// A launcher that must run a short helper before it starts a daemon needs the
+/// helper's refusal as a value it can put in its own error, and cannot let the
+/// helper write over a terminal that another program owns. The wait is bounded
+/// by `timeout_ms`; on expiry the port is closed and the call returns an error,
+/// and a child that outlives its port is not signalled, so give it a command
+/// that ends by itself.
+///
+/// Uses OTP `open_port/2` with `spawn_executable`, `exit_status` and
+/// `stderr_to_stdout`, the same helper this module's own `ps` and `id`
+/// observations run through. No Gleam package opens a port.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert bootstrap.run_captured("/bin/echo", ["hi"], 2000)
+///   == Ok(bootstrap.Captured(status: 0, output: "hi\n"))
+/// ```
+pub fn run_captured(
+  executable: String,
+  arguments: List(String),
+  timeout_ms: Int,
+) -> Result(Captured, String) {
+  use #(status, bytes) <- result.map(run_captured_bytes(
+    executable,
+    arguments,
+    timeout_ms,
+  ))
+
+  // A child's output is arbitrary bytes, and a String must hold valid text, so
+  // output that does not decode is named rather than guessed at.
+  let output = case bit_array.to_string(bytes) {
+    Ok(text) -> text
+    Error(Nil) -> "(the output was not text)"
+  }
+
+  Captured(status:, output:)
+}
+
+@external(erlang, "host_bootstrap_ffi", "run_captured")
+fn run_captured_bytes(
+  executable: String,
+  arguments: List(String),
+  timeout_ms: Int,
+) -> Result(#(Int, BitArray), String)
+
 /// Returns this process's real user id.
 ///
 /// The BEAM exposes no `getuid`, and neither `simplifile` nor `gleam_erlang`

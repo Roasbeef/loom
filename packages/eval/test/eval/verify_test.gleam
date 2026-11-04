@@ -1088,6 +1088,7 @@ pub fn settings(root: String) -> serve.Settings {
     memory: memory_config.default_options(),
     tools: catalog.default_tools(),
     advisor: None,
+    project: None,
     go_caches: None,
   )
 }

@@ -37,4 +37,5 @@ removed. Neither suite proves actual browser layout or CSP enforcement.
 `scripts/web_mermaid_check.sh` remains the full disposable-daemon browser drive.
 
 See [protocol-change/091](../../../protocol-change/091-isolated-mermaid-diagrams.md)
-for the unchanged sandbox and parent message contract.
+for the sandbox and parent message contract, including its bounded failure
+diagnostic addendum.

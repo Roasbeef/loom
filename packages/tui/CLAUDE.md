@@ -45,6 +45,38 @@ loopback node and an owner-only, exit-cleaned cookie. This reads only the typed
 profiling setting, while the daemon keeps whole-catalogue validation. No profiler
 sampling or call tracing starts merely because a client is named.
 
+## Starting a distributed daemon
+
+`bootstrap.daemon_launch` is the one place the launch callback builds the
+daemon's program and arguments. When the configuration the daemon will load
+(`--config`, else `<state>/loom.toml`) has a `[distribution]` table, it first
+runs `<server> distribution options CONFIG <state>/distribution-launch.options`
+through `host.run_captured` (`tui/distribution_launch.prepare`) and starts the
+daemon with `LOOM_DISTRIBUTION_OPTFILE` set to that file, so `bin/loomd` boots the VM
+for TLS distribution without an operator rendering the file by hand. The render
+runs only inside the launch callback, which is reached for a vacant endpoint
+under the launch lock, so a daemon that is already running is never touched.
+
+- **The file is never stale.** Each launch deletes the previous file and renders
+  anew; a failed render fails the launch with the renderer's own sentence and
+  leaves no file.
+- **An explicit variable wins.** An environment that already sets a non-empty
+  `LOOM_DISTRIBUTION_OPTFILE` is passed through and nothing is rendered.
+- **The decision is the daemon's.** A table is present when the key
+  `distribution` is, as `client/distribution.from_document` reads it. A document
+  that is not TOML is left to the daemon, which reports the parse error.
+- **The daemon's command renders it.** The text names `client_distribution_ffi`'s
+  verify function, which this package cannot depend on, so the launcher shells
+  out rather than rendering in process.
+- **Environment without new FFI.** The paused wrapper that `host.spawn_server`
+  starts passes no environment of its own, so a launch with assignments spawns
+  `/usr/bin/env VAR=value <server> ...` (`distribution_launch.command`). `env`
+  executes the daemon in place, so the fenced pid is still the daemon's.
+
+A daemon an operator starts directly through `bin/loomd` is not covered:
+the shell launcher cannot read TOML and runs before any Gleam does. See
+[the distributed architecture](../../docs/architecture/distributed.md#booting-a-distributed-vm).
+
 ## Activity and image-discovery cost
 
 Geometry reads the active phase when it only needs liveness; it formats the
@@ -975,7 +1007,7 @@ boundaries and the split's measurements under Invariants.
   A block of at least 512 bytes may carry a summarizer label (protocol 050):
   it then renders as a `SummarizedReasoning` header row, `∴ Reasoning
   (summarized)` with the hint or with its line count and elapsed time
-  while live, and the label beneath as dim text of at most three rows.
+  while live, and the label beneath as dim text of at most five rows.
   Compact tool rows retain every call while folding arguments and results.
   Unresolved code-mode calls retain a syntax-highlighted preview of six
   submitted source lines, with an omission marker. Confirmed success replaces
@@ -1048,7 +1080,11 @@ boundaries and the split's measurements under Invariants.
   `--passphrase-file`, `--drop-authority` and `--static`, and `enroll`, `revoke`
   and `renew` without `--passphrase-file` (`forward_distribution`, an `Invalid`
   launch): the forwarded child's stdin is a pipe, so it could not prompt for the
-  passphrase, and only `loomd distribution` can. `main`
+  passphrase, and only `loomd distribution` can. `loom vm …` (`up`, `down`,
+  `status`, implemented in `client/vm_cli`) is forwarded the same way with
+  no refusals of its own, and `vm_usage` is its local help copy, compared
+  with `loomd vm --help` by `scripts/cli_help_test.sh`; both name `loom-vm setup`,
+the launcher's own command, for fetching the artifacts. `main`
   answers it before it builds a model, so nothing draws a frame and no
   terminal state is installed on the way past. Its three help forms are
   local instead: the client-only shipment can print extension usage without
@@ -2029,7 +2065,7 @@ untouched.
   and the expand hint pushed it onto a second row. The rule holds for a
   block without a summary. A summarized block (`SummarizedReasoning`) is
   deliberately taller: a clipped header row plus at most
-  `transcript_lines.summary_rows` (3) dim rows, laid out by
+  `transcript_lines.summary_rows` (5) dim rows, laid out by
   `render.summarized_rows` and exempt from the outer wrap. A settled block
   borrows its stream's live label until its own arrives, so a block that
   showed a summary while live settles into the same rows; a label arriving
@@ -2872,6 +2908,41 @@ A correlated refusal clears `Shared.goal`, while an open inspector can keep
 its old board with the failed refresh label. The
 [delivery reading guide](../../docs/architecture/delivery.md#reading-the-held-input-and-goal-paths-in-gleam)
 shows the source paths, actual state constructors and request-ID traces.
+
+## Project board (protocol-change/106)
+
+`/project` and `loom project board --watch` open the owner's board for the
+project of the working directory: what needs a person, and a way to settle it.
+`tui/project_screen` is a pure state machine in the picker's shape: `update` maps
+a key to an `Action`, `observe`, `observed_ticket`, `answered` and
+`answer_refused` file what the daemon said, and `render` draws it as the
+`ProjectScreen` overlay. `tui/project_control` is the shell around it: `open`,
+`service` (the poll, reached from `session_control.service_activity` so the tick
+chain does not grow), `finish` and `act`. The reads and the answer run as
+`job.ReadProjectBoard`, `job.ReadProjectTicket` and `job.ChangeProject` in the
+terminal's one control-job slot (`tui/project_jobs` runs them). The board's
+ordering, stage words, ages and the mandate sentence come from
+`session_view/project_board`, which the web view uses too.
+
+Four things break if changed carelessly.
+
+- The poll reads `projects.board` and compares `revision`. `observe` keeps the
+  held board when the revision is unchanged, `same_picture` ignores the poll
+  state, and `project_control.finish` then skips `invalidate_frame`, so an
+  unchanged board causes no repaint. The poll state is `Poll` (`PollDue` or
+  `PollResting`) and not a time of zero, because the terminal's monotonic clock
+  is negative on the BEAM.
+- An answer echoes the question's `seq` as the ticket displayed it. The daemon
+  refuses a stale one with `conflict`; the job reports that as an outcome
+  (`ProjectChanged(change, Some("conflict"))`), `answer_refused` says so in
+  words and keeps the draft.
+- Ticket text is external. `project_board` makes each string safe when it
+  decodes, and the screen draws it as text only. A stage this client does not
+  know is drawn as its own word, and it counts as needing a person when it is
+  spelled `person/...`.
+- An age comes only from the ticket's `opened_ms`. A ticket without one shows
+  `?`. `set_mode` and `publish` controls are not built; the ticket page has no
+  button for them.
 
 ## Deep Docs
 
@@ -3803,3 +3874,13 @@ line cells), `draw` (flowcharts) and `sequence`.
   `mermaid_property_test` (qcheck on a fixed seed, and every directed graph on
   three nodes in all four directions read back from the text) and
   `mermaid_markdown_test`.
+
+## `loom project`
+
+`init`, `post <text>` and `board` for the repository in the working directory. They share
+one `ProjectsCommand`/`ProjectsReply` pair in `tui/daemon/protocol` and
+`daemon_selection.projects`, and the subcommand finds its project in `projects.list` by
+workspace. The wire forms are `docs/client-protocol.md` section 3.32. `launch_project`
+is the parser's test seam and `project_reply_text` builds what each subcommand prints
+from the reply alone, both `@internal` and tested in `project_command_test` without a
+daemon.

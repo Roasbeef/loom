@@ -1419,6 +1419,30 @@ pub fn state_root_mask_candidates(state_root: String) -> List(String) {
   list.append(established_masks(state_root), lazy_masks(state_root))
 }
 
+/// The base policy with this node's own distribution secrets protected: the
+/// private key of its TLS leaf and its Erlang cookie (ADR-022 D2).
+///
+/// A distributed daemon keeps both outside its state root, at the paths its
+/// `[distribution]` table names, so the state-root masks do not reach them.
+/// Under the default host read scope a jailed `bash` could print either into
+/// a tool result, which the model provider then receives, and either one is
+/// enough to speak to this node's peers as this node. A path that does not
+/// exist is skipped, as `protecting` skips any absent conditional mask,
+/// because the jail refuses to mask a missing path and a distributed daemon
+/// has already read both files before any session boots.
+///
+/// ## Examples
+///
+/// ```gleam
+/// workspace_policy.protecting_node_credentials(base, ["/srv/node/key.pem"])
+/// ```
+pub fn protecting_node_credentials(
+  base: policy.SandboxPolicy,
+  paths: List(String),
+) -> policy.SandboxPolicy {
+  protecting(base, always: [], where_maskable: paths)
+}
+
 /// The base policy with the daemon's state-root secrets masked, in place
 /// of the state root itself.
 ///
@@ -1449,6 +1473,93 @@ pub fn protecting_state_root(
     always: established_masks(state_root),
     where_maskable: lazy_masks(state_root),
   )
+}
+
+/// The base policy with a project host's private files masked: each project's
+/// host repository, its ledger and its check trees.
+///
+/// The host repository is what the host's diff, check and push read, and it is
+/// the line a worker's clone is isolated behind (`client/project_repo`). It is
+/// in no session's writable roots, and this mask also keeps a session from
+/// reading it. The ledger holds every ticket's inbound text and the check trees
+/// hold built output, so a session has no use for either.
+///
+/// Only entries on disk are masked, because the jail refuses to mask a path
+/// that does not exist (`protecting`) and a policy lives as long as its
+/// session. That is why a ticket's clone is not masked, here or from the other
+/// workers: a clone is removed when its ticket ends, and a mask over a removed
+/// path would refuse every later call of the sessions that still held it. A
+/// worker can therefore read the other clones as it can read the rest of the
+/// host, and it can write none of them, since only its own workspace is
+/// writable.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace_policy.protecting_projects(base, "/home/o/.loom")
+/// ```
+pub fn protecting_projects(
+  base: policy.SandboxPolicy,
+  state_root: String,
+) -> policy.SandboxPolicy {
+  let masks =
+    project_directories(state_root)
+    |> list.flat_map(fn(directory) {
+      list.append(private_masks(directory), existing([directory <> "/checks"]))
+    })
+  protecting(base, always: masks, where_maskable: [])
+}
+
+/// The base policy with each project's host repository and ledger masked, and
+/// its check trees left alone.
+///
+/// A check is worker-authored code, and it reads the host as a session's tools
+/// do. Without this mask it could read every project's `host.git`, which holds
+/// each commit the host took in, and its `ledger.db`, which holds every ticket's
+/// inbound text, and the failing output that goes back to the worker could
+/// carry what it read. `protecting_projects` is not the policy for it, because
+/// it also masks `<project>/checks`, which holds the tree the check is running
+/// in. Only entries on disk are masked, as there.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace_policy.protecting_project_files(base, "/home/o/.loom")
+/// ```
+pub fn protecting_project_files(
+  base: policy.SandboxPolicy,
+  state_root: String,
+) -> policy.SandboxPolicy {
+  let masks =
+    project_directories(state_root)
+    |> list.flat_map(private_masks)
+  protecting(base, always: masks, where_maskable: [])
+}
+
+/// The directory of each project under the state root, in a stable order.
+fn project_directories(state_root: String) -> List(String) {
+  let projects = state_root <> "/projects"
+  simplifile.read_directory(projects)
+  |> result.unwrap([])
+  |> list.sort(string.compare)
+  |> list.map(fn(id) { projects <> "/" <> id })
+}
+
+/// The files of one project's directory that neither a session nor a check has
+/// a use for, as they are on disk now: the host repository, and the ledger with
+/// its SQLite side files.
+fn private_masks(directory: String) -> List(String) {
+  let ledger = directory <> "/ledger.db"
+  existing(
+    list.flatten([
+      [directory <> "/host.git", ledger],
+      sqlite_side_files(ledger),
+    ]),
+  )
+}
+
+fn existing(paths: List(String)) -> List(String) {
+  list.filter(paths, exists)
 }
 
 // The masked entries `client/daemon/root.directories` and the startup
@@ -1545,8 +1656,45 @@ fn lazy_masks(state_root: String) -> List(String) {
 
       // The launcher's startup lock, on `daemon.lock`'s argument.
       state_root <> "/launch.lock",
+
+      // Each standing microVM guest's directory (`loom vm up`, ADR-022):
+      // its two deployment bundles, the orchestrator's credentials, and the
+      // guest root, whose node directory holds the executor's TLS key and
+      // cookie. Either pair lets a process join this daemon's distribution
+      // as a pinned node, which is Erlang RPC on the host daemon.
+      state_root <> "/vm",
     ],
+    node_home_masks(),
   ])
+}
+
+/// The node secrets a distributed daemon keeps under the user's home rather
+/// than its state root. The cookie must be the VM's `$HOME/.erlang.cookie`
+/// (the emulator reads it from nowhere else), and `loom vm up` keeps its
+/// guests in `$HOME/.loom/vm` whatever `--state-dir` the daemon runs with.
+/// A jailed process that read the cookie and a key could connect to this
+/// daemon's distribution listener as a pinned peer.
+fn node_home_masks() -> List(String) {
+  // A daemon with no `HOME` has neither file to mask.
+  case home_directory() {
+    Some(home) -> list.append(existing_cookie(home), [home <> "/.loom/vm"])
+    None -> []
+  }
+}
+
+/// The home's cookie, only when it is already a file. A missing path under a
+/// writable root would otherwise be masked with a tmpfs, and bwrap creates
+/// the mountpoint as a directory in the real home, where it outlives the jail
+/// and breaks every later distributed boot, which reads that path as the
+/// cookie. A stray directory at `.loom/vm` has no such consequence.
+fn existing_cookie(home: String) -> List(String) {
+  let cookie = home <> "/.erlang.cookie"
+
+  // An unreadable answer is treated as no cookie: there is no file to mask.
+  case simplifile.is_file(cookie) {
+    Ok(True) -> [cookie]
+    _ -> []
+  }
 }
 
 // The whole SQLite file family beside a database: it runs in WAL mode,

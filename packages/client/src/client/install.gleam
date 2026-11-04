@@ -118,6 +118,38 @@ pub fn helper() -> String {
 /// three rungs cannot disagree about it.
 pub const helper_name = "loom-exec"
 
+/// The name of the microVM launcher binary. A release ships it beside
+/// `loomd` and the installer does not put it on `PATH`.
+pub const launcher_name = "loom-vm"
+
+/// Where a release keeps the microVM launcher: `<root>/bin/loom-vm`, which is
+/// `$PREFIX/lib/loom/server/bin/loom-vm` for an installed release. The path
+/// whether or not anything is there, so a refusal can name where it looked.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // install.launcher() == "/opt/loom-0.1.0-linux-x86_64/bin/loom-vm"
+/// ```
+///
+pub fn launcher() -> String {
+  root() <> "/bin/" <> launcher_name
+}
+
+/// The microVM launcher shipped in the same tree as the running server, if
+/// there is one. A development tree and a release built with `DIST_VM=0`
+/// have none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Error(Nil) = install.bundled_launcher()
+/// ```
+///
+pub fn bundled_launcher() -> Result(String, Nil) {
+  existing_file(launcher())
+}
+
 /// Where a release keeps the bundled Gleam compiler: `<root>/bin/gleam`.
 ///
 /// ## Examples

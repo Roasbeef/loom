@@ -15,6 +15,12 @@
 //// error and no state change, which is what makes all-or-none trivially
 //// true here.
 ////
+//// Closing the handle only seals it: the actor stays alive so late callers
+//// receive error values. `retire_closed` is the separate, owner-held step
+//// that stops a sealed actor with a normal exit, for a store opened outside
+//// any supervisor. Every `Storage` operation monitors the actor, so a call on
+//// a retired handle returns an error value instead of exiting its caller.
+////
 //// ## Flow
 ////
 //// `open` → `handle_message` → `commit` → `check_expectations` → `apply_write` → `scan_branch`
@@ -47,6 +53,8 @@ import core/tx.{
   InsertUsage, SetRegister, StaleExpectation,
 }
 import gleam/dict.{type Dict}
+import gleam/dynamic/decode
+import gleam/erlang/atom
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -159,6 +167,9 @@ pub opaque type Message {
 
   /// Seal the handle. Idempotent.
   Close(reply: Subject(Result(Nil, StorageError)))
+
+  /// Stop the actor, but only once the handle is sealed.
+  Retire(reply: Subject(Result(Nil, StorageError)))
 }
 
 type ActorState {
@@ -737,9 +748,8 @@ fn take_limit(rows: List(row), limit: Option(Int)) -> List(row) {
 /// Opens a fresh in-memory session wrapped in an actor and returns the
 /// uniform `Storage` handle. Commit timestamps come from the injected
 /// clock, which the actor threads so stepping fixtures advance. Calls
-/// block until the actor replies (and panic if the actor process has
-/// died, which only happens if the owning supervisor killed it — the
-/// storage code itself never crashes the actor).
+/// block until the actor replies or its monitored process exits, returning an
+/// error value rather than exiting the caller if the actor is gone.
 ///
 /// ## Examples
 ///
@@ -759,30 +769,42 @@ pub fn open(clock: Clock) -> Result(Storage(Subject(Message)), StorageError) {
       Ok(
         Storage(
           handle: started.data,
-          commit: fn(handle, tx) { process.call_forever(handle, Commit(tx, _)) },
+          commit: fn(handle, tx) {
+            call(
+              handle,
+              Commit(tx, _),
+              on_gone: Error(Faulted(reason: "storage handle closed")),
+            )
+          },
           get_entries: fn(handle, entry_ids) {
-            process.call_forever(handle, GetEntries(entry_ids, _))
+            call(handle, GetEntries(entry_ids, _), on_gone: Error(HandleClosed))
           },
           get_register: fn(handle, ns, key) {
-            process.call_forever(handle, GetRegister(ns, key, _))
+            call(handle, GetRegister(ns, key, _), on_gone: Error(HandleClosed))
           },
           list_registers: fn(handle, ns, prefix) {
-            process.call_forever(handle, ListRegisters(ns, prefix, _))
+            call(
+              handle,
+              ListRegisters(ns, prefix, _),
+              on_gone: Error(HandleClosed),
+            )
           },
           scan_branch: fn(handle, q) {
-            process.call_forever(handle, ScanBranch(q, _))
+            call(handle, ScanBranch(q, _), on_gone: Error(HandleClosed))
           },
           scan_entries: fn(handle, q) {
-            process.call_forever(handle, ScanEntries(q, _))
+            call(handle, ScanEntries(q, _), on_gone: Error(HandleClosed))
           },
           scan_entry_heads: fn(handle, q) {
-            process.call_forever(handle, ScanEntryHeads(q, _))
+            call(handle, ScanEntryHeads(q, _), on_gone: Error(HandleClosed))
           },
           scan_usage: fn(handle, q) {
-            process.call_forever(handle, ScanUsage(q, _))
+            call(handle, ScanUsage(q, _), on_gone: Error(HandleClosed))
           },
-          stats: fn(handle) { process.call_forever(handle, Stats) },
-          close: fn(handle) { process.call_forever(handle, Close) },
+          stats: fn(handle) {
+            call(handle, Stats, on_gone: Error(HandleClosed))
+          },
+          close: fn(handle) { call(handle, Close, on_gone: Ok(Nil)) },
         ),
       )
     Error(error) ->
@@ -793,12 +815,137 @@ pub fn open(clock: Clock) -> Result(Storage(Subject(Message)), StorageError) {
   }
 }
 
+/// Makes one request of the actor and waits for the answer or the actor's death.
+///
+/// The ordinary `process.call_forever` exits its caller when the callee is
+/// already gone, which would turn a call on a retired handle into a crash of
+/// whoever held it. The monitor is taken before the send, so a death on either
+/// side of admission yields `on_gone`, an error value the caller can match.
+/// There is no deadline: a live actor answers from its mailbox in order, as it
+/// always has.
+fn call(
+  handle: Subject(Message),
+  request: fn(Subject(reply)) -> Message,
+  on_gone on_gone: reply,
+) -> reply {
+  // A handle whose owner is already unknown never reaches the mailbox.
+  case process.subject_owner(handle) {
+    Error(Nil) -> on_gone
+    Ok(owner) -> {
+      let answer = process.new_subject()
+      let monitor = process.monitor(owner)
+      process.send(handle, request(answer))
+      let outcome =
+        process.new_selector()
+        |> process.select(answer)
+        |> process.select_specific_monitor(monitor, fn(_down) { on_gone })
+        |> process.selector_receive_forever
+
+      // Releasing the monitor flushes a DOWN that raced the answer.
+      process.demonitor_process(monitor)
+      outcome
+    }
+  }
+}
+
 /// Extracts a descriptive string from actor start initialization errors.
 fn start_error_reason(error: actor.StartError) -> String {
   case error {
     actor.InitTimeout -> "initialisation timeout"
     actor.InitFailed(reason) -> reason
     actor.InitExited(_) -> "initialiser exited"
+  }
+}
+
+/// Stops a sealed memory actor with an orderly exit.
+///
+/// Ordinary `Storage.close` only seals the handle and leaves the actor alive,
+/// so late callers receive error values. A resource owner that opened the
+/// store outside any supervisor calls this after sealing to reclaim the
+/// process. The actor replies, then returns `actor.stop()`, so it exits with a
+/// normal reason and OTP logs no crash report; the call returns once that exit
+/// is observed. An unsealed handle is refused and keeps running. A handle
+/// whose actor is already gone returns `Ok(Nil)`, which makes retirement
+/// idempotent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // use Nil <- result.try(storage.close(store))
+/// // memory.retire_closed(store.handle)
+/// ```
+pub fn retire_closed(handle: Subject(Message)) -> Result(Nil, StorageError) {
+  case process.subject_owner(handle) {
+    Error(Nil) -> Ok(Nil)
+    Ok(owner) -> retire_live(handle, owner)
+  }
+}
+
+/// Retires the actor at `owner`, treating a `noproc` monitor notification as
+/// the idempotent already-gone case.
+fn retire_live(
+  handle: Subject(Message),
+  owner: process.Pid,
+) -> Result(Nil, StorageError) {
+  let watch = process.monitor(owner)
+  let answer = process.new_subject()
+  process.send(handle, Retire(answer))
+
+  // The actor either answers and then exits, or it died before it could.
+  let step =
+    process.new_selector()
+    |> process.select_map(answer, Replied)
+    |> process.select_specific_monitor(watch, fn(down) {
+      Exited(exit_proof(down))
+    })
+    |> process.selector_receive(5000)
+    |> result.unwrap(
+      Replied(Error(BackendFault("memory retirement was not acknowledged"))),
+    )
+
+  // Only a reply that accepts the retirement still owes an observed exit.
+  let outcome = case step {
+    // "Returned" must mean "gone", so wait for the exit itself.
+    Replied(Ok(Nil)) ->
+      process.new_selector()
+      |> process.select_specific_monitor(watch, exit_proof)
+      |> process.selector_receive(5000)
+      |> result.unwrap(Error(BackendFault("memory actor did not exit")))
+    Replied(Error(error)) -> Error(error)
+    Exited(proof) -> proof
+  }
+
+  process.demonitor_process(watch)
+  outcome
+}
+
+/// How the first wait of a retirement ended.
+type RetireStep {
+  /// The actor answered the request.
+  Replied(Result(Nil, StorageError))
+
+  /// The actor went down before answering, with the verdict on its exit.
+  Exited(Result(Nil, StorageError))
+}
+
+/// Only a normal exit proves an orderly stop.
+fn exit_proof(down: process.Down) -> Result(Nil, StorageError) {
+  case down {
+    process.ProcessDown(reason: process.Normal, ..) -> Ok(Nil)
+    process.ProcessDown(reason: process.Abnormal(reason), ..) ->
+      case decode.run(reason, atom.decoder()) == Ok(atom.create("noproc")) {
+        True -> Ok(Nil)
+        False ->
+          Error(BackendFault(
+            "memory retirement lost proof: " <> string.inspect(reason),
+          ))
+      }
+    process.ProcessDown(reason: process.Killed, ..) ->
+      Error(BackendFault("memory retirement lost proof: killed"))
+    process.PortDown(reason:, ..) ->
+      Error(BackendFault(
+        "memory retirement lost proof: " <> string.inspect(reason),
+      ))
   }
 }
 
@@ -926,6 +1073,17 @@ fn handle_message(
     Close(reply:), _ -> {
       process.send(reply, Ok(Nil))
       actor.continue(ActorState(..actor_state, closed: True))
+    }
+    Retire(reply:), True -> {
+      process.send(reply, Ok(Nil))
+      actor.stop()
+    }
+    Retire(reply:), False -> {
+      process.send(
+        reply,
+        Error(BackendFault("memory storage must be closed before retirement")),
+      )
+      actor.continue(actor_state)
     }
     Commit(reply:, ..), True -> {
       process.send(reply, Error(Faulted(reason: "storage handle closed")))

@@ -798,7 +798,10 @@ before any Gleam code runs, so both launchers add `-proto_dist inet_tls
 file, and add nothing when it is unset. The `bin/loomd` that `make
 server-shipment` writes does this through `ERL_FLAGS`; the release launcher
 `scripts/release.sh` writes does it with arguments to `erl`, so a path with a
-space survives. `loomd distribution options CONFIG OUTPUT` renders the file. The
+space survives. `loomd distribution options CONFIG OUTPUT` renders the file, and
+the `loom` client runs it and sets the variable itself for a daemon it starts
+(`<state>/distribution-launch.options`, rendered again at each start). A variable
+already set in the environment of `loom` is used as it is. The
 release itself is unchanged and a deployment needs no second build:
 [the distributed setup guide](distributed-setup.md) covers the credentials, the
 networking and the container example.
@@ -1224,6 +1227,165 @@ GitHub; only then will normal updater release discovery see it. Authentication
 for private GHCR pulls is confined to the Linux runner, outside the build
 container. Bump the workflow's Linux image digest when its committed toolchain
 recipe changes, and keep the macOS version inputs aligned with regular CI.
+
+## The microVM artifacts
+
+The microVM tier ([ADR-022](adr/022-microvm-tier-runs-the-executor-in-a-libkrun-guest.md),
+[microvm.md](architecture/microvm.md)) boots an executor inside a libkrun guest.
+Building what that needs from source takes 11 minutes for the guest root and 7
+for the Landlock kernel, so a release publishes it, and `loom-vm setup`
+installs it.
+
+### What a release carries
+
+The server archive holds `bin/loom-vm`, the launcher, beside `loomd` and
+`loom-exec`. It is a Go program built with cgo off, so it adds no native
+dependency to the per-host build model and is byte-identical across builders;
+`DIST_VM=0` leaves it out, as the guest image's own build does. The installer
+does not put it on `PATH`: it is at `$PREFIX/lib/loom/server/bin/loom-vm`.
+
+`.github/workflows/vmm-release.yml` publishes the rest. It runs beside
+`release.yml` on every `v*` tag (or by dispatch with an existing tag), and the
+nightly workflow calls it before `release.yml` with the tag `commit-<full
+commit>`:
+
+| Artifact | Where | Built on |
+| --- | --- | --- |
+| `ghcr.io/roasbeef/loom-guest:<tag>`, a manifest list for `linux/arm64` and `linux/amd64` | GHCR | a native runner for each architecture |
+| `go-microvm-runner-darwin-arm64` | the release's assets | `macos-15`, against Homebrew's libkrun, ad-hoc signed |
+| `libkrunfw-landlock-darwin-arm64.5.dylib` | the release's assets | the kernel on `ubuntu-24.04`, the dylib on `macos-15` |
+| `vmm-SHA256SUMS` | the release's assets | the digests of the two files above |
+
+The checksum file is not named `SHA256SUMS` because `release.yml` already
+publishes an asset by that name for the server archives, and a release cannot
+hold two. The assets are not covered by the release's reproduction check. GHCR
+creates the `loom-guest` package private on its first push. Make it public once
+in the package settings, since `loom-vm setup` pulls it without a token.
+
+The two kinds of release differ in when the release exists, and so in how the
+assets reach it. A version tag's release is a draft that `release.yml` creates
+only after its builds pass, so the workflow's last job waits for the draft and
+attaches the assets to it; publish the draft after both workflows have
+finished, because an immutable release takes no assets once it is published.
+A nightly's release is created already published, in the one command that
+uploads the server archives, so there is no later moment to attach anything.
+The nightly therefore runs `vmm-release.yml` first. For a `commit-*` tag that
+workflow builds the three files and leaves them in its run's `vmm-assets`
+artifact without attaching them, and `release.yml` uploads them in its
+`gh release create` beside the archives. Neither workflow's release is ever
+modified after it is published.
+
+If the `vmm-release.yml` run fails, the nightly publishes the server release
+without the three files rather than failing: the server release is the main
+product. The GHCR image may exist by then, but `loom-vm setup` finds no runner
+or checksum file and `loom vm setup` reports that the artifacts are not
+published for the build. A rerun for that commit finds the release published
+and builds nothing, so that nightly stays without them; the next nightly is
+unaffected. A `commit-*` tag is validated like `release.yml` validates a
+nightly's source: it must match `commit-[0-9a-f]{40}`, the checkout must be
+exactly that commit, and the commit must be on main. A tag name is never
+resolved as a branch.
+
+A rerun changes nothing that exists. The image tag is pushed only when it does
+not resolve yet, a nightly whose release exists builds nothing, and the attach
+job for a version tag does nothing when the release already carries
+`vmm-SHA256SUMS` (it is uploaded last). A release holding only some of the
+assets still fails the upload and is left to an operator, because a second
+build is not byte-identical to the first.
+
+What this adds to each nightly: two native image builds, one per architecture
+and in parallel (the 11-minute guest-root build is the measured figure for one;
+the arm64 runner's time and the cost of a registry push are not measured); the
+Landlock kernel build on `ubuntu-24.04` (7 minutes, measured locally, and the
+hosted time is not measured); and one `macos-15` job that links the dylib,
+installs libkrun from Homebrew and builds and signs the runner (not measured).
+The job timeouts are 90, 60 and 45 minutes and are limits, not measurements.
+Because the nightly waits for these files before it runs `release.yml`, its
+wall-clock time grows by about the longest of the two chains, which is more
+than 20 minutes if the figures above hold and is not measured. Hosted `macos-15`
+minutes are billed at a higher rate than Linux minutes where minutes are billed
+at all.
+
+There is no Linux download. Ubuntu ships no libkrun for the runner to link, so a
+Linux host builds the artifacts (`make vmm vmm-runner vmm-guest-root`, and
+`vmm-firmware` for Landlock) and runs `loom-vm setup --from-build
+packages/vmm/build`. The Linux half of the firmware build does run in CI, to
+produce the macOS dylib.
+
+### Installing
+
+libkrun must be installed first, because the runner loads it from Homebrew's
+prefix and release builds cannot ship it: `brew tap libkrun/krun && brew install
+libkrun`. Then:
+
+```sh
+loom-vm setup --release v0.3.0
+loom-vm doctor
+```
+
+Setup finds libkrun before it downloads anything, and names `brew install
+libkrun` when it is missing. It installs under `$LOOM_VM_HOME` (default
+`~/.loom/vm`), in `cache/<tag>/`, and writes `manifest.json` there, replacing
+it only after the new files are in place. `--repo OWNER/NAME` selects another
+repository's release and its `ghcr.io/OWNER/loom-guest` image. A developer who
+built the artifacts runs `make vmm-install-dev`, which records the paths of
+`packages/vmm/build` without copying them and sets the revision to `dev`.
+
+`loom vm setup` runs this command for you with the `loom-vm` that ships beside
+`loomd`, so a user never types the long path: with no flag it installs the
+artifacts for the running build. A nightly build reports its release's version
+and its own commit, and the nightly itself is the prerelease `commit-<full
+commit>`, so setup tries that tag first when the commit is 40 hex digits, then
+`v<version>`. The nightly's image carries the tag as its version label, which
+`setup.Release` requires to equal the tag. It passes the commit as `--revision`, so `loom-vm setup` reads the
+guest image's labels first and refuses an image built from another commit
+before it downloads or writes anything; the first tag that installs wins, and
+when none does the error names every tag tried. A nightly has the artifacts
+from the first nightly that carries this workflow; an earlier nightly has none,
+so its first candidate fails and its second is accepted only when it is the
+same commit. A nightly whose `vmm-release.yml` run failed has none either.
+`--release TAG` tries
+only that tag and `--from-build DIR` passes through. `loom vm up` runs the same
+setup first when no manifest exists. A development build reports version `dev`,
+has no release and is refused with a message that names `make vmm-install-dev`.
+
+### Verification, re-signing and quarantine
+
+Setup compares the SHA-256 of the runner and the firmware with
+`vmm-SHA256SUMS` and refuses a mismatch, a missing entry or a missing asset.
+That file comes from the same GitHub release over HTTPS, so it detects a
+corrupt or substituted download but is not a signature: nothing in the release
+is signed with a Developer ID, and the project has none. The guest image is
+checked by its labels instead. The release workflow sets
+`org.opencontainers.image.revision` to the tagged commit and
+`org.opencontainers.image.version` to the tag; setup refuses an image with no
+revision or with another version, and records the revision in the manifest. The
+image digest is not recorded in `vmm-SHA256SUMS`, so the image's integrity
+rests on GHCR and the tag.
+
+On macOS setup then removes `com.apple.quarantine` from the runner and the
+dylib, treating "no such xattr" as success, and re-signs the runner with
+`codesign --entitlements <runner.entitlements> -s - --force`. The signature is
+ad hoc, so it identifies no one. What it carries is the
+`com.apple.security.hypervisor` entitlement, without which Hypervisor.framework
+refuses to start a guest, and the signature is made on the user's own machine
+so that no attribute added in transit can leave the runner unusable. Setup
+records the digests of the files as installed, after the re-signing, and
+`loom-vm doctor` checks them, and checks the entitlement with `codesign -d
+--entitlements -`.
+
+### Version pinning
+
+Install the guest of the release whose `loomd` you run. The guest holds an
+executor, and an orchestrator talks to an executor over a protocol that
+negotiates exact revisions, so the two must come from the same release. The tag
+in `--release` is that pairing: the
+guest image, the runner and the firmware of one tag were built from one commit,
+and `revision` in the manifest says which. The runner is also locked to the
+go-microvm version `loom-vm` imports, which a release fixes. The runner links
+Homebrew's libkrun, so the libkrun installed on the user's machine must be at
+least as new as the one the release was built against; the workflow log prints
+that version.
 
 ## Opt-in profiling at launch
 

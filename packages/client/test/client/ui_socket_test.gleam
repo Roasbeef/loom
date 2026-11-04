@@ -1996,3 +1996,39 @@ pub fn the_admin_socket_admits_only_clicks_beneath_the_sidebar_test() {
     },
   )
 }
+
+// Protocol-change/106, the addendum on the web view: only the owner's operating
+// home is handed the capability to read the projects and answer a ticket, so a
+// member's home and a read-only page get no project data and no section.
+pub fn only_an_owners_operating_home_is_handed_the_projects_capability_test() {
+  let projects =
+    home.Projects(
+      boards: fn(_) { Nil },
+      ticket: fn(_, _, _) { Nil },
+      answer: fn(_, _, _, _, _) { Nil },
+      close: fn(_, _, _) { Nil },
+    )
+  let owner = home_principal(access.OwnerPrincipal)
+  let member = home_principal(access.MemberPrincipal)
+  let assert Some(_) =
+    ui_socket.home_projects_capability(owner, access.Operator, projects)
+  assert ui_socket.home_projects_capability(owner, access.Observer, projects)
+    == None
+  assert ui_socket.home_projects_capability(member, access.Operator, projects)
+    == None
+  assert ui_socket.home_projects_capability(member, access.Observer, projects)
+    == None
+}
+
+// A click on a ticket's button is admitted by the owner's socket and by no
+// other: a home that is not the owner's operating page drops it, alone or inside
+// a batch, and the same click anywhere outside the section is unaffected.
+pub fn only_an_owners_socket_admits_a_click_in_the_projects_section_test() {
+  let ticket = home.projects_path <> "\t0\t1\t0\t0\t0"
+  assert ui_socket.home_owner_accepts(click_on(ticket))
+  assert !ui_socket.home_accepts(click_on(ticket))
+  assert !ui_socket.home_accepts(click_on(home.projects_path))
+  assert !ui_socket.home_owner_accepts(click_on(home.projects_path))
+  assert !ui_socket.home_owner_accepts(click_on(home.projects_path <> "0\t1"))
+  assert ui_socket.home_accepts(click_on(home.table_path <> "\t0"))
+}

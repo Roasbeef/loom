@@ -43,6 +43,11 @@
 //// `run` → `run_with` → `parse` → `enroll` | `renew` | `revoke` |
 //// `attach_file` | `log` | `import_file`
 ////
+//// `enroll_member` and `revoke_member` are the signing bodies of `enroll` and
+//// `revoke` apart from the command line, with `unlock_at` for the key, so
+//// a standing microVM guest is enrolled by `loom vm up` and revoked by
+//// `loom vm rm` through the same steps.
+////
 //// 1. `run` hands the command to `run_with` with the socket as the way to reach
 ////    a daemon (`socket_daemon`); a test passes a ledger process of its own.
 //// 2. `parse` reads the words with the flags of the command (`flags_of`) and
@@ -399,8 +404,9 @@ fn wait_ms(parsed: Parsed) -> Result(Int, String) {
 
 // --- the authority -----------------------------------------------------------
 
-// The kept authority, unlocked.
-type Authority {
+/// The kept authority, unlocked. It is opaque so that the key it holds can be
+/// used to sign and never read back.
+pub opaque type Authority {
   Authority(
     directory: String,
     certificate: String,
@@ -534,10 +540,28 @@ fn kept_under(parsed: Parsed, home: String) -> Result(String, String) {
 /// Unlocks the kept authority key pair using passphrase or key file.
 fn unlock(parsed: Parsed) -> Result(Authority, String) {
   use directory <- result.try(authority_directory(parsed))
+  unlock_at(directory, value(parsed, "--passphrase-file"))
+}
+
+/// Unlocks the authority kept in `directory`, whose last segment is the
+/// deployment id. The passphrase is read from `passphrase_file` when one is
+/// given and asked for on the terminal otherwise. `enroll` and `revoke` reach
+/// it through their flags, and `loom vm up` and `rm` call it with the
+/// directory and the passphrase file they sealed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_cli.unlock_at(dir, Some(dir <> "/passphrase"))
+/// ```
+pub fn unlock_at(
+  directory: String,
+  passphrase_file: Option(String),
+) -> Result(Authority, String) {
   let deployment = last_segment(directory)
 
   // Read the passphrase from the file if provided, otherwise prompt.
-  use passphrase <- result.try(case value(parsed, "--passphrase-file") {
+  use passphrase <- result.try(case passphrase_file {
     Some(path) -> {
       use path <- result.try(bootstrap.absolute_path(path))
       authority_key.passphrase_from_file(path)
@@ -593,8 +617,9 @@ type Delivery {
   Offline(reason: String)
 }
 
-// What a signing run produced.
-type Signed {
+/// What a signing run produced: the entry, the ledger and the operator's copy
+/// as they stand after it, and whether a daemon took it.
+pub opaque type Signed {
   Signed(entry: SignedEntry, ledger: Ledger, store: Store, delivery: Delivery)
 }
 
@@ -808,36 +833,13 @@ fn enroll(parsed: Parsed, connect: Connect) -> Result(String, String) {
   let bundle_path = out <> "/" <> name <> distribution_provision_extension
   use Nil <- result.try(refuse_existing(bundle_path, overwrite_of(parsed)))
   use authority <- result.try(unlock(parsed))
-  let time = now()
-  use #(signed, _) <- result.try(
-    sign(
-      authority,
-      where_,
-      connect,
-      fn(ledger) {
-        use #(certificate, key) <- result.try(mint(authority, request))
-        use pin <- result.try(pin_of(certificate))
-        use entry <- result.map(ledger_operator.enroll(
-          ledger,
-          request,
-          pin,
-          time,
-        ))
-        Decision(entry:, extra: #(certificate, key))
-      },
-      fn(signed, issued) {
-        write_bundle(
-          bundle_path,
-          authority,
-          signed,
-          request,
-          issued.0,
-          issued.1,
-        )
-        |> or_bundle_not_written(name, "enrolled", signed)
-      },
-    ),
-  )
+  use signed <- result.try(enroll_member(
+    authority,
+    request,
+    where_,
+    connect,
+    bundle_path,
+  ))
   Ok(string.join(
     list.flatten([
       [
@@ -860,6 +862,154 @@ fn enroll(parsed: Parsed, connect: Connect) -> Result(String, String) {
     ]),
     "\n",
   ))
+}
+
+/// The signing body of `enroll`, apart from its words: mints a certificate
+/// under `authority` for `request`, signs the member entry against the ledger
+/// as the daemon at `where_` has it, appends it to the operator's copy, writes
+/// the bundle to `bundle_path` and hands the entry to the daemon. The request
+/// must have passed `ledger_operator.check_enrollment`. A bundle that cannot be
+/// written leaves the entry in the copy, and the error says so.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_cli.enroll_member(authority, request, where_, connect, "out/vm.loombundle")
+/// ```
+pub fn enroll_member(
+  authority: Authority,
+  request: Enrollment,
+  where_: admin.Where,
+  connect: Connect,
+  bundle_path: String,
+) -> Result(Signed, String) {
+  let time = now()
+  sign(
+    authority,
+    where_,
+    connect,
+    fn(ledger) {
+      use #(certificate, key) <- result.try(mint(authority, request))
+      use pin <- result.try(pin_of(certificate))
+      use entry <- result.map(ledger_operator.enroll(ledger, request, pin, time))
+      Decision(entry:, extra: #(certificate, key))
+    },
+    fn(signed, issued) {
+      write_bundle(bundle_path, authority, signed, request, issued.0, issued.1)
+      |> or_bundle_not_written(request.name, "enrolled", signed)
+    },
+  )
+  |> result.map(fn(done) { done.0 })
+}
+
+/// How a revoke is judged before it is signed.
+pub type Check {
+  /// The link graph, the sessions the member owns or has placed on it, and the
+  /// directory's voters are checked, and any of them refuses.
+  Checked
+
+  /// Nothing is checked: the operator said `--force`.
+  Forced
+}
+
+/// The signing body of `revoke`: signs the revoke of `name` under `authority`
+/// against the ledger as the daemon at `where_` has it. Under `Checked` it
+/// refuses what `checked_revoke` refuses, before anything is signed. The
+/// string is the sentence that says what was checked.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_cli.revoke_member(authority, "vm2", "", Checked, where_, connect)
+/// ```
+pub fn revoke_member(
+  authority: Authority,
+  name: String,
+  reason: String,
+  check: Check,
+  where_: admin.Where,
+  connect: Connect,
+) -> Result(#(Signed, String), String) {
+  let time = now()
+  let daemon = connect(where_)
+  sign(
+    authority,
+    where_,
+    connect,
+    fn(ledger) {
+      use entry <- result.try(ledger_operator.revoke(ledger, name, reason, time))
+      use after <- result.try(
+        membership_ledger.check(ledger, entry)
+        |> result.map_error(ledger_operator.describe),
+      )
+
+      // Check revocation safety unless forced.
+      use checked <- result.map(case check {
+        Forced -> Ok(unchecked_text(name))
+        Checked -> checked_revoke(ledger, after, name, daemon)
+      })
+
+      Decision(entry:, extra: checked)
+    },
+    fn(_, _) { Ok(Nil) },
+  )
+}
+
+/// The daemon at `where_` took the entry, or why it did not. A signed entry
+/// that no daemon took is in the operator's copy only, and the error names the
+/// file and the command that carries it to a member.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_cli.delivered(signed) // -> Ok("the daemon on this host")
+/// ```
+pub fn delivered(signed: Signed) -> Result(String, String) {
+  case signed.delivery {
+    Delivered(where_:, ..) -> Ok(where_)
+    Offline(reason:) ->
+      Error(
+        "no daemon took entry "
+        <> int.to_string(signed.entry.entry.seq)
+        <> " ("
+        <> reason
+        <> "). It is in the operator's copy of the ledger, "
+        <> membership_store.path(signed.store)
+        <> "; run `loom distribution import FILE` on a member's machine.",
+      )
+  }
+}
+
+/// Whether the operator's copy of the ledger already records `name` as
+/// revoked. A revoke of such a member is refused by the fold, so a caller that
+/// only wants the member gone treats it as done. A copy that cannot be read
+/// says nothing, and the answer is `False`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_cli.is_revoked(authority, "vm2")
+/// ```
+pub fn is_revoked(authority: Authority, name: String) -> Bool {
+  let path = authority.directory <> "/" <> authority_key.ledger_file
+
+  // An unreadable copy is no evidence of a revocation.
+  case membership_store.open(path, authority.verifier) {
+    Ok(opened) ->
+      membership_ledger.enrollment(opened.ledger, name)
+      == membership_ledger.Revoked
+    Error(_) -> False
+  }
+}
+
+/// The sequence number of the signed entry.
+pub fn entry_seq(signed: Signed) -> Int {
+  signed.entry.entry.seq
+}
+
+/// The way the commands reach a daemon through its control socket.
+pub fn socket_connect() -> Connect {
+  socket_daemon
 }
 
 const distribution_provision_extension = ".loombundle"
@@ -1392,28 +1542,20 @@ fn revoke(parsed: Parsed, connect: Connect) -> Result(String, String) {
   use wait <- result.try(wait_ms(parsed))
   use authority <- result.try(unlock(parsed))
   let reason = option.unwrap(value(parsed, "--reason"), "")
-  let time = now()
-  let daemon = connect(where_)
-  use #(signed, checked) <- result.try(sign(
+
+  // The flag is the operator's word that nothing need be checked.
+  let check = case has(parsed, "--force") {
+    True -> Forced
+    False -> Checked
+  }
+
+  use #(signed, checked) <- result.try(revoke_member(
     authority,
+    name,
+    reason,
+    check,
     where_,
     connect,
-    fn(ledger) {
-      use entry <- result.try(ledger_operator.revoke(ledger, name, reason, time))
-      use after <- result.try(
-        membership_ledger.check(ledger, entry)
-        |> result.map_error(ledger_operator.describe),
-      )
-
-      // Check revocation safety unless forced.
-      use checked <- result.map(case has(parsed, "--force") {
-        True -> Ok(unchecked_text(name))
-        False -> checked_revoke(ledger, after, name, daemon)
-      })
-
-      Decision(entry:, extra: checked)
-    },
-    fn(_, _) { Ok(Nil) },
   ))
   Ok(string.join(
     list.flatten([

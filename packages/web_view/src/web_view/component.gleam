@@ -3733,6 +3733,7 @@ fn opened_pieces(
       | turns.Commentary(..)
       | turns.Peer(..)
       | turns.Sibling(..)
+      | turns.Trigger(..)
       | turns.Missed(..)
       | turns.Decided(..) -> piece
     }
@@ -3770,6 +3771,7 @@ fn late_misses(
         | turns.Commentary(..)
         | turns.Peer(..)
         | turns.Sibling(..)
+        | turns.Trigger(..)
         | turns.Decided(..) -> False
       }
     })
@@ -5442,6 +5444,7 @@ fn peer_named(piece: turns.Piece, key: String) -> Result(String, Nil) {
       )
     turns.Peer(..)
     | turns.Sibling(..)
+    | turns.Trigger(..)
     | turns.Plain(..)
     | turns.Prompt(..)
     | turns.Work(..)
@@ -7107,6 +7110,7 @@ fn is_fold(piece: turns.Piece, fold: Int) -> Bool {
     | turns.Nudged(..)
     | turns.Peer(..)
     | turns.Sibling(..)
+    | turns.Trigger(..)
     | turns.Missed(..)
     | turns.Decided(..)
     | turns.Commentary(..) -> False
@@ -7887,6 +7891,7 @@ fn piece_rows(piece: turns.Piece) -> List(transcript.Row) {
     | turns.Commentary(..)
     | turns.Peer(..)
     | turns.Sibling(..)
+    | turns.Trigger(..)
     | turns.Missed(..)
     | turns.Decided(..) -> []
   }

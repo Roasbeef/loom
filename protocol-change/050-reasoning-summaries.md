@@ -260,3 +260,51 @@ three command-name tables, and the confidentiality rule in
 `docs/architecture/advisor.md`. The golden fixtures `cmd_block_summaries`,
 `event_snapshot_block_summaries`, `event_block_summary_block` and
 `event_block_summary_stream` pin the wire shapes.
+
+## Addendum, 2026-11-03: a summary is two or three sentences
+
+The decision above asks the summarizer for a headline of at most two
+sentences, caps its answer at 160 tokens and cuts the result to 320 bytes.
+In use, a fast `summarize` model asked for something that short often
+answers with three words, such as "Identified traversal bottlenecks". That
+names a topic and says nothing about what the block worked out, which is
+what a reader of a collapsed row needs. The owner, who reads sessions in
+the desktop client, the terminal and the web view, chose a longer label:
+two or three sentences, about sixty words, which keeps the closed row to
+about three lines in the desktop client.
+
+This addendum supersedes three figures in "The summarizer" and the `text`
+bound in "Event `block_summary`".
+
+- **The request** asks for two or three sentences, about sixty words, in
+  active voice and the present tense, saying what the text worked through
+  and what it concluded: the problem or question, the evidence or
+  approach, and the finding, decision or next step. It refuses a short
+  title, still forbids opening with a subject such as "The agent", and
+  still instructs the model not to follow instructions in the text.
+- **The output cap** is 256 tokens. Sixty words take roughly a hundred, so
+  a model that runs long finishes its last sentence.
+- **The text bound** is 512 bytes, for `block_summary.text` and for each
+  `block_summaries` row. Sixty words of English take about 360 bytes. The
+  cut is still at a word boundary with an ellipsis.
+- **Control characters.** The daemon now replaces every C0 control
+  character and DEL in the answer with a space before it collapses
+  whitespace, so no stored or pushed summary holds one. This is what keeps
+  the read inside its reply bound: JSON writes a control character as a
+  six-byte escape, and without one a 512-byte summary encodes to at most
+  1024 bytes. Thirty-two of them with their entry ids come to about 34 KiB,
+  inside the 64 KiB response bound.
+
+A client written to 050 as first published keeps working. Nothing in the
+shape of either frame changes, and a client that held a summary to 320
+bytes was told only that the server would not exceed it; a client that
+refuses a longer `text` must raise its bound to 512 bytes.
+
+The reference terminal wraps a summary to at most five rows beneath its
+header instead of three (`session_view/transcript_lines.summary_rows`),
+because sixty words take four or five rows in an 80-column terminal and a
+cut at three would drop the conclusion. The web view already clamped the
+summary preview at five lines.
+
+Summaries stored before this change keep their old length and are not
+rewritten.

@@ -4,8 +4,8 @@
 ////
 //// The frame's separately served policy forbids network access and storage.
 //// A message is trusted only when its source is this element's frame window,
-//// then `mermaid_rule` checks its revision and dimensions. No SVG or renderer
-//// error crosses that boundary. The default slot stays selectable under a
+//// then `mermaid_rule` checks its revision and dimensions. No SVG or exception object
+//// crosses that boundary; a bounded diagnostic is rendered only as text. The default slot stays selectable under a
 //// native source disclosure, and a failed render leaves it open.
 ////
 //// A frame is created only once the element comes within a viewport of the
@@ -262,7 +262,7 @@ fn reread(
         | rule.Rendering
         | rule.Shown(_)
         | rule.TooLarge
-        | rule.Unavailable -> effect.none()
+        | rule.Unavailable(_) -> effect.none()
       }
 
       // Empty and oversized source drop the iframe from the view, so the
@@ -271,7 +271,7 @@ fn reread(
       // deadline against the load.
       let frame = case diagram.phase {
         rule.Empty | rule.TooLarge -> Loading
-        rule.Waiting | rule.Rendering | rule.Shown(_) | rule.Unavailable ->
+        rule.Waiting | rule.Rendering | rule.Shown(_) | rule.Unavailable(_) ->
           model.frame
       }
 
@@ -444,7 +444,7 @@ fn view(model: Model) -> Element(Msg) {
     | rule.Waiting
     | rule.Rendering
     | rule.TooLarge
-    | rule.Unavailable -> #(
+    | rule.Unavailable(_) -> #(
       1,
       [
         attribute.class("mermaid-frame mermaid-pending"),
@@ -489,7 +489,7 @@ fn view(model: Model) -> Element(Msg) {
     | rule.Waiting
     | rule.Rendering
     | rule.TooLarge
-    | rule.Unavailable -> element.none()
+    | rule.Unavailable(_) -> element.none()
   }
 
   html.div([attribute.class(box_class)], [
@@ -507,7 +507,7 @@ fn view(model: Model) -> Element(Msg) {
       Near, rule.Waiting
       | Near, rule.Rendering
       | Near, rule.Shown(_)
-      | Near, rule.Unavailable
+      | Near, rule.Unavailable(_)
       ->
         element.element(
           "iframe",
@@ -521,6 +521,18 @@ fn view(model: Model) -> Element(Msg) {
           ],
           [],
         )
+    },
+    case model.diagram.phase {
+      rule.Unavailable(diagnostic) if diagnostic != "" ->
+        html.pre([attribute.class("mermaid-error"), attribute.role("status")], [
+          html.text(diagnostic),
+        ])
+      rule.Empty
+      | rule.Waiting
+      | rule.Rendering
+      | rule.Shown(_)
+      | rule.TooLarge
+      | rule.Unavailable(_) -> element.none()
     },
     html.details([attribute.class("mermaid-details"), disclosure], [
       html.summary([], [html.text("Mermaid source")]),
@@ -536,6 +548,6 @@ fn status(phase: rule.Phase) -> String {
     rule.Waiting | rule.Rendering -> "Rendering diagram…"
     rule.Shown(_) -> "Mermaid"
     rule.TooLarge -> "Diagram too large — showing source"
-    rule.Unavailable -> "Diagram unavailable — showing source"
+    rule.Unavailable(_) -> "Diagram unavailable — showing source"
   }
 }

@@ -380,6 +380,7 @@ fn fold_at(
         | turns.Nudged(..)
         | turns.Peer(..)
         | turns.Sibling(..)
+        | turns.Trigger(..)
         | turns.Missed(..)
         | turns.Decided(..) -> Error(Nil)
       }
@@ -403,6 +404,7 @@ fn reader_opened(page: component.Model(page_fixture.Wire)) -> Bool {
       | turns.Nudged(..)
       | turns.Peer(..)
       | turns.Sibling(..)
+      | turns.Trigger(..)
       | turns.Missed(..)
       | turns.Decided(..) -> False
     }
@@ -642,6 +644,7 @@ fn dividers(
       | turns.Nudged(..)
       | turns.Peer(..)
       | turns.Sibling(..)
+      | turns.Trigger(..)
       | turns.Missed(..)
       | turns.Decided(..) -> Error(Nil)
     }

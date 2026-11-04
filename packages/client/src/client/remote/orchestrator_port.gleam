@@ -1403,6 +1403,8 @@ fn answer(
   actor.continue(state)
 }
 
+// A project trigger is not among them: the daemon's own actor sends it over
+// a local endpoint, so a peer, and the relay, never reach it.
 // The five commands `client/peers` sends to a recipient. Everything else is
 // the recipient's own business or a read of its conversation: `Inbox`,
 // `History` and `Received` page what the session holds, `Link` and `Unlink`
@@ -1425,6 +1427,7 @@ fn served(command: peer_mail.Command) -> Bool {
     | peer_mail.Unlink(..)
     | peer_mail.Links(..)
     | peer_mail.Grants(..)
+    | peer_mail.Trigger(..)
     | peer_mail.Describe(..)
     | peer_mail.Activity(..)
     | peer_mail.Inbox(..)

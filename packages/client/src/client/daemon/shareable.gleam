@@ -50,6 +50,9 @@ import gleam/result
 import storage/access
 import storage/catalogue
 import storage/domain
+import telemetry/field
+import telemetry/level
+import telemetry/log
 import weft/poll
 
 /// How long the task waits for a running session to finish stopping, in
@@ -217,6 +220,13 @@ fn stopped(
       case isolated(registry, id) {
         Ok(Nil) -> Ok(Running)
         Error(Nil) -> {
+          // `make` has authenticated the daemon's owner by now, and the stop
+          // is the task's own, so the line says both.
+          log.info(log.erlang(threshold: level.Info), "daemon.session_stop", [
+            field.ident("principal", "owner"),
+            field.ident("session", id),
+            field.ident("via", "shareable"),
+          ])
           use _ <- result.try(
             manager.stop_session(registry, id)
             |> result.replace_error(NotStopped),

@@ -62,6 +62,21 @@ pub type Live {
   Live
 }
 
+/// Where the distribution listener binds. Both parts are optional, and `None`
+/// leaves the VM's own default: a free port on every interface.
+///
+/// The foreign code applies each part as the matching kernel parameter,
+/// `inet_dist_listen_min` with `inet_dist_listen_max` for the port and
+/// `inet_dist_use_interface` for the address, before it starts `net_kernel`.
+pub type Listen {
+  Listen(
+    /// The one port the listener may take.
+    port: Option(Int),
+    /// The one IPv4 address the listener binds, as its four octets.
+    interface: Option(#(Int, Int, Int, Int)),
+  )
+}
+
 /// How this node connects to one peer.
 pub type Link {
   /// A visible connection, made between two directory members.
@@ -158,14 +173,14 @@ pub fn validate_live(
 /// ## Examples
 ///
 /// ```gleam
-/// ffi_distribution.start(local, peers, files, option.None, option.None)
+/// ffi_distribution.start(local, peers, files, Listen(option.None, option.None), option.None)
 /// ```
 @external(erlang, "client_distribution_ffi", "start")
 pub fn start(
   local: String,
   peers: List(#(String, BitArray)),
   files: files,
-  listen_port: Option(Int),
+  listen: Listen,
   members: Option(List(String)),
 ) -> Result(Membership, Failure)
 
@@ -178,14 +193,14 @@ pub fn start(
 /// ## Examples
 ///
 /// ```gleam
-/// ffi_distribution.start_live(local, Live, files, option.None, option.None)
+/// ffi_distribution.start_live(local, Live, files, Listen(option.None, option.None), option.None)
 /// ```
 @external(erlang, "client_distribution_ffi", "start")
 pub fn start_live(
   local: String,
   trust: Live,
   files: files,
-  listen_port: Option(Int),
+  listen: Listen,
   members: Option(List(String)),
 ) -> Result(Membership, Failure)
 

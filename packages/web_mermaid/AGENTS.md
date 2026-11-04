@@ -12,8 +12,8 @@ separate `mermaid.js` asset. The session page's bundle never imports it.
 
 The frame and its HTTP sandbox/CSP are unchanged from
 [protocol-change/091](../../protocol-change/091-isolated-mermaid-diagrams.md).
-Moving the controller into Gleam changes implementation ownership, not the
-parent wire contract or which browser privileges the frame receives.
+The failure-diagnostic addendum extends the parent reply with bounded plain
+text without changing the frame's browser privileges.
 
 ## Key types
 
@@ -45,7 +45,7 @@ view into `#controller`, separate from the vendor-owned `#diagram` subtree.
 Controller updates never reconcile vendor SVG. Tests import the pure controller
 only; lint R20 forbids reaching Lustre or `web_mermaid/internal` transitively.
 
-The npm dependency graph stays in `packages/web_client/mermaid`. Its bootstrap
+The npm dependency graph stays in `packages/web_mermaid/bundle`. Its bootstrap
 imports this program's compiled entrypoint and injects Mermaid, so no npm
 resolution or vendor import is hidden in the FFI. All sources and both Gleam
 manifests/locks are included in the renderer's offline asset digest gate.
@@ -54,9 +54,11 @@ manifests/locks are included in the renderer's offline asset digest gate.
 
 The document installs its listener before sending `controller.Ready`. Only messages
 whose source is the actual parent window are decoded. Input is a JSON string
-with source, theme and revision; replies are JSON strings containing only fixed
-status words, revision and bounded height. No SVG, vendor diagnostics, callback
-or renderer configuration crosses to the parent.
+with source, theme and revision; replies are JSON strings containing status,
+revision, bounded height and an optional failure diagnostic. Only a string
+exception message crosses, truncated by `reply_json` to 2,000 Unicode code
+points. SVG, stacks, exception objects, callbacks and renderer configuration
+never cross. The parent independently bounds and renders diagnostics as text.
 
 The pure update returns ordered effects. `web_mermaid.perform` executes those
 in one Lustre effect, preserving Clear/Begin/reply order. Vendor completion
