@@ -120,7 +120,7 @@ pub type Header {
 /// assert !state_object.is_object_id("HEAD")
 /// ```
 pub fn is_object_id(text: String) -> Bool {
-  let length = bounded_length(text)
+  let length = string.byte_size(text)
   { length == 40 || length == 64 } && is_lower_hex(text)
 }
 
@@ -132,18 +132,13 @@ pub fn is_object_id(text: String) -> Bool {
 /// assert !state_object.is_hash("../etc/passwd")
 /// ```
 pub fn is_hash(text: String) -> Bool {
-  bounded_length(text) == 64 && is_lower_hex(text)
-}
-
-/// The length of the text, or 65 when it is longer. Text from a peer is
-/// measured by its first 65 characters, so a long one costs no more than a
-/// short one.
-fn bounded_length(text: String) -> Int {
-  string.length(string.slice(text, 0, 65))
+  string.byte_size(text) == 64 && is_lower_hex(text)
 }
 
 /// Whether every character is a lower-case hexadecimal digit. The empty text
-/// passes, so callers check the length as well.
+/// passes, so callers check the length first. Hex digits are ASCII, so a length
+/// in bytes is a length in characters for any text that passes, and measuring
+/// bytes costs nothing however long a peer's text is.
 fn is_lower_hex(text: String) -> Bool {
   list.all(string.to_graphemes(text), fn(grapheme) {
     string.contains("0123456789abcdef", grapheme)
@@ -398,18 +393,25 @@ const header_limit = 16_384
 pub fn parse_header(bytes: BitArray) -> Result(Header, String) {
   use lines <- result.try(header_lines(header_prefix(bytes), [], []))
 
-  // The signature line names a bundle version that carries these entries.
-  case lines {
-    ["# v2 git bundle", ..rest] | ["# v3 git bundle", ..rest] ->
-      list.try_fold(rest, Header([], []), header_entry)
-      |> result.map(fn(header) {
-        Header(
-          prerequisites: list.reverse(header.prerequisites),
-          refs: list.reverse(header.refs),
-        )
-      })
-    _ -> Error("the file is not a Git bundle")
-  }
+  // The first line is the signature, which names a bundle version that carries
+  // the entries after it.
+  use #(signature, entries) <- result.try(case lines {
+    [first, ..rest] -> Ok(#(first, rest))
+    [] -> Error("the file is not a Git bundle")
+  })
+
+  use <- bool.guard(
+    when: signature != <<"# v2 git bundle":utf8>>
+      && signature != <<"# v3 git bundle":utf8>>,
+    return: Error("the file is not a Git bundle"),
+  )
+  list.try_fold(entries, Header([], []), header_entry)
+  |> result.map(fn(header) {
+    Header(
+      prerequisites: list.reverse(header.prerequisites),
+      refs: list.reverse(header.refs),
+    )
+  })
 }
 
 /// The part of the file a header can be in. A file shorter than the limit is
@@ -421,52 +423,83 @@ fn header_prefix(bytes: BitArray) -> BitArray {
   }
 }
 
-/// Splits the prefix into ASCII lines and stops at the empty line. A byte
-/// outside ASCII, or a prefix that ends first, means no header was found.
+/// Splits the prefix into lines on the byte 10 and stops at the empty line. The
+/// lines stay bytes: Git writes a prerequisite as the commit's id and its
+/// subject, and a subject is whatever UTF-8 the author wrote. A prefix that ends
+/// before the empty line means no header was found.
 fn header_lines(
   bytes: BitArray,
-  line: List(UtfCodepoint),
-  lines: List(String),
-) -> Result(List(String), String) {
+  line: List(Int),
+  lines: List(BitArray),
+) -> Result(List(BitArray), String) {
   case bytes {
     <<10, rest:bits>> ->
       case line {
         [] -> Ok(list.reverse(lines))
-        _ ->
-          header_lines(rest, [], [
-            string.from_utf_codepoints(list.reverse(line)),
-            ..lines
-          ])
+        _ -> header_lines(rest, [], [bytes_of(line), ..lines])
       }
-    <<byte, rest:bits>> if byte < 128 ->
-      case string.utf_codepoint(byte) {
-        Ok(point) -> header_lines(rest, [point, ..line], lines)
-        Error(Nil) -> Error("the bundle header is malformed")
-      }
+    <<byte, rest:bits>> -> header_lines(rest, [byte, ..line], lines)
     _ -> Error("the bundle header is truncated or malformed")
   }
 }
 
+/// The bytes of a line, from the list that `header_lines` and `before_space`
+/// collect them in, last byte first.
+fn bytes_of(reversed: List(Int)) -> BitArray {
+  list.fold(list.reverse(reversed), <<>>, fn(bytes, byte) {
+    <<bytes:bits, byte>>
+  })
+}
+
 /// Adds one header line after the signature to the accumulator, which holds
 /// each list in reverse. `parse_header` turns them around once.
-fn header_entry(header: Header, line: String) -> Result(Header, String) {
+fn header_entry(header: Header, line: BitArray) -> Result(Header, String) {
   case line {
+    <<45, rest:bytes>> -> prerequisite_entry(header, rest)
+    _ -> text_entry(header, line)
+  }
+}
+
+/// Adds a capability or ref line, which must be text.
+fn text_entry(header: Header, line: BitArray) -> Result(Header, String) {
+  use text <- result.try(
+    bit_array.to_string(line)
+    |> result.replace_error("a bundle ref line is malformed"),
+  )
+
+  // A capability is accepted only for the object format, which names the id
+  // length. Anything else that is not a prerequisite is a ref.
+  case text {
     "@object-format=" <> _ -> Ok(header)
     "@" <> _ -> Error("the bundle uses a capability apply does not accept")
-    "-" <> rest -> prerequisite_entry(header, rest)
     ref -> ref_entry(header, ref)
   }
 }
 
-/// Adds a prerequisite line, which is an object id and an optional comment.
-fn prerequisite_entry(header: Header, rest: String) -> Result(Header, String) {
-  let #(oid, _comment) =
-    string.split_once(rest, " ") |> result.unwrap(#(rest, ""))
+/// Adds a prerequisite line, which is an object id and an optional comment. Only
+/// the id is read. The comment is the base commit's subject, in any encoding.
+fn prerequisite_entry(
+  header: Header,
+  rest: BitArray,
+) -> Result(Header, String) {
+  use oid <- result.try(
+    bit_array.to_string(before_space(rest, []))
+    |> result.replace_error("a bundle prerequisite is not an object id"),
+  )
   use <- bool.guard(
     when: !is_object_id(oid),
     return: Error("a bundle prerequisite is not an object id"),
   )
   Ok(Header(..header, prerequisites: [oid, ..header.prerequisites]))
+}
+
+/// The bytes before the first space, or all of them when there is none.
+fn before_space(bytes: BitArray, taken: List(Int)) -> BitArray {
+  case bytes {
+    <<32, _:bytes>> | <<>> -> bytes_of(taken)
+    <<byte, rest:bytes>> -> before_space(rest, [byte, ..taken])
+    _ -> bytes_of(taken)
+  }
 }
 
 /// Adds a ref line, which is an object id and a ref name.

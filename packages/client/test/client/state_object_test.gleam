@@ -173,6 +173,42 @@ pub fn a_version_three_header_may_name_the_object_format_only_test() {
     == Error("the bundle uses a capability apply does not accept")
 }
 
+pub fn a_prerequisite_may_carry_a_subject_in_any_bytes_test() {
+  // The bundle writer puts the base commit's subject after its id, as the
+  // author wrote it.
+  let subject = "Fix \u{2014} the \u{e9} thing \u{1f600}"
+  let utf8 =
+    bit_array.from_string(
+      "# v2 git bundle\n-"
+      <> base
+      <> " "
+      <> subject
+      <> "\n"
+      <> tip
+      <> " "
+      <> state_object.bundle_ref
+      <> "\n\nPACK",
+    )
+  let assert Ok(header) = state_object.parse_header(utf8)
+  assert header.prerequisites == [base]
+  assert header.refs == [#(tip, state_object.bundle_ref)]
+
+  // A subject in an encoding that is not UTF-8 is still only a comment.
+  let latin1 = <<
+    "# v2 git bundle\n-":utf8,
+    base:utf8,
+    " caf":utf8,
+    233,
+    "\n":utf8,
+    tip:utf8,
+    " ":utf8,
+    state_object.bundle_ref:utf8,
+    "\n\nPACK":utf8,
+  >>
+  let assert Ok(header) = state_object.parse_header(latin1)
+  assert header.prerequisites == [base]
+}
+
 pub fn headers_that_are_not_bundles_are_refused_test() {
   assert state_object.parse_header(<<>>)
     == Error("the bundle header is truncated or malformed")
@@ -185,9 +221,15 @@ pub fn headers_that_are_not_bundles_are_refused_test() {
   assert state_object.parse_header(<<"# v2 git bundle\n":utf8>>)
     == Error("the bundle header is truncated or malformed")
 
-  // Bytes outside ASCII inside the header are not a header.
-  assert state_object.parse_header(<<"# v2 git bundle\n", 200, "\n\n">>)
-    == Error("the bundle header is truncated or malformed")
+  // A ref line must be text, so bytes that are not UTF-8 on one are refused.
+  assert state_object.parse_header(<<
+      "# v2 git bundle\n":utf8,
+      tip:utf8,
+      " refs/x":utf8,
+      200,
+      "\n\n":utf8,
+    >>)
+    == Error("a bundle ref line is malformed")
   assert state_object.parse_header(bit_array.from_string(
       "# v2 git bundle\n-nothex x\n\n",
     ))

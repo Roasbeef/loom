@@ -17,10 +17,23 @@ import support/worktree_rig
 
 const unknown = "0123456789abcdef0123456789abcdef01234567"
 
+// The base commit's subject goes into the bundle header after its id, in the
+// raw UTF-8 the author wrote, so the thin tests use one that is not ASCII.
+const subject = "Fix \u{2014} the \u{e9} thing"
+
 fn header_of(path: String) -> state_object.Header {
   let assert Ok(bytes) = simplifile.read_bits(path)
   let assert Ok(header) = state_object.parse_header(bytes)
   header
+}
+
+// Whether the needle appears in the bytes at or after the offset.
+fn contains_bytes(bytes: BitArray, needle: BitArray, from: Int) -> Bool {
+  case bit_array.slice(bytes, from, bit_array.byte_size(needle)) {
+    Ok(window) if window == needle -> True
+    Ok(_) -> contains_bytes(bytes, needle, from + 1)
+    Error(Nil) -> False
+  }
 }
 
 fn size_of(path: String) -> Int {
@@ -78,7 +91,7 @@ pub fn candidates_are_limited_and_end_with_the_upstream_merge_base_test() {
 pub fn a_thin_bundle_carries_only_what_the_receiver_lacks_test() {
   let rig = state_rig.rig("thin")
   let c1 = worktree_rig.git(rig.root, ["rev-parse", "HEAD"])
-  let c2 = state_rig.commit_file(rig.root, "big.txt", incompressible(), "big")
+  let c2 = state_rig.commit_file(rig.root, "big.txt", incompressible(), subject)
   let receiver = state_rig.clone(rig, "receiver")
   let c3 = state_rig.commit_file(rig.root, "README", "three\n", "third")
 
@@ -106,11 +119,18 @@ pub fn a_thin_bundle_carries_only_what_the_receiver_lacks_test() {
 
   // The headers say the same thing the capture does.
   let thin_header = header_of(thin.bundle)
+
+  // The subject really is in the header in bytes outside ASCII, so the parse
+  // above read past it. The commit runner hands Git the text as Latin-1, so
+  // the dash arrives as the UTF-8 of three Latin-1 characters, which starts
+  // with the byte 195.
+  let assert Ok(thin_bytes) = simplifile.read_bits(thin.bundle)
+  let assert Ok(prefix) = bit_array.slice(thin_bytes, 0, 300)
+  assert contains_bytes(prefix, <<195>>, 0)
   assert list.contains(thin_header.prerequisites, c2)
   assert thin_header.refs == [#(thin.commit, state_object.bundle_ref)]
   assert header_of(full.bundle).prerequisites == []
   let thin_state = state_rig.state_of(thin)
-  let assert Ok(thin_bytes) = simplifile.read_bits(thin.bundle)
   assert state_object.verify_bundle(thin_state, thin_bytes) == Ok(Nil)
 
   // The verified child holds the working bytes, untracked files included.
@@ -134,7 +154,8 @@ pub fn a_thin_bundle_carries_only_what_the_receiver_lacks_test() {
 
 pub fn uncommitted_work_thin_against_head_ships_one_commit_test() {
   let rig = state_rig.rig("thin-head")
-  let _big = state_rig.commit_file(rig.root, "big.txt", incompressible(), "big")
+  let _big =
+    state_rig.commit_file(rig.root, "big.txt", incompressible(), subject)
   let head = worktree_rig.git(rig.root, ["rev-parse", "HEAD"])
   worktree_rig.write(rig.root <> "/README", "dirty\n")
 
