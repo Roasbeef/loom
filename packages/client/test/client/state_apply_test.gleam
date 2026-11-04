@@ -731,3 +731,262 @@ pub fn an_existing_ref_or_branch_is_never_moved_test() {
   assert simplifile.is_directory(destination(rig, 1)) == Ok(False)
   state_rig.stop(rig)
 }
+
+// --- Reset: the tree an executor's scope already has ------------------------
+
+// The linked worktree an executor builds for a scope before anything is applied:
+// made by the operator's own Git, on `loom/<session>`, at the receiver's head.
+fn scope_tree(scenario: Scenario, session: Int) -> String {
+  let tree = destination(scenario.rig, session)
+  let branch = "loom/" <> worktree_rig.session(session)
+  let _ =
+    worktree_rig.git(scenario.receiver, [
+      "worktree", "add", "--quiet", "-b", branch, tree, "HEAD",
+    ])
+  tree
+}
+
+fn reset(scenario: Scenario, session: Int) -> state_apply.Placement {
+  state_apply.Reset(
+    repository: scenario.receiver,
+    worktree: destination(scenario.rig, session),
+    session: worktree_rig.session(session),
+  )
+}
+
+fn apply_reset(
+  scenario: Scenario,
+  session: Int,
+) -> Result(state_apply.Applied, String) {
+  state_apply.apply(
+    scenario.rig.git,
+    scenario.bundle,
+    scenario.state,
+    reset(scenario, session),
+  )
+}
+
+pub fn an_existing_scope_tree_is_moved_onto_the_state_test() {
+  let scenario = scenario("reset")
+  let rig = scenario.rig
+  let tree = scope_tree(scenario, 1)
+  let session = worktree_rig.session(1)
+  let before = state_rig.refs(scenario.receiver)
+  let head_before = worktree_rig.git(scenario.receiver, ["rev-parse", "HEAD"])
+  let index_before = index_of(scenario.receiver)
+
+  let assert Ok(applied) = apply_reset(scenario, 1)
+  assert applied.tip == scenario.state.tip
+  assert applied.destination == tree
+  assert applied.branch == "loom/" <> session
+  assert applied.ref == state_object.incoming_ref(scenario.state.hash)
+
+  // The dirty snapshot is checked out as committed content, untracked files
+  // included, on the scope's own branch.
+  assert simplifile.read(tree <> "/README") == Ok("dirty\n")
+  assert simplifile.read(tree <> "/notes/new.txt") == Ok("untracked\n")
+  assert simplifile.read(tree <> "/notes/deep/more.txt") == Ok("deeper\n")
+  assert worktree_rig.git(tree, ["rev-parse", "--abbrev-ref", "HEAD"])
+    == "loom/" <> session
+  assert worktree_rig.git(tree, ["rev-parse", "HEAD"]) == scenario.state.tip
+  assert worktree_rig.git(tree, ["status", "--porcelain"]) == ""
+
+  // The branch moved and the incoming ref is new. Nothing else changed, and the
+  // receiver's own checkout is as it was.
+  let changed =
+    list.filter(string.split(state_rig.refs(scenario.receiver), "\n"), fn(line) {
+      !list.contains(string.split(before, "\n"), line)
+    })
+  assert list.sort(changed, string.compare)
+    == [
+      "refs/heads/loom/" <> session <> " " <> scenario.state.tip,
+      "refs/loom/in/"
+        <> state_object.short(scenario.state.hash)
+        <> " "
+        <> scenario.state.tip,
+    ]
+  assert worktree_rig.git(scenario.receiver, ["rev-parse", "HEAD"])
+    == head_before
+  assert index_of(scenario.receiver) == index_before
+  assert worktree_rig.git(scenario.receiver, ["status", "--porcelain"]) == ""
+  state_rig.stop(rig)
+}
+
+pub fn applying_into_the_same_tree_twice_changes_nothing_test() {
+  let scenario = scenario("reset-twice")
+  let rig = scenario.rig
+  let tree = scope_tree(scenario, 1)
+  let assert Ok(first) = apply_reset(scenario, 1)
+  let refs = state_rig.refs(scenario.receiver)
+
+  // A repeat finds the tip in the tree.
+  assert apply_reset(scenario, 1) == Ok(first)
+  assert state_rig.refs(scenario.receiver) == refs
+
+  // The session has since committed on top and left an edit. A repeat that
+  // arrives late must leave both alone.
+  let child = state_rig.commit_file(tree, "child.txt", "child\n", "child work")
+  worktree_rig.write(tree <> "/README", "child edit\n")
+  assert apply_reset(scenario, 1) == Ok(first)
+  assert worktree_rig.git(tree, ["rev-parse", "HEAD"]) == child
+  assert simplifile.read(tree <> "/README") == Ok("child edit\n")
+  state_rig.stop(rig)
+}
+
+pub fn a_scope_tree_with_changes_is_not_overwritten_test() {
+  let scenario = scenario("reset-dirty")
+  let rig = scenario.rig
+  let tree = scope_tree(scenario, 1)
+  let head = worktree_rig.git(tree, ["rev-parse", "HEAD"])
+
+  // An untracked file is a change as much as an edit is.
+  worktree_rig.write(tree <> "/mine.txt", "not yours to replace\n")
+  let assert Error(reason) = apply_reset(scenario, 1)
+  assert string.contains(reason, "holds changes")
+  assert worktree_rig.git(tree, ["rev-parse", "HEAD"]) == head
+  assert simplifile.read(tree <> "/mine.txt") == Ok("not yours to replace\n")
+
+  // The objects and the incoming ref are in, which a later apply reuses, and no
+  // branch moved.
+  assert worktree_rig.git(scenario.receiver, [
+      "rev-parse",
+      "loom/" <> worktree_rig.session(1),
+    ])
+    == head
+  state_rig.stop(rig)
+}
+
+pub fn a_tree_that_is_not_the_sessions_linked_worktree_is_refused_test() {
+  let scenario = scenario("reset-wrong-tree")
+  let rig = scenario.rig
+
+  // A tree on another session's branch.
+  let _ = scope_tree(scenario, 2)
+  let wrong =
+    state_apply.Reset(
+      repository: scenario.receiver,
+      worktree: destination(rig, 2),
+      session: worktree_rig.session(1),
+    )
+  let assert Error(reason) =
+    state_apply.apply(rig.git, scenario.bundle, scenario.state, wrong)
+  assert string.contains(reason, "not the linked worktree")
+
+  // A directory that is not a worktree at all, and one that does not exist.
+  let plain = rig.scratch <> "/plain"
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(plain)
+  let assert Ok(plain) = bootstrap.canonical_directory(plain)
+  let plain_reset =
+    state_apply.Reset(
+      repository: scenario.receiver,
+      worktree: plain,
+      session: worktree_rig.session(1),
+    )
+  let assert Error(_) =
+    state_apply.apply(rig.git, scenario.bundle, scenario.state, plain_reset)
+  let assert Error(_) = apply_reset(scenario, 3)
+
+  // A worktree of another repository, on the right branch.
+  let other = worktree_rig.repository(rig.scratch <> "/other")
+  let strange = rig.state <> "/worktrees/receiver/strange"
+  let _ =
+    worktree_rig.git(other, [
+      "worktree",
+      "add",
+      "--quiet",
+      "-b",
+      "loom/" <> worktree_rig.session(1),
+      strange,
+      "HEAD",
+    ])
+  let foreign =
+    state_apply.Reset(
+      repository: scenario.receiver,
+      worktree: strange,
+      session: worktree_rig.session(1),
+    )
+  let assert Error(_) =
+    state_apply.apply(rig.git, scenario.bundle, scenario.state, foreign)
+
+  // None of the refusals made the import: the state's incoming ref is absent.
+  assert string.contains(state_rig.refs(scenario.receiver), "refs/loom/in/")
+    == False
+  state_rig.stop(rig)
+}
+
+pub fn a_tree_whose_dot_git_is_a_link_is_refused_test() {
+  let scenario = scenario("reset-dotgit-link")
+  let rig = scenario.rig
+  let tree = scope_tree(scenario, 1)
+  let before = state_rig.refs(scenario.receiver)
+
+  // The tree's `.git` file is replaced by a link to the real one, which still
+  // reads as a worktree to Git but is not the plain file the grant is made on.
+  let real = rig.scratch <> "/real-dot-git"
+  let assert Ok(Nil) = simplifile.rename(tree <> "/.git", real)
+  let assert Ok(Nil) = simplifile.create_symlink(real, tree <> "/.git")
+  let assert Error(reason) = apply_reset(scenario, 1)
+  assert string.contains(reason, "plain .git file")
+  assert state_rig.refs(scenario.receiver) == before
+  state_rig.stop(rig)
+}
+
+pub fn hostile_configuration_cannot_change_a_reset_test() {
+  let scenario = scenario("reset-hostile")
+  let rig = scenario.rig
+  let repository = scenario.receiver
+  let tree = scope_tree(scenario, 1)
+  let hooks = repository <> "/.git/hooks"
+  let canary = fn(name: String) { repository <> "/.git/" <> name }
+
+  // The hook the checkout would run and a program for core.fsmonitor, each of
+  // which writes a canary into the one place the sandbox lets Git write.
+  worktree_rig.write(
+    hooks <> "/post-checkout",
+    "#!/bin/sh\nprintf ran > '" <> canary("hook-ran") <> "'\nexit 0\n",
+  )
+  let assert Ok(Nil) =
+    simplifile.set_permissions_octal(hooks <> "/post-checkout", 0o755)
+  let fsmonitor = repository <> "/.git/fsmonitor-program"
+  worktree_rig.write(
+    fsmonitor,
+    "#!/bin/sh\nprintf ran > '" <> canary("fsmonitor-ran") <> "'\nexit 0\n",
+  )
+  let assert Ok(Nil) = simplifile.set_permissions_octal(fsmonitor, 0o755)
+  let _ = worktree_rig.git(repository, ["config", "core.hooksPath", hooks])
+  let _ = worktree_rig.git(repository, ["config", "core.fsmonitor", fsmonitor])
+
+  // Controls: ordinary Git run by the operator in the same tree starts both, so
+  // a missing canary below is the apply's doing. The helper turns hooks off, so
+  // the control turns them on again.
+  let _ =
+    worktree_rig.git(tree, [
+      "-c",
+      "core.hooksPath=" <> hooks,
+      "checkout",
+      "--quiet",
+      "-b",
+      "control",
+      "HEAD",
+    ])
+  assert simplifile.is_file(canary("hook-ran")) == Ok(True)
+  let _ = worktree_rig.git(tree, ["status", "--porcelain"])
+  assert simplifile.is_file(canary("fsmonitor-ran")) == Ok(True)
+  list.each(["hook-ran", "fsmonitor-ran"], fn(name) {
+    let assert Ok(Nil) = simplifile.delete(canary(name))
+  })
+  let _ =
+    worktree_rig.git(tree, [
+      "checkout",
+      "--quiet",
+      "loom/" <> worktree_rig.session(1),
+    ])
+  let _ = simplifile.delete(canary("fsmonitor-ran"))
+
+  let assert Ok(applied) = apply_reset(scenario, 1)
+  assert worktree_rig.git(applied.destination, ["rev-parse", "HEAD"])
+    == scenario.state.tip
+  assert simplifile.is_file(canary("hook-ran")) == Ok(False)
+  assert simplifile.is_file(canary("fsmonitor-ran")) == Ok(False)
+  state_rig.stop(rig)
+}
