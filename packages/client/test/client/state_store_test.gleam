@@ -24,6 +24,10 @@ fn scratch(name: String) -> String {
     <> name
     <> "-"
     <> int.to_string(ffi_os.unique_positive_integer())
+
+  // The integer is unique within one run, not across runs, so an earlier run's
+  // directory of the same name is removed before this one uses it.
+  let _removed = simplifile.delete(directory)
   let assert Ok(Nil) = bootstrap.ensure_private_directory(directory)
   let assert Ok(canonical) = bootstrap.canonical_directory(directory)
   canonical
@@ -243,6 +247,31 @@ pub fn the_total_cap_refuses_what_does_not_fit_and_evicts_nothing_test() {
   assert state_store.usage(store) == Ok(held)
   let assert Ok(Some(_)) = state_store.get(store, one.hash)
   let assert Ok(Some(_)) = state_store.get(store, two.hash)
+}
+
+pub fn the_cap_counts_the_record_as_well_as_the_bundle_test() {
+  let #(store, root) =
+    open("record-cap", Limits(size_limit: 1000, total_cap: 1000, retain_s: 60))
+  let file = bundle(root, "rc.bundle", 900)
+
+  // The bundle alone would fit under 1000, and its record does not.
+  let assert Error(reason) =
+    state_store.put(store, file, tip:, base: None, dirty: Clean, now_s: now())
+  assert string.contains(reason, "and its record do not fit")
+  assert state_store.usage(store) == Ok(0)
+}
+
+pub fn a_size_limit_above_the_protocols_is_refused_test() {
+  let root = scratch("over-protocol")
+  assert result_of(state_store.open(
+      state_store.directory(root),
+      Limits(
+        size_limit: state_object.size_limit + 1,
+        total_cap: 2 * state_object.size_limit,
+        retain_s: 60,
+      ),
+    ))
+    == Error("the state store size limit exceeds the protocol's")
 }
 
 pub fn the_cap_counts_strays_so_they_cannot_widen_it_test() {

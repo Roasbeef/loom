@@ -59,7 +59,9 @@ import simplifile
 /// What a store admits and how long it keeps it.
 pub type Limits {
   Limits(
-    /// The largest bundle, in bytes.
+    /// The largest bundle, in bytes. It may not exceed
+    /// `state_object.size_limit`, which is what apply accepts, and `open`
+    /// refuses a larger one rather than store a state no receiver would apply.
     size_limit: Int,
     /// The most bytes the directory may hold in all, every file counted.
     total_cap: Int,
@@ -103,8 +105,8 @@ pub fn directory(state_root: String) -> String {
 }
 
 /// Opens the store at a directory, creating it private. The limits must allow
-/// at least one bundle of `size_limit` bytes and keep entries for a positive
-/// time.
+/// at least one bundle of `size_limit` bytes, keep entries for a positive time,
+/// and not set `size_limit` above the protocol's `state_object.size_limit`.
 ///
 /// ## Examples
 ///
@@ -117,6 +119,10 @@ pub fn open(directory: String, limits: Limits) -> Result(Store, String) {
       || limits.total_cap < limits.size_limit
       || limits.retain_s < 1,
     return: Error("the state store limits cannot hold a bundle"),
+  )
+  use <- bool.guard(
+    when: limits.size_limit > state_object.size_limit,
+    return: Error("the state store size limit exceeds the protocol's"),
   )
   use Nil <- result.try(bootstrap.ensure_private_directory(directory))
   Ok(Store(directory:, limits:))
@@ -179,32 +185,29 @@ fn admit(
   now_s: Int,
 ) -> Result(State, String) {
   let limits = store.limits
+  let record = bit_array.from_string(state_object.encode(state))
+  let needed = state.size + bit_array.byte_size(record)
   use _removed <- result.try(sweep(store, now_s))
   use held <- result.try(usage(store))
 
-  // The cap counts every file in the directory, so strays cannot widen it.
-  use <- bool.lazy_guard(
-    when: held + state.size > limits.total_cap,
-    return: fn() {
-      Error(
-        "the state store holds "
-        <> int.to_string(held)
-        <> " of its "
-        <> int.to_string(limits.total_cap)
-        <> " byte cap, so a bundle of "
-        <> int.to_string(state.size)
-        <> " bytes does not fit",
-      )
-    },
-  )
+  // The cap counts every file in the directory, so strays cannot widen it, and
+  // the entry's record as well as its bundle.
+  use <- bool.lazy_guard(when: held + needed > limits.total_cap, return: fn() {
+    Error(
+      "the state store holds "
+      <> int.to_string(held)
+      <> " of its "
+      <> int.to_string(limits.total_cap)
+      <> " byte cap, so a bundle of "
+      <> int.to_string(state.size)
+      <> " bytes and its record do not fit",
+    )
+  })
 
   // The record is the commit point. A crash before it leaves a bundle that no
   // record names, which `sweep` removes when it expires.
   use Nil <- result.try(write_atomic(bundle_path(store, state.hash), bytes))
-  use Nil <- result.map(write_atomic(
-    record_path(store, state.hash),
-    bit_array.from_string(state_object.encode(state)),
-  ))
+  use Nil <- result.map(write_atomic(record_path(store, state.hash), record))
   state
 }
 
