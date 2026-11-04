@@ -4996,7 +4996,7 @@ fn returned_report(
         report,
         "Its commits reached this machine and could not be applied yet: "
           <> bounded_reason(reason)
-          <> ". Ask again to retry.",
+          <> ". Ask again to retry, and ask from a tool call and not from a code-mode program: a program holds the workspace the apply has to wait for, so it would be refused every time.",
       )
   }
 }
