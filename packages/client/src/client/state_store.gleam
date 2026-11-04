@@ -29,9 +29,16 @@
 //// lock. One process owns a directory and serializes its calls, as the other
 //// stores under the state root are owned by one actor each.
 ////
+//// A state that arrives from a peer is written in pieces into
+//// `<hash>.part`, which `append_part` extends and `finish` turns into the
+//// bundle and its record once the bytes match the description. `read_piece`
+//// serves a held state back out in pieces. `client/state_transfer` decides what a
+//// piece means; this module only keeps the files.
+////
 //// ## Flow
 ////
-//// `open` → `put` → `get` → `sweep`
+//// `open` → `put` → `get` → `sweep`, and for a peer's pieces `append_part` →
+//// `finish` → `read_piece`
 ////
 //// 1. `open` creates the private directory and refuses limits that cannot hold
 ////    one bundle.
@@ -91,6 +98,18 @@ pub type Held {
     /// reads it later reads it through the sandbox and verifies it again.
     path: String,
   )
+}
+
+/// The limits a store was opened with, so a caller that judges a peer's claim
+/// can name the bound it is judged against.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // state_store.limits(store).size_limit
+/// ```
+pub fn limits(store: Store) -> Limits {
+  store.limits
 }
 
 /// The directory a node keeps its states in: `<state root>/states`.
@@ -354,6 +373,288 @@ pub fn usage(store: Store) -> Result(Int, String) {
   list.fold(files, 0, fn(total, file) { total + file.size })
 }
 
+// --- pieces that arrive from a peer ---------------------------------------------
+
+/// Why a staged write was not applied.
+pub type Staging {
+  /// The offered bytes or the claim about them are wrong, or they do not fit.
+  /// Sending the same bytes again cannot cure it.
+  Rejected(
+    /// What was found, in words fit for a log line and for the sender.
+    reason: String,
+  )
+
+  /// The directory could not be read or written. The peer did nothing wrong, and
+  /// the same piece may succeed later.
+  Faulted(
+    /// The filesystem's account of what failed.
+    reason: String,
+  )
+}
+
+/// How many bytes of a state's bundle the store holds in a half-written file,
+/// zero when it holds none. A state that is already complete answers zero as
+/// well, because its pieces are not wanted again and `get` is the question that
+/// finds it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // state_store.staged_bytes(store, hash) == Ok(0)
+/// ```
+pub fn staged_bytes(store: Store, hash: String) -> Result(Int, String) {
+  use <- bool.guard(
+    when: !state_object.is_hash(hash),
+    return: Error("not a state hash"),
+  )
+
+  // A missing file is no bytes held. Any other failure is not a count.
+  case simplifile.file_info(part_path(store, hash)) {
+    Ok(info) -> Ok(info.size)
+    Error(simplifile.Enoent) -> Ok(0)
+    Error(error) ->
+      Error(
+        "the staged bundle cannot be inspected: "
+        <> simplifile.describe_error(error),
+      )
+  }
+}
+
+/// Appends the next piece of a state's bundle to its half-written file.
+///
+/// The piece goes at the end of what is held, which the caller has already
+/// compared with the offset the peer named, so a piece can never leave a gap or
+/// overlap bytes that are there. The first piece of a state is also the
+/// admission: the description must be valid and its size within `size_limit`,
+/// and expired entries are swept before the cap is checked. Every piece is
+/// checked against `total_cap`, because the directory is shared by the
+/// transfers in flight and a transfer that began when there was room may not
+/// finish into a directory a later one filled. A piece that does not fit
+/// removes the half-written file, so its bytes do not hold the room that the
+/// refusal says is missing. A piece that would run past the declared size is
+/// refused. The answer is the bytes now held.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // state_store.append_part(store, state, bytes, now_s)
+/// ```
+pub fn append_part(
+  store: Store,
+  state: State,
+  bytes: BitArray,
+  now_s: Int,
+) -> Result(Int, Staging) {
+  let length = bit_array.byte_size(bytes)
+  use state <- result.try(
+    state_object.validate(state) |> result.map_error(Rejected),
+  )
+  use <- bool.lazy_guard(
+    when: state.size > store.limits.size_limit,
+    return: fn() {
+      Error(Rejected(
+        "the state is "
+        <> int.to_string(state.size)
+        <> " bytes, over the state size limit of "
+        <> int.to_string(store.limits.size_limit),
+      ))
+    },
+  )
+  use held <- result.try(
+    staged_bytes(store, state.hash) |> result.map_error(Faulted),
+  )
+  use <- bool.guard(
+    when: length < 1 || held + length > state.size,
+    return: Error(Rejected("the piece does not fit the declared size")),
+  )
+
+  // The first piece is the one that sweeps. Later pieces only count.
+  use _removed <- result.try(case held {
+    0 -> sweep(store, now_s) |> result.map_error(Faulted)
+    _ -> Ok(0)
+  })
+
+  use used <- result.try(usage(store) |> result.map_error(Faulted))
+  use <- bool.lazy_guard(
+    when: used + length > store.limits.total_cap,
+    return: fn() {
+      discard_part(store, state.hash)
+      Error(Rejected(
+        "the state store holds "
+        <> int.to_string(used)
+        <> " of its "
+        <> int.to_string(store.limits.total_cap)
+        <> " byte cap, so a piece of "
+        <> int.to_string(length)
+        <> " bytes does not fit",
+      ))
+    },
+  )
+
+  let part = part_path(store, state.hash)
+
+  // The first piece begins the file afresh, and every later one extends it.
+  let written = case held {
+    0 -> simplifile.write_bits(part, bytes)
+    _ -> simplifile.append_bits(part, bytes)
+  }
+
+  result.map(
+    result.map_error(written, fn(error) {
+      Faulted(
+        "the state store cannot write: " <> simplifile.describe_error(error),
+      )
+    }),
+    fn(_written) { held + length },
+  )
+}
+
+/// Makes a fully received bundle into a stored state, or refuses it.
+///
+/// The half-written file is read once, bounded by `size_limit`, and its size and
+/// SHA-256 are compared with the description. A mismatch removes the file and
+/// stores nothing, so a corrupted transfer cannot leave a state behind. When the
+/// bytes agree the file is renamed to the bundle's name and the record is
+/// written last, as `put` writes it, so a state exists exactly when its record
+/// does. The bundle's own header is not read here: apply compares it with the
+/// description before it touches a repository.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // state_store.finish(store, state)
+/// ```
+pub fn finish(store: Store, state: State) -> Result(State, Staging) {
+  let part = part_path(store, state.hash)
+  use bytes <- result.try(
+    bootstrap.read_bounded(part, store.limits.size_limit)
+    |> result.map_error(fn(reason) {
+      Faulted("the staged bundle cannot be read: " <> reason)
+    }),
+  )
+
+  // The check is the whole of the refusal. Nothing but a whole, matching bundle
+  // is ever named by a record.
+  use <- bool.lazy_guard(
+    when: state_object.hash_of(bytes) != state.hash
+      || bit_array.byte_size(bytes) != state.size,
+    return: fn() {
+      discard_part(store, state.hash)
+      Error(Rejected("the received bundle does not match its hash or its size"))
+    },
+  )
+  let record = bit_array.from_string(state_object.encode(state))
+  use Nil <- result.try(
+    simplifile.rename(part, bundle_path(store, state.hash))
+    |> result.map_error(fn(error) {
+      Faulted(
+        "the state store cannot place the bundle: "
+        <> simplifile.describe_error(error),
+      )
+    }),
+  )
+  write_atomic(record_path(store, state.hash), record)
+  |> result.map_error(Faulted)
+  |> result.replace(state)
+}
+
+/// Removes a state's half-written file. A file that is not there is not an
+/// error, and a file that cannot be removed is left for the sweep.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // state_store.discard_part(store, hash)
+/// ```
+pub fn discard_part(store: Store, hash: String) -> Nil {
+  // Only a well-formed hash names a file, so a peer's text is never a path.
+  case state_object.is_hash(hash) {
+    True -> {
+      let _removed = simplifile.delete(part_path(store, hash))
+      Nil
+    }
+    False -> Nil
+  }
+}
+
+/// Reads one piece of a held state: the record's description and the bytes from
+/// `offset`, at most `length` of them, fewer at the end of the bundle.
+///
+/// `Ok(None)` means no record exists. The bundle's size is compared with the
+/// record's, which catches a short file, but its hash is not recomputed for each
+/// piece, because that would read the whole bundle for every piece. A damaged
+/// bundle is caught by the receiver, which compares the hash when the last piece
+/// lands. The read takes a prefix of the file up to the end of the piece, so
+/// serving a bundle from start to finish reads each prefix once: the cost grows
+/// with the square of the bundle's size in pieces, bounded by `size_limit`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // state_store.read_piece(store, hash, 0, 262_144)
+/// ```
+pub fn read_piece(
+  store: Store,
+  hash: String,
+  offset: Int,
+  length: Int,
+) -> Result(Option(#(State, BitArray)), String) {
+  use <- bool.guard(
+    when: !state_object.is_hash(hash),
+    return: Error("not a state hash"),
+  )
+
+  // No record is an absence, and a record is a claim the bundle must bear out.
+  case simplifile.read(record_path(store, hash)) {
+    Error(simplifile.Enoent) -> Ok(None)
+    Error(error) ->
+      Error(
+        "the state record cannot be read: " <> simplifile.describe_error(error),
+      )
+    Ok(text) -> {
+      use state <- result.try(state_object.decode(text))
+      use <- bool.guard(
+        when: state.hash != hash,
+        return: Error("the state record names another hash"),
+      )
+      use piece <- result.map(piece_of(store, state, offset, length))
+      Some(#(state, piece))
+    }
+  }
+}
+
+/// The bytes of a recorded state's bundle from `offset`, after the bundle's size
+/// is compared with the record's.
+fn piece_of(
+  store: Store,
+  state: State,
+  offset: Int,
+  length: Int,
+) -> Result(BitArray, String) {
+  let path = bundle_path(store, state.hash)
+  use info <- result.try(
+    simplifile.file_info(path)
+    |> result.map_error(fn(error) {
+      "the stored bundle cannot be inspected: "
+      <> simplifile.describe_error(error)
+    }),
+  )
+  use <- bool.guard(
+    when: info.size != state.size,
+    return: Error("the stored bundle is not the recorded size"),
+  )
+  use <- bool.guard(
+    when: offset < 0 || offset >= state.size || length < 1,
+    return: Error("the piece lies outside the bundle"),
+  )
+  use prefix <- result.try(bootstrap.read_prefix(
+    path,
+    int.min(state.size, offset + length),
+  ))
+  bit_array.slice(prefix, offset, bit_array.byte_size(prefix) - offset)
+  |> result.replace_error("the stored bundle is shorter than its record")
+}
+
 // --- files ----------------------------------------------------------------------
 
 /// A regular file in the store's directory.
@@ -489,4 +790,11 @@ fn bundle_path(store: Store, hash: String) -> String {
 
 fn record_path(store: Store, hash: String) -> String {
   store.directory <> "/" <> hash <> ".json"
+}
+
+/// The half-written file of a state whose pieces are still arriving. It is not a
+/// bundle or a record by name, so `sweep` judges it by its modification time and
+/// every piece that is appended renews that time.
+fn part_path(store: Store, hash: String) -> String {
+  store.directory <> "/" <> hash <> ".part"
 }
