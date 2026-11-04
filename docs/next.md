@@ -360,30 +360,43 @@ upgraded, restarted, collected or retired during this round. The historical
 sections below retain their recorded scope; unrelated CI readiness was not
 revalidated for this observation-only work.
 
-## Session hot-path reads and measurements
+## Session hot-path measurements completed
 
-The local branch `perf/session-hot-paths`, based on `ccb795759`, contains
-`6c986a8c2` (referenced pending reads) and `b863d1b4e` (measurement workloads).
-No push, hosted CI run or installed update is established by this work.
+The [November 4 measurement record](review/session-hotpaths-2026-11-04.md)
+completes all three corrected full benchmarks at source `ae8d2539f` on
+`perf/session-hot-paths`, in an isolated sibling worktree. Every invocation
+exited 0. The committed data retain pending/register samples, commit latency
+histograms, exit statuses and host-load snapshots. Load was 8.10-11.19 on
+16 CPUs, lower than the earlier 120+ observations but not idle or isolated.
 
-Run admission reads only captured next-run payloads; the driver reads its
-inbox and staged tool-result IDs. The [pending-entry record](review/pending-entry-performance.md)
-contains the counted production-path witness, five rejected semantic controls,
-and normal, failure-drain and abort placement tests. The primary full runtime
-rerun passes all 221 tests; lint, formatting, documentation and prelude gates
-also pass. Its first full run had two timeout observations in existing tests;
-unchanged focused reruns and the unchanged complete rerun pass. No timeout or
-assertion was weakened, and the failed receipt is retained. Independent review
-found no actionable correctness findings.
+Scoped pending reads isolate unrelated malformed payloads, but are not a
+uniform performance improvement. SQLite `:memory:` at 128 owned keys and no
+unrelated backlog took 20 ms scanning versus 86 ms using points per 50 loads.
+At 1000 unrelated and 32 owned keys it took 221 versus 20 ms. No adaptive
+threshold or new read interface is selected. The [pending-entry record](review/pending-entry-performance.md)
+retains its correctness and negative-control proof alongside this tradeoff.
 
-The [register-read record](review/register-read-performance.md) separates
-typed control reads, cache-pressure cases and source-derived SQL counts. The
-[group-commit evaluation](review/group-commit-evaluation.md) supplies a corrected
-per-strand append workload and defers implementation. Shared benchmark smokes
-pass, including file-backed SQLite append validation. Quiet-host full timing
-comparisons remain open in #1150, #1151 and #1152; loaded-host, fresh-root and
-failed-teardown samples do not establish performance gains. No cache, frozen
-storage interface, dependency or durability policy was changed.
+The [register record](review/register-read-performance.md) now has full
+corrected data: 500 five-register typed loads took median 30/38 ms through
+direct storage/writer paths on SQLite `:memory:`. These are elapsed synthetic
+loads, not isolated actor CPU or whole-turn attribution. The [group-commit
+evaluation](review/group-commit-evaluation.md) measures continuous append
+chains; 128-caller file-backed SQLite commit medians were 17/19/21 ms across
+three repetitions. No batching implementation or benefit was measured, so
+production group commit remains deferred.
+
+A fresh worktree `make check-runtime` passed all 221 tests. The earlier
+primary verification, five rejected semantic controls and independent source
+review remain in the pending-entry record, including its first timeout
+observations and unchanged clean rerun. No assertion or deadline was weakened.
+No production code, dependency, cache, interface, durability policy or running
+daemon was changed by this measurement follow-up.
+
+Issues #1150, #1151 and #1152 remain open for actual ownership/backlog and
+runtime commit prevalence, scoped grouped-read design, and batching decisions.
+The previous full-benchmark host-load block is resolved for this recorded run;
+the synthetic results do not establish an end-to-end speedup. No push or hosted
+CI readiness is established.
 
 ## Catalogue source-read performance
 

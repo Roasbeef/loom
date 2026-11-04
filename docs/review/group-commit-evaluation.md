@@ -5,12 +5,13 @@ commit.
 
 ## Recommendation: defer
 
-There is not yet a representative measurement of concurrent strand appends
-on Loom's file-backed SQLite store, nor a measurement of a group-commit
-implementation. Defer implementation until the corrected benchmark has run
-under suitable host conditions and a runtime workload establishes whether
-concurrent commits are common enough to matter. Elapsed time alone cannot
-identify sync wait, CPU or device cost; no speedup can be inferred from it.
+The [November 4 full run](session-hotpaths-2026-11-04.md) now measures the
+corrected concurrent append-chain workload. SQLite commit latency grows with
+synthetic concurrency, but no group-commit implementation was measured and
+actual runtime contention prevalence is unknown. Defer implementation until
+a representative runtime workload and a controlled design comparison justify
+it. Elapsed time alone does not identify sync wait, CPU or device cost, and
+these data establish no batching speedup.
 
 The first benchmark run used a new root for every message rather than
 appending to each strand's prior leaf. Its numbers are therefore superseded,
@@ -20,10 +21,10 @@ exploratory wall-clock run also emitted a transitive-dependency warning; its
 raw file is `.codemode/tmp/loom-commit-cost-raw.csv`. Scratch files are local,
 not committed fixtures.
 
-The host was reported above load 120 on 16 CPUs during the corrected smoke
-run. A full measurement under that load would not support a useful
-comparison, so it remains pending. The smoke run is correctness-only; its
-timings are not performance results.
+The October 30 smoke phase reported host load above 120 on 16 CPUs, so full
+timing was deferred then. The November 4 corrected full run completed at
+load snapshots of 8.10-11.19; those are lower-load observations, not an idle
+or isolated host. The earlier smoke remains correctness-only.
 
 ## Corrected workload
 
@@ -35,7 +36,7 @@ exited 0 without warnings. It checked two callers with three commits each on
 both backends, including final branch and count assertions. The first compile
 exited 1 on the helper's return type; adding an explicit `Nil` fixed it. Smoke
 output and compiler stderr are `.codemode/tmp/loom-commit-cost-chain-smoke.csv`
-and `.codemode/tmp/loom-commit-cost-chain-smoke-stderr.log`. The full run will use fresh memory and file-backed SQLite stores at 1, 8, 32 and
+and `.codemode/tmp/loom-commit-cost-chain-smoke-stderr.log`. The full run uses fresh memory and file-backed SQLite stores at 1, 8, 32 and
 128 callers, three repetitions each, with 200 commits per caller. Each worker
 reads its leaf and commits a message whose parent is that leaf, with a
 CAS-guarded leaf update. Workers use Weft deadline-bounded tasks and join
@@ -96,6 +97,7 @@ append-chain workload on memory and file-backed SQLite (exit 0). Output is
 retained in `.codemode/tmp/session-hotpath-primary/commit-smoke.log`. The
 complete runtime gate, runtime lint, formatting, documentation and prelude
 checks pass; see [the pending-entry record](pending-entry-performance.md) for
-the first failed runtime attempt and unchanged clean rerun. Full timing and
-a production group-commit decision remain open in #1152. No interface,
+the first failed runtime attempt and unchanged clean rerun. Full corrected timing
+is now recorded in the November 4 report; actual-cycle contention and a
+production group-commit decision remain open in #1152. No interface,
 durability policy or running daemon was changed.

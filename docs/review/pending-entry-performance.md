@@ -1,5 +1,9 @@
 # Pending entry reads
 
+Latest measurements: [November 4 full run](session-hotpaths-2026-11-04.md).
+Scoped reads isolate unrelated payloads, but point reads are slower for wide
+owned queues with little unrelated backlog. This is not a uniform speedup.
+
 Issue: #1150. Source baseline: `ccb795759`.
 
 `pending.entry` is keyed by entry ID, not by strand. Run admission and each
@@ -45,9 +49,10 @@ was still shutting down when the store closed. The host was also under heavy
 load. Its raw output is retained at
 `.codemode/tmp/pending-entry-performance/wide-benchmark.log`, but is invalid
 for ranking either method. The benchmark now waits for the writer to stop
-before closing the store. A quiet rerun is required before drawing a timing
-conclusion, particularly for wide owned queues where individual actor calls
-may cost more than a single listing.
+before closing the store. The November 4 corrected full run completed all
+cases: it confirms that individual actor calls can cost more than one listing
+for wide owned queues, while a large unrelated backlog favors scoped points.
+The dated record retains all samples and the ordering/quantization caveats.
 
 The production-path test `owned_inbox_and_staged_result_survive_unrelated_corruption_test`
 wraps the actual storage boundary and asserts that a completed run performs
@@ -118,5 +123,7 @@ initial failure is retained in `runtime.log`, and the clean rerun in
 The primary also ran `register_read_bench_smoke` and
 `commit_cost_bench_smoke` successfully through `gleam run -m`. The pending
 benchmark's shared two-backend smoke ran in the runtime gate. These are
-correctness receipts, not full performance measurements. Quiet-host timing
-comparisons remain open in #1150, #1151 and #1152; no live process was updated.
+correctness receipts, not full performance measurements. The November 4 full
+measurements now cover all three workloads under lower observed host load;
+actual runtime prevalence and the scoped bulk-read design decision remain
+open in #1150, #1151 and #1152. No live process was updated.

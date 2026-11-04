@@ -1,5 +1,10 @@
 # Register-read performance investigation
 
+Latest measurements: [November 4 corrected full run](session-hotpaths-2026-11-04.md).
+The five-register, 500-load medians are now 5/10 ms on memory and 30/38 ms on
+SQLite `:memory:` (direct/writer). The older values below remain historical,
+not the current benchmark result. No CPU or whole-turn attribution is made.
+
 Issue: #1151. The corrected benchmark measures typed control-register and cache-pressure reads; it does not measure CPU, SQL query counters, or a complete runtime turn.
 
 ## Source-derived read counts
@@ -22,7 +27,7 @@ A writer-owned write-through cache would need a sound coherence story for extern
 
 A bounded grouped read could reduce writer/backend round trips while retaining independent fresh row selections and current validation; snapshot and ordering semantics must be specified, particularly in the presence of interleaved commits. A smaller projection could avoid transferring values in key-only inventories, but malformed payload behavior and callers' expectations must be checked before dropping decoding. A write-through cache is more invasive because it introduces coherence and lease-fence obligations. None has been implemented or approved. Measure the matched paths and real runtime cycle before selecting one; elapsed latency alone cannot establish CPU consumption.
 
-## Measurement
+## October 30 measurement history
 
 An earlier run was superseded after adding payload and sequence checks and typed control reads; its elapsed values are not used here.
 
@@ -114,4 +119,6 @@ formatting, documentation and prelude checks passing. The first runtime
 run's two timeout observations and unchanged successful rerun are recorded
 in [the pending-entry record](pending-entry-performance.md). These receipts
 do not replace an independent full timing run or establish SQLite renewal
-behavior. Quiet-host performance comparisons remain open in #1151.
+behavior. The November 4 full run exercises corrected SQLite teardown too;
+actual-cycle attribution and a grouped-read or cache decision remain open
+in #1151.

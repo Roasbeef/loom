@@ -32,9 +32,12 @@ and `group-commit-evaluation.md` under `docs/review/` carry commands, raw sample
 and limitations. Independent runtime, lint, formatting, documentation and
 prelude gates pass, with 221 runtime tests; the first primary runtime attempt
 and unchanged clean rerun are both retained in the pending-entry record.
-Corrected benchmark smokes pass, but quiet-host full timing comparisons remain
-open. Upstream Pi Durable results do not establish Loom speedups or installed
-savings.
+The [November 4 full measurement](review/session-hotpaths-2026-11-04.md)
+completes the corrected workloads under lower observed load. Scoped pending
+points help with unrelated backlogs but regress on wide owned queues; no
+universal speedup or adaptive threshold is claimed. Actual runtime prevalence,
+scoped multi-key read design and a production batching decision remain open.
+Upstream Pi Durable results do not establish Loom speedups or installed savings.
 
 ## Distributed runtime experience (#1137)
 
