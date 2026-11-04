@@ -273,6 +273,11 @@ pub type Event {
     /// the session is restarting to apply the profile, so the connection
     /// is about to close.
     switched: Option(Int),
+    /// The roles the session was created with a pinned model for, as role
+    /// name and `[models]` key in the fixed role order, or `[]` when it has
+    /// none (protocol-change/108). The names are the daemon's words and are
+    /// not checked here: a client shows them and decides nothing from them.
+    pins: List(#(String, String)),
   )
 
   /// The active strand's effective model selection.
@@ -1174,7 +1179,8 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
       use current <- result.try(optional_string(fields, "profile"))
       use available <- result.try(string_array(fields, "available"))
       use switched <- result.try(optional_int(fields, "moved"))
-      Ok(ProfileSnapshot(current:, available:, switched:))
+      use pins <- result.try(optional_pins(fields))
+      Ok(ProfileSnapshot(current:, available:, switched:, pins:))
     }
     "config" -> {
       use config <- result.try(required_object(fields, "config"))
@@ -1485,6 +1491,26 @@ fn optional_int(
     Error(Nil) -> Ok(None)
     Ok(json.Int(value)) -> Ok(Some(value))
     Ok(_) -> Error(key <> " must be an integer")
+  }
+}
+
+/// Extracts the optional `pins` object of a `profile` snapshot as role name and
+/// key pairs. Absence is no pins; a present value must be an object whose
+/// values are all text, so a malformed field fails the frame rather than being
+/// taken for "no pins" (protocol-change/108).
+fn optional_pins(
+  fields: List(#(String, JsonValue)),
+) -> Result(List(#(String, String)), String) {
+  case list.key_find(fields, "pins") {
+    Error(Nil) -> Ok([])
+    Ok(json.Object(pairs)) ->
+      list.try_map(pairs, fn(pair) {
+        case pair.1 {
+          json.String(key) -> Ok(#(pair.0, key))
+          _ -> Error("pins must map role names to model keys")
+        }
+      })
+    Ok(_) -> Error("pins must be an object")
   }
 }
 

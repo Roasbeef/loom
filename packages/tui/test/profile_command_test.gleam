@@ -108,6 +108,7 @@ pub fn the_snapshot_decodes_with_and_without_a_profile_test() {
       current: Some("codex"),
       available: ["codex"],
       switched: None,
+      pins: [],
     )
   assert profile_event(
       snapshot_body([
@@ -115,7 +116,12 @@ pub fn the_snapshot_decodes_with_and_without_a_profile_test() {
         #("moved", json.Int(2)),
       ]),
     )
-    == protocol.ProfileSnapshot(current: None, available: [], switched: Some(2))
+    == protocol.ProfileSnapshot(
+      current: None,
+      available: [],
+      switched: Some(2),
+      pins: [],
+    )
 }
 
 // Each name is a read or a mutation on the lane and is answered by the snapshot,
@@ -177,6 +183,7 @@ pub fn a_read_lists_the_profile_and_the_names_with_default_first_test() {
         current: Some("codex"),
         available: ["codex", "codex-blue"],
         switched: None,
+        pins: [],
       ),
     )
   let lines = system_lines(shown)
@@ -187,11 +194,36 @@ pub fn a_read_lists_the_profile_and_the_names_with_default_first_test() {
   )
 }
 
+// A session created with pinned roles shows them after the profile's lines
+// (protocol-change/108), decoded from the wire's `pins` object in its order.
+pub fn a_read_shows_the_pins_the_session_was_created_with_test() {
+  let decoded =
+    profile_event(
+      snapshot_body([
+        #("available", json.Array([])),
+        #(
+          "pins",
+          json.Object([
+            #("main", json.String("flash")),
+            #("vision", json.String("opus")),
+          ]),
+        ),
+      ]),
+    )
+  let shown = event_fold.apply_event(pushed.attached().shared, decoded)
+  assert list.contains(system_lines(shown), "pinned: main=flash, vision=opus")
+}
+
 pub fn a_read_of_the_default_roles_says_so_test() {
   let shown =
     event_fold.apply_event(
       pushed.attached().shared,
-      protocol.ProfileSnapshot(current: None, available: [], switched: None),
+      protocol.ProfileSnapshot(
+        current: None,
+        available: [],
+        switched: None,
+        pins: [],
+      ),
     )
   let lines = system_lines(shown)
   assert list.contains(lines, "model profile: default roles")
@@ -209,6 +241,7 @@ pub fn a_switch_says_what_was_saved_and_that_the_session_restarts_test() {
         current: Some("codex-blue"),
         available: ["codex", "codex-blue"],
         switched: Some(1),
+        pins: [],
       ),
     )
   assert list.contains(

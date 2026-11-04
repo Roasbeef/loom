@@ -1029,7 +1029,13 @@ default roles). The lane classifies `profile_get` as a read and `profile_set` as
 mutation, and both are answered by `protocol.ProfileSnapshot`
 (`session_channel.matching_presentation`). `event_fold.append_profile` writes the
 current profile and the names, with `default` first, or the switch confirmation
-that says the session is restarting. `attempt` accepts both names in a recording.
+that says the session is restarting. `ProfileSnapshot.pins` is the optional
+`pins` object of the snapshot (protocol-change/108) as role name and key pairs in
+the daemon's order, `[]` when absent; a value that is not an object of text fails
+the frame (`protocol.optional_pins`) and is never read as no pins. When there are
+pins, `append_profile` adds the line `pinned: main=opus, vision=eyes` after the
+profile's own lines, for a read and for a switch alike, which is what the terminal
+shows. `attempt` accepts both names in a recording.
 
 ## Held-input withdrawal (protocol 088)
 
