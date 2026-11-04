@@ -1517,10 +1517,10 @@ overrides. Missing identity is never replaced with a generated host identity.
 
 ## Repository states: a spawn that carries the parent's workspace
 
-Slice 3, send direction, of protocol-change/107. A parent calls `agent_spawn` with
+Slice 3 of protocol-change/107. A parent calls `agent_spawn` with
 `on` and `context: "my_workspace"` (`tools/agent.MyWorkspace`); the child starts with a
-fresh conversation and a copy of the workspace. The return of the child's commits is
-not built: `Joined.state` is a field that nothing fills.
+fresh conversation and a copy of the workspace, and the commits it makes come back as a
+ref in the parent's repository (the return, below).
 
 `remote_spawn.Request.state` and `Joined.state` are optional `state_object.State`s, and
 `SpawnRefusal` has `StateMissing(hash, have)` (send more and ask again; the sender
@@ -1531,7 +1531,9 @@ reads it with `state_object.decode`. `spawners.Spawner.seed` (`NoSeed`,
 `WorkspaceSeed`) is the owner's ceiling, the `seed` key of `[spawners.<name>]`, read
 totally.
 
-The sender. `agency.Config.seeding` is `Seeding(capture)`, `unseeded()` by default.
+The sender. `agency.Config.seeding` is `Seeding(capture, receive)`, `unseeded()` by
+default; `capture` answers an `agency.Seed` (the state and the canonical directory it
+was captured from).
 `spawn_elsewhere` runs `seeded` on the caller's own process before `AdmitRemote`: a
 `MyWorkspace` spawn from a tool call captures and writes the state into the stub
 through `write_stub`; from a program it is refused, because the program's call holds the
@@ -1586,8 +1588,64 @@ the check-then-rename window against a child swapping `seeds` is a stated residu
 (protocol-change/107 addendum). `wiring.run_gated` runs unplaced (extension, MCP) tools
 on the gate's shared side as well as workspace-side ones.
 
+The return (slice 3b). A child that was handed a state has its commits come back, and
+only its commits.
+
+- *Capture, on the child's machine.* `spawn_host_seeding` takes a `spawn_return.Returning`
+  (`spawn_return.over(state_node, remote_spawner.state_link_to(membership), logger)`, or
+  `none()`; a refused capture or a store fault reaches the parent as a fixed sentence and
+  the detail goes to the receiver's log).
+  Its `remember` runs when a spawn that carried a state has started a child and writes
+  `<state root>/seed-returns/<key>.copy` (the copy's name and the sent tip, no path;
+  `key` is a digest of spawner, parent session and strand). Its `settle` is applied to each
+  entry of a join: a `Ready` with no state and a record is answered from
+  `<key>.verdict` or by an attempt. An attempt claims the child (`spawn_seed.claim`),
+  runs `working` in an unlinked process under `work_ms` (14 minutes), and waits
+  `wait_ms` (1.5 s); a join that cannot wait answers `Pending`. `found` locates the copy
+  with `spawn_seed.copy_at` (a real directory at its canonical path), then
+  `state_capture.capture_commits`: `repository_snapshot.capture_commits`, the existing
+  capture with `Content.CommittedOnly` (no inventory, no attribute check, no index
+  comparison, tip = `HEAD`, thin against the sent tip, `None` when `HEAD` is the sent
+  tip, a refusal when `HEAD` does not descend from it or the directory is not a primary
+  checkout at its own path). `sent` pushes the bundle with `state_transfer.send` over
+  `state_link.via_port` to the spawner's node; `Silent` and `Stalled` keep the captured
+  state in the verdict (`Captured`) for the next join, `max_attempts` (5) of them make a
+  final refusal, and a decline or a lost state is final at once. A verdict carries the
+  outcome, whether the copy had uncommitted changes (`status --porcelain` in the jail),
+  and the attempts. `amend` sets `Joined.state` on a return and appends fixed sentences
+  to the report for no commits, a refusal and uncommitted work. A return never fails
+  the child's report. `main.start_states` calls `spawn_return.sweep` (claims only).
+- *Apply, on the parent's machine.* `settle_entry` (agency) calls `returned_report` for a
+  `Ready` whose stub has `seeded: Some(Seeded(workspace, returned))`. A stub with
+  `returned` already decided is told from the stub; a join that carries a state is
+  applied through `Seeding.receive`, which `serve.seeding_of` builds from
+  `return_apply.behind_gate`: the session's workspace must resolve to the directory the
+  spawn captured (`Seed.workspace`, from `serve.captured`), and the apply
+  (`return_apply.from_store`, over `Reach.apply` = `main.local_apply`) runs inside
+  `workspace_gate.exclusive`. `Ok` from `receive` is final and is written once by
+  `remote_child.returned` (`Applied(ref, commits)` or `NotApplied(reason)`); `Error` is a
+  gate that would not go quiet, told in the report and not recorded, so the next wait
+  tries again. `state_apply.apply_returned` is the apply: the description must name the
+  sent tip as its base and the bundle header must list that tip as its only
+  prerequisite, the child name passes `state_object.child_component`, and the one ref is
+  `state_object.child_ref` (`refs/loom/children/<child>/<tip8>`) created with the zero
+  old value; a dirty sent state is unpacked from the sent bundle first (objects, no
+  ref). It runs in the jail with the slice 1 guards and `run_reading_store`. Replays are
+  `AlreadyThere`. The sentence names the ref and the count and the Git commands to use.
+- *Observation.* `remote_agent.RemoteAgent` gains optional `commits` and `returned_ref`
+  (the `remote_children` snapshot), encoded only for a returned child and read as a
+  well-formed pair or not at all.
+- *Limits.* A linked-worktree workspace is refused by `check_repository` (only a primary
+  checkout takes the apply); an executor or pool placement takes no copy, so no return;
+  commits made after the join first reported the child are not returned; a crash between
+  a spawn's answer and `remember` loses that child's return.
+
 Tests: `workspace_gate_test` (overlap, concurrent file writes, drain refusal, stuck
-capture released and refused, dead holders), `state_capture_test` and
+capture released and refused, dead holders), `state_return_apply_test` (the apply and its
+refusals against a real repository), `state_capture_commits_test`, `spawn_return_test`
+(two ports, two stores, a real repository: the whole return, no commits, resume, give-up,
+decline, link swap), `return_apply_test` (the gate, the workspace check, the store), the
+`agency_test` cases for the returned answer, `state_capture_test` and
 `executor_capture_test` (real repository, real helper, real host), `spawn_seed_test`
 (judging and applying, resume, the ceiling, hostile `.git/config`), `seeded_spawn_test`
 (the sender's step against a real port and two stores), the `agency_test` cases for

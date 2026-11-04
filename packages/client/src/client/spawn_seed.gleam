@@ -70,6 +70,7 @@ import gleam/bit_array
 import gleam/bool
 import gleam/erlang/process
 import gleam/int
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
@@ -260,6 +261,49 @@ fn settled(path: String) -> Settled {
             False -> Tampered
           }
       }
+  }
+}
+
+/// The path of a finished copy, when `name` is the name of one and a whole
+/// repository is there: a real directory at its canonical path under
+/// `directory/seeds`, which only the daemon's own rename makes. Anything else,
+/// a link a session planted included, is `Error(Nil)`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // spawn_seed.copy_at("/srv/work", "seed-0123456789abcdef")
+/// // == Ok("/srv/work/seeds/seed-0123456789abcdef")
+/// ```
+pub fn copy_at(directory: String, name: String) -> Result(String, Nil) {
+  let path = directory <> "/" <> seeds_directory <> "/" <> name
+  use <- bool.guard(when: !is_copy_name(name), return: Error(Nil))
+
+  // Only a whole copy at its canonical name is one.
+  case settled(path) {
+    Whole -> Ok(path)
+    Missing | Tampered -> Error(Nil)
+  }
+}
+
+/// Whether text has the shape `name_of` makes: `seed-` and sixteen lower-case
+/// hexadecimal digits. A name read back from a file is held to it before it is
+/// made into a path.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert spawn_seed.is_copy_name("seed-0123456789abcdef")
+/// assert !spawn_seed.is_copy_name("seed-../x")
+/// ```
+pub fn is_copy_name(name: String) -> Bool {
+  case name {
+    "seed-" <> digits ->
+      string.byte_size(digits) == 16
+      && list.all(string.to_graphemes(digits), fn(each) {
+        string.contains("0123456789abcdef", each)
+      })
+    _ -> False
   }
 }
 

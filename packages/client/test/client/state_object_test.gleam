@@ -117,6 +117,45 @@ pub fn the_incoming_ref_is_named_for_the_first_eight_digits_test() {
   assert string.starts_with(state_object.incoming_ref(hash), "refs/loom/in/")
 }
 
+pub fn a_childs_ref_is_built_only_from_a_minted_name_test() {
+  assert state_object.child_component("sub:^main/fix-cache-0123456789abcdef")
+    == Ok("fix-cache-0123456789abcdef")
+  assert state_object.child_component("x") == Ok("x")
+  assert state_object.child_ref("fix-cache", tip)
+    == "refs/loom/children/fix-cache/" <> string.slice(tip, 0, 8)
+
+  // Each of these is a component Git's own grammar, or the path below the ref,
+  // would treat as something other than one plain name.
+  list.each(
+    [
+      "",
+      "sub:^main/",
+      "sub:^main/..",
+      "a..b",
+      "a.lock",
+      "A",
+      "a b",
+      "-a",
+      "a-",
+      "a--b",
+      "a:b",
+      "a~1",
+      "a^",
+      "a?",
+      "a*",
+      "a[",
+      "a\\b",
+      "a@{b",
+      "a\u{0}b",
+      string.repeat("a", 97),
+    ],
+    fn(strand) {
+      assert state_object.child_component(strand)
+        == Error("the child's name is not usable in a ref")
+    },
+  )
+}
+
 pub fn the_newest_candidate_the_receiver_holds_becomes_the_base_test() {
   assert state_object.choose_basis([tip, base, other], [other, base])
     == Thin(base)

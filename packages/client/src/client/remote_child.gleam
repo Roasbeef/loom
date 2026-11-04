@@ -130,8 +130,43 @@ pub type Stub {
     /// orchestrator when a join last said, zero until then. See
     /// `remote_spawn.Joined`.
     owed: Int,
+    /// What this session knows of the workspace the child was started from and
+    /// of the commits that came back from it (protocol-change/107), or `None`
+    /// for a child that was handed no workspace.
+    seeded: Option(Seeded),
     /// How far the spawn has got.
     state: State,
+  )
+}
+
+/// A child that was started from the parent's workspace.
+pub type Seeded {
+  Seeded(
+    /// The canonical directory the workspace was captured from. An apply of the
+    /// child's commits is made only into the repository there.
+    workspace: String,
+    /// What became of the child's commits, or `None` while nothing has been
+    /// decided. It is written once and not changed: a child's commits are
+    /// applied, or refused, one time.
+    returned: Option(Returned),
+  )
+}
+
+/// What became of the commits a child returned.
+pub type Returned {
+  /// They are in the parent's repository.
+  Applied(
+    /// The ref they are under, `refs/loom/children/<child>/<tip8>`.
+    ref: String,
+    /// How many commits the child made.
+    commits: Int,
+  )
+
+  /// They reached this machine and were not applied, for a reason that applying
+  /// again does not change.
+  NotApplied(
+    /// Why, in words for the parent's model.
+    reason: String,
   )
 }
 
@@ -504,7 +539,26 @@ fn agent_of(stub: Stub, now: Int) -> RemoteAgent {
       Some(_), seen if seen > 0 -> Some(int.max(0, now - seen))
       Some(_), _ | None, _ -> None
     },
+    commits: case returned_of(stub) {
+      Some(Applied(commits:, ..)) -> Some(commits)
+      Some(NotApplied(..)) | None -> None
+    },
+    returned_ref: case returned_of(stub) {
+      Some(Applied(ref:, ..)) -> Some(ref)
+      Some(NotApplied(..)) | None -> None
+    },
   )
+}
+
+/// What became of a child's returned commits, when it has been decided.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_child.returned_of(stub) == Some(remote_child.Applied("refs/loom/children/x/01234567", 2))
+/// ```
+pub fn returned_of(stub: Stub) -> Option(Returned) {
+  option.then(stub.seeded, fn(seeded) { seeded.returned })
 }
 
 /// The reader a session's gateway asks for a page of a remote child's
@@ -778,6 +832,38 @@ pub fn settled(
   })
 }
 
+/// Records what became of the commits a seeded child returned (protocol-change/107).
+///
+/// The step applies to a settled child that was handed a workspace and whose
+/// commits have not been decided yet, and only then: once written it is final,
+/// so a second join that carries the same state applies and records nothing, and
+/// at most one ref comes of one child.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_child.returned(runtime, key, remote_child.Applied(ref, 2))
+/// ```
+pub fn returned(
+  runtime: api.Runtime,
+  key: String,
+  returned: Returned,
+) -> Result(Stub, String) {
+  advance_with(runtime, key, fn(stub) {
+    // Only a settled seeded child with nothing decided yet takes the answer.
+    case stub.state, stub.seeded {
+      Settled(..), Some(Seeded(workspace:, returned: None)) ->
+        Some(
+          Stub(
+            ..stub,
+            seeded: Some(Seeded(workspace:, returned: Some(returned))),
+          ),
+        )
+      _, _ -> None
+    }
+  })
+}
+
 /// How long after a child's deadline a settled child that still owes mail is
 /// asked about, in milliseconds. A box that cannot deliver for longer than this
 /// has lost its place; the mail is not worth a connection held for ever.
@@ -1013,8 +1099,43 @@ pub fn encode(stub: Stub) -> JsonValue {
       #("glanceSeenMs", json.Int(stub.glance_seen_ms)),
       #("owed", json.Int(stub.owed)),
     ],
-    encode_state(stub.state),
+    list.append(seeded_member(stub.seeded), encode_state(stub.state)),
   ))
+}
+
+// A stub of a child that was handed no workspace encodes exactly as it did before
+// workspaces were sent, so a stub written by an older build reads back unchanged.
+/// The stub's `seeded` member when it has one, and nothing otherwise.
+fn seeded_member(seeded: Option(Seeded)) -> List(#(String, JsonValue)) {
+  case seeded {
+    None -> []
+    Some(Seeded(workspace:, returned:)) -> [
+      #(
+        "seeded",
+        json.Object([
+          #("workspace", json.String(workspace)),
+          #("returned", optional(returned, encode_returned)),
+        ]),
+      ),
+    ]
+  }
+}
+
+/// A returned answer as its wire object.
+fn encode_returned(returned: Returned) -> JsonValue {
+  case returned {
+    Applied(ref:, commits:) ->
+      json.Object([
+        #("kind", json.String("applied")),
+        #("ref", json.String(ref)),
+        #("commits", json.Int(commits)),
+      ])
+    NotApplied(reason:) ->
+      json.Object([
+        #("kind", json.String("not_applied")),
+        #("reason", json.String(reason)),
+      ])
+  }
 }
 
 /// Encode state keeps this client operation’s decoding or state decision in one place.
@@ -1186,6 +1307,8 @@ pub fn decode(value: JsonValue) -> Result(Stub, String) {
     Ok(found) -> expect_number(found)
   })
 
+  // An absent member is a child that was handed no workspace.
+  use seeded <- result.try(maybe(fields, "seeded", decode_seeded))
   use state <- result.try(decode_state(fields))
   Ok(Stub(
     orchestrator:,
@@ -1198,8 +1321,34 @@ pub fn decode(value: JsonValue) -> Result(Stub, String) {
     glance:,
     glance_seen_ms:,
     owed:,
+    seeded:,
     state:,
   ))
+}
+
+/// Decodes the `seeded` member, totally: a damaged one fails the stub's decode.
+fn decode_seeded(value: JsonValue) -> Result(Seeded, String) {
+  use fields <- result.try(object(value, "a seeded record"))
+  use workspace <- result.try(text(fields, "workspace"))
+  use returned <- result.map(maybe(fields, "returned", decode_returned))
+  Seeded(workspace:, returned:)
+}
+
+/// Decodes a returned answer.
+fn decode_returned(value: JsonValue) -> Result(Returned, String) {
+  use fields <- result.try(object(value, "a returned answer"))
+  use kind <- result.try(text(fields, "kind"))
+
+  // Each kind carries exactly the members it is written with.
+  case kind {
+    "applied" -> {
+      use ref <- result.try(text(fields, "ref"))
+      use commits <- result.map(number(fields, "commits"))
+      Applied(ref:, commits:)
+    }
+    "not_applied" -> text(fields, "reason") |> result.map(NotApplied)
+    other -> Error("unknown returned answer `" <> other <> "`")
+  }
 }
 
 /// Decode state keeps this client operation’s decoding or state decision in one place.

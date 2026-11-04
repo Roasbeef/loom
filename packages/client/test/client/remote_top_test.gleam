@@ -238,6 +238,8 @@ pub fn a_row_round_trips_with_its_requests_and_children_test() {
       tokens: 4,
       model: "fast",
       age_ms: Some(10),
+      commits: None,
+      returned_ref: None,
     )
   let full =
     Row(

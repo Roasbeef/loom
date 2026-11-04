@@ -58,6 +58,7 @@ fn a_stub(state: remote_child.State) -> remote_child.Stub {
     glance: None,
     glance_seen_ms: 0,
     owed: 0,
+    seeded: None,
     state:,
   )
 }
@@ -107,6 +108,53 @@ pub fn a_stub_round_trips_in_every_state_test() {
       round_trips(a_stub(remote_child.Settled(a_placed(), outcome, a_usage())))
     },
   )
+}
+
+pub fn a_seeded_stub_round_trips_and_an_unseeded_one_encodes_as_it_did_test() {
+  let settled = remote_child.Settled(a_placed(), agent.Completed, a_usage())
+  let seeded = fn(returned) {
+    Stub(
+      ..a_stub(settled),
+      seeded: option.Some(remote_child.Seeded(
+        workspace: "/work/loom",
+        returned:,
+      )),
+    )
+  }
+  round_trips(seeded(option.None))
+  round_trips(
+    seeded(
+      option.Some(remote_child.Applied("refs/loom/children/x/01234567", 2)),
+    ),
+  )
+  round_trips(
+    seeded(option.Some(remote_child.NotApplied("the workspace changed"))),
+  )
+
+  // A child that was handed no workspace adds nothing to what is stored, so a
+  // stub written before the member existed reads back as one.
+  let plain = remote_child.encode(a_stub(settled))
+  let assert json.Object(members) = plain
+  assert list.key_find(members, "seeded") == Error(Nil)
+  let assert Ok(back) = remote_child.decode(plain)
+  assert back.seeded == option.None
+}
+
+pub fn a_damaged_seeded_member_fails_the_stubs_decode_test() {
+  let assert json.Object(members) =
+    remote_child.encode(a_stub(remote_child.Requested))
+  let damaged = fn(seeded) {
+    remote_child.decode(json.Object([#("seeded", seeded), ..members]))
+  }
+  let assert Error(_) = damaged(json.String("x"))
+  let assert Error(_) = damaged(json.Object([#("workspace", json.Int(3))]))
+  let assert Error(_) =
+    damaged(
+      json.Object([
+        #("workspace", json.String("/w")),
+        #("returned", json.Object([#("kind", json.String("sideways"))])),
+      ]),
+    )
 }
 
 pub fn every_optional_part_of_the_request_survives_test() {

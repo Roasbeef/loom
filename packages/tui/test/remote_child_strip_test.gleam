@@ -41,6 +41,8 @@ fn agent(age_ms: option.Option(Int)) -> remote_agent.RemoteAgent {
     tokens: 12_400,
     model: "fast",
     age_ms:,
+    commits: option.None,
+    returned_ref: option.None,
   )
 }
 

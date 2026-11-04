@@ -32,14 +32,17 @@
 ////
 //// ## Flow
 ////
-//// `new` → `capture` → `scope_of`
+//// `new` → `capture` | `capture_commits` → `prepared` → `scope_of`
 ////
 //// 1. `new` binds the node's sandboxed Git, state root, node credentials and
 ////    store endpoint.
 //// 2. `capture` makes the stage and the scratch directories, runs the snapshot
 ////    against a basis, reads the bundle it made and deposits it.
-//// 3. `scope_of` is the sandbox policy of the capture: the workspace, with the
-////    state root and the node's credentials masked.
+////    `capture_commits` is the same for a finished child's work: only the
+////    commits made after a base, none of the working tree.
+//// 3. `prepared` builds the call both make, and `scope_of` is its sandbox
+////    policy: the workspace, with the state root and the node's credentials
+////    masked.
 
 import broker/policy
 import client/git_identity.{type Identity}
@@ -51,6 +54,7 @@ import client/workspace_policy
 import client/worktree_git.{type Git}
 import gleam/bit_array
 import gleam/int
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import host/bootstrap
 import simplifile
@@ -110,16 +114,70 @@ pub fn capture(
   identity: Identity,
   basis: Basis,
 ) -> Result(State, String) {
+  use #(call, snapshots, stage) <- result.try(prepared(capturer, directory))
+  use made <- result.try(repository_snapshot.capture_against(
+    capturer.git,
+    call,
+    snapshots,
+    stage,
+    identity,
+    capture_within_ms,
+    basis,
+  ))
+  deposited(capturer, made)
+}
+
+/// Captures the commits a finished child made in the repository at `directory`
+/// after `base`, and only those (protocol-change/107, "Return").
+///
+/// `base` is the tip of the state the child was handed, which the sender already
+/// holds, so the bundle is thin and small. The working tree is not read: edits the
+/// child left uncommitted do not travel, and no author is needed. The answer is
+/// `None` when the child committed nothing, and otherwise the description of the
+/// state now in the store, whose base is `base`. A refusal says what is wrong
+/// with the repository, such as a `HEAD` that does not descend from `base` or a
+/// directory that is not a primary checkout.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // state_capture.capture_commits(capturer, "/work/seeds/seed-0123", sent_tip)
+/// ```
+pub fn capture_commits(
+  capturer: Capturer,
+  directory: String,
+  base: String,
+) -> Result(Option(State), String) {
+  use #(call, snapshots, stage) <- result.try(prepared(capturer, directory))
+  use made <- result.try(repository_snapshot.capture_commits(
+    capturer.git,
+    call,
+    snapshots,
+    stage,
+    capture_within_ms,
+    base,
+  ))
+
+  // A child that committed nothing leaves no stage and no state.
+  case made {
+    None -> Ok(None)
+    Some(snapshot) -> deposited(capturer, snapshot) |> result.map(Some)
+  }
+}
+
+/// The discovery call over a directory, the store the stage goes in, and the
+/// stage's name. The directories are made private first, and the name is made
+/// here from a counter, so a model or a peer never chooses a path under the
+/// store.
+fn prepared(
+  capturer: Capturer,
+  directory: String,
+) -> Result(#(worktree_git.Capture, String, String), String) {
   let snapshots = capturer.state_root <> "/repository-snapshots"
   let scratch = capturer.state_root <> "/snapshot-scratch"
   use Nil <- result.try(bootstrap.ensure_private_directory(snapshots))
-  use Nil <- result.try(bootstrap.ensure_private_directory(scratch))
-
-  // The stage name is made here from a counter, so a model or a peer never
-  // chooses a path under the store.
-  let stage = "capture-" <> int.to_string(ffi_os.unique_positive_integer())
-  use made <- result.try(repository_snapshot.capture_against(
-    capturer.git,
+  use Nil <- result.map(bootstrap.ensure_private_directory(scratch))
+  let call =
     worktree_git.Capture(
       directory:,
       arguments: [],
@@ -128,14 +186,9 @@ pub fn capture(
       context: worktree_git.SourceContext,
       stdin: <<>>,
       limits: capture_limits(),
-    ),
-    snapshots,
-    stage,
-    identity,
-    capture_within_ms,
-    basis,
-  ))
-  deposited(capturer, made)
+    )
+  let stage = "capture-" <> int.to_string(ffi_os.unique_positive_integer())
+  #(call, snapshots, stage)
 }
 
 /// Reads the bundle a snapshot made, describes it from its bytes, and puts it in

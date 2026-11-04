@@ -137,6 +137,15 @@ pub type Reach {
     /// the workspace quiet, which the session's assembly holds. `None` for a
     /// reach that cannot capture.
     capture: Option(fn(String) -> Result(State, String)),
+    /// Applies the commits a finished child returned into the repository at a
+    /// directory on this machine (protocol-change/107, "Return"). The arguments
+    /// are the directory, the state the spawn sent, the state the child returned
+    /// and the child's strand. The answer is the ref the commits are under and how
+    /// many there are, or why there is none. Like `capture` it knows nothing of the
+    /// gate, which the session's assembly holds. `None` for a reach that cannot.
+    apply: Option(
+      fn(String, State, State, String) -> Result(#(String, Int), String),
+    ),
   )
 }
 
@@ -183,6 +192,7 @@ pub fn none(session: String) -> Reach {
     keep: fn(_name, _vote) { Nil },
     states: None,
     capture: None,
+    apply: None,
   )
 }
 

@@ -158,6 +158,8 @@ fn remote(
     tokens: 12_400,
     model: "fast",
     age_ms:,
+    commits: None,
+    returned_ref: None,
   )
 }
 
@@ -245,6 +247,8 @@ pub fn the_widest_remote_children_list_fits_one_frame_test() {
           tokens: 1_000_000,
           model: words,
           age_ms: Some(1_000_000),
+          commits: None,
+          returned_ref: None,
         ),
         ..acc
       ]
@@ -271,4 +275,36 @@ pub fn a_remote_children_list_round_trips_and_refuses_damage_test() {
     json.Object(list.key_set(damaged, "standing", json.String("dancing")))
   let assert Error(_) =
     remote_agent.decode_all([#("remote_children", json.Array([damaged]))])
+}
+
+// A child whose commits came back carries two more members, and a child that has
+// none encodes exactly as it did before they existed, so a client built earlier
+// reads every entry unchanged and one built later reads absence as "none".
+pub fn returned_work_is_two_optional_members_that_are_read_together_test() {
+  let plain = remote(remote_agent.Completed, "x", None)
+  let assert json.Object(plain_members) = remote_agent.encode(plain)
+  assert list.key_find(plain_members, "commits") == Error(Nil)
+  assert list.key_find(plain_members, "returned_ref") == Error(Nil)
+
+  let ref = "refs/loom/children/fix-cache-0123456789abcdef/01234567"
+  let back =
+    remote_agent.RemoteAgent(..plain, commits: Some(2), returned_ref: Some(ref))
+  assert remote_agent.decode(remote_agent.encode(back)) == Ok(back)
+
+  // One member without the other, a negative count, a ref outside the children
+  // namespace and a mistyped member are each ignored, never half believed.
+  let assert json.Object(members) = remote_agent.encode(back)
+  let without = fn(name) {
+    json.Object(list.filter(members, fn(pair) { pair.0 != name }))
+  }
+  let with = fn(name, value) { json.Object(list.key_set(members, name, value)) }
+  assert remote_agent.decode(without("returned_ref")) == Ok(plain)
+  assert remote_agent.decode(without("commits")) == Ok(plain)
+  assert remote_agent.decode(with("commits", json.Int(-1))) == Ok(plain)
+  assert remote_agent.decode(with("commits", json.String("2"))) == Ok(plain)
+  assert remote_agent.decode(with(
+      "returned_ref",
+      json.String("refs/heads/main"),
+    ))
+    == Ok(plain)
 }

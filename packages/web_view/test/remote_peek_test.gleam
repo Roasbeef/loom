@@ -40,6 +40,8 @@ fn agent() -> remote_agent.RemoteAgent {
     tokens: 900,
     model: "fast",
     age_ms: Some(1000),
+    commits: None,
+    returned_ref: None,
   )
 }
 

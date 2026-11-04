@@ -33,6 +33,7 @@ import client/remote_reach.{type Reach}
 import client/remote_spawn.{
   type CallSite, type Joined, type Request, type Spawned,
 }
+import client/state_object
 import core/clock
 import core/ids
 import gleam/dict.{type Dict}
@@ -101,6 +102,7 @@ pub opaque type Call {
   Asked(Ask)
   Set(Mode)
   Settle(Handle)
+  SettleReturning(Handle, state_object.State)
   Owing(Int)
   Look(reply: Subject(Report))
 }
@@ -144,6 +146,7 @@ type State {
     joins: Int,
     join_windows: List(Int),
     settled: List(Handle),
+    returned: List(#(Handle, state_object.State)),
     owed: Int,
     releases: List(remote_spawn.Parent),
     sends: List(#(String, String)),
@@ -171,6 +174,7 @@ pub fn start(name: String, mode: Mode) -> Box {
         joins: 0,
         join_windows: [],
         settled: [],
+        returned: [],
         owed: 0,
         releases: [],
         sends: [],
@@ -193,6 +197,16 @@ pub fn set_mode(box: Box, mode: Mode) -> Nil {
 /// Makes the orchestrator report the child as finished from the next join on.
 pub fn settle(box: Box, handle: Handle) -> Nil {
   process.send(box.inbox, Settle(handle))
+}
+
+/// Makes the orchestrator report the child as finished from the next join on, with
+/// `state` as the commits the child returned (protocol-change/107).
+pub fn settle_returning(
+  box: Box,
+  handle: Handle,
+  state: state_object.State,
+) -> Nil {
+  process.send(box.inbox, SettleReturning(handle, state))
 }
 
 /// Makes the orchestrator report `count` undelivered messages from every child it
@@ -286,6 +300,7 @@ pub fn voting(
     },
     states: None,
     capture: None,
+    apply: None,
     keep: fn(name, vote) { process.send(votes, #(name, vote)) },
   )
 }
@@ -328,6 +343,13 @@ fn handle(state: State, call: Call) -> actor.Next(State, Call) {
     Set(mode) -> actor.continue(State(..state, mode:))
     Settle(handle) ->
       actor.continue(State(..state, settled: [handle, ..state.settled]))
+    SettleReturning(handle, returned) ->
+      actor.continue(
+        State(..state, settled: [handle, ..state.settled], returned: [
+          #(handle, returned),
+          ..state.returned
+        ]),
+      )
     Owing(count) -> actor.continue(State(..state, owed: count))
     Look(reply:) -> {
       process.send(
@@ -593,7 +615,7 @@ fn join(
                   cost: 0.5,
                 ),
                 owed: state.owed,
-                state: None,
+                state: option.from_result(list.key_find(state.returned, handle)),
               )
             False -> remote_spawn.Pending(handle:, waited_ms: window_ms)
           }

@@ -17,6 +17,7 @@ import client/remote/address.{Address}
 import client/remote/orchestrator_port
 import client/remote/remote_spawner
 import client/remote_spawn
+import client/spawn_return
 import client/spawn_seed
 import client/spawners.{type Spawner}
 import client/state_capture
@@ -171,6 +172,7 @@ fn port_for(
       fn(found, call_site, asked) {
         spawn_seed.receive(receiver.node, found, call_site, asked)
       },
+      spawn_return.none(),
       log.discard(),
     )
   let assert Ok(_started) =

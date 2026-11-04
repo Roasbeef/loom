@@ -207,10 +207,12 @@ pub type Joined {
     /// parent keeps its connection to the orchestrator up and asks again until
     /// this reaches zero.
     owed: Int,
-    /// The state a child that was handed one made of its work, for the parent
-    /// to fetch (protocol-change/107, "Return"). It is `None` until the slice
-    /// that returns a child's commits; the field is here so the join is one
-    /// shape from the first slice that sends a state.
+    /// The commits a child that was handed a state made on top of it, as a state
+    /// thin against the one it was handed (protocol-change/107, "Return"). The
+    /// bundle is already in the parent's state store when this is `Some`, and the
+    /// parent applies it into its repository. It is `None` for a child that was
+    /// handed no state, one that committed nothing, and one whose commits could
+    /// not be returned, in which last case `report` says so.
     state: Option(State),
   )
 

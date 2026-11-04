@@ -1317,10 +1317,10 @@ there.
 
 ## Repository states
 
-**Status: slices 1 to 3 (the send direction) of [protocol-change/107](../../protocol-change/107-state-transport.md)
+**Status: slices 1 to 3 (both directions) of [protocol-change/107](../../protocol-change/107-state-transport.md)
 are built.** A model can start a child on another orchestrator from its own
-workspace (`agent_spawn` with `on` and `context: "my_workspace"`); the child's
-commits do not come back yet. A state is a Git bundle named by the SHA-256 of its bytes. It is
+workspace (`agent_spawn` with `on` and `context: "my_workspace"`), and the commits
+the child makes come back as one ref in the parent's repository. A state is a Git bundle named by the SHA-256 of its bytes. It is
 described by `hash`, `size`, `tip`, `base` and `dirty`, which `client/state_object`
 encodes as JSON. Three modules carry a state on one node.
 
@@ -1381,6 +1381,33 @@ The store is masked from every session jail. The daemon root makes `<state root>
 before any session is admitted and `workspace_policy` names it among the masks; the
 sandboxed Git runner shares the mask and lifts it for the one `git bundle unbundle`
 call (`worktree_git.run_reading_store`).
+
+### The child's commits come back
+
+The parent asks whether the child has finished by sending a join, and the join is the
+one message the child's machine is sure to receive after the child's run has ended.
+The return rides it. Only the commits the child made come back: edits it left
+uncommitted stay in its copy, and the report says so.
+
+| Step | Where | What happens |
+|---|---|---|
+| Remember | `client/spawn_return` | When a spawn that carried a state has started a child, the receiver records the copy's name and the sent tip under `<state root>/seed-returns`, a directory no session can read. No path is kept; the directory comes from the spawner's table when the record is used. |
+| Capture | `client/state_capture.capture_commits` | Runs when a join finds the child finished. The capture is the one a spawn uses with the working tree left out: the tip is `HEAD`, the bundle is thin against the sent tip, and the directory must be a primary checkout at the path it was named by, so a link the child planted leads nowhere. `HEAD` equal to the sent tip is "no commits"; a `HEAD` that no longer descends from it is a refusal. |
+| Send | `client/state_transfer.send` | The receiver sends the bundle from its store to the parent's over the orchestrator port, the carrier the join arrived on. It runs in a process of its own under a deadline of its own, and a join that cannot wait answers `Pending`. Its outcome is kept in a verdict file: a captured state waiting for its transfer resumes at the parent's offset on the next join, five tries that do not finish end in a refusal, and a decline or a lost state ends it at once. |
+| Tell | `Joined.state` | The finished child's entry carries the returned state. When nothing came back, the report says why in a fixed sentence: no commits, uncommitted work left behind, or the reason the commits could not be returned. A return never fails the child's report. |
+| Apply | `client/return_apply`, `client/state_apply.apply_returned` | The parent's Agency applies the state inside the exclusive side of the workspace gate, into the repository the spawn was captured from. The description must name the sent tip as its base and the bundle must list that tip as its only prerequisite. One ref, `refs/loom/children/<child>/<tip8>`, is created with the zero id as its old value; no branch, index, worktree or other ref changes. A dirty sent state's snapshot commit only the bundle held, so the sent bundle is unpacked first. |
+| Record | `client/remote_child.returned` | The answer is written to the stub once, so a second wait tells the same sentence and applies nothing, and one child makes at most one ref. The roster row gains `commits` and `returned_ref`. |
+
+The apply takes the exclusive side of the gate because the objects it unpacks are
+unreferenced until the ref exists, and a `git gc --prune=now` or `git repack -ad` from a
+tool call in that window would remove them. The shared side keeps a capture out and
+nothing else, since every workspace tool call holds it. A gate that will not go quiet in
+30 seconds is a reason to try again on the next wait, and is told and not recorded.
+
+The return reaches only a primary checkout: a session whose workspace is a linked
+worktree is told its commits could not be applied, and they stay in the parent's store
+for its retention. A child on an executor or pool placement takes no copy, so none comes
+back.
 
 ## Background code mode and MCP on a remote session
 

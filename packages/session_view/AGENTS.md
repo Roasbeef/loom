@@ -971,7 +971,12 @@ entry for a status bar and sits apart from `remote_usage` because it needs
 
 `remote_agent.RemoteAgent` is one child on another orchestrator as the
 `remote_children` snapshot carries it: id (its strand name there), parent,
-orchestrator, `Standing`, title, summary, tokens, model and `age_ms`.
+orchestrator, `Standing`, title, summary, tokens, model and `age_ms`, and
+(protocol-change/107, "Return") the optional `commits` and `returned_ref` of a child
+whose work came back to the parent's repository. The two members are encoded only for
+such a child and decoded as a pair: both present and well formed (a nonnegative count,
+a ref under `refs/loom/children/` within the name bound) or neither, so a client built
+before them reads every entry unchanged.
 `decode_all` is bounded (64 entries, 256 bytes for a row's words and 512 for
 its names) and total, and `within_bound` cuts a list to the 60,000 bytes one
 pushed frame may carry.

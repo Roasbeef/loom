@@ -597,9 +597,10 @@ pub type Message {
     caller: Caller,
     request: agent.SpawnRequest,
     orchestrator: String,
-    /// The state of the workspace the child starts from, captured before the
-    /// stub is written so that the stub names it for every resend.
-    state: Option(state_object.State),
+    /// The state of the workspace the child starts from, and the directory it
+    /// was captured from, captured before the stub is written so that the stub
+    /// names them for every resend.
+    state: Option(Seed),
     reply: Subject(Result(#(String, remote_child.Stub), Refusal)),
   )
 
@@ -4170,10 +4171,31 @@ const remote_join_slack_ms = 10_000
 pub type Seeding {
   Seeding(
     /// Captures the workspace into this node's state store and answers the
-    /// state's description, or why it cannot, in words for the parent's model.
-    /// It holds the workspace's gate while it works and gives it up within a
-    /// deadline, so it may take minutes and never hangs.
-    capture: fn() -> Result(state_object.State, String),
+    /// state's description and the directory it was captured from, or why it
+    /// cannot, in words for the parent's model. It holds the workspace's gate
+    /// while it works and gives it up within a deadline, so it may take minutes
+    /// and never hangs.
+    capture: fn() -> Result(Seed, String),
+    /// Applies the commits a finished child returned into the workspace it was
+    /// started from. The arguments are what the spawn sent, the state the child
+    /// returned and the child's strand. `Ok` is a decision that is final, the
+    /// commits applied or refused for good, and `Error` is a reason to try again
+    /// later, such as a workspace that would not go quiet. It holds the
+    /// workspace's gate while it works.
+    receive: fn(Seed, state_object.State, String) ->
+      Result(remote_child.Returned, String),
+  )
+}
+
+/// A workspace that was sent with a spawn: the state of it, and the canonical
+/// directory it was captured from, so the commits that come back are applied only
+/// into the repository the child started from.
+pub type Seed {
+  Seed(
+    /// The state the spawn sent.
+    state: state_object.State,
+    /// The directory the state was captured from.
+    workspace: String,
   )
 }
 
@@ -4187,9 +4209,16 @@ pub type Seeding {
 /// let assert Error(_) = agency.unseeded().capture()
 /// ```
 pub fn unseeded() -> Seeding {
-  Seeding(capture: fn() {
-    Error("this session has no workspace it can send to another orchestrator")
-  })
+  Seeding(
+    capture: fn() {
+      Error("this session has no workspace it can send to another orchestrator")
+    },
+    receive: fn(_seed, _returned, _child) {
+      Ok(remote_child.NotApplied(
+        "this session has no workspace to apply them to",
+      ))
+    },
+  )
 }
 
 // The words a local spawn that asks for the workspace is refused with.
@@ -4214,7 +4243,7 @@ fn seeded(
   config: Config,
   caller: Caller,
   request: agent.SpawnRequest,
-) -> Result(Option(state_object.State), Refusal) {
+) -> Result(Option(Seed), Refusal) {
   case request.context, caller.minter {
     agent.MyWorkspace, agent.Program(..) ->
       Error(agent.InvalidArgument(reason: program_workspace_refusal))
@@ -4325,7 +4354,7 @@ fn admit_remote(
   caller: Caller,
   request: agent.SpawnRequest,
   orchestrator: String,
-  seed: Option(state_object.State),
+  seed: Option(Seed),
 ) -> Result(#(String, remote_child.Stub), Refusal) {
   use ledger <- result.try(read_ledger(runtime))
   use <- bool.guard(
@@ -4381,7 +4410,7 @@ fn write_stub(
   caller: Caller,
   request: agent.SpawnRequest,
   orchestrator: String,
-  seed: Option(state_object.State),
+  seed: Option(Seed),
 ) -> Result(#(String, remote_child.Stub), Refusal) {
   let key = remote_child.stub_key(agent.call_site_digest(caller))
   use Nil <- result.try(check_capacity(config, runtime, ledger, caller))
@@ -4406,11 +4435,17 @@ fn write_stub(
       ),
       depth: parent_depth(ledger, caller),
       parent_tools: configuration.active_tool_names,
-      request: remote_request(request, seed),
+      request: remote_request(
+        request,
+        option.map(seed, fn(sent) { sent.state }),
+      ),
       name:,
       glance: None,
       glance_seen_ms: 0,
       owed: 0,
+      seeded: option.map(seed, fn(sent) {
+        remote_child.Seeded(workspace: sent.workspace, returned: None)
+      }),
       state: remote_child.Requested,
     )
   use admission <- result.map(
@@ -4626,7 +4661,12 @@ fn placed_spawn(placed: remote_child.Placed) -> Spawned {
 // and another operation, so a handle belongs to a stub by its strand. The
 // receiver judges the operation.
 type Target {
-  Target(handle: Handle, orchestrator: String, key: String)
+  Target(
+    handle: Handle,
+    orchestrator: String,
+    key: String,
+    stub: remote_child.Stub,
+  )
 }
 
 // What one task of a mixed wait brought back: the local handles' answer, or one
@@ -4656,6 +4696,7 @@ fn remote_targets(
             handle:,
             orchestrator: entry.stub.orchestrator,
             key: entry.key,
+            stub: entry.stub,
           ))
         Some(_) | None -> Error(Nil)
       }
@@ -4830,7 +4871,11 @@ fn joined_waits(
   // State what the branch decides before dispatching.
   case answer {
     Ok(entries) ->
-      Ok(list.map(entries, fn(entry) { settle_entry(runtime, targets, entry) }))
+      Ok(
+        list.map(entries, fn(entry) {
+          settle_entry(config, runtime, targets, entry)
+        }),
+      )
     Error(peer_mail.Refused(reason)) ->
       Error(agent.RemoteRefused(orchestrator:, reason:))
     Error(peer_mail.Unreachable) | Error(peer_mail.NotOpen) -> {
@@ -4853,6 +4898,7 @@ fn joined_waits(
 /// finished is recorded on its stub, so the roster and the fan-out count see it
 /// One handle's entry in a join, as the wait the tool renders. A child reported
 fn settle_entry(
+  config: Config,
   runtime: api.Runtime,
   targets: List(Target),
   entry: remote_spawn.Joined,
@@ -4869,21 +4915,140 @@ fn settle_entry(
       notes:,
       usage:,
       owed:,
-      ..,
+      state:,
     ) -> {
-      // State what the branch decides before dispatching.
-      case list.find(targets, fn(target) { target.handle == handle }) {
+      // A child this session holds a stub for is recorded settled, and the commits
+      // it returned, if any, are applied and told in a sentence of its report.
+      let report = case
+        list.find(targets, fn(target) { target.handle == handle })
+      {
         Ok(target) -> {
           let _recorded =
             remote_child.settled(runtime, target.key, outcome, usage, owed)
-          Nil
+          returned_report(config, runtime, target, report, state)
         }
-        Error(Nil) -> Nil
+        Error(Nil) -> report
       }
 
       Ready(handle:, outcome:, report:, result:, notes:)
     }
   }
+}
+
+/// The report of a settled child with the sentence about its returned commits
+/// appended (protocol-change/107, "Return").
+///
+/// A child that was handed no workspace has none. One whose commits have been
+/// decided before is told from the stub, so a second wait neither applies nor
+/// asks again. One whose join carries a state has it applied now, into the
+/// workspace it was started from, and the answer is recorded when it is final.
+/// A reason to try later is told and not recorded, so the next wait applies it
+/// again. The sentence is fixed words, the ref (letters, digits and dashes only,
+/// built from the daemon-minted child name and a commit id) and a count, plus a
+/// bounded reason on a refusal; nothing a peer wrote is interpolated unbounded.
+fn returned_report(
+  config: Config,
+  runtime: api.Runtime,
+  target: Target,
+  report: String,
+  state: Option(state_object.State),
+) -> String {
+  // What became of the commits, from what the stub recorded and the join carries.
+  let answered = case target.stub.seeded, target.stub.request.state, state {
+    // A child that was handed no workspace is reported as it was.
+    None, _, _ -> None
+    Some(remote_child.Seeded(returned: Some(returned), ..)), _, _ ->
+      Some(Known(returned))
+
+    // A join that carries no state has nothing to apply.
+    Some(_), _, None -> None
+    Some(_), None, Some(_) -> None
+
+    // The commits are applied into the workspace the child started from.
+    Some(remote_child.Seeded(workspace:, returned: None)),
+      Some(sent),
+      Some(back)
+    ->
+      Some(
+        case
+          config.seeding.receive(
+            Seed(state: sent, workspace:),
+            back,
+            target.handle.strand,
+          )
+        {
+          Ok(returned) -> Decided(returned)
+          Error(reason) -> Deferred(reason)
+        },
+      )
+  }
+
+  // A final answer is written once; a reason to wait is only told.
+  case answered {
+    None -> report
+    Some(Known(returned)) -> joined_text(report, returned_sentence(returned))
+    Some(Decided(returned)) -> {
+      let _recorded = remote_child.returned(runtime, target.key, returned)
+      joined_text(report, returned_sentence(returned))
+    }
+    Some(Deferred(reason)) ->
+      joined_text(
+        report,
+        "Its commits reached this machine and could not be applied yet: "
+          <> bounded_reason(reason)
+          <> ". Ask again to retry, and ask from a tool call and not from a code-mode program: a program holds the workspace the apply has to wait for, so it would be refused every time.",
+      )
+  }
+}
+
+/// What became of a settled child's returned commits when a join was answered.
+type Answer {
+  /// Decided by an earlier join, and read back from the stub.
+  Known(returned: remote_child.Returned)
+
+  /// Decided by this join, and not yet written to the stub.
+  Decided(returned: remote_child.Returned)
+
+  /// Not decidable now; the next wait applies them again.
+  Deferred(reason: String)
+}
+
+/// Appends one paragraph to a report.
+fn joined_text(report: String, sentence: String) -> String {
+  case report {
+    "" -> sentence
+    _ -> report <> "\n\n" <> sentence
+  }
+}
+
+/// The sentence for what became of a child's returned commits.
+fn returned_sentence(returned: remote_child.Returned) -> String {
+  case returned {
+    remote_child.Applied(ref:, commits:) ->
+      "The child committed "
+      <> int.to_string(commits)
+      <> case commits {
+        1 -> " commit"
+        _ -> " commits"
+      }
+      <> " on top of your workspace. They are in your repository at `"
+      <> ref
+      <> "`, and nothing in your checkout changed. Inspect them with `git log "
+      <> ref
+      <> "`, then bring them in with `git cherry-pick` or `git merge "
+      <> ref
+      <> "`."
+    remote_child.NotApplied(reason:) ->
+      "Its commits reached this machine and were not applied to your repository: "
+      <> bounded_reason(reason)
+      <> "."
+  }
+}
+
+/// A reason cut to a length one sentence can carry, with control characters made
+/// printable.
+fn bounded_reason(reason: String) -> String {
+  glance.clip(reason, 300)
 }
 
 /// for fewer handles than it was asked about leaves the rest pending.

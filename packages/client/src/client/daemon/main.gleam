@@ -122,6 +122,7 @@ import client/remote_mail
 import client/remote_reach
 import client/remote_release
 import client/remote_spawn
+import client/return_apply
 import client/roster.{type Roster}
 import client/serve
 import client/session_directory
@@ -129,6 +130,7 @@ import client/session_importer
 import client/session_move
 import client/session_mover
 import client/session_movers
+import client/spawn_return
 import client/spawn_seed
 import client/spawners
 import client/state_capture
@@ -1182,6 +1184,7 @@ pub fn start_states(
       // making them, so a daemon that starts has none that are live.
       let _swept =
         simplifile.delete(root <> "/" <> spawn_seed.staging_directory)
+      spawn_return.sweep(root)
       use store <- result.try(state_store.open(
         state_store.directory(root),
         state_store.default_limits,
@@ -1409,7 +1412,7 @@ pub fn start_orchestrator_port(
   // Skip orchestrator port setup unless membership is configured.
   case config.membership {
     None -> Ok(Nil)
-    Some(_) -> {
+    Some(membership) -> {
       use ready <- result.try(root.ready(daemon, within: 20_000))
       use domain_configuration <- result.try(captured_domain_configuration(
         config.session_defaults,
@@ -1496,6 +1499,11 @@ pub fn start_orchestrator_port(
             fn(spawner, site, request) {
               spawn_seed.receive(config.state_node, spawner, site, request)
             },
+            spawn_return.over(
+              config.state_node,
+              remote_spawner.state_link_to(membership),
+              logger,
+            ),
             logger,
           ),
           child_host(orchestrator_roster(config), ready.registry, child_inbox),
@@ -1903,6 +1911,7 @@ pub fn spawn_host(
     fn(spawner, site, request) {
       spawn_seed.receive(state_node.none(), spawner, site, request)
     },
+    spawn_return.none(),
     logger,
   )
 }
@@ -1914,10 +1923,16 @@ pub fn spawn_host(
 /// state is not all in the store, and otherwise makes the copy and returns the
 /// request the Agency serves (`client/spawn_seed.receive`).
 ///
+/// `returning` is the other end of a seeded child's life
+/// (`client/spawn_return`): a spawn that was handed a state is remembered once it
+/// has started, and each entry of a join is passed through it, so a finished child's
+/// commits are captured and sent to the parent's machine before the entry is
+/// answered.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // main.spawn_host_seeding([], delegates, releasing, existing, seeded, logger)
+/// // main.spawn_host_seeding([], delegates, releasing, existing, seeded, spawn_return.none(), logger)
 /// ```
 @internal
 pub fn spawn_host_seeding(
@@ -1930,6 +1945,7 @@ pub fn spawn_host_seeding(
     Result(Option(agency.DelegateEndpoint), remote_spawn.SpawnRefusal),
   seeded: fn(spawners.Spawner, remote_spawn.CallSite, remote_spawn.Request) ->
     Result(remote_spawn.Request, remote_spawn.SpawnRefusal),
+  returning: spawn_return.Returning,
   logger: Logger,
 ) -> orchestrator_port.SpawnHost {
   let spawner_of = fn(origin: remote_spawn.Origin) {
@@ -1964,9 +1980,9 @@ pub fn spawn_host_seeding(
         // A state is judged first, so a spawner that may not send one leaves no
         // session and no copy behind.
         use spawner <- result.try(spawner_of(origin))
-        use request <- result.try(seeded(spawner, call_site, request))
+        use served <- result.try(seeded(spawner, call_site, request))
         use #(spawner, endpoint) <- result.try(serving(origin))
-        endpoint.spawn(
+        use spawned <- result.map(endpoint.spawn(
           remote_spawn.Delegation(
             parent: origin.parent,
             depth:,
@@ -1974,8 +1990,25 @@ pub fn spawn_host_seeding(
             terms: delegate_host.terms_of(spawner),
           ),
           call_site,
-          request,
-        )
+          served,
+        ))
+
+        // A child that was handed a state is remembered once it exists, so that
+        // its commits can be returned when it has finished. A resend of the same
+        // spawn remembers the same child again.
+        case request.state {
+          Some(state) ->
+            returning.remember(
+              spawner,
+              origin.parent,
+              call_site,
+              state,
+              spawned.handle,
+            )
+          None -> Nil
+        }
+
+        spawned
       }
 
       // Include admission refusals before a session is found; the minter and
@@ -2009,8 +2042,12 @@ pub fn spawn_host_seeding(
       outcome
     },
     join: fn(origin, handles, within_ms) {
-      use #(_spawner, endpoint) <- result.try(serving(origin))
-      endpoint.join(origin.parent, handles, within_ms)
+      use #(spawner, endpoint) <- result.try(serving(origin))
+      use entries <- result.map(endpoint.join(origin.parent, handles, within_ms))
+
+      // A finished child that was handed a state has its commits returned
+      // before it is reported finished.
+      list.map(entries, returning.settle(spawner, origin.parent, _))
     },
     run_ended: fn(origin, operation) {
       use #(_spawner, endpoint) <- result.try(serving(origin))
@@ -2187,6 +2224,7 @@ fn reach_of(
         fn() { list.contains(manager.unshared_sessions(registry), session) },
         config.state_node.store,
         local_capture(config),
+        local_apply(config),
         logger,
       ))
     Some(membership), Ok(Some(marker)) ->
@@ -2201,6 +2239,7 @@ fn reach_of(
           fn() { True },
           config.state_node.store,
           local_capture(config),
+          local_apply(config),
           logger,
         )
         |> remote_reach.restricted(spawner.spawn_on)
@@ -2230,6 +2269,22 @@ fn local_capture(
       state_capture.capture(capturer, directory, identity, state_object.Full)
     }
   })
+}
+
+/// How a session of this daemon applies the commits a finished child returned into
+/// the repository its workspace is (protocol-change/107, "Return"), or `None` when
+/// the daemon keeps no store or could not start a sandboxed Git. The session's
+/// assembly runs it behind the workspace's gate.
+fn local_apply(
+  config: Config,
+) -> Option(
+  fn(String, state_object.State, state_object.State, String) ->
+    Result(#(String, Int), String),
+) {
+  case config.state_node.store, config.state_node.git {
+    Some(store), Some(git) -> Some(return_apply.from_store(store, git))
+    None, _ | _, None -> None
+  }
 }
 
 /// The deepest spawn a session's Agency admits, or `None` for the Agency's own
