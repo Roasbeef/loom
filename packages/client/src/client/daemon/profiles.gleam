@@ -91,6 +91,21 @@ pub fn model_keys(configuration: String) -> Result(List(String), String) {
   read(configuration, catalog.model_keys)
 }
 
+/// The model keys a `vision` pin accepts, sorted: the keys of `model_keys` whose
+/// entry reads images (`catalog.vision_model_keys`). It is read and worded as
+/// `model_keys` is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert profiles.vision_model_keys("") == Ok([])
+/// ```
+pub fn vision_model_keys(
+  configuration: String,
+) -> Result(List(String), String) {
+  read(configuration, catalog.vision_model_keys)
+}
+
 // Reads the file and lists what `pick` takes from its parsed catalogue. The file
 // is read each time, so an edit made since the last creation is seen. The
 // environment-only configuration, which has no file, offers neither profiles nor

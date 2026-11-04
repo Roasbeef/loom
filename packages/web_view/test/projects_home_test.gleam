@@ -197,6 +197,7 @@ fn start_with(projects: option.Option(home.Projects)) -> home.Start {
     projects:,
     profiles: [],
     models: [],
+    readers: [],
     signins: fn(deliver) { deliver(signins.Listed([])) },
     login: None,
     bookmark: None,

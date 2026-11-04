@@ -137,6 +137,7 @@ fn start(visiting: option.Option(home.Visit)) -> home.Start {
     projects: None,
     profiles: [],
     models: [],
+    readers: [],
     signins: fn(deliver) { deliver(signins.Listed([])) },
     login: None,
     bookmark: None,

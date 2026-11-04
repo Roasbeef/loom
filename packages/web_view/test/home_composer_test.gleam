@@ -117,6 +117,7 @@ fn owner(asked: Asked) -> home.Start {
     projects: None,
     profiles: ["fast"],
     models: ["glm"],
+    readers: ["glm"],
     signins: fn(deliver) { deliver(signins.Listed([])) },
     login: None,
     bookmark: None,
@@ -263,7 +264,7 @@ pub fn a_start_asks_the_daemon_once_for_the_chosen_place_test() {
       creations.Drawn("/src/weft"),
       "docs",
       creations.Private,
-      creations.Roles(Some("fast"), Some("glm")),
+      creations.Roles(Some("fast"), Some("glm"), None),
       "docs",
     ))
 
@@ -300,6 +301,35 @@ pub fn a_forged_choice_is_refused_and_never_asked_test() {
       "x",
     ))
   assert !string.contains(drawn(model), "/etc")
+}
+
+// The Model list draws a vision section from the models that read images, and a
+// start carries the vision key beside the others. A key the page did not list as
+// a reader is refused and changes nothing (protocol-change/108).
+pub fn a_vision_choice_is_offered_from_readers_and_asked_once_test() {
+  let asked = process.new_subject()
+  let model = opened(owner(asked))
+  let model = run(model, compose(composer.Toggled(composer.ModelChip)))
+  assert string.contains(drawn(model), "Vision model")
+
+  let model = run(model, compose(composer.ChoseModel(Some("glm"))))
+  let model = run(model, compose(composer.ChoseVision(Some("glm"))))
+  let before = drawn(model)
+  let model = run(model, compose(composer.ChoseVision(Some("secret"))))
+  assert drawn(model) == before
+
+  let model =
+    run(model, compose(composer.ChoseTarget(composer.Folder("/src/weft"))))
+  let model = run(model, compose(composer.Started("docs", composer.Nothing)))
+  assert process.receive(asked, 0)
+    == Ok(#(
+      creations.Drawn("/src/weft"),
+      "docs",
+      creations.Private,
+      creations.Roles(None, Some("glm"), Some("glm")),
+      "docs",
+    ))
+  let _ = model
 }
 
 // The code list: the folders, one section for each executor with what it

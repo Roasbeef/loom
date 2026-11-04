@@ -79,6 +79,7 @@ fn page(
     projects: None,
     profiles: [],
     models: [],
+    readers: [],
     signins: fn(deliver) { deliver(signins.Listed([])) },
     login: None,
     bookmark: None,
@@ -568,14 +569,17 @@ pub fn the_registered_form_offers_the_profile_and_the_model_test() {
   assert string.contains(html, "name=\"model\"")
   assert string.contains(html, "replaces the main model the profile gives")
 
-  let picked = creations.Roles(Some("alt"), Some("fast"))
+  let picked = creations.Roles(Some("alt"), Some("fast"), None)
   let _ = run(model, home.CreatingRemote("app", "", picked))
   assert the_asked(asked)
     == Ok(#(creations.Registered("box", "app"), "", creations.Shareable, picked))
 
   // A profile the page never offered asks nothing.
   let _ =
-    run(model, home.CreatingRemote("app", "", creations.Roles(Some("x"), None)))
+    run(
+      model,
+      home.CreatingRemote("app", "", creations.Roles(Some("x"), None, None)),
+    )
   assert the_asked(asked) == Error(Nil)
 }
 
@@ -761,7 +765,7 @@ pub fn the_fields_decode_totally_test() {
       ["alt"],
       ["fast"],
     )
-    == Ok(#("tools", "", creations.Roles(Some("alt"), None)))
+    == Ok(#("tools", "", creations.Roles(Some("alt"), None, None)))
   assert create.remote_fields_with_roles(
       [#("workspace", "1"), #("name", ""), #("model", "3")],
       offered,

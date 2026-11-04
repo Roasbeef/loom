@@ -60,6 +60,7 @@ fn start(
     projects: None,
     profiles: [],
     models: [],
+    readers: [],
     signins: fn(deliver) { deliver(signins.Listed([])) },
     login: None,
     bookmark: None,

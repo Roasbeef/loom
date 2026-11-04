@@ -3217,6 +3217,25 @@ pub fn model_keys(catalog: Catalog) -> List(String) {
   |> list.filter(stored_catalogue.is_model_key)
 }
 
+/// The keys of the `[models.<key>]` entries a `vision` pin accepts: those of
+/// `model_keys` that read images, which is every entry unless it declares
+/// `vision = false`. The new-session form offers only these beside the
+/// `vision` role, so a refusal at creation is the rare answer to a stale page
+/// and not the usual one (protocol-change/108).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalog.vision_model_keys(catalogue) -> ["anthropic-opus"]
+/// ```
+///
+pub fn vision_model_keys(catalog: Catalog) -> List(String) {
+  catalog.models
+  |> list.filter(fn(entry) { entry.vision == ReadsImages })
+  |> list.map(fn(entry) { entry.name })
+  |> list.filter(stored_catalogue.is_model_key)
+}
+
 /// Why a role pin cannot be applied, which decides the code the daemon answers
 /// with (protocol-change/108). The message is the sentence a person reads.
 pub type PinRefusal {

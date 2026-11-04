@@ -904,6 +904,13 @@ pub fn upgrade_home(
     None -> []
   }
 
+  // The keys among them that read images are told too, so the form offers only
+  // those beside the `vision` role (protocol-change/108).
+  let readers = case creating {
+    Some(_) -> attachment.readers()
+    None -> []
+  }
+
   // The executors a registered workspace may be created on (protocol-change/078)
   // are told to the same page for the same reason, and are the daemon's startup
   // capture, so there is no read to make. A creation checks the executor again
@@ -1143,6 +1150,7 @@ pub fn upgrade_home(
       creating,
       profiles,
       models,
+      readers,
       executors,
       pools,
       placing,
@@ -1723,6 +1731,7 @@ fn admit_home(
   ),
   profiles: List(String),
   models: List(String),
+  readers: List(String),
   executors: List(String),
   pools: List(String),
   placing: fn(fn(placements.Read) -> Nil) -> Nil,
@@ -1772,6 +1781,7 @@ fn admit_home(
       create: creating,
       profiles:,
       models:,
+      readers:,
       executors:,
       pools:,
       machine: attachment.machine,
@@ -3288,8 +3298,7 @@ pub fn create_with(
       name,
       "",
       roles.profile,
-      option.map(roles.model, fn(key) { [#(catalogue.PinMain, key)] })
-        |> option.unwrap([]),
+      pins_of(roles),
       executor_of(place),
       pool_of(place),
     )
@@ -7284,4 +7293,28 @@ pub fn first_prompt(
 
     _ -> Error("the session did not accept the message")
   }
+}
+
+/// The role pins a creation's chosen roles ask for, in the fixed role order the
+/// daemon's own decoder reads them in: `main` first, then `vision`. The page
+/// chose each key from a list it was told, and the daemon checks them again
+/// against its configuration when the creation runs (protocol-change/108).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // pins_of(creations.Roles(None, Some("flash"), Some("opus")))
+/// // == [#(catalogue.PinMain, "flash"), #(catalogue.PinVision, "opus")]
+/// ```
+fn pins_of(roles: creations.Roles) -> List(#(catalogue.PinnedRole, String)) {
+  list.flatten([
+    case roles.model {
+      Some(key) -> [#(catalogue.PinMain, key)]
+      None -> []
+    },
+    case roles.vision {
+      Some(key) -> [#(catalogue.PinVision, key)]
+      None -> []
+    },
+  ])
 }

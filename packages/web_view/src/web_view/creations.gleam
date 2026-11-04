@@ -51,9 +51,10 @@ pub type Sharing {
 }
 
 /// Which model roles a creation asks for, beyond the daemon's defaults
-/// (protocol-change/076 and 080). A profile and a model are independent and
-/// compose: the model, when there is one, replaces the `main` chain of whatever
-/// role set the profile (or the configuration) gives. Both are text the page was
+/// (protocol-change/076, 080 and 108). A profile and the pinned models are
+/// independent and compose: each model, when there is one, replaces the chain
+/// of its role (`main` or `vision`) in whatever role set the profile (or the
+/// configuration) gives. Both are text the page was
 /// told when it opened, chosen from a list and never typed, and the daemon checks
 /// each against its configuration again when the creation runs.
 pub type Roles {
@@ -63,12 +64,17 @@ pub type Roles {
     /// The `[models.<key>]` key the session's `main` role is pinned to, or
     /// `None` for the chain the profile or configuration gives.
     model: Option(String),
+    /// The `[models.<key>]` key the session's `vision` role is pinned to
+    /// (protocol-change/108), or `None` for the chain the profile or
+    /// configuration gives. The page offers only keys that read images, and the
+    /// daemon checks again when the creation runs.
+    vision: Option(String),
   )
 }
 
 /// The roles a creation gets when the form chose nothing: the configuration's
 /// own, with no profile and no pinned model.
-pub const default_roles = Roles(profile: None, model: None)
+pub const default_roles = Roles(profile: None, model: None, vision: None)
 
 /// The most bytes a typed path may hold, which is the catalogue's own bound on
 /// a workspace.

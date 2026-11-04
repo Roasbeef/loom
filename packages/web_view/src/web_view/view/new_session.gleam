@@ -116,6 +116,8 @@ pub type Presses(message) {
     profile: fn(Option(String)) -> message,
     /// A main model was pressed, or the default.
     model: fn(Option(String)) -> message,
+    /// A vision model was pressed, or the default.
+    vision: fn(Option(String)) -> message,
     /// The code list's search text changed.
     search: fn(String) -> message,
     /// The form was submitted with this message and this typed field.
@@ -681,18 +683,44 @@ fn model_list(pane: Pane(message)) -> Element(message) {
             html.div([attribute.class("sep")], []),
             section_head("Main model", "pins the main role"),
             choice("Default", pick(roles.model, None), presses.model(None)),
-            ..list.map(pane.offers.models, fn(name) {
-              choice(
-                name,
-                pick(roles.model, Some(name)),
-                presses.model(Some(name)),
-              )
-            })
+            ..list.append(
+              list.map(pane.offers.models, fn(name) {
+                choice(
+                  name,
+                  pick(roles.model, Some(name)),
+                  presses.model(Some(name)),
+                )
+              }),
+              vision_section(pane),
+            )
           ],
         ),
       )
     ],
   )
+}
+
+/// The Model list's vision section: the default, then the models that read
+/// images. It is drawn only when the agent's machine named some, because a
+/// text-only entry can never be pinned to the role (protocol-change/108), and
+/// another orchestrator names none.
+fn vision_section(pane: Pane(message)) -> List(Element(message)) {
+  let roles = pane.state.roles
+  let presses = pane.presses
+
+  // An agent that named no reader has no vision section at all, so the list
+  // reads as it did before the role could be pinned.
+  case pane.offers.readers {
+    [] -> []
+    readers -> [
+      html.div([attribute.class("sep")], []),
+      section_head("Vision model", "pins the vision role"),
+      choice("Default", pick(roles.vision, None), presses.vision(None)),
+      ..list.map(readers, fn(name) {
+        choice(name, pick(roles.vision, Some(name)), presses.vision(Some(name)))
+      })
+    ]
+  }
 }
 
 /// The profile list's "Default" row. A box has no default profile, since a create

@@ -2399,6 +2399,17 @@ fn pinning_catalogue() -> catalog.Catalog {
   parsed
 }
 
+// The keys a `vision` pin accepts are the model keys less any entry that
+// declares `vision = false`, in the same order, so the form never offers a
+// text-only entry for the role.
+pub fn vision_model_keys_leave_out_a_text_only_entry_test() {
+  let parsed = pinning_catalogue()
+  assert list.contains(catalog.model_keys(parsed), "blind")
+  assert !list.contains(catalog.vision_model_keys(parsed), "blind")
+  assert catalog.vision_model_keys(parsed)
+    == list.filter(catalog.model_keys(parsed), fn(key) { key != "blind" })
+}
+
 pub fn pinned_roles_change_and_unpinned_roles_keep_their_chains_test() {
   let assert Ok(parsed) = catalog.parse(with_profiles)
   let assert Ok(pinned) =

@@ -335,6 +335,18 @@ Not implemented by this proposal. The change touches:
   that fails on a removed or newly text-only entry, `profile_set` leaving a
   pinned strand in place, and the `pins` field of the snapshot.
 
+## Implementation note: what the web form chose
+
+The web home's composer offers two of the seven roles, `main` (as before) and
+`vision`, as a section of its existing Model list; the other five reach the
+daemon through `roles` only. The old create forms keep their one Main model
+select. The vision flag reaches the page as a second list, `Start.readers`, the
+keys among `Start.models` that read images, and not as a flag on each entry:
+every consumer of `Start.models` keeps its type, and the page learns the same
+fact. Another orchestrator's offers (`orchestrators.Offers`) do not carry it, so
+the composer offers no vision section there and a creation on it never carries a
+vision key. The daemon checks the pin again at creation either way.
+
 ## Verification
 
 The properties to pin are the ones in the sketch's test list. In addition, a

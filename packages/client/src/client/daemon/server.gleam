@@ -381,6 +381,10 @@ pub type HomeAttachment(instance) {
     /// bounded as `profiles` is, and a key is only a name: nothing else of a
     /// `[models.<key>]` entry is ever handed to a page.
     models: fn() -> List(String),
+    /// The subset of `models` that read images, which the forms offer beside the
+    /// `vision` role (protocol-change/108). It is read as `models` is, and is
+    /// only keys: the page learns no more of an entry than that it reads images.
+    readers: fn() -> List(String),
     /// The `[executors.<name>]` names of the daemon's configuration, in the
     /// order the configuration lists them, which the owner's page offers a form
     /// for a registered workspace on (protocol-change/078). They are the
@@ -882,6 +886,10 @@ fn home_upgrade(
             },
             models: fn() {
               profiles.model_keys(config.domain_configuration)
+              |> result.unwrap([])
+            },
+            readers: fn() {
+              profiles.vision_model_keys(config.domain_configuration)
               |> result.unwrap([])
             },
             executors: list.map(roster.rows(config.executors), fn(executor) {

@@ -7066,8 +7066,13 @@ opens on the default model; with no config file it fails like a profile does.
 `unknown_model`, and the control dispatch words it with the keys that exist.
 `HomeAttachment.models` reads `profiles.model_keys` for the web form once at page
 open and, as for profiles, only for a page that holds the creation capability.
-`ui_socket.create_for` and `create_task` take a `creations.Roles` in place of a
-bare profile and map `unknown_model` to `creations.UnknownModel`. The observer
+`HomeAttachment.readers` is the subset of those keys that read images
+(`profiles.vision_model_keys`, from `catalog.vision_model_keys`, which leaves out
+an entry declaring `vision = false`); the page offers only these beside the
+`vision` role (protocol-change/108). `ui_socket.create_for` and `create_task` take a
+`creations.Roles` (`profile`, `model`, `vision`) in place of a bare profile and
+map `model` to the pin `main` and `vision` to the pin `vision` (`pins_of`), and
+map `unknown_model` to `creations.UnknownModel`. The observer
 socket's admission is untouched: the form's existing submit carries the field.
 
 The model composes with a session's place (protocol 078): `manager.Creation` and
