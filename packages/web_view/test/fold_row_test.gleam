@@ -576,7 +576,7 @@ pub fn a_failed_spawn_says_why_it_failed_test() {
     ))
   assert string.contains(
     html,
-    "Spawned · Failed: the box refused: no &lt;b&gt;seed&lt;/b&gt; &lt;script&gt;alert(1)&lt;/script&gt;",
+    "Spawned · failed: the box refused: no &lt;b&gt;seed&lt;/b&gt; &lt;script&gt;alert(1)&lt;/script&gt;",
   )
   assert string.contains(
     html,
@@ -590,7 +590,7 @@ pub fn a_failed_spawn_says_why_it_failed_test() {
 pub fn a_failed_spawn_without_a_reason_reads_as_before_test() {
   let html = failed_spawn(None)
   assert string.contains(html, "Spawned · failed")
-  assert !string.contains(html, "Failed:")
+  assert !string.contains(html, "failed:")
 }
 
 pub fn a_long_result_is_its_first_line_opened_to_the_report_test() {

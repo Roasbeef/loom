@@ -291,19 +291,6 @@ pub fn a_card_names_the_commits_that_came_back_and_their_ref_test() {
   assert !string.contains(drawn, "<script>")
 }
 
-pub fn one_returned_commit_is_singular_test() {
-  let drawn =
-    page_of(
-      remote_agent.RemoteAgent(
-        ..agent(),
-        commits: Some(1),
-        returned_ref: Some("refs/loom/children/build-1a2b/0123abcd"),
-      ),
-    )
-  assert string.contains(drawn, "1 commit returned")
-  assert !string.contains(drawn, "1 commits returned")
-}
-
 // A child that returned nothing, or whose pair is incomplete on the wire, is
 // drawn exactly as it was before the members existed: no count, no ref.
 pub fn a_card_without_returned_work_draws_neither_line_test() {

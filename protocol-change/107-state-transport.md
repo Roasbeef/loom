@@ -762,7 +762,7 @@ card (`Failed · <reason>`, from the entry's `summary`). What had no reason was 
 transcript's spawn line of a call that failed, which read `Spawned · failed` because the
 failed result's details were not read. `turns.Spawned` gains `refusal`, the `reason` detail
 of the agency's refusal outcome, made one line and cut to 300 characters, and the line reads
-`Spawned · Failed: <reason>`. A failure that recorded no reason reads as it did. The reason
+`Spawned · failed: <reason>`. A failure that recorded no reason reads as it did. The reason
 may quote what a remote orchestrator said, so it is a text node like every other word from
 another machine.
 

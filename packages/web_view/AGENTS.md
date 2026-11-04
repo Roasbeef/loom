@@ -903,7 +903,7 @@ page keys and nonces, and the relay into the session's gateway.
   `turns.attributed` sets it on that principal's messages in
   `component.relaned`. A sender with no such attachment shows the name alone,
   so an observer's page and an operator's draw the same words for a message. A spawn is a line (`Spawned <tag> · purpose`;
-  a call that failed names no child and reads `Spawned · Failed: <reason>` when its
+  a call that failed names no child and reads `Spawned · failed: <reason>` when its
   result recorded one, `Spawned · failed` when not)
   and a result is a line naming the child (`<tag> finished`) with the first
   line of the report, opened to the whole report when it runs longer

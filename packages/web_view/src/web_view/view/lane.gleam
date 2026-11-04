@@ -1186,14 +1186,14 @@ fn item_element(
 }
 
 /// What a spawn line says when it has no child to name. A failed call that
-/// recorded a reason says `Failed: <reason>`, where the reason is the one
+/// recorded a reason says `failed: <reason>`, the same word as without one, where the reason is the one
 /// bounded line `session_view/turns` kept, drawn by the caller as a text node.
 /// Every other standing keeps the plain word, so a failure without a reason
 /// reads as it did before reasons were carried.
 fn spawn_standing(standing: turns.Standing, refusal: Option(String)) -> String {
   // Only a failed call has a reason to say; the plain word serves the rest.
   case standing, refusal {
-    turns.Failed, Some(reason) -> "Failed: " <> reason
+    turns.Failed, Some(reason) -> standing_text(standing) <> ": " <> reason
     turns.Failed, None | turns.Pending, _ | turns.Done, _ ->
       standing_text(standing)
   }

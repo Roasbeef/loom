@@ -1310,7 +1310,7 @@ fn entry_kind(
       }
 
       // The reason of a failed spawn is read before the payload is cleared.
-      let reason = refusal_of(details, is_error)
+      let reason = refusal_of(details, outcome)
 
       // Clear details payload if execution resulted in error.
       let details = case is_error {
@@ -1633,11 +1633,11 @@ pub const refusal_limit = 300
 /// The one-line, bounded reason of a failed spawn result, when it has one.
 fn refusal_of(
   details: Option(json.JsonValue),
-  is_error: Bool,
+  standing: Standing,
 ) -> Option(String) {
-  case is_error {
-    False -> None
-    True ->
+  case standing {
+    Pending | Done -> None
+    Failed ->
       details
       |> option.then(field_text(_, "reason"))
       |> option.map(fn(reason) {
@@ -1652,20 +1652,21 @@ fn refusal_of(
   }
 }
 
+/// The details a call's result recorded, whether or not it failed.
+fn recorded_details(
+  outcome: Option(message.AgentMessage),
+) -> Option(json.JsonValue) {
+  case outcome {
+    Some(message.ToolResultMessage(details:, ..)) -> details
+    Some(_) | None -> None
+  }
+}
+
 /// A reason cut to `refusal_limit` characters, marking the cut with `…`.
 fn cut_reason(reason: String) -> String {
   case string.length(reason) > refusal_limit {
     True -> string.slice(reason, 0, refusal_limit - 1) <> "…"
     False -> reason
-  }
-}
-
-/// The reason a call's result carries when the call failed.
-fn refusal(outcome: Option(message.AgentMessage)) -> Option(String) {
-  case outcome {
-    Some(message.ToolResultMessage(details:, is_error:, ..)) ->
-      refusal_of(details, is_error)
-    Some(_) | None -> None
   }
 }
 
@@ -1699,7 +1700,7 @@ fn called(
         Some(call.invocation),
         details(call.outcome),
         standing,
-        refusal(call.outcome),
+        refusal_of(recorded_details(call.outcome), standing),
         strands,
       )),
     ]
