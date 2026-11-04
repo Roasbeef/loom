@@ -1651,6 +1651,7 @@ pub fn the_state_root_masks_name_the_secrets_and_not_the_root_test() {
     "/home/o/.loom/catalogue.db",
     "/home/o/.loom/workspaces",
     "/home/o/.loom/domains",
+    "/home/o/.loom/repository-snapshots",
     "/home/o/.loom/locks",
     "/home/o/.loom/daemon.lock",
     "/home/o/.loom/launch.lock",
@@ -2567,6 +2568,7 @@ pub fn a_managed_blob_store_is_covered_by_a_state_root_mask_test() {
   let state = absolute("build/blob-mask-state")
   make(state <> "/workspaces")
   make(state <> "/domains")
+  make(state <> "/repository-snapshots")
   let settings = settings_under("build/blob-mask-session")
   let domain = serve.workspace_data_root(state, settings.workspace)
   let managed =
@@ -2744,6 +2746,7 @@ fn blob_jail_fixture(name: String) -> BlobJail {
   make(state <> "/sessions")
   make(state <> "/run")
   make(state <> "/domains")
+  make(state <> "/repository-snapshots")
   list.each(["owner.token", "catalogue.db", "daemon.lock"], fn(entry) {
     let assert Ok(Nil) = simplifile.write(state <> "/" <> entry, "x")
       as "a state-root entry must be writable"

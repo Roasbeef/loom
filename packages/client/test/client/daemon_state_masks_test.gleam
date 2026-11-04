@@ -244,6 +244,13 @@ fn jailed_readings(base: policy.SandboxPolicy, root: String) -> Nil {
   assert !string.contains(text, credential)
     as "no byte of the credential reaches the jail"
 
+  // A different session must not read captured repository bytes either.
+  let #(code, text) =
+    jailed(helper, base, root, "cat repository-snapshots/canary")
+  assert code != 0 as "repository snapshots are unreadable from the jail"
+  assert !string.contains(text, "snapshot-private-canary")
+    as "snapshot bytes stay out of the jail"
+
   let retired = exec.close(helper, waiting: 5000)
   assert retired == Ok(Nil) as "the masking fixture retires its helper"
 }
@@ -338,7 +345,15 @@ fn fake_state_root(label: String) -> String {
     as "every policy path is absolute"
 
   list.each(
-    ["sessions", "tokens", "locks", "workspaces", "domains", ".tmp"],
+    [
+      "sessions",
+      "tokens",
+      "locks",
+      "workspaces",
+      "domains",
+      "repository-snapshots",
+      ".tmp",
+    ],
     fn(name) {
       let assert Ok(Nil) = native.ensure_private_directory(root <> "/" <> name)
         as "the fixture's state root has the daemon's directories"
@@ -354,6 +369,7 @@ fn fake_state_root(label: String) -> String {
       #("catalogue.db-wal", "fixture-wal"),
       #("daemon.lock", ""),
       #("loom.toml", catalogue_document),
+      #("repository-snapshots/canary", "snapshot-private-canary"),
     ],
     fn(entry) {
       let assert Ok(Nil) = simplifile.write(root <> "/" <> entry.0, entry.1)

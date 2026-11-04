@@ -6,6 +6,8 @@
 //// directory descriptors anchored to the original write grant. The
 //// global scope leaves repository overrides and preserved commit authors intact.
 //// Neither query nor publication can exceed the session's filesystem policy.
+//// A snapshot caller can instead resolve the source repository's effective
+//// name and email; that projection never copies the surrounding configuration.
 
 import broker/broker
 import broker/budget
@@ -27,6 +29,37 @@ import tools/tool
 /// The server selects the generated global configuration for every tool.
 pub const environment_name = "GIT_CONFIG_GLOBAL"
 
+/// The resolved identity values copied into a child's isolated tool home.
+///
+/// These values are convenience configuration, not an authentication authority.
+pub type Identity {
+  Identity(
+    /// The last configured user.name, if present.
+    name: Option(String),
+    /// The last configured user.email, if present.
+    email: Option(String),
+  )
+}
+
+/// Resolves the parent's effective identity under its existing read policy.
+///
+/// Repository settings override global settings, and the last value wins.
+/// Missing values remain missing rather than being inferred from the host.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // git_identity.resolve(wiring, Some("/home/operator"), reading: host_env)
+/// // -> Ok(git_identity.Identity(Some("Operator"), Some("operator@example.com")))
+/// ```
+pub fn resolve(
+  wiring: worktree_diff.Wiring,
+  home: Option(String),
+  reading reading: fn(String) -> Result(String, Nil),
+) -> Result(Identity, String) {
+  configured_identity(wiring, home, reading, scope: Effective)
+}
+
 /// Publishes identity defaults before model work can create commits.
 ///
 /// An unavailable global identity is a warning, not a boot failure: the empty
@@ -46,18 +79,60 @@ pub fn prepare(
   helper helper: String,
   reading reading: fn(String) -> Result(String, Nil),
 ) -> Result(Option(String), String) {
-  let configured = configured_identity(wiring, home, reading)
+  let configured = configured_identity(wiring, home, reading, scope: Global)
 
-  // Fall back to empty identity and warn when global git configuration cannot be read.
-  let #(identity, warning) = case configured {
+  // A failed query still publishes the restrictive empty projection.
+  let #(identity, query_warning) = case configured {
     Ok(identity) -> #(identity, None)
     Error(_) -> #(
-      [],
+      Identity(None, None),
       Some(
         "global Git identity could not be read; configure user.name and user.email in the repository",
       ),
     )
   }
+
+  use warning <- result.try(publish(wiring, identity, helper:))
+
+  // A query failure explains the warning more precisely than missing fields.
+  case query_warning {
+    Some(_) -> Ok(query_warning)
+    None -> Ok(warning)
+  }
+}
+
+/// Publishes only the resolved identity to a fresh tool home.
+///
+/// A missing or empty value yields a warning and remains unconfigured.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // git_identity.publish(wiring, identity, helper: helper_path)
+/// // -> Ok(None)
+/// ```
+pub fn publish(
+  wiring: worktree_diff.Wiring,
+  identity: Identity,
+  helper helper: String,
+) -> Result(Option(String), String) {
+  // Both values are required to prevent Git from guessing an identity.
+  let warning = case identity {
+    Identity(Some(name), Some(email)) ->
+      case string.trim(name) == "" || string.trim(email) == "" {
+        True -> Some(incomplete_warning)
+        False -> None
+      }
+    _ -> Some(incomplete_warning)
+  }
+
+  let entries =
+    [#("user.name", identity.name), #("user.email", identity.email)]
+    |> list.filter_map(fn(pair) {
+      pair.1
+      |> option.to_result(Nil)
+      |> result.map(fn(value) { #(pair.0, value) })
+    })
 
   use destination <- result.try(
     list.key_find(wiring.env, environment_name)
@@ -79,7 +154,7 @@ pub fn prepare(
   )
   let entries =
     json.Array(
-      list.map(identity, fn(pair) {
+      list.map(entries, fn(pair) {
         json.Array([json.String(pair.0), json.String(pair.1)])
       }),
     )
@@ -145,6 +220,9 @@ pub fn publication_failure(output: String) -> String {
   }
 }
 
+const incomplete_warning =
+  "Git identity is incomplete; configure user.name and user.email in the repository"
+
 const helper_prefix = "loom-exec: "
 
 const reason_limit = 160
@@ -161,12 +239,18 @@ fn is_printable_ascii(grapheme: String) -> Bool {
   }
 }
 
-/// Reads global user.name and user.email Git configuration values from the host environment.
+type Scope {
+  Global
+  Effective
+}
+
+/// Reads user.name and user.email through the broker under the selected scope.
 fn configured_identity(
   wiring: worktree_diff.Wiring,
   home: Option(String),
   reading: fn(String) -> Result(String, Nil),
-) -> Result(List(#(String, String)), String) {
+  scope scope: Scope,
+) -> Result(Identity, String) {
   let environment =
     list.append(
       [#("PATH", "/usr/bin:/bin"), #("HOME", option_home(home))],
@@ -178,22 +262,44 @@ fn configured_identity(
   // `wiring.git` is the host-resolved binary, never the Xcode shim. A fresh
   // operator HOME misses `xcrun`'s cache, and the shim's cache rewrite would
   // be killed by this call's one-megabyte file-size limit before Git ran.
+  let scope = case scope {
+    Global -> ["--global"]
+    Effective -> []
+  }
+
   use #(code, output) <- result.try(run(
     wiring,
     worktree_diff.read_policy(wiring.base_policy),
     [
-      wiring.git, "config", "--global", "--includes", "--null", "--get-regexp",
-      "^user\\.(name|email)$",
+      wiring.git,
+      "config",
+      ..list.append(scope, [
+        "--includes",
+        "--null",
+        "--get-regexp",
+        "^user\\.(name|email)$",
+      ])
     ],
     environment,
   ))
 
   // Decode identity records on success or treat status 1 as empty configuration.
   case code {
-    0 -> decode(output)
-    1 -> Ok([])
-    _ -> Error("global Git identity query failed")
+    0 -> decode(output) |> result.map(identity_from_entries)
+    1 -> Ok(Identity(None, None))
+    _ -> Error("Git identity query failed")
   }
+}
+
+/// Reduces Git's ordered records so each field keeps its last value.
+fn identity_from_entries(entries: List(#(String, String))) -> Identity {
+  list.fold(entries, Identity(None, None), fn(identity, pair) {
+    case pair {
+      #("user.name", value) -> Identity(..identity, name: Some(value))
+      #("user.email", value) -> Identity(..identity, email: Some(value))
+      _ -> identity
+    }
+  })
 }
 
 fn option_home(home: Option(String)) -> String {

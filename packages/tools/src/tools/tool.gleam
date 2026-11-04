@@ -1299,12 +1299,53 @@ pub fn collect_observed(
   waiting timeout: Int,
   observe observe: fn(OutputTail) -> Nil,
 ) -> Result(Collected, Nil) {
+  collect_window(events, fn() { Ok(timeout) }, observe)
+}
+
+/// Collects a call before one absolute deadline on the caller's clock.
+///
+/// Output does not renew the window. A caller may include settlement grace in
+/// this deadline, then separately refuse results that exceeded its work budget.
+/// The injected clock keeps this collector independent of the host time source.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tool.collect_before(events, deadline_ms, monotonic.now)
+/// ```
+@internal
+pub fn collect_before(
+  events: Subject(CallEvent),
+  deadline_ms: Int,
+  now: fn() -> Int,
+) -> Result(Collected, Nil) {
+  collect_window(
+    events,
+    fn() {
+      let left = deadline_ms - now()
+
+      // An expired window cannot consume more queued output as progress.
+      case left > 0 {
+        True -> Ok(left)
+        False -> Error(Nil)
+      }
+    },
+    ignore_output(),
+  )
+}
+
+/// Initializes the shared collector with either an idle or absolute window.
+fn collect_window(
+  events: Subject(CallEvent),
+  waiting: fn() -> Result(Int, Nil),
+  observe: fn(OutputTail) -> Nil,
+) -> Result(Collected, Nil) {
   let tails =
     Tails(
       stdout: tail.new(capacity: tail_bytes),
       stderr: tail.new(capacity: tail_bytes),
     )
-  collect_loop(events, timeout, observe, Gathering([], [], False, False, tails))
+  collect_loop(events, waiting, observe, Gathering([], [], False, False, tails))
 }
 
 // The two rolling windows a collector shows its observer.
@@ -1328,10 +1369,13 @@ type Gathering {
 /// Receives output events until the process settles or times out.
 fn collect_loop(
   events: Subject(CallEvent),
-  timeout: Int,
+  waiting: fn() -> Result(Int, Nil),
   observe: fn(OutputTail) -> Nil,
   gathering: Gathering,
 ) -> Result(Collected, Nil) {
+  use timeout <- result.try(waiting())
+
+  // Receive windows are reevaluated before every event, including settlement.
   case process.receive(events, timeout) {
     // One chunk: fold it, then show the observer the window it made
     // before waiting for the next. A chunk observed after the next
@@ -1339,7 +1383,7 @@ fn collect_loop(
     Ok(broker.CallOutput(stream:, data:, total_bytes: _, truncated:)) -> {
       let gathering = absorb(gathering, stream, data, truncated)
       observe(observed(gathering.tails, stream))
-      collect_loop(events, timeout, observe, gathering)
+      collect_loop(events, waiting, observe, gathering)
     }
 
     Ok(broker.CallSettled(outcome:)) ->

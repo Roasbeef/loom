@@ -987,6 +987,12 @@ fn directories(config: Config) {
   ))
   use Nil <- result.try(bootstrap.ensure_private_directory(root <> "/domains"))
 
+  // Snapshot staging can contain another session's working tree and history.
+  // Create it before admission so every ordinary jail can mask it.
+  use Nil <- result.try(bootstrap.ensure_private_directory(
+    root <> "/repository-snapshots",
+  ))
+
   // The executor's Git worktrees, one directory for each session of a
   // workspace in worktree mode (protocol-change/095). It is made here, mode
   // 0700 and before any session is admitted, for the reason the socket root
