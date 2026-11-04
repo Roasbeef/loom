@@ -1502,6 +1502,7 @@ pub fn start_orchestrator_port(
             spawn_return.over(
               config.state_node,
               remote_spawner.state_link_to(membership),
+              logger,
             ),
             logger,
           ),

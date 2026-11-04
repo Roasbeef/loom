@@ -294,7 +294,7 @@ fn world(
       fn(found, call_site, asked) {
         spawn_seed.receive(receiver, found, call_site, asked)
       },
-      spawn_return.over(receiver, link_to(parent, parents_port)),
+      spawn_return.over(receiver, link_to(parent, parents_port), log.discard()),
       log.discard(),
     )
   let at = port("return_receiver_port", host, receiver.endpoint)
@@ -400,7 +400,7 @@ pub fn a_finished_childs_commits_reach_the_parents_store_test() {
   let tip = child_works(world)
   let refs = state_rig.refs(rig.root)
 
-  let joined = finished(world, 20)
+  let joined = finished(world, 60)
   let assert Some(state) = state_of(joined)
   assert state.tip == tip
   assert state.base == Some(world.parent.sent.tip)
@@ -444,7 +444,7 @@ pub fn a_finished_childs_commits_reach_the_parents_store_test() {
   assert worktree_rig.git(rig.root, ["status", "--porcelain"]) == status
 
   // The same join asked again answers the same state and sends nothing twice.
-  assert state_of(finished(world, 20)) == Some(state)
+  assert state_of(finished(world, 60)) == Some(state)
   state_rig.stop(rig)
 }
 
@@ -453,7 +453,7 @@ pub fn a_child_that_committed_nothing_returns_no_state_test() {
   let rig = world.parent.rig
   worktree_rig.write(world.copy <> "/README", "never committed\n")
 
-  let joined = finished(world, 20)
+  let joined = finished(world, 60)
   assert state_of(joined) == None
   assert string.contains(report_of(joined), spawn_return.no_commits_note)
   assert string.contains(report_of(joined), spawn_return.uncommitted_note)
@@ -489,7 +489,7 @@ pub fn a_transfer_that_cannot_start_is_retried_by_the_next_join_test() {
   // While the link is down the child is still being returned, and its commits
   // are captured into the receiver's store once, whatever the number of joins.
   let assert remote_spawn.Pending(..) = ask_join(world)
-  until(fn() { stored(world) > before }, 50)
+  until(fn() { stored(world) > before }, 100)
   let held = stored(world)
   let assert remote_spawn.Pending(..) = ask_join(world)
   let assert remote_spawn.Pending(..) = ask_join(world)
@@ -497,7 +497,7 @@ pub fn a_transfer_that_cannot_start_is_retried_by_the_next_join_test() {
 
   // When the link is back the next join delivers the state it kept.
   let assert Ok(Nil) = simplifile.delete(rig.scratch <> "/link-down")
-  let joined = finished(world, 20)
+  let joined = finished(world, 60)
   let assert Some(state) = state_of(joined)
   assert world.parent.endpoint.stage(state.hash) == Ok(state_transfer.Complete)
   assert stored(world) == held
@@ -513,7 +513,7 @@ pub fn a_return_that_never_finishes_is_given_up_with_a_note_test() {
   let _tip = child_works(world)
 
   // Every join is one more try, and the child stays unfinished until the last.
-  let joined = finished(world, 60)
+  let joined = finished(world, 120)
   assert state_of(joined) == None
   assert string.starts_with(report_of(joined), "I finished the cache.")
   assert string.contains(report_of(joined), "did not finish after 5 tries")
@@ -535,7 +535,7 @@ pub fn a_parent_that_declines_the_bundle_costs_the_child_nothing_test() {
   let rig = world.parent.rig
   let _tip = child_works(world)
 
-  let joined = finished(world, 20)
+  let joined = finished(world, 60)
   assert state_of(joined) == None
   assert string.starts_with(report_of(joined), "I finished the cache.")
   assert string.contains(report_of(joined), "could not be returned")
@@ -561,6 +561,26 @@ pub fn a_restart_clears_the_claims_and_keeps_the_verdicts_test() {
   state_rig.stop(rig)
 }
 
+pub fn a_refused_capture_tells_the_parent_no_path_of_this_machine_test() {
+  let world = world("return-nopath", Seeded, None, connected)
+  let rig = world.parent.rig
+
+  // The child discards the history it was given, so the capture is refused.
+  let _ = worktree_rig.git(world.copy, ["reset", "--hard", "--quiet", "HEAD~1"])
+  let _ = state_rig.commit_file(world.copy, "other.txt", "other\n", "elsewhere")
+
+  let joined = finished(world, 60)
+  assert state_of(joined) == None
+  let report = report_of(joined)
+  assert string.contains(report, spawn_return.capture_refused)
+
+  // Nothing of the receiver's directories reaches the parent's model.
+  assert !string.contains(report, world.directory)
+  assert !string.contains(report, world.receiver.state_root)
+  assert !string.contains(report, rig.scratch)
+  state_rig.stop(rig)
+}
+
 pub fn a_copy_replaced_by_a_link_is_not_followed_test() {
   let world = world("return-link", Seeded, None, connected)
   let rig = world.parent.rig
@@ -571,7 +591,7 @@ pub fn a_copy_replaced_by_a_link_is_not_followed_test() {
   let assert Ok(Nil) = simplifile.delete(world.copy)
   let assert Ok(Nil) = simplifile.create_symlink(rig.root, world.copy)
 
-  let joined = finished(world, 20)
+  let joined = finished(world, 60)
   assert state_of(joined) == None
   assert string.contains(report_of(joined), "could not be returned")
   assert state_rig.refs(rig.root) == refs

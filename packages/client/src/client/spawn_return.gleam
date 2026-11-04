@@ -73,6 +73,8 @@ import gleam/result
 import gleam/string
 import host/bootstrap
 import simplifile
+import telemetry/field
+import telemetry/log.{type Logger}
 import tools/agent.{type Handle}
 import weft
 
@@ -120,22 +122,42 @@ pub fn none() -> Returning {
   })
 }
 
+/// What a node reaches in order to return a child's commits: the way to the
+/// parent's store, and the log that keeps what is not sent to the parent.
+type Reach {
+  Reach(
+    /// For the node a spawner names, the link to its state store, or `None`
+    /// while the two machines are not connected.
+    link_to: fn(String) -> Option(Link),
+    /// Where a refusal's detail goes. The detail can hold this machine's paths
+    /// and Git's own words, so the parent's report carries a fixed sentence and
+    /// the detail stays here.
+    logger: Logger,
+  )
+}
+
 /// A node that returns the commits of the children it seeded. `link_to` answers,
 /// for the node a spawner names, the link to its state store, or `None` while the
-/// two machines are not connected.
+/// two machines are not connected. `logger` keeps the detail of a refused capture,
+/// which is not sent to the parent.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // spawn_return.over(node, fn(_spawner_node) { Some(link) })
+/// // spawn_return.over(node, fn(_spawner_node) { Some(link) }, log.discard())
 /// ```
-pub fn over(node: StateNode, link_to: fn(String) -> Option(Link)) -> Returning {
+pub fn over(
+  node: StateNode,
+  link_to: fn(String) -> Option(Link),
+  logger: Logger,
+) -> Returning {
+  let reach = Reach(link_to:, logger:)
   Returning(
     remember: fn(spawner, parent, site, state, handle) {
       remember(node, spawner, parent, site, state, handle)
     },
     settle: fn(spawner, parent, entry) {
-      settle(node, link_to, spawner, parent, entry)
+      settle(node, reach, spawner, parent, entry)
     },
   )
 }
@@ -380,7 +402,7 @@ fn decode_verdict(text: String) -> Result(Verdict, Nil) {
 /// Answers one entry of a join.
 fn settle(
   node: StateNode,
-  link_to: fn(String) -> Option(Link),
+  reach: Reach,
   spawner: Spawner,
   parent: Parent,
   entry: Joined,
@@ -388,7 +410,7 @@ fn settle(
   // Only a finished child that carries no state yet can have commits to return.
   case entry {
     remote_spawn.Ready(handle:, state: None, ..) ->
-      settle_child(node, link_to, spawner, parent, handle, entry)
+      settle_child(node, reach, spawner, parent, handle, entry)
     remote_spawn.Ready(state: Some(..), ..) | remote_spawn.Pending(..) -> entry
   }
 }
@@ -397,7 +419,7 @@ fn settle(
 /// when it has none.
 fn settle_child(
   node: StateNode,
-  link_to: fn(String) -> Option(Link),
+  reach: Reach,
   spawner: Spawner,
   parent: Parent,
   handle: Handle,
@@ -414,7 +436,7 @@ fn settle_child(
       |> result.replace_error(Nil),
     )
     use copy <- result.map(decode_copy(text))
-    answered(node, link_to, spawner, copy, directory, key, entry)
+    answered(node, reach, spawner, copy, directory, key, entry)
   }
 
   // A child with no readable record was not seeded, and is answered as it was.
@@ -425,7 +447,7 @@ fn settle_child(
 /// verdict is not final, and answers `Pending` while the work is not done.
 fn answered(
   node: StateNode,
-  link_to: fn(String) -> Option(Link),
+  reach: Reach,
   spawner: Spawner,
   copy: Copy,
   directory: String,
@@ -438,7 +460,7 @@ fn answered(
   // and a captured state that is not yet in the parent's store is not an answer.
   let verdict =
     option.lazy_or(final_of(known), fn() {
-      final_of(attempt(node, link_to, spawner, copy, directory, key, known))
+      final_of(attempt(node, reach, spawner, copy, directory, key, known))
     })
 
   // An answer amends the entry, and its absence leaves the child unfinished.
@@ -480,7 +502,7 @@ fn verdict_of(directory: String, key: String) -> Option(Verdict) {
 /// its own and the next join finds what it learned.
 fn attempt(
   node: StateNode,
-  link_to: fn(String) -> Option(Link),
+  reach: Reach,
   spawner: Spawner,
   copy: Copy,
   directory: String,
@@ -500,7 +522,7 @@ fn attempt(
         process.spawn_unlinked(fn() {
           process.send(
             reply,
-            working(node, link_to, spawner, copy, directory, key, known),
+            working(node, reach, spawner, copy, directory, key, known),
           )
         })
 
@@ -514,7 +536,7 @@ fn attempt(
 /// child's verdict file, and releases the claim whatever the end.
 fn working(
   node: StateNode,
-  link_to: fn(String) -> Option(Link),
+  reach: Reach,
   spawner: Spawner,
   copy: Copy,
   directory: String,
@@ -522,7 +544,7 @@ fn working(
   known: Option(Verdict),
 ) -> Verdict {
   let outcomes =
-    weft.new([fn() { Ok(found(node, link_to, spawner, copy, known)) }])
+    weft.new([fn() { Ok(found(node, reach, spawner, copy, known)) }])
     |> weft.deadline(work_ms)
     |> weft.start
 
@@ -558,7 +580,7 @@ fn working(
 /// attempt kept.
 fn found(
   node: StateNode,
-  link_to: fn(String) -> Option(Link),
+  reach: Reach,
   spawner: Spawner,
   copy: Copy,
   known: Option(Verdict),
@@ -582,16 +604,16 @@ fn found(
         attempts: 0,
       )
     Ok(_), Some(Verdict(outcome: Captured(state:), tree:, attempts:)) ->
-      sent(node, link_to, spawner, state, tree, attempts)
+      sent(node, reach, spawner, state, tree, attempts)
     Ok(path), Some(_) | Ok(path), None ->
-      captured(node, link_to, spawner, copy, path)
+      captured(node, reach, spawner, copy, path)
   }
 }
 
 /// Looks at the child's tree, captures its commits, and sends them.
 fn captured(
   node: StateNode,
-  link_to: fn(String) -> Option(Link),
+  reach: Reach,
   spawner: Spawner,
   copy: Copy,
   path: String,
@@ -609,13 +631,15 @@ fn captured(
   // does not change what is wrong with the repository.
   case made {
     Ok(None) -> Verdict(outcome: NoCommits, tree:, attempts: 0)
-    Error(reason) ->
-      Verdict(
-        outcome: Refused("capturing them failed: " <> clipped(reason)),
-        tree:,
-        attempts: 0,
-      )
-    Ok(Some(state)) -> sent(node, link_to, spawner, state, tree, 0)
+    Error(reason) -> {
+      // The detail can hold this machine's paths and Git's own words, so it is
+      // kept in this machine's log and the parent is told a fixed sentence.
+      log.warn(reach.logger, "spawn_return.capture_refused", [
+        field.text("detail", clipped(reason)),
+      ])
+      Verdict(outcome: Refused(capture_refused), tree:, attempts: 0)
+    }
+    Ok(Some(state)) -> sent(node, reach, spawner, state, tree, 0)
   }
 }
 
@@ -623,14 +647,14 @@ fn captured(
 /// offset the parent holds.
 fn sent(
   node: StateNode,
-  link_to: fn(String) -> Option(Link),
+  reach: Reach,
   spawner: Spawner,
   state: State,
   tree: Tree,
   attempts: Int,
 ) -> Verdict {
   // A transfer needs both the store to read from and a link to send over.
-  let moved = case node.store, link_to(spawner.node) {
+  let moved = case node.store, reach.link_to(spawner.node) {
     Some(store), Some(link) ->
       Some(state_transfer.send(store, state.hash, link))
     None, _ | _, None -> None
@@ -651,8 +675,14 @@ fn sent(
         tree:,
         attempts:,
       )
-    Some(state_transfer.Faulted(reason:)) ->
-      Verdict(outcome: Refused(clipped(reason)), tree:, attempts:)
+    Some(state_transfer.Faulted(reason:)) -> {
+      // A fault in this machine's own store can name its paths, so the parent is
+      // told a fixed sentence and the detail stays in the log.
+      log.warn(reach.logger, "spawn_return.send_faulted", [
+        field.text("detail", clipped(reason)),
+      ])
+      Verdict(outcome: Refused(send_faulted), tree:, attempts:)
+    }
     Some(state_transfer.Silent) | Some(state_transfer.Stalled) | None ->
       unfinished(state, tree, attempts + 1)
   }
@@ -715,6 +745,15 @@ fn clipped(text: String) -> String {
 }
 
 // --- the entry the parent reads ----------------------------------------------
+
+/// The reason a refused capture is reported with. The detail is in the log of the
+/// machine the child ran on.
+pub const capture_refused =
+  "the commits could not be captured on the machine the child ran on; its log has the detail"
+
+/// The reason a transfer that this machine's store could not serve is reported with.
+pub const send_faulted =
+  "this machine's state store could not serve the commits; its log has the detail"
 
 /// The sentence for a child that left changes uncommitted.
 pub const uncommitted_note =
