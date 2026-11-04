@@ -1282,7 +1282,9 @@ Apply runs no hook and moves no ref. It never fetches, because a fetch reads the
 repository's `url.<base>.insteadOf` and `protocol.*` settings, which can turn a
 path into a command; it unpacks with `git bundle unbundle`, walks the tip's
 history to prove every object arrived, and creates the incoming ref expecting it
-absent. Every call overrides `core.hooksPath` and `core.fsmonitor`. Its writes
+absent. Every call overrides `core.hooksPath` and `core.fsmonitor`, and the
+runner sets `GIT_NO_LAZY_FETCH` so a promisor remote in the repository's config
+cannot run a command when an object is missing. Its writes
 are the repository's `.git`, the destination's parent and the new branch, and the
 caller serializes applies to one repository as the worktree gate does. The
 sandboxed Git that reads the bundle shares `protecting_state_root` with session

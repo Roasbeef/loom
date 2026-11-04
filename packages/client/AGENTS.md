@@ -1360,13 +1360,16 @@ pack, and `verify_bundle` compares a state with a file's bytes: size, then
 SHA-256, then the header, which must carry exactly one ref, `bundle_ref`, at
 the tip, with prerequisites exactly when the state names a base. The header
 cannot name the base itself, because a bundle lists every boundary commit and a
-merge can make that more than one.
+merge can make that more than one. `parse_header` works on bytes: a prerequisite
+line is the commit's id and then its subject in whatever encoding the author
+used, so only the id is read, while a ref line must be UTF-8.
 
 `state_store` keeps `<state root>/states/<hash>.bundle` and `<hash>.json`, the
 record written last. Its limits are the only bound on the disk this feature
 uses, because the free-space check in `repository_snapshot` is an observation:
-`size_limit` for one bundle, `total_cap` for every file in the directory, and
-`retain_s` for age. A bundle that does not fit is refused with a reason and
+`size_limit` for one bundle (at most `state_object.size_limit`, which `open`
+enforces), `total_cap` for every file in the directory, counting the new entry's
+record as well as its bundle, and `retain_s` for age. A bundle that does not fit is refused with a reason and
 nothing is evicted. `put` hashes the bytes, answers the existing entry when the
 same bytes are held whole, and otherwise sweeps, checks the cap and writes. `get`
 reads the whole bundle and compares its size and hash with the record, because a
@@ -1393,7 +1396,10 @@ bundle.
 `state_apply.apply` verifies the state against the bundle file before it opens a
 repository, then runs Git through `worktree_git.run` in the sandbox with
 `core.hooksPath` and `core.fsmonitor` overridden on every call and the
-autocrlf and sparse settings forced off. It unpacks with `git bundle unbundle`,
+autocrlf and sparse settings forced off. `worktree_git` sets `GIT_NO_LAZY_FETCH`
+for every call, so a repository whose config names a promisor remote reached by
+a command cannot start it when an object is missing. The repository's `.git`
+must be a directory and not a link to one. It unpacks with `git bundle unbundle`,
 walks the tip's history to prove every object arrived, and creates
 `refs/loom/in/<hash8>` with the zero object id as the expected old value, so an
 existing ref is never moved; one that already names the tip is the state having
