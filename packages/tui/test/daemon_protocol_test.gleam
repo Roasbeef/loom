@@ -620,6 +620,37 @@ pub fn a_moved_session_is_left_out_of_a_page_test() {
   )
 }
 
+// A router and a worker belong to a project and are reached from its tickets.
+// The page leaves them out of the list a person picks from, and the sessions
+// beside them are kept, in order.
+pub fn a_projects_router_and_workers_are_left_out_of_a_page_test() {
+  let frame = fn(standing: String) {
+    "{\"v\":2,\"reply_to\":7,\"event\":\"sessions.list\",\"body\":{\"revision\":9,\"sessions\":["
+    <> row("00000000-0000-7000-8000-000000000001", "")
+    <> ","
+    <> row("00000000-0000-7000-8000-000000000002", standing)
+    <> ","
+    <> row("00000000-0000-7000-8000-000000000003", "")
+    <> "],\"after\":null}}"
+  }
+  list.each(
+    [
+      ",\"standing\":{\"kind\":\"router\",\"project\":\"p-1\"}",
+      ",\"standing\":{\"kind\":\"worker\",\"project\":\"p-1\",\"ticket\":\"t-a\"}",
+    ],
+    fn(standing) {
+      let assert Ok(protocol.Answer(_, _, protocol.SessionsReply(page))) =
+        protocol.decode(frame(standing))
+        as "a page with a project session decodes"
+      assert list.map(page.sessions, fn(session) { session.session_id })
+        == [
+          "00000000-0000-7000-8000-000000000001",
+          "00000000-0000-7000-8000-000000000003",
+        ]
+    },
+  )
+}
+
 fn row(id: String, extra: String) -> String {
   "{\"session_id\":\""
   <> id

@@ -569,7 +569,23 @@ pub type Running {
 /// // let running = remote_daemons.start(layout)
 /// ```
 pub fn start(layout: Layout) -> Running {
-  let launcher = distribution_launcher(layout)
+  start_through(layout, distribution_launcher(layout))
+}
+
+/// Starts the daemon as `start` does, but through the layout's own isolated
+/// launcher, with no distribution options file. A fixture that needs an
+/// ordinary idle daemon, one that never dials another node, uses this.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let running = remote_daemons.start_plain(layout)
+/// ```
+pub fn start_plain(layout: Layout) -> Running {
+  start_through(layout, layout.launcher)
+}
+
+fn start_through(layout: Layout, launcher: String) -> Running {
   let started =
     bootstrap.resolve_daemon(
       bootstrap.Options(

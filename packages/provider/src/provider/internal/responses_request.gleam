@@ -83,8 +83,14 @@ pub fn body_with_options(
   encode_body(resolved, request, PublicApi, access, tier)
 }
 
-/// Builds a subscription body while leaving access selection to the server.
-/// The access argument is retained for existing callers but is not transmitted.
+/// Builds a subscription body with the operator's explicit access program.
+///
+/// Omission is a selection, not neutrality: with no `access_programs` the API
+/// resolves the program from the model's Cyber tier, and a Blue-tier model such
+/// as `gpt-daybreak-blue-latest` falls back to Standard safeguards. Daybreak's
+/// permissive classification is precisely what an omitted selection discards,
+/// so a defensive-security request then fails with `cyber_policy`. The explicit
+/// program therefore travels on this path exactly as it does on the API-key one.
 ///
 /// ## Examples
 ///
@@ -109,12 +115,10 @@ pub fn subscription_body_with_access(
 pub fn subscription_body_with_options(
   resolved: model.ResolvedModel,
   request: model.ProviderRequest,
-  _access: option.Option(model.CyberAccessProgram),
+  access: option.Option(model.CyberAccessProgram),
   tier: option.Option(model.ResponsesServiceTier),
 ) -> String {
-  // The private subscription endpoint can downgrade explicit access selections.
-  // Omission preserves its entitlement-aware default for every call path.
-  encode_body(resolved, request, Subscription, None, tier)
+  encode_body(resolved, request, Subscription, access, tier)
 }
 
 /// Encodes a complete request payload into a JSON string according to API mode.

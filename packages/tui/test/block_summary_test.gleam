@@ -111,10 +111,11 @@ pub fn the_live_row_reads_lines_and_time_test() {
   assert transcript_lines.live_summary_header("a", 0) == " · 1 line"
 }
 
-// A summarized block paints as its header row and then at most three dim
-// secondary rows, each within the pane; a longer summary ends in an
-// ellipsis. The header carries the attribution, and the summary no prefix.
-pub fn a_summarized_block_is_a_header_and_three_rows_at_most_test() {
+// A summarized block paints as its header row and then at most
+// `summary_rows` dim secondary rows, each within the pane; a longer summary
+// ends in an ellipsis. The header carries the attribution, and the summary
+// no prefix.
+pub fn a_summarized_block_is_a_header_and_bounded_rows_test() {
   let long = string.repeat("Checked the merge of touching intervals. ", 20)
   list.each([30, 60, 120], fn(width) {
     let rows =
@@ -390,7 +391,7 @@ pub fn long_advice_collapses_to_its_heading_and_label_test() {
   let assert ["◇ Advisor · block delivered (summarized)" <> _, ..rest] = rows
     as "the heading is the first row"
 
-  // Three summary rows and the blank every system row closes with.
+  // The summary rows and the blank every system row closes with.
   assert list.length(rest) == transcript_lines.summary_rows + 1
 }
 

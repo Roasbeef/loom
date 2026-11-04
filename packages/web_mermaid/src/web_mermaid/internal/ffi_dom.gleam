@@ -262,7 +262,8 @@ pub fn send_text(text: String) -> Nil
 @external(javascript, "./dom.mjs", "initialize")
 pub fn initialize(vendor: Vendor, configuration: String) -> Result(Nil, Nil)
 
-/// Normalizes vendor promise success, synchronous exceptions and rejection into a callback.
+/// Returns vendor SVG or only the exception message, without a stack or object.
+/// The pure controller bounds diagnostic text before any reply to the parent.
 ///
 /// ## Examples
 ///
@@ -275,5 +276,5 @@ pub fn render(
   id: String,
   source: String,
   host: Element,
-  done: fn(Result(String, Nil)) -> Nil,
+  done: fn(Result(String, String)) -> Nil,
 ) -> Nil

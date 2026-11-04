@@ -100,6 +100,7 @@ fn home_start(manage: Option(Ask)) -> home.Start {
     create: None,
     folders: None,
     elsewhere: None,
+    projects: None,
     profiles: [],
     models: [],
     signins: fn(deliver) { deliver(signins.Listed([])) },

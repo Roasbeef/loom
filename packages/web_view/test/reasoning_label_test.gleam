@@ -336,6 +336,7 @@ fn folds(model) -> List(Int) {
       | turns.Nudged(..)
       | turns.Peer(..)
       | turns.Sibling(..)
+      | turns.Trigger(..)
       | turns.Missed(..)
       | turns.Decided(..)
       | turns.Commentary(..) -> Error(Nil)

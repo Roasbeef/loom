@@ -50,14 +50,14 @@ question that only the owner can settle.
 
 **Choosing an executor.** `sessions.create` decodes `executor` and `pool` as
 exclusive names and then reads `workspace` as a registered name, not a path
-(`created_workspace`, `client/daemon/protocol.gleam:1107`; `executor_field`,
-`client/daemon/protocol.gleam:891`; `pool_field`, `client/daemon/protocol.gleam:1088`).
+(`created_workspace`, `client/daemon/protocol.gleam:1258`; `executor_field`,
+`client/daemon/protocol.gleam:891`; `pool_field`, `client/daemon/protocol.gleam:1239`).
 The daemon holds the names from its `[executors.<name>]` and `[pools.<name>]`
 tables, with each executor's declared platform, enforcement and toolchains
 (`Executor`, `client/executors.gleam:76`). The web home is told only the names
-(`HomeAttachment`, `client/daemon/server.gleam:323`, whose `executors` field is
+(`HomeAttachment`, `client/daemon/server.gleam:336`, whose `executors` field is
 `List(String)`), draws them in a select, and asks the owner to type the workspace
-name (`CreatingRemote`, `web_view/home.gleam:982`). The terminal builds a
+name (`CreatingRemote`, `web_view/home.gleam:1054`). The terminal builds a
 `Placement` from launch flags (`Placement`, `tui/placement.gleam:31`) and cannot
 change it inside a running terminal. Neither client can show whether an executor
 answers, is full, or contradicts its declaration. That is learned at the attach,
@@ -67,7 +67,7 @@ same way. [The setup guide](../distributed-setup.md) tells an operator to check 
 connection with `epmd -names`, `lsof` or `ss`.
 
 **The session list.** `sessions.list` reads this daemon's catalogue
-(`ListSessions`, `client/daemon/server.gleam:3973`). The orchestrator port answers
+(`ListSessions`, `client/daemon/server.gleam:4473`). The orchestrator port answers
 `Owns` and the move messages (`Message`, `client/remote/orchestrator_port.gleam:218`).
 Nothing answers "what sessions do you hold".
 
@@ -80,7 +80,7 @@ reason that goes to one log line (`Stalled`, `client/session_mover.gleam:233`) a
 is forgotten, and the movers keep only the time the stall began (`Entry`,
 `client/session_movers.gleam:140`). `directory.status` reports the configured
 members, Ra's members with their votes, the leader and this member's applied index
-(`directory_status_json`, `client/daemon/server.gleam:4179`). It does not compare
+(`directory_status_json`, `client/daemon/server.gleam:4693`). It does not compare
 the applied index with the leader's, so it cannot say whether this copy has caught
 up. The only "not caught up" signal today is `voter: false`, which holds while a
 joining member is a non-voter.
@@ -179,9 +179,9 @@ serves both through `detached` (`client/remote/orchestrator_port.gleam:655`), th
 path `Activate` uses: the computation runs in a run that dies with the requester and
 with the port, so a read never keeps an `Owns` question waiting. The port does not
 know the catalogue, the ledger or the movers. `start_with` takes one more closure
-record, and `start_orchestrator_port` (`client/daemon/main.gleam:1179`) builds it
+record, and `start_orchestrator_port` (`client/daemon/main.gleam:1200`) builds it
 from the registry, the movers and the executor host, the way it builds
-`catalogue_holds` (`client/daemon/main.gleam:1271`) and `peer_command`
+`catalogue_holds` (`client/daemon/main.gleam:1292`) and `peer_command`
 (`client/daemon/main.gleam:651`). The function runs on every daemon that has a
 `[distribution]` table, executors included, so a pure executor answers `Report`
 too. It answers with no orchestrator facts when it has no catalogue to describe.
@@ -352,7 +352,7 @@ index creates nothing. A terminal golden test of the table.
 
 **Today.** Section 2. A daemon answers for the sessions it holds, and the owner is
 sent elsewhere with the launch line for the owning daemon
-(`redirect_words`, `tui/daemon/selection.gleam:1147`).
+(`redirect_words`, `tui/daemon/selection.gleam:1184`).
 
 **What a daemon can answer about sessions it does not own.** One thing: what the
 owning orchestrator's catalogue says. A new `Sessions` ask on the port returns a
@@ -440,7 +440,7 @@ For each item in the owner's list: what exists, where it lives, and the proposal
 
 | Item | State today | Proposal |
 |---|---|---|
-| Orchestrator and executor reachable | Internal: `distribution.connect` results, and a link keeper for directory members only (`connect`, `client/distribution.gleam:554`) | `state` on each node in `deployment.status`, from the asker's own connect attempt |
+| Orchestrator and executor reachable | Internal: `distribution.connect` results, and a link keeper for directory members only (`connect`, `client/distribution.gleam:616`) | `state` on each node in `deployment.status`, from the asker's own connect attempt |
 | Executor census (platform, enforcement, toolchains) | Returned at attach and kept in the live plane | Executor facts, from the last attach; absent before the first |
 | Capacity and live scopes | Ledger rows and the limit (`default_limits`, `storage/exec_ledger.gleam:577`; `LOOM_EXECUTOR_MAX_SCOPES`) | Executor facts: counts by state and the limit, as numbers |
 | Helper pool | `pool_census` per plane, no node total | Deferred (section 10) |
@@ -530,7 +530,7 @@ of the section sits beneath `admin.body_path`, which the Admin socket already ad
 and nothing else (`admin_accepts`). The existing 065 admin addendum's description of
 the page in [the web view](../architecture/web-view.md) gets a paragraph for the
 section. Its reads run in weft tasks with a read number, next to the people and
-session reads (`admin_read_task`, `client/daemon/ui_socket.gleam:5460`).
+session reads (`admin_read_task`, `client/daemon/ui_socket.gleam:5653`).
 
 **Terminal.** A compact rendering, from the same snapshot:
 

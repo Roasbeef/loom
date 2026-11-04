@@ -73,6 +73,14 @@ pub type Speaker {
   /// and ending in `origin_checked`, a newline, and the body.
   PeerMessage
 
+  /// A message from outside any session, delivered through a stored trigger
+  /// and selected by its stored `TriggerOrigin` and by nothing in its text.
+  /// The text is a heading built from the origin (`⚑ from github · octocat ·
+  /// trigger trg-1`), a newline, and the body, which is untrusted data. The
+  /// heading never claims the daemon checked the sender, and it grants no
+  /// authority.
+  TriggerMessage
+
   /// A code-mode program the transcript has no result for yet, drawn as a
   /// titled block. The text is the title, a newline, the foot, a newline,
   /// and the body: a `PROGRAM` line counting the program's lines, the

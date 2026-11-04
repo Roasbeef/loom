@@ -178,6 +178,7 @@ pub fn settings_under(root: String) -> serve.Settings {
   serve.Settings(
     evolution_role: serve.Source,
     pack: None,
+    project: None,
     peer_directory: None,
     peer_defaults: None,
     remote_reach: None,
@@ -1712,6 +1713,55 @@ pub fn a_workspace_on_the_state_root_is_a_policy_the_server_boots_on_test() {
   // the half the fix must not have traded away.
   assert list.contains(base.protected, "/home/o/.loom/owner.token")
   assert list.contains(base.protected, "/home/o/.loom/sessions")
+}
+
+pub fn standing_guest_secrets_are_state_root_masks_test() {
+  // `loom vm up` keeps each guest's bundles, the orchestrator's credentials
+  // and a guest root holding the executor's key and cookie under the state
+  // root's `vm` directory, and every distributed daemon's cookie is the
+  // home's `.erlang.cookie`. Either pair would let a jailed process join this
+  // daemon's distribution as a pinned node, so both are mask candidates.
+  let masks = workspace_policy.state_root_mask_candidates("/home/o/.loom")
+  assert list.contains(masks, "/home/o/.loom/vm")
+
+  case workspace_policy.home_directory() {
+    Some(home) -> {
+      // The cookie is masked only when it exists, because masking a missing
+      // path makes bwrap create a directory there.
+      let cookie = home <> "/.erlang.cookie"
+      assert list.contains(masks, cookie)
+        == { simplifile.is_file(cookie) == Ok(True) }
+      assert list.contains(masks, home <> "/.loom/vm")
+    }
+    None -> Nil
+  }
+}
+
+pub fn a_node_credential_is_masked_and_a_missing_one_is_skipped_test() {
+  // ADR-022 D2: a distributed node's TLS key and cookie live outside its
+  // state root, so only this protector keeps them from a jailed child. The
+  // key exists and is masked; the cookie path is absent and is skipped,
+  // because the jail refuses to mask a missing path and would refuse the
+  // whole session rather than one entry.
+  let directory =
+    "build/node-credentials-"
+    <> string.lowercase(bit_array.base16_encode(token.production_entropy()(4)))
+  let assert Ok(Nil) = simplifile.create_directory_all(directory)
+    as "the test directory is created"
+  let key = directory <> "/key.pem"
+  let cookie = directory <> "/.erlang.cookie"
+  let assert Ok(Nil) = simplifile.write(key, "not a real key")
+    as "the key is written"
+
+  let base =
+    workspace_policy.protecting_node_credentials(
+      workspace_policy.base_policy("/work"),
+      [key, cookie],
+    )
+  let _ = simplifile.delete_all([directory])
+
+  assert list.contains(base.protected, key)
+  assert !list.contains(base.protected, cookie)
 }
 
 pub fn a_workspace_equal_to_a_masked_entry_refuses_the_boot_test() {

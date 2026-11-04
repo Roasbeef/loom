@@ -110,6 +110,7 @@ pub fn weigh(turn: List(Block), strands: List(protocol.Strand)) -> Weight {
       | turns.Nudged(..)
       | turns.Peer(..)
       | turns.Sibling(..)
+      | turns.Trigger(..)
       | turns.Missed(..)
       | turns.Decided(..) -> Weight(..weight, base: weight.base + rows(piece))
     }
@@ -301,6 +302,7 @@ pub fn draw(
       | turns.Nudged(..)
       | turns.Peer(..)
       | turns.Sibling(..)
+      | turns.Trigger(..)
       | turns.Missed(..)
       | turns.Decided(..) -> piece
     }
@@ -379,7 +381,8 @@ fn rows(piece: Piece) -> Int {
     turns.Commentary(..) -> 0
     turns.Returned(report:, ..) -> 1 + lines(report)
     turns.Nudged(body:, ..) -> 1 + lines(body)
-    turns.Peer(text:, ..) -> 1 + lines(composer.transcript_text(text, False))
+    turns.Peer(text:, ..) | turns.Trigger(text:, ..) ->
+      1 + lines(composer.transcript_text(text, False))
     turns.Sibling(text:, trailer:, ..) ->
       1
       + lines(composer.transcript_text(text, False))

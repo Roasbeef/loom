@@ -3,13 +3,14 @@
 # Every target is a thin wrapper over the scripts and package tooling, so
 # what CI runs and what you run locally are the same commands.
 
-PACKAGES := host core storage session machine prompt statem statem_parallel evalstat gepa session_view web_view telemetry runtime provider \
+PACKAGES := host core storage session machine prompt statem statem_parallel evalstat gepa project session_view web_view telemetry runtime provider \
 	broker executor mcp lsp tools cap ext codemode events harness client conformance eval tui lint
 # Packages that target JavaScript. They are formatted, built and documented
 # with the rest; their pure tests run on a JavaScript runtime.
 JS_PACKAGES := web_client web_mermaid
 GO_PKG   := packages/sandbox
 HELPER   := $(GO_PKG)/loom-exec
+VMM_PKG  := packages/vmm
 PREFIX   ?= $(HOME)/.local
 
 .DEFAULT_GOAL := help
@@ -93,8 +94,9 @@ test-%: sandbox ## Run tests for one package, e.g. make test-core
 # JavaScript too (scripts/portable_js_test.sh finds the runtime); the full
 # gate runs this after each one's Erlang suite.
 .PHONY: test-portable-js
-test-portable-js: ## Run gepa's and evalstat's tests on the JavaScript target
+test-portable-js: ## Run gepa's, evalstat's and project's tests on the JavaScript target
 	@bash scripts/portable_js_test.sh gepa
+	@bash scripts/portable_js_test.sh project
 	@bash scripts/portable_js_test.sh evalstat
 
 .PHONY: build
@@ -120,6 +122,7 @@ fmt: ## Format all Gleam and Go sources in place
 	done
 	@test -z "$(LOOSE_GLEAM)" || gleam format $(LOOSE_GLEAM)
 	@cd $(GO_PKG) && gofmt -w .
+	@cd $(VMM_PKG) && gofmt -w .
 	@echo "formatted"
 
 .PHONY: fmt-check
@@ -133,6 +136,8 @@ fmt-check: ## Verify formatting without writing (what CI enforces)
 	@test -z "$(LOOSE_GLEAM)" || gleam format --check $(LOOSE_GLEAM)
 	@test -z "$$(cd $(GO_PKG) && gofmt -l .)" || { \
 		echo "unformatted Go files:"; (cd $(GO_PKG) && gofmt -l .); exit 1; }
+	@test -z "$$(cd $(VMM_PKG) && gofmt -l .)" || { \
+		echo "unformatted Go files:"; (cd $(VMM_PKG) && gofmt -l .); exit 1; }
 	@echo "formatting clean"
 
 # ----------------------------------------------------------------- binaries
@@ -446,6 +451,77 @@ sandbox: ## Build the loom-exec sandbox helper binary
 sandbox-test: ## Vet, build, and test the Go sandbox package
 	@cd $(GO_PKG) && go vet ./... && go build ./... && \
 		python3 ../../scripts/with_timeout.py 1200 -- go test -timeout 10m ./...
+
+# The microVM launcher (ADR-022). loom-vm is CGO-free and builds anywhere;
+# the go-microvm runner links libkrun with cgo, so it is built from the same
+# module version loom-vm imports and, on macOS, codesigned with the
+# Hypervisor.framework entitlement or HVF refuses it. KRUN_PREFIX locates
+# libkrun's headers and libraries (Homebrew's prefix on macOS).
+KRUN_PREFIX ?= $(shell brew --prefix 2>/dev/null || echo /usr/local)
+
+.PHONY: vmm
+vmm: ## Build the loom-vm microVM launcher into packages/vmm/build
+	@scripts/go-build.sh $(VMM_PKG) ./cmd/loom-vm $(VMM_PKG)/build/loom-vm
+
+.PHONY: vmm-runner
+vmm-runner: ## Build (and on macOS codesign) the go-microvm runner loom-vm boots with
+	@cd $(VMM_PKG) && CGO_ENABLED=1 CGO_CFLAGS="-I$(KRUN_PREFIX)/include" \
+		CGO_LDFLAGS="-L$(KRUN_PREFIX)/lib" go build -trimpath \
+		-o build/go-microvm-runner github.com/stacklok/go-microvm/runner/cmd/go-microvm-runner
+	@if [ "$$(uname -s)" = Darwin ]; then \
+		codesign --entitlements $(VMM_PKG)/runner.entitlements -s - --force \
+			$(VMM_PKG)/build/go-microvm-runner; fi
+
+# The stock libkrunfw has no Landlock (ADR-022, D3). This builds the guest
+# kernel with it in a podman container and bundles it into a macOS dylib that
+# loom-vm loads through --firmware-dir. It takes tens of minutes, needs a
+# running podman machine (PODMAN_CONNECTION, default loom-build), and caches
+# its downloads in packages/vmm/build/firmware-work.
+.PHONY: vmm-firmware
+vmm-firmware: ## Build libkrunfw with Landlock into packages/vmm/build/firmware
+	@$(VMM_PKG)/guest/build-libkrunfw.sh $(VMM_PKG)/build/firmware
+
+# The linux/arm64 guest root (packages/vmm/guest/Dockerfile). `make release`
+# cannot cross-compile, so the image builds natively inside the arm64 podman
+# machine named by VMM_BUILD_CONNECTION. The runtime stage's filesystem is
+# exported to packages/vmm/build/guest-root, which `loom-vm run --root-dir`
+# boots. The old root is removed first so that a rebuild never layers new
+# files over stale ones. Boot a copy, not this directory, because the guest
+# writes into its root in place. Clone with `cp -cRp` on macOS: without -p,
+# cp applies the umask to directory modes and /tmp loses its world-write bit.
+VMM_BUILD_CONNECTION ?= loom-build
+VMM_GUEST_IMAGE      ?= localhost/loom-vmm-guest-root:dev
+VMM_GUEST_ROOT       := $(VMM_PKG)/build/guest-root
+# The image labels `loom-vm setup` reads. A developer build is version "dev"
+# at the checkout's commit; the release workflow passes the tag.
+VMM_GUEST_REVISION   ?= $(shell git rev-parse HEAD)
+VMM_GUEST_VERSION    ?= dev
+
+.PHONY: vmm-guest-root
+vmm-guest-root: ## Build the linux/arm64 guest root into packages/vmm/build/guest-root (podman)
+	podman --connection $(VMM_BUILD_CONNECTION) build --platform linux/arm64 \
+		--target runtime -t $(VMM_GUEST_IMAGE) \
+		--build-arg LOOM_REVISION=$(VMM_GUEST_REVISION) \
+		--build-arg LOOM_VERSION=$(VMM_GUEST_VERSION) \
+		-f $(VMM_PKG)/guest/Dockerfile .
+	@set -e; \
+	ctr=$$(podman --connection $(VMM_BUILD_CONNECTION) create $(VMM_GUEST_IMAGE) /bin/true); \
+	trap 'podman --connection $(VMM_BUILD_CONNECTION) rm -f '"$$ctr"' >/dev/null' EXIT; \
+	rm -rf $(VMM_GUEST_ROOT); mkdir -p $(VMM_GUEST_ROOT); \
+	podman --connection $(VMM_BUILD_CONNECTION) export "$$ctr" | tar -xp -C $(VMM_GUEST_ROOT); \
+	echo "exported $(VMM_GUEST_ROOT)"
+
+# The developer path to a manifest: `loom-vm setup --from-build` records where
+# the three targets above put their output, under $LOOM_VM_HOME (default
+# ~/.loom/vm), without copying anything. A user who builds nothing runs
+# `loom-vm setup --release TAG` instead (docs/distribution.md).
+.PHONY: vmm-install-dev
+vmm-install-dev: vmm ## Write loom-vm's manifest for the packages/vmm/build tree (LOOM_VM_HOME)
+	@$(VMM_PKG)/build/loom-vm setup --from-build $(VMM_PKG)/build
+
+.PHONY: vmm-test
+vmm-test: ## Vet, build, and test the Go microVM launcher
+	@cd $(VMM_PKG) && go vet ./... && go build ./... && go test ./...
 
 .PHONY: selftest
 selftest: sandbox ## Probe this kernel's enforcement layers (ENFORCED/SKIPPED per probe)

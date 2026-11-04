@@ -636,6 +636,13 @@
   .home-folder .home-group-head{margin:0;}
   .home-folder-name{flex:0 0 auto;color:var(--color-fg);font:500 13px/1.4 var(--font-sans);}
   .home-folder-path{flex:1 1 auto;min-width:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  /* A rule's row and a would-have-done row hold two or three spans that are not
+     a heading with a control. As flex items they each get a gap and wrap onto
+     their own line when the sentence is long, where they were inline text that
+     ran into one another. */
+  li.home-detail{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;}
+  li.home-detail .home-folder-path{flex:1 1 20ch;}
+  li.home-detail .home-folder-name{flex:0 1 auto;min-width:0;max-width:100%;overflow-wrap:anywhere;}
   button.home-forget{flex:0 0 auto;margin:0;padding:2px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);cursor:pointer;}
   button.home-forget:hover{background:var(--color-bg-raised);}
   form.home-create{display:flex;flex-direction:column;gap:10px;margin:0 0 12px 0;padding:12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);}
@@ -1284,9 +1291,9 @@
     .pc-call-args{display:none;}
     .pc-bar{grid-column:2 / -1;grid-row:2;}
   }
-  article.nudge,article.peer-card,article.sibling-card{background:var(--color-bg-raised);border-radius:10px;padding:9px 12px;min-width:0;}
+  article.nudge,article.peer-card,article.sibling-card,article.trigger-card{background:var(--color-bg-raised);border-radius:10px;padding:9px 12px;min-width:0;}
   article.nudge{border:1px solid var(--color-advisor);}
-  article.sibling-card{border:1px solid var(--color-divider);}
+  article.sibling-card,article.trigger-card{border:1px solid var(--color-divider);}
   article.peer-card{border:1px solid color-mix(in srgb,var(--color-peer) 40%,var(--color-divider));}
   .card-head{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;margin:0 0 4px 0; font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);}
   article.peer-card .card-head{color:var(--color-peer-text);}
@@ -1637,6 +1644,50 @@
   button.admin-abandon:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
   code.admin-id{font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
   .home-peers{margin:0 0 8px 0;padding:6px 10px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  /* The Projects section and a ticket's page on the owner's home
+     (protocol-change/106, the addendum on the web view). The section is a tinted
+     box with a hairline border, and a ticket is a button that fills its row. No
+     shadow, no coloured edge. At phone width every target is at least 44px tall
+     and a ticket's title and age wrap onto two lines instead of overflowing. */
+  main.centre > .home-head{flex:0 0 auto;width:100%;max-width:780px;margin:0 auto 16px auto;box-sizing:border-box;}
+  .home-projects{padding:10px 12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);}
+  .home-project + .home-project{margin-top:12px;}
+  .home-project-stage{margin:8px 0 0 0;}
+  button.home-ticket{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:2px 12px;width:100%;min-height:36px;margin:0;padding:6px 8px;border:0;border-radius:6px;background:transparent;color:inherit;text-align:left;cursor:pointer;}
+  button.home-ticket:hover{background:var(--color-bg);}
+  button.home-ticket:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  button.home-ticket .home-folder-name{flex:1 1 12ch;min-width:0;overflow-wrap:anywhere;}
+  button.home-ticket .home-folder-path{flex:0 0 auto;}
+  li.home-folder:has(> button.home-ticket){padding:0;}
+  .home-ticket-page{max-width:780px;}
+  .home-ticket-page .home-card-fact{white-space:pre-wrap;}
+  @media (max-width:640px){
+    main.centre > .home-head{margin-bottom:12px;}
+    button.home-ticket{min-height:44px;}
+    .home-ticket-page button.home-new,.home-ticket-page button.place-send{min-height:44px;}
+  }
+  /* The Projects section and a ticket's page on the owner's home
+     (protocol-change/106, the addendum on the web view). The section is a tinted
+     box with a hairline border, and a ticket is a button that fills its row. No
+     shadow, no coloured edge. At phone width every target is at least 44px tall
+     and a ticket's title and age wrap onto two lines instead of overflowing. */
+  main.centre > .home-head{flex:0 0 auto;width:100%;max-width:780px;margin:0 auto 16px auto;box-sizing:border-box;}
+  .home-projects{padding:10px 12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);}
+  .home-project + .home-project{margin-top:12px;}
+  .home-project-stage{margin:8px 0 0 0;}
+  button.home-ticket{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:2px 12px;width:100%;min-height:36px;margin:0;padding:6px 8px;border:0;border-radius:6px;background:transparent;color:inherit;text-align:left;cursor:pointer;}
+  button.home-ticket:hover{background:var(--color-bg);}
+  button.home-ticket:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  button.home-ticket .home-folder-name{flex:1 1 12ch;min-width:0;overflow-wrap:anywhere;}
+  button.home-ticket .home-folder-path{flex:0 0 auto;}
+  li.home-folder:has(> button.home-ticket){padding:0;}
+  .home-ticket-page{max-width:780px;}
+  .home-ticket-page .home-card-fact{white-space:pre-wrap;}
+  @media (max-width:640px){
+    main.centre > .home-head{margin-bottom:12px;}
+    button.home-ticket{min-height:44px;}
+    .home-ticket-page button.home-new,.home-ticket-page button.place-send{min-height:44px;}
+  }
   .todo-total{margin-left:auto;color:var(--color-fg-quiet);font-variant-numeric:tabular-nums;}
   ul.todo-tasks{list-style:none;margin:0;padding:0;}
   li.todo-task{position:relative;padding-left:8px;}
@@ -2009,7 +2060,9 @@
     .new-col .lede{margin-bottom:14px;text-align:left;}
     form.place-composer{margin-top:auto;}
     .recent-hint{display:none;}
-    .recent-row{min-height:44px;}
+    .recent-row{min-height:44px;flex-wrap:wrap;padding-top:8px;padding-bottom:8px;}
+    .recent-place{flex:1 1 auto;min-width:0;max-width:100%;flex-wrap:wrap;white-space:normal;overflow-wrap:anywhere;}
+    .session-head .status{flex:0 1 auto;min-width:0;max-width:100%;white-space:normal;}
     .place-chip{height:44px;}
     .pop,.pop.wide{position:fixed;z-index:21;top:auto;left:0;right:0;bottom:0;width:auto;min-width:0;max-width:none;max-height:82dvh;padding:12px 12px 20px 12px;border-width:1px 0 0 0;border-radius:18px 18px 0 0;overflow-y:auto;}
     .pop-scrim{z-index:20;background:rgba(0,0,0,.45);}
@@ -2078,4 +2131,5 @@ loom-mermaid { display: block; min-width: 0; margin: 12px 0; }
 .mermaid-pending { visibility: hidden; }
 .mermaid-details { border-top: 1px solid var(--color-divider); padding: 8px 12px; }
 .mermaid-details summary { cursor: pointer; color: var(--color-fg-quiet); font-size: 12px; }
+.mermaid-error { margin: 0; padding: 8px 12px; border-top: 1px solid var(--color-divider); color: var(--color-fg); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow: auto; font: 12px/1.6 var(--font-mono); }
 .mermaid-source { overflow-x: auto; white-space: pre; font: 12px/1.6 var(--font-mono); margin: 8px 0 0; }

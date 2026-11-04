@@ -1694,6 +1694,196 @@ pub fn relayed_page_after_decoder() -> decode.Decoder(RelayedPageAfter) {
   ))
 }
 
+pub type ProjectById {
+  ProjectById(
+    project_id: String,
+    workspace: String,
+    router_session: String,
+    ledger_path: String,
+    state: String,
+    created_ms: Int,
+  )
+}
+
+pub fn project_by_id(project_id project_id: String) {
+  let sql =
+    "SELECT project_id, workspace, router_session, ledger_path, state, created_ms
+FROM catalogue_projects WHERE project_id = ?"
+  #(sql, [dev.ParamString(project_id)], project_by_id_decoder())
+}
+
+pub fn project_by_id_decoder() -> decode.Decoder(ProjectById) {
+  use project_id <- decode.field(0, decode.string)
+  use workspace <- decode.field(1, decode.string)
+  use router_session <- decode.field(2, decode.string)
+  use ledger_path <- decode.field(3, decode.string)
+  use state <- decode.field(4, decode.string)
+  use created_ms <- decode.field(5, decode.int)
+  decode.success(ProjectById(
+    project_id:,
+    workspace:,
+    router_session:,
+    ledger_path:,
+    state:,
+    created_ms:,
+  ))
+}
+
+pub type ProjectByWorkspace {
+  ProjectByWorkspace(
+    project_id: String,
+    workspace: String,
+    router_session: String,
+    ledger_path: String,
+    state: String,
+    created_ms: Int,
+  )
+}
+
+pub fn project_by_workspace(workspace workspace: String) {
+  let sql =
+    "SELECT project_id, workspace, router_session, ledger_path, state, created_ms
+FROM catalogue_projects WHERE workspace = ?"
+  #(sql, [dev.ParamString(workspace)], project_by_workspace_decoder())
+}
+
+pub fn project_by_workspace_decoder() -> decode.Decoder(ProjectByWorkspace) {
+  use project_id <- decode.field(0, decode.string)
+  use workspace <- decode.field(1, decode.string)
+  use router_session <- decode.field(2, decode.string)
+  use ledger_path <- decode.field(3, decode.string)
+  use state <- decode.field(4, decode.string)
+  use created_ms <- decode.field(5, decode.int)
+  decode.success(ProjectByWorkspace(
+    project_id:,
+    workspace:,
+    router_session:,
+    ledger_path:,
+    state:,
+    created_ms:,
+  ))
+}
+
+pub type AllProjects {
+  AllProjects(
+    project_id: String,
+    workspace: String,
+    router_session: String,
+    ledger_path: String,
+    state: String,
+    created_ms: Int,
+  )
+}
+
+pub fn all_projects() {
+  let sql =
+    "SELECT project_id, workspace, router_session, ledger_path, state, created_ms
+FROM catalogue_projects ORDER BY project_id"
+  #(sql, [], all_projects_decoder())
+}
+
+pub fn all_projects_decoder() -> decode.Decoder(AllProjects) {
+  use project_id <- decode.field(0, decode.string)
+  use workspace <- decode.field(1, decode.string)
+  use router_session <- decode.field(2, decode.string)
+  use ledger_path <- decode.field(3, decode.string)
+  use state <- decode.field(4, decode.string)
+  use created_ms <- decode.field(5, decode.int)
+  decode.success(AllProjects(
+    project_id:,
+    workspace:,
+    router_session:,
+    ledger_path:,
+    state:,
+    created_ms:,
+  ))
+}
+
+pub fn insert_project(
+  project_id project_id: String,
+  workspace workspace: String,
+  router_session router_session: String,
+  ledger_path ledger_path: String,
+  state state: String,
+  created_ms created_ms: Int,
+) {
+  let sql =
+    "INSERT INTO catalogue_projects (project_id, workspace, router_session, ledger_path, state, created_ms)
+VALUES (?, ?, ?, ?, ?, ?)"
+  #(sql, [
+    dev.ParamString(project_id),
+    dev.ParamString(workspace),
+    dev.ParamString(router_session),
+    dev.ParamString(ledger_path),
+    dev.ParamString(state),
+    dev.ParamInt(created_ms),
+  ])
+}
+
+pub fn set_project_state(state state: String, project_id project_id: String) {
+  let sql = "UPDATE catalogue_projects SET state = ? WHERE project_id = ?"
+  #(sql, [dev.ParamString(state), dev.ParamString(project_id)])
+}
+
+pub fn insert_project_worker(
+  session_id session_id: String,
+  project_id project_id: String,
+  ticket_id ticket_id: String,
+  assignment_seq assignment_seq: Int,
+) {
+  let sql =
+    "INSERT INTO catalogue_project_workers (session_id, project_id, ticket_id, assignment_seq)
+VALUES (?, ?, ?, ?)"
+  #(sql, [
+    dev.ParamString(session_id),
+    dev.ParamString(project_id),
+    dev.ParamString(ticket_id),
+    dev.ParamInt(assignment_seq),
+  ])
+}
+
+pub type ProjectStandingOfSession {
+  ProjectStandingOfSession(
+    role: String,
+    project_id: String,
+    ticket_id: String,
+    assignment_seq: Int,
+  )
+}
+
+pub fn project_standing_of_session(
+  router_session router_session: String,
+  session_id session_id: String,
+) {
+  let sql =
+    "SELECT CAST('router' AS TEXT) AS role, project_id, CAST('' AS TEXT) AS ticket_id,
+       CAST(0 AS INTEGER) AS assignment_seq
+FROM catalogue_projects WHERE router_session = ?
+UNION ALL
+SELECT CAST('worker' AS TEXT) AS role, project_id, ticket_id, assignment_seq
+FROM catalogue_project_workers WHERE session_id = ?"
+  #(
+    sql,
+    [dev.ParamString(router_session), dev.ParamString(session_id)],
+    project_standing_of_session_decoder(),
+  )
+}
+
+pub fn project_standing_of_session_decoder() -> decode.Decoder(
+  ProjectStandingOfSession,
+) {
+  use role <- decode.field(0, decode.string)
+  use project_id <- decode.field(1, decode.string)
+  use ticket_id <- decode.field(2, decode.string)
+  use assignment_seq <- decode.field(3, decode.int)
+  decode.success(ProjectStandingOfSession(
+    role:,
+    project_id:,
+    ticket_id:,
+    assignment_seq:,
+  ))
+}
+
 pub type DomainById {
   DomainById(
     domain_id: String,
@@ -2657,6 +2847,213 @@ pub fn history_source_entry_decoder() -> decode.Decoder(HistorySourceEntry) {
   use seq <- decode.field(0, decode.optional(decode.int))
   use payload_bytes <- decode.field(1, decode.optional(decode.int))
   decode.success(HistorySourceEntry(seq:, payload_bytes:))
+}
+
+pub type ProjectLedgerAppend {
+  ProjectLedgerAppend(seq: Int)
+}
+
+pub fn project_ledger_append(at_ms at_ms: Int, event_json event_json: String) {
+  let sql =
+    "INSERT INTO ledger_event (at_ms, event_json) VALUES (?, ?) RETURNING seq"
+  #(
+    sql,
+    [dev.ParamInt(at_ms), dev.ParamString(event_json)],
+    project_ledger_append_decoder(),
+  )
+}
+
+pub fn project_ledger_append_decoder() -> decode.Decoder(ProjectLedgerAppend) {
+  use seq <- decode.field(0, decode.int)
+  decode.success(ProjectLedgerAppend(seq:))
+}
+
+pub type ProjectLedgerEventsAfter {
+  ProjectLedgerEventsAfter(seq: Int, at_ms: Int, event_json: String)
+}
+
+pub fn project_ledger_events_after(seq seq: Int, limit limit: Int) {
+  let sql =
+    "SELECT seq, at_ms, event_json FROM ledger_event WHERE seq > ? ORDER BY seq LIMIT ?"
+  #(
+    sql,
+    [dev.ParamInt(seq), dev.ParamInt(limit)],
+    project_ledger_events_after_decoder(),
+  )
+}
+
+pub fn project_ledger_events_after_decoder() -> decode.Decoder(
+  ProjectLedgerEventsAfter,
+) {
+  use seq <- decode.field(0, decode.int)
+  use at_ms <- decode.field(1, decode.int)
+  use event_json <- decode.field(2, decode.string)
+  decode.success(ProjectLedgerEventsAfter(seq:, at_ms:, event_json:))
+}
+
+pub type ProjectLedgerLastSeq {
+  ProjectLedgerLastSeq(last_seq: Int)
+}
+
+pub fn project_ledger_last_seq() {
+  let sql =
+    "SELECT CAST(COALESCE(MAX(seq), 0) AS INTEGER) AS last_seq FROM ledger_event"
+  #(sql, [], project_ledger_last_seq_decoder())
+}
+
+pub fn project_ledger_last_seq_decoder() -> decode.Decoder(ProjectLedgerLastSeq) {
+  use last_seq <- decode.field(0, decode.int)
+  decode.success(ProjectLedgerLastSeq(last_seq:))
+}
+
+pub type ProjectLedgerSnapshot {
+  ProjectLedgerSnapshot(before_seq: Int, at_ms: Int, snapshot_json: String)
+}
+
+pub fn project_ledger_snapshot() {
+  let sql = "SELECT before_seq, at_ms, snapshot_json FROM ledger_snapshot"
+  #(sql, [], project_ledger_snapshot_decoder())
+}
+
+pub fn project_ledger_snapshot_decoder() -> decode.Decoder(
+  ProjectLedgerSnapshot,
+) {
+  use before_seq <- decode.field(0, decode.int)
+  use at_ms <- decode.field(1, decode.int)
+  use snapshot_json <- decode.field(2, decode.string)
+  decode.success(ProjectLedgerSnapshot(before_seq:, at_ms:, snapshot_json:))
+}
+
+pub fn project_ledger_put_snapshot(
+  before_seq before_seq: Int,
+  at_ms at_ms: Int,
+  snapshot_json snapshot_json: String,
+) {
+  let sql =
+    "INSERT INTO ledger_snapshot (slot, before_seq, at_ms, snapshot_json) VALUES (1, ?, ?, ?)
+ON CONFLICT(slot) DO UPDATE
+SET before_seq = excluded.before_seq, at_ms = excluded.at_ms, snapshot_json = excluded.snapshot_json"
+  #(sql, [
+    dev.ParamInt(before_seq),
+    dev.ParamInt(at_ms),
+    dev.ParamString(snapshot_json),
+  ])
+}
+
+pub fn project_ledger_delete_before(seq seq: Int) {
+  let sql = "DELETE FROM ledger_event WHERE seq < ?"
+  #(sql, [dev.ParamInt(seq)])
+}
+
+pub type ProjectLedgerCursor {
+  ProjectLedgerCursor(entry_id: String)
+}
+
+pub fn project_ledger_cursor(session_id session_id: String) {
+  let sql = "SELECT entry_id FROM scanner_cursor WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)], project_ledger_cursor_decoder())
+}
+
+pub fn project_ledger_cursor_decoder() -> decode.Decoder(ProjectLedgerCursor) {
+  use entry_id <- decode.field(0, decode.string)
+  decode.success(ProjectLedgerCursor(entry_id:))
+}
+
+pub fn project_ledger_put_cursor(
+  session_id session_id: String,
+  entry_id entry_id: String,
+) {
+  let sql =
+    "INSERT INTO scanner_cursor (session_id, entry_id) VALUES (?, ?)
+ON CONFLICT(session_id) DO UPDATE SET entry_id = excluded.entry_id"
+  #(sql, [dev.ParamString(session_id), dev.ParamString(entry_id)])
+}
+
+pub fn project_ledger_put_effect(
+  kind kind: String,
+  key key: String,
+  payload_json payload_json: String,
+  due_ms due_ms: Int,
+) {
+  let sql =
+    "INSERT INTO effect_row (kind, key, payload_json, attempts, due_ms) VALUES (?, ?, ?, 0, ?)
+ON CONFLICT(kind, key) DO UPDATE
+SET payload_json = excluded.payload_json, attempts = 0, due_ms = excluded.due_ms"
+  #(sql, [
+    dev.ParamString(kind),
+    dev.ParamString(key),
+    dev.ParamString(payload_json),
+    dev.ParamInt(due_ms),
+  ])
+}
+
+pub type ProjectLedgerEffectsDue {
+  ProjectLedgerEffectsDue(
+    kind: String,
+    key: String,
+    payload_json: String,
+    attempts: Int,
+    due_ms: Int,
+  )
+}
+
+pub fn project_ledger_effects_due(due_ms due_ms: Int, limit limit: Int) {
+  let sql =
+    "SELECT kind, key, payload_json, attempts, due_ms FROM effect_row
+WHERE due_ms <= ? ORDER BY due_ms, kind, key LIMIT ?"
+  #(
+    sql,
+    [dev.ParamInt(due_ms), dev.ParamInt(limit)],
+    project_ledger_effects_due_decoder(),
+  )
+}
+
+pub fn project_ledger_effects_due_decoder() -> decode.Decoder(
+  ProjectLedgerEffectsDue,
+) {
+  use kind <- decode.field(0, decode.string)
+  use key <- decode.field(1, decode.string)
+  use payload_json <- decode.field(2, decode.string)
+  use attempts <- decode.field(3, decode.int)
+  use due_ms <- decode.field(4, decode.int)
+  decode.success(ProjectLedgerEffectsDue(
+    kind:,
+    key:,
+    payload_json:,
+    attempts:,
+    due_ms:,
+  ))
+}
+
+pub type ProjectLedgerDeferEffect {
+  ProjectLedgerDeferEffect(attempts: Int)
+}
+
+pub fn project_ledger_defer_effect(
+  due_ms due_ms: Int,
+  kind kind: String,
+  key key: String,
+) {
+  let sql =
+    "UPDATE effect_row SET attempts = attempts + 1, due_ms = ?
+WHERE kind = ? AND key = ? RETURNING attempts"
+  #(
+    sql,
+    [dev.ParamInt(due_ms), dev.ParamString(kind), dev.ParamString(key)],
+    project_ledger_defer_effect_decoder(),
+  )
+}
+
+pub fn project_ledger_defer_effect_decoder() -> decode.Decoder(
+  ProjectLedgerDeferEffect,
+) {
+  use attempts <- decode.field(0, decode.int)
+  decode.success(ProjectLedgerDeferEffect(attempts:))
+}
+
+pub fn project_ledger_delete_effect(kind kind: String, key key: String) {
+  let sql = "DELETE FROM effect_row WHERE kind = ? AND key = ?"
+  #(sql, [dev.ParamString(kind), dev.ParamString(key)])
 }
 
 pub type SnapshotSession {

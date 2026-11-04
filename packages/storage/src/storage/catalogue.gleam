@@ -51,6 +51,11 @@
 ////     the caller's transaction with the registration it names. `relayed_of`
 ////     is the marker that says a session is one, and `relayed_page` lists a
 ////     spawner's sessions newest first.
+//// 14. `create_project` and `bind_worker` record a project (protocol-change/106)
+////     and its worker sessions in the caller's transaction, `project`,
+////     `project_of_workspace` and `projects` read them, `archive_project`
+////     retires one, and `project_standing` answers what a session is to
+////     project mode as a typed `ProjectStanding`.
 
 import core/ids
 import gleam/bit_array
@@ -74,6 +79,7 @@ import storage/catalogue_moves_schema
 import storage/catalogue_names_schema
 import storage/catalogue_pools_schema
 import storage/catalogue_profiles_schema
+import storage/catalogue_projects_schema
 import storage/catalogue_recent_folders_schema
 import storage/catalogue_relayed_schema
 import storage/catalogue_releases_schema
@@ -298,7 +304,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 /// raise this fails `migrations_end_at_the_current_version_test` rather than
 /// leaving a catalogue that claims a version whose migration never ran.
 @internal
-pub const current_version = 19
+pub const current_version = 20
 
 /// The migration schemas in version order, each applied to a catalogue that
 /// lacks its version.
@@ -323,6 +329,7 @@ pub fn migrations() -> List(#(Int, String)) {
     #(17, catalogue_spend_schema.schema),
     #(18, catalogue_start_failures_schema.schema),
     #(19, catalogue_relayed_schema.schema),
+    #(20, catalogue_projects_schema.schema),
   ]
 }
 
@@ -3501,6 +3508,449 @@ fn transact(
       Error(error)
     }
   }
+}
+
+/// Whether a project takes new work. An archived project keeps its row, its
+/// workers' rows and its ledger file; the word is the owner's.
+pub type ProjectState {
+  /// The project is in use.
+  ProjectActive
+
+  /// The owner retired the project. Nothing in the catalogue deletes it.
+  ProjectArchived
+}
+
+/// A project (protocol-change/106, catalogue version 20): one workspace, the
+/// router session that serves it, and the ledger file that holds its history.
+/// The catalogue records the ledger's path and never opens the file.
+pub type Project {
+  Project(
+    /// The project's identity, one to 64 bytes of printable text.
+    id: String,
+    /// The workspace the project is bound to. The first version binds exactly
+    /// one, and no two projects share it.
+    workspace: String,
+    /// The registered session that is the project's router. It is the router of
+    /// this project only, and a registration naming it cannot be deleted while
+    /// the project stands.
+    router_session: String,
+    /// The project's SQLite ledger file, as the daemon canonicalized it.
+    ledger_path: String,
+    /// Whether the project takes new work.
+    state: ProjectState,
+    /// Creation time in Unix milliseconds, read from the system clock.
+    created_ms: Int,
+  )
+}
+
+/// The binding of one worker session to the n-th assignment of a ticket.
+pub type ProjectWorker {
+  ProjectWorker(
+    /// The worker's registered session.
+    session_id: String,
+    /// The project the worker belongs to.
+    project: String,
+    /// The ticket the worker was assigned, one to 128 bytes of printable text.
+    ticket: String,
+    /// Which assignment of the ticket this session is. The worker's request key
+    /// derives from the pair, so a ticket's n-th assignment binds one session.
+    seq: Int,
+  )
+}
+
+/// What a session is to project mode. It is a typed answer so that a site which
+/// must decide what to do with a session matches on every case; a new case then
+/// fails to compile there. It is not a field of any other standing type.
+pub type ProjectStanding {
+  /// The session belongs to no project.
+  NotProject
+
+  /// The session is the router of a project.
+  RouterOf(
+    /// The project's identity.
+    project: String,
+  )
+
+  /// The session is a worker bound to an assignment.
+  WorkerOf(
+    /// The project's identity.
+    project: String,
+    /// The ticket the session was assigned.
+    ticket: String,
+    /// Which assignment of the ticket the session is.
+    seq: Int,
+  )
+}
+
+/// The most bytes a project id holds.
+pub const project_id_limit = 64
+
+/// The most bytes a ticket id holds in a worker binding.
+pub const project_ticket_limit = 128
+
+/// The most bytes a workspace or ledger path holds in a project row.
+pub const project_path_limit = 4096
+
+/// Records a project in the caller's transaction.
+///
+/// The router session must be registered and must have no standing yet: a
+/// session that is already a router or a worker is `Conflict`, and so is a
+/// project id or workspace that another project holds, because the schema's
+/// primary key and unique indexes refuse the row and this function answers the
+/// refusal as `Conflict`. A malformed field is `Invalid` and nothing is
+/// written.
+///
+/// This writes one row and takes no transaction of its own, because its caller
+/// creates the router's registration in the same turn (`atomic`), so no
+/// project exists whose router does not, and no router registration exists
+/// without the project that explains it. Called outside `atomic` it is still
+/// one statement, but the standing check and the insert are then not one step.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.atomic(store, fn() { catalogue.create_project(store, project) })
+/// ```
+@internal
+pub fn create_project(
+  catalogue: Catalogue,
+  project: Project,
+) -> Result(Nil, Error) {
+  use Nil <- result.try(validate_project(project))
+  use standing <- result.try(project_standing(catalogue, project.router_session))
+
+  // A router is a session with no other part in project mode.
+  case standing {
+    NotProject ->
+      insert_or_conflict(
+        catalogue,
+        sql.insert_project(
+          project.id,
+          project.workspace,
+          project.router_session,
+          project.ledger_path,
+          project_state_text(project.state),
+          project.created_ms,
+        ),
+      )
+    RouterOf(..) | WorkerOf(..) -> Error(Conflict)
+  }
+}
+
+/// Reads the project bound to a workspace, or `None` for a workspace no project
+/// holds. A stored row that breaks its grammar is `Invalid` and is never read
+/// as "no project".
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.project_of_workspace(store, "/work/repo") == Ok(None)
+/// ```
+pub fn project_of_workspace(
+  catalogue: Catalogue,
+  workspace: String,
+) -> Result(Option(Project), Error) {
+  use rows <- result.try(query(catalogue, sql.project_by_workspace(workspace)))
+
+  // A workspace has at most one project, so more than one row is damage.
+  case rows {
+    [] -> Ok(None)
+    [row] ->
+      decode_project(
+        row.project_id,
+        row.workspace,
+        row.router_session,
+        row.ledger_path,
+        row.state,
+        row.created_ms,
+      )
+      |> result.map(Some)
+    [_, _, ..] -> Error(Invalid("duplicate project metadata"))
+  }
+}
+
+/// Reads a project by identity, or `None` when there is none. A stored row that
+/// breaks its grammar is `Invalid`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.project(store, "proj-1") == Ok(None)
+/// ```
+pub fn project(
+  catalogue: Catalogue,
+  id: String,
+) -> Result(Option(Project), Error) {
+  use rows <- result.try(query(catalogue, sql.project_by_id(id)))
+
+  // The id is the primary key, so more than one row is damage.
+  case rows {
+    [] -> Ok(None)
+    [row] ->
+      decode_project(
+        row.project_id,
+        row.workspace,
+        row.router_session,
+        row.ledger_path,
+        row.state,
+        row.created_ms,
+      )
+      |> result.map(Some)
+    [_, _, ..] -> Error(Invalid("duplicate project metadata"))
+  }
+}
+
+/// Every project in identity order, archived ones included, for the boot sweep
+/// that reopens the active ones. One damaged row makes the whole read
+/// `Invalid`; it is reported and never skipped.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.projects(store) == Ok([])
+/// ```
+pub fn projects(catalogue: Catalogue) -> Result(List(Project), Error) {
+  use rows <- result.try(query(catalogue, sql.all_projects()))
+  list.try_map(rows, fn(row) {
+    decode_project(
+      row.project_id,
+      row.workspace,
+      row.router_session,
+      row.ledger_path,
+      row.state,
+      row.created_ms,
+    )
+  })
+}
+
+/// Marks a project archived, in one immediate transaction. Archiving an
+/// archived project changes nothing, and there is no way back: a project that
+/// should work again is a new project over a free workspace. An unknown project
+/// is `Missing`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.archive_project(store, "proj-1")
+/// ```
+pub fn archive_project(catalogue: Catalogue, id: String) -> Result(Nil, Error) {
+  transaction(catalogue.connection, fn() {
+    use found <- result.try(project(catalogue, id))
+
+    // Only an active project has anything to change.
+    case found {
+      None -> Error(Missing)
+      Some(Project(state: ProjectArchived, ..)) -> Ok(Nil)
+      Some(Project(state: ProjectActive, ..)) ->
+        statement(
+          catalogue,
+          sql.set_project_state(project_state_text(ProjectArchived), id),
+        )
+    }
+  })
+}
+
+/// Binds a worker session to a ticket's assignment in the caller's
+/// transaction.
+///
+/// The project and the session must both exist. A session that already has a
+/// standing (a router, or a worker bound before) is `Conflict`, and so is an
+/// assignment the project has already bound, which is the catalogue's side of
+/// the idempotent creation the request key gives. A malformed field is
+/// `Invalid`. Like `create_project` it takes no transaction of its own: the
+/// caller reserves the worker's registration in the same turn.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.atomic(store, fn() { catalogue.bind_worker(store, worker) })
+/// ```
+@internal
+pub fn bind_worker(
+  catalogue: Catalogue,
+  worker: ProjectWorker,
+) -> Result(Nil, Error) {
+  use Nil <- result.try(validate_worker(worker))
+  use standing <- result.try(project_standing(catalogue, worker.session_id))
+
+  // A session takes one part in project mode, once.
+  case standing {
+    NotProject ->
+      insert_or_conflict(
+        catalogue,
+        sql.insert_project_worker(
+          worker.session_id,
+          worker.project,
+          worker.ticket,
+          worker.seq,
+        ),
+      )
+    RouterOf(..) | WorkerOf(..) -> Error(Conflict)
+  }
+}
+
+/// What a session is to project mode, in one statement and so from one state of
+/// the catalogue.
+///
+/// A session that is both a router and a worker, or a worker twice, cannot be
+/// written (`create_project` and `bind_worker` refuse it, and the primary key
+/// holds the rest). A catalogue that nonetheless says so is damaged, and the
+/// answer is `Invalid`: reading it as `NotProject` would let a damaged file
+/// move or sweep a session that project mode keeps in place.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.project_standing(store, session_id) == Ok(catalogue.NotProject)
+/// ```
+pub fn project_standing(
+  catalogue: Catalogue,
+  session_id: String,
+) -> Result(ProjectStanding, Error) {
+  use rows <- result.try(query(
+    catalogue,
+    sql.project_standing_of_session(session_id, session_id),
+  ))
+
+  // Each table holds at most one row for a session, so one row is the answer.
+  case rows {
+    [] -> Ok(NotProject)
+    [row] ->
+      decode_standing(
+        row.role,
+        row.project_id,
+        row.ticket_id,
+        row.assignment_seq,
+      )
+    [_, _, ..] -> Error(Invalid("duplicate project standing"))
+  }
+}
+
+// A role word this build does not know is a damaged read and never a session
+// with no standing, for the reason `project_standing` gives.
+/// Decodes one standing row, refusing a role or field outside its grammar.
+fn decode_standing(
+  role: String,
+  project: String,
+  ticket: String,
+  seq: Int,
+) -> Result(ProjectStanding, Error) {
+  let named = printable_text(project, project_id_limit)
+  let assigned = printable_text(ticket, project_ticket_limit) && seq >= 0
+
+  // The router row carries no ticket, so only the worker row checks one.
+  case role, named, assigned {
+    "router", True, _ -> Ok(RouterOf(project:))
+    "worker", True, True -> Ok(WorkerOf(project:, ticket:, seq:))
+    _, _, _ -> Error(Invalid("invalid project standing metadata"))
+  }
+}
+
+/// Decodes a stored project row, refusing a state word or field outside its
+/// grammar.
+fn decode_project(
+  id: String,
+  workspace: String,
+  router_session: String,
+  ledger_path: String,
+  state: String,
+  created_ms: Int,
+) -> Result(Project, Error) {
+  // The state word is the table's two-valued CHECK, read back as a type.
+  use state <- result.try(case state {
+    "active" -> Ok(ProjectActive)
+    "archived" -> Ok(ProjectArchived)
+    _ -> Error(Invalid("unknown project state"))
+  })
+
+  // The fields of a stored row are judged as a caller's would be.
+  let project =
+    Project(id:, workspace:, router_session:, ledger_path:, state:, created_ms:)
+  validate_project(project)
+  |> result.replace_error(Invalid("invalid project metadata"))
+  |> result.replace(project)
+}
+
+/// The word the table stores for a project state.
+fn project_state_text(state: ProjectState) -> String {
+  case state {
+    ProjectActive -> "active"
+    ProjectArchived -> "archived"
+  }
+}
+
+/// Checks a project's fields against the grammar the table's CHECKs also hold.
+fn validate_project(project: Project) -> Result(Nil, Error) {
+  case
+    printable_text(project.id, project_id_limit)
+    && printable_text(project.workspace, project_path_limit)
+    && printable_text(project.ledger_path, project_path_limit)
+    && result.is_ok(ids.parse_session_id(project.router_session))
+    && project.created_ms >= 0
+  {
+    True -> Ok(Nil)
+    False -> Error(Invalid("invalid project metadata"))
+  }
+}
+
+/// Checks a worker binding's fields against the grammar the table's CHECKs also
+/// hold.
+fn validate_worker(worker: ProjectWorker) -> Result(Nil, Error) {
+  case
+    result.is_ok(ids.parse_session_id(worker.session_id))
+    && printable_text(worker.project, project_id_limit)
+    && printable_text(worker.ticket, project_ticket_limit)
+    && worker.seq >= 0
+  {
+    True -> Ok(Nil)
+    False -> Error(Invalid("invalid project worker metadata"))
+  }
+}
+
+/// Whether the text is one to `limit` bytes with no control code point.
+fn printable_text(text: String, limit: Int) -> Bool {
+  let size = string.byte_size(text)
+  size >= 1
+  && size <= limit
+  && list.all(string.to_utf_codepoints(text), fn(codepoint) {
+    !control(string.utf_codepoint_to_int(codepoint))
+  })
+}
+
+// A unique, primary-key or foreign-key refusal is the caller asking for a row
+// the catalogue already holds or naming a row it lacks, which is `Conflict`
+// whichever key said so. Any other failure stays a database error.
+/// Runs an insert, answering a constraint refusal as `Conflict`.
+fn insert_or_conflict(
+  catalogue: Catalogue,
+  generated: #(String, List(dev.Param)),
+) -> Result(Nil, Error) {
+  let #(text, params) = generated
+  use arguments <- result.try(list.try_map(params, parameter))
+
+  // Separate a refused row from a failed statement.
+  case
+    sqlight.query(
+      text,
+      on: catalogue.connection,
+      with: arguments,
+      expecting: decode.success(Nil),
+    )
+  {
+    Ok(_) -> Ok(Nil)
+    Error(sqlight.SqlightError(code:, ..) as refusal) ->
+      case constraint_refusal(code) {
+        True -> Error(Conflict)
+        False -> Error(sql_error(refusal))
+      }
+  }
+}
+
+// SQLite reports the kind of constraint in the bits above the low byte, and the
+// low byte is the family the refusal belongs to (19, SQLITE_CONSTRAINT).
+/// Whether a SQLite result code is any constraint refusal.
+fn constraint_refusal(code: sqlight.ErrorCode) -> Bool {
+  int.bitwise_and(sqlight.error_code_to_int(code), 255) == 19
 }
 
 /// Groups internal catalogue changes in one immediate transaction.

@@ -42,6 +42,14 @@ esac
 STRIP_ERTS="${DIST_STRIP_ERTS:-1}"
 [ "$DEBUG" = 1 ] && STRIP_ERTS=0
 CODEMODE="${DIST_CODEMODE:-1}"
+# DIST_VM=0 leaves the microVM launcher (`loom-vm`) out of the release. The
+# guest image's own build sets it: a guest holds an executor, and a launcher
+# inside it would be a 15 MB program that can only boot a guest of its own.
+VM="${DIST_VM:-1}"
+case "$VM" in
+  0|1) ;;
+  *) echo "release.sh: DIST_VM must be 0 or 1" >&2; exit 1 ;;
+esac
 SEED="$ROOT/build/codemode-seed"
 
 REL_ROOT="$ROOT/build/release"
@@ -612,6 +620,21 @@ rm -f "$REL/bin/loom"
 echo "==> building the sandbox helper"
 scripts/go-build.sh "$ROOT/packages/sandbox" ./cmd/loom-exec "$REL/bin/loom-exec"
 
+# The microVM launcher (ADR-022). Unlike the helper it is not tied to the
+# kernel it was built on, and unlike the ERTS it carries no native code of the
+# host's: with cgo off it is one Go program with no build-host inputs, so the
+# per-host build model that forces a release to be built where it runs costs
+# nothing here, and two builders produce the same bytes (go-build.sh passes
+# -trimpath; the same module versions come from go.sum). It
+# sits beside loomd and loom-exec so `loom vm` and `loom-vm setup` find it from
+# the installation root. It needs the network at build time like the helper
+# does, for the module cache, and no libkrun: the runner that links libkrun is
+# a separate download (docs/distribution.md, "The microVM artifacts").
+if [ "$VM" = 1 ]; then
+  echo "==> building the microVM launcher"
+  CGO_ENABLED=0 scripts/go-build.sh "$ROOT/packages/vmm" ./cmd/loom-vm "$REL/bin/loom-vm"
+fi
+
 # Code mode: the compiler and the pre-resolved package cache a hermetic
 # build is cloned from. The release already carried the third thing
 # `discover` asks for — `erts-*/bin/erl` — and the server now finds all
@@ -666,6 +689,7 @@ echo "release: $REL"
 # the tree and nothing else.
 sizes="$REL $REL/erts-$ERTS_VSN $REL/lib $REL/bin/loom-exec"
 [ "$CODEMODE" = 1 ] && sizes="$sizes $REL/bin/gleam $REL/share/codemode-seed"
+[ "$VM" = 1 ] && sizes="$sizes $REL/bin/loom-vm"
 for p in $sizes; do
   du -sh "$p" | sed 's/^/  /'
 done

@@ -69,12 +69,15 @@ fn capture_fixture(name: String) {
   let assert Ok(Nil) = simplifile.create_directory_all(staging)
   let assert Ok(here) = simplifile.current_directory()
   let assert Ok(git) =
-    worktree_git.start(worktree_git.Config(
-      helper_path: here <> "/../sandbox/loom-exec",
-      scratch: rig.state <> "/git-runner",
-      state_root: rig.state,
-      demand: exec.BestEffort,
-    ))
+    worktree_git.start(
+      worktree_git.Config(
+        helper_path: here <> "/../sandbox/loom-exec",
+        scratch: rig.state <> "/git-runner",
+        state_root: rig.state,
+        demand: exec.BestEffort,
+        credentials: [],
+      ),
+    )
   let base = policy.workspace_default(rig.root)
   let scope =
     policy.SandboxPolicy(..base, readable_roots: ["/"], protected: [

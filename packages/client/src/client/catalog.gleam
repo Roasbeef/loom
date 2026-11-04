@@ -478,6 +478,18 @@ pub type Catalog {
 ///
 pub const advisor_role = model.Custom("advisor")
 
+/// The role a project's router session routes on (protocol-change/106). It is
+/// optional like the advisor: a catalogue that omits it routes on `subagent`
+/// and then `main`, in that order, through `harness/routing`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.router_role == model.Custom("router")
+/// ```
+///
+pub const router_role = model.Custom("router")
+
 // The six routable roles, in the canonical order listings use. The
 // advisor comes last because it is the only one no session needs, and
 // this order is the one an operator reads down.
@@ -488,6 +500,7 @@ const routable_roles = [
   model.Summarize,
   model.Vision,
   advisor_role,
+  router_role,
 ]
 
 // --- parsing ---------------------------------------------------------------
@@ -563,14 +576,18 @@ pub fn parse_with_document(
   // `client/directory/settings`': the members of the session directory's
   // Khepri cluster, when this daemon is one of them. `spawners` is
   // `client/spawners`': which other orchestrators may start subagents on this
-  // one, and on what terms.
+  // one, and on what terms. `project` is `client/project_settings`': the
+  // limits and finishing keys of project mode, read once when the daemon
+  // starts. A key missing from this list is refused for every reader of the
+  // file, so a file that set `[project]` was rejected before the table was
+  // ever read.
   use Nil <- result.try(known_keys(
     dict.keys(document),
     [
       "models", "roles", "mcp", "rule", "schedule", "schedules", "memory",
       "tools", "jobs", "secrets", "workspace", "advisor", "daemon", "lsp",
       "profiles", "peers", "retry", "distribution", "executors", "pools",
-      "workspaces", "orchestrators", "directory", "spawners",
+      "workspaces", "orchestrators", "directory", "spawners", "project",
     ],
     "the top level",
   ))
@@ -2018,13 +2035,14 @@ fn parse_role(place: String, name: String) -> Result(model.Role, String) {
     "summarize" -> Ok(model.Summarize)
     "vision" -> Ok(model.Vision)
     "advisor" -> Ok(advisor_role)
+    "router" -> Ok(router_role)
     other ->
       Error(
         place
         <> "."
         <> other
         <> " is not a routable role (main, subagent, plan, summarize,"
-        <> " vision, advisor)",
+        <> " vision, advisor, router)",
       )
   }
 }
@@ -3156,16 +3174,19 @@ pub type Retarget {
 /// ```
 ///
 pub fn retargets(leaving: Catalog, entering: Catalog) -> List(Retarget) {
-  list.filter_map([model.Main, model.Subagent, advisor_role], fn(role) {
-    use from <- result.try(role_head(leaving, role))
-    use to <- result.try(role_head(entering, role))
+  list.filter_map(
+    [model.Main, model.Subagent, advisor_role, router_role],
+    fn(role) {
+      use from <- result.try(role_head(leaving, role))
+      use to <- result.try(role_head(entering, role))
 
-    // Retarget if model provider or model_id changed.
-    case from.name == to.name && from.model_id == to.model_id {
-      True -> Error(Nil)
-      False -> Ok(Retarget(role:, from:, to:))
-    }
-  })
+      // Retarget if model provider or model_id changed.
+      case from.name == to.name && from.model_id == to.model_id {
+        True -> Error(Nil)
+        False -> Ok(Retarget(role:, from:, to:))
+      }
+    },
+  )
 }
 
 // The entry heading a role's chain, which is what `gateway.resolve` picks and

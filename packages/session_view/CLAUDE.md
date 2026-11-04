@@ -331,6 +331,10 @@ for a host with no surfaces.
   the same session sent (stored origin `StrandOrigin`, framing removed by
   `strand_framing.strip`, a brief's result-contract trailer kept apart; `Peer`
   and `Sibling` keep the whole text and the host shortens it when it draws),
+  `Trigger` for outside text delivered through a stored project trigger (stored
+  origin `TriggerOrigin`; its fields come from the origin and its text is
+  untrusted data; the line is `TriggerMessage`, headed `⚑ from <source> ·
+  <actor> · trigger <id>` with no daemon check),
   `Missed` for a cache notice and `Commentary` for the advisor's board (reviews that
   stand next to each other are one piece with a `reviews` count). A feed or goal
   feed sent to the advisor is an input, since the advisor's strand has no other:
@@ -1184,3 +1188,17 @@ and `context_deferred_until`, and runs its ordinary tick when it fires. It is
 the earliest staging poll or deadline, the instant a requested read is owed, and
 the instant a watched board goes stale, or `None` when detached or idle. A past
 instant means a tick is owed now.
+
+## Project board (protocol-change/106)
+
+`session_view/project_board` is the total decoder and the words for
+`projects.board` and `projects.ticket`, shared by the terminal's board screen and
+the web view's Projects section. `decode_board` and `decode_detail` keep a stage
+or delivery state they do not know as text, leave out a row with no usable `id`
+and count it in `Board.unreadable`, and pass every string through
+`text_hygiene` once. `ordered` puts needs-a-person stages first, by urgency and
+then newest first, and does not depend on the order the daemon sent. `groups`,
+`health_words`, `age_words` (an absent time is `?`, never zero),
+`mandate_words` and `answer_refusal_words` are the sentences. `command.Surface`
+has a `Project` variant for `/project`; the terminal opens its board screen for
+it.

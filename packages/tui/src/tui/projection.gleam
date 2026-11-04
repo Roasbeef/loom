@@ -55,7 +55,7 @@ import session_view/transcript_line.{
   PeerMessage, ProgramFailure, ProgramRunning, ProgramSettled, Reasoning,
   ReasoningDigest, SentMessage, Spacer, StrandMessage, SummarizedAdvice,
   SummarizedReasoning, System, ToolCall, ToolDetail, ToolFailure, ToolGroup,
-  ToolPatch, ToolResult, User,
+  ToolPatch, ToolResult, TriggerMessage, User,
 }
 import session_view/transcript_lines.{
   BetweenEntries, Projected, Transient, WithinResponse,
@@ -631,6 +631,7 @@ fn image_of(speaker: Speaker) -> Option(Option(image_header.Picture)) {
     | SentMessage
     | StrandMessage
     | PeerMessage
+    | TriggerMessage
     | ProgramRunning
     | ProgramFailure
     | ProgramSettled
@@ -1107,7 +1108,7 @@ fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
     // the gutter counts only the indent before the heading and the body.
     SentMessage | StrandMessage if index == 0 -> 1
     SentMessage | StrandMessage if index < row_count - 1 -> 3
-    PeerMessage if index > 0 && index < row_count - 1 -> 4
+    PeerMessage | TriggerMessage if index > 0 && index < row_count - 1 -> 4
     ToolDetail -> 2
     System
     | ToolGroup
@@ -1126,6 +1127,7 @@ fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
     | SentMessage
     | StrandMessage
     | PeerMessage
+    | TriggerMessage
     | ProgramRunning
     | ProgramFailure
     | ProgramSettled

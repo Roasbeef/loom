@@ -43,3 +43,10 @@ declared|darwin|no /proc on this host, so a stopped server's death cannot be obs
 # bucket installs the component, rust-src and std's dependencies
 # (.github/scripts/install_rust_analyzer.sh) and runs it for real.
 declared|darwin|SKIP lsp manager rust-analyzer: rust-analyzer does not run|macOS runners carry no rust-analyzer component; the Linux client bucket installs it and runs the fixture for real.
+
+# The microVM executor fixture boots a libkrun guest (ADR-022) and needs a
+# hypervisor, the go-microvm runner, the Landlock guest kernel and an exported
+# guest root, none of which a CI runner or the signoff container carries. It
+# runs on a developer's Apple Silicon Mac with LOOM_VM and its companions set.
+declared|linux|SKIP shipped microvm executor: LOOM_VM is unset|The microVM fixture needs a hypervisor and a built guest root; CI and the signoff container have neither, and it runs on a developer machine.
+declared|darwin|SKIP shipped microvm executor: LOOM_VM is unset|The hosted macOS runner has no libkrun runner or guest root; the fixture runs on a developer's Apple Silicon Mac.

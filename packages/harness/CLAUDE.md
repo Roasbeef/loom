@@ -132,3 +132,9 @@ supervisor; `api.open` links the tree to its caller.
   daemon-specific assembly built on this package.
 - [packages/runtime/CLAUDE.md](../runtime/CLAUDE.md) — `Effects`, `api.open`.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
+
+## Router routing
+
+`routing.candidate_roles` gives `Custom("router")` the order router, subagent, main (the
+other custom roles use router-less main then subagent). The word matches
+`client/catalog.router_role`; harness cannot import client.

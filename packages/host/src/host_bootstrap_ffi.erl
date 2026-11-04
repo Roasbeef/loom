@@ -16,7 +16,7 @@
          spawn_server/4, release_server_process/1, close_server_process/1,
          terminate_process_group/1, process_identity/1,
          legacy_darwin_process_identity/1,
-         current_log_tail/3]).
+         current_log_tail/3, run_captured/3]).
 
 %% Every path arriving from Gleam is a UTF-8 binary. `binary_to_list/1` would
 %% split it one codepoint per byte, so `/tmp/é` would reach `filename`, `file`
@@ -521,6 +521,17 @@ darwin_absent_or_unrunnable(Pid) ->
 ps_unrunnable() ->
     <<"/bin/ps could not be consulted "
       "(refused by the sandbox or did not answer)">>.
+
+%% The same bounded run the `ps` and `id` observations use, offered to Gleam
+%% with its paths and arguments as Unicode and its answer as one tuple, so that
+%% a launcher can run a helper and read its refusal without printing it.
+run_captured(ExecutableBinary, ArgumentBinaries, TimeoutMs) ->
+    Executable = unicode:characters_to_list(ExecutableBinary),
+    Arguments = lists:map(fun unicode:characters_to_list/1, ArgumentBinaries),
+    case run_capture_status(Executable, Arguments, TimeoutMs) of
+        {ok, Status, Output} -> {ok, {Status, Output}};
+        {error, _} = Error -> Error
+    end.
 
 run_capture_status(Executable, Arguments, TimeoutMs) ->
     run_capture_status(Executable, Arguments, TimeoutMs, []).

@@ -83,7 +83,7 @@ import session_view/transcript_line.{
   PeerMessage, ProgramFailure, ProgramRunning, ProgramSettled, Reasoning,
   ReasoningDigest, SentMessage, Spacer, StrandMessage, Stream, SummarizedAdvice,
   SummarizedReasoning, System, ToolCall, ToolDetail, ToolFailure, ToolGroup,
-  ToolPatch, ToolResult, User,
+  ToolPatch, ToolResult, TriggerMessage, User,
 }
 import session_view/usage_display
 import session_view/worktree_view
@@ -581,8 +581,11 @@ pub fn summarized_reasoning_line(header: String, label: String) -> Line {
 }
 
 /// The most rows a summary's secondary lines take beneath their header.
-/// A longer summary is cut with an ellipsis at the end of the last row.
-pub const summary_rows = 3
+/// A summary is two or three sentences of about sixty words, which wraps to
+/// four or five rows in an 80-column terminal, so five rows show the whole
+/// of a typical label, conclusion included. A longer summary is cut with an
+/// ellipsis at the end of the last row.
+pub const summary_rows = 5
 
 /// How many lines a reasoning block holds so far, in words: `1 line`,
 /// `2 lines`. A live reasoning row says this and how long the generation has
@@ -1516,7 +1519,8 @@ pub fn closes_bare(speaker: Speaker) -> Bool {
     | SummarizedAdvice
     | SentMessage
     | StrandMessage
-    | PeerMessage -> False
+    | PeerMessage
+    | TriggerMessage -> False
   }
 }
 
@@ -1544,6 +1548,7 @@ pub fn opens_bare(rows: List(Line), opening: GroupOpening) -> Bool {
     [Line(speaker: SentMessage, ..), ..] -> True
     [Line(speaker: StrandMessage, ..), ..] -> True
     [Line(speaker: PeerMessage, ..), ..] -> True
+    [Line(speaker: TriggerMessage, ..), ..] -> True
     [Line(speaker: SummarizedReasoning, ..), ..] -> True
 
     // A harness row, such as advisor commentary, a notice or a tool group's
@@ -2914,6 +2919,9 @@ fn entry_rows(
       |> option.lazy_or(fn() {
         sibling_message_lines(value, details_extent(details_expanded), clock)
       })
+      |> option.lazy_or(fn() {
+        trigger_message_lines(value, details_extent(details_expanded), clock)
+      })
       |> option.lazy_unwrap(fn() {
         message_lines(
           value,
@@ -3094,6 +3102,42 @@ fn sibling_message_lines(
         ),
       ])
     }
+    _ -> None
+  }
+}
+
+/// A message that came from outside any session through a stored trigger.
+/// It is selected by the stored `TriggerOrigin` alone, and its heading
+/// (`⚑ from github · octocat · trigger trg-1`) is built from that origin's
+/// three fields, each cut to one line, and never from the body. The body is
+/// outside text, so it is drawn as the other messages between agents are and
+/// carries no claim of verification: unlike a peer message, the heading says
+/// nothing about the daemon having checked the sender.
+fn trigger_message_lines(
+  value: message.AgentMessage,
+  extent: notes_view.Extent,
+  clock: Option(Int),
+) -> Option(List(Line)) {
+  case value {
+    message.UserMessage(
+      content:,
+      origin: Some(message.TriggerOrigin(source:, trigger:, actor:)),
+      timestamp:,
+    ) ->
+      Some([
+        Line(
+          TriggerMessage,
+          "⚑ from "
+            <> text_hygiene.single_line(source)
+            <> " · "
+            <> text_hygiene.single_line(actor)
+            <> " · trigger "
+            <> text_hygiene.single_line(trigger)
+            <> clock_text(timestamp, clock)
+            <> "\n"
+            <> message_body(user_body(content), extent),
+        ),
+      ])
     _ -> None
   }
 }

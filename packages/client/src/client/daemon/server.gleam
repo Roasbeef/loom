@@ -58,12 +58,17 @@
 import broker/token
 import client/daemon/manager
 import client/daemon/profiles
+import client/daemon/project_book
+import client/daemon/project_host
+import client/daemon/project_start
+import client/daemon/project_verdict
 import client/daemon/protocol
 import client/daemon/root
 import client/daemon/ui_assets
 import client/daemon/ui_http
 import client/daemon/ui_login
 import client/daemon/ui_origin
+import client/daemon/ui_projects
 import client/daemon/ui_relay
 import client/daemon/ui_result
 import client/daemon/ui_sessions
@@ -80,6 +85,7 @@ import client/orchestrators
 import client/peer_mail
 import client/peers
 import client/pools
+import client/project_standing
 import client/remote/orchestrator_port
 import client/roster.{type Roster}
 import client/session_directory
@@ -102,12 +108,16 @@ import host/build_identity
 import host/claim
 import host/login
 import mist
+import project/model as project_model
 import session_view/move_candidates
 import session_view/transcript_image
 import storage/access
 import storage/catalogue
 import storage/domain
 import storage/snapshot as storage_snapshot
+import telemetry/field
+import telemetry/level
+import telemetry/log
 import web_view/elsewhere as page_elsewhere
 import web_view/ending.{type Ending}
 import web_view/image
@@ -160,6 +170,9 @@ pub type Config(instance) {
       Response(mist.ResponseData),
     /// The web view, present only when the daemon was started with `--ui`.
     ui: Option(Ui(instance)),
+    /// Project mode's control, present once the daemon started its project
+    /// table. `None` answers the `projects.*` commands `not_found`.
+    projects: Option(project_start.Control),
   )
 }
 
@@ -399,6 +412,12 @@ pub type HomeAttachment(instance) {
     /// from its runtime (`ui_socket.read_task`). A key outside the configuration
     /// is `Unread`, and nothing is dialled for it.
     elsewhere: fn(Option(String), Option(String)) -> page_elsewhere.Read,
+    /// What the owner's home may read of the daemon's projects and do with a
+    /// ticket's question (protocol-change/106, the addendum on the web view), or
+    /// nothing when the daemon started no project table. The reads run in tasks
+    /// of the page's own (`ui_socket.read_task`), and the socket hands them to
+    /// the owner's operating page alone.
+    projects: Option(ui_projects.Feed),
     /// The `[orchestrators.<name>]` keys of the daemon's configuration, in order,
     /// which the owner's page draws in its Agent chip and sidebar and asks
     /// through the relay (protocol-change/094). The relay dials none the page
@@ -882,6 +901,7 @@ fn home_upgrade(
             elsewhere: fn(orchestrator, after) {
               heard_elsewhere(config, orchestrator, after)
             },
+            projects: ui_projects.feed(config.projects),
             orchestrators: list.map(
               roster.rows(config.movers.orchestrators),
               fn(orchestrator) { orchestrator.name },
@@ -2982,6 +3002,21 @@ fn control(
             | protocol.UiLink(..)
             | protocol.DeviceLink(..)
             | protocol.ListSessions(..)
+            | protocol.CreateProject(..)
+            | protocol.ListProjects
+            | protocol.ProjectBoard(..)
+            | protocol.PostToProject(..)
+            | protocol.StopTicket(..)
+            | protocol.ProjectTicket(..)
+            | protocol.AnswerQuestion(..)
+            | protocol.CloseTicket(..)
+            | protocol.RetryTicket(..)
+            | protocol.RequeueTrigger(..)
+            | protocol.SetProjectMode(..)
+            | protocol.LabelTrigger(..)
+            | protocol.ProjectLabels(..)
+            | protocol.RunProjectVerdict(..)
+            | protocol.PublishTicket(..)
             | protocol.SessionActivity(..)
             | protocol.ListArchivedSessions(..)
             | protocol.ArchiveSession(..)
@@ -3034,6 +3069,10 @@ fn control_use(command: protocol.Command) {
     | protocol.ListArchivedSessions(..)
     | protocol.GetSession(_)
     | protocol.WorkspaceDefault(_)
+    | protocol.ListProjects
+    | protocol.ProjectBoard(..)
+    | protocol.ProjectTicket(..)
+    | protocol.ProjectLabels(..)
     | protocol.DirectoryStatus
     | protocol.DeploymentStatus(_)
     | protocol.SessionsElsewhere(..)
@@ -3057,6 +3096,17 @@ fn control_use(command: protocol.Command) {
     | protocol.RevokeLogin(..)
     | protocol.RenamePrincipal(..)
     | protocol.CreateSession(..)
+    | protocol.CreateProject(..)
+    | protocol.PostToProject(..)
+    | protocol.StopTicket(..)
+    | protocol.AnswerQuestion(..)
+    | protocol.CloseTicket(..)
+    | protocol.RetryTicket(..)
+    | protocol.RequeueTrigger(..)
+    | protocol.SetProjectMode(..)
+    | protocol.LabelTrigger(..)
+    | protocol.RunProjectVerdict(..)
+    | protocol.PublishTicket(..)
     | protocol.OpenSession(..)
     | protocol.StopSession(..)
     | protocol.MoveSession(..)
@@ -3193,10 +3243,457 @@ fn dispatch(
     | protocol.LedgerEntries(..)
     | protocol.LedgerStatus
     | protocol.LedgerHoldings -> ledger_command(config, principal, command)
+
+    // The project commands answer with project facts rather than session ones
+    // (protocol-change/106) and are the owner's alone.
+    protocol.CreateProject(workspace, name) ->
+      project_command(config, principal, fn(control) {
+        project_create(control, workspace, name)
+      })
+    protocol.ListProjects -> project_command(config, principal, project_list)
+    protocol.ProjectBoard(project, page) ->
+      project_command(config, principal, fn(control) {
+        project_board(control, project, page)
+      })
+    protocol.PostToProject(project, request, text) ->
+      project_command(config, principal, fn(control) {
+        project_post(control, project, request, text)
+      })
+    protocol.StopTicket(project, ticket) ->
+      project_command(config, principal, fn(control) {
+        project_stop(control, project, ticket)
+      })
+    protocol.ProjectTicket(project, ticket) ->
+      project_command(config, principal, fn(control) {
+        project_ticket(control, project, ticket)
+      })
+    protocol.AnswerQuestion(project, ticket, seq, text) ->
+      project_command(config, principal, fn(control) {
+        project_answer(control, project, ticket, seq, text)
+      })
+    protocol.CloseTicket(project, ticket) ->
+      project_command(config, principal, fn(control) {
+        project_close(control, project, ticket)
+      })
+    protocol.RetryTicket(project, ticket) ->
+      project_command(config, principal, fn(control) {
+        project_retry(control, project, ticket)
+      })
+    protocol.PublishTicket(project, ticket) ->
+      project_command(config, principal, fn(control) {
+        project_publish(control, project, ticket)
+      })
+    protocol.RequeueTrigger(project, trigger) ->
+      project_command(config, principal, fn(control) {
+        project_requeue(control, project, trigger)
+      })
+    protocol.SetProjectMode(project, rule, mode) ->
+      project_command_in_words(config, principal, fn(control) {
+        project_set_mode(control, project, rule, mode)
+      })
+    protocol.LabelTrigger(project, trigger, label) ->
+      project_command_in_words(config, principal, fn(control) {
+        project_label(control, project, trigger, label)
+      })
+    protocol.ProjectLabels(project, rule) ->
+      project_command_in_words(config, principal, fn(control) {
+        project_labels(control, project, rule)
+      })
+    protocol.RunProjectVerdict(project, rule, lane) ->
+      project_command_in_words(config, principal, fn(control) {
+        project_verdict(control, project, rule, lane)
+      })
     _ ->
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(control_refusal)
   }
+}
+
+/// The owner gate and the daemon's project control, once, for the five project
+/// commands. A daemon that started no project table answers `not_found`.
+fn project_command(
+  config: Config(instance),
+  principal: access.Principal,
+  run: fn(project_start.Control) -> Result(#(String, JsonValue), String),
+) -> Result(#(String, JsonValue), Refused) {
+  use Nil <- result.try(owner(principal) |> result.map_error(control_refusal))
+  use control <- result.try(
+    option.to_result(config.projects, Nil)
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
+  )
+  run(control) |> result.map_error(control_refusal)
+}
+
+/// `projects.create`: makes the project row, its ledger and its router session
+/// for a workspace, and answers their ids. Any failure answers `bad_request`.
+fn project_create(
+  control: project_start.Control,
+  workspace: String,
+  name: String,
+) -> Result(#(String, JsonValue), String) {
+  control.create(workspace, name)
+  |> result.map_error(fn(_) { "bad_request" })
+  |> result.map(fn(created) {
+    #(
+      "projects.create",
+      json.Object([
+        #("project", json.String(created.project)),
+        #("workspace", json.String(created.workspace)),
+        #("router_session", json.String(created.router_session)),
+      ]),
+    )
+  })
+}
+
+/// `projects.list`: every running project with its ticket count per stage. A
+/// project whose actor does not answer the count lists with no counts.
+fn project_list(
+  control: project_start.Control,
+) -> Result(#(String, JsonValue), String) {
+  let rows =
+    project_book.all(control.book)
+    |> list.map(fn(handle) {
+      let counts = result.unwrap(project_host.counts(handle), [])
+      json.Object([
+        #("id", json.String(handle.project)),
+        #("workspace", json.String(handle.workspace)),
+        #("router_session", json.String(handle.router_session)),
+        #(
+          "counts",
+          json.Object(
+            list.map(counts, fn(entry) { #(entry.0, json.Int(entry.1)) }),
+          ),
+        ),
+      ])
+    })
+  Ok(#("projects.list", json.Object([#("projects", json.Array(rows))])))
+}
+
+/// `projects.board`: one page of a project's tickets with the revision they
+/// were read at. An unknown project is `not_found`, and an actor that does not
+/// answer is `unavailable`.
+fn project_board(
+  control: project_start.Control,
+  project: String,
+  page: Int,
+) -> Result(#(String, JsonValue), String) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.replace_error("not_found"),
+  )
+  use shown <- result.map(
+    project_host.board(handle, page) |> result.replace_error("unavailable"),
+  )
+  #("projects.board", ui_projects.board_body(project, shown))
+}
+
+/// `projects.post`: the owner's text as an explicit trigger. The request id is
+/// the idempotency key, and `repeated` tells the client its earlier post
+/// already took.
+fn project_post(
+  control: project_start.Control,
+  project: String,
+  request: String,
+  text: String,
+) -> Result(#(String, JsonValue), String) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.replace_error("not_found"),
+  )
+  use posted <- result.map(
+    project_host.post(handle, request, text)
+    |> result.replace_error("bad_request"),
+  )
+
+  // Both answers name the trigger, so a client can follow it on the board.
+  let #(trigger, repeated) = case posted {
+    project_host.Posted(trigger) -> #(trigger, False)
+    project_host.Repeated(trigger) -> #(trigger, True)
+  }
+
+  #(
+    "projects.post",
+    json.Object([
+      #("trigger", json.String(trigger)),
+      #("repeated", json.Bool(repeated)),
+    ]),
+  )
+}
+
+/// `projects.stop`: a person's stop of one ticket, attributed to the owner.
+fn project_stop(
+  control: project_start.Control,
+  project: String,
+  ticket: String,
+) -> Result(#(String, JsonValue), String) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.replace_error("not_found"),
+  )
+  use Nil <- result.map(
+    project_host.stop_ticket(handle, ticket, "owner")
+    |> result.replace_error("bad_request"),
+  )
+  #("projects.stop", json.Object([#("ticket", json.String(ticket))]))
+}
+
+/// The `projects.ticket` step: one ticket with its assignments and inputs.
+fn project_ticket(
+  control: project_start.Control,
+  project: String,
+  ticket: String,
+) -> Result(#(String, JsonValue), String) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.replace_error("not_found"),
+  )
+  use detail <- result.map(
+    project_host.ticket(handle, ticket) |> result.replace_error("not_found"),
+  )
+  #("projects.ticket", detail)
+}
+
+/// The `projects.answer` step. A stale `seq` is `conflict`, which a client
+/// shows as "the question changed" and which records nothing.
+fn project_answer(
+  control: project_start.Control,
+  project: String,
+  ticket: String,
+  seq: Int,
+  text: String,
+) -> Result(#(String, JsonValue), String) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.replace_error("not_found"),
+  )
+  use Nil <- result.map(
+    project_host.answer(handle, ticket, seq, text, "owner")
+    |> result.map_error(fn(failure) {
+      case failure {
+        project_host.NoSuchTicket -> "not_found"
+        project_host.StaleQuestion -> "conflict"
+        project_host.NotAccepted(..) -> "bad_request"
+      }
+    }),
+  )
+  #(
+    "projects.answer",
+    json.Object([
+      #("ticket", json.String(ticket)),
+      #("seq", json.Int(seq)),
+    ]),
+  )
+}
+
+/// The `projects.close` step: the owner accepted a ticket's work. A ticket that
+/// already ended, or that a person stopped, is `bad_request`.
+fn project_close(
+  control: project_start.Control,
+  project: String,
+  ticket: String,
+) -> Result(#(String, JsonValue), String) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.replace_error("not_found"),
+  )
+  use Nil <- result.map(
+    project_host.close_ticket(handle, ticket, "owner")
+    |> result.replace_error("bad_request"),
+  )
+  #("projects.close", json.Object([#("ticket", json.String(ticket))]))
+}
+
+/// The `projects.retry` step.
+fn project_retry(
+  control: project_start.Control,
+  project: String,
+  ticket: String,
+) -> Result(#(String, JsonValue), String) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.replace_error("not_found"),
+  )
+  use Nil <- result.map(
+    project_host.retry(handle, ticket, "owner")
+    |> result.replace_error("bad_request"),
+  )
+  #("projects.retry", json.Object([#("ticket", json.String(ticket))]))
+}
+
+/// The `projects.publish` step: the owner publishes a ticket's current commit
+/// past a failing or missing check. The principal is the owner, who is the only
+/// one `project_command` admits, and the project's actor records it. A project
+/// that keeps `publish` off, or a ticket with no commit, is `bad_request`.
+fn project_publish(
+  control: project_start.Control,
+  project: String,
+  ticket: String,
+) -> Result(#(String, JsonValue), String) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.replace_error("not_found"),
+  )
+  use commit <- result.map(
+    project_host.publish(handle, ticket, "owner")
+    |> result.replace_error("bad_request"),
+  )
+  #(
+    "projects.publish",
+    json.Object([
+      #("ticket", json.String(ticket)),
+      #("commit", json.String(commit)),
+    ]),
+  )
+}
+
+/// The `projects.requeue` step.
+fn project_requeue(
+  control: project_start.Control,
+  project: String,
+  trigger: String,
+) -> Result(#(String, JsonValue), String) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.replace_error("not_found"),
+  )
+  use Nil <- result.map(
+    project_host.requeue(handle, trigger, "owner")
+    |> result.replace_error("bad_request"),
+  )
+  #("projects.requeue", json.Object([#("trigger", json.String(trigger))]))
+}
+
+/// Like `project_command`, for a step whose refusal carries the project's own
+/// words. A mode refused for want of a verdict says so in a sentence the
+/// owner can act on, and the generic "request refused" would hide it.
+fn project_command_in_words(
+  config: Config(instance),
+  principal: access.Principal,
+  run: fn(project_start.Control) -> Result(#(String, JsonValue), Refused),
+) -> Result(#(String, JsonValue), Refused) {
+  use Nil <- result.try(owner(principal) |> result.map_error(control_refusal))
+  use control <- result.try(
+    option.to_result(config.projects, Nil)
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
+  )
+  run(control)
+}
+
+/// The `projects.set_mode` step: the owner sets one rule's mode. An unknown
+/// mode word, an unknown rule, and `auto` without a verdict are `bad_request`,
+/// and the message is the actor's sentence.
+fn project_set_mode(
+  control: project_start.Control,
+  project: String,
+  rule: String,
+  mode: String,
+) -> Result(#(String, JsonValue), Refused) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
+  )
+
+  // The three words of a mode are the only ones there are.
+  use parsed <- result.try(case mode {
+    "off" -> Ok(project_model.Off)
+    "observe" -> Ok(project_model.Observe)
+    "auto" -> Ok(project_model.Auto)
+    _ -> Error(Refused("bad_request", "a mode is off, observe or auto", []))
+  })
+
+  use Nil <- result.map(
+    project_host.set_mode(handle, rule, parsed, "owner")
+    |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
+  )
+  #(
+    "projects.set_mode",
+    json.Object([
+      #("rule", json.String(rule)),
+      #("mode", json.String(mode)),
+    ]),
+  )
+}
+
+/// The `projects.label` step: the owner judges one recorded trigger. The two
+/// words are `accept` (the project should have taken the trigger on) and
+/// `reject` (it should not have). An unknown trigger, or one no rule matched,
+/// is `bad_request` with the actor's sentence.
+fn project_label(
+  control: project_start.Control,
+  project: String,
+  trigger: String,
+  label: String,
+) -> Result(#(String, JsonValue), Refused) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
+  )
+
+  // The two words of a label are the only ones there are.
+  use parsed <- result.try(case label {
+    "accept" -> Ok(project_model.ShouldAccept)
+    "reject" -> Ok(project_model.ShouldNotAccept)
+    _ -> Error(Refused("bad_request", "a label is accept or reject", []))
+  })
+
+  use Nil <- result.map(
+    project_host.label(handle, trigger, parsed, "owner")
+    |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
+  )
+  #(
+    "projects.label",
+    json.Object([
+      #("trigger", json.String(trigger)),
+      #("label", json.String(label)),
+    ]),
+  )
+}
+
+/// The `projects.labels` step: the recorded triggers of one rule that want a
+/// label, with the labelled count against what a verdict needs.
+fn project_labels(
+  control: project_start.Control,
+  project: String,
+  rule: String,
+) -> Result(#(String, JsonValue), Refused) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
+  )
+
+  use body <- result.map(
+    project_host.labels(handle, rule, 20)
+    |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
+  )
+  #("projects.labels", body)
+}
+
+/// The `projects.verdict` step: run a verdict for one rule on a lane. A replay
+/// run is recorded and answered with its finding. A live run is started and
+/// answered with `state: running`, and its finding is recorded when its trials
+/// are done. A lane the daemon cannot run, a run already going for the rule,
+/// and too few labels are `bad_request` with the sentence saying what is
+/// missing.
+fn project_verdict(
+  control: project_start.Control,
+  project: String,
+  rule: String,
+  lane: Option(String),
+) -> Result(#(String, JsonValue), Refused) {
+  use handle <- result.try(
+    project_book.get(control.book, project)
+    |> result.map_error(fn(_) { control_refusal("not_found") }),
+  )
+  use chosen <- result.try(
+    project_verdict.lane_of(lane, fn() { control.judge(project) })
+    |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
+  )
+
+  use body <- result.map(
+    project_host.run_verdict(handle, rule, chosen, "owner")
+    |> result.map_error(fn(words) { Refused("bad_request", words, []) }),
+  )
+  #("projects.verdict", body)
 }
 
 /// The `ledger.*` owner commands (protocol-change/086). A member principal is
@@ -3989,7 +4486,12 @@ fn dispatch_class(
         )
         |> result.map_error(error_code),
       )
-      let encode = listed_json(custodies)
+      let standings =
+        project_start.standings(
+          state.registry,
+          list.map(views, fn(view) { view.registration.id }),
+        )
+      let encode = listed_json(custodies, standings)
       use bounded <- result.try(page_prefix(views, 60_000, [], encode))
       Ok(#("sessions.list", page_body(bounded, current, encode)))
     }
@@ -4077,6 +4579,15 @@ fn dispatch_class(
     protocol.StopSession(id, supplied) -> {
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))
+
+      // A stop ends the session's slot for good, and a worker that was stopped
+      // reads as lost with no cause of its own. The line names who asked, so a
+      // stop that nobody remembers making can be attributed afterwards.
+      log.info(log.erlang(threshold: level.Info), "daemon.session_stop", [
+        field.ident("principal", principal.id),
+        field.ident("session", id),
+        field.ident("via", "control"),
+      ])
       manager.stop_session(state.registry, id)
       |> result.map_error(error_code)
       |> result.map(fn(status) { #("sessions.stop", status_json(status)) })
@@ -4208,6 +4719,23 @@ fn dispatch_class(
     | protocol.LedgerEntries(..)
     | protocol.LedgerStatus
     | protocol.LedgerHoldings -> Error("unavailable")
+
+    // The project commands are served by `dispatch` and never reach here.
+    protocol.CreateProject(..)
+    | protocol.ListProjects
+    | protocol.ProjectBoard(..)
+    | protocol.PostToProject(..)
+    | protocol.StopTicket(..)
+    | protocol.ProjectTicket(..)
+    | protocol.AnswerQuestion(..)
+    | protocol.CloseTicket(..)
+    | protocol.RetryTicket(..)
+    | protocol.RequeueTrigger(..)
+    | protocol.SetProjectMode(..)
+    | protocol.LabelTrigger(..)
+    | protocol.ProjectLabels(..)
+    | protocol.RunProjectVerdict(..)
+    | protocol.PublishTicket(..) -> Error("unavailable")
     protocol.Shutdown(supplied) -> {
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))
@@ -5016,13 +5544,43 @@ fn custody_members(custody: catalogue.Custody) -> List(#(String, JsonValue)) {
 /// `custodies` is encoded as a plain view.
 fn listed_json(
   custodies: List(#(String, catalogue.Custody)),
+  standings: List(#(String, project_standing.Standing)),
 ) -> fn(manager.View) -> JsonValue {
   fn(view: manager.View) {
     // This branch resolves list key_find custodies view registration id before the operation continues.
-    case list.key_find(custodies, view.registration.id) {
+    let plain = case list.key_find(custodies, view.registration.id) {
       Ok(custody) -> with_custody_members(view_json(view), custody)
       Error(Nil) -> view_json(view)
     }
+
+    // A session that belongs to a project says so, and an ordinary session's
+    // record is byte for byte what it was.
+    case list.key_find(standings, view.registration.id), plain {
+      Ok(held), json.Object(fields) ->
+        json.Object(list.append(fields, [#("standing", standing_json(held))]))
+      Ok(_), _ | Error(Nil), _ -> plain
+    }
+  }
+}
+
+/// The `standing` member of a listed session that belongs to a project:
+/// `{"kind":"router","project"}` or `{"kind":"worker","project","ticket"}`. An
+/// ordinary session carries no such member.
+fn standing_json(held: project_standing.Standing) -> JsonValue {
+  case held {
+    project_standing.Router(project:) ->
+      json.Object([
+        #("kind", json.String("router")),
+        #("project", json.String(project)),
+      ])
+    project_standing.Worker(project:, ticket:, ..) ->
+      json.Object([
+        #("kind", json.String("worker")),
+        #("project", json.String(project)),
+        #("ticket", json.String(ticket)),
+      ])
+    project_standing.Ordinary ->
+      json.Object([#("kind", json.String("ordinary"))])
   }
 }
 

@@ -201,6 +201,12 @@ fn heads(resolved: ResolvedModel, identity: ModelIdentity) -> Bool {
 fn candidate_roles(configured: Role) -> List(Role) {
   case configured {
     model.Main | model.Subagent -> [model.Main, model.Subagent]
+
+    // A project router falls back to the cheap route before the main one,
+    // the reverse of the other roles, because it only routes. The word is the
+    // one `client/catalog.router_role` names; harness cannot import client.
+    model.Custom("router") -> [configured, model.Subagent, model.Main]
+
     model.Plan | model.Summarize | model.Vision | model.Custom(..) -> [
       configured,
       model.Main,

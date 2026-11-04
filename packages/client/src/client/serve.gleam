@@ -144,6 +144,10 @@ import client/peer_outbox_drain
 import client/peers
 import client/permissions
 import client/profile_switch
+import client/project_jail
+import client/project_packs
+import client/project_scan
+import client/project_standing
 import client/proposals
 import client/relayed_session
 import client/remote/owner_port
@@ -203,6 +207,7 @@ import host/bootstrap
 import host/skill
 import machine/operation
 import machine/strand as machine_strand
+import project/policy as project_policy
 import provider/adapter/anthropic
 import provider/adapter/gemini
 import provider/adapter/openai
@@ -234,6 +239,7 @@ import tools/agent.{type Agency}
 import tools/codemode as codemode_tool
 import tools/evolution as evolution_tool
 import tools/history as history_tool
+import tools/project as project_tools
 import tools/remember
 import tools/tool
 import weft/actor as owned_actor
@@ -592,6 +598,12 @@ pub type Settings {
     /// because a path is an environment read in disguise and a trial's jail
     /// could not see it anyway. A `system` override still bypasses the pack.
     pack: Option(String),
+    /// The session's part in a project and the tool seam built for it, or
+    /// `None` for an ordinary session. A router session gets a registry of
+    /// exactly its three tools, a worker's loses the peer and `agent_*`
+    /// tools and gains its two, and the router's tool ceiling reaches the
+    /// gateway so `set_config` cannot widen it.
+    project: Option(project_standing.Seat),
     /// The operator's home directory, where the global `AGENTS.md`
     /// default is looked for when the workspace has none of its own.
     /// `resolve` fills it from `HOME`, and `None` records that `HOME`
@@ -1226,13 +1238,14 @@ pub fn resolve_managed(
       domain_paths: Some(DomainPaths(selected.memory_path, selected.index_path)),
       codemode_sockets: codemode_socket_root(settings.base_policy, state_root),
       // The daemon's secrets, not the daemon's directory. Masking the
-      // whole state root also masked a workspace an operator had every
-      // right to open on it; see `state_root_mask_candidates` for the grain and
-      // the reason for each entry.
-      base_policy: workspace_policy.protecting_state_root(
-        settings.base_policy,
-        state_root,
-      ),
+        // whole state root also masked a workspace an operator had every
+        // right to open on it; see `state_root_mask_candidates` for the grain and
+        // the reason for each entry.
+        base_policy: workspace_policy.protecting_state_root(
+          settings.base_policy,
+          state_root,
+        )
+        |> workspace_policy.protecting_projects(state_root),
     ),
   )
 }
@@ -1609,6 +1622,7 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       gateway:,
       evolution_role: Source,
       pack: None,
+      project: None,
       catalog: catalogue,
       secrets: secret_store,
       secret_failures:,
@@ -1792,7 +1806,8 @@ fn compaction_settings(context_window: Int) -> operation.CompactionSettings {
 // rather than refusing, which is what keeps such a session running.
 
 /// Establishes catalogue facts for the caller, keeping its validation and result policy at this boundary.
-fn catalogue_facts(
+@internal
+pub fn catalogue_facts(
   catalogue: catalog.Catalog,
 ) -> fn(machine_strand.ModelIdentity) ->
   Result(#(model.ResolvedModel, String, catalog.ImageReading), Nil) {
@@ -3817,6 +3832,10 @@ fn assemble_in(
   // anything under it.
   let rulescan_name = address.new_address(namespace)
 
+  // A project worker's commit scanner is a writer subscriber by name for the
+  // same reason, and it is started only for a session seated as a worker.
+  let project_scan_name = address.new_address(namespace)
+
   // The scheduled-heartbeat scanner is not a writer subscriber — it is
   // driven by its own injected timer, never by a commit hint, so its
   // name is minted for exactly one reason: the restartable-service tier
@@ -4061,7 +4080,10 @@ fn assemble_in(
     owner_services.local(
       handle: agency.fact_supplier(agency_config),
       runtime: agency.runtime_supplier(agency_config),
-      escalate: escalate.seam(escalate_config).refused,
+      escalate: project_approvals(
+        settings.project,
+        escalate.seam(escalate_config),
+      ).refused,
       output: hub.tool_output_observer(event_bus, opened),
       capability: case home {
         Here(_) -> owner_services.no_capability
@@ -4446,6 +4468,7 @@ fn assemble_in(
           contributions.BuiltIn,
           list.append(skill_tool.tools(skills), peers.tools(peer_wiring)),
         ),
+        // A project worker or router is shaped after the others are in, below.
         // `advise` is registered for the whole session because a registry
         // is per session rather than per strand; `configuration` below
         // withholds it from the primary's active list, and
@@ -4470,6 +4493,7 @@ fn assemble_in(
     // comes to stand in for a built-in one: the built-in is gone, so
     // there is no collision to refuse and no override to perform.
     |> contributions.deactivate(settings.deactivated_tools)
+    |> project_shaped(settings.project, peers.tools(peer_wiring))
     |> contributions.registry
     |> result.map_error(contributions.collision_message),
   )
@@ -4579,7 +4603,7 @@ fn assemble_in(
     wiring.Config(
       observe_output: owner_api.output,
       gateway:,
-      role: model.Main,
+      role: project_role(settings.project),
       facts: catalogue_facts(settings.catalog),
       system: Some(assembled.text),
       api: settings.api,
@@ -4694,6 +4718,10 @@ fn assemble_in(
         // A host that shut the scheduling door has no wiring and adds
         // no hook at all.
         |> schedule_reaping(schedule_wiring)
+        // A project's router tells the project each time a run ends, which
+        // ends the router's turn without waiting for its deadline. Any
+        // other session adds nothing.
+        |> project_run_end(settings.project)
         |> notes.digest_hooks(opened, clock)
         // The notes index is read at every run start rather than once here,
         // because a `remember` call in any session rewrites it, and an index
@@ -4797,6 +4825,7 @@ fn assemble_in(
         // skips, at no cost to the commit.
         subscribers: [
           writer.Routed(rulescan_name),
+          writer.Routed(project_scan_name),
           writer.Routed(forwarder_name),
           writer.Routed(summary_commits),
           ..history_subscribers(history_seam, history_pulls)
@@ -4898,6 +4927,9 @@ fn assemble_in(
   let hub_catalog = settings.catalog
   let child_history_reach = settings.remote_reach
   let first_prompt = settings.first_prompt
+
+  // Read here so the hub's closure holds the seat and not the whole settings.
+  let project_seat = settings.project
 
   // Project profile, spawner, remote reach, and memory settings for the hub.
   let profile_desk = settings.profile_desk
@@ -5070,6 +5102,7 @@ fn assemble_in(
     // again, cold, and says so.
     |> half.children.lsp_manager
     |> with_rule_scanner(settings, runtime, rulescan_name, logger)
+    |> with_project_scanner(settings, runtime, project_scan_name, logger)
     |> with_schedule_scanner(settings, runtime, schedulescan_name, logger)
     // The peer outbox drainer is in this tier because everything it owes is
     // a pending row in the session's own store: a replacement begins with a
@@ -5124,6 +5157,7 @@ fn assemble_in(
             |> with_spawner_link(spawner_link)
             |> hub.with_remote_reach(hub_remote_reach)
             |> hub.with_registry(tool_registry)
+            |> with_project_ceiling(project_seat, tool.names(tool_registry))
             |> hub.with_extension_refusals(extension_refusals)
             |> hub.with_skills(skills)
             |> with_evolution_control(evolution_wiring, core_control)
@@ -5579,6 +5613,32 @@ fn with_rule_scanner(
         ),
       )
     }
+  }
+}
+
+/// Starts the commit scanner of a project worker. Only a worker has a log the
+/// project reads, so a router, an ordinary session and a boot without project
+/// mode start nothing, and the name stays unregistered, which the writer skips.
+fn with_project_scanner(
+  builder: sup.Builder,
+  settings: Settings,
+  runtime: api.Runtime,
+  name: address.Address(writer.Event),
+  logger: Logger,
+) -> sup.Builder {
+  // The seat carries the feed only for a worker.
+  case settings.project {
+    Some(project_standing.Seat(feed: Some(feed), ..)) ->
+      sup.add(
+        builder,
+        project_scan.supervised(
+          project_scan.default_options(feed)
+            |> project_scan.with_logger(logger),
+          runtime,
+          name,
+        ),
+      )
+    Some(project_standing.Seat(feed: None, ..)) | None -> builder
   }
 }
 
@@ -6324,6 +6384,211 @@ fn render_prompt(
   )
 }
 
+/// Shapes the registry's contributions for a project session. An ordinary
+/// session is left as it was. A router is given a registry of its three tools
+/// alone, which removes `bash`, `code_mode` and every extension at the source:
+/// a tool that was never registered cannot be activated, called, or reached by
+/// a capability. A worker keeps the rest and loses the peer tools and the
+/// `agent_*` tools, because it talks to the project through its report and to
+/// nothing else, and gains its two project tools.
+fn project_shaped(
+  found: List(contributions.Contribution),
+  project: Option(project_standing.Seat),
+  peer_tools: List(tool.Tool),
+) -> List(contributions.Contribution) {
+  case project {
+    None -> found
+    Some(project_standing.Seat(standing:, seam:, ..)) ->
+      case standing {
+        project_standing.Ordinary -> found
+        project_standing.Router(..) -> [
+          contributions.Contribution(
+            contributions.BuiltIn,
+            project_tools.router_tools(seam),
+          ),
+        ]
+        project_standing.Worker(..) -> {
+          let refused =
+            list.append(
+              list.map(peer_tools, fn(each) { each.name }),
+              list.filter(agent.tool_names, project_standing.worker_excludes),
+            )
+          list.append(contributions.deactivate(found, refused), [
+            contributions.Contribution(
+              contributions.BuiltIn,
+              project_tools.worker_tools(seam),
+            ),
+          ])
+        }
+      }
+  }
+}
+
+/// The role the session's requests are routed by. A router routes on the
+/// `router` role, which falls back to the subagent route and then main; every
+/// other session routes on main, as it always did.
+fn project_role(project: Option(project_standing.Seat)) -> model.Role {
+  case project {
+    Some(project_standing.Seat(standing: project_standing.Router(..), ..)) ->
+      catalog.router_role
+    Some(project_standing.Seat(standing: project_standing.Worker(..), ..))
+    | Some(project_standing.Seat(standing: project_standing.Ordinary, ..))
+    | None -> model.Main
+  }
+}
+
+/// Gives the gateway the tool ceiling of a router or a worker, so an
+/// operator's `set_config` cannot name a tool above it. A router's ceiling is
+/// its three tools. A worker's is the registered tools its jail allows, which
+/// keeps the peer and `agent_*` tools out of its active set even if a later
+/// registry were to hold them. Other sessions have no ceiling.
+fn with_project_ceiling(
+  options: hub.Options,
+  project: Option(project_standing.Seat),
+  registered: List(String),
+) -> hub.Options {
+  case project {
+    Some(project_standing.Seat(standing: project_standing.Worker(..), jail:, ..)) ->
+      hub.with_tool_ceiling(
+        options,
+        list.filter(registered, project_jail.allows(worker_tools(jail), _)),
+      )
+    Some(project_standing.Seat(standing:, ..)) ->
+      case project_standing.tool_ceiling(standing) {
+        Ok(ceiling) -> hub.with_tool_ceiling(options, ceiling)
+        Error(Nil) -> options
+      }
+    None -> options
+  }
+}
+
+/// The tool ceiling of a worker's seat. A worker seated with no jail never
+/// comes from the daemon, whose seat step derives one or builds no session, and
+/// the three readings here fail closed for it anyway: the worker ceiling,
+/// refused approvals and no network.
+fn worker_tools(jail: Option(project_jail.Jail)) -> project_jail.ToolCeiling {
+  option.map(jail, fn(found) { found.tools })
+  |> option.unwrap(project_jail.worker_tools)
+}
+
+/// The approval route of a worker's seat, refused when the seat has no jail.
+fn worker_approvals(
+  jail: Option(project_jail.Jail),
+) -> project_policy.ApprovalRoute {
+  option.map(jail, fn(found) { found.approvals })
+  |> option.unwrap(project_policy.ApprovalsRefused)
+}
+
+/// The base policy of a worker's seat. With no jail the worker keeps the
+/// owner's policy narrowed to the network a registries-only Mandate gets.
+fn worker_sandbox(
+  jail: Option(project_jail.Jail),
+  owner: policy.SandboxPolicy,
+) -> policy.SandboxPolicy {
+  option.map(jail, fn(found) { found.sandbox })
+  |> option.lazy_unwrap(fn() {
+    project_jail.sandbox_of(project_policy.RegistriesOnly, owner)
+  })
+}
+
+/// The escalation seam a session's refused calls go to. A worker whose
+/// Mandate refuses approvals gets the seam that writes no record and asks
+/// nobody, and every other session keeps the seam it was built with.
+fn project_approvals(
+  project: Option(project_standing.Seat),
+  person: escalate.Escalations,
+) -> escalate.Escalations {
+  case project {
+    Some(project_standing.Seat(standing: project_standing.Worker(..), jail:, ..)) ->
+      project_jail.escalations(worker_approvals(jail), person)
+    Some(project_standing.Seat(..)) | None -> person
+  }
+}
+
+/// Settles a session's settings for its project standing: the seat itself, a
+/// router's model (the head of the `router` role, else `subagent`, else the
+/// model main routes), and the prompt pack of its kind.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.seat_project(settings, seat)
+/// ```
+pub fn seat_project(
+  settings: Settings,
+  seat: project_standing.Seat,
+) -> Settings {
+  let seated = Settings(..settings, project: Some(seat))
+
+  // An ordinary session keeps its settings untouched, even though a seat was
+  // offered. A router also changes its model and a worker only its pack.
+  case seat.standing {
+    project_standing.Ordinary -> settings
+    project_standing.Router(..) ->
+      Settings(
+        ..seated,
+        model: routed_identity(settings),
+        pack: Some(project_packs.router()),
+      )
+    project_standing.Worker(..) ->
+      Settings(
+        ..seated,
+        pack: Some(project_packs.worker()),
+        codemode_seed: worker_seed(
+          settings.codemode_seed,
+          seat.workspace,
+          usable_seed,
+        ),
+        base_policy: worker_sandbox(seat.jail, settings.base_policy),
+      )
+  }
+}
+
+/// The code-mode build seed a worker uses. An ordinary session finds its seed
+/// beside its workspace or in the daemon's release, and a worker's workspace is
+/// a clone the host cut from the owner's checkout, so the seed that sits
+/// untracked beside the checkout is not in it and the worker found none:
+/// `codemode.unavailable`. A seed that works where the settings point is kept,
+/// whether it came from a flag, the release or the clone. Otherwise the owner's
+/// workspace is tried, the same rung an ordinary session in that checkout
+/// would have found, and the settings' own path is what remains.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.worker_seed("/clone/build/codemode-seed", "/owner/repo", serve.usable_seed)
+/// ```
+pub fn worker_seed(
+  current: String,
+  owner: String,
+  usable: fn(String) -> Result(String, Nil),
+) -> String {
+  let beside_owner = owner <> "/" <> default_seed_directory
+  install.first_of([fn() { usable(current) }, fn() { usable(beside_owner) }])
+  |> result.unwrap(current)
+}
+
+/// The identity a router's strand is seeded with. Dispatch matches a strand to a
+/// role by its model, so the strand must hold the head of the role it routes on.
+@internal
+pub fn routed_identity(settings: Settings) -> machine_strand.ModelIdentity {
+  let resolved =
+    [catalog.router_role, model.Subagent]
+    |> list.find_map(fn(role) {
+      provider_gateway.resolve(settings.gateway, role)
+    })
+
+  // With neither role configured, the router keeps the model it was given.
+  case resolved {
+    Ok(found) ->
+      machine_strand.ModelIdentity(
+        provider: found.provider,
+        model_id: found.model_id,
+      )
+    Error(Nil) -> settings.model
+  }
+}
+
 /// Chooses the pack source this boot renders. A pack handed in through
 /// `Settings` wins over the environment: the field exists so a host can pick
 /// a pack per session, and an ambient variable that silently outranked it
@@ -6984,6 +7249,28 @@ fn schedule_reaping(
   case wiring {
     None -> hooks
     Some(wiring) -> scheduleseam.reaping_hooks(hooks, wiring)
+  }
+}
+
+/// A router seat's run-end signal on a hook record. The signal is a cast to
+/// the project actor, so the driver's loop waits for nothing. A worker, an
+/// ordinary session and a boot without project mode add no hook.
+fn project_run_end(
+  hooks: effects.Hooks,
+  seat: Option(project_standing.Seat),
+) -> effects.Hooks {
+  // Only a seat that carries the signal, which is a router's, adds the hook.
+  case seat {
+    Some(project_standing.Seat(run_ended: Some(ended), ..)) -> {
+      // The slot is captured and not the record, as the other run-end wrappers
+      // do, so each layer adds one closure and not a copy of the record.
+      let inner = hooks.run_end
+      effects.Hooks(..hooks, run_end: fn(operation) {
+        ended()
+        inner(operation)
+      })
+    }
+    Some(project_standing.Seat(run_ended: None, ..)) | None -> hooks
   }
 }
 

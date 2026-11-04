@@ -792,7 +792,7 @@ the tab preference and never a note, query or selection.
 `<loom-mermaid>` takes no source attribute. Its light child is the server's
 `pre.mermaid-source`, drawn as text only. `mermaid_rule.State` owns source,
 effective theme, revision and `Phase` (`Empty`, `Waiting`, `Rendering`,
-`Shown(height)`, `TooLarge`, `Unavailable`). A changed source or theme advances
+`Shown(height)`, `TooLarge`, `Unavailable(diagnostic)`). A changed source or theme advances
 the revision before the 350 ms debounce; unchanged patches do nothing. Only
 the current render can publish a height, limited to 120 through 2000 pixels.
 A ten-second unanswered render becomes source fallback, not a retry loop.
@@ -805,7 +805,10 @@ transcript runs renderers only for diagrams a reader has come near. Disconnect r
 advances the revision, invalidating callbacks from the old connection. Bounded
 callbacks retain only a revision and dispatch, not the source. The parent
 checks frame-window identity before `mermaid_rule.reply` decodes a JSON string;
-no SVG or vendor diagnostic is accepted. Copy source is an explicit user action
+no SVG or exception object is accepted. Failure messages may carry a diagnostic,
+limited independently to 2,000 Unicode code points in a reply of at most 12,512
+UTF-8 bytes. Only the current rendering revision may show it, as a text node
+above the open source disclosure; new source/theme and disconnect clear it. Copy source is an explicit user action
 and reports clipboard refusal without hiding the selectable source. While a
 diagram is `Shown`, the toolbar also offers an Expand/Collapse toggle (`ViewMode`: `Inline` or `Expanded`) that promotes `.mermaid-box` to `.mermaid-box-expanded` so the isolated frame fills the viewport and triggers its resize observer without reloading the iframe.
 

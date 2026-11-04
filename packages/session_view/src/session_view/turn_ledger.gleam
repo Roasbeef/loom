@@ -409,6 +409,7 @@ fn work_of(sealed: Sealed) -> Option(turns.Piece) {
       | turns.Commentary(..)
       | turns.Peer(..)
       | turns.Sibling(..)
+      | turns.Trigger(..)
       | turns.Missed(..)
       | turns.Decided(..) -> False
     }
@@ -544,6 +545,7 @@ fn keyed_by(piece: turns.Piece, first: Int) -> turns.Piece {
     | turns.Commentary(..)
     | turns.Peer(..)
     | turns.Sibling(..)
+    | turns.Trigger(..)
     | turns.Missed(..)
     | turns.Decided(..) -> piece
   }
@@ -604,7 +606,9 @@ fn piece_bytes(piece: turns.Piece) -> Int {
       string.byte_size(report) + string.byte_size(outcome)
     turns.Nudged(preview:, body:, ..) ->
       string.byte_size(preview) + string.byte_size(body)
-    turns.Peer(text:, ..) | turns.Missed(text:, ..) -> string.byte_size(text)
+    turns.Peer(text:, ..)
+    | turns.Trigger(text:, ..)
+    | turns.Missed(text:, ..) -> string.byte_size(text)
     turns.Sibling(text:, trailer:, ..) ->
       string.byte_size(text) + option_bytes(trailer)
     turns.Work(..) | turns.Decided(..) -> 0
@@ -679,6 +683,7 @@ fn work_items(
       | turns.Commentary(..)
       | turns.Peer(..)
       | turns.Sibling(..)
+      | turns.Trigger(..)
       | turns.Missed(..)
       | turns.Decided(..) -> []
     }

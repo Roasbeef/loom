@@ -160,6 +160,21 @@ done
 # daemon.
 run_failure loomd executor
 
+# `loom vm` is a passthrough as well: the launcher's copy of the help must equal
+# the server's.
+run_help loom "usage: loom vm" vm --help
+cp "$scratch/loom.stdout" "$scratch/loom-vm.stdout"
+LOOM_SERVER="$scratch/no-loomd" run_help loom "usage: loom vm" help vm
+cmp "$scratch/loom-vm.stdout" "$scratch/loom.stdout"
+for spelling in "vm --help" "vm -h" "help vm"; do
+  # shellcheck disable=SC2086
+  run_help loomd "usage: loom vm" $spelling
+  cmp "$scratch/loom-vm.stdout" "$scratch/loomd.stdout"
+done
+
+# A bare `loomd vm` is the command's own usage error and never starts a daemon.
+run_failure loomd vm
+
 # Both spellings reach the command itself on `loomd`: a bare `dist` is the
 # command's own usage error and never starts a daemon.
 run_failure loomd dist

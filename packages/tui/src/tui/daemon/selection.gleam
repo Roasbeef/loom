@@ -292,6 +292,7 @@ fn open_selected(host: Host, selected: protocol.Session) {
     | protocol.DeploymentReply(_)
     | protocol.DirectoryReply(_)
     | protocol.ElsewhereReply(_)
+    | protocol.ProjectsReply(_)
     | protocol.UiLinkReply(..) ->
       Error("open returned an unexpected control reply")
   })
@@ -371,6 +372,7 @@ pub fn create_named(
     | protocol.DeploymentReply(_)
     | protocol.DirectoryReply(_)
     | protocol.ElsewhereReply(_)
+    | protocol.ProjectsReply(_)
     | protocol.UiLinkReply(..) ->
       Error("create returned an unexpected control reply")
   }
@@ -558,6 +560,7 @@ fn remove_using(
     | protocol.DeploymentReply(_)
     | protocol.DirectoryReply(_)
     | protocol.ElsewhereReply(_)
+    | protocol.ProjectsReply(_)
     | protocol.UiLinkReply(..) ->
       Error("stop returned an unexpected control reply; session kept")
   })
@@ -658,6 +661,7 @@ fn await_retirement(session, operation, request) {
         | Ok(protocol.DeploymentReply(_))
         | Ok(protocol.DirectoryReply(_))
         | Ok(protocol.ElsewhereReply(_))
+        | Ok(protocol.ProjectsReply(_))
         | Ok(protocol.UiLinkReply(..)) ->
           poll.Fail(
             "stop observation returned an unexpected reply; session kept",
@@ -705,6 +709,7 @@ pub fn list(host: Host, after: String) -> Result(protocol.Page, String) {
     | protocol.DeploymentReply(_)
     | protocol.DirectoryReply(_)
     | protocol.ElsewhereReply(_)
+    | protocol.ProjectsReply(_)
     | protocol.UiLinkReply(..) ->
       Error("listing returned an unexpected control reply")
   }
@@ -753,6 +758,7 @@ pub fn deployment(
     | protocol.ActivityReply(_)
     | protocol.DirectoryReply(_)
     | protocol.ElsewhereReply(_)
+    | protocol.ProjectsReply(_)
     | protocol.UiLinkReply(..) ->
       Error("deployment returned an unexpected control reply")
   }
@@ -793,6 +799,7 @@ pub fn directory(host: Host) -> Result(json.JsonValue, String) {
     | protocol.ActivityReply(_)
     | protocol.DeploymentReply(_)
     | protocol.ElsewhereReply(_)
+    | protocol.ProjectsReply(_)
     | protocol.UiLinkReply(..) ->
       Error("directory returned an unexpected control reply")
   }
@@ -855,10 +862,41 @@ pub fn elsewhere(
     | protocol.ActivityReply(_)
     | protocol.DeploymentReply(_)
     | protocol.DirectoryReply(_)
+    | protocol.ProjectsReply(_)
     | protocol.UiLinkReply(..) ->
       Error(ElsewhereFailed(
         "sessions elsewhere returned an unexpected control reply",
       ))
+  }
+}
+
+/// Sends one `projects.*` command and answers its reply body, whole. The
+/// launcher's `project` subcommands read the fields they print.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.projects(host, "projects.list", [])
+/// ```
+pub fn projects(
+  host: Host,
+  name: String,
+  fields: List(#(String, json.JsonValue)),
+) -> Result(json.JsonValue, String) {
+  use reply <- result.try(
+    daemon.request(
+      host.control,
+      protocol.ProjectsCommand(name:, fields:),
+      30_000,
+    )
+    |> result.map_error(failure),
+  )
+
+  // The daemon answers a projects command with a projects reply. Any other
+  // reply means the two sides disagree about the protocol.
+  case reply {
+    protocol.ProjectsReply(document) -> Ok(document)
+    _other -> Error(name <> " returned an unexpected control reply")
   }
 }
 
@@ -993,6 +1031,7 @@ fn selected_row(reply) {
     | protocol.DeploymentReply(_)
     | protocol.DirectoryReply(_)
     | protocol.ElsewhereReply(_)
+    | protocol.ProjectsReply(_)
     | protocol.UiLinkReply(..) ->
       Error("selection returned an unexpected control reply")
   }
@@ -1071,6 +1110,7 @@ fn await(host: Host, session, operation) {
         | Ok(protocol.DeploymentReply(_))
         | Ok(protocol.DirectoryReply(_))
         | Ok(protocol.ElsewhereReply(_))
+        | Ok(protocol.ProjectsReply(_))
         | Ok(protocol.UiLinkReply(..)) ->
           poll.Fail("operation returned an unexpected control reply")
       }

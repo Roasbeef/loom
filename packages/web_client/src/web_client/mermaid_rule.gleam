@@ -3,11 +3,12 @@
 //// A source or theme change advances the revision before a debounce starts.
 //// Only that revision can begin rendering or publish a result, so an old
 //// timer, parser failure or resize cannot replace a newer diagram. The frame
-//// receives bounded text and returns only fixed status words and dimensions;
+//// receives bounded text and returns status, dimensions and bounded error text;
 //// SVG never crosses into the session page.
 
 import gleam/dynamic/decode
 import gleam/json
+import gleam/list
 import gleam/result
 import gleam/string
 
@@ -47,8 +48,8 @@ pub type Phase {
   /// The source exceeds the renderer's bound.
   TooLarge
 
-  /// Rendering failed or the frame did not answer in time.
-  Unavailable
+  /// Rendering failed or timed out. An empty diagnostic keeps the generic fallback.
+  Unavailable(diagnostic: String)
 }
 
 /// The text and theme whose revision owns the current display.
@@ -73,8 +74,8 @@ pub type Reply {
   /// This revision rendered, or its layout changed after a width change.
   Rendered(revision: Int, height: Int)
 
-  /// This revision could not be rendered.
-  Failed(revision: Int)
+  /// This revision failed; diagnostic is bounded display text, empty if absent.
+  Failed(revision: Int, diagnostic: String)
 
   /// Unknown or malformed messages have no effect.
   Ignored
@@ -151,7 +152,8 @@ pub fn receive(state: State, reply: Reply) -> State {
         False -> state
       }
     }
-    Failed(revision), Rendering -> expire(state, revision)
+    Failed(revision, diagnostic), Rendering if revision == state.revision ->
+      State(..state, phase: Unavailable(diagnostic))
     _, _ -> state
   }
 }
@@ -165,7 +167,7 @@ pub fn receive(state: State, reply: Reply) -> State {
 /// ```
 pub fn expire(state: State, revision: Int) -> State {
   case state.phase, revision == state.revision {
-    Rendering, True -> State(..state, phase: Unavailable)
+    Rendering, True -> State(..state, phase: Unavailable(""))
     _, _ -> state
   }
 }
@@ -200,8 +202,9 @@ pub fn request(state: State) -> String {
 /// assert mermaid_rule.reply("{\"kind\":\"ready\"}") == Ready
 /// ```
 pub fn reply(text: String) -> Reply {
-  // Discard replies exceeding maximum payload size.
-  case string.byte_size(text) > 512 {
+  // Two thousand code points need at most 12,000 bytes when JSON-escaped.
+  // The remaining room covers the fixed envelope and revision.
+  case string.byte_size(text) > 12_512 {
     True -> Ignored
     False -> {
       use <- result.lazy_unwrap(json.parse(text, reply_decoder()))
@@ -224,7 +227,13 @@ fn reply_decoder() -> decode.Decoder(Reply) {
     }
     "failed" -> {
       use revision <- decode.field("revision", decode.int)
-      decode.success(Failed(revision))
+      use diagnostic <- decode.optional_field("diagnostic", "", decode.string)
+      let diagnostic =
+        diagnostic
+        |> string.to_utf_codepoints
+        |> list.take(2000)
+        |> string.from_utf_codepoints
+      decode.success(Failed(revision, diagnostic))
     }
     _ -> decode.success(Ignored)
   }

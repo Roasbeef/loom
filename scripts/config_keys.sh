@@ -78,6 +78,9 @@ packages/client/src/client/retryconf.gleam|policy_table|call|[retry]|
 packages/client/src/client/daemon/limits.gleam|from_fields|arms|[daemon]|
 packages/client/src/client/lsp/profile.gleam|table_keys|const|[lsp.<name>]|
 ?packages/client/src/client/peer_defaults.gleam|from_fields|arms|[peers]|peers
+packages/client/src/client/project_settings.gleam|from_fields|arms|[project]|
+packages/client/src/client/project_sources.gleam|parse_source|call|[[project.source]]|
+packages/client/src/client/project_sources.gleam|parse_rule|call|[[project.rule]]|
 packages/client/src/client/distribution.gleam|table|call|[distribution]|
 packages/client/src/client/distribution.gleam|peer_row|call|[[distribution.peers]]|
 packages/client/src/client/executors.gleam|row|call|[executors.<name>]|

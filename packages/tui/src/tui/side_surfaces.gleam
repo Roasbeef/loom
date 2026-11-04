@@ -30,7 +30,7 @@ import tui/memory_panel
 import tui/model.{
   type Model, AccessManager, AgentInspector, ApprovalInspector, DaemonSelector,
   EvolutionReview, GoalInspector, MemoryOverview, Model, ModelSelector,
-  NoOverlay, PeerLinkManager, ProposalReview,
+  NoOverlay, PeerLinkManager, ProjectScreen, ProposalReview,
 } as tui_model
 import tui/proposal_panel
 import tui/queue_editor
@@ -66,6 +66,7 @@ pub fn notes_surface(model: Model) -> Bool {
     | False, ProposalReview(_)
     | False, EvolutionReview(_)
     | False, MemoryOverview(_)
+    | False, ProjectScreen(_)
     | False, AgentInspector(_)
     | False, ApprovalInspector(_)
     -> False

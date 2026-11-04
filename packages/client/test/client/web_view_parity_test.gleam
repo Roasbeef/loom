@@ -255,6 +255,7 @@ fn visible_texts(line: Line) -> List(String) {
     | transcript_line.SentMessage
     | transcript_line.StrandMessage
     | transcript_line.PeerMessage
+    | transcript_line.TriggerMessage
     | transcript_line.ProgramRunning
     | transcript_line.ProgramFailure
     | transcript_line.ProgramSettled

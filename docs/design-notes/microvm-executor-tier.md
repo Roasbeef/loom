@@ -600,3 +600,27 @@ the one failure mode this codebase has consistently refused to ship.
   model, and the honest-reporting contract.
 - `protocol-change/004-sandbox-policy-explicit-mounts.md` — PROPOSED, and
   the first prerequisite.
+
+## Addendum, 2026-11-01: the open items are decided in ADR-022
+
+[ADR-022](../adr/022-microvm-tier-runs-the-executor-in-a-libkrun-guest.md)
+settles §6 items 3 and 4 and four of §7's open questions. It also corrects
+two expectations in this note against a real boot on an Apple Silicon Mac.
+
+- **§2.2's fork has a third way.** The distributed runtime moved the whole
+  workspace plane onto the executor node, so the guest holds the executor and
+  `fs_*` and `bash` share the guest's tree. No host workspace is shared in.
+- **§7, "whether the guest runs `loom-exec` unchanged": it does.** The layer
+  tags stay true because the guest kernel applies them.
+- **§3 point 2 is not free.** The stock libkrunfw kernel has no Landlock, so
+  "degraded mode disappears" holds only with the custom kernel ADR-022 D3
+  requires.
+- **§3 point 4 needs an explicit choice.** libkrun's default TSI networking
+  let a guest reach a host loopback listener. The allowlist is enforceable by
+  construction only once the launcher always installs a host-side network
+  stack (ADR-022 D4).
+- **§4's latency argument moves.** A VM per executor placement pays boot once
+  per session, measured at 2.0 to 2.4 s, so warm pools are an optimisation.
+- **§4's VM-tier self-test** probes from inside a booted guest that host
+  loopback is unreachable and that a name off the allowlist does not resolve,
+  alongside `loom-exec --self-test` in the guest.

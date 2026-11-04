@@ -42,6 +42,196 @@ actual startup repeats validation and can still fail on runtime resources.
 
 # client
 
+## Standing microVM guest (`loom vm`)
+
+`client.gleam` dispatches `loomd vm setup | up | down | status | logs | list | rm |
+sync` to `client/vm_cli`, and `loom vm …` forwards there (`tui.gleam`, `Forward(verb: "vm", …)`, with a
+private copy of the usage text that `scripts/cli_help_test.sh` compares).
+`client/vm_spec` holds every decision that needs no effect: argument parsing,
+the artifact manifest decoder and revision check, the two-node
+`distribution_plan.Plan`, the guest's `loom.toml`, the `loom-vm run` and `cp`
+argument lists, `scrub_git_config`, the pid-file codec, the `epmd -names`
+reader and the daily verbs' decisions (`printable`, the checkouts record,
+`fetch_arguments`, `bundle_arguments`, `unpushed_branches`, `read_enrolment`,
+`plan_teardown`), and, for the join of a guest into a ledger deployment,
+`deployment_state` (`NoDeployment`, `LedgerDeployment`, `StaticDeployment`,
+read with `distribution.parse`), `guest_enrollment` (the `ledger_operator.Enrollment`
+of the guest) and `bundle_deployment`, `orchestrator_membership` (the daemon's member name from its installed ledger) and `joined_teardown`. `up` decides from `deployment_state` before minting anything: no deployment mints, a ledger deployment is joined (`vm_cli.join` enrols `guest_enrollment` through `ledger_cli.enroll_member` and `ledger_cli.socket_connect` on the running default daemon, with `ledger_cli.unlock_at` on the sealed key; `rm` revokes with `revoke_member`), and a static one is refused. `up` mints in
+ledger mode with `distribution_provision.provision_ledger` and seals the
+authority key with `authority_key.keep` under `<vm home>/authority/<id>/`
+beside a generated `passphrase` file (`vm_cli.seal_authority`); `stage_ledger`
+puts the bundle's ledger at `creds/ledger.log` in the guest root only when the
+root has none; `rm` deletes the authority directory with the guest
+(`removable_authority`). The directory is under the vm home that
+`workspace_policy` masks. `client/vm_cli` performs them with `distribution_provision`,
+`distribution_install`, `host/bootstrap` (`spawn_server`, `process_identity`,
+`reserve_loopback_port`), `ffi_os.run_capture` for `cp`, `chmod`, `kill`, `ps`,
+`uname`, `git` and `epmd`, `host/access` (`raw_request`, `execute`) for the
+daemon's `status` and `daemon.shutdown`, and `weft/poll`. It adds no FFI. Tests: `client/vm_cli_test`,
+which covers the pure decisions, and `daemon_shipped_microvm_test`, the live
+boot, which needs the built artifacts. The latter assembles a build tree of
+links, runs `loom-vm setup --from-build` into a private `LOOM_VM_HOME`, and
+drives `vm up`, a scripted turn through an orchestrator on the configuration
+`up` wrote, `vm down`, `vm status`, `vm up` again and a second turn. It checks
+the GitHub placeholder, that a fake token given as `LOOM_VM_GITHUB_TOKEN` is
+nowhere under the guest's files, that the guest's root is a directory and not a
+link to the export, and, with `LOOM_VM_GITHUB_LIVE=1`, that `api.github.com`
+answers `/zen` 200 and `/user` 401 through the proxy. The first `up` also gives
+`--allow deb.debian.org` and `--provision` of a script that appends a line to a
+file in the guest root: a jailed call reads it, reaches the host and is refused
+another, `up --provision` on the provisioned guest is refused naming `--fresh`,
+and the resume (no flags) keeps the allowed host and leaves one line in the file.
+The same run then drives `vm list`, `vm logs`, a commit made by a jailed call
+that arrives through `vm sync` as `refs/remotes/vm/*` (in the checkout `up`
+recorded and in a `--checkout` scratch one), a hostile `.git/config` and hook
+planted by a jailed call whose marker never appears on the host after `vm sync`
+(with a control repository showing the marker would be writable), `vm sync
+--to-guest` read back by a jailed `git fetch`, a refused second guest, and `vm rm`
+of the idle and failing guests under the isolated home.
+
+`logs`, `list`, `rm` and `sync` read the guest's root, which model-influenced code
+writes, so they treat it as untrusted: no `git` with a working directory in the
+root (`sync` fetches into the developer's checkout with the copy as remote,
+`vm_spec.fetch_arguments`), reads through `plain_chain` (each component a real
+directory, no link), writes
+through `make_inside` and a rename, and guest text printed through
+`vm_spec.printable`. `up` records each copy's developer checkout in
+`<vm home>/<name>/checkouts` (`vm_spec.decode_checkouts`), outside the root, for
+`sync`; `--checkout PATH` overrides it and is required for a guest with no record.
+`rm` removes `[executors.<name>]`, and `[distribution]` and the home's cookie only
+when they are this guest's and no other executor remains
+(`distribution_install.without_tables`, `vm_spec.plan_teardown`), refuses a
+running guest, and without `--yes` only lists the workspaces. `sync` needs a
+Git release with upload-pack's lazy-fetch refusal, 2.45.1 or a backport
+(`vm_spec.check_git_version`) and runs it with
+`GIT_NO_LAZY_FETCH=1`, because the fetch's `-c` settings do not reach
+upload-pack; `--to-guest` bundles `--branches`; `logs` caps its output at 4 MiB;
+and `stage_node` registers every workspace the `checkouts` record names.
+
+`--allow HOST` and `--provision SCRIPT` are decided in `vm_spec`: `valid_host`
+(the `machine.Spec` rule, refused in `parse`), `encode_allow`/`decode_allow` for
+`<vm home>/<name>/allow`, `effective_allow` (given replaces recorded, `--fresh`
+clears), `provision_plan` (stage, retry the staged script, skip, or refuse a
+script on a provisioned resume) and `boot_budget_ms` (120 s, or 1800 s when a
+script runs). `vm_cli` records the list in `stage`, copies the script to
+`<root>/etc/loom-vm/provision` and reads the marker `<root>/etc/loom-vm/provisioned`.
+`LOOM-PROVISION-FAILED` on the console fails `up`.
+
+A kept root cloned from other artifacts than the manifest names is upgraded in
+place (`vm_spec.root_step`, decided from `RootLayout`, the host's
+`<vm home>/<name>/root-revision` record and the manifest revision; only a `dev`
+manifest keeps a stale root, and a root recorded `dev` under a release manifest
+upgrades). `vm_cli.build_next_root` clones into
+`<vm home>/<name>/root.next`, then moves `srv/workspaces` with one `rename`
+(refused naming `--fresh` when it or a parent is a link), the last fallible
+step, refused naming `--fresh` when it fails; `clear_workspaces_slot` removes any
+`srv/workspaces` the clone brought first. `swap_roots` then deletes the root and
+renames `root.next` over it. `root.next/srv/workspaces` existing means the rename
+completed and the next `up` finishes the swap (`FinishUpgrade`); the guest-written
+old root is never consulted. `up` prints `upgrade_line` in `prepare_root`, just
+before `build_next_root`. `state.img` is kept. The host keeps the `--provision` script at
+`<vm home>/<name>/provision` (`record_provision_copy`; `--fresh` without the flag
+clears it) and a new root is provisioned from it (`vm_spec.new_root_provision`),
+never from the root; an unfinished script is retried from it too
+(`provision_plan`'s `kept`), and the copy is written by temporary file and rename.
+`stranded_in` lists processes; `refuse_stranded` refuses `up` and `rm`, `down`'s
+not-running arm fails and `status` adds a `runner:` line when a runner survives
+whose command starts with the manifest's runner path (`Some`; without a readable
+manifest only the JSON matches and the text says "may be") and whose JSON names
+the guest's root or state disk (`vm_spec.stranded_runners`); none stops anything.
+
+`setup` runs `install.bundled_launcher()` (`bin/loom-vm` in the server tree)
+with `setup --home <vm home> --release TAG` (or `--from-build`), where with no
+flag the tags are `vm_spec.release_candidates`: `commit-<commit>` for a 40-hex
+commit, then `v<version>`, each run with `--revision <commit>` so `loom-vm`
+refuses an image of another commit before it writes anything (`vmm-release.yml`
+does not publish `commit-*` tags yet). A failed attempt changes nothing, so
+nothing is restored. A
+development build (`build_identity` version `dev`) has no release and is
+refused naming `make vmm-install-dev`; `up` with no manifest runs the same
+setup first for a release build. A linked worktree (`.git` a file) is copied as
+a plain tree, then `own_repository` clones it `--no-checkout --no-local`
+into `<root>/srv/loom-node/git-staging`, moves that `.git` over the copy's,
+restores `HEAD` and `origin` from the worktree (`vm_spec.head_target`,
+`head_arguments`, `origin_arguments`), resets the index, and removes the copy if
+any copy step fails. At the end, when the deployment is in the exact default
+`loom.toml` (a first `up` or a resume), `up` asks the user's daemon how many
+sessions it holds. `vm_spec.daemon_step` decides: a count of zero means
+`daemon.shutdown` and a note that the next `loom` starts it; any session, or no
+count, means no stop and a `kill -TERM <pid>` line. `daemon_shipped_microvm_test`
+proves the idle stop on its isolated home.
+
+Invariants that break things when violated:
+
+- A guest's files all live under `<vm home>/<name>/`: `deploy/`, `orch/`,
+  `root/`, `root.next/` (only during an upgrade), `state.img`, `allow`, `checkouts`,
+  `root-revision`, `provision`, `loom-vm.pid` and `loom-vm.log`. `LOOM_VM_HOME` overrides
+  `~/.loom/vm`.
+- `up` reads the bundles in `deploy/` again instead of minting new ones, so the
+  orchestrator's installed pins keep matching the executor's certificate.
+- The install is `RefuseExisting`: a `loom.toml` that holds another
+  deployment, or a cookie that differs, is refused and never replaced.
+- The manifest's revision must be `dev` or the running build's commit.
+- `up` never stops a daemon that holds a session, and never starts one.
+- A linked worktree's copy never keeps a `.git` file or an `origin` that names
+  a host path; any failed copy step removes the copy, because a resumed `up`
+  keeps a copy that exists.
+- The pid file holds the process's birth marker, and `down` signals a pid only
+  while it still has that marker.
+- The console log is truncated before each launch. It is appended to, and the
+  `LOOM-EXECUTOR-READY` of an earlier run would satisfy the wait.
+- `--timeout 0` is passed because `loom-vm run` stops a guest after ten
+  minutes by default, and zero means until stopped.
+- A guest that ran before keeps `root/`, its workspace copies and `state.img`
+  unless `--fresh`. `up` clones the export from the manifest's path resolved
+  through symbolic links, because `cp -R` copies a link as a link and the guest
+  would otherwise boot the export itself.
+- `--allow` never widens `--inject-host`: `launch_arguments` passes no
+  `--inject-host`, and the allowed hosts are reachable, never credentialed.
+- A host write under `root/` goes through `make_inside`, which checks each
+  directory's canonical path against the canonical root and refuses a link the
+  guest left (naming `--fresh`). Never `create_directory_all` under the root.
+- A host write that moves workspaces between roots is one `rename` of `srv/workspaces`,
+  after `plain_chain` found it and its parents real directories.
+- Only `--provision` supplies a script. The workspace is never searched, and a
+  script on a provisioned resume is refused rather than run again.
+- Nothing the host runs after a guest has booted uses a directory inside `root/`
+  as Git's working directory, and nothing reads `root/` through a link or prints
+  its text without `vm_spec.printable`.
+- A `checkouts` record names a copy made in the current root: replacing the root
+  removes it, and a kept copy is not re-recorded.
+- The workspace copy is made owner-writable. The guest's init cannot give a
+  file to the `loom` user when the host user cannot write it, and Git's object
+  files are read-only.
+
+See `docs/architecture/microvm.md`, "A standing guest".
+
+## Node credential masks on an executor
+
+`executor_plane.machine` parses its own `[distribution]` table and keeps the
+node's TLS key and cookie in `Machine.credentials`. The executor's base policy
+adds them through `workspace_policy.protecting_node_credentials`, beside the
+state-root and blob masks, so a jailed child cannot print them into a tool
+result (ADR-022 D2 and its 2026-11-01 addendum). `worktrees.Config` and
+`worktree_git.Config` carry the same list, so the sandboxed Git that runs a
+repository's hooks during `git worktree add` masks them too. Both live outside the state
+root, which is why the state-root masks never covered them. An absent path is
+skipped, as for every conditional mask. Every jail, a host session's
+included, also masks the state root's `vm` directory, the home's `.loom/vm`
+and the home's `.erlang.cookie` (`workspace_policy.lazy_masks`,
+`node_home_masks`): `loom vm up` keeps each guest's bundles and its
+executor's key and cookie there, and the cookie is every distributed
+daemon's. A node key `loom distribution install` places outside the state
+root is still unmasked for host sessions. `loom vm up` installs a newly
+minted deployment with `listen_address = "127.0.0.1"`
+(`vm_spec.with_loopback_listener`) and, on resume, does not reinstall it.
+The line is not in the bundle, so a later `loom distribution install` into the
+same file needs `--force`, which drops it.
+`daemon_shipped_microvm_test` proves the mask from
+inside a libkrun guest it boots with `loom vm up` (see "Standing microVM guest");
+it needs `LOOM_VM`, `LOOM_VM_GUEST_ROOT`, `LOOM_VM_RUNNER`, `LOOM_VM_LIB_DIR` and
+`LOOM_VM_FIRMWARE_DIR`, and skips without them.
+
 ## Fresh history source pages
 
 `daemon/manager.collect_sources` asks the catalogue owner for `DomainSources`,
@@ -1969,7 +2159,7 @@ overrides. Missing identity is never replaced with a generated host identity.
   request_timeout_ms, max_answer_tokens, request_deadline_ms,
   max_summary_bytes, source_limit_bytes, scan_limit}` — the block
   summarizer (protocol 050), one **`weft/state_machine`** per session
-  that asks the `summarize` role for a one- or two-sentence summary of
+  that asks the `summarize` role for a two- or three-sentence summary of
   each long reasoning block and each long delivered advice or nudges
   message. `route` resolves the `summarize` role's first identity and
   pins it (`ForResolved`, thinking off, `max_answer_tokens`) with **no
@@ -6867,7 +7057,19 @@ booted without the flags fails before any state is touched. The launcher
 -ssl_dist_optfile "$LOOM_DISTRIBUTION_OPTFILE"` to `ERL_FLAGS` when that
 variable is set and is otherwise unchanged. `daemon/distribution_cli` is
 `loomd distribution options CONFIG OUTPUT`, which writes the options file with
-mode 0600 from the same table.
+mode 0600 from the same table. The `loom` client runs that command itself and
+sets the variable when it starts a daemon (`tui/distribution_launch`), so a
+change to this command's arguments or output is a change to the client's
+launcher; its stand-in test and the shipped-daemon fixtures both depend on it.
+
+`[distribution] listen_address` (protocol-change/106) is an IPv4 loopback
+address, parsed by `distribution.parse_loopback` into four octets and held in
+`Config.listen_address`. `start` passes it with `listen_port` as one
+`ffi_distribution.Listen` and the FFI's `set_listen` applies it as the kernel
+parameter `inet_dist_use_interface` before `net_kernel:start/2`. It is not in the
+options file or the boot-argument comparison, which stay exact. The
+`listen_loopback` and `listen_all` scenarios read a table through the production
+reader and inspect the address the listener socket is bound to.
 
 `test/client/distribution_test.gleam` covers configuration refusals in process
 and drives `test/client_distribution_fixture_ffi.erl`, which mints certificates
@@ -10013,3 +10215,217 @@ and the id round-trips through `ids.parse_session_id`; anything else is `Unknown
   socket admission, the visit reaching the upgrade, the create allowance and the
   capability) and `ui_top_test` (real ports on this node, including the offers
   conversion, the listing and `found`).
+
+## Project mode (slice 1, protocol-change/106)
+
+The daemon runs projects: a catalogue row, a `router` role session and one
+ordinary top-level worker session per ticket assignment
+([design note](../../docs/design-notes/project-mode.md)).
+
+- `client/project_standing.Standing` is `Ordinary | Router(project) |
+  Worker(project, ticket, seq)`, lifted from `catalogue.project_standing`. The
+  deciding sites match it with no catch-all: `manager.project_free` (move and
+  archive, and the delegate sweeps) goes through `mobility`, `serve.project_shaped`
+  through the standing, and the gateway ceiling through `tool_ceiling`. It is
+  separate from `spawners.Standing` and `session_directory.Standing`, and delegates
+  are not on it. `Seat` pairs a standing with the tool seam built for the session
+  and, for a worker, its `client/project_jail.Jail`.
+- `client/project_jail` maps `project/policy.WorkerPolicy` and the owner's session
+  policy onto what a worker runs under: `sandbox` (the owner's policy for an
+  explicit Mandate, `NetworkOff` for an inferred one, because nothing enforces a
+  registry allowlist), `approvals` (`escalate.none` when refused, so no record is
+  written and no person is asked) and `tools` (the peer and `agent_*` tools are
+  above it). `project_start.seat` derives it on every build of a worker's
+  session from the Mandate the actor told `project_book`, never from stored
+  session configuration, and `serve.seat_project` applies it.
+- `client/daemon/project_host` is the actor, on `weft/actor`, one per active project
+  and the sole writer of its ledger. `commit` asks `engine.apply`, appends the
+  event with its effect rows in one `append_with_effects`, and keeps the new
+  state only after the append; `perform_due` then runs the queued rows, bounded to
+  eight rounds a message. Effects are idempotent by key: `StartJob` by the engine's
+  `request_key` (never randomise it), `DeliverJob` by the receipt of
+  `peer_mail.Trigger` keyed on `trigger:session`. Triggers, questions and replies
+  are host records (`client/project_records`, a `host` field no engine event has)
+  in the same ordered history. Times are `Ports.now_ms`, system time.
+  Finishing work is three jobs in order. `ObserveJob` reads an idle worker's head
+  through `Ports.observe_head` and commits `HeadObserved`, with `project/protect`
+  deciding the protected paths from the diff, so a touched head never gets a
+  `RequestCheck`. `observe_head` answers `Intake`: `Taken` when the host repository
+  holds the commit and the diff was read there, `NotTaken` when it refused the
+  commit (`intake_refused`: the actor records the commit as a head with its paths
+  counted as protected, then a `ReviewRequested` with `model.IntakeRefused` and
+  the host's words, so no check or publish runs for it). `CheckJob` runs
+  `Ports.run_check` in a witnessed `weft` task (`in_task`, deadline = wall plus
+  margin) and the answer returns as a `CheckSettled` message; the row is deferred
+  past the deadline and settled by the answer, and a task that dies leaves it to
+  run again (three attempts, then `ReviewRequested`). `host.passed` is called only
+  in `check_passed`, after the run is written as a `CheckRecorded` record whose
+  ledger position is the proof's entry. A failure is told to the live worker as a
+  `check` trigger with the output inside a fence (`tell_worker`). `PublishJob`
+  runs `Ports.publish` the same way, only when `Policy.publish` is on and the
+  commit is the one a pass or a person vouched for; `Policy.publish` off, no
+  remote and no `gh` become `ReviewRequested` with the reason. `projects.publish`
+  is `project_host.publish`, refused while publish is off. `Ports.run_check` and
+  `observe_head` are built in `project_start` (`run_check`, `observe`) over
+  `client/project_repo` and `worktrees.check_runner` (a second sandboxed Git so a
+  check does not hold the attach pool's one slot); `publish` is
+  `client/project_publish` (`git push` from the host repository to the pinned URL,
+  without force or hooks, REST through `gh api`, lookup before create).
+- `client/project_repo` is where a worker's Git stops. A worker's workspace is a
+  clone the host makes (`git clone --no-hardlinks`, `origin` removed, branch
+  `loom/<ticket>-<seq>`) under `<state>/projects/<id>/tickets/`, with a real `.git`
+  directory, so `workspace_policy` adds no writable root for it. A ticket with a
+  recorded head starts its next clone there instead (`project_repo.clone` takes a
+  `Start`: `FromOwner`, or `FromCommit`, a template-less repository that fetches
+  the commit from `host.git` by path, so it has no remote at all, with hooks and
+  `core.fsmonitor` off on the command line), unless the owner's `HEAD` already
+  contains the head, as for a merged ticket the owner pulled. The host
+  repository `<state>/projects/<id>/host.git` is bare, made by `ensure_host` when
+  the project's actor starts, written only by host code, and masked in every
+  session (`workspace_policy.protecting_projects`: the host repository, the
+  ledger and its side files, the check trees; a clone is not masked because it is
+  removed with its ticket and a mask over a removed path refuses every call of a
+  session that still holds it). `ensure_host` also pins the owner's
+  `origin` push URL in `host.git/loom-origin-url`, once; `publish` pushes to that
+  URL literally and never by remote name. `intake` reads the clone's `HEAD`,
+  fetches exactly that commit into the host repository under
+  `refs/tickets/<ticket>/<commit>` (jailed: clone read-only, host repository
+  writable, `transfer.fsckObjects`), requires the id the host repository holds to
+  be the one the clone named, and reads `base...commit` there against the owner's
+  `HEAD` fetched into `refs/base/head`. `check_tree` cuts the check's repository
+  from the host repository. `release` keeps a clone with working-tree changes or
+  with any ref or `HEAD` naming an object the host repository lacks, comparing every
+  ref rather than the branch the clone says it is on. `sound_clone` is checked by
+  `project_start.seat`: a worker whose `.git` was turned into a file is refused its
+  session, because the session policy widens to the Git directory such a file
+  names. Every host Git command here runs in the sandbox with
+  `GIT_NO_REPLACE_OBJECTS` and `GIT_CONFIG_GLOBAL=/dev/null`
+  (`worktree_git.environment`); the push runs unjailed with the redirecting
+  variables removed and the owner's global configuration kept
+  (`project_publish.run_git`). Ordinary linked-worktree sessions keep
+  `widening_linked_worktree` unchanged. An answer is a `DeliverJob` for `model.answer_id`, source
+  `owner`; with no live session it waits in the ticket's inbox. The `started`
+  pair is finished by `mark_live` when a retry finds the session bound.
+- `client/daemon/project_start` fills the actor's `Ports` from the registry:
+  `create` (project id is `p-` and twelve hex of the workspace's SHA-256),
+  `ensure_running`, `start_worker` (clone named from `<ticket>-<seq>`, then
+  `manager.reserve`, `catalogue.bind_worker`, `manager.create_scoped`, in that order
+  so the session's builder reads its standing), and `reopen` at boot. `reopen`
+  also installs the registry's end bell (`manager.on_session_ended`, rung when a
+  running slot faults, with the fault's text, and again when any slot drains, but
+  never while the registry shuts down); the bell casts to `project_book`, which
+  casts `project_host.session_gone` to every actor, and the actor ends the
+  holding assignment as `WorkerFailed` only if it still holds its slot, so a stop
+  the host ordered or a worker at rest reads as nothing. `reopen` makes the same
+  call for a live assignment whose session has no registration.
+  `client/daemon/project_book` is the table of handles, and of each ticket's
+  Mandate (`Ports.remember_mandate`, called for every ticket when the actor starts
+  and before each worker start; a builder cannot ask the actor, which waits for the
+  build), that the builder reads, and the
+  `factory_supervisor` (temporary children) every actor is started under
+  (`launch`), so a control handler that ends abnormally cannot take a project's
+  only ledger writer with it. A worker's
+  memory domain stays its own clone's: `domain.Scope` has only `WorkspacePrivate`
+  and `SessionOnly`, and the id derives from the canonical workspace path.
+- `client/projectseam` fills `tools/project`'s closures over the actor. `serve.Settings`
+  gains `project`; a router's registry is exactly `route`, `project_read` and
+  `reply` (no `bash`, no `code_mode`, no extension), a worker's loses the peer and
+  `agent_*` tools, and `gateway.Options.tool_ceiling` makes `set_config` refuse a
+  name above the router's list. `client/project_packs` derives the router and
+  worker packs from `prompt/default` by replacing the `delegation` section.
+- The live lane of a verdict asks a scratch judgement session, not the router.
+  `client/project_judge_session` opens one in-memory `harness` session per trial with
+  the router's pack and resolved model (`serve.routed_identity`) and the one tool
+  `tools/project.judge_tools` gives, `route`, whose executor records its items and
+  applies nothing. The session is opened and held by a custodian actor that
+  `client/project_judge` adopts as a weft managed task's owner, so the wall limit, a
+  failed sibling or the project actor stopping all close it. `project_judge.measure`
+  runs the trials at a concurrency limit under a wall deadline and cancels the rest
+  on the first failure. `project_host` starts a live run in a witnessed weft task,
+  answers `projects.verdict` at once, keeps the run in memory (`Host.runs`, the rule
+  row's `run` object) and concludes it with `project_verdict.conclude`; a second run
+  on a rule that is going is refused, and a run that fails or is cut off records
+  nothing. `project_start.Control.judge` builds the judge from the router
+  registration's settings. `test/support/scripted_router` scripts the model.
+- `peer_mail.Trigger` admits a stored trigger with the trigger origin. The daemon is
+  the caller, so no grant is checked; `orchestrator_port.served` answers `False` for
+  it, which is what keeps it off the relay (tested in `peer_remote_test`).
+- Control: `projects.create|list|board|post|stop|ticket|answer|retry|requeue|publish|set_mode` in
+  `daemon/protocol` and `daemon/server` (`project_command`), classified in
+  `control_use`. `projects.ticket` is a read. `projects.answer` echoes the
+  question's `seq`; `project_host.answer` checks it against the open question
+  before it writes the text, and a stale one is `StaleQuestion`, which the control
+  command answers `conflict` and the page words as "the question changed". The
+  answer's text is stored in the ledger and delivered to the worker (see above).
+  The board record gains `opened_ms` (the opening message's arrival time, or null),
+  the only source of an age, `check` and `review`, and the board gains `unrouted`.
+- `client/daemon/ui_projects` is the owner's home page's feed over the same actors
+  (`boards`, `ticket`, `answer`), returning the daemon's JSON for
+  `session_view/project_board` to decode; `board_body` is shared with
+  `projects.board`. The socket hands it to the owner's operating page alone
+  (`ui_socket.home_projects_capability`, repeated by `projects_for`,
+  `ticket_read_for` and `answer_for`), and admits a click beneath
+  `home.projects_path` for that page only (`ui_socket.home_event`).
+  `[project]` is `client/project_settings` (`max_workers`, `token_ceiling`,
+  `check`, `protected_paths`, `publish`, `queue_limit`, `attention_limit`, and the
+  tables `source` and `rule`, read by `client/project_sources`).
+- The GitHub source is four modules and a section of `project_host`.
+  `client/project_github` decodes REST answers totally and translates each item
+  into the gate's inputs (sender class from the owner's literal lists, an exact
+  `@account` token, the first matching rule), drops the agent's own account, and
+  derives trigger ids from GitHub's (`gh-i|c|r-<id>`, `gh-ci-<id>`) and threads from
+  the issue or pull request number (`model.github_thread`, `gh-<n>`).
+  `client/project_poller` is one bounded pass over `gh api` on the REST interface
+  (never GraphQL), from a cursor per stream, with `retry-after` and
+  `x-ratelimit-*` honoured; `project_watcher` is the schedule and builds the request
+  from the engine's tickets. The actor runs the pass in a weft task and takes the
+  answer as `PollSettled`: texts and `TriggerArrived` first, cursors (the ledger's
+  `scanner_cursor`, keyed `src:<stream>`) only after every trigger was written, then
+  conclusions (`Concluded`) and a `SourceNote` record when the words change. A rule
+  gets its first mode from the configuration (`configure_rules`, `observe` by
+  default), a person's later mode survives restarts, and `projects.set_mode` refuses
+  `auto` in words. A reply to a GitHub thread is a `github_reply` effect row only when
+  `publish` is on, posted by `project_poller.post_reply` after a search for its marker
+  comment, one at a time per thread, with `project_github.reply_body` neutering `@`,
+  `<`, `>` and `#`. A body is stored whole and delivered cut at
+  `project_github.inline_chars` with a pointer (`delivered_text`). The board gains
+  `would_have_done` and `sources`.
+- Retention. `project/snapshot` writes the engine's state as one document and
+  `retire` drops ended tickets and settled triggers older than 30 days
+  (`project_retention.retain_ms`) that nothing remaining names. `compact_now` writes a
+  `Retention` marker record, builds a `project_retention.Document` (the state, the host
+  record lines that still matter, each remaining trigger's arrival entry, and the
+  decision kept for each dropped trigger) and calls `project_ledger.compact_before`;
+  `boot` starts from the snapshot (`restore_snapshot`) and replays the rest. Daily from
+  the tick, or on demand through `project_host.compact`. A dropped trigger's card is
+  its decision.
+- `client/project_scan` is a worker's commit scanner, modelled on `rulescan`: a
+  restartable service subscribed by name through `writer.Routed`, started in
+  `serve` only for a session seated as a worker (`Seat.feed`). It pulls the main
+  strand with `storage.branch_scan` and sends the project actor each user message
+  whose origin is a human principal (`project_host.human_turn`, keyed `h-<entry id>`
+  so a repeat records nothing) and the last committed successful `project_report`
+  result above its cursor (`replay_report`, dropped when the ticket already holds
+  that report). The cursor is `project_ledger.cursor`/`set_cursor`, a checkpoint
+  sent after the turns it covers; correctness rests on the entry key and on
+  `already_holds`, not on the cursor. The process carries no `telemetry/owner`
+  role: a new role is a protocol change.
+- Restart and close. `recover_interrupted` runs in `boot`: each assignment that is
+  running with a session and has no `Recovered` host record gets one, with a
+  `recover` effect row, and `recover_worker` delivers a harness-worded note through
+  `admit` under the message id `recovery-<ticket>-<seq>`. The record is what stops a
+  second restart from sending another. `stop_worker` ends with `release_tree` for a
+  ticket that has an outcome: `Ports.release_worktree` closes the clone with
+  `project_repo.release`, which keeps a clone with changes or with refs the host
+  repository has not taken in. A kept clone is written as a `TreeKept` host record
+  and appears on the ticket card as `kept_worktrees`; a person fetches from the
+  ticket's refs in `host.git` and treats the clone as untrusted, because its
+  configuration and hooks are the worker's.
+- `project_daemon_test` is the daemon-level fixture: a real `root.start` with the
+  production session builder, a real catalogue, ledger and Git worktrees, the
+  control commands over a socket, and only the model scripted. It found that
+  `open_router` re-created the router under a different name than `make_project`
+  reserved it with, which the registry refuses as a conflicting request, so no
+  project could be created; it now reads the name from the registration.
+- Not built in this slice: the host check, pull requests, outbound delivery of
+  replies, a Mandate-enforced broker policy.

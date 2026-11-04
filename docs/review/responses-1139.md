@@ -19,6 +19,30 @@ selection was supplied, and Daybreak responses when omitted. Subscription bodies
 now always omit the override. Existing configuration is accepted, while API-key
 Responses bodies retain their explicit selections.
 
+**Correction (2026-11-02).** The omission was reverted. The public Responses
+contract (`AccessProgramsParam.cyber`), which is what this transport targets,
+resolves an unset program from the model's Cyber tier: a Blue-tier model gets
+Daybreak Blue only when the program is selected and otherwise falls back to
+Standard safeguards. Withholding the selection therefore requests Standard
+guards, and a Blue-tier model on Standard guards refuses ordinary
+defensive-security work with the permanent `cyber_policy` code, which is never
+retried and never walks a fallback chain.
+
+Subscription bodies forward the operator's selection again, and both
+regression tests assert the forwarded program. Entries that configure no
+selection still omit it.
+
+This does not retract the observation recorded above. That report came from
+the private subscription path and was not retested here; it may well describe
+how that endpoint behaved at the time. What the correction adds is that the
+public endpoint's documented resolution makes omission an active request for
+Standard treatment, so omission is not a neutral default Loom can rely on
+when an operator has named a program. Separately, the Blue-tier failure that
+prompted this correction was not caused by the omission: that catalogue entry
+configured no `cyber_access`, so `6a2d8f4b4` never changed its wire bytes. The
+missing selection was in its configuration, and the endpoint's handling of an
+omitted program is where the behaviour changed.
+
 ## Comparison with the native parser
 
 The comparison used [openai/codex at

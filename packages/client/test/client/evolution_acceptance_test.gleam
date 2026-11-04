@@ -608,6 +608,7 @@ pub fn settings(root: String, url: String) -> serve.Settings {
     gateway:,
     evolution_role: serve.Source,
     pack: None,
+    project: None,
     catalog: catalogue,
     system: None,
     home: Some(root <> "/empty-home"),

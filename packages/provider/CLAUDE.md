@@ -76,10 +76,24 @@ when it extends the bytes already streamed. It emits the missing suffix once,
 including the full argument string when no deltas arrived, then records the
 text closure. Item identity, canonical item closure and terminal output still
 must agree before settlement. Conflicting or shortened snapshots still fail
-with `arguments_done_witness`.
+with `arguments_done_witness`. Reasoning summary and content parts follow the
+same prefix-extension rule across `change_part`, `close_part` and `close_item`:
+when the provider omits intermediate `.done` events, delivers sequential-cutoff
+summary completions, drops an unfinished open summary section at item
+completion, or emits late summary/reasoning events after `response.output_item.done`
+has already closed the reasoning item, `reconcile_thought_item` reconciles open
+parts against the canonical reasoning item, emits any missing thinking suffix
+once, ignores late post-cutoff reasoning events, and `order_blocks` normalizes
+surviving block ranks for replay while still rejecting conflicting or dropped
+closed witnesses. Assistant message phases accept `commentary`, `partial_answer`
+and `final_answer`; reasoning content parts accept both `reasoning_text` and
+`text`; `response.incomplete` with `interrupted` and `response.completed` with
+`end_turn: false` settle with `end_turn: Some(False)`; and `budget_reached` is
+classified as a permanent provider error.
 
 A settled message keeps the requested alias in `model` and the served model
-in `response_model`. Nonempty `openai-model` headers of at most 256 bytes take
+in `response_model`. Nonempty `openai-model` or `x-openai-model` headers of at
+most 256 bytes take
 precedence over the response envelope's model, which remains the identity
 witness. HTTP headers seed the observation; subsequent event headers update it,
 with response-local headers preferred over top-level ones in the same event.

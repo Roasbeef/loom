@@ -456,10 +456,23 @@ await_epmd(Deadline) ->
             end
     end.
 
-set_listen({some, Port}) ->
+%% The listener's port and interface are kernel parameters that OTP reads when
+%% the listener opens, so setting them before net_kernel:start/2 is the same as
+%% booting with them. An unset part leaves the parameter as the VM has it: a free
+%% port, and every interface. The address is a validated IPv4 tuple, built in
+%% Gleam, so nothing here parses text.
+set_listen({listen, Port, Interface}) ->
+    ok = set_listen_port(Port),
+    set_listen_interface(Interface).
+
+set_listen_port({some, Port}) ->
     ok = application:set_env(kernel, inet_dist_listen_min, Port),
     ok = application:set_env(kernel, inet_dist_listen_max, Port);
-set_listen(none) -> ok.
+set_listen_port(none) -> ok.
+
+set_listen_interface({some, {_, _, _, _} = Address}) ->
+    application:set_env(kernel, inet_dist_use_interface, Address);
+set_listen_interface(none) -> ok.
 
 bounded_file(Path, Maximum, Privacy) ->
     {ok, #file_info{type = regular, size = Size, mode = Mode}} =

@@ -30,7 +30,8 @@ import gleam/string
 
 /// Historical source attribution captured by the authenticated admission host.
 /// This carries no credential or authority; `core/origin` validates its bounds
-/// and carries three source kinds (human, peer session, same-session strand).
+/// and carries four source kinds (human, peer session, same-session strand,
+/// external trigger).
 pub type Origin {
   /// A human principal and its display name at admission.
   Origin(
@@ -54,6 +55,26 @@ pub type Origin {
     /// The sending strand's identifier, minted by the harness from the
     /// authenticated caller.
     strand: String,
+  )
+
+  /// Text that came from outside any session, through a stored trigger of a
+  /// project: a webhook, a message on a channel, a schedule. The text is
+  /// untrusted data, and this value says only where it arrived from.
+  ///
+  /// Attribution is not authority. No code may read this origin to grant,
+  /// widen or skip a check, because anyone who can cause the trigger can
+  /// choose the text and, within the validated bounds, the actor. Provider
+  /// projection fences the body and labels it as external text for the
+  /// same reason. Only the project engine writes this variant, from the
+  /// stored trigger and never from tool arguments.
+  TriggerOrigin(
+    /// The kind of source the trigger came from, such as `github`.
+    source: String,
+    /// The identifier of the stored trigger that carried the text.
+    trigger: String,
+    /// The principal the source reported as the author, as the source
+    /// spelled it. It is a claim by the source and nothing more.
+    actor: String,
   )
 }
 

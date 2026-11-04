@@ -58,14 +58,14 @@ pub fn newer_source_during_inspection_cannot_publish_old_svg_test() {
 
 pub fn both_failure_stages_clear_and_refuse_without_late_revival_test() {
   let cases = [
-    #(drawing(1), c.Rendered(1, Error(Nil))),
+    #(drawing(1), c.Rendered(1, Error(""))),
     #(checking(1), c.Published(1, Error(Nil))),
   ]
   list.each(cases, fn(pair) {
     let #(failed, effects) = c.update(pair.0, pair.1)
     assert failed.phase == c.Idle
     assert failed.shown == None
-    assert effects == [c.Clear, c.ReplyToParent(c.FailedReply(1))]
+    assert effects == [c.Clear, c.ReplyToParent(c.FailedReply(1, ""))]
     assert c.update(failed, c.Published(1, Ok(500.0))) == #(failed, [])
     assert c.update(failed, c.Rendered(1, Ok("late"))) == #(failed, [])
   })
@@ -77,14 +77,14 @@ pub fn refusing_queued_work_does_not_release_the_active_vendor_slot_test() {
   assert model.phase == c.Busy(c.Drawing, request(1), None)
   assert model.latest == 3
   assert model.shown == None
-  assert effects == [c.Clear, c.ReplyToParent(c.FailedReply(3))]
+  assert effects == [c.Clear, c.ReplyToParent(c.FailedReply(3, ""))]
   let #(idle, effects) = c.update(model, c.Rendered(1, Ok("stale")))
   assert idle.phase == c.Idle
   assert effects == []
 
   let #(queued, _) = c.update(model, c.Requested(request(4)))
   assert queued.phase == c.Busy(c.Drawing, request(1), Some(request(4)))
-  let #(next, effects) = c.update(queued, c.Rendered(1, Error(Nil)))
+  let #(next, effects) = c.update(queued, c.Rendered(1, Error("")))
   assert next.phase == c.Busy(c.Drawing, request(4), None)
   assert effects == [c.Begin(request(4))]
 }
@@ -97,7 +97,7 @@ pub fn stale_requests_refusals_and_wrong_completion_revisions_are_ignored_test()
       c.Requested(request(2)),
       c.Refused(1),
       c.Refused(2),
-      c.Rendered(1, Error(Nil)),
+      c.Rendered(1, Error("")),
     ],
     fn(message) {
       assert c.update(drawing, message) == #(drawing, [])
@@ -175,8 +175,8 @@ pub fn configuration_pins_every_security_and_layout_option_test() {
   assert c.color_scheme(c.Dark) == "dark"
   assert c.color_scheme(c.Light) == "light"
   assert c.reply_json(c.Ready) == "{\"kind\":\"ready\"}"
-  assert c.reply_json(c.FailedReply(3))
-    == "{\"kind\":\"failed\",\"revision\":3}"
+  assert c.reply_json(c.FailedReply(3, ""))
+    == "{\"kind\":\"failed\",\"revision\":3,\"diagnostic\":\"\"}"
 }
 
 pub fn svg_restrictions_cover_root_descendants_and_all_reference_attributes_test() {
@@ -240,4 +240,36 @@ fn config_decoder() -> decode.Decoder(
     layout,
     flow,
   ))
+}
+
+/// Retains the current vendor error without publishing a superseded diagnostic.
+pub fn diagnostic_belongs_to_the_active_revision_test() {
+  let diagnostic = "Parse error on line 8:\nExpected ACTOR, got loop"
+  let #(failed, effects) =
+    c.update(drawing(1), c.Rendered(1, Error(diagnostic)))
+  assert failed.phase == c.Idle
+  assert effects == [c.Clear, c.ReplyToParent(c.FailedReply(1, diagnostic))]
+
+  // A queued successor owns the display even if the active parser fails first.
+  let #(queued, _) = c.update(drawing(1), c.Requested(request(2)))
+  let #(next, effects) = c.update(queued, c.Rendered(1, Error(diagnostic)))
+  assert next.phase == c.Busy(c.Drawing, request(2), None)
+  assert effects == [c.Begin(request(2))]
+}
+
+/// Bounds Unicode and JSON escape expansion without turning text into markup.
+pub fn diagnostic_reply_is_bounded_and_preserves_literal_text_test() {
+  let diagnostic = "<img src=x onerror=alert(1)>\nExpected 'ACTOR' at \"Loop\""
+  let decoder = {
+    use diagnostic <- decode.field("diagnostic", decode.string)
+    decode.success(diagnostic)
+  }
+  assert json.parse(c.reply_json(c.FailedReply(1, diagnostic)), decoder)
+    == Ok(diagnostic)
+  list.each(["💜", "\u{0}", "e\u{301}"], fn(point) {
+    let encoded = c.reply_json(c.FailedReply(1, string.repeat(point, 3000)))
+    assert string.byte_size(encoded) <= 12_512
+    let assert Ok(decoded) = json.parse(encoded, decoder)
+    assert list.length(string.to_utf_codepoints(decoded)) == 2000
+  })
 }

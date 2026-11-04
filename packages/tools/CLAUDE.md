@@ -1201,3 +1201,14 @@ agent to use qualified standard-library helpers, to repair the named lines on a
 compile failure and keep the rest, and to fix and rerun a program that fails at
 runtime rather than move its remaining probes to other tools. It keeps the
 compiler gate intact.
+
+## `tools/project`
+
+The router's `route`, `project_read` and `reply`, and a worker's `project_report` and
+`project_handback`. The module owns schemas and wording and takes a `Projects` seam of
+closures like `tools/schedule`; `client/projectseam` fills it. `route` decodes one to
+twenty items into `project/model` values (a capped `TicketTitle`, `TriggerId`s, no free
+text for a worker), and each item is judged alone by the host. `parse_resource` is a
+closed grammar (`candidates`, `board[:N]`, `ticket:ID`, `trigger:ID`, `thread:ID`).
+`router_tool_names` is the router's tool ceiling. This package depends on the pure
+`project` package for its types.

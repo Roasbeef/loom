@@ -1,0 +1,14 @@
+name = "project"
+version = "0.1.0"
+gleam = ">= 1.18.0"
+description = "Project mode's engine: a pure, replayable state machine over triggers, tickets and assignments"
+
+[dependencies]
+gleam_stdlib = ">= 1.0.0 and < 2.0.0"
+gleam_json = ">= 3.0.0 and < 4.0.0"
+evalstat = { path = "../evalstat" }
+
+[dev_dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"
+qcheck = ">= 1.0.5 and < 2.0.0"
+statem = { path = "../statem" }

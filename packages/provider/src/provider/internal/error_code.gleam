@@ -10,9 +10,9 @@ const permanent_codes = [
   "invalid_prompt", "model_not_found", "insufficient_quota",
   "credit_balance_exhausted", "organization_spend_limit_exceeded",
   "project_spend_limit_exceeded", "organization_usage_limit_exceeded",
-  "usage_not_included", "usage_limit_reached", "flex_unavailable",
-  "cyber_policy", "bio_policy", "misalignment_policy_violation",
-  "context_length_exceeded",
+  "usage_not_included", "usage_limit_reached", "budget_reached",
+  "flex_unavailable", "cyber_policy", "bio_policy",
+  "misalignment_policy_violation", "context_length_exceeded",
 ]
 
 /// Identified request, access, quota and context failures cannot be repaired by

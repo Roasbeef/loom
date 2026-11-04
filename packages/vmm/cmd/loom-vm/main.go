@@ -1,0 +1,456 @@
+// Command loom-vm boots the microVM tier's guests from the command line.
+//
+// It is the launcher ADR-022 places beside loom-exec: a host-side program
+// that turns a machine.Spec into a running guest, so the tier can be driven
+// and measured before the broker learns to place an executor inside one.
+//
+//	loom-vm probe
+//	loom-vm run [flags] -- INIT [ARGS...]
+//	loom-vm setup (--release TAG | --from-build DIR)
+//	loom-vm doctor
+//
+// probe reports whether this host can boot a guest. run boots one, copies
+// the guest console to standard output until the guest exits, and then
+// releases the machine. Native paths come from flags, or from LOOM_VM_RUNNER,
+// LOOM_VM_LIB_DIR and LOOM_VM_FIRMWARE_DIR.
+//
+// setup installs a release's artifacts, or points at a build tree, and writes
+// the manifest under $LOOM_VM_HOME (default ~/.loom/vm) that names every
+// path a guest boots from. doctor checks what the manifest names.
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/roasbeef/loom/vmm/epmd"
+	"github.com/roasbeef/loom/vmm/machine"
+	"github.com/roasbeef/loom/vmm/machine/libkrun"
+)
+
+const usage = `usage:
+  loom-vm probe [native flags]
+  loom-vm run [native flags] [run flags] -- INIT [ARGS...]
+  loom-vm setup (--release TAG | --from-build DIR) [--repo OWNER/NAME] [--revision REV] [--lib-dir DIR]
+  loom-vm doctor [--home DIR]
+`
+
+func main() {
+	if len(os.Args) < 2 {
+		fmt.Fprint(os.Stderr, usage)
+		os.Exit(2)
+	}
+
+	var err error
+	switch os.Args[1] {
+	case "probe":
+		err = probe(os.Args[2:])
+
+	case "run":
+		err = run(os.Args[2:])
+
+	case "setup":
+		err = setupCmd(os.Args[2:])
+
+	case "doctor":
+		err = doctorCmd(os.Args[2:])
+
+	case "-h", "--help", "help":
+		fmt.Fprint(os.Stdout, usage)
+
+	default:
+		fmt.Fprintf(os.Stderr, "loom-vm: unknown command %q\n%s", os.Args[1], usage)
+		os.Exit(2)
+	}
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loom-vm: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// nativeFlags registers the flags that locate the runner and libraries,
+// shared by every command that touches a backend.
+func nativeFlags(fs *flag.FlagSet) *libkrun.Config {
+	cfg := &libkrun.Config{}
+	fs.StringVar(&cfg.RunnerPath, "runner", os.Getenv("LOOM_VM_RUNNER"),
+		"go-microvm-runner binary (LOOM_VM_RUNNER)")
+	fs.StringVar(&cfg.LibDir, "lib-dir", os.Getenv("LOOM_VM_LIB_DIR"),
+		"directory holding libkrun (LOOM_VM_LIB_DIR)")
+	fs.StringVar(&cfg.FirmwareDir, "firmware-dir", os.Getenv("LOOM_VM_FIRMWARE_DIR"),
+		"directory holding a custom libkrunfw (LOOM_VM_FIRMWARE_DIR)")
+
+	return cfg
+}
+
+// probe prints the backend's answer about this host and fails when the
+// backend cannot boot here.
+func probe(args []string) error {
+	fs := flag.NewFlagSet("probe", flag.ContinueOnError)
+	cfg := nativeFlags(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	b := libkrun.New(*cfg)
+	p := b.Probe(context.Background())
+
+	state := "unusable"
+	if p.Available == machine.Usable {
+		state = "usable"
+	}
+
+	fmt.Printf("%s: %s (%s)\n", b.Name(), state, p.Reason)
+	for _, w := range p.Warnings {
+		fmt.Printf("  warning: %s\n", w)
+	}
+
+	if p.Available != machine.Usable {
+		return errors.New("no usable backend")
+	}
+
+	return nil
+}
+
+// listFlag collects a repeatable string flag.
+type listFlag []string
+
+func (l *listFlag) String() string { return strings.Join(*l, ",") }
+
+func (l *listFlag) Set(v string) error {
+	*l = append(*l, v)
+	return nil
+}
+
+// run boots one guest and copies its console until it exits.
+func run(args []string) error {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	cfg := nativeFlags(fs)
+
+	var (
+		spec    machine.Spec
+		allow   listFlag
+		files   listFlag
+		fwds    listFlag
+		pubs    listFlag
+		timeout time.Duration
+	)
+	fs.StringVar(&spec.Name, "name", "loom-vm", "guest name")
+	fs.StringVar(&spec.Root.Image, "image", "", "OCI image for the guest root")
+	fs.StringVar(&spec.Root.Dir, "root-dir", "", "prepared root directory")
+	cpus := fs.Uint("cpus", 0, "vCPUs (0 = default)")
+	mem := fs.Uint("mem", 0, "memory in MiB (0 = default)")
+	fs.Var(&allow, "allow", "allowlisted egress host (repeatable)")
+	fs.Var(&files, "file", "SRC:DST[:MODE] copied into the guest (repeatable)")
+	fs.Var(&fwds, "forward", "HOST:GUEST port forwarded from host loopback (repeatable)")
+	fs.Var(&pubs, "publish", "NAME:HOST:GUEST forward GUEST to HOST and register NAME "+
+		"at HOST in the host's epmd (repeatable)")
+	fs.DurationVar(&timeout, "timeout", 10*time.Minute,
+		"stop the guest after this long (0 runs until stopped)")
+	stateDisk := fs.String("state-disk", "", "raw image attached as /dev/vda, "+
+		"created sparse if missing")
+	stateDiskMiB := fs.Uint("state-disk-size", 4096, "size in MiB of a newly created state disk")
+
+	var gh githubFlags
+	gh.register(fs)
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	spec.CPUs, spec.MemoryMiB = uint32(*cpus), uint32(*mem)
+	spec.Init = fs.Args()
+	spec.Egress.Hosts = allow
+
+	for _, f := range files {
+		parsed, err := parseFile(f)
+		if err != nil {
+			return err
+		}
+		spec.Files = append(spec.Files, parsed)
+	}
+
+	for _, f := range fwds {
+		parsed, err := parseForward(f)
+		if err != nil {
+			return err
+		}
+		spec.Forwards = append(spec.Forwards, parsed)
+	}
+
+	var published []publication
+	for _, p := range pubs {
+		parsed, err := parsePublish(p)
+		if err != nil {
+			return err
+		}
+		published = append(published, parsed)
+		spec.Forwards = append(spec.Forwards, parsed.forward)
+	}
+
+	if *stateDisk != "" {
+		disk, err := ensureDisk(*stateDisk, int64(*stateDiskMiB)<<20)
+		if err != nil {
+			return err
+		}
+		spec.Disks = append(spec.Disks, machine.Disk{ID: "state", Path: disk})
+	}
+
+	// The proxy goes up before the guest and, because defers run in reverse,
+	// comes down after it.
+	stopProxy, err := gh.apply(&spec, timeout)
+	if err != nil {
+		return err
+	}
+	defer stopProxy()
+
+	// Validation runs after the proxy has added its host service, so the
+	// service's port is checked with every other entry of the spec.
+	if err := spec.Validate(); err != nil {
+		return err
+	}
+
+	// An interrupt ends the run the same way a timeout does: through the
+	// context, so the deferred Stop still releases the machine.
+	ctx, cancel := runContext(timeout)
+	defer cancel()
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	m, err := libkrun.New(*cfg).Start(ctx, spec)
+	if err != nil {
+		return err
+	}
+	defer m.Stop(context.Background())
+
+	// The names go into the host's epmd only once the forwards exist, and
+	// the deferred closes withdraw them before Stop runs, so no name ever
+	// points at a port with nothing behind it for longer than a boot.
+	for _, p := range published {
+		reg, err := register(p)
+		if err != nil {
+			return err
+		}
+		defer reg.Close()
+	}
+
+	// An interrupt or SIGTERM is how a caller asks for the guest to stop, so
+	// the cancellation it causes is a clean end of the run, not a failure.
+	// A timeout is still reported.
+	err = follow(ctx, m, os.Stdout)
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+
+	return err
+}
+
+// publication is one --publish flag: a node name and the forward it is
+// registered at.
+type publication struct {
+	name    string
+	forward machine.Forward
+}
+
+// parsePublish reads a NAME:HOST:GUEST flag. NAME is the node's short name,
+// the part before "@".
+func parsePublish(v string) (publication, error) {
+	name, ports, ok := strings.Cut(v, ":")
+	if !ok || name == "" {
+		return publication{}, fmt.Errorf("--publish %q: want NAME:HOST:GUEST", v)
+	}
+
+	fwd, err := parseForward(ports)
+	if err != nil {
+		return publication{}, fmt.Errorf("--publish %q: %w", v, err)
+	}
+
+	return publication{name: name, forward: fwd}, nil
+}
+
+// register holds p's name in the host's epmd. When no epmd answers it starts
+// one, as `erl -name` would, and retries for up to three seconds: in a fixture
+// the executor's guest boots before any host node has started epmd.
+func register(p publication) (*epmd.Registration, error) {
+	reg, err := epmd.Register(epmd.DefaultAddress, p.name, p.forward.Host)
+	if err == nil {
+		return reg, nil
+	}
+
+	if out, serr := exec.Command("epmd", "-daemon").CombinedOutput(); serr != nil {
+		return nil, fmt.Errorf("%w; starting epmd: %v: %s", err, serr, out)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+
+		reg, err = epmd.Register(epmd.DefaultAddress, p.name, p.forward.Host)
+		if err == nil {
+			return reg, nil
+		}
+	}
+
+	return nil, err
+}
+
+// parseFile reads a SRC:DST[:MODE] flag. MODE is octal and defaults to
+// 0644.
+func parseFile(v string) (machine.File, error) {
+	parts := strings.Split(v, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return machine.File{}, fmt.Errorf("--file %q: want SRC:DST[:MODE]", v)
+	}
+
+	f := machine.File{Source: parts[0], Target: parts[1], Mode: 0o644}
+	if len(parts) == 3 {
+		mode, err := strconv.ParseUint(parts[2], 8, 32)
+		if err != nil {
+			return machine.File{}, fmt.Errorf("--file %q: mode: %w", v, err)
+		}
+		f.Mode = os.FileMode(mode)
+	}
+
+	return f, nil
+}
+
+// parseForward reads a HOST:GUEST flag.
+func parseForward(v string) (machine.Forward, error) {
+	host, guest, ok := strings.Cut(v, ":")
+	if !ok {
+		return machine.Forward{}, fmt.Errorf("--forward %q: want HOST:GUEST", v)
+	}
+
+	h, herr := strconv.ParseUint(host, 10, 16)
+	g, gerr := strconv.ParseUint(guest, 10, 16)
+	if herr != nil || gerr != nil {
+		return machine.Forward{}, fmt.Errorf("--forward %q: ports must be 1-65535", v)
+	}
+
+	return machine.Forward{Host: uint16(h), Guest: uint16(g)}, nil
+}
+
+// follow copies the console file to w until the guest exits or ctx ends.
+// The runner creates the file after boot begins, so a missing file is
+// retried rather than reported.
+func follow(ctx context.Context, m machine.Machine, w io.Writer) error {
+	var console *os.File
+	for console == nil {
+		f, err := os.Open(m.ConsolePath())
+		switch {
+		case err == nil:
+			console = f
+
+		case !errors.Is(err, os.ErrNotExist):
+			return err
+
+		default:
+			if err := sleep(ctx, 50*time.Millisecond); err != nil {
+				return err
+			}
+		}
+	}
+	defer console.Close()
+
+	// A guest that exited has written its last line, so one final copy
+	// after Wait returns drains what arrived between the last read and the
+	// exit.
+	done := make(chan error, 1)
+	go func() { done <- m.Wait(ctx) }()
+
+	for {
+		if _, err := io.Copy(w, console); err != nil {
+			return err
+		}
+
+		select {
+		case err := <-done:
+			_, cerr := io.Copy(w, console)
+			return errors.Join(err, cerr)
+
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+// sleep waits d or until ctx ends.
+func sleep(ctx context.Context, d time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+
+	case <-time.After(d):
+		return nil
+	}
+}
+
+// runContext bounds a run by timeout, or not at all when timeout is zero,
+// which is how a standing guest runs until `loom vm down` stops it.
+func runContext(timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout == 0 {
+		return context.WithCancel(context.Background())
+	}
+
+	return context.WithTimeout(context.Background(), timeout)
+}
+
+// ensureDisk returns path made absolute, creating a sparse raw image of
+// size bytes there if no file exists. An existing file keeps its contents,
+// which is what keeps a standing guest's state across restarts, and is
+// extended with zeros when it is shorter than size.
+//
+// The extension repairs what a guest's first boot does to the image. mke2fs
+// zeroes the last 64 KiB of the device it formats, and libkrun shortens the
+// backing file by that much when the guest does. The filesystem still counts
+// the full device, so the next boot's kernel refuses to mount it with "block
+// count exceeds size of device". The shortened tail was zeroed already, so
+// restoring the length restores the device the filesystem was made on. A file
+// that is longer than size is left alone: a disk is never shrunk.
+func ensureDisk(path string, size int64) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("--state-disk %q: %w", path, err)
+	}
+
+	info, err := os.Stat(abs)
+	switch {
+	case err == nil && !info.Mode().IsRegular():
+		return "", fmt.Errorf("--state-disk %q is not a regular file", abs)
+
+	case err == nil && info.Size() < size:
+		if err := os.Truncate(abs, size); err != nil {
+			return "", fmt.Errorf("--state-disk %q: %w", abs, err)
+		}
+
+		return abs, nil
+
+	case err == nil:
+		return abs, nil
+
+	case !errors.Is(err, os.ErrNotExist):
+		return "", fmt.Errorf("--state-disk %q: %w", abs, err)
+	}
+
+	f, err := os.OpenFile(abs, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("--state-disk %q: %w", abs, err)
+	}
+	defer f.Close()
+
+	if err := f.Truncate(size); err != nil {
+		return "", fmt.Errorf("--state-disk %q: %w", abs, err)
+	}
+
+	return abs, nil
+}

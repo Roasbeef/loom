@@ -14,6 +14,199 @@ validation before merge. No live upgrade is authorized.
 Repository handoff, isolated child custody, movement, gateway, page relay and
 fleet work remain open under #1137.
 
+## Owned memory sessions (PR #1171)
+
+Embedders outside Loom's supervision tree can use
+`session.open_memory_owned` to obtain a session and a separate retirement
+callback. The owner drains runtime work and readers before invoking it. The
+callback seals the store, requests an orderly stop, and waits for the storage
+actor to exit. Ordinary `open_memory` and `close` retain their seal-only
+lifetime.
+
+Retirement installs its monitor without a separate liveness check. A `noproc`
+notification means the actor is already absent and cleanup is complete; other
+observed abnormal exits remain faults. Sequential and concurrent retirement
+are covered in the storage tests. The concurrent test exercises competing
+callers but does not force the original check-to-monitor scheduling window.
+
+## Project mode (draft PR #1164)
+
+One router session decides what becomes work for a repository, and each piece
+of work runs in its own session. Read
+[docs/architecture/project-mode.md](architecture/project-mode.md) first; its
+Known gaps section is the list of what's open. The owner merges this PR.
+
+- **Rulings not to reopen:** typed routing with no free text for a worker;
+  `auto` per source and rule, and only after a passing live verdict; the host
+  runs the check, the push and the pull request; a person's turn is recorded
+  with explicit strength; a project is a catalogue row and a role. Inferred text
+  never reaches an explicit worker, and inferred work is published only by a
+  person. A replay pass unlocks nothing, because replay agrees with its own
+  recording whatever the labels say. An inferred worker has no network, since
+  the broker refuses every allowlist.
+- **Verified live, on macOS with Kimi K3 and publishing off:** fan-out, the host
+  check catching bad work, close and resume keeping commits, strangers reaching
+  no model, jail refusals of writes, and a passing live verdict that unlocked
+  `auto`.
+- **Never run:** Linux jail enforcement of a worker, publishing against real
+  GitHub, posted replies, masked secret reads from a worker (the model refused
+  to try), remote workers.
+- **Unexplained:** one worker read failed with "the session was stopped" after a
+  graceful restart. `daemon.session_stop` now logs who stopped a session, so
+  look there if it recurs.
+- **Next:** drive publishing against a real repository, then a Linux drive.
+  An egress proxy would let inferred workers fetch dependencies.
+
+## MicroVM executor tier (issue #85)
+
+Two branches carry the tier. `microvm/libkrun-launcher` (PR #1154) is the
+first slice: the `loom-vm` launcher, the Landlock libkrunfw, the guest root,
+the executor-in-a-guest link and the node credential mask.
+`microvm/dev-experience`, cut from its tip, is the developer path recorded in
+ADR-022's "developer path" addendum. Neither has a hosted CI run.
+
+- **What a developer runs:** `loom-vm setup --release TAG` (or `make
+  vmm-install-dev` from a checkout), then `loom vm up --workspace DIR`, then
+  `loom --executor vm --workspace NAME`. `loom vm down` stops the guest and
+  `loom vm status` reports it. A second `up` resumes the guest's checkout and
+  its state disk; `--fresh` starts both again. `--github gh|env|off` (default
+  `gh`) chooses the token the credential proxy injects; the guest only ever
+  holds a placeholder.
+- **Verified on an Apple Silicon Mac:** `daemon_shipped_microvm_test` drives
+  `loom vm up`. An orchestrator on the host runs a scripted turn whose
+  jailed `bash` call shows the Landlock guest kernel and loom-exec, cannot
+  read the node's cookie, and sees only the placeholder token. With
+  `LOOM_VM_GITHUB_LIVE=1`, GitHub answers `/zen` with 200 and the injected
+  fake token with 401 on `/user`. A host-side grep finds the fake token
+  nowhere under the guest's directory. After `down` and `up`, a new session
+  reads a file the first one wrote. A cold `up` takes about 7 s and a resume
+  about 4 s.
+- **Fixed on the way:** an executor's distribution key and cookie, and then
+  the standing guest's deployment and the home's `.erlang.cookie`, were
+  readable from host jails; all are masked now. Formatting the state disk in
+  the guest shortened its image by 64 KiB, which refused the next boot;
+  `loom-vm` restores the size. A symlinked guest root was booted in place of
+  a private copy.
+- **Ruled (owner, 2026-11-01):** a standing guest run by `loom vm`, separate
+  from the daemon; the local daemon as a loopback-bound distribution member
+  (protocol-change/106); prebuilt artifacts on GHCR and the release; the
+  agent pushes from the guest through the credential proxy, superseding
+  #214's no-injection line and #1137's owner-pushes ruling for this tier; a
+  persistent state disk per guest. `loom vm sync` is #1155.
+- **Several guests, one deployment (2026-11-02):** `loom vm up` mints in ledger
+  mode and seals the authority key under `<vm home>/authority/<id>/`. A
+  `loom.toml` that holds a ledger deployment gets a new guest enrolled through
+  the running daemon (`vm_spec.deployment_state`, `vm_cli.join`,
+  `ledger_cli.enroll_member`); `rm` revokes it (`ledger_cli.revoke_member`) and
+  removes the minting guest last. A static deployment is refused, and so is a
+  join with the daemon down or the key elsewhere. The live test joins a second
+  guest and places a session on each. A guest is reached only from the
+  orchestrators of its host; executor-to-executor placement is #1137. Not done:
+  a join whose entry was signed but whose bundle could not be written has to be
+  finished with `loom distribution renew`. A join the daemon did not take
+  fails with the bundle kept, and `up` resumes from it after the operator's
+  `loom distribution import`; that path is covered by pure tests and has no
+  live step.
+- **Unverified:** `.github/workflows/vmm-release.yml` has never run; the GHCR
+  package must be made public once by hand after the first publish;
+  `setup --release` has never downloaded a real release; Linux/KVM has not
+  booted; no real push with a real token has been made.
+- **Open:** a pool driver and a guest per session; the remaining #214 pieces
+  (proxy as the only egress path, per-call allowlists, an enforcement-report
+  entry, a self-test probe) before `narrow_unenforceable` stops downgrading
+  for guests; whether the proxy should refuse private address ranges, which
+  would break a GitHub Enterprise allowlist; a node key installed by `loom
+  distribution install` outside the state root is still unmasked for host
+  sessions (the cookie is masked); the Linux half of the firmware build and a
+  Linux runner download; Firecracker.
+
+## Correction: a Blue-tier entry must name its cyber access program
+
+A `codex-subscription` session against `gpt-daybreak-blue-latest` began failing
+with `provider stream error (cyber_policy)` at `seq=3` after several days of
+working. The failing session's header read `codex-daybreak-blue`, and
+`[profiles.codex-blue]` routes `main` to that entry. The session store is a
+protected path, so this is header and catalogue evidence rather than a read
+transcript.
+
+That model is Blue-tier: it gets Daybreak Blue only when the program is
+selected, and otherwise falls back to Standard safeguards
+(`AccessProgramsParam.cyber`). Standard safeguards refuse ordinary
+defensive-security work, and `cyber_policy` is a permanent code, so the attempt
+is terminal: never retried, never walked to another target. The entry named no
+`cyber_access`, so it requested Standard guards by omission.
+
+The trigger was not a Loom commit. `6a2d8f4b4` dropped `access_programs` from
+subscription bodies, but only an entry that configures `cyber_access` ever
+attaches a selection, and this entry configured none: its wire bytes were
+identical before and after that commit. The change is in how the endpoint
+resolves an omitted program, which is consistent with the same week's Codex
+work making Daybreak an explicit opt-in. That reading stays a hypothesis: no
+comparison request was made, and nothing here dates the server change.
+
+`6a2d8f4b4` was still a real and separate hazard. It silently discarded a
+selection from any entry that did configure one, such as `codex-sol-6-blue`,
+and its rationale inverted the contract. Subscription bodies forward the
+operator's selection again, and both regression tests assert the forwarded
+program. Entries that configure no selection still omit, which is correct for
+a model without a Cyber tier and wrong for a Blue-tier one.
+
+So the fix has two halves and only this tree carries one. A `codex-subscription`
+entry for a Blue-tier model must also name its program, as
+`cyber_access = "daybreak_blue"`. That is per-user configuration in
+`loom.toml`, outside this workspace, and is recorded here rather than applied.
+
+## JSON string cursor allocation
+
+The [profile follow-up](review/json-cursor-2026-10-30.md) keeps one origin cursor
+through simple JSON escapes and reconstructs exact source positions only at a
+closing quote, Unicode escape or refusal. Against main `c06d33430`, the fixed
+transcript fixture uses 28.6% fewer heap words and 20.1% less median VM CPU;
+dense escapes use about 51% fewer words. Grammar, full corruption reports,
+portable source and output-binary ownership remain unchanged. No installed
+memory or whole-daemon CPU savings are claimed.
+
+All 169 native core tests and 23,004 complete baseline/candidate comparisons
+pass. Four semantic mutants are rejected and the unchanged-candidate control
+fails the allocation guard. Independent Astra review found no actionable
+issues. The branch PR records broad native/E2E, hosted and exact-head Linux
+readiness; focused measurements alone do not complete those gates. The full
+supplemental JavaScript core suite retains the same nine baseline failures,
+with all new cursor properties passing on both implementations. No assertion,
+test, dependency, public interface or live process policy changed.
+
+## Mermaid failure diagnostics
+
+`codex/mermaid-error-details` adds a bounded exception message above the open
+source fallback. The [verification record](review/mermaid-error-details-2026-10-30.md)
+records the screenshot reproducer, failing-before regression, 1,678 focused
+Gleam tests, five FFI checks, all 28 real-browser checks and independent review.
+The [protocol 091 addendum](../protocol-change/091-isolated-mermaid-diagrams.md#addendum-failure-diagnostics-2026-10-30)
+keeps the diagnostic as bounded text under the existing frame identity,
+revision, sandbox and content-policy checks. Integration with main preserved
+the catalogue/profile handoff below; exact-head hosted and Linux validation
+are being repeated on that integration. No live update was performed.
+
+## Current local CPU and memory profile
+
+Baseline `ccb795759` on October 30, 2026. The [current profile](review/live-profile-2026-10-30.md)
+confirms the installed daemon includes the evolution and catalogue repairs,
+superseding the older installed-version observations below. The quiet OS window
+used 6.54% of one core at about 345 to 360 MiB RSS; a later uninstrumented active
+window used 63.51% at about 413 to 441 MiB RSS. Pickglass's active sample ranks
+register/snapshot SQLite work first, with web rendering secondary. The active
+allocation trace counts 356.28 MiB over 17.165 seconds, at least 65.6% in JSON;
+2,311 register-cache reads required only 104 decode calls. The closing VM census
+is 348.28 MiB allocated across 503 processes. These are changing workloads,
+not matched savings or proof of a leak.
+
+Next, reproduce register/snapshot polling and subscribed-view work in a fixed
+replay before changing caching or serialization. Captures and the validator
+are in this worktree's `.notes/profiles/2026-10-30/`. No production process was
+upgraded, restarted, collected or retired during this round. The historical
+sections below retain their recorded scope; unrelated CI readiness was not
+revalidated for this observation-only work.
+
 ## Catalogue source-read performance
 
 The [catalogue hot-path record](review/catalogue-hot-paths-2026-10-29.md) tracks
@@ -26,7 +219,7 @@ Independent review found no actionable issues. [PR #1148](https://github.com/Roa
 carries full-gate, later benchmark and exact-head hosted/Linux receipts; use
 those current receipts for readiness. No live process was upgraded or retired.
 
-## Fresh local CPU and memory profile
+## October 29 CPU and memory baseline
 
 The [October 29 profile](review/live-profile-2026-10-29.md) captures the unchanged
 running daemon at `fcbc7d9b`, the older native client, and native descendants.
@@ -38,9 +231,9 @@ restarted, collected or retired.
 The active CPU sample and focused counters identify repeated history-source
 catalogue lookups and session register/JSON reads. The catalogue follow-up
 above supplies the fixed offline benchmark and implementation while preserving
-fresh membership and path checks. A separately authorized installed update is
-needed to measure #1138 under a matched workload; the current process still
-predates it. These captures establish no installed savings.
+fresh membership and path checks. That historical process predates #1138. The
+October 30 profile above now measures a newer installed daemon, while a matched
+replay is still needed to isolate the repairs from changes in process age and workload.
 
 ## Versioned peer compatibility (issue #1137)
 
@@ -56,6 +249,29 @@ directions and their precise limits. One independent pass and its native-test
 delta check found no actionable issues. Full static gates pass; broad and
 exact-head hosted/Linux validation remain required. TLS launch preflight is
 the current slice above; no live upgrade is authorized.
+
+## TLS launch and loopback listener (issue #1137, branch `dist/launcher-optfile`)
+
+Two edges of distributed startup are closed by
+[protocol 106](../protocol-change/106-distribution-launch-and-listen-address.md).
+A daemon that `loom` starts no longer needs `LOOM_DISTRIBUTION_OPTFILE`: when its
+configuration has a `[distribution]` table the client renders the options file into
+the state root at every start and sets the variable for the child, and an
+explicit variable still wins (`tui/distribution_launch`). A daemon started by hand
+through `bin/loomd` still needs the variable; that was a ruling, not an omission,
+and the reasons are in the architecture document ("Booting a distributed VM").
+`[distribution] listen_address` binds the listener to an IPv4 loopback address,
+for an orchestrator nobody dials; it is not in the options file, so the boot
+comparison is unchanged. The live check (isolated home, static two-node plan, a
+daemon started by `loom sessions list`) showed the node in `epmd -names` and its
+listener on `*:14471`, then on `127.0.0.1:14471` with the key set.
+
+Left open: `loom distribution install` treats a table with an extra
+`listen_address` as a different table and refuses without `--force`, which drops
+the key; plans and bundles do not carry it. In the client suite on macOS,
+`start_without_an_epmd_reports_the_port_not_credentials_test` fails when the whole
+`client@distribution_test` module runs and passes alone, with or without this
+branch.
 
 ## Distributed runtime experience (issue #1137)
 
@@ -141,11 +357,9 @@ documents the reproduction, native parser comparison and remaining gates.
 
 Function-argument done snapshots may supply the whole payload or extend the
 streamed prefix. Only the missing suffix is emitted; conflicts still fail and
-canonical item/terminal closure remains required. Subscription requests omit
-`access_programs`, including existing configured overrides. API-key Responses
-requests keep their explicit selection. Served-model headers and bounded
-terminal access observations use the existing message fields and diagnostics;
-neither can change replay options or the requested identity.
+canonical item/terminal closure remains required. Subscription requests forward
+`access_programs` as API-key requests do; the original omission was reverted.
+Served-model headers and bounded
 
 The final provider gate passed all 343 tests, the Responses suite passed 62,
 and the catalogue suite passed 137. Eight semantic mutants were killed, and

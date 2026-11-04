@@ -83,12 +83,15 @@ pub fn discovery_uses_the_real_broker_and_original_context_test() {
   let assert Ok(Nil) = bootstrap.ensure_private_directory(scratch)
   let assert Ok(here) = simplifile.current_directory()
   let assert Ok(git) =
-    worktree_git.start(worktree_git.Config(
-      helper_path: here <> "/../sandbox/loom-exec",
-      scratch: rig.state <> "/git-runner",
-      state_root: rig.state,
-      demand: exec.BestEffort,
-    ))
+    worktree_git.start(
+      worktree_git.Config(
+        helper_path: here <> "/../sandbox/loom-exec",
+        scratch: rig.state <> "/git-runner",
+        state_root: rig.state,
+        demand: exec.BestEffort,
+        credentials: [],
+      ),
+    )
   let call =
     worktree_git.Capture(
       directory: rig.root,
@@ -461,12 +464,15 @@ pub fn clean_and_dirty_submodules_refuse_without_changing_parent_test() {
   let assert Ok(Nil) = bootstrap.ensure_private_directory(scratch)
   let assert Ok(here) = simplifile.current_directory()
   let assert Ok(git) =
-    worktree_git.start(worktree_git.Config(
-      helper_path: here <> "/../sandbox/loom-exec",
-      scratch: rig.state <> "/git-runner",
-      state_root: rig.state,
-      demand: exec.BestEffort,
-    ))
+    worktree_git.start(
+      worktree_git.Config(
+        helper_path: here <> "/../sandbox/loom-exec",
+        scratch: rig.state <> "/git-runner",
+        state_root: rig.state,
+        demand: exec.BestEffort,
+        credentials: [],
+      ),
+    )
   let call =
     worktree_git.Capture(
       directory: rig.root,
@@ -534,12 +540,15 @@ pub fn missing_head_promisor_include_never_runs_transport_test() {
   let assert Ok(Nil) = bootstrap.ensure_private_directory(scratch)
   let assert Ok(here) = simplifile.current_directory()
   let assert Ok(git) =
-    worktree_git.start(worktree_git.Config(
-      helper_path: here <> "/../sandbox/loom-exec",
-      scratch: rig.state <> "/git-runner",
-      state_root: rig.state,
-      demand: exec.BestEffort,
-    ))
+    worktree_git.start(
+      worktree_git.Config(
+        helper_path: here <> "/../sandbox/loom-exec",
+        scratch: rig.state <> "/git-runner",
+        state_root: rig.state,
+        demand: exec.BestEffort,
+        credentials: [],
+      ),
+    )
   let call =
     worktree_git.Capture(
       directory: rig.root,
@@ -652,12 +661,15 @@ pub fn source_tool_home_excludes_are_honored_and_unreadable_files_refused_test()
   // The broker must use the same source home as the parent tool.
   let assert Ok(here) = simplifile.current_directory()
   let assert Ok(git) =
-    worktree_git.start(worktree_git.Config(
-      helper_path: here <> "/../sandbox/loom-exec",
-      scratch: rig.state <> "/git-runner",
-      state_root: rig.state,
-      demand: exec.BestEffort,
-    ))
+    worktree_git.start(
+      worktree_git.Config(
+        helper_path: here <> "/../sandbox/loom-exec",
+        scratch: rig.state <> "/git-runner",
+        state_root: rig.state,
+        demand: exec.BestEffort,
+        credentials: [],
+      ),
+    )
   let call =
     worktree_git.Capture(
       directory: rig.root,

@@ -63,3 +63,6 @@ document ever cited them under the old ones.
 - [021](021-evaluation-instrument-beside-governed-evolution.md): the
   evaluation instrument sits beside governed evolution and never promotes
   (issues #236, #807, #492).
+- [022](022-microvm-tier-runs-the-executor-in-a-libkrun-guest.md): the
+  microVM tier runs the executor in a libkrun guest through go-microvm, with
+  a Landlock kernel and default-deny networking (issue #85).

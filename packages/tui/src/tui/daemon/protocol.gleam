@@ -398,6 +398,18 @@ pub type Command {
     /// The identity the page follows. Present only with an `orchestrator`.
     after: Option(String),
   )
+
+  /// One of the `projects.*` commands (`protocol-change/106`). Owner-only. The
+  /// name is the wire command (`projects.create`, `projects.board`,
+  /// `projects.post`) and the fields are its body, so the launcher's
+  /// subcommands share one variant, and the daemon's reply is read where it is
+  /// drawn.
+  ProjectsCommand(
+    /// The wire command.
+    name: String,
+    /// The command's body fields.
+    fields: List(#(String, json.JsonValue)),
+  )
 }
 
 /// The most sessions one `SessionActivity` request may name.
@@ -719,6 +731,13 @@ pub type Reply {
     /// The daemon's reply body, unread.
     document: json.JsonValue,
   )
+
+  /// The answer to a `projects.*` command. The body is kept whole, and the
+  /// launcher's `project` subcommands read the fields they print.
+  ProjectsReply(
+    /// The daemon's reply body, unread.
+    document: json.JsonValue,
+  )
 }
 
 /// One validated server envelope; uncorrelated hello is the only handshake.
@@ -815,6 +834,7 @@ pub fn name(command: Command) -> String {
     DeploymentStatus(..) -> "deployment.status"
     DirectoryStatus -> "directory.status"
     SessionsElsewhere(..) -> "sessions.elsewhere"
+    ProjectsCommand(name:, ..) -> name
     Shutdown -> "daemon.shutdown"
   }
 }
@@ -842,7 +862,11 @@ pub fn mutates(command: Command) -> Bool {
     | DeploymentStatus(..)
     | DirectoryStatus
     | SessionsElsewhere(..)
+    | ProjectsCommand("projects.board", _)
+    | ProjectsCommand("projects.ticket", _)
+    | ProjectsCommand("projects.list", _)
     | SessionActivity(..) -> False
+    ProjectsCommand(..) -> True
     SetDefault(..)
     | RenameSession(..)
     | CreateSession(..)
@@ -944,6 +968,7 @@ fn command_fields(command: Command, epoch: Epoch) {
       }
     SessionsElsewhere(orchestrator, after) ->
       elsewhere_fields(orchestrator, after)
+    ProjectsCommand(_, fields) -> Ok(fields)
     ListSessions(after, revision) | ListArchivedSessions(after, revision) -> {
       // Validate continuation token.
       use Nil <- result.try(case after {
@@ -1412,6 +1437,21 @@ fn redirect_at(code: String, body: json.JsonValue) -> Result(Redirect, Nil) {
 fn decode_reply(event: String, body: json.JsonValue) {
   // Dispatch on reply event name to decode structured payload.
   case event {
+    "projects.create"
+    | "projects.list"
+    | "projects.board"
+    | "projects.post"
+    | "projects.stop"
+    | "projects.ticket"
+    | "projects.answer"
+    | "projects.close"
+    | "projects.retry"
+    | "projects.publish"
+    | "projects.requeue"
+    | "projects.set_mode"
+    | "projects.label"
+    | "projects.labels"
+    | "projects.verdict" -> Ok(ProjectsReply(body))
     "status" -> result.map(summary(body), StatusReply)
     "ui.link" -> {
       use path <- result.try(text_at(body, "path", 1024))
@@ -1525,18 +1565,27 @@ fn page(body: json.JsonValue) {
   Ok(Page(revision, sessions, after))
 }
 
-// One record of a listing, or nothing for a session this daemon no longer
-// serves. A record that carries `moved` is the tombstone the source keeps for a
-// session another orchestrator owns now: the conversation is not here, nothing
-// here can open it, and its new owner lists it. It is not a row, so the page
-// leaves it out, and no consumer of a page has to remember to
-// (`protocol-change/085`). The member is read as present or absent, and its
-// destination is not needed, so a tombstone whose `to` is damaged is still not
-// listed as a session that can be opened.
+/// One record of a listing, or nothing for a session this daemon no longer
+/// serves. A record that carries `moved` is the tombstone the source keeps for a
+/// session another orchestrator owns now: the conversation is not here, nothing
+/// here can open it, and its new owner lists it. It is not a row, so the page
+/// leaves it out, and no consumer of a page has to remember to
+/// (`protocol-change/085`). The member is read as present or absent, and its
+/// destination is not needed, so a tombstone whose `to` is damaged is still not
+/// listed as a session that can be opened.
+///
+/// A session that carries a `standing` is a project's router or one of its
+/// workers (`protocol-change/106`). It is reached from its ticket, so the page
+/// leaves it out of the list a person picks a conversation from. The daemon
+/// still returns it to a script that reads the frame itself.
 fn listed(body: json.JsonValue) -> Result(Option(Session), String) {
-  case field(body, "moved") {
-    Ok(_) -> Ok(None)
-    Error(_) -> result.map(session(body), Some)
+  case field(body, "moved"), field(body, "standing") {
+    Ok(_), _ -> Ok(None)
+
+    // A session of a project, a router or a worker, is shown from its ticket
+    // and not in the list a person picks a conversation from.
+    Error(_), Ok(_) -> Ok(None)
+    Error(_), Error(_) -> result.map(session(body), Some)
   }
 }
 
