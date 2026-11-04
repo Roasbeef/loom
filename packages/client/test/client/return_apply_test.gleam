@@ -40,9 +40,15 @@ fn here() -> String {
 
 // A path no one has written yet, which a worker in another process polls for.
 fn marker() -> String {
-  here()
-  <> "/build/return-apply-release-"
-  <> int.to_string(ffi_os.unique_positive_integer())
+  let path =
+    here()
+    <> "/build/return-apply-release-"
+    <> int.to_string(ffi_os.unique_positive_integer())
+
+  // The counter starts again in every VM, so a marker an earlier run wrote under
+  // the same number would release the apply before the test looks at the gate.
+  let _removed = simplifile.delete(path)
+  path
 }
 
 // Waits, in the caller's own process, for the marker to appear.
