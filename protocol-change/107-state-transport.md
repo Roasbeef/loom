@@ -1,10 +1,12 @@
 # protocol-change/107: moving repository state between machines
 
 **Status**: PROPOSED 2026-11-03. Slice 1 is partly built: the local capture and
-import of PR #1147 (draft). Everything that crosses a link is not. The rulings
+import of PR #1147 (merged). Everything that crosses a link is not. The rulings
 this rests on were agreed with the owner on 2026-11-01 and are recorded on loom
-#1137; the spellings below are provisional until a slice builds them.
-**Affects**: the orchestrator port's closed message type (three constructors),
+#1137; the spellings below are provisional until a slice builds them. The
+git-identity message (see "Git identity on an executor") was added on
+2026-11-03 so the version bump is paid once.
+**Affects**: the orchestrator port's closed message type (four constructors),
 the remote node vocabulary of [078](078-distributed-runtime.md) (the executor
 host gains four, `remote/protocol` version 5 to 6), the subagent `Request` and
 `Joined` of [084](084-remote-subagents.md) (one optional field each) and its
@@ -246,6 +248,36 @@ the precondition holds by construction.
 - The pushed `remote_children` snapshot gains `commits` and the returned ref for
   a settled child, optional, so an older client ignores them.
 
+### Git identity on an executor
+
+A child that commits on an executor needs an author. Today the executor builds
+the tool's `gitconfig` from its own global `user.name` and `user.email`
+(`workspace_plane.prepare_identity`, through `git_identity.prepare`). On a
+machine that never set them the file holds only `useConfigOnly`, `git commit`
+fails, and the agent works around it by writing `git config user.name` into the
+shared repository's `.git/config` (loom #1061). The orchestrator's identity has
+no way to reach the executor, because `Attach` is frozen and the host's attach
+spec carries none.
+
+`orchestrator_port.Message` gains `AskGitIdentity`, which the executor sends once
+per scope build after the version check, as it does `AskMcpPlan`. The reply is an
+optional `GitIdentity(name, email)` decoded totally in `peer_codec`. Both values
+must be non-empty after trimming and carry no control character or NUL, or the
+owner answers none. The owner answers from the identity the orchestrator already
+resolves for its own sessions (`git_identity.resolve`).
+
+An executor that receives an identity publishes it through `git_identity.publish`
+and adds `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and
+`GIT_COMMITTER_EMAIL` to the tool environment. A repository's `.git/config` and
+the executor's own `~/.gitconfig` then cannot change the author. The four names
+join the refusal lists in `catalog.parse_tools` and `lsp/profile`, so a
+configuration cannot set them either. A session on an executor that received no
+identity behaves as today, and a local session is unchanged: its repository's own
+`user.*` still wins.
+
+This is the same version bump as the chunk messages, so executors upgrade with
+their orchestrators once. It lands with slice 2.
+
 ## Safety
 
 - Git never runs in the daemon's own VM against a repository the model has
@@ -295,7 +327,9 @@ directories), so a child begins with a cold build.
    registered workspace. Those three finish the slice, with their tests against a
    real repository with a hostile `.git/config`. No wire.
 2. The chunk messages on both vocabularies, version 6, and the P model case for a
-   drop mid-transfer and a restart of either side, beside the 084 cases.
+   drop mid-transfer and a restart of either side, beside the 084 cases. The
+   `AskGitIdentity` message rides this bump, with a real-repository test that a
+   hostile `.git/config` and a planted `~/.gitconfig` cannot change the author.
 3. `Request.state`, `Joined.state`, the `seed` key and the refusals: a
    delegated child starts from the parent's work, and its commits come back.
    This slice also owns the drain: a spawn runs inside a parent turn that can
@@ -323,6 +357,12 @@ with no token on the remote machine.
 - Whether the return should also be offered for a child that was not handed a
   state, from an empty directory. This draft returns only what the child
   committed on top of a state it received.
+- Whether the owner can name an identity per executor (a `git_name` and
+  `git_email` on `[executors.<name>]`) in place of the one it resolves for
+  itself. This draft sends only the resolved identity, because a new permanent
+  key is not needed to unblock the drive.
+- Whether `git commit --amend` and a rebase keep an existing author under the
+  pinned environment. Git does, but the slice's test should run it.
 - Whether `loom vm sync` (#1155) should be rebuilt on this transport. It fetches
   a guest's committed work to the host, and with `--to-guest` the other way, by
   its own path, and it cannot carry uncommitted edits.
