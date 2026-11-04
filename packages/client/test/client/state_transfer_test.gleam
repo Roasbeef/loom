@@ -402,8 +402,16 @@ pub fn a_node_serves_the_piece_it_holds_at_an_offset_test() {
   assert bit_array.byte_size(last.bytes) == size - 2 * chunk
   assert state_transfer.serve(store, state_object.hash_of(<<"none">>), 0)
     == state_transfer.NotHeld
-  let assert state_transfer.FetchFailed(_) =
+
+  // An offset at the end is served from the last byte, with the offset it starts
+  // at, so a peer whose half-written file holds every byte has a piece to finish
+  // with. A negative offset is a fault.
+  let assert state_transfer.Served(end) =
     state_transfer.serve(store, state.hash, size)
+  assert end.offset == size - 1
+  assert bit_array.byte_size(end.bytes) == 1
+  let assert state_transfer.FetchFailed(_) =
+    state_transfer.serve(store, state.hash, -1)
 }
 
 pub fn a_state_is_relayed_between_two_stores_without_being_held_test() {

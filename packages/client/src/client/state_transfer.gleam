@@ -412,7 +412,10 @@ pub fn stage(store: Store, hash: String) -> Result(Stage, String) {
 }
 
 /// Cuts the piece of a held state that starts at `offset`, with the state's
-/// description, so a peer can fetch what this node captured.
+/// description, so a peer can fetch what this node captured. An offset at or past
+/// the end is served from the last byte, which is how a peer whose half-written
+/// file already holds every byte is given a piece in range to finish with, and the
+/// piece says the offset it starts at.
 ///
 /// ## Examples
 ///
@@ -421,7 +424,7 @@ pub fn stage(store: Store, hash: String) -> Result(Stage, String) {
 /// ```
 pub fn serve(store: Store, hash: String, offset: Int) -> Fetched {
   case state_store.read_piece(store, hash, offset, chunk_bytes) {
-    Ok(Some(#(state, bytes))) -> Served(Piece(state:, offset:, bytes:))
+    Ok(Some(#(state, at, bytes))) -> Served(Piece(state:, offset: at, bytes:))
     Ok(None) -> NotHeld
     Error(reason) -> FetchFailed(reason)
   }
@@ -495,7 +498,10 @@ pub fn relay(hash: String, from from: Link, to to: Link) -> Outcome {
 
 /// A source of pieces fetched from a link. A silence ends the transfer as
 /// `Silent`, a node that does not hold the state as a refusal, and a piece for
-/// another state or another offset than the one asked for is a fault.
+/// another state or another offset than the one asked for is a fault. The one
+/// exception is an offset at or past the end, which the source serves from the
+/// last byte: the destination holds every byte and the piece is for it to finish
+/// with.
 fn fetching(hash: String, from: Link) -> Source {
   fn(offset) {
     case from.fetch(hash, offset) {
@@ -503,7 +509,10 @@ fn fetching(hash: String, from: Link) -> Source {
       Ok(NotHeld) -> Error(Faulted("the source does not hold the state"))
       Ok(FetchFailed(reason:)) -> Error(Faulted(reason))
       Ok(Served(piece:)) ->
-        case piece.state.hash == hash && piece.offset == offset {
+        case
+          piece.state.hash == hash
+          && { piece.offset == offset || offset >= piece.state.size }
+        {
           True -> Ok(piece)
           False -> Error(Faulted("the source served another piece than asked"))
         }

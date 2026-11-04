@@ -17,7 +17,8 @@
 //// included, may not exceed `total_cap`. A bundle that does not fit is refused
 //// with a reason. Nothing is evicted to make room, because an entry that has
 //// not expired may be the one a peer is fetching. Entries older than `retain_s`
-//// are removed by `sweep`, which every admission runs first.
+//// are removed by `sweep`, which every admission runs first, and a half-written
+//// file that has not grown for `part_retain_s` (an hour) goes sooner.
 ////
 //// ## What may be relied on
 ////
@@ -72,7 +73,9 @@ pub type Limits {
     size_limit: Int,
     /// The most bytes the directory may hold in all, every file counted.
     total_cap: Int,
-    /// How long an entry is kept, in seconds from the time it was written.
+    /// How long an entry is kept, in seconds from the time it was written. A
+    /// half-written file, which is not an entry until its last piece lands, is
+    /// kept for `part_retain_s` at most.
     retain_s: Int,
   )
 }
@@ -83,6 +86,14 @@ pub type Limits {
 /// outlives the session that names it.
 pub const default_limits =
   Limits(size_limit: 268_435_456, total_cap: 1_073_741_824, retain_s: 604_800)
+
+/// How long a half-written file is kept after its last piece, in seconds: one
+/// hour, and never longer than the store's own `retain_s`. A transfer that will
+/// resume resumes in minutes, and a part that has not grown for an hour belongs to
+/// a sender that has gone, while its bytes count against `total_cap` and would
+/// otherwise hold that room for the days a finished state is kept. Every appended
+/// piece renews the file's time, so a transfer that is moving is never swept.
+pub const part_retain_s = 3600
 
 /// An open store. It is the directory and the limits it was opened with.
 pub opaque type Store {
@@ -293,7 +304,9 @@ fn verified(store: Store, hash: String, text: String) -> Result(Held, String) {
 /// crash between them leaves an orphan bundle and never a record without bytes.
 /// A bundle with no record, a temporary file and any other file are judged by
 /// their own modification times, which keeps a write in progress and removes
-/// what a crashed one left.
+/// what a crashed one left. A half-written file is judged by its own time too, but
+/// against `part_retain_s` and not `retain_s`, so a transfer that was abandoned
+/// stops holding the cap within the hour.
 ///
 /// ## Examples
 ///
@@ -322,30 +335,41 @@ fn plan_sweep(
     list.filter_map(files, fn(file) {
       case kind_of(file.name) {
         Record(hash) -> Ok(hash)
-        Bundle(_) | Other -> Error(Nil)
+        Bundle(_) | Part(_) | Other -> Error(Nil)
       }
     })
     |> set.from_list
 
   list.filter_map(files, fn(file) {
+    let kind = kind_of(file.name)
     use <- bool.guard(
-      when: !expired(file.modified_s, now_s, retain_s),
+      when: !expired(file.modified_s, now_s, retention_of(kind, retain_s)),
       return: Error(Nil),
     )
 
     // A record's age decides for its bundle, which goes after it. A bundle
     // that has a record is left to that record, and one without is an orphan
-    // judged by its own age, like a temporary or a foreign file.
-    case kind_of(file.name) {
+    // judged by its own age, like a temporary or a foreign file. A part is
+    // judged by its own, shorter, age.
+    case kind {
       Record(hash) -> Ok([file.name, hash <> ".bundle"])
       Bundle(hash) ->
         case set.contains(recorded, hash) {
           True -> Error(Nil)
           False -> Ok([file.name])
         }
-      Other -> Ok([file.name])
+      Part(_) | Other -> Ok([file.name])
     }
   })
+}
+
+/// How long a file of this kind is kept: a half-written file for `part_retain_s`
+/// at most, and everything else for the store's `retain_s`.
+fn retention_of(kind: Kind, retain_s: Int) -> Int {
+  case kind {
+    Part(_) -> int.min(part_retain_s, retain_s)
+    Record(_) | Bundle(_) | Other -> retain_s
+  }
 }
 
 /// Whether an entry written at `modified_s` is past retention at `now_s`. An
@@ -577,8 +601,15 @@ pub fn discard_part(store: Store, hash: String) -> Nil {
   }
 }
 
-/// Reads one piece of a held state: the record's description and the bytes from
-/// `offset`, at most `length` of them, fewer at the end of the bundle.
+/// Reads one piece of a held state: the record's description, the offset the
+/// piece starts at, and the bytes from there, at most `length` of them, fewer at
+/// the end of the bundle.
+///
+/// An offset at or past the end of the bundle is answered with the last byte's
+/// piece, and the offset returned is the one served. A peer whose half-written file
+/// already holds every byte asks for the end, and a piece in range is what lets it
+/// finish; the caller compares the offset it gets with the one it asked for. A
+/// negative offset is an error.
 ///
 /// `Ok(None)` means no record exists. The bundle's size is compared with the
 /// record's, which catches a short file, but its hash is not recomputed for each
@@ -598,7 +629,7 @@ pub fn read_piece(
   hash: String,
   offset: Int,
   length: Int,
-) -> Result(Option(#(State, BitArray)), String) {
+) -> Result(Option(#(State, Int, BitArray)), String) {
   use <- bool.guard(
     when: !state_object.is_hash(hash),
     return: Error("not a state hash"),
@@ -617,20 +648,21 @@ pub fn read_piece(
         when: state.hash != hash,
         return: Error("the state record names another hash"),
       )
-      use piece <- result.map(piece_of(store, state, offset, length))
-      Some(#(state, piece))
+      use #(at, piece) <- result.map(piece_of(store, state, offset, length))
+      Some(#(state, at, piece))
     }
   }
 }
 
-/// The bytes of a recorded state's bundle from `offset`, after the bundle's size
-/// is compared with the record's.
+/// The offset served and the bytes of a recorded state's bundle from it, after
+/// the bundle's size is compared with the record's. An offset past the end is
+/// served from the last byte.
 fn piece_of(
   store: Store,
   state: State,
   offset: Int,
   length: Int,
-) -> Result(BitArray, String) {
+) -> Result(#(Int, BitArray), String) {
   let path = bundle_path(store, state.hash)
   use info <- result.try(
     simplifile.file_info(path)
@@ -644,14 +676,16 @@ fn piece_of(
     return: Error("the stored bundle is not the recorded size"),
   )
   use <- bool.guard(
-    when: offset < 0 || offset >= state.size || length < 1,
+    when: offset < 0 || length < 1,
     return: Error("the piece lies outside the bundle"),
   )
+  let at = int.min(offset, state.size - 1)
   use prefix <- result.try(bootstrap.read_prefix(
     path,
-    int.min(state.size, offset + length),
+    int.min(state.size, at + length),
   ))
-  bit_array.slice(prefix, offset, bit_array.byte_size(prefix) - offset)
+  bit_array.slice(prefix, at, bit_array.byte_size(prefix) - at)
+  |> result.map(fn(bytes) { #(at, bytes) })
   |> result.replace_error("the stored bundle is shorter than its record")
 }
 
@@ -670,6 +704,9 @@ type Kind {
   /// `<hash>.bundle`, a state's bytes.
   Bundle(hash: String)
 
+  /// `<hash>.part`, the bytes of a state that is still arriving.
+  Part(hash: String)
+
   /// Anything else: a temporary file, or a file that is not the store's.
   Other
 }
@@ -677,10 +714,15 @@ type Kind {
 /// Classifies a file name. Only a well-formed hash makes a name a record or a
 /// bundle, so a name never reaches a path through a peer's text.
 fn kind_of(name: String) -> Kind {
-  case string.ends_with(name, ".json"), string.ends_with(name, ".bundle") {
-    True, _ -> hashed(string.drop_end(name, 5), Record)
-    _, True -> hashed(string.drop_end(name, 7), Bundle)
-    False, False -> Other
+  case
+    string.ends_with(name, ".json"),
+    string.ends_with(name, ".bundle"),
+    string.ends_with(name, ".part")
+  {
+    True, _, _ -> hashed(string.drop_end(name, 5), Record)
+    _, True, _ -> hashed(string.drop_end(name, 7), Bundle)
+    _, _, True -> hashed(string.drop_end(name, 5), Part)
+    False, False, False -> Other
   }
 }
 

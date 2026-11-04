@@ -406,3 +406,112 @@ pub fn a_record_naming_another_hash_is_refused_test() {
   assert state_store.get(store, other)
     == Error("the state record names another hash")
 }
+
+// --- half-written files -----------------------------------------------------------
+
+// A state of 600 bytes, named by the hash of the bytes it describes.
+fn arriving(
+  root_name: String,
+) -> #(state_store.Store, BitArray, state_object.State) {
+  let #(store, _root) =
+    open(
+      root_name,
+      Limits(size_limit: 1000, total_cap: 2500, retain_s: 604_800),
+    )
+  let bytes = bit_array.from_string(string.repeat("p", 600))
+  let state =
+    state_object.State(
+      hash: state_object.hash_of(bytes),
+      size: 600,
+      tip: tip,
+      base: None,
+      dirty: Clean,
+    )
+  #(store, bytes, state)
+}
+
+fn first(bytes: BitArray, length: Int) -> BitArray {
+  let assert Ok(cut) = bit_array.slice(bytes, 0, length)
+  cut
+}
+
+pub fn a_part_that_has_not_grown_for_an_hour_is_swept_and_frees_the_cap_test() {
+  let #(store, bytes, state) = arriving("part-sweep")
+  assert state_store.append_part(store, state, first(bytes, 300), now())
+    == Ok(300)
+  let assert Ok(held) = state_store.usage(store)
+  assert held == 300
+
+  // Half an hour on, the transfer may still resume, and the file is kept.
+  assert state_store.sweep(store, now() + 1800) == Ok(0)
+  assert state_store.staged_bytes(store, state.hash) == Ok(300)
+
+  // Two hours on it has not grown for longer than a part is kept, so it goes, and
+  // its bytes stop counting against the cap.
+  assert state_store.sweep(store, now() + 7200) == Ok(1)
+  assert state_store.staged_bytes(store, state.hash) == Ok(0)
+  assert state_store.usage(store) == Ok(0)
+}
+
+pub fn a_stale_part_goes_while_a_two_day_old_bundle_stays_test() {
+  let #(store, bytes, state) = arriving("part-and-bundle")
+  let held = bundle(scratch("part-and-bundle-file"), "kept", 100)
+  let assert Ok(stored) =
+    state_store.put(
+      store,
+      held,
+      tip: tip,
+      base: None,
+      dirty: Clean,
+      now_s: now(),
+    )
+  assert state_store.append_part(store, state, first(bytes, 300), now())
+    == Ok(300)
+
+  // Two days on, the part is long past its hour and the bundle is well inside the
+  // seven days a finished state is kept.
+  assert state_store.sweep(store, now() + 172_800) == Ok(1)
+  assert state_store.staged_bytes(store, state.hash) == Ok(0)
+  let assert Ok(Some(_kept)) = state_store.get(store, stored.hash)
+}
+
+pub fn a_part_never_outlives_a_store_that_keeps_things_for_less_test() {
+  let #(store, _root) =
+    open("part-short", Limits(size_limit: 1000, total_cap: 2500, retain_s: 600))
+  let bytes = bit_array.from_string(string.repeat("p", 600))
+  let state =
+    state_object.State(
+      hash: state_object.hash_of(bytes),
+      size: 600,
+      tip: tip,
+      base: None,
+      dirty: Clean,
+    )
+  assert state_store.append_part(store, state, first(bytes, 300), now())
+    == Ok(300)
+
+  // Ten minutes and a second: past the store's own retention, well inside an hour.
+  assert state_store.sweep(store, now() + 601) == Ok(1)
+  assert state_store.staged_bytes(store, state.hash) == Ok(0)
+}
+
+pub fn the_last_piece_is_served_for_an_offset_past_the_end_test() {
+  let #(store, _bytes, _state) = arriving("past-end")
+  let held = bundle(scratch("past-end-file"), "whole", 100)
+  let assert Ok(stored) =
+    state_store.put(
+      store,
+      held,
+      tip: tip,
+      base: None,
+      dirty: Clean,
+      now_s: now(),
+    )
+
+  let assert Ok(Some(#(_state, at, served))) =
+    state_store.read_piece(store, stored.hash, stored.size + 50, 262_144)
+  assert at == stored.size - 1
+  assert bit_array.byte_size(served) == 1
+  assert state_store.read_piece(store, stored.hash, -1, 262_144)
+    == Error("the piece lies outside the bundle")
+}
