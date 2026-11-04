@@ -601,7 +601,8 @@ fn piece_bytes(piece: turns.Piece) -> Int {
     turns.Plain(block:, ..) | turns.Commentary(block:, ..) -> block_bytes(block)
     turns.Prompt(block:, name:, ..) ->
       block_bytes(block) + string.byte_size(name)
-    turns.Spawned(purpose:, ..) -> string.byte_size(purpose)
+    turns.Spawned(purpose:, refusal:, ..) ->
+      string.byte_size(purpose) + option_bytes(refusal)
     turns.Returned(report:, outcome:, ..) ->
       string.byte_size(report) + string.byte_size(outcome)
     turns.Nudged(preview:, body:, ..) ->

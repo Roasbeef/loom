@@ -530,6 +530,7 @@ pub fn a_spawn_and_a_one_line_result_are_lines_not_cards_test() {
         "scan the repo",
         turns.Sub(0),
         turns.Done,
+        None,
       ),
       turns.Returned(
         "6.0/0/0",
@@ -550,6 +551,46 @@ pub fn a_spawn_and_a_one_line_result_are_lines_not_cards_test() {
   assert !string.contains(html, "article")
   assert !string.contains(html, "card-head")
   assert !string.contains(html, "agent_spawn")
+}
+
+fn failed_spawn(refusal: option.Option(String)) -> String {
+  drawn([
+    turns.Spawned(
+      "2.0/0",
+      None,
+      "scan the repo",
+      turns.Unplaced,
+      turns.Failed,
+      refusal,
+    ),
+  ])
+}
+
+// A refused spawn names no child, so its line says why it failed. The reason
+// is session text and a remote machine's, so it is a text node: markup in it
+// is escaped, and nothing of it becomes an element or an attribute.
+pub fn a_failed_spawn_says_why_it_failed_test() {
+  let html =
+    failed_spawn(Some(
+      "the box refused: no <b>seed</b> <script>alert(1)</script>",
+    ))
+  assert string.contains(
+    html,
+    "Spawned · Failed: the box refused: no &lt;b&gt;seed&lt;/b&gt; &lt;script&gt;alert(1)&lt;/script&gt;",
+  )
+  assert string.contains(
+    html,
+    "<span class=\"spawn-purpose\"> · scan the repo</span>",
+  )
+  assert !string.contains(html, "<script>")
+  assert !string.contains(html, "<b>seed")
+}
+
+// A failure whose result recorded no reason reads as it always did.
+pub fn a_failed_spawn_without_a_reason_reads_as_before_test() {
+  let html = failed_spawn(None)
+  assert string.contains(html, "Spawned · failed")
+  assert !string.contains(html, "Failed:")
 }
 
 pub fn a_long_result_is_its_first_line_opened_to_the_report_test() {
