@@ -50,6 +50,7 @@
 //// program.
 
 import client/escalate
+import client/git_identity
 import client/owner_services.{type ExecutionTerms, type OwnerServices}
 import client/remote/protocol.{
   type ExecutionAnswer, type Key, type Lookup, type OwnerMessage, type Unacked,
@@ -154,6 +155,12 @@ pub type Config {
     /// servers this orchestrator runs, and the names it expects the executor to
     /// run. The executor asks for it while it builds the scope's plane.
     mcp: protocol.McpPlan,
+    /// The author the orchestrator resolved for the session's commits, which the
+    /// executor asks for while it builds the scope's plane
+    /// (protocol-change/107). `None` is an owner with no identity to give. A
+    /// value is checked again when it is answered, so an identity that is empty
+    /// or carries a control character reaches the executor as no identity at all.
+    git_identity: Option(git_identity.Identity),
   )
 }
 
@@ -359,6 +366,33 @@ fn serve(config: Config, link: Option(HostLink), message: OwnerMessage) -> Nil {
     // Asked during the plane build, before the attach is answered and so
     // before the link is bound; the plan is the port's own, fixed for the open.
     protocol.AskMcpPlan(reply:) -> process.send(reply, config.mcp)
+
+    // Asked in the same build, for the same reason, and answered from the
+    // port's own turn: the identity was resolved before the port started, and
+    // answering reads nothing.
+    protocol.AskGitIdentity(reply:) ->
+      process.send(reply, answered_identity(config.git_identity))
+  }
+}
+
+/// What the port tells an executor that asks the session's author: the resolved
+/// identity if it is complete and passes `protocol.git_identity_of`, and
+/// nothing otherwise. A half identity is not sent, because the executor would
+/// pin a name beside an email Git then guesses.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert owner_port.answered_identity(option.None) == option.None
+/// ```
+pub fn answered_identity(
+  resolved: Option(git_identity.Identity),
+) -> Option(protocol.GitIdentity) {
+  // Only a complete identity is a candidate. The check is the protocol's own.
+  case resolved {
+    Some(git_identity.Identity(Some(name), Some(email))) ->
+      protocol.git_identity_of(name, email)
+    Some(git_identity.Identity(..)) | None -> None
   }
 }
 

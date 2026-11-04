@@ -124,6 +124,7 @@ import client/evolution/machine/local
 import client/evolution/record
 import client/executor_evolution
 import client/extension/memory as extension_memory
+import client/git_identity
 import client/gocache
 import client/install
 import client/internal/ffi_os
@@ -651,7 +652,7 @@ fn start(
     |> workspace_policy.protecting_evolution(evolution_root(machine.state_root))
   use prepared <- result.try(
     workspace_plane.prepare(
-      workspace_spec(machine, root, scope, blob_root, base),
+      workspace_spec(machine, root, scope, blob_root, base, author_of(spec)),
       reading: fn(name) { secret.lookup(machine.secrets, name) },
     ),
   )
@@ -841,6 +842,26 @@ fn toolchain_reason(
   }
 }
 
+// The author the owner sent, in the form the workspace plane pins. A value that
+// does not pass the protocol's check is not an author, so the check is made here
+// as well: the host asked through `owner_link.git_identity`, which already made
+// it, and a second reader of the same type does not trust the first.
+/// The commit author the scope's owner sent, as the workspace plane takes it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // executor_plane.author_of(spec) == option.Some(git_identity.Identity(Some("Ada"), Some("ada@example.invalid")))
+/// ```
+pub fn author_of(spec: host.AttachSpec) -> Option(git_identity.Identity) {
+  option.then(spec.git_identity, fn(sent) {
+    protocol.git_identity_of(sent.name, sent.email)
+  })
+  |> option.map(fn(checked) {
+    git_identity.Identity(Some(checked.name), Some(checked.email))
+  })
+}
+
 /// Constructs workspace specification record for plane preparation.
 fn workspace_spec(
   machine: Machine,
@@ -848,6 +869,7 @@ fn workspace_spec(
   scope: String,
   blob_root: String,
   base: policy.SandboxPolicy,
+  author: Option(git_identity.Identity),
 ) -> workspace_plane.WorkspaceSpec {
   workspace_plane.WorkspaceSpec(
     workspace: root,
@@ -866,6 +888,7 @@ fn workspace_spec(
     lsp_servers: machine.lsp_servers,
     jobs_policy: machine.jobs_policy,
     owner_files: None,
+    author:,
   )
 }
 
@@ -1159,8 +1182,13 @@ fn plane_over(
             mcp: built.mcp,
             branch: option.map(built.custody, fn(held) { held.branch }),
             evolution: built.evolving.census,
+            states: remote_census.state_census(
+              facts.helper,
+              built.started.plane.census.git,
+            ),
           ),
           evolution: built.evolving.door,
+          state: None,
           children: fn(builder) {
             builder
             |> children.scratch

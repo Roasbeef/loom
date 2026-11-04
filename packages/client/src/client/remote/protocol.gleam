@@ -60,6 +60,29 @@
 //// expects the executor to run from its own configuration. No command line and
 //// no secret crosses. The plan is not a field of `Attach`, because `Attach`
 //// keeps one shape across versions (see `version`).
+////
+//// ## Git identity
+////
+//// The executor asks the owner port for the session's commit author
+//// (`AskGitIdentity`) at the same point and for the same reason as the MCP plan.
+//// The answer is optional: an owner with no identity to give, or one whose
+//// identity does not pass `git_identity_of`, answers `None`, and the session
+//// behaves as it did before the message existed. An identity is two bounded
+//// lines of printable text, checked by the owner before it is sent and again by
+//// the executor before it is used, because the executor is the machine that a
+//// repository's hostile configuration and a planted home directory live on.
+////
+//// ## Flow
+////
+//// `key_of` → `coordinates_of` → `execution_key` → `execution_id` →
+//// `git_identity_of` → `describe`
+////
+//// 1. `key_of`, `coordinates_of` and `execution_key` name a call: the identity
+////    the ledger files it under, the coordinates an evolution request carries,
+////    and the key of a background program.
+//// 2. `execution_id` reads an execution's identity back out of a key.
+//// 3. `git_identity_of` is the one check an author passes on either side of the
+////    link, and `describe` is the sentence a refusal is read as.
 
 import broker/framing.{type CapOutcome}
 import client/escalate
@@ -70,6 +93,8 @@ import client/notice
 import client/owner_services.{
   type ExecutionTerms, type FactFault, type OwnerCapCall,
 }
+import client/state_object
+import client/state_transfer
 import client/wiring.{type Authority}
 import codemode/satellite.{type CapDenial}
 import core/ids.{type OpId, type Seq}
@@ -77,6 +102,7 @@ import core/json.{type JsonValue}
 import core/msgpack.{type MsgPackValue}
 import gleam/erlang/process.{type Subject}
 import gleam/int
+import gleam/list
 import gleam/option.{type Option}
 import gleam/string
 import runtime/api
@@ -120,6 +146,20 @@ import tools/tool
 /// Trials and core upgrades are not in this version; they come with the
 /// changes that serve them, under their own bumps.
 ///
+/// Version 6 added the repository state transport of protocol-change/107: four
+/// `HostMessage` constructors (`StateCapture`, `StateChunk`, `StateStatus` and
+/// `StateFetch`), whose pieces and verdicts are `client/state_transfer`'s, the
+/// refusal `NoStates`, and the census field `RemoteCensus.states`, which says
+/// whether the executor can capture and apply a state. It also added
+/// `AskGitIdentity`, the `OwnerMessage` by which an executor asks the owner for
+/// the author a session's commits carry, so that neither the executor's own Git
+/// configuration nor the repository's chooses it. The orchestrator port
+/// carries the same three piece messages in its own closed type
+/// (`client/remote/orchestrator_port`), which has no version of its own and is
+/// served by peers of the same build. The step from 5 changes the shape of the
+/// census that an attach reply carries as well as adding messages, so every
+/// executor must upgrade with its orchestrators.
+///
 /// `Attach` must keep the shape it had in version 2. It is the first
 /// message a peer of any version sends, and the host matches the term it
 /// receives against this module's constructors: an `Attach` of another arity
@@ -128,7 +168,7 @@ import tools/tool
 /// travels in a message sent after the version check has passed, as the MCP
 /// plan does. Every other message may change shape, because a peer of another
 /// version never gets past the attach to send it.
-pub const version = 5
+pub const version = 6
 
 /// The name an execution's ledger row is admitted under, in the column a tool
 /// call's row holds its tool name in. No tool is named this, so a row is known
@@ -276,6 +316,11 @@ pub type Refusal {
   /// candidate. `reason` says why, in the words the census carries.
   NoEvolution(reason: String)
 
+  /// The executor holds no state store, or the scope's plane cannot capture a
+  /// repository, so it can neither take part in a state transfer nor make one.
+  /// `reason` says why, in the words the census carries.
+  NoStates(reason: String)
+
   /// An argument was outside its domain.
   Invalid(reason: String)
 
@@ -365,6 +410,59 @@ pub type McpPlan {
     /// from the executor's own configuration.
     expected: List(String),
   )
+}
+
+/// The most bytes of an author's name or email a `GitIdentity` carries.
+pub const max_identity_bytes = 256
+
+/// The author a session's commits carry, as the owner sends it to the executor
+/// that runs the session's tools. Both values have passed `git_identity_of`:
+/// they are trimmed, non-empty, at most `max_identity_bytes` long and free of
+/// control characters, so neither can end a line of Git configuration, a shell
+/// word or an environment entry.
+pub type GitIdentity {
+  GitIdentity(
+    /// The author's name, as `user.name` would hold it.
+    name: String,
+    /// The author's email, as `user.email` would hold it.
+    email: String,
+  )
+}
+
+/// Accepts a name and an email as a `GitIdentity`, or answers `None`.
+///
+/// This is the one check an identity passes on either side of the link. Both
+/// values are trimmed first, then each must be non-empty, at most
+/// `max_identity_bytes` bytes, and contain no control character: no NUL, no line
+/// break, no tab and nothing else below the space or at DEL. A value that fails
+/// any of these makes the whole identity `None`, never a repaired one, because a
+/// half-valid author is a guess about whose commits these are.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert protocol.git_identity_of(" Ada ", "ada@example.invalid")
+///   == option.Some(protocol.GitIdentity("Ada", "ada@example.invalid"))
+/// ```
+pub fn git_identity_of(name: String, email: String) -> Option(GitIdentity) {
+  let name = string.trim(name)
+  let email = string.trim(email)
+
+  // Each value is judged on its own, and one that fails fails the pair.
+  case identity_line(name), identity_line(email) {
+    True, True -> option.Some(GitIdentity(name:, email:))
+    _, _ -> option.None
+  }
+}
+
+/// Whether one identity value is acceptable: present, bounded and printable.
+fn identity_line(value: String) -> Bool {
+  value != ""
+  && string.byte_size(value) <= max_identity_bytes
+  && !list.any(string.to_utf_codepoints(value), fn(point) {
+    let code = string.utf_codepoint_to_int(point)
+    code < 0x20 || code == 0x7f
+  })
 }
 
 /// What a tool call's door knows about the call, as far as the executor needs
@@ -687,6 +785,43 @@ pub type HostMessage(census) {
     handle: Handle,
     reply: Subject(Result(JsonValue, Refusal)),
   )
+
+  /// Captures the session's workspace into a state in the executor's store
+  /// (protocol-change/107). It writes into the store and reads the workspace, so
+  /// it is held to the scope's incarnation and token as a write is. `basis` is
+  /// what the capture bundles against: `Full`, or `Thin` against a commit the
+  /// receiver reported holding. The caller must have drained the session's
+  /// effects first, because capture cannot check that the workspace is quiet.
+  /// The answer is the description of the state now in the store, or why the
+  /// workspace was refused, which resending does not change.
+  StateCapture(
+    session: String,
+    incarnation: Int,
+    token: BitArray,
+    basis: state_object.Basis,
+    reply: Subject(Result(state_object.State, Refusal)),
+  )
+
+  /// One piece of a state this executor is receiving. The store is the node's,
+  /// not a scope's, so no fence applies: a piece is judged by its hash and by
+  /// the store's limits, and it cannot reach a session. The verdict says how many
+  /// bytes the store now holds, so a repeat is harmless.
+  StateChunk(
+    piece: state_transfer.Piece,
+    reply: Subject(state_transfer.Verdict),
+  )
+
+  /// How far a state has got in this executor's store, for a sender that
+  /// resumes after a dropped connection. `Error` is a store that could not say,
+  /// which is never `Absent`.
+  StateStatus(
+    hash: String,
+    reply: Subject(Result(state_transfer.Stage, String)),
+  )
+
+  /// Asks for the piece at `offset` of a state this executor holds, so the
+  /// orchestrator can relay what the executor captured.
+  StateFetch(hash: String, offset: Int, reply: Subject(state_transfer.Fetched))
 }
 
 /// What the executor's workspace says to the session's owner port. One
@@ -780,6 +915,13 @@ pub type OwnerMessage {
   /// its code mode reaches. Sent once per build, after the attach's version
   /// check passed, so both ends speak this version.
   AskMcpPlan(reply: Subject(McpPlan))
+
+  /// The executor is building the scope's plane and asks the author the
+  /// session's commits carry. Sent once per build, after the attach's version
+  /// check passed, as `AskMcpPlan` is. The answer is `None` when the owner has no
+  /// identity to give or its identity does not pass `git_identity_of`, and a
+  /// session on an executor that heard `None` behaves as it did before.
+  AskGitIdentity(reply: Subject(Option(GitIdentity)))
 }
 
 /// The key of one call of a session's tool run.
@@ -921,6 +1063,8 @@ pub fn describe(refusal: Refusal) -> String {
     NoEvolution(reason:) ->
       "the executor cannot build evolution candidates for this session: "
       <> reason
+    NoStates(reason:) ->
+      "the executor cannot move repository states for this session: " <> reason
     Invalid(reason:) -> "the executor refused the request: " <> reason
     ExecutorFault(reason:) -> "the executor failed: " <> reason
     Unreachable(reason:) -> "the executor could not be reached: " <> reason

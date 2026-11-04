@@ -914,7 +914,12 @@ fn protecting_owner_files(
 /// granted on the session base here — the same move the code-mode
 /// builder makes on its own derived base, for the same variable. The
 /// helper-owned `LOOM_SCRATCH_DIR` travels through the same allowlists;
-/// reserving it here lets the helper expose its private directory.
+/// reserving it here lets the helper expose its private directory. The four
+/// Git author names (`git_identity.author_names`) are granted for the same
+/// reason: a session whose owner sent an identity (protocol-change/107) puts
+/// them in the environment, and a name the base does not allow is a narrowing
+/// refusal and not a variable. Allowing them pins nothing. A session with no
+/// identity has none of them in its environment.
 ///
 /// Public to this package for the reason `under_tools_config` is: the
 /// composed allowlist is a value a test should be able to read back.
@@ -931,13 +936,13 @@ pub fn allowing_tool_tmpdir(
 ) -> policy.SandboxPolicy {
   policy.SandboxPolicy(
     ..base,
-    env_allow: list.unique(
-      list.append(base.env_allow, [
-        "TMPDIR",
-        "LOOM_SCRATCH_DIR",
-        git_identity.environment_name,
-      ]),
-    ),
+    env_allow: list.unique(list.append(
+      base.env_allow,
+      list.append(
+        ["TMPDIR", "LOOM_SCRATCH_DIR", git_identity.environment_name],
+        git_identity.author_names,
+      ),
+    )),
   )
 }
 

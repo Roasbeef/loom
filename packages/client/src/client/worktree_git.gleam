@@ -264,9 +264,55 @@ pub fn start(config: Config) -> Result(Git, String) {
 /// // worktree_git.run(git, Run("/repo", [], ["status", "--porcelain=v1"]), 60_000)
 /// ```
 pub fn run(git: Git, call: Run, within_ms: Int) -> Result(Output, String) {
+  run_in(git, call, environment(), within_ms)
+}
+
+/// Reads the operator's global Git configuration through the sandbox and answers
+/// how the call ended (protocol-change/107, "Git identity on an executor").
+///
+/// Every other call here reads no user configuration. This one exists to read
+/// it, so its environment is the fixed one of `run` with two changes: `HOME` is
+/// the operator's, and `GIT_CONFIG_GLOBAL` is no longer `/dev/null`. `overrides`
+/// are the operator's own `XDG_CONFIG_HOME` and `GIT_CONFIG_GLOBAL`, if they set
+/// them (`git_identity.operator_overrides`). Nothing else of the daemon's
+/// environment is taken, the system configuration is off, and the call has no
+/// network and nothing it may write, so a configuration that names a program,
+/// a pager or an include can run nothing: `git config` reads values and never
+/// runs them. The working directory is the runner's own scratch, which is not a
+/// repository, so no repository configuration is read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // worktree_git.read_global_config(git, "/home/operator", [], ["config", "--global", "--get", "user.name"], 4000)
+/// ```
+pub fn read_global_config(
+  git: Git,
+  home: String,
+  overrides: List(#(String, String)),
+  arguments: List(String),
+  within_ms: Int,
+) -> Result(Output, String) {
+  let environment =
+    list.filter(environment(), fn(pair) { pair.0 != "GIT_CONFIG_GLOBAL" })
+    |> list.key_set("HOME", home)
+    |> list.fold(overrides, _, fn(kept, pair) {
+      list.key_set(kept, pair.0, pair.1)
+    })
+  let call = Run(directory: git.scratch, writable: [], arguments:)
+  run_in(git, call, environment, within_ms)
+}
+
+/// Runs one call under a given environment, which is also the allowlist the
+/// policy lets through.
+fn run_in(
+  git: Git,
+  call: Run,
+  environment: List(#(String, String)),
+  within_ms: Int,
+) -> Result(Output, String) {
   let #(op_id, _) =
     ids.mint_op(ids.generator(wall_clock(), seed: random_seed()))
-  let environment = environment()
   let allowed = list.map(environment, fn(pair) { pair.0 })
   let policy = policy_of(git, call, allowed, within_ms)
   let events = process.new_subject()

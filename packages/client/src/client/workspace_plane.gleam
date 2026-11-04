@@ -170,6 +170,14 @@ pub type WorkspaceSpec {
     jobs_policy: jobs.JobsPolicy,
     /// The owner's files to mask, or `None` when the owner is elsewhere.
     owner_files: Option(workspace_policy.OwnerFiles),
+    /// The author an owner on another machine sent for the session's commits
+    /// (protocol-change/107), or `None`. When there is one, the plane publishes
+    /// it as the tool home's Git defaults in place of this machine's own global
+    /// identity, and pins it in every tool's environment, where it outranks the
+    /// repository's configuration and a home directory a tool planted. With
+    /// `None` the plane behaves as it always has: this machine's global
+    /// identity is the default and the repository's own `user.*` wins.
+    author: Option(git_identity.Identity),
   )
 }
 
@@ -516,7 +524,7 @@ pub fn prepare(
 
   // The environment is built once the code-mode decision is in, so the
   // shell finds the same `gleam` and `erl` the compiler uses.
-  let #(env, unset_env) =
+  let #(configured_env, unset_env) =
     workspace_policy.tool_environment(
       spec.workspace,
       result.map(toolchain, codemode_wiring.toolchain_path)
@@ -525,6 +533,16 @@ pub fn prepare(
       spec.tools,
       reading:,
     )
+
+  // An author from the owner is pinned after the names the server already
+  // owns. The configuration cannot name these (`profile.not_server_owned`), so
+  // nothing before them repeats one.
+  let env = case spec.author {
+    Some(author) ->
+      list.append(configured_env, git_identity.author_environment(author))
+    None -> configured_env
+  }
+
   Ok(Prepared(
     spec:,
     census: Census(
@@ -1108,12 +1126,24 @@ fn prepare_identity(
   entropy: fn() -> Int,
 ) -> Result(List(Warning), String) {
   let spec = prepared.spec
-  use warning <- result.map(git_identity.prepare(
-    worktree_wiring(census, broker_actor, spec.demand, clock, entropy),
-    spec.home,
-    helper: spec.helper_path,
-    reading: workspace_policy.env_text,
-  ))
+  let wiring =
+    worktree_wiring(census, broker_actor, spec.demand, clock, entropy)
+
+  // An owner's identity replaces this machine's global one: the executor's own
+  // `~/.gitconfig` is not read when the owner said who the author is, so a
+  // machine that never set one commits as the owner does, and one that set
+  // another does not commit as that.
+  use warning <- result.map(case spec.author {
+    Some(author) ->
+      git_identity.publish(wiring, author, helper: spec.helper_path)
+    None ->
+      git_identity.prepare(
+        wiring,
+        spec.home,
+        helper: spec.helper_path,
+        reading: workspace_policy.env_text,
+      )
+  })
 
   // Decide how to handle warning {.
   case warning {

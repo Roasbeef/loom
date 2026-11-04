@@ -366,3 +366,93 @@ with no token on the remote machine.
 - Whether `loom vm sync` (#1155) should be rebuilt on this transport. It fetches
   a guest's committed work to the host, and with `--to-guest` the other way, by
   its own path, and it cannot carry uncommitted edits.
+
+## Addendum: slice 2 built (2026-11-03)
+
+Slice 2 is built: the chunk messages on both vocabularies, `AskGitIdentity`,
+`protocol.version` 5 to 6, and the P model case for a drop and a restart of either
+end. This addendum records what it settled and where it differs from the text
+above. Nothing above is edited.
+
+**Settled: `amend` and `rebase` under the pinned environment.** Both keep an
+existing author. The test runs real commits in the jail with `GIT_AUTHOR_*` and
+`GIT_COMMITTER_*` pinned: a commit made with `--author` and then amended keeps its
+author and takes the pinned committer, and a commit replayed by `rebase` does the
+same. The pinned name is therefore the committer of every commit made or replayed
+there, and the author of every commit that did not name one. A `.git/config` that
+sets `user.name` and a tool-home gitconfig overwritten by the model do not change
+either.
+
+**Settled: the store's numbers.** `size_limit` stays 256 MiB for one bundle,
+`total_cap` 1 GiB for the directory and `retain_s` seven days. The cap is checked
+on every piece and not only at admission, because transfers in flight share the
+directory, and a piece that does not fit removes its half-written file.
+
+**Differences from the text above.**
+
+- *Where the checks live.* "Wire" and "Git identity on an executor" put the total
+  decoders in `peer_codec`. The messages are typed Erlang terms matched directly,
+  and `peer_codec` is the JSON of the stable peer exchange (protocol 105), which
+  none of them crosses. The bounds are in the vocabulary instead:
+  `protocol.git_identity_of` for the author, and `state_transfer.take` for a
+  piece, which judges the description, the size against the store's limit, the
+  piece's length and its place in the declared size before the disk is touched.
+- *The thin basis has no message yet.* "Capture" says a first send asks the
+  receiver which of a few commits it holds. The proposal names no message for
+  that question, and slice 2 adds none: `StateCapture` takes a `Basis`, `Full` or
+  `Thin(base)`, and the caller chooses it. The question needs an owner in the
+  loop that can ask a node, so it belongs with the first caller, in slice 3.
+- *Capture is not wired on an executor.* `HostMessage.StateCapture` is fenced
+  like an evolution write and served by the plane's optional `Capturing`.
+  No production plane carries one, so it answers `NoStates`. `RemoteCensus.states`
+  reports whether Git and an enforcing helper are present, which is what a plane
+  will need to carry one.
+- *The node's store has one owner.* `client/state_service` owns the directory and
+  both carriers answer through it, because the store has no lock and a daemon can
+  be orchestrator and executor at once.
+- *Serving uses a positioned read.* `StateFetch` at offset N reads only that
+  piece, with `host/bootstrap.read_range`, a `file:pread/3` added beside
+  `read_prefix` in the existing `host_bootstrap_ffi.erl` with the owner's
+  approval. It is bounded like `read_prefix` and adds the bounds a peer's offset
+  needs. An offset at or past the end is served from the last byte.
+
+**Found by building it, and settled: where the owner's identity comes from.**
+107 says the owner answers from `git_identity.resolve`. `resolve` runs Git
+through a sandbox broker with a `worktree_diff.Wiring`, which an orchestrator
+holds only for a workspace it runs locally, and the only session that asks has
+its workspace on an executor. The identity an executor needs is the operator's
+global `user.name` and `user.email` on the orchestrator's machine, not anything
+of the session, so it is read once for all sessions by `client/owner_identity`
+through a sandboxed Git runner (`client/worktree_git`) that the daemon starts
+when it has a `[distribution]` table. `worktree_git.read_global_config` runs
+`git config --global --includes --null --get-regexp` with the runner's fixed
+environment, the operator's `HOME`, and the operator's own `XDG_CONFIG_HOME` and
+`GIT_CONFIG_GLOBAL` if set; no network, nothing writable, the state root and node
+credentials masked. The host stays readable, as for every call of that runner,
+because an include may name any path. `git_identity` is factored so the query
+arguments and `identity_of_query` are shared with a session's own query. The
+result is held for a minute, a failure included, so a session build waits at most
+the lookup's 5 s once and a Git that hangs delays one build and no more. The owner
+port still sends none for an incomplete identity or one that fails
+`protocol.git_identity_of`. No new key, no new FFI and no wire change.
+
+**Review findings, fixed and accepted.** An independent review of the PR found
+three things that are fixed here. A half-written file that reached the declared
+size without `finish` having run answered every later attempt with `Partial` of
+the whole size, and nothing could finish it: the receiver now finishes it on the
+first piece in range, a faulted finish discards it, and `send` clamps to the last
+byte so it always cuts a piece in range. An abandoned `.part` held `total_cap` for
+the seven days a finished state is kept: parts are now swept after an hour. And
+`pull` took the `Store`, which would have made a first caller a second writer
+beside `state_service`: it now takes the `Endpoint`.
+
+Accepted for now, with the reason. `held_verdict` and `stage` call
+`state_store.get`, which hashes the whole bundle to confirm a complete state, on
+every `StateChunk` and `StateStatus` for it, and a flood of requests to one
+owner queues in its mailbox. The peers are pinned, trusted executors, every
+request serializes in the one owner's turn, and the work is bounded by the
+256 MiB size limit, so neither is reachable by an untrusted peer. The cost of
+`StateFetch`'s read, which the review also raised, is fixed by the positioned
+read above, which the owner approved. The sender's `resyncs` bound is unchanged.
+
+**Slices.** Slice 2 is done as above. Slices 3 to 5 are unchanged.

@@ -28,6 +28,7 @@ import client/remote/owner_port
 import client/remote/protocol
 import client/remote/remote_census.{type RemoteCensus}
 import client/remote/surface
+import client/state_transfer
 import client/workspaces
 import core/clock
 import core/json
@@ -141,6 +142,7 @@ fn rig_over(
       clock: clock.from_function(ffi_os.system_time_ms),
       factory:,
       execution_result_bytes: host.default_execution_result_bytes,
+      states: state_transfer.declining(),
     ))
     as "the host starts"
   let assert Ok(port) =
@@ -151,6 +153,7 @@ fn rig_over(
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
       mcp: protocol.McpPlan(served: [], expected: []),
+      git_identity: option.None,
     ))
     as "the owner port starts"
   Rig(host_pid: started.pid, address: started.data, checkout:, state:, port:)

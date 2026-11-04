@@ -1418,6 +1418,100 @@ the real helper and `support/state_rig`. `state_apply_test` fires a hostile
 hook, fsmonitor program and ext transport rewrite natively first, so a missing
 canary afterwards is the apply's doing.
 
+## Repository states: pieces on the wire and the commit author
+
+Slice 2 of protocol-change/107 moves a state across a link and adds the identity
+message, in one `protocol.version` bump from 5 to 6. It wires no capture or apply
+into a spawn or a session move; that is slice 3.
+
+`state_store` gained the files a peer's pieces need. `append_part` extends
+`<hash>.part` at its end: the first piece validates the description, checks the
+size against `size_limit`, sweeps, and every piece is checked against
+`total_cap`, because the directory is shared by the transfers in flight, and a
+piece that does not fit removes the half-written file. `finish` reads the part
+once and compares its size and SHA-256 with the description; a mismatch deletes
+it and stores nothing, and a match renames it to the bundle and writes the record
+last. `read_piece` serves a held state with a positioned read of just the piece
+(`host/bootstrap.read_range`, a `file:pread/3`); an offset at or past the end is
+served from the last byte and returns the offset it served. The receiver's hash
+check is what catches a damaged bundle, so the server checks only the size. A
+`.part` file is not a bundle or a record by name, so `sweep` judges it by its
+modification time, which every appended piece renews, and against
+`part_retain_s` (an hour, never more than `retain_s`) and not the days a finished
+state is kept, so an abandoned transfer stops holding `total_cap` within the hour.
+
+`state_transfer` is the vocabulary and the logic. A `Piece` carries the state's
+description and its offset, so the receiver keeps no announcement. `take` judges a
+piece before the disk is touched (`BadState`, `TooLarge`, `BadPiece`), then places
+it against the bytes held: at the end it is appended, wholly inside it is a repeat
+and answers `Accepted` with the bytes held, and beyond it is `OutOfOrder` with the
+offset expected. The piece that reaches the size makes the state through
+`finish` or answers `Mismatch`. A part that already holds the declared size
+(a crash between the last append and the rename, or a faulted finish) is finished
+by the first piece in range for the state, before offsets are compared, and a
+fault in `finish` discards the part; `send` clamps its offset to the last byte so
+it always cuts a piece in range. `stage` is `Absent`, `Partial(held)` or
+`Complete`, and a store that cannot say is an `Error` that is never `Absent`.
+`Endpoint` is the three functions a carrier calls (`take`, `stage`, `serve`),
+`declining()` is the node with no store, and a `Link` is the three questions
+asked of another node, where `Error(Nil)` is silence and never a refusal. `send`,
+`relay` and `pull` are one `transfer` loop over a source of pieces and a sink for
+them: ask where the destination stands, send the piece at that offset, continue at
+the offset each verdict reports, bounded by the pieces the state needs plus
+`max_resyncs`, and `Stalled` when it has not converged. `pull` writes, so it takes
+the node's `Endpoint` and never the `Store`: every write on a node goes through
+`state_service`. `send` takes the store because it only reads.
+
+`state_service` is the one process that owns a node's store, because the store has
+no lock. Both the orchestrator port and the executor host answer through the
+`Endpoint` it builds, each in a run of its own cancelled with the requester.
+`daemon/main.start_states` starts one for a daemon that has a workspace or a
+`[distribution]` table and hands the same endpoint to `start_executor` and
+`start_orchestrator_port`. `remote/state_link` turns an `Address` of either
+carrier into a `Link`. `orchestrator_port.start_with_states` takes the endpoint,
+and `start_with_top` is it with `declining()`.
+
+The author. `protocol.git_identity_of` trims both values and accepts the pair only
+if each is non-empty, at most `max_identity_bytes` (256) bytes and free of control
+characters. `owner_port.Config.git_identity` is the identity the orchestrator
+resolved, and the port answers `AskGitIdentity` through `answered_identity`, which
+sends none for an incomplete or invalid one. The host asks once per scope build
+with `owner_link.git_identity` and a short wait, treats silence as none, and puts
+the answer on `AttachSpec.git_identity`. `executor_plane` passes it as
+`WorkspaceSpec.author`, and `workspace_plane` then publishes it with
+`git_identity.publish` in place of the machine's own global identity and appends
+`git_identity.author_environment` to `Census.env`. `workspace_policy.
+allowing_tool_tmpdir` lets the four names through the environment narrowing, and
+`lsp/profile.not_server_owned` refuses them in every configuration.
+`owner_identity` is where the owner's identity comes from. A session whose
+workspace is remote has no sandbox broker on the orchestrator, and the identity
+is the operator's anyway, so `resolve` reads the global `user.name` and
+`user.email` through a `worktree_git.Git` of the daemon's own with
+`worktree_git.read_global_config` (the runner's fixed environment, the operator's
+`HOME`, and their `XDG_CONFIG_HOME` and `GIT_CONFIG_GLOBAL` from
+`git_identity.operator_overrides`; no network, nothing writable). The answer is
+read by `git_identity.identity_of_query`, which `git_identity.configured_identity`
+also uses. One holder process, started by `daemon/main.start_owner_identity` when
+the daemon has a `[distribution]` table, keeps the answer for `keep_ms` (a minute),
+a failure included, and `lookup` waits at most the time it is given; a holder that
+is not running answers none at once. `serve.gleam` sets `Registered.git_identity`
+from `lookup`, and the owner port still sends none for an incomplete identity.
+
+Tests: `state_transfer_test` drives two real stores through a scripted link (a
+drop, a lost verdict, a restart of either end, a mismatch, an oversize announce, a
+gap, a duplicate, the cap) and one captured bundle that still verifies after it
+crosses. `owner_identity_test` reads a real global gitconfig through the real
+runner (include, none, hostile programs, a moved `GIT_CONFIG_GLOBAL`, an empty or
+tab-bearing value, a stopped runner) and follows one identity from the gitconfig
+to a workspace's tool environment. `remote/state_wire_test` sends states through a host and a port started
+over a real `state_service`, and checks the version 5 attach refusal and the
+capture fence. `remote/identity_wire_test` covers the identity check, the owner's
+answer and the host handing it to the factory. `workspace_plane_test` runs real
+commits in the jail under a hostile `.git/config` and an overwritten tool-home
+gitconfig, and shows that `amend` and `rebase` keep an existing author while the
+pinned name becomes the committer. `protocol/models/state-transfer` is the P model
+of the drop and restart cases.
+
 `git_identity.resolve` reads the source's effective name/email, while `publish`
 projects only those two values through the existing descriptor-confined helper.
 Ordinary session `prepare` still queries global defaults and permits repository
@@ -7511,7 +7605,14 @@ below.
   `CloseOutcome`. The census is a type parameter the host never reads.
   `unknown_outcome_text` is the model's wording for a lost call and
   `did_not_run_text` the wording of a fenced one. `Attach` carries
-  `protocol.version` (5); the host refuses any other value with `VersionMismatch`.
+  `protocol.version` (6); the host refuses any other value with `VersionMismatch`.
+  Version 6 added the state messages `StateCapture`, `StateChunk`, `StateStatus`
+  and `StateFetch`, the refusal `NoStates`, `RemoteCensus.states` (`Moves` or
+  `Stays(reason)`, from the helper's health and a resolved Git binary), and
+  `AskGitIdentity` with `GitIdentity` and `git_identity_of`, the one check an
+  author passes on both sides of the link. `Plane.state` is an optional
+  `host.Capturing`; no production plane has one, so a `StateCapture` answers
+  `NoStates`.
   Change the version whenever a constructor or field changes. Version 2 moved
   the executor's clock reading out of the census and into `Attached`, so each
   reply carries the time it was sent. Version 3 added background executions

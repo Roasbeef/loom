@@ -258,6 +258,7 @@ fn linked(
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
       mcp: remote_protocol.McpPlan(served: [], expected: []),
+      git_identity: option.None,
     ))
     as "the owner port starts"
   let assert Ok(link) = owner_link.start(owner_port.inbox(port))

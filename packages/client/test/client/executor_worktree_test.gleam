@@ -18,6 +18,7 @@ import client/remote/owner_port
 import client/remote/protocol
 import client/remote/remote_census.{type RemoteCensus}
 import client/remote/surface
+import client/state_transfer
 import core/clock
 import core/json
 import core/message
@@ -83,6 +84,7 @@ fn serve(rig: Rig) -> Plane {
       limits: exec_ledger.default_limits(),
       max_result_bytes: host.default_max_result_bytes,
       execution_result_bytes: host.default_execution_result_bytes,
+      states: state_transfer.declining(),
       clock: clock.from_function(ffi_os.system_time_ms),
       factory:,
     ))
@@ -95,6 +97,7 @@ fn serve(rig: Rig) -> Plane {
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
       mcp: protocol.McpPlan(served: [], expected: []),
+      git_identity: option.None,
     ))
     as "the owner port starts"
   Plane(rig:, host_pid: started.pid, address: started.data, port:)

@@ -76,6 +76,7 @@ import core/clock.{type Clock}
 import core/msgpack
 import gleam/erlang/process.{type Subject}
 import gleam/int
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import runtime/effects
@@ -109,6 +110,11 @@ const escalate_slack_ms = 2000
 
 // Budgets for requests that read or write one record or one strand.
 const record_wait_ms = 15_000
+
+/// How long the host waits for the owner's identity while it builds a scope's
+/// plane, in milliseconds. The answer is one read of a value the owner already
+/// holds, and it is optional, so the wait is much shorter than a record's.
+pub const identity_wait_ms = 5000
 
 // A capability can run a spawn or a note write on the owner, so it gets far
 // longer than a record read.
@@ -248,6 +254,39 @@ pub fn mcp_plan(link: Link) -> Result(protocol.McpPlan, String) {
       call.CalleeGone -> "the session's owner is gone"
     }
   })
+}
+
+/// Asks the current owner port for the author the session's commits carry,
+/// which the host does once while it builds a scope's plane, after the
+/// attach's version check, as it asks for the MCP plan.
+///
+/// The answer is checked again here with `protocol.git_identity_of`, because the
+/// executor is where a hostile repository and a planted home directory live and
+/// a value the owner should have refused costs nothing to refuse twice. An owner
+/// that does not answer within the record budget, is gone, has no identity or
+/// sent one that fails the check is `None`, and the session behaves as it did
+/// before the message existed. Unlike the MCP plan, the identity never fails the
+/// build: a session can run without an author, and Git refuses its commits. The
+/// wait is `within_ms`, which the host takes from `identity_wait_ms`, because an
+/// owner that is present and slow should not hold a build for the whole record
+/// budget over an optional answer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // owner_link.git_identity(link, owner_link.identity_wait_ms) == option.Some(protocol.GitIdentity("Ada", "ada@example.invalid"))
+/// ```
+pub fn git_identity(
+  link: Link,
+  within_ms: Int,
+) -> Option(protocol.GitIdentity) {
+  // An unanswered ask is no identity, and an identity that was answered is
+  // judged again before anything uses it.
+  case ask(link, within_ms, protocol.AskGitIdentity) {
+    Ok(Some(protocol.GitIdentity(name:, email:))) ->
+      protocol.git_identity_of(name, email)
+    Ok(None) | Error(_) -> None
+  }
 }
 
 // A launch whose answer never came may still have been claimed: the request

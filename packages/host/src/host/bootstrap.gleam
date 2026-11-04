@@ -335,6 +335,28 @@ pub fn release_launch_lock(lock: LaunchLock) -> Nil
 @external(erlang, "host_bootstrap_ffi", "read_prefix")
 pub fn read_prefix(path: String, bytes: Int) -> Result(BitArray, String)
 
+/// Reads `bytes` bytes of one regular file starting at `offset`, and nothing
+/// before it.
+///
+/// A read that starts inside the file and runs past its end answers what is
+/// there, and one that starts at or past the end answers nothing. An offset or a
+/// length below zero, or a length over 16 MiB, is an error, as is anything that is
+/// not a regular file. `simplifile` reads whole files, and `read_prefix` can reach
+/// a piece in the middle only by reading everything before it, which is what a
+/// positioned read exists to avoid.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // bootstrap.read_range(path, 262_144, 262_144)
+/// ```
+@external(erlang, "host_bootstrap_ffi", "read_range")
+pub fn read_range(
+  path: String,
+  offset: Int,
+  bytes: Int,
+) -> Result(BitArray, String)
+
 /// Reads one regular file without ever retaining more than `limit` bytes.
 ///
 /// The bound is enforced while reading and one byte past the limit is an

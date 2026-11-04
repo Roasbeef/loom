@@ -359,6 +359,22 @@ pub fn a_server_owned_env_name_is_refused_test() {
     refusal(one_server("env = [\"PATH\"]"))
 }
 
+pub fn the_four_author_names_are_refused_from_a_server_env_test() {
+  list.each(
+    [
+      "GIT_AUTHOR_NAME",
+      "GIT_AUTHOR_EMAIL",
+      "GIT_COMMITTER_NAME",
+      "GIT_COMMITTER_EMAIL",
+    ],
+    fn(name) {
+      let assert "lsp.x.env may not name " <> refused =
+        refusal(one_server("env = [\"" <> name <> "\"]"))
+      assert string.starts_with(refused, name)
+    },
+  )
+}
+
 pub fn a_repeated_env_name_is_refused_test() {
   assert refusal(one_server("env = [\"GOFLAGS\", \"GOFLAGS\"]"))
     == "lsp.x.env lists GOFLAGS more than once"

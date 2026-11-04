@@ -16,6 +16,7 @@ import client/remote/host
 import client/remote/protocol.{
   type ExecutionAnswer, type HostMessage, type Key, type Refusal,
 }
+import client/state_transfer
 import core/json
 import gleam/bit_array
 import gleam/erlang/process.{type Pid, type Subject}
@@ -293,6 +294,7 @@ pub fn an_oversized_value_is_replaced_by_an_errored_value_that_fits_test() {
     host.Config(
       ..fixtures.host_config(path, factory(probe)),
       execution_result_bytes: 600,
+      states: state_transfer.declining(),
     )
   let rig = start(path, probe, config)
   let _attached = attach(rig, token(1))

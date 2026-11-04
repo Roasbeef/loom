@@ -1,0 +1,10 @@
+<!-- The repository state transfer protocol model. See README.md. -->
+<Project>
+<ProjectName>StateTransfer</ProjectName>
+<InputFiles>
+	<PFile>./PSrc/</PFile>
+	<PFile>./PSpec/</PFile>
+	<PFile>./PTst/</PFile>
+</InputFiles>
+<OutputDir>./PGenerated/</OutputDir>
+</Project>

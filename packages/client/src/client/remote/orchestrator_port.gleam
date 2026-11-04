@@ -141,6 +141,22 @@
 //// create names the same `request_id` and a resent message the same
 //// `message_id`.
 ////
+//// Protocol-change/107 adds the three messages by which repository states move:
+//// `StateChunk` carries one piece of a state this node is receiving and answers
+//// a verdict, `StateStatus` asks how many bytes of a state the node holds so a
+//// sender resumes after a dropped connection, and `StateFetch` asks for one piece
+//// of a state the node holds, so the orchestrator can relay what another node
+//// captured. They are served by an `Endpoint` (`client/state_transfer`) that the
+//// daemon builds over the one process that owns the store
+//// (`client/state_service`), and a daemon that keeps no store starts the port
+//// with `state_transfer.declining`, which refuses every piece with
+//// `NotServing`. All three run apart from the port, as an activation does,
+//// because the last piece of a state is read and hashed whole. The state is
+//// judged by its hash and the store's limits and not by who sent it, so the
+//// messages carry no origin. The sending ends are `send_state_piece`,
+//// `ask_state_stage` and `ask_state_fetch`, and `client/remote/state_link` turns
+//// an address into the `Link` that `client/state_transfer` drives.
+////
 //// The port reveals whether an identity is in this daemon's catalogue, and for
 //// `Holds` two counts of sessions, to a peer the operator pinned as a trusted
 //// Erlang node. It carries no credential, and a client is never redirected by
@@ -197,6 +213,7 @@ import client/remote_top.{type Placement, type Refusal}
 import client/session_move.{
   type Activation, type Chunk, type Stage, type Verdict,
 }
+import client/state_transfer
 import core/glance.{type Glance}
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
@@ -622,6 +639,39 @@ pub type Message {
     session: String,
     /// Where the answer goes.
     reply: Subject(Result(Nil, Refusal)),
+  )
+
+  /// One piece of a repository state that another node is sending here
+  /// (protocol-change/107). The verdict says how many bytes of the state this
+  /// node holds now, so a piece sent twice is answered twice and written once.
+  /// The state is judged by its hash and the store's limits, and the last piece
+  /// makes it only if the bytes are the ones described.
+  StateChunk(
+    /// The piece, with the state's description.
+    piece: state_transfer.Piece,
+    /// Where the verdict goes.
+    reply: Subject(state_transfer.Verdict),
+  )
+
+  /// How far a state has got in this node's store, for a sender that resumes
+  /// after a dropped connection (protocol-change/107). `Error` is a store that
+  /// could not say, which the asker must not read as nothing held.
+  StateStatus(
+    /// The state's hash.
+    hash: String,
+    /// Where the stage goes.
+    reply: Subject(Result(state_transfer.Stage, String)),
+  )
+
+  /// One piece of a state this node holds, from `offset`, so another node can
+  /// fetch what this one captured (protocol-change/107).
+  StateFetch(
+    /// The state's hash.
+    hash: String,
+    /// Where in the bundle the piece starts.
+    offset: Int,
+    /// Where the piece goes.
+    reply: Subject(state_transfer.Fetched),
   )
 
   /// The sending orchestrator's operator answering a request of a session it
@@ -1159,6 +1209,43 @@ pub fn start_with_top(
   reads: Reads,
   top: TopHost,
 ) -> actor.StartResult(Subject(Message)) {
+  start_with_states(
+    name,
+    held,
+    peer,
+    describe,
+    importer,
+    spawns,
+    children,
+    holds,
+    reads,
+    top,
+    state_transfer.declining(),
+  )
+}
+
+/// Starts the port as `start_with_top` does, and serves repository states with
+/// `states` (protocol-change/107). `start_with_top` is this with
+/// `state_transfer.declining`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(_) = orchestrator_port.start_with_states(orchestrator_port.default(), held, forward, describe, importer, spawns, children, holds, reads, top, states)
+/// ```
+pub fn start_with_states(
+  name: Name(Message),
+  held: fn(String) -> Result(Ownership, Nil),
+  peer: PeerHandler,
+  describe: Describer,
+  importer: Importer,
+  spawns: SpawnHost,
+  children: ChildHost,
+  holds: Holder,
+  reads: Reads,
+  top: TopHost,
+  states: state_transfer.Endpoint,
+) -> actor.StartResult(Subject(Message)) {
   actor.new(Nil)
   |> actor.on_message(fn(state, message) {
     answer(
@@ -1171,6 +1258,7 @@ pub fn start_with_top(
       holds,
       reads,
       top,
+      states,
       state,
       message,
     )
@@ -1204,6 +1292,7 @@ fn answer(
   holds: Holder,
   reads: Reads,
   top: TopHost,
+  states: state_transfer.Endpoint,
   state: Nil,
   message: Message,
 ) -> actor.Next(Nil, Message) {
@@ -1358,6 +1447,18 @@ fn answer(
           decided_by,
         )
       })
+
+    // The three state messages run apart from the port. The last piece of a
+    // state is read and hashed whole, so none of them may keep a question about
+    // ownership waiting. The endpoint serializes them in the store's one owner,
+    // so the pieces of a state land in the order the sender's acknowledgements
+    // let them be sent.
+    StateChunk(piece:, reply:) ->
+      detached(reply, fn(_node) { states.take(piece) })
+    StateStatus(hash:, reply:) ->
+      detached(reply, fn(_node) { states.stage(hash) })
+    StateFetch(hash:, offset:, reply:) ->
+      detached(reply, fn(_node) { states.serve(hash, offset) })
 
     // The eight messages of a spawner's page run apart from the port. A create
     // writes the catalogue and opens a session, a send may open one, a page
@@ -1631,6 +1732,59 @@ pub fn ask_activation(
   within_ms: Int,
 ) -> Result(Verdict, Nil) {
   exchange(at, fn(reply) { Activate(activation:, reply:) }, within_ms)
+}
+
+/// Sends one piece of a repository state to the port at `at` and waits at most
+/// `within_ms` for the verdict. `Error(Nil)` is silence, as `ask` defines it, and
+/// is not a refusal: the piece may or may not have been written, and
+/// `ask_state_stage` says where the receiver stands.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.send_state_piece(Address(node: peer, name: orchestrator_port.default()), piece, 30_000)
+/// ```
+pub fn send_state_piece(
+  at: Address(Message),
+  piece: state_transfer.Piece,
+  within_ms: Int,
+) -> Result(state_transfer.Verdict, Nil) {
+  exchange(at, fn(reply) { StateChunk(piece:, reply:) }, within_ms)
+}
+
+/// Asks the port at `at` how far a state has got, and waits at most `within_ms`.
+/// The outer `Error(Nil)` is silence; the inner `Error` is a store that could not
+/// say, and neither is read as nothing held.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_state_stage(Address(node: peer, name: orchestrator_port.default()), hash, 5000)
+/// ```
+pub fn ask_state_stage(
+  at: Address(Message),
+  hash: String,
+  within_ms: Int,
+) -> Result(Result(state_transfer.Stage, String), Nil) {
+  exchange(at, fn(reply) { StateStatus(hash:, reply:) }, within_ms)
+}
+
+/// Asks the port at `at` for the piece of a state it holds that starts at
+/// `offset`, and waits at most `within_ms`. Silence is `Error(Nil)`, and the same
+/// piece can be asked for again: the read changes nothing on the receiver.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_state_fetch(Address(node: peer, name: orchestrator_port.default()), hash, 0, 30_000)
+/// ```
+pub fn ask_state_fetch(
+  at: Address(Message),
+  hash: String,
+  offset: Int,
+  within_ms: Int,
+) -> Result(state_transfer.Fetched, Nil) {
+  exchange(at, fn(reply) { StateFetch(hash:, offset:, reply:) }, within_ms)
 }
 
 /// Asks the port at `at` to start a child, and waits at most `within_ms`.

@@ -17,7 +17,8 @@
 //// included, may not exceed `total_cap`. A bundle that does not fit is refused
 //// with a reason. Nothing is evicted to make room, because an entry that has
 //// not expired may be the one a peer is fetching. Entries older than `retain_s`
-//// are removed by `sweep`, which every admission runs first.
+//// are removed by `sweep`, which every admission runs first, and a half-written
+//// file that has not grown for `part_retain_s` (an hour) goes sooner.
 ////
 //// ## What may be relied on
 ////
@@ -29,9 +30,16 @@
 //// lock. One process owns a directory and serializes its calls, as the other
 //// stores under the state root are owned by one actor each.
 ////
+//// A state that arrives from a peer is written in pieces into
+//// `<hash>.part`, which `append_part` extends and `finish` turns into the
+//// bundle and its record once the bytes match the description. `read_piece`
+//// serves a held state back out in pieces. `client/state_transfer` decides what a
+//// piece means; this module only keeps the files.
+////
 //// ## Flow
 ////
-//// `open` → `put` → `get` → `sweep`
+//// `open` → `put` → `get` → `sweep`, and for a peer's pieces `append_part` →
+//// `finish` → `read_piece`
 ////
 //// 1. `open` creates the private directory and refuses limits that cannot hold
 ////    one bundle.
@@ -65,7 +73,9 @@ pub type Limits {
     size_limit: Int,
     /// The most bytes the directory may hold in all, every file counted.
     total_cap: Int,
-    /// How long an entry is kept, in seconds from the time it was written.
+    /// How long an entry is kept, in seconds from the time it was written. A
+    /// half-written file, which is not an entry until its last piece lands, is
+    /// kept for `part_retain_s` at most.
     retain_s: Int,
   )
 }
@@ -76,6 +86,14 @@ pub type Limits {
 /// outlives the session that names it.
 pub const default_limits =
   Limits(size_limit: 268_435_456, total_cap: 1_073_741_824, retain_s: 604_800)
+
+/// How long a half-written file is kept after its last piece, in seconds: one
+/// hour, and never longer than the store's own `retain_s`. A transfer that will
+/// resume resumes in minutes, and a part that has not grown for an hour belongs to
+/// a sender that has gone, while its bytes count against `total_cap` and would
+/// otherwise hold that room for the days a finished state is kept. Every appended
+/// piece renews the file's time, so a transfer that is moving is never swept.
+pub const part_retain_s = 3600
 
 /// An open store. It is the directory and the limits it was opened with.
 pub opaque type Store {
@@ -91,6 +109,18 @@ pub type Held {
     /// reads it later reads it through the sandbox and verifies it again.
     path: String,
   )
+}
+
+/// The limits a store was opened with, so a caller that judges a peer's claim
+/// can name the bound it is judged against.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // state_store.limits(store).size_limit
+/// ```
+pub fn limits(store: Store) -> Limits {
+  store.limits
 }
 
 /// The directory a node keeps its states in: `<state root>/states`.
@@ -274,7 +304,9 @@ fn verified(store: Store, hash: String, text: String) -> Result(Held, String) {
 /// crash between them leaves an orphan bundle and never a record without bytes.
 /// A bundle with no record, a temporary file and any other file are judged by
 /// their own modification times, which keeps a write in progress and removes
-/// what a crashed one left.
+/// what a crashed one left. A half-written file is judged by its own time too, but
+/// against `part_retain_s` and not `retain_s`, so a transfer that was abandoned
+/// stops holding the cap within the hour.
 ///
 /// ## Examples
 ///
@@ -303,30 +335,41 @@ fn plan_sweep(
     list.filter_map(files, fn(file) {
       case kind_of(file.name) {
         Record(hash) -> Ok(hash)
-        Bundle(_) | Other -> Error(Nil)
+        Bundle(_) | Part(_) | Other -> Error(Nil)
       }
     })
     |> set.from_list
 
   list.filter_map(files, fn(file) {
+    let kind = kind_of(file.name)
     use <- bool.guard(
-      when: !expired(file.modified_s, now_s, retain_s),
+      when: !expired(file.modified_s, now_s, retention_of(kind, retain_s)),
       return: Error(Nil),
     )
 
     // A record's age decides for its bundle, which goes after it. A bundle
     // that has a record is left to that record, and one without is an orphan
-    // judged by its own age, like a temporary or a foreign file.
-    case kind_of(file.name) {
+    // judged by its own age, like a temporary or a foreign file. A part is
+    // judged by its own, shorter, age.
+    case kind {
       Record(hash) -> Ok([file.name, hash <> ".bundle"])
       Bundle(hash) ->
         case set.contains(recorded, hash) {
           True -> Error(Nil)
           False -> Ok([file.name])
         }
-      Other -> Ok([file.name])
+      Part(_) | Other -> Ok([file.name])
     }
   })
+}
+
+/// How long a file of this kind is kept: a half-written file for `part_retain_s`
+/// at most, and everything else for the store's `retain_s`.
+fn retention_of(kind: Kind, retain_s: Int) -> Int {
+  case kind {
+    Part(_) -> int.min(part_retain_s, retain_s)
+    Record(_) | Bundle(_) | Other -> retain_s
+  }
 }
 
 /// Whether an entry written at `modified_s` is past retention at `now_s`. An
@@ -354,6 +397,302 @@ pub fn usage(store: Store) -> Result(Int, String) {
   list.fold(files, 0, fn(total, file) { total + file.size })
 }
 
+// --- pieces that arrive from a peer ---------------------------------------------
+
+/// Why a staged write was not applied.
+pub type Staging {
+  /// The offered bytes or the claim about them are wrong, or they do not fit.
+  /// Sending the same bytes again cannot cure it.
+  Rejected(
+    /// What was found, in words fit for a log line and for the sender.
+    reason: String,
+  )
+
+  /// The directory could not be read or written. The peer did nothing wrong, and
+  /// the same piece may succeed later.
+  Faulted(
+    /// The filesystem's account of what failed.
+    reason: String,
+  )
+}
+
+/// How many bytes of a state's bundle the store holds in a half-written file,
+/// zero when it holds none. A state that is already complete answers zero as
+/// well, because its pieces are not wanted again and `get` is the question that
+/// finds it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // state_store.staged_bytes(store, hash) == Ok(0)
+/// ```
+pub fn staged_bytes(store: Store, hash: String) -> Result(Int, String) {
+  use <- bool.guard(
+    when: !state_object.is_hash(hash),
+    return: Error("not a state hash"),
+  )
+
+  // A missing file is no bytes held. Any other failure is not a count.
+  case simplifile.file_info(part_path(store, hash)) {
+    Ok(info) -> Ok(info.size)
+    Error(simplifile.Enoent) -> Ok(0)
+    Error(error) ->
+      Error(
+        "the staged bundle cannot be inspected: "
+        <> simplifile.describe_error(error),
+      )
+  }
+}
+
+/// Appends the next piece of a state's bundle to its half-written file.
+///
+/// The piece goes at the end of what is held, which the caller has already
+/// compared with the offset the peer named, so a piece can never leave a gap or
+/// overlap bytes that are there. The first piece of a state is also the
+/// admission: the description must be valid and its size within `size_limit`,
+/// and expired entries are swept before the cap is checked. Every piece is
+/// checked against `total_cap`, because the directory is shared by the
+/// transfers in flight and a transfer that began when there was room may not
+/// finish into a directory a later one filled. A piece that does not fit
+/// removes the half-written file, so its bytes do not hold the room that the
+/// refusal says is missing. A piece that would run past the declared size is
+/// refused. The answer is the bytes now held.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // state_store.append_part(store, state, bytes, now_s)
+/// ```
+pub fn append_part(
+  store: Store,
+  state: State,
+  bytes: BitArray,
+  now_s: Int,
+) -> Result(Int, Staging) {
+  let length = bit_array.byte_size(bytes)
+  use state <- result.try(
+    state_object.validate(state) |> result.map_error(Rejected),
+  )
+  use <- bool.lazy_guard(
+    when: state.size > store.limits.size_limit,
+    return: fn() {
+      Error(Rejected(
+        "the state is "
+        <> int.to_string(state.size)
+        <> " bytes, over the state size limit of "
+        <> int.to_string(store.limits.size_limit),
+      ))
+    },
+  )
+  use held <- result.try(
+    staged_bytes(store, state.hash) |> result.map_error(Faulted),
+  )
+  use <- bool.guard(
+    when: length < 1 || held + length > state.size,
+    return: Error(Rejected("the piece does not fit the declared size")),
+  )
+
+  // The first piece is the one that sweeps. Later pieces only count.
+  use _removed <- result.try(case held {
+    0 -> sweep(store, now_s) |> result.map_error(Faulted)
+    _ -> Ok(0)
+  })
+
+  use used <- result.try(usage(store) |> result.map_error(Faulted))
+  use <- bool.lazy_guard(
+    when: used + length > store.limits.total_cap,
+    return: fn() {
+      discard_part(store, state.hash)
+      Error(Rejected(
+        "the state store holds "
+        <> int.to_string(used)
+        <> " of its "
+        <> int.to_string(store.limits.total_cap)
+        <> " byte cap, so a piece of "
+        <> int.to_string(length)
+        <> " bytes does not fit",
+      ))
+    },
+  )
+
+  let part = part_path(store, state.hash)
+
+  // The first piece begins the file afresh, and every later one extends it.
+  let written = case held {
+    0 -> simplifile.write_bits(part, bytes)
+    _ -> simplifile.append_bits(part, bytes)
+  }
+
+  result.map(
+    result.map_error(written, fn(error) {
+      Faulted(
+        "the state store cannot write: " <> simplifile.describe_error(error),
+      )
+    }),
+    fn(_written) { held + length },
+  )
+}
+
+/// Makes a fully received bundle into a stored state, or refuses it.
+///
+/// The half-written file is read once, bounded by `size_limit`, and its size and
+/// SHA-256 are compared with the description. A mismatch removes the file and
+/// stores nothing, so a corrupted transfer cannot leave a state behind. When the
+/// bytes agree the file is renamed to the bundle's name and the record is
+/// written last, as `put` writes it, so a state exists exactly when its record
+/// does. The bundle's own header is not read here: apply compares it with the
+/// description before it touches a repository.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // state_store.finish(store, state)
+/// ```
+pub fn finish(store: Store, state: State) -> Result(State, Staging) {
+  let part = part_path(store, state.hash)
+  use bytes <- result.try(
+    bootstrap.read_bounded(part, store.limits.size_limit)
+    |> result.map_error(fn(reason) {
+      Faulted("the staged bundle cannot be read: " <> reason)
+    }),
+  )
+
+  // The check is the whole of the refusal. Nothing but a whole, matching bundle
+  // is ever named by a record.
+  use <- bool.lazy_guard(
+    when: state_object.hash_of(bytes) != state.hash
+      || bit_array.byte_size(bytes) != state.size,
+    return: fn() {
+      discard_part(store, state.hash)
+      Error(Rejected("the received bundle does not match its hash or its size"))
+    },
+  )
+  let record = bit_array.from_string(state_object.encode(state))
+  use Nil <- result.try(
+    simplifile.rename(part, bundle_path(store, state.hash))
+    |> result.map_error(fn(error) {
+      Faulted(
+        "the state store cannot place the bundle: "
+        <> simplifile.describe_error(error),
+      )
+    }),
+  )
+  write_atomic(record_path(store, state.hash), record)
+  |> result.map_error(Faulted)
+  |> result.replace(state)
+}
+
+/// Removes a state's half-written file. A file that is not there is not an
+/// error, and a file that cannot be removed is left for the sweep.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // state_store.discard_part(store, hash)
+/// ```
+pub fn discard_part(store: Store, hash: String) -> Nil {
+  // Only a well-formed hash names a file, so a peer's text is never a path.
+  case state_object.is_hash(hash) {
+    True -> {
+      let _removed = simplifile.delete(part_path(store, hash))
+      Nil
+    }
+    False -> Nil
+  }
+}
+
+/// Reads one piece of a held state: the record's description, the offset the
+/// piece starts at, and the bytes from there, at most `length` of them, fewer at
+/// the end of the bundle.
+///
+/// An offset at or past the end of the bundle is answered with the last byte's
+/// piece, and the offset returned is the one served. A peer whose half-written file
+/// already holds every byte asks for the end, and a piece in range is what lets it
+/// finish; the caller compares the offset it gets with the one it asked for. A
+/// negative offset is an error.
+///
+/// `Ok(None)` means no record exists. The bundle's size is compared with the
+/// record's, which catches a short file, but its hash is not recomputed for each
+/// piece, because that would read the whole bundle for every piece. A damaged
+/// bundle is caught by the receiver, which compares the hash when the last piece
+/// lands. The read is positioned (`bootstrap.read_range`), so a piece costs the
+/// piece and serving a bundle from start to finish reads it once.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // state_store.read_piece(store, hash, 0, 262_144)
+/// ```
+pub fn read_piece(
+  store: Store,
+  hash: String,
+  offset: Int,
+  length: Int,
+) -> Result(Option(#(State, Int, BitArray)), String) {
+  use <- bool.guard(
+    when: !state_object.is_hash(hash),
+    return: Error("not a state hash"),
+  )
+
+  // No record is an absence, and a record is a claim the bundle must bear out.
+  case simplifile.read(record_path(store, hash)) {
+    Error(simplifile.Enoent) -> Ok(None)
+    Error(error) ->
+      Error(
+        "the state record cannot be read: " <> simplifile.describe_error(error),
+      )
+    Ok(text) -> {
+      use state <- result.try(state_object.decode(text))
+      use <- bool.guard(
+        when: state.hash != hash,
+        return: Error("the state record names another hash"),
+      )
+      use #(at, piece) <- result.map(piece_of(store, state, offset, length))
+      Some(#(state, at, piece))
+    }
+  }
+}
+
+/// The offset served and the bytes of a recorded state's bundle from it, after
+/// the bundle's size is compared with the record's. An offset past the end is
+/// served from the last byte.
+fn piece_of(
+  store: Store,
+  state: State,
+  offset: Int,
+  length: Int,
+) -> Result(#(Int, BitArray), String) {
+  let path = bundle_path(store, state.hash)
+  use info <- result.try(
+    simplifile.file_info(path)
+    |> result.map_error(fn(error) {
+      "the stored bundle cannot be inspected: "
+      <> simplifile.describe_error(error)
+    }),
+  )
+  use <- bool.guard(
+    when: info.size != state.size,
+    return: Error("the stored bundle is not the recorded size"),
+  )
+  use <- bool.guard(
+    when: offset < 0 || length < 1,
+    return: Error("the piece lies outside the bundle"),
+  )
+  let at = int.min(offset, state.size - 1)
+  use bytes <- result.try(bootstrap.read_range(
+    path,
+    at,
+    int.min(length, state.size - at),
+  ))
+
+  // A bundle whose size matched its record and that answers nothing here is
+  // shorter than the record says, and an empty piece is never served.
+  case bytes {
+    <<>> -> Error("the stored bundle is shorter than its record")
+    _ -> Ok(#(at, bytes))
+  }
+}
+
 // --- files ----------------------------------------------------------------------
 
 /// A regular file in the store's directory.
@@ -369,6 +708,9 @@ type Kind {
   /// `<hash>.bundle`, a state's bytes.
   Bundle(hash: String)
 
+  /// `<hash>.part`, the bytes of a state that is still arriving.
+  Part(hash: String)
+
   /// Anything else: a temporary file, or a file that is not the store's.
   Other
 }
@@ -376,10 +718,15 @@ type Kind {
 /// Classifies a file name. Only a well-formed hash makes a name a record or a
 /// bundle, so a name never reaches a path through a peer's text.
 fn kind_of(name: String) -> Kind {
-  case string.ends_with(name, ".json"), string.ends_with(name, ".bundle") {
-    True, _ -> hashed(string.drop_end(name, 5), Record)
-    _, True -> hashed(string.drop_end(name, 7), Bundle)
-    False, False -> Other
+  case
+    string.ends_with(name, ".json"),
+    string.ends_with(name, ".bundle"),
+    string.ends_with(name, ".part")
+  {
+    True, _, _ -> hashed(string.drop_end(name, 5), Record)
+    _, True, _ -> hashed(string.drop_end(name, 7), Bundle)
+    _, _, True -> hashed(string.drop_end(name, 5), Part)
+    False, False, False -> Other
   }
 }
 
@@ -489,4 +836,11 @@ fn bundle_path(store: Store, hash: String) -> String {
 
 fn record_path(store: Store, hash: String) -> String {
   store.directory <> "/" <> hash <> ".json"
+}
+
+/// The half-written file of a state whose pieces are still arriving. It is not a
+/// bundle or a record by name, so `sweep` judges it by its modification time and
+/// every piece that is appended renews that time.
+fn part_path(store: Store, hash: String) -> String {
+  store.directory <> "/" <> hash <> ".part"
 }

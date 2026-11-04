@@ -34,6 +34,7 @@ fn port_over(
       reconcile_every_ms: every_ms,
       executions: owner_port.no_executions(),
       mcp: protocol.McpPlan(served: [], expected: []),
+      git_identity: option.None,
     ))
     as "the port starts"
   port
@@ -309,6 +310,7 @@ fn port_with_executions(
       reconcile_every_ms: 60_000,
       executions:,
       mcp: protocol.McpPlan(served: [], expected: []),
+      git_identity: option.None,
     ))
     as "the port starts"
   port
