@@ -426,8 +426,7 @@ pub fn an_executor_puts_a_held_state_in_its_scopes_tree_test() {
   let root_head = git(root, ["rev-parse", "HEAD"])
   let root_refs = refs_of(root)
 
-  let assert Ok(protocol.Applied(tip)) =
-    request_apply(plane, 0, token, source.state)
+  let assert Ok(tip) = request_apply(plane, 0, token, source.state)
 
   // The tree's checkout is the bundle's tip, and the source's uncommitted work
   // arrived as committed content, the untracked file included.
@@ -469,7 +468,7 @@ pub fn applying_a_state_twice_is_the_same_answer_and_changes_nothing_test() {
   let source = source_of(plane, "apply-twice-source")
 
   let first = request_apply(plane, 0, token, source.state)
-  assert first == Ok(protocol.Applied(source.state.tip))
+  assert first == Ok(source.state.tip)
   let refs = refs_of(plane.rig.root)
 
   // The resend after a lost reply, and then the resend after the session has
@@ -510,7 +509,7 @@ pub fn a_state_the_store_lacks_is_refused_and_the_tree_is_left_alone_test() {
   let tree = tree_of(plane)
   let head = git(tree, ["rev-parse", "HEAD"])
 
-  let assert Ok(protocol.Refused(reason)) =
+  let assert Error(protocol.ExecutorFault(reason)) =
     request_apply(plane, 0, token, a_state())
   assert string.contains(reason, "does not hold that state")
   assert git(tree, ["rev-parse", "HEAD"]) == head
@@ -527,7 +526,7 @@ pub fn a_shared_workspace_takes_no_state_and_says_which_mode_test() {
   let head = git(root, ["rev-parse", "HEAD"])
   let refs = refs_of(root)
 
-  let assert Ok(protocol.Refused(reason)) =
+  let assert Error(protocol.ExecutorFault(reason)) =
     request_apply(plane, 0, token, source.state)
   assert string.contains(reason, "mode = \"shared\"")
   assert string.contains(reason, "mode = \"worktree\"")
@@ -551,7 +550,7 @@ pub fn a_tree_whose_dot_git_is_a_link_takes_no_state_test() {
   let assert Ok(Nil) = simplifile.rename(tree <> "/.git", real)
   let assert Ok(Nil) = simplifile.create_symlink(real, tree <> "/.git")
 
-  let assert Ok(protocol.Refused(reason)) =
+  let assert Error(protocol.ExecutorFault(reason)) =
     request_apply(plane, 0, token, source.state)
   assert string.contains(reason, "plain .git file")
   assert refs_of(plane.rig.root) == refs
@@ -644,8 +643,7 @@ pub fn hostile_configuration_on_either_side_cannot_change_an_apply_test() {
   assert simplifile.is_file(source_canary) == Ok(True)
   let assert Ok(Nil) = simplifile.delete(source_canary)
   let source = captured(plane, clone)
-  let assert Ok(protocol.Applied(tip)) =
-    request_apply(plane, 0, token, source.state)
+  let assert Ok(tip) = request_apply(plane, 0, token, source.state)
   assert tip == source.state.tip
   assert git(tree, ["rev-parse", "HEAD"]) == source.state.tip
   assert simplifile.is_file(canary("hook-ran")) == Ok(False)
@@ -653,4 +651,113 @@ pub fn hostile_configuration_on_either_side_cannot_change_an_apply_test() {
   assert simplifile.is_file(canary("transport-ran")) == Ok(False)
   assert simplifile.is_file(source_canary) == Ok(False)
   stop(plane)
+}
+
+pub fn a_smudge_filter_in_the_executors_config_does_not_run_on_a_bundles_files_test() {
+  let plane = serve("apply-smudge", Able)
+  let _attachment = attached(plane)
+  let tree = tree_of(plane)
+  let root = plane.rig.root
+  let scratch = filepath.directory_name(root)
+
+  // A bundle a hostile peer made by hand: a commit whose tree attaches a
+  // filter to every `.txt` file. Capture refuses such a tree, so it is built
+  // with the operator's Git and put in the store as a transfer would.
+  let clone = scratch <> "/smudge-source"
+  let _ = git(scratch, ["clone", "--quiet", root, clone])
+  let base = git(clone, ["rev-parse", "HEAD"])
+  write(clone <> "/.gitattributes", "*.txt filter=evil\n")
+  write(clone <> "/payload.txt", "payload\n")
+  let _ = git(clone, ["add", ".gitattributes", "payload.txt"])
+  let _ = git(clone, ["commit", "--quiet", "-m", "attach a filter"])
+  let tip = git(clone, ["rev-parse", "HEAD"])
+  let _ = git(clone, ["update-ref", state_object.bundle_ref, tip])
+  let bundle = scratch <> "/smudge.bundle"
+  let _ =
+    git(clone, [
+      "bundle",
+      "create",
+      bundle,
+      state_object.bundle_ref,
+      "^" <> base,
+    ])
+  let assert Ok(state) =
+    state_store.put(
+      plane.store,
+      bundle,
+      tip:,
+      base: Some(base),
+      dirty: Clean,
+      now_s: ffi_os.system_time_ms() / 1000,
+    )
+
+  // The executor's repository names the program for the filter. It writes a
+  // marker in the one place the apply's Git may write, and passes the bytes on.
+  let marker = root <> "/.git/smudge-ran"
+  let program = scratch <> "/smudge-program"
+  write(program, "#!/bin/sh\nprintf ran > '" <> marker <> "'\nexec cat\n")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(program, 0o755)
+  let _ = git(root, ["config", "filter.evil.smudge", program])
+
+  // Control: the operator's Git checking the same file out in the clone, with
+  // the same program, starts it.
+  let _ = git(clone, ["config", "filter.evil.smudge", program])
+  let assert Ok(Nil) = simplifile.delete(clone <> "/payload.txt")
+  let _ = git(clone, ["checkout", "--", "payload.txt"])
+  assert simplifile.is_file(marker) == Ok(True)
+  let assert Ok(Nil) = simplifile.delete(marker)
+
+  let assert Ok(applied) = request_apply(plane, 0, token, state)
+  assert applied == tip
+  assert git(tree, ["rev-parse", "HEAD"]) == tip
+  assert simplifile.read(tree <> "/payload.txt") == Ok("payload\n")
+  assert simplifile.is_file(marker) == Ok(False)
+  stop(plane)
+}
+
+pub fn an_apply_whose_requester_vanishes_still_finishes_test() {
+  let plane = serve("apply-orphaned", Able)
+  let _attachment = attached(plane)
+  let tree = tree_of(plane)
+  let source = source_of(plane, "apply-orphaned-source")
+
+  // The requester sends the request and exits at once, as an orchestrator that
+  // lost its connection does. The run is not cancelled with it.
+  let _requester =
+    process.spawn_unlinked(fn() {
+      let reply = process.new_subject()
+      address.deliver(
+        plane.address,
+        protocol.StateApply(
+          session: session(1),
+          incarnation: 0,
+          token:,
+          state: source.state,
+          reply:,
+        ),
+      )
+    })
+  wait_for_head(tree, source.state.tip, 600)
+
+  // The checkout completed, so the tree is whole and the resend is answered
+  // with the tip and not refused for changes.
+  assert git(tree, ["status", "--porcelain"]) == ""
+  assert simplifile.read(tree <> "/notes/untracked.txt")
+    == Ok("carried along\n")
+  assert request_apply(plane, 0, token, source.state) == Ok(source.state.tip)
+  stop(plane)
+}
+
+// Waits until the tree's `HEAD` is `tip`, looking every 50 ms for at most
+// `looks` times. The checkout moves `HEAD` after it has written the tree, so
+// `HEAD` at the tip means the apply is finished.
+fn wait_for_head(tree: String, tip: String, looks: Int) -> Nil {
+  case git(tree, ["rev-parse", "HEAD"]) == tip, looks {
+    True, _ -> Nil
+    False, 0 -> panic as "the orphaned apply never finished"
+    False, _ -> {
+      process.sleep(50)
+      wait_for_head(tree, tip, looks - 1)
+    }
+  }
 }

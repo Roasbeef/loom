@@ -188,7 +188,7 @@ fn apply(
   incarnation: Int,
   token: BitArray,
   state: State,
-) -> Result(protocol.ApplyAnswer, protocol.Refusal) {
+) -> Result(String, protocol.Refusal) {
   let reply = process.new_subject()
   address.deliver(
     at,
@@ -401,11 +401,11 @@ pub fn an_apply_is_fenced_and_runs_the_planes_apply_test() {
   let wanted = a_state()
   let assert Ok(_attached) = attach(at, 6, <<1>>)
 
-  // The plane's tip is the answer, and its refusal is a refusal of the state
-  // and not of the request.
-  assert apply(at, 0, <<1>>, wanted) == Ok(protocol.Applied(wanted.tip))
+  // The plane's tip is the answer, and its refusal is the executor's own account
+  // of why the workspace would not take the state, as a refused capture is.
+  assert apply(at, 0, <<1>>, wanted) == Ok(wanted.tip)
   assert apply(at, 0, <<1>>, State(..wanted, dirty: Dirty))
-    == Ok(protocol.Refused("the tree holds changes"))
+    == Error(protocol.ExecutorFault("the tree holds changes"))
 
   // A request under another attach's token, or another incarnation, is from a
   // dead runtime, and the plane is never asked.

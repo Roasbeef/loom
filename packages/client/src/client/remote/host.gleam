@@ -960,15 +960,17 @@ fn capture_state(
 }
 
 /// Serves a `StateApply` for a scope, held to the same fence as a capture and then
-/// to the plane's ability to apply. An apply that the workspace refuses is not a
-/// fence refusal: it is `Refused` with the reason, answered by the run, so a
-/// caller tells a dead runtime from a workspace that cannot take the state.
+/// to the plane's ability to apply. An apply that the workspace refuses is an
+/// `ExecutorFault` with the reason, as a refused capture is, answered by the run.
+/// The run is not cancelled with the requester: an apply cut off in the middle of
+/// its checkout would leave a tree with changes in it that every resend then
+/// refuses, so it runs to the end and a resend finds the tip in place.
 fn apply_state(
   state: State(census),
   session: String,
   fence: Fence,
   wanted: state_object.State,
-  reply: Subject(Result(protocol.ApplyAnswer, Refusal)),
+  reply: Subject(Result(String, Refusal)),
 ) -> State(census) {
   let ready = {
     use Nil <- result.try(fenced(state, session, fence))
@@ -976,14 +978,12 @@ fn apply_state(
   }
 
   // A refusal is the plane's absence or the fence's verdict. What the workspace
-  // decides about the state is an answer, and the run gives it.
+  // decides about the state is a finding about the workspace, answered by the run.
   case ready {
     Ok(capturing) ->
-      apart(reply, fn() {
-        case capturing.apply(wanted) {
-          Ok(tip) -> Ok(protocol.Applied(tip:))
-          Error(reason) -> Ok(protocol.Refused(reason:))
-        }
+      to_completion(reply, fn() {
+        capturing.apply(wanted)
+        |> result.map_error(protocol.ExecutorFault)
       })
     Error(refusal) -> process.send(reply, Error(refusal))
   }
@@ -1034,6 +1034,22 @@ fn apart(reply: Subject(answer), compute: fn() -> answer) -> Nil {
     }
     Error(Nil) -> Nil
   }
+}
+
+/// Computes one answer in a run of its own that runs to its end whether or not
+/// the requester is still there, and sends it to `reply`. A send to a requester
+/// that has gone is harmless. This is for work that must not stop half done, such
+/// as a checkout that rewrites a tree.
+fn to_completion(reply: Subject(answer), compute: fn() -> answer) -> Nil {
+  let _witness =
+    weft.new([
+      fn() {
+        process.send(reply, compute())
+        Ok(Nil)
+      },
+    ])
+    |> weft.start_witnessed
+  Nil
 }
 
 // --- evolution ----------------------------------------------------------------

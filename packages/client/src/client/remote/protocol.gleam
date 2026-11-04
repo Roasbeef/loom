@@ -819,14 +819,19 @@ pub type HostMessage(census) {
   /// workspace takes one. The tree must be one the session has not written yet,
   /// because the apply replaces its checkout, so the orchestrator asks before
   /// the session's first turn. A dirty state's snapshot commit is checked out as
-  /// it is. A request repeated after it was applied is answered `Applied` again
-  /// and changes nothing.
+  /// it is. The answer is the commit the tree has checked out, which is the
+  /// state's own tip, or why the workspace refused the state (a workspace in
+  /// `shared` mode, a state the store lacks, a tree that holds changes), which
+  /// resending does not change. A request repeated after it was applied is
+  /// answered with the tip again and changes nothing. The run is not cancelled
+  /// when the requester goes away, so a request whose orchestrator vanished
+  /// mid-apply still finishes and the resend finds the tip in place.
   StateApply(
     session: String,
     incarnation: Int,
     token: BitArray,
     state: state_object.State,
-    reply: Subject(Result(ApplyAnswer, Refusal)),
+    reply: Subject(Result(String, Refusal)),
   )
 
   /// One piece of a state this executor is receiving. The store is the node's,
@@ -849,20 +854,6 @@ pub type HostMessage(census) {
   /// Asks for the piece at `offset` of a state this executor holds, so the
   /// orchestrator can relay what the executor captured.
   StateFetch(hash: String, offset: Int, reply: Subject(state_transfer.Fetched))
-}
-
-/// What a `StateApply` did, once the request passed the scope's fence. A request
-/// the fence refuses, or a scope that cannot apply states, is the `Refusal` the
-/// reply carries instead.
-pub type ApplyAnswer {
-  /// The scope's tree is on the state, and `tip` is the commit it has checked
-  /// out. It is the state's own tip.
-  Applied(tip: String)
-
-  /// The workspace refused the state, for the reason given, such as a workspace
-  /// in `shared` mode, a state the executor's store does not hold, or a tree
-  /// that holds changes. Resending does not change it.
-  Refused(reason: String)
 }
 
 /// What the executor's workspace says to the session's owner port. One
