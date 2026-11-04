@@ -171,6 +171,7 @@ pub fn over_distribution(
             tools,
             request,
             within_ms,
+            logger,
           )
           |> result.replace_error(peer_mail.Unreachable)
           |> spawn_answer(logger, site, Some(peer))
@@ -306,7 +307,7 @@ pub fn state_link_to(
 /// ## Examples
 ///
 /// ```gleam
-/// // remote_spawner.asked_with_state(states, at, parent, site, 0, tools, request, 30_000)
+/// // remote_spawner.asked_with_state(states, at, parent, site, 0, tools, request, 30_000, logger)
 /// ```
 @internal
 pub fn asked_with_state(
@@ -318,6 +319,7 @@ pub fn asked_with_state(
   tools: List(String),
   request: remote_spawn.Request,
   within_ms: Int,
+  logger: Logger,
 ) -> Result(Result(remote_spawn.Spawned, SpawnRefusal), Nil) {
   let started = bootstrap.monotonic_time_ms()
   let ask = fn(left) {
@@ -329,15 +331,45 @@ pub fn asked_with_state(
   case ask(within_ms), request.state {
     Ok(Error(remote_spawn.StateMissing(hash:, have: _))), Some(state)
       if state.hash == hash
-    ->
+    -> {
       // The first ask has used some of the window, so the send gets what is left.
+      let sending = bootstrap.monotonic_time_ms()
+
+      // A completed transfer is told once and the question is asked again; a
+      // refusal is final, and a transfer that did not finish is the next attempt's.
       case sent(states, at, state, left(within_ms, started)) {
-        Ok(Nil) -> ask(left(within_ms, started))
+        Ok(Nil) -> {
+          told_sent(logger, at, site, state, sending)
+          ask(left(within_ms, started))
+        }
         Error(Held(refused)) -> Ok(Error(refused))
         Error(NotAll) -> Error(Nil)
       }
+    }
     heard, _ -> heard
   }
+}
+
+/// Says that a state reached the receiver's store whole. It is logged once for
+/// each completed transfer, not for each ask, so a resend that finds the state
+/// already there does not repeat it. The state is named by its short hash and its
+/// size, and the receiver by its node name; nothing of the bundle or of either
+/// machine's paths is written.
+fn told_sent(
+  logger: Logger,
+  at: address.Address(orchestrator_port.Message),
+  site: remote_spawn.CallSite,
+  state: state_object.State,
+  sending: Int,
+) -> Nil {
+  log.info(logger, "remote_spawn.state_sent", [
+    field.ident("operation", ids.op_id_to_string(site.operation)),
+    field.text("step", site.step_id),
+    field.text("peer", atom.to_string(node.name(at.node))),
+    field.ident("state", state_object.short(state.hash)),
+    field.count("bytes", state.size),
+    field.count("elapsed_ms", bootstrap.monotonic_time_ms() - sending),
+  ])
 }
 
 // What is left of a window of `within_ms` that began at `started`, never less

@@ -34,6 +34,7 @@ import host/bootstrap
 import simplifile
 import support/state_rig.{type Rig}
 import support/worktree_rig
+import telemetry/log
 import tools/agent
 
 // A machine: a state root laid out as a daemon leaves it, a store behind its
@@ -66,6 +67,7 @@ fn node_at(rig: Rig, name: String) -> Node {
       git: Some(git),
       state_root: root,
       credentials: [],
+      logger: log.discard(),
     ),
     store:,
     root:,

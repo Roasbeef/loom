@@ -224,6 +224,7 @@ fn receiver_at(rig: Rig) -> state_node.StateNode {
     git: Some(git),
     state_root: root,
     credentials: [],
+    logger: log.discard(),
   )
 }
 
@@ -312,6 +313,7 @@ fn world(
       ["bash"],
       request(sent),
       30_000,
+      log.discard(),
     )
   let copy = case sent {
     Some(state) -> directory <> "/seeds/" <> spawn_seed.name_of(site(), state)
@@ -426,7 +428,7 @@ pub fn a_finished_childs_commits_reach_the_parents_store_test() {
       60_000,
       rig.root,
       rig.root,
-      return_apply.from_store(world.parent.store, rig.git),
+      return_apply.from_store(world.parent.store, rig.git, log.discard()),
       world.parent.sent,
       state,
       world.handle.strand,

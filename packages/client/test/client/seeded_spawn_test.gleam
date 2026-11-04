@@ -32,18 +32,23 @@ import core/ids
 import gleam/erlang/atom
 import gleam/erlang/node
 import gleam/erlang/process.{type Subject}
+import gleam/int
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap
 import simplifile
 import support/state_rig.{type Rig}
 import support/worktree_rig
+import telemetry/field
+import telemetry/level
 import telemetry/log
+import telemetry/record.{type Record}
 import tools/agent
 
-// The receiver's machine.
+// The receiver's machine, and the records its node wrote.
 type Receiver {
-  Receiver(node: state_node.StateNode, root: String)
+  Receiver(node: state_node.StateNode, root: String, logs: Subject(Record))
 }
 
 fn receiver_at(rig: Rig) -> Receiver {
@@ -63,6 +68,7 @@ fn receiver_at(rig: Rig) -> Receiver {
       credentials: [],
       demand: exec.BestEffort,
     ))
+  let logs = process.new_subject()
   Receiver(
     node: state_node.StateNode(
       endpoint: state_service.endpoint(service),
@@ -70,8 +76,10 @@ fn receiver_at(rig: Rig) -> Receiver {
       git: Some(git),
       state_root: root,
       credentials: [],
+      logger: log.new(sink: log.to_subject(logs), threshold: level.Info),
     ),
     root:,
+    logs:,
   )
 }
 
@@ -221,6 +229,15 @@ fn ask(
   at: address.Address(orchestrator_port.Message),
   asked: remote_spawn.Request,
 ) {
+  ask_logging(store, at, asked, log.discard())
+}
+
+fn ask_logging(
+  store: state_store.Store,
+  at: address.Address(orchestrator_port.Message),
+  asked: remote_spawn.Request,
+  logger: log.Logger,
+) {
   remote_spawner.asked_with_state(
     Some(store),
     at,
@@ -230,6 +247,7 @@ fn ask(
     ["bash"],
     asked,
     30_000,
+    logger,
   )
 }
 
@@ -320,5 +338,53 @@ pub fn a_state_the_sender_no_longer_holds_is_refused_for_good_test() {
   let assert Ok(Nil) = simplifile.delete(held.path)
   let assert Ok(Error(remote_spawn.StateRefused(_))) =
     ask(store, at, request(Some(state)))
+  state_rig.stop(rig)
+}
+
+// The text of one field of a record, or the empty string.
+fn field_of(entry: Record, key: String) -> String {
+  case list.find(entry.fields, fn(one) { one.key == key }) {
+    Ok(field.Field(value: field.Text(text), ..))
+    | Ok(field.Field(value: field.Ident(text), ..)) -> text
+    Ok(field.Field(value: field.Count(number), ..)) -> int.to_string(number)
+    _ -> ""
+  }
+}
+
+// What each side says about a state that went across, once, and no more than
+// the sizes and short names an operator needs to read it by.
+pub fn each_side_says_once_that_the_state_arrived_test() {
+  let #(rig, store, state) = parent("seeded-logs")
+  let receiver = receiver_at(rig)
+  let directory = rig.scratch <> "/scratch-dir"
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(directory)
+  let heard = process.new_subject()
+  let at = port_for(receiver, spawner(directory, "workspace"), heard)
+  let sender_logs = process.new_subject()
+  let logger = log.new(sink: log.to_subject(sender_logs), threshold: level.Info)
+
+  let assert Ok(Ok(_spawned)) =
+    ask_logging(store, at, request(Some(state)), logger)
+
+  // The sender's line names the state and the bytes it moved.
+  let assert Ok(sent) = process.receive(sender_logs, 1000)
+  assert sent.event == "remote_spawn.state_sent"
+  assert field_of(sent, "state") == state_object.short(state.hash)
+  assert field_of(sent, "bytes") == int.to_string(state.size)
+
+  // The receiver's line names the same state, the spawner and the copy.
+  let assert Ok(placed) = process.receive(receiver.logs, 1000)
+  assert placed.event == "remote_spawn.seed_placed"
+  assert field_of(placed, "state") == state_object.short(state.hash)
+  assert field_of(placed, "bytes") == int.to_string(state.size)
+  assert field_of(placed, "spawner") == "laptop"
+  assert field_of(placed, "seed") == spawn_seed.name_of(site(), state)
+  assert !string.contains(string.inspect(placed), directory)
+
+  // A resend finds the state and the copy already there, and says nothing more.
+  let assert Ok(Ok(_again)) =
+    ask_logging(store, at, request(Some(state)), logger)
+  assert process.receive(sender_logs, 100) == Error(Nil)
+  assert process.receive(receiver.logs, 100) == Error(Nil)
   state_rig.stop(rig)
 }

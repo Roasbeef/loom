@@ -19,6 +19,7 @@ import client/state_store.{type Store}
 import client/state_transfer.{type Endpoint}
 import client/worktree_git.{type Git}
 import gleam/option.{type Option, None, Some}
+import telemetry/log.{type Logger}
 
 /// A node's means of moving states.
 pub type StateNode {
@@ -37,6 +38,9 @@ pub type StateNode {
     state_root: String,
     /// The node's distribution key and cookie, which every jailed call masks.
     credentials: List(String),
+    /// Where the node says that a state arrived and was placed. It carries no
+    /// path of another machine and no bundle content.
+    logger: Logger,
   )
 }
 
@@ -54,6 +58,7 @@ pub fn none() -> StateNode {
     git: None,
     state_root: "",
     credentials: [],
+    logger: log.discard(),
   )
 }
 

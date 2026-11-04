@@ -1204,6 +1204,7 @@ pub fn start_states(
         git:,
         state_root: root,
         credentials:,
+        logger:,
       ))
     }
   }
@@ -2286,7 +2287,8 @@ fn local_apply(
     Result(#(String, Int), String),
 ) {
   case config.state_node.store, config.state_node.git {
-    Some(store), Some(git) -> Some(return_apply.from_store(store, git))
+    Some(store), Some(git) ->
+      Some(return_apply.from_store(store, git, config.state_node.logger))
     None, _ | _, None -> None
   }
 }
