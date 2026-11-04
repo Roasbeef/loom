@@ -181,6 +181,60 @@ pub fn incoming_ref(hash: String) -> String {
   "refs/loom/in/" <> short(hash)
 }
 
+/// The name a returned child's work is kept under in the parent's repository:
+/// the last segment of the child's strand, accepted only when it is a run of
+/// lower-case letters, digits and single dashes that begins and ends with a
+/// letter or digit.
+///
+/// The strand is minted by the receiving daemon from a slug and a digest, so the
+/// segment always passes. The check is for the day it does not, and for a ref name
+/// built from it: a component that Git's own grammar would reject (`..`, a
+/// trailing `.lock`, a colon) is refused here, before any command is built.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert state_object.child_component("sub:^main/fix-cache-0123456789abcdef")
+///   == Ok("fix-cache-0123456789abcdef")
+/// ```
+///
+/// ```gleam
+/// assert state_object.child_component("sub:^main/../x") == Error("the child's name is not usable in a ref")
+/// ```
+pub fn child_component(strand: String) -> Result(String, String) {
+  let segment = result.unwrap(list.last(string.split(strand, "/")), "")
+  let usable =
+    segment != ""
+    && string.byte_size(segment) <= 96
+    && list.all(string.to_graphemes(segment), fn(each) {
+      string.contains("abcdefghijklmnopqrstuvwxyz0123456789-", each)
+    })
+    && !string.starts_with(segment, "-")
+    && !string.ends_with(segment, "-")
+    && !string.contains(segment, "--")
+
+  // Only a name that passed every test above reaches a ref.
+  case usable {
+    True -> Ok(segment)
+    False -> Error("the child's name is not usable in a ref")
+  }
+}
+
+/// The only ref a child's returned work is kept under in the parent's
+/// repository: `refs/loom/children/<child>/<tip8>`, where the child is a name
+/// that passed `child_component` and `tip8` is the first eight digits of the
+/// commit the child ended on.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert state_object.child_ref("fix-cache", "0123456789abcdef0123456789abcdef01234567")
+///   == "refs/loom/children/fix-cache/01234567"
+/// ```
+pub fn child_ref(child: String, tip: String) -> String {
+  "refs/loom/children/" <> child <> "/" <> string.slice(tip, 0, 8)
+}
+
 /// Accepts a description only when its parts have the shapes the rest of the
 /// code relies on: a hash that is 64 lower-case hex digits, a positive size,
 /// and full object ids for the tip and the base.

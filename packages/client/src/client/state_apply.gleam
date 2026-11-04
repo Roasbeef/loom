@@ -48,9 +48,21 @@
 //// `.git`. It also owns any record of the new tree: this module creates the
 //// directory and the branch and writes no ledger row.
 ////
+//// ## Returned work
+////
+//// `apply_returned` is the other direction: the commits a child made on a remote
+//// machine, on top of a state this machine sent, come back as a bundle and are
+//// kept under one ref, `refs/loom/children/<child>/<tip8>`, in the repository the
+//// state was captured from. It creates no worktree and no branch, moves no
+//// existing ref, and asks for nothing the sent state does not already supply. The
+//// bundle is untrusted exactly as a sent one is, so the same comparison runs
+//// first, and the header must list the sent tip and nothing else as its
+//// prerequisite.
+////
 //// ## Flow
 ////
-//// `apply` → `into_worktree` | `into_clone` → `import_bundle`
+//// `apply` → `into_worktree` | `into_clone` → `import_bundle`, and
+//// `apply_returned` → `hold_sent` → `create_child_ref`
 ////
 //// 1. `apply` reads the bundle within the declared size and has
 ////    `state_object.verify_bundle` compare it with the state. Nothing touches a
@@ -156,6 +168,25 @@ pub fn apply(
   state: State,
   placement: Placement,
 ) -> Result(Applied, String) {
+  use #(state, _bytes) <- result.try(verified(bundle, state))
+
+  // Only a state that matches its bytes reaches a repository, and then by the
+  // route its placement names.
+  case placement {
+    Worktree(repository:, destination:, session:) ->
+      into_worktree(git, bundle, state, repository, destination, session)
+    Clone(destination:, session:) ->
+      into_clone(git, bundle, state, destination, session)
+  }
+}
+
+/// Reads the bundle within the declared size and compares it with the
+/// description, answering the validated description and the bytes. This is the
+/// check every route makes before a repository is opened.
+fn verified(
+  bundle: String,
+  state: State,
+) -> Result(#(State, BitArray), String) {
   use state <- result.try(state_object.validate(state))
   use <- bool.guard(
     when: state.size > state_object.size_limit,
@@ -167,15 +198,200 @@ pub fn apply(
       "the bundle cannot be read within the declared size: " <> reason
     }),
   )
-  use Nil <- result.try(state_object.verify_bundle(state, bytes))
+  use Nil <- result.map(state_object.verify_bundle(state, bytes))
+  #(state, bytes)
+}
 
-  // Only a state that matches its bytes reaches a repository, and then by the
-  // route its placement names.
-  case placement {
-    Worktree(repository:, destination:, session:) ->
-      into_worktree(git, bundle, state, repository, destination, session)
-    Clone(destination:, session:) ->
-      into_clone(git, bundle, state, destination, session)
+/// The state a spawn sent, as this machine still holds it: the description and
+/// the bundle file in its store.
+pub type Sent {
+  Sent(
+    /// The path of the bundle in the state store.
+    bundle: String,
+    /// The description the spawn named.
+    state: State,
+  )
+}
+
+/// Whether a returned ref was made by this apply.
+pub type Creation {
+  /// The ref did not exist and this apply made it.
+  Created
+
+  /// The ref already named the returned tip, so an earlier apply of the same
+  /// return made it and this one changed nothing.
+  AlreadyThere
+}
+
+/// What an apply of a child's returned commits left in the repository.
+pub type Returned {
+  Returned(
+    /// The ref the commits are under, `refs/loom/children/<child>/<tip8>`.
+    ref: String,
+    /// The commit that ref names.
+    tip: String,
+    /// Whether this apply made the ref.
+    creation: Creation,
+  )
+}
+
+/// Applies the commits a finished child made on top of the state it was sent,
+/// creating one ref and nothing else (protocol-change/107, "Return").
+///
+/// The bundle is untrusted: the child that made it ran on another machine under a
+/// model's direction. It is compared with its description first, as for every
+/// route. The description must name the state that was sent as its base, the
+/// bundle's header must list that state's tip as its only prerequisite, and the
+/// child's name must pass the grammar of a ref component, so a child can neither
+/// ask for objects the parent was not asked to supply nor name a ref outside
+/// `refs/loom/children/`. Git then unpacks the bundle with no network and no hook,
+/// a walk from the tip proves every object arrived, and the ref is created with
+/// the zero id as its old value.
+///
+/// A dirty state's tip is a snapshot commit that only the bundle holds, so when
+/// the repository lacks the sent tip the sent bundle is unpacked first. That
+/// writes objects and no ref. A ref that already names the returned tip is a
+/// replay and is answered `AlreadyThere` with nothing written; one that names
+/// another commit is refused and left alone. No branch, index, working tree or
+/// other ref is touched. The caller holds the repository's workspace gate.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // state_apply.apply_returned(git, repository, child, sent, bundle, returned)
+/// // == Ok(Returned(ref: "refs/loom/children/fix-cache/01234567", tip:, creation: Created))
+/// ```
+pub fn apply_returned(
+  git: Git,
+  repository: String,
+  child: String,
+  sent: Sent,
+  bundle: String,
+  returned: State,
+) -> Result(Returned, String) {
+  use #(returned, bytes) <- result.try(verified(bundle, returned))
+  use child <- result.try(state_object.child_component(child))
+  use Nil <- result.try(thin_against(sent.state, returned, bytes))
+  use Nil <- result.try(check_repository(repository))
+  let ref = state_object.child_ref(child, returned.tip)
+  use existing <- result.try(current_value(git, repository, ref))
+
+  // Whether the ref is there already decides whether anything is unpacked.
+  case existing {
+    Some(oid) if oid == returned.tip ->
+      Ok(Returned(ref:, tip: returned.tip, creation: AlreadyThere))
+    Some(_) -> Error(ref <> " already names a different commit")
+    None -> {
+      use Nil <- result.try(hold_sent(git, repository, sent))
+      create_child_ref(git, repository, bundle, returned, ref)
+    }
+  }
+}
+
+/// Requires a returned state to be thin against exactly the state that was sent:
+/// the description names the sent tip as its base, and the bundle's header lists
+/// that commit and no other as a prerequisite. A merge that pulled in older
+/// history, or a history rewritten below the sent tip, lists another boundary and
+/// is refused, because the parent was asked to supply only what it sent.
+fn thin_against(
+  sent: State,
+  returned: State,
+  bytes: BitArray,
+) -> Result(Nil, String) {
+  use <- bool.guard(
+    when: returned.base != Some(sent.tip),
+    return: Error(
+      "the returned state is not thin against the state that was sent",
+    ),
+  )
+  use header <- result.try(state_object.parse_header(bytes))
+
+  // The list must be exactly the sent tip; one entry more is a request for
+  // history the parent was never asked to supply.
+  case header.prerequisites == [sent.tip] {
+    True -> Ok(Nil)
+    False ->
+      Error(
+        "the returned bundle needs commits other than the state that was sent",
+      )
+  }
+}
+
+/// Makes sure the repository holds the sent tip. A clean state's tip is a commit
+/// the repository had, and nothing is read. A dirty state's tip is a snapshot
+/// commit that was only ever in the bundle, so the sent bundle is unpacked, which
+/// writes its objects and no ref.
+fn hold_sent(git: Git, repository: String, sent: Sent) -> Result(Nil, String) {
+  use held <- result.try(
+    git_run(git, repository, [], [
+      "cat-file",
+      "-e",
+      sent.state.tip <> "^{commit}",
+    ]),
+  )
+
+  // Git exits zero when the commit is there, which is all that is asked.
+  case held.code {
+    0 -> Ok(Nil)
+    _ -> {
+      use #(_state, _bytes) <- result.try(verified(sent.bundle, sent.state))
+      git_ok_with(
+        git,
+        repository,
+        [repository <> "/.git"],
+        worktree_git.run_reading_store,
+        ["bundle", "unbundle", sent.bundle],
+      )
+      |> result.replace(Nil)
+    }
+  }
+}
+
+/// Unpacks the returned bundle and names its tip. Nothing is named until the walk
+/// from the tip finds every object. A ref another apply of the same return made
+/// in the meantime is the replay it is: the zero old value makes Git refuse, and
+/// the ref is read again.
+fn create_child_ref(
+  git: Git,
+  repository: String,
+  bundle: String,
+  returned: State,
+  ref: String,
+) -> Result(Returned, String) {
+  let writable = [repository <> "/.git"]
+  use _ <- result.try(
+    git_ok_with(git, repository, writable, worktree_git.run_reading_store, [
+      "bundle",
+      "unbundle",
+      bundle,
+    ]),
+  )
+  use _ <- result.try(
+    git_ok(git, repository, [], [
+      "rev-list", "--objects", "--quiet", returned.tip, "--not", "--all",
+    ]),
+  )
+  let made =
+    git_ok(git, repository, writable, [
+      "update-ref",
+      ref,
+      returned.tip,
+      string.repeat("0", string.length(returned.tip)),
+    ])
+
+  // A failed update is either a lost race to the same ref or a real refusal.
+  case made {
+    Ok(_) -> Ok(Returned(ref:, tip: returned.tip, creation: Created))
+    Error(reason) -> {
+      use again <- result.try(current_value(git, repository, ref))
+
+      // Another apply that got there first named the same tip.
+      case again {
+        Some(oid) if oid == returned.tip ->
+          Ok(Returned(ref:, tip: returned.tip, creation: AlreadyThere))
+        Some(_) | None -> Error(reason)
+      }
+    }
   }
 }
 
