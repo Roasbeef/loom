@@ -614,3 +614,115 @@ narrowed.
   clears it, and a resend with a different state has a different name.
 - *Test order.* The tests that look at `seed-staging` now wait for it to drain, since
   the attempt removes its stage and claim after the rename has made the copy whole.
+
+## Addendum: slice 3b, the return direction (2026-11-04)
+
+Slice 3 is now whole: a child started from the parent's workspace finishes, and the
+commits it made on top of that workspace arrive as one ref in the parent's repository.
+This addendum records what the build settled and where it differs from the text above.
+Nothing above is edited. No wire constructor was added and the version stays at 6:
+`Joined.state` and the optional `remote_children` members were already in "Wire".
+
+**What comes back.** Only commits. The receiver captures `HEAD` thin against the tip of
+the state the child was handed, with the working tree left unread
+(`repository_snapshot.capture_commits`, the existing capture with a `CommittedOnly`
+content: no inventory, no attribute check, no comparison of the index with the tree).
+Edits the child left uncommitted, staged or untracked do not travel, and the child's
+report says that there were some. A child that was handed no state, or committed
+nothing, returns nothing, and a `HEAD` that does not descend from the sent tip (a child
+that reset or rewrote what it was given) is a refusal with a reason.
+
+**Settled: who moves the bundle.** 107 says the parent pulls with `StateFetch`. The
+build pushes: the receiver sends from its store to the parent's over the orchestrator
+port with `state_transfer.send`, from inside the join. The join is the one message the
+receiver is sure to get after the child's run has ended, and the parent is connected for
+its duration, so the push needs no message the vocabulary lacks and no timer on the
+parent. The reasons for a pull still hold in part and are met differently: the receiver
+keeps what it learned in a verdict file under `<state root>/seed-returns`, a directory no
+session can read, so a restart of the receiver or the end of the parent's turn loses
+nothing, and a transfer that did not finish resumes at the parent's offset on the next
+join. A captured state that is not yet in the parent's store is `Pending` to the parent;
+a `Ready` carrying a state always means the bundle is already in the parent's store.
+
+**Differences from the text above.**
+
+- *The join waits for the return.* A seeded child's entry is `Pending` while its commits
+  are being captured and moved (a join waits 1.5 s for the work before answering), so the
+  parent is not told a child finished until the matter of its commits is decided: moved,
+  none, or given up. The work runs in a process of its own under a 14-minute deadline,
+  claimed so concurrent joins do not each start it, and a transfer that does not finish is
+  tried at the next join up to five times, then ends in a refusal that names the hash the
+  commits are kept under in the receiver's store.
+- *A return does not fail a child.* A refused capture, a declined bundle, a copy swapped
+  for a link and a transfer that never finishes each append one fixed sentence to the
+  child's report. The child's text is otherwise unchanged.
+- *The ref and its sentence.* The ref is `refs/loom/children/<child>/<tip8>`, where
+  `<child>` is the last segment of the daemon-minted strand (`state_object.child_component`
+  accepts lower-case letters, digits and single dashes and nothing else). The model-visible
+  text gains one paragraph naming the count and the ref, and the Git commands to use; the
+  ref and the count are built from validated values, and a refusal's reason is cut to 300
+  bytes.
+- *The apply also unpacks the sent bundle.* The sent tip of a dirty workspace is a
+  snapshot commit that only the bundle ever held, so the returned bundle's one
+  prerequisite is a commit the parent's repository lacks. `apply_returned` unpacks the
+  sent bundle first when the sent tip is absent, which writes objects and no ref; it does
+  not create `refs/loom/in/<hash8>`. The ref the apply makes is the one ref.
+- *Prerequisites are exactly the sent tip.* The returned description must name the sent
+  tip as its base and the bundle header must list it as its only prerequisite. A child
+  that merged older history or rewrote below the sent tip lists another boundary and is
+  refused, so the parent is only ever asked to supply what it sent.
+- *The workspace gate's exclusive side.* The shared side is not enough. The apply unpacks
+  objects that nothing references until the ref exists, and every workspace tool call
+  holds the shared side, so a `git gc --prune=now` or `git repack -ad` from one of them
+  would run beside the apply. The apply takes `workspace_gate.exclusive` with the capture's
+  bounds (30 s drain, 330 s hold). A gate that does not go quiet is a reason to try again:
+  it is told in the report and not recorded, and the next wait applies again; a hold that
+  lapses discards the answer and the retry finds the ref already made. A test holds the
+  gate closed during an apply and shows a tool call cannot enter, and another holds a
+  tool call open and shows the apply is refused as retry and writes nothing.
+- *The apply is for the workspace the child started from.* The stub records the canonical
+  directory the spawn captured, as a `seeded` member that is absent for every other
+  child, so a stub written earlier decodes unchanged. The apply runs only when the
+  session's workspace resolves to that directory now, and only into a primary checkout.
+  A session moved to another machine, or whose workspace changed, is told its commits
+  could not be applied; they stay in the parent's store for its retention.
+- *Decided once.* The answer is written to the stub once (`remote_child.returned`, a
+  compare-and-set on a settled seeded stub with nothing decided), so a second wait tells the
+  same sentence, applies nothing, and one child makes at most one ref. A replayed return that
+  does reach the apply is `AlreadyThere`; a ref that exists with another tip is refused and
+  never moved.
+- *The strip.* `remote_children` rows gain `commits` and `returned_ref`, written only for a
+  child whose commits were applied. A client built before them ignores both, and a client
+  that reads them treats an incomplete or malformed pair as absent. The card cannot tell
+  "no commits" from "could not be returned": both leave the pair absent, and the report
+  carries the difference in words.
+
+**Costs and limits accepted for now.**
+
+- A linked-worktree workspace (095) is refused by the apply, which takes only a primary
+  checkout whose `.git` is a directory. The path of the primary checkout cannot be read
+  from a `.git` file the model can write, and a daemon-owned record of it is not wired to
+  the session assembly. A session in a linked worktree is told its commits could not be
+  applied.
+- Commits made after the join first reported the child finished are not returned; the
+  first decision is final. A child sent a message after it settled and given more work
+  returns nothing of the second run.
+- A crash between the receiver's answer to a spawn and the write of its record loses that
+  child's return. The window is two calls wide and the commits stay in the child's copy.
+- `seed-returns` holds a record and a verdict of a few hundred bytes per seeded child and
+  has no sweep beyond clearing claims at start.
+- An executor or pool placement takes no copy and so returns nothing, as in the send
+  direction.
+
+**What the live drive of exit criterion 1 still needs.** Nothing here was run over a real
+TLS distribution link, under bubblewrap and Landlock, or by a model. The drive is a box
+orchestrator with a `[distribution]` table and a session whose workspace is a primary
+checkout on the box; a laptop with `[spawners.box]` set to a `directory` and
+`seed = "workspace"`; a model call `agent_spawn(on: "laptop", context: "my_workspace")`;
+the child committing in `seeds/<name>` on the laptop; and then the box's `agent_wait`
+reporting the ref, with `git log refs/loom/children/...` on the box showing the commits and
+the box's checkout untouched. It also needs the keeper link to stay up between the child's
+end and the join, a Git identity on the laptop for the child's commits (the executor
+identity path of slice 2 does not apply to a `directory` placement), and the box's session
+to be outside a code-mode program when it waits, since a program holds the gate's shared
+side.
