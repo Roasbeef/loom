@@ -445,8 +445,11 @@ pub fn a_link_planted_at_seeds_is_refused_and_nothing_lands_behind_it_test() {
       request(Some(state)),
     )
   assert simplifile.read_directory(outside) == Ok([])
+
+  // What the failed apply leaves in the stage is its verdict and nothing else.
+  let name = spawn_seed.name_of(site(), state)
   assert simplifile.read_directory(rig.scratch <> "/receiver/seed-staging")
-    == Ok([])
+    == Ok([name <> ".refused"])
   state_rig.stop(rig)
 }
 
@@ -477,6 +480,23 @@ pub fn a_link_planted_at_the_copys_name_is_refused_test() {
 }
 
 // --- an apply slower than the asker ------------------------------------------
+
+// The attempt releases its stage and its claim after it has made the copy whole,
+// so the directory is polled until it is empty, with a bound.
+fn staging_drains(rig: Rig) -> Bool {
+  drained(rig.scratch <> "/receiver/seed-staging", 200)
+}
+
+fn drained(path: String, tries: Int) -> Bool {
+  case simplifile.read_directory(path), tries {
+    Ok([]), _ -> True
+    _, 0 -> False
+    _, _ -> {
+      process.sleep(50)
+      drained(path, tries - 1)
+    }
+  }
+}
 
 // Asks until the copy is there, with a window too short for any apply.
 fn asked_until_made(
@@ -527,8 +547,7 @@ pub fn an_apply_slower_than_the_asker_finishes_and_a_resend_finds_it_test() {
     == Ok("edited by the parent\n")
 
   // No stage and no claim outlives the apply.
-  assert simplifile.read_directory(rig.scratch <> "/receiver/seed-staging")
-    == Ok([])
+  assert staging_drains(rig)
   state_rig.stop(rig)
 }
 
@@ -555,8 +574,7 @@ pub fn two_concurrent_attempts_end_with_one_whole_copy_test() {
   assert simplifile.read_directory(directory <> "/seeds") == Ok([name])
   assert simplifile.read(directory <> "/seeds/" <> name <> "/notes.txt")
     == Ok("not committed anywhere\n")
-  assert simplifile.read_directory(rig.scratch <> "/receiver/seed-staging")
-    == Ok([])
+  assert staging_drains(rig)
   state_rig.stop(rig)
 }
 
@@ -571,5 +589,48 @@ pub fn a_claim_is_exclusive_until_it_is_stale_test() {
   assert spawn_seed.claim(parent, "seed-b", now) == Ok(spawn_seed.Claimed)
   assert spawn_seed.claim(parent, "seed-a", now + spawn_seed.claim_stale_s + 10)
     == Ok(spawn_seed.Claimed)
+  state_rig.stop(rig)
+}
+
+// An apply that fails after the asker's window has gone is answered by the
+// verdict it kept: the resend is refused at once with the same reason, and no
+// second apply starts (an ask that found the claim free would be told to ask again,
+// not refused). The failure is a link planted at `seeds`, which the apply meets
+// only when it comes to move the finished repository, after all its Git work.
+pub fn an_apply_that_fails_after_its_asker_left_is_answered_by_its_verdict_test() {
+  let #(rig, _capturer, state) = parent("seed-verdict")
+  let receiver = node_at(rig, "receiver")
+  let directory = rig.scratch <> "/scratch-dir"
+  let outside = rig.scratch <> "/outside"
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(directory)
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(outside)
+  let assert Ok(Nil) = simplifile.create_symlink(outside, directory <> "/seeds")
+  let spawner = in_directory(directory, "workspace")
+  sent(rig, receiver, state)
+
+  // The first ask is told to ask again, because the apply is still going.
+  let assert Error(remote_spawn.NotYetOpen(_)) =
+    spawn_seed.receive_within(
+      receiver.node,
+      spawner,
+      site(),
+      request(Some(state)),
+      1,
+    )
+
+  // The refusal arrives once the apply has failed, and is the same every time.
+  let assert Error(remote_spawn.StateRefused(reason)) =
+    asked_until_made(receiver, spawner, state, 300)
+  list.each([1, 2, 3], fn(_resend) {
+    assert spawn_seed.receive_within(
+        receiver.node,
+        spawner,
+        site(),
+        request(Some(state)),
+        1,
+      )
+      == Error(remote_spawn.StateRefused(reason))
+  })
+  assert simplifile.read_directory(outside) == Ok([])
   state_rig.stop(rig)
 }

@@ -1579,7 +1579,9 @@ process under its own 11-minute `weft.deadline`, so an asker that stops waiting
 (`receive_within`) gets `NotYetOpen` and the apply goes on; every attempt's stage is
 `<name>-<unique integer>` and only that attempt deletes it; `main.start_states` empties
 `seed-staging` at start. `published` requires `seeds` to be a real canonical directory,
-renames, and `verified` requires the copy to be exactly at its name, else removes it;
+renames, and `verified` requires the copy to be exactly at its name, else refuses and
+leaves it (no unjailed delete through a tree a session controls); a failed apply keeps
+`<name>.refused` beside the claim before releasing it, and `copy` answers from it;
 the check-then-rename window against a child swapping `seeds` is a stated residual
 (protocol-change/107 addendum). `wiring.run_gated` runs unplaced (extension, MCP) tools
 on the gate's shared side as well as workspace-side ones.

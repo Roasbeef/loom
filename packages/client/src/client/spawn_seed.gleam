@@ -284,10 +284,27 @@ fn copy(
     Whole -> Ok(Nil)
     Tampered -> Error(StateRefused(tampered_reason))
     Missing -> {
+      // An apply that failed after its asker had gone left its verdict, so the
+      // resend is told so at once and starts no second apply.
+      use Nil <- result.try(refused_before(node, name))
       use held <- result.try(held(node, state))
       applied(node, directory, name, held, wait_ms)
     }
   }
+}
+
+/// The reason an earlier apply of this copy failed, as the refusal it earned, or
+/// `Ok` when none did.
+fn refused_before(node: StateNode, name: String) -> Result(Nil, SpawnRefusal) {
+  case simplifile.read(verdict_path(node.state_root, name)) {
+    Ok(reason) -> Error(StateRefused(reason))
+    Error(_) -> Ok(Nil)
+  }
+}
+
+/// Where the verdict of one copy's failed apply is kept, beside its claim.
+fn verdict_path(state_root: String, name: String) -> String {
+  state_root <> "/" <> staging_directory <> "/" <> name <> ".refused"
 }
 
 /// Starts the apply for one copy, unless another attempt is making it, and waits
@@ -460,11 +477,8 @@ fn building(
     |> weft.deadline(apply_ms)
     |> weft.start
 
-  let _stage_removed = simplifile.delete(stage)
-  let _claim_released = simplifile.delete(parent <> "/" <> name <> ".claim")
-
   // A task that finished has its own answer; every other end is the deadline.
-  case outcomes {
+  let answer = case outcomes {
     [weft.Completed(..)] -> Ok(Nil)
     [weft.Failed(error:, ..)] -> Error(error)
     [weft.Crashed(..)]
@@ -475,6 +489,45 @@ fn building(
     | []
     | [_, _, ..] ->
       Error(StateRefused("applying the state did not finish in time"))
+  }
+
+  // The verdict is kept before the claim is let go, so no ask can find the claim
+  // free and the verdict missing. The stage and the claim are daemon-owned.
+  record_refusal(parent, name, answer)
+  let _stage_removed = simplifile.delete(stage)
+  let _claim_released = simplifile.delete(parent <> "/" <> name <> ".claim")
+  answer
+}
+
+/// Keeps the reason a failed apply was refused for, so that an ask arriving after
+/// the asker that started it has gone is answered with it. The reason is bounded
+/// and printable, and is written to a temporary file and renamed so a reader never
+/// sees half of it. A success keeps nothing. Failing to keep it costs only that the
+/// next ask applies again.
+fn record_refusal(
+  parent: String,
+  name: String,
+  answer: Result(Nil, SpawnRefusal),
+) -> Nil {
+  // Only a refusal is a verdict; a copy that was made, or a store that failed, is
+  // not.
+  case answer {
+    Ok(Nil) -> Nil
+    Error(StateRefused(reason)) -> {
+      let path = parent <> "/" <> name <> ".refused"
+      let temporary =
+        path <> "." <> int.to_string(ffi_os.unique_positive_integer())
+
+      // The rename is what publishes it, whole.
+      case simplifile.write(temporary, worktree_git.printable(reason, 512)) {
+        Ok(Nil) -> {
+          let _renamed = simplifile.rename(temporary, path)
+          Nil
+        }
+        Error(_) -> Nil
+      }
+    }
+    Error(_) -> Nil
   }
 }
 
@@ -535,13 +588,15 @@ fn made(
 /// The workspace is writable by the sessions that run in it, and this move is made
 /// by the daemon outside any jail, so a session could try to steer it. Before the
 /// move `seeds` must be a real directory at its canonical path, and after it the
-/// copy must be where its name says; a copy that landed anywhere else is removed
-/// and refused. This narrows the window and does not close it: a child that
-/// swaps `seeds` for a link between the check and the rename can still redirect
-/// the rename, and the after-check then finds and removes what the daemon put
-/// there. Closing it for good needs a destination no session can write, which is
-/// a design change for a later slice. What lands is always a repository this
-/// daemon made from a bundle at a name it chose.
+/// copy must be where its name says; a copy that landed anywhere else is refused
+/// and left where it landed. This narrows the window and does not close it: a
+/// child that swaps `seeds` for a link between the check and the rename can still
+/// redirect the rename, and the after-check then refuses. The daemon does not
+/// delete what landed, because that delete would be made outside the jail by path
+/// through a tree the session controls. Closing the window for good needs a
+/// destination no session can write, which is a design change for a later slice.
+/// What lands is always a repository this daemon made from a bundle at a name it
+/// chose.
 fn published(
   stage: String,
   directory: String,
@@ -588,16 +643,20 @@ fn seeds_ready(seeds: String) -> Result(Nil, SpawnRefusal) {
   }
 }
 
-/// Requires the copy to be exactly where its name says. One that landed
-/// elsewhere was put there by this daemon at a path it named, so it is removed.
+/// Requires the copy to be exactly where its name says.
+///
+/// One that is not is refused, and left where the rename put it. The daemon does
+/// not delete it: the delete would be made outside the jail, by path, through a
+/// tree a session that already won the first race can still rearrange, and a link
+/// swapped into it mid-walk would have the daemon delete its own private files.
+/// What stays is a repository the daemon made from a bundle at a name it chose, in
+/// a place the session could already write. The refusal is logged by the spawn
+/// host, which records the class of every final refusal.
 fn verified(final: String, name: String) -> Result(String, SpawnRefusal) {
-  // Whole is the copy where its name says; anything else is removed.
+  // Whole is the copy where its name says; anything else is refused.
   case settled(final) {
     Whole -> Ok(name)
-    Missing | Tampered -> {
-      let _removed = simplifile.delete(final)
-      Error(StateRefused(tampered_reason))
-    }
+    Missing | Tampered -> Error(StateRefused(tampered_reason))
   }
 }
 

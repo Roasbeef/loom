@@ -593,3 +593,24 @@ narrowed.
   `.gitattributes`, and a control runs the same configuration under ordinary Git
   outside the jail and shows the program fires. "Never run" above should be read as
   "cannot write outside the jail".
+
+**Slice 3, send direction: second review (2026-11-04).** Three more findings, fixed.
+
+- *The after-the-move check no longer deletes.* The previous paragraph said a copy
+  that landed away from its name is removed. That delete is made outside the jail, by
+  path, through a tree a session that already won the first race can still rearrange,
+  and a link swapped into it mid-walk would have the daemon delete its own private
+  files. The daemon now deletes nothing there. It refuses with the same constant
+  reason and leaves the repository where the rename put it: a repository the daemon
+  made from a bundle at a name it chose, in a place the session could already write.
+  The refusal is logged by the spawn host with the rest of the final refusals. The
+  stage and the claim, which are daemon-owned under `seed-staging`, are still removed.
+- *A late failure is answered, not repeated.* An apply that failed after its asker had
+  gone sent its refusal to nobody, released the claim, and every retry ran a full
+  apply again. The attempt now keeps a verdict, `<name>.refused` in `seed-staging`
+  (the reason, printable and at most 512 bytes, written to a temporary file and
+  renamed), before it releases the claim, and an ask for a copy that is not yet there
+  looks for the verdict first and answers `StateRefused` with it. The startup sweep
+  clears it, and a resend with a different state has a different name.
+- *Test order.* The tests that look at `seed-staging` now wait for it to drain, since
+  the attempt removes its stage and claim after the rename has made the copy whole.
