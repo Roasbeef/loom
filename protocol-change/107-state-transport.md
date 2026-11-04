@@ -410,10 +410,11 @@ directory, and a piece that does not fit removes its half-written file.
 - *The node's store has one owner.* `client/state_service` owns the directory and
   both carriers answer through it, because the store has no lock and a daemon can
   be orchestrator and executor at once.
-- *Serving costs more than receiving.* There is no ranged read without new FFI,
-  so `StateFetch` reads a prefix of the bundle up to the end of the piece. A whole
-  bundle served that way reads the square of its size in pieces, bounded by
-  `size_limit`. A ranged read is a `host/bootstrap` change if it ever matters.
+- *Serving uses a positioned read.* `StateFetch` at offset N reads only that
+  piece, with `host/bootstrap.read_range`, a `file:pread/3` added beside
+  `read_prefix` in the existing `host_bootstrap_ffi.erl` with the owner's
+  approval. It is bounded like `read_prefix` and adds the bounds a peer's offset
+  needs. An offset at or past the end is served from the last byte.
 
 **Found by building it, and settled: where the owner's identity comes from.**
 107 says the owner answers from `git_identity.resolve`. `resolve` runs Git
@@ -434,5 +435,24 @@ result is held for a minute, a failure included, so a session build waits at mos
 the lookup's 5 s once and a Git that hangs delays one build and no more. The owner
 port still sends none for an incomplete identity or one that fails
 `protocol.git_identity_of`. No new key, no new FFI and no wire change.
+
+**Review findings, fixed and accepted.** An independent review of the PR found
+three things that are fixed here. A half-written file that reached the declared
+size without `finish` having run answered every later attempt with `Partial` of
+the whole size, and nothing could finish it: the receiver now finishes it on the
+first piece in range, a faulted finish discards it, and `send` clamps to the last
+byte so it always cuts a piece in range. An abandoned `.part` held `total_cap` for
+the seven days a finished state is kept: parts are now swept after an hour. And
+`pull` took the `Store`, which would have made a first caller a second writer
+beside `state_service`: it now takes the `Endpoint`.
+
+Accepted for now, with the reason. `held_verdict` and `stage` call
+`state_store.get`, which hashes the whole bundle to confirm a complete state, on
+every `StateChunk` and `StateStatus` for it, and a flood of requests to one
+owner queues in its mailbox. The peers are pinned, trusted executors, every
+request serializes in the one owner's turn, and the work is bounded by the
+256 MiB size limit, so neither is reachable by an untrusted peer. The cost of
+`StateFetch`'s read, which the review also raised, is fixed by the positioned
+read above, which the owner approved. The sender's `resyncs` bound is unchanged.
 
 **Slices.** Slice 2 is done as above. Slices 3 to 5 are unchanged.

@@ -240,7 +240,7 @@ No new dependency and no new FFI.
 **The root key** is 32 bytes drawn once and kept at `<state-dir>/browser.key`
 beside `owner.token`, written with `atomic_write_private`
 (`host/bootstrap.gleam:403`) at mode `0600`, and read at start through the
-owner-and-`0600` check `read_private_bounded` (`host/bootstrap.gleam:359`)
+owner-and-`0600` check `read_private_bounded` (`host/bootstrap.gleam:383`)
 applies to `owner.token`. It is the one secret that verifies every login;
 it never leaves the daemon's host and is never derived from or written
 into a token. At start the daemon does one of three things: a readable

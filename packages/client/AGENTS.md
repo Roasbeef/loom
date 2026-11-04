@@ -1431,12 +1431,14 @@ size against `size_limit`, sweeps, and every piece is checked against
 piece that does not fit removes the half-written file. `finish` reads the part
 once and compares its size and SHA-256 with the description; a mismatch deletes
 it and stores nothing, and a match renames it to the bundle and writes the record
-last. `read_piece` serves a held state by reading a prefix of the bundle up to the
-end of the piece, so serving a whole bundle costs the square of its size in pieces,
-bounded by `size_limit`; the receiver's hash check is what catches a damaged
-bundle, so the server checks only the size. A `.part` file is not a bundle or a
-record by name, so `sweep` judges it by its modification time, which every
-appended piece renews.
+last. `read_piece` serves a held state with a positioned read of just the piece
+(`host/bootstrap.read_range`, a `file:pread/3`); an offset at or past the end is
+served from the last byte and returns the offset it served. The receiver's hash
+check is what catches a damaged bundle, so the server checks only the size. A
+`.part` file is not a bundle or a record by name, so `sweep` judges it by its
+modification time, which every appended piece renews, and against
+`part_retain_s` (an hour, never more than `retain_s`) and not the days a finished
+state is kept, so an abandoned transfer stops holding `total_cap` within the hour.
 
 `state_transfer` is the vocabulary and the logic. A `Piece` carries the state's
 description and its offset, so the receiver keeps no announcement. `take` judges a
@@ -1444,7 +1446,11 @@ piece before the disk is touched (`BadState`, `TooLarge`, `BadPiece`), then plac
 it against the bytes held: at the end it is appended, wholly inside it is a repeat
 and answers `Accepted` with the bytes held, and beyond it is `OutOfOrder` with the
 offset expected. The piece that reaches the size makes the state through
-`finish` or answers `Mismatch`. `stage` is `Absent`, `Partial(held)` or
+`finish` or answers `Mismatch`. A part that already holds the declared size
+(a crash between the last append and the rename, or a faulted finish) is finished
+by the first piece in range for the state, before offsets are compared, and a
+fault in `finish` discards the part; `send` clamps its offset to the last byte so
+it always cuts a piece in range. `stage` is `Absent`, `Partial(held)` or
 `Complete`, and a store that cannot say is an `Error` that is never `Absent`.
 `Endpoint` is the three functions a carrier calls (`take`, `stage`, `serve`),
 `declining()` is the node with no store, and a `Link` is the three questions
@@ -1452,7 +1458,9 @@ asked of another node, where `Error(Nil)` is silence and never a refusal. `send`
 `relay` and `pull` are one `transfer` loop over a source of pieces and a sink for
 them: ask where the destination stands, send the piece at that offset, continue at
 the offset each verdict reports, bounded by the pieces the state needs plus
-`max_resyncs`, and `Stalled` when it has not converged.
+`max_resyncs`, and `Stalled` when it has not converged. `pull` writes, so it takes
+the node's `Endpoint` and never the `Store`: every write on a node goes through
+`state_service`. `send` takes the store because it only reads.
 
 `state_service` is the one process that owns a node's store, because the store has
 no lock. Both the orchestrator port and the executor host answer through the

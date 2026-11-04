@@ -165,6 +165,8 @@ pub fn a_hostile_configuration_runs_no_program_test() {
     }
   }
 
+  // The identity is the real assertion. The canary is a weak secondary check,
+  // because the sandbox grants no write and a program could not make it anyway.
   assert owner_identity.resolve(rig.git, rig.home, hostile, 20_000)
     == Ok(Identity(Some("Ada Lovelace"), Some("ada@example.invalid")))
   assert simplifile.is_file(canary) == Ok(False)
