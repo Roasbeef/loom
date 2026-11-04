@@ -128,8 +128,25 @@ pub fn a_childs_ref_is_built_only_from_a_minted_name_test() {
   // would treat as something other than one plain name.
   list.each(
     [
-      "", "sub:^main/", "sub:^main/..", "a..b", "a.lock", "A", "a b", "-a", "a-",
-      "a--b", "a:b", "a~1", "a^", "a?", "a*", "a[", "a\\b", "a@{b", "a\u{0}b",
+      "",
+      "sub:^main/",
+      "sub:^main/..",
+      "a..b",
+      "a.lock",
+      "A",
+      "a b",
+      "-a",
+      "a-",
+      "a--b",
+      "a:b",
+      "a~1",
+      "a^",
+      "a?",
+      "a*",
+      "a[",
+      "a\\b",
+      "a@{b",
+      "a\u{0}b",
       string.repeat("a", 97),
     ],
     fn(strand) {

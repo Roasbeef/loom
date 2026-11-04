@@ -20,11 +20,18 @@
 //// holds the base has. When the working tree adds nothing to `HEAD` the tip is
 //// `HEAD` itself and no commit is made. Otherwise the tip is a snapshot commit.
 ////
+//// `capture_commits` is the same capture for a finished child's work
+//// (protocol-change/107, "Return"): thin against the state the child was handed,
+//// with `HEAD` as the tip and the working tree unread, so only what the child
+//// committed comes back and its uncommitted edits stay where they are.
+////
 //// ## Flow
 ////
-//// `capture` calls `capture_against` with a full basis. `capture_against`
-//// calls `discover`, `validate_repository`, `inventory`, `working_entries`,
-//// and `check_attributes`, then `check_basis` and `check_space`.
+//// `capture` calls `capture_against` with a full basis. `capture_against` and
+//// `capture_commits` call `captured`, which calls `discover`,
+//// `validate_repository`, and `selected` (`inventory`, `working_entries` and
+//// `check_attributes` for working bytes, nothing for commits), then
+//// `check_basis` and `check_space`.
 //// It then uses `private_scope` and `update_private_index` to build a tree,
 //// `tip_of` to choose the commit it delivers, `seed_base` to give a thin
 //// child its base, and verifies the bundle and checks out a private child.
@@ -142,6 +149,101 @@ pub fn capture_against(
   within_ms: Int,
   basis: state_object.Basis,
 ) -> Result(Snapshot, String) {
+  captured(
+    git,
+    call,
+    store,
+    stage_name,
+    identity,
+    within_ms,
+    basis,
+    WorkingBytes,
+  )
+}
+
+/// What a capture puts on top of the repository's history.
+type Content {
+  /// The working tree's bytes, as a snapshot commit when they differ from
+  /// `HEAD`. This is what a parent's workspace is sent as.
+  WorkingBytes
+
+  /// Nothing: the tip is `HEAD` and the working tree is not read. This is what a
+  /// finished child's work is returned as, because only what it committed comes
+  /// back.
+  CommittedOnly
+}
+
+/// Captures the commits a repository has made after `base`, and nothing the
+/// working tree holds (protocol-change/107, "Return").
+///
+/// This is the capture of a finished child's work: the bundle is thin against the
+/// state the child was handed, its tip is `HEAD`, and edits the child left
+/// uncommitted, staged or untracked do not travel. The working tree is neither
+/// inventoried nor read, so a build directory or a file the child left behind
+/// cannot make the capture fail, and no author identity is needed because no
+/// commit is made. `directory` must be the top of a primary checkout whose `.git`
+/// is the directory under it: a repository that resolves anywhere else, such as
+/// one reached through a link the child planted, is refused. `Ok(None)` says
+/// `HEAD` is `base` itself, so there is nothing to return. A `base` that is not
+/// an ancestor of `HEAD` is refused, which is what a child that rewrote the
+/// history it was given earns.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // repository_snapshot.capture_commits(git, call, store, stage, 600_000, sent_tip)
+/// ```
+@internal
+pub fn capture_commits(
+  git: worktree_git.Git,
+  call: worktree_git.Capture,
+  store: String,
+  stage_name: String,
+  within_ms: Int,
+  base: String,
+) -> Result(Option(Snapshot), String) {
+  use source <- result.try(discover(git, call, within_ms))
+
+  // The repository must be the one at the directory, not one it points at.
+  use Nil <- result.try(
+    case
+      source.workspace == call.directory
+      && source.git_dir == source.workspace <> "/.git"
+      && source.common_dir == source.git_dir
+    {
+      True -> Ok(Nil)
+      False ->
+        Error("the repository is not a primary checkout at its directory")
+    },
+  )
+
+  // A child that committed nothing has nothing to bundle.
+  use <- bool.guard(when: source.head == base, return: Ok(None))
+  captured(
+    git,
+    call,
+    store,
+    stage_name,
+    git_identity.Identity(None, None),
+    within_ms,
+    state_object.Thin(base),
+    CommittedOnly,
+  )
+  |> result.map(Some)
+}
+
+/// The capture both entry points run, differing only in what is put on top of
+/// `HEAD`.
+fn captured(
+  git: worktree_git.Git,
+  call: worktree_git.Capture,
+  store: String,
+  stage_name: String,
+  identity: git_identity.Identity,
+  within_ms: Int,
+  basis: state_object.Basis,
+  content: Content,
+) -> Result(Snapshot, String) {
   let deadline = bootstrap.monotonic_time_ms() + within_ms
   let limits = call.limits
 
@@ -218,14 +320,13 @@ pub fn capture_against(
 
   use Nil <- result.try(refuse_grafts(source.common_dir, call.scope.protected))
   use Nil <- result.try(validate_repository(git, call, deadline))
-  use entries <- result.try(inventory(git, call, remaining(deadline)))
-  use working <- result.try(working_entries(
-    source.workspace,
-    call.scope,
-    entries,
+  use #(working, paths) <- result.try(selected(
+    git,
+    call,
+    source,
+    content,
+    deadline,
   ))
-  let paths = list.append(entries.tracked, entries.untracked) |> list.unique
-  use Nil <- result.try(check_attributes(git, call, paths, remaining(deadline)))
 
   // A thin base is judged in the source context, before any stage exists.
   use Nil <- result.try(check_basis(git, call, source.head, basis, deadline))
@@ -344,13 +445,7 @@ pub fn capture_against(
     <<>>,
     deadline,
   ))
-  use _ <- result.try(private_git_text(
-    git,
-    private,
-    ["diff-files", "--quiet", "--no-ext-diff"],
-    <<>>,
-    deadline,
-  ))
+  use Nil <- result.try(index_matches_tree(git, private, content, deadline))
   use _ <- result.try(private_git_text(
     git,
     private,
@@ -412,6 +507,65 @@ pub fn capture_against(
       ))
     False, _ -> Error("imported snapshot is not clean")
     True, False -> Error("snapshot capture deadline expired")
+  }
+}
+
+/// What the capture reads of the working tree: the entries a snapshot commit is
+/// built from and the paths whose attributes are checked. A capture of commits
+/// reads none, and an empty selection makes every later step that takes one do
+/// nothing.
+fn selected(
+  git: worktree_git.Git,
+  call: worktree_git.Capture,
+  source: Source,
+  content: Content,
+  deadline: Int,
+) -> Result(#(WorkingEntries, List(String)), String) {
+  // Only the working bytes need the inventory, the size accounting and the
+  // attribute check.
+  case content {
+    CommittedOnly -> Ok(#(WorkingEntries([], [], 0), []))
+    WorkingBytes -> {
+      use entries <- result.try(inventory(git, call, remaining(deadline)))
+      use working <- result.try(working_entries(
+        source.workspace,
+        call.scope,
+        entries,
+      ))
+      let paths = list.append(entries.tracked, entries.untracked) |> list.unique
+      use Nil <- result.map(check_attributes(
+        git,
+        call,
+        paths,
+        remaining(deadline),
+      ))
+      #(working, paths)
+    }
+  }
+}
+
+/// Proves the private index is the tree the working bytes were collected into: a
+/// snapshot of the working tree must leave nothing the index lacks. A capture of
+/// commits has no such claim, because its index is `HEAD`'s tree and the working
+/// tree is free to differ from it.
+fn index_matches_tree(
+  git: worktree_git.Git,
+  private: worktree_git.Capture,
+  content: Content,
+  deadline: Int,
+) -> Result(Nil, String) {
+  // The comparison would fail by design for a child's uncommitted edits.
+  case content {
+    CommittedOnly -> Ok(Nil)
+    WorkingBytes ->
+      private_git_text(
+        git,
+        private,
+        ["diff-files", "--quiet", "--no-ext-diff"],
+        <<>>,
+        deadline,
+      )
+      |> result.replace(Nil)
   }
 }
 
