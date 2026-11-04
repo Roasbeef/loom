@@ -282,7 +282,8 @@ pub fn message_phase(value: JsonValue) -> Result(Option(String), Nil) {
 
   // Validate that phase is a known allowed variant.
   case phase {
-    None | Some("commentary") | Some("final_answer") -> Ok(phase)
+    None | Some("commentary") | Some("partial_answer") | Some("final_answer") ->
+      Ok(phase)
     Some(_) -> Error(Nil)
   }
 }
@@ -312,11 +313,14 @@ fn optional_content(
       use parts <- result.try(
         list.try_map(parts, fn(part) {
           use kind <- result.try(wire.string_field(part, "type"))
-          use <- bool.guard(kind != "reasoning_text", Error(Nil))
+          use <- bool.guard(
+            kind != "reasoning_text" && kind != "text",
+            Error(Nil),
+          )
           use text <- result.try(wire.string_field(part, "text"))
           Ok(
             json.Object([
-              #("type", json.String(kind)),
+              #("type", json.String("reasoning_text")),
               #("text", json.String(text)),
             ]),
           )
