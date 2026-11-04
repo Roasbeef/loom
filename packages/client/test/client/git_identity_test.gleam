@@ -159,9 +159,7 @@ pub fn absent_identity_refuses_a_commit_until_repository_configuration_test() {
       helper: helper_path(),
       reading: absent,
     )
-    == Ok(Some(
-      "Git identity is incomplete; configure user.name and user.email in the repository",
-    ))
+    == Ok(Some(git_identity.incomplete_warning))
   let failed =
     invoke(wiring, ["git", "commit", "--allow-empty", "-m", "must fail"])
   let assert broker.CallExited(report) = failed.outcome
@@ -397,9 +395,7 @@ pub fn workspace_under_tmp_publishes_identity_on_macos_test() {
           helper: helper_path(),
           reading: absent,
         )
-        == Ok(Some(
-          "Git identity is incomplete; configure user.name and user.email in the repository",
-        ))
+        == Ok(Some(git_identity.incomplete_warning))
       assert string.contains(
         read(
           workspace_policy.tool_home_directory(wiring.workspace) <> "/gitconfig",

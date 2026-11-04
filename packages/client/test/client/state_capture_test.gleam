@@ -108,7 +108,15 @@ pub fn a_clean_workspace_needs_no_author_and_a_dirty_one_is_refused_without_one_
   dirty(rig)
   let assert Error(reason) =
     state_capture.capture(capturer, rig.root, nobody, Full)
-  assert string.length(reason) > 0
+
+  // The reason says where the identity has to be set, because a setting in the
+  // repository is not read and an operator would look there first.
+  assert string.contains(reason, "global Git configuration")
+  assert string.contains(reason, "git config --global user.name")
+  assert string.contains(
+    reason,
+    "a setting in the repository itself is not used",
+  )
   state_rig.stop(rig)
 }
 

@@ -822,7 +822,7 @@ fn wip_commit(
   use commit <- result.map(case committed, identity.name, identity.email {
     Error(_), None, _ | Error(_), _, None ->
       Error(
-        "Git could not create the WIP commit; user.name and user.email are incomplete",
+        "Git could not create the working snapshot commit: the operator's global Git configuration has no user.name or no user.email. Set them with `git config --global user.name ...` and `git config --global user.email ...` on this machine; a setting in the repository itself is not used",
       )
     result, _, _ -> result
   })
