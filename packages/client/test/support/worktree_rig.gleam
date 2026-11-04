@@ -117,6 +117,7 @@ pub fn establish(state: String) -> Nil {
       "domains",
       "worktrees",
       "repository-snapshots",
+      "states",
     ],
     fn(name) {
       let assert Ok(Nil) =

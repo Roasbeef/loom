@@ -251,6 +251,16 @@ fn jailed_readings(base: policy.SandboxPolicy, root: String) -> Nil {
   assert !string.contains(text, "snapshot-private-canary")
     as "snapshot bytes stay out of the jail"
 
+  // Nor may a session's tool read a bundle in the state store: a state is the
+  // whole history and working files of some workspace, sent here or captured
+  // here, and the jail that runs a model's commands must not carry it away
+  // (protocol-change/107, "Safety"). The sandboxed Git that applies one is the
+  // only reader, through a grant the runner gives it and a session never gets.
+  let #(code, text) = jailed(helper, base, root, "cat states/canary.bundle")
+  assert code != 0 as "the state store is unreadable from the jail"
+  assert !string.contains(text, "stored-bundle-private-canary")
+    as "bundle bytes stay out of the jail"
+
   let retired = exec.close(helper, waiting: 5000)
   assert retired == Ok(Nil) as "the masking fixture retires its helper"
 }
@@ -352,6 +362,7 @@ fn fake_state_root(label: String) -> String {
       "workspaces",
       "domains",
       "repository-snapshots",
+      "states",
       ".tmp",
     ],
     fn(name) {
@@ -370,6 +381,7 @@ fn fake_state_root(label: String) -> String {
       #("daemon.lock", ""),
       #("loom.toml", catalogue_document),
       #("repository-snapshots/canary", "snapshot-private-canary"),
+      #("states/canary.bundle", "stored-bundle-private-canary"),
     ],
     fn(entry) {
       let assert Ok(Nil) = simplifile.write(root <> "/" <> entry.0, entry.1)

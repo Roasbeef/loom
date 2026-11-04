@@ -94,6 +94,23 @@ pub opaque type Git {
   )
 }
 
+/// Whether a call may read the node's state store, `<state root>/states`.
+///
+/// The store holds bundles of other workspaces' history and working files, and
+/// every jail the daemon builds masks it (`workspace_policy.protecting_state_root`),
+/// the runner's own calls included, because a call here reads a repository the
+/// model may have written and its hooks and configuration run under the call's
+/// policy. Applying a bundle is the one use that has to read the store, and
+/// `run_reading_store` is the only way a call is given it.
+pub type StoreAccess {
+  /// The store is masked, as it is for a session's tools.
+  StoreSealed
+
+  /// The store can be read and not written, for a call that unpacks one bundle
+  /// from it.
+  StoreReadable
+}
+
 /// One Git invocation.
 pub type Run {
   Run(
@@ -264,7 +281,29 @@ pub fn start(config: Config) -> Result(Git, String) {
 /// // worktree_git.run(git, Run("/repo", [], ["status", "--porcelain=v1"]), 60_000)
 /// ```
 pub fn run(git: Git, call: Run, within_ms: Int) -> Result(Output, String) {
-  run_in(git, call, environment(), within_ms)
+  run_in(git, call, environment(), StoreSealed, within_ms)
+}
+
+/// Runs one Git invocation like `run`, with the node's state store readable.
+///
+/// This is the one call that gets the grant a session never does
+/// (protocol-change/107, "Safety"): applying a state unpacks a bundle that lives
+/// in the store, and a sandboxed Git cannot read a path the jail masks. The store
+/// is readable and not writable, since the call's writable roots are the
+/// caller's and the store is never among them, and the grant is for the one call
+/// that names the bundle, not for the rest of an apply.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // worktree_git.run_reading_store(git, Run(repository, [repository <> "/.git"], ["bundle", "unbundle", bundle]), 600_000)
+/// ```
+pub fn run_reading_store(
+  git: Git,
+  call: Run,
+  within_ms: Int,
+) -> Result(Output, String) {
+  run_in(git, call, environment(), StoreReadable, within_ms)
 }
 
 /// Reads the operator's global Git configuration through the sandbox and answers
@@ -300,7 +339,7 @@ pub fn read_global_config(
       list.key_set(kept, pair.0, pair.1)
     })
   let call = Run(directory: git.scratch, writable: [], arguments:)
-  run_in(git, call, environment, within_ms)
+  run_in(git, call, environment, StoreSealed, within_ms)
 }
 
 /// Runs one call under a given environment, which is also the allowlist the
@@ -309,12 +348,13 @@ fn run_in(
   git: Git,
   call: Run,
   environment: List(#(String, String)),
+  store: StoreAccess,
   within_ms: Int,
 ) -> Result(Output, String) {
   let #(op_id, _) =
     ids.mint_op(ids.generator(wall_clock(), seed: random_seed()))
   let allowed = list.map(environment, fn(pair) { pair.0 })
-  let policy = policy_of(git, call, allowed, within_ms)
+  let policy = policy_of(git, call, allowed, store, within_ms)
   let events = process.new_subject()
   use handle <- result.try(
     broker.clear_call(
@@ -755,26 +795,40 @@ fn policy_of(
   git: Git,
   call: Run,
   allowed: List(String),
+  store: StoreAccess,
   within_ms: Int,
 ) -> policy.SandboxPolicy {
   let base = policy.workspace_default(git.scratch)
-  policy.SandboxPolicy(
-    ..base,
-    writable_roots: call.writable,
-    readable_roots: ["/"],
-    network: policy.NetworkOff,
-    limits: policy.Limits(
-      cpu_s: 0,
-      wall_s: { within_ms + 999 } / 1000,
-      mem_bytes: 0,
-      pids: 64,
-      fsize_bytes: 0,
-      output_bytes: output_limit_bytes,
-    ),
-    env_allow: allowed,
-  )
-  |> workspace_policy.protecting_state_root(git.state_root)
-  |> workspace_policy.protecting_node_credentials(git.credentials)
+  let masked =
+    policy.SandboxPolicy(
+      ..base,
+      writable_roots: call.writable,
+      readable_roots: ["/"],
+      network: policy.NetworkOff,
+      limits: policy.Limits(
+        cpu_s: 0,
+        wall_s: { within_ms + 999 } / 1000,
+        mem_bytes: 0,
+        pids: 64,
+        fsize_bytes: 0,
+        output_bytes: output_limit_bytes,
+      ),
+      env_allow: allowed,
+    )
+    |> workspace_policy.protecting_state_root(git.state_root)
+    |> workspace_policy.protecting_node_credentials(git.credentials)
+
+  // The store is the one mask a call can ask to have lifted, and only by name.
+  case store {
+    StoreSealed -> masked
+    StoreReadable ->
+      policy.SandboxPolicy(
+        ..masked,
+        protected: list.filter(masked.protected, fn(path) {
+          path != git.state_root <> "/states"
+        }),
+      )
+  }
 }
 
 // Nothing here comes from a peer. Git reads no user or system configuration:

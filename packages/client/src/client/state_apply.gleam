@@ -294,8 +294,16 @@ fn create_ref(
   ref: String,
 ) -> Result(String, String) {
   let writable = [repository <> "/.git"]
+
+  // The unpack is the one call that reads the node's state store, so it is the
+  // one call the runner lifts the store's mask for. The walk and the ref that
+  // follow read only the repository.
   use _ <- result.try(
-    git_ok(git, repository, writable, ["bundle", "unbundle", bundle]),
+    git_ok_with(git, repository, writable, worktree_git.run_reading_store, [
+      "bundle",
+      "unbundle",
+      bundle,
+    ]),
   )
   use _ <- result.try(
     git_ok(git, repository, [], [
@@ -427,13 +435,24 @@ fn git_run(
   writable: List(String),
   arguments: List(String),
 ) -> Result(worktree_git.Output, String) {
+  git_run_with(git, directory, writable, worktree_git.run, arguments)
+}
+
+/// Runs Git through the given runner call and answers however it exited.
+fn git_run_with(
+  git: Git,
+  directory: String,
+  writable: List(String),
+  runner: fn(Git, worktree_git.Run, Int) -> Result(worktree_git.Output, String),
+  arguments: List(String),
+) -> Result(worktree_git.Output, String) {
   // An empty list of writable roots is how a read says it writes nothing.
   let within = case writable {
     [] -> worktree_git.query_within_ms
     _ -> worktree_git.checkout_within_ms
   }
 
-  worktree_git.run(
+  runner(
     git,
     worktree_git.Run(
       directory:,
@@ -452,7 +471,25 @@ fn git_ok(
   writable: List(String),
   arguments: List(String),
 ) -> Result(String, String) {
-  use output <- result.try(git_run(git, directory, writable, arguments))
+  git_ok_with(git, directory, writable, worktree_git.run, arguments)
+}
+
+/// Runs Git that must exit zero through the given runner call, which is how the
+/// one call that reads the state store asks for it.
+fn git_ok_with(
+  git: Git,
+  directory: String,
+  writable: List(String),
+  runner: fn(Git, worktree_git.Run, Int) -> Result(worktree_git.Output, String),
+  arguments: List(String),
+) -> Result(String, String) {
+  use output <- result.try(git_run_with(
+    git,
+    directory,
+    writable,
+    runner,
+    arguments,
+  ))
 
   // Zero is the only success. Anything else is Git's own account of why not.
   case output.code {
