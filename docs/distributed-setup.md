@@ -58,6 +58,15 @@ remote sessions over the control protocol with a scripted model provider that ra
 `fs_write`, `fs_read`, `bash` and `git` on the executor. It did not use a real
 model, a terminal prompt or the web page.
 
+A fourth run covers Quick start D in section 7, the state-transport drive for loom
+#1137 on commit `5f4ebffa5`. It ran on one Mac, with two orchestrators as two
+daemons under separate home directories on the loopback address, and a scripted
+model provider. It followed `provision`, `install --home` and the configuration of
+that quick start, handed a workspace with uncommitted edits to a child on the other
+daemon, and took the child's commits back. It also moved a 100 MiB bundle and killed
+the receiving daemon part way through it. It did not use a real model, the terminal
+or the web page, and the link was the loopback address.
+
 Steps that an earlier edition of this page ran on one machine, and that no run
 repeated, are also **Pending**.
 
@@ -1590,6 +1599,238 @@ source halted after each of the six steps), `daemon_shipped_directory_test` and
 `daemon_shipped_directory_quorum_test` (two of three members killed and
 returned; a member's directory deleted and rejoined). The commands above were
 not run by hand.
+
+### Quick start D: hand a workspace to another orchestrator's child
+
+This is the one procedure on this page that moves a repository between two
+orchestrators rather than a tool call to an executor. A model on one orchestrator
+(the box, in this example) starts a child on another (the laptop) and asks that the
+child begin in a copy of the box session's workspace, uncommitted edits included.
+When the child finishes, the commits it made come back to the box as one ref. The
+design is [protocol-change/107](../protocol-change/107-state-transport.md).
+
+**Verified** (state-transport drive for loom #1137, on commit `5f4ebffa5`, on one
+Mac with the box and the laptop as two daemons under separate home directories on
+the loopback address, with a scripted model provider). The numbers below are from
+that run. The loopback address says nothing about a real network.
+
+**What you need.** Two orchestrators under one authority and one cookie, each
+pinning the other (sections 3 and 4). Git on both machines. A git checkout on the
+box that the box session works in: a primary checkout, with `.git` a directory and
+not a linked worktree. A directory on the laptop for the copies.
+
+#### Provision and install
+
+Write a plan with two orchestrators and no executor. Each daemon's bundle pins the
+other, so neither needs a list of the other (**Verified**, same run):
+
+```toml
+[[node]]
+name = "box"
+role = "orchestrator"
+erlang_node = "box@127.0.0.1"
+listen_port = 9311
+
+[[node]]
+name = "laptop"
+role = "orchestrator"
+erlang_node = "laptop@127.0.0.1"
+listen_port = 9312
+```
+
+```sh
+loom distribution provision plan.toml out --static
+loom distribution install out/box.loombundle --home $HOME/loom-demo/box
+loom distribution install out/laptop.loombundle --home $HOME/loom-demo/laptop
+```
+
+Each `install` prints the command that starts its daemon, as in section 4. Both
+daemons listen for control clients on their own `--bind` address, which is a
+different port for each when they share a machine.
+
+#### The box's configuration
+
+The box names the laptop as an orchestrator it can start children on, and has the
+model catalogue its own session uses. Append to
+`$HOME/loom-demo/box/.loom/loom.toml`:
+
+```toml
+[orchestrators.laptop]
+node = "laptop@127.0.0.1"
+
+[models.main]
+dialect = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+model_id = "<the model id your provider expects>"
+context_window = 200000
+max_output_tokens = 8192
+
+[roles]
+main = ["main"]
+```
+
+#### The laptop's configuration
+
+The laptop is where the child runs, so the laptop holds the table that says what a
+child from the box may do ([`[spawners.<name>]`](configuration.md#spawnersname)),
+the model catalogue the child uses, and a row for the box so that the child can
+report upward. Append to `$HOME/loom-demo/laptop/.loom/loom.toml`:
+
+```toml
+[orchestrators.box]
+node = "box@127.0.0.1"
+
+[models.child]
+dialect = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+model_id = "<the model id your provider expects>"
+context_window = 200000
+max_output_tokens = 8192
+
+[roles]
+main = ["child"]
+subagent = ["child"]
+
+[profiles.review.roles]
+main = ["child"]
+subagent = ["child"]
+
+[spawners.box]
+node = "box@127.0.0.1"
+directory = "/abs/path/on/the/laptop/work"
+profile = "review"
+seed = "workspace"
+```
+
+The keys that matter here:
+
+- `profile` is required. It names a `[profiles.<name>.roles]` table, and the
+  child's session takes its models from it. A spawner without one is refused when
+  the file loads.
+- `seed = "workspace"` is what lets the box send a workspace. The default is
+  `"none"`, which refuses every spawn that carries one (see below).
+- `directory` is where the copies are made, under `<directory>/seeds`. A copy is
+  built in `<state root>/seed-staging` and renamed into place, so `directory` must
+  be on the same filesystem as the laptop's state root, and it must be an absolute
+  path with no `..`. The `executor` and `pool` placements take no copy in this
+  release.
+
+Each daemon needs a model key in its own environment for the model that `api_key_env`
+names. The child's loop runs on the laptop, so in a real deployment the laptop needs
+its own model key, and the box needs one for the session that spawns. The scripted
+provider of the drive ran on the loopback address and ignored its key, but the
+anthropic dialect refuses to dispatch when the variable `api_key_env` names is unset
+or empty, with `secret ... is not available`. The drive gave each daemon a placeholder
+string for that reason. A scripted provider therefore needs a placeholder value, and
+a real provider needs the real key. What the laptop never holds is a forge or push
+credential of the box's: the box sends a bundle of the repository's commits and
+working files, and neither its Git configuration nor its credential helpers go with
+it. The working files go as they are, though. A file that `.gitignore` excludes is not
+sent, and an untracked file that it does not exclude is, so keep a credential file out
+of the workspace or ignore it.
+
+#### Git identity, on both machines
+
+The snapshot of a workspace with uncommitted work is a commit, and Git needs an
+author for it. Loom uses the operator's **global** Git identity on the box and
+invents none. Set it on the box before the first spawn:
+
+```sh
+git config --global user.name "Your Name"
+git config --global user.email "you@example.com"
+```
+
+A setting in the repository itself is not used for the snapshot. Without a global
+identity, a spawn of a workspace that has uncommitted changes is refused with
+`Git could not create the working snapshot commit: the operator's global Git
+configuration has no user.name or no user.email`. A clean workspace needs no author.
+
+The laptop needs the same for the child's commits. A child's tools see the laptop
+operator's global identity, and without one the child's `git commit` fails with
+`Author identity unknown` until it supplies an identity of its own. The scripted child
+of the drive did that with `git -c user.name=... -c user.email=... commit`. If the
+child's commits come back under an author you did not expect, check the laptop's
+global configuration first.
+
+#### Spawn, and what you see
+
+Start both daemons, open a session on the box in the checkout, and have its model
+call `agent_spawn` with `on: "laptop"` and `context: "my_workspace"`, then
+`agent_wait` for the child. Do this from tool calls and not from a code-mode program:
+a program is itself a tool call that holds the workspace the copy has to wait for, and
+the spawn is refused with a message that says so.
+
+**Verified**, same run, with the box checkout holding a modified tracked file and an
+untracked file:
+
+- On the laptop, `<directory>/seeds/seed-<16 hex digits>` is a git repository on
+  branch `loom/seed-<16 hex digits>`. Its files equal the box checkout's, the
+  modified and the untracked bytes included, and its history is the box's history
+  plus one commit named `Working snapshot` that holds the uncommitted bytes.
+- The box checkout does not change. The drive compared every file's hash and the
+  full list of refs before and after, and they were equal.
+- After the child commits in the copy and the box's `agent_wait` reports it finished,
+  the box has `refs/loom/children/<child>/<tip8>`, where `<child>` is the last
+  segment of the child's name and `<tip8>` is the first eight characters of the
+  returned tip. `git log` of that ref on the box shows the child's commit on top of
+  `Working snapshot`. Edits the child left uncommitted in its copy do not come back.
+- The returned history includes the `Working snapshot` commit, so the box's
+  `.git` now holds the box's own uncommitted bytes as a commit. A command that
+  pushes every ref, such as `git push --mirror`, carries it.
+
+Each side writes one info line when a state arrives, which an operator can follow
+without a debugger. The box logs `remote_spawn.state_sent` with the short hash, the
+size in bytes and the time the transfer took. The laptop logs
+`remote_spawn.seed_placed` with the spawner, the copy's name, the short hash and the
+size. The box logs `remote_spawn.commits_applied` with the child, the ref, the number
+of commits and the returned state's short hash and size. None carries a path of
+either machine.
+
+#### With `seed` unset
+
+With the laptop's `[spawners.box]` table lacking `seed`, or set to `"none"`, the
+spawn is refused and nothing is started (**Verified**, same run). The model sees:
+
+```text
+the orchestrator `laptop` refused the spawn, and nothing was started: it will not
+start a child from the state: this machine's table [spawners.box] has seed = "none",
+so it takes no workspace with a spawn. Its owner can set seed = "workspace" to allow it
+```
+
+The box has already captured the workspace and stored the bundle by then, because the
+refusal is the laptop's and the laptop is only asked after the capture. The refusal
+costs the box that capture, not a child.
+
+#### A large workspace, and a daemon that is killed
+
+**Verified**, same run, with a box checkout that held a 100 MiB file. The state was a
+bundle of 104,890,392 bytes. It crossed the loopback link in about 1.3 seconds.
+
+The laptop daemon was then killed with SIGKILL (`kill -9`) after 40,632,320 bytes had
+arrived and was started again. The partial file stayed in the laptop's state store.
+The box's outbox resent the spawn, the laptop reported the bytes it held, and the sender
+continued from that offset and did not start over. The whole bundle was in the laptop's
+store 2.6 seconds after the restart began, the copy was built, and the child ran and
+returned its commit to the box as in the first case.
+
+One thing to expect after a kill, stated as it was observed: for about 45 seconds
+after the restart, opening the delegate session failed on the laptop and its log
+carried `daemon.session_start_failed` at error level with `class` `lease_held`, once
+per attempt. The session's file still held the dead daemon's writer lease, and the new
+daemon cannot take it until it expires on its own. The spawn did not fail for the
+operator. It waited, and the child's commits arrived about 47 seconds after the
+bundle had been complete. Nothing was lost, and the log lines are the cost.
+
+#### What to check if it does not work
+
+| What you see | What it means |
+|---|---|
+| `Git could not create the working snapshot commit` | The box has no global Git identity. Set it as above. |
+| `... has seed = "none"` | The laptop's `[spawners.box]` has no `seed = "workspace"`. |
+| `a program cannot start a child with context: my_workspace` | The call came from a code-mode program. Make it from a tool call. |
+| `this orchestrator cannot capture a workspace: it keeps no state store or has no sandboxed Git` | The box daemon started without a sandbox helper. Run `make sandbox` for a development build, or use a release. |
+| `the spawner's directory is not usable on this machine` | `directory` does not exist on the laptop, or is not a directory the daemon can resolve. |
+| `the orchestrator laptop did not answer in time` | The laptop is down, restarting (see the lease note above), or not pinned. The box keeps asking, so check `agent_roster` before spawning again. |
 
 ## 8. Verify it is working
 

@@ -771,3 +771,74 @@ mutation outcome: `ui_top.read_failure` words silence as "the orchestrator did n
 for every read, and `top_relay.describe`'s "not known whether it happened" is kept for the
 calls that change something. This was done before this slice (`8a793e6ef`) and is recorded
 here so the next reader does not look for it.
+
+## Addendum: live drive of exit criterion 1 (2026-11-04)
+
+The drive that the slice 3b addendum said was still needed has been run, on commit
+`5f4ebffa5`. It was one Mac with two orchestrators as two daemons under separate home
+directories on the loopback address (a box with a session whose workspace is a primary
+checkout, and a laptop with `[spawners.box]` set to a `directory` and
+`seed = "workspace"`), provisioned with `loom distribution provision --static` and
+`install --home`, and a scripted model provider. The link was TLS distribution. It was
+not run under a real model, over a real network or on Linux under bubblewrap and
+Landlock. Nothing above is edited, no wire constructor was added and the version stays
+at 6. `docs/distributed-setup.md`, "Quick start D", is the procedure as it was run.
+
+**What passed.**
+
+- The laptop's copy under `<directory>/seeds/seed-*` equalled the box checkout, the
+  modified and the untracked bytes included, and the box checkout was unchanged: the
+  hashes of its files and the list of its refs were equal before and after.
+- A child that committed in the copy returned its commit, which arrived on the box as
+  `refs/loom/children/<child>/<tip8>`. The ref's history is the box's history, then the
+  `Working snapshot` commit holding the dirty bytes, then the child's commit.
+- A laptop table with `seed` unset refused the spawn with a `StateRefused` that names
+  `[spawners.box] seed = "none"`, and the model saw that sentence.
+- A 100 MiB workspace (a bundle of 104,890,392 bytes) crossed the loopback link in
+  about 1.3 seconds. The laptop daemon was killed with SIGKILL after 40,632,320 bytes
+  had arrived. After it restarted, the sender continued from the partial file's offset,
+  the whole bundle was in the laptop's store 2.6 seconds after the restart began, and
+  the child ran and returned its commit.
+
+**Defects the drive found, fixed on `distributed/drive-fixes`.**
+
+- *Stage leak and name reuse.* A capture's stage was named from a per-VM counter and a
+  failed capture left it in `<state>/repository-snapshots`, which was never swept. After
+  a restart the counter began again, and the first capture could draw the name of a
+  stage a failed or killed capture had left, and was refused with `snapshot stage already
+  exists or cannot be created`. `state_capture` now removes the stage when a capture
+  fails (it is the caller that knows the Git calls have settled, which `repository_snapshot`
+  does not), draws the name from random bytes, and sweeps the directory when the daemon
+  starts, as `seed-staging` already was.
+- *A misleading identity error.* The snapshot commit uses the operator's global Git
+  identity alone. A repository with its own `user.name` and `user.email` still failed
+  when `~/.gitconfig` had none, with `invalid arguments: ... user.name and user.email are
+  incomplete`, and the session-open warning said to configure the identity "in the
+  repository". Both now say that the identity belongs in the operator's global Git
+  configuration, with the command, and that a setting in the repository itself is not
+  used for the snapshot. The failure class is unchanged: the Agency reports a capture
+  failure as an invalid argument, and no existing refusal fits better (`RemoteRefused`
+  would blame the other orchestrator).
+- *No success logging.* Only refusals were logged. The sender now logs
+  `remote_spawn.state_sent`, the receiver `remote_spawn.seed_placed` and the parent
+  `remote_spawn.commits_applied`, each at info level with short hashes, sizes and names,
+  and no path of either machine.
+
+**Observed and not fixed.** These are recorded so that the next reader does not
+rediscover them.
+
+- `.codemode/.gitignore` and `.codemode/home/gitconfig` appear in the operator's
+  checkout when a session opens in it. A capture leaves untracked `.codemode` paths out
+  of the bundle (`repository_snapshot.runtime_path`), so they do not travel, but they
+  show in the operator's `git status`, and they make a checkout that nobody touched
+  differ from the one before the session opened.
+- After a SIGKILL of the receiving daemon, `daemon.session_start_failed` with `class`
+  `lease_held` is logged at error level for about 45 seconds, once per attempt, until the
+  dead daemon's writer lease expires. Nothing is lost and the spawn waits, but the level
+  reads as a fault.
+- The sender pays for the capture and for the local store before the receiver can refuse
+  a spawn. A laptop whose `seed` is `none` is only asked after the box has bundled the
+  workspace, so a refusal costs the box a capture and a stored state that retention later
+  removes. The refusal is correct and the order is the cost of sending the state with the
+  request; asking the receiver's terms first would need a message the vocabulary does not
+  have.

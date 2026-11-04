@@ -21,6 +21,9 @@ import gleam/string
 import simplifile
 import support/state_rig.{type Rig}
 import support/worktree_rig
+import telemetry/field
+import telemetry/level
+import telemetry/log
 import weft/registry
 
 fn started() -> Gate {
@@ -37,9 +40,15 @@ fn here() -> String {
 
 // A path no one has written yet, which a worker in another process polls for.
 fn marker() -> String {
-  here()
-  <> "/build/return-apply-release-"
-  <> int.to_string(ffi_os.unique_positive_integer())
+  let path =
+    here()
+    <> "/build/return-apply-release-"
+    <> int.to_string(ffi_os.unique_positive_integer())
+
+  // The counter starts again in every VM, so a marker an earlier run wrote under
+  // the same number would release the apply before the test looks at the gate.
+  let _removed = simplifile.delete(path)
+  path
 }
 
 // Waits, in the caller's own process, for the marker to appear.
@@ -239,17 +248,43 @@ fn returned(name: String) -> Return {
 }
 
 fn behind(world: Return, gate: Gate) {
+  behind_logging(world, gate, log.discard())
+}
+
+fn behind_logging(world: Return, gate: Gate, logger: log.Logger) {
   return_apply.behind_gate(
     gate,
     1000,
     60_000,
     world.rig.root,
     world.rig.root,
-    return_apply.from_store(world.store, world.rig.git),
+    return_apply.from_store(world.store, world.rig.git, logger),
     world.sent,
     world.returned,
     world.child,
   )
+}
+
+// The line an operator reads to know a child's commits arrived: which child, how
+// many commits, which ref, and the returned state by its short hash and size.
+pub fn applied_commits_are_told_with_the_child_and_the_ref_test() {
+  let world = returned("return-apply-log")
+  let gate = started()
+  let logs = process.new_subject()
+  let logger = log.new(sink: log.to_subject(logs), threshold: level.Info)
+
+  let assert Ok(remote_child.Applied(ref:, commits: 2)) =
+    behind_logging(world, gate, logger)
+  let assert Ok(told) = process.receive(logs, 1000)
+  assert told.event == "remote_spawn.commits_applied"
+  assert told.fields
+    == [
+      field.ident("child", world.child),
+      field.ident("state", state_object.short(world.returned.hash)),
+      field.count("bytes", world.returned.size),
+      field.count("commits", 2),
+      field.text("ref", ref),
+    ]
 }
 
 pub fn the_store_supplies_both_bundles_and_a_replay_changes_nothing_test() {

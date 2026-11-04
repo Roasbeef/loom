@@ -1339,7 +1339,8 @@ transformations are refused before staging. Gitlink/LFS, conflicting, unborn,
 shallow, partial or sparse states and grafted history are explicit refusals.
 The ordinary daemon creates and masks `repository-snapshots` before admission;
 a dedicated narrow capture scope can reach its own stage, retaining every other
-mask. Failed stages stay private until native custody is known to have drained.
+mask. `repository_snapshot` leaves a failed stage private, because it cannot know
+that native custody has drained; its caller `state_capture` knows, and removes it.
 Space preflight is an observation, not a reservation or aggregate quota.
 
 ## Repository states: store, thin bundles and apply
@@ -1560,9 +1561,13 @@ ticket as lapsed, so the capture's `Reopen` is answered `Lost` and `exclusive` r
 `state_capture.capture(capturer, directory, identity, basis)` builds the capture call
 (host readable, state root and node credentials masked), runs
 `repository_snapshot.capture_against`, describes the bundle from its bytes, deposits it
-through the store's endpoint (`state_transfer.deposit`) and removes the stage.
+through the store's endpoint (`state_transfer.deposit`) and removes the stage, on a
+failure as well as on success. The stage's name is `capture-` and sixteen random
+hexadecimal digits, because a per-VM counter began again after a restart and could
+draw the name of a stage a killed daemon had left; `state_capture.sweep` empties
+`repository-snapshots` when the daemon starts, as `seed-staging` is.
 `state_node.StateNode` is what the daemon holds (endpoint, store handle, sandboxed Git,
-state root, credentials); `main.start_states` builds it before the root, and
+state root, credentials, logger); `main.start_states` builds it before the root, and
 `prepare_startup` puts it in `Config.state_node`. `executor_plane.factory_capturing`
 gives every plane a `host.Capturing` over the scope's directory with the owner's author.
 

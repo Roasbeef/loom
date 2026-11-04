@@ -133,9 +133,7 @@ pub fn prepare(
     Ok(identity) -> #(identity, None)
     Error(_) -> #(
       Identity(None, None),
-      Some(
-        "global Git identity could not be read; configure user.name and user.email in the repository",
-      ),
+      Some("global Git identity could not be read; " <> identity_advice),
     )
   }
 
@@ -267,8 +265,15 @@ pub fn publication_failure(output: String) -> String {
   }
 }
 
-const incomplete_warning =
-  "Git identity is incomplete; configure user.name and user.email in the repository"
+/// What a session's open says when the operator's global Git identity lacks a
+/// name or an email.
+pub const incomplete_warning = "Git identity is incomplete; " <> identity_advice
+
+/// What to do about it. The snapshot a spawn with `context: my_workspace` sends
+/// is committed under the global identity alone, so a setting in the repository
+/// itself covers the commits made there and does not cover that snapshot.
+const identity_advice =
+  "set user.name and user.email in the operator's global Git configuration (`git config --global user.name ...`). A repository-local setting is used for commits made in that repository, and not for the snapshot a spawn sends"
 
 const helper_prefix = "loom-exec: "
 

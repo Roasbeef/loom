@@ -49,21 +49,29 @@ import gleam/int
 import gleam/option.{None, Some}
 import gleam/result
 import host/bootstrap
+import telemetry/field
+import telemetry/log.{type Logger}
 
 /// The apply over a node's store and Git. The arguments are the directory of the
 /// repository, the state the spawn sent, the state the child returned and the
 /// child's strand. The answer is the ref the commits are under and how many there
 /// are, or the reason there is none.
 ///
+/// An apply that ends with the commits in the repository says so, with the
+/// returned state's short hash and size, the child's strand and the ref. A replay
+/// of the same return ends the same way and says so again. The ref is a name
+/// inside the repository, and no path is written.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // return_apply.from_store(store, git)("/work/loom", sent, returned, "sub:^main/fix-1a2b")
+/// // return_apply.from_store(store, git, logger)("/work/loom", sent, returned, "sub:^main/fix-1a2b")
 /// // == Ok(#("refs/loom/children/fix-1a2b/01234567", 2))
 /// ```
 pub fn from_store(
   store: Store,
   git: Git,
+  logger: Logger,
 ) -> fn(String, State, State, String) -> Result(#(String, Int), String) {
   fn(workspace, sent, returned, child) {
     use held_sent <- result.try(held(store, sent))
@@ -76,6 +84,13 @@ pub fn from_store(
       held_returned.path,
       held_returned.state,
     ))
+    log.info(logger, "remote_spawn.commits_applied", [
+      field.ident("child", child),
+      field.ident("state", state_object.short(returned.hash)),
+      field.count("bytes", returned.size),
+      field.count("commits", applied.commits),
+      field.text("ref", applied.ref),
+    ])
     #(applied.ref, applied.commits)
   }
 }

@@ -26,13 +26,19 @@
 //// root is its own stage under `repository-snapshots`, which no session can read.
 //// The bundle reaches the store through the store's own endpoint, in the pieces a
 //// peer's would arrive in, so a state is made the one way the store makes any
-//// state, by comparing the bytes with the description. The stage is removed on
-//// success. After a failure it stays, as `repository_snapshot` leaves it, until
-//// the processes that may still use it are known to have drained.
+//// state, by comparing the bytes with the description. The stage is removed
+//// whichever way the capture ends. `repository_snapshot` leaves a failed stage
+//// in place, because it cannot know that the processes using it have gone; this
+//// module is the caller that does, since every Git call it makes has settled or
+//// been cancelled by the time the capture returns. A stage that outlives its
+//// process, because the daemon was killed mid-capture, is removed by `sweep`
+//// when the next daemon starts, and its name is drawn at random so that one
+//// left behind can never be the name a later capture is refused for.
 ////
 //// ## Flow
 ////
-//// `new` → `capture` | `capture_commits` → `prepared` → `scope_of`
+//// `new` → `capture` | `capture_commits` → `prepared` → `scope_of`, and `sweep`
+//// at daemon start
 ////
 //// 1. `new` binds the node's sandboxed Git, state root, node credentials and
 ////    store endpoint.
@@ -43,19 +49,22 @@
 //// 3. `prepared` builds the call both make, and `scope_of` is its sandbox
 ////    policy: the workspace, with the state root and the node's credentials
 ////    masked.
+//// 4. `sweep` empties the stage directory when a daemon starts, before any
+////    capture can be running.
 
 import broker/policy
 import client/git_identity.{type Identity}
-import client/internal/ffi_os
+import client/internal/ffi_pki
 import client/repository_snapshot
 import client/state_object.{type Basis, type State}
 import client/state_transfer.{type Endpoint}
 import client/workspace_policy
 import client/worktree_git.{type Git}
 import gleam/bit_array
-import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import host/bootstrap
 import simplifile
 
@@ -115,7 +124,7 @@ pub fn capture(
   basis: Basis,
 ) -> Result(State, String) {
   use #(call, snapshots, stage) <- result.try(prepared(capturer, directory))
-  use made <- result.try(repository_snapshot.capture_against(
+  repository_snapshot.capture_against(
     capturer.git,
     call,
     snapshots,
@@ -123,8 +132,9 @@ pub fn capture(
     identity,
     capture_within_ms,
     basis,
-  ))
-  deposited(capturer, made)
+  )
+  |> result.try(deposited(capturer, _))
+  |> removing_stage_on_failure(snapshots <> "/" <> stage)
 }
 
 /// Captures the commits a finished child made in the repository at `directory`
@@ -149,26 +159,31 @@ pub fn capture_commits(
   base: String,
 ) -> Result(Option(State), String) {
   use #(call, snapshots, stage) <- result.try(prepared(capturer, directory))
-  use made <- result.try(repository_snapshot.capture_commits(
-    capturer.git,
-    call,
-    snapshots,
-    stage,
-    capture_within_ms,
-    base,
-  ))
+  let made =
+    repository_snapshot.capture_commits(
+      capturer.git,
+      call,
+      snapshots,
+      stage,
+      capture_within_ms,
+      base,
+    )
 
   // A child that committed nothing leaves no stage and no state.
-  case made {
-    None -> Ok(None)
-    Some(snapshot) -> deposited(capturer, snapshot) |> result.map(Some)
-  }
+  result.try(made, fn(made) {
+    case made {
+      None -> Ok(None)
+      Some(snapshot) -> deposited(capturer, snapshot) |> result.map(Some)
+    }
+  })
+  |> removing_stage_on_failure(snapshots <> "/" <> stage)
 }
 
 /// The discovery call over a directory, the store the stage goes in, and the
 /// stage's name. The directories are made private first, and the name is made
-/// here from a counter, so a model or a peer never chooses a path under the
-/// store.
+/// here from random bytes, so a model or a peer never chooses a path under the
+/// store and a stage left by an earlier process never shares a name with this
+/// one. A counter would not do: it starts again at one in every process.
 fn prepared(
   capturer: Capturer,
   directory: String,
@@ -187,8 +202,56 @@ fn prepared(
       stdin: <<>>,
       limits: capture_limits(),
     )
-  let stage = "capture-" <> int.to_string(ffi_os.unique_positive_integer())
+  let token =
+    ffi_pki.random_bytes(8) |> bit_array.base16_encode |> string.lowercase
+  let stage = "capture-" <> token
   #(call, snapshots, stage)
+}
+
+/// Removes the stage when a capture failed, and passes the answer on unchanged.
+/// A success has removed it already, in `deposited` or by never making one.
+fn removing_stage_on_failure(
+  answer: Result(a, String),
+  stage: String,
+) -> Result(a, String) {
+  // A failure removes the stage whichever step it came from, and a success has
+  // nothing left to remove.
+  case answer {
+    Ok(_) -> answer
+    Error(_) -> {
+      let _removed = simplifile.delete(stage)
+      answer
+    }
+  }
+}
+
+/// Removes every stage a capture left in the store, for a daemon that is starting.
+///
+/// A stage belongs to the capture that made it, and a capture runs inside the
+/// daemon that started it, so none of the stages found when a daemon starts is
+/// live. They are what a daemon killed mid-capture left, each a copy of a
+/// repository's history. The directory itself stays, because the daemon makes it
+/// before any session is admitted and every ordinary jail masks it. A directory
+/// that cannot be read has nothing to remove.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // state_capture.sweep("/state")
+/// ```
+pub fn sweep(state_root: String) -> Nil {
+  let snapshots = state_root <> "/repository-snapshots"
+
+  // A directory that is not there has no stages, and one that cannot be read has
+  // none this daemon can remove.
+  case simplifile.read_directory(snapshots) {
+    Ok(names) ->
+      list.each(names, fn(name) {
+        let _removed = simplifile.delete(snapshots <> "/" <> name)
+        Nil
+      })
+    Error(_) -> Nil
+  }
 }
 
 /// Reads the bundle a snapshot made, describes it from its bytes, and puts it in

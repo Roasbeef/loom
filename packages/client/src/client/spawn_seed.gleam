@@ -76,6 +76,8 @@ import gleam/result
 import gleam/string
 import host/bootstrap
 import simplifile
+import telemetry/field
+import telemetry/log.{type Logger}
 import tools/agent
 import weft
 
@@ -128,7 +130,14 @@ pub fn receive_within(
     Some(state) -> {
       use directory <- result.try(permitted(spawner, state))
       let name = name_of(site, state)
-      use Nil <- result.map(copy(node, directory, name, state, wait_ms))
+      use Nil <- result.map(copy(
+        node,
+        directory,
+        spawner.name,
+        name,
+        state,
+        wait_ms,
+      ))
       remote_spawn.Request(
         ..request,
         brief: request.brief <> briefed(name),
@@ -319,6 +328,7 @@ const tampered_reason = "the spawner's directory cannot hold a copy"
 fn copy(
   node: StateNode,
   directory: String,
+  spawner: String,
   name: String,
   state: State,
   wait_ms: Int,
@@ -332,7 +342,7 @@ fn copy(
       // resend is told so at once and starts no second apply.
       use Nil <- result.try(refused_before(node, name))
       use held <- result.try(held(node, state))
-      applied(node, directory, name, held, wait_ms)
+      applied(node, directory, spawner, name, held, wait_ms)
     }
   }
 }
@@ -366,6 +376,7 @@ fn verdict_path(state_root: String, name: String) -> String {
 fn applied(
   node: StateNode,
   directory: String,
+  spawner: String,
   name: String,
   held: state_store.Held,
   wait_ms: Int,
@@ -400,7 +411,16 @@ fn applied(
             process.spawn_unlinked(fn() {
               process.send(
                 reply,
-                building(git, held, directory, parent, stage, name),
+                building(
+                  git,
+                  node.logger,
+                  held,
+                  directory,
+                  parent,
+                  stage,
+                  spawner,
+                  name,
+                ),
               )
             })
 
@@ -501,15 +521,20 @@ pub const staging_directory = "seed-staging"
 ///
 /// The stage name is unique to the attempt, so no attempt ever deletes another's
 /// tree. Whatever the end, the attempt removes its own stage, which is gone
-/// already when the rename took it, and its claim.
+/// already when the rename took it, and its claim. An attempt that made the copy
+/// says so once, which is the only place a copy is known to be new: a resend that
+/// finds the finished copy never gets here.
 fn building(
   git: worktree_git.Git,
+  logger: Logger,
   held: state_store.Held,
   directory: String,
   parent: String,
   stage: String,
+  spawner: String,
   name: String,
 ) -> Result(Nil, SpawnRefusal) {
+  let started = bootstrap.monotonic_time_ms()
   let outcomes =
     weft.new([
       fn() {
@@ -540,7 +565,33 @@ fn building(
   record_refusal(parent, name, answer)
   let _stage_removed = simplifile.delete(stage)
   let _claim_released = simplifile.delete(parent <> "/" <> name <> ".claim")
+
+  // Only a copy that was made is told; a refusal has its own verdict file.
+  case answer {
+    Ok(Nil) -> told_placed(logger, held.state, spawner, name, started)
+    Error(_) -> Nil
+  }
+
   answer
+}
+
+/// Says that a state was applied and its copy is in place. The state is named by
+/// its short hash and size, the copy by its name under the spawner's `seeds`
+/// directory, and no path of this machine is written.
+fn told_placed(
+  logger: Logger,
+  state: State,
+  spawner: String,
+  name: String,
+  started: Int,
+) -> Nil {
+  log.info(logger, "remote_spawn.seed_placed", [
+    field.text("spawner", spawner),
+    field.ident("seed", name),
+    field.ident("state", state_object.short(state.hash)),
+    field.count("bytes", state.size),
+    field.count("elapsed_ms", bootstrap.monotonic_time_ms() - started),
+  ])
 }
 
 /// Keeps the reason a failed apply was refused for, so that an ask arriving after

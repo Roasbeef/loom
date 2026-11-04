@@ -108,7 +108,15 @@ pub fn a_clean_workspace_needs_no_author_and_a_dirty_one_is_refused_without_one_
   dirty(rig)
   let assert Error(reason) =
     state_capture.capture(capturer, rig.root, nobody, Full)
-  assert string.length(reason) > 0
+
+  // The reason says where the identity has to be set, because a setting in the
+  // repository is not read and an operator would look there first.
+  assert string.contains(reason, "global Git configuration")
+  assert string.contains(reason, "git config --global user.name")
+  assert string.contains(
+    reason,
+    "a setting in the repository itself is not used",
+  )
   state_rig.stop(rig)
 }
 
@@ -141,5 +149,42 @@ pub fn the_runners_ordinary_calls_cannot_read_the_store_test() {
   assert sealed.code != 0
   let assert Ok(lifted) = worktree_git.run_reading_store(rig.git, call, 60_000)
   assert lifted.code == 0
+  state_rig.stop(rig)
+}
+
+// A capture that fails after its stage exists, here for want of an author, takes
+// the stage with it: the stage is a copy of the repository's history, and
+// nothing will come back for it.
+pub fn a_failed_capture_leaves_no_stage_behind_test() {
+  let rig = state_rig.rig("capture-failed")
+  let #(capturer, _store) = capturer(rig)
+  dirty(rig)
+  let nobody = git_identity.Identity(None, None)
+
+  let assert Error(_) = state_capture.capture(capturer, rig.root, nobody, Full)
+  assert simplifile.read_directory(rig.snapshots) == Ok([])
+  state_rig.stop(rig)
+}
+
+// A stage that an earlier process left behind, which a kill mid-capture does,
+// is not in the way of a new capture, and the start of the next daemon removes it
+// while keeping the directory every jail masks.
+pub fn a_stage_from_an_earlier_process_blocks_nothing_and_is_swept_test() {
+  let rig = state_rig.rig("capture-leftover")
+  let #(capturer, _store) = capturer(rig)
+
+  // The name an earlier process drew from its own counter.
+  let leftover = rig.snapshots <> "/capture-1"
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(leftover)
+  let assert Ok(Nil) =
+    simplifile.write(leftover <> "/snapshot.bundle", "half a bundle")
+
+  let assert Ok(_state) =
+    state_capture.capture(capturer, rig.root, state_rig.identity(), Full)
+  assert simplifile.read_directory(rig.snapshots) == Ok(["capture-1"])
+
+  state_capture.sweep(rig.state)
+  assert simplifile.is_directory(rig.snapshots) == Ok(True)
+  assert simplifile.read_directory(rig.snapshots) == Ok([])
   state_rig.stop(rig)
 }
