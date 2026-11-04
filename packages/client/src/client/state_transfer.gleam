@@ -343,8 +343,17 @@ fn held_verdict(store: Store, piece: Piece, now_s: Int) -> Verdict {
 
 /// Places a piece against the bytes held: at the end it is appended, inside them
 /// it is a repeat, and beyond them it leaves a gap the sender must close.
+///
+/// A half-written file that already holds the declared size has nothing left to
+/// receive and is finished, whatever the piece says. A crash between the last
+/// append and the rename leaves such a file, and so does a failed finish, and no
+/// later piece can add to it, so the first piece in range completes it or
+/// discards it.
 fn placed(store: Store, piece: Piece, held: Int, now_s: Int) -> Verdict {
   let end = piece.offset + bit_array.byte_size(piece.bytes)
+  use <- bool.lazy_guard(when: held >= piece.state.size, return: fn() {
+    completed(store, piece.state)
+  })
 
   // The offset against the bytes held is the whole decision: only a piece that
   // starts exactly at the end of them adds anything.
@@ -370,12 +379,26 @@ fn appended(store: Store, piece: Piece, now_s: Int) -> Verdict {
     Error(state_store.Rejected(reason:)) -> Refused(NoRoom(reason))
     Error(state_store.Faulted(reason:)) -> Failed(reason)
     Ok(held) if held < state.size -> Accepted(held:)
-    Ok(_whole) ->
-      case state_store.finish(store, state) {
-        Ok(_made) -> Accepted(held: state.size)
-        Error(state_store.Rejected(reason:)) -> Refused(Mismatch(reason))
-        Error(state_store.Faulted(reason:)) -> Failed(reason)
-      }
+    Ok(_whole) -> completed(store, state)
+  }
+}
+
+/// Finishes a half-written file that holds every byte of the state.
+///
+/// A mismatch is refused and stores nothing, as `state_store.finish` leaves it. A
+/// fault, such as a bundle that cannot be placed, discards the file as well: it is
+/// whole, no piece can add to it, and keeping it would answer every later attempt
+/// with a full file that nothing finishes. The sender starts again from nothing.
+fn completed(store: Store, state: State) -> Verdict {
+  // Each ending leaves no half-written file: a made state renamed it, a mismatch
+  // removed it, and a fault is removed here.
+  case state_store.finish(store, state) {
+    Ok(_made) -> Accepted(held: state.size)
+    Error(state_store.Rejected(reason:)) -> Refused(Mismatch(reason))
+    Error(state_store.Faulted(reason:)) -> {
+      state_store.discard_part(store, state.hash)
+      Failed(reason)
+    }
   }
 }
 
@@ -470,6 +493,10 @@ fn cut(store: Store, hash: String) -> Result(Source, Outcome) {
 
 /// The piece of a bundle in memory that starts at `offset`.
 fn slice(state: State, bytes: BitArray, offset: Int) -> Piece {
+  // A receiver that holds every byte and never finished reports an offset at the
+  // end, and an empty piece there would be refused. The last byte's piece is in
+  // range, and the receiver finishes on the first piece it is given.
+  let offset = int.min(offset, state.size - 1)
   let length = int.min(chunk_bytes, state.size - offset)
 
   // The bundle read from the store is the recorded size, so a slice inside it

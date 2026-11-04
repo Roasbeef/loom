@@ -533,3 +533,110 @@ pub fn a_captured_bundle_crosses_and_still_verifies_test() {
     == Ok(Nil)
   state_rig.stop(rig)
 }
+
+// --- a half-written file that holds every byte -------------------------------------
+
+// A receiver whose half-written file holds every byte of the state and was never
+// finished, which is what a crash between the last append and the rename leaves.
+// It is written through the store, as a receiver's own last append would be.
+fn crashed_before_finishing(receiver: Store, state: State, bytes: BitArray) {
+  let assert Ok(held) = state_store.append_part(receiver, state, bytes, now())
+  assert held == size
+}
+
+pub fn a_full_part_left_by_a_crash_is_finished_by_the_next_send_test() {
+  let sender_root = scratch("full-part-from")
+  let receiver_root = scratch("full-part-to")
+  let sender = open(sender_root, limits())
+  let receiver = open(receiver_root, limits())
+  let bytes = payload(size)
+  let state = held(sender, sender_root, bytes)
+  crashed_before_finishing(receiver, state, bytes)
+
+  // The status says the receiver holds every byte and has no state, which is where
+  // a sender used to be stuck: it had no piece to send and the receiver no way to
+  // finish.
+  assert state_transfer.stage(receiver, state.hash) == Ok(Partial(size))
+  assert state_transfer.send(sender, state.hash, local(receiver)) == Delivered
+  assert contents(receiver, state.hash) == bytes
+  assert state_store.staged_bytes(receiver, state.hash) == Ok(0)
+}
+
+pub fn a_full_part_of_other_bytes_is_refused_once_and_the_next_send_delivers_test() {
+  let sender_root = scratch("full-wrong-from")
+  let receiver_root = scratch("full-wrong-to")
+  let sender = open(sender_root, limits())
+  let receiver = open(receiver_root, limits())
+  let bytes = payload(size)
+  let state = held(sender, sender_root, bytes)
+  crashed_before_finishing(
+    receiver,
+    state,
+    bit_array.from_string(string.repeat("z", size)),
+  )
+
+  // The bytes held are the right length and are not the state's. The first piece
+  // in range finishes them, the comparison refuses, and the file is discarded.
+  let assert Declined(state_transfer.Mismatch(_)) =
+    state_transfer.send(sender, state.hash, local(receiver))
+  assert state_store.staged_bytes(receiver, state.hash) == Ok(0)
+  assert state_store.get(receiver, state.hash) == Ok(None)
+
+  // Nothing is left to be stuck on, so the next send starts at zero and delivers.
+  assert state_transfer.send(sender, state.hash, local(receiver)) == Delivered
+  assert contents(receiver, state.hash) == bytes
+}
+
+// A bundle that cannot be placed: a directory with something in it is where the
+// bundle's name should go, so the rename in `finish` fails after the bytes were
+// compared and found right.
+fn blocked_bundle(root: String, state: State) -> Nil {
+  let blocker = state_store.directory(root) <> "/" <> state.hash <> ".bundle"
+  let assert Ok(Nil) = simplifile.create_directory_all(blocker)
+  let assert Ok(Nil) = simplifile.write(blocker <> "/occupied", "x")
+  Nil
+}
+
+pub fn a_finish_that_faults_leaves_no_half_written_file_test() {
+  let root = scratch("fault-finish")
+  let receiver = open(root, limits())
+  let bytes = payload(size)
+  let state = described(bytes)
+  blocked_bundle(root, state)
+
+  // The last piece reaches the size, the bytes are right, and the bundle cannot be
+  // placed. The answer is a failure the sender may retry, and no file is left that
+  // would answer every retry with a full part nothing finishes.
+  assert state_transfer.take(receiver, piece_of(state, bytes, 0, chunk), now())
+    == Accepted(chunk)
+  assert state_transfer.take(
+      receiver,
+      piece_of(state, bytes, chunk, chunk),
+      now(),
+    )
+    == Accepted(2 * chunk)
+  let verdict =
+    state_transfer.take(
+      receiver,
+      piece_of(state, bytes, 2 * chunk, size - 2 * chunk),
+      now(),
+    )
+  let assert state_transfer.Failed(_) = verdict
+  assert state_store.staged_bytes(receiver, state.hash) == Ok(0)
+  assert state_transfer.stage(receiver, state.hash) == Ok(Absent)
+}
+
+pub fn a_full_part_that_cannot_be_finished_is_discarded_by_the_next_piece_test() {
+  let root = scratch("fault-full")
+  let receiver = open(root, limits())
+  let bytes = payload(size)
+  let state = described(bytes)
+  blocked_bundle(root, state)
+  crashed_before_finishing(receiver, state, bytes)
+
+  // Any piece in range for the state is enough to try, and a fault discards.
+  let verdict =
+    state_transfer.take(receiver, piece_of(state, bytes, 0, chunk), now())
+  let assert state_transfer.Failed(_) = verdict
+  assert state_store.staged_bytes(receiver, state.hash) == Ok(0)
+}
