@@ -289,17 +289,21 @@ pub fn asked_with_state(
     Ok(Error(remote_spawn.StateMissing(hash:, have: _))), Some(state)
       if state.hash == hash
     ->
-      case sent(states, at, state, within_ms) {
-        Ok(Nil) ->
-          ask(int.max(
-            1,
-            within_ms - { bootstrap.monotonic_time_ms() - started },
-          ))
+      // The first ask has used some of the window, so the send gets what is left.
+      case sent(states, at, state, left(within_ms, started)) {
+        Ok(Nil) -> ask(left(within_ms, started))
         Error(Held(refused)) -> Ok(Error(refused))
         Error(NotAll) -> Error(Nil)
       }
     heard, _ -> heard
   }
+}
+
+// What is left of a window of `within_ms` that began at `started`, never less
+// than the millisecond that keeps a deadline meaningful.
+/// The time left of a window that began at `started`.
+fn left(within_ms: Int, started: Int) -> Int {
+  int.max(1, within_ms - { bootstrap.monotonic_time_ms() - started })
 }
 
 // Why a transfer did not end the question: the state is refused for good, or it

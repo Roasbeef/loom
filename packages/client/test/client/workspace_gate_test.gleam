@@ -260,3 +260,51 @@ pub fn a_call_that_waits_too_long_at_a_closed_gate_is_busy_test() {
   assert workspace_gate.exclusive(gate, 200, 1000, fn() { "quiet" })
     == Ok("quiet")
 }
+
+// The gate fails open for a call and closed for a capture. A session with no gate
+// running has no capture to wait for, so its tool calls run; a capture asked of a
+// gate that is not there has nothing to hold and is refused.
+pub fn no_gate_lets_a_call_run_and_refuses_a_capture_test() {
+  let assert Ok(names) = registry.start()
+  let nowhere = workspace_gate.at(registry.new_address(names))
+  assert workspace_gate.shared(nowhere, 100, fn() { "ran" }) == Ok("ran")
+  assert workspace_gate.exclusive(nowhere, 100, 100, fn() { "captured" })
+    == Error(workspace_gate.Unavailable)
+}
+
+// A gate that dies while a call waits at it lets the call run, and does not leave
+// it to wait out its whole allowance.
+pub fn a_gate_that_dies_under_a_waiting_call_lets_it_run_test() {
+  let assert Ok(names) = registry.start()
+  let address = registry.new_address(names)
+  let held = process.new_subject()
+  let started = process.new_subject()
+
+  // The gate is started by a process we can kill, and held by a capture.
+  let owner =
+    process.spawn_unlinked(fn() {
+      let assert Ok(gate) = workspace_gate.start_at(address)
+      process.send(started, gate)
+      process.sleep(30_000)
+    })
+  let assert Ok(gate) = process.receive(started, 2000) as "the gate starts"
+  let _capture =
+    process.spawn(fn() {
+      let _ =
+        workspace_gate.exclusive(gate, 1000, 30_000, fn() {
+          process.send(held, Nil)
+          process.sleep(30_000)
+        })
+      Nil
+    })
+  let assert Ok(Nil) = process.receive(held, 2000)
+    as "the capture holds the gate"
+  let waiting = process.new_subject()
+  let _call =
+    process.spawn(fn() {
+      process.send(waiting, workspace_gate.shared(gate, 20_000, fn() { "ran" }))
+    })
+  process.sleep(100)
+  process.kill(owner)
+  assert process.receive(waiting, 3000) == Ok(Ok("ran"))
+}
