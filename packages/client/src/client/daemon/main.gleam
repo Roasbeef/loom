@@ -129,6 +129,7 @@ import client/session_move
 import client/session_mover
 import client/session_movers
 import client/spawners
+import client/state_node.{type StateNode}
 import client/state_service
 import client/state_store
 import client/state_transfer
@@ -245,6 +246,10 @@ pub type Config {
     keepers: link_keeper.Keepers,
     /// The project table and the `[project]` numbers.
     projects: Projects,
+    /// What the daemon holds for moving repository states, started by
+    /// `prepare_startup` before the first session can be admitted
+    /// (protocol-change/107). `state_node.none()` on a daemon that moves none.
+    state_node: StateNode,
   )
 }
 
@@ -609,6 +614,7 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
       None,
       dict.new(),
       no_projects,
+      state_node.none(),
     )
   use config <- result.try(parse_loop(arguments, initial))
 
@@ -1088,7 +1094,12 @@ pub fn start_executor(
           max_result_bytes: executor_host.default_max_result_bytes,
           execution_result_bytes: executor_host.default_execution_result_bytes,
           clock: clock.from_function(ffi_os.system_time_ms),
-          factory: executor_plane.factory(machine, configured, trees),
+          factory: executor_plane.factory_capturing(
+            machine,
+            configured,
+            trees,
+            state_node.capturer(config.state_node),
+          ),
           states:,
         ))
         |> result.map_error(fn(error) {
@@ -1125,39 +1136,100 @@ pub fn start_executor(
   }
 }
 
-/// Starts the one process that owns this node's repository state store
-/// (protocol-change/107) and answers the endpoint the executor host and the
-/// orchestrator port both serve states through. A daemon that is neither, with
-/// no workspace to serve and no `[distribution]` table, keeps no store and
-/// answers `declining`, so a node that never moves states creates no directory.
+/// Starts what this node needs to move repository states (protocol-change/107):
+/// the one process that owns its state store, the endpoint the executor host and
+/// the orchestrator port both serve states through, a read handle on the store
+/// for senders, and the sandboxed Git that capture and apply run through. A
+/// daemon that is neither executor nor orchestrator, with no workspace to serve
+/// and no `[distribution]` table, keeps no store and answers `none`, so a node
+/// that never moves states creates no process and runs no Git.
 ///
-/// The store is `<state root>/states` with the default limits. Both carriers
-/// get the same endpoint, because a daemon that is orchestrator and executor
-/// at once must have one owner for the directory.
+/// The store is `<state root>/states` with the default limits, a directory the
+/// daemon root also makes and every session jail masks. Both carriers get the
+/// same endpoint, because a daemon that is orchestrator and executor at once must
+/// have one owner for the directory. The sandboxed Git is a runner of its own,
+/// and a daemon that cannot start one (no sandbox helper) starts without it and
+/// says so: it can still receive and relay states, and it refuses to capture or
+/// apply one with a reason.
+///
+/// The daemon starts this before its root, so that the first session admitted
+/// can already reach the store. The state root may not exist yet, so it is made
+/// private here exactly as the root makes it.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // assert main.start_states(Config(..config, workspaces: [], membership: None), logger) == Ok(state_transfer.declining())
+/// // assert main.start_states(Config(..config, workspaces: [], membership: None), logger).git == Ok(option.None)
 /// ```
 @internal
 pub fn start_states(
   config: Config,
   logger: Logger,
-) -> Result(state_transfer.Endpoint, String) {
+) -> Result(StateNode, String) {
   // Only a node that can be asked for a state keeps a store.
   case config.workspaces, config.membership {
-    [], None -> Ok(state_transfer.declining())
+    [], None -> Ok(state_node.none())
     _, _ -> {
+      use absolute <- result.try(bootstrap.absolute_path(config.state_root))
+      use Nil <- result.try(bootstrap.ensure_private_directory(absolute))
+      use root <- result.try(bootstrap.canonical_directory(absolute))
       use store <- result.try(state_store.open(
-        state_store.directory(config.state_root),
+        state_store.directory(root),
         state_store.default_limits,
       ))
-      use service <- result.map(
+      use service <- result.try(
         state_service.start(store, fn() { ffi_os.system_time_ms() / 1000 }),
       )
       log.info(logger, "daemon.states_serving", [])
-      state_service.endpoint(service)
+      let #(git, credentials) = start_state_git(config, root, logger)
+      Ok(state_node.StateNode(
+        endpoint: state_service.endpoint(service),
+        store: Some(store),
+        git:,
+        state_root: root,
+        credentials:,
+      ))
+    }
+  }
+}
+
+/// Starts the sandboxed Git that capture and apply run through, and the node's
+/// credential files its jail masks. A failure is told and survived: a state
+/// improves a spawn and is never a reason to refuse to boot.
+fn start_state_git(
+  config: Config,
+  root: String,
+  logger: Logger,
+) -> #(Option(worktree_git.Git), List(String)) {
+  let started = {
+    use configuration <- result.try(captured_domain_configuration(
+      config.session_defaults,
+      "",
+    ))
+    use machine <- result.try(executor_plane.machine(
+      config.session_defaults,
+      configuration,
+      config.state_root,
+      logger,
+    ))
+    worktree_git.start(worktree_git.Config(
+      helper_path: machine.helper_path,
+      scratch: root <> "/state-git",
+      state_root: root,
+      credentials: machine.credentials,
+      demand: machine.demand,
+    ))
+    |> result.map(fn(git) { #(git, machine.credentials) })
+  }
+
+  // A daemon without the runner can hold states and cannot read one.
+  case started {
+    Ok(#(git, credentials)) -> #(Some(git), credentials)
+    Error(reason) -> {
+      log.warn(logger, "daemon.state_git_unavailable", [
+        field.text(key: "reason", value: reason),
+      ])
+      #(None, [])
     }
   }
 }
@@ -2556,6 +2628,11 @@ pub fn prepare_startup(
       ledger:,
       projects: Projects(book: Some(project_table), settings: project_numbers),
     )
+
+  // The states start before the root so that the first session admitted can
+  // already reach the store.
+  use node <- result.try(start_states(config, logger))
+  let config = Config(..config, state_node: node)
   root.start(
     root.Config(
       config.state_root,
@@ -3760,7 +3837,7 @@ fn run(
       let config = Config(..config, member:)
       use keepers <- result.try(start_link_keepers(config, logger))
       let config = Config(..config, keepers:)
-      use states <- result.try(start_states(config, logger))
+      let states = config.state_node.endpoint
       use Nil <- result.try(start_owner_identity(config, logger))
       use executor <- result.try(start_executor(config, states, logger))
       use Nil <- result.try(sweep_delegate_sessions(

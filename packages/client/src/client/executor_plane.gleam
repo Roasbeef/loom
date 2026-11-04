@@ -139,6 +139,7 @@ import client/remote/protocol
 import client/remote/remote_census.{RemoteCensus}
 import client/secrets
 import client/serve
+import client/state_capture
 import client/workspace_plane
 import client/workspace_policy
 import client/workspaces.{type Workspace}
@@ -422,7 +423,33 @@ pub fn factory(
   configured: List(Workspace),
   trees: Worktrees,
 ) -> host.PlaneFactory(remote_census.RemoteCensus) {
-  fn(spec: host.AttachSpec) { build(machine, configured, trees, spec) }
+  factory_capturing(machine, configured, trees, None)
+}
+
+/// The factory like `factory`, for an executor that can capture its workspaces
+/// into a state (protocol-change/107). Each plane it builds answers a
+/// `StateCapture` for its scope with `capturer`, over the directory the scope
+/// works in: the session's tree for a worktree workspace and the workspace's root
+/// for a shared one. With `None` the planes answer `NoStates`, as `factory`'s do.
+///
+/// The commit author of a snapshot is the one the scope's owner sent at attach
+/// (`author_of`), and a scope that was sent none can capture a clean workspace
+/// and refuses a dirty one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // executor_plane.factory_capturing(machine, workspaces, trees, Some(capturer))
+/// ```
+pub fn factory_capturing(
+  machine: Machine,
+  configured: List(Workspace),
+  trees: Worktrees,
+  capturer: Option(state_capture.Capturer),
+) -> host.PlaneFactory(remote_census.RemoteCensus) {
+  fn(spec: host.AttachSpec) {
+    build(machine, configured, trees, capturer, spec)
+  }
 }
 
 /// Builds a workspace execution plane from configured parameters and attach spec.
@@ -430,6 +457,7 @@ fn build(
   machine: Machine,
   configured: List(Workspace),
   trees: Worktrees,
+  capturer: Option(state_capture.Capturer),
   spec: host.AttachSpec,
 ) -> Result(host.Plane(remote_census.RemoteCensus), host.PlaneFailure) {
   use workspace <- result.try(
@@ -454,7 +482,7 @@ fn build(
 
   // Determine build strategy based on workspace shared or worktree mode.
   case workspace.mode {
-    workspaces.Shared -> build_in(machine, root, None, spec)
+    workspaces.Shared -> build_in(machine, root, None, capturer, spec)
     workspaces.Worktree(..) -> {
       use tree <- result.try(
         worktrees.open(trees, workspace, spec.session)
@@ -465,7 +493,7 @@ fn build(
       // The tree exists from here on, so a build that fails must settle it:
       // a tree that nothing uses and nothing holds changes in is removed, and
       // one that holds changes stays for the next attach to adopt.
-      case build_in(machine, tree.path, custody, spec) {
+      case build_in(machine, tree.path, custody, capturer, spec) {
         Ok(plane) -> Ok(plane)
         Error(failure) -> {
           let _closed = worktrees.close(trees, workspace, spec.session)
@@ -490,6 +518,7 @@ fn build_in(
   machine: Machine,
   directory: String,
   custody: Option(Custody),
+  capturer: Option(state_capture.Capturer),
   spec: host.AttachSpec,
 ) -> Result(host.Plane(remote_census.RemoteCensus), host.PlaneFailure) {
   let built = {
@@ -505,7 +534,9 @@ fn build_in(
       }
       Ok(scratch) ->
         // Attempt to start workspace plane with prepared scopes.
-        case start(machine, directory, scope, blob_root, custody, spec) {
+        case
+          start(machine, directory, scope, blob_root, custody, capturer, spec)
+        {
           Ok(plane) -> Ok(plane)
           Error(reason) -> {
             remove_scope(machine.logger, scope)
@@ -637,6 +668,7 @@ fn start(
   scope: String,
   blob_root: String,
   custody: Option(Custody),
+  capturer: Option(state_capture.Capturer),
   spec: host.AttachSpec,
 ) -> Result(host.Plane(remote_census.RemoteCensus), String) {
   // The store is in the state root but in no directory the state-root masks
@@ -705,6 +737,7 @@ fn start(
               code_mode:,
               mcp: mcp.statuses,
               evolving:,
+              capturing: capturing_of(capturer, root, author_of(spec)),
             ),
             list.append(cleanups, evolving.cleanups),
           )
@@ -1133,7 +1166,29 @@ type Built {
     code_mode: Option(codemode_wiring.Config),
     mcp: List(remote_census.McpStatus),
     evolving: Evolving,
+    capturing: Option(host.Capturing),
   )
+}
+
+// How a scope captures its workspace, when the executor can. The directory is
+// the one the scope's tools work in, and the author is the one the owner sent, so
+// a snapshot of uncommitted work is made by the same name the scope's commits are.
+/// The scope's capture, when this executor has a capturer.
+fn capturing_of(
+  capturer: Option(state_capture.Capturer),
+  directory: String,
+  author: Option(git_identity.Identity),
+) -> Option(host.Capturing) {
+  option.map(capturer, fn(capturer) {
+    host.Capturing(capture: fn(basis) {
+      state_capture.capture(
+        capturer,
+        directory,
+        option.unwrap(author, git_identity.Identity(None, None)),
+        basis,
+      )
+    })
+  })
 }
 
 // The host's view of a started plane. The prompt facts are read once, here,
@@ -1188,7 +1243,7 @@ fn plane_over(
             ),
           ),
           evolution: built.evolving.door,
-          state: None,
+          state: built.capturing,
           children: fn(builder) {
             builder
             |> children.scratch

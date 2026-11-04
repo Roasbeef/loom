@@ -14,6 +14,7 @@ import client/ledger_holdings
 import client/ledger_service
 import client/membership_entry.{Upsert}
 import client/peer_defaults
+import client/state_node
 import gleam/dict
 import gleam/option.{None, Some}
 import support/ledger_rig as rig
@@ -50,6 +51,7 @@ fn config(handle: ledger_control.Handle) -> main.Config {
       None,
       dict.new(),
       main.no_projects,
+      state_node.none(),
     ),
     ledger: Some(handle),
   )
