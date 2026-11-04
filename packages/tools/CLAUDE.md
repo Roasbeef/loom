@@ -282,6 +282,14 @@ was asked.
   broker's `CallOutcome`. `Delivery.Queued` is a send recorded for an
   orchestrator that is away (protocol-change/084, phase 2): the tool renders it
   without promising a landing.
+- **`Provenance` has three words** (`fresh`, `my_conversation`, and from
+  protocol-change/107 `my_workspace`). `MyWorkspace` is a fresh conversation with a
+  copy of the caller's workspace for a child on another orchestrator, so the
+  `context` enum lists it only when the Agency reaches an orchestrator
+  (`orchestrator_names` is not empty). The Agency captures the workspace and the
+  receiving orchestrator's `[spawners.<name>] seed` decides whether it takes it; a local
+  spawn that asks for it is refused. The unknown-context refusal still reads "fresh or
+  my_conversation".
 - **Spawn selection is a catalogue name.** `SpawnRequest.model` is optional;
   the Agency resolves an explicit name before creating the child. Omission
   retains host routing. `Spawned.model` and `model_id` report the child's

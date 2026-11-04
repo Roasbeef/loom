@@ -99,6 +99,7 @@ token_budget_per_day = 5000000
 child_token_budget = 200000
 max_per_day = 20
 transcript = \"visible\"
+seed = \"workspace\"
 ",
     )
   assert spawners.parse(text)
@@ -120,6 +121,7 @@ transcript = \"visible\"
         max_per_day: Some(20),
         approval_ceiling: None,
         transcript: spawners.Visible,
+        seed: spawners.WorkspaceSeed,
         spawn_on: [],
         top_level: None,
       ),
@@ -139,6 +141,10 @@ pub fn omitted_keys_take_the_documented_defaults_test() {
   // A spawner's children keep their transcripts on this machine unless the
   // table says otherwise (protocol-change/090).
   assert spawner.transcript == spawners.Hidden
+
+  // A spawner may not send a checkout here unless the owner says so
+  // (protocol-change/107).
+  assert spawner.seed == spawners.NoSeed
 
   // The metering keys default to no bound, which is a spawner as it was before
   // the keys existed.
@@ -319,6 +325,21 @@ pub fn transcript_is_visible_or_hidden_test() {
     minimal_with("transcript = \"hiden\""),
     "spawners.laptop.transcript must be",
   )
+}
+
+// `seed` is one of two words, and absent is the first. A typo is refused and
+// never read as either, so a misspelt `none` cannot start accepting a checkout
+// from the spawning orchestrator.
+pub fn seed_is_none_or_workspace_and_defaults_to_none_test() {
+  let assert Ok([absent]) = spawners.parse(with(minimal))
+  assert absent.seed == spawners.NoSeed
+  let assert Ok([none]) = spawners.parse(minimal_with("seed = \"none\""))
+  assert none.seed == spawners.NoSeed
+  let assert Ok([workspace]) =
+    spawners.parse(minimal_with("seed = \"workspace\""))
+  assert workspace.seed == spawners.WorkspaceSeed
+  refused(minimal_with("seed = \"workspce\""), "spawners.laptop.seed must be")
+  refused(minimal_with("seed = true"), "spawners.laptop.seed must be a string")
 }
 
 pub fn a_node_that_is_not_a_pinned_peer_is_refused_by_name_test() {
@@ -529,7 +550,7 @@ pub fn a_malformed_table_is_refused_with_the_key_it_names_test() {
   )
   refused(
     minimal_with("host = \"x\""),
-    "unknown key `host` in [spawners.laptop] (allowed: node, executor, pool, directory, workspace, profile, tools, max_depth, max_sessions, max_within_s, default_within_s, retain_s, idle_close_s, token_budget_per_day, child_token_budget, max_per_day, approval_ceiling, transcript, spawn_on, top_level)",
+    "unknown key `host` in [spawners.laptop] (allowed: node, executor, pool, directory, workspace, profile, tools, max_depth, max_sessions, max_within_s, default_within_s, retain_s, idle_close_s, token_budget_per_day, child_token_budget, max_per_day, approval_ceiling, transcript, seed, spawn_on, top_level)",
   )
   refused(
     with("[spawners]\nlaptop = \"laptop@100.64.0.5\"\n"),

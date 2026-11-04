@@ -993,6 +993,12 @@ fn directories(config: Config) {
     root <> "/repository-snapshots",
   ))
 
+  // The state store (protocol-change/107). Bundles are whole workspaces, so
+  // every ordinary jail masks the directory (`client/workspace_policy`), and
+  // for the reason the snapshot stages are made here it exists before the
+  // first session is admitted, whether or not this daemon ever keeps a state.
+  use Nil <- result.try(bootstrap.ensure_private_directory(root <> "/states"))
+
   // The executor's Git worktrees, one directory for each session of a
   // workspace in worktree mode (protocol-change/095). It is made here, mode
   // 0700 and before any session is admitted, for the reason the socket root

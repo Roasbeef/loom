@@ -570,6 +570,29 @@ pub fn pull(local: Endpoint, hash: String, from from: Link) -> Outcome {
   )
 }
 
+/// Puts a bundle this node just made into its own store, through the node's
+/// `Endpoint`, in the same pieces a peer's would arrive in.
+///
+/// A capture leaves a bundle file in a private stage, and the store has one
+/// writing process (`client/state_service`) that takes pieces and nothing else.
+/// Sending the bundle through the endpoint means the store makes the state the
+/// one way it ever does, by comparing the bytes' size and SHA-256 with the
+/// description, so a state a capture describes wrongly is refused here and never
+/// stored. The bytes are the caller's, already read within the store's limit.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // state_transfer.deposit(state_service.endpoint(service), state, bytes) == Delivered
+/// ```
+pub fn deposit(local: Endpoint, state: State, bytes: BitArray) -> Outcome {
+  transfer(
+    fn() { local.stage(state.hash) |> result.replace_error(Nil) },
+    fn(offset) { Ok(slice(state, bytes, offset)) },
+    fn(piece) { Ok(local.take(piece)) },
+  )
+}
+
 /// Drives pieces from a source to a sink until the destination holds the whole
 /// state.
 ///

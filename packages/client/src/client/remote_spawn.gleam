@@ -50,6 +50,7 @@
 ////    is the set the child's tools may narrow.
 //// 3. `refusal_of` renders an Agency refusal as the refusal the sender reads.
 
+import client/state_object.{type State}
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import gleam/int
@@ -137,6 +138,13 @@ pub type Request {
     result_schema: Option(ResultSchema),
     /// Whether the child outlives the parent's run.
     detach: Detach,
+    /// The parent's workspace, described, when the child is to start from it
+    /// (protocol-change/107). The bundle is not in the request: it crosses
+    /// separately, in pieces, to the receiver's state store, and the receiver
+    /// answers `StateMissing` until the whole of it is there. `None` is a spawn
+    /// as it was before states existed, and it is the only value a spawn sends
+    /// to a spawner whose `seed` is `none`.
+    state: Option(State),
   )
 }
 
@@ -199,6 +207,11 @@ pub type Joined {
     /// parent keeps its connection to the orchestrator up and asks again until
     /// this reaches zero.
     owed: Int,
+    /// The state a child that was handed one made of its work, for the parent
+    /// to fetch (protocol-change/107, "Return"). It is `None` until the slice
+    /// that returns a child's commits; the field is here so the join is one
+    /// shape from the first slice that sends a state.
+    state: Option(State),
   )
 
   /// The window ended first. Not an error: the parent may ask again.
@@ -296,6 +309,26 @@ pub type SpawnRefusal {
   /// (`[spawners.<name>] transcript = "hidden"`, the default), so a
   /// `ChildHistory` is not answered with any of it (protocol-change/090).
   TranscriptHidden
+
+  /// The request names a state that is not in the receiver's store, or is there
+  /// in part (protocol-change/107). It is not a refusal of the spawn: nothing was
+  /// started, and the sender sends the state from `have` and asks again with the
+  /// same call site, which the receiver answers as it answers any resend.
+  StateMissing(
+    /// The hash of the state the request names.
+    hash: String,
+    /// The bytes of it the receiver holds, zero when it holds none.
+    have: Int,
+  )
+
+  /// The receiver will not start a child from the state, for a reason that
+  /// sending it again does not change: the spawner's `seed` is `none`, the
+  /// placement cannot take a state, the state is not the one described, or
+  /// applying it failed. No child was started and none is half made.
+  StateRefused(
+    /// What is wrong, in words for the parent's model, bounded in length.
+    reason: String,
+  )
 }
 
 /// The longest one join waits on the receiver, in milliseconds. A sender may ask
@@ -510,6 +543,14 @@ pub fn describe_refusal(refusal: SpawnRefusal) -> String {
       "it keeps the transcripts of this spawner's children to itself"
     NotYetOpen(reason:) ->
       "its session for this parent is not open yet: " <> reason
+    StateMissing(hash:, have:) ->
+      "it does not hold the state "
+      <> state_object.short(hash)
+      <> " yet ("
+      <> int.to_string(have)
+      <> " bytes of it)"
+    StateRefused(reason:) ->
+      "it will not start a child from the state: " <> reason
   }
 }
 
@@ -533,6 +574,8 @@ pub fn refusal_class(refusal: SpawnRefusal) -> Option(String) {
     StoreFailure(..) -> Some("store_failure")
     NotYetOpen(..) -> None
     TranscriptHidden -> Some("transcript_hidden")
+    StateMissing(..) -> None
+    StateRefused(..) -> Some("state_refused")
   }
 }
 

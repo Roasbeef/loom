@@ -27,6 +27,7 @@ fn request() -> remote_spawn.Request {
     within_ms: None,
     result_schema: None,
     detach: Attached,
+    state: None,
   )
 }
 
@@ -170,4 +171,22 @@ pub fn every_refusal_reads_as_a_sentence_naming_its_rule_test() {
     == "a different call already started a child under that name"
   assert sentence(remote_spawn.StoreFailure(reason: "disk full"))
     == "its store failed: disk full"
+}
+
+// A state that is not all there yet says how much is, so the sender resumes
+// there; a state the receiver will not take says why, in words for the model.
+// Only the second is a final refusal worth a diagnostic: the first is a request
+// to send more.
+pub fn the_two_state_refusals_read_as_sentences_and_classify_apart_test() {
+  let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  assert remote_spawn.describe_refusal(remote_spawn.StateMissing(hash:, have: 7))
+    == "it does not hold the state 01234567 yet (7 bytes of it)"
+  assert remote_spawn.describe_refusal(remote_spawn.StateRefused(
+      reason: "[spawners.laptop] seed is \"none\"",
+    ))
+    == "it will not start a child from the state: [spawners.laptop] seed is \"none\""
+  assert remote_spawn.refusal_class(remote_spawn.StateMissing(hash:, have: 0))
+    == None
+  assert remote_spawn.refusal_class(remote_spawn.StateRefused(reason: "no"))
+    == Some("state_refused")
 }

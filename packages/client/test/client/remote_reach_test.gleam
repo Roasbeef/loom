@@ -47,6 +47,7 @@ pub fn every_question_of_such_a_reach_is_a_definitive_refusal_test() {
       within_ms: None,
       result_schema: None,
       detach: remote_spawn.Attached,
+      state: None,
     )
   assert reach.spawn("box", parent, site, 0, [], request, 1000)
     == Error(refused)

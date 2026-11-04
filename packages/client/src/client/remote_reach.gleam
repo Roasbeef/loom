@@ -54,7 +54,10 @@ import client/remote_mail.{type Landing}
 import client/remote_spawn.{
   type CallSite, type Joined, type Parent, type Request, type Spawned,
 }
+import client/state_object.{type State}
+import client/state_store.{type Store}
 import gleam/list
+import gleam/option.{type Option, None}
 import session_view/remote_transcript.{type Page}
 import tools/agent.{type Handle}
 
@@ -125,6 +128,15 @@ pub type Reach {
     /// pass finds nothing owed. It never waits: a vote to a keeper that is not
     /// running is lost, and the next pass votes again.
     keep: fn(String, Vote) -> Nil,
+    /// The store a spawn that names a state sends it from (protocol-change/107),
+    /// or `None` for a reach that moves none.
+    states: Option(Store),
+    /// Captures the workspace at a directory on this machine into that store and
+    /// answers the state's description, or why it cannot (protocol-change/107).
+    /// It runs the node's sandboxed Git and knows nothing of the gate that keeps
+    /// the workspace quiet, which the session's assembly holds. `None` for a
+    /// reach that cannot capture.
+    capture: Option(fn(String) -> Result(State, String)),
   )
 }
 
@@ -169,6 +181,8 @@ pub fn none(session: String) -> Reach {
       Error(not_configured(name))
     },
     keep: fn(_name, _vote) { Nil },
+    states: None,
+    capture: None,
   )
 }
 

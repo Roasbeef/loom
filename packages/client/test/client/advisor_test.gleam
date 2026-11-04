@@ -3600,6 +3600,7 @@ fn settle_remote(
         within_ms: None,
         result_schema: None,
         detach: remote_spawn.Attached,
+        state: None,
       ),
       name: "sub:^main/" <> digest,
       glance: None,

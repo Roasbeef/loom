@@ -72,6 +72,7 @@ import client/peer_mail
 import client/remote_escalation_store
 import client/remote_reach.{type Reach}
 import client/remote_spawn.{type ChildUsage, type Parent}
+import client/state_object
 import core/corruption
 import core/glance.{type Glance}
 import core/ids.{type OpId}
@@ -1060,18 +1061,36 @@ fn encode_site(site: remote_spawn.CallSite) -> JsonValue {
 
 /// Encode request keeps this client operation’s decoding or state decision in one place.
 fn encode_request(request: remote_spawn.Request) -> JsonValue {
-  json.Object([
-    #("purpose", json.String(request.purpose)),
-    #("brief", json.String(request.brief)),
-    #("model", optional(request.model, json.String)),
-    #("tools", optional(request.tools, strings)),
-    #("withinMs", optional(request.within_ms, json.Int)),
-    #(
-      "resultSchema",
-      optional(request.result_schema, agent.render_result_schema),
-    ),
-    #("detach", json.Bool(request.detach == remote_spawn.Detached)),
-  ])
+  json.Object(list.append(
+    [
+      #("purpose", json.String(request.purpose)),
+      #("brief", json.String(request.brief)),
+      #("model", optional(request.model, json.String)),
+      #("tools", optional(request.tools, strings)),
+      #("withinMs", optional(request.within_ms, json.Int)),
+      #(
+        "resultSchema",
+        optional(request.result_schema, agent.render_result_schema),
+      ),
+      #("detach", json.Bool(request.detach == remote_spawn.Detached)),
+    ],
+    state_member(request.state),
+  ))
+}
+
+// A request that carries no state encodes exactly as it did before states
+// existed, so a stub written by an older build reads back unchanged and a spawn
+// that asks for nothing adds nothing to the session's store. The description is
+// kept as the text `client/state_object` writes, so its one codec and its one
+// validation are the ones that read it back.
+/// State member is the stub's `state` member when the request has one, and nothing otherwise.
+fn state_member(
+  state: Option(state_object.State),
+) -> List(#(String, JsonValue)) {
+  case state {
+    Some(state) -> [#("state", json.String(state_object.encode(state)))]
+    None -> []
+  }
 }
 
 /// Encode placed keeps this client operation’s decoding or state decision in one place.
@@ -1264,6 +1283,15 @@ fn decode_request(value: JsonValue) -> Result(remote_spawn.Request, String) {
     Ok(_) | Error(Nil) -> Error("expected `detach` to be a boolean")
   })
 
+  // An absent member is a request that carried no state. A present one is read
+  // by the state codec, so a damaged description fails the stub's decode and
+  // is never half believed.
+  use state <- result.try(
+    maybe(fields, "state", fn(value) {
+      expect_text(value) |> result.try(state_object.decode)
+    }),
+  )
+
   Ok(remote_spawn.Request(
     purpose:,
     brief:,
@@ -1272,6 +1300,7 @@ fn decode_request(value: JsonValue) -> Result(remote_spawn.Request, String) {
     within_ms:,
     result_schema:,
     detach:,
+    state:,
   ))
 }
 

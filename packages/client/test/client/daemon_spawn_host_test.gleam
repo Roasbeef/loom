@@ -69,6 +69,7 @@ fn request() -> remote_spawn.Request {
     within_ms: None,
     result_schema: None,
     detach: Attached,
+    state: None,
   )
 }
 

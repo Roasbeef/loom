@@ -1317,9 +1317,10 @@ there.
 
 ## Repository states
 
-**Status: slice 1 of [protocol-change/107](../../protocol-change/107-state-transport.md)
-is built, the local half. Nothing crosses a link yet and no production caller
-exists.** A state is a Git bundle named by the SHA-256 of its bytes. It is
+**Status: slices 1 to 3 (the send direction) of [protocol-change/107](../../protocol-change/107-state-transport.md)
+are built.** A model can start a child on another orchestrator from its own
+workspace (`agent_spawn` with `on` and `context: "my_workspace"`); the child's
+commits do not come back yet. A state is a Git bundle named by the SHA-256 of its bytes. It is
 described by `hash`, `size`, `tip`, `base` and `dirty`, which `client/state_object`
 encodes as JSON. Three modules carry a state on one node.
 
@@ -1355,6 +1356,31 @@ caller serializes applies to one repository as the worktree gate does. The
 sandboxed Git that reads the bundle shares `protecting_state_root` with session
 jails, so the slice that masks `states` from sessions has to leave the runner able
 to read it.
+
+### A spawn that carries the parent's workspace
+
+The parent's turn calls `agent_spawn` with `context: "my_workspace"`. The Agency
+captures the workspace before it writes the stub, so the stub, which every resend is
+built from, names the state.
+
+| Step | Where | What happens |
+|---|---|---|
+| Quiet | `client/workspace_gate` | The session's workspace tool calls run inside the gate's shared side. The capture closes the gate, waits up to 30 s for the calls in flight, and holds it up to 330 s. A drain that runs out refuses the spawn and reopens the gate; a hold that runs out reopens it and discards the capture's result. |
+| Capture | `client/state_capture` | `repository_snapshot` runs in the node's sandboxed Git and the bundle goes into the node's store through the store's endpoint, in the pieces a peer's would arrive in. Always a full bundle. |
+| Ask | `remote/remote_spawner.asked_with_state` | The request carries the state's description. The receiver answers `StateMissing(hash, have)` until the bundle is whole. |
+| Send | `client/state_transfer.send` | The sender sends from `have` for at most the attempt's window and asks again. A window that runs out is silence, and the outbox drainer's ordinary resend continues at the receiver's offset. |
+| Judge | `client/spawn_seed` | The spawner's `seed` ceiling, its placement and the description are checked first; a `seed = "none"` spawner leaves no session and no byte stored. |
+| Apply | `client/state_apply` | In a stage of the attempt's own under `<state root>/seed-staging`, in a process that outlives the asker (an asker that gives up is told to ask again), claimed so concurrent asks do not each apply; then one rename into `<directory>/seeds/<name>`, after checking that `seeds` is a real directory and that the copy landed where its name says. A child that swaps `seeds` in the window between check and rename is a stated residual. The child's brief is told where the copy is. |
+
+Only a spawner placed on a `directory` takes a copy in this release. A session whose
+workspace is on an executor is refused when it asks: the executor's plane answers
+`StateCapture` (`executor_plane.factory_capturing`), and the session assembly does
+not yet pull the state into the orchestrator's store.
+
+The store is masked from every session jail. The daemon root makes `<state root>/states`
+before any session is admitted and `workspace_policy` names it among the masks; the
+sandboxed Git runner shares the mask and lifts it for the one `git bundle unbundle`
+call (`worktree_git.run_reading_store`).
 
 ## Background code mode and MCP on a remote session
 
@@ -1978,12 +2004,14 @@ The directory holds no state of its own, so it has no model.
   destination and leave a moved one out. The receiver's row is listed on the
   receiver, and the source daemon's `sessions.elsewhere` lists it under its
   owner.
-- **Repository states stay on one node.** The store, thin capture and apply of
-  protocol-change/107 slice 1 have no message that carries a state to another
-  machine, no spawn that sends one and no return of a child's commits. Capture
-  still needs a drained, serialized source, and no caller enforces that yet. A
-  thin bundle needs the receiver to hold the base, and a repository whose full
-  bundle exceeds 256 MiB is refused, not degraded.
+- **A workspace goes to a child, and the child's work does not come back.** A spawn
+  can carry the parent's workspace to a spawner placed on a `directory` of the
+  receiving machine (protocol-change/107 slice 3). It does not go to a spawner placed
+  on an executor or a pool, it is not sent from a session whose workspace is on an
+  executor, it is always a full bundle, and the child's commits stay on the machine
+  that made them. The capture is a snapshot of the working bytes behind a gate that
+  waits for tool calls in flight; a process a tool left running in the background is
+  outside it. A repository whose full bundle exceeds 256 MiB is refused, not degraded.
 - **Membership changes are eventual, and some are not checked.** `enroll`,
   `revoke` and `renew` change a running deployment without reprovisioning, and
   a member that is off learns an entry when it next connects to one that has it.

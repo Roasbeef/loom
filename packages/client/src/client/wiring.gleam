@@ -172,6 +172,7 @@ import client/notes
 import client/permissions
 import client/tool_holder
 import client/tool_placement
+import client/workspace_gate
 import core/clock.{type Clock}
 import core/entry
 import core/ids.{type OpId}
@@ -1460,11 +1461,40 @@ pub fn run_placed(
   session: Session,
   clock: Clock,
 ) -> fn(effects.ToolRun) -> effects.ToolOutcome {
+  run_gated(owner, workspace, session, clock, None)
+}
+
+/// `run_placed` for a session whose workspace can be captured
+/// (protocol-change/107). Every workspace-side call runs inside the shared side
+/// of `gate`, so a capture that asks for the workspace waits for the calls in
+/// flight and holds off new ones for as long as it runs. A call that waits at a
+/// closed gate longer than the gate allows settles in band as a failure the
+/// model can read and retry. Owner-side calls do not pass the gate: they do not
+/// touch the workspace's files, and `agent_spawn`, which asks the capture, is one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let run = wiring.run_gated(owner_run, workspace_holder, session, clock, Some(gate))
+/// ```
+pub fn run_gated(
+  owner: fn(effects.ToolRun) -> effects.ToolOutcome,
+  workspace: tool_holder.Holder(WorkspaceRun),
+  session: Session,
+  clock: Clock,
+  gate: Option(workspace_gate.Gate),
+) -> fn(effects.ToolRun) -> effects.ToolOutcome {
   fn(run: effects.ToolRun) {
     case tool_placement.placement(run.call.name) {
       Ok(tool_placement.WorkspaceSide) ->
-        run_on_workspace(workspace, session, clock, run)
-      Ok(tool_placement.OwnerSide) | Error(Nil) -> owner(run)
+        run_on_workspace(workspace, session, clock, gate, run)
+      Ok(tool_placement.OwnerSide) -> owner(run)
+
+      // A tool with no placement is an extension's or an MCP server's, and it
+      // may write the workspace as freely as `bash` does, so it runs inside the
+      // gate's shared side too. `agent_spawn`, which asks the capture, is placed
+      // on the owner and is not held up by it.
+      Error(Nil) -> through_gate(gate, clock, run, fn() { owner(run) })
     }
   }
 }
@@ -1478,6 +1508,7 @@ fn run_on_workspace(
   workspace: tool_holder.Holder(WorkspaceRun),
   session: Session,
   clock: Clock,
+  gate: Option(workspace_gate.Gate),
   run: effects.ToolRun,
 ) -> effects.ToolOutcome {
   case tool_holder.fetch(workspace, within_ms: holder_deadline_ms) {
@@ -1485,8 +1516,40 @@ fn run_on_workspace(
       holder_unavailable("the session's workspace", unavailable, run, clock)
     Ok(on_workspace) ->
       case read_authority(session, run) {
-        Ok(authority) -> on_workspace(run, authority)
+        Ok(authority) ->
+          through_gate(gate, clock, run, fn() { on_workspace(run, authority) })
         Error(reason) -> tool_table.finished(tool.failure(reason), run, clock)
+      }
+  }
+}
+
+// A call runs inside the gate's shared side when the session has one. The wait
+// at a closed gate is the gate's, and a call that outwaits it is answered in
+// band with the reason, which names what held it up and says that asking again
+// is safe.
+/// Runs a workspace call through the session's gate, if it has one.
+fn through_gate(
+  gate: Option(workspace_gate.Gate),
+  clock: Clock,
+  run: effects.ToolRun,
+  work: fn() -> effects.ToolOutcome,
+) -> effects.ToolOutcome {
+  case gate {
+    None -> work()
+    Some(gate) ->
+      case workspace_gate.shared(gate, workspace_gate.entry_wait_ms, work) {
+        Ok(outcome) -> outcome
+        Error(workspace_gate.Busy) ->
+          tool_table.finished(
+            tool.failure(
+              "the tool `"
+              <> run.call.name
+              <> "` did not run: the workspace is held while a copy of it is made "
+              <> "for a subagent on another machine; the call can be made again",
+            ),
+            run,
+            clock,
+          )
       }
   }
 }

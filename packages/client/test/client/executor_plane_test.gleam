@@ -172,7 +172,14 @@ fn establish(state: String) -> Nil {
     Nil
   })
   list.each(
-    ["sessions", "run", "workspaces", "domains", "repository-snapshots"],
+    [
+      "sessions",
+      "run",
+      "workspaces",
+      "domains",
+      "repository-snapshots",
+      "states",
+    ],
     fn(name) {
       let assert Ok(Nil) = simplifile.create_directory_all(state <> "/" <> name)
         as "a state root directory is created"

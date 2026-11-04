@@ -171,6 +171,10 @@ pub fn a_fresh_state_root_masks_both_domain_directories_test() {
   assert simplifile.is_directory(path <> "/domains") == Ok(True)
   assert simplifile.is_directory(path <> "/repository-snapshots") == Ok(True)
 
+  // The state store exists before any session does, so the mask over it can be
+  // built for the first session and not only the second.
+  assert simplifile.is_directory(path <> "/states") == Ok(True)
+
   // A workspace-private session admitted now has no session-only domain
   // yet, and still masks where one will appear.
   let masked =
@@ -180,6 +184,7 @@ pub fn a_fresh_state_root_masks_both_domain_directories_test() {
     )
   assert list.contains(masked.protected, path <> "/domains")
   assert list.contains(masked.protected, path <> "/repository-snapshots")
+  assert list.contains(masked.protected, path <> "/states")
   assert list.contains(masked.protected, path <> "/workspaces")
   assert root.shutdown(daemon, within: 5000) == Ok(Nil)
   released_lock(path)

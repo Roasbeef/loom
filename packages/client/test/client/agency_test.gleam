@@ -44,6 +44,7 @@ import client/remote_send
 import client/remote_spawn
 import client/serve
 import client/spawners
+import client/state_object
 import client/workflow_ledger
 import codemode/satellite
 import codemode/vet/policy as vet_policy
@@ -5112,6 +5113,7 @@ fn remote_request(purpose: String) -> remote_spawn.Request {
     within_ms: None,
     result_schema: None,
     detach: remote_spawn.Attached,
+    state: None,
   )
 }
 
@@ -6327,6 +6329,111 @@ fn lineage_of(harness: Harness, strand: String) -> Option(lineage.Lineage) {
 // The same operation, a different planned call in it.
 fn second_call(caller: Caller, index: Int) -> Caller {
   Caller(..caller, source_index: index)
+}
+
+fn a_workspace_state() -> state_object.State {
+  state_object.State(
+    hash: string.repeat("ab", 32),
+    size: 2048,
+    tip: string.repeat("1", 40),
+    base: None,
+    dirty: state_object.Dirty,
+  )
+}
+
+fn seeded_by(capture: fn() -> Result(state_object.State, String)) {
+  fn(config: agency.Config) {
+    agency.Config(..config, seeding: agency.Seeding(capture:))
+  }
+}
+
+fn my_workspace_on_box(purpose: String) -> agent.SpawnRequest {
+  agent.SpawnRequest(..on_box(purpose), context: agent.MyWorkspace)
+}
+
+// A spawn that asks for the workspace captures it first, and the stub that every
+// resend is built from names the state the capture made.
+pub fn a_spawn_for_the_workspace_records_its_state_on_the_stub_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) =
+    start_remote(Hangs, [box], seeded_by(fn() { Ok(a_workspace_state()) }))
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(_spawned) =
+    harness.seam.spawn(caller, my_workspace_on_box("continue the cache"))
+    as "the orchestrator answers the spawn"
+  let assert [stub] = stubs_of(harness)
+  assert stub.request.state == Some(a_workspace_state())
+
+  // The other orchestrator was asked once, for the call site the stub names.
+  assert list.length({ fake_orchestrators.report(box) }.spawns) == 1
+  close(harness)
+}
+
+// A spawn that asks for nothing stores and sends nothing of the kind.
+pub fn a_spawn_that_does_not_ask_for_the_workspace_captures_nothing_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) =
+    start_remote(
+      Hangs,
+      [box],
+      seeded_by(fn() { panic as "an ordinary spawn must not capture" }),
+    )
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(_spawned) = harness.seam.spawn(caller, on_box("plain"))
+    as "the orchestrator answers the spawn"
+  let assert [stub] = stubs_of(harness)
+  assert stub.request.state == None
+  close(harness)
+}
+
+// A capture that cannot be made is the model's to read, and nothing is written
+// or sent: the call site is free to ask again.
+pub fn a_refused_capture_refuses_the_spawn_and_writes_no_stub_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) =
+    start_remote(
+      Hangs,
+      [box],
+      seeded_by(fn() { Error("the workspace did not go quiet") }),
+    )
+  let caller = caller_on("main", "turn-1:tools", 0)
+  assert harness.seam.spawn(caller, my_workspace_on_box("continue"))
+    == Error(agent.InvalidArgument(reason: "the workspace did not go quiet"))
+  assert stubs_of(harness) == []
+  assert { fake_orchestrators.report(box) }.spawns == []
+  close(harness)
+}
+
+// A program's call holds the workspace the copy would wait for, so it is refused
+// up front instead of waiting out the drain.
+pub fn a_program_cannot_ask_for_the_workspace_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) =
+    start_remote(
+      Hangs,
+      [box],
+      seeded_by(fn() { panic as "a program must not capture" }),
+    )
+  let caller =
+    Caller(..caller_on("main", "turn-1:tools", 0), minter: agent.Program(1))
+  let assert Error(agent.InvalidArgument(reason:)) =
+    harness.seam.spawn(caller, my_workspace_on_box("continue"))
+  assert string.contains(reason, "program")
+  close(harness)
+}
+
+// The workspace is copied to another orchestrator, so a local child, which
+// already works in this workspace, is told so.
+pub fn a_local_spawn_cannot_ask_for_the_workspace_test() {
+  let harness = start_harness(Hangs)
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Error(agent.InvalidArgument(reason:)) =
+    harness.seam.spawn(
+      caller,
+      agent.SpawnRequest(..a_spawn("local"), context: agent.MyWorkspace),
+    )
+  assert string.contains(reason, "on")
+  close(harness)
 }
 
 pub fn a_remote_spawn_is_written_ahead_and_the_child_is_a_descendant_test() {

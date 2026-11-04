@@ -1620,6 +1620,14 @@ fn established_masks(state_root: String) -> List(String) {
     // Captured repositories hold private workspace content and history.
     // The daemon creates this before admitting any session.
     state_root <> "/repository-snapshots",
+
+    // The state store holds the bundles other machines sent and this one
+    // captured, each the whole history and working files of a workspace. A
+    // session's tool that read one would hold another workspace's code. The
+    // daemon creates the directory before admitting any session, for the reason
+    // `repository-snapshots` is, and the sandboxed Git that applies a bundle is
+    // the one reader (`worktree_git.run_reading_store`).
+    state_root <> "/states",
   ]
 }
 

@@ -456,3 +456,161 @@ request serializes in the one owner's turn, and the work is bounded by the
 read above, which the owner approved. The sender's `resyncs` bound is unchanged.
 
 **Slices.** Slice 2 is done as above. Slices 3 to 5 are unchanged.
+
+## Addendum: slice 3, the send direction (2026-11-04)
+
+Slice 3 is built in two pieces. This one is the send: a delegated remote child can
+start from the parent's workspace. The return of the child's commits (`Joined.state`
+filled in, the pull, the ref in the parent's repository) is the next piece and is
+not built. This addendum records what was settled and where the build differs from
+the text above. Nothing above is edited.
+
+**Settled: the quiescence lock.** The open question prefers a lock, and a look at
+how workspace effects are serialized shows half of one. `agent_spawn` is an
+`Exclusive` tool, and the strand driver starts an `Exclusive` call only when none
+of that strand's other calls is running, so a spawn already drains the parent's
+own turn. It does not drain the session's other strands. `client/workspace_gate`
+is the missing half: every workspace-side tool call of a session runs inside its
+shared side (`wiring.run_gated`), and a capture runs inside `exclusive`. A capture
+asks for the workspace, new calls wait at the gate, the calls in flight finish
+within 30 seconds or the capture is refused (`NotQuiet`) and the gate reopens, and
+the gate is held for at most 330 seconds, after which it reopens under the capture
+and the capture's late answer is `Lapsed`, so its result is discarded. A call that
+waits at a closed gate gives up in band after 340 seconds. A background process a
+tool left running (`bash` with `&`, a code-mode execution) is not a call in flight
+and is outside the gate; capture is a snapshot of the working bytes and the spawn
+says so. A code-mode program's own `agent_spawn` cannot ask for the workspace,
+because the program is a tool call that holds the gate its capture would wait for.
+
+**Settled: how the parent asks.** `agent_spawn` gains no argument. `context`, which
+already says what a child starts with, gains a third word, `my_workspace`, offered
+only where `on` is. It starts the child with a fresh conversation and a copy of the
+workspace. The spawner's `seed` key is the owner's ceiling on the receiving
+machine, as 107 says, and the sending side has no switch of its own: the sender
+cannot read the receiver's table, so the receiver's refusal, which names the key, is
+how a model learns the ceiling. The text above says the model "may narrow this to
+none"; with the ask explicit and off by default there is nothing to narrow.
+
+**Differences from the text above.**
+
+- *The child shares its session's workspace.* 107 says the receiver applies into
+  "the child's workspace" and starts the child there. A remote child is a strand in
+  the delegate session of its (spawner, parent) pair, which has one workspace, and
+  the Agency has no per-strand directory. The copy is therefore a repository at
+  `seeds/<name>` under the spawner's `directory`, the name is a digest of the call
+  site and the state, and the child's brief is told where the copy is and which
+  branch it is on. The child is still a strand that can read the rest of the
+  workspace.
+- *Only a `directory` placement takes a copy.* A spawner placed on an `executor` or
+  a `pool` has its workspace on another machine, and applying a state there needs an
+  apply message in the executor vocabulary that 107 does not list. Adding one is a
+  second change to the version 6 vocabulary, so the receiver refuses with
+  `StateRefused` and says why. `Worktree` apply stays unused by a spawn.
+- *The copy is made in a stage and renamed in.* `into_clone` makes
+  `destination` and `destination/.git` writable roots after `git init`, which in a
+  session's workspace would let a concurrent child swap them. The apply runs in
+  `<state root>/seed-staging`, which no session can write, and the finished
+  repository is moved into the workspace with one rename. A copy at its final name
+  is whole, which also makes a resent spawn idempotent. The stage cannot be under
+  `repository-snapshots` because a mask wins over a write grant inside it, and the
+  rename needs the spawner's directory and the state root on one filesystem. A
+  failure to rename is a `StateRefused` that says so.
+- *The `states` mask.* `workspace_policy.established_masks` names
+  `<state root>/states` and the daemon root makes it before any session is admitted.
+  The sandboxed Git runner shares the mask and lifts it for one call,
+  `git bundle unbundle`, through `worktree_git.run_reading_store`; every other call of
+  the runner and every session tool finds the store masked.
+- *No thin basis.* 107 and the slice 2 addendum leave the question "which of these
+  commits do you hold" for the first caller. Asking it needs an owner that can run
+  Git where the receiver's repository is, which for a `directory` placement is a
+  repository that does not exist yet. Every state a spawn sends is full, and the
+  `Basis` that `StateCapture` and `capture_against` accept stays for the slice that
+  returns a child's work, where the sender holds the base.
+- *The sender holds the state.* A state captured on an executor would have to be
+  relayed into the orchestrator's store for the outbox to resend it. That relay is
+  `state_transfer.pull`, which exists, and the executor's `Capturing` is wired
+  (`executor_plane.factory_capturing`) and tested through the real host. The session
+  assembly does not use them yet: a session whose workspace is on an executor asks
+  for a copy and is refused with a reason that says so. A session with a workspace on
+  the orchestrator's machine captures it directly, through the same
+  `client/state_capture`.
+- *`Joined.state` is a field and nothing fills it.* It is `None` until the return.
+
+**Safety checks settled.** A hostile `.git/config` on the parent (an fsmonitor
+program and a clean filter) is neither run by the capture nor by the apply; the test
+plants a canary the programs would create. The spawner's directory is the only path
+an apply can write into, and it comes from the table; the copy's name is a digest
+and no peer text reaches a path. A spawner with `seed = "none"` is refused before a
+session is found or a byte is stored.
+
+**What the live drive still needs.** A session on the box with a `[distribution]`
+table, a `[spawners.box]` on the laptop with `directory` and `seed = "workspace"`,
+and a model call `agent_spawn(on: "laptop", context: "my_workspace")` from a session
+whose workspace is on the box. The transfer over a real TLS distribution link, and
+the capture under Linux's bubblewrap and Landlock, were not exercised here.
+
+**Slice 3, send direction: changes after review (2026-11-04).** An independent review
+of the build above found the following, all fixed, and two statements above are
+narrowed.
+
+- *The final destination is not safe from a session.* The apply's stage is
+  daemon-owned, but the rename into `<directory>/seeds/<name>` is made by the daemon,
+  outside any jail, through a directory that any session on that workspace can write.
+  A child that made `seeds` a link would have had the rename land the repository
+  elsewhere. Now `seeds` must be a real directory at its canonical path before the
+  move, a name that is a link or anything but a real directory is refused (it is no
+  longer taken for a finished copy), and after the move the copy's canonical path must
+  be exactly `<directory>/seeds/<name>`, else what the daemon placed is removed and the
+  spawn is refused with a constant reason. **The residual:** check-then-rename is still
+  racy against a child that swaps `seeds` in the window between the check and the
+  rename. The after-check then finds and removes what landed, but the rename itself
+  has happened outside the jail, with a repository the daemon made from a bundle at a
+  name the daemon chose. Closing it for good needs a destination no session can write,
+  which is a design change for a later slice.
+- *An apply could not outlive its asker, and attempts shared a stage.* The first ask
+  waits 30 seconds and the sandboxed Git allows ten minutes, so a state needing more
+  restarted from nothing on every retry and never finished, and the attempts, which
+  shared one stage name, deleted each other's trees. Now every attempt has a stage of
+  its own (the name and a unique integer) and deletes only that, `seed-staging` is
+  emptied when the daemon starts, and the apply runs in a process of its own under a
+  deadline of its own (11 minutes), so an asker that stops waiting is answered
+  `NotYetOpen` ("ask again") and the apply goes on. A resend finds the finished copy
+  before it reads the store, so it is quick and survives the bundle's expiry. A claim,
+  a marker directory made atomically beside the stages, keeps the asks that arrive
+  meanwhile from each starting a full apply of the same copy; a claim older than 15
+  minutes is taken over. Duplicates remain correct if they ever happen, because stages
+  are unique and the attempt that renames second finds the name taken and removes its
+  own stage. The claim is a file-system marker and not a process, so it needs no
+  owner and survives nothing: a restart sweeps it.
+- *Unplaced tools bypassed the gate.* Extension and MCP tools have no placement and
+  went to the owner untouched, so a filesystem server could write during a capture.
+  They run on the shared side now. `agent_spawn` is placed on the owner and does not
+  wait on the gate it closes.
+- *The hostile-configuration claim is narrower than it read.* The guarantee is that
+  a program a repository's configuration names cannot write outside the jail, on
+  either machine; for a filter the jail is the guarantee, and the `-c` overrides cover
+  hooks and the file-system monitor. The test now attaches the filter with a
+  `.gitattributes`, and a control runs the same configuration under ordinary Git
+  outside the jail and shows the program fires. "Never run" above should be read as
+  "cannot write outside the jail".
+
+**Slice 3, send direction: second review (2026-11-04).** Three more findings, fixed.
+
+- *The after-the-move check no longer deletes.* The previous paragraph said a copy
+  that landed away from its name is removed. That delete is made outside the jail, by
+  path, through a tree a session that already won the first race can still rearrange,
+  and a link swapped into it mid-walk would have the daemon delete its own private
+  files. The daemon now deletes nothing there. It refuses with the same constant
+  reason and leaves the repository where the rename put it: a repository the daemon
+  made from a bundle at a name it chose, in a place the session could already write.
+  The refusal is logged by the spawn host with the rest of the final refusals. The
+  stage and the claim, which are daemon-owned under `seed-staging`, are still removed.
+- *A late failure is answered, not repeated.* An apply that failed after its asker had
+  gone sent its refusal to nobody, released the claim, and every retry ran a full
+  apply again. The attempt now keeps a verdict, `<name>.refused` in `seed-staging`
+  (the reason, printable and at most 512 bytes, written to a temporary file and
+  renamed), before it releases the claim, and an ask for a copy that is not yet there
+  looks for the verdict first and answers `StateRefused` with it. The startup sweep
+  clears it, and a resend with a different state has a different name.
+- *Test order.* The tests that look at `seed-staging` now wait for it to drain, since
+  the attempt removes its stage and claim after the rename has made the copy whole.

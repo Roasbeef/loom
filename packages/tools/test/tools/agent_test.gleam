@@ -160,6 +160,7 @@ fn provenance_text(context: agent.Provenance) -> String {
   case context {
     agent.Fresh -> "fresh"
     agent.MyConversation -> "mine"
+    agent.MyWorkspace -> "workspace"
   }
 }
 
@@ -685,6 +686,65 @@ pub fn on_is_offered_only_where_there_is_somewhere_to_run_test() {
     as "the orchestrators must be advertised"
   assert list.key_find(on, "enum")
     == Ok(json.Array([json.String("box"), json.String("gpu")]))
+}
+
+// `my_workspace` sends a copy of the workspace to another orchestrator, so it
+// is a word of `context` only where `on` is: a session that reaches nowhere
+// advertises the two words it always did.
+pub fn my_workspace_is_offered_only_beside_on_test() {
+  let words = fn(agency) {
+    let assert Ok(json.Object(context)) =
+      list.key_find(spawn_properties(agency), "context")
+      as "the context property is declared"
+    list.key_find(context, "enum")
+  }
+  assert words(echoing_agency())
+    == Ok(json.Array([json.String("fresh"), json.String("my_conversation")]))
+  assert words(agent.Agency(..echoing_agency(), orchestrator_names: ["box"]))
+    == Ok(
+      json.Array([
+        json.String("fresh"),
+        json.String("my_conversation"),
+        json.String("my_workspace"),
+      ]),
+    )
+}
+
+pub fn spawn_decodes_my_workspace_as_its_own_provenance_test() {
+  let seen = process.new_subject()
+  let agency =
+    agent.Agency(
+      ..echoing_agency(),
+      spawn: fn(caller: agent.Caller, request: agent.SpawnRequest) {
+        process.send(seen, request.context)
+        Ok(agent.Spawned(
+          handle: agent.Handle(
+            strand: "sub:^main/x-1",
+            operation: caller.operation,
+          ),
+          strand: "sub:^main/x-1",
+          tools: [],
+          model: "default-model",
+          model_id: "provider-model-id",
+          deadline_ms: option.None,
+        ))
+      },
+      orchestrator_names: ["box"],
+    )
+  let outcome =
+    run(
+      "agent_spawn",
+      ctx_for("main", "turn", 0),
+      agency,
+      json.Object([
+        #("purpose", json.String("x")),
+        #("brief", json.String("b")),
+        #("on", json.String("box")),
+        #("context", json.String("my_workspace")),
+      ]),
+    )
+  assert !outcome.is_error
+  assert process.receive(seen, 100) == Ok(agent.MyWorkspace)
 }
 
 fn recording_spawn(
