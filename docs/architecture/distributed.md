@@ -573,8 +573,13 @@ at the tip in the scope's fresh worktree. Only a worktree-mode workspace takes o
 and a `shared` workspace is refused with a reason that names the mode. A dirty
 state's snapshot commit is checked out as it is, so the child sees the sender's
 uncommitted work as committed content. The tree must be one the session has not
-written yet; a tree that already contains the tip is answered `Applied` and left
-alone, so a resend is harmless. Nothing calls either on an orchestrator yet.
+written yet, and nothing in the host enforces that: the orchestrator side must not
+send a `StateApply` after the session's first turn. A tree that already contains the
+tip is answered with the tip and left alone, so a resend is harmless. The apply's run
+is not cancelled when the requester goes away, as an ordinary run is not, so an
+orchestrator that vanishes mid-checkout leaves a whole tree and the resend finds the
+tip in place. A workspace that refuses a state answers `ExecutorFault` with the
+reason. Nothing calls either on an orchestrator yet.
 
 A node's store has no lock, so `client/state_service` is the one process that
 owns it and both carriers answer through the endpoint it builds. A daemon that is

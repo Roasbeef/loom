@@ -860,8 +860,8 @@ of slice 4.
 
 - `HostMessage.StateApply(session, incarnation, token, state, reply)`. `state` is the
   description of a state that the executor's store already holds, put there by
-  `StateChunk` and `StateStatus` as any state is. The reply is `Result(ApplyAnswer,
-  Refusal)`, where `ApplyAnswer` is `Applied(tip)` or `Refused(reason)`. The executor
+  `StateChunk` and `StateStatus` as any state is. The reply is `Result(String,
+  Refusal)`: the tip the tree has checked out, or a refusal. The executor
   imports the state into the workspace's root repository, where the objects and one ref,
   `refs/loom/in/<hash8>`, land with the connectivity walk, the guarded `update-ref`, the
   disabled hooks and file-system monitor and `GIT_NO_LAZY_FETCH` that `state_apply`
@@ -882,9 +882,31 @@ of slice 4.
 incarnation and attach token are judged first, in the host, by the ledger's own check, so
 a request from a dead runtime learns that it is dead (`StaleToken`, `StaleIncarnation`,
 `ScopeNotOpen`) whatever the plane can do and the plane never sees it. A plane with no
-capturer answers `NoStates`. What the workspace decides about the state is not a fence
-refusal. It is `Refused(reason)`, so a caller tells a dead runtime from a workspace that
-cannot take the state.
+capturer answers `NoStates`. What the workspace decides about the state is answered as a
+refused capture is, `ExecutorFault(reason)`, so a caller tells a dead runtime
+(`StaleToken`, `StaleIncarnation`) from a workspace that cannot take the state by the
+variant. A first draft carried a separate `ApplyAnswer` with `Applied` and `Refused`; a
+review found it a second spelling of the same distinction, and it was dropped.
+
+**The run is not cancelled with its requester.** The other state requests run in a run
+of their own that the host cancels when the requester exits, because an abandoned
+capture only leaves a stage. An apply cut off in the middle of `checkout -B` would leave
+HEAD at the old tip with a partly written tree, which every resend would then refuse for
+holding changes. The apply therefore runs to its end, as an ordinary run does, and a send
+to a requester that has gone is harmless. A test sends the request from a process that
+exits at once and finds the tree whole and the resend answered with the tip.
+
+**Filters and transports.** A `.gitattributes` in the bundle's tree can attach a filter
+driver the executor's configuration defines, and a checkout runs its `smudge` command on
+each file. The first draft relied on the jail alone. A test showed the program does run
+inside the jail and can write where the jail lets Git write, which is the repository's own
+`.git`. Every checkout of `state_apply` now lists the `filter.<name>` drivers its
+configuration names and empties each one's `smudge`, `clean` and `process` for the call and
+turns `required` off, and refuses a driver name that cannot be written on a command line
+faithfully. The guards also set `submodule.recurse=false` and `protocol.allow=never`. The
+test attaches a filter to a hand-made bundle, because capture refuses such a tree, and
+asserts that the marker its program would write is not created, with a control in which the
+operator's Git runs the same program.
 
 **The mode requirement.** Only `mode = "worktree"` takes a state. A shared workspace has
 no tree of the scope's own: its sessions all work in the root, and moving a branch there
@@ -897,7 +919,7 @@ tree, whose `.git` file the session can rewrite.
 tree's checkout. A tree with a change in it, staged, unstaged or untracked, is refused. A
 tree on another branch, in another repository, or whose `.git` is a link or is not a plain
 file is refused before anything is written. A tree that already contains the tip is
-answered `Applied` and not touched, so a resend after a lost reply is harmless, including
+answered with the tip and not touched, so a resend after a lost reply is harmless, including
 after the session has begun to commit on top. A dirty state's snapshot commit is checked
 out as it is: the child sees the sender's uncommitted work as committed content, and
 `git log` shows one commit on its branch with the subject `Working snapshot`.
@@ -919,9 +941,12 @@ its common directory is the one the caller names from its own configuration.
   for another scope can make an apply fail with a lock error, which is a refusal the
   caller may resend.
 - A tree the session has already committed in, whose history does not contain the tip, is
-  moved if it has no change in it. The previous tip stays in the reflog. The orchestrator
-  is expected to ask before the first turn, and the doc says so; nothing detects a tree
-  that is not fresh beyond the checks above.
+  moved if it has no change in it. The previous tip stays in the reflog. The "before the
+  first turn" ordering is enforced by nothing in this slice: the host cannot tell a tree
+  the session has worked in from a fresh one beyond the checks above. The orchestrator
+  side, which is the next slice, must refuse to send `StateApply` after a session's first
+  turn. `worktrees.open` adopting a tree that holds an earlier incarnation's commits is a
+  gap that was there before this slice and is accepted.
 - The `Capturer` holds a read handle on the node's store, so `state_capture.new` takes the
   store. That is a change to the signature of the module's constructor and no more.
 

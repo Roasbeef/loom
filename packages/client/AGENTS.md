@@ -1415,6 +1415,10 @@ tree's `.git` to be a plain file and what Git finds from inside it to be the nam
 repository (top, worktree Git directory, common directory, branch); a tree that
 already contains the tip is answered as applied and not touched, and any other tree
 must have no change in it. A dirty state's snapshot commit is checked out as it is.
+The checkouts (`checked_out`) empty every `filter.<name>` driver the configuration
+names for the call, since a `.gitattributes` in the bundle can attach one and a
+checkout would run its `smudge` command; the guards also set
+`submodule.recurse=false` and `protocol.allow=never`.
 `state_capture.apply` finds the state in the node's store (the `Capturer` holds a
 read handle) and calls it. The caller serializes applies to one repository, as the
 `worktrees` gate does, and owns any ledger row for the new tree.
@@ -7769,8 +7773,11 @@ below.
   `state_object.Basis` and a `state_object.Content` (`WithWorkingTree` or
   `CommittedOnly`) and answers an optional state (`None` is a committed-only
   capture with nothing beyond its base). `StateApply` names a state the node's
-  store holds, is fenced like `StateCapture`, and answers `ApplyAnswer`
-  (`Applied(tip)` or `Refused(reason)`); only a worktree-mode workspace takes one.
+  store holds, is fenced like `StateCapture`, and answers the tip it checked out
+  or `ExecutorFault(reason)` for a workspace that refused it; only a worktree-mode
+  workspace takes one. Its run is not cancelled when the requester exits
+  (`host.to_completion`), because a checkout cut off half way leaves a tree with
+  changes that every resend would refuse.
   `Plane.state` is an optional `host.Capturing` (a `capture` and an `apply`
   function), which `executor_plane.factory_capturing` fills from the daemon's
   `state_capture.Capturer`; a plane without one answers `NoStates`.
