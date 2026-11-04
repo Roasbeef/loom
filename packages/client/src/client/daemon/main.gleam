@@ -2904,6 +2904,12 @@ pub fn prepare_startup(
                 roster.rows(executor_roster(config)),
                 config.pools,
                 pool,
+                fn() {
+                  ledger_holdings.resident_by_name(
+                    directory,
+                    executor_roster(config),
+                  )
+                },
                 chosen,
               ),
             )

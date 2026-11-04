@@ -9,10 +9,10 @@
 ////
 //// ## What a pool says
 ////
-//// A pool lists its `executors`, in the order they are tried. It may also
-//// require a `platform`, an `enforcement` or `toolchains`: the same three
-//// keys an `[executors.<name>]` row uses to declare what its machine
-//// provides. An executor is a candidate only if the pool lists it and its
+//// A pool lists its `executors` in a configured order, which breaks ties
+//// between them (see "Spreading" below). It may also require a `platform`, an
+//// `enforcement` or `toolchains`: the same three keys an `[executors.<name>]`
+//// row uses to declare what its machine provides. An executor is a candidate only if the pool lists it and its
 //// declaration says what the pool requires. An executor that declared
 //// nothing cannot satisfy a requirement, because the orchestrator would be
 //// guessing. A pool with no requirement admits every executor it lists.
@@ -23,26 +23,41 @@
 //// capacity is learned the same way, from the executor's refusal. The
 //// orchestrator keeps no model of either.
 ////
+//// ## Spreading
+////
+//// A first open does not take the first executor that has room. `spread`
+//// reorders the candidates by how many open scopes this orchestrator has
+//// already placed on each, fewest first, and the configured order breaks a
+//// tie. The sessions one orchestrator places therefore go round the pool, and no
+//// executor holds a second before each has one. The counts are the orchestrator's own
+//// bookkeeping and say nothing about load or about what the executor holds for
+//// other orchestrators; whether an executor is up or has room is still learned
+//// at the attach, which skips to the next candidate. With no open scopes the
+//// order is the configured one, as it was before spreading.
+////
 //// Like `[executors.<name>]`, the daemon reads the table once, when it
 //// starts, and the catalogue parser validates the same table, so a typo is
 //// refused wherever the file is read.
 ////
 //// ## Flow
 ////
-//// `from_document` → `row` → `members` → `candidates`
+//// `from_document` → `row` → `members` → `candidates` → `spread`
 ////
 //// 1. `from_document` reads the table after the executors it refers to.
 //// 2. `row` validates one pool's name and keys, and `members` its list of
 ////    executors, which must be configured and distinct.
 //// 3. `find` resolves the pool a session names, and `candidates` returns the
-////    executors that may hold the session, in order.
+////    executors that may hold the session, in configured order.
+//// 4. `spread` puts the candidates the orchestrator has used least first.
 
 import client/distribution
 import client/executors.{type Enforcement, type Executor}
 import client/ledger_reference.{type Peers}
 import gleam/dict.{type Dict}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order
 import gleam/result
 import gleam/string
 import storage/catalogue
@@ -53,8 +68,8 @@ pub type Pool {
   Pool(
     /// The `[pools.<name>]` key, which satisfies `catalogue.is_pool_name`.
     name: String,
-    /// The executors of the pool in the order they are tried. Each is a
-    /// configured `[executors.<name>]`.
+    /// The executors of the pool in the order that breaks ties between equally
+    /// used ones. Each is a configured `[executors.<name>]`.
     executors: List(String),
     /// The platform every candidate must declare, or `None` for any.
     platform: Option(String),
@@ -152,7 +167,7 @@ pub fn find(configured: List(Pool), name: String) -> Result(Pool, Nil) {
 }
 
 /// The executors that may hold a session created in this pool, in the order
-/// they are tried.
+/// the pool lists them.
 ///
 /// A member is dropped when the pool requires a platform and it declared a
 /// different one or none, when the pool requires an enforcement and it
@@ -176,6 +191,39 @@ pub fn candidates(pool: Pool, configured: List(Executor)) -> List(Executor) {
       Error(Nil) -> Error(Nil)
     }
   })
+}
+
+/// The candidates of a first open, ordered so that the executor with the fewest
+/// open scopes this orchestrator has placed on it comes first.
+///
+/// `open` maps an executor's name to that count, and a name it lacks counts as
+/// zero. Candidates with equal counts keep the order they came in, which is the
+/// pool's configured order when they come from `candidates`, so an `open` that
+/// is empty or all equal returns the list unchanged. The result holds exactly
+/// the candidates it was given. The function judges nothing else: an executor
+/// that is down or full is still in the list, and the attach skips it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let open = dict.from_list([#("alpha", 2), #("bravo", 0)])
+/// let found = pools.spread([alpha, bravo, charlie], open)
+/// assert list.map(found, fn(executor) { executor.name })
+///   == ["bravo", "charlie", "alpha"]
+/// ```
+pub fn spread(
+  candidates: List(Executor),
+  open: Dict(String, Int),
+) -> List(Executor) {
+  candidates
+  |> list.index_map(fn(executor, position) {
+    let held = result.unwrap(dict.get(open, executor.name), 0)
+    #(executor, held, position)
+  })
+  |> list.sort(fn(a, b) {
+    int.compare(a.1, b.1) |> order.break_tie(int.compare(a.2, b.2))
+  })
+  |> list.map(fn(entry) { entry.0 })
 }
 
 /// Whether an executor's declaration says what the pool requires.

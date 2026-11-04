@@ -107,6 +107,7 @@ import core/clock.{type Clock}
 import core/ids
 import core/json.{type JsonValue}
 import core/register
+import gleam/dict.{type Dict}
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -758,22 +759,28 @@ pub fn fixed(
 }
 
 /// The placement of a session created in a pool: the pool's executors that
-/// satisfy its requirements, in the order the configuration lists them, with
-/// the executors that cannot be reached left to the open to skip.
+/// satisfy its requirements, ordered by how many open scopes this orchestrator
+/// holds on each, fewest first, and by the configuration's order among equals
+/// (`pools.spread`), with the executors that cannot be reached left to the open
+/// to skip.
 ///
-/// A pool that is not configured, or that no executor satisfies, is a reason
-/// the first open fails; a session that already has a scope record never asks.
+/// `placed` is asked once, when a first open needs its candidates, and answers
+/// the open scopes this orchestrator has on each executor by name. An answer
+/// with no entries leaves the configuration's order. A pool that is not
+/// configured, or that no executor satisfies, is a reason the first open fails;
+/// a session that already has a scope record never asks.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // workspace.pooled(Some(membership), configured, pools, "linux", record_choice)
+/// // workspace.pooled(Some(membership), configured, pools, "linux", open_scopes, record_choice)
 /// ```
 pub fn pooled(
   membership: Option(distribution.Membership),
   configured: List(executors.Executor),
   available: List(pools.Pool),
   pool: String,
+  placed: fn() -> Dict(String, Int),
   chosen: fn(String) -> Nil,
 ) -> Placement {
   Placement(
@@ -797,7 +804,7 @@ pub fn pooled(
             <> ")",
           ))
         admitted ->
-          list.try_map(admitted, fn(executor) {
+          list.try_map(pools.spread(admitted, placed()), fn(executor) {
             candidate(membership, configured, executor.name)
             |> result.map(waiting_as_pool(_, found))
           })

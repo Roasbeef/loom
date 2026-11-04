@@ -13,6 +13,7 @@ import client/membership_ledger
 import client/node_report
 import client/remote/orchestrator_port.{type Held, Held, Placed}
 import client/roster
+import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
@@ -20,6 +21,7 @@ import storage/catalogue
 import support/held_catalogue
 import support/membership_fixture as fixture
 import support/membership_log as log
+import weft/poll
 
 // --- who is asked --------------------------------------------------------------
 
@@ -299,6 +301,55 @@ pub fn more_executors_than_the_port_carries_are_unknown_not_truncated_test() {
   // More executors than the port carries are unknown, so the report is left
   // without placements and nobody reads a short list as whole.
   assert ledger_holdings.placements(registry, listed) == Error(Nil)
+}
+
+// --- the open scopes a pool spreads by -----------------------------------------
+
+pub fn resident_sessions_are_counted_by_executor_name_test() {
+  let #(registry, store, directory) = held_catalogue.start()
+  let on_box = held_catalogue.registered_n(store, directory, "box", 2)
+  let _ = held_catalogue.registered_n(store, directory, "spare", 1)
+  let listed =
+    roster.fixed([
+      executors.plain("box", "loom@box.example.net"),
+      executors.plain("spare", "loom@spare.example.net"),
+      executors.plain("idle", "loom@idle.example.net"),
+    ])
+  let assert [first, ..] = on_box
+  let assert Ok(_) = manager.open(registry, first)
+
+  // Only the session that was opened is resident, and an executor nothing was
+  // placed on is absent, which the spreading reads as zero.
+  let assert poll.Answered(counted) =
+    poll.until(within: 2000, every: 1, attempt: fn() {
+      let counted = ledger_holdings.resident_by_name(registry, listed)
+      case dict.get(counted, "box") {
+        Ok(1) -> poll.Done(counted)
+        _ -> poll.Retry
+      }
+    })
+    as "the opened session becomes resident"
+  assert counted == dict.from_list([#("box", 1), #("spare", 0)])
+}
+
+pub fn an_unknown_tally_leaves_the_counts_empty_test() {
+  let #(registry, store, directory) = held_catalogue.start()
+  let names =
+    list.repeat(Nil, node_report.max_placements + 1)
+    |> list.index_map(fn(_, n) { "box" <> int.to_string(n) })
+  list.each(names, fn(name) {
+    let _ = held_catalogue.registered_n(store, directory, name, 1)
+    Nil
+  })
+  let listed =
+    roster.fixed(
+      list.map(names, fn(name) {
+        executors.plain(name, "loom@" <> name <> ".example.net")
+      }),
+    )
+
+  // A tally that is unknown is no information, and the pool keeps its order.
+  assert ledger_holdings.resident_by_name(registry, listed) == dict.new()
 }
 
 pub fn an_empty_catalogue_has_no_placements_test() {

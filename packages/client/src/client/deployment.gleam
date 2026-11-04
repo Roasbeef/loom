@@ -1045,9 +1045,11 @@ pub type ExecutorEntry {
   )
 }
 
-/// What a card for a pool shows. A pool names executors in a trial order and
-/// may require a declaration of them; the daemon does not reorder it by health,
-/// so the order here is the order a first open tries.
+/// What a card for a pool shows. A pool names executors in an order and may
+/// require a declaration of them; the daemon does not reorder it by health, so
+/// the order here is the pool's own. A first open tries the executor with the
+/// fewest open sessions first and uses this order only to break ties
+/// (`pools.spread`).
 pub type PoolEntry {
   PoolEntry(
     /// The `[pools.<name>]` key.
