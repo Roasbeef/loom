@@ -122,6 +122,7 @@ import client/remote_mail
 import client/remote_reach
 import client/remote_release
 import client/remote_spawn
+import client/return_apply
 import client/roster.{type Roster}
 import client/serve
 import client/session_directory
@@ -2222,6 +2223,7 @@ fn reach_of(
         fn() { list.contains(manager.unshared_sessions(registry), session) },
         config.state_node.store,
         local_capture(config),
+        local_apply(config),
         logger,
       ))
     Some(membership), Ok(Some(marker)) ->
@@ -2236,6 +2238,7 @@ fn reach_of(
           fn() { True },
           config.state_node.store,
           local_capture(config),
+          local_apply(config),
           logger,
         )
         |> remote_reach.restricted(spawner.spawn_on)
@@ -2265,6 +2268,22 @@ fn local_capture(
       state_capture.capture(capturer, directory, identity, state_object.Full)
     }
   })
+}
+
+/// How a session of this daemon applies the commits a finished child returned into
+/// the repository its workspace is (protocol-change/107, "Return"), or `None` when
+/// the daemon keeps no store or could not start a sandboxed Git. The session's
+/// assembly runs it behind the workspace's gate.
+fn local_apply(
+  config: Config,
+) -> Option(
+  fn(String, state_object.State, state_object.State, String) ->
+    Result(#(String, Int), String),
+) {
+  case config.state_node.store, config.state_node.git {
+    Some(store), Some(git) -> Some(return_apply.from_store(store, git))
+    None, _ | _, None -> None
+  }
 }
 
 /// The deepest spawn a session's Agency admits, or `None` for the Agency's own

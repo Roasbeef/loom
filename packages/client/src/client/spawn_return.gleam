@@ -157,6 +157,7 @@ pub fn sweep(state_root: String) -> Nil {
   case simplifile.read_directory(directory) {
     Ok(names) ->
       list.each(names, fn(name) {
+        // Only a claim is removed; a record or a verdict is kept.
         case string.ends_with(name, ".claim") {
           True -> {
             let _removed = simplifile.delete(directory <> "/" <> name)

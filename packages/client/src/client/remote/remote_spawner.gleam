@@ -143,6 +143,10 @@ pub fn over_distribution(
   offered: fn() -> Bool,
   states: Option(Store),
   capture: Option(fn(String) -> Result(state_object.State, String)),
+  apply: Option(
+    fn(String, state_object.State, state_object.State, String) ->
+      Result(#(String, Int), String),
+  ),
   logger: Logger,
 ) -> Reach {
   remote_reach.Reach(
@@ -230,6 +234,7 @@ pub fn over_distribution(
     },
     states:,
     capture:,
+    apply:,
     keep: fn(name, vote) {
       // This match resolves dict.get(keepers, name) before the surrounding protocol step continues.
       // This match resolves dict.get(keepers, name) before the enclosing validation continues.

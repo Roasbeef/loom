@@ -61,6 +61,7 @@ pub fn stub(orchestrator: String, seed: Int, state: State) -> Stub {
     glance: None,
     glance_seen_ms: 0,
     owed: 0,
+    seeded: None,
     state:,
   )
 }

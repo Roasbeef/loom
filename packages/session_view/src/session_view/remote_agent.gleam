@@ -109,6 +109,13 @@ pub type RemoteAgent {
     /// How long before the snapshot, on the daemon's clock, the newest glance
     /// reached the parent's daemon, or `None` before the first glance.
     age_ms: Option(Int),
+    /// How many commits the child made on top of the workspace it was started
+    /// from, when they came back to the parent's repository
+    /// (protocol-change/107, "Return"), and `None` for every other child.
+    commits: Option(Int),
+    /// The ref in the parent's repository that holds those commits,
+    /// `refs/loom/children/<child>/<tip8>`, or `None` while there is none.
+    returned_ref: Option(String),
   )
 }
 
@@ -123,20 +130,38 @@ pub type RemoteAgent {
 /// //     "model": "fast", "age_ms": null}
 /// ```
 pub fn encode(agent: RemoteAgent) -> JsonValue {
-  json.Object([
-    #("id", json.String(agent.id)),
-    #("parent", json.String(agent.parent)),
-    #("orchestrator", json.String(agent.orchestrator)),
-    #("standing", json.String(standing_word(agent.standing))),
-    #("title", json.String(agent.title)),
-    #("summary", json.String(agent.summary)),
-    #("tokens", json.Int(agent.tokens)),
-    #("model", json.String(agent.model)),
-    #("age_ms", case agent.age_ms {
-      Some(age) -> json.Int(age)
-      None -> json.Null
-    }),
-  ])
+  json.Object(list.append(
+    [
+      #("id", json.String(agent.id)),
+      #("parent", json.String(agent.parent)),
+      #("orchestrator", json.String(agent.orchestrator)),
+      #("standing", json.String(standing_word(agent.standing))),
+      #("title", json.String(agent.title)),
+      #("summary", json.String(agent.summary)),
+      #("tokens", json.Int(agent.tokens)),
+      #("model", json.String(agent.model)),
+      #("age_ms", case agent.age_ms {
+        Some(age) -> json.Int(age)
+        None -> json.Null
+      }),
+    ],
+    returned_members(agent),
+  ))
+}
+
+// The two members of a child whose commits came back. A child with none
+// encodes exactly as it did before they existed, so a client built before them
+// reads every entry unchanged, and one that does read them treats absence as
+// "nothing came back".
+/// The returned-work members of an entry, or none.
+fn returned_members(agent: RemoteAgent) -> List(#(String, JsonValue)) {
+  case agent.commits, agent.returned_ref {
+    Some(commits), Some(ref) -> [
+      #("commits", json.Int(commits)),
+      #("returned_ref", json.String(ref)),
+    ]
+    Some(_), None | None, Some(_) | None, None -> []
+  }
 }
 
 /// The wire word of a standing.
@@ -267,6 +292,11 @@ pub fn decode(value: JsonValue) -> Result(RemoteAgent, String) {
       Error("remote_children.age_ms must be a nonnegative integer or null")
   })
 
+  // The two members of returned work are optional and read together: a pair
+  // that is incomplete or mistyped is ignored rather than half believed, which is
+  // also how a client built before them sees an entry that has them.
+  let #(commits, returned_ref) = returned_of(fields)
+
   RemoteAgent(
     id:,
     parent:,
@@ -277,7 +307,33 @@ pub fn decode(value: JsonValue) -> Result(RemoteAgent, String) {
     tokens:,
     model:,
     age_ms:,
+    commits:,
+    returned_ref:,
   )
+}
+
+/// The returned-work pair of an entry, when both members are well formed: a
+/// nonnegative count and a ref of `refs/loom/children/` within the name bound.
+/// Anything else is `None` for both.
+fn returned_of(
+  fields: List(#(String, JsonValue)),
+) -> #(Option(Int), Option(String)) {
+  // The pair is read only when both members are there.
+  case list.key_find(fields, "commits"), list.key_find(fields, "returned_ref") {
+    Ok(json.Int(commits)), Ok(json.String(ref)) -> {
+      let well_formed =
+        commits >= 0
+        && string.byte_size(ref) <= max_name_bytes
+        && string.starts_with(ref, "refs/loom/children/")
+
+      // Only a well-formed pair is believed.
+      case well_formed {
+        True -> #(Some(commits), Some(ref))
+        False -> #(None, None)
+      }
+    }
+    _, _ -> #(None, None)
+  }
 }
 
 /// Decodes the standing status variant from remote agent fields.

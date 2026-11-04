@@ -232,6 +232,9 @@ pub type Returned {
     tip: String,
     /// Whether this apply made the ref.
     creation: Creation,
+    /// How many commits the ref holds above the state that was sent: what the
+    /// child made.
+    commits: Int,
   )
 }
 
@@ -259,7 +262,7 @@ pub type Returned {
 ///
 /// ```gleam
 /// // state_apply.apply_returned(git, repository, child, sent, bundle, returned)
-/// // == Ok(Returned(ref: "refs/loom/children/fix-cache/01234567", tip:, creation: Created))
+/// // == Ok(Returned(ref: "refs/loom/children/fix-cache/01234567", tip:, creation: Created, commits: 2))
 /// ```
 pub fn apply_returned(
   git: Git,
@@ -277,15 +280,39 @@ pub fn apply_returned(
   use existing <- result.try(current_value(git, repository, ref))
 
   // Whether the ref is there already decides whether anything is unpacked.
-  case existing {
-    Some(oid) if oid == returned.tip ->
-      Ok(Returned(ref:, tip: returned.tip, creation: AlreadyThere))
+  use creation <- result.try(case existing {
+    Some(oid) if oid == returned.tip -> Ok(AlreadyThere)
     Some(_) -> Error(ref <> " already names a different commit")
     None -> {
       use Nil <- result.try(hold_sent(git, repository, sent))
       create_child_ref(git, repository, bundle, returned, ref)
     }
-  }
+  })
+
+  // The ref now holds the child's commits, and only they are counted.
+  use commits <- result.map(count_commits(
+    git,
+    repository,
+    returned.tip,
+    sent.state.tip,
+  ))
+  Returned(ref:, tip: returned.tip, creation:, commits:)
+}
+
+/// How many commits `tip` has that `sent` does not, which for a bundle thin
+/// against `sent` is the number the child made.
+fn count_commits(
+  git: Git,
+  repository: String,
+  tip: String,
+  sent: String,
+) -> Result(Int, String) {
+  use text <- result.try(
+    git_ok(git, repository, [], ["rev-list", "--count", tip, "^" <> sent]),
+  )
+  string.trim(text)
+  |> int.parse
+  |> result.replace_error("Git did not count the child's commits")
 }
 
 /// Requires a returned state to be thin against exactly the state that was sent:
@@ -357,7 +384,7 @@ fn create_child_ref(
   bundle: String,
   returned: State,
   ref: String,
-) -> Result(Returned, String) {
+) -> Result(Creation, String) {
   let writable = [repository <> "/.git"]
   use _ <- result.try(
     git_ok_with(git, repository, writable, worktree_git.run_reading_store, [
@@ -381,14 +408,13 @@ fn create_child_ref(
 
   // A failed update is either a lost race to the same ref or a real refusal.
   case made {
-    Ok(_) -> Ok(Returned(ref:, tip: returned.tip, creation: Created))
+    Ok(_) -> Ok(Created)
     Error(reason) -> {
       use again <- result.try(current_value(git, repository, ref))
 
       // Another apply that got there first named the same tip.
       case again {
-        Some(oid) if oid == returned.tip ->
-          Ok(Returned(ref:, tip: returned.tip, creation: AlreadyThere))
+        Some(oid) if oid == returned.tip -> Ok(AlreadyThere)
         Some(_) | None -> Error(reason)
       }
     }

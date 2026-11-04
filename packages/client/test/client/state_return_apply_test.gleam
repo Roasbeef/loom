@@ -172,6 +172,7 @@ pub fn a_childs_commits_come_back_as_one_ref_and_nothing_else_moves_test() {
   assert returned.ref == ref_of(scenario)
   assert returned.tip == scenario.tip
   assert returned.creation == Created
+  assert returned.commits == 2
 
   // Exactly one ref is new, it names the child's tip, and the two commits the
   // child made are on it above the sent snapshot.
@@ -230,6 +231,7 @@ pub fn a_replayed_return_changes_nothing_and_is_not_an_error_test() {
   assert again.ref == first.ref
   assert again.tip == first.tip
   assert again.creation == AlreadyThere
+  assert again.commits == 2
   assert state_rig.refs(rig.root) == refs
   state_rig.stop(rig)
 }

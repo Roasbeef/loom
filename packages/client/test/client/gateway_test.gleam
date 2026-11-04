@@ -8144,6 +8144,7 @@ fn remote_harness() -> #(Harness, fake_orchestrators.Box) {
       glance: None,
       glance_seen_ms: 0,
       owed: 0,
+      seeded: None,
       state: remote_child.Requested,
     )
   let assert Ok(remote_child.Fresh) =

@@ -161,6 +161,7 @@ import client/remote_reach
 import client/remote_spawn
 import client/remote_top
 import client/retryconf
+import client/return_apply
 import client/rules
 import client/rulescan
 import client/schedule
@@ -3443,18 +3444,50 @@ fn seeding_of(
   workspace: String,
   gate: workspace_gate.Gate,
   capture: Option(fn(String) -> Result(state_object.State, String)),
+  apply: Option(
+    fn(String, state_object.State, state_object.State, String) ->
+      Result(#(String, Int), String),
+  ),
 ) -> agency.Seeding {
+  // The commits a child returns are applied by the same node that captured, and
+  // by none else.
+  let apply = option.lazy_unwrap(apply, return_apply.unavailable)
+  let receive = fn(seed: agency.Seed, returned, child) {
+    return_apply.behind_gate(
+      gate,
+      workspace_gate.drain_ms,
+      workspace_gate.hold_ms,
+      workspace,
+      seed.workspace,
+      apply,
+      seed.state,
+      returned,
+      child,
+    )
+  }
+
+  // Where the workspace is decides whether a capture is possible; applying the
+  // commits that come back is the same in every case.
   case home, capture {
     There(..), _ ->
-      agency.Seeding(capture: fn() { Error(remote_workspace_refusal) })
+      agency.Seeding(
+        capture: fn() { Error(remote_workspace_refusal) },
+        receive:,
+      )
     Here(..), None ->
-      agency.Seeding(capture: fn() {
-        Error(
-          "this orchestrator cannot capture a workspace: it keeps no state store or has no sandboxed Git",
-        )
-      })
+      agency.Seeding(
+        capture: fn() {
+          Error(
+            "this orchestrator cannot capture a workspace: it keeps no state store or has no sandboxed Git",
+          )
+        },
+        receive:,
+      )
     Here(..), Some(capture) ->
-      agency.Seeding(capture: fn() { captured(capture, workspace, gate) })
+      agency.Seeding(
+        capture: fn() { captured(capture, workspace, gate) },
+        receive:,
+      )
   }
 }
 
@@ -3467,16 +3500,25 @@ fn captured(
   capture: fn(String) -> Result(state_object.State, String),
   workspace: String,
   gate: workspace_gate.Gate,
-) -> Result(state_object.State, String) {
+) -> Result(agency.Seed, String) {
+  // The directory is recorded as it resolves now, so the commits that come back
+  // are applied only into the repository this state was captured from.
+  use directory <- result.try(
+    bootstrap.canonical_directory(workspace)
+    |> result.replace_error("the workspace cannot be read"),
+  )
+
+  // The gate's three refusals are each a sentence the model can act on.
   case
     workspace_gate.exclusive(
       gate,
       workspace_gate.drain_ms,
       workspace_gate.hold_ms,
-      fn() { capture(workspace) },
+      fn() { capture(directory) },
     )
   {
-    Ok(made) -> made
+    Ok(made) ->
+      result.map(made, fn(state) { agency.Seed(state:, workspace: directory) })
     Error(workspace_gate.NotQuiet) ->
       Error(
         "the workspace did not go quiet: a tool call was still running after "
@@ -3962,6 +4004,7 @@ fn assemble_in(
         settings.workspace,
         gate,
         option.then(settings.remote_reach, fn(reach) { reach.capture }),
+        option.then(settings.remote_reach, fn(reach) { reach.apply }),
       ),
       depth_cap: option.unwrap(settings.depth_cap, agency_base.depth_cap),
       peer_defaults: option.unwrap(

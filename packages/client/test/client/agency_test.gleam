@@ -6342,8 +6342,29 @@ fn a_workspace_state() -> state_object.State {
 }
 
 fn seeded_by(capture: fn() -> Result(state_object.State, String)) {
+  seeded_and_received(capture, fn(_seed, _returned, _child) {
+    Ok(remote_child.NotApplied("nothing is applied in this test"))
+  })
+}
+
+// A session whose spawn captures a workspace and whose receive is the test's.
+fn seeded_and_received(
+  capture: fn() -> Result(state_object.State, String),
+  receive: fn(agency.Seed, state_object.State, String) ->
+    Result(remote_child.Returned, String),
+) {
   fn(config: agency.Config) {
-    agency.Config(..config, seeding: agency.Seeding(capture:))
+    agency.Config(
+      ..config,
+      seeding: agency.Seeding(
+        capture: fn() {
+          result.map(capture(), fn(state) {
+            agency.Seed(state:, workspace: "/work/loom")
+          })
+        },
+        receive:,
+      ),
+    )
   }
 }
 
@@ -6419,6 +6440,163 @@ pub fn a_program_cannot_ask_for_the_workspace_test() {
   let assert Error(agent.InvalidArgument(reason:)) =
     harness.seam.spawn(caller, my_workspace_on_box("continue"))
   assert string.contains(reason, "program")
+  close(harness)
+}
+
+fn the_commits_a_child_made() -> state_object.State {
+  state_object.State(
+    hash: string.repeat("cd", 32),
+    size: 512,
+    tip: string.repeat("2", 40),
+    base: Some(string.repeat("1", 40)),
+    dirty: state_object.Clean,
+  )
+}
+
+const child_ref = "refs/loom/children/record-0123456789abcdef/22222222"
+
+pub fn a_childs_returned_commits_are_applied_once_and_told_in_its_report_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let applied = process.new_subject()
+  let #(harness, _queued) =
+    start_remote(
+      Hangs,
+      [box],
+      seeded_and_received(
+        fn() { Ok(a_workspace_state()) },
+        fn(seed, returned, child) {
+          process.send(applied, #(seed.workspace, returned, child))
+          Ok(remote_child.Applied(ref: child_ref, commits: 2))
+        },
+      ),
+    )
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(spawned) =
+    harness.seam.spawn(caller, my_workspace_on_box("continue the cache"))
+  fake_orchestrators.settle_returning(
+    box,
+    spawned.handle,
+    the_commits_a_child_made(),
+  )
+
+  // The first wait applies them into the workspace the spawn captured, for the
+  // child the handle names, and the report says where they are.
+  let assert Ok([agent.Ready(report:, ..)]) =
+    harness.seam.wait(caller, [spawned.handle], 100)
+  assert string.contains(report, "done on")
+  assert string.contains(report, "committed 2 commits")
+  assert string.contains(report, "`" <> child_ref <> "`")
+  assert string.contains(report, "git cherry-pick")
+  let assert Ok(#(workspace, returned, child)) = process.receive(applied, 100)
+  assert workspace == "/work/loom"
+  assert returned == the_commits_a_child_made()
+  assert child == spawned.handle.strand
+
+  // It was written down, so a second wait applies nothing and says the same.
+  let assert [stub] = stubs_of(harness)
+  assert remote_child.returned_of(stub)
+    == Some(remote_child.Applied(ref: child_ref, commits: 2))
+  let assert Ok([agent.Ready(report: again, ..)]) =
+    harness.seam.wait(caller, [spawned.handle], 100)
+  assert again == report
+  assert process.receive(applied, 50) == Error(Nil)
+
+  // The strip's row for the child carries the count and the ref.
+  let assert [row] = remote_child.agents([remote_child.Kept("k", stub)], 0)
+  assert row.commits == Some(2)
+  assert row.returned_ref == Some(child_ref)
+  close(harness)
+}
+
+pub fn a_return_that_cannot_be_applied_yet_is_told_and_tried_again_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) =
+    start_remote(
+      Hangs,
+      [box],
+      seeded_and_received(fn() { Ok(a_workspace_state()) }, fn(_s, _r, _c) {
+        Error("the workspace did not go quiet")
+      }),
+    )
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(spawned) =
+    harness.seam.spawn(caller, my_workspace_on_box("continue the cache"))
+  fake_orchestrators.settle_returning(
+    box,
+    spawned.handle,
+    the_commits_a_child_made(),
+  )
+
+  let assert Ok([agent.Ready(report:, ..)]) =
+    harness.seam.wait(caller, [spawned.handle], 100)
+  assert string.contains(report, "could not be applied yet")
+  assert string.contains(report, "did not go quiet")
+  assert string.contains(report, "done on")
+
+  // Nothing was written, so the next wait applies them again.
+  let assert [stub] = stubs_of(harness)
+  assert remote_child.returned_of(stub) == None
+  close(harness)
+}
+
+pub fn a_return_that_is_refused_for_good_is_recorded_and_not_repeated_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let applied = process.new_subject()
+  let #(harness, _queued) =
+    start_remote(
+      Hangs,
+      [box],
+      seeded_and_received(fn() { Ok(a_workspace_state()) }, fn(_s, _r, _c) {
+        process.send(applied, Nil)
+        Ok(remote_child.NotApplied(
+          "this session's workspace is not the one the child was started from",
+        ))
+      }),
+    )
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(spawned) =
+    harness.seam.spawn(caller, my_workspace_on_box("continue the cache"))
+  fake_orchestrators.settle_returning(
+    box,
+    spawned.handle,
+    the_commits_a_child_made(),
+  )
+
+  let assert Ok([agent.Ready(report:, ..)]) =
+    harness.seam.wait(caller, [spawned.handle], 100)
+  assert string.contains(report, "were not applied to your repository")
+  assert string.contains(report, "not the one the child was started from")
+  let assert Ok(Nil) = process.receive(applied, 100)
+
+  // A second wait tells the same and asks the apply nothing.
+  let assert Ok([agent.Ready(report: again, ..)]) =
+    harness.seam.wait(caller, [spawned.handle], 100)
+  assert again == report
+  assert process.receive(applied, 50) == Error(Nil)
+  let assert [stub] = stubs_of(harness)
+  let assert [row] = remote_child.agents([remote_child.Kept("k", stub)], 0)
+  assert row.commits == None
+  assert row.returned_ref == None
+  close(harness)
+}
+
+pub fn a_child_with_no_returned_state_is_reported_as_it_was_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) =
+    start_remote(
+      Hangs,
+      [box],
+      seeded_and_received(fn() { Ok(a_workspace_state()) }, fn(_s, _r, _c) {
+        panic as "nothing was returned, so nothing is applied"
+      }),
+    )
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(spawned) =
+    harness.seam.spawn(caller, my_workspace_on_box("continue the cache"))
+  fake_orchestrators.settle(box, spawned.handle)
+  let assert Ok([agent.Ready(report:, ..)]) =
+    harness.seam.wait(caller, [spawned.handle], 100)
+  assert report == "done on " <> spawned.strand
   close(harness)
 }
 
@@ -7240,6 +7418,7 @@ fn a_stub_of(
       glance: None,
       glance_seen_ms: 0,
       owed: 0,
+      seeded: None,
       state:,
     ),
   )
@@ -7279,6 +7458,67 @@ pub fn admitting_a_call_site_twice_keeps_the_first_stub_test() {
 // Two writers hear the same answer: the effect process that asked and the
 // drainer that resends. Whichever is late must not undo the other, or a child
 // that has finished would be shown as running again.
+pub fn the_returned_answer_is_written_once_and_only_to_a_settled_seeded_child_test() {
+  let harness = start_harness(Hangs)
+  let settled =
+    remote_child.Settled(
+      remote_child.Placed(
+        handle: an_answer("first").handle,
+        tools: ["bash"],
+        model: "cheap",
+        model_id: "cheap-1",
+        deadline_ms: 2000,
+      ),
+      agent.Completed,
+      remote_spawn.ChildUsage(
+        input: 1,
+        output: 2,
+        cache_read: 3,
+        cache_write: 4,
+        cost: 0.25,
+      ),
+    )
+  let #(key, plain) =
+    a_stub_of(
+      "box",
+      caller_on("main", "turn-1:tools", 0),
+      settled,
+      remote_spawn.Detached,
+    )
+  let seeded =
+    remote_child.Stub(
+      ..plain,
+      seeded: Some(remote_child.Seeded(workspace: "/work", returned: None)),
+    )
+  let assert Ok(remote_child.Fresh) =
+    remote_child.admit(harness.runtime, key, seeded)
+  let answer = remote_child.Applied("refs/loom/children/x/01234567", 3)
+
+  let assert Ok(written) = remote_child.returned(harness.runtime, key, answer)
+  assert remote_child.returned_of(written) == Some(answer)
+
+  // A second, different answer changes nothing: a child's commits are decided
+  // once, so at most one ref comes of one child.
+  let assert Ok(again) =
+    remote_child.returned(harness.runtime, key, remote_child.NotApplied("late"))
+  assert remote_child.returned_of(again) == Some(answer)
+
+  // A child that was handed no workspace takes none.
+  let #(plain_key, unseeded) =
+    a_stub_of(
+      "box",
+      caller_on("main", "turn-1:tools", 1),
+      settled,
+      remote_spawn.Detached,
+    )
+  let assert Ok(remote_child.Fresh) =
+    remote_child.admit(harness.runtime, plain_key, unseeded)
+  let assert Ok(untouched) =
+    remote_child.returned(harness.runtime, plain_key, answer)
+  assert remote_child.returned_of(untouched) == None
+  close(harness)
+}
+
 pub fn a_stub_only_moves_forward_test() {
   let harness = start_harness(Hangs)
   let #(key, stub) =

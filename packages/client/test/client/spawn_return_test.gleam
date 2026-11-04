@@ -18,17 +18,19 @@ import client/remote/address.{Address}
 import client/remote/orchestrator_port
 import client/remote/remote_spawner
 import client/remote/state_link
+import client/remote_child
 import client/remote_spawn
+import client/return_apply
 import client/spawn_return
 import client/spawn_seed
 import client/spawners.{type Spawner}
-import client/state_apply
 import client/state_capture
 import client/state_node
 import client/state_object.{type State, Full}
 import client/state_service
 import client/state_store
 import client/state_transfer
+import client/workspace_gate
 import client/worktree_git
 import core/clock
 import core/ids
@@ -44,6 +46,7 @@ import support/state_rig.{type Rig}
 import support/worktree_rig
 import telemetry/log
 import tools/agent
+import weft/registry
 
 // The parent's machine: its repository, its store and the store's endpoint.
 type Parent {
@@ -409,22 +412,36 @@ pub fn a_finished_childs_commits_reach_the_parents_store_test() {
   assert world.parent.endpoint.stage(state.hash) == Ok(state_transfer.Complete)
   assert state_rig.refs(rig.root) == refs
 
-  // Applied there, the commits are one ref and the uncommitted edit is not in it.
-  let assert Ok(Some(held)) = state_store.get(world.parent.store, state.hash)
-  let assert Ok(Some(sent)) =
-    state_store.get(world.parent.store, world.parent.sent.hash)
-  let assert Ok(returned) =
-    state_apply.apply_returned(
-      rig.git,
+  // Applied behind the parent's gate, the commits are one ref, and the child's
+  // uncommitted edit is not in it. The parent's branches, HEAD and tree are as
+  // they were.
+  let head = worktree_rig.git(rig.root, ["rev-parse", "HEAD"])
+  let status = worktree_rig.git(rig.root, ["status", "--porcelain"])
+  let assert Ok(names) = registry.start()
+  let assert Ok(gate) = workspace_gate.start_at(registry.new_address(names))
+  let assert Ok(remote_child.Applied(ref:, commits: 2)) =
+    return_apply.behind_gate(
+      gate,
+      1000,
+      60_000,
       rig.root,
-      world.handle.strand,
-      state_apply.Sent(bundle: sent.path, state: world.parent.sent),
-      held.path,
+      rig.root,
+      return_apply.from_store(world.parent.store, rig.git),
+      world.parent.sent,
       state,
+      world.handle.strand,
     )
-  assert returned.tip == tip
+  assert ref
+    == "refs/loom/children/finish-the-cache-0123456789abcdef/"
+    <> string.slice(tip, 0, 8)
+  assert list.filter(string.split(state_rig.refs(rig.root), "\n"), fn(line) {
+      !list.contains(string.split(refs, "\n"), line)
+    })
+    == [ref <> " " <> tip]
   assert worktree_rig.git(rig.root, ["show", tip <> ":README"])
     == "edited by the parent"
+  assert worktree_rig.git(rig.root, ["rev-parse", "HEAD"]) == head
+  assert worktree_rig.git(rig.root, ["status", "--porcelain"]) == status
 
   // The same join asked again answers the same state and sends nothing twice.
   assert state_of(finished(world, 20)) == Some(state)

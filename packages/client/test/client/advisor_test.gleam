@@ -3606,6 +3606,7 @@ fn settle_remote(
       glance: None,
       glance_seen_ms: 0,
       owed: 0,
+      seeded: None,
       state: remote_child.Settled(
         placed:,
         outcome: agent.Completed,
