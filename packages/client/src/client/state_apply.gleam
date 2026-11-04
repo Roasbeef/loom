@@ -36,7 +36,9 @@
 //// Every Git call carries `-c core.hooksPath=/dev/null`, so no hook runs
 //// whatever `.git/hooks` or `core.hooksPath` hold, and
 //// `-c core.fsmonitor=false`, which stops the program a repository can name
-//// there. `core.autocrlf` and the sparse checkout settings are forced off so
+//// there. `submodule.recurse=false` keeps a checkout from entering a submodule
+//// a configuration asks for, and `protocol.allow=never` refuses every transport,
+//// since nothing here fetches. `core.autocrlf` and the sparse checkout settings are forced off so
 //// the checkout has the captured bytes and all of them. A filter or attribute
 //// driver is the one thing a command line cannot turn off in general. Capture
 //// refuses a tree whose attributes name one, and the sandbox, which has no
@@ -175,7 +177,8 @@ const reason_limit = 512
 const guards = [
   "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c",
   "core.autocrlf=false", "-c", "core.sparseCheckout=false", "-c",
-  "index.sparse=false", "-c", "gc.auto=0", "-c", "maintenance.auto=false",
+  "index.sparse=false", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c",
+  "submodule.recurse=false", "-c", "protocol.allow=never",
 ]
 
 /// Applies a state from a bundle file into a placement.
@@ -512,7 +515,7 @@ fn into_worktree(
   // destination's parent, as `client/worktrees` grants them.
   let writable = [repository <> "/.git", filepath.directory_name(destination)]
   use _ <- result.map(
-    git_ok(git, repository, writable, [
+    checked_out(git, repository, writable, [
       "worktree", "add", "--quiet", "-b", branch, destination, ref,
     ]),
   )
@@ -549,7 +552,7 @@ fn into_clone(
   let made = {
     use ref <- result.try(import_bundle(git, destination, bundle, state))
     use _ <- result.map(
-      git_ok(git, destination, [destination], [
+      checked_out(git, destination, [destination], [
         "checkout", "--quiet", "-b", branch, ref,
       ]),
     )
@@ -600,12 +603,105 @@ fn into_existing(
       use Nil <- result.try(require_clean(git, worktree))
       let writable = [repository <> "/.git", worktree]
       use _ <- result.map(
-        git_ok(git, worktree, writable, [
+        checked_out(git, worktree, writable, [
           "checkout", "--quiet", "-B", branch, state.tip,
         ]),
       )
       applied
     }
+  }
+}
+
+/// Runs a Git command that writes a working tree, with every filter driver the
+/// configuration names switched off for the call.
+///
+/// A filter is a program a configuration names and a `.gitattributes` in the
+/// bundle's tree attaches to paths, and a checkout runs its `smudge` command on
+/// each file it writes. No command-line switch turns filters off in general, but
+/// every driver that can run has a name in the configuration, so the call lists
+/// the names and empties each one's commands. An empty `smudge` or `clean`
+/// converts nothing, an empty `process` is a command that cannot start, and
+/// `required` is turned off so that neither fails the checkout.
+fn checked_out(
+  git: Git,
+  directory: String,
+  writable: List(String),
+  arguments: List(String),
+) -> Result(String, String) {
+  use overrides <- result.try(filter_overrides(git, directory))
+  git_ok(git, directory, writable, list.append(overrides, arguments))
+}
+
+/// The `-c` pairs that empty every filter driver the configuration seen from
+/// `directory` names. `git config` answers exit one when there is none. A name a
+/// `-c` could not carry faithfully, one with an `=` or a control character, is a
+/// refusal, since the override would then miss the driver it was written for.
+fn filter_overrides(
+  git: Git,
+  directory: String,
+) -> Result(List(String), String) {
+  use output <- result.try(
+    git_run(git, directory, [], [
+      "config", "-z", "--name-only", "--get-regexp", "^filter[.]",
+    ]),
+  )
+
+  // Exit one is Git's answer that nothing matched, which is the usual case.
+  case output.code {
+    0 ->
+      string.split(output.stdout, "\u{0}")
+      |> list.filter_map(driver_of)
+      |> list.unique
+      |> list.try_map(emptied)
+      |> result.map(list.flatten)
+    1 -> Ok([])
+    _ -> Error("Git could not list the filter drivers of the configuration")
+  }
+}
+
+/// The driver a configuration key belongs to: `filter.<name>.<variable>` names
+/// `<name>`, which may itself contain dots. A key with no name is not a driver.
+fn driver_of(key: String) -> Result(String, Nil) {
+  case string.split(key, ".") {
+    ["filter", ..rest] ->
+      case list.reverse(rest) {
+        [_variable, ..name] if name != [] ->
+          Ok(string.join(list.reverse(name), "."))
+        _ -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+}
+
+/// The `-c` pairs that empty one driver, or a refusal when its name cannot be
+/// written on a command line faithfully.
+fn emptied(name: String) -> Result(List(String), String) {
+  let writable =
+    !string.contains(name, "=")
+    && list.all(string.to_graphemes(name), is_printable)
+
+  // An `=` would end the key early, and a control character would not survive.
+  case writable {
+    False -> Error("a filter driver has a name that cannot be switched off")
+    True ->
+      Ok(
+        list.flat_map(
+          [".smudge=", ".clean=", ".process=", ".required=false"],
+          fn(variable) { ["-c", "filter." <> name <> variable] },
+        ),
+      )
+  }
+}
+
+/// Whether a grapheme is not a control character.
+fn is_printable(grapheme: String) -> Bool {
+  // A grapheme of several code points is a letter with marks, never a control.
+  case string.to_utf_codepoints(grapheme) {
+    [point] -> {
+      let code = string.utf_codepoint_to_int(point)
+      code >= 32 && code != 127
+    }
+    _ -> True
   }
 }
 
