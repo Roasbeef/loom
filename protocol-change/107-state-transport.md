@@ -842,3 +842,98 @@ rediscover them.
   removes. The refusal is correct and the order is the cost of sending the state with the
   request; asking the receiver's terms first would need a message the vocabulary does not
   have.
+
+## Addendum: slice 4a, the executor applies a state (2026-11-04)
+
+Slice 3 left a placement the spawn refused: a spawner on an `executor` or a `pool` has
+its workspace on another machine, and applying a state there needs an apply message in
+the executor vocabulary, which 107 does not list. This addendum adds it, and the
+capture that returns a child's commits from an executor's scope. It is one wire change
+inside the unreleased protocol version 6 (the last tag is v0.3.2), so it is an addendum
+here and not a new protocol, and `protocol.version` stays at 6. Nothing above is edited.
+The orchestrator side that calls either message (the seed from a session whose
+workspace is local, the return of a child's commits, and the executor placement of a
+spawner) is not built; it is the next piece, and so is the `sessions.move` checkout step
+of slice 4.
+
+**What was added.**
+
+- `HostMessage.StateApply(session, incarnation, token, state, reply)`. `state` is the
+  description of a state that the executor's store already holds, put there by
+  `StateChunk` and `StateStatus` as any state is. The reply is `Result(ApplyAnswer,
+  Refusal)`, where `ApplyAnswer` is `Applied(tip)` or `Refused(reason)`. The executor
+  imports the state into the workspace's root repository, where the objects and one ref,
+  `refs/loom/in/<hash8>`, land with the connectivity walk, the guarded `update-ref`, the
+  disabled hooks and file-system monitor and `GIT_NO_LAZY_FETCH` that `state_apply`
+  already uses, and it never fetches. It then checks out the session's branch
+  `loom/<session>` at the tip, in the scope's own worktree, with `checkout -B`
+  (`state_apply.Reset`).
+- `StateCapture` gains `content`, of the type `state_object.Content`: `WithWorkingTree`
+  is the capture as it was, and `CommittedOnly` reads no working tree and makes no
+  snapshot commit, so its tip is `HEAD` and only commits travel, thin against the basis.
+  It is the capture of 3b (`capture_commits`) made available to the wire, with the
+  working tree left unread so that a child's uncommitted edits stay where they are.
+- The reply of `StateCapture` becomes `Result(Option(State), Refusal)`. A committed-only
+  capture of a tree whose `HEAD` is the thin base has nothing to deliver, and a caller
+  that returns a child's work must tell that from a refusal. `None` is only ever that
+  answer. This is a change to a message of version 6 that no caller used yet.
+
+**The fence.** `StateApply` is fenced exactly as `StateCapture` is: the scope's
+incarnation and attach token are judged first, in the host, by the ledger's own check, so
+a request from a dead runtime learns that it is dead (`StaleToken`, `StaleIncarnation`,
+`ScopeNotOpen`) whatever the plane can do and the plane never sees it. A plane with no
+capturer answers `NoStates`. What the workspace decides about the state is not a fence
+refusal. It is `Refused(reason)`, so a caller tells a dead runtime from a workspace that
+cannot take the state.
+
+**The mode requirement.** Only `mode = "worktree"` takes a state. A shared workspace has
+no tree of the scope's own: its sessions all work in the root, and moving a branch there
+would move it under every other session. It is refused with a reason that names both
+modes. The scope's repository is the canonical root the configuration fixed
+(`Custody.repository`), and the tree is the scope's directory; neither is read from the
+tree, whose `.git` file the session can rewrite.
+
+**A scope's tree is fresh.** The apply runs before the child's first turn, and replaces the
+tree's checkout. A tree with a change in it, staged, unstaged or untracked, is refused. A
+tree on another branch, in another repository, or whose `.git` is a link or is not a plain
+file is refused before anything is written. A tree that already contains the tip is
+answered `Applied` and not touched, so a resend after a lost reply is harmless, including
+after the session has begun to commit on top. A dirty state's snapshot commit is checked
+out as it is: the child sees the sender's uncommitted work as committed content, and
+`git log` shows one commit on its branch with the subject `Working snapshot`.
+
+**Committed-only capture in a linked worktree.** `capture_commits` refuses a repository
+that resolves anywhere but the top of a primary checkout at its directory, which is what
+stops a session from planting a `.git` that names another repository. A scope's tree is a
+linked worktree, so `repository_snapshot.capture_committed` takes a `Checkout`, `Primary`
+or `LinkedTo(common_dir)`. For a linked worktree the capture is refused unless the top of
+the tree is the directory, its Git directory is one of that repository's `worktrees`, and
+its common directory is the one the caller names from its own configuration.
+
+**What it costs.**
+
+- The apply hashes the bundle twice: `state_store.get` confirms the stored state, and
+  `state_apply` compares the bytes with the description. Both are bounded by the size
+  limit and run in a run of their own, off the host's turn.
+- It takes no worktree gate. Git takes its own locks, so a concurrent `git worktree add`
+  for another scope can make an apply fail with a lock error, which is a refusal the
+  caller may resend.
+- A tree the session has already committed in, whose history does not contain the tip, is
+  moved if it has no change in it. The previous tip stays in the reflog. The orchestrator
+  is expected to ask before the first turn, and the doc says so; nothing detects a tree
+  that is not fresh beyond the checks above.
+- The `Capturer` holds a read handle on the node's store, so `state_capture.new` takes the
+  store. That is a change to the signature of the module's constructor and no more.
+
+**What stays unbuilt.** No orchestrator code sends either message. The seed of a session
+whose workspace is on an executor (`state_transfer.pull` into the orchestrator's store,
+then a send to the target), the return of a child's commits from an executor, the
+`executor` and `pool` placements of a spawner taking a copy, and the `sessions.move`
+step are later work. Nothing here was run over a real TLS distribution link or by a
+model.
+
+**Not touched.** `peer_codec` is the JSON of the stable peer exchange (protocol 105) and,
+as the slice 2 addendum says, none of the state messages crosses it, so it has no
+encoder or decoder to extend. The P model of the transfer
+(`protocol/models/state-transfer`) models the pieces and the store and not the capture or
+the apply, which are local to an executor, so it needs no new transition.

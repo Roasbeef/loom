@@ -555,9 +555,26 @@ its hash. `HostMessage` also gained `StateCapture`, which reads a scope's
 workspace and writes the store, so it is held to the scope's incarnation and
 token as an evolution write is, and a plane with no capture answers the new
 refusal `NoStates`. `RemoteCensus.states` says whether the executor has what
-capture and apply need, Git and a helper that enforces. No production plane
-carries a capture yet, so `StateCapture` answers `NoStates` until the slice that
-wires a spawn.
+capture and apply need, Git and a helper that enforces. A plane carries a
+capture when the node has Git and a store, and one without answers `NoStates`.
+
+Two more things ride the same fence, in the same version 6 (slice 4a of
+protocol-change/107). `StateCapture` has a `content`: `WithWorkingTree` makes a
+snapshot commit of uncommitted work, and `CommittedOnly` reads no working tree, so
+a child's uncommitted edits stay where they are and only its commits, thin against
+the state it was handed, come back. A committed-only capture of a tree with nothing
+beyond its base answers no state. On an executor the capture runs in the scope's
+linked worktree and is checked against the workspace's own repository, which the
+configuration fixes, so a `.git` the session rewrote cannot make it bundle another
+repository. `StateApply` names a state the executor's store already holds and has the
+scope's workspace take it: the state is imported into the workspace's repository
+under `refs/loom/in/<hash8>`, and the scope's branch `loom/<session>` is checked out
+at the tip in the scope's fresh worktree. Only a worktree-mode workspace takes one,
+and a `shared` workspace is refused with a reason that names the mode. A dirty
+state's snapshot commit is checked out as it is, so the child sees the sender's
+uncommitted work as committed content. The tree must be one the session has not
+written yet; a tree that already contains the tip is answered `Applied` and left
+alone, so a resend is harmless. Nothing calls either on an orchestrator yet.
 
 A node's store has no lock, so `client/state_service` is the one process that
 owns it and both carriers answer through the endpoint it builds. A daemon that is
@@ -768,7 +785,7 @@ There is no cancel message. The runtime aborts a call by killing its effect
 process, and the host monitors the process that owns each `Run`'s reply subject.
 A `DOWN` with any reason except `noconnection` means someone asked to stop, and
 when the run's last waiter is gone the host cancels it
-(`cancels_run`, `remote/host.gleam:575`). A `noconnection` `DOWN` means only
+(`cancels_run`, `remote/host.gleam:582`). A `noconnection` `DOWN` means only
 that the orchestrator is unreachable. The run continues to completion or to its
 own deadline, which is built on the executor's clock, and its outcome waits in
 the ledger. An abort issued during a partition arrives only as `noconnection`,
