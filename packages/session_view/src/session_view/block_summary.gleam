@@ -2,9 +2,9 @@
 //// messages, as this terminal holds them (protocol 050).
 ////
 //// A reasoning block renders collapsed. For a long block the daemon's
-//// summarizer writes a one- or two-sentence label, and the collapsed block
-//// becomes a header row naming it as summarized, with the label drawn
-//// beneath as dim secondary text of up to three rows. The full text is
+//// summarizer writes a label of two or three sentences, and the collapsed
+//// block becomes a header row naming it as summarized, with the label drawn
+//// beneath as dim secondary text of up to five rows. The full text is
 //// still the durable entry and still one Ctrl+G away. The same labels
 //// shorten long advice and nudges messages.
 ////

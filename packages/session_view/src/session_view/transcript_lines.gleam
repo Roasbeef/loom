@@ -581,8 +581,11 @@ pub fn summarized_reasoning_line(header: String, label: String) -> Line {
 }
 
 /// The most rows a summary's secondary lines take beneath their header.
-/// A longer summary is cut with an ellipsis at the end of the last row.
-pub const summary_rows = 3
+/// A summary is two or three sentences of about sixty words, which wraps to
+/// four or five rows in an 80-column terminal, so five rows show the whole
+/// of a typical label, conclusion included. A longer summary is cut with an
+/// ellipsis at the end of the last row.
+pub const summary_rows = 5
 
 /// How many lines a reasoning block holds so far, in words: `1 line`,
 /// `2 lines`. A live reasoning row says this and how long the generation has

@@ -4108,9 +4108,9 @@ output from one that is its last few kilobytes.
 | `strand` | string | `stream` only | Strand whose provider request is streaming reasoning. |
 | `op` | string | `stream` only | Operation the request belongs to. |
 | `generation` | string | `stream` only | The request identity the stream's `stream_delta` frames carry. |
-| `text` | string | required | The summary, at most 320 bytes. |
+| `text` | string | required | The summary, at most 512 bytes. |
 
-A one- or two-sentence summary the daemon's `summarize` role wrote for a
+A two- or three-sentence summary the daemon's `summarize` role wrote for a
 long reasoning block or a long delivered advice or nudges message
 ([protocol 050](../protocol-change/050-reasoning-summaries.md)). Pushed to
 every subscribed connection; never seq'd and never replayed. A `block`
@@ -4381,7 +4381,7 @@ Sources: (`client/daemon/protocol.gleam:124-160`),
 | Stream delta text | 24576 bytes | `stream_delta` |
 | Tool output tail | 4096 bytes per stream | `tool_output.tail` |
 | Summary lookup | 32 blocks | `block_summaries` |
-| Summary text | 320 bytes | `block_summary.text`, `block_summaries` rows |
+| Summary text | 512 bytes | `block_summary.text`, `block_summaries` rows |
 | Escalation preview | 2048 bytes | `escalation.preview` |
 | Session listing page | 60000 bytes | `sessions.list` |
 | Simultaneous connections | 64 by default; `daemon.max_connections` | The daemon |

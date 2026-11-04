@@ -954,7 +954,7 @@ does not jump when a call completes. `Ctrl+G` expands all of it.
 
 ### Summaries of long blocks
 
-The daemon's summarizer writes a one- or two-sentence summary of each
+The daemon's summarizer writes a two- or three-sentence summary of each
 reasoning block and each delivered advice or nudges message of at least
 512 bytes ([protocol 050](../../protocol-change/050-reasoning-summaries.md)).
 `session_view/block_summary` holds them per attachment: stored summaries keyed by
@@ -965,7 +965,7 @@ In compact mode a long reasoning block with a summary is one
 `SummarizedReasoning` line: a header row, `∴ Reasoning (summarized)` and
 the expand hint once settled, or `∴ Reasoning (summarized) · 62 lines ·
 13s` while it streams, and the summary beneath it as dim secondary text,
-indented and wrapped to at most three rows, cut with `…` beyond that. The
+indented and wrapped to at most five rows, cut with `…` beyond that. The
 header carries the attribution, so the summary has no prefix and is never
 read as the agent's own words. A block without a summary keeps the single
 `ReasoningDigest` row: its first line once settled, `3 lines · 1m 04s so
