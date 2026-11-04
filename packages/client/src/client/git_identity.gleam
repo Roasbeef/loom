@@ -301,9 +301,7 @@ fn configured_identity(
   let environment =
     list.append(
       [#("PATH", "/usr/bin:/bin"), #("HOME", option_home(home))],
-      list.filter_map(["XDG_CONFIG_HOME", environment_name], fn(name) {
-        reading(name) |> result.map(fn(value) { #(name, value) })
-      }),
+      operator_overrides(reading),
     )
 
   // `wiring.git` is the host-resolved binary, never the Xcode shim. A fresh
@@ -317,19 +315,54 @@ fn configured_identity(
   use #(code, output) <- result.try(run(
     wiring,
     worktree_diff.read_policy(wiring.base_policy),
-    [
-      wiring.git,
-      "config",
-      ..list.append(scope, [
-        "--includes",
-        "--null",
-        "--get-regexp",
-        "^user\\.(name|email)$",
-      ])
-    ],
+    [wiring.git, "config", ..list.append(scope, query_arguments)],
     environment,
   ))
+  identity_of_query(code, output)
+}
 
+/// The arguments, after `git config` and the scope, that read the two identity
+/// keys with their includes followed, as NUL-separated records.
+pub const query_arguments = [
+  "--includes", "--null", "--get-regexp", "^user\\.(name|email)$",
+]
+
+/// The two environment names an operator may use to move their global Git
+/// configuration, and the values `reading` finds for them. They are the only
+/// part of the daemon's own environment that an identity query takes: the rest
+/// of a query's environment is fixed, so a `GIT_CONFIG_COUNT` or a pager named in
+/// the daemon's environment never reaches Git.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert git_identity.operator_overrides(fn(_) { Error(Nil) }) == []
+/// ```
+pub fn operator_overrides(
+  reading: fn(String) -> Result(String, Nil),
+) -> List(#(String, String)) {
+  list.filter_map(["XDG_CONFIG_HOME", environment_name], fn(name) {
+    reading(name) |> result.map(fn(value) { #(name, value) })
+  })
+}
+
+/// Turns the exit status and standard output of the query above into an
+/// identity: the last value of each key on success, nothing at all for status 1,
+/// which is how Git says no key matched, and an error for anything else.
+///
+/// This is the part of resolving an identity that does not depend on where Git
+/// ran, so a query through a session's broker and one through the daemon's own
+/// sandboxed runner read their answer the same way.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert git_identity.identity_of_query(1, "") == Ok(Identity(None, None))
+/// ```
+pub fn identity_of_query(
+  code: Int,
+  output: String,
+) -> Result(Identity, String) {
   // Decode identity records on success or treat status 1 as empty configuration.
   case code {
     0 -> decode(output) |> result.map(identity_from_entries)

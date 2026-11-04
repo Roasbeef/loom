@@ -847,7 +847,13 @@ fn toolchain_reason(
 // as well: the host asked through `owner_link.git_identity`, which already made
 // it, and a second reader of the same type does not trust the first.
 /// The commit author the scope's owner sent, as the workspace plane takes it.
-fn author_of(spec: host.AttachSpec) -> Option(git_identity.Identity) {
+///
+/// ## Examples
+///
+/// ```gleam
+/// // executor_plane.author_of(spec) == option.Some(git_identity.Identity(Some("Ada"), Some("ada@example.invalid")))
+/// ```
+pub fn author_of(spec: host.AttachSpec) -> Option(git_identity.Identity) {
   option.then(spec.git_identity, fn(sent) {
     protocol.git_identity_of(sent.name, sent.email)
   })

@@ -138,6 +138,7 @@ import client/memory_config
 import client/memory_overview
 import client/notes
 import client/owner_codemode
+import client/owner_identity
 import client/owner_services
 import client/peer_mail
 import client/peer_outbox_drain
@@ -4175,15 +4176,13 @@ fn assemble_in(
             session: settings.session_id,
           ),
           mcp: mcp_plan,
-          // The orchestrator resolves no identity for a session whose workspace
-          // is on another machine: `git_identity.resolve` runs through a sandbox
-          // broker on the workspace's own machine, and the owner has none of
-          // those for a remote placement. The message, the executor's pinning
-          // and this seam are in place, and an owner that learns a way to
-          // resolve the operator's identity without running Git in the daemon's
-          // VM supplies it here. Until then an executor hears `None` and its
-          // session behaves as it did before protocol version 6.
-          git_identity: None,
+          // The operator's global identity, which the daemon's sandboxed Git
+          // runner reads once for every session (`client/owner_identity`). A
+          // daemon that started no holder, a machine with no global identity and
+          // a read that does not finish within the lookup's wait all give `None`,
+          // and the executor's session then behaves as it did before protocol
+          // version 6.
+          git_identity: owner_identity.lookup(owner_identity.default(), 5000),
           logger:,
         ),
         owner,

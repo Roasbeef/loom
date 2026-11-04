@@ -99,6 +99,7 @@ import client/ledger_service.{type Service}
 import client/membership_ledger
 import client/node_report
 import client/orchestrators
+import client/owner_identity
 import client/peer_defaults
 import client/peer_mail
 import client/peer_outbox_drain
@@ -133,7 +134,9 @@ import client/state_store
 import client/state_transfer
 import client/system_prompt
 import client/top_host
+import client/workspace_policy
 import client/workspaces
+import client/worktree_git
 import client/worktrees
 import core/clock
 import core/glance
@@ -1155,6 +1158,74 @@ pub fn start_states(
       )
       log.info(logger, "daemon.states_serving", [])
       state_service.endpoint(service)
+    }
+  }
+}
+
+/// Starts the holder of the operator's Git identity when the daemon has a
+/// `[distribution]` table (protocol-change/107), which is when an executor can
+/// ask an owner for it. The holder reads the operator's global `user.name` and
+/// `user.email` through its own sandboxed Git runner on the first lookup
+/// (`client/owner_identity`), so Git never runs in the daemon's VM.
+///
+/// A daemon that cannot start the runner, because it has no sandbox helper or
+/// its configuration does not parse, starts without the holder and says so. The
+/// identity is an improvement to a remote session and never a reason to refuse
+/// to boot, and a daemon with no holder answers executors with no identity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // assert main.start_owner_identity(Config(..config, membership: None), logger) == Ok(Nil)
+/// ```
+@internal
+pub fn start_owner_identity(
+  config: Config,
+  logger: Logger,
+) -> Result(Nil, String) {
+  // Only a daemon that peers can reach has anyone to answer.
+  case config.membership {
+    None -> Ok(Nil)
+    Some(_) -> {
+      let started = {
+        use configuration <- result.try(captured_domain_configuration(
+          config.session_defaults,
+          "",
+        ))
+        use machine <- result.try(executor_plane.machine(
+          config.session_defaults,
+          configuration,
+          config.state_root,
+          logger,
+        ))
+        use root <- result.try(bootstrap.canonical_directory(config.state_root))
+        use git <- result.try(
+          worktree_git.start(worktree_git.Config(
+            helper_path: machine.helper_path,
+            scratch: root <> "/identity-git",
+            state_root: root,
+            credentials: machine.credentials,
+            demand: machine.demand,
+          )),
+        )
+        owner_identity.start(
+          owner_identity.default(),
+          git,
+          option.unwrap(machine.home, "/nonexistent"),
+          workspace_policy.env_text,
+        )
+      }
+
+      // A failure is told and survived.
+      case started {
+        Ok(Nil) -> Nil
+        Error(reason) ->
+          log.warn(logger, "daemon.owner_identity_unavailable", [
+            field.text(key: "reason", value: reason),
+          ])
+      }
+
+      Ok(Nil)
     }
   }
 }
@@ -3690,6 +3761,7 @@ fn run(
       use keepers <- result.try(start_link_keepers(config, logger))
       let config = Config(..config, keepers:)
       use states <- result.try(start_states(config, logger))
+      use Nil <- result.try(start_owner_identity(config, logger))
       use executor <- result.try(start_executor(config, states, logger))
       use Nil <- result.try(sweep_delegate_sessions(
         config,

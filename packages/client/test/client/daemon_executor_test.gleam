@@ -8,6 +8,7 @@ import client/daemon/main
 import client/executor_plane
 import client/internal/ffi_os
 import client/node_report.{ExecutorFacts, ScopeCounts}
+import client/owner_identity
 import client/peer_defaults
 import client/remote/address
 import client/remote/protocol
@@ -63,6 +64,13 @@ fn config(
     session_defaults: arguments,
     workspaces: served,
   )
+}
+
+pub fn a_daemon_with_no_distribution_starts_no_identity_holder_test() {
+  let state = absolute(fixtures.scratch("daemon-owner-identity-none"))
+  assert main.start_owner_identity(config(state, [], []), log.discard())
+    == Ok(Nil)
+  assert process.named(owner_identity.default()) == Error(Nil)
 }
 
 pub fn a_daemon_that_serves_no_workspace_starts_no_host_test() {
