@@ -16,6 +16,7 @@ import client/internal/ffi_os
 import client/owner_services.{type OwnerServices, OwnerServices}
 import client/remote/host
 import client/remote/protocol
+import client/state_transfer
 import client/wiring
 import codemode/vet/policy as vet_policy
 import core/clock
@@ -291,6 +292,7 @@ pub fn factory(
         close_outcome
       },
       evolution: None,
+      state: None,
     ))
   }
 }
@@ -519,6 +521,7 @@ pub fn host_config(
     limits: exec_ledger.default_limits(),
     max_result_bytes: 65_536,
     execution_result_bytes: 4096,
+    states: state_transfer.declining(),
     clock: clock.fixed(at: 1000),
     factory:,
   )

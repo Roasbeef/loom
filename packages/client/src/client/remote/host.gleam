@@ -98,11 +98,25 @@
 //// (`EvolutionInventory`) is held to the scope's incarnation and no more,
 //// because it carries no attach token and changes nothing.
 ////
+//// ## State messages
+////
+//// Four messages (protocol-change/107) move repository states. Three of them,
+//// `StateChunk`, `StateStatus` and `StateFetch`, are about the node's store and
+//// not about any scope: they carry no fence, because a piece is judged by its
+//// hash and the store's limits and cannot reach a session. They are served by the
+//// `Config.states` endpoint, which a daemon builds over the one process that owns
+//// the store (`client/state_service`), each in a run of its own, so a piece that
+//// completes a large state never stalls the admission of a tool call. The fourth,
+//// `StateCapture`, reads a scope's workspace and writes the store, so it is held
+//// to the scope's incarnation and token as an evolution write is, and is served
+//// by the plane's `Capturing`, in a run of its own as well. A plane without one
+//// answers `NoStates`.
+////
 //// ## Flow
 ////
 //// `start` → `start_reporting` → `initialise` → `handle_event` → `handle_peer` →
 //// `attach`, `admit_call`, `evolve`, `stop_execution`, `fenced_lookup`,
-//// `close`, `summarized`
+//// `close`, `summarized`, and for states `capture_state`, `apart`
 ////
 //// 1. `initialise` registers the name and opens the ledger, which turns every
 ////    row the previous VM left `Admitted` into `Unknown`.
@@ -140,6 +154,8 @@ import client/remote/protocol.{
   type CloseOutcome, type ExecutionAnswer, type HostMessage, type Key,
   type Refusal, type RunAnswer,
 }
+import client/state_object
+import client/state_transfer
 import client/wiring.{type Authority}
 import core/clock.{type Clock}
 import core/json.{type JsonValue}
@@ -226,6 +242,23 @@ pub type Plane(census) {
     /// The plane's evolution machine, or `None` when it has none, in which case
     /// every evolution message for the scope is answered `NoEvolution`.
     evolution: Option(Evolution),
+    /// How the plane captures its workspace into a state, or `None` when it
+    /// cannot, in which case a `StateCapture` for the scope is answered
+    /// `NoStates`.
+    state: Option(Capturing),
+  )
+}
+
+/// What a plane does for a `StateCapture`: capture the scope's workspace into a
+/// state in the node's store, bundled against `basis`, and answer the state's
+/// description or the reason the workspace was refused. It runs in a process of
+/// its own, which the host cancels when the requester goes away. The caller has
+/// drained the session's effects before asking, since capture cannot check that
+/// the workspace is quiet.
+pub type Capturing {
+  Capturing(
+    /// Captures the workspace against a basis.
+    capture: fn(state_object.Basis) -> Result(state_object.State, String),
   )
 }
 
@@ -282,6 +315,10 @@ pub type Config(census) {
     clock: Clock,
     /// Builds a scope's plane.
     factory: PlaneFactory(census),
+    /// What the node answers about repository states. A daemon builds it over
+    /// the one process that owns the store, and a node that keeps none passes
+    /// `state_transfer.declining()`.
+    states: state_transfer.Endpoint,
   )
 }
 
@@ -838,6 +875,103 @@ fn handle_peer(
         fn(refusal) { process.send(reply, Error(refusal)) },
         protocol.InventoryRequest(handle:, reply:),
       )
+    protocol.StateCapture(session:, incarnation:, token:, basis:, reply:) ->
+      capture_state(state, session, Writer(incarnation:, token:), basis, reply)
+
+    // The store is the node's, so these three change no scope and carry no
+    // fence. Each runs apart from the host, because the last piece of a state is
+    // read and hashed whole.
+    protocol.StateChunk(piece:, reply:) -> {
+      apart(reply, fn() { state.config.states.take(piece) })
+      state
+    }
+    protocol.StateStatus(hash:, reply:) -> {
+      apart(reply, fn() { state.config.states.stage(hash) })
+      state
+    }
+    protocol.StateFetch(hash:, offset:, reply:) -> {
+      apart(reply, fn() { state.config.states.serve(hash, offset) })
+      state
+    }
+  }
+}
+
+// --- states -------------------------------------------------------------------
+
+// A `StateCapture` for a scope. The fence is judged first, as for an evolution
+// write, so a request from a dead runtime learns that it is dead whatever the
+// plane can do. Then the plane is asked whether it can capture, and only a
+// request that passed both reaches the capture, which runs apart from the host
+// because it reads a whole repository.
+/// Capture state keeps this client operation’s decoding or state decision in one place.
+fn capture_state(
+  state: State(census),
+  session: String,
+  fence: Fence,
+  basis: state_object.Basis,
+  reply: Subject(Result(state_object.State, Refusal)),
+) -> State(census) {
+  let ready = {
+    use Nil <- result.try(fenced(state, session, fence))
+    capturing_of(state, session)
+  }
+
+  // A refusal is the plane's absence or the fence's verdict. A capture that
+  // fails is a finding about the workspace, answered by the run itself.
+  case ready {
+    Ok(capturing) ->
+      apart(reply, fn() {
+        capturing.capture(basis)
+        |> result.map_error(protocol.ExecutorFault)
+      })
+    Error(refusal) -> process.send(reply, Error(refusal))
+  }
+
+  state
+}
+
+// The scope's capture, for a request that passed the fence. A scope with no
+// plane yet has nothing to ask, and a plane without a `Capturing` answers
+// `NoStates`.
+/// Capturing of keeps this client operation’s decoding or state decision in one place.
+fn capturing_of(
+  state: State(census),
+  session: String,
+) -> Result(Capturing, Refusal) {
+  // This match resolves the scope's slot before the surrounding protocol step continues.
+  case dict.get(state.placements, session) {
+    Error(Nil) -> Error(no_plane())
+    Ok(Building(..)) -> Error(protocol.PlaneBuilding)
+    Ok(Ready(placement)) ->
+      option.to_result(
+        placement.plane.state,
+        protocol.NoStates("the scope's workspace plane cannot capture states"),
+      )
+  }
+}
+
+// Computes one answer in a run of its own and sends it to `reply`. The run is
+// cancelled with the requester, which is a process on another node, so its death
+// or disconnection ends a capture nobody is waiting for. The work never crashes
+// into the host: it is a closure the daemon supplied, which answers a refusal
+// for every failure it can name.
+/// Apart keeps this client operation’s decoding or state decision in one place.
+fn apart(reply: Subject(answer), compute: fn() -> answer) -> Nil {
+  // The reply's owner is the requester, and its absence leaves nobody to answer.
+  case process.subject_owner(reply) {
+    Ok(requester) -> {
+      let _witness =
+        weft.new([
+          fn() {
+            process.send(reply, compute())
+            Ok(Nil)
+          },
+        ])
+        |> weft.cancel_when_exits(requester)
+        |> weft.start_witnessed
+      Nil
+    }
+    Error(Nil) -> Nil
   }
 }
 

@@ -30,6 +30,7 @@ import client/remote/owner_port
 import client/remote/protocol
 import client/remote/remote_census.{type RemoteCensus}
 import client/remote/surface
+import client/state_transfer
 import client/workspaces
 import core/clock
 import core/json
@@ -83,6 +84,7 @@ pub fn host(
       clock: clock.fixed(at: 1000),
       factory: fixtures.factory(probe, mode, protocol.AllRetired),
       execution_result_bytes: host.default_execution_result_bytes,
+      states: state_transfer.declining(),
     )
   use _started <- result.try(
     host.start(config) |> result.map_error(string.inspect),
@@ -274,6 +276,7 @@ pub fn workspace_host(directory: String) -> Result(WorkspaceHandle, String) {
       clock: clock.from_function(ffi_os.system_time_ms),
       factory: executor_plane.factory(machine, served, trees),
       execution_result_bytes: host.default_execution_result_bytes,
+      states: state_transfer.declining(),
     )
   use _started <- result.try(
     host.start(config) |> result.map_error(string.inspect),
@@ -327,6 +330,7 @@ pub fn worktree_host(directory: String) -> Result(TreesHandle, String) {
       clock: clock.from_function(ffi_os.system_time_ms),
       factory: executor_plane.factory(machine, served, trees),
       execution_result_bytes: host.default_execution_result_bytes,
+      states: state_transfer.declining(),
     )
   use _started <- result.try(
     host.start(config) |> result.map_error(string.inspect),

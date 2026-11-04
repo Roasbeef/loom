@@ -70,6 +70,8 @@ import client/notice
 import client/owner_services.{
   type ExecutionTerms, type FactFault, type OwnerCapCall,
 }
+import client/state_object
+import client/state_transfer
 import client/wiring.{type Authority}
 import codemode/satellite.{type CapDenial}
 import core/ids.{type OpId, type Seq}
@@ -120,6 +122,17 @@ import tools/tool
 /// Trials and core upgrades are not in this version; they come with the
 /// changes that serve them, under their own bumps.
 ///
+/// Version 6 added the repository state transport of protocol-change/107: four
+/// `HostMessage` constructors (`StateCapture`, `StateChunk`, `StateStatus` and
+/// `StateFetch`), whose pieces and verdicts are `client/state_transfer`'s, the
+/// refusal `NoStates`, and the census field `RemoteCensus.states`, which says
+/// whether the executor can capture and apply a state. The orchestrator port
+/// carries the same three piece messages in its own closed type
+/// (`client/remote/orchestrator_port`), which has no version of its own and is
+/// served by peers of the same build. The step from 5 changes the shape of the
+/// census an `Attached` carries as well as adding messages, so every executor
+/// must upgrade with its orchestrators.
+///
 /// `Attach` must keep the shape it had in version 2. It is the first
 /// message a peer of any version sends, and the host matches the term it
 /// receives against this module's constructors: an `Attach` of another arity
@@ -128,7 +141,7 @@ import tools/tool
 /// travels in a message sent after the version check has passed, as the MCP
 /// plan does. Every other message may change shape, because a peer of another
 /// version never gets past the attach to send it.
-pub const version = 5
+pub const version = 6
 
 /// The name an execution's ledger row is admitted under, in the column a tool
 /// call's row holds its tool name in. No tool is named this, so a row is known
@@ -275,6 +288,11 @@ pub type Refusal {
   /// The scope has no evolution plane, so it can neither compile nor serve a
   /// candidate. `reason` says why, in the words the census carries.
   NoEvolution(reason: String)
+
+  /// The executor holds no state store, or the scope's plane cannot capture a
+  /// repository, so it can neither take part in a state transfer nor make one.
+  /// `reason` says why, in the words the census carries.
+  NoStates(reason: String)
 
   /// An argument was outside its domain.
   Invalid(reason: String)
@@ -687,6 +705,43 @@ pub type HostMessage(census) {
     handle: Handle,
     reply: Subject(Result(JsonValue, Refusal)),
   )
+
+  /// Captures the session's workspace into a state in the executor's store
+  /// (protocol-change/107). It writes into the store and reads the workspace, so
+  /// it is held to the scope's incarnation and token as a write is. `basis` is
+  /// what the capture bundles against: `Full`, or `Thin` against a commit the
+  /// receiver reported holding. The caller must have drained the session's
+  /// effects first, because capture cannot check that the workspace is quiet.
+  /// The answer is the description of the state now in the store, or why the
+  /// workspace was refused, which resending does not change.
+  StateCapture(
+    session: String,
+    incarnation: Int,
+    token: BitArray,
+    basis: state_object.Basis,
+    reply: Subject(Result(state_object.State, Refusal)),
+  )
+
+  /// One piece of a state this executor is receiving. The store is the node's,
+  /// not a scope's, so no fence applies: a piece is judged by its hash and by
+  /// the store's limits, and it cannot reach a session. The verdict says how many
+  /// bytes the store now holds, so a repeat is harmless.
+  StateChunk(
+    piece: state_transfer.Piece,
+    reply: Subject(state_transfer.Verdict),
+  )
+
+  /// How far a state has got in this executor's store, for a sender that
+  /// resumes after a dropped connection. `Error` is a store that could not say,
+  /// which is never `Absent`.
+  StateStatus(
+    hash: String,
+    reply: Subject(Result(state_transfer.Stage, String)),
+  )
+
+  /// Asks for the piece at `offset` of a state this executor holds, so the
+  /// orchestrator can relay what the executor captured.
+  StateFetch(hash: String, offset: Int, reply: Subject(state_transfer.Fetched))
 }
 
 /// What the executor's workspace says to the session's owner port. One
@@ -921,6 +976,8 @@ pub fn describe(refusal: Refusal) -> String {
     NoEvolution(reason:) ->
       "the executor cannot build evolution candidates for this session: "
       <> reason
+    NoStates(reason:) ->
+      "the executor cannot move repository states for this session: " <> reason
     Invalid(reason:) -> "the executor refused the request: " <> reason
     ExecutorFault(reason:) -> "the executor failed: " <> reason
     Unreachable(reason:) -> "the executor could not be reached: " <> reason

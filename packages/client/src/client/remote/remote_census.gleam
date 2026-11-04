@@ -20,6 +20,7 @@ import client/workspace_plane
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option}
+import gleam/string
 import tools/tool
 
 /// The census an attach reply carries for a real workspace.
@@ -53,7 +54,53 @@ pub type RemoteCensus {
     /// (protocol-change/098), so evidence recorded against one executor's
     /// toolchain and seed never authorizes a build on another's.
     evolution: EvolutionCensus,
+    /// Whether this executor has what capturing and applying a repository state
+    /// need, Git and a sandbox helper that enforces (protocol-change/107). A
+    /// sender consults it before it offers a state to this executor.
+    states: StateCensus,
   )
+}
+
+/// What an executor says about moving repository states. It is computed when the
+/// scope's plane is built, from the machine's Git and the helper's health, and a
+/// rebound attach reuses it.
+pub type StateCensus {
+  /// The executor resolved a Git binary and its helper enforces, so a state can
+  /// be captured here and applied here under the sandbox.
+  Moves
+
+  /// The executor cannot take part, for a reason the operator can act on: no Git
+  /// found on this machine, or a helper that cannot confine a child.
+  Stays(reason: String)
+}
+
+/// Decides the state census from what the machine reported at plane build:
+/// whether the helper enforces and which Git the fixed calls name.
+///
+/// The Git program is the bare name `git` when the machine resolved no binary
+/// (`client/host_git.program`), which leaves the lookup to the jail's `PATH` and
+/// is not a Git this executor is known to have. A degraded helper cannot run the
+/// sandboxed Git that capture and apply go through.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_census.state_census(workspace_plane.Healthy, "/usr/bin/git")
+///   == remote_census.Moves
+/// ```
+pub fn state_census(
+  helper: workspace_plane.HelperHealth,
+  program: String,
+) -> StateCensus {
+  // The helper's health is judged first, because a degraded helper cannot
+  // confine Git whichever binary was found.
+  case helper, string.starts_with(program, "/") {
+    workspace_plane.Degraded, _ ->
+      Stays("the sandbox helper does not enforce, so Git cannot run confined")
+    workspace_plane.Healthy, False ->
+      Stays("no Git binary was found on this machine")
+    workspace_plane.Healthy, True -> Moves
+  }
 }
 
 /// What an executor says about compiling evolution candidates. It is computed

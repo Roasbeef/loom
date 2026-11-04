@@ -17,6 +17,7 @@ import client/remote/owner_port
 import client/remote/protocol
 import client/remote/remote_census.{type RemoteCensus, RemoteCensus}
 import client/remote/workspace
+import client/state_transfer
 import client/system_prompt
 import client/workspace_plane
 import client/workspace_policy
@@ -93,6 +94,7 @@ pub fn census_over(
     evolution: remote_census.Uncompiled(
       "the fake executor has no evolution plane",
     ),
+    states: remote_census.Stays("the fake executor keeps no states"),
   )
 }
 
@@ -170,6 +172,7 @@ pub fn factory(
       execute: fn(_start) { json.Null },
       abort_step: fn(_op, _step) { Nil },
       evolution: None,
+      state: None,
     ))
   }
 }
@@ -316,6 +319,7 @@ fn start_with(
       clock: executor_clock,
       factory:,
       execution_result_bytes: host.default_execution_result_bytes,
+      states: state_transfer.declining(),
     ))
     as "the host starts"
   Executor(pid: started.pid, address: started.data)

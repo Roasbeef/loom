@@ -11,6 +11,7 @@ import client/node_report.{ExecutorFacts, ScopeCounts}
 import client/peer_defaults
 import client/remote/address
 import client/remote/protocol
+import client/state_transfer
 import client/system_prompt
 import client/workspaces
 import gleam/dict
@@ -66,7 +67,12 @@ fn config(
 
 pub fn a_daemon_that_serves_no_workspace_starts_no_host_test() {
   let state = absolute(fixtures.scratch("daemon-executor-none"))
-  assert main.start_executor(config(state, [], []), log.discard()) == Ok(None)
+  assert main.start_executor(
+      config(state, [], []),
+      state_transfer.declining(),
+      log.discard(),
+    )
+    == Ok(None)
   assert process.named(address.default()) == Error(Nil)
 }
 
@@ -87,6 +93,7 @@ pub fn a_daemon_that_serves_a_workspace_registers_the_host_test() {
   let assert Ok(Some(hosted)) =
     main.start_executor(
       config(scratch <> "/state", served, arguments),
+      state_transfer.declining(),
       log.discard(),
     )
   let assert Ok(host) = process.named(address.default())
@@ -136,6 +143,7 @@ pub fn a_missing_helper_refuses_the_start_with_a_reason_test() {
         "--helper",
         scratch <> "/no-such-helper",
       ]),
+      state_transfer.declining(),
       log.discard(),
     )
   assert string.contains(reason, "the helper binary does not exist")
@@ -168,7 +176,11 @@ pub fn a_daemon_that_serves_a_worktree_workspace_reports_it_in_its_census_test()
   ]
 
   let assert Ok(Some(hosted)) =
-    main.start_executor(config(state, served, arguments), log.discard())
+    main.start_executor(
+      config(state, served, arguments),
+      state_transfer.declining(),
+      log.discard(),
+    )
   let assert Ok(host) = process.named(address.default())
     as "the host registers under the fixed name"
 
@@ -207,7 +219,11 @@ pub fn a_worktree_root_that_is_not_a_primary_checkout_refuses_the_start_test() {
   ]
 
   let assert Error(reason) =
-    main.start_executor(config(state, served, arguments), log.discard())
+    main.start_executor(
+      config(state, served, arguments),
+      state_transfer.declining(),
+      log.discard(),
+    )
 
   assert string.contains(reason, "primary checkout")
   assert process.named(address.default()) == Error(Nil)

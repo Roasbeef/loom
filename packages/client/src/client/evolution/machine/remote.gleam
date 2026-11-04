@@ -270,6 +270,7 @@ fn refused(refusal: protocol.Refusal) -> store.Refusal {
     | protocol.UnknownHandle
     | protocol.AlreadyPublished
     | protocol.NoEvolution(..)
+    | protocol.NoStates(..)
     | protocol.Invalid(..)
     | protocol.ExecutorFault(..)
     | protocol.Unreachable(..) -> store.Unavailable(protocol.describe(refusal))

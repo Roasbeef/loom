@@ -1072,7 +1072,54 @@ pub fn a_version_4_attach_is_refused_and_the_host_stays_up_test() {
   let assert Ok(answer) = process.receive(reply, 5000)
     as "the host answers a version 4 attach"
   assert answer == Error(protocol.VersionMismatch(supported: protocol.version))
-  assert protocol.version == 5
+  assert protocol.version == 6
+  assert process.is_alive(rig.pid)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  stop(rig)
+}
+
+pub fn a_version_5_attach_is_refused_and_the_host_stays_up_test() {
+  let probe = fixtures.probe(fixtures.Open)
+  let path = fixtures.scratch("host") <> "/ledger.db"
+  let text =
+    "remote_test_host_v5_" <> int.to_string(ffi_os.unique_positive_integer())
+  let rig =
+    start_config(
+      path,
+      probe,
+      host.Config(
+        ..fixtures.host_config(
+          path,
+          fixtures.factory(probe, fixtures.AsksNothing, protocol.AllRetired),
+        ),
+        name: ffi_remote.fixed_name(text),
+      ),
+    )
+  let reply: Subject(Result(protocol.Attached(String), Refusal)) =
+    process.new_subject()
+
+  // The step to version 6 added the state messages and a census field and kept
+  // `Attach`'s shape, so an executor of the previous release is refused by
+  // value. Version 5's `Attach` as its build sends it, built by hand.
+  let version_5 = #(
+    atom.create("attach"),
+    5,
+    "s1",
+    "/work",
+    0,
+    token(1),
+    fixtures.plan_port(),
+    reply,
+  )
+  ffi_remote.send(
+    to: node.self(),
+    name: ffi_remote.fixed_name(text),
+    message: version_5,
+  )
+  let assert Ok(answer) = process.receive(reply, 5000)
+    as "the host answers a version 5 attach"
+  assert answer == Error(protocol.VersionMismatch(supported: protocol.version))
+  assert protocol.version == 6
   assert process.is_alive(rig.pid)
   let assert Ok(_attached) = attach(rig, 0, token(1))
   stop(rig)

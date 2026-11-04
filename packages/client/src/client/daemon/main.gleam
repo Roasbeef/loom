@@ -128,6 +128,9 @@ import client/session_move
 import client/session_mover
 import client/session_movers
 import client/spawners
+import client/state_service
+import client/state_store
+import client/state_transfer
 import client/system_prompt
 import client/top_host
 import client/workspaces
@@ -1050,11 +1053,12 @@ fn existing_roots(served: List(workspaces.Workspace)) -> Result(Nil, String) {
 /// ## Examples
 ///
 /// ```gleam
-/// // assert main.start_executor(Config(..config, workspaces: []), logger) == Ok(None)
+/// // assert main.start_executor(Config(..config, workspaces: []), state_transfer.declining(), logger) == Ok(None)
 /// ```
 @internal
 pub fn start_executor(
   config: Config,
+  states: state_transfer.Endpoint,
   logger: Logger,
 ) -> Result(Option(ExecutorHost), String) {
   // Skip executor setup when no workspace is configured.
@@ -1082,6 +1086,7 @@ pub fn start_executor(
           execution_result_bytes: executor_host.default_execution_result_bytes,
           clock: clock.from_function(ffi_os.system_time_ms),
           factory: executor_plane.factory(machine, configured, trees),
+          states:,
         ))
         |> result.map_error(fn(error) {
           "the executor host did not start: " <> string.inspect(error)
@@ -1113,6 +1118,43 @@ pub fn start_executor(
           }),
         ),
       )
+    }
+  }
+}
+
+/// Starts the one process that owns this node's repository state store
+/// (protocol-change/107) and answers the endpoint the executor host and the
+/// orchestrator port both serve states through. A daemon that is neither, with
+/// no workspace to serve and no `[distribution]` table, keeps no store and
+/// answers `declining`, so a node that never moves states creates no directory.
+///
+/// The store is `<state root>/states` with the default limits. Both carriers
+/// get the same endpoint, because a daemon that is orchestrator and executor
+/// at once must have one owner for the directory.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // assert main.start_states(Config(..config, workspaces: [], membership: None), logger) == Ok(state_transfer.declining())
+/// ```
+@internal
+pub fn start_states(
+  config: Config,
+  logger: Logger,
+) -> Result(state_transfer.Endpoint, String) {
+  // Only a node that can be asked for a state keeps a store.
+  case config.workspaces, config.membership {
+    [], None -> Ok(state_transfer.declining())
+    _, _ -> {
+      use store <- result.try(state_store.open(
+        state_store.directory(config.state_root),
+        state_store.default_limits,
+      ))
+      use service <- result.map(
+        state_service.start(store, fn() { ffi_os.system_time_ms() / 1000 }),
+      )
+      log.info(logger, "daemon.states_serving", [])
+      state_service.endpoint(service)
     }
   }
 }
@@ -1197,7 +1239,7 @@ pub fn directory_path(state_root: String) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// // assert main.start_orchestrator_port(Config(..config, membership: None), daemon, logger, peer, delegate, inbox, relay, movers, orchestrator_port.unreported()) == Ok(Nil)
+/// // assert main.start_orchestrator_port(Config(..config, membership: None), daemon, logger, peer, delegate, inbox, relay, movers, orchestrator_port.unreported(), state_transfer.declining()) == Ok(Nil)
 /// ```
 @internal
 pub fn start_orchestrator_port(
@@ -1210,6 +1252,7 @@ pub fn start_orchestrator_port(
   relay_endpoint: fn(instance) -> relayed_session.Endpoint,
   movers: session_movers.Control,
   reads: orchestrator_port.Reads,
+  states: state_transfer.Endpoint,
 ) -> Result(Nil, String) {
   // Skip orchestrator port setup unless membership is configured.
   case config.membership {
@@ -1287,7 +1330,7 @@ pub fn start_orchestrator_port(
           covered: movers.cover,
         ))
       use _started <- result.try(
-        orchestrator_port.start_with_top(
+        orchestrator_port.start_with_states(
           orchestrator_port.default(),
           catalogue_holds(ready.registry),
           peer_command(ready.registry, peer_endpoint),
@@ -1307,6 +1350,7 @@ pub fn start_orchestrator_port(
           ),
           reads,
           top,
+          states,
         )
         |> result.map_error(fn(error) {
           "the orchestrator port did not start: " <> string.inspect(error)
@@ -3645,7 +3689,8 @@ fn run(
       let config = Config(..config, member:)
       use keepers <- result.try(start_link_keepers(config, logger))
       let config = Config(..config, keepers:)
-      use executor <- result.try(start_executor(config, logger))
+      use states <- result.try(start_states(config, logger))
+      use executor <- result.try(start_executor(config, states, logger))
       use Nil <- result.try(sweep_delegate_sessions(
         config,
         daemon,
@@ -3665,6 +3710,7 @@ fn run(
         fn(resident: serve.Resident) { resident.relay },
         movers,
         reads,
+        states,
       ))
       use Nil <- result.try(start_release_drain(config, daemon, logger))
       use Nil <- result.try(start_delegate_sweep(config, daemon, logger))

@@ -1159,8 +1159,13 @@ fn plane_over(
             mcp: built.mcp,
             branch: option.map(built.custody, fn(held) { held.branch }),
             evolution: built.evolving.census,
+            states: remote_census.state_census(
+              facts.helper,
+              built.started.plane.census.git,
+            ),
           ),
           evolution: built.evolving.door,
+          state: None,
           children: fn(builder) {
             builder
             |> children.scratch

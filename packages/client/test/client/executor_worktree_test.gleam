@@ -18,6 +18,7 @@ import client/remote/owner_port
 import client/remote/protocol
 import client/remote/remote_census.{type RemoteCensus}
 import client/remote/surface
+import client/state_transfer
 import core/clock
 import core/json
 import core/message
@@ -83,6 +84,7 @@ fn serve(rig: Rig) -> Plane {
       limits: exec_ledger.default_limits(),
       max_result_bytes: host.default_max_result_bytes,
       execution_result_bytes: host.default_execution_result_bytes,
+      states: state_transfer.declining(),
       clock: clock.from_function(ffi_os.system_time_ms),
       factory:,
     ))
