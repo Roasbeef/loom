@@ -1,4 +1,4 @@
-//// Tests for the role pins a registration carries (protocol-change/107): the
+//// Tests for the role pins a registration carries (protocol-change/108): the
 //// stored object's codec, the round trip through the catalogue, the migration
 //// of 080's `model` column, and the refusal of damaged values.
 

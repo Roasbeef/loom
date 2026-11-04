@@ -1,4 +1,4 @@
-# protocol-change/107: pinning any role when a session is created
+# protocol-change/108: pinning any role when a session is created
 
 **Status**: PROPOSED 2026-11-03. **Affects**: the control command
 `sessions.create` (one optional request field, two refusal codes of which one

@@ -217,7 +217,7 @@ pub type Creation {
     /// fixed role order, or `[]` for the chains the profile or configuration
     /// gives. It is retained
     /// with the registration and resolved again by every open
-    /// (protocol-change/107).
+    /// (protocol-change/108).
     pins: List(#(catalogue.PinnedRole, String)),
     /// The executor the workspace is registered on, or the empty string for a
     /// workspace on this host (protocol-change/078).

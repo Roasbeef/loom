@@ -79,7 +79,7 @@ independent test oracle, including Unicode rejection and length boundaries.
   read with `Invalid` and is never read as "no profile", because that would open
   a profiled session under the default roles.
 - `Registration.pins: List(#(PinnedRole, String))` are the `[models.<key>]` keys
-  the session's roles were pinned to at creation (protocol-change/107, which
+  the session's roles were pinned to at creation (protocol-change/108, which
   replaced 080's single `main` key). `PinnedRole` is the closed set `main`,
   `subagent`, `plan`, `summarize`, `vision`, `advisor`, `router`, defined here
   because the catalogue sits below the packages that define a role;

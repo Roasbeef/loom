@@ -2379,7 +2379,7 @@ pub fn an_unknown_model_names_the_known_keys_test() {
     == "unknown model \"x\"; the configuration defines no models"
 }
 
-// --- role pins (protocol-change/107) ----------------------------------------
+// --- role pins (protocol-change/108) ----------------------------------------
 
 // The profiles fixture plus one entry that declares it cannot read images.
 const with_text_only =

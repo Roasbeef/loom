@@ -466,7 +466,7 @@ loads, and the hub reopens the session once no strand is running
 
 It likewise stores the keys of the `[models.<key>]` entries the session's roles
 were pinned to, or none, as the `pins` object of the registration
-([protocol 107](../../protocol-change/107-session-role-pins.md), which
+([protocol 108](../../protocol-change/108-session-role-pins.md), which
 generalizes the `main` pin of [protocol 080](../../protocol-change/080-session-model-choice.md)).
 The keys are resolved again at every open, after the profile, by
 `catalog.select_roles`: a key the file no longer defines, or a pinned `vision`

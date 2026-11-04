@@ -134,7 +134,7 @@ pub type Refusal {
   UnknownModel(message: String)
 
   /// The configuration defines the model key, but the entry cannot serve the
-  /// role it was pinned to (protocol-change/107).
+  /// role it was pinned to (protocol-change/108).
   UnsuitableModel(message: String)
 
   /// The configuration cannot be read or does not parse, so no profile or model

@@ -59,7 +59,7 @@ pub type Desk {
     /// The models the session's roles were pinned to at creation, in the fixed
     /// role order, or `[]`. A pin is laid over whatever profile the session
     /// routes by, so a switch leaves it in place, and the `profile` snapshot
-    /// reports it (protocol-change/107).
+    /// reports it (protocol-change/108).
     pins: List(#(catalogue.PinnedRole, String)),
     /// The profile names the configuration defines now, sorted, or why the
     /// configuration cannot be read.

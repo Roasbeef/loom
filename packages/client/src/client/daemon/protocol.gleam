@@ -298,7 +298,7 @@ pub type Command {
     /// The `[models.<key>]` entries to pin the session's roles to, in the fixed
     /// role order, or `[]` for the chains the profile or configuration gives.
     /// The wire's `model` is the pin `main` and is merged with `roles`
-    /// (protocol-change/107, which generalizes 080).
+    /// (protocol-change/108, which generalizes 080).
     pins: List(#(catalogue.PinnedRole, String)),
     /// The executor `workspace` is registered on, or `None` when `workspace`
     /// is a path on this host. When it is present `workspace` is a registered
@@ -1354,7 +1354,7 @@ const model_words = "model must be a model key of 1 to 64 bytes"
 
 const roles_words = "roles must be an object from role name to a model key"
 
-// The role pins of a creation (protocol-change/107): `model`, which is the pin
+// The role pins of a creation (protocol-change/108): `model`, which is the pin
 // `main`, and the optional `roles` object, merged into one list in the fixed
 // role order. Every malformed shape is refused as a bad request and none is
 // read as no choice, so a misspelled role cannot create a session whose pin did

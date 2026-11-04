@@ -533,7 +533,7 @@ pub type Snapshot {
     /// How many strands a switch moved; `None` for a read.
     switched: Option(Int),
     /// The roles the session was created with a pinned model for, as role name
-    /// and `[models]` key in the fixed role order, or `[]` (protocol-change/107).
+    /// and `[models]` key in the fixed role order, or `[]` (protocol-change/108).
     pins: List(#(String, String)),
   )
 }

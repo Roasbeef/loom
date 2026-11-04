@@ -985,7 +985,7 @@ pub fn an_elsewhere_read_names_its_group_and_its_cursor_as_the_lists_do_test() {
   assert result.is_ok(read([key, #("after", json.String(""))]))
 }
 
-// --- role pins (protocol-change/107) ----------------------------------------
+// --- role pins (protocol-change/108) ----------------------------------------
 
 fn creation_with(extra: List(#(String, json.JsonValue))) {
   protocol.decode(

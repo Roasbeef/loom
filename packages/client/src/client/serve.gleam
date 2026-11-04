@@ -1146,7 +1146,7 @@ type Flags {
     // `resolve_managed` is the one place that sets it.
     profile: Option(String),
     // The models the session's roles are pinned to, for the same reason and
-    // from the same place (protocol-change/107).
+    // from the same place (protocol-change/108).
     pins: List(#(catalogue.PinnedRole, String)),
     codemode_seed: Option(String),
     codemode_seams: Option(String),

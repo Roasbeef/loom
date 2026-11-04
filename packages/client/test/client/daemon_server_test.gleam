@@ -2729,7 +2729,7 @@ pub fn a_model_with_no_config_file_is_refused_as_unknown_test() {
   })
 }
 
-// --- role pins (protocol-change/107) ----------------------------------------
+// --- role pins (protocol-change/108) ----------------------------------------
 
 const pinning_catalogue =
   "

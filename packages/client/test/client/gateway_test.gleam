@@ -7401,7 +7401,7 @@ fn profile_harness(
 }
 
 // `profile_harness` for a session created with role pins, which the desk
-// reports in its `profile` snapshot (protocol-change/107).
+// reports in its `profile` snapshot (protocol-change/108).
 fn pinned_profile_harness(
   current: Option(String),
   pins: List(#(catalogue.PinnedRole, String)),

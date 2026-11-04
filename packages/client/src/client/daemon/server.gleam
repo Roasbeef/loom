@@ -3993,7 +3993,7 @@ pub const unknown_model_code = "unknown_model"
 
 /// The code `create_session` answers when a creation pins a role to an entry
 /// the configuration defines but that cannot serve the role, such as a text-only
-/// entry for `vision` (protocol-change/107).
+/// entry for `vision` (protocol-change/108).
 pub const unsuitable_model_code = "unsuitable_model"
 
 /// The code `create_session` answers when a creation names an executor that

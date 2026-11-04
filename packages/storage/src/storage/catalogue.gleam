@@ -139,7 +139,7 @@ pub type Registration {
     /// that one entry. Like `profile` the pins are part of the immutable
     /// creation request and are keys rather than the role set they resolved
     /// to, so the daemon resolves them again each time the session opens
-    /// (protocol-change/107, which generalizes the `main` pin of 080).
+    /// (protocol-change/108, which generalizes the `main` pin of 080).
     pins: List(#(PinnedRole, String)),
     /// The executor the session's workspace is registered on, by its
     /// `[executors.<name>]` key, or the empty string for a session whose
@@ -3366,7 +3366,7 @@ pub fn is_model_key(text: String) -> Bool {
 }
 
 /// The roles a session may be created with a pinned model for
-/// (protocol-change/107): the closed set `client/catalog` routes, named here
+/// (protocol-change/108): the closed set `client/catalog` routes, named here
 /// because the catalogue sits below the packages that define a role.
 pub type PinnedRole {
   PinMain

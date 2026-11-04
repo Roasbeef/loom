@@ -134,7 +134,7 @@ fn resolve_profiled(
   })
 }
 
-// The same, for a registration with any role pins (protocol-change/107).
+// The same, for a registration with any role pins (protocol-change/108).
 fn resolve_pinned(
   seed: Int,
   config_text: String,
@@ -409,7 +409,7 @@ pub fn a_session_whose_model_was_removed_is_refused_not_defaulted_test() {
   )
 }
 
-// --- role pins (protocol-change/107) ----------------------------------------
+// --- role pins (protocol-change/108) ----------------------------------------
 
 const pinning_config =
   "

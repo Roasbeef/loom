@@ -42,7 +42,7 @@
 ////    `select_profile` is how a session takes a profile: it returns the
 ////    catalogue with that profile's roles in place of the default ones.
 ////    `select_roles` is applied after it for a session with role pins
-////    (protocol-change/107): it replaces each pinned role's chain with that
+////    (protocol-change/108): it replaces each pinned role's chain with that
 ////    entry alone, and `select_model` is the one-pin case for the main role of 080.
 ////    `retargets` compares two such catalogues and says which strand-bearing
 ////    roles changed their head, through `role_head`, which is what a live
@@ -3218,7 +3218,7 @@ pub fn model_keys(catalog: Catalog) -> List(String) {
 }
 
 /// Why a role pin cannot be applied, which decides the code the daemon answers
-/// with (protocol-change/107). The message is the sentence a person reads.
+/// with (protocol-change/108). The message is the sentence a person reads.
 pub type PinRefusal {
   /// The configuration does not define the pinned key.
   UnknownPin(message: String)
@@ -3264,7 +3264,7 @@ pub fn pinned_role(role: stored_catalogue.PinnedRole) -> model.Role {
 /// The catalogue a session with role pins routes by: the same entries, servers
 /// and profiles, with each pinned role replaced by the one-entry chain `[key]`
 /// and every other role as it was. It is applied after `select_profile`, so a
-/// profile's roles are the base the pins are laid over (protocol-change/107).
+/// profile's roles are the base the pins are laid over (protocol-change/108).
 ///
 /// A pinned chain has no fallbacks afterwards: the role runs on the chosen
 /// entry or fails. The pins are checked in the order given, which callers keep
@@ -3378,7 +3378,7 @@ pub fn unknown_pin(
 }
 
 /// The refusal for a model key pinned to a named role that the configuration
-/// does not define, naming the keys it does (protocol-change/107). It is
+/// does not define, naming the keys it does (protocol-change/108). It is
 /// `unknown_model` with the role added.
 ///
 /// ## Examples
