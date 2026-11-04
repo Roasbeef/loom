@@ -1370,7 +1370,7 @@ built from, names the state.
 | Ask | `remote/remote_spawner.asked_with_state` | The request carries the state's description. The receiver answers `StateMissing(hash, have)` until the bundle is whole. |
 | Send | `client/state_transfer.send` | The sender sends from `have` for at most the attempt's window and asks again. A window that runs out is silence, and the outbox drainer's ordinary resend continues at the receiver's offset. |
 | Judge | `client/spawn_seed` | The spawner's `seed` ceiling, its placement and the description are checked first; a `seed = "none"` spawner leaves no session and no byte stored. |
-| Apply | `client/state_apply` | In `<state root>/seed-staging`, then one rename into `<directory>/seeds/<name>`. The child's brief is told where the copy is. |
+| Apply | `client/state_apply` | In a stage of the attempt's own under `<state root>/seed-staging`, in a process that outlives the asker (an asker that gives up is told to ask again), claimed so concurrent asks do not each apply; then one rename into `<directory>/seeds/<name>`, after checking that `seeds` is a real directory and that the copy landed where its name says. A child that swaps `seeds` in the window between check and rename is a stated residual. The child's brief is told where the copy is. |
 
 Only a spawner placed on a `directory` takes a copy in this release. A session whose
 workspace is on an executor is refused when it asks: the executor's plane answers

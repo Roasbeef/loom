@@ -548,3 +548,48 @@ table, a `[spawners.box]` on the laptop with `directory` and `seed = "workspace"
 and a model call `agent_spawn(on: "laptop", context: "my_workspace")` from a session
 whose workspace is on the box. The transfer over a real TLS distribution link, and
 the capture under Linux's bubblewrap and Landlock, were not exercised here.
+
+**Slice 3, send direction: changes after review (2026-11-04).** An independent review
+of the build above found the following, all fixed, and two statements above are
+narrowed.
+
+- *The final destination is not safe from a session.* The apply's stage is
+  daemon-owned, but the rename into `<directory>/seeds/<name>` is made by the daemon,
+  outside any jail, through a directory that any session on that workspace can write.
+  A child that made `seeds` a link would have had the rename land the repository
+  elsewhere. Now `seeds` must be a real directory at its canonical path before the
+  move, a name that is a link or anything but a real directory is refused (it is no
+  longer taken for a finished copy), and after the move the copy's canonical path must
+  be exactly `<directory>/seeds/<name>`, else what the daemon placed is removed and the
+  spawn is refused with a constant reason. **The residual:** check-then-rename is still
+  racy against a child that swaps `seeds` in the window between the check and the
+  rename. The after-check then finds and removes what landed, but the rename itself
+  has happened outside the jail, with a repository the daemon made from a bundle at a
+  name the daemon chose. Closing it for good needs a destination no session can write,
+  which is a design change for a later slice.
+- *An apply could not outlive its asker, and attempts shared a stage.* The first ask
+  waits 30 seconds and the sandboxed Git allows ten minutes, so a state needing more
+  restarted from nothing on every retry and never finished, and the attempts, which
+  shared one stage name, deleted each other's trees. Now every attempt has a stage of
+  its own (the name and a unique integer) and deletes only that, `seed-staging` is
+  emptied when the daemon starts, and the apply runs in a process of its own under a
+  deadline of its own (11 minutes), so an asker that stops waiting is answered
+  `NotYetOpen` ("ask again") and the apply goes on. A resend finds the finished copy
+  before it reads the store, so it is quick and survives the bundle's expiry. A claim,
+  a marker directory made atomically beside the stages, keeps the asks that arrive
+  meanwhile from each starting a full apply of the same copy; a claim older than 15
+  minutes is taken over. Duplicates remain correct if they ever happen, because stages
+  are unique and the attempt that renames second finds the name taken and removes its
+  own stage. The claim is a file-system marker and not a process, so it needs no
+  owner and survives nothing: a restart sweeps it.
+- *Unplaced tools bypassed the gate.* Extension and MCP tools have no placement and
+  went to the owner untouched, so a filesystem server could write during a capture.
+  They run on the shared side now. `agent_spawn` is placed on the owner and does not
+  wait on the gate it closes.
+- *The hostile-configuration claim is narrower than it read.* The guarantee is that
+  a program a repository's configuration names cannot write outside the jail, on
+  either machine; for a filter the jail is the guarantee, and the `-c` overrides cover
+  hooks and the file-system monitor. The test now attaches the filter with a
+  `.gitattributes`, and a control runs the same configuration under ordinary Git
+  outside the jail and shows the program fires. "Never run" above should be read as
+  "cannot write outside the jail".

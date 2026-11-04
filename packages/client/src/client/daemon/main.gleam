@@ -1177,6 +1177,11 @@ pub fn start_states(
       use absolute <- result.try(bootstrap.absolute_path(config.state_root))
       use Nil <- result.try(bootstrap.ensure_private_directory(absolute))
       use root <- result.try(bootstrap.canonical_directory(absolute))
+
+      // The stages and claims of copies being made belong to the process that was
+      // making them, so a daemon that starts has none that are live.
+      let _swept =
+        simplifile.delete(root <> "/" <> spawn_seed.staging_directory)
       use store <- result.try(state_store.open(
         state_store.directory(root),
         state_store.default_limits,

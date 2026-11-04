@@ -1570,7 +1570,19 @@ and otherwise: `permitted` (ceiling, placement, description, size), `held` (the 
 bundle in the store, else `StateMissing`), `applied` (the copy at
 `<directory>/seeds/<name>`, made in `<state root>/seed-staging` and renamed in), and
 `briefed` (the words appended to the brief). Only an `InDirectory` placement takes a
-copy. `name_of` is a digest of the call site and the state hash.
+copy. `name_of` is a digest of the call site and the state hash. `copy` looks at the
+final name first (`settled`: `Missing`, `Whole` or `Tampered`, by `link_info` and the
+canonical path, so a link is never taken for a finished copy) and a resend returns
+before the store is read. `applied` claims the copy (`claim`, a marker directory in
+`<state root>/seed-staging`, stale after 15 minutes) and runs `building` in an unlinked
+process under its own 11-minute `weft.deadline`, so an asker that stops waiting
+(`receive_within`) gets `NotYetOpen` and the apply goes on; every attempt's stage is
+`<name>-<unique integer>` and only that attempt deletes it; `main.start_states` empties
+`seed-staging` at start. `published` requires `seeds` to be a real canonical directory,
+renames, and `verified` requires the copy to be exactly at its name, else removes it;
+the check-then-rename window against a child swapping `seeds` is a stated residual
+(protocol-change/107 addendum). `wiring.run_gated` runs unplaced (extension, MCP) tools
+on the gate's shared side as well as workspace-side ones.
 
 Tests: `workspace_gate_test` (overlap, concurrent file writes, drain refusal, stuck
 capture released and refused, dead holders), `state_capture_test` and

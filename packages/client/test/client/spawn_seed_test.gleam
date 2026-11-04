@@ -26,6 +26,8 @@ import client/state_transfer
 import client/worktree_git
 import core/clock
 import core/ids
+import gleam/erlang/process
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap
@@ -345,24 +347,36 @@ pub fn a_state_over_the_size_limit_is_refused_test() {
   state_rig.stop(rig)
 }
 
-// A parent whose `.git/config` names a program that Git would run: whatever the
-// capture does with it, the program never ran, on the sender or the receiver.
-pub fn a_hostile_git_config_runs_nothing_on_either_machine_test() {
+// A parent whose `.git/config` names programs that Git would run, with an
+// attribute that makes the clean filter apply to a file in the tree. What is
+// guaranteed is that they cannot write outside the jail, on either machine: the
+// jail is the guarantee for a filter, and the `-c` overrides are for hooks and
+// the file-system monitor. The control is what makes the test mean something: the
+// same configuration under ordinary Git, outside any jail, does create its canary.
+pub fn a_hostile_git_config_cannot_write_outside_the_jail_test() {
   let rig = state_rig.rig("seed-hostile")
-  let canary = rig.scratch <> "/canary"
+  let jailed = rig.scratch <> "/canary-jailed"
+  let native = rig.scratch <> "/canary-native"
   let config = rig.root <> "/.git/config"
   let assert Ok(existing) = simplifile.read(config)
-  let assert Ok(Nil) =
-    simplifile.write(
-      config,
-      existing
-        <> "[core]\n\tfsmonitor = touch "
-        <> canary
-        <> "\n[filter \"x\"]\n\tclean = touch "
-        <> canary
-        <> "\n",
-    )
+  let hostile = fn(canary) {
+    let assert Ok(Nil) =
+      simplifile.write(
+        config,
+        existing
+          <> "[core]\n\tfsmonitor = touch "
+          <> canary
+          <> "\n[filter \"x\"]\n\tclean = touch "
+          <> canary
+          <> "\n",
+      )
+    Nil
+  }
+  worktree_rig.write(rig.root <> "/.gitattributes", "hostile.txt filter=x\n")
   worktree_rig.write(rig.root <> "/hostile.txt", "present\n")
+
+  // The configuration names the jailed canary and the sandboxed capture runs.
+  hostile(jailed)
   let store = sender_store(rig)
   let assert Ok(service) =
     state_service.start(store, fn() { ffi_os.system_time_ms() / 1000 })
@@ -370,10 +384,11 @@ pub fn a_hostile_git_config_runs_nothing_on_either_machine_test() {
     state_capture.new(rig.git, rig.state, [], state_service.endpoint(service))
   let captured =
     state_capture.capture(capturer, rig.root, state_rig.identity(), Full)
-  assert !worktree_rig.exists(canary)
+  assert !worktree_rig.exists(jailed)
 
   // A capture that was refused has nothing to send; one that succeeded is
-  // applied on the receiver, and nothing runs there either.
+  // applied on the receiver, and nothing is written outside the jail there
+  // either.
   case captured {
     Error(_) -> Nil
     Ok(state) -> {
@@ -388,8 +403,173 @@ pub fn a_hostile_git_config_runs_nothing_on_either_machine_test() {
           site(),
           request(Some(state)),
         )
-      assert !worktree_rig.exists(canary)
+      assert !worktree_rig.exists(jailed)
     }
   }
+
+  // The control: the same configuration naming another canary, under ordinary
+  // Git outside the jail, runs the filter and creates it.
+  hostile(native)
+  let _added = worktree_rig.git(rig.root, ["add", "hostile.txt"])
+  assert worktree_rig.exists(native)
+  state_rig.stop(rig)
+}
+
+// --- the sessions can write the workspace the copy lands in -------------------
+
+// A sent state, ready to be received.
+fn sent(rig: Rig, receiver: Node, state: State) -> Nil {
+  assert state_transfer.send(sender_store(rig), state.hash, link_to(receiver))
+    == state_transfer.Delivered
+  Nil
+}
+
+// `seeds` is a link a session planted to a directory elsewhere: the daemon's
+// rename would land the repository there, outside every jail, so the copy is
+// refused and nothing reaches the link's target.
+pub fn a_link_planted_at_seeds_is_refused_and_nothing_lands_behind_it_test() {
+  let #(rig, _capturer, state) = parent("seed-link-dir")
+  let receiver = node_at(rig, "receiver")
+  let directory = rig.scratch <> "/scratch-dir"
+  let outside = rig.scratch <> "/outside"
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(directory)
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(outside)
+  let assert Ok(Nil) = simplifile.create_symlink(outside, directory <> "/seeds")
+  sent(rig, receiver, state)
+
+  let assert Error(remote_spawn.StateRefused(_)) =
+    spawn_seed.receive(
+      receiver.node,
+      in_directory(directory, "workspace"),
+      site(),
+      request(Some(state)),
+    )
+  assert simplifile.read_directory(outside) == Ok([])
+  assert simplifile.read_directory(rig.scratch <> "/receiver/seed-staging")
+    == Ok([])
+  state_rig.stop(rig)
+}
+
+// The copy's own name is a link: a resend must not take it for a finished copy,
+// and the rename must not follow it.
+pub fn a_link_planted_at_the_copys_name_is_refused_test() {
+  let #(rig, _capturer, state) = parent("seed-link-name")
+  let receiver = node_at(rig, "receiver")
+  let directory = rig.scratch <> "/scratch-dir"
+  let outside = rig.scratch <> "/outside"
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(directory)
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(outside)
+  let assert Ok(Nil) = simplifile.create_directory(directory <> "/seeds")
+  let name = spawn_seed.name_of(site(), state)
+  let assert Ok(Nil) =
+    simplifile.create_symlink(outside, directory <> "/seeds/" <> name)
+  sent(rig, receiver, state)
+
+  let assert Error(remote_spawn.StateRefused(_)) =
+    spawn_seed.receive(
+      receiver.node,
+      in_directory(directory, "workspace"),
+      site(),
+      request(Some(state)),
+    )
+  assert simplifile.read_directory(outside) == Ok([])
+  state_rig.stop(rig)
+}
+
+// --- an apply slower than the asker ------------------------------------------
+
+// Asks until the copy is there, with a window too short for any apply.
+fn asked_until_made(
+  receiver: Node,
+  spawner: Spawner,
+  state: State,
+  tries: Int,
+) -> Result(remote_spawn.Request, remote_spawn.SpawnRefusal) {
+  case
+    spawn_seed.receive_within(
+      receiver.node,
+      spawner,
+      site(),
+      request(Some(state)),
+      1,
+    )
+  {
+    Error(remote_spawn.NotYetOpen(_)) if tries > 0 -> {
+      process.sleep(100)
+      asked_until_made(receiver, spawner, state, tries - 1)
+    }
+    other -> other
+  }
+}
+
+// The asker's window ends long before the apply does. The first ask is told to
+// ask again, the apply goes on without it, and a later ask finds the copy whole.
+pub fn an_apply_slower_than_the_asker_finishes_and_a_resend_finds_it_test() {
+  let #(rig, _capturer, state) = parent("seed-slow")
+  let receiver = node_at(rig, "receiver")
+  let directory = rig.scratch <> "/scratch-dir"
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(directory)
+  let spawner = in_directory(directory, "workspace")
+  sent(rig, receiver, state)
+
+  let assert Error(remote_spawn.NotYetOpen(_)) =
+    spawn_seed.receive_within(
+      receiver.node,
+      spawner,
+      site(),
+      request(Some(state)),
+      1,
+    )
+  let assert Ok(seeded) = asked_until_made(receiver, spawner, state, 300)
+  let name = spawn_seed.name_of(site(), state)
+  assert string.contains(seeded.brief, "seeds/" <> name)
+  assert simplifile.read(directory <> "/seeds/" <> name <> "/README")
+    == Ok("edited by the parent\n")
+
+  // No stage and no claim outlives the apply.
+  assert simplifile.read_directory(rig.scratch <> "/receiver/seed-staging")
+    == Ok([])
+  state_rig.stop(rig)
+}
+
+// Two asks for the same copy while one apply runs: both end with the one whole
+// copy, and neither removed the other's tree.
+pub fn two_concurrent_attempts_end_with_one_whole_copy_test() {
+  let #(rig, _capturer, state) = parent("seed-concurrent")
+  let receiver = node_at(rig, "receiver")
+  let directory = rig.scratch <> "/scratch-dir"
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(directory)
+  let spawner = in_directory(directory, "workspace")
+  sent(rig, receiver, state)
+
+  let done = process.new_subject()
+  list.each([1, 2], fn(_attempt) {
+    process.spawn(fn() {
+      process.send(done, asked_until_made(receiver, spawner, state, 300))
+    })
+  })
+  let assert Ok(first) = process.receive(done, 60_000)
+  let assert Ok(second) = process.receive(done, 60_000)
+  assert first == second
+  let name = spawn_seed.name_of(site(), state)
+  assert simplifile.read_directory(directory <> "/seeds") == Ok([name])
+  assert simplifile.read(directory <> "/seeds/" <> name <> "/notes.txt")
+    == Ok("not committed anywhere\n")
+  assert simplifile.read_directory(rig.scratch <> "/receiver/seed-staging")
+    == Ok([])
+  state_rig.stop(rig)
+}
+
+// A claim is exclusive, and one whose owner died is taken over once it is old.
+pub fn a_claim_is_exclusive_until_it_is_stale_test() {
+  let rig = state_rig.rig("seed-claim")
+  let parent = rig.scratch <> "/claims"
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(parent)
+  let now = ffi_os.system_time_ms() / 1000
+  assert spawn_seed.claim(parent, "seed-a", now) == Ok(spawn_seed.Claimed)
+  assert spawn_seed.claim(parent, "seed-a", now) == Ok(spawn_seed.Busy)
+  assert spawn_seed.claim(parent, "seed-b", now) == Ok(spawn_seed.Claimed)
+  assert spawn_seed.claim(parent, "seed-a", now + spawn_seed.claim_stale_s + 10)
+    == Ok(spawn_seed.Claimed)
   state_rig.stop(rig)
 }
