@@ -99,7 +99,7 @@ fn serve(name: String, capture: Capture) -> Plane {
     ))
     as "the sandboxed Git starts"
   let capturer = case capture {
-    Able -> Some(state_capture.new(git, rig.state, [], endpoint))
+    Able -> Some(state_capture.new(git, rig.state, [], endpoint, store))
     Unable -> None
   }
   let assert Ok(started) =

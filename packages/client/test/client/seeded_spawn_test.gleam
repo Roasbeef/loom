@@ -218,7 +218,13 @@ fn parent(name: String) -> #(Rig, state_store.Store, State) {
   worktree_rig.write(rig.root <> "/README", "edited by the parent\n")
   worktree_rig.write(rig.root <> "/notes.txt", "not committed anywhere\n")
   let capturer =
-    state_capture.new(rig.git, rig.state, [], state_service.endpoint(service))
+    state_capture.new(
+      rig.git,
+      rig.state,
+      [],
+      state_service.endpoint(service),
+      store,
+    )
   let assert Ok(state) =
     state_capture.capture(capturer, rig.root, state_rig.identity(), Full)
   #(rig, store, state)

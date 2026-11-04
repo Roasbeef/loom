@@ -162,7 +162,13 @@ fn parent(name: String) -> #(Rig, state_capture.Capturer, State) {
   let assert Ok(service) =
     state_service.start(store, fn() { ffi_os.system_time_ms() / 1000 })
   let capturer =
-    state_capture.new(rig.git, rig.state, [], state_service.endpoint(service))
+    state_capture.new(
+      rig.git,
+      rig.state,
+      [],
+      state_service.endpoint(service),
+      store,
+    )
   worktree_rig.write(rig.root <> "/README", "edited by the parent\n")
   worktree_rig.write(rig.root <> "/notes.txt", "not committed anywhere\n")
   let assert Ok(state) =
@@ -383,7 +389,13 @@ pub fn a_hostile_git_config_cannot_write_outside_the_jail_test() {
   let assert Ok(service) =
     state_service.start(store, fn() { ffi_os.system_time_ms() / 1000 })
   let capturer =
-    state_capture.new(rig.git, rig.state, [], state_service.endpoint(service))
+    state_capture.new(
+      rig.git,
+      rig.state,
+      [],
+      state_service.endpoint(service),
+      store,
+    )
   let captured =
     state_capture.capture(capturer, rig.root, state_rig.identity(), Full)
   assert !worktree_rig.exists(jailed)

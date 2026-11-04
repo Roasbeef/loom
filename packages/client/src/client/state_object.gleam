@@ -97,6 +97,19 @@ pub type Basis {
   )
 }
 
+/// What a capture puts on top of the repository's history.
+pub type Content {
+  /// The working tree's bytes, as a snapshot commit when they differ from
+  /// `HEAD`. This is what a parent's workspace is sent as, and it is the only
+  /// content that reads the working tree.
+  WithWorkingTree
+
+  /// Nothing: the tip is `HEAD` and the working tree is not read. This is what a
+  /// finished child's work is returned as, because only what it committed comes
+  /// back.
+  CommittedOnly
+}
+
 /// What a bundle file says about itself before its pack begins.
 pub type Header {
   Header(

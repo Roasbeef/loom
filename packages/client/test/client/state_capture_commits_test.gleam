@@ -6,17 +6,20 @@
 //// what the capture carries (the commits and nothing else), at what it leaves
 //// alone (the child's tree, index and refs), and at what it refuses (a history
 //// that no longer holds the sent tip, and a directory that is not the primary
-//// checkout it names).
+//// checkout it names). The same capture is also run in a linked worktree, which
+//// is the directory an executor's scope works in.
 
 import client/internal/ffi_os
+import client/repository_snapshot
 import client/state_apply.{Clone}
 import client/state_capture
-import client/state_object.{type State, Full}
+import client/state_object.{type State, Full, Thin}
 import client/state_service
 import client/state_store
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import host/bootstrap
 import simplifile
 import support/state_rig.{type Rig}
 import support/worktree_rig
@@ -45,7 +48,13 @@ fn scenario(name: String) -> Scenario {
   let assert Ok(service) =
     state_service.start(store, fn() { ffi_os.system_time_ms() / 1000 })
   let capturer =
-    state_capture.new(rig.git, rig.state, [], state_service.endpoint(service))
+    state_capture.new(
+      rig.git,
+      rig.state,
+      [],
+      state_service.endpoint(service),
+      store,
+    )
   worktree_rig.write(rig.root <> "/README", "parent edit\n")
   let assert Ok(sent) =
     state_capture.capture(capturer, rig.root, state_rig.identity(), Full)
@@ -216,5 +225,103 @@ pub fn a_hostile_child_configuration_does_not_change_what_is_captured_test() {
       "\n",
     ))
     == 1
+  state_rig.stop(rig)
+}
+
+// A linked worktree of the child, on its own branch, as an executor's scope has.
+fn linked(scenario: Scenario, name: String) -> String {
+  let tree = scenario.rig.scratch <> "/" <> name
+  let _ =
+    worktree_rig.git(scenario.child, [
+      "worktree", "add", "--quiet", "-b", name, tree, "HEAD",
+    ])
+  let assert Ok(canonical) = bootstrap.canonical_directory(tree)
+    as "the tree resolves"
+  canonical
+}
+
+pub fn a_linked_worktree_captures_its_commits_and_not_its_edits_test() {
+  let scenario = scenario("commits-linked")
+  let rig = scenario.rig
+  let tree = linked(scenario, "scope")
+  let checkout = repository_snapshot.LinkedTo(scenario.child <> "/.git")
+  let tip = state_rig.commit_file(tree, "made.txt", "made\n", "scope work")
+
+  // Edits the scope did not commit: a tracked file, a staged one, a new one.
+  worktree_rig.write(tree <> "/README", "never committed\n")
+  worktree_rig.write(tree <> "/staged.txt", "staged\n")
+  let _ = worktree_rig.git(tree, ["add", "staged.txt"])
+  worktree_rig.write(tree <> "/untracked.txt", "untracked\n")
+  let status = worktree_rig.git(tree, ["status", "--porcelain"])
+
+  let assert Ok(Some(state)) =
+    state_capture.capture_committed(
+      scenario.capturer,
+      tree,
+      checkout,
+      Thin(scenario.sent.tip),
+    )
+
+  // The tip is the scope's own commit and no snapshot of its edits was made.
+  assert state.tip == tip
+  assert state.base == Some(scenario.sent.tip)
+  assert state.dirty == state_object.Clean
+  let assert Ok(Some(held)) = state_store.get(scenario.store, state.hash)
+  let assert Ok(bytes) = simplifile.read_bits(held.path)
+  let assert Ok(header) = state_object.parse_header(bytes)
+  assert header.prerequisites == [scenario.sent.tip]
+  assert worktree_rig.git(tree, ["status", "--porcelain"]) == status
+  assert simplifile.read(tree <> "/README") == Ok("never committed\n")
+
+  // A full basis is committed history alone as well, without a base.
+  let assert Ok(Some(full)) =
+    state_capture.capture_committed(scenario.capturer, tree, checkout, Full)
+  assert full.tip == tip
+  assert full.base == None
+  assert full.dirty == state_object.Clean
+  state_rig.stop(rig)
+}
+
+pub fn a_linked_worktree_with_nothing_beyond_the_base_captures_nothing_test() {
+  let scenario = scenario("commits-linked-none")
+  let rig = scenario.rig
+  let tree = linked(scenario, "scope")
+  worktree_rig.write(tree <> "/README", "never committed\n")
+  assert state_capture.capture_committed(
+      scenario.capturer,
+      tree,
+      repository_snapshot.LinkedTo(scenario.child <> "/.git"),
+      Thin(scenario.sent.tip),
+    )
+    == Ok(None)
+  state_rig.stop(rig)
+}
+
+pub fn a_linked_worktree_that_points_elsewhere_is_refused_test() {
+  let scenario = scenario("commits-linked-elsewhere")
+  let rig = scenario.rig
+  let tree = linked(scenario, "scope")
+  let _ = state_rig.commit_file(tree, "made.txt", "made\n", "scope work")
+  let capture = fn(tree: String, common: String) {
+    state_capture.capture_committed(
+      scenario.capturer,
+      tree,
+      repository_snapshot.LinkedTo(common),
+      Thin(scenario.sent.tip),
+    )
+  }
+
+  // The caller expected another repository, so this tree is not its tree.
+  let assert Error(reason) = capture(tree, rig.root <> "/.git")
+  assert string.contains(reason, "linked worktree")
+
+  // A primary checkout is not a linked worktree either.
+  let assert Error(_) = capture(scenario.child, scenario.child <> "/.git")
+
+  // A session rewrote the tree's `.git` to point at the parent's repository.
+  let planted = linked(scenario, "planted")
+  let _ = state_rig.commit_file(planted, "p.txt", "p\n", "planted work")
+  worktree_rig.write(planted <> "/.git", "gitdir: " <> rig.root <> "/.git\n")
+  let assert Error(_) = capture(planted, scenario.child <> "/.git")
   state_rig.stop(rig)
 }

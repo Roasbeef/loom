@@ -31,7 +31,13 @@ fn capturer(rig: Rig) -> #(state_capture.Capturer, state_store.Store) {
   let assert Ok(service) =
     state_service.start(store, fn() { ffi_os.system_time_ms() / 1000 })
   #(
-    state_capture.new(rig.git, rig.state, [], state_service.endpoint(service)),
+    state_capture.new(
+      rig.git,
+      rig.state,
+      [],
+      state_service.endpoint(service),
+      store,
+    ),
     store,
   )
 }
