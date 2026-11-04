@@ -229,16 +229,24 @@ names replaces the default chain whole. A role it omits keeps the default chain.
 
 ### Choosing a model for one session
 
-The web home's new-session forms and the `sessions.create` control command can
-pin a session's `main` role to one `[models.<name>]` entry, with or without a
-profile. The `main` chain becomes that one entry, so it has no fallbacks, and
-every other role keeps the chain `[roles]` or the chosen profile gives it. A
-profile and a model compose: the profile's roles are applied first and `main` is
-pinned afterwards. The session stores the key and resolves it again at every
-open, so renaming or removing the entry makes the session unopenable until it is
-restored. The web form offers a key of at most 64 bytes; a longer `<name>` is
-valid in the file and cannot be chosen this way. Only the key is given to the
-web page.
+The `sessions.create` control command can pin any of a session's roles to one
+`[models.<name>]` entry each, with or without a profile: `model` pins `main`, and
+the `roles` object pins `main`, `subagent`, `plan`, `summarize`, `vision`,
+`advisor` and `router` by name (`roles.main` and `model` are the same pin, and
+two different answers are refused). The web home's new-session form still offers
+`main` alone. A pinned role's chain becomes that one entry, so it has no
+fallbacks, and every other role keeps the chain `[roles]` or the chosen profile
+gives it. A profile and the pins compose: the profile's roles are applied first
+and the pins afterwards. A pin may add a route the file does not have, such as
+`advisor` or `router`, and a pin to `vision` must name an entry that reads
+images: an entry that declares `vision = false` is refused with
+`unsuitable_model`. The session stores the keys and resolves them again at every
+open, so renaming or removing a pinned entry, or making a pinned `vision` entry
+text-only, makes the session unopenable until it is restored. A profile switch
+leaves the pins where they are, so a pinned role does not follow the new profile.
+The pins cannot be changed after creation; start a session with the pins you want
+instead. A key of at most 64 bytes can be pinned; a longer `<name>` is valid in
+the file and cannot be chosen this way. Only the key is given to the web page.
 
 ## `[mcp.<name>]`
 

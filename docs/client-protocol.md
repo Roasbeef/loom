@@ -565,7 +565,7 @@ Source: (`client/daemon/server.gleam:4780-4821`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:4512`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:4520`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -677,7 +677,8 @@ Owner-only. Reserves a durable identity and initializes the session.
 | `executor` | string | optional | The executor the workspace is registered on: an `[executors.<name>]` key of the daemon's configuration, in the grammar of a profile name. Absent means `workspace` is a path on the daemon's host and the command is exactly what it was. A present value that is not an executor name, including the empty string, is refused as malformed. The daemon stores the name with the session. See [protocol-change/078](../protocol-change/078-distributed-runtime.md). |
 | `pool` | string | optional | A pool of executors the workspace may be registered on: a `[pools.<name>]` key of the daemon's configuration, in the same grammar. Exclusive with `executor`: a request with both, or with a present value that is not a pool name, is refused as malformed. With a `pool` the workspace is a registered name, the domain scope defaults to `session_only`, and the daemon picks the executor when the session first opens. See the addendum on pools in [protocol-change/078](../protocol-change/078-distributed-runtime.md). |
 | `profile` | string | optional | A model profile of the session's configuration (`[profiles.<name>.roles]`): a lowercase letter, then lowercase letters, numbers, `_` or `-`, at most 32 characters. Absent means the configuration's default roles. A present value that is not a profile name, including the empty string, is refused as malformed. The server stores the name with the session and resolves it again at every open. See [protocol-change/076](../protocol-change/076-config-profiles.md). |
-| `model` | string | optional | A `[models.<key>]` key of the session's configuration to pin the `main` role to, 1 to 64 bytes. Absent means the chain the profile or configuration gives. A present value that is not a key of that length, including the empty string and a non-string, is refused as malformed. The server stores the key with the session and resolves it again at every open, after the profile. See [protocol-change/080](../protocol-change/080-session-model-choice.md). |
+| `model` | string | optional | A `[models.<key>]` key of the session's configuration to pin the `main` role to, 1 to 64 bytes. Absent means the chain the profile or configuration gives. A present value that is not a key of that length, including the empty string and a non-string, is refused as malformed. The server stores the key with the session and resolves it again at every open, after the profile. See [protocol-change/080](../protocol-change/080-session-model-choice.md). It is another spelling of `roles.main`. |
+| `roles` | object | optional | Model keys to pin any of the roles to, from a role name to a `[models.<key>]` key of 1 to 64 bytes. The names are `main`, `subagent`, `plan`, `summarize`, `vision`, `advisor` and `router`. Each pinned role's chain becomes that one entry, with no fallbacks, laid over the profile's roles; an unpinned role keeps the chain the profile or the configuration gives. An empty object is the same as an absent field. A value that is not an object, a name outside the seven, a value that is not a key, and a repeated name are refused as malformed, never read as no choice. If `model` and `roles.main` are both present they must name the same key, and otherwise the request is refused as malformed with a `message` that names both. The server stores the pins with the session and resolves them again at every open. See [protocol-change/107](../protocol-change/107-session-role-pins.md). |
 
 Source: (`client/daemon/protocol.gleam:227-234`) and
 (`client/daemon/protocol.gleam:256-263`).
@@ -694,17 +695,25 @@ when a path cannot be canonicalized; `unknown_profile` when the
 configuration the session will load does not define `profile`, which is
 a refusal whose `message` names the profiles that do exist
 (`unknown profile "x"; the configuration defines: a, b`);
-`unknown_model` when it does not define `model`, with a `message` that names
-the keys that exist (`unknown model "x"; the configuration defines: a, b`), and
-the profile is judged first when both are wrong;
-`unusable_configuration` when a profile or a model is named and that configuration
+`unknown_model` when it does not define `model` or a key in `roles`, with a
+`message` that names the keys that exist (`unknown model "x"; the configuration
+defines: a, b`) and, for a key in `roles` other than a lone `main`, the role
+(`unknown model "x" for role "vision"; the configuration defines: a, b`);
+`unsuitable_model` when the configuration defines a key in `roles` but the entry
+cannot serve the role, which today means a `vision` pin whose entry declares
+`vision = false` (`model "x" cannot serve role "vision": it declares vision =
+false; a vision role must name an entry that reads images`). The profile is judged
+first and then each pin in the order `main`, `subagent`, `plan`, `summarize`,
+`vision`, `advisor`, `router`, and the first failure is the refusal;
+`unusable_configuration` when a profile, a model or a role is named and that configuration
 cannot be read or parsed, whose `message` is the daemon's startup wording
 (for an unknown top-level key, ``unknown key `x` in the top level (allowed: ...)``);
 `executor_unknown` when `executor` names no `[executors.<name>]` of the
 daemon's configuration, and `pool_unknown` when `pool` names no
 `[pools.<name>]`, each before anything is reserved; `conflict` when
-the key was reused with different metadata, a different `profile`,
-`model`, `executor` or `pool` included; `unavailable`.
+the key was reused with different metadata, a different `profile`, set of
+pins (`model` and `roles` compared as the normalized pins), `executor` or `pool`
+included; `unavailable`.
 Source: (`client/daemon/server.gleam:657-664`).
 
 On a session directory member, a session with an `executor` or a `pool` is
@@ -1247,7 +1256,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1459`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1539`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -3181,8 +3190,11 @@ profiles it may switch to. See
 
 `profile_get` has an empty body and is a read. The reply is a `profile` snapshot
 (section 5.2): `profile` is the profile the session routes its roles by and is
-absent for the configuration's default roles, and `available` is the profile
-names the configuration defines now, sorted. The names are read from the file at
+absent for the configuration's default roles, `pins` is the object from role
+name to `[models.<key>]` key the session was created with, in the fixed role
+order, and is absent when it has none, and `available` is the profile
+names the configuration defines now, sorted. A client that sent `roles` and finds
+no `pins` here has met a daemon that ignored the field. The names are read from the file at
 each request.
 
 ```json
@@ -3202,7 +3214,9 @@ reopens the session so that every role is built from the new profile. The reply
 carries `moved`, the number of strands moved, and a client that sees it MUST expect
 the connection to close and reattach by opening the session again. A strand whose
 model was chosen with `set_config` `model_name` and is not the head of any role of
-the old profile is left where it is.
+the old profile is left where it is. A role the session was created with a pin
+for ([protocol 107](../protocol-change/107-session-role-pins.md)) keeps its
+pinned entry across the switch, and strands that follow it stay on that entry.
 
 Errors: `bad_request` for a malformed name, and for a name the configuration does
 not define, with the sentence that lists the ones it does; `conflict` while any
@@ -3422,7 +3436,7 @@ Mode `resume` carries `next_seq` only. Mode `strands` carries a full
 replacement `strands` list. Mode `config` carries `config`. Mode
 `models` carries `models`. Mode `notes` carries `board` (section 4.9.16).
 Mode `schedules` carries `schedules`. Mode `profile` carries `profile`
-(absent for the default roles), `available` and, in the reply to `profile_set`
+(absent for the default roles), `pins` (absent when the session has none), `available` and, in the reply to `profile_set`
 only, `moved` (section 4.9.30). Modes `queued_input`, `worktree_diff`,
 `live_jobs`, `skills`, `context` and `goal` carry `board` (sections 4.9.17 through 4.9.27). Mode `btw` carries its attachment-private `board` (section
 4.9.31). Mode `child_history` carries `board` (section 4.9.34).
