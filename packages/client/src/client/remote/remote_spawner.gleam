@@ -249,6 +249,42 @@ pub fn over_distribution(
 /// How long one question of a state transfer waits for the peer, in milliseconds.
 const state_question_ms = 15_000
 
+/// The way a receiving node reaches a spawner's state store to return a child's
+/// commits to it (protocol-change/107, "Return"): for the node a `[spawners.<name>]`
+/// row names, the link to its orchestrator port.
+///
+/// Like `laptop_over` it never dials. The spawner's node connected to this one in
+/// order to ask the join that led here, and a node that is not connected now is
+/// `None`, which the caller reads as "try again at the next join". A node the
+/// membership does not know is `None` as well.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_spawner.state_link_to(membership)("laptop@100.64.0.5")
+/// ```
+pub fn state_link_to(
+  membership: Membership,
+) -> fn(String) -> Option(state_transfer.Link) {
+  fn(node) {
+    case distribution.peer(membership, node) {
+      Error(_) -> None
+      Ok(peer) ->
+        case distribution.is_connected(peer) {
+          False -> None
+          True ->
+            Some(state_link.via_port(
+              address.Address(
+                node: distribution.node(peer),
+                name: orchestrator_port.default(),
+              ),
+              state_question_ms,
+            ))
+        }
+    }
+  }
+}
+
 /// Asks the receiver to start a child, and sends the state the request names
 /// when the receiver says it does not hold it (protocol-change/107).
 ///
