@@ -1185,6 +1185,10 @@ pub fn start_states(
       let _swept =
         simplifile.delete(root <> "/" <> spawn_seed.staging_directory)
       spawn_return.sweep(root)
+
+      // A capture's stage is a copy of a repository's history, and one left by a
+      // daemon that was killed mid-capture will not be used again.
+      state_capture.sweep(root)
       use store <- result.try(state_store.open(
         state_store.directory(root),
         state_store.default_limits,
