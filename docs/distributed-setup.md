@@ -367,7 +367,10 @@ members on running emulators and reads the derived rows, and no run on two
 machines has repeated it). Read the same state from the orchestrator with
 `loom deployment status`: it prints the executors and orchestrators the daemon
 holds, and for a ledger deployment a `LEDGER` section with the head, which members
-have reported it and when, and the last line the daemon refused.
+have reported it and when, and the last line the daemon refused. A `SPAWNING`
+section lists, for each peer orchestrator, whether this machine can spawn on it and
+whether it can spawn here (see [Spawning is one direction at a
+time](#spawning-is-one-direction-at-a-time)).
 
 Replace a certificate (`renew`), remove a node (`revoke`), read the ledger
 (`log`) and carry a ledger to a node nothing else reaches (`import`):
@@ -1714,6 +1717,33 @@ The keys that matter here:
   be on the same filesystem as the laptop's state root, and it must be an absolute
   path with no `..`. The `executor` and `pool` placements take no copy in this
   release.
+
+#### Spawning is one direction at a time
+
+Spawning from the box onto the laptop needs the box to hold an
+`[orchestrators.laptop]` row and the laptop to hold a `[spawners.box]` table. Pairing
+writes what one direction needs, so the reverse, a model on the laptop starting a child
+on the box, needs `[orchestrators.box]` on the laptop and `[spawners.laptop]` on the
+box, written by hand, and a restart of the daemon that gained a table, because a
+daemon reads its tables once at start. Loom does not widen who may spawn where on its
+own. `loom deployment status` shows the state of the machine you run it on, in a
+`SPAWNING` section with one line for each peer:
+
+```text
+SPAWNING
+  this machine can spawn on laptop; laptop cannot spawn here; to enable the other direction, add [spawners.laptop] on this machine and restart the daemon
+  this machine can spawn on desk; desk can spawn here (seed workspace)
+```
+
+A line says whether an `[orchestrators.<peer>]` row exists on this machine (it can
+spawn on the peer), whether a `[spawners.<peer>]` table exists here (the peer can spawn
+here, with that table's `seed` of `none` or `workspace`), and, when only one direction
+exists, which table to add here for the other. The peers are matched by their node and
+not by the key of the table, and a spawner for which no row exists is listed too. The
+command sees this machine's configuration and not the peer's: whether the peer admits a
+spawn is decided by its own `[spawners.<this machine>]`, which `loom deployment status`
+on the peer shows from its side. The Admin page's Deployment section draws the same
+lines under the pools.
 
 Each daemon needs a model key in its own environment for the model that `api_key_env`
 names. The child's loop runs on the laptop, so in a real deployment the laptop needs

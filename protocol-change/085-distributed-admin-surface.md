@@ -877,3 +877,33 @@ adds one optional member to the whole-deployment reply.
   narrower the facts stack under the name as label and value. Pills and labels never
   wrap. The handlers, paths and the machine's page are unchanged: a row is still a
   click beneath `admin.body_path` that sends `MachineChosen`.
+
+## Addendum 2026-11-04: the status says which directions of spawning exist
+
+Issue #1137 observed that pairing writes the `[spawners.<name>]` table of one
+direction only, so the reverse needs hand-written configuration and a restart, and that
+nothing said so before a spawn in the missing direction failed. Pairing is unchanged,
+since widening who may spawn where is the owner's decision. This addendum only makes
+the state visible, in one optional member.
+
+- **`deployment.status` gains `spawning`.** A whole-deployment reply carries an array
+  with one entry for each peer orchestrator: its `name` and `node`, `to_peer` (this
+  daemon holds an `[orchestrators.<name>]` row for it), `from_peer` (this daemon holds a
+  `[spawners.<name>]` table for it), `seed` (`none` or `workspace`) with `from_peer`, and
+  `add` when only one direction exists, naming the table the operator would add on this
+  daemon for the other. The entries join the rows and tables by node and not by key,
+  list the rows first and then any spawner no row names, and stop at 32. The member is
+  added by `server.with_spawning`, from the tables in `Reach.spawners`
+  (`main.deployment_reach`) and the pairing rule in `client/spawn_pairing`. It is
+  optional like `distribution`: a reply for one node does not carry it, an older client
+  ignores it, and the terminal and the Admin page read an absent or malformed member as
+  none.
+- **What a direction means.** Only the answering daemon's configuration is visible, so
+  "this daemon can spawn on the peer" means its row exists. The peer admits the spawn
+  only if its own `[spawners.<this daemon>]` says so, which its own status shows.
+- **Where it is drawn.** `loom deployment status` prints a `SPAWNING` section with one
+  line for each peer, naming the table to add and saying that the daemon reads its
+  tables once, at start. The Admin page's Deployment section draws a Spawning group
+  under the pools, with every name and table as a text node.
+- **Nothing else changes.** No wire constructor is added, no configuration key or
+  default moves, and no table is written.

@@ -565,7 +565,7 @@ Source: (`client/daemon/server.gleam:4780-4821`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:4512`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:4540`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -1620,6 +1620,7 @@ it needs no epoch.
 | `ledger` | object | without `node`, on a daemon that runs from a membership ledger | The body of `ledger.status` (§3.30): the daemon's head, its standing, each active member with the head it last reported to this daemon and how long ago, and the last line it refused. At most 64 members. Absent when the ledger does not answer, and then a client treats it as unknown. |
 | `distribution` | string | without `node` | `configured` when the answering daemon started distribution under a configured node name, `none` when it has no `[distribution]` table. Without distribution `self` is a name the BEAM made up (`nonode@nohost` or a generated profile name), and the Admin page draws the daemon as "This machine" rather than by that name (protocol-change/085, the addendum of 2026-10-19). A client that does not know the member ignores it, and one that reads a reply without it treats it as `configured`. |
 | `host` | string | without `node`, when the daemon could read it | The answering daemon's host name, as `inet:gethostname/0` gives it, read once when the daemon starts; at most 253 bytes. The Admin page titles a standalone daemon's card with it. |
+| `spawning` | array | without `node` | The directions of spawning configured with each peer orchestrator, read from the answering daemon's own `[orchestrators.<name>]` rows and `[spawners.<name>]` tables and joined by node, at most 32 entries (issue #1137). A peer with a row comes first, in table order, then a spawner no row names. Each entry has `name` (the peer's key here), `node`, `to_peer` (boolean: the daemon holds an `[orchestrators.<name>]` row for the peer, so it can spawn on it) and `from_peer` (boolean: it holds a `[spawners.<name>]` table for the peer, so the peer can spawn on it). `seed` (`none` or `workspace`) is present with `from_peer`, and `add` is present when only one direction exists and holds the table the operator would add on the answering daemon for the other, such as `[spawners.box]`. The statements are about the answering daemon's configuration and not the peer's, whose own `[spawners.<this daemon>]` decides whether it admits a spawn. Nothing is written and no pairing changes. The member is empty when the daemon has no peers; a client that does not know it ignores it. |
 
 On a daemon that runs from a membership ledger, the configured orchestrators and
 executors include the ones the ledger derives (protocol-change/086, phase 2), so

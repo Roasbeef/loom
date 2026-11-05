@@ -869,7 +869,11 @@ Every row is also a value of `on` in `agent_spawn`, which starts a subagent on t
 orchestrator instead of in the session. It is offered only in a session its owner
 holds alone, and the other orchestrator's `[spawners.<name>]` table, below, is the
 one authority: this table has no switch for it, and an orchestrator with no spawner
-table for this machine refuses the spawn and says so.
+table for this machine refuses the spawn and says so. `loom deployment status` lists,
+for each peer, whether this machine holds a row for it and a `[spawners.<name>]`
+table for it, with that table's `seed`, and names the table to add here when only one
+direction exists ([Spawning is one direction at a
+time](distributed-setup.md#spawning-is-one-direction-at-a-time)); it changes nothing.
 
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |

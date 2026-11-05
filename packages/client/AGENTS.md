@@ -9473,6 +9473,16 @@ reports; the 2026-10-16 addendum of 085 records the spellings it chose.
   (protocol-change/085, the addendum of 2026-10-19). `Reach.host` is read once by
   `main.deployment_reach` through `ffi_os.host_name` (`inet:gethostname/0`,
   decoded by `host_name_of`); `alone` and `over` leave it `None`.
+- A whole-deployment reply also carries `spawning`, added by `server.with_spawning`
+  (issue #1137, protocol-change/085, the addendum of 2026-11-04): for each peer
+  orchestrator, whether this daemon can spawn on it (an `[orchestrators.<name>]`
+  row), whether it can spawn here (a `[spawners.<name>]` table, with its `seed`),
+  and, when only one direction exists, the table to add here for the other.
+  `client/spawn_pairing.pairings` joins the rows and tables by node, rows first,
+  at most `limit` (32), and `missing` and `to_json` are its other two functions.
+  The tables come from `Reach.spawners`, set by `main.deployment_reach` from
+  `Config.spawners`; `alone` and `over` leave it empty. Pairing semantics are
+  unchanged and nothing is written.
 - `server.Config.deployment` is the `Reach`; `main.deployment_reach` builds it
   from `Config.membership` and the node's own name and `listen_moving` gives it
   `reads.report`. `server.deployment_status` adds `MemberRole` to the asking
