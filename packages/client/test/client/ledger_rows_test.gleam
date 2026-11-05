@@ -15,7 +15,7 @@ import client/orchestrators
 import client/roster
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import support/ledger_rig as rig
 import support/membership_fixture as fixture
 import support/membership_log as history
@@ -171,6 +171,7 @@ pub fn a_written_orchestrator_with_an_address_keeps_it_test() {
       name: "laptop",
       node: "loom@laptop.example.net",
       address: Some("wss://laptop.example.net/v2/control"),
+      checkout: None,
     )
   assert ledger_rows.orchestrators_of(ledger, hub, [written]) == [written]
 }

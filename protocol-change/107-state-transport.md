@@ -988,3 +988,146 @@ repository an `includeIf` on the linked worktree's Git directory that defines a
 marker its program would write is not created and that the file arrives intact. A control
 adds a worktree of the same commit with the operator's Git and finds the marker, and the
 test fails against the previous `worktree add` form.
+
+## Addendum: slice 4c, the checkout step of `sessions.move` (2026-11-04)
+
+Slice 4 is built for the case that exit criterion 2 of #1137 names: a session that works in
+a directory on its orchestrator moves to another orchestrator, and its checkout arrives on
+an executor that orchestrator reaches. No wire constructor was added and the version stays
+at 6: the step sends `StateChunk` and `StateStatus` to the executor's host as any state is
+sent, and one `StateApply`, both of which slice 4a built. Nothing above is edited.
+
+**What was added.** `client/move_checkout` is a step of the mover, taken after the stop and
+before the close by a session whose registration names no executor and no pool. In order:
+
+1. The directory is captured with its working tree and full history (`state_capture.capture`,
+   `Full`). An uncommitted edit and the untracked files that `.gitignore` does not exclude
+   become one `Working snapshot` commit on top of the directory's history, as they do in a
+   spawn's seed, authored by the operator's global Git identity. The checkout therefore
+   arrives as committed content, and the session's first `git status` there is clean.
+2. The state is sent to the executor with `state_transfer.send` over `state_link.via_host`,
+   which asks how far the executor has got and resumes at that offset.
+3. The source attaches a scope for the session on that executor (`workspace.attach` over the
+   stopped session file, with a new `owner_services.declining` owner), sends one `StateApply`
+   under the scope's own incarnation and token (`Hands.apply_state`), and closes the scope.
+   The close removes the tree and keeps `loom/<session>`, which the apply moved to the tip,
+   and writes the clean-close cell that the six steps already read. The receiver attaches
+   at the next incarnation, and its plane recreates the tree from the branch.
+4. A reserved cell in the session file, `client/move/checkout`, records the operation, the
+   captured state and whether the landing was done.
+
+The place comes from the source's configuration: `[orchestrators.<name>]` gains
+`checkout_executor` and `checkout_workspace`, given together. The destination must list an
+executor of the same name that reaches the same machine. The importer checks that the name
+is listed and cannot check that the two names reach one machine.
+`sessions.move` refuses a local session, before it stops anything, when the destination names
+no place, when this daemon does not list the executor, or when the directory is not the top of
+a primary checkout (a linked worktree has a file where the repository directory is).
+
+**Ordering.** Nothing enforced "never admit a turn on the destination before the apply is
+answered" in slice 4a, and this slice enforces it by construction: the destination is not told
+of the session until the checkout is recorded as done, so it cannot admit a turn for it earlier.
+The apply is also the only writer of the tree, the source's slot is stopped, and the scope the
+source attached is closed before the destination's attach.
+
+**Differences from the text above.**
+
+- *The source's row is not rewritten.* The brief for this slice, and "A session move with a
+  checkout" above, rewrite the stopped session's registration from local to executor and
+  workspace. The build hands the later steps a copy that names them (`move_checkout.relocated`),
+  and the manifest carries it to the receiver, which builds its own registration from it. The
+  source's row is read again at each run and is never changed, so a move that is abandoned
+  leaves a plain local session that opens in its directory as it did, with no reverse edit to
+  get wrong, and the catalogue needed no schema change. The cost is that the choice of place is
+  read from the configuration at each run, which is why it is a configuration key and not an
+  argument of the command.
+- *The apply needs an open scope.* `StateApply` is fenced, so the source attaches a scope for
+  it. The text above says "send it to the target's registered workspace, and apply it". The
+  scope exists for the length of one request and is closed, and the destination's first attach
+  costs an extra incarnation. A source that is lost between the attach and the close leaves
+  the scope open, and the next attach rebinds it.
+- *The checkout is a seventh step.* `session_move.Step` gains `Checkout`, between `Intent` and
+  `Close`, so `LOOM_MOVE_CRASH_AFTER=checkout` can halt the daemon after it.
+- *The receiver is the one that already existed.* The orchestrator-to-orchestrator move needs
+  no change on the receiving side: it sees a closed scope, a manifest that names an executor and
+  workspace, and a session file that also carries the step's cell.
+
+**Resuming.** The step is entered again after a crash, a stall and a restart, and takes what is
+left. A cell for this operation with a captured state is used again while the source's store
+holds the bundle, because capturing a dirty directory again would make another snapshot commit
+and another hash, and the transfer would start at the beginning. A cell for another operation
+is ignored and replaced. A crash after the capture resumes at the send, after the send at the
+landing, and after the landing but before the cell says so lands again: an apply of a tip the
+tree already has answers the tip and changes nothing. Each of those is a test, with a link
+that drops after the first piece for the transfer.
+
+**Refusals.** Every failure names the stage (`capturing the workspace`, `sending the state to
+the executor`, `putting the checkout in the executor's tree`). What resending cannot change
+abandons the move and the session stays on the source, resident and openable, its directory as
+it was: a directory the capture refuses, a `shared` workspace on the executor (the apply
+refuses it and names both modes), a name the executor does not serve, a tree that holds
+changes, a store that declines the bundle. What may pass stalls it: no answer from the
+executor, a fence race, an executor that is still preparing the workspace. A configuration
+that makes the executor refuse every attach, such as a misspelt `checkout_workspace`, therefore
+stalls and does not abandon, because the attach reports its refusal as a string that the mover
+cannot tell from a connection failure. A directory member ends it with `sessions.move
+--abandon`; otherwise it is fixed in the file and the daemon restarted.
+
+**Costs and limits.**
+
+- The capture runs against the source's stopped session, and the stop does not quiet other
+  sessions or processes that work in the same directory. The precondition of
+  `repository_snapshot` is still the operator's to keep.
+- The state is the whole history, not a thin bundle: the source cannot ask the executor what it
+  holds (the open question above), so a repository the executor already has is sent again in
+  full, up to `size_limit`, and a larger one is refused.
+- The session's workspace-private memory stays on the source, as for every moved session. A
+  strand's remembered working directory is a path under the old workspace and is revalidated at
+  each use, so the first tool call that relies on one may be refused until the model sets
+  another.
+- The session file the receiver gets carries the step's cell, which names the captured state.
+  It is a few hundred bytes and is not read again.
+- The executor keeps the state in its store for seven days and the branch indefinitely, as for
+  any state and any scope.
+- A session in a pool that has not attached yet has no workspace to carry and is refused.
+  The web home and the terminal's candidate read (`move_candidates`) still offer no Move for a
+  local row; `loom sessions move ID --to NAME` is the way in.
+
+**Not built.** A thin basis for the checkout, which needs a question to the executor. A
+local session on a `shared` executor workspace, which `StateApply` refuses by design. Moving
+a session whose directory is a linked worktree. A candidate read that tells the operator which
+orchestrators have a place for a local session. Moving the checkout back from the executor to
+a directory on a laptop. Nothing here was run over a real TLS distribution link or by a
+model, and the live drive of exit criterion 2 is not done: it needs a laptop daemon with
+`[orchestrators.box]` naming `checkout_executor` and `checkout_workspace`, a box that is both
+orchestrator and executor with a `worktree` workspace, and `loom sessions move` on a session
+that has run in a dirty repository.
+
+**Slice 4c: changes after review (2026-11-04).** An independent review of the build found
+the following. Two are fixed here and two are accepted, with the reason.
+
+- *A directory member does not move a local session yet.* A member's mover swaps the owner
+  record from `Serving` to `Moving`, and a local session's record is `Local`, which no
+  swap handles, so the move would stall for good (the abandon fails the same way) or, with
+  no record yet, end in a tombstone the receiver never got. `sessions.move` now refuses such
+  a move before it stops the session. A member path needs `Local -> Moving` and
+  `Moving -> Local` swaps in `client/directory/ownership` and arms in the mover, and is not
+  built.
+- *A scope record from an earlier move names the executor.* The attach follows the file's
+  scope record whatever the placement says, so a record left by an abandoned move, followed by
+  a move whose `checkout_executor` differs, would have put the checkout on the first executor
+  and told the receiver the second. The landing now refuses a record that names another
+  executor, with the executor named.
+- *Accepted: a retry after an abort can deliver the earlier snapshot.* `StateApply` treats a
+  tree that already contains the tip as applied, and "contains" is ancestry
+  (`state_apply.holds_tip`), which a resend after the session has committed needs. If a move is
+  abandoned after the landing, the operator discards the uncommitted edits in the directory,
+  and the move is asked for again, the new tip is an ancestor of the executor's earlier
+  snapshot and the tree is left at the snapshot. The move's report does not say so. Tightening
+  the apply to equality would break the resend rule of slice 4a, so it stays; a directory that
+  was edited again is captured as a new snapshot and does move the branch.
+- *Accepted: the close after an unanswered apply.* When the executor is silent for the
+  15 minutes `apply_within_ms` allows, the landing closes the scope while an apply that runs to
+  its end on the executor may still be writing the tree, and a close that finds the tree busy
+  can record `UnknownCleanup`, which an operator on the executor releases. It needs an apply
+  that outlives the wait.

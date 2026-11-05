@@ -76,7 +76,7 @@ census is returned in `Attached` (`client/remote/protocol.gleam:236`) and kept b
 the live plane. The execution ledger holds the scope rows, the byte budget, the
 unacknowledged results and the scopes that block a reopen, and the only reader is
 `loomd executor release`, which runs with the daemon stopped. A move stalls with a
-reason that goes to one log line (`Stalled`, `client/session_mover.gleam:233`) and
+reason that goes to one log line (`Stalled`, `client/session_mover.gleam:254`) and
 is forgotten, and the movers keep only the time the stall began (`Entry`,
 `client/session_movers.gleam:140`). `directory.status` reports the configured
 members, Ra's members with their votes, the leader and this member's applied index
@@ -179,9 +179,9 @@ serves both through `detached` (`client/remote/orchestrator_port.gleam:705`), th
 path `Activate` uses: the computation runs in a run that dies with the requester and
 with the port, so a read never keeps an `Owns` question waiting. The port does not
 know the catalogue, the ledger or the movers. `start_with` takes one more closure
-record, and `start_orchestrator_port` (`client/daemon/main.gleam:1397`) builds it
+record, and `start_orchestrator_port` (`client/daemon/main.gleam:1404`) builds it
 from the registry, the movers and the executor host, the way it builds
-`catalogue_holds` (`client/daemon/main.gleam:1490`) and `peer_command`
+`catalogue_holds` (`client/daemon/main.gleam:1497`) and `peer_command`
 (`client/daemon/main.gleam:651`). The function runs on every daemon that has a
 `[distribution]` table, executors included, so a pure executor answers `Report`
 too. It answers with no orchestrator facts when it has no catalogue to describe.

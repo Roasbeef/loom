@@ -29,6 +29,7 @@ import client/directory/ownership.{type Ownership}
 import client/directory/record
 import client/executors
 import client/internal/ffi_os
+import client/move_checkout
 import client/node_report
 import client/orchestrators
 import client/remote/address.{type Address}
@@ -45,6 +46,7 @@ import client/session_importer
 import client/session_move
 import client/session_mover.{Aborted, Finished, Stalled}
 import client/session_movers
+import client/state_store
 import core/clock
 import core/ids
 import core/json
@@ -456,10 +458,12 @@ fn environment(
         incarnation,
       )
     },
+    checkout: None,
     clock: clock.fixed(at: 5000),
     node: node_name(),
     budget: session_mover.Budget(
       drain_ms: 5000,
+      checkout_ms: 5000,
       close_ms: 5000,
       cut_ms: 10_000,
       send_ms: 20_000,
@@ -598,6 +602,51 @@ pub fn a_stopped_session_moves_and_runs_on_the_receiver_at_the_next_incarnation_
       terminate: False,
     )
   let assert Ok(Nil) = session.close(opened)
+  finish(rig)
+}
+
+// A session whose workspace is already on an executor keeps it there, and the
+// checkout step is not taken for it however the destination is configured: its
+// ports are ones that would refuse everything, and the move still finishes.
+pub fn a_session_on_an_executor_takes_no_checkout_step_test() {
+  let rig =
+    start(
+      "no-checkout",
+      3,
+      Recorded,
+      protocol.AllRetired,
+      receiver_knows_box(),
+      0,
+    )
+  let move = begin(rig)
+  let assert Ok(store) =
+    state_store.open(
+      state_store.directory(rig.source.directory),
+      state_store.default_limits,
+    )
+  let refusing =
+    move_checkout.Ports(
+      capture: fn(_directory) { Error("the checkout step must not run") },
+      store:,
+      link: fn(_executor) { Error("the checkout step must not run") },
+      land: fn(_arrival) {
+        Error(move_checkout.LandRefused("the checkout step must not run"))
+      },
+      after: fn(_progress) { Nil },
+    )
+  let carrying =
+    orchestrators.Orchestrator(
+      ..orchestrators.plain("bravo", node_name()),
+      checkout: Some(orchestrators.CheckoutTarget("box", "repo")),
+    )
+  let environment =
+    session_mover.Environment(
+      ..plain(rig),
+      checkout: Some(refusing),
+      orchestrators: roster.fixed([carrying]),
+    )
+  assert session_mover.drive(environment, move) == Finished
+  assert_moved(rig)
   finish(rig)
 }
 
@@ -1303,6 +1352,7 @@ pub fn a_step_that_runs_out_of_time_stalls_the_move_and_does_not_end_it_test() {
       ..environment(rig, slow, fn(_) { Nil }),
       budget: session_mover.Budget(
         drain_ms: 5000,
+        checkout_ms: 5000,
         close_ms: 5000,
         cut_ms: 10_000,
         send_ms: 200,

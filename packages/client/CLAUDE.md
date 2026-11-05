@@ -8543,7 +8543,7 @@ the executor refuses the old token by value. The storage half is in
 `domain.import_session`). `docs/design-notes/distributed-runtime.md` section 8 and
 the protocol-change/078 addendum on moving a session have the protocol.
 
-- `session_move` is the vocabulary and nothing else: the six `Step`s, the `Manifest`
+- `session_move` is the vocabulary and nothing else: the six `Step`s (and `Checkout`, taken only by a session that works in a directory on the source), the `Manifest`
   (the registration without its path and configuration, which name files on the
   source's machine), `Chunk`, `Activation`, `Stage` (`Absent | Received |
   Activated`), `Verdict` (`Accepted | Refused(Refusal) | Failed`) and the file and
@@ -8611,6 +8611,25 @@ the protocol-change/078 addendum on moving a session have the protocol.
   `Activated` goes straight to the retirement. Each step is bounded by a weft deadline of its
   own (`Budget`), and an expiry is a stall. `Environment.after` is told after each
   step; a daemon passes the crash knob and a test passes a recorder.
+- `move_checkout` is the seventh step of a move (protocol-change/107, slice 4c), taken
+  between the stop and the close by a session whose registration has no executor and no
+  pool. `carry` captures the directory with its working tree (`Ports.capture`, the
+  daemon's `local_capture`), records the state in a reserved cell of the session file
+  (`client/move/checkout`: the operation, the state, `Taken | Done`), pushes it with
+  `state_transfer.send` over `Ports.link` (`state_link.via_host`, which resumes at the
+  executor's offset), and has `Ports.land` attach a scope for the session
+  (`workspace.attach` over the stopped file with `owner_services.declining`), send
+  `Hands.apply_state` (a fenced `StateApply`) and close the scope, which writes the clean
+  close the later steps read. A rerun uses the cell's state while the store still holds
+  it, and a cell for another operation is ignored. `Refused(stage, reason)` is what
+  resending cannot change and abandons the move; `Unfinished` stalls it. The source's
+  row is never rewritten: `relocated` gives the later steps a copy of the registration
+  with the executor and workspace of `orchestrators.CheckoutTarget`, so the manifest
+  carries them. `Environment.checkout` is `None` for a daemon with no capturer.
+  `manager.begin_move_from(.., departure: WithLocalCheckout)` admits a local session
+  and `server.departure_for` judges the place, the listed executor and a primary
+  checkout before it. Tests: `session_move_checkout_test` (the real host, plane and
+  stores), `daemon_move_test`, `orchestrators_test`.
 - `session_movers` is the daemon's actor, started beside the orchestrator port and
   linked to the process that starts the daemon's services. `Control` carries the
   listed orchestrators, `begin` and `holds` (the ask of an origin's port). One entry per session;

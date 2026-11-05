@@ -31,15 +31,28 @@
 //// daemon asks nobody, and every session it does not know is `not_found`,
 //// exactly as before this table existed.
 ////
+//// ## Where a local checkout lands
+////
+//// A session whose workspace is a directory on this machine can move to an
+//// orchestrator only if this file says where the directory goes there
+//// (protocol-change/107, slice 4c). `checkout_executor` names one of this
+//// daemon's own `[executors.<name>]`, and `checkout_workspace` names one of the
+//// workspaces that executor serves, in `worktree` mode. The two keys come
+//// together or not at all. The mover resumes from the catalogue, which records
+//// the session, the operation and the orchestrator and nothing else, so the
+//// place is read from the file again at each run and a restart finds it.
+////
 //// ## Flow
 ////
-//// `from_document` → `row` → `address_of`
+//// `from_document` → `row` → `address_of` → `checkout_of`
 ////
 //// 1. `from_document` reads the table and requires the distribution table.
 //// 2. `row` validates one entry's name and keys.
 //// 3. `address_of` reads the optional address, which has to be a control
 ////    address a client may send a bearer to (`host/claim.remote_address`).
-//// 4. `find` and `by_node` resolve a configured orchestrator.
+//// 4. `checkout_of` reads the optional pair of keys that place a local
+////    checkout on an executor.
+//// 5. `find` and `by_node` resolve a configured orchestrator.
 
 import client/distribution
 import client/ledger_reference
@@ -64,6 +77,23 @@ pub type Orchestrator {
     /// The control address a client uses to reach this orchestrator, in the
     /// form `loom --addr` takes, or `None` when the operator configured none.
     address: Option(String),
+    /// Where a session's local checkout lands when the session moves to this
+    /// orchestrator, or `None` when this daemon has been told of none, in which
+    /// case a local session does not move there.
+    checkout: Option(CheckoutTarget),
+  )
+}
+
+/// The place a moved session's checkout is put: one of this daemon's executors
+/// and a workspace that executor serves.
+pub type CheckoutTarget {
+  CheckoutTarget(
+    /// The `[executors.<name>]` key.
+    executor: String,
+    /// The name of a `[workspaces.<name>]` on that executor. This daemon cannot
+    /// read the executor's table, so the executor is what refuses a name it does
+    /// not serve, or serves in `shared` mode.
+    workspace: String,
   )
 }
 
@@ -75,7 +105,7 @@ pub type Orchestrator {
 /// assert orchestrators.plain("alpha", "alpha@10.0.0.2").address == None
 /// ```
 pub fn plain(name: String, node: String) -> Orchestrator {
-  Orchestrator(name:, node:, address: None)
+  Orchestrator(name:, node:, address: None, checkout: None)
 }
 
 /// Reads the orchestrators from configuration text, for callers that hold no
@@ -240,7 +270,7 @@ fn row(name: String, value: tom.Toml) -> Result(Orchestrator, String) {
     tom.Table(fields) -> {
       use Nil <- result.try(known_keys(
         dict.keys(fields),
-        ["node", "address"],
+        ["node", "address", "checkout_executor", "checkout_workspace"],
         "[orchestrators." <> name <> "]",
       ))
 
@@ -251,8 +281,9 @@ fn row(name: String, value: tom.Toml) -> Result(Orchestrator, String) {
         Error(Nil) -> Error("orchestrators." <> name <> ".node is required")
       })
 
-      use address <- result.map(address_of(fields, "orchestrators." <> name))
-      Orchestrator(name:, node:, address:)
+      use address <- result.try(address_of(fields, "orchestrators." <> name))
+      use checkout <- result.map(checkout_of(fields, "orchestrators." <> name))
+      Orchestrator(name:, node:, address:, checkout:)
     }
     _ -> Error("orchestrators." <> name <> " must be a table")
   }
@@ -284,6 +315,43 @@ fn address_of(
         Error(_) -> Error(words)
       }
     Ok(_) -> Error(words)
+  }
+}
+
+// Reads the optional pair `checkout_executor` and `checkout_workspace`. `place`
+// is the table's full name, so a refusal names the key. The executor must
+// satisfy the executor-name grammar, so a typo is refused where the file is
+// read. Whether this daemon configures an executor of that name is judged where
+// the executors are read, because this module sees one table.
+/// Resolves the place a local checkout lands from the configured table.
+fn checkout_of(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(Option(CheckoutTarget), String) {
+  case
+    dict.get(fields, "checkout_executor"),
+    dict.get(fields, "checkout_workspace")
+  {
+    Error(Nil), Error(Nil) -> Ok(None)
+    Ok(tom.String(executor)), Ok(tom.String(workspace)) ->
+      case
+        catalogue.is_executor_name(executor),
+        catalogue.is_workspace_name(workspace)
+      {
+        True, True -> Ok(Some(CheckoutTarget(executor:, workspace:)))
+        False, _ -> Error(place <> ".checkout_executor is not an executor name")
+        _, False ->
+          Error(place <> ".checkout_workspace is not a workspace name")
+      }
+    Ok(_), Ok(_) ->
+      Error(
+        place <> ".checkout_executor and checkout_workspace must be strings",
+      )
+    Ok(_), Error(Nil) | Error(Nil), Ok(_) ->
+      Error(
+        place
+        <> ".checkout_executor and checkout_workspace must be given together",
+      )
   }
 }
 

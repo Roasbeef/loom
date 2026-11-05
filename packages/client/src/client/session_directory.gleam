@@ -458,7 +458,7 @@ pub fn as_member(
 fn by_node_or_named(listed: List(Orchestrator), node: String) -> Orchestrator {
   case orchestrators.by_node(listed, node) {
     Ok(found) -> found
-    Error(Nil) -> orchestrators.Orchestrator(name: node, node:, address: None)
+    Error(Nil) -> orchestrators.plain(node, node)
   }
 }
 
@@ -474,7 +474,7 @@ fn configured_or_named(
 ) -> Orchestrator {
   case orchestrators.find(asked, name) {
     Ok(found) -> found
-    Error(Nil) -> orchestrators.Orchestrator(name:, node: "", address: None)
+    Error(Nil) -> orchestrators.plain(name, "")
   }
 }
 

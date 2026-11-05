@@ -88,6 +88,7 @@ fn desk() {
     name: "desk",
     node: "desk@10.0.0.8",
     address: Some("ws://10.0.0.8:7000"),
+    checkout: None,
   )
 }
 

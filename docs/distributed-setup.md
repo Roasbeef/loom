@@ -1306,10 +1306,17 @@ executor's checkout stays where it is. Use it to retire a machine that runs an
 orchestrator, or to put a session where its owner now works. The session's
 conversation database moves. The files, the checkout and the executor do not.
 
-Only a session that lives on an executor can move. A local session's checkout is a
-directory on the orchestrator, so there is nothing for a second orchestrator to
-attach to. A session also has to have opened at least once, so that the executor
-holds a scope for it, and it cannot be archived.
+A session that lives on an executor moves with its checkout in place. A session that
+works in a directory on the orchestrator moves only when the destination's row in this
+daemon's `loom.toml` says where the directory goes: `checkout_executor`, one of this
+daemon's executors, and `checkout_workspace`, a workspace that executor serves in
+`worktree` mode (see [`[orchestrators.<name>]`](configuration.md#orchestratorsname)).
+The daemon captures the directory, uncommitted edits and untracked files included,
+sends it to that executor and has the executor check it out for the session, and the
+move then goes on as for any session on an executor. The destination must list the
+same executor. The directory must be the top of a primary checkout, and it is left as
+it was. A session on an executor also has to have opened at least once, so that the
+executor holds a scope for it, and no session can be archived.
 
 **What you need** (**Pending** as a hand-run procedure; the shipped move test,
 described below, runs it over the control protocol). Both orchestrators and the

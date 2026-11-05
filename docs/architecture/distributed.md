@@ -1230,7 +1230,8 @@ drainer's next attempt gets the receipt the recipient stored.
 An owner can hand a session that lives on an executor to another orchestrator
 with `sessions.move` (`loom sessions move <id> --to <orchestrator>`). The
 conversation file moves; the checkout and the executor stay where they are. A
-local session cannot move, because its checkout is a directory on the source.
+session that works in a directory on the source moves only through the checkout step,
+[described below](#moving-a-session-that-works-in-a-directory).
 
 ### Who owns the session
 
@@ -1332,6 +1333,51 @@ the abandon is a compare-and-set that exists only there. If the receiver has alr
 taken the session the compare-and-set fails and the move finishes instead, which the
 confirmation says. `loom sessions move ID --abandon` sends `abandon: true`.
 
+### Moving a session that works in a directory
+
+A session whose registration has no executor and no pool has no scope to hand over.
+The seventh step, `client/move_checkout` ([protocol-change/107](../../protocol-change/107-state-transport.md),
+slice 4c), gives it one. It runs between the stop and the close, because a stopped
+session is the one case in which the directory is quiet (`repository_snapshot` needs a
+drained workspace), and it leaves the cell the other steps already read.
+
+1. **Capture.** The directory is captured in full, working tree included, into the
+   source's state store. The uncommitted edit and the untracked files become one
+   `Working snapshot` commit on top of the directory's history, authored by the
+   operator's global Git identity, and arrive as committed content. Ignored files do
+   not travel. A directory the capture refuses (a submodule, LFS, a shallow clone) ends
+   the move at this stage.
+2. **Send.** `state_transfer.send` pushes the bundle to the executor named by the
+   destination's `checkout_executor`, in pieces over the executor host, resuming at the
+   executor's offset after a dropped link.
+3. **Land.** The source attaches a scope for the session on that executor with
+   `workspace.attach` over the stopped file, sends one `StateApply` under the scope's
+   own fence, and closes the scope. The apply imports the state into the workspace's
+   repository under `refs/loom/in/<hash8>` and checks out `loom/<session>` at the tip in
+   the scope's tree; the clean close removes the tree and keeps the branch. A `shared`
+   workspace, a name the executor does not serve and a tree that holds changes are
+   refused, and the refusal ends the move.
+4. **Record.** The file's reserved cell `client/move/checkout` says the checkout was
+   placed for this operation. The six steps then run with a copy of the registration
+   that names the executor and workspace, so the manifest tells the receiver.
+
+The receiver attaches at the next incarnation and its plane recreates the tree from the
+branch at the applied tip, so its first turn finds the directory's work. Nothing on the
+receiver runs before the apply is answered, because the receiver is not told of the
+session until the checkout is recorded. The source's row stays local until the move
+retires, so a move that is abandoned leaves a session that opens in its directory as
+before. The cell holds the captured state, so a rerun after a crash or a stall sends
+the bundle it already has from the executor's offset instead of capturing again, and a
+rerun after the apply but before the record applies again, which the executor answers
+without changing the tree.
+
+Three things stay behind. The directory on the source is not written again. A
+workspace's shared memory domain stays on the source, as for any moved session. And a
+strand's remembered working directory is a path under the old workspace, so the first
+tool call that relies on one may be refused until the model sets another. Other sessions
+that work in the same directory are not quieted by the stop, which the capture's
+precondition leaves to the operator.
+
 ### The executor fence
 
 The receiver attaches at the incarnation the copied cell implies, one above the
@@ -1347,7 +1393,7 @@ there.
 
 ## Repository states
 
-**Status: slices 1 to 3 (both directions) of [protocol-change/107](../../protocol-change/107-state-transport.md)
+**Status: slices 1 to 3 (both directions) and 4c (the checkout step of `sessions.move`, [described above](#moving-a-session-that-works-in-a-directory)) of [protocol-change/107](../../protocol-change/107-state-transport.md)
 are built.** A model can start a child on another orchestrator from its own
 workspace (`agent_spawn` with `on` and `context: "my_workspace"`), and the commits
 the child makes come back as one ref in the parent's repository. A state is a Git bundle named by the SHA-256 of its bytes. It is

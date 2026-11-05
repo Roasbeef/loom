@@ -1526,8 +1526,10 @@ move that was in flight.
 
 Errors: `forbidden`, `stale_epoch`, `not_found`, `unavailable`,
 `orchestrator_unknown` (the destination is not in this daemon's
-`[orchestrators.<name>]` tables), `not_movable` (the session has no executor yet,
-is archived, has not finished being created, or was imported from an orchestrator that has not yet retired the move that brought it here), `conflict` (a move toward
+`[orchestrators.<name>]` tables), `not_movable` (the session works in a directory on this machine and the destination's
+`[orchestrators.<name>]` names no `checkout_executor` and `checkout_workspace`, or names an
+executor this daemon does not list, or the directory is not the top of a primary checkout; the
+session is in a pool and has no executor yet; it is archived; has not finished being created, or was imported from an orchestrator that has not yet retired the move that brought it here), `conflict` (a move toward
 another destination is in flight), and `not_owner` (the session already moved).
 `moving` is not a refusal of this command: asking again is how a client learns
 the stored `op`.

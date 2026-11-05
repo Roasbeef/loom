@@ -51,11 +51,20 @@ fn has(value, key) -> Bool {
   }
 }
 
+// The laptop, with a place for a local session's checkout on `executor`.
+fn laptop_carrying(executor: String) -> orchestrators.Orchestrator {
+  orchestrators.Orchestrator(
+    ..laptop(),
+    checkout: Some(orchestrators.CheckoutTarget(executor:, workspace: "repo")),
+  )
+}
+
 fn laptop() -> orchestrators.Orchestrator {
   orchestrators.Orchestrator(
     name: "laptop",
     node: "laptop@10.0.0.7",
     address: Some("wss://laptop.example.com:8443/v2/control"),
+    checkout: None,
   )
 }
 
@@ -130,6 +139,19 @@ fn moving_from(
   desk_says: process.Subject(Origin),
   run: fn(root.Ready(String), Int, String, process.Subject(Note)) -> Nil,
 ) {
+  moving_listing(
+    desk_says,
+    [laptop(), orchestrators.plain("desk", "desk@10.0.0.8")],
+    run,
+  )
+}
+
+// `moving_from` with the orchestrators the movers list given.
+fn moving_listing(
+  desk_says: process.Subject(Origin),
+  listed: List(orchestrators.Orchestrator),
+  run: fn(root.Ready(String), Int, String, process.Subject(Note)) -> Nil,
+) {
   let told = recorder()
   let asking =
     Directory(
@@ -139,10 +161,7 @@ fn moving_from(
     )
   let movers =
     session_movers.Control(
-      orchestrators: roster.fixed([
-        laptop(),
-        orchestrators.plain("desk", "desk@10.0.0.8"),
-      ]),
+      orchestrators: roster.fixed(listed),
       begin: fn(move) { process.send(told, Began(move)) },
       holds: fn(_, _) { process.call(desk_says, 1000, Ask) },
       abandon: fn(_) { Nil },
@@ -620,6 +639,116 @@ pub fn a_move_is_refused_for_each_reason_it_cannot_start_test() {
     let _ = ffi_ws.tcp_close(socket)
     Nil
   })
+}
+
+// A session that works in `directory`, made as `local` makes one.
+fn working_in(
+  ready: root.Ready(String),
+  key: String,
+  directory: String,
+) -> String {
+  let assert Ok(view) =
+    manager.create(
+      ready.registry,
+      manager.Creation(key, directory, "Local", "", None, None, "", ""),
+      directory: ready.sessions_directory,
+      generator: ids_for(key),
+    )
+    as "the owner creates a local session"
+  view.registration.id
+}
+
+// A directory shaped like the top of a primary checkout, or like a linked
+// worktree, whose `.git` is a file.
+fn checkout_directory(ready: root.Ready(String), name: String, shape: String) {
+  let directory = ready.state_root <> "/" <> name
+  let assert Ok(Nil) = simplifile.create_directory_all(directory)
+    as "the directory is made"
+  case shape {
+    "primary" -> {
+      let assert Ok(Nil) = simplifile.create_directory_all(directory <> "/.git")
+        as "the repository directory is made"
+      Nil
+    }
+    _ -> {
+      let assert Ok(Nil) =
+        simplifile.write(
+          directory <> "/.git",
+          "gitdir: /elsewhere/.git/worktrees/x\n",
+        )
+        as "the pointer file is written"
+      Nil
+    }
+  }
+  let assert Ok(canonical) = bootstrap.canonical_directory(directory)
+    as "the directory resolves"
+  canonical
+}
+
+pub fn a_local_session_moves_only_where_the_table_says_its_checkout_lands_test() {
+  moving_listing(
+    origin(),
+    [laptop(), laptop_carrying("build-box") |> rename("carrier")],
+    fn(ready, port, credential, recorder) {
+      let primary = checkout_directory(ready, "primary", "primary")
+      let session = working_in(ready, "carried", primary)
+      let #(socket, _) = wire.connect(port, credential, "/v2/control")
+      let _hello = wire.frame(socket, within_ms: 1000)
+
+      // `laptop` names no place for a checkout, so the local session stays.
+      assert code(move(socket, 1, session, "laptop", ready.epoch))
+        == json.String("not_movable")
+      assert told(recorder) == []
+      assert manager.custody(ready.registry, session) == Ok(catalogue.Resident)
+
+      // `carrier` does, and the move begins.
+      let begun = move(socket, 2, session, "carrier", ready.epoch)
+      assert field(begun, "event") == json.String("sessions.move")
+      assert list.length(told(recorder)) == 1
+      let _ = ffi_ws.tcp_close(socket)
+      Nil
+    },
+  )
+}
+
+pub fn a_local_session_is_refused_for_a_place_or_a_directory_that_cannot_carry_it_test() {
+  moving_listing(
+    origin(),
+    [
+      laptop_carrying("build-box") |> rename("carrier"),
+      laptop_carrying("nowhere") |> rename("unlisted"),
+    ],
+    fn(ready, port, credential, recorder) {
+      let linked = checkout_directory(ready, "linked", "linked")
+      let primary = checkout_directory(ready, "primary", "primary")
+      let in_linked = working_in(ready, "in-linked", linked)
+      let in_primary = working_in(ready, "in-primary", primary)
+      let #(socket, _) = wire.connect(port, credential, "/v2/control")
+      let _hello = wire.frame(socket, within_ms: 1000)
+
+      // A linked worktree keeps its objects elsewhere and is not carried.
+      assert code(move(socket, 1, in_linked, "carrier", ready.epoch))
+        == json.String("not_movable")
+
+      // A place on an executor this daemon does not list is not a place.
+      assert code(move(socket, 2, in_primary, "unlisted", ready.epoch))
+        == json.String("not_movable")
+      assert told(recorder) == []
+      assert manager.custody(ready.registry, in_linked)
+        == Ok(catalogue.Resident)
+      assert manager.custody(ready.registry, in_primary)
+        == Ok(catalogue.Resident)
+      let _ = ffi_ws.tcp_close(socket)
+      Nil
+    },
+  )
+}
+
+fn rename(
+  row: orchestrators.Orchestrator,
+  name: String,
+) -> orchestrators.Orchestrator {
+  orchestrators.Orchestrator(..row, name:, node: name <> "@10.0.0.9")
 }
 
 pub fn a_member_may_not_move_a_session_test() {

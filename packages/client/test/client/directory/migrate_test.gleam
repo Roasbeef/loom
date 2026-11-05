@@ -220,6 +220,7 @@ fn environment_for(
       stage: fn(_, _, _) { Error(Nil) },
     ),
     close: session_mover.unreachable_executors(),
+    checkout: option.None,
     clock: clock.fixed(1_700_000_000_000),
     node: bravo,
     budget: session_mover.default_budget(),
