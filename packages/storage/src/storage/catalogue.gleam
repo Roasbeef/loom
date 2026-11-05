@@ -36,9 +36,11 @@
 ////    `abort_move` and `import_session` are the compare-and-set transitions of
 ////    a session moving between orchestrators.
 //// 10. `claim_delegate` records the delegate session of a (spawner, parent
-////     session) pair under the spawner's cap, `delegate_of` is the marker
-////     that says a session is one, and `delegates` lists every one for the
-////     retention sweep.
+////     session) pair under the spawner's cap, and `claim_delegate_child` the
+////     session of one named child of that pair (protocol-change/107, slice 4b).
+////     `delegate_of` is the marker that says a session is one, `delegates`
+////     lists every one for the retention sweep, and `delegates_of_parent`
+////     lists the sessions one parent holds.
 //// 11. `set_delegate_state` moves a delegate session through open, releasing
 ////     and released, and `write_remote_releases`, `remote_releases` and
 ////     `settle_remote_release` keep the releases a deleted parent session still
@@ -1791,13 +1793,26 @@ fn insert_move(
 
 /// The delegate session a remote orchestrator's subagents run in
 /// (protocol-change/084): the session this daemon created for one
-/// (spawner, parent session) pair.
+/// (spawner, parent session) pair, or, when `child` is named, for one child of
+/// that pair (protocol-change/107, slice 4b).
+///
+/// A child has a session of its own when its workspace has to be its own: a
+/// seeded child on an executor is given the parent's state in a worktree that no
+/// other child shares. The table keeps one text key for the parent, which is the
+/// parent's identity for the pair's session and the parent's identity, a slash
+/// and the child's name for a child's. The primary key and every query keep their
+/// shape, and no table is rebuilt. This type is where the two are told apart:
+/// `parent_session` is always the parent's identity, which the session's mail and
+/// progress are addressed to, and `child` is empty for the pair's session.
 pub type Delegate {
   Delegate(
     /// The `[spawners.<name>]` key of the spawning orchestrator.
     spawner: String,
     /// The spawning orchestrator's own identity for the parent session.
     parent_session: String,
+    /// The child this session exists for, or the empty string for the session
+    /// that serves the pair's other children.
+    child: String,
     /// This daemon's identity for the delegate session.
     session_id: String,
     /// The last message from the spawner, in Unix milliseconds.
@@ -1861,7 +1876,7 @@ pub type DelegateClaim {
 ///
 /// ```gleam
 /// // catalogue.claim_delegate(store, "laptop", parent, id, limit: 4, now_ms: 1_000)
-/// // == Ok(catalogue.Claimed(catalogue.Delegate("laptop", parent, id, 1_000)))
+/// // == Ok(catalogue.Claimed(catalogue.Delegate("laptop", parent, "", id, 1_000, catalogue.Open)))
 /// ```
 pub fn claim_delegate(
   catalogue: Catalogue,
@@ -1871,12 +1886,48 @@ pub fn claim_delegate(
   limit limit: Int,
   now_ms now_ms: Int,
 ) -> Result(DelegateClaim, Error) {
+  claim_delegate_child(
+    catalogue,
+    spawner,
+    parent_session,
+    "",
+    session_id,
+    limit:,
+    now_ms:,
+  )
+}
+
+/// `claim_delegate` for one named child of a pair: the session a seeded child
+/// runs in (protocol-change/107, slice 4b). The empty `child` is the pair's own
+/// session, so `claim_delegate` is this function with it.
+///
+/// A child's session counts against the spawner's cap as any delegate session
+/// does, which is what bounds how many seeded children a spawner has in flight.
+/// A `child` that is not a profile-name-shaped word of at most 24 bytes is
+/// `Invalid`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.claim_delegate_child(store, "laptop", parent, "seed-0123456789abcdef", id, limit: 4, now_ms: 1_000)
+/// ```
+pub fn claim_delegate_child(
+  catalogue: Catalogue,
+  spawner: String,
+  parent_session: String,
+  child: String,
+  session_id: String,
+  limit limit: Int,
+  now_ms now_ms: Int,
+) -> Result(DelegateClaim, Error) {
   use Nil <- result.try(validate_delegate(
     spawner,
     parent_session,
+    child,
     session_id,
     now_ms,
   ))
+  let key = delegate_key(parent_session, child)
   transaction(catalogue.connection, fn() {
     // The delegate row's foreign key would refuse an unregistered session as
     // a bare `Database` error; naming it here is what keeps the refusal a
@@ -1890,7 +1941,12 @@ pub fn claim_delegate(
       [_, ..] -> Ok(Nil)
     })
 
-    use held <- result.try(delegate_for(catalogue, spawner, parent_session))
+    use held <- result.try(delegate_child_for(
+      catalogue,
+      spawner,
+      parent_session,
+      child,
+    ))
 
     // Claim existing delegate session or check spawner limit before insertion.
     case held {
@@ -1898,7 +1954,7 @@ pub fn claim_delegate(
       Some(found) -> {
         use Nil <- result.try(statement(
           catalogue,
-          sql.touch_delegate_session(now_ms, spawner, parent_session),
+          sql.touch_delegate_session(now_ms, spawner, key),
         ))
         Ok(Claimed(Delegate(..found, last_contact_ms: now_ms)))
       }
@@ -1911,16 +1967,12 @@ pub fn claim_delegate(
           False -> {
             use Nil <- result.map(statement(
               catalogue,
-              sql.insert_delegate_session(
-                spawner,
-                parent_session,
-                session_id,
-                now_ms,
-              ),
+              sql.insert_delegate_session(spawner, key, session_id, now_ms),
             ))
             Claimed(Delegate(
               spawner:,
               parent_session:,
+              child:,
               session_id:,
               last_contact_ms: now_ms,
               state: Open,
@@ -1932,35 +1984,76 @@ pub fn claim_delegate(
   })
 }
 
-/// Validates syntax of a spawner profile name and parent session identity.
+/// The longest child name a delegate row accepts, in bytes. The stored key is a
+/// session identity of 36 bytes, a slash and the name, and the column holds 64.
+const delegate_child_limit = 24
+
+/// Whether text can name a child in a delegate row: empty, for the pair's own
+/// session, or a profile-name-shaped word that fits beside the parent's identity.
+fn is_delegate_child(child: String) -> Bool {
+  child == ""
+  || is_profile_name(child)
+  && bit_array.byte_size(<<child:utf8>>) <= delegate_child_limit
+}
+
+/// The text a delegate row keeps in its `parent_session` column: the parent's
+/// identity alone for the pair's session, and the identity, a slash and the
+/// child's name for a child's.
+fn delegate_key(parent_session: String, child: String) -> String {
+  case child {
+    "" -> parent_session
+    named -> parent_session <> "/" <> named
+  }
+}
+
+/// Reads a stored key back into the parent's identity and the child's name, or
+/// `Error(Nil)` for a key that is neither shape. It is total: a damaged row is
+/// reported and never read as a different pair.
+fn split_delegate_key(key: String) -> Result(#(String, String), Nil) {
+  let #(parent, child) = case string.split_once(key, "/") {
+    Ok(#(parent, child)) -> #(parent, child)
+    Error(Nil) -> #(key, "")
+  }
+
+  // A slash with nothing after it, or a second slash, is no key.
+  case result.is_ok(ids.parse_session_id(parent)) && is_delegate_child(child) {
+    True -> Ok(#(parent, child))
+    False -> Error(Nil)
+  }
+}
+
+/// Validates syntax of a spawner profile name, a parent session identity and a
+/// child name.
 fn validate_pair(
   spawner: String,
   parent_session: String,
+  child: String,
 ) -> Result(Nil, Error) {
   case
     is_profile_name(spawner)
     && result.is_ok(ids.parse_session_id(parent_session))
+    && is_delegate_child(child)
   {
     True -> Ok(Nil)
     False -> Error(Invalid("invalid delegate session metadata"))
   }
 }
 
-/// Validates spawner name, parent session, child session identity, and timestamp.
+/// Validates spawner name, parent session, child name, session identity, and
+/// timestamp.
 fn validate_delegate(
   spawner: String,
   parent_session: String,
+  child: String,
   session_id: String,
   now_ms: Int,
 ) -> Result(Nil, Error) {
   case
-    is_profile_name(spawner)
-    && result.is_ok(ids.parse_session_id(parent_session))
-    && result.is_ok(ids.parse_session_id(session_id))
-    && now_ms >= 0
+    validate_pair(spawner, parent_session, child),
+    result.is_ok(ids.parse_session_id(session_id)) && now_ms >= 0
   {
-    True -> Ok(Nil)
-    False -> Error(Invalid("invalid delegate session metadata"))
+    Ok(Nil), True -> Ok(Nil)
+    _, _ -> Error(Invalid("invalid delegate session metadata"))
   }
 }
 
@@ -1982,10 +2075,27 @@ pub fn delegate_for(
   spawner: String,
   parent_session: String,
 ) -> Result(Option(Delegate), Error) {
-  use Nil <- result.try(validate_pair(spawner, parent_session))
+  delegate_child_for(catalogue, spawner, parent_session, "")
+}
+
+/// `delegate_for` for one named child of a pair: the session a seeded child runs
+/// in, or `None` when it has none. The empty `child` is the pair's own session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.delegate_child_for(store, "laptop", parent, "seed-0123456789abcdef") == Ok(None)
+/// ```
+pub fn delegate_child_for(
+  catalogue: Catalogue,
+  spawner: String,
+  parent_session: String,
+  child: String,
+) -> Result(Option(Delegate), Error) {
+  use Nil <- result.try(validate_pair(spawner, parent_session, child))
   use rows <- result.try(query(
     catalogue,
-    sql.delegate_session(spawner, parent_session),
+    sql.delegate_session(spawner, delegate_key(parent_session, child)),
   ))
 
   // Decode the single delegate row if present.
@@ -1996,6 +2106,7 @@ pub fn delegate_for(
       Some(Delegate(
         spawner:,
         parent_session:,
+        child:,
         session_id: row.session_id,
         last_contact_ms: row.last_contact_ms,
         state:,
@@ -2029,20 +2140,21 @@ pub fn delegate_of(
     [] -> Ok(None)
     [row] ->
       case
-        is_profile_name(row.spawner)
-        && result.is_ok(ids.parse_session_id(row.parent_session))
+        is_profile_name(row.spawner),
+        split_delegate_key(row.parent_session)
       {
-        True -> {
+        True, Ok(#(parent_session, child)) -> {
           use state <- result.map(delegate_state(row.state))
           Some(Delegate(
             spawner: row.spawner,
-            parent_session: row.parent_session,
+            parent_session:,
+            child:,
             session_id:,
             last_contact_ms: row.last_contact_ms,
             state:,
           ))
         }
-        False -> Error(Invalid("invalid delegate session metadata"))
+        _, _ -> Error(Invalid("invalid delegate session metadata"))
       }
     [_, _, ..] -> Error(Invalid("duplicate delegate session metadata"))
   }
@@ -2064,22 +2176,43 @@ pub fn delegates(catalogue: Catalogue) -> Result(List(Delegate), Error) {
   use rows <- result.try(query(catalogue, sql.all_delegate_sessions()))
   list.try_map(rows, fn(row) {
     // Validate identifiers and decode the delegate record.
-    case
-      is_profile_name(row.spawner)
-      && result.is_ok(ids.parse_session_id(row.parent_session))
-    {
-      True -> {
+    case is_profile_name(row.spawner), split_delegate_key(row.parent_session) {
+      True, Ok(#(parent_session, child)) -> {
         use state <- result.map(delegate_state(row.state))
         Delegate(
           spawner: row.spawner,
-          parent_session: row.parent_session,
+          parent_session:,
+          child:,
           session_id: row.session_id,
           last_contact_ms: row.last_contact_ms,
           state:,
         )
       }
-      False -> Error(Invalid("invalid delegate session metadata"))
+      _, _ -> Error(Invalid("invalid delegate session metadata"))
     }
+  })
+}
+
+/// Every delegate session one parent holds on one spawner: its own pair session,
+/// if any, and the session of each seeded child. This is what a parent's release
+/// walks, since the pair's row is not the only one a deleted parent leaves.
+///
+/// It reads the table once and keeps the rows whose parent matches, which is
+/// bounded by the spawner's `max_sessions`, so no query of its own is needed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.delegates_of_parent(store, "laptop", parent) == Ok([])
+/// ```
+pub fn delegates_of_parent(
+  catalogue: Catalogue,
+  spawner: String,
+  parent_session: String,
+) -> Result(List(Delegate), Error) {
+  use all <- result.map(delegates(catalogue))
+  list.filter(all, fn(row) {
+    row.spawner == spawner && row.parent_session == parent_session
   })
 }
 
