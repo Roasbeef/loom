@@ -2364,6 +2364,37 @@ pub fn a_child_name_that_cannot_share_a_row_with_its_parent_is_invalid_test() {
   assert catalogue.close(store) == Ok(Nil)
 }
 
+pub fn a_damaged_delegate_key_is_invalid_and_never_the_pairs_session_test() {
+  let path = fresh_path("delegate-damaged-key")
+  let assert Ok(store) = catalogue.open(path) as "catalogue opens"
+  let record = registration(102)
+  let parent = parent_of(103)
+  assert catalogue.reserve(store, record) == Ok(record)
+  assert catalogue.close(store) == Ok(Nil)
+
+  // A key whose child is missing, or that has a second slash, is written by hand,
+  // as a damaged file would hold it.
+  let assert Ok(db) = sqlight.open(path) as "raw connection opens"
+  assert sqlight.exec(
+      "INSERT INTO catalogue_delegate_sessions(spawner, parent_session, session_id, last_contact_ms) VALUES ('laptop', '"
+        <> parent
+        <> "/', '"
+        <> record.id
+        <> "', 1)",
+      on: db,
+    )
+    == Ok(Nil)
+  assert sqlight.close(db) == Ok(Nil)
+
+  // The session reads as damaged, and neither lookup takes it for the pair's.
+  let assert Ok(store) = catalogue.open(path) as "catalogue reopens"
+  let invalid = catalogue.Invalid("invalid delegate session metadata")
+  assert catalogue.delegate_of(store, record.id) == Error(invalid)
+  assert catalogue.delegates(store) == Error(invalid)
+  assert catalogue.delegate_for(store, "laptop", parent) == Ok(option.None)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
 pub fn every_delegate_session_is_listed_in_identity_order_test() {
   let path = fresh_path("delegate-list")
   let assert Ok(store) = catalogue.open(path) as "catalogue opens"

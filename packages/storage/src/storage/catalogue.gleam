@@ -2010,12 +2010,16 @@ fn delegate_key(parent_session: String, child: String) -> String {
 /// `Error(Nil)` for a key that is neither shape. It is total: a damaged row is
 /// reported and never read as a different pair.
 fn split_delegate_key(key: String) -> Result(#(String, String), Nil) {
-  let #(parent, child) = case string.split_once(key, "/") {
-    Ok(#(parent, child)) -> #(parent, child)
-    Error(Nil) -> #(key, "")
-  }
+  // A key with a slash names a child, and the name has to be there: `p/` is a
+  // damaged key and is not read as the pair's session.
+  use #(parent, child) <- result.try(case string.split_once(key, "/") {
+    Ok(#(_parent, "")) -> Error(Nil)
+    Ok(#(parent, child)) -> Ok(#(parent, child))
+    Error(Nil) -> Ok(#(key, ""))
+  })
 
-  // A slash with nothing after it, or a second slash, is no key.
+  // The parent is a session identity, and the name, which may not hold a second
+  // slash, fits the grammar of a child.
   case result.is_ok(ids.parse_session_id(parent)) && is_delegate_child(child) {
     True -> Ok(#(parent, child))
     False -> Error(Nil)
