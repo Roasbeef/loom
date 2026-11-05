@@ -579,7 +579,8 @@ tip is answered with the tip and left alone, so a resend is harmless. The apply'
 is not cancelled when the requester goes away, as an ordinary run is not, so an
 orchestrator that vanishes mid-checkout leaves a whole tree and the resend finds the
 tip in place. A workspace that refuses a state answers `ExecutorFault` with the
-reason. Nothing calls either on an orchestrator yet.
+reason. The orchestrator side that calls both is the child's own session on an
+executor, below.
 
 A node's store has no lock, so `client/state_service` is the one process that
 owns it and both carriers answer through the endpoint it builds. A daemon that is
@@ -1402,10 +1403,12 @@ built from, names the state.
 | Judge | `client/spawn_seed` | The spawner's `seed` ceiling, its placement and the description are checked first; a `seed = "none"` spawner leaves no session and no byte stored. |
 | Apply | `client/state_apply` | In a stage of the attempt's own under `<state root>/seed-staging`, in a process that outlives the asker (an asker that gives up is told to ask again), claimed so concurrent asks do not each apply; then one rename into `<directory>/seeds/<name>`, after checking that `seeds` is a real directory and that the copy landed where its name says. A child that swaps `seeds` in the window between check and rename is a stated residual. The child's brief is told where the copy is. |
 
-Only a spawner placed on a `directory` takes a copy in this release. A session whose
-workspace is on an executor is refused when it asks: the executor's plane answers
-`StateCapture` (`executor_plane.factory_capturing`), and the session assembly does
-not yet pull the state into the orchestrator's store.
+A spawner placed on a `directory` takes a copy as above. A spawner placed on an
+`executor` or a `pool` takes the state into a session of its own for each child, which
+the next section describes. A session whose workspace is on an executor still asks for a
+copy of that workspace and is refused: the executor's plane answers `StateCapture`
+(`executor_plane.factory_capturing`), and the session assembly does not yet pull that
+state into the orchestrator's store.
 
 The store is masked from every session jail. The daemon root makes `<state root>/states`
 before any session is admitted and `workspace_policy` names it among the masks; the
@@ -1436,8 +1439,55 @@ nothing else, since every workspace tool call holds it. A gate that will not go 
 
 The return reaches only a primary checkout: a session whose workspace is a linked
 worktree is told its commits could not be applied, and they stay in the parent's store
-for its retention. A child on an executor or pool placement takes no copy, so none comes
-back.
+for its retention. A child on an executor or pool placement returns by the path in the
+next section.
+
+### A seeded child on an executor or a pool
+
+A session has one workspace, and a seeded child needs a tree no other child shares, so
+a child whose spawner is placed on an `executor` or a `pool` runs in a delegate session
+of its own (protocol-change/107, slice 4b). The catalogue keys that session by the
+spawner, the parent session and the child's name, which is the digest `spawn_seed.name_of`
+makes of the call site and the state. The row keeps its one text key: the parent's
+identity for the pair's session, and the identity, a slash and the name for a child's.
+`catalogue.Delegate` tells them apart, so `parent_session` is always the parent that
+mail and progress go to. A child's session counts against the spawner's `max_sessions`,
+so that cap is sized for the children in flight, one more for the pair's own session, and
+a pool places the children as it places any session (`manager.claim_placement`).
+
+| Step | Where | What happens |
+|---|---|---|
+| Judge | `client/spawn_seed.land` | As for a directory, and the state must be whole in this node's store before any session is made, so a sender that is mid-transfer holds no slot. |
+| Session | `client/delegate_host.children` | `resolve` finds or makes the child's session and waits for it to attach, which on a pool is where the executor is chosen. `fit`, from the attach census, says whether the workspace takes a state: Git, an enforcing helper and `mode = "worktree"`. A `shared` workspace is refused naming the mode, and the session just made is ended. |
+| Send | `client/state_transfer.send` over `remote/state_link.via_host` | The bundle goes from this node's store to the executor's, resuming at the offset the executor holds. A window that runs out is silence, and the next ask continues. |
+| Apply | `session_states.apply`, `HostMessage.StateApply` | The executor checks the state out as the child's tree. The record refuses once the session has begun, asked at the moment of the request, and `land` skips the work for a session that has. |
+| Start | `agency.DelegateEndpoint.spawn` | Called only after the apply was acknowledged. This is the session's first turn, so a child never starts on a half-made tree. |
+
+The send and the apply run in a process of their own under a claim, as the directory
+copy does, so a sender whose window is thirty seconds is told to ask again while the
+work goes on, and a refusal that arrives after the asker left is kept as a verdict. A
+refusal ends the session made for the child, because no child will run in it. A resend
+of a spawn whose child began finds the session, finds it not fresh, and goes straight to
+the Agency, which answers the child it already started.
+
+The join asks each child's own session (`client/child_join`): one task per session, run
+together under one deadline, with the pair's session asked for the handles it serves.
+A message into a child, a decision about its request, a read of its transcript and the
+end of a run reach the session the child runs in. The return captures the child's
+commits on the executor (`StateCapture` of the committed content, thin against the sent
+tip), pulls the bundle into this node's store with `state_transfer.pull`, and pushes it
+to the parent as above. A capture or a pull that gets no answer is tried again at the
+next join, five times. Once the child's entry is ready and it owes the parent no mail,
+the join ends the child's session (`delegate_host.child_releaser`), which marks the row
+releasing before it stops the slot, so a daemon that dies in between leaves a row the
+sweep deletes. A child nobody joins is ended with its parent, whose release walks the
+pair's session and every child's, or by the retention sweep.
+
+What this does not carry: a tree the child left with uncommitted changes is not reported
+for a child on an executor, because asking would need a message the executor's
+vocabulary lacks; a join that asks again after the child's session was ended is refused,
+because the report lived in the session; and a spawn that reaches the receiver after its
+run ended is not fenced by the run-end fence, which lives in the pair's session.
 
 ## Background code mode and MCP on a remote session
 
@@ -1642,7 +1692,8 @@ pair through the registry (`manager.delegate_session`), with the spawner's
 placement and profile and the `session_only` memory domain, and records it in
 the catalogue table `catalogue_delegate_sessions` (catalogue version 15, with a
 `state` column added in version 16). The row is the pair, the session, the time
-of the last message and how far its release has got. It is also the
+of the last message and how far its release has got. A seeded child on an executor
+or a pool has a row and a session of its own, below. It is also the
 marker that makes the session a delegate session, which the registry's `movable`
 check reads, so `sessions.move` answers `not_movable` for it. The spawner's
 `max_sessions` is the count of its rows. The count, the creation and the record
