@@ -302,12 +302,13 @@ fn perform(
     Ok(outcome) -> outcome
     Error(Nil) -> {
       // The caller gave up but the actor still holds the call in flight.
-      // Without telling it, every timed-out call would keep its slot in
-      // the pooled outstanding-effect ledger forever: a handful of slow
-      // commands would exhaust the cap, and later calls would be refused
-      // with "budget" rather than the real reason. Cancel releases the
-      // slot and asks the broker to kill the executor, exactly as a dead
-      // caller does.
+      // Without telling it, every timed-out call would keep its entry
+      // counted against the pooled outstanding-effect cap until the host
+      // finally settled it, and a handful of slow commands would leave
+      // later calls refused with "budget" rather than the real reason.
+      // Cancel is what lets the settlement arrive: the host cancels its
+      // executor at once and frees the admission tally when the call
+      // closes, exactly as a dead caller's cancellation does.
       process.send(subject, Cancel(reply))
       Error(Unreachable("no cap_result within deadline"))
     }
