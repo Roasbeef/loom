@@ -15,8 +15,11 @@
 //// Orchestrators (this daemon first, marked "this daemon"), Executors, and
 //// directory members that are neither (`machines.group_of`). The pools the daemon
 //// configures follow as a fourth group, each with the executors it admits and
-//// how many of them could take a session now. A group with nothing in it is not
-//// drawn.
+//// how many of them could take a session now, and the spawning directions
+//// configured with each peer orchestrator (`spawning`): whether this machine can
+//// spawn on the peer, whether the peer can spawn here and with what `seed`, and
+//// for a peer with one direction the table the owner would add for the other. A
+//// group with nothing in it is not drawn.
 ////
 //// A row shows what matters for its group and nothing else. An orchestrator
 //// shows its build, its resident sessions and slots, how long it has been up and
@@ -70,13 +73,14 @@
 ////
 //// ## Flow
 ////
-//// `view` → `drawn` → `standalone` or `group` → `row` → `facts` → `pools`
+//// `view` → `drawn` → `standalone` or `group` → `row` → `facts` → `pools` → `spawning`
 ////
 //// 1. `view` draws the section from what the page holds of the deployment: the
 ////    machines, or the words for a deployment not yet read or one that could not
 ////    be.
 //// 2. `drawn` draws the heading, the summary and the notes, then `standalone`
-////    for a daemon on its own or a `group` for each kind of machine, then `pools`.
+////    for a daemon on its own or a `group` for each kind of machine, then
+////    `pools` and `spawning`.
 //// 3. `row` draws one machine as its button, with `facts` choosing the facts its
 ////    group shows. The chosen machine's page is drawn by `view/admin_machine`
 ////    beneath the section.
@@ -92,9 +96,9 @@ import lustre/element/keyed
 import lustre/event
 import web_view/machines.{
   type Group, type Held, type Ledgered, type Machine, type Pool, type Snapshot,
-  Dialled, Enrolled, ExecutorGroup, Failed, Findings, Known, MemberGroup,
-  NotLinkedFromHere, NotListed, NothingYet, OrchestratorGroup, Standalone, This,
-  Unconfirmed, Unledgered,
+  type Spawning, Dialled, Enrolled, ExecutorGroup, Failed, Findings, Known,
+  MemberGroup, NotLinkedFromHere, NotListed, NothingYet, OrchestratorGroup,
+  Standalone, This, Unconfirmed, Unledgered,
 }
 import web_view/sessions.{type Entry}
 
@@ -178,6 +182,7 @@ fn drawn(
         group(snapshot, ExecutorGroup, section),
         group(snapshot, MemberGroup, section),
         pools(snapshot.pools),
+        spawning(snapshot.spawning),
       ])
   }
 
@@ -564,6 +569,95 @@ fn pools(listed: List(Pool)) -> List(Element(message)) {
         ),
       ]),
     ]
+  }
+}
+
+/// The directions of spawning with each peer orchestrator under their heading
+/// (issue #1137): whether this machine can spawn on the peer and whether the
+/// peer can spawn here, and for a peer with one direction the table to add for
+/// the other. A peer's name and the table are the daemon's text, drawn as text
+/// nodes.
+fn spawning(listed: List(Spawning)) -> List(Element(message)) {
+  case listed {
+    [] -> []
+    [_, ..] -> [
+      html.div([attribute.class("admin-group")], [
+        html.h3([attribute.class("admin-subheading")], [
+          html.text("Spawning"),
+          html.span([attribute.class("home-count")], [
+            html.text(int.to_string(list.length(listed))),
+          ]),
+        ]),
+        keyed.ul(
+          [attribute.class("admin-fleet")],
+          list.index_map(listed, fn(each, index) {
+            #(int.to_string(index), spawning_row(each))
+          }),
+        ),
+      ]),
+    ]
+  }
+}
+
+/// One peer. Its pill is ok when both directions are configured and waiting
+/// when only one is, and a peer with one direction says which table to add.
+fn spawning_row(each: Spawning) -> Element(message) {
+  // Both directions read healthy, and one reads as needing a look.
+  let #(tint, words) = case each.to_peer, each.from_peer {
+    machines.Allowed, machines.Allowed -> #(
+      machines.pill_class(machines.Healthy),
+      "both ways",
+    )
+    machines.Allowed, machines.NotAllowed
+    | machines.NotAllowed, machines.Allowed
+    | machines.NotAllowed, machines.NotAllowed
+    -> #(machines.pill_class(machines.Degraded), "one way")
+  }
+
+  // The seed is the peer's spawner table's, so it is stated only with it.
+  let seed = case each.from_peer, each.seed {
+    machines.Allowed, Some(setting) -> " (seed " <> setting <> ")"
+    machines.Allowed, None | machines.NotAllowed, _ -> ""
+  }
+
+  // A peer with one direction names the table that would add the other.
+  let add = case each.add {
+    Some(table) -> [
+      fact(
+        "To enable the other direction",
+        "add " <> table <> " on this machine and restart the daemon",
+      ),
+    ]
+    None -> []
+  }
+
+  html.li([attribute.class("admin-node")], [
+    html.div([attribute.class("admin-node-pick")], [
+      html.span([attribute.class("admin-node-head")], [
+        html.span([attribute.class("admin-name")], [html.text(each.name)]),
+        html.span([attribute.class("pill"), attribute.class(tint)], [
+          html.text(words),
+        ]),
+      ]),
+      html.span(
+        [attribute.class("admin-node-facts")],
+        list.append(
+          [
+            fact("This machine can spawn on it", direction_words(each.to_peer)),
+            fact("It can spawn here", direction_words(each.from_peer) <> seed),
+          ],
+          add,
+        ),
+      ),
+    ]),
+  ])
+}
+
+/// A direction as the words the page draws.
+fn direction_words(direction: machines.Direction) -> String {
+  case direction {
+    machines.Allowed -> "yes"
+    machines.NotAllowed -> "no"
   }
 }
 

@@ -183,6 +183,7 @@ fn reach(
     self_name: self,
     footing: deployment.Distributed,
     host: None,
+    spawners: [],
     dial: fn(node, _within_ms) {
       process.send(asked, node)
       case list.key_find(answers, node) {
@@ -331,6 +332,7 @@ pub fn a_connected_node_that_waits_out_its_bound_reads_as_a_timeout_test() {
       self_name: self,
       footing: deployment.Distributed,
       host: None,
+      spawners: [],
       dial: fn(_node, _within_ms) { Ok(Nil) },
       ask: fn(_node, within_ms) {
         process.sleep(within_ms)
@@ -361,6 +363,7 @@ pub fn slow_targets_do_not_starve_the_fast_ones_test() {
       self_name: self,
       footing: deployment.Distributed,
       host: None,
+      spawners: [],
       dial: fn(node, _within_ms) {
         case string.starts_with(node, "slow") {
           True -> {
@@ -401,6 +404,7 @@ pub fn a_node_that_is_not_connected_is_not_asked_test() {
         self_name: self,
         footing: deployment.Distributed,
         host: None,
+        spawners: [],
         dial: fn(_node, _within_ms) { Error(Unreachable) },
         ask: fn(node, _within_ms) {
           process.send(told, node)
@@ -424,6 +428,7 @@ pub fn a_connection_that_never_settles_reads_as_down_by_the_deadline_test() {
       self_name: self,
       footing: deployment.Distributed,
       host: None,
+      spawners: [],
       dial: fn(_node, _within_ms) {
         process.sleep(60_000)
         Ok(Nil)
@@ -443,6 +448,7 @@ pub fn a_report_that_never_arrives_reads_as_down_by_the_deadline_test() {
       self_name: self,
       footing: deployment.Distributed,
       host: None,
+      spawners: [],
       dial: fn(_node, _within_ms) { Ok(Nil) },
       ask: fn(_node, _within_ms) {
         process.sleep(60_000)
@@ -462,6 +468,7 @@ pub fn a_connection_that_crashes_reads_as_down_test() {
       self_name: self,
       footing: deployment.Distributed,
       host: None,
+      spawners: [],
       dial: fn(_node, _within_ms) { panic as "boom" },
       ask: fn(_node, _within_ms) { Error(orchestrator_port.PortGone) },
       sessions: listed_sessions.unlisted,

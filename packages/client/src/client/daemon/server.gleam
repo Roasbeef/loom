@@ -90,6 +90,7 @@ import client/remote/orchestrator_port
 import client/roster.{type Roster}
 import client/session_directory
 import client/session_movers
+import client/spawn_pairing
 import core/clock
 import core/ids
 import core/json.{type JsonValue}
@@ -3886,10 +3887,11 @@ fn deployment_status(
     session_directory.NotMember -> [deployment.OrchestratorRole]
   }
 
+  let orchestrators = roster.rows(config.movers.orchestrators)
   deployment.status(
     config.deployment,
     roles,
-    roster.rows(config.movers.orchestrators),
+    orchestrators,
     roster.rows(config.executors),
     config.pools,
     node,
@@ -3900,9 +3902,35 @@ fn deployment_status(
       "deployment.status",
       deployment.to_json(snapshot, bootstrap.system_time_ms())
         |> with_footing(node, config.deployment)
+        |> with_spawning(
+          node,
+          spawn_pairing.pairings(orchestrators, config.deployment.spawners),
+        )
         |> with_ledger(node, config.ledger),
     )
   })
+}
+
+/// The whole-deployment read says which directions of spawning this daemon has
+/// configured with each peer orchestrator: whether it can spawn on the peer, and
+/// whether the peer can spawn here and with what `seed`, with the table to add
+/// when only one direction exists (`client/spawn_pairing`). It is read from the
+/// daemon's own configuration and writes nothing. A read that names one node is
+/// about that node and carries nothing about the asking daemon, and a client that
+/// does not know the member ignores it.
+fn with_spawning(
+  body: JsonValue,
+  node: Option(String),
+  found: List(spawn_pairing.Pairing),
+) -> JsonValue {
+  // The member joins the overview only, beside the facts of the asking daemon.
+  case body, node {
+    json.Object(fields), None ->
+      json.Object(
+        list.append(fields, [#("spawning", spawn_pairing.to_json(found))]),
+      )
+    _, _ -> body
+  }
 }
 
 /// The whole-deployment read says whether this daemon runs with distribution,

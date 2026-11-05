@@ -1947,7 +1947,9 @@ machine") is the account.
   `Findings`, `Snapshot`, `Detail` (the long lists of one node), `Reading` (`Heard |
   HeardOne | Unread`), `Held`, `Detailed`, `Tab`, `Distribution` (`Distributed |
   Standalone`, from the reply's optional `distribution`), `Pool` (from
-  `placements.pools`), `Group` (`OrchestratorGroup | ExecutorGroup | MemberGroup`, by
+  `placements.pools`), `Spawning` (a peer's `to_peer` and `from_peer` as
+  `Allowed | NotAllowed`, its `seed` and the table to `add`, from the optional
+  `spawning` array; `view/admin_machines` draws it under the pools as text nodes), `Group` (`OrchestratorGroup | ExecutorGroup | MemberGroup`, by
   `group_of`), `Title` (by `title`: a standalone daemon's own row is its host name,
   the reply's optional `host`, labelled "This machine", or "This machine" alone; its
   node name the BEAM made up is never drawn), and the words

@@ -990,3 +990,121 @@ pub fn hostile_configuration_cannot_change_a_reset_test() {
   assert simplifile.is_file(canary("fsmonitor-ran")) == Ok(False)
   state_rig.stop(rig)
 }
+
+// A state a hostile peer made by hand: one commit on top of the receiver's head
+// whose tree attaches a filter to every `.txt` file. Capture refuses such a
+// tree, so it is built with the operator's Git and admitted as a transfer would.
+// The answer is the source clone, the state and the stored bundle's path.
+fn filtered_state(
+  scenario: Scenario,
+  name: String,
+) -> #(String, State, String) {
+  let rig = scenario.rig
+  let source = rig.scratch <> "/" <> name
+  let _ =
+    worktree_rig.git(rig.scratch, [
+      "clone",
+      "--quiet",
+      scenario.receiver,
+      source,
+    ])
+  let base = worktree_rig.git(source, ["rev-parse", "HEAD"])
+  worktree_rig.write(source <> "/.gitattributes", "*.txt filter=evil\n")
+  worktree_rig.write(source <> "/payload.txt", "payload\n")
+  let _ = worktree_rig.git(source, ["add", ".gitattributes", "payload.txt"])
+  let _ = worktree_rig.git(source, ["commit", "--quiet", "-m", "attach"])
+  let tip = worktree_rig.git(source, ["rev-parse", "HEAD"])
+  let _ = worktree_rig.git(source, ["update-ref", state_object.bundle_ref, tip])
+
+  // The bundle holds the one commit, thin against the head the receiver has.
+  let bundle = rig.scratch <> "/" <> name <> ".bundle"
+  let _ =
+    worktree_rig.git(source, [
+      "bundle",
+      "create",
+      bundle,
+      state_object.bundle_ref,
+      "^" <> base,
+    ])
+  let assert Ok(store) =
+    state_store.open(
+      state_store.directory(rig.state),
+      state_store.default_limits,
+    )
+  let assert Ok(state) =
+    state_store.put(
+      store,
+      bundle,
+      tip:,
+      base: Some(base),
+      dirty: state_object.Clean,
+      now_s: now(),
+    )
+  let assert Ok(Some(held)) = state_store.get(store, state.hash)
+  #(source, held.state, held.path)
+}
+
+pub fn a_filter_only_a_linked_worktree_includes_does_not_run_test() {
+  let scenario = scenario("apply-include")
+  let rig = scenario.rig
+  let repository = scenario.receiver
+  let #(source, state, bundle) = filtered_state(scenario, "include-source")
+
+  // A program that records that it ran in the one place the sandbox lets Git
+  // write, and passes the bytes on.
+  let marker = repository <> "/.git/smudge-ran"
+  let program = rig.scratch <> "/smudge-program"
+  worktree_rig.write(
+    program,
+    "#!/bin/sh\nprintf ran > '" <> marker <> "'\nexec cat\n",
+  )
+  let assert Ok(Nil) = simplifile.set_permissions_octal(program, 0o755)
+
+  // The driver is named by a file that only the Git directory of a linked
+  // worktree includes, so the repository's own configuration lists none.
+  let include = rig.scratch <> "/include.config"
+  worktree_rig.write(
+    include,
+    "[filter \"evil\"]\n\tsmudge = " <> program <> "\n",
+  )
+  // The pattern names the `.git` directory too, because a checkout of the
+  // repository may itself sit under a directory called `worktrees`.
+  let key = "includeIf.gitdir:**/.git/worktrees/**.path"
+  let _ = worktree_rig.git(repository, ["config", key, include])
+  let _ = worktree_rig.git(source, ["config", key, include])
+  let #(_, listed) =
+    worktree_rig.git_status(repository, ["config", "--get-regexp", "^filter[.]"])
+  assert !string.contains(listed, "filter.evil")
+
+  // Control: the operator's Git adding a worktree of the same commit starts the
+  // program, so a missing marker below is the apply's doing.
+  let _ =
+    worktree_rig.git(source, [
+      "worktree",
+      "add",
+      "--quiet",
+      "--detach",
+      rig.scratch <> "/control",
+      state.tip,
+    ])
+  assert simplifile.is_file(marker) == Ok(True)
+  let assert Ok(Nil) = simplifile.delete(marker)
+
+  let assert Ok(applied) =
+    state_apply.apply(
+      rig.git,
+      bundle,
+      state,
+      Worktree(
+        repository:,
+        destination: destination(rig, 1),
+        session: worktree_rig.session(1),
+      ),
+    )
+  assert worktree_rig.git(applied.destination, ["rev-parse", "HEAD"])
+    == state.tip
+  assert simplifile.read(applied.destination <> "/payload.txt")
+    == Ok("payload\n")
+  assert simplifile.is_file(marker) == Ok(False)
+  state_rig.stop(rig)
+}

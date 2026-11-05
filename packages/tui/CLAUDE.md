@@ -3654,7 +3654,10 @@ and `launch_directory` are the test seams for the parse.
   guess, text (256 bytes) and lists (128 entries) are bounded, and an optional
   member that is absent, malformed or unknown is left out: a node's build,
   uptime, `orchestrator` and `executor` facts, the `directory` block, `moves`,
-  `ledger`. `extent` is `OneNode` when the reply has neither `edges` nor `orchestrators`.
+  `ledger`, `spawning` (a peer's `to_peer` and `from_peer` as `Open | Closed`, its
+  `seed` and the table to `add`; an entry missing a required member is skipped,
+  and `status_text` draws a `SPAWNING` section with a line for each peer).
+  `extent` is `OneNode` when the reply has neither `edges` nor `orchestrators`.
   `omitted` and `more` are what the daemon cut to fit one frame; `status_text`
   prints a line saying so and, for an overview, "run with --node <key> for the
   rest". A move is read as `session_id` and `to` and nothing else.

@@ -18,6 +18,7 @@ import client/remote/protocol as remote_protocol
 import client/roster
 import client/session_directory
 import client/session_movers
+import client/spawners
 import core/json
 import gleam/bit_array
 import gleam/erlang/process
@@ -142,6 +143,16 @@ fn reporting(
   ask: fn(String, Int) -> Result(NodeReport, orchestrator_port.Silence),
   run: fn(root.Ready(String), Int, String, process.Subject(Note)) -> Nil,
 ) {
+  reading_tables([], answers, ask, run)
+}
+
+// The same daemon with the `[spawners.<name>]` tables it read at start.
+fn reading_tables(
+  tables: List(spawners.Spawner),
+  answers: List(#(String, Result(Nil, deployment.Why))),
+  ask: fn(String, Int) -> Result(NodeReport, orchestrator_port.Silence),
+  run: fn(root.Ready(String), Int, String, process.Subject(Note)) -> Nil,
+) {
   let told = recorder()
   let reach =
     deployment.Reach(
@@ -149,6 +160,7 @@ fn reporting(
       self_name: self,
       footing: deployment.Distributed,
       host: Some("studio"),
+      spawners: tables,
       dial: fn(node, _within_ms) {
         process.send(told, Dialled(node))
         case list.key_find(answers, node) {
@@ -234,6 +246,26 @@ pub fn the_owner_reads_every_configured_node_as_the_daemon_found_it_test() {
       assert field(asking, "uptime_ms") == json.Int(60_000)
       assert field(desk, "build_version") == json.String("0.3.0")
       assert !has(down, "build_commit")
+
+      // With no spawner table, each orchestrator row is a one-way pairing, and the
+      // reply says which table would admit the other direction.
+      assert field(body, "spawning")
+        == json.Array([
+          json.Object([
+            #("name", json.String("desk")),
+            #("node", json.String("desk@10.0.0.8")),
+            #("to_peer", json.Bool(True)),
+            #("from_peer", json.Bool(False)),
+            #("add", json.String("[spawners.desk]")),
+          ]),
+          json.Object([
+            #("name", json.String("laptop")),
+            #("node", json.String("laptop@10.0.0.7")),
+            #("to_peer", json.Bool(True)),
+            #("from_peer", json.Bool(False)),
+            #("add", json.String("[spawners.laptop]")),
+          ]),
+        ])
 
       // The executor and its pool are described for a creation form, and the
       // unreachable executor leaves its pool with nobody eligible.
@@ -324,6 +356,7 @@ pub fn a_key_narrows_the_read_to_the_node_it_names_test() {
       assert !has(body, "placements")
       assert !has(body, "orchestrators")
       assert !has(body, "distribution")
+      assert !has(body, "spawning")
       let _ = ffi_ws.tcp_close(socket)
       assert dialled(told) == ["executor@10.0.0.2"]
     },
@@ -525,6 +558,86 @@ pub fn a_node_that_connects_and_reports_late_is_down_test() {
       assert field(laptop, "reason") == json.String("timeout")
       assert !has(laptop, "build_commit")
       assert field(executor, "state") == json.String("ok")
+      let _ = ffi_ws.tcp_close(socket)
+      Nil
+    },
+  )
+}
+
+// The tables of a daemon that lets `desk` spawn here with workspaces and lets a
+// peer it holds no row for, `roamer`, spawn here with none.
+fn tables() -> List(spawners.Spawner) {
+  let text =
+    "[distribution]
+node = \"studio@10.0.0.1\"
+ca = \"/etc/loom/ca.pem\"
+certificate = \"/etc/loom/cert.pem\"
+key = \"/etc/loom/key.pem\"
+cookie = \"/home/loom/.erlang.cookie\"
+
+[[distribution.peers]]
+node = \"desk@10.0.0.8\"
+sha256 = \"0000000000000000000000000000000000000000000000000000000000000001\"
+
+[[distribution.peers]]
+node = \"roamer@10.0.0.9\"
+sha256 = \"0000000000000000000000000000000000000000000000000000000000000002\"
+
+[profiles.review.roles]
+main = [\"fast\"]
+
+[spawners.desk]
+node = \"desk@10.0.0.8\"
+profile = \"review\"
+directory = \"/srv/loom/work\"
+seed = \"workspace\"
+
+[spawners.roamer]
+node = \"roamer@10.0.0.9\"
+profile = \"review\"
+directory = \"/srv/loom/work\"
+"
+  let assert Ok(found) = spawners.parse(text) as "the spawner tables parse"
+  found
+}
+
+pub fn the_read_states_which_directions_of_spawning_exist_test() {
+  reading_tables(
+    tables(),
+    [#("desk@10.0.0.8", Ok(Nil)), #("laptop@10.0.0.7", Ok(Nil))],
+    fn(node, _within_ms) { Ok(bare(node)) },
+    fn(_ready, port, credential, _told) {
+      let #(socket, _) = wire.connect(port, credential, "/v2/control")
+      let _hello = wire.frame(socket, within_ms: 1000)
+      let body = field(status(socket, 1, json.Object([])), "body")
+
+      // `desk` has both directions and states its seed, `laptop` has a row and
+      // no table, and `roamer` has a table and no row.
+      assert field(body, "spawning")
+        == json.Array([
+          json.Object([
+            #("name", json.String("desk")),
+            #("node", json.String("desk@10.0.0.8")),
+            #("to_peer", json.Bool(True)),
+            #("from_peer", json.Bool(True)),
+            #("seed", json.String("workspace")),
+          ]),
+          json.Object([
+            #("name", json.String("laptop")),
+            #("node", json.String("laptop@10.0.0.7")),
+            #("to_peer", json.Bool(True)),
+            #("from_peer", json.Bool(False)),
+            #("add", json.String("[spawners.laptop]")),
+          ]),
+          json.Object([
+            #("name", json.String("roamer")),
+            #("node", json.String("roamer@10.0.0.9")),
+            #("to_peer", json.Bool(False)),
+            #("from_peer", json.Bool(True)),
+            #("seed", json.String("none")),
+            #("add", json.String("[orchestrators.roamer]")),
+          ]),
+        ])
       let _ = ffi_ws.tcp_close(socket)
       Nil
     },

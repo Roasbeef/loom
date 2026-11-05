@@ -1404,8 +1404,10 @@ walks the tip's history to prove every object arrived, and creates
 existing ref is never moved; one that already names the tip is the state having
 been applied before and is reused. It does not fetch, because a fetch reads the
 repository's `url.<base>.insteadOf` and `protocol.*` settings. `Worktree` adds
-`git worktree add -b loom/<session>` for a primary checkout, with writable roots
-of the repository's `.git` and the destination's parent. `Clone` makes a new
+`git worktree add --no-checkout -b loom/<session>` for a primary checkout, with
+writable roots of the repository's `.git` and the destination's parent, then
+`git reset --hard` from inside the new tree (a failed one removes the tree), so
+the filter listing reads the configuration the checkout reads. `Clone` makes a new
 repository with an empty template, imports and checks out the branch, and
 refuses a thin state because a new repository holds no base. `Reset` is the
 executor's case (slice 4a): the scope's linked worktree already exists on
@@ -1417,7 +1419,9 @@ already contains the tip is answered as applied and not touched, and any other t
 must have no change in it. A dirty state's snapshot commit is checked out as it is.
 The checkouts (`checked_out`) empty every `filter.<name>` driver the configuration
 names for the call, since a `.gitattributes` in the bundle can attach one and a
-checkout would run its `smudge` command; the guards also set
+checkout would run its `smudge` command. The listing runs in the directory the
+files are written in, because an `includeIf` can add a driver to one tree alone; the
+guards also set
 `submodule.recurse=false` and `protocol.allow=never`.
 `state_capture.apply` finds the state in the node's store (the `Capturer` holds a
 read handle) and calls it. The caller serializes applies to one repository, as the
@@ -9469,6 +9473,16 @@ reports; the 2026-10-16 addendum of 085 records the spellings it chose.
   (protocol-change/085, the addendum of 2026-10-19). `Reach.host` is read once by
   `main.deployment_reach` through `ffi_os.host_name` (`inet:gethostname/0`,
   decoded by `host_name_of`); `alone` and `over` leave it `None`.
+- A whole-deployment reply also carries `spawning`, added by `server.with_spawning`
+  (issue #1137, protocol-change/085, the addendum of 2026-11-04): for each peer
+  orchestrator, whether this daemon can spawn on it (an `[orchestrators.<name>]`
+  row), whether it can spawn here (a `[spawners.<name>]` table, with its `seed`),
+  and, when only one direction exists, the table to add here for the other.
+  `client/spawn_pairing.pairings` joins the rows and tables by node, rows first,
+  at most `limit` (32), and `missing` and `to_json` are its other two functions.
+  The tables come from `Reach.spawners`, set by `main.deployment_reach` from
+  `Config.spawners`; `alone` and `over` leave it empty. Pairing semantics are
+  unchanged and nothing is written.
 - `server.Config.deployment` is the `Reach`; `main.deployment_reach` builds it
   from `Config.membership` and the node's own name and `listen_moving` gives it
   `reads.report`. `server.deployment_status` adds `MemberRole` to the asking
