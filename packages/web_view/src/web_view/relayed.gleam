@@ -131,8 +131,10 @@ pub type Row {
 
 /// Whether the transcript could be read.
 pub type History {
-  /// The newest page of the transcript. Images, reasoning and results are words
-  /// in it (`session_view/remote_transcript.said`), never markup.
+  /// The newest page of the transcript, within the byte bound the decoder
+  /// enforces. The page draws it through the lane (`web_view/relayed_lane`):
+  /// Markdown is rendered, an image is text, reasoning is dropped, and no string
+  /// of it is markup.
   Shown(
     /// The page, oldest entry first.
     page: remote_transcript.Page,

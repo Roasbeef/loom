@@ -22,16 +22,21 @@
 ////
 //// ## Text from another machine
 ////
-//// The session's name, its folder, every line of its transcript and every word of
-//// a request were written on the box, and a model wrote some of them. All of it
-//// is a text node. The transcript is not Markdown and carries no image, tool
-//// result body or link: the box's page of words (`remote_transcript.said`) is
-//// drawn as it is, between the framing lines every host draws around another
-//// machine's working (`strand_framing`). The only strings that become classes
-//// are fixed words chosen by `case`. A request's identity is also the key of its
-//// card in the list: a key is only compared with the other keys of that list,
-//// never becomes a path, a class or an attribute, and the port's decoder bounds
-//// its length.
+//// The session's name, its folder, every entry of its transcript and every word
+//// of a request were written on the box, and a model wrote some of them. None of
+//// it is markup. A name and a request are text nodes. The transcript is drawn by
+//// the page's own lane (`view/lane.reading`, over the pieces `relayed_lane`
+//// projects from the box's page), so an answer is rendered Markdown, whose raw
+//// HTML is the characters it was written with and whose links the browser checks
+//// before they can be followed, and a tool call is a folded step. The lane draws
+//// no image and no link to a result, because both are addresses on a session
+//// this daemon holds. The framing that tells an agent a transcript is another
+//// agent's working (`strand_framing`) is not drawn: this page is for the
+//// session's owner, and the placement strip already says where it lives. The
+//// only strings that become classes are fixed words chosen by `case`. A request's
+//// identity is also the key of its card in the list: a key is only compared with
+//// the other keys of that list, never becomes a path, a class or an attribute,
+//// and the port's decoder bounds its length.
 ////
 //// ## When the box stops answering
 ////
@@ -67,9 +72,11 @@ import lustre/element/html
 import lustre/element/keyed
 import lustre/event
 import session_view/remote_transcript
-import session_view/strand_framing
+import session_view/turns
 import web_view/relayed.{type Need, type Row}
+import web_view/relayed_lane
 import web_view/relayed_session.{type State}
+import web_view/view/lane
 import web_view/view/placement
 
 /// The messages a page's buttons send, as constructors the view applies to the
@@ -122,7 +129,7 @@ pub fn view(state: State, presses: Presses(message)) -> Element(message) {
       reach(state),
       notice(state),
       needs(state, row, presses),
-      transcript(state),
+      transcript(state, row),
       reply(state, presses),
     ]
     relayed_session.Unread, _ | relayed_session.Listed, None ->
@@ -443,10 +450,12 @@ fn actions(
   }
 }
 
-/// The newest page of the transcript between the framing every host draws around
-/// another machine's working, with a line for older entries the page does not
-/// hold and one for entries left out because they were too large to send.
-fn transcript(state: State) -> Element(message) {
+/// The newest page of the transcript, drawn as the page's own lane draws a
+/// session's, with a line for older entries the page does not hold and one for
+/// entries left out because they were too large to send. The framing that
+/// protects an agent reading the page is not drawn: the person reading this
+/// page is the session's owner, who is told where the session lives above.
+fn transcript(state: State, row: Row) -> Element(message) {
   case state.history {
     None -> element.none()
     Some(relayed.Unreadable(why:)) ->
@@ -454,23 +463,29 @@ fn transcript(state: State) -> Element(message) {
         html.text("The transcript could not be read: " <> why),
       ])
     Some(relayed.Shown(page:)) ->
-      html.section([attribute.class("relayed-transcript")], [
-        html.p([attribute.class("peek-frame")], [
-          html.text(strand_framing.transcript_head(
-            page.child,
-            state.orchestrator,
-          )),
-        ]),
-        html.div([attribute.class("peek-body")], page_body(page)),
-        html.p([attribute.class("peek-frame")], [
-          html.text(strand_framing.transcript_foot),
-        ]),
-      ])
+      html.section(
+        [attribute.class("relayed-transcript")],
+        page_body(page, running(row.activity)),
+      )
   }
 }
 
-/// Page body helper.
-fn page_body(page: remote_transcript.Page) -> List(Element(message)) {
+/// Whether the session is running an operation or waits on an approval, which
+/// keeps its last turn drawn as work in progress.
+fn running(activity: relayed.Activity) -> turns.Latest {
+  case activity {
+    relayed.Working | relayed.NeedsYou -> turns.Running
+    relayed.Idle -> turns.Settled
+  }
+}
+
+/// The entries oldest first, as the lane draws them. The lane is built once for
+/// each page the box gave and each state of the session, however often the
+/// page is drawn again, so its Markdown is parsed when a page arrives.
+fn page_body(
+  page: remote_transcript.Page,
+  latest: turns.Latest,
+) -> List(Element(message)) {
   // Dispatch on page_body state.
   let older = case page.next {
     Some(_) -> [
@@ -494,24 +509,18 @@ fn page_body(page: remote_transcript.Page) -> List(Element(message)) {
   }
 
   // Dispatch on page_body state.
-  let entries = case remote_transcript.said(page) {
-    [] -> [
-      html.p([attribute.class("pane-empty")], [html.text("No entries yet.")]),
-    ]
-    said -> list.map(said, entry)
-  }
+  let entries =
+    element.memo([element.ref(page), element.ref(latest)], fn() {
+      case relayed_lane.pieces(page, latest) {
+        [] ->
+          html.p([attribute.class("pane-empty")], [
+            html.text("No entries yet."),
+          ])
+        pieces -> lane.reading(pieces)
+      }
+    })
 
-  list.flatten([older, entries, omitted])
-}
-
-/// Entry helper.
-fn entry(said: remote_transcript.Said) -> Element(message) {
-  html.div([attribute.class("peek-entry")], [
-    html.span([attribute.class("peek-speaker")], [
-      html.text(remote_transcript.speaker_word(said.speaker)),
-    ]),
-    html.p([attribute.class("peek-text")], [html.text(said.text)]),
-  ])
+  list.flatten([older, [entries], omitted])
 }
 
 /// The reply form: one box and one button. The box is uncontrolled and keyed by

@@ -2074,6 +2074,24 @@ ticket stay the home's.
 - `view/relayed_session` draws the centre with the existing approval-card,
   placement-strip and composer markup. The reply form accepts exactly one `message`
   field (`reply_fields`). Every handler lies beneath `home.table_path`.
+- The transcript on that page is drawn by the page's own lane, not as lines of
+  words (094 addendum, 2026-11-04, issue #1135). `web_view/relayed_lane.pieces(page,
+  latest)` projects the box's `remote_transcript.Page` into `turns.Piece`s with no
+  capture (`transcript_lines.keyed_record_blocks` over an empty presentation,
+  `turns.pieces`), taking out any reasoning block the page carries and drawing a
+  settled turn's work open (`Folded` becomes `Unfolded(0)`), since the page has no
+  message that asks for a fold. `Working` and `NeedsYou` pass `turns.Running`, so the
+  last turn is open as it is locally. `view/lane.reading(pieces)` draws them: rendered
+  Markdown, folded tool steps, no `<loom-follow>`, no handler, and no session, so no
+  picture and no result link (`lane.result_links` draws none for an empty session).
+  The view memoises it on the page and the activity, so Markdown is parsed when a page
+  arrives. Remote text stays data: every string is a text node or a node of the
+  closed `session_view/markdown` tree, a `javascript:` link is only the hidden
+  `ll-url` text, and raw HTML is escaped. The page draws neither line of the
+  agent-facing framing (`strand_framing.transcript_head` and `transcript_foot`): the
+  view added them, so dropping its two paragraphs removes exactly them, and a message
+  that quotes the sentence is kept. `remote_transcript.lines` and `view/peek` still
+  carry both. `relayed_transcript_test` pins all of it.
 - `home.Start.visiting` is `Some(home.Visit(orchestrator, session, refresh_ms, read,
   send, stop, archive, decide))` only for this page. `Model` keeps `relay`,
   `relay_timer` and `relay_reads`. `RelayTimerReady`/`RelayTicked` read every

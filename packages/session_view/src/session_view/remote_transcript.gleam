@@ -253,6 +253,15 @@ fn decode_fields(fields: List(#(String, JsonValue))) -> Result(Page, String) {
     }),
   )
 
+  // The sender keeps a page within `page_bytes_limit` (`take`), so a page over
+  // it was not made by an honest sender. A receiver that parses and draws every
+  // page must not take the sender's word for the bound.
+  use <- bool.guard(
+    list.fold(entries, 0, fn(total, record) { total + encoded_bytes(record) })
+      > page_bytes_limit,
+    Error("the page's entries are over their byte bound"),
+  )
+
   // Read the omitted entry count for the page.
   use omitted <- result.try(case list.key_find(fields, "omitted") {
     Ok(json.Int(count)) if count >= 0 -> Ok(count)

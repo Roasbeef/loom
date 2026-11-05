@@ -459,3 +459,41 @@ checks its expected epoch and operation revision before the existing TopHost
 callback; discovery alone never grants access. The legacy named port receives no
 migrated request. The acknowledgement, authority, identity and retry semantics
 above remain, with explicit envelope byte limits recorded in 105.
+
+## Addendum: the relayed page renders and unframes (2026-11-04)
+
+Issue #1135 tracks making a relayed session's page match a local one. Two
+defects of the page fall inside this proposal and are fixed here. No wire
+shape, constructor, authority or bound changes: the page still reads
+`TopHistory` pages of the `ChildHistory` shape, and the same entries reach it.
+
+The page drew each entry as one line of words, so an answer's Markdown, a
+table and a tool call showed as source ("tool: bash", a literal `<details>`).
+It now draws the page's entries through the lane a local session's page uses.
+`web_view/relayed_lane` projects the entries into `session_view/turns` pieces,
+without a capture, and `view/lane.reading` draws them: answers are rendered
+Markdown, a tool call is a folded step, a settled turn's work is drawn open
+under its divider because this page has no message that would ask for a fold.
+The trust rule is unchanged. The lane puts every transcript string in a text
+node or in the closed tree of `session_view/markdown`: raw HTML in an answer is
+the characters it was written with, an image is text, and a link is a pair of
+text children that the browser checks before it can be followed, so a
+`javascript:` destination is never an attribute. `reading` has no session, so
+it draws no picture and no link to a result, both of which are addresses on a
+session this daemon holds. The projection also drops any reasoning block a
+page carries, as the box does before it sends one. Because the page now parses
+every entry it receives, the decoder (`remote_transcript.decode`) refuses a page
+whose entries encode to more than `page_bytes_limit`, the bound the box already
+cuts to, rather than taking the sender's word for it.
+
+The page also drew the head and foot lines of the framing that 090 gives an
+agent that reads a remote child's transcript (`strand_framing.transcript_head`
+and `transcript_foot`). That framing tells a model whose words it is reading;
+the owner reading their own session's page needs neither line, and the
+placement strip already says where the session lives. The page no longer draws
+them. Nothing is stripped from text: the lines were added by the view, so
+removing the view's two paragraphs removes exactly the framing, and a message
+that quotes the sentence is kept as written. The framing is unchanged for
+every other reader: `remote_transcript.lines`, which the terminal draws, and
+the Strands tab's peek (`view/peek`) keep both lines, and their tests still
+pin them.
