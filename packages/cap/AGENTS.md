@@ -414,7 +414,11 @@ ownership and checked-interval limits are in
   cooperation from the dying process is needed. The combinator signals every
   losing worker before it waits on the original monitors, then returns only
   after every Down has joined. This ordering prevents one slow exit from
-  postponing cancellation of its siblings.
+  postponing cancellation of its siblings. The same treatment reaches a
+  caller whose wait merely lapsed: `perform` sends the actor a `Cancel`
+  carrying the reply subject, so a timed-out call also releases its
+  in-flight slot and its cancel frame. Without it, a run of slow commands
+  permanently exhausted the pooled outstanding-effect cap.
 - **Fail-fast reports the failure which triggered cancellation.** Indices
   absent from the runner's completed-outcome map are tasks it killed after
   observing that failure. They do not become synthetic lower-indexed crashes,
