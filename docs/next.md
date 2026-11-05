@@ -1,5 +1,44 @@
 # Current handoff
 
+## Strand register decoding replay
+
+The [fixed replay](review/strand-poll-replay-2026-11-05.md) isolates the
+remaining strand control-read cost on main `b103ddd28`. A private first-match
+field walk in `machine/codec` removes lookup closures/callbacks while preserving
+all four fresh reads, typed decoding and corruption refusal. Across real memory
+and SQLite writers with held assistant/summary requests, VM reductions fall
+5.14% to 8.14% and caller allocation falls 1.97% to 2.85%. End-to-end CPU/wall
+timings are mixed; no elapsed-time or installed-memory saving is claimed.
+
+Full poll answers/read traces match in 1,356 comparisons, with 1,272 additional
+complete typed-value/corruption-record comparisons. Four isolated semantic
+mutants are rejected, and the candidate-as-baseline control fails the combined
+improvement guard. All 890 selected native tests, the new properties on Erlang
+and Node, and house lint pass. The PR records independent review, hosted results
+and current merge rules separately. No public interface, dependency, cache,
+timer or live process changed. Raw evidence is under
+`.notes/benchmarks/strand-poll/`.
+
+## November 4 live profile
+
+The [fresh CPU/memory profile](review/live-profile-2026-11-04.md) measures
+installed daemon `be9d81d843`, including PR #1153. Uninstrumented windows use
+7.06% and 13.13% of one core; closing RSS is 499.42 MiB and footprint 548 MB.
+The sampled CPU candidate remains SQLite register/snapshot queries (92 of 153
+active samples). In the separate selected allocation trace, strand runtime
+accounts for 63.6% and JSON 10.4%, with 19.43 MB total over 15.355 seconds. A
+node-wide cache probe records 2,350 reads and 86 decodes; these observations do
+not justify another cache. Closing VM allocation is 478.58 MiB across 807
+processes, with a largest process of 10.65 MiB and maximum mailbox length of
+one. These are capacity and activity measurements, not a leak diagnosis or
+a matched installed-savings percentage.
+
+Next, replay strand wait/poll register reads at a fixed workload and separate
+message copying from typed payload decoding, preserving fresh sequence checks
+and corruption refusal. Raw artifacts and the validator are in this tree's
+`.notes/profiles/2026-11-04/`. That profiling round made no production or implementation
+change. The older sections retain their historical workload/build limits.
+
 ## TLS launch preflight (issue #1137)
 
 The owner approved this slice for code and isolated tests, not a live upgrade.

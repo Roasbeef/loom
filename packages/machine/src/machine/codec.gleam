@@ -2027,14 +2027,16 @@ fn fields_of(
   }
 }
 
-/// Looks up an optional named field in a list of key-value fields.
+// A field lookup preserves the first matching key, including objects assembled
+// directly with duplicate keys. Direct recursion removes the field-name closure
+// and callback dispatch from the repeated register-decoding path.
+/// Looks up the first named field without constructing a search callback.
 fn get(fields: Fields, name: String) -> Result(JsonValue, Nil) {
-  list.find_map(fields, fn(field) {
-    case field {
-      #(field_name, value) if field_name == name -> Ok(value)
-      _ -> Error(Nil)
-    }
-  })
+  case fields {
+    [] -> Error(Nil)
+    [#(field_name, value), ..] if field_name == name -> Ok(value)
+    [_, ..rest] -> get(rest, name)
+  }
 }
 
 /// Retrieves a required field from object fields or reports corruption on absence.

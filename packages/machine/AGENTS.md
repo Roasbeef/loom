@@ -70,6 +70,11 @@ Differences from pi are explicit policy amendments recorded in
 - `machine/strand.{StrandConfiguration, StrandState}` — the strand-scoped
   register payloads.
 - `machine/codec` — total JSON codecs for every register payload above.
+  Its private field lookup walks directly to the first matching key without
+  constructing a search callback. Unknown fields and directly constructed
+  duplicate-key objects retain their prior decoding behavior.
+  `codec_field_lookup_test` checks reordered/noisy fields, first-duplicate
+  precedence and complete corruption reports with fixed-seed properties.
 
 ## Relationships
 
