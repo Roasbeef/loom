@@ -372,6 +372,74 @@ fn real_token_peer(ctx: PeerCtx) -> Nil {
   )
 }
 
+// A cleared `proc.run` closes the child's stdin at start, so a command
+// that reads stdin sees EOF rather than an open pipe held until the
+// deadline. The witness helper holds the execution until an `exec_stdin`
+// frame arrives — with the fix the call settles cleanly and the eof
+// flag is true; without it, the cap_result only ever arrives as the
+// deadline refusal.
+pub fn a_cleared_proc_run_closes_stdin_at_start_test() {
+  let dir = fresh_dir("stdin-eof")
+  let witness = process.new_subject()
+  let broker =
+    start_broker(fn() {
+      Ok(fake_helper.start_helper(fake_helper.StdinWitness(witness)))
+    })
+  let cfg = config(dir)
+  let outcome =
+    satellite.run(
+      artifact(),
+      run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
+      broker,
+      cfg,
+      satellite_peer.launcher(fn(ctx) {
+        satellite_peer.send_cap_call(
+          ctx,
+          ctx.token,
+          0,
+          "proc.run",
+          msgpack.MapValue([
+            #(
+              msgpack.StringValue("argv"),
+              msgpack.ArrayValue([msgpack.StringValue("cat")]),
+            ),
+          ]),
+        )
+        let results = satellite_peer.collect_results(ctx, 1, 8000)
+        let settled_cleanly = case results {
+          [#(_, outcome), ..] -> is_code_ok(outcome)
+          _ -> False
+        }
+        satellite_peer.send_outcome(
+          ctx,
+          msgpack.MapValue([
+            #(
+              msgpack.StringValue("settled_cleanly"),
+              msgpack.BoolValue(settled_cleanly),
+            ),
+          ]),
+        )
+      }),
+    ).outcome
+  let assert Ok(satellite.Completed(value)) = outcome
+  assert bool_field(value, "settled_cleanly") == True
+
+  // The witness subject is owned by this process, so its message is read
+  // here after the run. It must say the stdin frame arrived with eof set;
+  // without the close the helper would have held the call forever and
+  // settled_cleanly would have failed the assertion above.
+  let assert Ok(True) = process.receive(witness, 1000)
+  broker.stop(broker)
+}
+
+// Whether a cap_result was the ok arm rather than an in-band refusal.
+fn is_code_ok(outcome: CapOutcome) -> Bool {
+  case outcome {
+    framing.CapOk(_) -> True
+    _ -> False
+  }
+}
+
 // --- the outcome frame gets the same envelope checks (CH-F5) -------------
 
 pub fn an_outcome_frame_of_another_version_is_rejected_test() {

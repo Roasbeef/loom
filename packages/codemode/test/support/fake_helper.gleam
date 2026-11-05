@@ -36,6 +36,13 @@ pub type Behavior {
   /// partly provide: one layer applied, one `skip:`ped, and the helper's
   /// own `degraded` bool (which tracks only bwrap) left false.
   PartialJail
+
+  /// Hold the execution open until an `exec_stdin` frame arrives, then
+  /// settle with a clean exit and report the eof flag on `control`. This
+  /// is how a test observes that a cleared call closed the child's stdin
+  /// at start — the frame whose absence once held a foreground `rg` on
+  /// an open pipe until the deadline.
+  StdinWitness(control: Subject(Bool))
   /// Echo and exit 0, except an argv whose first word is `command`, which
   /// writes `stderr` and exits `code`.
   FailingOn(command: String, code: Int, stderr: String)
@@ -150,6 +157,10 @@ fn react(state: FakeState, frame: framing.Frame) -> FakeState {
   case frame.body {
     framing.ExecStart(argv:, ..) -> exec_start(state, frame.id, argv)
     framing.CancelExecution(..) -> cancelled(state)
+
+    // The eof this frame carries is the whole fact under test: report it,
+    // and settle the execution it was addressed to.
+    framing.ExecStdin(exec_id:, eof:, ..) -> stdin_seen(state, exec_id, eof)
     framing.Heartbeat ->
       reply(state, framing.Frame(id: frame.id, body: framing.Heartbeat))
     _ -> state
@@ -165,6 +176,7 @@ fn exec_start(state: FakeState, id: Int, argv: List(String)) -> FakeState {
         [first, ..] if first == command -> failing_exit(state, id, code, stderr)
         _ -> echo_exit(state, id, argv)
       }
+    StdinWitness(control: _) -> FakeState(..state, running: Some(#(id, argv)))
     HoldForCancel -> FakeState(..state, running: Some(#(id, argv)))
     Gated(control:) -> {
       process.send(control, Started(id:, argv:, release: state.inbox))
@@ -176,6 +188,21 @@ fn exec_start(state: FakeState, id: Int, argv: List(String)) -> FakeState {
 fn release(state: FakeState, id: Int) -> FakeState {
   case state.running {
     Some(#(running_id, argv)) if running_id == id -> echo_exit(state, id, argv)
+    _ -> state
+  }
+}
+
+// The `StdinWitness` arm of a stdin frame: report the eof flag, then
+// settle the held execution cleanly. A `StdinWitness` run that settles
+// without ever passing through here is the bug's signature — the call
+// cleared, the child blocked on a stdin nobody closed, and only the
+// deadline ended it.
+fn stdin_seen(state: FakeState, id: Int, eof: Bool) -> FakeState {
+  case state.behavior {
+    StdinWitness(control:) -> {
+      process.send(control, eof)
+      echo_exit(state, id, ["stdin-seen"])
+    }
     _ -> state
   }
 }

@@ -1593,6 +1593,16 @@ fn run_collector(
     Error(refusal) -> settling.done(refusal_outcome(refusal))
     Ok(handle) -> {
       settling.started(handle)
+
+      // The default router refuses a `stdin` argument, so a cleared
+      // `proc.run` never streams input: nothing will ever write to the
+      // child's stdin. Closing it here, before anything can wait on it,
+      // is what makes a command that reads stdin see EOF instead of an
+      // open pipe. `rg` with no positional path searches stdin when it is
+      // not a tty, so an open pipe held by the helper held the whole call
+      // until the deadline — the same posture `worktree_git` takes for a
+      // command it knows reads no input.
+      broker.stdin(broker, handle, data: <<>>, eof: True)
       report_collected(
         settling,
         broker,
