@@ -145,6 +145,59 @@ pub fn the_pools_and_the_footing_are_read_test() {
   assert older.pools == []
 }
 
+// The directions of spawning with each peer are read when the daemon states them
+// (issue #1137): both, one, and a seed. A reply without the member, one with it
+// empty, and entries that do not decode all read as none.
+pub fn the_spawning_directions_are_read_when_stated_test() {
+  let snapshot =
+    fleet.spawning_overview([
+      fleet.pairing("desk", True, True, [#("seed", json.String("workspace"))]),
+      fleet.pairing("laptop", True, False, [
+        #("add", json.String("[spawners.laptop]")),
+      ]),
+      fleet.pairing("roamer", False, True, [
+        #("seed", json.String("none")),
+        #("add", json.String("[orchestrators.roamer]")),
+      ]),
+    ])
+  assert snapshot.spawning
+    == [
+      machines.Spawning(
+        "desk",
+        machines.Allowed,
+        machines.Allowed,
+        Some("workspace"),
+        None,
+      ),
+      machines.Spawning(
+        "laptop",
+        machines.Allowed,
+        machines.NotAllowed,
+        None,
+        Some("[spawners.laptop]"),
+      ),
+      machines.Spawning(
+        "roamer",
+        machines.NotAllowed,
+        machines.Allowed,
+        Some("none"),
+        Some("[orchestrators.roamer]"),
+      ),
+    ]
+  assert fleet.overview("box").spawning == []
+  assert fleet.spawning_overview([]).spawning == []
+  let skipped =
+    fleet.spawning_overview([
+      json.Object([#("name", json.String("broken"))]),
+      json.Object([
+        #("name", json.String("odd")),
+        #("to_peer", json.String("yes")),
+        #("from_peer", json.Bool(True)),
+      ]),
+    ])
+  assert skipped.spawning == []
+}
+
 // A daemon with no distribution is its host name labelled "This machine", or
 // "This machine" alone when the reply states no host name: the node name the
 // BEAM gave it is never the name it is drawn under. Every other machine keeps

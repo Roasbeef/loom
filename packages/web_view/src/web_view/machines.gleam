@@ -46,8 +46,9 @@
 ////
 //// 1. `decode_overview` reads the whole-deployment document into a `Snapshot`.
 ////    It reads the nodes, merges the ledger's members into the machines, and
-////    reads the links, the directory, the moves, the pools and whether the
-////    asking daemon runs with distribution.
+////    reads the links, the directory, the moves, the pools, the directions of
+////    spawning with each peer and whether the asking daemon runs with
+////    distribution.
 //// 2. `decode_detail` reads the document a read for one node returns, which
 ////    carries that node's long lists.
 //// 3. `summary_words` is the line under the Deployment heading, `title` is the
@@ -376,6 +377,39 @@ pub type Pool {
   )
 }
 
+/// Whether one direction of spawning between the asking daemon and a peer
+/// orchestrator is configured on the asking daemon.
+pub type Direction {
+  /// The daemon's configuration allows it.
+  Allowed
+
+  /// The daemon's configuration does not.
+  NotAllowed
+}
+
+/// The directions of spawning configured with one peer orchestrator, as the
+/// asking daemon states them (issue #1137). The daemon sees only its own
+/// configuration, so each statement is about what it holds and not about the
+/// peer.
+pub type Spawning {
+  Spawning(
+    /// The peer's key in the asking daemon's configuration.
+    name: String,
+    /// Whether the asking daemon can spawn on the peer: it holds an
+    /// `[orchestrators.<name>]` row for it.
+    to_peer: Direction,
+    /// Whether the peer can spawn on the asking daemon: it holds a
+    /// `[spawners.<name>]` table for it.
+    from_peer: Direction,
+    /// The `seed` setting of that table, `none` or `workspace`, when there is
+    /// one.
+    seed: Option(String),
+    /// The table that would complete a pairing with one direction, as the
+    /// daemon wrote it, when there is one.
+    add: Option(String),
+  )
+}
+
 /// The group a machine is listed under on the Admin page, by what it does.
 pub type Group {
   /// It owns sessions. The asking daemon is always one.
@@ -429,6 +463,9 @@ pub type Snapshot {
     pools: List(Pool),
     /// The asking daemon's host name, when the reply states it.
     host: Option(String),
+    /// The directions of spawning configured with each peer orchestrator. Empty
+    /// when the daemon has none to state or predates the member.
+    spawning: List(Spawning),
   )
 }
 
@@ -624,6 +661,7 @@ pub fn decode_overview(document: JsonValue) -> Result(Snapshot, String) {
       |> result.map(optional_list(_, "pools", pool))
       |> result.unwrap([]),
     host: optional_text(document, "host"),
+    spawning: optional_list(document, "spawning", spawning),
   ))
 }
 
@@ -760,6 +798,39 @@ fn pool(value: JsonValue) -> Result(Pool, String) {
     executors: optional_list(value, "executors", text),
     eligible: optional_list(value, "eligible", text),
   )
+}
+
+/// Decodes one peer's directions of spawning. The name and both directions are
+/// required of an entry, and an entry without them is skipped with the rest of
+/// the optional list.
+fn spawning(value: JsonValue) -> Result(Spawning, String) {
+  use name <- result.try(text_at(value, "name"))
+  use to_peer <- result.try(direction_at(value, "to_peer"))
+  use from_peer <- result.map(direction_at(value, "from_peer"))
+  Spawning(
+    name:,
+    to_peer:,
+    from_peer:,
+    seed: optional_text(value, "seed"),
+    add: optional_text(value, "add"),
+  )
+}
+
+/// Decodes a direction, which the daemon writes as a boolean.
+fn direction_at(value: JsonValue, key: String) -> Result(Direction, String) {
+  use found <- result.try(field(value, key))
+
+  // Only a boolean is a direction.
+  case found {
+    json.Bool(True) -> Ok(Allowed)
+    json.Bool(False) -> Ok(NotAllowed)
+    json.Object(_)
+    | json.Array(_)
+    | json.String(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Null -> Error(key <> " is not a boolean")
+  }
 }
 
 /// Decodes deployment membership ledger head sequence and self name.

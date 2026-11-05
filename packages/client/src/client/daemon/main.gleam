@@ -2405,7 +2405,11 @@ fn deployment_reach(config: Config) -> deployment.Reach {
     None -> reach
   }
 
-  deployment.Reach(..reach, host: ffi_os.host_name() |> option.from_result)
+  deployment.Reach(
+    ..reach,
+    host: ffi_os.host_name() |> option.from_result,
+    spawners: config.spawners,
+  )
 }
 
 /// The executors this daemon uses: the `[executors.<name>]` rows of its file

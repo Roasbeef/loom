@@ -364,6 +364,39 @@ pub fn standalone() -> machines.Snapshot {
   snapshot
 }
 
+/// One entry of the `spawning` member: a peer and the two directions, with the
+/// members only some entries carry.
+pub fn pairing(
+  name: String,
+  to_peer: Bool,
+  from_peer: Bool,
+  extra: List(#(String, JsonValue)),
+) -> JsonValue {
+  json.Object(list.append(
+    [
+      #("name", text(name)),
+      #("node", text(name <> "@10.0.0.7")),
+      #("to_peer", json.Bool(to_peer)),
+      #("from_peer", json.Bool(from_peer)),
+    ],
+    extra,
+  ))
+}
+
+/// The whole deployment's document with a `spawning` member of these entries.
+pub fn spawning_document(entries: List(JsonValue)) -> JsonValue {
+  let assert json.Object(fields) = document("box") as "the fixture is an object"
+  json.Object(list.append(fields, [#("spawning", json.Array(entries))]))
+}
+
+/// The page's reading of the whole deployment when the daemon states these
+/// spawning entries.
+pub fn spawning_overview(entries: List(JsonValue)) -> machines.Snapshot {
+  let assert Ok(snapshot) = machines.decode_overview(spawning_document(entries))
+    as "the fixture decodes"
+  snapshot
+}
+
 /// The page's reading of the whole deployment with the executor named
 /// `box_name`.
 pub fn overview(box_name: String) -> machines.Snapshot {

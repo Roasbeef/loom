@@ -1300,3 +1300,108 @@ pub fn a_node_that_connected_and_gave_no_report_says_so_test() {
     tui.format_deployment(silent, tui.ShowDeployment(None, tui.AsText))
   assert string.contains(drawn, "connected, no report")
 }
+
+// --- spawning directions (issue #1137) ----------------------------------------
+
+fn pairing(
+  name: String,
+  to_peer: Bool,
+  from_peer: Bool,
+  extra: List(#(String, json.JsonValue)),
+) -> json.JsonValue {
+  json.Object(list.append(
+    [
+      member("name", json.String(name)),
+      member("node", json.String(name <> "@10.0.0.7")),
+      member("to_peer", json.Bool(to_peer)),
+      member("from_peer", json.Bool(from_peer)),
+    ],
+    extra,
+  ))
+}
+
+fn with_spawning(entries: List(json.JsonValue)) -> json.JsonValue {
+  let assert json.Object(members) = reply()
+  json.Object(list.append(members, [member("spawning", json.Array(entries))]))
+}
+
+pub fn both_one_and_no_directions_are_read_and_drawn_test() {
+  let document =
+    with_spawning([
+      pairing("desk", True, True, [member("seed", json.String("workspace"))]),
+      pairing("laptop", True, False, [
+        member("add", json.String("[spawners.laptop]")),
+      ]),
+      pairing("roamer", False, True, [
+        member("seed", json.String("none")),
+        member("add", json.String("[orchestrators.roamer]")),
+      ]),
+    ])
+  let assert Ok(status) = deployment_view.decode(document)
+  assert list.map(status.spawning, fn(each) { #(each.to_peer, each.from_peer) })
+    == [
+      #(deployment_view.Open, deployment_view.Open),
+      #(deployment_view.Open, deployment_view.Closed),
+      #(deployment_view.Closed, deployment_view.Open),
+    ]
+  assert list.map(status.spawning, fn(each) { each.seed })
+    == [Some("workspace"), None, Some("none")]
+
+  // Each peer is one line that states both directions, and a peer with one
+  // direction names the table to add and where.
+  let drawn = deployment_view.status_text(status)
+  assert string.contains(
+    drawn,
+    "SPAWNING\n"
+      <> "  this machine can spawn on desk; desk can spawn here (seed workspace)\n"
+      <> "  this machine can spawn on laptop; laptop cannot spawn here; to enable the other direction, add [spawners.laptop] on this machine and restart the daemon\n"
+      <> "  this machine cannot spawn on roamer; roamer can spawn here (seed none); to enable the other direction, add [orchestrators.roamer] on this machine and restart the daemon",
+  )
+}
+
+pub fn a_reply_without_the_spawning_member_draws_no_section_test() {
+  let assert Ok(status) = deployment_view.decode(reply())
+  assert status.spawning == []
+  assert !string.contains(deployment_view.status_text(status), "SPAWNING")
+
+  // The member is present and empty on a daemon with no peers, and draws nothing.
+  let assert Ok(empty) = deployment_view.decode(with_spawning([]))
+  assert empty.spawning == []
+  assert !string.contains(deployment_view.status_text(empty), "SPAWNING")
+}
+
+pub fn a_spawning_entry_that_does_not_decode_is_skipped_test() {
+  let document =
+    with_spawning([
+      json.Object([member("name", json.String("broken"))]),
+      pairing("desk", True, True, []),
+      json.Object([
+        member("name", json.String("odd")),
+        member("node", json.String("odd@10.0.0.7")),
+        member("to_peer", json.String("yes")),
+        member("from_peer", json.Bool(True)),
+      ]),
+    ])
+  let assert Ok(status) = deployment_view.decode(document)
+  assert list.map(status.spawning, fn(each) { each.name }) == ["desk"]
+  let drawn = deployment_view.status_text(status)
+  assert string.ends_with(
+    drawn,
+    "SPAWNING\n  this machine can spawn on desk; desk can spawn here",
+  )
+  assert !string.contains(drawn, "broken")
+  assert !string.contains(drawn, "odd")
+}
+
+pub fn a_hostile_peer_name_cannot_start_a_row_in_the_spawning_section_test() {
+  let document =
+    with_spawning([
+      pairing("desk\nSPAWNING forged", True, False, [
+        member("add", json.String("[spawners.desk]\u{1b}[2J")),
+      ]),
+    ])
+  let assert Ok(status) = deployment_view.decode(document)
+  let drawn = deployment_view.status_text(status)
+  assert !string.contains(drawn, "\u{1b}")
+  assert !string.contains(drawn, "\nSPAWNING forged")
+}

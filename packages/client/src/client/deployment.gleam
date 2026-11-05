@@ -90,6 +90,7 @@ import client/pools.{type Pool}
 import client/remote/address
 import client/remote/orchestrator_port
 import client/remote/protocol
+import client/spawners.{type Spawner}
 import core/json.{type JsonValue}
 import gleam/int
 import gleam/list
@@ -215,6 +216,11 @@ pub type Reach {
     /// (`main.deployment_reach`), or none when it could not be read. Both
     /// constructors leave it out.
     host: Option(String),
+    /// The `[spawners.<name>]` tables the daemon read at start, which the
+    /// whole-deployment reply sets beside its orchestrator rows to say which
+    /// directions of spawning exist (`client/spawn_pairing`). Both constructors
+    /// leave it empty.
+    spawners: List(Spawner),
     /// Connects to a configured node.
     dial: Dial,
     /// Asks a connected node for its report.
@@ -263,6 +269,7 @@ pub fn alone(self: String) -> Reach {
     self_name: self,
     footing: Standalone,
     host: None,
+    spawners: [],
     dial: fn(_node, _within_ms) { Error(Unavailable) },
     ask: fn(_node, _within_ms) { Error(orchestrator_port.PortGone) },
     sessions: listed_sessions.unlisted,
@@ -288,6 +295,7 @@ pub fn over(membership: distribution.Membership, self: String) -> Reach {
     self_name: self,
     footing: Distributed,
     host: None,
+    spawners: [],
     dial: fn(node, within_ms) {
       use peer <- result.try(
         distribution.peer(membership, node)

@@ -283,6 +283,40 @@ pub type Pool {
   )
 }
 
+/// Whether one direction of spawning between the asking daemon and a peer is
+/// configured on the asking daemon.
+pub type Direction {
+  /// The daemon's configuration allows it.
+  Open
+
+  /// The daemon's configuration does not.
+  Closed
+}
+
+/// The directions of spawning configured with one peer orchestrator, as the
+/// asking daemon states them (issue #1137). Only its own configuration is
+/// visible to it, so a statement is about what it holds and not about the peer.
+pub type Spawning {
+  Spawning(
+    /// The peer's key in the asking daemon's configuration.
+    name: String,
+    /// The peer's node.
+    node: String,
+    /// Whether the asking daemon can spawn on the peer: it holds an
+    /// `[orchestrators.<name>]` row for it.
+    to_peer: Direction,
+    /// Whether the peer can spawn on the asking daemon: it holds a
+    /// `[spawners.<name>]` table for it.
+    from_peer: Direction,
+    /// The `seed` setting of that table, `none` or `workspace`, when there is
+    /// one.
+    seed: Option(String),
+    /// The table that would complete a pairing with one direction, as the
+    /// asking daemon wrote it, when there is one.
+    add: Option(String),
+  )
+}
+
 /// The session directory as the asking daemon sees it.
 pub type Directory {
   Directory(
@@ -375,6 +409,10 @@ pub type Status {
     /// The asking daemon's membership ledger, when it runs from one and the
     /// request named no node.
     ledger: Option(Ledger),
+    /// The directions of spawning configured with each peer orchestrator, when
+    /// the daemon states them and the request named no node. A daemon built
+    /// before the member existed leaves it empty, as does one with no peers.
+    spawning: List(Spawning),
     /// What an overview left out to fit one frame (`moves`, `node_facts`,
     /// `edges` and the like). Empty when it left nothing out.
     omitted: List(String),
@@ -426,6 +464,7 @@ pub fn decode(document: JsonValue) -> Result(Status, String) {
       Ok(found) -> Some(found)
       Error(_) -> None
     },
+    spawning: optional_list(document, "spawning", spawning),
     omitted: optional_list(document, "omitted", text),
     more: optional_list(document, "more", text),
   ))
@@ -481,6 +520,43 @@ fn move(value: JsonValue) -> Result(Move, String) {
     stalled_ms: optional_count(value, "stalled_ms"),
     reason: optional_text(value, "reason"),
   )
+}
+
+// One peer of the spawning member. The name, the node and both directions are
+// required of an entry, and an entry missing any of them is skipped with the
+// rest of the optional list; the seed and the table to add are read when they
+// are text.
+/// Reads one entry of the `spawning` member.
+fn spawning(value: JsonValue) -> Result(Spawning, String) {
+  use name <- result.try(text_at(value, "name"))
+  use node <- result.try(text_at(value, "node"))
+  use to_peer <- result.try(direction_at(value, "to_peer"))
+  use from_peer <- result.map(direction_at(value, "from_peer"))
+  Spawning(
+    name:,
+    node:,
+    to_peer:,
+    from_peer:,
+    seed: optional_text(value, "seed"),
+    add: optional_text(value, "add"),
+  )
+}
+
+/// Reads a direction, which the daemon writes as a boolean.
+fn direction_at(value: JsonValue, key: String) -> Result(Direction, String) {
+  use found <- result.try(field(value, key))
+
+  // Only a boolean is a direction.
+  case found {
+    json.Bool(True) -> Ok(Open)
+    json.Bool(False) -> Ok(Closed)
+    json.Object(_)
+    | json.Array(_)
+    | json.String(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Null -> Error(key <> " is not a boolean")
+  }
 }
 
 // The ledger member is optional like the rest of what a later daemon adds, so a
@@ -761,6 +837,10 @@ pub fn status_text(status: Status) -> String {
       case status.edges {
         [] -> []
         edges -> [links(status, edges)]
+      },
+      case status.spawning {
+        [] -> []
+        found -> [spawning_text(found)]
       },
       case directory_lines(status), move_lines(status) {
         [], [] -> []
@@ -1045,6 +1125,45 @@ fn named(nodes: List(Node), node: String) -> String {
   list.find(nodes, fn(each) { each.node == node })
   |> result.map(fn(each) { each.name })
   |> result.unwrap(node)
+}
+
+// The directions of spawning with each peer, one line each. A statement is about
+// the asking daemon's own configuration: whether it holds a row to spawn on the
+// peer and a table that lets the peer spawn on it. A peer with one direction
+// carries the table the operator would add for the other, as the daemon names it.
+// The daemon reads its tables once, so the line says to restart it.
+/// Formats the spawning section of a whole-deployment reply.
+fn spawning_text(found: List(Spawning)) -> String {
+  string.join(["SPAWNING", ..list.map(found, spawning_line)], "\n")
+}
+
+/// Formats the directions of spawning with one peer as a line.
+fn spawning_line(each: Spawning) -> String {
+  let peer = clean(each.name)
+
+  // The row the asking daemon holds for the peer decides the first half.
+  let there = case each.to_peer {
+    Open -> "this machine can spawn on " <> peer
+    Closed -> "this machine cannot spawn on " <> peer
+  }
+
+  // The peer's spawner table decides the second, and carries the seed.
+  let here = case each.from_peer, each.seed {
+    Open, Some(seed) -> peer <> " can spawn here (seed " <> clean(seed) <> ")"
+    Open, None -> peer <> " can spawn here"
+    Closed, _ -> peer <> " cannot spawn here"
+  }
+
+  // A peer with one direction names the table that would add the other.
+  let add = case each.add {
+    Some(table) ->
+      "; to enable the other direction, add "
+      <> clean(table)
+      <> " on this machine and restart the daemon"
+    None -> ""
+  }
+
+  "  " <> there <> "; " <> here <> add
 }
 
 // One line per pair of nodes. Edges between the same two nodes are one line

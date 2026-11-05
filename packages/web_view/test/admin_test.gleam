@@ -10,6 +10,7 @@
 //// until it is hidden, that a read that was overtaken is dropped, and how a page
 //// that can no longer be served ends.
 
+import core/json
 import fleet_fixture as fleet
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -1774,6 +1775,45 @@ pub fn the_machines_are_grouped_by_what_they_do_test() {
   assert count(html, "class=\"pill pending\"") == 2
   assert count(html, "class=\"pill ended\"") == 1
   assert count(html, "class=\"pill online\"") == 2
+}
+
+// The directions of spawning with each peer are drawn under the pools (issue
+// #1137): each peer says whether this machine can spawn on it and whether it
+// can spawn here with its seed, and a peer with one direction names the table to
+// add. A name the daemon sent is a text node, so markup in it is escaped.
+pub fn the_spawning_directions_of_each_peer_are_drawn_test() {
+  let snapshot =
+    fleet.spawning_overview([
+      fleet.pairing("desk", True, True, [#("seed", json.String("workspace"))]),
+      fleet.pairing("<b>laptop</b>", True, False, [
+        #("add", json.String("[spawners.laptop]")),
+      ]),
+    ])
+  let stated =
+    admin.Start(..start(), deployment: fn(_, deliver) {
+      deliver(machines.Heard(snapshot))
+    })
+  let #(model, _) = opened_machines(stated)
+  let html = drawn(model)
+  let assert Ok(#(_, spawning)) = string.split_once(html, ">Spawning<")
+  assert string.contains(spawning, "both ways")
+  assert string.contains(spawning, "one way")
+  assert string.contains(spawning, "This machine can spawn on it")
+  assert string.contains(spawning, "(seed workspace)")
+  assert string.contains(
+    spawning,
+    "add [spawners.laptop] on this machine and restart the daemon",
+  )
+  assert string.contains(spawning, "&lt;b&gt;laptop&lt;/b&gt;")
+  assert !string.contains(html, "<b>laptop</b>")
+
+  // A daemon that states none draws no Spawning heading.
+  let plain =
+    admin.Start(..start(), deployment: fn(_, deliver) {
+      deliver(machines.Heard(fleet.overview("box")))
+    })
+  let #(unstated, _) = opened_machines(plain)
+  assert !string.contains(drawn(unstated), ">Spawning<")
 }
 
 // A daemon with no distribution is one card for "This machine", with its build
