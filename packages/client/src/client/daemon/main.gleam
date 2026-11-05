@@ -53,6 +53,7 @@ import argv
 import client/agency
 import client/catalog
 import client/catalogue_page
+import client/child_join
 import client/config_watch
 import client/daemon/limits
 import client/daemon/listen_address
@@ -1501,8 +1502,16 @@ pub fn start_orchestrator_port(
             delegate_host.resolver(delegates),
             delegate_host.releaser(delegates),
             delegate_host.existing_endpoint(delegates),
-            fn(spawner, site, request) {
-              spawn_seed.receive(config.state_node, spawner, site, request)
+            delegate_host.children(delegates),
+            fn(spawner, parent, site, request) {
+              spawn_seed.land(
+                config.state_node,
+                delegate_host.children(delegates),
+                spawner,
+                parent,
+                site,
+                request,
+              )
             },
             spawn_return.over(
               config.state_node,
@@ -1913,8 +1922,16 @@ pub fn spawn_host(
     delegates,
     releasing,
     existing,
-    fn(spawner, site, request) {
-      spawn_seed.receive(state_node.none(), spawner, site, request)
+    delegate_host.no_children(),
+    fn(spawner, parent, site, request) {
+      spawn_seed.land(
+        state_node.none(),
+        delegate_host.no_children(),
+        spawner,
+        parent,
+        site,
+        request,
+      )
     },
     spawn_return.none(),
     logger,
@@ -1922,17 +1939,21 @@ pub fn spawn_host(
 }
 
 /// `spawn_host` for a daemon that takes a workspace with a spawn
-/// (protocol-change/107). `seeded` judges a request before any delegate session
-/// is found or made for it: it passes a request with no state through untouched,
-/// refuses one the spawner's `seed` does not allow, answers `StateMissing` when the
-/// state is not all in the store, and otherwise makes the copy and returns the
-/// request the Agency serves (`client/spawn_seed.receive`).
+/// (protocol-change/107). `seeded` judges a request before the Agency is asked to
+/// start anything: it passes a request with no state through untouched, refuses one
+/// the spawner's `seed` does not allow, answers `StateMissing` when the state is not
+/// all in the store, and otherwise puts the state where the child will work and
+/// returns the request the Agency serves (`client/spawn_seed.land`). For a
+/// spawner placed on an executor or a pool that is a session of the child's own,
+/// made through `children`, with its workspace filled, and the child is started in
+/// it, so that a child's first turn is never before its workspace is whole.
 ///
 /// `returning` is the other end of a seeded child's life
 /// (`client/spawn_return`): a spawn that was handed a state is remembered once it
 /// has started, and each entry of a join is passed through it, so a finished child's
 /// commits are captured and sent to the parent's machine before the entry is
-/// answered.
+/// answered. A join, a message into a child and the end of a run reach a seeded
+/// child's own session through `children` (`client/child_join`).
 ///
 /// ## Examples
 ///
@@ -1948,11 +1969,23 @@ pub fn spawn_host_seeding(
     Result(Int, remote_spawn.SpawnRefusal),
   existing: fn(spawners.Spawner, remote_spawn.Parent) ->
     Result(Option(agency.DelegateEndpoint), remote_spawn.SpawnRefusal),
-  seeded: fn(spawners.Spawner, remote_spawn.CallSite, remote_spawn.Request) ->
-    Result(remote_spawn.Request, remote_spawn.SpawnRefusal),
+  children: delegate_host.ChildSessions,
+  seeded: fn(
+    spawners.Spawner,
+    remote_spawn.Parent,
+    remote_spawn.CallSite,
+    remote_spawn.Request,
+  ) -> Result(spawn_seed.Landed, remote_spawn.SpawnRefusal),
   returning: spawn_return.Returning,
   logger: Logger,
 ) -> orchestrator_port.SpawnHost {
+  // The functions the closures below use, projected once so that none of them
+  // holds on to the whole record it came from.
+  let session_of = returning.session_of
+  let remember_child = returning.remember
+  let open_child = children.open
+  let live_children = children.live
+  let release_child = children.release
   let spawner_of = fn(origin: remote_spawn.Origin) {
     spawners.by_node(configured, origin.node)
     |> result.replace_error(remote_spawn.UnknownSpawner(node: origin.node))
@@ -1979,31 +2012,83 @@ pub fn spawn_host_seeding(
       ),
     )
   }
+
+  // A message about one child goes to the session that child runs in: its own,
+  // when it was seeded onto an executor, and the pair's otherwise.
+  let serving_child = fn(origin: remote_spawn.Origin, child: agent.Handle) {
+    use spawner <- result.try(
+      spawners.by_node(configured, origin.node)
+      |> result.replace_error(remote_spawn.UnknownSpawner(node: origin.node)),
+    )
+
+    // The child's own session when it has one, and the pair's when it has not.
+    case session_of(spawner, origin.parent, child) {
+      Some(name) -> {
+        use opened <- result.try(open_child(spawner, origin.parent, name))
+        option.to_result(
+          opened,
+          remote_spawn.InvalidArgument(
+            reason: "this orchestrator holds no such child for that parent",
+          ),
+        )
+      }
+      None -> serving_existing(origin)
+    }
+  }
   orchestrator_port.SpawnHost(
     spawn: fn(origin, call_site, depth, parent_tools, request) {
       let outcome = {
         // A state is judged first, so a spawner that may not send one leaves no
         // session and no copy behind.
         use spawner <- result.try(spawner_of(origin))
-        use served <- result.try(seeded(spawner, call_site, request))
-        use #(spawner, endpoint) <- result.try(serving(origin))
-        use spawned <- result.map(endpoint.spawn(
-          remote_spawn.Delegation(
-            parent: origin.parent,
-            depth:,
-            parent_tools:,
-            terms: delegate_host.terms_of(spawner),
-          ),
+        use landed <- result.try(seeded(
+          spawner,
+          origin.parent,
           call_site,
-          served,
+          request,
         ))
+
+        // A seeded child on an executor starts in the session its workspace was
+        // put in, and any other child in the pair's.
+        use endpoint <- result.try(case landed.session {
+          Some(own) -> Ok(own)
+          None -> result.map(serving(origin), fn(found) { found.1 })
+        })
+
+        let started =
+          endpoint.spawn(
+            remote_spawn.Delegation(
+              parent: origin.parent,
+              depth:,
+              parent_tools:,
+              terms: delegate_host.terms_of(spawner),
+            ),
+            call_site,
+            landed.request,
+          )
+
+        // A session made for a child that was then refused holds a slot and a
+        // worktree for nothing, so a definitive refusal ends it.
+        use spawned <- result.map(
+          unstarted_ended(started, landed.session, fn() {
+            case request.state {
+              Some(state) ->
+                release_child(
+                  spawner,
+                  origin.parent,
+                  spawn_seed.name_of(call_site, state),
+                )
+              None -> Ok(0)
+            }
+          }),
+        )
 
         // A child that was handed a state is remembered once it exists, so that
         // its commits can be returned when it has finished. A resend of the same
         // spawn remembers the same child again.
         case request.state {
           Some(state) ->
-            returning.remember(
+            remember_child(
               spawner,
               origin.parent,
               call_site,
@@ -2047,27 +2132,43 @@ pub fn spawn_host_seeding(
       outcome
     },
     join: fn(origin, handles, within_ms) {
-      use #(spawner, endpoint) <- result.try(serving(origin))
-      use entries <- result.map(endpoint.join(origin.parent, handles, within_ms))
+      use spawner <- result.try(spawner_of(origin))
 
       // A finished child that was handed a state has its commits returned
-      // before it is reported finished.
-      list.map(entries, returning.settle(spawner, origin.parent, _))
+      // before it is reported finished, and a seeded child on an executor is
+      // asked in its own session.
+      child_join.join(
+        child_join.Joining(
+          spawner:,
+          parent: origin.parent,
+          pair: fn() { result.map(serving(origin), fn(found) { found.1 }) },
+          children:,
+          returning:,
+        ),
+        handles,
+        within_ms,
+      )
     },
     run_ended: fn(origin, operation) {
-      use #(_spawner, endpoint) <- result.try(serving(origin))
-      endpoint.run_ended(operation)
+      use #(spawner, endpoint) <- result.try(serving(origin))
+      use stopped <- result.try(endpoint.run_ended(operation))
+
+      // The children that run in sessions of their own end with the run too.
+      use live <- result.try(live_children(spawner, origin.parent))
+      list.try_fold(live, stopped, fn(total, each) {
+        each.run_ended(operation) |> result.map(fn(more) { total + more })
+      })
     },
     release: fn(origin) {
       use spawner <- result.try(spawner_of(origin))
       releasing(spawner, origin.parent)
     },
     send: fn(origin, child, message_id, text) {
-      use endpoint <- result.try(serving_existing(origin))
+      use endpoint <- result.try(serving_child(origin, child))
       endpoint.send(origin.parent, child, message_id, text)
     },
     resolve: fn(origin, child, escalation_id, decision, expected_seq, decider) {
-      use endpoint <- result.try(serving_existing(origin))
+      use endpoint <- result.try(serving_child(origin, child))
       endpoint.resolve(
         origin.parent,
         child,
@@ -2086,9 +2187,14 @@ pub fn spawn_host_seeding(
         spawners.Hidden -> Error(remote_spawn.TranscriptHidden)
       })
 
-      use found <- result.try(existing(spawner, origin.parent))
+      // The child's own session when it has one, and the pair's session when it
+      // is open, answer the read; a closed pair's session holds no child to read.
+      use found <- result.try(case session_of(spawner, origin.parent, child) {
+        Some(name) -> open_child(spawner, origin.parent, name)
+        None -> existing(spawner, origin.parent)
+      })
 
-      // Query history on existing child endpoint if found.
+      // Query history on the child's endpoint if found.
       case found {
         Some(endpoint) -> endpoint.history(origin.parent, child, cursor, limit)
         None ->
@@ -2099,6 +2205,42 @@ pub fn spawn_host_seeding(
       }
     },
   )
+}
+
+/// Ends the session made for a child whose start was refused for good, and
+/// answers the start as it was.
+///
+/// A child that started has its session; one that did not, and was refused for a
+/// reason a resend does not change, would hold a slot against the spawner's
+/// `max_sessions` and a worktree on the executor for nothing, until the parent was
+/// deleted. A refusal that asks the sender to try again, or whose outcome is not
+/// known (`StoreFailure`), leaves the session for the next ask. A child in the
+/// pair's session has no session of its own to end.
+fn unstarted_ended(
+  started: Result(a, remote_spawn.SpawnRefusal),
+  own: Option(agency.DelegateEndpoint),
+  release: fn() -> Result(Int, remote_spawn.SpawnRefusal),
+) -> Result(a, remote_spawn.SpawnRefusal) {
+  case started, own {
+    Error(refusal), Some(_) ->
+      case refusal {
+        remote_spawn.StoreFailure(..)
+        | remote_spawn.NotYetOpen(..)
+        | remote_spawn.StateMissing(..) -> started
+        remote_spawn.UnknownSpawner(..)
+        | remote_spawn.ParentRunEnded
+        | remote_spawn.CapReached(..)
+        | remote_spawn.ToolOutsideCeiling(..)
+        | remote_spawn.InvalidArgument(..)
+        | remote_spawn.NameAlreadyMinted
+        | remote_spawn.TranscriptHidden
+        | remote_spawn.StateRefused(..) -> {
+          let _released = release()
+          started
+        }
+      }
+    _, _ -> started
+  }
 }
 
 /// The functions the orchestrator port calls for what a child on another
