@@ -241,6 +241,125 @@ pub fn channel_cancels_dead_caller_test() {
   channel.stop(handle)
 }
 
+// A caller whose wait lapsed must not leave its call in flight: the
+// slot it holds in the pooled outstanding-effect ledger is released and
+// a cancel frame goes out, or five timed-out calls would exhaust the
+// pool for the rest of the channel's life (the "budget" refusals that
+// follow a run of "no cap_result within deadline" errors).
+pub fn channel_cancels_timed_out_call_test() {
+  let sent = process.new_subject()
+  let send = fn(bytes) {
+    process.send(sent, bytes)
+    Nil
+  }
+  let assert Ok(handle) = channel.start(<<1>>, send)
+  let ch = channel.to_channel(handle)
+
+  // The caller gives up when the deadline lapses but stays alive behind a
+  // release handshake until the cancel has been asserted. That is what
+  // separates the timeout path from the dead-caller path: if the caller
+  // simply returned, its own death would emit the same cancel through
+  // cancel_for_caller and the test would pass without the fix.
+  let result = process.new_subject()
+  let release_handle = process.new_subject()
+  let _ =
+    process.spawn_unlinked(fn() {
+      let channel.Channel(call:) = ch
+      // The wait is deadline plus the reply margin, so the Cancel this
+      // test needs is not sent until roughly five seconds in. The
+      // receives below budget for that.
+      let outcome = call("proc.run", map([]), 1)
+      // Block here, still alive, until the test releases it. The release
+      // subject is created by this caller, because only a subject's owner
+      // may receive from it; the test gets it over release_handle.
+      let release = process.new_subject()
+      process.send(release_handle, release)
+      process.send(result, outcome)
+      process.receive(release, 60_000)
+    })
+
+  // Its cap_call frame (id 0) goes out, then the lapse releases it: a
+  // cancel for id 0 must follow while the caller is still alive.
+  let assert Ok(call_bytes) = process.receive(sent, 1000)
+  assert frame_head(call_bytes) == Ok(#(0, "cap_call"))
+  let assert Ok(cancel_bytes) = process.receive(sent, 8000)
+  assert frame_head(cancel_bytes) == Ok(#(0, "cancel"))
+
+  // The caller's wait really did lapse at its own deadline rather than
+  // settling in band. Only now release it so it can finish.
+  let assert Ok(Error(_)) = process.receive(result, 1000)
+  let assert Ok(release) = process.receive(release_handle, 1000)
+  process.send(release, Nil)
+
+  // The channel still accepts a later call on a fresh id. The cancel
+  // above is the proof the slot was released: the channel actor has no
+  // pooled ledger of its own, so a fresh id alone would not show the host
+  // stopped counting the abandoned call.
+  let later = process.new_subject()
+  let _ =
+    process.spawn_unlinked(fn() {
+      let channel.Channel(call:) = ch
+      process.send(later, call("fs.read", map([]), 60_000))
+    })
+  let assert Ok(second_call) = process.receive(sent, 1000)
+  assert frame_head(second_call) == Ok(#(1, "cap_call"))
+  channel.stop(handle)
+}
+
+// The lapse must not disturb a sibling call: cancelling by reply subject
+// touches only the entry that subject names.
+pub fn channel_cancel_spares_sibling_test() {
+  let sent = process.new_subject()
+  let send = fn(bytes) {
+    process.send(sent, bytes)
+    Nil
+  }
+  let assert Ok(handle) = channel.start(<<1>>, send)
+  let ch = channel.to_channel(handle)
+
+  // The lapsed caller goes first and its frame (id 0) is awaited before
+  // the sibling spawns, so the actor hands out ids in the order the test
+  // assumes rather than the scheduler's. It stays alive behind a release
+  // handshake, so the cancel it produces can only come from the timeout
+  // path, not from its own death.
+  let lapsed = process.new_subject()
+  let release_handle = process.new_subject()
+  let _ =
+    process.spawn_unlinked(fn() {
+      let channel.Channel(call:) = ch
+      let outcome = call("proc.run", map([]), 1)
+      // The caller owns the release subject: only a subject's owner may
+      // receive from it, so it is created here and handed to the test.
+      let release = process.new_subject()
+      process.send(release_handle, release)
+      process.send(lapsed, outcome)
+      process.receive(release, 60_000)
+    })
+  let assert Ok(first_call) = process.receive(sent, 1000)
+  assert frame_head(first_call) == Ok(#(0, "cap_call"))
+
+  // Only now spawn the patient sibling, whose frame must carry id 1.
+  let patient = process.new_subject()
+  let _ =
+    process.spawn_unlinked(fn() {
+      let channel.Channel(call:) = ch
+      process.send(patient, call("fs.read", map([]), 60_000))
+    })
+  let assert Ok(second_call) = process.receive(sent, 1000)
+  assert frame_head(second_call) == Ok(#(1, "cap_call"))
+
+  // The lapse cancels only id 0. The patient call is still live, so a
+  // delivery for it still reaches its caller.
+  let assert Ok(cancel_bytes) = process.receive(sent, 8000)
+  assert frame_head(cancel_bytes) == Ok(#(0, "cancel"))
+  channel.deliver(handle, 1, channel.CapOk(msgpack.StringValue("later")))
+  let assert Ok(answer) = process.receive(patient, 1000)
+  assert answer == Ok(msgpack.StringValue("later"))
+  let assert Ok(release) = process.receive(release_handle, 1000)
+  process.send(release, Nil)
+  channel.stop(handle)
+}
+
 // --- cap/task: ordering, concurrency, failures, cancellation ------------
 
 pub fn parallel_map_preserves_order_test() {

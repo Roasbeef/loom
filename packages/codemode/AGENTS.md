@@ -858,7 +858,11 @@ session and sends it many invocations.
   `proc.run`, a call carrying `cwd`, `stdin`, `env`, or `timeout_ms` is
   denied in band
   rather than run without them, and output is rendered as msgpack *text*
-  because `cap/proc` decodes it into a `String`.
+  because `cap/proc` decodes it into a `String`. A cleared `proc.run`
+  also closes the child's stdin at start: nothing will ever stream to a
+  foreground command, and an open pipe held a no-argument `rg` (which
+  reads stdin when it is not a tty) until the deadline. `job.send` is the
+  streaming path and keeps its stdin open by design.
 
 ## Deep Docs
 

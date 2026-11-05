@@ -140,6 +140,14 @@ pub opaque type Msg {
   )
   Deliver(id: Int, outcome: CapOutcome)
 
+  /// A caller whose wait lapsed asks the actor to release the call it had
+  /// abandoned. Identified by its `reply` subject, which is unique per
+  /// call and already held by the caller; the actor finds the matching
+  /// in-flight entry, drops it and its caller monitor, and emits a cancel
+  /// so the broker kills the executor instead of leaving it to run for a
+  /// caller that is no longer waiting.
+  Cancel(reply: Subject(Result(MsgPackValue, CallError)))
+
   /// Replaces the token every later `cap_call` presents.
   ///
   /// A single-shot node never sends one: it boots with the execution's
@@ -292,7 +300,18 @@ fn perform(
   // Await the capability call result from the channel actor.
   case process.receive(reply, deadline_ms + reply_margin_ms) {
     Ok(outcome) -> outcome
-    Error(Nil) -> Error(Unreachable("no cap_result within deadline"))
+    Error(Nil) -> {
+      // The caller gave up but the actor still holds the call in flight.
+      // Without telling it, every timed-out call would keep its entry
+      // counted against the pooled outstanding-effect cap until the host
+      // finally settled it, and a handful of slow commands would leave
+      // later calls refused with "budget" rather than the real reason.
+      // Cancel is what lets the settlement arrive: the host cancels its
+      // executor at once and frees the admission tally when the call
+      // closes, exactly as a dead caller's cancellation does.
+      process.send(subject, Cancel(reply))
+      Error(Unreachable("no cap_result within deadline"))
+    }
   }
 }
 
@@ -303,6 +322,8 @@ fn handle(state: State, msg: Msg) -> actor.Next(State, Msg) {
       handle_perform(state, cap, args, deadline_ms, caller, reply)
 
     Deliver(id:, outcome:) -> handle_deliver(state, id, outcome)
+
+    Cancel(reply) -> cancel_for_reply(state, reply)
 
     SetToken(token:) -> actor.continue(State(..state, token:))
 
@@ -399,6 +420,36 @@ fn cancel_for_caller(state: State, pid: Pid) -> actor.Next(State, Msg) {
       { entry.1 }.caller == pid
     })
   list.each(dead, fn(entry) {
+    case wire.encode_cancel(entry.0) {
+      Ok(bytes) -> state.send(bytes)
+      Error(_) -> Nil
+    }
+  })
+  actor.continue(State(..state, inflight: dict.from_list(alive)))
+}
+
+/// Cancels the one in-flight call a caller abandoned when its wait lapsed.
+///
+/// The cancel can lose a race with the real result: the result may have
+/// been delivered between the caller's timeout and this message reaching
+/// the actor, leaving no entry to partition out. No cancel frame is sent
+/// then, which is the right outcome — but if the frame had already gone
+/// out before delivery, the host discards it harmlessly: the satellite's
+/// cancel handler ignores an id it no longer holds, and the broker's
+/// `cancel` is a no-op once the call has settled.
+fn cancel_for_reply(
+  state: State,
+  reply: Subject(Result(MsgPackValue, CallError)),
+) -> actor.Next(State, Msg) {
+  let #(dead, alive) =
+    list.partition(dict.to_list(state.inflight), fn(entry) {
+      { entry.1 }.reply == reply
+    })
+  list.each(dead, fn(entry) {
+    process.demonitor_process({ entry.1 }.monitor)
+
+    // The broker owns the id: the cancel frame names it so the executor
+    // is killed and its pooled budget released.
     case wire.encode_cancel(entry.0) {
       Ok(bytes) -> state.send(bytes)
       Error(_) -> Nil
