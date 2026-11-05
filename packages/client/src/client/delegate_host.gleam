@@ -506,10 +506,11 @@ pub type ChildSessions {
     resolve: fn(Spawner, Parent, String) ->
       Result(agency.DelegateEndpoint, SpawnRefusal),
     /// The session of a child that already has one, opened if it is not
-    /// resident, and never created: a child that settled and was released has
-    /// none, and a join about it must not make one.
+    /// resident, and `None` for a child with none. It never creates: a child that
+    /// settled and was released has no session, and a join about it must not make
+    /// one.
     open: fn(Spawner, Parent, String) ->
-      Result(agency.DelegateEndpoint, SpawnRefusal),
+      Result(Option(agency.DelegateEndpoint), SpawnRefusal),
     /// The resident sessions of a parent's seeded children, for the end of a
     /// run. A session that is not resident holds no running child.
     live: fn(Spawner, Parent) ->
@@ -551,20 +552,20 @@ pub fn no_children() -> ChildSessions {
     )
   ChildSessions(
     resolve: fn(_spawner, _parent, _child) { Error(unused) },
-    open: fn(_spawner, _parent, _child) { Error(unused) },
+    open: fn(_spawner, _parent, _child) { Ok(None) },
     live: fn(_spawner, _parent) { Ok([]) },
     release: fn(_spawner, _parent, _child) { Ok(0) },
   )
 }
 
-/// Opens the session of a child that has one. A child with no row is refused
-/// without creating a session, which a join about a settled child relies on;
-/// one with a row goes through the registry's ordinary admission, which opens a
-/// closed session and refuses a releasing one.
+/// Opens the session of a child that has one. A child with no row is `None`
+/// without a session being created, which a join about a settled child relies
+/// on; one with a row goes through the registry's ordinary admission, which opens
+/// a closed session and refuses a releasing one.
 fn child_opener(
   context: Context(instance),
 ) -> fn(Spawner, Parent, String) ->
-  Result(agency.DelegateEndpoint, SpawnRefusal) {
+  Result(Option(agency.DelegateEndpoint), SpawnRefusal) {
   let find = resolve_existing_child(context)
   let resolve = child_resolver(context)
   fn(spawner, parent, child) {
@@ -572,11 +573,8 @@ fn child_opener(
 
     // A child with no session has none to open.
     case existing {
-      NoSession ->
-        Error(remote_spawn.InvalidArgument(
-          reason: "this orchestrator holds no such child for that parent",
-        ))
-      Existing(..) -> resolve(spawner, parent, child)
+      NoSession -> Ok(None)
+      Existing(..) -> resolve(spawner, parent, child) |> result.map(Some)
     }
   }
 }

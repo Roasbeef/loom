@@ -172,6 +172,7 @@ import client/scratch
 import client/secrets
 import client/server
 import client/session_git
+import client/session_states
 import client/skill_tool
 import client/state_object
 import client/system_prompt
@@ -3565,6 +3566,9 @@ type Half {
     /// says it compiles candidates; `None` for a local workspace and for an
     /// executor that cannot compile.
     evolution: Option(remote_workspace.EvolutionAccess),
+    /// How the session moves repository states in and out of its workspace
+    /// (protocol-change/107, slice 4b); `None` for a local workspace.
+    states: Option(session_states.SessionStates),
   )
 }
 
@@ -3600,6 +3604,7 @@ fn here(
     recover: None,
     executions: None,
     evolution: None,
+    states: None,
   )
 }
 
@@ -3644,6 +3649,7 @@ fn there(
       lookup: hands.execution_lookup,
     )),
     evolution: Some(hands.evolution),
+    states: Some(hands.states),
   )
 }
 
@@ -5398,10 +5404,15 @@ fn assemble_in(
   })
 
   // Build the initialized session instance record.
+  let projected = agency.delegate_endpoint(agency_config)
   Ok(Instance(
     peer: peer_endpoint,
     spawns: agency.DelegateEndpoint(
-      ..agency.delegate_endpoint(agency_config),
+      ..projected,
+      states: option.map(half.states, session_states.before_first_turn(
+        _,
+        projected.fresh,
+      )),
       resolve: fn(
         parent,
         _child,

@@ -325,6 +325,7 @@ import client/remote_mail
 import client/remote_reach
 import client/remote_send
 import client/remote_spawn
+import client/session_states
 import client/state_object
 import client/workflow_ledger
 import core/clock.{type Clock}
@@ -5447,6 +5448,16 @@ pub type DelegateEndpoint {
       Int,
       remote_escalation.Decider,
     ) -> Result(remote_escalation.Answer, remote_spawn.SpawnRefusal),
+    /// Whether no child of the session has ever been started in it, which is
+    /// the only time a state may be put into its workspace
+    /// (protocol-change/107, slice 4b). It fails closed: a ledger that cannot be
+    /// read, or one that holds any child, answers `False`.
+    fresh: fn() -> Bool,
+    /// How the session moves states in and out of its workspace when the
+    /// workspace is on an executor, or `None` for a workspace on this machine.
+    /// The host that builds the session fills this in, as it does `resolve`;
+    /// `delegate_endpoint` has none.
+    states: Option(session_states.SessionStates),
   )
 }
 
@@ -5499,7 +5510,35 @@ pub fn delegate_endpoint(config: Config) -> DelegateEndpoint {
         reason: "this session has no hub to decide a request",
       ))
     },
+    fresh: fn() { delegate_fresh(trimmed) },
+    states: None,
   )
+}
+
+/// Whether no child has ever been started in a delegate session.
+///
+/// A seeded child's workspace is filled before its first turn, and a session
+/// that has taken one holds work the fill would replace. A child's lineage cell
+/// is written before its strand runs (`delegate_spawn`), so a session with no
+/// such cell has run nothing. The read is of the facts under the lineage prefix
+/// and not of the decoded ledger: a cell that will not decode still means a child
+/// was started, so it counts, and a read that fails answers `False`, which keeps
+/// the fill away from a session it cannot vouch for.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.delegate_fresh(config) == True
+/// ```
+pub fn delegate_fresh(config: Config) -> Bool {
+  case borrow(config) {
+    Error(_refusal) -> False
+    Ok(runtime) ->
+      case api.reserved_facts(runtime, prefix: lineage.key_prefix) {
+        Ok([]) -> True
+        Ok([_, ..]) | Error(_) -> False
+      }
+  }
 }
 
 // --- messages into a child on this orchestrator -------------------------------
