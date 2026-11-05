@@ -18,7 +18,9 @@
 //// that already names the state's tip is the state having been applied before,
 //// which is how two children of one parent share an import. The session's
 //// branch is created with `git worktree add -b` or `git checkout -b`, and Git
-//// refuses a name that exists. No transport is used by apply itself. A fetch
+//// refuses a name that exists. `Reset` is the one placement that moves a branch,
+//// and only the session's own, in a tree no session has written yet. No
+//// transport is used by apply itself. A fetch
 //// from a path reads the repository's `url.<base>.insteadOf` and `protocol.*`
 //// settings, which can turn a bundle path into a command, so the bundle is
 //// unpacked with `git bundle unbundle`, checked for connectivity, and given its
@@ -34,7 +36,9 @@
 //// Every Git call carries `-c core.hooksPath=/dev/null`, so no hook runs
 //// whatever `.git/hooks` or `core.hooksPath` hold, and
 //// `-c core.fsmonitor=false`, which stops the program a repository can name
-//// there. `core.autocrlf` and the sparse checkout settings are forced off so
+//// there. `submodule.recurse=false` keeps a checkout from entering a submodule
+//// a configuration asks for, and `protocol.allow=never` refuses every transport,
+//// since nothing here fetches. `core.autocrlf` and the sparse checkout settings are forced off so
 //// the checkout has the captured bytes and all of them. A filter or attribute
 //// driver is the one thing a command line cannot turn off in general. Capture
 //// refuses a tree whose attributes name one, and the sandbox, which has no
@@ -59,10 +63,21 @@
 //// first, and the header must list the sent tip and nothing else as its
 //// prerequisite.
 ////
+//// ## An executor's scope
+////
+//// An executor builds a worktree-mode scope's tree before the orchestrator can
+//// ask for anything, so `Reset` does not add a worktree. It imports the state
+//// into the repository the tree belongs to, as `Worktree` does, and moves the
+//// tree's own branch, `loom/<session>`, onto the tip. It requires the tree to be
+//// clean and not yet written by the session; a tree that already contains the
+//// tip is left alone, so a repeated request changes nothing. A dirty state's
+//// snapshot commit is checked out as it is, which means the session sees the
+//// sender's uncommitted work as committed content.
+////
 //// ## Flow
 ////
-//// `apply` → `into_worktree` | `into_clone` → `import_bundle`, and
-//// `apply_returned` → `hold_sent` → `create_child_ref`
+//// `apply` → `into_worktree` | `into_clone` | `into_existing` → `import_bundle`,
+//// and `apply_returned` → `hold_sent` → `create_child_ref`
 ////
 //// 1. `apply` reads the bundle within the declared size and has
 ////    `state_object.verify_bundle` compare it with the state. Nothing touches a
@@ -73,7 +88,10 @@
 //// 3. `into_clone` makes a fresh repository at the destination, imports the
 ////    bundle and checks out the session's branch. A thin state is refused,
 ////    because a new repository holds no base.
-//// 4. `import_bundle` is the shared part: it answers the incoming ref, creating
+//// 4. `into_existing` checks that the tree is the linked worktree it should be
+////    (`check_linked`), imports the bundle, and moves the tree's branch when the
+////    tree is clean and does not hold the tip yet.
+//// 5. `import_bundle` is the shared part: it answers the incoming ref, creating
 ////    it from the bundle when absent.
 
 import client/state_object.{type State}
@@ -115,6 +133,25 @@ pub type Placement {
     /// The session the checkout is for. It names the branch `loom/<session>`.
     session: String,
   )
+
+  /// The linked worktree a scope already has, moved onto the state. An
+  /// executor builds a worktree-mode scope's tree before anything can be
+  /// applied, so the tree and its branch `loom/<session>` exist and the branch
+  /// is only moved. A dirty state's snapshot commit is checked out as it is: the
+  /// session sees the uncommitted work of the sender as committed content.
+  Reset(
+    /// The repository's top directory. It must be canonical and a primary
+    /// checkout, as for `Worktree`. The state's objects and its incoming ref go
+    /// into this repository, whose object database the tree shares.
+    repository: String,
+    /// The tree's directory. It must be a canonical directory holding a plain
+    /// `.git` file, and a linked worktree of `repository` on the branch
+    /// `loom/<session>`. It may be written only by this apply, because the
+    /// session has not run in it yet.
+    worktree: String,
+    /// The session the tree is for. It names the branch `loom/<session>`.
+    session: String,
+  )
 }
 
 /// What an apply made.
@@ -140,7 +177,8 @@ const reason_limit = 512
 const guards = [
   "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c",
   "core.autocrlf=false", "-c", "core.sparseCheckout=false", "-c",
-  "index.sparse=false", "-c", "gc.auto=0", "-c", "maintenance.auto=false",
+  "index.sparse=false", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c",
+  "submodule.recurse=false", "-c", "protocol.allow=never",
 ]
 
 /// Applies a state from a bundle file into a placement.
@@ -177,6 +215,8 @@ pub fn apply(
       into_worktree(git, bundle, state, repository, destination, session)
     Clone(destination:, session:) ->
       into_clone(git, bundle, state, destination, session)
+    Reset(repository:, worktree:, session:) ->
+      into_existing(git, bundle, state, repository, worktree, session)
   }
 }
 
@@ -475,7 +515,7 @@ fn into_worktree(
   // destination's parent, as `client/worktrees` grants them.
   let writable = [repository <> "/.git", filepath.directory_name(destination)]
   use _ <- result.map(
-    git_ok(git, repository, writable, [
+    checked_out(git, repository, writable, [
       "worktree", "add", "--quiet", "-b", branch, destination, ref,
     ]),
   )
@@ -512,7 +552,7 @@ fn into_clone(
   let made = {
     use ref <- result.try(import_bundle(git, destination, bundle, state))
     use _ <- result.map(
-      git_ok(git, destination, [destination], [
+      checked_out(git, destination, [destination], [
         "checkout", "--quiet", "-b", branch, ref,
       ]),
     )
@@ -526,6 +566,220 @@ fn into_clone(
       let _removed = simplifile.delete(destination)
       made
     }
+  }
+}
+
+/// Imports into the repository a scope's tree belongs to, and moves the tree's
+/// branch onto the state.
+///
+/// The tree is checked before anything is written: it must be the linked
+/// worktree of this repository, on the session's branch, and not reached through
+/// a link. The import is the shared one, so objects and the incoming ref go into
+/// the repository and no other ref is made. A tree that already holds the tip is
+/// answered as applied and left alone, which is what makes a resent request
+/// harmless after the session has begun to commit on top. Otherwise the tree must
+/// be clean, since a state is never laid over changes, and the branch is moved
+/// with `checkout -B`.
+fn into_existing(
+  git: Git,
+  bundle: String,
+  state: State,
+  repository: String,
+  worktree: String,
+  session: String,
+) -> Result(Applied, String) {
+  use branch <- result.try(branch_of(session))
+  use Nil <- result.try(check_repository(repository))
+  use Nil <- result.try(check_linked(git, repository, worktree, branch))
+  use Nil <- result.try(require_base(git, repository, state))
+  use ref <- result.try(import_bundle(git, repository, bundle, state))
+  use held <- result.try(holds_tip(git, worktree, state.tip))
+  let applied = Applied(ref:, tip: state.tip, destination: worktree, branch:)
+
+  // A tree that holds the state needs nothing, and one that does not is moved.
+  case held {
+    True -> Ok(applied)
+    False -> {
+      use Nil <- result.try(require_clean(git, worktree))
+      let writable = [repository <> "/.git", worktree]
+      use _ <- result.map(
+        checked_out(git, worktree, writable, [
+          "checkout", "--quiet", "-B", branch, state.tip,
+        ]),
+      )
+      applied
+    }
+  }
+}
+
+/// Runs a Git command that writes a working tree, with every filter driver the
+/// configuration names switched off for the call.
+///
+/// A filter is a program a configuration names and a `.gitattributes` in the
+/// bundle's tree attaches to paths, and a checkout runs its `smudge` command on
+/// each file it writes. No command-line switch turns filters off in general, but
+/// every driver that can run has a name in the configuration, so the call lists
+/// the names and empties each one's commands. An empty `smudge` or `clean`
+/// converts nothing, an empty `process` is a command that cannot start, and
+/// `required` is turned off so that neither fails the checkout.
+fn checked_out(
+  git: Git,
+  directory: String,
+  writable: List(String),
+  arguments: List(String),
+) -> Result(String, String) {
+  use overrides <- result.try(filter_overrides(git, directory))
+  git_ok(git, directory, writable, list.append(overrides, arguments))
+}
+
+/// The `-c` pairs that empty every filter driver the configuration seen from
+/// `directory` names. `git config` answers exit one when there is none. A name a
+/// `-c` could not carry faithfully, one with an `=` or a control character, is a
+/// refusal, since the override would then miss the driver it was written for.
+fn filter_overrides(
+  git: Git,
+  directory: String,
+) -> Result(List(String), String) {
+  use output <- result.try(
+    git_run(git, directory, [], [
+      "config", "-z", "--name-only", "--get-regexp", "^filter[.]",
+    ]),
+  )
+
+  // Exit one is Git's answer that nothing matched, which is the usual case.
+  case output.code {
+    0 ->
+      string.split(output.stdout, "\u{0}")
+      |> list.filter_map(driver_of)
+      |> list.unique
+      |> list.try_map(emptied)
+      |> result.map(list.flatten)
+    1 -> Ok([])
+    _ -> Error("Git could not list the filter drivers of the configuration")
+  }
+}
+
+/// The driver a configuration key belongs to: `filter.<name>.<variable>` names
+/// `<name>`, which may itself contain dots. A key with no name is not a driver.
+fn driver_of(key: String) -> Result(String, Nil) {
+  case string.split(key, ".") {
+    ["filter", ..rest] ->
+      case list.reverse(rest) {
+        [_variable, ..name] if name != [] ->
+          Ok(string.join(list.reverse(name), "."))
+        _ -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+}
+
+/// The `-c` pairs that empty one driver, or a refusal when its name cannot be
+/// written on a command line faithfully.
+fn emptied(name: String) -> Result(List(String), String) {
+  let writable =
+    !string.contains(name, "=")
+    && list.all(string.to_graphemes(name), is_printable)
+
+  // An `=` would end the key early, and a control character would not survive.
+  case writable {
+    False -> Error("a filter driver has a name that cannot be switched off")
+    True ->
+      Ok(
+        list.flat_map(
+          [".smudge=", ".clean=", ".process=", ".required=false"],
+          fn(variable) { ["-c", "filter." <> name <> variable] },
+        ),
+      )
+  }
+}
+
+/// Whether a grapheme is not a control character.
+fn is_printable(grapheme: String) -> Bool {
+  // A grapheme of several code points is a letter with marks, never a control.
+  case string.to_utf_codepoints(grapheme) {
+    [point] -> {
+      let code = string.utf_codepoint_to_int(point)
+      code >= 32 && code != 127
+    }
+    _ -> True
+  }
+}
+
+/// Requires `worktree` to be a linked worktree of `repository` on `branch`. The
+/// entry named `.git` must be a plain file, and what Git then finds from inside
+/// the tree must be this repository: the top of the tree is the directory, its own
+/// Git directory is one of the repository's `worktrees`, and the common one is the
+/// repository's. A tree that points elsewhere is refused before any write.
+fn check_linked(
+  git: Git,
+  repository: String,
+  worktree: String,
+  branch: String,
+) -> Result(Nil, String) {
+  use canonical <- result.try(bootstrap.canonical_directory(worktree))
+  use <- bool.guard(
+    when: canonical != worktree || !is_plain_file(worktree <> "/.git"),
+    return: Error(
+      "the tree is not a canonical directory with a plain .git file",
+    ),
+  )
+  use text <- result.try(
+    git_ok(git, worktree, [], [
+      "rev-parse", "--path-format=absolute", "--show-toplevel",
+      "--absolute-git-dir", "--git-common-dir", "--symbolic-full-name", "HEAD",
+    ]),
+  )
+  let common = repository <> "/.git"
+
+  // The four answers come in the order they were asked for.
+  case string.split(string.trim(text), "\n") {
+    [top, git_dir, shared, head] ->
+      case
+        top == worktree
+        && shared == common
+        && string.starts_with(git_dir, common <> "/worktrees/")
+        && head == "refs/heads/" <> branch
+      {
+        True -> Ok(Nil)
+        False ->
+          Error(
+            "the tree is not the linked worktree of the repository on branch "
+            <> branch,
+          )
+      }
+    _ -> Error("Git did not describe the tree")
+  }
+}
+
+/// Whether the tree's `HEAD` already contains the tip, which for a tree this
+/// apply moved is the tip itself and for one the session has committed on is a
+/// descendant of it. Git answers by exit code: zero is yes, one is no, and
+/// anything else is a failure to ask.
+fn holds_tip(git: Git, worktree: String, tip: String) -> Result(Bool, String) {
+  use output <- result.try(
+    git_run(git, worktree, [], ["merge-base", "--is-ancestor", tip, "HEAD"]),
+  )
+
+  // Exit one is Git's answer that the tip is not an ancestor, not a failure.
+  case output.code {
+    0 -> Ok(True)
+    1 -> Ok(False)
+    _ -> Error("Git could not compare the tree with the state's tip")
+  }
+}
+
+/// Requires a tree to have no change in it, staged, unstaged or untracked.
+fn require_clean(git: Git, worktree: String) -> Result(Nil, String) {
+  use text <- result.try(
+    git_ok(git, worktree, [], [
+      "--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all",
+    ]),
+  )
+
+  // Any line of status output is a change: staged, unstaged or untracked.
+  case string.trim(text) {
+    "" -> Ok(Nil)
+    _ -> Error("the tree holds changes, and a state is not applied over them")
   }
 }
 
@@ -675,6 +929,15 @@ fn check_repository(repository: String) -> Result(Nil, String) {
 fn is_plain_directory(path: String) -> Bool {
   case simplifile.link_info(path) {
     Ok(info) -> simplifile.file_info_type(info) == simplifile.Directory
+    Error(_) -> False
+  }
+}
+
+/// Whether the path itself is a regular file. A link is not one, whatever it
+/// points at.
+fn is_plain_file(path: String) -> Bool {
+  case simplifile.link_info(path) {
+    Ok(info) -> simplifile.file_info_type(info) == simplifile.File
     Error(_) -> False
   }
 }

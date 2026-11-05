@@ -221,7 +221,13 @@ fn returned(name: String) -> Return {
   let assert Ok(service) =
     state_service.start(store, fn() { ffi_os.system_time_ms() / 1000 })
   let capturer =
-    state_capture.new(rig.git, rig.state, [], state_service.endpoint(service))
+    state_capture.new(
+      rig.git,
+      rig.state,
+      [],
+      state_service.endpoint(service),
+      store,
+    )
   worktree_rig.write(rig.root <> "/README", "parent edit\n")
   let assert Ok(sent) =
     state_capture.capture(capturer, rig.root, state_rig.identity(), Full)

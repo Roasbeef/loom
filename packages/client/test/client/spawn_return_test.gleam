@@ -194,7 +194,7 @@ fn parent_side(name: String) -> Parent {
   worktree_rig.write(rig.root <> "/README", "edited by the parent\n")
   worktree_rig.write(rig.root <> "/notes.txt", "not committed anywhere\n")
   let endpoint = state_service.endpoint(service)
-  let capturer = state_capture.new(rig.git, rig.state, [], endpoint)
+  let capturer = state_capture.new(rig.git, rig.state, [], endpoint, store)
   let assert Ok(sent) =
     state_capture.capture(capturer, rig.root, state_rig.identity(), Full)
   Parent(rig:, store:, endpoint:, sent:)

@@ -62,8 +62,8 @@ pub fn none() -> StateNode {
   )
 }
 
-/// The node's means of capturing a workspace, or `None` when it has no Git to
-/// run the capture with.
+/// The node's means of capturing a workspace and applying a held state, or
+/// `None` when it has no Git to run them with or no store to read bundles from.
 ///
 /// ## Examples
 ///
@@ -71,14 +71,15 @@ pub fn none() -> StateNode {
 /// assert state_node.capturer(state_node.none()) == option.None
 /// ```
 pub fn capturer(node: StateNode) -> Option(Capturer) {
-  case node.git {
-    Some(git) ->
+  case node.git, node.store {
+    Some(git), Some(store) ->
       Some(state_capture.new(
         git,
         node.state_root,
         node.credentials,
         node.endpoint,
+        store,
       ))
-    None -> None
+    _, _ -> None
   }
 }

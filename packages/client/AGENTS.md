@@ -1407,9 +1407,21 @@ repository's `url.<base>.insteadOf` and `protocol.*` settings. `Worktree` adds
 `git worktree add -b loom/<session>` for a primary checkout, with writable roots
 of the repository's `.git` and the destination's parent. `Clone` makes a new
 repository with an empty template, imports and checks out the branch, and
-refuses a thin state because a new repository holds no base. The caller
-serializes applies to one repository, as the `worktrees` gate does, and owns any
-ledger row for the new tree.
+refuses a thin state because a new repository holds no base. `Reset` is the
+executor's case (slice 4a): the scope's linked worktree already exists on
+`loom/<session>`, so the state is imported into the repository the tree belongs to
+and `git checkout -B` moves the branch onto the tip. `check_linked` requires the
+tree's `.git` to be a plain file and what Git finds from inside it to be the named
+repository (top, worktree Git directory, common directory, branch); a tree that
+already contains the tip is answered as applied and not touched, and any other tree
+must have no change in it. A dirty state's snapshot commit is checked out as it is.
+The checkouts (`checked_out`) empty every `filter.<name>` driver the configuration
+names for the call, since a `.gitattributes` in the bundle can attach one and a
+checkout would run its `smudge` command; the guards also set
+`submodule.recurse=false` and `protocol.allow=never`.
+`state_capture.apply` finds the state in the node's store (the `Capturer` holds a
+read handle) and calls it. The caller serializes applies to one repository, as the
+`worktrees` gate does, and owns any ledger row for the new tree.
 
 Tests: `state_object_test` and `state_store_test` need no repository.
 `repository_snapshot_thin_test` and `state_apply_test` use real repositories,
@@ -1570,6 +1582,13 @@ draw the name of a stage a killed daemon had left; `state_capture.sweep` empties
 state root, credentials, logger); `main.start_states` builds it before the root, and
 `prepare_startup` puts it in `Config.state_node`. `executor_plane.factory_capturing`
 gives every plane a `host.Capturing` over the scope's directory with the owner's author.
+`state_capture.capture_committed(capturer, directory, checkout, basis)` is the
+`CommittedOnly` capture: HEAD is the tip, no working tree is read, and `checkout`
+(`repository_snapshot.Primary` or `LinkedTo(common_dir)`) says what kind of directory
+it must be. An executor's scope is `LinkedTo` the workspace's canonical `.git`, which
+`executor_plane` takes from the configuration and not from the tree. The plane's
+`apply` function is `state_capture.apply` into the scope's tree, and a `shared`
+workspace refuses with a reason that names both modes.
 
 The receiver. `main.spawn_host_seeding` judges `seeded` before it finds or creates a
 delegate session. `spawn_seed.receive` passes a request with no state through,
@@ -7746,13 +7765,22 @@ below.
   `unknown_outcome_text` is the model's wording for a lost call and
   `did_not_run_text` the wording of a fenced one. `Attach` carries
   `protocol.version` (6); the host refuses any other value with `VersionMismatch`.
-  Version 6 added the state messages `StateCapture`, `StateChunk`, `StateStatus`
-  and `StateFetch`, the refusal `NoStates`, `RemoteCensus.states` (`Moves` or
-  `Stays(reason)`, from the helper's health and a resolved Git binary), and
-  `AskGitIdentity` with `GitIdentity` and `git_identity_of`, the one check an
-  author passes on both sides of the link. `Plane.state` is an optional
-  `host.Capturing`; no production plane has one, so a `StateCapture` answers
-  `NoStates`.
+  Version 6 added the state messages `StateCapture`, `StateChunk`, `StateStatus`,
+  `StateFetch` and `StateApply`, the refusal `NoStates`, `RemoteCensus.states`
+  (`Moves` or `Stays(reason)`, from the helper's health and a resolved Git
+  binary), and `AskGitIdentity` with `GitIdentity` and `git_identity_of`, the one
+  check an author passes on both sides of the link. `StateCapture` carries a
+  `state_object.Basis` and a `state_object.Content` (`WithWorkingTree` or
+  `CommittedOnly`) and answers an optional state (`None` is a committed-only
+  capture with nothing beyond its base). `StateApply` names a state the node's
+  store holds, is fenced like `StateCapture`, and answers the tip it checked out
+  or `ExecutorFault(reason)` for a workspace that refused it; only a worktree-mode
+  workspace takes one. Its run is not cancelled when the requester exits
+  (`host.to_completion`), because a checkout cut off half way leaves a tree with
+  changes that every resend would refuse.
+  `Plane.state` is an optional `host.Capturing` (a `capture` and an `apply`
+  function), which `executor_plane.factory_capturing` fills from the daemon's
+  `state_capture.Capturer`; a plane without one answers `NoStates`.
   Change the version whenever a constructor or field changes. Version 2 moved
   the executor's clock reading out of the census and into `Attached`, so each
   reply carries the time it was sent. Version 3 added background executions

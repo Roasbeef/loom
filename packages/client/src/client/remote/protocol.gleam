@@ -146,9 +146,10 @@ import tools/tool
 /// Trials and core upgrades are not in this version; they come with the
 /// changes that serve them, under their own bumps.
 ///
-/// Version 6 added the repository state transport of protocol-change/107: four
-/// `HostMessage` constructors (`StateCapture`, `StateChunk`, `StateStatus` and
-/// `StateFetch`), whose pieces and verdicts are `client/state_transfer`'s, the
+/// Version 6 added the repository state transport of protocol-change/107: five
+/// `HostMessage` constructors (`StateCapture`, `StateChunk`, `StateStatus`,
+/// `StateFetch` and `StateApply`), whose pieces and verdicts are
+/// `client/state_transfer`'s, the
 /// refusal `NoStates`, and the census field `RemoteCensus.states`, which says
 /// whether the executor can capture and apply a state. It also added
 /// `AskGitIdentity`, the `OwnerMessage` by which an executor asks the owner for
@@ -790,16 +791,47 @@ pub type HostMessage(census) {
   /// (protocol-change/107). It writes into the store and reads the workspace, so
   /// it is held to the scope's incarnation and token as a write is. `basis` is
   /// what the capture bundles against: `Full`, or `Thin` against a commit the
-  /// receiver reported holding. The caller must have drained the session's
-  /// effects first, because capture cannot check that the workspace is quiet.
-  /// The answer is the description of the state now in the store, or why the
-  /// workspace was refused, which resending does not change.
+  /// receiver reported holding. `content` is what goes on top of the history:
+  /// `WithWorkingTree` makes a snapshot commit of uncommitted work, and
+  /// `CommittedOnly` reads no working tree, so only commits travel and a child's
+  /// uncommitted edits stay where they are. The caller must have drained the
+  /// session's effects first, because capture cannot check that the workspace is
+  /// quiet. The answer is the description of the state now in the store, or why
+  /// the workspace was refused, which resending does not change. It is `None`
+  /// only for `CommittedOnly` against a `Thin` basis that is the workspace's own
+  /// `HEAD`: there is nothing beyond it to deliver.
   StateCapture(
     session: String,
     incarnation: Int,
     token: BitArray,
     basis: state_object.Basis,
-    reply: Subject(Result(state_object.State, Refusal)),
+    content: state_object.Content,
+    reply: Subject(Result(Option(state_object.State), Refusal)),
+  )
+
+  /// Puts a state that is already in the executor's store into the session's
+  /// workspace (protocol-change/107). The state arrives first, by `StateChunk`
+  /// and `StateStatus`, and this names it by its description. It changes the
+  /// workspace, so it is held to the scope's incarnation and token exactly as
+  /// `StateCapture` is. The executor unpacks the state into the workspace's
+  /// repository under `refs/loom/in/<hash8>` and checks out the session's branch
+  /// `loom/<session>` at the tip, in the scope's tree. Only a worktree-mode
+  /// workspace takes one. The tree must be one the session has not written yet,
+  /// because the apply replaces its checkout, so the orchestrator asks before
+  /// the session's first turn. A dirty state's snapshot commit is checked out as
+  /// it is. The answer is the commit the tree has checked out, which is the
+  /// state's own tip, or why the workspace refused the state (a workspace in
+  /// `shared` mode, a state the store lacks, a tree that holds changes), which
+  /// resending does not change. A request repeated after it was applied is
+  /// answered with the tip again and changes nothing. The run is not cancelled
+  /// when the requester goes away, so a request whose orchestrator vanished
+  /// mid-apply still finishes and the resend finds the tip in place.
+  StateApply(
+    session: String,
+    incarnation: Int,
+    token: BitArray,
+    state: state_object.State,
+    reply: Subject(Result(String, Refusal)),
   )
 
   /// One piece of a state this executor is receiving. The store is the node's,

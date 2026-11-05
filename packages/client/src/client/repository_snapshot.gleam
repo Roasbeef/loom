@@ -24,11 +24,14 @@
 //// (protocol-change/107, "Return"): thin against the state the child was handed,
 //// with `HEAD` as the tip and the working tree unread, so only what the child
 //// committed comes back and its uncommitted edits stay where they are.
+//// `capture_committed` is the general form of it, for a checkout that is a linked
+//// worktree as well as a primary one and for a basis that is `Full` as well as
+//// `Thin`.
 ////
 //// ## Flow
 ////
-//// `capture` calls `capture_against` with a full basis. `capture_against` and
-//// `capture_commits` call `captured`, which calls `discover`,
+//// `capture` calls `capture_against` with a full basis. `capture_against`,
+//// `capture_commits` and `capture_committed` call `captured`, which calls `discover`,
 //// `validate_repository`, and `selected` (`inventory`, `working_entries` and
 //// `check_attributes` for working bytes, nothing for commits), then
 //// `check_basis` and `check_space`.
@@ -157,20 +160,26 @@ pub fn capture_against(
     identity,
     within_ms,
     basis,
-    WorkingBytes,
+    state_object.WithWorkingTree,
   )
 }
 
-/// What a capture puts on top of the repository's history.
-type Content {
-  /// The working tree's bytes, as a snapshot commit when they differ from
-  /// `HEAD`. This is what a parent's workspace is sent as.
-  WorkingBytes
+/// Where a capture expects a repository's Git data to be, given the directory it
+/// was pointed at. A directory is only a name, and the model that works in it can
+/// rewrite the `.git` entry in it, so a capture that read whatever the entry
+/// points at could be made to bundle another repository on the machine.
+pub type Checkout {
+  /// The directory is the top of a primary checkout, with its `.git` directory
+  /// inside it.
+  Primary
 
-  /// Nothing: the tip is `HEAD` and the working tree is not read. This is what a
-  /// finished child's work is returned as, because only what it committed comes
-  /// back.
-  CommittedOnly
+  /// The directory is a linked worktree of the repository whose common Git
+  /// directory is `common_dir`, which the caller knows from its own
+  /// configuration and not from the directory.
+  LinkedTo(
+    /// The canonical `<repository>/.git` of the primary checkout.
+    common_dir: String,
+  )
 }
 
 /// Captures the commits a repository has made after `base`, and nothing the
@@ -202,23 +211,51 @@ pub fn capture_commits(
   within_ms: Int,
   base: String,
 ) -> Result(Option(Snapshot), String) {
-  use source <- result.try(discover(git, call, within_ms))
-
-  // The repository must be the one at the directory, not one it points at.
-  use Nil <- result.try(
-    case
-      source.workspace == call.directory
-      && source.git_dir == source.workspace <> "/.git"
-      && source.common_dir == source.git_dir
-    {
-      True -> Ok(Nil)
-      False ->
-        Error("the repository is not a primary checkout at its directory")
-    },
+  capture_committed(
+    git,
+    call,
+    store,
+    stage_name,
+    within_ms,
+    Primary,
+    state_object.Thin(base),
   )
+}
+
+/// Captures what a repository committed, with the working tree unread, from a
+/// checkout of the kind `checkout` names.
+///
+/// This is `capture_commits` for a directory that is not necessarily a primary
+/// checkout, such as the linked worktree of an executor's scope, and for a basis
+/// that is not necessarily thin. The tip is `HEAD` and no snapshot commit is made,
+/// so uncommitted edits stay where they are. The directory must be the kind of
+/// checkout the caller expects: a repository that resolves anywhere else is
+/// refused. `Ok(None)` is a `Thin` basis whose base is `HEAD` itself, which has
+/// nothing to deliver; a `Full` basis always has something.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // repository_snapshot.capture_committed(git, call, store, stage, 600_000, Primary, Thin(sent_tip))
+/// ```
+@internal
+pub fn capture_committed(
+  git: worktree_git.Git,
+  call: worktree_git.Capture,
+  store: String,
+  stage_name: String,
+  within_ms: Int,
+  checkout: Checkout,
+  basis: state_object.Basis,
+) -> Result(Option(Snapshot), String) {
+  use source <- result.try(discover(git, call, within_ms))
+  use Nil <- result.try(located(source, call.directory, checkout))
 
   // A child that committed nothing has nothing to bundle.
-  use <- bool.guard(when: source.head == base, return: Ok(None))
+  use <- bool.guard(
+    when: basis == state_object.Thin(source.head),
+    return: Ok(None),
+  )
   captured(
     git,
     call,
@@ -226,10 +263,46 @@ pub fn capture_commits(
     stage_name,
     git_identity.Identity(None, None),
     within_ms,
-    state_object.Thin(base),
-    CommittedOnly,
+    basis,
+    state_object.CommittedOnly,
   )
   |> result.map(Some)
+}
+
+/// Requires the repository Git found to be the one the caller expects at the
+/// directory, and not one the directory points at.
+fn located(
+  source: Source,
+  directory: String,
+  checkout: Checkout,
+) -> Result(Nil, String) {
+  let at_directory = source.workspace == directory
+
+  // The kind of checkout decides which Git directories are the expected ones.
+  case checkout {
+    Primary ->
+      case
+        at_directory
+        && source.git_dir == source.workspace <> "/.git"
+        && source.common_dir == source.git_dir
+      {
+        True -> Ok(Nil)
+        False ->
+          Error("the repository is not a primary checkout at its directory")
+      }
+
+    // A linked worktree keeps its own Git directory under the primary
+    // checkout's `worktrees`, and shares the common one.
+    LinkedTo(common_dir:) ->
+      case
+        at_directory
+        && source.common_dir == common_dir
+        && string.starts_with(source.git_dir, common_dir <> "/worktrees/")
+      {
+        True -> Ok(Nil)
+        False -> Error("the repository is not the linked worktree it should be")
+      }
+  }
 }
 
 /// The capture both entry points run, differing only in what is put on top of
@@ -242,7 +315,7 @@ fn captured(
   identity: git_identity.Identity,
   within_ms: Int,
   basis: state_object.Basis,
-  content: Content,
+  content: state_object.Content,
 ) -> Result(Snapshot, String) {
   let deadline = bootstrap.monotonic_time_ms() + within_ms
   let limits = call.limits
@@ -518,14 +591,14 @@ fn selected(
   git: worktree_git.Git,
   call: worktree_git.Capture,
   source: Source,
-  content: Content,
+  content: state_object.Content,
   deadline: Int,
 ) -> Result(#(WorkingEntries, List(String)), String) {
   // Only the working bytes need the inventory, the size accounting and the
   // attribute check.
   case content {
-    CommittedOnly -> Ok(#(WorkingEntries([], [], 0), []))
-    WorkingBytes -> {
+    state_object.CommittedOnly -> Ok(#(WorkingEntries([], [], 0), []))
+    state_object.WithWorkingTree -> {
       use entries <- result.try(inventory(git, call, remaining(deadline)))
       use working <- result.try(working_entries(
         source.workspace,
@@ -551,13 +624,13 @@ fn selected(
 fn index_matches_tree(
   git: worktree_git.Git,
   private: worktree_git.Capture,
-  content: Content,
+  content: state_object.Content,
   deadline: Int,
 ) -> Result(Nil, String) {
   // The comparison would fail by design for a child's uncommitted edits.
   case content {
-    CommittedOnly -> Ok(Nil)
-    WorkingBytes ->
+    state_object.CommittedOnly -> Ok(Nil)
+    state_object.WithWorkingTree ->
       private_git_text(
         git,
         private,

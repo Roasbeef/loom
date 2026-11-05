@@ -100,23 +100,24 @@
 ////
 //// ## State messages
 ////
-//// Four messages (protocol-change/107) move repository states. Three of them,
+//// Five messages (protocol-change/107) move repository states. Three of them,
 //// `StateChunk`, `StateStatus` and `StateFetch`, are about the node's store and
 //// not about any scope: they carry no fence, because a piece is judged by its
 //// hash and the store's limits and cannot reach a session. They are served by the
 //// `Config.states` endpoint, which a daemon builds over the one process that owns
 //// the store (`client/state_service`), each in a run of its own, so a piece that
-//// completes a large state never stalls the admission of a tool call. The fourth,
-//// `StateCapture`, reads a scope's workspace and writes the store, so it is held
-//// to the scope's incarnation and token as an evolution write is, and is served
-//// by the plane's `Capturing`, in a run of its own as well. A plane without one
-//// answers `NoStates`.
+//// completes a large state never stalls the admission of a tool call. The other
+//// two, `StateCapture` and `StateApply`, work on a scope's workspace. Capture
+//// reads it and writes the store, and apply writes it from the store. Both are
+//// held to the scope's incarnation and token as an evolution write is, and are
+//// served by the plane's `Capturing`, in a run of its own as well. A plane
+//// without one answers `NoStates`.
 ////
 //// ## Flow
 ////
 //// `start` → `start_reporting` → `initialise` → `handle_event` → `handle_peer` →
 //// `attach`, `admit_call`, `evolve`, `stop_execution`, `fenced_lookup`,
-//// `close`, `summarized`, and for states `capture_state`, `apart`
+//// `close`, `summarized`, and for states `capture_state`, `apply_state`, `apart`
 ////
 //// 1. `initialise` registers the name and opens the ledger, which turns every
 ////    row the previous VM left `Admitted` into `Unknown`.
@@ -247,23 +248,29 @@ pub type Plane(census) {
     /// The plane's evolution machine, or `None` when it has none, in which case
     /// every evolution message for the scope is answered `NoEvolution`.
     evolution: Option(Evolution),
-    /// How the plane captures its workspace into a state, or `None` when it
-    /// cannot, in which case a `StateCapture` for the scope is answered
-    /// `NoStates`.
+    /// How the plane captures its workspace into a state and applies one to it,
+    /// or `None` when it cannot, in which case a `StateCapture` or `StateApply`
+    /// for the scope is answered `NoStates`.
     state: Option(Capturing),
   )
 }
 
-/// What a plane does for a `StateCapture`: capture the scope's workspace into a
-/// state in the node's store, bundled against `basis`, and answer the state's
-/// description or the reason the workspace was refused. It runs in a process of
-/// its own, which the host cancels when the requester goes away. The caller has
-/// drained the session's effects before asking, since capture cannot check that
-/// the workspace is quiet.
+/// What a plane does for a `StateCapture` and a `StateApply`. Capture takes the
+/// scope's workspace into a state in the node's store, bundled against `basis`
+/// with `content` on top of the history, and answers the state's description,
+/// `None` when a committed-only capture has nothing beyond its base, or the
+/// reason the workspace was refused. Apply puts a state the node's store holds
+/// into the workspace and answers the tip it checked out, or the reason it was
+/// refused. Each runs in a process of its own, which the host cancels when the
+/// requester goes away. The caller has drained the session's effects before
+/// asking, since neither can check that the workspace is quiet.
 pub type Capturing {
   Capturing(
     /// Captures the workspace against a basis.
-    capture: fn(state_object.Basis) -> Result(state_object.State, String),
+    capture: fn(state_object.Basis, state_object.Content) ->
+      Result(Option(state_object.State), String),
+    /// Applies a state of the node's store in the workspace.
+    apply: fn(state_object.State) -> Result(String, String),
   )
 }
 
@@ -880,8 +887,24 @@ fn handle_peer(
         fn(refusal) { process.send(reply, Error(refusal)) },
         protocol.InventoryRequest(handle:, reply:),
       )
-    protocol.StateCapture(session:, incarnation:, token:, basis:, reply:) ->
-      capture_state(state, session, Writer(incarnation:, token:), basis, reply)
+    protocol.StateCapture(
+      session:,
+      incarnation:,
+      token:,
+      basis:,
+      content:,
+      reply:,
+    ) ->
+      capture_state(
+        state,
+        session,
+        Writer(incarnation:, token:),
+        basis,
+        content,
+        reply,
+      )
+    protocol.StateApply(session:, incarnation:, token:, state: wanted, reply:) ->
+      apply_state(state, session, Writer(incarnation:, token:), wanted, reply)
 
     // The store is the node's, so these three change no scope and carry no
     // fence. Each runs apart from the host, because the last piece of a state is
@@ -914,7 +937,8 @@ fn capture_state(
   session: String,
   fence: Fence,
   basis: state_object.Basis,
-  reply: Subject(Result(state_object.State, Refusal)),
+  content: state_object.Content,
+  reply: Subject(Result(Option(state_object.State), Refusal)),
 ) -> State(census) {
   let ready = {
     use Nil <- result.try(fenced(state, session, fence))
@@ -926,7 +950,39 @@ fn capture_state(
   case ready {
     Ok(capturing) ->
       apart(reply, fn() {
-        capturing.capture(basis)
+        capturing.capture(basis, content)
+        |> result.map_error(protocol.ExecutorFault)
+      })
+    Error(refusal) -> process.send(reply, Error(refusal))
+  }
+
+  state
+}
+
+/// Serves a `StateApply` for a scope, held to the same fence as a capture and then
+/// to the plane's ability to apply. An apply that the workspace refuses is an
+/// `ExecutorFault` with the reason, as a refused capture is, answered by the run.
+/// The run is not cancelled with the requester: an apply cut off in the middle of
+/// its checkout would leave a tree with changes in it that every resend then
+/// refuses, so it runs to the end and a resend finds the tip in place.
+fn apply_state(
+  state: State(census),
+  session: String,
+  fence: Fence,
+  wanted: state_object.State,
+  reply: Subject(Result(String, Refusal)),
+) -> State(census) {
+  let ready = {
+    use Nil <- result.try(fenced(state, session, fence))
+    capturing_of(state, session)
+  }
+
+  // A refusal is the plane's absence or the fence's verdict. What the workspace
+  // decides about the state is a finding about the workspace, answered by the run.
+  case ready {
+    Ok(capturing) ->
+      to_completion(reply, fn() {
+        capturing.apply(wanted)
         |> result.map_error(protocol.ExecutorFault)
       })
     Error(refusal) -> process.send(reply, Error(refusal))
@@ -978,6 +1034,22 @@ fn apart(reply: Subject(answer), compute: fn() -> answer) -> Nil {
     }
     Error(Nil) -> Nil
   }
+}
+
+/// Computes one answer in a run of its own that runs to its end whether or not
+/// the requester is still there, and sends it to `reply`. A send to a requester
+/// that has gone is harmless. This is for work that must not stop half done, such
+/// as a checkout that rewrites a tree.
+fn to_completion(reply: Subject(answer), compute: fn() -> answer) -> Nil {
+  let _witness =
+    weft.new([
+      fn() {
+        process.send(reply, compute())
+        Ok(Nil)
+      },
+    ])
+    |> weft.start_witnessed
+  Nil
 }
 
 // --- evolution ----------------------------------------------------------------

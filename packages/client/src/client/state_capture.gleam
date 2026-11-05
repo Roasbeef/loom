@@ -9,7 +9,9 @@
 //// describes it, puts it in the store, and removes the stage. The node is the
 //// orchestrator for a session whose workspace is local, and the executor that
 //// serves the workspace for one whose workspace is remote (the executor's plane
-//// reaches here through `host.Capturing`).
+//// reaches here through `host.Capturing`). The same module also applies a held
+//// state in a scope's tree, for an executor that was asked to put a parent's
+//// checkout there.
 ////
 //// ## What the caller owes
 ////
@@ -37,26 +39,31 @@
 ////
 //// ## Flow
 ////
-//// `new` → `capture` | `capture_commits` → `prepared` → `scope_of`, and `sweep`
-//// at daemon start
+//// `new` → `capture` | `capture_committed` | `apply` → `prepared` → `scope_of`, and
+//// `sweep` at daemon start
 ////
-//// 1. `new` binds the node's sandboxed Git, state root, node credentials and
-////    store endpoint.
+//// 1. `new` binds the node's sandboxed Git, state root, node credentials, store
+////    endpoint and a read handle on the store.
 //// 2. `capture` makes the stage and the scratch directories, runs the snapshot
 ////    against a basis, reads the bundle it made and deposits it.
-////    `capture_commits` is the same for a finished child's work: only the
-////    commits made after a base, none of the working tree.
-//// 3. `prepared` builds the call both make, and `scope_of` is its sandbox
+////    `capture_committed` is the same for a finished child's work: only the
+////    commits, none of the working tree, and `capture_commits` is its form for a
+////    primary checkout thin against a sent tip.
+//// 3. `prepared` builds the call the captures make, and `scope_of` is its sandbox
 ////    policy: the workspace, with the state root and the node's credentials
 ////    masked.
 //// 4. `sweep` empties the stage directory when a daemon starts, before any
 ////    capture can be running.
+//// 5. `apply` is the other direction: it finds a state the store holds and has
+////    `client/state_apply` check it out in a scope's tree.
 
 import broker/policy
 import client/git_identity.{type Identity}
 import client/internal/ffi_pki
 import client/repository_snapshot
+import client/state_apply
 import client/state_object.{type Basis, type State}
+import client/state_store.{type Store}
 import client/state_transfer.{type Endpoint}
 import client/workspace_policy
 import client/worktree_git.{type Git}
@@ -73,32 +80,35 @@ import simplifile
 /// longer than it.
 pub const capture_within_ms = 180_000
 
-/// A node's means of capturing a workspace.
+/// A node's means of capturing a workspace and of applying a state it holds.
 pub opaque type Capturer {
   Capturer(
     git: Git,
     state_root: String,
     credentials: List(String),
     states: Endpoint,
+    store: Store,
   )
 }
 
 /// Binds what a capture needs: the node's sandboxed Git, its state root, the
-/// node credential files every jailed call masks, and the endpoint of the one
-/// process that owns its store.
+/// node credential files every jailed call masks, the endpoint of the one
+/// process that owns its store, and a read handle on that store's directory,
+/// which `apply` reads a held bundle out of.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // state_capture.new(git, state_root, [key, cookie], state_service.endpoint(service))
+/// // state_capture.new(git, state_root, [key, cookie], state_service.endpoint(service), store)
 /// ```
 pub fn new(
   git: Git,
   state_root: String,
   credentials: List(String),
   states: Endpoint,
+  store: Store,
 ) -> Capturer {
-  Capturer(git:, state_root:, credentials:, states:)
+  Capturer(git:, state_root:, credentials:, states:, store:)
 }
 
 /// Captures the workspace at `directory` into the node's store.
@@ -158,15 +168,43 @@ pub fn capture_commits(
   directory: String,
   base: String,
 ) -> Result(Option(State), String) {
+  capture_committed(
+    capturer,
+    directory,
+    repository_snapshot.Primary,
+    state_object.Thin(base),
+  )
+}
+
+/// Captures what the repository at `directory` committed, bundled against
+/// `basis`, with the working tree unread.
+///
+/// This is `capture_commits` for a directory that may be the linked worktree of
+/// an executor's scope (`checkout` says which kind it must be), and for a basis
+/// that may be `Full`. The answer is `None` for a `Thin` basis whose base is
+/// `HEAD`, and otherwise the description of the state now in the store.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // state_capture.capture_committed(capturer, tree, repository_snapshot.LinkedTo(common), state_object.Thin(sent_tip))
+/// ```
+pub fn capture_committed(
+  capturer: Capturer,
+  directory: String,
+  checkout: repository_snapshot.Checkout,
+  basis: Basis,
+) -> Result(Option(State), String) {
   use #(call, snapshots, stage) <- result.try(prepared(capturer, directory))
   let made =
-    repository_snapshot.capture_commits(
+    repository_snapshot.capture_committed(
       capturer.git,
       call,
       snapshots,
       stage,
       capture_within_ms,
-      base,
+      checkout,
+      basis,
     )
 
   // A child that committed nothing leaves no stage and no state.
@@ -177,6 +215,55 @@ pub fn capture_commits(
     }
   })
   |> removing_stage_on_failure(snapshots <> "/" <> stage)
+}
+
+/// Applies a state this node holds into a scope's linked worktree
+/// (protocol-change/107, "Apply"), and answers the tip it checked out.
+///
+/// The state must be in the node's store under the description given: a state
+/// that is absent, partial, or held as something else is refused, because the
+/// description is a claim a peer made and the store is the node's own record.
+/// `repository` is the canonical primary checkout the tree belongs to,
+/// `worktree` the tree, and `session` names the branch `loom/<session>` that is
+/// moved onto the tip. `client/state_apply` does the rest, in the sandbox, with
+/// no network and no hook, and refuses a tree that is not what it should be.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // state_capture.apply(capturer, state, "/srv/repo", "/state/worktrees/repo/s-1", "s-1")
+/// ```
+pub fn apply(
+  capturer: Capturer,
+  state: State,
+  repository: String,
+  worktree: String,
+  session: String,
+) -> Result(String, String) {
+  use found <- result.try(stored(capturer, state))
+  state_apply.apply(
+    capturer.git,
+    found.path,
+    found.state,
+    state_apply.Reset(repository:, worktree:, session:),
+  )
+  |> result.map(fn(applied) { applied.tip })
+}
+
+/// The state in the node's store under the description that names it. A hash the
+/// store does not hold is "not here", which the sender answers by sending it;
+/// one it holds as another state is a description that is not this node's.
+fn stored(
+  capturer: Capturer,
+  state: State,
+) -> Result(state_store.Held, String) {
+  case state_store.get(capturer.store, state.hash) {
+    Ok(Some(found)) if found.state == state -> Ok(found)
+    Ok(Some(_)) ->
+      Error("this node's store holds a different state under that hash")
+    Ok(None) -> Error("this node's store does not hold that state")
+    Error(reason) -> Error(reason)
+  }
 }
 
 /// The discovery call over a directory, the store the stage goes in, and the
