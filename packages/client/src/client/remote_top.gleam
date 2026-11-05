@@ -110,6 +110,10 @@ pub type Cap {
 
   /// `max_per_hour`: creations over a rolling hour.
   MaxPerHour
+
+  /// Live session feeds a spawner holds at once (protocol-change/108). It is a
+  /// constant of the receiver and not a key of the table.
+  MaxFeeds
 }
 
 /// What a table can offer and a request can name.
@@ -128,6 +132,25 @@ pub type Offered {
 
   /// A model.
   OfferedModel
+
+  /// The live session page. The only name it takes is `live`, the value of the
+  /// table's `page` key that serves it (protocol-change/108).
+  OfferedPage
+}
+
+/// Why a session feed that a request names is gone (protocol-change/108).
+pub type FeedEnd {
+  /// The receiver dropped the feed because the page fell behind its queue or
+  /// stopped polling for a whole lease. Starting again from a fresh attach is
+  /// always correct.
+  FeedLapsed
+
+  /// The session's run ended, so its gateway is gone.
+  FeedStopped
+
+  /// The receiver's owner took the page's access away: the spawner's table
+  /// changed, or the session was archived.
+  FeedRevoked
 }
 
 /// Why the orchestrator would not do what a message asked, or could not yet.
@@ -181,6 +204,13 @@ pub type Refusal {
     /// What failed.
     reason: String,
   )
+
+  /// The feed the request names has ended, or never existed for this spawner,
+  /// and nothing was done. A new attach is the only way to continue.
+  FeedEnded(
+    /// Why it ended.
+    why: FeedEnd,
+  )
 }
 
 /// Words a refusal for the person at the page.
@@ -214,10 +244,32 @@ pub fn describe_refusal(refusal: Refusal) -> String {
       "your orchestrator has started "
       <> int.to_string(limit)
       <> " sessions there in the last hour (max_per_hour)"
+    CapReached(cap: MaxFeeds, limit:) ->
+      "your orchestrator already has "
+      <> int.to_string(limit)
+      <> " live session pages open there"
     NotRelayed -> "that session was not started by your orchestrator"
     InvalidArgument(reason:) -> reason
     NotYetOpen(reason:) -> reason
     StoreFailure(reason:) -> reason
+    FeedEnded(why:) -> describe_feed_end(why)
+  }
+}
+
+/// Words a feed's ending for the person at the page.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_top.describe_feed_end(remote_top.FeedStopped)
+///   == "the session's run ended"
+/// ```
+pub fn describe_feed_end(why: FeedEnd) -> String {
+  // The three endings are the whole of what a receiver can say about a feed.
+  case why {
+    FeedLapsed -> "the page fell behind the orchestrator's queue of the session"
+    FeedStopped -> "the session's run ended"
+    FeedRevoked -> "the orchestrator no longer lets your page reach the session"
   }
 }
 
@@ -231,6 +283,7 @@ fn offered_word(what: Offered) -> String {
     OfferedPool -> "the pool"
     OfferedProfile -> "the profile"
     OfferedModel -> "the model"
+    OfferedPage -> "the page"
   }
 }
 
@@ -255,7 +308,8 @@ pub fn retryable(refusal: Refusal) -> Bool {
     | NotOffered(..)
     | CapReached(..)
     | NotRelayed
-    | InvalidArgument(..) -> False
+    | InvalidArgument(..)
+    | FeedEnded(..) -> False
   }
 }
 
