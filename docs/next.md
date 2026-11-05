@@ -282,7 +282,8 @@ issues. Linux hosted gates passed; local census and macOS advisory results
 remain unresolved, with exact receipts on PR #1143. The owner selected an
 always-on trusted brain or gateway for model
 access, with remote executors remaining keyless. Repository handoff, per-spawn
-workspace custody, movement and full page relay remain open.
+workspace custody, movement and full page relay remain open. The full page relay
+(#1135) is proposed in [protocol-change/108](../protocol-change/108-live-session-relay.md).
 
 The next slice makes distributed observations honest: remote refusals reach the
 card, post-dispatch relay uncertainty survives later failures, and failed reads
