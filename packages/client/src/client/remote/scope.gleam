@@ -218,10 +218,7 @@ pub fn read_at(
   owner: String,
   clock: Clock,
 ) -> Result(Option(Scope), String) {
-  use opened <- result.try(open_at(path, owner, clock))
-  let found = read(opened)
-  let _closed = session.close(opened)
-  found
+  with_file(path, owner, clock, read)
 }
 
 /// Writes the cell of a closed session file by path, as `read_at` reads it. A
@@ -240,10 +237,33 @@ pub fn write_at(
   clock: Clock,
   scope: Scope,
 ) -> Result(Nil, String) {
+  with_file(path, owner, clock, write(_, scope))
+}
+
+/// Runs `work` on the session file at `path`, opened under `owner` and closed
+/// again before this returns, whatever `work` answered.
+///
+/// This is how a mover reaches any reserved cell of a file that no writer holds
+/// (`read_at` and `write_at` are its two uses for the scope cell). The rules of
+/// `read_at` hold: `owner` must not be the owner of a running writer or of an
+/// export, a missing file is refused rather than created, and a file a writer
+/// holds is refused with the lease holder named.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // scope.with_file(path, "move-read", clock, fn(opened) { scope.read(opened) })
+/// ```
+pub fn with_file(
+  path: String,
+  owner: String,
+  clock: Clock,
+  work: fn(Session) -> Result(a, String),
+) -> Result(a, String) {
   use opened <- result.try(open_at(path, owner, clock))
-  let written = write(opened, scope)
+  let done = work(opened)
   let _closed = session.close(opened)
-  written
+  done
 }
 
 // A session file that is not there is refused before it is opened, because

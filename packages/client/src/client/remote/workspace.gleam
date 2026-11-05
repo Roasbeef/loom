@@ -100,6 +100,7 @@ import client/remote/protocol.{type HostMessage, type Key}
 import client/remote/remote_census.{type RemoteCensus}
 import client/remote/scope.{type Scope}
 import client/remote/surface
+import client/state_object.{type State}
 import client/tool_placement
 import client/wiring
 import client/workspace_plane.{type WorkspacePlane}
@@ -238,7 +239,25 @@ pub type Hands {
     /// evolution plane when it compiles candidates, and the reason it will not
     /// when it does not.
     evolution: EvolutionAccess,
+    /// Puts a state the executor's store already holds into the scope's tree
+    /// and answers the tip it checked out (protocol-change/107). Only a session
+    /// move that has attached a scope for this alone asks it, before any turn.
+    apply_state: fn(State) -> Result(String, ApplyFailure),
   )
+}
+
+/// Why a state is not in the scope's tree.
+pub type ApplyFailure {
+  /// The executor answered and refused. The refusal is about the state or the
+  /// tree, so asking again is refused again; a refusal that names the fence
+  /// (`StaleToken`, `StaleIncarnation`) means the scope is no longer this
+  /// open's.
+  ApplyRefused(refusal: protocol.Refusal)
+
+  /// The executor could not be reached in time, and the request may or may not
+  /// have taken effect. The request is safe to send again: an apply that already
+  /// happened answers the tip.
+  ApplyUnanswered
 }
 
 /// Whether a session on this executor can use governed evolution.
@@ -591,7 +610,38 @@ fn build(
     },
     mcp: remote.mcp,
     evolution: evolution_link(registered, candidate, joined, remote.evolution),
+    apply_state: fn(state) { apply_in(joined, session, state) },
   )
+}
+
+// How long an apply is waited for while the connection is being repaired. The
+// apply itself has no bound of its own on the executor: it runs to its end, so a
+// wait that ends here is a request that may still be finishing.
+const apply_within_ms = 900_000
+
+/// Asks the executor to check a held state out in the scope's tree.
+///
+/// The surface sends the scope's incarnation and token with the request, and
+/// sends it again after a repair of the connection. That is safe because an
+/// apply that already landed answers its tip and changes nothing.
+fn apply_in(
+  joined: surface.Surface(RemoteCensus),
+  session: String,
+  state: State,
+) -> Result(String, ApplyFailure) {
+  let incarnation = surface.incarnation(joined)
+  let token = surface.token(joined)
+  let asked =
+    surface.ask_within(joined, apply_within_ms, fn(reply) {
+      protocol.StateApply(session:, incarnation:, token:, state:, reply:)
+    })
+
+  // The answer of the executor, or the silence that ended the wait.
+  case asked {
+    Ok(Ok(tip)) -> Ok(tip)
+    Ok(Error(refusal)) -> Error(ApplyRefused(refusal))
+    Error(Nil) -> Error(ApplyUnanswered)
+  }
 }
 
 /// What the executor's census allows, and the notice when it allows nothing.

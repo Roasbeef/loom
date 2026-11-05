@@ -524,3 +524,39 @@ pub fn no_capability(call: OwnerCapCall) -> Result(CapOutcome, CapDenial) {
     message: "this host serves no owner capability `" <> call.cap <> "`",
   ))
 }
+
+/// The owner of a scope that is opened to be written to once and closed, and
+/// never to run a tool: a session move that puts a checkout on an executor
+/// attaches a scope for the length of one `StateApply` (protocol-change/107,
+/// slice 4c).
+///
+/// Nothing runs in such a scope, so nothing calls back. If something did, it
+/// finds an owner that refuses it: an escalation is settled as refused, the
+/// reserved facts are empty and read-only, a notice or a wake has no strand to
+/// reach, and no background execution or capability is served.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert owner_services.declining().facts.list("job/") == Ok([])
+/// ```
+pub fn declining() -> OwnerServices {
+  OwnerServices(
+    escalate: fn(_refused) { escalate.Settle },
+    facts: FactAccess(
+      cell: fn(_key) { Ok(option.None) },
+      put: fn(_key, _value, _expected) { Error(StoreAbsent) },
+      put_blind: fn(_key, _value) { Error(StoreAbsent) },
+      delete: fn(_key) { Error(StoreAbsent) },
+      list: fn(_prefix) { Ok([]) },
+    ),
+    output: fn(_run) { fn(_tail) { Nil } },
+    capability: no_capability,
+    holds: fn(_caller, _tool) { Error(agent.AgencyUnavailable) },
+    notify: fn(_strand, _work, _text) { Error(unavailable) },
+    strand_activity: fn(_strand) { Error(unavailable) },
+    wake: fn(_strand, _text) { Error(unavailable) },
+    launch_execution: no_launch,
+    interact_execution: no_interaction,
+  )
+}
