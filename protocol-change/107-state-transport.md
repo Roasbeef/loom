@@ -962,3 +962,29 @@ as the slice 2 addendum says, none of the state messages crosses it, so it has n
 encoder or decoder to extend. The P model of the transfer
 (`protocol/models/state-transfer`) models the pieces and the store and not the capture or
 the apply, which are local to an executor, so it needs no new transition.
+
+## Addendum: the filter listing and the checkout share a tree (2026-11-04)
+
+The "Filters and transports" paragraph of the slice 4a addendum says that every checkout of
+`state_apply` lists the `filter.<name>` drivers its configuration names. A review of the
+merged slice found that this was not true of `Worktree`. The listing ran in the
+repository, but `git worktree add` performs its checkout in a subprocess inside the new
+tree, and a conditional include in the repository's `.git/config`, one that matches
+`onbranch:loom/**` or the Git directory of a linked worktree, can pull a `filter.<name>`
+driver into that tree alone. A session that wrote the configuration earlier could name a
+driver the listing never saw. The jail still bounded what its program could do, so the
+consequence was the one the first draft of that paragraph already described, a write
+inside the repository's `.git`, and the claim was wrong rather than the sandbox.
+
+`Worktree` now runs `git worktree add --no-checkout -b loom/<session>`, which writes no
+file, and then `git reset --hard` from inside the new tree through the same `checked_out`
+call as the other placements. The listing and the checkout therefore read the
+configuration of one tree, and the paragraph is true of every placement. A failed
+checkout removes the tree this call made, as a failed `git worktree add` did, and leaves
+the branch, which is how `git worktree add -b` behaved. `Clone` and `Reset` already listed
+and wrote in the directory they checked out and are unchanged. A test gives the
+repository an `includeIf` on the linked worktree's Git directory that defines a
+`filter.evil.smudge`, attaches the filter to a hand-made bundle, and asserts that the
+marker its program would write is not created and that the file arrives intact. A control
+adds a worktree of the same commit with the operator's Git and finds the marker, and the
+test fails against the previous `worktree add` form.

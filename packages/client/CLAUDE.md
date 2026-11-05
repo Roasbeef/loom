@@ -1404,8 +1404,10 @@ walks the tip's history to prove every object arrived, and creates
 existing ref is never moved; one that already names the tip is the state having
 been applied before and is reused. It does not fetch, because a fetch reads the
 repository's `url.<base>.insteadOf` and `protocol.*` settings. `Worktree` adds
-`git worktree add -b loom/<session>` for a primary checkout, with writable roots
-of the repository's `.git` and the destination's parent. `Clone` makes a new
+`git worktree add --no-checkout -b loom/<session>` for a primary checkout, with
+writable roots of the repository's `.git` and the destination's parent, then
+`git reset --hard` from inside the new tree (a failed one removes the tree), so
+the filter listing reads the configuration the checkout reads. `Clone` makes a new
 repository with an empty template, imports and checks out the branch, and
 refuses a thin state because a new repository holds no base. `Reset` is the
 executor's case (slice 4a): the scope's linked worktree already exists on
@@ -1417,7 +1419,9 @@ already contains the tip is answered as applied and not touched, and any other t
 must have no change in it. A dirty state's snapshot commit is checked out as it is.
 The checkouts (`checked_out`) empty every `filter.<name>` driver the configuration
 names for the call, since a `.gitattributes` in the bundle can attach one and a
-checkout would run its `smudge` command; the guards also set
+checkout would run its `smudge` command. The listing runs in the directory the
+files are written in, because an `includeIf` can add a driver to one tree alone; the
+guards also set
 `submodule.recurse=false` and `protocol.allow=never`.
 `state_capture.apply` finds the state in the node's store (the `Capturer` holds a
 read handle) and calls it. The caller serializes applies to one repository, as the
