@@ -17,12 +17,23 @@
 //// The `seed` key of the spawner's table (`client/spawners`) is the owner's
 //// ceiling, and it is checked first, before the store is looked at or any
 //// directory made, so a spawner with `seed = "none"` leaves no trace. The
-//// placement decides where a copy can be made. The child shares its delegate
-//// session's workspace, so the copy is made as a repository inside it, at
+//// placement decides where a copy can be made.
+////
+//// A `directory` placement shares its delegate session's workspace with the
+//// pair's other children, so the copy is made as a repository inside it, at
 //// `seeds/<name>` under the spawner's `directory`, and the child's brief is told
-//// where it is. A spawner placed on an executor or a pool has its workspace on
-//// another machine, where the apply would have to run, and is refused with a
-//// reason that says so.
+//// where it is.
+////
+//// An `executor` or `pool` placement has its workspace on another machine, and a
+//// session has one workspace, so the child gets a session of its own
+//// (protocol-change/107, slice 4b). The workspace is its worktree, and the state
+//// becomes that worktree's checkout. `land` makes that happen in a fixed order:
+//// the whole bundle is in this machine's store, the child's session is opened
+//// and its scope attached, the bundle is sent to the executor's store, the
+//// executor applies it, and only then is the request handed to the Agency, whose
+//// start of the child is the session's first turn. A step that fails is a refusal
+//// that names the step, and a child that was not started is never reported
+//// started.
 ////
 //// ## Where the copy is made
 ////
@@ -41,9 +52,11 @@
 ////
 //// ## Flow
 ////
-//// `receive` → `permitted` → `copy` → `held` → `applied` → `briefed`
+//// `land` → `permitted` → `copy` → `held` → `applied` → `briefed`, and for an
+//// executor `landed` → `placed` → `placing` → `moved`
 ////
-//// 1. `receive` passes a request with no state through unchanged.
+//// 1. `land` passes a request with no state through unchanged, and `receive` is
+////    the directory half of it.
 //// 2. `permitted` judges the spawner's ceiling, its placement and the
 ////    description, and `copy` returns at once for a copy that is already there.
 //// 3. `held` finds the whole bundle in the store, or answers `StateMissing` with
@@ -52,12 +65,19 @@
 ////    that another attempt is making it.
 //// 5. `briefed` tells the child where its copy is, in words appended to its
 ////    brief.
+//// 6. For an executor, `landed` opens the child's session, `placed` runs the
+////    claim and waits for the work, `placing` is the work under its deadline, and
+////    `moved` is its two steps: send the bundle, apply it before the first
+////    turn.
 
+import client/agency.{type DelegateEndpoint}
+import client/delegate_host.{type ChildSessions}
 import client/internal/ffi_os
 import client/remote_spawn.{
-  type CallSite, type Request, type SpawnRefusal, NotYetOpen, StateMissing,
-  StateRefused, StoreFailure,
+  type CallSite, type Parent, type Request, type SpawnRefusal, NotYetOpen,
+  StateMissing, StateRefused, StoreFailure,
 }
+import client/session_states.{type SessionStates}
 import client/spawners.{type Spawner, InDirectory, NoSeed, WorkspaceSeed}
 import client/state_apply
 import client/state_node.{type StateNode}
@@ -71,7 +91,7 @@ import gleam/bool
 import gleam/erlang/process
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
@@ -84,7 +104,31 @@ import weft
 /// The directory under a spawner's `directory` that holds the copies.
 pub const seeds_directory = "seeds"
 
-/// Judges a request that may carry a state and prepares the copy it names.
+/// Where a state is put.
+pub type Target {
+  /// A repository copy under this directory of the spawner's, which is on this
+  /// machine.
+  Directory(path: String)
+
+  /// The child's own session, whose workspace is on an executor.
+  Session
+}
+
+/// What a request becomes once its state has been dealt with.
+pub type Landed {
+  Landed(
+    /// The request the Agency serves: its state cleared, and its brief saying
+    /// where the child's workspace is.
+    request: Request,
+    /// The child's own session, with its workspace filled, when the placement is
+    /// an executor or a pool, and `None` when the child runs in the pair's
+    /// session.
+    session: Option(DelegateEndpoint),
+  )
+}
+
+/// Judges a request that may carry a state and prepares the copy it names, for a
+/// spawner placed in a directory.
 ///
 /// A request with no state is returned as it is. One with a state is returned
 /// with its brief amended to say where the child's copy is and its `state` cleared,
@@ -92,7 +136,9 @@ pub const seeds_directory = "seeds"
 /// done its work. Any other answer is a refusal: `StateMissing` when the bundle
 /// is not all in the store, which the sender answers by sending the rest, and
 /// `StateRefused` for everything else about the state, which resending cannot
-/// change.
+/// change. A spawner placed on an executor or a pool is refused here, because its
+/// child needs a session of its own that this function has no way to open: the
+/// daemon's spawn host calls `land`.
 ///
 /// ## Examples
 ///
@@ -128,21 +174,118 @@ pub fn receive_within(
   case request.state {
     None -> Ok(request)
     Some(state) -> {
-      use directory <- result.try(permitted(spawner, state))
-      let name = name_of(site, state)
-      use Nil <- result.map(copy(
-        node,
-        directory,
-        spawner.name,
-        name,
-        state,
-        wait_ms,
-      ))
-      remote_spawn.Request(
-        ..request,
-        brief: request.brief <> briefed(name),
-        state: None,
-      )
+      use target <- result.try(permitted(spawner, state))
+
+      // Only a directory has a copy to make without a session to open.
+      case target {
+        Directory(path: directory) ->
+          copy_in(node, directory, spawner, site, request, state, wait_ms)
+        Session -> Error(StateRefused(needs_a_session))
+      }
+    }
+  }
+}
+
+// What `receive` says of a spawner placed on an executor or a pool.
+const needs_a_session =
+  "this spawner places its children on an executor, and each is started in a session of its own; the spawn host does that, not a copy in a directory"
+
+/// Makes the copy for a spawner placed in a directory and amends the brief.
+fn copy_in(
+  node: StateNode,
+  directory: String,
+  spawner: Spawner,
+  site: CallSite,
+  request: Request,
+  state: State,
+  wait_ms: Int,
+) -> Result(Request, SpawnRefusal) {
+  let name = name_of(site, state)
+  use Nil <- result.map(copy(
+    node,
+    directory,
+    spawner.name,
+    name,
+    state,
+    wait_ms,
+  ))
+  remote_spawn.Request(
+    ..request,
+    brief: request.brief <> briefed(name),
+    state: None,
+  )
+}
+
+/// Deals with the state a request carries, wherever the spawner places its
+/// children, and returns the request the Agency serves with the session it is to
+/// be served in.
+///
+/// A request with no state is `Landed` as it is, with no session of its own. For
+/// a `directory` placement the copy is made as `receive` makes it. For an
+/// `executor` or `pool` placement the child's session is found or made through
+/// `children`, the state is sent to its executor and applied there, and the
+/// session is returned so that the child starts in it. Nothing is started here:
+/// the Agency's `spawn` is the child's first turn, and it is not called until this
+/// has returned `Ok`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // spawn_seed.land(node, children, spawner, parent, call_site, request)
+/// // == Ok(spawn_seed.Landed(request:, session: option.None)) for a request with no state
+/// ```
+pub fn land(
+  node: StateNode,
+  children: ChildSessions,
+  spawner: Spawner,
+  parent: Parent,
+  site: CallSite,
+  request: Request,
+) -> Result(Landed, SpawnRefusal) {
+  land_within(node, children, spawner, parent, site, request, place_wait_ms)
+}
+
+/// `land` for an asker that waits at most `wait_ms` for the workspace to be put
+/// in place. The work is not abandoned when the asker stops waiting, and the next
+/// ask for the same spawn finds it done or still going.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // spawn_seed.land_within(node, children, spawner, parent, call_site, request, 15_000)
+/// ```
+pub fn land_within(
+  node: StateNode,
+  children: ChildSessions,
+  spawner: Spawner,
+  parent: Parent,
+  site: CallSite,
+  request: Request,
+  wait_ms: Int,
+) -> Result(Landed, SpawnRefusal) {
+  // A request with no state is the request it always was.
+  case request.state {
+    None -> Ok(Landed(request:, session: None))
+    Some(state) -> {
+      use target <- result.try(permitted(spawner, state))
+
+      // Where the state goes decides which half of the work this is.
+      case target {
+        Directory(path: directory) ->
+          copy_in(node, directory, spawner, site, request, state, apply_ms)
+          |> result.map(fn(served) { Landed(request: served, session: None) })
+        Session ->
+          landed(
+            node,
+            children,
+            spawner,
+            parent,
+            name_of(site, state),
+            request,
+            state,
+            wait_ms,
+          )
+      }
     }
   }
 }
@@ -151,8 +294,13 @@ pub fn receive_within(
 /// ten minutes for a checkout, and a margin.
 pub const apply_ms = 660_000
 
+/// How long a spawn waits for a workspace to be put into a child's session on an
+/// executor before it tells the sender to ask again, in milliseconds. The work
+/// goes on in a process of its own, and the sender's window is thirty seconds.
+pub const place_wait_ms = 15_000
+
 /// Judges the spawner's ceiling, its placement and the description, and answers
-/// the directory the copy goes under.
+/// where the state goes.
 ///
 /// ## Examples
 ///
@@ -162,7 +310,7 @@ pub const apply_ms = 660_000
 pub fn permitted(
   spawner: Spawner,
   state: State,
-) -> Result(String, SpawnRefusal) {
+) -> Result(Target, SpawnRefusal) {
   use <- bool.lazy_guard(when: spawner.seed == NoSeed, return: fn() {
     Error(StateRefused(
       "this machine's table [spawners."
@@ -183,24 +331,20 @@ pub fn permitted(
   )
 
   // The seed ceiling is the owner's to widen, and the placement is the owner's
-  // to choose; this release makes a copy only where this machine holds the
-  // workspace.
+  // to choose. An executor or a pool takes a state only in a workspace of
+  // `mode = "worktree"`, which this machine learns from the executor's census
+  // when the child's session attaches, so that refusal comes later and names the
+  // mode.
   case spawner.seed, spawner.placement {
     WorkspaceSeed, InDirectory(path:) ->
       bootstrap.canonical_directory(path)
+      |> result.map(Directory)
       |> result.replace_error(StateRefused(
         "the spawner's directory is not usable on this machine",
       ))
     WorkspaceSeed, spawners.OnExecutor(..)
     | WorkspaceSeed, spawners.InPool(..)
-    ->
-      Error(StateRefused(
-        "the table [spawners."
-        <> spawner.name
-        <> "] places its children on an executor, and a workspace is applied "
-        <> "where the children run; this release applies it only for a "
-        <> "`directory` placement",
-      ))
+    -> Ok(Session)
     NoSeed, _ -> Error(StateRefused("the spawner takes no workspace"))
   }
 }
@@ -777,4 +921,362 @@ pub fn briefed(name: String) -> String {
   <> "/"
   <> name
   <> "/`, or `cd` into it. Commit what you change. Nothing is pushed anywhere."
+}
+
+// --- a child's own session on an executor (protocol-change/107, slice 4b) --------
+
+/// Puts a state into the workspace of the child's own session, in the order that
+/// keeps the child from starting on a half-made tree.
+///
+/// 1. A refusal an earlier attempt left is answered at once, so a failure that
+///    came after its asker had gone is not run again.
+/// 2. A session that already exists and has begun belongs to a spawn that went
+///    through, and this one is its resend: nothing is put anywhere, and the
+///    Agency answers the child it already started.
+/// 3. The whole bundle must be in this machine's store. A state that is still
+///    arriving is `StateMissing` before any session is made, so a sender that is
+///    midway through a transfer holds no slot.
+/// 4. The session is found or made, and the executor's census must say its
+///    workspace takes a state. A workspace in `shared` mode is refused naming the
+///    mode, and the session just made is released, since no child will run in it.
+/// 5. The bundle is sent to the executor's store and applied, by `placed`.
+fn landed(
+  node: StateNode,
+  children: ChildSessions,
+  spawner: Spawner,
+  parent: Parent,
+  name: String,
+  request: Request,
+  state: State,
+  wait_ms: Int,
+) -> Result(Landed, SpawnRefusal) {
+  let ready = fn(endpoint) {
+    Landed(
+      request: remote_spawn.Request(
+        ..request,
+        brief: request.brief <> briefed_in_workspace(),
+        state: None,
+      ),
+      session: Some(endpoint),
+    )
+  }
+  use Nil <- result.try(refused_before(node, name))
+  use begun <- result.try(children.open(spawner, parent, name))
+
+  // A child that has begun is a resend of a spawn that went through.
+  case begun {
+    Some(endpoint) ->
+      placed_or_begun(
+        node,
+        children,
+        spawner,
+        parent,
+        name,
+        state,
+        endpoint,
+        wait_ms,
+      )
+      |> result.map(ready)
+    None -> {
+      use held <- result.try(held(node, state))
+      use endpoint <- result.try(children.resolve(spawner, parent, name))
+      placed_in(node, children, spawner, parent, name, held, endpoint, wait_ms)
+      |> result.map(fn(_placed) { ready(endpoint) })
+    }
+  }
+}
+
+/// A session that exists: skips the work when the child has begun, and otherwise
+/// finishes it, as a resend after a lost reply or a wait that ran out does.
+fn placed_or_begun(
+  node: StateNode,
+  children: ChildSessions,
+  spawner: Spawner,
+  parent: Parent,
+  name: String,
+  state: State,
+  endpoint: DelegateEndpoint,
+  wait_ms: Int,
+) -> Result(DelegateEndpoint, SpawnRefusal) {
+  // A session whose child began has its workspace already, and one that has not
+  // gets it now.
+  case endpoint.fresh() {
+    False -> Ok(endpoint)
+    True -> {
+      use held <- result.try(held(node, state))
+      placed_in(node, children, spawner, parent, name, held, endpoint, wait_ms)
+      |> result.map(fn(_placed) { endpoint })
+    }
+  }
+}
+
+/// Checks the session can take a state, then runs the work or finds it running.
+fn placed_in(
+  node: StateNode,
+  children: ChildSessions,
+  spawner: Spawner,
+  parent: Parent,
+  name: String,
+  held: state_store.Held,
+  endpoint: DelegateEndpoint,
+  wait_ms: Int,
+) -> Result(Nil, SpawnRefusal) {
+  let release = fn() {
+    let _released = children.release(spawner, parent, name)
+    Nil
+  }
+
+  // The census says whether the executor's workspace takes a state at all.
+  case endpoint.states {
+    None -> {
+      release()
+      Error(StateRefused(
+        "the child's session has no workspace on an executor to put a workspace in",
+      ))
+    }
+    Some(states) ->
+      case states.fit {
+        Error(reason) -> {
+          release()
+          Error(StateRefused(worktree_git.printable(reason, 512)))
+        }
+        Ok(Nil) ->
+          placed(node, states, endpoint, spawner, name, held, release, wait_ms)
+      }
+  }
+}
+
+/// Starts the work for one child, unless another attempt is doing it, and waits
+/// for it.
+///
+/// The sender's window is thirty seconds and a large checkout takes minutes, so
+/// the work runs in a process of its own that nothing but its own deadline ends,
+/// and an asker that stops waiting is told to ask again. The claim is the one the
+/// directory copy uses, a marker directory made atomically beside the stages, so
+/// the asks that arrive meanwhile do not each start a transfer. Were two to run,
+/// both are safe: a piece the executor holds is accepted again, and an apply of
+/// a tip the tree already has is answered with the tip and touches nothing.
+fn placed(
+  node: StateNode,
+  states: SessionStates,
+  endpoint: DelegateEndpoint,
+  spawner: Spawner,
+  name: String,
+  held: state_store.Held,
+  release: fn() -> Nil,
+  wait_ms: Int,
+) -> Result(Nil, SpawnRefusal) {
+  use parent <- result.try(stage_parent(node))
+  use taken <- result.try(claim(parent, name, ffi_os.system_time_ms() / 1000))
+
+  // One attempt does the work; the others are told to ask again.
+  case taken {
+    Busy -> Error(NotYetOpen(still_placing))
+    Claimed -> {
+      let reply = process.new_subject()
+      let _working =
+        process.spawn_unlinked(fn() {
+          process.send(
+            reply,
+            placing(
+              node,
+              states,
+              endpoint,
+              spawner,
+              held,
+              parent,
+              name,
+              release,
+            ),
+          )
+        })
+
+      // An asker that stops waiting leaves the work running.
+      case process.receive(reply, wait_ms) {
+        Ok(done) -> done
+        Error(Nil) -> Error(NotYetOpen(still_placing))
+      }
+    }
+  }
+}
+
+const still_placing =
+  "the workspace is still being put in place on the executor; ask again"
+
+/// The work of one placement under a deadline of its own.
+///
+/// Whatever the end, the claim is released, and a refusal is kept as the
+/// attempt's verdict before that, so an ask that arrives after the asker has gone
+/// is answered with it and starts nothing. A refusal also ends the child's
+/// session, since no child will run in it; a request to ask again leaves the
+/// session for the next ask.
+fn placing(
+  node: StateNode,
+  states: SessionStates,
+  endpoint: DelegateEndpoint,
+  spawner: Spawner,
+  held: state_store.Held,
+  parent: String,
+  name: String,
+  release: fn() -> Nil,
+) -> Result(Nil, SpawnRefusal) {
+  let started = bootstrap.monotonic_time_ms()
+  let outcomes =
+    weft.new([fn() { moved(node, states, endpoint, held) }])
+    |> weft.deadline(apply_ms)
+    |> weft.start
+
+  // A task that finished has its own answer; every other end is the deadline.
+  let answer = case outcomes {
+    [weft.Completed(..)] -> Ok(Nil)
+    [weft.Failed(error:, ..)] -> Error(error)
+    [weft.Crashed(..)]
+    | [weft.Abandoned(..)]
+    | [weft.NeverStarted(..)]
+    | [weft.DrainProofLost(..)]
+    | [weft.CancellationUnconfirmed(..)]
+    | []
+    | [_, _, ..] ->
+      Error(StateRefused(
+        "putting the workspace in place did not finish in time",
+      ))
+  }
+
+  // The verdict is kept before the claim is let go, so no ask finds the claim
+  // free and the verdict missing.
+  record_refusal(parent, name, answer)
+  let _claim_released = simplifile.delete(parent <> "/" <> name <> ".claim")
+
+  // The end of the child's session, or the record that the workspace is in place.
+  case answer {
+    Ok(Nil) ->
+      told_applied(
+        node.logger,
+        held.state,
+        spawner.name,
+        states.executor,
+        started,
+      )
+    Error(StateRefused(..)) -> release()
+    Error(_) -> Nil
+  }
+
+  answer
+}
+
+/// Sends the bundle to the executor's store and has the executor apply it.
+fn moved(
+  node: StateNode,
+  states: SessionStates,
+  endpoint: DelegateEndpoint,
+  held: state_store.Held,
+) -> Result(Nil, SpawnRefusal) {
+  use Nil <- result.try(delivered(node, states, held.state))
+  applied_on(states, endpoint, held.state)
+}
+
+/// Relays the bundle from this machine's store to the executor's, resuming at the
+/// offset the executor already holds. A transfer that did not finish is the next
+/// ask's to continue; a refusal or a store that lost the bundle is final.
+fn delivered(
+  node: StateNode,
+  states: SessionStates,
+  state: State,
+) -> Result(Nil, SpawnRefusal) {
+  case node.store {
+    None -> Error(StateRefused("this machine keeps no state store"))
+    Some(store) ->
+      case state_transfer.send(store, state.hash, states.link) {
+        state_transfer.Delivered -> Ok(Nil)
+        state_transfer.Declined(refusal:) ->
+          Error(
+            StateRefused(worktree_git.printable(
+              "sending the workspace to the executor failed: the executor declined it: "
+                <> state_transfer.describe(refusal),
+              512,
+            )),
+          )
+        state_transfer.Faulted(reason:) ->
+          Error(
+            StateRefused(worktree_git.printable(
+              "sending the workspace to the executor failed: " <> reason,
+              512,
+            )),
+          )
+        state_transfer.Silent | state_transfer.Stalled ->
+          Error(NotYetOpen(still_placing))
+      }
+  }
+}
+
+/// Has the executor check the state out as the child's tree, before the child's
+/// first turn.
+///
+/// The session is asked once more whether it has begun, at the moment before the
+/// request, because the executor cannot tell: a session that began while the
+/// bundle was crossing is a resend of a spawn that went through, and gets no
+/// apply. The session's own `apply` refuses once the session has begun as well,
+/// so the line is held where the request is made and not only here.
+fn applied_on(
+  states: SessionStates,
+  endpoint: DelegateEndpoint,
+  state: State,
+) -> Result(Nil, SpawnRefusal) {
+  use <- bool.guard(when: !endpoint.fresh(), return: Ok(Nil))
+
+  // The executor's answer is the tip it checked out, a request to ask again, or
+  // a refusal that asking again does not change.
+  case states.apply(state) {
+    Ok(tip) if tip == state.tip -> Ok(Nil)
+    Ok(_other) ->
+      Error(StateRefused(
+        "applying the workspace on the executor checked out another commit than the one sent",
+      ))
+    Error(session_states.Later(reason:)) ->
+      Error(NotYetOpen(worktree_git.printable(reason, 300)))
+    Error(session_states.Final(reason:)) ->
+      Error(
+        StateRefused(worktree_git.printable(
+          "applying the workspace on the executor failed: " <> reason,
+          512,
+        )),
+      )
+  }
+}
+
+/// Says that a state was put into a child's workspace on an executor. The state is
+/// named by its short hash and size and the executor by its name; no path of
+/// either machine is written.
+fn told_applied(
+  logger: Logger,
+  state: State,
+  spawner: String,
+  executor: String,
+  started: Int,
+) -> Nil {
+  log.info(logger, "remote_spawn.seed_applied", [
+    field.text("spawner", spawner),
+    field.text("executor", executor),
+    field.ident("state", state_object.short(state.hash)),
+    field.count("bytes", state.size),
+    field.count("elapsed_ms", bootstrap.monotonic_time_ms() - started),
+  ])
+}
+
+/// The words appended to the brief of a child whose workspace is its session's
+/// own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // spawn_seed.briefed_in_workspace()
+/// ```
+pub fn briefed_in_workspace() -> String {
+  "\n\nYour workspace: you were started from the workspace of the session "
+  <> "that asked for you, as it was when it asked, uncommitted edits and new "
+  <> "files included. Your workspace is that copy, a Git worktree on a branch "
+  <> "of its own, and its newest commit may be a snapshot of that uncommitted "
+  <> "work. Work in it as in any workspace and commit what you change: your "
+  <> "commits are returned to the session that asked, as a ref in its "
+  <> "repository. Nothing is pushed anywhere."
 }
