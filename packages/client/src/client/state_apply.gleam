@@ -83,8 +83,10 @@
 ////    `state_object.verify_bundle` compare it with the state. Nothing touches a
 ////    repository before that comparison passes.
 //// 2. `into_worktree` checks the repository, the destination and, for a thin
-////    state, that the base is held, then imports the bundle and runs
-////    `git worktree add -b`.
+////    state, that the base is held, then imports the bundle, runs
+////    `git worktree add --no-checkout -b`, and writes the files with
+////    `git reset --hard` from inside the new tree, where the filter drivers are
+////    listed from the configuration that checkout reads.
 //// 3. `into_clone` makes a fresh repository at the destination, imports the
 ////    bundle and checks out the session's branch. A thin state is refused,
 ////    because a new repository holds no base.
@@ -512,14 +514,35 @@ fn into_worktree(
 
   // The new branch is created by `-b`, which refuses a name that exists, and
   // the tree is its only checkout. Writes are the repository's `.git` and the
-  // destination's parent, as `client/worktrees` grants them.
+  // destination's parent, as `client/worktrees` grants them. `--no-checkout`
+  // writes no file, so no filter driver is consulted by this call.
   let writable = [repository <> "/.git", filepath.directory_name(destination)]
-  use _ <- result.map(
-    checked_out(git, repository, writable, [
-      "worktree", "add", "--quiet", "-b", branch, destination, ref,
+  use _ <- result.try(
+    git_ok(git, repository, writable, [
+      "worktree", "add", "--quiet", "--no-checkout", "-b", branch, destination,
+      ref,
     ]),
   )
-  Applied(ref:, tip: state.tip, destination:, branch:)
+
+  // The files are written from inside the new tree, so the filter drivers
+  // listed are the ones that checkout reads. Run from the repository, the
+  // listing would miss a driver which an `includeIf` on the branch or the Git
+  // directory of a linked worktree pulls in for the tree alone.
+  let tree_writable = [repository <> "/.git", destination]
+  let populated =
+    checked_out(git, destination, tree_writable, ["reset", "--hard", "--quiet"])
+
+  // A failed checkout leaves nothing registered, since this call made the tree.
+  case populated {
+    Ok(_) -> Ok(Applied(ref:, tip: state.tip, destination:, branch:))
+    Error(reason) -> {
+      let _removed =
+        git_run(git, repository, writable, [
+          "worktree", "remove", "--force", destination,
+        ])
+      Error(reason)
+    }
+  }
 }
 
 /// Imports into a repository made at the destination, and checks out the
@@ -619,7 +642,10 @@ fn into_existing(
 /// bundle's tree attaches to paths, and a checkout runs its `smudge` command on
 /// each file it writes. No command-line switch turns filters off in general, but
 /// every driver that can run has a name in the configuration, so the call lists
-/// the names and empties each one's commands. An empty `smudge` or `clean`
+/// the names and empties each one's commands. The listing and the checkout must
+/// run in the same directory: a conditional include can add a driver to one tree
+/// and not to another, so the caller gives the directory the files are written
+/// in, never the repository a linked worktree is added from. An empty `smudge` or `clean`
 /// converts nothing, an empty `process` is a command that cannot start, and
 /// `required` is turned off so that neither fails the checkout.
 fn checked_out(
