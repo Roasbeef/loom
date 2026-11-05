@@ -65,6 +65,7 @@
 //// 5. `line_element` draws one transcript line inside its own memo, as
 ////    Markdown or as it is (`body_of`).
 
+import core/ids
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
@@ -417,7 +418,6 @@ fn rows_at(
   session: String,
   endpoint: String,
 ) -> Element(message) {
-  let newest = newest_thought(pieces)
   element.element(
     "loom-follow",
     [
@@ -430,29 +430,57 @@ fn rows_at(
       keyed.div(
         [attribute.class("transcript lane"), attribute.role("log")],
         list.append(
-          list.filter_map(pieces, fn(piece) {
-            case piece {
-              // The advisor's reviews are the panel's, never a row of the lane.
-              turns.Commentary(..) -> Error(Nil)
-              _ ->
-                Ok(#(
-                  piece_key(piece),
-                  timeline_row(
-                    piece,
-                    draw,
-                    replies,
-                    marks,
-                    folds,
-                    session,
-                    newest,
-                  ),
-                ))
-            }
-          }),
+          timeline(pieces, draw, replies, marks, folds, session),
           live_entry(live, draw, marks, replies),
         ),
       ),
     ],
+  )
+}
+
+/// The timeline's keyed rows, one for each piece but the advisor's reviews,
+/// which belong to the panel and never to the lane.
+fn timeline(
+  pieces: List(turns.Piece),
+  draw: fn(Line) -> Element(message),
+  replies: Replies(message),
+  marks: Marks,
+  folds: Folds(message),
+  session: String,
+) -> List(#(String, Element(message))) {
+  let newest = newest_thought(pieces)
+
+  list.filter_map(pieces, fn(piece) {
+    case piece {
+      turns.Commentary(..) -> Error(Nil)
+      _ ->
+        Ok(#(
+          piece_key(piece),
+          timeline_row(piece, draw, replies, marks, folds, session, newest),
+        ))
+    }
+  })
+}
+
+/// A lane that only reads: the pieces of a transcript recorded on another
+/// machine, drawn as the page's own lane draws them and with nothing to press.
+///
+/// It has no `<loom-follow>`, so the page around it keeps its own scroll, and
+/// no live row, reply, marker or handler. It has no session either, so it
+/// draws no picture and no link to a result: both are addresses on a session
+/// this daemon holds, and a session recorded elsewhere has none here. Every
+/// string reaches the page as the lane draws it, a text node or rendered
+/// Markdown (`markdown_view`), and no attribute is built from the transcript.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // lane.reading(relayed_lane.pieces(page, turns.Settled))
+/// ```
+pub fn reading(pieces: List(turns.Piece)) -> Element(message) {
+  keyed.div(
+    [attribute.class("transcript lane"), attribute.role("log")],
+    timeline(pieces, line_element, NoReplies, no_marks(), NoFolds, ""),
   )
 }
 
@@ -1150,7 +1178,7 @@ fn item_element(
       // Dispatch on item_element state.
       let links = case result_source {
         None -> []
-        Some(id) -> [tool_result.links(session, id)]
+        Some(id) -> result_links(session, id)
       }
 
       // A foreground `code_mode` call is a card (`view/program_card`): the
@@ -1355,11 +1383,20 @@ fn block_body(
         pictures(session, block.key, transcript_image.of_block(block)),
         case turns.block_result(block) {
           None -> []
-          Some(id) -> [tool_result.links(session, id)]
+          Some(id) -> result_links(session, id)
         },
       ),
     ),
   )
+}
+
+/// The links to a result's whole text, which are addresses on the page's own
+/// session. With no session there is no address to draw, and none is.
+fn result_links(session: String, id: ids.EntryId) -> List(Element(message)) {
+  case session {
+    "" -> []
+    _ -> [tool_result.links(session, id)]
+  }
 }
 
 /// A person's message. One the shared projection shortened (a long paste, an
