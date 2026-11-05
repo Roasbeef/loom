@@ -1131,3 +1131,102 @@ the following. Two are fixed here and two are accepted, with the reason.
   its end on the executor may still be writing the tree, and a close that finds the tree busy
   can record `UnknownCleanup`, which an operator on the executor releases. It needs an apply
   that outlives the wait.
+
+## Addendum: slice 4b, a seeded spawn on an executor or a pool (2026-11-04)
+
+Slice 3 left a placement the spawn refused, and slice 4a gave the executor the two
+messages it needs. This slice is the orchestrator side that uses them: a spawn that carries
+the parent's workspace now works when the spawner is placed on an `executor` or a `pool`,
+for exit criterion 3 of #1137 (one orchestrator starting several children on several
+machines, each doing real work in its own worktree, the results coming back). No wire
+constructor was added and the version stays at 6. Nothing above is edited.
+
+**What was built.** Each seeded child on an executor or a pool runs in a delegate session
+of its own. Its workspace is that session's worktree, and the parent's state becomes the
+worktree's checkout before the child's first turn. In order: the receiving orchestrator
+holds the whole bundle in its store (otherwise `StateMissing`, before any session is made);
+the child's session is found or made, which on a pool is where the executor is chosen; the
+attach census says whether the executor's workspace takes a state; the bundle is sent to the
+executor's store over `remote/state_link.via_host` with `state_transfer.send`, which resumes
+at the executor's offset; `StateApply` is sent under the scope's incarnation and token; and
+only after it is acknowledged is the request handed to the Agency, whose `spawn` is the
+child's first turn. A step that fails is a refusal that names the step, and a child that
+was not started is never reported started. `spawn_seed.land` is that order,
+`session_states.SessionStates` is the record of what a session can do with states, and
+`remote/workspace.states_over` builds it over the attached surface.
+
+**The first-turn fence is held on the orchestrator.** The executor cannot tell a tree the
+session has worked in from a fresh one. `agency.DelegateEndpoint.fresh` reads the
+session's lineage facts (a child's lineage cell is written before its strand runs, and a
+cell that will not decode still counts, and a read that fails answers "not fresh"). The
+session assembly wraps `apply` so it refuses once the session has begun, asked at the
+moment of each request, and `land` asks again immediately before the request. A resend of
+a spawn whose child began finds a session that is not fresh and sends nothing; the Agency
+answers the child it already started.
+
+**Keying.** A child's session is the delegate session of a (spawner, parent session, child)
+triple. The table is unchanged: the `parent_session` text is the parent's identity for the
+pair's session and the identity, a slash and the child's name for a child's, and
+`catalogue.Delegate` splits it into `parent_session` (always the parent, which mail and
+progress go to) and `child`. A name is a profile-name word of at most 24 bytes so that the
+key fits the column. This was chosen over a new column because a primary key change in SQLite
+is a table rebuild and a migration for a name that only the registry reads. The child's name
+is `spawn_seed.name_of`, a digest of the call site and the state, so a resend finds the same
+session. A child's session counts against the spawner's `max_sessions`, so the cap is sized
+for the children in flight and one more for the pair's own session.
+
+**Settled: where a child's session is ended.** The design asked for release when the child
+settles. The Agency's end of a child is not enough, because the session also holds what the
+join answers from: the child's report, usage and unsent mail. The release is therefore at the
+join: when a child's entry is `Ready`, after the return has decided what becomes of its
+commits, and the child owes the parent no mail (`owed` is zero). It is `release_delegate_child`,
+which writes the releasing state before it stops the slot, so a daemon that dies in between
+leaves a row the retention sweep deletes and a repeat finds nothing and does nothing. A
+refusal makes the same release at once: a workspace the census refuses, a failed send or
+apply, or an Agency that refuses the child for good ends the session made for it. A child nobody
+joins is ended with its parent, whose release now walks the pair's session and every child's
+(`delegates_of_parent`), or by the sweep.
+
+**Return.** For a `Session` home `spawn_return` asks the executor for `StateCapture` of the
+committed content thin against the tip that was sent, pulls the bundle into the receiving
+node's store with `state_transfer.pull`, and pushes it to the parent as every other child's
+is. `None` from the capture is "no commits", worded as the directory path words it. A capture or
+a pull that gets no answer is a new non-final outcome, `Waiting`, tried again at the next join
+up to the five tries a transfer gets, and then a refusal that says the commits are in the
+child's workspace. `child_join` asks each child's own session in a task of its own, all
+under one deadline, and a message into a child, a decision about its request, a read of its
+transcript and the end of a run reach the session the child runs in.
+
+**Differences from the text above.**
+
+- *The mode is learned at the attach.* The design says a `shared` workspace is refused with a
+  reason naming the mode. The orchestrator cannot read the executor's workspace table, so
+  `permitted` accepts every executor and pool placement under `seed = "workspace"`, and the
+  refusal is made from the attach census (`branch` present means worktree mode), which costs
+  no request. The executor refuses a shared workspace too, with the same words.
+- *`receive` stays the directory half.* It refuses an executor or pool placement and says a
+  session of its own is needed. `land` serves both, and the daemon's spawn host calls it.
+- *`Returning.settle` takes the session's record.* A child on an executor cannot be captured
+  without it, and the pair's children are settled with none.
+
+**Costs and limits accepted for now.**
+
+- Uncommitted changes in an executor child's tree are not reported to the parent, as a
+  directory child's are, because asking would need a message the executor's vocabulary lacks.
+- A join that asks again after a child's session was ended is refused ("holds no such
+  child"), because the report lived in the session. The parent asks only about handles it
+  holds from a spawn it saw answered, and the answer that ends the session is the one
+  carrying the result, so the cost is a lost reply: the commits are in the parent's store but
+  the parent is not told their ref.
+- A spawn delayed past the end of its run is not fenced by the run-end fence, which is
+  written in the pair's session. It needs a spawn that is itself late past its run's end,
+  and the child is still ended with its parent.
+- A run end creates the pair's session if none exists, as it always did, so a parent whose
+  children were all seeded still holds one extra session until the sweep.
+- A session whose own workspace is on an executor still cannot seed a child: the parent's
+  workspace is captured from the orchestrator's machine only. `sessions.move` and its
+  checkout step are unchanged.
+- The pool placement is tested at the registry, with the existing claim machinery
+  (`manager.claim_placement` and `pools.spread`) asked from eight concurrent builds, and the
+  executor leg is tested against one real in-process executor. Nothing here was run over a
+  real TLS distribution link, under bubblewrap and Landlock, on three machines or by a model.

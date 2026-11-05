@@ -188,7 +188,15 @@ independent test oracle, including Unicode rejection and length boundaries.
   orchestrator in one transaction and leaves existing rows alone,
   `remote_releases` lists them and `settle_remote_release` deletes one. Those rows
   name no registration, because the parent session they concern is deleted by the
-  time they matter. Both are defined in `sql/catalogue_releases.sql`.
+  time they matter. Both are defined in `sql/catalogue_releases.sql`. A seeded
+  child on an executor has a session of its own (protocol-change/107, slice 4b),
+  kept in the same table with no change to it: the `parent_session` text is the
+  parent's identity for the pair's session and the identity, `/` and the child's
+  name for a child's, and `catalogue.Delegate` splits it into `parent_session` and
+  `child`. `claim_delegate_child` and `delegate_child_for` take the name (the old
+  functions are the empty one), `delegates_of_parent` lists everything one parent
+  holds, and a name is a profile-name word of at most 24 bytes so the key fits the
+  64-byte column.
   `claim_delegate` is the one write: in one immediate
   transaction it answers the pair's existing row and moves its contact time, or
   records the pair for the given session unless the spawner already holds
