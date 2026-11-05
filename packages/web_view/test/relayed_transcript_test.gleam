@@ -27,6 +27,7 @@ import web_view/listing
 import web_view/relayed
 import web_view/relayed_lane
 import web_view/relayed_session
+import web_view/view/lane
 import web_view/view/peek
 import web_view/view/relayed_session as relayed_view
 
@@ -39,6 +40,8 @@ const script = "<script>alert(1)</script>"
 const image = "<img src=x onerror=alert(1)>"
 
 const bad_link = "[click me](javascript:alert(1))"
+
+const pixel = "![x](http://attacker/x.png)"
 
 fn usage() -> message.Usage {
   message.Usage(
@@ -167,7 +170,7 @@ fn hostile() -> remote_transcript.Page {
     answered(2, [called("c1", "echo " <> script)]),
     returned(3, "c1", script <> image),
     answered(4, [
-      said(script <> "\n\n" <> image <> "\n\n" <> bad_link),
+      said(script <> "\n\n" <> image <> "\n\n" <> bad_link <> "\n\n" <> pixel),
     ]),
   ])
 }
@@ -274,12 +277,30 @@ pub fn hostile_text_reaches_the_page_as_characters_test() {
   )
 }
 
-pub fn the_page_draws_no_handler_link_or_address_from_the_transcript_test() {
-  let html = drawn(relayed.Idle, hostile())
+// The lane alone, so the page's own controls cannot hide a link of the
+// transcript's or be blamed for one.
+pub fn the_lane_draws_no_handler_link_or_address_from_the_transcript_test() {
+  let html =
+    relayed_lane.pieces(hostile(), turns.Settled)
+    |> lane.reading
+    |> element.to_string
 
+  assert string.contains(html, "transcript lane")
   assert !string.contains(html, "<a ")
   assert !string.contains(html, "href=")
   assert !string.contains(html, "<iframe")
+  assert !string.contains(html, "<img")
+}
+
+// An image is the text of its alt and its destination, and nothing is fetched.
+pub fn a_markdown_image_is_text_and_loads_nothing_test() {
+  let html =
+    relayed_lane.pieces(hostile(), turns.Settled)
+    |> lane.reading
+    |> element.to_string
+
+  assert string.contains(html, "[image: x · http://attacker/x.png]")
+  assert !string.contains(html, "<img")
 }
 
 pub fn an_orphan_result_has_no_link_to_a_session_this_daemon_lacks_test() {

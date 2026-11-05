@@ -481,7 +481,10 @@ text children that the browser checks before it can be followed, so a
 `javascript:` destination is never an attribute. `reading` has no session, so
 it draws no picture and no link to a result, both of which are addresses on a
 session this daemon holds. The projection also drops any reasoning block a
-page carries, as the box does before it sends one.
+page carries, as the box does before it sends one. Because the page now parses
+every entry it receives, the decoder (`remote_transcript.decode`) refuses a page
+whose entries encode to more than `page_bytes_limit`, the bound the box already
+cuts to, rather than taking the sender's word for it.
 
 The page also drew the head and foot lines of the framing that 090 gives an
 agent that reads a remote child's transcript (`strand_framing.transcript_head`
