@@ -54,7 +54,8 @@
 ////    process) before it removes the registration, and
 ////    `remote_releases` and `settle_remote_release` are how the release
 ////    drainer reads and settles them.
-//// 10. `delegate_now` admits the delegate session of a spawner's pair and refuses
+//// 10. `delegate_now` admits the delegate session of a spawner's pair, or of one
+////    named child of the pair (protocol-change/107, slice 4b), and refuses
 ////    one that is not open. `claim_now` is the Agency's claim of one spawn against
 ////    the spawner's rolling day, and `add_spend` is how a child's tokens reach
 ////    the same table. `release_now` begins a release by marking the row
@@ -237,9 +238,12 @@ pub type DelegateRequest {
     spawner: String,
     /// The spawning orchestrator's identity for the parent session.
     parent_session: String,
+    /// The child the session is for, or the empty string for the session that
+    /// serves the pair's other children (protocol-change/107, slice 4b).
+    child: String,
     /// The creation a first spawn makes. Its `request_key` is derived from the
-    /// pair by the caller, so a creation retried after a crash finds the
-    /// registration it reserved and does not make a second one.
+    /// pair and the child by the caller, so a creation retried after a crash
+    /// finds the registration it reserved and does not make a second one.
     creation: Creation,
     /// The directory new conversation files are placed in.
     directory: String,
@@ -803,13 +807,23 @@ type Message(instance) {
   DelegatePair(
     String,
     String,
+    String,
     Subject(Result(Option(catalogue.Delegate), Error)),
   )
 
-  /// Releases the delegate session of a pair: marks it releasing, stops its
-  /// slot, and deletes it once the slot has drained. The strings are the
-  /// spawner, the parent session and the sessions directory.
-  ReleaseDelegate(String, String, String, Subject(Result(Nil, Error)))
+  /// Every delegate session one parent holds on one spawner, its pair's and its
+  /// seeded children's, read without creating or waking anything.
+  DelegateFamily(
+    String,
+    String,
+    Subject(Result(List(catalogue.Delegate), Error)),
+  )
+
+  /// Releases the delegate session of a pair or of one of its children: marks
+  /// it releasing, stops its slot, and deletes it once the slot has drained. The
+  /// strings are the spawner, the parent session, the child (empty for the
+  /// pair's own session) and the sessions directory.
+  ReleaseDelegate(String, String, String, String, Subject(Result(Nil, Error)))
 
   /// Deletes the delegate sessions that are due and answers how many went, with
   /// the resident ones that look idle. The function judges a spawner, the
@@ -2394,7 +2408,49 @@ pub fn delegate_pair(
   spawner: String,
   parent_session: String,
 ) -> Result(Option(catalogue.Delegate), Error) {
+  delegate_child(manager, spawner, parent_session, "")
+}
+
+/// `delegate_pair` for one named child of a pair: the session a seeded child
+/// runs in, or `None` when it has none or has been released and deleted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.delegate_child(registry, "laptop", parent, "seed-0123456789abcdef") == Ok(option.None)
+/// ```
+@internal
+pub fn delegate_child(
+  manager: Manager(instance),
+  spawner: String,
+  parent_session: String,
+  child: String,
+) -> Result(Option(catalogue.Delegate), Error) {
   call.try_call(manager.commands, waiting: 5000, sending: DelegatePair(
+    spawner,
+    parent_session,
+    child,
+    _,
+  ))
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Every delegate session one parent holds on one spawner: the pair's own, when
+/// it has one, and one for each seeded child that has not been released. A
+/// release of the parent, and the end of a run, walk this list.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.delegate_family(registry, "laptop", parent) == Ok([])
+/// ```
+@internal
+pub fn delegate_family(
+  manager: Manager(instance),
+  spawner: String,
+  parent_session: String,
+) -> Result(List(catalogue.Delegate), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: DelegateFamily(
     spawner,
     parent_session,
     _,
@@ -2424,9 +2480,33 @@ pub fn release_delegate(
   parent_session: String,
   sessions: String,
 ) -> Result(Nil, Error) {
+  release_delegate_child(manager, spawner, parent_session, "", sessions)
+}
+
+/// `release_delegate` for one named child of a pair, because the child has
+/// settled (protocol-change/107, slice 4b). The row moves to releasing, which is
+/// written before anything else and so is what a crash leaves behind: the sweep
+/// deletes a releasing row whose slot is gone, and a repeat of this call finishes
+/// the deletion a failed one started. A repeat for a child already deleted is
+/// `Ok` and does nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.release_delegate_child(registry, "laptop", parent, child, sessions) == Ok(Nil)
+/// ```
+@internal
+pub fn release_delegate_child(
+  manager: Manager(instance),
+  spawner: String,
+  parent_session: String,
+  child: String,
+  sessions: String,
+) -> Result(Nil, Error) {
   call.try_call(manager.commands, waiting: 5000, sending: ReleaseDelegate(
     spawner,
     parent_session,
+    child,
     sessions,
     _,
   ))
@@ -3943,17 +4023,30 @@ fn handle(
       )
       sm.keep(book)
     }
-    DelegatePair(spawner, parent_session, reply) -> {
+    DelegatePair(spawner, parent_session, child, reply) -> {
       process.send(
         reply,
-        catalogue.delegate_for(book.catalogue, spawner, parent_session)
+        catalogue.delegate_child_for(
+          book.catalogue,
+          spawner,
+          parent_session,
+          child,
+        )
           |> result.map_error(Catalogue),
       )
       sm.keep(book)
     }
-    ReleaseDelegate(spawner, parent_session, sessions, reply) -> {
+    DelegateFamily(spawner, parent_session, reply) -> {
+      process.send(
+        reply,
+        catalogue.delegates_of_parent(book.catalogue, spawner, parent_session)
+          |> result.map_error(Catalogue),
+      )
+      sm.keep(book)
+    }
+    ReleaseDelegate(spawner, parent_session, child, sessions, reply) -> {
       let #(book, outcome) =
-        release_now(book, spawner, parent_session, sessions)
+        release_now(book, spawner, parent_session, child, sessions)
       process.send(reply, outcome)
       step(phase, book)
     }
@@ -5037,10 +5130,13 @@ fn release_now(
   book: Book(instance),
   spawner: String,
   parent_session: String,
+  child: String,
   sessions: String,
 ) -> #(Book(instance), Result(Nil, Error)) {
-  // release_now distinguishes the catalogue.delegate_for(book.catalogue, spawner, parent_session) outcomes before continuing the transition.
-  case catalogue.delegate_for(book.catalogue, spawner, parent_session) {
+  // release_now distinguishes the catalogue.delegate_child_for(book.catalogue, spawner, parent_session, child) outcomes before continuing the transition.
+  case
+    catalogue.delegate_child_for(book.catalogue, spawner, parent_session, child)
+  {
     Error(error) -> #(book, Error(Catalogue(error)))
     Ok(None) -> #(book, Ok(Nil))
     Ok(Some(found)) -> {
@@ -5517,10 +5613,11 @@ fn delegate_now(
     ShuttingDown -> #(book, Error(DelegateFailed(Unavailable)))
     Ready ->
       case
-        catalogue.delegate_for(
+        catalogue.delegate_child_for(
           book.catalogue,
           request.spawner,
           request.parent_session,
+          request.child,
         )
       {
         Error(error) -> #(book, Error(DelegateFailed(Catalogue(error))))
@@ -5686,10 +5783,11 @@ fn claim_delegate(
   session_id: String,
 ) -> Result(Nil, DelegateError) {
   use claim <- result.try(
-    catalogue.claim_delegate(
+    catalogue.claim_delegate_child(
       book.catalogue,
       request.spawner,
       request.parent_session,
+      request.child,
       session_id,
       limit: request.limit,
       now_ms: request.now_ms,
