@@ -13,7 +13,7 @@ import client/session_move
 import core/json
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap
 
@@ -24,6 +24,7 @@ fn beta() -> Orchestrator {
     name: "beta",
     node: "beta@10.0.0.2",
     address: Some("wss://beta.example.com/v2/control"),
+    checkout: None,
   )
 }
 
@@ -378,6 +379,7 @@ pub fn a_record_naming_an_unlisted_node_is_named_by_the_node_test() {
         name: "zeta@10.0.0.9",
         node: "zeta@10.0.0.9",
         address: option.None,
+        checkout: None,
       )),
     )
 }
@@ -405,6 +407,7 @@ pub fn a_tombstone_naming_an_unlisted_orchestrator_names_it_alone_test() {
         name: "zeta",
         node: "",
         address: option.None,
+        checkout: None,
       )),
     )
 }

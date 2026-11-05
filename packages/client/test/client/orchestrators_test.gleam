@@ -4,9 +4,9 @@
 //// anything else is refused wherever the file is read.
 
 import client/catalog
-import client/orchestrators.{Orchestrator}
+import client/orchestrators.{CheckoutTarget, Orchestrator}
 import gleam/dict
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 
 const distribution =
@@ -79,6 +79,7 @@ address = \"wss://beta.example.com:8443/v2/control\"
         name: "beta",
         node: "beta@10.0.0.2",
         address: Some("wss://beta.example.com:8443/v2/control"),
+        checkout: None,
       ),
     ])
   let loopback =
@@ -90,6 +91,52 @@ address = \"ws://127.0.0.1:7000/v2/control\"
     )
   let assert Ok([row]) = orchestrators.parse(loopback)
   assert row.address == Some("ws://127.0.0.1:7000/v2/control")
+}
+
+pub fn a_row_may_say_where_a_local_checkout_lands_test() {
+  let text =
+    with(
+      "[orchestrators.beta]
+node = \"beta@10.0.0.2\"
+checkout_executor = \"box\"
+checkout_workspace = \"repo\"
+",
+    )
+  let assert Ok([row]) = orchestrators.parse(text)
+  assert row.checkout
+    == Some(CheckoutTarget(executor: "box", workspace: "repo"))
+
+  // Absent keys mean a local session does not move there.
+  let assert Ok([plain]) =
+    orchestrators.parse(with("[orchestrators.beta]\nnode = \"beta@10.0.0.2\"\n"))
+  assert plain.checkout == None
+}
+
+pub fn the_two_checkout_keys_come_together_and_are_names_test() {
+  refused(
+    with(
+      "[orchestrators.beta]\nnode = \"beta@10.0.0.2\"\ncheckout_executor = \"box\"\n",
+    ),
+    "orchestrators.beta.checkout_executor and checkout_workspace must be given together",
+  )
+  refused(
+    with(
+      "[orchestrators.beta]\nnode = \"beta@10.0.0.2\"\ncheckout_workspace = \"repo\"\n",
+    ),
+    "orchestrators.beta.checkout_executor and checkout_workspace must be given together",
+  )
+  refused(
+    with(
+      "[orchestrators.beta]\nnode = \"beta@10.0.0.2\"\ncheckout_executor = \"Big Box\"\ncheckout_workspace = \"repo\"\n",
+    ),
+    "orchestrators.beta.checkout_executor is not an executor name",
+  )
+  refused(
+    with(
+      "[orchestrators.beta]\nnode = \"beta@10.0.0.2\"\ncheckout_executor = \"box\"\ncheckout_workspace = \"../repo\"\n",
+    ),
+    "orchestrators.beta.checkout_workspace is not a workspace name",
+  )
 }
 
 pub fn a_node_that_is_not_a_pinned_peer_is_refused_by_name_test() {
@@ -132,7 +179,7 @@ pub fn a_malformed_table_is_refused_with_the_key_it_names_test() {
   )
   refused(
     with("[orchestrators.beta]\nnode = \"beta@10.0.0.2\"\nhost = \"x\"\n"),
-    "unknown key `host` in [orchestrators.beta] (allowed: node, address)",
+    "unknown key `host` in [orchestrators.beta] (allowed: node, address, checkout_executor, checkout_workspace)",
   )
   refused(
     with("[orchestrators]\nbeta = \"beta@10.0.0.2\"\n"),

@@ -56,6 +56,7 @@ fn laptop() -> orchestrators.Orchestrator {
     name: "laptop",
     node: "laptop@10.0.0.7",
     address: Some("wss://laptop.example.com:8443/v2/control"),
+    checkout: None,
   )
 }
 

@@ -879,6 +879,23 @@ time](distributed-setup.md#spawning-is-one-direction-at-a-time)); it changes not
 | --- | --- | --- | --- | --- |
 | `node` | string | required | one of the `node` values in `[[distribution.peers]]` | The peer node that answers for this orchestrator. |
 | `address` | string | none | `wss://<host>[:<port>]/v2/control`, or `ws://` for a loopback host, with no credentials, query or fragment | The control address a client passes to `loom --addr` to reach this orchestrator. A daemon binds loopback only, so this is whatever the operator exposes (a tunnel, a proxy). When absent, `not_owner` names the orchestrator and no address. |
+| `checkout_executor` | string | none, and then a local session does not move here | an `[executors.<name>]` key of this daemon; given together with `checkout_workspace` | Where a session that works in a directory on this machine puts its checkout when it moves to this orchestrator (protocol-change 107, slice 4c). This daemon captures the directory, sends the state to this executor, has the executor check it out in a scope of its own, and closes the scope, and the other orchestrator then takes the session as it takes any session on that executor. The other orchestrator needs an `[executors.<name>]` of the same name that reaches the same machine. |
+| `checkout_workspace` | string | none | a workspace name; given together with `checkout_executor` | The `[workspaces.<name>]` the executor serves that the checkout lands in. It must be in `worktree` mode: this daemon cannot read the executor's table, so the executor refuses a `shared` workspace or a name it does not serve when the move asks it, and the move ends with its words. |
+
+### Moving a session that works in a directory on this machine
+
+A session whose workspace is a directory on this machine moves only to an
+orchestrator whose row names `checkout_executor` and `checkout_workspace`. The
+directory is captured with its working tree (an uncommitted edit and an untracked
+file arrive as one `Working snapshot` commit on the session's branch there), sent
+to the executor, and checked out in a tree the receiver then finds. The directory
+on this machine is not changed and is not written again for the session. The
+directory must be the top of a primary checkout; a linked worktree is refused when
+the move is asked for, and a repository the capture refuses (a submodule, LFS, a
+shallow clone) ends the move with the reason. Without the two keys the move is
+refused as it always was, and a session on an executor is unaffected by them. See
+[docs/architecture/distributed.md](architecture/distributed.md), "Moving a session
+that works in a directory".
 
 ### Orchestrators that come from the ledger
 

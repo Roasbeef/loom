@@ -93,6 +93,7 @@ fn beta_at() -> orchestrators.Orchestrator {
     name: "beta",
     node: "beta@10.0.0.2",
     address: Some("wss://beta.example.com:8443/v2/control"),
+    checkout: None,
   )
 }
 

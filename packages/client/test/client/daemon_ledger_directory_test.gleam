@@ -112,7 +112,7 @@ pub fn a_listed_orchestrator_must_be_a_member_test() {
       None,
       Some(started.service),
       a,
-      [Orchestrator(name: "b", node: b, address: None)],
+      [Orchestrator(name: "b", node: b, address: None, checkout: None)],
       logger,
     )
     as "an orchestrator that is a member is accepted"
@@ -126,6 +126,7 @@ pub fn a_listed_orchestrator_must_be_a_member_test() {
           name: "outsider",
           node: "loom@laptop.example.net",
           address: None,
+          checkout: None,
         ),
       ],
       logger,
@@ -214,6 +215,7 @@ pub fn the_orchestrators_a_member_derives_are_members_test() {
           name: "laptop",
           node: "loom@laptop.example.net",
           address: None,
+          checkout: None,
         ),
       ],
       logger,
