@@ -99,8 +99,10 @@ import client/remote/owner_port
 import client/remote/protocol.{type HostMessage, type Key}
 import client/remote/remote_census.{type RemoteCensus}
 import client/remote/scope.{type Scope}
+import client/remote/state_link
 import client/remote/surface
 import client/remote/untrusted_link
+import client/session_states.{type SessionStates, SessionStates}
 import client/state_object.{type State}
 import client/tool_placement
 import client/wiring
@@ -244,6 +246,10 @@ pub type Hands {
     /// and answers the tip it checked out (protocol-change/107). Only a session
     /// move that has attached a scope for this alone asks it, before any turn.
     apply_state: fn(State) -> Result(String, ApplyFailure),
+    /// How the session puts a state into its workspace and takes the commits
+    /// out of it (protocol-change/107, slice 4b), over the surface this open
+    /// attached.
+    states: SessionStates,
   )
 }
 
@@ -612,6 +618,13 @@ fn build(
     mcp: remote.mcp,
     evolution: evolution_link(registered, candidate, joined, remote.evolution),
     apply_state: fn(state) { apply_in(joined, session, state) },
+    states: states_over(
+      registered.session,
+      candidate.executor.name,
+      candidate.reach.address,
+      joined,
+      remote,
+    ),
   )
 }
 
@@ -642,6 +655,108 @@ fn apply_in(
     Ok(Ok(tip)) -> Ok(tip)
     Ok(Error(refusal)) -> Error(ApplyRefused(refusal))
     Error(Nil) -> Error(ApplyUnanswered)
+  }
+}
+
+// How long one question to the executor's state store waits for its answer.
+const state_question_ms = 15_000
+
+// How long the repair of a dropped connection is tried for a state request. The
+// wait for the answer itself is not bounded by it: a checkout of a large
+// repository can take minutes, and the host ends the wait when it dies.
+const state_repair_ms = 60_000
+
+/// The session's means of moving states, over the attached surface.
+///
+/// A state is sent to the executor's store over a link that needs no fence,
+/// because the store is the node's and not the scope's. The two requests that
+/// touch the scope's tree, the apply and the capture, carry the incarnation and
+/// token this open attached under, so a request from a dead open is refused by
+/// the host whatever the network did. `remote` is the census the attach returned,
+/// from which the record learns whether the workspace takes a state.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace.states_over(session, "runner", executor_address, attached_surface, census)
+/// ```
+pub fn states_over(
+  session: String,
+  executor: String,
+  at: Address(HostMessage(RemoteCensus)),
+  joined: surface.Surface(RemoteCensus),
+  remote: RemoteCensus,
+) -> SessionStates {
+  SessionStates(
+    executor:,
+    link: state_link.via_host(at, state_question_ms),
+    fit: state_fitness(executor, remote),
+    apply: fn(state) {
+      surface.ask_within(joined, state_repair_ms, fn(reply) {
+        protocol.StateApply(
+          session:,
+          incarnation: surface.incarnation(joined),
+          token: surface.token(joined),
+          state:,
+          reply:,
+        )
+      })
+      |> answered(executor)
+    },
+    capture: fn(basis, content) {
+      surface.ask_within(joined, state_repair_ms, fn(reply) {
+        protocol.StateCapture(
+          session:,
+          incarnation: surface.incarnation(joined),
+          token: surface.token(joined),
+          basis:,
+          content:,
+          reply:,
+        )
+      })
+      |> answered(executor)
+    },
+  )
+}
+
+/// Reads an executor's answer to a state request: the answer itself, silence as
+/// a reason to ask again, and a refusal, which the executor means, as final.
+fn answered(
+  heard: Result(Result(answer, protocol.Refusal), Nil),
+  executor: String,
+) -> Result(answer, session_states.Failure) {
+  case heard {
+    Ok(Ok(answer)) -> Ok(answer)
+    Ok(Error(refusal)) ->
+      Error(session_states.Final(protocol.describe(refusal)))
+    Error(Nil) ->
+      Error(session_states.Later(
+        "the executor `" <> executor <> "` did not answer in time",
+      ))
+  }
+}
+
+/// Whether the executor's workspace for this session takes a state, from the
+/// census the attach returned. Only a workspace in worktree mode has a tree of
+/// the session's own, which the census shows as a branch; a shared workspace has
+/// none, and moving a branch there would move it under every other session.
+fn state_fitness(
+  executor: String,
+  remote: RemoteCensus,
+) -> Result(Nil, String) {
+  case remote.states, remote.branch {
+    remote_census.Stays(reason:), _ ->
+      Error(
+        "the executor `" <> executor <> "` cannot take a workspace: " <> reason,
+      )
+    remote_census.Moves, option.None ->
+      Error(
+        "the workspace on the executor `"
+        <> executor
+        <> "` has mode = \"shared\", and only mode = \"worktree\" takes a "
+        <> "state: a shared workspace has no tree of its own for the child",
+      )
+    remote_census.Moves, option.Some(_) -> Ok(Nil)
   }
 }
 
