@@ -99,6 +99,8 @@ type Heard {
 
 fn recording(heard: Subject(Heard)) -> agency.DelegateEndpoint {
   agency.DelegateEndpoint(
+    fresh: fn() { True },
+    states: None,
     spawn: fn(delegation, _site, _request) {
       process.send(heard, Spawn(delegation))
       Error(remote_spawn.StoreFailure(reason: "recorded"))
