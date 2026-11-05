@@ -10,6 +10,7 @@ import storage/catalogue
 pub fn each_step_is_named_and_the_name_reads_back_test() {
   let steps = [
     session_move.Intent,
+    session_move.Checkout,
     session_move.Close,
     session_move.Cut,
     session_move.Send,
@@ -17,7 +18,7 @@ pub fn each_step_is_named_and_the_name_reads_back_test() {
     session_move.Retire,
   ]
   assert list.map(steps, session_move.step_name)
-    == ["intent", "close", "cut", "send", "activate", "retire"]
+    == ["intent", "checkout", "close", "cut", "send", "activate", "retire"]
   assert list.map(steps, fn(step) {
       session_move.parse_step(session_move.step_name(step))
     })

@@ -887,13 +887,14 @@ type Message(instance) {
 
   /// The owner's request to hand a session to the orchestrator named, under the
   /// operation identity the caller minted: the caller, the epoch, the session,
-  /// the destination and the identity.
+  /// the destination, the identity and which sessions may leave.
   BeginMove(
     access.Digest,
     String,
     String,
     String,
     String,
+    Departure,
     Subject(Result(catalogue.Custody, AdminError)),
   )
 
@@ -2874,12 +2875,48 @@ pub fn begin_move(
   to to: String,
   op op: String,
 ) -> Result(catalogue.Custody, AdminError) {
+  begin_move_from(manager, caller, epoch, id, to:, op:, departure: OnExecutors)
+}
+
+/// Which sessions a move may take from this registry.
+pub type Departure {
+  /// Only a session whose workspace is registered on an executor, which the
+  /// receiver reaches too. This is every move before protocol-change/107,
+  /// slice 4c.
+  OnExecutors
+
+  /// A session whose workspace is a directory on this machine as well. The
+  /// caller has established a place for its checkout on the receiver's side,
+  /// which the registry cannot see, and the mover carries the directory there
+  /// (`client/move_checkout`).
+  WithLocalCheckout
+}
+
+/// `begin_move`, with the sessions that may leave named. The registry refuses
+/// a local session unless `departure` says its checkout is carried.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.begin_move_from(registry, owner, epoch, id, to: "laptop", op: "0192f3c1", departure: manager.WithLocalCheckout)
+/// ```
+@internal
+pub fn begin_move_from(
+  manager: Manager(instance),
+  caller: access.Digest,
+  epoch: String,
+  id: String,
+  to to: String,
+  op op: String,
+  departure departure: Departure,
+) -> Result(catalogue.Custody, AdminError) {
   call.try_call(manager.commands, waiting: 5000, sending: BeginMove(
     caller,
     epoch,
     id,
     to,
     op,
+    departure,
     _,
   ))
   |> result.unwrap(Error(AdminUnavailable))
@@ -3547,9 +3584,9 @@ fn handle(
       process.send(reply, read)
       sm.keep(book)
     }
-    BeginMove(caller, epoch, id, to, op, reply) -> {
+    BeginMove(caller, epoch, id, to, op, departure, reply) -> {
       let #(book, outcome) =
-        begin_move_now(phase, book, caller, epoch, id, to, op)
+        begin_move_now(phase, book, caller, epoch, id, to, op, departure)
       process.send(reply, outcome)
       step(phase, book)
     }
@@ -4348,13 +4385,14 @@ fn begin_move_now(
   id: String,
   to: String,
   op: String,
+  departure: Departure,
 ) -> #(Book(instance), Result(catalogue.Custody, AdminError)) {
   let decided = {
     use Nil <- result.try(authorize_admin(phase, book, caller, epoch))
     use record <- result.try(
       catalogue.get(book.catalogue, id) |> result.map_error(AdminMetadata),
     )
-    use Nil <- result.try(movable(book, record))
+    use Nil <- result.try(movable(book, record, departure))
     use custody <- result.try(
       catalogue.custody(book.catalogue, id) |> result.map_error(AdminMetadata),
     )
@@ -4411,11 +4449,15 @@ fn project_free(book: Book(instance), id: String) -> Result(Nil, AdminError) {
 
 // Whether a registration can be handed over: a session on an executor, whose
 // scope the receiver can reopen, that has a file and is not archived. A local
-// session's checkout is a directory on this machine, which does not travel.
+// session's checkout is a directory on this machine, which does not travel by
+// itself; it moves only when the caller says its checkout is carried
+// (`WithLocalCheckout`), and a session in a pool that has not attached has no
+// workspace to carry at all.
 /// Checks the session state and ownership conditions required for a move.
 fn movable(
   book: Book(instance),
   record: catalogue.Registration,
+  departure: Departure,
 ) -> Result(Nil, AdminError) {
   use visibility <- result.try(
     catalogue.visibility(book.catalogue, record.id)
@@ -4443,16 +4485,20 @@ fn movable(
   use Nil <- result.try(project_free(book, record.id))
 
   // movable distinguishes the record.state, visibility, record.executor outcomes before continuing the transition.
-  case record.state, visibility, record.executor {
-    catalogue.Reserved, _, _ ->
+  case record.state, visibility, record.executor, record.pool, departure {
+    catalogue.Reserved, _, _, _, _ ->
       Error(AdminNotMovable("the session has not finished being created"))
-    _, catalogue.Archived, _ ->
+    _, catalogue.Archived, _, _, _ ->
       Error(AdminNotMovable("the session is archived; restore it first"))
-    _, _, "" ->
+    _, _, "", _, OnExecutors ->
       Error(AdminNotMovable(
         "only a session on an executor can move; this one has no executor yet",
       ))
-    catalogue.Saved, catalogue.Active, _ -> Ok(Nil)
+    _, _, "", pool, WithLocalCheckout if pool != "" ->
+      Error(AdminNotMovable(
+        "the session is in a pool and has no executor yet, so it has no workspace to carry",
+      ))
+    catalogue.Saved, catalogue.Active, _, _, _ -> Ok(Nil)
   }
 }
 

@@ -98,6 +98,7 @@ import client/ledger_reference
 import client/ledger_rows
 import client/ledger_service.{type Service}
 import client/membership_ledger
+import client/move_checkout
 import client/node_report
 import client/orchestrators
 import client/owner_identity
@@ -116,6 +117,7 @@ import client/remote/orchestrator_port
 import client/remote/peer_service
 import client/remote/remote_peer
 import client/remote/remote_spawner
+import client/remote/state_link
 import client/remote/top_relay
 import client/remote/workspace
 import client/remote_mail
@@ -2590,6 +2592,7 @@ pub fn start_movers(
           directory:,
           courier: session_directory.courier_over(membership),
           close: closer_of(config, membership),
+          checkout: checkout_ports(config, membership, logger),
           clock: clock.from_function(ffi_os.system_time_ms),
           node: atom.to_string(node.name(node.self())),
           budget: session_mover.default_budget(),
@@ -2633,10 +2636,61 @@ fn closer_of(
   }
 }
 
+/// What the checkout of a session's local workspace needs from this daemon
+/// (protocol-change/107, slice 4c): the means to capture a directory into its
+/// state store, that store, a link to an executor's host and the attach that
+/// applies a state there. A daemon that keeps no store or has no sandboxed
+/// runner has none, and a session that works in a directory on its machine is
+/// then not moved.
+fn checkout_ports(
+  config: Config,
+  membership: distribution.Membership,
+  logger: Logger,
+) -> Option(move_checkout.Ports) {
+  let configured = executor_roster(config)
+  let rows = fn() { roster.rows(configured) }
+
+  // A daemon that can capture a directory and keeps a store to hold the bundle
+  // can carry a checkout; one that cannot says so when a move asks.
+  case local_capture(config), config.state_node.store {
+    Some(capture), Some(store) ->
+      Some(
+        move_checkout.Ports(
+          capture:,
+          store:,
+          link: fn(executor) {
+            use reach <- result.try(workspace.reach(
+              Some(membership),
+              rows(),
+              executor,
+            ))
+            use Nil <- result.map(reach.connect())
+            state_link.via_host(reach.address, checkout_link_wait_ms)
+          },
+          land: move_checkout.landing(
+            fn(executor) {
+              workspace.fixed(Some(membership), rows(), executor, fn(_chosen) {
+                Nil
+              })
+            },
+            logger,
+          ),
+          after: fn(_progress) { Nil },
+        ),
+      )
+    _, _ -> None
+  }
+}
+
+/// How long one question to an executor's state store is waited for during a
+/// checkout, in milliseconds. A piece is a quarter of a megabyte, so this covers
+/// a slow link by a wide margin.
+const checkout_link_wait_ms = 30_000
+
 /// TEST-ONLY. `LOOM_MOVE_CRASH_AFTER=<step>` halts the VM the moment the named
 /// step of a session move is durable, so a shipped test can lose the source at
 /// each of the six steps and watch a restart finish the move. The steps are
-/// `intent`, `close`, `cut`, `send`, `activate` and `retire`. Unset, or set to
+/// `intent`, `checkout`, `close`, `cut`, `send`, `activate` and `retire`. Unset, or set to
 /// anything else, it does nothing. It is read once at startup, is not documented
 /// for operators, and has no counterpart in the configuration file.
 fn crash_after_step() -> fn(session_move.Step) -> Nil {

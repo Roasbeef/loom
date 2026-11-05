@@ -12,15 +12,19 @@
 //// messages (`client/remote/orchestrator_port`) can all import it without
 //// importing one another.
 ////
-//// ## The six steps
+//// ## The six steps, and a seventh for a local checkout
 ////
 //// The source drives a move through six steps, and each is durable before the
 //// next begins, so a restart resumes from what is on disk and never from a
-//// memory of where it was.
+//// memory of where it was. A session whose workspace is a directory on the
+//// source takes one more step first, `Checkout`, which puts a copy of the
+//// directory on an executor so that the six that follow have a scope to hand
+//// over (protocol-change/107, slice 4c).
 ////
 //// | Step | Durable afterward |
 //// | --- | --- |
 //// | `Intent` | the source's row is `moving`, and its slot is stopped |
+//// | `Checkout` | the executor's tree holds the session's checkout, and the file's scope cell reads a clean close |
 //// | `Close` | the file's scope cell reads a clean close |
 //// | `Cut` | a copy of the closed file, with its digest, beside the original |
 //// | `Send` | the whole copy waits on the receiver |
@@ -53,10 +57,15 @@ pub const chunk_bytes = 262_144
 /// than this is refused before anything is sent.
 pub const size_limit = 268_435_456
 
-/// The six steps of a move, in the order the source takes them.
+/// The steps of a move, in the order the source takes them. `Checkout` is taken
+/// only by a session whose workspace was a directory on the source.
 pub type Step {
   /// The source recorded `moving(op, to)` and stopped the session's slot.
   Intent
+
+  /// The session's workspace is on an executor: the directory was captured, the
+  /// state was applied in a scope's tree there, and the scope was closed.
+  Checkout
 
   /// The session's scope on the executor ended in a clean close, and the file
   /// says so.
@@ -85,6 +94,7 @@ pub type Step {
 pub fn step_name(step: Step) -> String {
   case step {
     Intent -> "intent"
+    Checkout -> "checkout"
     Close -> "close"
     Cut -> "cut"
     Send -> "send"
@@ -104,6 +114,7 @@ pub fn step_name(step: Step) -> String {
 pub fn parse_step(text: String) -> Result(Step, Nil) {
   case text {
     "intent" -> Ok(Intent)
+    "checkout" -> Ok(Checkout)
     "close" -> Ok(Close)
     "cut" -> Ok(Cut)
     "send" -> Ok(Send)

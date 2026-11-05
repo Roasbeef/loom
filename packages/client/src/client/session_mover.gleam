@@ -21,6 +21,15 @@
 //// 6. **Retire.** The source's row becomes `moved(to)`, the lease is released and
 ////    the file is set aside as `<id>.db.moved`.
 ////
+//// A session whose workspace is a directory on this machine takes one more step
+//// between the stop and the close, the **checkout** (protocol-change/107,
+//// slice 4c). The directory is captured, sent to the executor that this daemon's
+//// `[orchestrators.<name>]` names for the receiver, and checked out there in a
+//// scope that is then closed (`client/move_checkout`). A stopped session is the
+//// one case in which the directory is quiet, and the close the checkout leaves
+//// behind is what the steps after it read. A session on an executor does not
+//// take it.
+////
 //// ## Every run starts from what is on disk
 ////
 //// A mover is restarted by a daemon restart, by a crash of its own process and by
@@ -55,7 +64,8 @@
 ////
 //// ## Flow
 ////
-//// `drive` → `run` → `migrated` → `intended` → `carried` → `retire`
+//// `drive` → `run` → `migrated` → `intended` → `carried` → `retire`, with
+//// `checked_out` inside `carried`
 ////
 //// 1. `drive` runs the move and turns how it halted into an `Outcome` through
 ////    `ended`; `give_up` does the same from an abandon.
@@ -63,7 +73,7 @@
 ////    member for `migrated`, asks the receiver's `receiver_stage`, and writes
 ////    the record's intent with `intended`.
 //// 3. `carried` takes the steps that remain: `stopped`, `settled_children`,
-////    `closed`, `cut`, `send` and `activate`.
+////    `checked_out`, `closed`, `cut`, `send` and `activate`.
 //// 4. `retire` finishes the move: by the rows with `retire_by_rows`, or on a
 ////    member with `retire_recorded` after a consistent read.
 //// 5. A move given up goes through `abandon`, which on a member is
@@ -95,6 +105,7 @@ import client/daemon/manager
 import client/directory/ownership.{type Ownership}
 import client/directory/record
 import client/directory/store
+import client/move_checkout
 import client/orchestrators.{type Orchestrator}
 import client/remote/protocol
 import client/remote/scope
@@ -108,7 +119,7 @@ import core/clock.{type Clock}
 import gleam/bit_array
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import simplifile
 import storage/catalogue
@@ -124,6 +135,9 @@ pub type Budget {
   Budget(
     /// The slot's drain after the stop, which closes the scope on the executor.
     drain_ms: Int,
+    /// The checkout of a local workspace: the capture, the transfer of the state
+    /// and the apply on the executor.
+    checkout_ms: Int,
     /// A close the mover itself asks the executor for.
     close_ms: Int,
     /// The coherent copy and its hash.
@@ -148,6 +162,7 @@ pub type Budget {
 pub fn default_budget() -> Budget {
   Budget(
     drain_ms: 180_000,
+    checkout_ms: 1_800_000,
     close_ms: 90_000,
     cut_ms: 120_000,
     send_ms: 600_000,
@@ -205,6 +220,10 @@ pub type Environment(instance) {
     courier: Courier,
     /// Closes a scope on an executor for a session with no runtime.
     close: Closer,
+    /// What the checkout of a local workspace needs, or `None` for a daemon that
+    /// cannot capture one: a session whose workspace is a directory on this
+    /// machine is then not moved, and the move is given up with the reason.
+    checkout: Option(move_checkout.Ports),
     /// The clock the file steps read.
     clock: Clock,
     /// This node's name, which the receiver matches to one of its own
@@ -504,6 +523,7 @@ fn carried(
 ) -> Result(Nil, Halt) {
   use Nil <- result.try(stopped(environment, move))
   use Nil <- result.try(settled_children(environment, move, registration))
+  use registration <- result.try(checked_out(environment, move, registration))
   use cell <- result.try(closed(environment, move, registration))
   environment.after(session_move.Close)
   use copy <- result.try(cut(environment, move, registration))
@@ -689,6 +709,74 @@ fn settled_children(
         <> orchestrator
         <> "`, and it reports to this one",
       ))
+  }
+}
+
+// --- the checkout of a local workspace ----------------------------------------
+
+// A session whose workspace is a directory on this machine has no scope to hand
+// over. The checkout gives it one, on the executor the configuration names for
+// the receiver, and the registration the later steps use says so: the receiver
+// is told the session lives on that executor, in that workspace. The row this
+// daemon keeps is not changed, so a move that is abandoned leaves a session that
+// opens in its own directory as it did before, and a run that starts again after
+// a crash finds the same row and the checkout recorded in the file.
+
+/// Establishes checked out for the caller, keeping its validation and result policy at this boundary.
+fn checked_out(
+  environment: Environment(instance),
+  move: catalogue.Pending,
+  registration: catalogue.Registration,
+) -> Result(catalogue.Registration, Halt) {
+  // Only a session that works in a directory on this machine has a checkout to
+  // carry; on an executor the registration is already what the receiver needs.
+  case move_checkout.is_local(registration) {
+    False -> Ok(registration)
+    True -> {
+      use receiver <- result.try(destination(environment, move))
+      use target <- result.try(option.to_result(
+        receiver.checkout,
+        Abandon(
+          "not_movable: this session works in a directory on this machine, "
+          <> "and [orchestrators."
+          <> receiver.name
+          <> "] names no checkout_executor and checkout_workspace to put it in",
+        ),
+      ))
+      use ports <- result.try(option.to_result(
+        environment.checkout,
+        Abandon(
+          "not_movable: this daemon cannot capture a workspace, so a session "
+          <> "that works in a directory on this machine does not move",
+        ),
+      ))
+
+      let request =
+        move_checkout.Request(
+          session: move.session,
+          op: move.op,
+          path: registration.path,
+          directory: registration.workspace,
+          target:,
+          clock: environment.clock,
+        )
+      use Nil <- result.try(
+        bounded(environment.budget.checkout_ms, "the checkout", fn() {
+          move_checkout.carry(ports, request) |> result.map_error(halt_of)
+        }),
+      )
+      environment.after(session_move.Checkout)
+      Ok(move_checkout.relocated(registration, target))
+    }
+  }
+}
+
+/// A checkout that did not finish as the step that ends the run: a refusal ends
+/// the move and a failure that may pass stalls it.
+fn halt_of(failure: move_checkout.Failure) -> Halt {
+  case failure {
+    move_checkout.Refused(..) -> Abandon(move_checkout.describe(failure))
+    move_checkout.Unfinished(..) -> Stall(move_checkout.describe(failure))
   }
 }
 

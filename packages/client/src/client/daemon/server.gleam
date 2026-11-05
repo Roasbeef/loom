@@ -81,6 +81,7 @@ import client/evolution/store as evolution_store
 import client/executors
 import client/internal/ffi_os
 import client/ledger_control
+import client/move_checkout
 import client/orchestrators
 import client/peer_mail
 import client/peers
@@ -112,6 +113,7 @@ import mist
 import project/model as project_model
 import session_view/move_candidates
 import session_view/transcript_image
+import simplifile
 import storage/access
 import storage/catalogue
 import storage/domain
@@ -5061,10 +5063,11 @@ pub fn move_session(
   id: String,
   to: String,
 ) -> Result(MoveBegun, MoveRefusal) {
-  use _destination <- result.try(
+  use destination <- result.try(
     orchestrators.find(roster.rows(config.movers.orchestrators), to)
     |> result.replace_error(UnknownDestination),
   )
+  use departure <- result.try(departure_for(config, registry, id, destination))
   use Nil <- result.try(
     inbound_settled(config, registry, id)
     |> result.replace_error(
@@ -5076,13 +5079,14 @@ pub fn move_session(
   use Nil <- result.try(selections_stay_behind(config, id))
   let #(minted, _) = ids.mint_op(config.generator())
   use custody <- result.try(
-    manager.begin_move(
+    manager.begin_move_from(
       registry,
       digest,
       supplied,
       id,
       to:,
       op: ids.op_id_to_string(minted),
+      departure:,
     )
     |> result.map_error(Declined),
   )
@@ -5096,6 +5100,104 @@ pub fn move_session(
     catalogue.Moved(to: owner, ..) ->
       Error(Declined(manager.AdminMoved(to: owner)))
     catalogue.Resident | catalogue.Imported(..) -> Error(Unanswered)
+  }
+}
+
+// Which sessions this move may take, judged where the configuration is known.
+// A session on an executor moves as it always has. A session whose workspace is a
+// directory on this machine moves only if the destination's table says where its
+// checkout lands, that place is an executor this daemon lists, and the directory
+// is the top of a primary checkout: a linked worktree keeps its objects in
+// another directory, which the capture refuses, and a directory that is no
+// repository has nothing to capture. These are refused here so that the owner is
+// told before the session is stopped. What only the executor can judge (that it
+// serves the workspace, in `worktree` mode) is learned by the checkout and ends
+// the move with the executor's words.
+/// Decides whether a move may carry the session's local checkout.
+fn departure_for(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  id: String,
+  destination: orchestrators.Orchestrator,
+) -> Result(manager.Departure, MoveRefusal) {
+  use view <- result.try(
+    manager.get(registry, id) |> result.map_error(Unreadable),
+  )
+  let registration = view.registration
+
+  // A session on an executor needs nothing from the destination's table. One in
+  // a directory on this machine needs a place for it and a directory that can be
+  // carried.
+  case move_checkout.is_local(registration) {
+    False -> Ok(manager.OnExecutors)
+    True -> {
+      use target <- result.try(checkout_place(destination))
+      use Nil <- result.try(checkout_executor_listed(
+        config,
+        destination,
+        target,
+      ))
+      primary_checkout(registration)
+    }
+  }
+}
+
+/// The place the destination's table gives a local session's checkout, or the
+/// refusal that names the keys to set.
+fn checkout_place(
+  destination: orchestrators.Orchestrator,
+) -> Result(orchestrators.CheckoutTarget, MoveRefusal) {
+  option.to_result(
+    destination.checkout,
+    Declined(manager.AdminNotMovable(
+      "this session works in a directory on this machine; to move it, "
+      <> "[orchestrators."
+      <> destination.name
+      <> "] needs checkout_executor and checkout_workspace",
+    )),
+  )
+}
+
+/// Requires the checkout's executor to be one this daemon lists, because this
+/// daemon is the one that attaches to it.
+fn checkout_executor_listed(
+  config: Config(instance),
+  destination: orchestrators.Orchestrator,
+  target: orchestrators.CheckoutTarget,
+) -> Result(Nil, MoveRefusal) {
+  // A place on an executor this daemon does not list is not a place.
+  case executors.find(roster.rows(config.executors), target.executor) {
+    Ok(_) -> Ok(Nil)
+    Error(Nil) ->
+      Error(
+        Declined(manager.AdminNotMovable(
+          "[orchestrators."
+          <> destination.name
+          <> "] names the checkout executor `"
+          <> target.executor
+          <> "`, which this daemon does not list",
+        )),
+      )
+  }
+}
+
+/// Requires the session's directory to be the top of a primary checkout, whose
+/// repository directory is a directory. A linked worktree has a file there that
+/// points at another directory, and a directory that is no repository has none.
+fn primary_checkout(
+  registration: catalogue.Registration,
+) -> Result(manager.Departure, MoveRefusal) {
+  // Anything but a directory is a refusal; the capture would say the same
+  // later, after the session was stopped.
+  case simplifile.is_directory(registration.workspace <> "/.git") {
+    Ok(True) -> Ok(manager.WithLocalCheckout)
+    Ok(False) | Error(_) ->
+      Error(
+        Declined(manager.AdminNotMovable(
+          "the session's directory is not the top of a primary checkout "
+          <> "(a linked worktree, or not a repository), so it cannot be carried",
+        )),
+      )
   }
 }
 
