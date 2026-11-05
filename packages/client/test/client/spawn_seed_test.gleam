@@ -251,7 +251,7 @@ pub fn a_spawner_whose_seed_is_none_refuses_and_leaves_no_trace_test() {
   state_rig.stop(rig)
 }
 
-pub fn a_placement_on_an_executor_cannot_take_a_copy_test() {
+pub fn an_executor_or_a_pool_takes_the_state_into_a_session_of_its_own_test() {
   let #(rig, _capturer, state) = parent("seed-executor")
   let receiver = node_at(rig, "receiver")
   let on_executor =
@@ -259,9 +259,27 @@ pub fn a_placement_on_an_executor_cannot_take_a_copy_test() {
       "executor = \"runner\"\nworkspace = \"loom\"\n",
       "seed = \"workspace\"\n",
     )
+  let in_pool =
+    spawners.Spawner(
+      ..on_executor,
+      placement: spawners.InPool(pool: "linux", workspace: "loom"),
+    )
+
+  // Both place the child in a session of its own, where the apply is made.
+  assert spawn_seed.permitted(on_executor, state) == Ok(spawn_seed.Session)
+  assert spawn_seed.permitted(in_pool, state) == Ok(spawn_seed.Session)
+
+  // The directory half of the receiver cannot open a session, and says so.
   let assert Error(remote_spawn.StateRefused(reason)) =
     spawn_seed.receive(receiver.node, on_executor, site(), request(Some(state)))
   assert string.contains(reason, "executor")
+  assert string.contains(reason, "session of its own")
+
+  // The owner's ceiling is judged first on every placement.
+  let off = spawners.Spawner(..on_executor, seed: spawners.NoSeed)
+  let assert Error(remote_spawn.StateRefused(none)) =
+    spawn_seed.permitted(off, state)
+  assert string.contains(none, "seed = \"none\"")
   state_rig.stop(rig)
 }
 

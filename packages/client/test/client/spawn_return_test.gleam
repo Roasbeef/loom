@@ -13,6 +13,7 @@
 import broker/exec
 import client/agency
 import client/daemon/main
+import client/delegate_host
 import client/internal/ffi_os
 import client/remote/address.{Address}
 import client/remote/orchestrator_port
@@ -131,6 +132,8 @@ seed = \"workspace\"
 // finished with a report of its own.
 fn finishing() -> agency.DelegateEndpoint {
   agency.DelegateEndpoint(
+    fresh: fn() { True },
+    states: None,
     spawn: fn(_delegation, _site, _request) {
       Ok(remote_spawn.Spawned(
         handle: handle(),
@@ -292,8 +295,16 @@ fn world(
       fn(_spawner, _parent) { Ok(finishing()) },
       fn(_spawner, _parent) { Ok(0) },
       fn(_spawner, _parent) { Ok(None) },
-      fn(found, call_site, asked) {
-        spawn_seed.receive(receiver, found, call_site, asked)
+      delegate_host.no_children(),
+      fn(found, parent, call_site, asked) {
+        spawn_seed.land(
+          receiver,
+          delegate_host.no_children(),
+          found,
+          parent,
+          call_site,
+          asked,
+        )
       },
       spawn_return.over(receiver, link_to(parent, parents_port), log.discard()),
       log.discard(),

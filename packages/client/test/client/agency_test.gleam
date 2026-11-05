@@ -5358,6 +5358,22 @@ pub fn a_resent_remote_spawn_adopts_the_child_it_made_test() {
   close(harness)
 }
 
+pub fn a_delegate_session_is_fresh_until_its_first_child_is_started_test() {
+  let harness = start_harness(Hangs)
+
+  // A session that has started nothing may have a state put into its workspace,
+  // and the endpoint it projects asks the same question.
+  assert agency.delegate_fresh(harness.config)
+  assert agency.delegate_endpoint(harness.config).fresh()
+
+  // The first child's lineage cell is written before its strand runs, so from the
+  // spawn on the session has begun, and a resend of the spawn changes nothing.
+  let _first = remote_spawned(harness, "turn-1:tools", "review auth")
+  assert !agency.delegate_fresh(harness.config)
+  assert !agency.delegate_endpoint(harness.config).fresh()
+  close(harness)
+}
+
 pub fn a_resent_spawn_adopts_even_after_its_run_has_ended_test() {
   let harness = start_harness(Hangs)
   let site = site_of("turn-1:tools", 0)
