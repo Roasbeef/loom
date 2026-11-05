@@ -1102,3 +1102,32 @@ model, and the live drive of exit criterion 2 is not done: it needs a laptop dae
 `[orchestrators.box]` naming `checkout_executor` and `checkout_workspace`, a box that is both
 orchestrator and executor with a `worktree` workspace, and `loom sessions move` on a session
 that has run in a dirty repository.
+
+**Slice 4c: changes after review (2026-11-04).** An independent review of the build found
+the following. Two are fixed here and two are accepted, with the reason.
+
+- *A directory member does not move a local session yet.* A member's mover swaps the owner
+  record from `Serving` to `Moving`, and a local session's record is `Local`, which no
+  swap handles, so the move would stall for good (the abandon fails the same way) or, with
+  no record yet, end in a tombstone the receiver never got. `sessions.move` now refuses such
+  a move before it stops the session. A member path needs `Local -> Moving` and
+  `Moving -> Local` swaps in `client/directory/ownership` and arms in the mover, and is not
+  built.
+- *A scope record from an earlier move names the executor.* The attach follows the file's
+  scope record whatever the placement says, so a record left by an abandoned move, followed by
+  a move whose `checkout_executor` differs, would have put the checkout on the first executor
+  and told the receiver the second. The landing now refuses a record that names another
+  executor, with the executor named.
+- *Accepted: a retry after an abort can deliver the earlier snapshot.* `StateApply` treats a
+  tree that already contains the tip as applied, and "contains" is ancestry
+  (`state_apply.holds_tip`), which a resend after the session has committed needs. If a move is
+  abandoned after the landing, the operator discards the uncommitted edits in the directory,
+  and the move is asked for again, the new tip is an ancestor of the executor's earlier
+  snapshot and the tree is left at the snapshot. The move's report does not say so. Tightening
+  the apply to equality would break the resend rule of slice 4a, so it stays; a directory that
+  was edited again is captured as a new snapshot and does move the branch.
+- *Accepted: the close after an unanswered apply.* When the executor is silent for the
+  15 minutes `apply_within_ms` allows, the landing closes the scope while an apply that runs to
+  its end on the executor may still be writing the tree, and a close that finds the tree busy
+  can record `UnknownCleanup`, which an operator on the executor releases. It needs an apply
+  that outlives the wait.

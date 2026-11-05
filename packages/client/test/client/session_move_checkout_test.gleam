@@ -675,6 +675,10 @@ fn assert_stays_on_source(rig: Rig) -> Nil {
   assert custody(rig.source, rig.session) == catalogue.Resident
   assert simplifile.is_file(source_file(rig)) == Ok(True)
   let assert Ok(_) = manager.open(rig.source.registry, rig.session)
+
+  // The file opens for another reader, so no lease of the move is left on it.
+  let assert Ok(_) =
+    scope.read_at(source_file(rig), "inspector", clock.fixed(at: 9000))
   assert_directory_untouched(rig)
 }
 
@@ -712,6 +716,28 @@ pub fn a_shared_workspace_on_the_executor_refuses_the_state_test() {
   let assert Ok(Some(cell)) =
     scope.read_at(source_file(rig), "inspector", clock.fixed(at: 9000))
   assert cell.closed == Some(protocol.AllRetired)
+  finish(rig)
+}
+
+pub fn a_scope_record_from_an_earlier_move_keeps_the_checkout_on_its_executor_test() {
+  let rig = start("stale-record", Shared, 0)
+  let move = begin(rig)
+  let assert Aborted(_) = session_mover.drive(plain(rig), move)
+
+  // The abandoned move left a record naming `box`. Asking again with a place on
+  // another executor is refused, because the attach would follow the record and
+  // put the checkout on `box` while the receiver was told `other`.
+  let move = begin(rig)
+  let elsewhere =
+    environment(
+      rig,
+      Some(ports(rig, silently, direct)),
+      Some(CheckoutTarget(executor: "other", workspace: "repo")),
+      fn(_) { Nil },
+    )
+  let assert Aborted(reason) = session_mover.drive(elsewhere, move)
+  assert string.contains(reason, "from an earlier move")
+  assert_stays_on_source(rig)
   finish(rig)
 }
 

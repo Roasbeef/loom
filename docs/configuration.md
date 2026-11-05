@@ -893,7 +893,8 @@ on this machine is not changed and is not written again for the session. The
 directory must be the top of a primary checkout; a linked worktree is refused when
 the move is asked for, and a repository the capture refuses (a submodule, LFS, a
 shallow clone) ends the move with the reason. Without the two keys the move is
-refused as it always was, and a session on an executor is unaffected by them. See
+refused as it always was, and a session on an executor is unaffected by them. A daemon
+that is a member of the session directory does not move such a session yet. See
 [docs/architecture/distributed.md](architecture/distributed.md), "Moving a session
 that works in a directory".
 

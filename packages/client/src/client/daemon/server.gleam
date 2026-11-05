@@ -5128,9 +5128,20 @@ fn departure_for(
   // A session on an executor needs nothing from the destination's table. One in
   // a directory on this machine needs a place for it and a directory that can be
   // carried.
-  case move_checkout.is_local(registration) {
-    False -> Ok(manager.OnExecutors)
-    True -> {
+  case move_checkout.is_local(registration), config.directory.ownership {
+    False, _ -> Ok(manager.OnExecutors)
+
+    // A member's mover swaps the owner record from `Serving` to `Moving`, and a
+    // local session's record is `Local`, which no swap handles, so the move
+    // would stall for good or end in a tombstone nobody received.
+    True, Some(_) ->
+      Error(
+        Declined(manager.AdminNotMovable(
+          "a directory member does not move a session that works in a directory "
+          <> "on this machine yet",
+        )),
+      )
+    True, None -> {
       use target <- result.try(checkout_place(destination))
       use Nil <- result.try(checkout_executor_listed(
         config,

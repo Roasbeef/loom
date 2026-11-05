@@ -579,6 +579,32 @@ fn attach_apply_close(
   opened: session.Session,
   arrival: Arrival,
 ) -> Result(Result(String, LandFailure), String) {
+  use recorded <- result.try(scope.read(opened))
+
+  // The attach goes to the executor the file's scope record names, whatever the
+  // placement says, so a record left by an earlier move that was abandoned would
+  // put the checkout on one executor and tell the receiver another.
+  case scope.executor_of(recorded) {
+    Some(named) if named != arrival.target.executor ->
+      Ok(
+        Error(LandRefused(
+          "the session's scope record names the executor `"
+          <> named
+          <> "` from an earlier move, so it can move only to a destination whose "
+          <> "checkout_executor is that one",
+        )),
+      )
+    Some(_) | None -> attach_and_apply(placement, logger, opened, arrival)
+  }
+}
+
+/// Attaches a scope, applies the state in its tree and closes it.
+fn attach_and_apply(
+  placement: workspace.Placement,
+  logger: Logger,
+  opened: session.Session,
+  arrival: Arrival,
+) -> Result(Result(String, LandFailure), String) {
   let attached =
     workspace.attach(workspace.Registered(
       placement:,
