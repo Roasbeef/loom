@@ -5,6 +5,7 @@
 
 import core/accounting
 import core/clock
+import core/codec
 import core/entry.{type Entry}
 import core/ids
 import core/json
@@ -111,6 +112,41 @@ pub fn a_page_round_trips_and_a_damaged_one_is_refused_test() {
     remote_transcript.decode(
       json.Object(list.key_set(fields, "next", json.Int(0))),
     )
+}
+
+// The receiver does not take the sender's word for the byte bound: a page whose
+// entries encode to more than `page_bytes_limit` is refused, and one that fills
+// the bound exactly is read. Two entries make the sum, not one entry, the thing
+// the bound is checked against.
+pub fn a_page_over_the_byte_bound_is_refused_and_one_at_it_is_read_test() {
+  let encoded = fn(record: Entry) {
+    string.byte_size(json.to_string(codec.encode_entry(record)))
+  }
+  let assert [empty, _] = entries([2, 1], fn(_) { "" })
+  let room = remote_transcript.page_bytes_limit - 2 * encoded(empty)
+  let filled = fn(extra: Int) {
+    let first = room / 2
+    entries([2, 1], fn(seq) {
+      case seq {
+        1 -> string.repeat("a", first)
+        _ -> string.repeat("a", room - first + extra)
+      }
+    })
+  }
+  let page = fn(extra: Int) {
+    remote_transcript.Page(
+      child:,
+      entries: list.reverse(filled(extra)),
+      omitted: 0,
+      next: None,
+    )
+  }
+
+  let at_bound = page(0)
+  assert remote_transcript.decode(remote_transcript.encode(at_bound))
+    == Ok(at_bound)
+  let assert Error(_) =
+    remote_transcript.decode(remote_transcript.encode(page(1)))
 }
 
 // A model's text is words to draw, never markup: the words a host is given
