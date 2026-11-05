@@ -15,6 +15,13 @@
 //// - `HoldForCancel` never settles on its own; a `cancel` settles it with
 ////   a distinctive exit code 137 and signal 15, so a test can prove a
 ////   specific clearance — and only that one — was cancelled.
+//// - `StdinWitness(control)` holds one execution until an `exec_stdin`
+////   frame arrives and reports its eof flag, so a test can prove a cleared
+////   call closed the child's stdin at start. It is a single-execution
+////   behaviour: any `exec_stdin` settles the hold.
+////
+//// `PartialJail` and `FailingOn` cover the degraded-jail and
+//// nonzero-exit cases beside these.
 
 import broker/exec
 import broker/framing
