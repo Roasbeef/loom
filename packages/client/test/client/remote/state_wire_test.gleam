@@ -199,7 +199,7 @@ fn apply(
   answer
 }
 
-// Version 7 (protocol-change/110) added the host seam to the MCP plan and
+// Version 7 (protocol-change/111) added the host seam to the MCP plan and
 // left the state messages as version 6 made them.
 pub fn the_vocabulary_is_at_version_seven_test() {
   assert protocol.version == 7

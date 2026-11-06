@@ -44,7 +44,7 @@
 //// failure its type allows and logged. An accepted callback runs in a weft
 //// task against the owner port, so the link never waits on an owner.
 ////
-//// A call to a host's own module (`host.<module>`, protocol-change/110) is
+//// A call to a host's own module (`host.<module>`, protocol-change/111) is
 //// held to one more condition: the `run` it names must be a `code_mode` call.
 //// Only a program reaches a host module, so a host call made under any other
 //// tool call of the session is forged and is refused before the owner sees it.

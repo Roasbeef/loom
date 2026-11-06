@@ -6,7 +6,7 @@
 `invoke_typed` under the capability `host.<module>` rather than
 `mcp.<server>`: the envelope (`{tool, arguments}`) and the result vocabulary
 (`cap/mcp`) are the same, and a generated host module (`cap/<name>`,
-protocol-change/110) calls them with fixed literals. They are internal, so a
+protocol-change/111) calls them with fixed literals. They are internal, so a
 program can reach a host module only through the module the host's seam admits.
 
 ## Inferred LSP plans and question-shaped helpers

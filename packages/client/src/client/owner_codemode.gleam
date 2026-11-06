@@ -154,7 +154,7 @@ pub fn over_owner_serving(
 }
 
 /// Applies the seam the session's host defined, as the owner sent it in the
-/// plan, to a workspace's code mode (protocol-change/110).
+/// plan, to a workspace's code mode (protocol-change/111).
 ///
 /// The executor vets and describes programs under it: the narrowed imports,
 /// the withheld names gone from what is advertised, and the host module's

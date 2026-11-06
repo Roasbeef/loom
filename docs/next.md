@@ -1,11 +1,11 @@
 # Current handoff
 
-## Host-defined code-mode seams (protocol-change/110)
+## Host-defined code-mode seams (protocol-change/111)
 
 A host that embeds Loom can give a session its own code-mode seam:
 `client/host_seam.HostSeam` narrows the `cap/*` imports, withholds named
 capabilities, and adds a generated `cap/<name>` whose functions are the host's
-own tools. [Protocol-change 110](../protocol-change/110-host-code-mode-seam.md)
+own tools. [Protocol-change 111](../protocol-change/111-host-code-mode-seam.md)
 is the design and the threat model; `docs/architecture/code-mode.md`, "A seam
 the host defines", is the map. The consumer is aegis's `cap/aegis` on its
 untrusted runner pod.

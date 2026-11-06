@@ -129,7 +129,7 @@ pub fn executor_caps() -> List(String) {
 /// holds. An `mcp.<server>` name is the owner's, because the MCP clients and
 /// the secrets they were started with stay on the owner. A `host.<module>`
 /// name is the owner's too, because a host module's functions are the host's
-/// own tools, which never leave the owner (protocol-change/110).
+/// own tools, which never leave the owner (protocol-change/111).
 ///
 /// ## Examples
 ///

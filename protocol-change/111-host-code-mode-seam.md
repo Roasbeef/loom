@@ -1,4 +1,4 @@
-# protocol-change/110: a code-mode seam the host defines
+# protocol-change/111: a code-mode seam the host defines
 
 **Status**: PROPOSED 2026-11-06, built in the PR that adds this file.
 **Affects**: `client/codemode.Config` (one field, `host`) and

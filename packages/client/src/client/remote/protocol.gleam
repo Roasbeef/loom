@@ -162,7 +162,7 @@ import tools/tool
 /// executor must upgrade with its orchestrators.
 ///
 /// Version 7 added `McpPlan.host`, the seam a session's host defined
-/// (protocol-change/110), with the `HostPlan` it carries. A plan of version 6
+/// (protocol-change/111), with the `HostPlan` it carries. A plan of version 6
 /// has one field fewer, and an executor of either version reading the other's
 /// would fail to match it, so every executor must upgrade with its
 /// orchestrators.
@@ -417,7 +417,7 @@ pub type McpPlan {
     /// from the executor's own configuration.
     expected: List(String),
     /// The seam the session's host defined, or `None` for Loom's own seams
-    /// (protocol-change/110). It rides on the plan because it is the same kind
+    /// (protocol-change/111). It rides on the plan because it is the same kind
     /// of thing: what the executor compiles and vets programs against, with
     /// the calls that need the owner sent back to it.
     host: Option(HostPlan),

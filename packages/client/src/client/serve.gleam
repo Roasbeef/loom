@@ -640,7 +640,7 @@ pub type Settings {
     /// one of the two isolated capability surfaces.
     codemode_seams: codemode_wiring.Seams,
     /// The code-mode seam the host that embeds this session defined, or
-    /// `None` for Loom's own (protocol-change/110). A setting for the reason
+    /// `None` for Loom's own (protocol-change/111). A setting for the reason
     /// `codemode_seams` is one: it is the host's choice, made before `boot`.
     /// It narrows what a program may import, withholds named capabilities,
     /// and adds the host's own module, whose functions are host tools; the

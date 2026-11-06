@@ -1,4 +1,4 @@
-//// A host-defined code-mode seam (protocol-change/110), through the code the
+//// A host-defined code-mode seam (protocol-change/111), through the code the
 //// production paths run: `client/codemode`'s vetting, description and router
 //// for a local session, and `codemode.owner_answering` for an owner whose
 //// workspace is on an executor.

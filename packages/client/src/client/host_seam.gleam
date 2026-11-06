@@ -1,5 +1,5 @@
 //// A code-mode seam a host defines for its own sessions
-//// (protocol-change/110).
+//// (protocol-change/111).
 ////
 //// Loom's code mode judges a program against one of its own seams, a closed
 //// set of `cap/*` modules a host selects from (`codemode/vet/policy.Seam`),

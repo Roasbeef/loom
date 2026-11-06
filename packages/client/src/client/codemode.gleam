@@ -452,7 +452,7 @@ pub type Config {
     /// coordinates. The workspace seam alone sees it.
     evolution: Option(fn(tool.Ctx) -> codemode_evolution.Door),
     /// The seam the host that embeds this session defined for it, or `None`
-    /// for Loom's own seams unchanged (protocol-change/110).
+    /// for Loom's own seams unchanged (protocol-change/111).
     ///
     /// One field for the reason `mcp` is one: it narrows the allowlist,
     /// withdraws withheld names from what the description advertises, adds
@@ -762,7 +762,7 @@ pub fn over_lsp_observation(
 }
 
 /// The same host configuration, under a seam the embedding host defined
-/// (`client/host_seam`, protocol-change/110).
+/// (`client/host_seam`, protocol-change/111).
 ///
 /// The layer narrows the workspace and orchestration seams alike, and only
 /// those: an installed extension and a resident hook keep the allowlists

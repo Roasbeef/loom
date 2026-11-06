@@ -1,4 +1,4 @@
-//// A host seam shaped like aegis's (protocol-change/110), for the tests.
+//// A host seam shaped like aegis's (protocol-change/111), for the tests.
 ////
 //// The host's module is `cap/aegis`, with two of the host's own tools:
 //// `file_finding`, which returns a typed result and refuses at the validation

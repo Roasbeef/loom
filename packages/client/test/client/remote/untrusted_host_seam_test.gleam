@@ -1,4 +1,4 @@
-//// A host module's calls over the untrusted link (protocol-change/110).
+//// A host module's calls over the untrusted link (protocol-change/111).
 ////
 //// A host-defined code-mode module's functions are the host's own tools, and
 //// each call returns to the orchestrator as a `capability` callback. The link

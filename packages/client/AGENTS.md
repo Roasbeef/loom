@@ -1,4 +1,4 @@
-# Host-defined code-mode seam (protocol-change/110)
+# Host-defined code-mode seam (protocol-change/111)
 
 `client/host_seam` is a seam a host that embeds Loom defines for its sessions:
 `HostSeam(imports, withheld, module)`, where `module` is a `HostModule(name,

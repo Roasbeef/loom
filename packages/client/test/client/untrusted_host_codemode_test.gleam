@@ -1,5 +1,5 @@
 //// A host-defined seam on an untrusted executor, end to end
-//// (protocol-change/110 over protocol-change/109).
+//// (protocol-change/111 over protocol-change/109).
 ////
 //// The executor is the real one: `executor_plane`'s factory over a checkout of
 //// a small Gleam project, with the repository's build seed and a `gleam lsp`

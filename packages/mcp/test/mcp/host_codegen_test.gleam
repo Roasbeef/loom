@@ -1,5 +1,5 @@
 //// A host's own capability module through the MCP generator
-//// (protocol-change/110): the same rendering as a server's façade, under
+//// (protocol-change/111): the same rendering as a server's façade, under
 //// `cap/<name>` and the `host.` capability family.
 
 import gleam/bit_array

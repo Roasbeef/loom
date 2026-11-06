@@ -441,7 +441,7 @@ the program-mode change and its cost.
 ### A seam the host defines
 
 A host that embeds Loom can narrow a session's seam and give it a module of
-its own ([protocol 110](../../protocol-change/110-host-code-mode-seam.md)).
+its own ([protocol 111](../../protocol-change/111-host-code-mode-seam.md)).
 `client/host_seam.HostSeam` names the `cap/*` modules a program may import,
 the capability names it withholds (`lsp.rename`, say), and a `HostModule`
 whose functions are the host's own registered tools. `host_seam.build` checks
