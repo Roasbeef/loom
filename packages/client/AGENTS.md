@@ -1,3 +1,34 @@
+# Host-defined code-mode seam (protocol-change/110)
+
+`client/host_seam` is a seam a host that embeds Loom defines for its sessions:
+`HostSeam(imports, withheld, module)`, where `module` is a `HostModule(name,
+functions)` and each `HostFunction(tool, output)` is a `tool.Tool` the host also
+offers directly. `build` checks it (known imports, a lower-case name that
+shadows no shipped `cap/*` module, no tool twice) and generates `cap/<name>`
+through `mcp/codegen.generate_host`. `codemode.over_host(config, Some(layer))`
+applies it: `seam_allowlist` narrows `cap/*` to the imports and adds the module
+and `cap/mcp`, `seam_caps_on` drops withheld and unimported names and adds
+`host.<name>`, the surface and source join the extra surfaces and generated
+modules, and `surface_router` puts `host_seam.routing` outermost. The arm
+refuses a withheld name, and for `host.<name>` decodes `{tool, arguments}`, asks
+`tool_gate.holding` for that tool, runs the tool's `run` and renders the outcome
+with `mcp.tool_result`.
+
+Remote: `serve.Settings.code_mode_host` is built once in `assemble_in`
+(`host_layer_of`); a bad declaration refuses the session. The local plane gets
+`over_host`; a remote session's owner side gets `OwnerSide.host`
+(`codemode.OwnerHost(layer, clock)`) and the plan gets `McpPlan.host`
+(`owner_codemode.host_plan`, `protocol.HostPlan`, version 7). The executor
+applies it with `owner_codemode.hosting` (`host_seam.elsewhere`, no tools), and
+`cap_placement` makes `host.` owner-bound. `owner_answering` runs
+`host_seam.owner_admits` first, refusing any owner-bound code-mode family whose
+module the seam excludes, then answers `host.` from the arm under a context of
+the call's coordinates. `untrusted_link.from_a_program` refuses a `host.`
+callback unless the matching in-flight `run` is `code_mode`. Tests:
+`host_seam_test`, `remote/untrusted_host_seam_test` (real link, hand-driven
+executor), `untrusted_host_codemode_test` (real executor plane behind the
+gateway; needs `make sandbox codemode-seed` and `gleam`).
+
 # Untrusted executors (protocol-change/109)
 
 An `[executors.<name>]` row with `trust = "untrusted"` (`executors.Trust`,
