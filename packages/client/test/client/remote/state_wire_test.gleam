@@ -210,8 +210,8 @@ pub fn an_attach_from_a_version_five_peer_is_refused_test() {
 
   // A peer of the version before the state messages never gets past the attach,
   // so it never sends a message the host cannot match.
-  assert attach(at, 5, <<1>>) == Error(protocol.VersionMismatch(supported: 6))
-  let assert Ok(_attached) = attach(at, 6, <<1>>)
+  assert attach(at, 5, <<1>>) == Error(protocol.VersionMismatch(supported: protocol.version))
+  let assert Ok(_attached) = attach(at, protocol.version, <<1>>)
 }
 
 pub fn a_state_is_sent_to_a_host_and_held_there_test() {
@@ -298,7 +298,7 @@ pub fn a_host_that_keeps_no_store_refuses_every_piece_test() {
 
 pub fn a_capture_for_a_scope_with_no_plane_capture_is_refused_test() {
   let at = started(state_transfer.declining(), plain_factory())
-  let assert Ok(_attached) = attach(at, 6, <<1>>)
+  let assert Ok(_attached) = attach(at, protocol.version, <<1>>)
 
   let assert Error(protocol.NoStates(_)) = capture(at, <<1>>, Full)
 }
@@ -344,7 +344,7 @@ pub fn a_capture_is_fenced_and_runs_the_planes_capture_test() {
 
   // Before any attach there is no scope to capture from.
   let assert Error(_nothing) = capture(at, <<1>>, Full)
-  let assert Ok(_attached) = attach(at, 6, <<1>>)
+  let assert Ok(_attached) = attach(at, protocol.version, <<1>>)
   assert capture(
       at,
       <<1>>,
@@ -379,7 +379,7 @@ pub fn an_apply_for_a_scope_with_no_plane_apply_is_refused_test() {
   // Before any attach the scope does not exist, and after one this plane has
   // no means of applying.
   let assert Error(_nothing) = apply(at, 0, <<1>>, wanted)
-  let assert Ok(_attached) = attach(at, 6, <<1>>)
+  let assert Ok(_attached) = attach(at, protocol.version, <<1>>)
   let assert Error(protocol.NoStates(_)) = apply(at, 0, <<1>>, wanted)
 }
 
@@ -401,7 +401,7 @@ pub fn an_apply_is_fenced_and_runs_the_planes_apply_test() {
   }
   let at = started(state_transfer.declining(), factory)
   let wanted = a_state()
-  let assert Ok(_attached) = attach(at, 6, <<1>>)
+  let assert Ok(_attached) = attach(at, protocol.version, <<1>>)
 
   // The plane's tip is the answer, and its refusal is the executor's own account
   // of why the workspace would not take the state, as a refused capture is.
