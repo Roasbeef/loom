@@ -4,7 +4,7 @@
 //// read.
 
 import client/catalog
-import client/executors.{Degraded, Enforced, Executor, Observed}
+import client/executors.{Degraded, Enforced, Executor, Observed, Trusted}
 import gleam/dict
 import gleam/list
 import gleam/option.{Some}
@@ -144,6 +144,7 @@ toolchains = [\"codemode\", \"gleam_ls\"]
         enforcement: Some(Enforced),
         toolchains: ["codemode", "gleam_ls"],
         attach_within_s: 30,
+        trust: Trusted,
       ),
     ])
   assert executors.parse(executor_with("enforcement = \"degraded\"\n"))
@@ -210,6 +211,7 @@ fn declared() -> executors.Executor {
     enforcement: Some(Enforced),
     toolchains: ["codemode"],
     attach_within_s: 30,
+    trust: Trusted,
   )
 }
 

@@ -119,6 +119,8 @@ import client/remote/remote_peer
 import client/remote/remote_spawner
 import client/remote/state_link
 import client/remote/top_relay
+import client/remote/untrusted_gateway
+import client/remote/untrusted_link
 import client/remote/workspace
 import client/remote_mail
 import client/remote_reach
@@ -143,6 +145,7 @@ import client/state_store
 import client/state_transfer
 import client/system_prompt
 import client/top_host
+import client/untrusted_config
 import client/workspace_policy
 import client/workspaces
 import client/worktree_git
@@ -258,6 +261,10 @@ pub type Config {
     /// `prepare_startup` before the first session can be admitted
     /// (protocol-change/107). `state_node.none()` on a daemon that moves none.
     state_node: StateNode,
+    /// The untrusted executor link's tables, `[executor_link]` and
+    /// `[executor_listener]`, read at startup and never reread
+    /// (protocol-change/109).
+    untrusted: untrusted_config.Settings,
   )
 }
 
@@ -623,6 +630,7 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
       dict.new(),
       no_projects,
       state_node.none(),
+      untrusted_config.none,
     )
   use config <- result.try(parse_loop(arguments, initial))
 
@@ -1053,6 +1061,104 @@ fn existing_roots(served: List(workspaces.Workspace)) -> Result(Nil, String) {
       <> " is not a directory: "
       <> reason
     })
+  })
+}
+
+/// Reads `[executor_link]` and `[executor_listener]`, and requires the
+/// first when any `[executors.<name>]` row is untrusted, because the link to
+/// such an executor presents this orchestrator's certificate.
+fn untrusted_settings(
+  document: dict.Dict(String, tom.Toml),
+  configured: List(executors.Executor),
+) -> Result(untrusted_config.Settings, String) {
+  use settings <- result.try(untrusted_config.from_document(document))
+  let untrusted =
+    list.any(configured, fn(executor) { executor.trust != executors.Trusted })
+
+  // A row that must be dialled over the link needs credentials to dial with.
+  case untrusted, settings.link {
+    True, None ->
+      Error(
+        "an untrusted executor needs an [executor_link] table naming ca, certificate and key",
+      )
+    True, Some(_link) | False, _ -> Ok(settings)
+  }
+}
+
+/// Starts the untrusted link's two ends (protocol-change/109): on an
+/// orchestrator, one link per untrusted executor, registered under
+/// `untrusted_link.name_for` so a session's placement finds it by name; on an
+/// executor with `[executor_listener]`, the gateway in front of its host.
+///
+/// Like the host, the links and the gateway are unlinked from the startup
+/// process and not restarted: a link that died takes its bindings with it, and
+/// the sessions it served refuse their callbacks until they attach again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // assert main.start_untrusted(Config(..config, untrusted: untrusted_config.none), None, logger) == Ok(Nil)
+/// ```
+@internal
+pub fn start_untrusted(
+  config: Config,
+  executor: Option(ExecutorHost),
+  logger: Logger,
+) -> Result(Nil, String) {
+  use Nil <- result.try(start_untrusted_links(config, logger))
+
+  // A listener fronts this daemon's own host, so it needs one.
+  case config.untrusted.listener, executor {
+    None, _ -> Ok(Nil)
+    Some(_listener), None ->
+      Error(
+        "[executor_listener] needs [workspaces] to serve: this daemon has no executor host",
+      )
+    Some(listener), Some(_host) -> {
+      use gateway <- result.map(
+        untrusted_gateway.start(untrusted_gateway.Config(
+          address: listener.address,
+          port: listener.port,
+          credentials: listener.credentials,
+          orchestrators: listener.orchestrators,
+          host: address.Address(node: node.self(), name: address.default()),
+          logger:,
+        )),
+      )
+      process.unlink(gateway.acceptor)
+      log.info(logger, "daemon.untrusted_listener", [
+        field.count("port", gateway.port),
+        field.count("orchestrators", list.length(listener.orchestrators)),
+      ])
+    }
+  }
+}
+
+/// Starts one link per untrusted executor row.
+fn start_untrusted_links(
+  config: Config,
+  logger: Logger,
+) -> Result(Nil, String) {
+  list.try_each(config.executors, fn(executor) {
+    // Only an untrusted row is dialled over the link.
+    case executor.trust, config.untrusted.link {
+      executors.Untrusted(host:, port:, pin:), Some(credentials) -> {
+        use pid <- result.map(
+          untrusted_link.start(untrusted_link.Config(
+            executor: executor.name,
+            name: untrusted_link.name_for(executor.name),
+            host:,
+            port:,
+            pin:,
+            credentials:,
+            mint: untrusted_link.strong_binding,
+            logger:,
+          )),
+        )
+        process.unlink(pid)
+      }
+      executors.Untrusted(..), None | executors.Trusted, _ -> Ok(Nil)
+    }
   })
 }
 
@@ -3156,6 +3262,10 @@ fn decode_startup(
     executors.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
+  use untrusted <- result.try(
+    untrusted_settings(document, executors)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
   use pools <- result.try(
     pools.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
@@ -3209,6 +3319,7 @@ fn decode_startup(
       orchestrators:,
       directory:,
       spawners:,
+      untrusted:,
     ),
     connection_limits,
     project_numbers,
@@ -4056,6 +4167,7 @@ fn run(
       let states = config.state_node.endpoint
       use Nil <- result.try(start_owner_identity(config, logger))
       use executor <- result.try(start_executor(config, states, logger))
+      use Nil <- result.try(start_untrusted(config, executor, logger))
       use Nil <- result.try(sweep_delegate_sessions(
         config,
         daemon,

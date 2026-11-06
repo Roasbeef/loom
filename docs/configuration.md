@@ -113,6 +113,8 @@ is not in this list is refused.
 | `project` | table with arrays of `[[project.source]]` and `[[project.rule]]` | Worker limits, finished-work policy and event sources of a project (from protocol-change 106). | [`[project]`](#project) |
 | `distribution` | table and array of `[[distribution.peers]]` | Trusted TLS Erlang distribution (from protocol-change 078). | [`[distribution]`](#distribution) |
 | `executors` | table of `[executors.<name>]` | Machines a session's workspace may be registered on (from protocol-change 078). | [`[executors.<name>]`](#executorsname) |
+| `executor_link` | table | This orchestrator's certificate for the link to untrusted executors (from protocol-change 109). | [`[executor_link]`](#executor_link) |
+| `executor_listener` | table | The listener of an untrusted executor (from protocol-change 109). | [`[executor_listener]`](#executor_listener) |
 | `pools` | table of `[pools.<name>]` | Named groups of executors a session may be placed on without naming one (from protocol-change 078). | [`[pools.<name>]`](#poolsname) |
 | `workspaces` | table of `[workspaces.<name>]` | Checkouts this machine serves to orchestrators (from protocol-change 078). | [`[workspaces.<name>]`](#workspacesname) |
 | `orchestrators` | table of `[orchestrators.<name>]` | Other orchestrators this daemon asks who owns a session it does not know (from protocol-change 078). | [`[orchestrators.<name>]`](#orchestratorsname) |
@@ -709,11 +711,29 @@ than it declared is not contradicted.
 
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |
-| `node` | string | required | one of the `node` values in `[[distribution.peers]]` | The peer node that serves this executor's workspaces. |
+| `node` | string | required for a trusted executor; refused for an untrusted one | one of the `node` values in `[[distribution.peers]]` | The peer node that serves this executor's workspaces. |
+| `trust` | string | `trusted` | `trusted` or `untrusted` | Whether the executor is a distribution peer with the full privileges of one (`trusted`), or is never a peer and is reached over the untrusted link, which checks everything it sends back (`untrusted`, protocol-change 109). See [Untrusted executors](#untrusted-executors). |
+| `address` | string | required for an untrusted executor; refused for a trusted one | `host:port`, an IPv6 host in brackets | Where the untrusted executor's `[executor_listener]` listens. The orchestrator dials it; the executor never dials back. |
+| `pin` | string | required for an untrusted executor; refused for a trusted one | 64 lower-case hexadecimal digits | The SHA-256 of the untrusted executor's leaf certificate in DER. The link refuses any other certificate, even one from the same authority. |
 | `platform` | string | none declared | `<os>/<architecture>`, such as `linux/x86_64` or `macos/arm64` | The platform the machine reports in the system prompt. |
 | `enforcement` | string | none declared | `enforced` or `degraded` | Whether the machine's sandbox helper confines what it runs. |
 | `toolchains` | array of strings | none declared | distinct lowercase names | What the machine provides: `codemode` for the code-mode toolchain, or the key of an `[lsp.<name>]` server it serves. |
 | `attach_within_s` | integer | `30` | `1` to `900` | How long an attach to this executor keeps retrying while the executor answers that it is still preparing the workspace (protocol-change 095). A first attach to a [`worktree` workspace](#worktree-workspaces) runs a whole checkout; time `git worktree add` once on the executor for the largest such workspace and set this to twice that. |
+
+### Untrusted executors
+
+(From protocol-change 109.) An executor whose `trust` is `untrusted` is never an
+Erlang distribution peer. The orchestrator dials its `address` over TLS 1.3, both
+sides present a certificate under the authority in their `ca`, and each side
+requires the other's leaf to hash to a configured pin. The executor's tool calls,
+callbacks and repository states travel in length-prefixed JSON frames of at most
+32 MiB, and the orchestrator checks every callback against the session it was
+attached for before an owner sees it. No `[distribution]` table is needed for an
+untrusted executor, and the orchestrator needs an
+[`[executor_link]`](#executor_link) table. Background code mode, remote evolution,
+and the commands that project hooks, goal checks, Git observation and the worktree
+diff run through the executor's broker are refused on an untrusted executor for
+now.
 
 ### Executors that come from the ledger
 
@@ -738,6 +758,34 @@ node that is not an orchestrator derives nothing.
 
 A table that you write and the ledger later revokes stays in the file as an inert
 row (see `ledger` above); `loom deployment status` shows it as down.
+
+## `[executor_link]`
+
+(From protocol-change 109.) Required on an orchestrator that names any untrusted
+`[executors.<name>]`, and read once when the daemon starts. It is the certificate
+this orchestrator presents on the link to every untrusted executor.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `ca` | string | required | a PEM file | The authority an untrusted executor's certificate must chain to. |
+| `certificate` | string | required | a PEM file | This orchestrator's leaf certificate. Each untrusted executor lists its pin in `[executor_listener] orchestrators`. |
+| `key` | string | required | a PEM file | The leaf's private key. |
+
+## `[executor_listener]`
+
+(From protocol-change 109.) Makes this daemon an untrusted executor: it serves its
+`[workspaces.<name>]` to the orchestrators listed here over the untrusted link, and
+never as a distribution peer. A file with `[executor_listener]` and
+`[distribution]` is refused. The daemon needs `[workspaces]`, because the listener
+fronts its executor host. Read once when the daemon starts.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `listen` | string | required | an IP address and a port, such as `0.0.0.0:7443` or `[::]:7443` | Where to listen. The unspecified address listens on every interface. |
+| `ca` | string | required | a PEM file | The authority an orchestrator's certificate must chain to. |
+| `certificate` | string | required | a PEM file | This executor's leaf certificate, whose SHA-256 is the `pin` of its `[executors.<name>]` row on each orchestrator. |
+| `key` | string | required | a PEM file | The leaf's private key. |
+| `orchestrators` | array of strings | required | 1 to 32 distinct pins, each 64 lower-case hexadecimal digits | The SHA-256 of each orchestrator leaf that may connect. Any other certificate fails the handshake. |
 
 ## `[pools.<name>]`
 

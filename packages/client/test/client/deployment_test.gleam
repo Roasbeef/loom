@@ -48,6 +48,7 @@ fn exec2() {
     enforcement: Some(executors.Enforced),
     toolchains: ["codemode"],
     attach_within_s: 30,
+    trust: executors.Trusted,
   )
 }
 
@@ -1862,6 +1863,7 @@ fn fleet() -> deployment.Snapshot {
         enforcement: Some(executors.Enforced),
         toolchains: ["codemode", "gleam", "rust-analyzer"],
         attach_within_s: 30,
+        trust: executors.Trusted,
       )
     })
   let executor_nodes = list.map(executor_rows, fn(row) { row.node })
