@@ -35,6 +35,7 @@
 import client/async_codemode
 import client/codemode
 import client/extension/seam as extension_seam
+import client/host_seam
 import client/peers
 import client/workflows
 import codemode/artifact
@@ -126,12 +127,15 @@ pub fn executor_caps() -> List(String) {
 
 /// Where a capability is answered, or `Error(Nil)` for a name neither group
 /// holds. An `mcp.<server>` name is the owner's, because the MCP clients and
-/// the secrets they were started with stay on the owner.
+/// the secrets they were started with stay on the owner. A `host.<module>`
+/// name is the owner's too, because a host module's functions are the host's
+/// own tools, which never leave the owner (protocol-change/110).
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// assert cap_placement.placement("mcp.github") == Ok(cap_placement.OwnerBound)
+/// assert cap_placement.placement("host.aegis") == Ok(cap_placement.OwnerBound)
 /// assert cap_placement.placement("proc.run")
 ///   == Ok(cap_placement.WorkspaceBound)
 /// assert cap_placement.placement("no.such") == Error(Nil)
@@ -139,7 +143,9 @@ pub fn executor_caps() -> List(String) {
 ///
 pub fn placement(cap: String) -> Result(Placement, Nil) {
   case
-    string.starts_with(cap, "mcp.") || list.contains(owner_caps(), cap),
+    string.starts_with(cap, "mcp.")
+    || string.starts_with(cap, host_seam.cap_prefix)
+    || list.contains(owner_caps(), cap),
     list.contains(executor_caps(), cap)
   {
     True, False -> Ok(OwnerBound)
