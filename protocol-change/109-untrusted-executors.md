@@ -300,8 +300,13 @@ carries all three over the link, with the same properties the link gives a
 
 - **Start and stop.** `StartExecution` is a request like `run`: its asker is
   the record's worker, so the worker's death (which is how the record stops its
-  program) sends `cancel`, the gateway kills the waiter, and the host reads the
-  waiter's death as a stop. A dropped connection makes the waiter exit with
+  program) removes the start at once and, on an open connection, sends
+  `cancel`; the gateway kills the waiter, and the host reads the waiter's death
+  as a stop. A worker that dies while the link has no connection sends no
+  cancel, as a `DOWN` lost to a partition sends none over distribution, and the
+  program runs until the owner port's reconciler sends `stop_execution` or its
+  own deadline passes; its callbacks reach nobody in the meantime, because its
+  start is gone. A dropped connection makes the waiter exit with
   `noconnection`, which the host reads as a partition: the program keeps
   running, and the start the link re-sends on the next connection is admitted
   by key and joins it, or reads the value the program stored if it ended in
@@ -315,8 +320,12 @@ carries all three over the link, with the same properties the link gives a
   proxy answers a launch whose orchestrator has no connection, or whose answer
   is of another kind, with the refusal `owner_link` gives a launch the owner did
   not answer, which names the handle the launch may have been given. The
-  orchestrator clamps an interaction's wait to an hour before the owner hears
-  it, so a hostile executor cannot hold a forwarder longer.
+  orchestrator clamps a launch's budget to its own `code_mode` ceiling
+  (`client/codemode.max_within_ms`) before the owner builds the record's
+  deadline from it, because on a trusted executor that clamp happens in the
+  executor's `code_mode` tool and here it would be the attacker's. It clamps an
+  interaction's wait to an hour before the owner hears it, so a hostile
+  executor cannot hold a forwarder longer.
 - **The program's capabilities.** The link accepts a capability or a tool-list
   check whose site is an outstanding `start` of the binding's session: the
   start's key names the operation and the step, and its terms name the strand
@@ -456,7 +465,8 @@ Assume the executor's VM, its jails and its listener are wholly the attacker's.
   waits for a `code_mode` call can send `peer.*` messages or schedule work as
   that strand while the call runs, and, since slice 2, for as long as any
   background program of the session is live, whose lifetime is the record's
-  (at most the launch's clamped budget). During a `code_mode` call it can also
+  (at most the orchestrator's `code_mode` ceiling, fifteen minutes, which the
+  link clamps every launch's budget to). During a `code_mode` call it can also
   launch programs the model did not ask for, up to the execution service's
   limits, and each keeps that window open. Narrowing that further needs the
   orchestrator to know which capabilities and launches the program asked for,

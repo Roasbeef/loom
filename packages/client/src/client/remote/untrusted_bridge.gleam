@@ -42,6 +42,7 @@
 import broker/broker
 import broker/framing
 import broker/internal/call
+import client/codemode as codemode_wiring
 import client/escalate
 import client/extension/hooks
 import client/notice
@@ -221,9 +222,10 @@ const record_wait_ms = 15_000
 const capability_wait_ms = 120_000
 
 /// The longest a join of a background execution is waited for, whatever the
-/// executor says the call asked. A join is bounded by the program's own
-/// lifetime, so an hour holds any honest one, and a hostile executor cannot hold
-/// a forwarder for longer.
+/// executor says the call asked. The owner answers a join within its own poll
+/// (about half a minute), so this ceiling is reached only by an owner port that
+/// hangs; it bounds how long a hostile executor's interaction can hold a
+/// forwarder in that case.
 pub const max_join_ms = 3_600_000
 
 // The capability denial code a callback the link refused carries. It is not
@@ -711,10 +713,13 @@ fn notice_answer(
       |> untrusted_wire.GitIdentityAnswered
       |> Some
 
-    // A launch the owner did not answer may still have been claimed, so it
-    // is refused with the handle the claim would have minted.
+    // The launch's budget is clamped here, because the owner builds the
+    // record's deadline from it and on a trusted executor the clamp happened
+    // in the `code_mode` tool; here the executor's clamp is the attacker's. A
+    // launch the owner did not answer may still have been claimed, so it is
+    // refused with the handle the claim would have minted.
     untrusted_wire.LaunchExecutionCall(terms:) ->
-      asked(port, protocol.LaunchExecution(terms, _))
+      asked(port, protocol.LaunchExecution(budgeted(terms), _))
       |> result.lazy_unwrap(fn() { Error(owner_link.launch_unanswered(terms)) })
       |> untrusted_wire.LaunchAnswered
       |> Some
@@ -751,6 +756,22 @@ fn notice_answer(
     | untrusted_wire.FactDeleteCall(..)
     | untrusted_wire.FactListCall(..) -> owner_answer(port, callback)
   }
+}
+
+/// Launch terms with their budget held to the orchestrator's own ceiling for a
+/// `code_mode` call, so a program's record, and the window in which the
+/// program can call its owner, last no longer than an honest launch's could.
+fn budgeted(
+  terms: owner_services.ExecutionTerms,
+) -> owner_services.ExecutionTerms {
+  owner_services.ExecutionTerms(
+    ..terms,
+    within_ms: int.clamp(
+      terms.within_ms,
+      min: 0,
+      max: codemode_wiring.max_within_ms,
+    ),
+  )
 }
 
 /// A monitored call to the owner port with the record budget.

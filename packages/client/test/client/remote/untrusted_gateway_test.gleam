@@ -336,8 +336,7 @@ pub fn a_cancel_after_a_reconnect_still_stops_the_program_test() {
   // a second one, and the cancel after it stops that program.
   let second = rig.hello(rig.gateway.port, rig.pair)
   rig.send(second, start_request(2))
-  process.sleep(200)
-  assert process.receive(rig.started, 0) == Error(Nil)
+  assert process.receive(rig.started, 200) == Error(Nil)
   rig.send(second, untrusted_wire.Cancel(2))
   assert process.selector_receive(down, 10_000) == Ok(Nil)
   stop_programs(rig)

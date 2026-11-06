@@ -16,6 +16,7 @@
 //// the re-send goes out on the new one.
 
 import broker/framing
+import client/codemode as codemode_wiring
 import client/escalate
 import client/internal/ffi_tls_stream.{type Listener, type Stream}
 import client/owner_services
@@ -1034,5 +1035,66 @@ pub fn a_start_resent_after_a_drop_is_cancelled_on_the_new_connection_test() {
   // the connection that carries it now.
   process.kill(worker)
   assert rig.next(again) == Ok(untrusted_codec.CancelEnvelope(id:))
+  stop(rig)
+}
+
+// An owner port that answers every launch and reports the budget it was
+// handed.
+fn budget_port() -> #(Subject(protocol.OwnerMessage), Subject(Int)) {
+  let budgets = process.new_subject()
+  let handed = process.new_subject()
+  process.spawn(fn() {
+    let inbox = process.new_subject()
+    process.send(handed, inbox)
+    budget_loop(inbox, budgets)
+  })
+  let assert Ok(inbox) = process.receive(handed, 1000) as "the port starts"
+  #(inbox, budgets)
+}
+
+fn budget_loop(
+  inbox: Subject(protocol.OwnerMessage),
+  budgets: Subject(Int),
+) -> Nil {
+  case process.receive_forever(inbox) {
+    protocol.LaunchExecution(terms:, reply:) -> {
+      process.send(budgets, terms.within_ms)
+      process.send(reply, Ok(json.String("exec-1")))
+    }
+    _other -> Nil
+  }
+  budget_loop(inbox, budgets)
+}
+
+pub fn a_launch_budget_beyond_the_orchestrators_ceiling_is_clamped_test() {
+  let rig = start("launch-budget")
+  let #(port, budgets) = budget_port()
+  let Attached(stream:, binding:) = attach(rig, "s1", port, None)
+  let #(_id, _asker, _answers) =
+    run_in_flight(rig, stream, "s1", code_mode_run("call_1", 0))
+
+  // The executor's own clamp is the attacker's: a budget of thirty years
+  // would keep the program's record, and its window to the owner, open.
+  let launch =
+    untrusted_wire.LaunchExecutionCall(
+      owner_services.ExecutionTerms(
+        ..fixtures.execution_terms(),
+        within_ms: 1_000_000_000_000,
+      ),
+    )
+  assert called(stream, binding, 1, launch)
+    == untrusted_wire.LaunchAnswered(Ok(json.String("exec-1")))
+  assert process.receive(budgets, 2000) == Ok(codemode_wiring.max_within_ms)
+
+  // An honest budget under the ceiling reaches the owner as it was sent.
+  assert called(
+      stream,
+      binding,
+      2,
+      untrusted_wire.LaunchExecutionCall(fixtures.execution_terms()),
+    )
+    == untrusted_wire.LaunchAnswered(Ok(json.String("exec-1")))
+  assert process.receive(budgets, 2000)
+    == Ok(fixtures.execution_terms().within_ms)
   stop(rig)
 }
