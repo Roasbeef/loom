@@ -709,9 +709,34 @@ fn dialed(
     | weft.PulledOutcome(outcome: weft.DrainProofLost(..))
     | weft.PulledOutcome(outcome: weft.CancellationUnconfirmed(..))
     | weft.AllDelivered
-    | weft.RunLost(..) -> resting(data, "the executor could not be reached")
+    | weft.RunLost(..) ->
+      resting(unreachable(data), "the executor could not be reached")
     weft.NotYet -> sm.keep(data)
   }
+}
+
+/// Refuses the outstanding requests whose askers wait a bounded time: an
+/// attach, a listing and a close. Over distribution an unreachable node is a
+/// `DOWN` at once, and the surface's bounded repair loop gives up on its own;
+/// this link stays alive while it redials, so without this an attach to a down
+/// executor would wait for it forever. A run, a lookup and the state
+/// transport's requests wait as they would for a partitioned peer, and are
+/// sent when the executor answers again.
+fn unreachable(data: Data) -> Data {
+  let refusal = protocol.Unreachable("the executor could not be reached")
+  dict.fold(data.outstanding, data, fn(data, id, pending) {
+    // Only the three bounded exchanges are refused; everything else waits.
+    case pending.request {
+      untrusted_wire.AttachRequest(..)
+      | untrusted_wire.ListUnackedRequest(..)
+      | untrusted_wire.CloseRequest(..) -> {
+        untrusted_bridge.refuse(pending.reply, refusal)
+        let data = unwatch(data, pending.monitor)
+        Data(..data, outstanding: dict.delete(data.outstanding, id))
+      }
+      _waits -> data
+    }
+  })
 }
 
 /// A dial's report after the link has moved on: a stream it delivered is
@@ -878,7 +903,7 @@ fn responded(
         Ok(response) -> {
           let _delivered =
             untrusted_bridge.deliver(pending.reply, response, data.broker)
-          armed(stream, settle(data, id, pending, response))
+          armed(stream, settle(data, id, pending))
         }
       }
   }
@@ -886,23 +911,13 @@ fn responded(
 
 /// Forgets an answered request, and retires the binding of a scope that
 /// closed.
-fn settle(
-  data: Data,
-  id: Int,
-  pending: Pending,
-  response: untrusted_wire.Response,
-) -> Data {
+///
+/// A close does not retire the session's binding here. Every close path stops
+/// the owner port, whose `DOWN` retires it, and a late close answer could
+/// otherwise retire the binding of a newer open of the same session.
+fn settle(data: Data, id: Int, pending: Pending) -> Data {
   let data = unwatch(data, pending.monitor)
-  let data = Data(..data, outstanding: dict.delete(data.outstanding, id))
-
-  // A scope that closed takes no more callbacks; any other answer leaves the
-  // bindings as they are.
-  case pending.request, response {
-    untrusted_wire.CloseRequest(session:, ..),
-      untrusted_wire.CloseAnswered(Ok(_closed))
-    -> retire_session(data, session)
-    _, _ -> data
-  }
+  Data(..data, outstanding: dict.delete(data.outstanding, id))
 }
 
 /// A callback: decoded, then checked against its binding, then either

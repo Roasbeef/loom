@@ -168,9 +168,7 @@ fn run_in_flight(
           reply:,
         ),
       )
-      let assert Ok(answer) = process.receive(reply, 10_000)
-        as "the run is answered"
-      process.send(answers, answer)
+      process.send(answers, process.receive_forever(reply))
     })
   let assert Ok(untrusted_codec.RequestEnvelope(id:, body:)) = rig.next(stream)
     as "the run arrives"
@@ -386,6 +384,7 @@ pub fn a_response_to_a_request_never_sent_closes_and_the_run_is_sent_again_test(
     ),
   )
   assert rig.closed(stream, 5000)
+  assert process.is_alive(rig.link)
 
   // The link dials again and sends both outstanding requests, in order.
   let again = rig.greeted(rig.listener)
@@ -430,6 +429,7 @@ pub fn a_response_of_the_wrong_kind_closes_the_connection_test() {
     ),
   )
   assert rig.closed(stream, 5000)
+  assert process.is_alive(rig.link)
   assert process.receive(answers, 300) == Error(Nil)
   stop(rig)
 }
@@ -441,6 +441,7 @@ pub fn a_malformed_frame_closes_the_connection_test() {
 
   rig.send_raw(stream, <<"{\"frame\": \"response\", \"id\": ":utf8>>)
   assert rig.closed(stream, 5000)
+  assert process.is_alive(rig.link)
   stop(rig)
 }
 
@@ -457,6 +458,7 @@ pub fn a_frame_only_an_orchestrator_sends_closes_the_connection_test() {
     ),
   )
   assert rig.closed(stream, 5000)
+  assert process.is_alive(rig.link)
   stop(rig)
 }
 
@@ -467,6 +469,7 @@ pub fn an_oversized_frame_closes_the_connection_test() {
 
   rig.send_raw(stream, bit_array_of(untrusted_wire.max_frame_bytes + 1))
   assert rig.closed(stream, 10_000)
+  assert process.is_alive(rig.link)
   stop(rig)
 }
 
@@ -501,6 +504,11 @@ pub fn a_tail_for_a_call_not_in_flight_never_reaches_the_owner_test() {
       callback: untrusted_wire.TailCast(run:, tail:),
     ),
   )
+
+  // A refused callback's answer orders the tail ahead of the check: frames
+  // are read one at a time, so the tail was judged before this was answered.
+  let assert untrusted_wire.FactCellAnswered(Error(_refused)) =
+    called(stream, <<9:size(128)>>, 1, untrusted_wire.FactGetCall("job/one"))
   assert unseen(seen)
 
   // In flight, the same tail is delivered.
@@ -509,7 +517,7 @@ pub fn a_tail_for_a_call_not_in_flight_never_reaches_the_owner_test() {
     stream,
     untrusted_wire.Callback(
       binding:,
-      id: 2,
+      id: 3,
       callback: untrusted_wire.TailCast(run:, tail:),
     ),
   )
@@ -558,7 +566,97 @@ pub fn an_executor_with_a_certificate_from_another_authority_is_refused_test() {
   let assert Ok(raw) = ffi_tls_stream.accept(listener, 10_000)
     as "the link dials"
   let assert Error(_refused) = ffi_tls_stream.handshake(raw, 10_000)
-  assert process.receive(reply, 300) == Error(Nil)
+  // The failed handshake is a failed dial, so the attach is refused as
+  // unreachable rather than left waiting.
+  let assert Ok(Error(protocol.Unreachable(_))) = process.receive(reply, 5000)
+    as "the attach is refused as unreachable"
   process.kill(link)
   ffi_tls_stream.close_listener(listener)
+}
+
+pub fn an_executor_with_another_pin_under_the_same_authority_is_refused_test() {
+  let pair = rig.pair("same-authority")
+  let #(listener, port) = rig.listen(pair.stray, [pair.orchestrator_pin])
+  let #(link, address) = link_to(port, pair)
+  let #(owner, _seen) = recording_port()
+  let reply = attach_unread(address, owner)
+
+  // The leaf chains to the authority both sides trust and still fails the
+  // link's pin, so the link never says hello.
+  let assert Ok(raw) = ffi_tls_stream.accept(listener, 10_000)
+    as "the link dials"
+  let greeted = case ffi_tls_stream.handshake(raw, 10_000) {
+    Error(_failure) -> False
+    Ok(stream) ->
+      case rig.next(stream) {
+        Ok(untrusted_codec.HelloEnvelope(..)) -> True
+        Ok(_other) | Error(_closed) -> False
+      }
+  }
+  assert !greeted
+  // The failed handshake is a failed dial, so the attach is refused as
+  // unreachable rather than left waiting.
+  let assert Ok(Error(protocol.Unreachable(_))) = process.receive(reply, 5000)
+    as "the attach is refused as unreachable"
+  process.kill(link)
+  ffi_tls_stream.close_listener(listener)
+}
+
+pub fn an_attach_to_an_executor_nobody_answers_for_is_refused_test() {
+  let pair = rig.pair("down")
+  let #(listener, port) = rig.listen(pair.executor, [pair.orchestrator_pin])
+
+  // Nothing listens there any more, so every dial fails.
+  ffi_tls_stream.close_listener(listener)
+  let #(link, address) = link_to(port, pair)
+  let #(owner, _seen) = recording_port()
+  let reply = attach_unread(address, owner)
+
+  let assert Ok(Error(protocol.Unreachable(_))) = process.receive(reply, 15_000)
+    as "the attach is refused as unreachable"
+  assert process.is_alive(link)
+  process.kill(link)
+}
+
+// A link to `port` that expects the pair's executor leaf.
+fn link_to(
+  port: Int,
+  pair: rig.Pair,
+) -> #(process.Pid, address.Address(protocol.HostMessage(RemoteCensus))) {
+  let name = process.new_name("untrusted_link_test")
+  let assert Ok(link) =
+    untrusted_link.start(untrusted_link.Config(
+      executor: "pod",
+      name:,
+      host: "127.0.0.1",
+      port:,
+      pin: pair.executor_pin,
+      credentials: pair.orchestrator,
+      mint: untrusted_link.strong_binding,
+      logger: log.discard(),
+    ))
+    as "the link starts"
+  process.unlink(link)
+  #(link, untrusted_link.address(name))
+}
+
+// Sends an attach and returns where its answer will go, reading nothing.
+fn attach_unread(
+  address: address.Address(protocol.HostMessage(RemoteCensus)),
+  owner: Subject(protocol.OwnerMessage),
+) -> Subject(Result(protocol.Attached(RemoteCensus), protocol.Refusal)) {
+  let reply = process.new_subject()
+  address.deliver(
+    address,
+    protocol.Attach(
+      version: protocol.version,
+      session: "s1",
+      workspace: "/work",
+      incarnation: 0,
+      token: <<"token":utf8>>,
+      owner_port: owner,
+      reply:,
+    ),
+  )
+  reply
 }
