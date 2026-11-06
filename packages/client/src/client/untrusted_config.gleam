@@ -157,11 +157,20 @@ pub fn host_port(text: String) -> Result(#(String, Int), Nil) {
     string.reverse(text),
     ":",
   ))
-  let host = unbracketed(string.reverse(reversed_host))
+  let written = string.reverse(reversed_host)
+  let host = unbracketed(written)
   use port <- result.try(int.parse(string.reverse(reversed_port)))
 
-  // An empty host, or a port outside the TCP range, names no listener.
-  case host != "" && port > 0 && port < 65_536 {
+  let bracketed = host != written
+
+  // An empty host, or a port outside the TCP range, names no listener, and an
+  // IPv6 host without its brackets would split at the wrong colon.
+  case
+    host != ""
+    && port > 0
+    && port < 65_536
+    && { bracketed || !string.contains(host, ":") }
+  {
     True -> Ok(#(host, port))
     False -> Error(Nil)
   }

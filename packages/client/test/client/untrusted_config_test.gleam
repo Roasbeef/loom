@@ -133,3 +133,10 @@ pub fn an_ipv6_address_is_written_in_brackets_test() {
     )
   let assert executors.Untrusted(host: "::1", port: 7443, ..) = executor.trust
 }
+
+pub fn an_ipv6_address_without_brackets_is_refused_test() {
+  assert untrusted_config.host_port("::1") == Error(Nil)
+  assert untrusted_config.host_port("::1:7443") == Error(Nil)
+  assert untrusted_config.host_port("[::1]:7443") == Ok(#("::1", 7443))
+  assert untrusted_config.host_port("10.0.0.2:7443") == Ok(#("10.0.0.2", 7443))
+}

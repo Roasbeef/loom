@@ -94,6 +94,11 @@ stream_options(Ca, Cert, Key, Pins, MaxFrame) ->
      {active, false},
      {packet, 4},
      {packet_size, MaxFrame},
+     %% A peer that stops reading must not park the sender in send/2, which
+     %% would stop it serving every session on the link; the send fails and
+     %% the connection closes.
+     {send_timeout, 30000},
+     {send_timeout_close, true},
      {cacertfile, binary_to_list(Ca)},
      {certfile, binary_to_list(Cert)},
      {keyfile, binary_to_list(Key)},

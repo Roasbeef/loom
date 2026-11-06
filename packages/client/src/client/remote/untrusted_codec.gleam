@@ -513,6 +513,7 @@ pub fn decode_answer(
 ///   )
 ///   == Ok(frame)
 /// ```
+@internal
 pub fn decode_frame(
   bytes: BitArray,
   response: fn(Int) -> Option(untrusted_wire.ResponseKind),

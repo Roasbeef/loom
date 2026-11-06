@@ -199,7 +199,7 @@ pub fn a_malformed_declaration_is_refused_with_the_key_it_names_test() {
   )
   refused(
     executor_with("capacity = 4\n"),
-    "unknown key `capacity` in [executors.build-box] (allowed: node, platform, enforcement, toolchains, attach_within_s)",
+    "unknown key `capacity` in [executors.build-box] (allowed: node, platform, enforcement, toolchains, attach_within_s, trust, address, pin)",
   )
 }
 
