@@ -1,5 +1,14 @@
 # cap
 
+## Host modules
+
+`cap/internal/mcp.host_invoke` and `host_invoke_typed` are `invoke` and
+`invoke_typed` under the capability `host.<module>` rather than
+`mcp.<server>`: the envelope (`{tool, arguments}`) and the result vocabulary
+(`cap/mcp`) are the same, and a generated host module (`cap/<name>`,
+protocol-change/110) calls them with fixed literals. They are internal, so a
+program can reach a host module only through the module the host's seam admits.
+
 ## Inferred LSP plans and question-shaped helpers
 
 `lsp_sql.plan(outlines, targets)` asks the host to infer the configured server
