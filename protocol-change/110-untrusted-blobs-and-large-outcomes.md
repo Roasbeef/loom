@@ -140,8 +140,8 @@ judges each piece before the disk is touched:
    The book answers the binding's session. Any other binding is refused.
 2. The digest must be 64 lower-case hex digits, the size at least 1 and at most
    `size_limit`, and the piece must lie inside the size.
-3. The binding **claims** the blob: from its first accepted piece, or from a
-   status that finds it complete, the blob counts against the binding's and the
+3. The binding **claims** the blob: from the first piece it sends that passes
+   step 2, or from a status that finds it complete, the blob counts against the binding's and the
    orchestrator's bounds (below). A claim that would pass a bound is refused.
 4. A piece at the offset held is appended. A piece wholly inside what is held is
    a repeat and is answered with the bytes held. A piece past it, or one that
@@ -170,7 +170,9 @@ incarnation, so a late close never retires a newer open's binding, and the
 proxy and its claims go with it. Claims are kept in
 memory, so an executor restart loses them along with every binding, and the
 orchestrator places again after its next attach. The status answers `complete`
-and no bytes move. A blob no binding claims stays on disk for `retain_s` (a
+and no bytes move. A placement sent after the restart and before the session
+attaches again names a binding the executor no longer holds, and is declined
+with that reason; it is final for that binding, not for the blob. A blob no binding claims stays on disk for `retain_s` (a
 day) from when it was finished, so a second job that needs the same archives
 finds them; a half-written file that has not grown for an hour is removed.
 
@@ -229,6 +231,20 @@ The orchestrator's link:
 4. When the bytes held reach the size, compares the SHA-256 with the digest and
    only then decodes the outcome, with the codec's total decoder, and delivers
    it to the asker as `RunFinished` or `Terminal`.
+
+**The host must hold the outcome.** An outcome only reaches the wire if the
+executor's host kept it: the host replaces a result larger than its
+`max_result_bytes` with a "too large" outcome before the ledger stores it, and
+`loomd`'s host keeps the default of 16 MiB, under a frame. An integration that
+returns larger outcomes, as aegis's proofs do, starts its host with
+`max_result_bytes` raised to what it returns (at most `max_outcome_bytes`).
+`loomd` has no key for it yet, because no plane of Loom's own returns more.
+
+**Requests and answers the link sends** are held to the same bound. A request
+whose frame would pass `max_frame_bytes` is refused to its asker at once
+(`Invalid`) and never kept, and an owner's answer that would is replaced by
+the callback's failure. Kept, either would close the connection on every send
+and be sent again on every reconnect.
 
 **Same behaviour as `run`.** The original request stays outstanding while its
 outcome is fetched, with its asker's monitor, so:
@@ -298,6 +314,19 @@ and sessions from one that misbehaves, not from an attacker.
   On an untrusted executor that process already owns the plane.
 - One outcome of up to 96 MiB is decoded in full on the orchestrator. Breadth is
   as unbounded as it is for one frame (109, "One frame's decoded size").
+- A claim can outlive its binding. The gateway asks its book for a binding's
+  session and then hands the piece to the keeper; a re-attach or a close that
+  retires the binding in between releases its claims first, and the piece then
+  claims the blob again for a binding no `release` will name. The leaked claim
+  counts against that orchestrator's own bounds until the executor restarts.
+  Closing it needs the keeper to remember retired bindings, which is more
+  machinery than a re-attach in the middle of a placement warrants.
+- An orchestrator that never comes back keeps its bindings, as 109's proxies
+  already do, and now its claims: up to `link_bytes` that the sweep may not
+  remove until the executor restarts. Releasing them when its connection drops
+  would take a blob from a plane in the middle of a partition. Two such
+  orchestrators fill the default directory, and later placements are refused
+  with a reason naming the cap.
 
 ## What it costs
 
@@ -316,8 +345,10 @@ receiver over a real directory: a wrong digest, an oversized piece, a gap, a
 repeat, each bound, a claim's release and a restart. `untrusted_link_test` adds
 a hostile executor that answers a blob put with a backwards offset, an outcome
 fetch with a wrong digest, an oversized piece, a piece nobody asked for, a
-replayed `oversized` and an `oversized` for an id never issued, and a cancel
-after a reconnect; each is refused or bounded and the link survives.
+replayed `oversized` and an `oversized` for an id never issued, a cancel after
+a reconnect, and a fetch's place freed by a whole answer, which goes to the
+waiting fetch; each is refused or bounded and the link survives. It also
+refuses a request larger than a frame instead of keeping it.
 `untrusted_end_to_end_test` places a blob through the real link and gateway and
 opens it on the executor, and returns a 40 MiB outcome through a real host.
 `untrusted_state_test` sends a full bundle of a repository the executor's
