@@ -123,9 +123,9 @@ const capability_wait_ms = 120_000
 // How often a call that waits out a link cut looks for the link again.
 const link_poll_ms = 100
 
-// The slack an interaction with a background execution is given beyond its
-// own wait.
-const interaction_slack_ms = 2000
+/// The slack an interaction with a background execution is given beyond its
+/// own wait, in milliseconds, for the owner's round trip.
+pub const interaction_slack_ms = 2000
 
 /// Starts a link naming `port`, linked to the caller.
 ///
@@ -289,13 +289,21 @@ pub fn git_identity(
   }
 }
 
-// A launch whose answer never came may still have been claimed: the request
-// can have reached the owner and only the reply been lost. The handle is a
-// digest of the launching call's coordinates, which this side has, so the
-// model is told the handle it can check or cancel instead of waiting for a
-// notice that may or may not come.
-/// Launch unanswered keeps this client operation’s decoding or state decision in one place.
-fn launch_unanswered(terms: ExecutionTerms) -> String {
+/// The refusal a launch gets when the owner's answer never came. The launch
+/// may still have been claimed: the request can have reached the owner and only
+/// the reply been lost. The handle is a digest of the launching call's
+/// coordinates, which the executor has, so the model is told the handle it can
+/// check or cancel instead of waiting for a notice that may or may not come.
+/// The untrusted link's proxy answers a launch the same way when its
+/// orchestrator's connection drops.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // owner_link.launch_unanswered(terms)
+/// // -> "the session's owner did not answer the launch; ..."
+/// ```
+pub fn launch_unanswered(terms: ExecutionTerms) -> String {
   let handle =
     agent.call_site_digest(agent.Caller(
       strand: terms.strand,
