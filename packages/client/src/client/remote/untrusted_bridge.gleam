@@ -761,6 +761,9 @@ fn notice_answer(
 /// Launch terms with their budget held to the orchestrator's own ceiling for a
 /// `code_mode` call, so a program's record, and the window in which the
 /// program can call its owner, last no longer than an honest launch's could.
+/// The ceiling is the constant every `code_mode` tool is configured with on
+/// either machine; were it ever made configurable, this clamp would have to
+/// read the orchestrator's configured value instead.
 fn budgeted(
   terms: owner_services.ExecutionTerms,
 ) -> owner_services.ExecutionTerms {
