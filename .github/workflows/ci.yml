@@ -907,16 +907,20 @@ jobs:
   # job cancelled at its limit fails `gate (macos)` like any other. On main
   # the job took 8 to 28 minutes, and the distributed runtime (issue #697)
   # adds about ten shipped modules that boot two or three daemons each and
-  # run for real here, so the old 30-minute limit cancelled it. Two runners
+  # run for real here, so the old 30-minute limit cancelled it. Three runners
   # partition client modules at bounded concurrency; every other package and
-  # the default full-gate checks still run in each matrix member.
+  # the default full-gate checks still run in each matrix member. Two became
+  # three in November 2026, when shard 1/2 reached the 50-minute limit (run
+  # 42286979562): each member spends about 30 minutes on the other packages
+  # and the rest on its part of the client suite, so add a shard rather than
+  # raise the limit.
   check-macos:
-    name: check (macos, advisory, client shard ${{ matrix.client_shard }}/2)
+    name: check (macos, advisory, client shard ${{ matrix.client_shard }}/3)
     needs: deps-macos
     strategy:
       fail-fast: false
       matrix:
-        client_shard: [1, 2]
+        client_shard: [1, 2, 3]
     runs-on: macos-15
     timeout-minutes: 50
     outputs:
@@ -926,6 +930,7 @@ jobs:
       # Each matrix member writes its own output key so both must complete.
       check_outcome_1: ${{ steps.check_outcomes.outputs.check_outcome_1 }}
       check_outcome_2: ${{ steps.check_outcomes.outputs.check_outcome_2 }}
+      check_outcome_3: ${{ steps.check_outcomes.outputs.check_outcome_3 }}
     steps:
       # actions/checkout v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -1002,7 +1007,7 @@ jobs:
           # Bound client concurrency without changing other packages' scheduling.
           # Preserve the runner's serial exemptions and the full suite's budget.
           LOOM_CLIENT_TEST_PARALLEL: 4
-          LOOM_CLIENT_TEST_SHARD: ${{ matrix.client_shard }}/2
+          LOOM_CLIENT_TEST_SHARD: ${{ matrix.client_shard }}/3
         run: set -o pipefail; .github/scripts/hex_retry.sh make check 2>&1 | tee check-macos-${{ matrix.client_shard }}.log
 
       # Unique outputs are combined across matrix members, without last-job wins.
@@ -1198,13 +1203,13 @@ jobs:
       # below reads exactly the files the old single job censused
       # together.
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
-        if: needs.check-macos.outputs.check_outcome_1 == 'success' && needs.check-macos.outputs.check_outcome_2 == 'success'
+        if: needs.check-macos.outputs.check_outcome_1 == 'success' && needs.check-macos.outputs.check_outcome_2 == 'success' && needs.check-macos.outputs.check_outcome_3 == 'success'
         with:
           pattern: check-macos-log-*
           merge-multiple: true
 
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
-        if: needs.check-macos.outputs.check_outcome_1 == 'success' && needs.check-macos.outputs.check_outcome_2 == 'success'
+        if: needs.check-macos.outputs.check_outcome_1 == 'success' && needs.check-macos.outputs.check_outcome_2 == 'success' && needs.check-macos.outputs.check_outcome_3 == 'success'
         with:
           name: e2e-macos-logs
 
@@ -1217,10 +1222,10 @@ jobs:
       # visible as `check-macos`'s own step outcome, carried here as the
       # `check_outcome` job output.
       - name: Skip census
-        if: needs.check-macos.outputs.check_outcome_1 == 'success' && needs.check-macos.outputs.check_outcome_2 == 'success'
+        if: needs.check-macos.outputs.check_outcome_1 == 'success' && needs.check-macos.outputs.check_outcome_2 == 'success' && needs.check-macos.outputs.check_outcome_3 == 'success'
         run: |
           .github/scripts/skip_census.sh "gate (macos)" \
-            check-macos-1.log check-macos-2.log e2e-macos.log e2e-codemode-macos.log
+            check-macos-1.log check-macos-2.log check-macos-3.log e2e-macos.log e2e-codemode-macos.log
 
   # ------------------------------------------------------------- the jail
   #
