@@ -26,7 +26,8 @@ refuses an untrusted row without `[executor_link]`, and `untrusted_config` refus
   weft tasks relayed to per-callback sinks.
 - `remote/untrusted_gateway` is the acceptor, one `weft/state_machine` per
   connection (the handshake runs there, not in the acceptor), a waiter per request
-  (unlinked on purpose, so a dropped connection never cancels), the book
+  (unlinked, and exiting with `noconnection` when its connection dies, so a
+  partition never cancels and a cancel after a re-send still does), the book
   (`weft/actor`: current connection and proxies per orchestrator pin), and one
   proxy `weft/actor` per binding.
 - `internal/ffi_tls_stream` and `client_tls_stream_ffi.erl` are the only TLS
@@ -38,6 +39,7 @@ decoded against its request's kind; a callback reaches an owner port only throug
 `admitted`; a waiter's death is the only abort the host sees from this link.
 Tests: `remote/untrusted_codec_test`, `remote/untrusted_link_test` (a hostile
 executor driven by hand over real TLS, `support/untrusted_rig`),
+`remote/untrusted_gateway_test` (the gateway and a real host driven by hand),
 `remote/untrusted_end_to_end_test` (surface and owner port, link, gateway, real
 host) and `untrusted_config_test`.
 

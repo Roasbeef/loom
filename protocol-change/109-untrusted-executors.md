@@ -184,10 +184,12 @@ keeps that rule on both sides.
   the reply subject the host sees. `cancel` kills that waiter, so the host's
   monitor fires with a reason other than `noconnection` and cancels the call as
   it would have.
-- When the connection drops, the executor's waiters are left alone. Each one
-  waits for its answer and then exits, so a partition never cancels a call, as
-  a distribution partition does not. The run finishes, its outcome waits in the
-  ledger, and the orchestrator's re-send finds it there.
+- When the connection drops, each of its waiters exits with the reason
+  `noconnection`, which the host reads as a partition and never as an abort,
+  exactly as it reads a dropped distribution connection. The run finishes, its
+  outcome waits in the ledger, and the orchestrator's re-send on the next
+  connection gets a new waiter. Because the old waiter is gone, a cancel sent
+  after the re-send kills the only waiter left, and the host aborts the call.
 
 ### Re-sending
 
@@ -198,6 +200,14 @@ sends them again on the next connection. While the link has an outstanding
 request or a live binding and no connection, it redials with a pause that
 doubles from 50 ms to 2 s. The surface's own repair loop then only runs when
 the link process itself is gone.
+
+Over distribution an unreachable executor is a `DOWN` at once, and the
+surface's bounded exchanges (an attach within `attach_within_ms`, the
+reconciler's listing, a close) give up on their own. The link stays alive while
+it redials, so when a dial fails it refuses its outstanding attaches, listings
+and closes with `Unreachable` instead of holding them. A run, a lookup and the
+state transport's requests keep waiting, as they would for a partitioned
+peer.
 
 ### Callbacks ride the orchestrator's connection
 
@@ -224,8 +234,9 @@ The orchestrator checks every callback before its owner port sees it:
 
 1. **The binding is one this link minted**, for an attach it sent to this
    executor, and has not retired. A binding retires when the session attaches
-   again (a new binding replaces it), when its scope closes, and when its owner
-   port dies. A callback on any other binding is refused in band.
+   again with a new owner port (a re-sent attach keeps its binding) and when
+   its owner port dies, which every close does. A callback on any other binding
+   is refused in band.
 2. **The id is greater than every id accepted on that binding.** The counter
    survives a reconnect, so a replayed callback, from this connection or an
    earlier one, is refused in band.
@@ -355,10 +366,11 @@ Assume the executor's VM, its jails and its listener are wholly the attacker's.
   call with other arguments.
 - Replay a callback or a reply, answer a request that was not sent, or answer
   one request with another's kind.
-- Exhaust the orchestrator's memory with one frame (32 MiB, bounded nesting)
-  or with outstanding callbacks (64 per binding, 1024 per link), or crash the
-  link with a malformed frame: decoding is total, and a violation closes that
-  connection and nothing else.
+- Exhaust the orchestrator's memory with outstanding callbacks (64 per binding,
+  1024 per link) or requests, or crash the link with a malformed frame:
+  decoding is total, and a violation closes that connection and nothing else.
+  A frame is at most 32 MiB with bounded nesting; see the residual risks for
+  what one decoded frame can cost.
 - Put a repository state in the orchestrator's store that the orchestrator did
   not ask for, or one whose bytes do not match the description it fetched.
 
@@ -373,6 +385,21 @@ Assume the executor's VM, its jails and its listener are wholly the attacker's.
   that strand while the call runs. Narrowing that further needs the
   orchestrator to know which capabilities the program asked for, which only the
   executor knows; slice 1 does not try.
+- **One frame's decoded size.** The frame bound is on bytes, and nesting is
+  bounded, but breadth is not: a 32 MiB array of small integers decodes to
+  several hundred megabytes of terms for as long as the frame is being read.
+  The link reads one frame at a time, so this is a transient cost per
+  connection, and a small orchestrator can still be pushed into an allocation
+  failure by a hostile executor. A count of values in the decoder would bound
+  it; slice 1 does not add one.
+- **The grant an escalation asks for is the executor's.** The link checks that
+  an escalation describes the call in flight exactly, but its `denial`, the
+  access the call says it was refused, comes from the executor's broker, which
+  the orchestrator cannot re-evaluate. An operator who approves "for this
+  session" remembers that grant on the orchestrator, and it applies to the
+  session's later calls wherever they run. The operator sees the grant before
+  deciding; a later slice can refuse the remembered decision for an escalation
+  that arrived over this link.
 - TLS and the pins are the authentication. A stolen orchestrator key lets its
   holder dial the executor as that orchestrator, which, the executor being
   untrusted anyway, gains it the executor's sessions and nothing on the
@@ -410,9 +437,14 @@ and refuses malformed bodies, unknown kinds, wrong kinds and absurd sizes.
 `untrusted_link_test` drives the real link against a hostile executor written
 in the test, which forges callbacks for another session and for an unknown
 binding, describes an in-flight call with other arguments, replays callback
-ids, answers requests it was never sent, answers with the wrong kind, and sends
-malformed frames; each is refused and the owner port never sees it. The
-end-to-end test runs a real orchestrator surface and owner port against a real
-executor host and gateway over TLS with certificates minted by `client_pki_ffi`,
-including a cancel, a dropped connection with a re-send, and an oversized frame
-that closes the connection.
+ids, answers requests it was never sent, answers with the wrong kind, sends
+malformed, backwards and oversized frames, and presents a leaf from another
+authority or with another pin under the same one; each is refused, the owner
+port never sees it, and the link survives. It also covers the backlog re-sent on
+a new connection, a dead asker's cancel, and an attach to an executor nobody
+answers for. `untrusted_gateway_test` drives the real gateway and host as an
+orchestrator by hand: a dropped connection does not cancel a call, a cancel
+after the re-send on a new connection does, and an orchestrator pin the gateway
+does not list is refused. `untrusted_end_to_end_test` runs a real orchestrator
+surface and owner port through the link and the gateway into a real host, with
+certificates minted by `client_pki_ffi`.

@@ -203,8 +203,13 @@ The differences from the trusted mode are these.
   distribution partition.
 - **Cancellation is a frame.** The link monitors each asker and sends `cancel`
   when it dies; the gateway kills the waiter that owns the reply subject the host
-  monitors, so the host reads the same abort. A dropped connection kills no
-  waiter, so a partition still never cancels a call.
+  monitors, so the host reads the same abort. When a connection drops, its
+  waiters exit with `noconnection`, which the host reads as a partition, so a
+  partition never cancels a call and a cancel after the re-send still does.
+- **An unreachable executor fails the bounded requests.** When a dial fails,
+  the link refuses its outstanding attaches, listings and closes with
+  `Unreachable`, as a dropped distribution connection would make the surface
+  do, and keeps runs and lookups for the next connection.
 - **State transport is pulled.** `state_chunk` and `state_fetch` are both the
   orchestrator's requests; the executor pushes nothing.
 - **Not carried yet:** background code mode, remote evolution, and the census's
