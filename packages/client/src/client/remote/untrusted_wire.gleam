@@ -426,7 +426,8 @@ pub type AnswerKind {
 
 /// The reason the orchestrator records in place of an untrusted executor's
 /// evolution census.
-pub const no_evolution_reason = "evolution is not carried over an untrusted executor link"
+pub const no_evolution_reason =
+  "evolution is not carried over an untrusted executor link"
 
 /// The reply a request waits for, or `None` for `AckRequest`, which waits for
 /// nothing.
