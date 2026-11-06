@@ -192,8 +192,10 @@ The differences from the trusted mode are these.
   port only if its binding is one it minted and has not retired, its id is fresh,
   and, for an escalation, a capability, a tool-list check or a tail, it names a
   `run` the link has in flight for that session (an escalation must match the call
-  exactly, arguments included). Anything else is answered with the failure its
-  type allows.
+  exactly, arguments included). A capability or a tool-list check may instead name
+  a background execution whose `start` is outstanding, and a background launch or
+  interaction must come from a `code_mode` call in flight. Anything else is
+  answered with the failure its type allows.
 - **Everything returned is decoded totally**, against the kind of reply the
   request waits for. A frame that does not decode, a reply of the wrong kind, a
   reply to an id never issued and any frame only an orchestrator sends close the
@@ -213,8 +215,12 @@ The differences from the trusted mode are these.
   lookups wait for the next connection.
 - **State transport is pulled.** `state_chunk` and `state_fetch` are both the
   orchestrator's requests; the executor pushes nothing.
-- **Not carried yet:** background code mode, remote evolution, and the census's
-  broker subject. The orchestrator puts a refusing broker handle in the census, so
+- **Background code mode rides the same rules** (slice 2 of 109). A launch is a
+  callback; the record's worker sends `start_execution` as a request, so its
+  death cancels the program and a partition leaves it running, and the start
+  re-sent on the next connection joins the program or reads the value it stored.
+  `stop_execution` is a cast like `ack`.
+- **Not carried yet:** remote evolution, and the census's broker subject. The orchestrator puts a refusing broker handle in the census, so
   project hooks, goal checks, Git observation and the worktree diff are refused on
   an untrusted executor, and it records the evolution census as `Uncompiled`.
 

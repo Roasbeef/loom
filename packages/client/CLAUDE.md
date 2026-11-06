@@ -23,7 +23,12 @@ refuses an untrusted row without `[executor_link]`, and `untrusted_config` refus
   and re-sends them on each new connection, monitors each asker and sends `cancel`
   on its death, mints a binding per attach (reused for a re-sent attach with the
   same port), and checks every callback in `admitted`. Accepted callbacks run in
-  weft tasks relayed to per-callback sinks.
+  weft tasks relayed to per-callback sinks. Background code mode (slice 2) rides
+  the same machinery: `StartExecutionRequest` is an outstanding request whose
+  asker is the record's worker, `StopExecutionRequest` a cast like `AckRequest`,
+  and `about_work` admits a capability or `Holds` at an outstanding start's site
+  (`at_work`) and a `LaunchExecutionCall` or `InteractExecutionCall` only from a
+  `code_mode` run in flight.
 - `remote/untrusted_gateway` is the acceptor, one `weft/state_machine` per
   connection (the handshake runs there, not in the acceptor), a waiter per request
   (unlinked, and exiting with `noconnection` when its connection dies, so a
@@ -41,7 +46,8 @@ Tests: `remote/untrusted_codec_test`, `remote/untrusted_link_test` (a hostile
 executor driven by hand over real TLS, `support/untrusted_rig`),
 `remote/untrusted_gateway_test` (the gateway and a real host driven by hand),
 `remote/untrusted_end_to_end_test` (surface and owner port, link, gateway, real
-host) and `untrusted_config_test`.
+host, a background program launched, called back and stopped) and
+`untrusted_config_test`.
 
 # Evolution callback ownership
 
