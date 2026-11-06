@@ -199,8 +199,10 @@ fn apply(
   answer
 }
 
-pub fn the_vocabulary_is_at_version_six_test() {
-  assert protocol.version == 6
+// Version 7 (protocol-change/110) added the host seam to the MCP plan and
+// left the state messages as version 6 made them.
+pub fn the_vocabulary_is_at_version_seven_test() {
+  assert protocol.version == 7
 }
 
 pub fn an_attach_from_a_version_five_peer_is_refused_test() {

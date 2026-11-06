@@ -1072,7 +1072,7 @@ pub fn a_version_4_attach_is_refused_and_the_host_stays_up_test() {
   let assert Ok(answer) = process.receive(reply, 5000)
     as "the host answers a version 4 attach"
   assert answer == Error(protocol.VersionMismatch(supported: protocol.version))
-  assert protocol.version == 6
+  assert protocol.version == 7
   assert process.is_alive(rig.pid)
   let assert Ok(_attached) = attach(rig, 0, token(1))
   stop(rig)
@@ -1119,7 +1119,7 @@ pub fn a_version_5_attach_is_refused_and_the_host_stays_up_test() {
   let assert Ok(answer) = process.receive(reply, 5000)
     as "the host answers a version 5 attach"
   assert answer == Error(protocol.VersionMismatch(supported: protocol.version))
-  assert protocol.version == 6
+  assert protocol.version == 7
   assert process.is_alive(rig.pid)
   let assert Ok(_attached) = attach(rig, 0, token(1))
   stop(rig)

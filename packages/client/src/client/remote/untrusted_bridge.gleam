@@ -641,7 +641,7 @@ fn notice_answer(
 
     untrusted_wire.McpPlanCall ->
       asked(port, protocol.AskMcpPlan)
-      |> result.lazy_unwrap(fn() { protocol.McpPlan(served: [], expected: []) })
+      |> result.lazy_unwrap(fn() { protocol.empty_mcp_plan() })
       |> untrusted_wire.McpPlanAnswered
       |> Some
 
@@ -718,7 +718,7 @@ pub fn refused_answer(callback: Callback, reason: String) -> Option(Answer) {
         ),
       )
     untrusted_wire.McpPlanCall ->
-      Some(untrusted_wire.McpPlanAnswered(protocol.McpPlan([], [])))
+      Some(untrusted_wire.McpPlanAnswered(protocol.empty_mcp_plan()))
     untrusted_wire.GitIdentityCall ->
       Some(untrusted_wire.GitIdentityAnswered(None))
   }
@@ -1132,7 +1132,7 @@ pub fn fail_owner(reply: OwnerReply) -> Nil {
         subject,
         Error(satellite.CapDenial(owner_link.unavailable_code, unavailable)),
       )
-    McpPlanReply(subject) -> process.send(subject, protocol.McpPlan([], []))
+    McpPlanReply(subject) -> process.send(subject, protocol.empty_mcp_plan())
     GitIdentityReply(subject) -> process.send(subject, None)
   }
 }

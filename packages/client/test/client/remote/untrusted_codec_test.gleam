@@ -929,19 +929,40 @@ pub fn every_answer_round_trips_test() {
   )
 
   assert_answer(
-    untrusted_wire.McpPlanAnswered(
-      plan: protocol.McpPlan(
-        served: [
-          protocol.Facade(
-            server: "fs",
-            module_name: "mcp_fs",
-            source: "pub fn read() { Nil }",
-            surface: "read",
-          ),
-        ],
-        expected: ["fs", "db"],
-      ),
-    ),
+    untrusted_wire.McpPlanAnswered(plan: protocol.McpPlan(
+      served: [
+        protocol.Facade(
+          server: "fs",
+          module_name: "mcp_fs",
+          source: "pub fn read() { Nil }",
+          surface: "read",
+        ),
+      ],
+      expected: ["fs", "db"],
+      host: option.Some(protocol.HostPlan(
+        imports: ["cap/search", "cap/lsp"],
+        withheld: ["lsp.rename"],
+        module: option.Some(protocol.Facade(
+          server: "aegis",
+          module_name: "cap/aegis",
+          source: "pub fn post_note() { Nil }",
+          surface: "post_note",
+        )),
+      )),
+    )),
+  )
+
+  // A host seam that only narrows carries no module.
+  assert_answer(
+    untrusted_wire.McpPlanAnswered(plan: protocol.McpPlan(
+      served: [],
+      expected: [],
+      host: option.Some(protocol.HostPlan(
+        imports: ["cap/search"],
+        withheld: [],
+        module: option.None,
+      )),
+    )),
   )
 
   assert_answer(
@@ -1557,9 +1578,7 @@ fn one_answer_of_each_kind() -> List(untrusted_wire.Answer) {
     untrusted_wire.CapabilityAnswered(
       answer: Ok(framing.CapOk(msgpack.NilValue)),
     ),
-    untrusted_wire.McpPlanAnswered(
-      plan: protocol.McpPlan(served: [], expected: []),
-    ),
+    untrusted_wire.McpPlanAnswered(plan: protocol.empty_mcp_plan()),
     untrusted_wire.GitIdentityAnswered(identity: None),
   ]
 }

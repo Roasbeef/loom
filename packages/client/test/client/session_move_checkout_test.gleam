@@ -621,7 +621,7 @@ fn attach_on_receiver(rig: Rig) -> workspace.Hands {
       clock: clock.fixed(at: 6000),
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
-      mcp: protocol.McpPlan(served: [], expected: []),
+      mcp: protocol.empty_mcp_plan(),
       git_identity: None,
       logger: log.discard(),
     ))

@@ -1107,6 +1107,7 @@ fn settings_at(test_root: String) -> serve.Settings {
     // No seed: this host must not go looking for a toolchain.
     codemode_seed: test_root <> "/no-such-seed",
     codemode_seams: codemode.WorkspaceOnly,
+    code_mode_host: None,
     rules: [],
     schedules: [],
     schedule_policy: schedule.ModelSchedulesOff,

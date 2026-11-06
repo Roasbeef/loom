@@ -619,6 +619,7 @@ pub fn settings(root: String, url: String) -> serve.Settings {
     compaction: operation.CompactionSettings(True, 16_384, 20_000),
     codemode_seed: seed,
     codemode_seams: codemode.WorkspaceOnly,
+    code_mode_host: None,
     rules: [],
     schedules: [],
     schedule_policy: schedule.ModelSchedulesOff,

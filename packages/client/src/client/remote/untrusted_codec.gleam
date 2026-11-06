@@ -2796,7 +2796,28 @@ fn encode_mcp_plan(plan: protocol.McpPlan) -> JsonValue {
   json.Object([
     #("served", encode_list(plan.served, encode_facade)),
     #("expected", encode_list(plan.expected, json.String)),
+    #("host", encode_option(plan.host, encode_host_plan)),
   ])
+}
+
+/// The JSON of a host-defined seam.
+fn encode_host_plan(plan: protocol.HostPlan) -> JsonValue {
+  json.Object([
+    #("imports", encode_list(plan.imports, json.String)),
+    #("withheld", encode_list(plan.withheld, json.String)),
+    #("module", encode_option(plan.module, encode_facade)),
+  ])
+}
+
+/// Reads a host-defined seam.
+fn decode_host_plan(
+  value: JsonValue,
+) -> Result(protocol.HostPlan, CorruptionReport) {
+  use fields <- result.try(object_of(value, "host plan"))
+  use imports <- result.try(list_field(fields, "imports", string_reader))
+  use withheld <- result.try(list_field(fields, "withheld", string_reader))
+  use module <- result.map(option_field(fields, "module", decode_facade))
+  protocol.HostPlan(imports:, withheld:, module:)
 }
 
 /// Reads the MCP façades the session serves.
@@ -2805,8 +2826,9 @@ fn decode_mcp_plan(
 ) -> Result(protocol.McpPlan, CorruptionReport) {
   use fields <- result.try(object_of(value, "mcp plan"))
   use served <- result.try(list_field(fields, "served", decode_facade))
-  use expected <- result.map(list_field(fields, "expected", string_reader))
-  protocol.McpPlan(served:, expected:)
+  use expected <- result.try(list_field(fields, "expected", string_reader))
+  use host <- result.map(option_field(fields, "host", decode_host_plan))
+  protocol.McpPlan(served:, expected:, host:)
 }
 
 /// The JSON of one MCP façade.

@@ -504,7 +504,7 @@ pub fn plan_port() -> Subject(protocol.OwnerMessage) {
 fn answer_plans(inbox: Subject(protocol.OwnerMessage)) -> Nil {
   case process.receive_forever(inbox) {
     protocol.AskMcpPlan(reply:) ->
-      process.send(reply, protocol.McpPlan(served: [], expected: []))
+      process.send(reply, protocol.empty_mcp_plan())
     protocol.AskGitIdentity(reply:) -> process.send(reply, None)
     _unanswered -> Nil
   }

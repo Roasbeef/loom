@@ -368,6 +368,7 @@ fn settings(
     ),
     codemode_seed: root <> "/no-such-seed",
     codemode_seams: codemode.WorkspaceOnly,
+    code_mode_host: None,
     rules: [],
     schedules: [],
     schedule_policy: schedule.ModelSchedulesOff,

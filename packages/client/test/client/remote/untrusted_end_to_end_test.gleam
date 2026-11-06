@@ -91,7 +91,7 @@ fn start(label: String) -> Rig {
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
-      mcp: protocol.McpPlan(served: [], expected: []),
+      mcp: protocol.empty_mcp_plan(),
       git_identity: None,
     ))
     as "the port starts"
