@@ -157,6 +157,61 @@ accepts that cost when enrolling a machine. The design therefore draws its
 boundary around who may connect, and does not try to defend one connected node
 against another.
 
+### Untrusted executors
+
+Everything above is the trusted mode, and it stays the default. An executor whose
+`[executors.<name>]` row says `trust = "untrusted"` is never a distribution peer
+([protocol-change/109](../../protocol-change/109-untrusted-executors.md)). The
+orchestrator holds one `client/remote/untrusted_link` per such executor,
+registered under a name on its own node, and that name is the `Address` the
+session's `Reach` holds, so the surface, the scope record and the owner port send
+the same `HostMessage`s they send to a trusted executor. The link dials the
+executor's `client/remote/untrusted_gateway` over TLS 1.3 with a pinned leaf on
+each side and carries 078's vocabulary as length-prefixed JSON frames
+(`client/remote/untrusted_wire`, `client/remote/untrusted_codec`), with every
+`Subject` replaced by a request id or by a binding the link mints per attach.
+
+```mermaid
+flowchart LR
+    subgraph orch["orchestrator"]
+        s["surface, owner port"] --> l["untrusted_link<br/>(a name on this node)"]
+    end
+    subgraph exec["untrusted executor (no distribution)"]
+        g["untrusted_gateway"] --> h["host, ledger, plane"]
+        h -- "OwnerMessage" --> p["proxy per binding"]
+    end
+    l -- "request, cancel, answer<br/>(TLS 1.3, pinned, JSON frames)" --> g
+    p -- "callback, response" --> l
+```
+
+The differences from the trusted mode are these.
+
+- **Callbacks are checked.** The gateway gives the host a proxy per binding in
+  place of the owner port; the proxy sends each `OwnerMessage` as a callback on
+  the connection the orchestrator opened. The link passes a callback to the owner
+  port only if its binding is one it minted and has not retired, its id is fresh,
+  and, for an escalation, a capability, a tool-list check or a tail, it names a
+  `run` the link has in flight for that session (an escalation must match the call
+  exactly, arguments included). Anything else is answered with the failure its
+  type allows.
+- **Everything returned is decoded totally**, against the kind of reply the
+  request waits for. A frame that does not decode, a reply of the wrong kind, a
+  reply to an id never issued and any frame only an orchestrator sends close the
+  connection.
+- **The link re-sends.** It keeps every outstanding request's bytes and sends them
+  again on the next connection, which is the re-send the surface performs after a
+  distribution partition.
+- **Cancellation is a frame.** The link monitors each asker and sends `cancel`
+  when it dies; the gateway kills the waiter that owns the reply subject the host
+  monitors, so the host reads the same abort. A dropped connection kills no
+  waiter, so a partition still never cancels a call.
+- **State transport is pulled.** `state_chunk` and `state_fetch` are both the
+  orchestrator's requests; the executor pushes nothing.
+- **Not carried yet:** background code mode, remote evolution, and the census's
+  broker subject. The orchestrator puts a refusing broker handle in the census, so
+  project hooks, goal checks, Git observation and the worktree diff are refused on
+  an untrusted executor, and it records the evolution census as `Uncompiled`.
+
 ### Who may connect
 
 `client/distribution` is the membership layer. It starts distribution and
@@ -2143,6 +2198,8 @@ The directory holds no state of its own, so it has no model.
 | `client/ledger_control`, `client/ledger_reference` | The `ledger.*` control commands, both halves; the ledger read for the start and for the tables that name a peer |
 | `client/executors`, `client/workspaces`, `client/pools`, `client/orchestrators` | The `[executors]`, `[workspaces]`, `[pools]` and `[orchestrators]` tables |
 | `client/tool_placement` | Which side runs each tool |
+| `client/remote/untrusted_wire`, `client/remote/untrusted_codec`, `client/remote/untrusted_bridge` | The untrusted link's frames, their total codec, and the translation between 078's subject-carrying messages and frames |
+| `client/remote/untrusted_link`, `client/remote/untrusted_gateway`, `client/internal/ffi_tls_stream`, `client_tls_stream_ffi.erl`, `client/untrusted_config` | The untrusted link's orchestrator end, its executor end, the pinned TLS stream, and `[executor_link]` and `[executor_listener]` |
 | `client/remote/protocol`, `client/remote/address`, `client/remote/codec` | The closed node vocabulary and its transport |
 | `client/remote/host`, `client/executor_plane`; `daemon/main.start_executor` | The executor's host and its real plane factory |
 | `client/worktrees`, `client/worktree_git` | A worktree workspace's trees: lifecycle, reconciliation, and the sandboxed Git |

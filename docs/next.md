@@ -1,5 +1,31 @@
 # Current handoff
 
+## Untrusted executors (issue #1196, protocol-change/109)
+
+An `[executors.<name>]` row can now say `trust = "untrusted"`: the executor is
+never a distribution peer, and the orchestrator reaches it over a TLS 1.3 link
+with a pinned leaf on each side, carrying 078's vocabulary as JSON frames.
+[Protocol-change 109](../protocol-change/109-untrusted-executors.md) is the
+design and the threat model; `docs/architecture/distributed.md`, "Untrusted
+executors", is the map. The consumer is aegis, whose review pod runs
+attacker-influenced code and must not be a peer.
+
+- **Built (slice 1):** the link (`client/remote/untrusted_link`) and the gateway
+  (`untrusted_gateway`), the wire and its total codec, the bridge between them
+  and 078's subject-carrying messages, `[executor_link]` and
+  `[executor_listener]`, tool calls with recovery and cancel, owner callbacks
+  checked per binding, and state transport (pulled, never pushed).
+- **Rulings not to reopen:** the cut stays at `ToolSurface.run` (no per-file
+  RPC, no path on the wire); the link stands where the host's address was, so
+  the surface and owner port are unchanged; no Erlang term crosses; a callback
+  that names a call must name one the link has in flight, and an escalation must
+  match it exactly.
+- **Not done:** background code mode, remote evolution, and a broker tunnel for
+  non-tool callers (project hooks, goal checks, Git observation, the worktree
+  diff), which are refused on an untrusted executor (slices 2 to 4 of 109). The
+  links and the gateway are not restarted by a supervisor. No live drive with a
+  real model or a real aegis pod has been run.
+
 ## Strand register decoding replay
 
 The [fixed replay](review/strand-poll-replay-2026-11-05.md) isolates the
