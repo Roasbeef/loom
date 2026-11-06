@@ -451,3 +451,15 @@ after the re-send on a new connection does, and an orchestrator pin the gateway
 does not list is refused. `untrusted_end_to_end_test` runs a real orchestrator
 surface and owner port through the link and the gateway into a real host, with
 certificates minted by `client_pki_ffi`.
+
+## Addendum, 2026-11-06: placed blobs and outcomes larger than a frame
+
+[110](110-untrusted-blobs-and-large-outcomes.md) adds to this link, at wire
+version 2, a carrier for bytes that are not a Git state (blobs placed by the
+orchestrator for a session, checked for size and SHA-256 before they exist,
+bounded per binding, per orchestrator and on disk) and a fetch in pieces for a
+tool outcome whose response would not fit a frame. Both keep this proposal's
+direction rule: only the orchestrator sends blob bytes, and the executor sends
+outcome bytes only as replies to the orchestrator's own requests. The executor
+side of 110 also retires a binding when the host carries out a close of its
+scope, which this proposal left to the next attach.
