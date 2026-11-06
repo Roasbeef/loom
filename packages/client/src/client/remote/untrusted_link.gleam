@@ -715,26 +715,36 @@ fn dialed(
   }
 }
 
-/// Refuses the outstanding requests whose askers wait a bounded time: an
-/// attach, a listing and a close. Over distribution an unreachable node is a
-/// `DOWN` at once, and the surface's bounded repair loop gives up on its own;
-/// this link stays alive while it redials, so without this an attach to a down
-/// executor would wait for it forever. A run, a lookup and the state
-/// transport's requests wait as they would for a partitioned peer, and are
-/// sent when the executor answers again.
+/// Refuses the outstanding requests whose askers wait a bounded time and
+/// would otherwise wait on this link forever: an attach and a listing. Over
+/// distribution an unreachable node is a `DOWN` at once, and the surface's
+/// bounded repair loop gives up on its own; this link stays alive while it
+/// redials. An attach is refused only once the pause has grown to its longest,
+/// a few seconds of consecutive failed dials, so a pod that restarts during an
+/// open is tolerated as the trusted surface tolerates one for its window. A
+/// close is not refused: its asker bounds its own wait, and a refusal would
+/// read as final where silence is retried. A run, a lookup and the state
+/// transport's requests wait as they would for a partitioned peer.
 fn unreachable(data: Data) -> Data {
   let refusal = protocol.Unreachable("the executor could not be reached")
+  let patient = data.pause_ms < longest_pause_ms
   dict.fold(data.outstanding, data, fn(data, id, pending) {
-    // Only the three bounded exchanges are refused; everything else waits.
-    case pending.request {
-      untrusted_wire.AttachRequest(..)
-      | untrusted_wire.ListUnackedRequest(..)
-      | untrusted_wire.CloseRequest(..) -> {
+    // A listing is refused at once and an attach after the patience ends;
+    // everything else waits for the next connection.
+    let refused = case pending.request {
+      untrusted_wire.ListUnackedRequest(..) -> True
+      untrusted_wire.AttachRequest(..) -> !patient
+      _waits -> False
+    }
+
+    // A refused request leaves the book with its monitor; a waiting one stays.
+    case refused {
+      True -> {
         untrusted_bridge.refuse(pending.reply, refusal)
         let data = unwatch(data, pending.monitor)
         Data(..data, outstanding: dict.delete(data.outstanding, id))
       }
-      _waits -> data
+      False -> data
     }
   })
 }

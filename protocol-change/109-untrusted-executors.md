@@ -203,11 +203,14 @@ the link process itself is gone.
 
 Over distribution an unreachable executor is a `DOWN` at once, and the
 surface's bounded exchanges (an attach within `attach_within_ms`, the
-reconciler's listing, a close) give up on their own. The link stays alive while
-it redials, so when a dial fails it refuses its outstanding attaches, listings
-and closes with `Unreachable` instead of holding them. A run, a lookup and the
-state transport's requests keep waiting, as they would for a partitioned
-peer.
+reconciler's listing) give up on their own. The link stays alive while it
+redials, so when a dial fails it refuses its outstanding listings with
+`Unreachable` at once, and its outstanding attaches once the pause between
+dials has grown to its longest, a few seconds of consecutive failures, so a pod
+that restarts during an open is tolerated. A close is not refused: its asker
+bounds its own wait, and a session move retries a close that went unanswered
+but abandons one that was refused. A run, a lookup and the state transport's
+requests keep waiting, as they would for a partitioned peer.
 
 ### Callbacks ride the orchestrator's connection
 

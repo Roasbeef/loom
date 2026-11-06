@@ -207,9 +207,10 @@ The differences from the trusted mode are these.
   waiters exit with `noconnection`, which the host reads as a partition, so a
   partition never cancels a call and a cancel after the re-send still does.
 - **An unreachable executor fails the bounded requests.** When a dial fails,
-  the link refuses its outstanding attaches, listings and closes with
-  `Unreachable`, as a dropped distribution connection would make the surface
-  do, and keeps runs and lookups for the next connection.
+  the link refuses its outstanding listings with `Unreachable`, and its
+  outstanding attaches after a few seconds of consecutive failed dials, as a
+  dropped distribution connection would make the surface do. Closes, runs and
+  lookups wait for the next connection.
 - **State transport is pulled.** `state_chunk` and `state_fetch` are both the
   orchestrator's requests; the executor pushes nothing.
 - **Not carried yet:** background code mode, remote evolution, and the census's

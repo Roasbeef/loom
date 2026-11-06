@@ -547,8 +547,10 @@ pub fn opening_a_registered_session_reports_the_executor_is_unavailable_test() {
   )
 }
 
+// The executor is looked up before distribution is required, because an
+// untrusted executor needs none (protocol-change/109).
 const unreachable =
-  "executor_unavailable: this daemon was not started with [distribution]"
+  "executor_unavailable: no executor named build-box is configured"
 
 fn failed_reason(ready: root.Ready(String), id: String, operation: String) {
   let assert poll.Answered(reason) =

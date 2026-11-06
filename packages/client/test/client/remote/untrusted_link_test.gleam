@@ -566,10 +566,12 @@ pub fn an_executor_with_a_certificate_from_another_authority_is_refused_test() {
   let assert Ok(raw) = ffi_tls_stream.accept(listener, 10_000)
     as "the link dials"
   let assert Error(_refused) = ffi_tls_stream.handshake(raw, 10_000)
-  // The failed handshake is a failed dial, so the attach is refused as
-  // unreachable rather than left waiting.
-  let assert Ok(Error(protocol.Unreachable(_))) = process.receive(reply, 5000)
-    as "the attach is refused as unreachable"
+  // No attach can succeed over a connection the pin refused.
+  let attached = case process.receive(reply, 300) {
+    Ok(Ok(_attached)) -> True
+    Ok(Error(_refused)) | Error(Nil) -> False
+  }
+  assert !attached
   process.kill(link)
   ffi_tls_stream.close_listener(listener)
 }
@@ -594,10 +596,12 @@ pub fn an_executor_with_another_pin_under_the_same_authority_is_refused_test() {
       }
   }
   assert !greeted
-  // The failed handshake is a failed dial, so the attach is refused as
-  // unreachable rather than left waiting.
-  let assert Ok(Error(protocol.Unreachable(_))) = process.receive(reply, 5000)
-    as "the attach is refused as unreachable"
+  // No attach can succeed over a connection the pin refused.
+  let attached = case process.receive(reply, 300) {
+    Ok(Ok(_attached)) -> True
+    Ok(Error(_refused)) | Error(Nil) -> False
+  }
+  assert !attached
   process.kill(link)
   ffi_tls_stream.close_listener(listener)
 }
