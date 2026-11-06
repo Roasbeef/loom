@@ -26,6 +26,7 @@ import gleam/string
 import host/bootstrap
 import simplifile
 import support/remote_fixtures as fixtures
+import support/worktree_rig
 
 type Rig {
   Rig(git: worktree_git.Git, home: String, scratch: String)
@@ -45,6 +46,12 @@ fn rig(name: String) -> Rig {
   let home = scratch <> "/home"
   let assert Ok(Nil) = bootstrap.ensure_private_directory(state)
   let assert Ok(Nil) = bootstrap.ensure_private_directory(home)
+
+  // The runner masks the state root's entries a daemon creates before any
+  // session, and a Linux jail refuses to mask one that is missing under a
+  // read-only parent. Seatbelt has no such refusal, so a bare directory
+  // passed on macOS and failed every call on Linux.
+  worktree_rig.establish(state)
   let assert Ok(here) = simplifile.current_directory()
   let assert Ok(git) =
     worktree_git.start(
