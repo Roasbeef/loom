@@ -398,14 +398,26 @@ pub fn a_background_program_launches_calls_its_owner_and_returns_its_value_test(
   assert surface.run(remote, run) == fixtures.expected_outcome(run)
   let assert Ok(Running(call: "launch", ..)) = process.receive(rig.seen, 2000)
     as "the plane ran the call"
-  assert process.receive(rig.seen, 5000) == Ok(Launched(Ok(json.String("e1"))))
   let assert Ok(Working(..)) = process.receive(rig.records, 5000)
     as "the record's worker started"
-  let assert Ok(Programmed(..)) = process.receive(rig.seen, 5000)
-    as "the host started the program"
 
-  // The program's capability call reached the owner after the call that
-  // launched it ended, and its answer is the value the worker hears.
+  // The launching call reports its answer from its own process and the
+  // program reports its start from another, so the two arrive in either
+  // order: the worker can start the program before the call's report lands.
+  let assert Ok(first) = process.receive(rig.seen, 5000)
+    as "the plane reports the launch or the program"
+  let assert Ok(second) = process.receive(rig.seen, 5000)
+    as "the plane reports the other of the two"
+  let launched = Launched(Ok(json.String("e1")))
+  let assert True = case first, second {
+    Launched(..), Programmed(..) -> first == launched
+    Programmed(..), Launched(..) -> second == launched
+    _, _ -> False
+  }
+    as "the launch was answered with the handle and the program started"
+
+  // The program's capability call is admitted on its start, whose step is
+  // the execution's own, and its answer is the value the worker hears.
   let assert Ok(Served(call)) = process.receive(rig.records, 5000)
     as "the owner served the program's capability"
   assert call.step_id == fixtures.execution_key("s1", "e1").step
