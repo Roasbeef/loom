@@ -49,6 +49,7 @@ fn start(label: String) -> Rig {
       credentials: pair.executor,
       orchestrators: [pair.orchestrator_pin],
       host: executor.address,
+      blobs: None,
       logger: log.discard(),
     ))
     as "the gateway starts"

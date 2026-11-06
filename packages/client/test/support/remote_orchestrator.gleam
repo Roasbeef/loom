@@ -310,12 +310,39 @@ fn start_with(
   executor_clock: clock.Clock,
   name: process.Name(protocol.HostMessage(RemoteCensus)),
 ) -> Executor {
+  start_reserving(path, factory, limits, executor_clock, name, 65_536)
+}
+
+/// Starts a host whose calls may return outcomes of up to `max_result_bytes`,
+/// for a test of an outcome larger than one frame of the untrusted link.
+pub fn start_holding(
+  factory: host.PlaneFactory(RemoteCensus),
+  max_result_bytes: Int,
+) -> Executor {
+  start_reserving(
+    fixtures.scratch("orchestrator") <> "/ledger.db",
+    factory,
+    exec_ledger.default_limits(),
+    clock.fixed(at: 1000),
+    process.new_name("remote_orchestrator_holding"),
+    max_result_bytes,
+  )
+}
+
+fn start_reserving(
+  path: String,
+  factory: host.PlaneFactory(RemoteCensus),
+  limits: exec_ledger.Limits,
+  executor_clock: clock.Clock,
+  name: process.Name(protocol.HostMessage(RemoteCensus)),
+  max_result_bytes: Int,
+) -> Executor {
   let assert Ok(started) =
     host.start(host.Config(
       name:,
       ledger_path: path,
       limits:,
-      max_result_bytes: 65_536,
+      max_result_bytes:,
       clock: executor_clock,
       factory:,
       execution_result_bytes: host.default_execution_result_bytes,

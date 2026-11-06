@@ -111,6 +111,8 @@ import client/profile_switch
 import client/project_settings
 import client/relayed_session
 import client/remote/address
+import client/remote/blob_service
+import client/remote/blob_store
 import client/remote/host as executor_host
 import client/remote/link_keeper
 import client/remote/orchestrator_port
@@ -1115,6 +1117,7 @@ pub fn start_untrusted(
         "[executor_listener] needs [workspaces] to serve: this daemon has no executor host",
       )
     Some(listener), Some(_host) -> {
+      use blobs <- result.try(start_placed_blobs(config.state_root))
       use gateway <- result.map(
         untrusted_gateway.start(untrusted_gateway.Config(
           address: listener.address,
@@ -1122,6 +1125,7 @@ pub fn start_untrusted(
           credentials: listener.credentials,
           orchestrators: listener.orchestrators,
           host: address.Address(node: node.self(), name: address.default()),
+          blobs: Some(blobs),
           logger:,
         )),
       )
@@ -1132,6 +1136,21 @@ pub fn start_untrusted(
       ])
     }
   }
+}
+
+/// Opens the placed-blob store under the state root and starts its keeper
+/// (protocol-change/110), linked to the startup process as the gateway's book
+/// is. The directory is masked from every jail by `workspace_policy`.
+fn start_placed_blobs(
+  state_root: String,
+) -> Result(blob_service.Service, String) {
+  use store <- result.try(blob_store.open(
+    blob_store.directory(state_root),
+    blob_store.default_limits,
+  ))
+  blob_service.start(store, blob_service.default_bounds, fn() {
+    ffi_os.system_time_ms() / 1000
+  })
 }
 
 /// Starts one link per untrusted executor row.

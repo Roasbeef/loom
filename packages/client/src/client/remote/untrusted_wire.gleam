@@ -45,6 +45,7 @@ import broker/framing.{type CapOutcome}
 import client/escalate
 import client/notice
 import client/owner_services.{type FactFault, type OwnerCapCall}
+import client/remote/blob_transfer
 import client/remote/protocol.{
   type CloseOutcome, type GitIdentity, type Key, type Lookup, type McpPlan,
   type Refusal, type RunAnswer, type Unacked,
@@ -68,8 +69,9 @@ import tools/tool
 
 /// The version of these frames, which `Hello` and `Welcome` carry beside
 /// `protocol.version`. A change to any frame, request, reply, callback or
-/// answer here changes it.
-pub const version = 1
+/// answer here changes it. Version 2 added placed blobs and outcomes fetched
+/// in pieces (protocol-change/110).
+pub const version = 2
 
 /// The largest frame either side sends or accepts, in bytes of body. The TLS
 /// socket enforces it before a frame is buffered, so a larger one closes the
@@ -82,14 +84,20 @@ pub const max_frame_bytes = 33_554_432
 /// description and the base64 growth.
 pub const max_piece_bytes = 16_777_216
 
+/// The largest encoded tool outcome the orchestrator fetches in pieces when it
+/// does not fit a frame (protocol-change/110): three frames' worth, which holds
+/// a fix proof's 48 MiB of transcripts after JSON escaping. An `Oversized`
+/// above it is answered to the asker as a lost outcome.
+pub const max_outcome_bytes = 100_663_296
+
 /// The bytes of a binding. Sixteen random bytes from the operating system's
 /// strong source are not guessed.
 pub const binding_bytes = 16
 
 /// One frame, in either direction. Which frames a side accepts is the
 /// receiver's rule, not the type's: an orchestrator accepts only `Welcome`,
-/// `Response` and `Callback`, and an executor only `Hello`, `Request`, `Cancel`
-/// and `Answer`.
+/// `Response`, `Callback` and `Oversized`, and an executor only `Hello`,
+/// `Request`, `Cancel` and `Answer`.
 pub type Frame {
   /// The orchestrator's first frame on a connection.
   Hello(
@@ -124,6 +132,12 @@ pub type Frame {
 
   /// The orchestrator's answer to callback `id` on `binding`.
   Answer(binding: BitArray, id: Int, answer: Answer)
+
+  /// The executor's reply to request `id` in place of a `Response` that would
+  /// not fit a frame: the reply holds a tool outcome whose encoding
+  /// (`untrusted_codec.encode_outcome_bytes`) is `size` bytes with the SHA-256
+  /// `digest`, which the orchestrator fetches with `OutcomePieceRequest`.
+  Oversized(id: Int, size: Int, digest: String)
 }
 
 /// A `HostMessage` of 078 without its reply subject. Only the requests slice 1
@@ -210,6 +224,19 @@ pub type Request {
   /// `StateFetch`: one piece of a state the executor holds, asked for by the
   /// orchestrator.
   StateFetchRequest(hash: String, offset: Int)
+
+  /// How far a blob has got on the executor, for the session `binding` was
+  /// minted for; a complete blob is claimed for it (protocol-change/110).
+  BlobStatusRequest(binding: BitArray, digest: String)
+
+  /// One piece of a blob the orchestrator places for the session `binding`
+  /// was minted for.
+  BlobPutRequest(binding: BitArray, piece: blob_transfer.Piece)
+
+  /// The piece at `offset` of the encoded outcome the executor's ledger holds
+  /// for `key`, after an `Oversized` reply. It is answered from `Query`, which
+  /// never starts or joins a call.
+  OutcomePieceRequest(key: Key, offset: Int)
 }
 
 /// The census an untrusted executor reports: `RemoteCensus` without the two
@@ -263,6 +290,25 @@ pub type Response {
 
   /// The reply to `StateFetchRequest`.
   FetchAnswered(fetched: state_transfer.Fetched)
+
+  /// The reply to `BlobStatusRequest`.
+  BlobStatusAnswered(answer: Result(blob_transfer.Stage, String))
+
+  /// The reply to `BlobPutRequest`.
+  BlobPutAnswered(verdict: blob_transfer.Verdict)
+
+  /// The reply to `OutcomePieceRequest`.
+  OutcomePieceAnswered(piece: OutcomePiece)
+}
+
+/// One piece of an encoded tool outcome, or why there is none.
+pub type OutcomePiece {
+  /// The bytes at `offset` of the outcome's encoding, which is `size` bytes in
+  /// all with SHA-256 `digest`, as the executor encoded it for this answer.
+  OutcomeServed(size: Int, digest: String, offset: Int, bytes: BitArray)
+
+  /// The ledger holds no ended outcome for the key.
+  OutcomeNotHeld(reason: String)
 }
 
 /// Which `Response` a request waits for. The receiver decodes a response
@@ -297,6 +343,15 @@ pub type ResponseKind {
 
   /// `FetchAnswered`.
   FetchKind
+
+  /// `BlobStatusAnswered`.
+  BlobStatusKind
+
+  /// `BlobPutAnswered`.
+  BlobPutKind
+
+  /// `OutcomePieceAnswered`.
+  OutcomePieceKind
 }
 
 /// An `OwnerMessage` of 078 without its reply subject. `LaunchExecution` and
@@ -453,6 +508,9 @@ pub fn response_kind(request: Request) -> Option(ResponseKind) {
     StateChunkRequest(..) -> Some(ChunkKind)
     StateStatusRequest(..) -> Some(StatusKind)
     StateFetchRequest(..) -> Some(FetchKind)
+    BlobStatusRequest(..) -> Some(BlobStatusKind)
+    BlobPutRequest(..) -> Some(BlobPutKind)
+    OutcomePieceRequest(..) -> Some(OutcomePieceKind)
   }
 }
 

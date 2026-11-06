@@ -13,16 +13,24 @@ import client/escalate
 import client/internal/ffi_tls_stream.{type Listener, type Stream}
 import client/owner_services
 import client/remote/address
+import client/remote/blob_transfer
+import client/remote/outcome_fetch
 import client/remote/protocol
 import client/remote/remote_census.{type RemoteCensus}
+import client/remote/untrusted_bridge
 import client/remote/untrusted_codec
 import client/remote/untrusted_link
 import client/remote/untrusted_wire
 import codemode/satellite
 import core/json
+import gleam/bit_array
 import gleam/erlang/process.{type Subject}
+import gleam/int
+import gleam/list
 import gleam/option.{None}
+import gleam/string
 import runtime/effects.{type ToolRun}
+import simplifile
 import support/remote_fixtures as fixtures
 import support/untrusted_rig as rig
 import telemetry/log
@@ -33,6 +41,7 @@ type Rig {
     listener: Listener,
     address: address.Address(protocol.HostMessage(RemoteCensus)),
     link: process.Pid,
+    blobs: Subject(untrusted_bridge.BlobAsk),
   )
 }
 
@@ -46,8 +55,8 @@ fn start(label: String) -> Rig {
   let pair = rig.pair(label)
   let #(listener, port) = rig.listen(pair.executor, [pair.orchestrator_pin])
   let name = process.new_name("untrusted_link_test")
-  let assert Ok(link) =
-    untrusted_link.start(untrusted_link.Config(
+  let assert Ok(started) =
+    untrusted_link.start_placing(untrusted_link.Config(
       executor: "pod",
       name:,
       host: "127.0.0.1",
@@ -58,13 +67,19 @@ fn start(label: String) -> Rig {
       logger: log.discard(),
     ))
     as "the link starts"
-  process.unlink(link)
-  Rig(listener:, address: untrusted_link.address(name), link:)
+  process.unlink(started.pid)
+  Rig(
+    listener:,
+    address: untrusted_link.address(name),
+    link: started.pid,
+    blobs: started.blobs,
+  )
 }
 
 fn stop(rig: Rig) -> Nil {
   process.kill(rig.link)
   ffi_tls_stream.close_listener(rig.listener)
+  rig.flush()
 }
 
 // An owner port that records every message it receives and answers the ones
@@ -663,4 +678,449 @@ fn attach_unread(
     ),
   )
   reply
+}
+
+// --- outcomes fetched in pieces (protocol-change/110) ----------------------------
+
+/// An outcome whose encoding is larger than one piece.
+fn large_outcome() -> effects.ToolOutcome {
+  effects.ToolFailed(reason: string.repeat("x", 20_000_000))
+}
+
+/// What the executor declares for an outcome, and the bytes it cuts pieces
+/// from.
+fn encoding_of(outcome: effects.ToolOutcome) -> #(BitArray, Int, String) {
+  let bytes = untrusted_codec.encode_outcome_bytes(outcome)
+  #(bytes, bit_array.byte_size(bytes), blob_transfer.digest_of(bytes))
+}
+
+/// Reads the next frame as an outcome piece request, answering its id and
+/// offset.
+fn piece_request(stream: Stream) -> #(Int, Int) {
+  let assert Ok(untrusted_codec.RequestEnvelope(id:, body:)) = rig.next(stream)
+    as "a piece is asked for"
+  let assert Ok(untrusted_wire.OutcomePieceRequest(offset:, ..)) =
+    untrusted_codec.decode_request(body)
+    as "it is an outcome piece request"
+  #(id, offset)
+}
+
+/// Serves the piece at `offset` of `bytes`, as an honest executor would.
+fn serve_piece(
+  stream: Stream,
+  id: Int,
+  bytes: BitArray,
+  size: Int,
+  digest: String,
+  offset: Int,
+) -> Nil {
+  let length = int.min(untrusted_wire.max_piece_bytes, size - offset)
+  let assert Ok(cut) = bit_array.slice(bytes, offset, length)
+    as "the piece is inside the outcome"
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id:,
+      response: untrusted_wire.OutcomePieceAnswered(
+        untrusted_wire.OutcomeServed(size:, digest:, offset:, bytes: cut),
+      ),
+    ),
+  )
+}
+
+pub fn an_oversized_outcome_is_fetched_in_pieces_and_delivered_test() {
+  let rig = start("fetch")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(id, _asker, answers) =
+    run_in_flight(rig, stream, "s1", fixtures.tool_run("call_1", 0))
+  let outcome = large_outcome()
+  let #(bytes, size, digest) = encoding_of(outcome)
+
+  rig.send(stream, untrusted_wire.Oversized(id:, size:, digest:))
+  let #(first, at) = piece_request(stream)
+  assert at == 0
+  serve_piece(stream, first, bytes, size, digest, 0)
+  let #(second, at) = piece_request(stream)
+  assert at == untrusted_wire.max_piece_bytes
+  serve_piece(stream, second, bytes, size, digest, at)
+
+  assert process.receive(answers, 10_000) == Ok(protocol.RunFinished(outcome))
+  stop(rig)
+}
+
+pub fn an_outcome_whose_bytes_never_match_its_digest_is_lost_test() {
+  let rig = start("wrong-digest")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(id, _asker, answers) =
+    run_in_flight(rig, stream, "s1", fixtures.tool_run("call_1", 0))
+  let #(bytes, size, _digest) = encoding_of(effects.ToolFailed(reason: "no"))
+  let lie = blob_transfer.digest_of(<<"something else">>)
+
+  // Every fetch gets the whole outcome under a digest it does not have. The
+  // link starts over a bounded number of times and then answers the asker
+  // with the lost form, never with the bytes.
+  rig.send(stream, untrusted_wire.Oversized(id:, size:, digest: lie))
+  list.each(list.repeat(Nil, outcome_fetch.max_restarts + 1), fn(_attempt) {
+    let #(piece, at) = piece_request(stream)
+    assert at == 0
+    serve_piece(stream, piece, bytes, size, lie, 0)
+  })
+
+  assert process.receive(answers, 5000) == Ok(protocol.RunLost)
+  assert process.is_alive(rig.link)
+  stop(rig)
+}
+
+pub fn an_outcome_piece_that_runs_past_its_size_is_lost_test() {
+  let rig = start("past-size")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(id, _asker, answers) =
+    run_in_flight(rig, stream, "s1", fixtures.tool_run("call_1", 0))
+  let #(bytes, size, digest) = encoding_of(effects.ToolFailed(reason: "no"))
+
+  rig.send(stream, untrusted_wire.Oversized(id:, size:, digest:))
+  let #(piece, _at) = piece_request(stream)
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id: piece,
+      response: untrusted_wire.OutcomePieceAnswered(
+        untrusted_wire.OutcomeServed(
+          size:,
+          digest:,
+          offset: 0,
+          bytes: bit_array.append(bytes, <<"more">>),
+        ),
+      ),
+    ),
+  )
+  assert process.receive(answers, 5000) == Ok(protocol.RunLost)
+  stop(rig)
+}
+
+pub fn an_outcome_over_the_links_bound_is_lost_without_a_fetch_test() {
+  let rig = start("too-large")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(id, _asker, answers) =
+    run_in_flight(rig, stream, "s1", fixtures.tool_run("call_1", 0))
+
+  rig.send(
+    stream,
+    untrusted_wire.Oversized(
+      id:,
+      size: untrusted_wire.max_outcome_bytes + 1,
+      digest: blob_transfer.digest_of(<<"x">>),
+    ),
+  )
+  assert process.receive(answers, 5000) == Ok(protocol.RunLost)
+  assert rig.next_raw(stream, 300) == Error("silent")
+  stop(rig)
+}
+
+pub fn an_oversized_reply_to_no_request_closes_the_connection_test() {
+  let rig = start("unrequested-oversized")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+
+  rig.send(
+    stream,
+    untrusted_wire.Oversized(
+      id: 999,
+      size: 64,
+      digest: blob_transfer.digest_of(<<"x">>),
+    ),
+  )
+  assert rig.closed(stream, 5000)
+  assert process.is_alive(rig.link)
+  stop(rig)
+}
+
+pub fn an_outcome_piece_nobody_asked_for_closes_the_connection_test() {
+  let rig = start("unrequested-piece")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(id, _asker, answers) =
+    run_in_flight(rig, stream, "s1", fixtures.tool_run("call_1", 0))
+  let #(bytes, size, digest) = encoding_of(effects.ToolFailed(reason: "no"))
+
+  // A piece for the run's own id, which is not a piece request, does not
+  // decode as the run's reply; one for an id never minted is a violation.
+  serve_piece(stream, 999, bytes, size, digest, 0)
+  assert rig.closed(stream, 5000)
+  assert process.receive(answers, 300) == Error(Nil)
+
+  // The run is still outstanding and is sent again on the next connection.
+  let again = rig.greeted(rig.listener)
+  let assert Ok(untrusted_codec.RequestEnvelope(..)) = rig.next(again)
+    as "the attach is sent again"
+  let assert Ok(untrusted_codec.RequestEnvelope(id: resent, ..)) =
+    rig.next(again)
+    as "the run is sent again"
+  assert resent == id
+  stop(rig)
+}
+
+pub fn a_replayed_oversized_does_not_ask_twice_test() {
+  let rig = start("replayed-oversized")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(id, _asker, answers) =
+    run_in_flight(rig, stream, "s1", fixtures.tool_run("call_1", 0))
+  let outcome = effects.ToolFailed(reason: "no")
+  let #(bytes, size, digest) = encoding_of(outcome)
+
+  rig.send(stream, untrusted_wire.Oversized(id:, size:, digest:))
+  let #(piece, _at) = piece_request(stream)
+  rig.send(stream, untrusted_wire.Oversized(id:, size:, digest:))
+  assert rig.next_raw(stream, 300) == Error("silent")
+
+  serve_piece(stream, piece, bytes, size, digest, 0)
+  assert process.receive(answers, 5000) == Ok(protocol.RunFinished(outcome))
+  stop(rig)
+}
+
+pub fn a_fetch_resumes_after_a_reconnect_and_a_cancel_reaches_both_ids_test() {
+  let rig = start("fetch-reconnect")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(id, asker, _answers) =
+    run_in_flight(rig, stream, "s1", fixtures.tool_run("call_1", 0))
+  let #(bytes, size, digest) = encoding_of(large_outcome())
+
+  // The first piece arrives, the second is asked for, and the connection
+  // drops before it is served.
+  rig.send(stream, untrusted_wire.Oversized(id:, size:, digest:))
+  let #(first, _at) = piece_request(stream)
+  serve_piece(stream, first, bytes, size, digest, 0)
+  let #(_second, at) = piece_request(stream)
+  assert at == untrusted_wire.max_piece_bytes
+  ffi_tls_stream.close(stream)
+
+  // The run is sent again, the executor says oversized again, and the fetch
+  // asks for the piece it was missing rather than starting over.
+  let again = rig.greeted(rig.listener)
+  let assert Ok(untrusted_codec.RequestEnvelope(..)) = rig.next(again)
+    as "the attach is sent again"
+  let assert Ok(untrusted_codec.RequestEnvelope(id: resent, ..)) =
+    rig.next(again)
+    as "the run is sent again"
+  assert resent == id
+  rig.send(again, untrusted_wire.Oversized(id:, size:, digest:))
+  let #(third, at) = piece_request(again)
+  assert at == untrusted_wire.max_piece_bytes
+
+  // The asker dies: the run and the piece in flight are both cancelled.
+  process.kill(asker)
+  let assert Ok(untrusted_codec.CancelEnvelope(id: cancelled)) = rig.next(again)
+    as "the run is cancelled"
+  assert cancelled == id
+  let assert Ok(untrusted_codec.CancelEnvelope(id: cancelled)) = rig.next(again)
+    as "the piece is cancelled"
+  assert cancelled == third
+  stop(rig)
+}
+
+// --- placed blobs (protocol-change/110) ----------------------------------------
+
+/// A file of `size` bytes in a scratch directory, and its description.
+fn blob_file(label: String, size: Int) -> #(String, blob_transfer.Blob) {
+  let path = fixtures.scratch("untrusted-blob-" <> label) <> "/blob.bin"
+  let assert Ok(Nil) = simplifile.write_bits(path, bit_array_of(size))
+    as "the blob is written"
+  let assert Ok(blob) = blob_transfer.describe(path) as "the blob is described"
+  #(path, blob)
+}
+
+/// Places a blob from a process of its own and reports how the placement
+/// ended.
+fn placing(
+  rig: Rig,
+  session: String,
+  path: String,
+  blob: blob_transfer.Blob,
+) -> Subject(Result(blob_transfer.Placed, blob_transfer.Failure)) {
+  let ended = process.new_subject()
+  let link = untrusted_link.blob_link(rig.blobs, session, 5000)
+  process.spawn_unlinked(fn() {
+    process.send(ended, blob_transfer.place(path, blob, link))
+  })
+  ended
+}
+
+/// Reads the next frame as a blob request.
+fn blob_request(stream: Stream) -> #(Int, untrusted_wire.Request) {
+  let assert Ok(untrusted_codec.RequestEnvelope(id:, body:)) = rig.next(stream)
+    as "a blob request arrives"
+  let assert Ok(request) = untrusted_codec.decode_request(body) as "it decodes"
+  #(id, request)
+}
+
+pub fn a_blob_is_placed_in_pieces_under_the_sessions_binding_test() {
+  let rig = start("blob")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, binding:) = attach(rig, "s1", port, None)
+  let #(path, blob) = blob_file("placed", blob_transfer.piece_bytes + 10)
+  let ended = placing(rig, "s1", path, blob)
+
+  let #(status, request) = blob_request(stream)
+  assert request
+    == untrusted_wire.BlobStatusRequest(binding:, digest: blob.digest)
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id: status,
+      response: untrusted_wire.BlobStatusAnswered(Ok(blob_transfer.Absent)),
+    ),
+  )
+  let #(first, request) = blob_request(stream)
+  let assert untrusted_wire.BlobPutRequest(binding: named, piece:) = request
+  assert named == binding
+  assert piece.offset == 0
+  assert bit_array.byte_size(piece.bytes) == blob_transfer.piece_bytes
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id: first,
+      response: untrusted_wire.BlobPutAnswered(blob_transfer.Accepted(
+        held: blob_transfer.piece_bytes,
+      )),
+    ),
+  )
+  let #(second, request) = blob_request(stream)
+  let assert untrusted_wire.BlobPutRequest(piece:, ..) = request
+  assert piece.offset == blob_transfer.piece_bytes
+  assert bit_array.byte_size(piece.bytes) == 10
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id: second,
+      response: untrusted_wire.BlobPutAnswered(blob_transfer.Stored),
+    ),
+  )
+
+  assert process.receive(ended, 5000)
+    == Ok(Ok(blob_transfer.Placed(blob:, sent: 2)))
+  stop(rig)
+}
+
+pub fn a_blob_the_executor_holds_is_placed_with_no_bytes_test() {
+  let rig = start("blob-held")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(path, blob) = blob_file("held", 64)
+  let ended = placing(rig, "s1", path, blob)
+
+  let #(status, _request) = blob_request(stream)
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id: status,
+      response: untrusted_wire.BlobStatusAnswered(Ok(blob_transfer.Complete)),
+    ),
+  )
+  assert process.receive(ended, 5000)
+    == Ok(Ok(blob_transfer.Placed(blob:, sent: 0)))
+  assert rig.next_raw(stream, 300) == Error("silent")
+  stop(rig)
+}
+
+pub fn an_executor_that_keeps_correcting_the_offset_stalls_the_placement_test() {
+  let rig = start("blob-backwards")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(path, blob) = blob_file("backwards", 64)
+  let ended = placing(rig, "s1", path, blob)
+
+  let #(status, _request) = blob_request(stream)
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id: status,
+      response: untrusted_wire.BlobStatusAnswered(Ok(blob_transfer.Absent)),
+    ),
+  )
+
+  // The executor answers every piece by sending the sender backwards. The
+  // placement follows a bounded number of corrections and stops.
+  let stalled = bounce(stream, ended, 0)
+  assert stalled == Error(blob_transfer.Stalled)
+  assert process.is_alive(rig.link)
+  stop(rig)
+}
+
+/// Answers each piece with an out-of-order verdict until the placement ends.
+fn bounce(
+  stream: Stream,
+  ended: Subject(Result(blob_transfer.Placed, blob_transfer.Failure)),
+  answered: Int,
+) -> Result(blob_transfer.Placed, blob_transfer.Failure) {
+  assert answered <= blob_transfer.max_resyncs + 2
+  case process.receive(ended, 0) {
+    Ok(result) -> result
+    Error(Nil) ->
+      case rig.next(stream) {
+        Ok(untrusted_codec.RequestEnvelope(id:, ..)) -> {
+          rig.send(
+            stream,
+            untrusted_wire.Response(
+              id:,
+              response: untrusted_wire.BlobPutAnswered(blob_transfer.OutOfOrder(
+                expected: 0,
+              )),
+            ),
+          )
+          bounce(stream, ended, answered + 1)
+        }
+        _other -> {
+          let assert Ok(result) = process.receive(ended, 5000)
+            as "the placement ends"
+          result
+        }
+      }
+  }
+}
+
+pub fn an_offset_outside_the_blob_ends_the_placement_test() {
+  let rig = start("blob-outside")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(path, blob) = blob_file("outside", 64)
+  let ended = placing(rig, "s1", path, blob)
+
+  let #(status, _request) = blob_request(stream)
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id: status,
+      response: untrusted_wire.BlobStatusAnswered(Ok(blob_transfer.Absent)),
+    ),
+  )
+  let #(put, _request) = blob_request(stream)
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id: put,
+      response: untrusted_wire.BlobPutAnswered(blob_transfer.OutOfOrder(
+        expected: 1_000_000,
+      )),
+    ),
+  )
+  let assert Ok(Error(blob_transfer.Faulted(_reason))) =
+    process.receive(ended, 5000)
+    as "the placement refuses to read outside the blob"
+  stop(rig)
+}
+
+pub fn a_blob_for_a_session_with_no_binding_is_refused_at_once_test() {
+  let rig = start("blob-unbound")
+  let #(path, blob) = blob_file("unbound", 64)
+  let ended = placing(rig, "nobody", path, blob)
+  let assert Ok(Error(blob_transfer.Declined(_reason))) =
+    process.receive(ended, 5000)
+    as "a session the link never attached has nowhere to place a blob"
+  stop(rig)
 }
