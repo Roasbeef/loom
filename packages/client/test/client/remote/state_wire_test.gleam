@@ -210,7 +210,8 @@ pub fn an_attach_from_a_version_five_peer_is_refused_test() {
 
   // A peer of the version before the state messages never gets past the attach,
   // so it never sends a message the host cannot match.
-  assert attach(at, 5, <<1>>) == Error(protocol.VersionMismatch(supported: protocol.version))
+  assert attach(at, 5, <<1>>)
+    == Error(protocol.VersionMismatch(supported: protocol.version))
   let assert Ok(_attached) = attach(at, protocol.version, <<1>>)
 }
 
