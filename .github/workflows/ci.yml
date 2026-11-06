@@ -39,10 +39,11 @@
 #                      second cold build.
 #   check (linux, *)   `make check`'s package loop, split into five
 #                      parallel buckets sized so the slowest — client — sets
-#                      the pace: `client` in two shards (`client-1`,
-#                      `client-2`; the 6.8 min measured above grew past the
+#                      the pace: `client` in three shards (`client-1` to
+#                      `client-3`; the 6.8 min measured above grew past the
 #                      1200 s package budget once delegation ran the shipped
-#                      fixtures for real, so each shard is a half),
+#                      fixtures for real, and two halves grew past it again
+#                      by November 2026, so each shard is a third),
 #                      the mid-sized
 #                      `runtime`+`storage`+`session`+`events` group (~4.4
 #                      min combined), `conformance` alone (1.75 min), and
@@ -386,13 +387,19 @@ jobs:
           # step keyed on the client bucket tests startsWith(bucket,
           # 'client'), so both shards get the delegation, the rust-analyzer
           # install and LOOM_EVOLUTION_E2E. Do not raise the timeout or
-          # skip fixtures here; add a shard instead.
+          # skip fixtures here; add a shard instead. Two shards became three
+          # when client-1 reached the budget mid-run (run 42126579902, killed
+          # at 1200 s with no failing test) after passing at about twenty
+          # minutes on the runs before it.
           - bucket: client-1
             packages: client
-            client_shard: 1/2
+            client_shard: 1/3
           - bucket: client-2
             packages: client
-            client_shard: 2/2
+            client_shard: 2/3
+          - bucket: client-3
+            packages: client
+            client_shard: 3/3
           # The next tier down: four packages that were ~1.0-1.4 min each,
           # ~4.4 min combined — still under the client bucket's pace.
           - bucket: runtime-storage-session-events
@@ -822,6 +829,7 @@ jobs:
           .github/scripts/skip_census.sh "gate (linux)" \
             check-client-1.log \
             check-client-2.log \
+            check-client-3.log \
             check-runtime-storage-session-events.log \
             check-conformance.log \
             check-eval.log \
