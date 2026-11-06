@@ -34,6 +34,7 @@ import core/clock
 import filepath
 import gleam/erlang/process
 import gleam/option.{None, Some}
+import host/bootstrap
 import provider/secret
 import simplifile
 import storage/exec_ledger
@@ -165,8 +166,13 @@ fn serve(label: String) -> Placement {
       )),
     ))
     as "the owner port starts"
+  // The orchestrator's state root stands in for a daemon's, so it holds the
+  // entries a daemon makes before any capture: the capture's jail masks them,
+  // and on Linux a jail refuses to mask a path that does not exist.
   let orchestrator = filepath.directory_name(rig.root) <> "/orchestrator"
-  let assert Ok(Nil) = simplifile.create_directory_all(orchestrator)
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(orchestrator)
+  let assert Ok(orchestrator) = bootstrap.canonical_directory(orchestrator)
+  worktree_rig.establish(orchestrator)
   let #(store, _endpoint, capturer) = states_at(orchestrator)
   Placement(
     rig:,
