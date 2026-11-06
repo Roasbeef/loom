@@ -245,7 +245,9 @@ const book_ms = 5000
 pub const max_proxy_callbacks = 64
 
 /// Listens, starts the book and the acceptor, and answers the bound port.
-/// The book and the acceptor are linked to the caller.
+/// The book and the acceptor are linked to the caller; the daemon unlinks the
+/// acceptor, and the book, like the daemon's other services, ends only with
+/// the process that started it.
 ///
 /// ## Examples
 ///
@@ -311,7 +313,11 @@ fn handed(
     |> result.try(fn(started) {
       ffi_tls_stream.hand_to(raw, started.pid)
       |> result.replace(started.data)
-      |> result.replace_error(Nil)
+      |> result.map_error(fn(_failure) {
+        // A connection that never got its socket would wait in `Accepted`
+        // forever, so it is stopped here.
+        process.kill(started.pid)
+      })
     })
 
   // The handshake runs in the connection, after it owns the socket.
@@ -549,20 +555,22 @@ fn waiting(
 ) -> Connection {
   let host = data.host
   let connection = data.subject
+  let carrier = process.self()
 
-  // The waiter is unlinked on purpose: it must outlive this connection,
-  // because the host reads its death as an abort, and a dropped connection is
-  // a partition, which must never cancel a call. A weft run would tie it to a
-  // scope this connection owns.
+  // The waiter is unlinked on purpose: the host reads its death as an abort,
+  // so it must not die with this connection for any other reason. When the
+  // connection dies first, the waiter leaves with `noconnection`, which the
+  // host reads as a partition (`untrusted_bridge.ask_host`). A weft run would
+  // tie it to a scope this connection owns and kill it with another reason.
   case request {
     untrusted_wire.AckRequest(..) -> {
-      let _none = untrusted_bridge.ask_host(host, request, port)
+      let _none = untrusted_bridge.ask_host(host, request, port, carrier)
       data
     }
     _other -> {
       let waiter =
         process.spawn_unlinked(fn() {
-          let response = untrusted_bridge.ask_host(host, request, port)
+          let response = untrusted_bridge.ask_host(host, request, port, carrier)
           process.send(connection, Replied(id:, response:))
         })
       Connection(..data, waiters: dict.insert(data.waiters, id, waiter))
@@ -860,8 +868,14 @@ fn proxy(
   case event {
     Owner(message:) ->
       actor.continue(forwarded(state, untrusted_bridge.callback_of(message)))
+
+    // A callback still outstanding went out on the earlier connection, whose
+    // answer the link no longer sends, so it is failed now; the earlier
+    // connection's `DOWN` may arrive after this, or not count.
     Control(Connected(connection:)) ->
-      actor.continue(ProxyState(..state, connection: Some(connection)))
+      actor.continue(failed_all(
+        ProxyState(..state, connection: Some(connection)),
+      ))
     Control(Disconnected) ->
       actor.continue(failed_all(ProxyState(..state, connection: None)))
     Control(Answered(id:, body:)) -> actor.continue(settled(state, id, body))

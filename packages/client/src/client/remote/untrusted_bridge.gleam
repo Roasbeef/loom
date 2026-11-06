@@ -59,6 +59,7 @@ import client/state_transfer
 import codemode/satellite
 import core/ids.{type Seq}
 import core/json.{type JsonValue}
+import gleam/erlang/atom
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/option.{type Option, None, Some}
@@ -168,6 +169,15 @@ pub type OwnerReply {
 
   /// `AskGitIdentity`'s.
   GitIdentityReply(subject: Subject(Option(protocol.GitIdentity)))
+}
+
+/// What a waiter heard while it waited on the host.
+type Heard {
+  /// The host answered, or went away.
+  Heard(response: Response)
+
+  /// The connection that carries the request died first.
+  Partitioned
 }
 
 /// What the executor's proxy does with one `OwnerMessage`.
@@ -720,7 +730,12 @@ pub fn refused_answer(callback: Callback, reason: String) -> Option(Answer) {
 /// its `DOWN`, which is answered as an executor fault. An `Ack` has no answer.
 ///
 /// `owner_port` is the proxy that stands in for the session's owner port, and
-/// only an attach uses it.
+/// only an attach uses it. `connection` is the process that carries the
+/// orchestrator's link: if it dies before the answer, this process exits with
+/// the reason `noconnection`, which the host reads as a partition and never as
+/// an abort. A trusted host sees the same reason when distribution drops, and
+/// after the orchestrator re-sends the request on a new connection, the new
+/// waiter is the only one left, so a later cancel still aborts the call.
 ///
 /// ## Examples
 ///
@@ -732,6 +747,7 @@ pub fn ask_host(
   host: Address(HostMessage(RemoteCensus)),
   request: Request,
   owner_port: Option(Subject(OwnerMessage)),
+  connection: Pid,
 ) -> Option(Response) {
   let fault = protocol.ExecutorFault("the executor's host is gone")
 
@@ -750,6 +766,7 @@ pub fn ask_host(
     ->
       Some(asked_host(
         host,
+        connection,
         protocol.Attach(
           version,
           session,
@@ -776,6 +793,7 @@ pub fn ask_host(
     ->
       Some(asked_host(
         host,
+        connection,
         protocol.Run(key, incarnation, token, run, authority, _),
         untrusted_wire.RunAnswered,
         untrusted_wire.RunAnswered(protocol.RunRefused(fault)),
@@ -786,7 +804,7 @@ pub fn ask_host(
       None
     }
 
-    _, _ -> Some(ledger_ask(host, request, fault))
+    _, _ -> Some(ledger_ask(host, connection, request, fault))
   }
 }
 
@@ -794,6 +812,7 @@ pub fn ask_host(
 /// so each match reads as one table.
 fn ledger_ask(
   host: Address(HostMessage(RemoteCensus)),
+  connection: Pid,
   request: Request,
   fault: protocol.Refusal,
 ) -> Response {
@@ -805,6 +824,7 @@ fn ledger_ask(
     untrusted_wire.QueryRequest(key:) ->
       asked_host(
         host,
+        connection,
         protocol.Query(key, _),
         untrusted_wire.LookupAnswered,
         untrusted_wire.LookupAnswered(Error(fault)),
@@ -812,6 +832,7 @@ fn ledger_ask(
     untrusted_wire.QueryOrFenceRequest(key:, incarnation:) ->
       asked_host(
         host,
+        connection,
         protocol.QueryOrFence(key, incarnation, _),
         untrusted_wire.LookupAnswered,
         untrusted_wire.LookupAnswered(Error(fault)),
@@ -819,6 +840,7 @@ fn ledger_ask(
     untrusted_wire.ListUnackedRequest(session:) ->
       asked_host(
         host,
+        connection,
         protocol.ListUnacked(session, _),
         untrusted_wire.UnackedAnswered,
         untrusted_wire.UnackedAnswered(Error(fault)),
@@ -826,6 +848,7 @@ fn ledger_ask(
     untrusted_wire.CloseRequest(session:, workspace:, incarnation:) ->
       asked_host(
         host,
+        connection,
         protocol.Close(session, workspace, incarnation, _),
         untrusted_wire.CloseAnswered,
         untrusted_wire.CloseAnswered(Error(fault)),
@@ -839,6 +862,7 @@ fn ledger_ask(
     ) ->
       asked_host(
         host,
+        connection,
         protocol.StateCapture(session, incarnation, token, basis, content, _),
         untrusted_wire.CaptureAnswered,
         untrusted_wire.CaptureAnswered(Error(fault)),
@@ -846,6 +870,7 @@ fn ledger_ask(
     untrusted_wire.StateApplyRequest(session:, incarnation:, token:, state:) ->
       asked_host(
         host,
+        connection,
         protocol.StateApply(session, incarnation, token, state, _),
         untrusted_wire.ApplyAnswered,
         untrusted_wire.ApplyAnswered(Error(fault)),
@@ -853,6 +878,7 @@ fn ledger_ask(
     untrusted_wire.StateChunkRequest(piece:) ->
       asked_host(
         host,
+        connection,
         protocol.StateChunk(piece, _),
         untrusted_wire.ChunkAnswered,
         untrusted_wire.ChunkAnswered(state_transfer.Failed(reason)),
@@ -860,6 +886,7 @@ fn ledger_ask(
     untrusted_wire.StateStatusRequest(hash:) ->
       asked_host(
         host,
+        connection,
         protocol.StateStatus(hash, _),
         untrusted_wire.StatusAnswered,
         untrusted_wire.StatusAnswered(Error(reason)),
@@ -867,6 +894,7 @@ fn ledger_ask(
     untrusted_wire.StateFetchRequest(hash:, offset:) ->
       asked_host(
         host,
+        connection,
         protocol.StateFetch(hash, offset, _),
         untrusted_wire.FetchAnswered,
         untrusted_wire.FetchAnswered(state_transfer.FetchFailed(reason)),
@@ -886,6 +914,7 @@ fn ledger_ask(
 /// admits.
 fn asked_host(
   host: Address(HostMessage(RemoteCensus)),
+  connection: Pid,
   make: fn(Subject(reply)) -> HostMessage(RemoteCensus),
   wrap: fn(reply) -> Response,
   lost: Response,
@@ -895,14 +924,27 @@ fn asked_host(
   // Watching before sending means a host that is already gone answers with
   // its `DOWN` instead of with silence.
   let watch = address.watch(host)
+  let carrier = process.monitor(connection)
   address.deliver(host, make(reply))
-  let answer =
+  let heard =
     process.new_selector()
-    |> process.select_map(reply, wrap)
-    |> process.select_specific_monitor(watch, fn(_down) { lost })
+    |> process.select_map(reply, fn(answer) { Heard(wrap(answer)) })
+    |> process.select_specific_monitor(watch, fn(_down) { Heard(lost) })
+    |> process.select_specific_monitor(carrier, fn(_down) { Partitioned })
     |> process.selector_receive_forever
   process.demonitor_process(watch)
-  answer
+  process.demonitor_process(carrier)
+
+  // A connection that died first is a partition: this process leaves with
+  // the reason the host reads as one, and the request's answer, which the
+  // host still commits to its ledger, waits for the orchestrator's re-send.
+  case heard {
+    Heard(response) -> response
+    Partitioned -> {
+      process.send_abnormal_exit(process.self(), atom.create("noconnection"))
+      lost
+    }
+  }
 }
 
 /// An attach reply's census, projected onto the wire.

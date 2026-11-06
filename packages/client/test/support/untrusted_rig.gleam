@@ -20,6 +20,8 @@ pub type Pair {
     orchestrator_pin: BitArray,
     executor: ffi_tls_stream.Credentials,
     executor_pin: BitArray,
+    /// A third leaf under the same authority, which neither side pins.
+    stray: ffi_tls_stream.Credentials,
   )
 }
 
@@ -30,7 +32,8 @@ pub fn pair(name: String) -> Pair {
   let #(orchestrator, orchestrator_pin) =
     leaf(directory, "orchestrator", ca, ca_key)
   let #(executor, executor_pin) = leaf(directory, "executor", ca, ca_key)
-  Pair(orchestrator:, orchestrator_pin:, executor:, executor_pin:)
+  let #(stray, _stray_pin) = leaf(directory, "stray", ca, ca_key)
+  Pair(orchestrator:, orchestrator_pin:, executor:, executor_pin:, stray:)
 }
 
 /// A second authority's leaf, which chains to nothing the pair trusts.
@@ -142,6 +145,39 @@ pub fn closed(stream: Stream, within_ms: Int) -> Bool {
     Error("ended") | Error("broken") -> True
     Ok(_frame) | Error(_other) -> False
   }
+}
+
+/// Dials a listener as an orchestrator holding `credentials`, expecting the
+/// executor's leaf to hash to `pin`.
+pub fn dial(
+  port: Int,
+  credentials: ffi_tls_stream.Credentials,
+  pin: BitArray,
+) -> Result(Stream, ffi_tls_stream.Failure) {
+  ffi_tls_stream.connect(
+    "127.0.0.1",
+    port,
+    credentials,
+    pin,
+    untrusted_wire.max_frame_bytes,
+    10_000,
+  )
+}
+
+/// Dials and greets as an honest orchestrator would.
+pub fn hello(port: Int, pair: Pair) -> Stream {
+  let assert Ok(stream) = dial(port, pair.orchestrator, pair.executor_pin)
+    as "the gateway admits the orchestrator"
+  send(
+    stream,
+    untrusted_wire.Hello(
+      wire: untrusted_wire.version,
+      protocol: protocol.version,
+    ),
+  )
+  let assert Ok(untrusted_codec.WelcomeEnvelope(..)) = next(stream)
+    as "the gateway welcomes the orchestrator"
+  stream
 }
 
 /// Sends a frame.
