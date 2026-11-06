@@ -44,6 +44,11 @@
 //// failure its type allows and logged. An accepted callback runs in a weft
 //// task against the owner port, so the link never waits on an owner.
 ////
+//// A call to a host's own module (`host.<module>`, protocol-change/110) is
+//// held to one more condition: the `run` it names must be a `code_mode` call.
+//// Only a program reaches a host module, so a host call made under any other
+//// tool call of the session is forged and is refused before the owner sees it.
+////
 //// ## Violations
 ////
 //// A frame that does not decode, a response for an id the link never issued,
@@ -76,6 +81,7 @@
 
 import broker/broker
 import broker/internal/ffi_crypto
+import client/host_seam
 import client/internal/ffi_remote
 import client/internal/ffi_tls_stream.{type Stream}
 import client/remote/address.{type Address}
@@ -94,9 +100,11 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import runtime/effects
 import telemetry/field
 import telemetry/log.{type Logger}
+import tools/codemode as codemode_tool
 import weft
 import weft/state_machine as sm
 
@@ -998,8 +1006,42 @@ fn checked(
   callback: Callback,
 ) -> Result(Subject(OwnerMessage), String) {
   use Nil <- result.try(about_work(data, held.session, callback))
+  use Nil <- result.try(from_a_program(data, held.session, callback))
   use Nil <- result.try(within_bounds(data, held, callback))
   Ok(held.port)
+}
+
+/// A host module's capability must come from a `code_mode` call in flight.
+///
+/// `about_work` has already found a `run` at the callback's coordinates and
+/// strand. A host function is one of the host's tools reached through a
+/// program, so the `run` must also be the session's `code_mode` call: a
+/// hostile executor holding some other call open cannot use it to reach the
+/// host's tools. Every other capability keeps `about_work`'s rule, which an
+/// extension's own owner-bound calls rely on.
+fn from_a_program(
+  data: Data,
+  session: String,
+  callback: Callback,
+) -> Result(Nil, String) {
+  case callback {
+    untrusted_wire.CapabilityCall(call: asked) ->
+      case string.starts_with(asked.cap, host_seam.cap_prefix) {
+        False -> Ok(Nil)
+        True ->
+          in_flight(data, session, fn(key, run) {
+            key.op == ids.op_id_to_string(asked.op_id)
+            && key.step == asked.step_id
+            && key.source_index == asked.source_index
+            && run.strand == asked.strand
+            && run.call.name == codemode_tool.tool_name
+          })
+          |> result.replace_error(
+            "a host capability names no code_mode call in flight",
+          )
+      }
+    _other -> Ok(Nil)
+  }
 }
 
 /// The four callbacks that name a tool call must name a `run` this link has
