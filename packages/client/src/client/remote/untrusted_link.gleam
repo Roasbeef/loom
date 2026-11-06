@@ -89,6 +89,7 @@ import client/remote/untrusted_wire.{type Answer, type Callback, type Request}
 import core/corruption
 import core/ids
 import core/json
+import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/node
 import gleam/erlang/process.{type Monitor, type Name, type Pid, type Subject}
@@ -695,6 +696,7 @@ fn queued(
 ) -> sm.Next(Phase, Data, Message) {
   let id = data.next_id
   let frame = encoded(untrusted_wire.Request(id:, request:))
+  use <- too_large_to_send(data, frame, reply)
   let #(data, monitor) = watch(data, requester, Asker(id))
   let data = bound(data, request, port)
   let pending = Pending(request:, frame:, reply:, monitor:, fetching: Whole)
@@ -711,6 +713,29 @@ fn queued(
     Open(stream:) -> sent(stream, data, frame)
     Idle -> dial(data)
     Dialing | Greeting(..) | Resting -> sm.keep(data)
+  }
+}
+
+/// Refuses a request whose frame is larger than the executor's socket accepts,
+/// instead of keeping it: kept, it would close the connection on every send and
+/// be sent again on every reconnect, and nothing behind it would move. It was
+/// never sent, so the refusal is the honest answer.
+fn too_large_to_send(
+  data: Data,
+  frame: BitArray,
+  reply: Reply,
+  next: fn() -> sm.Next(Phase, Data, Message),
+) -> sm.Next(Phase, Data, Message) {
+  // Every frame the link sends is bounded by what the peer's socket admits.
+  case bit_array.byte_size(frame) > untrusted_wire.max_frame_bytes {
+    True -> {
+      untrusted_bridge.refuse(
+        reply,
+        protocol.Invalid("the request is larger than one frame of the link"),
+      )
+      sm.keep(data)
+    }
+    False -> next()
   }
 }
 
@@ -1075,7 +1100,7 @@ fn responded(
         Ok(response) -> {
           let _delivered =
             untrusted_bridge.deliver(pending.reply, response, data.broker)
-          armed(stream, settle(data, id, pending))
+          next_waiting(stream, settle(data, id, pending))
         }
       }
   }
@@ -1118,8 +1143,12 @@ fn oversized(
         Some(_key), Ok(fetch) ->
           fetch_for(stream, data, id, pending, fetch, size, digest)
         None, _ ->
-          armed(stream, lost(data, id, pending, "a reply too large to carry"))
-        _, Error(reason) -> armed(stream, lost(data, id, pending, reason))
+          next_waiting(
+            stream,
+            lost(data, id, pending, "a reply too large to carry"),
+          )
+        _, Error(reason) ->
+          next_waiting(stream, lost(data, id, pending, reason))
       }
   }
 }
@@ -1645,6 +1674,7 @@ fn forwarded(
   // the entry, and answers too if no outcome came first.
   case pulled {
     weft.PulledOutcome(outcome: weft.Completed(value: answer, ..)) -> {
+      let answer = fitting(binding, id, callback, answer)
       let #(data, frame) = answer_once(data, binding, id, answer)
       send_on_open(phase, data, frame)
     }
@@ -1664,6 +1694,36 @@ fn forwarded(
       send_on_open(phase, data, frame)
       |> sm.with_selector(selector_of(data))
     }
+  }
+}
+
+/// The owner's answer, or the callback's failure when the answer's frame would
+/// be larger than the executor's socket accepts: sent whole, it would close the
+/// connection and the proxy would fail the callback anyway, so failing it here
+/// keeps the connection.
+fn fitting(
+  binding: BitArray,
+  id: Int,
+  callback: Callback,
+  answer: Option(Answer),
+) -> Option(Answer) {
+  // A tail has no answer and so no frame.
+  let size = case answer {
+    Some(answer) ->
+      bit_array.byte_size(
+        encoded(untrusted_wire.Answer(binding:, id:, answer:)),
+      )
+    None -> 0
+  }
+
+  // Only an answer that fits a frame is sent as it is.
+  case size > untrusted_wire.max_frame_bytes {
+    True ->
+      untrusted_bridge.refused_answer(
+        callback,
+        "the owner's answer is larger than one frame of the link",
+      )
+    False -> answer
   }
 }
 
@@ -1797,26 +1857,25 @@ fn cancelled(
   id: Int,
   piece: Option(Int),
 ) -> sm.Next(Phase, Data, Message) {
-  let cancel = encoded(untrusted_wire.Cancel(id))
+  // A fetch's piece is cancelled beside its request.
+  let #(data, cancels) = case piece {
+    None -> #(data, [id])
+    Some(piece) -> #(Data(..data, pieces: dict.delete(data.pieces, piece)), [
+      id,
+      piece,
+    ])
+  }
 
-  // A fetch's piece is cancelled beside its request, and its place goes to the
-  // oldest waiting fetch.
-  case piece {
-    None -> sent(stream, data, cancel)
-    Some(piece) -> {
-      let data = Data(..data, pieces: dict.delete(data.pieces, piece))
-      let written =
-        ffi_tls_stream.send(stream, cancel)
-        |> result.try(fn(_sent) {
-          ffi_tls_stream.send(stream, encoded(untrusted_wire.Cancel(piece)))
-        })
+  let written =
+    list.try_each(cancels, fn(cancelled) {
+      ffi_tls_stream.send(stream, encoded(untrusted_wire.Cancel(cancelled)))
+    })
 
-      // Either cancel failing is a dead connection.
-      case written {
-        Ok(Nil) -> next_waiting(stream, data)
-        Error(_failure) -> rest(stream, data, "a send failed")
-      }
-    }
+  // Every request that leaves an open link may free a fetch's place, so the
+  // oldest waiting fetch is offered it; a failed cancel is a dead connection.
+  case written {
+    Ok(Nil) -> next_waiting(stream, data)
+    Error(_failure) -> rest(stream, data, "a send failed")
   }
 }
 

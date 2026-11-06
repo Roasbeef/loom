@@ -847,8 +847,7 @@ pub fn an_outcome_piece_nobody_asked_for_closes_the_connection_test() {
     run_in_flight(rig, stream, "s1", fixtures.tool_run("call_1", 0))
   let #(bytes, size, digest) = encoding_of(effects.ToolFailed(reason: "no"))
 
-  // A piece for the run's own id, which is not a piece request, does not
-  // decode as the run's reply; one for an id never minted is a violation.
+  // A piece for an id never minted is a violation.
   serve_piece(stream, 999, bytes, size, digest, 0)
   assert rig.closed(stream, 5000)
   assert process.receive(answers, 300) == Error(Nil)
@@ -921,6 +920,77 @@ pub fn a_fetch_resumes_after_a_reconnect_and_a_cancel_reaches_both_ids_test() {
   let assert Ok(untrusted_codec.CancelEnvelope(id: cancelled)) = rig.next(again)
     as "the piece is cancelled"
   assert cancelled == third
+  stop(rig)
+}
+
+pub fn a_fetch_place_freed_by_any_ending_goes_to_the_waiting_fetch_test() {
+  let rig = start("fetch-waiting")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(first, _asker, first_answers) =
+    run_in_flight(rig, stream, "s1", fixtures.tool_run("call_1", 0))
+  let #(second, _asker, _answers) =
+    run_in_flight(rig, stream, "s1", fixtures.tool_run("call_2", 0))
+  let #(third, _asker, _answers) =
+    run_in_flight(rig, stream, "s1", fixtures.tool_run("call_3", 0))
+  let #(_bytes, size, digest) = encoding_of(effects.ToolFailed(reason: "no"))
+
+  // Two fetches take the link's places; the third waits.
+  rig.send(stream, untrusted_wire.Oversized(id: first, size:, digest:))
+  let #(_piece, _at) = piece_request(stream)
+  rig.send(stream, untrusted_wire.Oversized(id: second, size:, digest:))
+  let #(_piece, _at) = piece_request(stream)
+  rig.send(stream, untrusted_wire.Oversized(id: third, size:, digest:))
+  assert rig.next_raw(stream, 300) == Error("silent")
+
+  // The first ends in a way other than its fetch: the executor answers it
+  // whole. Its place goes to the waiting fetch at once.
+  let outcome = effects.ToolFailed(reason: "whole after all")
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id: first,
+      response: untrusted_wire.RunAnswered(protocol.RunFinished(outcome)),
+    ),
+  )
+  assert process.receive(first_answers, 5000)
+    == Ok(protocol.RunFinished(outcome))
+  let assert Ok(untrusted_codec.RequestEnvelope(body:, ..)) = rig.next(stream)
+    as "the waiting fetch asks for its first piece"
+  let assert Ok(untrusted_wire.OutcomePieceRequest(key:, offset: 0)) =
+    untrusted_codec.decode_request(body)
+    as "it is the third call's piece"
+  assert key == protocol.key_of("s1", fixtures.tool_run("call_3", 0))
+  stop(rig)
+}
+
+pub fn a_request_larger_than_a_frame_is_refused_and_not_kept_test() {
+  let rig = start("request-too-large")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let run =
+    effects.ToolRun(
+      ..fixtures.tool_run("call_1", 0),
+      arguments: json.String(string.repeat("a", untrusted_wire.max_frame_bytes)),
+    )
+
+  // Kept, it would close the connection on every send and every reconnect.
+  let reply = process.new_subject()
+  address.deliver(
+    rig.address,
+    protocol.Run(
+      key: protocol.key_of("s1", run),
+      incarnation: 0,
+      token: <<"token":utf8>>,
+      run:,
+      authority: fixtures.authority(),
+      reply:,
+    ),
+  )
+  let assert Ok(protocol.RunRefused(protocol.Invalid(_reason))) =
+    process.receive(reply, 5000)
+    as "the run is refused, not sent"
+  assert rig.next_raw(stream, 300) == Error("silent")
   stop(rig)
 }
 
