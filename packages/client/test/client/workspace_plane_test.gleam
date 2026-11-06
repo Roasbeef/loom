@@ -142,6 +142,13 @@ fn with_started_as(
     Nil,
 ) -> Nil {
   let prepared = prepared_as(settings, author)
+
+  // The base always masks the owner's history index, because the owner's boot
+  // probe creates it before the half starts. This fixture's owner holds
+  // nothing, so it creates the file itself: Linux's jail refuses to mask a
+  // path that does not exist under a parent it cannot write.
+  let assert Ok(Nil) = simplifile.write(files(settings).index, "")
+    as "the owner's index exists before the half starts"
   let published = process.new_subject()
   let assert Ok(namespace) = address.start() as "a namespace for the plane"
   let assert Ok(local) =
