@@ -17,7 +17,8 @@ with `mcp.tool_result`.
 Remote: `serve.Settings.code_mode_host` is built once in `assemble_in`
 (`host_layer_of`); a bad declaration refuses the session. The local plane gets
 `over_host`; a remote session's owner side gets `OwnerSide.host`
-(`codemode.OwnerHost(layer, clock)`) and the plan gets `McpPlan.host`
+(`codemode.OwnerHost(layer, clock, holds)`, the Agency's check even on a
+workspace-only owner) and the plan gets `McpPlan.host`
 (`owner_codemode.host_plan`, `protocol.HostPlan`, version 7). The executor
 applies it with `owner_codemode.hosting` (`host_seam.elsewhere`, no tools), and
 `cap_placement` makes `host.` owner-bound. `owner_answering` runs

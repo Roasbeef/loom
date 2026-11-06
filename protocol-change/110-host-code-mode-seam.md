@@ -168,9 +168,11 @@ Code mode runs where the session's workspace is placed, as it does today.
   with `owner_codemode.hosting`, so it vets and describes programs under the
   seam. `cap_placement` makes `host.` owner-bound, so `over_owner` sends every
   host call back as an `OwnerCapCall`. On the owner, `OwnerSide.host` holds the
-  layer and the session's clock, and `owner_answering` answers the call from
-  the same arm, with the Agency's `holds` and a context of the call's
-  coordinates.
+  layer, the session's clock and the strand's tool-list check, and
+  `owner_answering` answers the call from the same arm under a context of the
+  call's coordinates. The check is handed over rather than read off the
+  surface, because an owner serving the workspace seam alone has no Agency on
+  its surface and a local session of the same choice still asks it.
 
 `client/serve` builds the layer once per session from `Settings.code_mode_host`
 and refuses the session with the reason if the declaration is wrong. It applies
@@ -262,6 +264,12 @@ It cannot:
   per-stage checks do). Narrowing this to the calls the program actually made
   would need the orchestrator to see the program's calls, which only the
   executor sees.
+- A host function runs the tool's `run` directly, as an evolution operation
+  does. The direct call's scheduling (`execution_mode`), its sandbox
+  `requirements` and its approval prompt do not apply: a tool that needs an
+  operator's approval is refused in band from a program, and one that relies on
+  being `Exclusive` within a batch is not serialized against the program's other
+  calls. The tool's own checks and refusal are unchanged.
 - A host tool runs in the host's VM under a context with no workspace. A tool
   that reads `ctx.workspace` or the filesystem seam gets nothing on an owner.
   Host modules are for the host's own state.
