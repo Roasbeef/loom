@@ -4265,7 +4265,11 @@ fn assemble_in(
               },
               // The host's tools answer its module here, and the seam is held
               // against an executor that ignores it.
-              host: option.map(host_layer, codemode_wiring.OwnerHost(_, clock)),
+              host: option.map(host_layer, codemode_wiring.OwnerHost(
+                _,
+                clock,
+                Some(over.holds),
+              )),
             )
           }
           owner_codemode.answering_executions(

@@ -82,7 +82,9 @@ import tools/tool
 pub type HostSeam {
   HostSeam(
     /// The `cap/*` modules a program may import, a subset of what the seam
-    /// would admit. A module named here that the seam does not admit stays
+    /// would admit. An MCP façade is named by its generated module, the
+    /// server's name mangled as `mcp/name` does, which is not checked here
+    /// because the MCP layer is not known when the seam is built. A module named here that the seam does not admit stays
     /// out; a module the seam admits and this list omits is refused at
     /// vetting. Standard-library modules are not affected.
     imports: List(String),
@@ -683,7 +685,8 @@ fn answer(
 
 /// A tool's outcome as an MCP-shaped result: its text blocks, whether it
 /// failed, and its details as the structured value when the function declared
-/// an output and the tool succeeded.
+/// an output and the tool succeeded. An image block travels as its kind alone,
+/// as an MCP server's does, so a program does not receive the image.
 fn rendered(function: HostFunction, outcome: tool.ToolOutcome) -> CapOutcome {
   // Only a declared output on a success is decoded by the program, so only
   // then do the details travel as the structured value.

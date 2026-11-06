@@ -247,7 +247,9 @@ pub fn a_host_call_reaches_the_owner_only_while_its_program_runs_test() {
   assert process.receive(seen, 2000) == Ok("host.aegis")
 
   // The `code_mode` call ends; the program's binding is still live, but a host
-  // call now names no program, so it is refused.
+  // call now names no program, so it is refused. The response and the callback
+  // travel on one stream and the link reads them in order, so no wait is
+  // needed between them.
   let run = code_mode_run()
   rig.send(
     stream,
@@ -258,7 +260,6 @@ pub fn a_host_call_reaches_the_owner_only_while_its_program_runs_test() {
       ),
     ),
   )
-  process.sleep(200)
   let assert untrusted_wire.CapabilityAnswered(Error(_refused)) =
     called(stream, binding, 2, host_call())
   assert unseen(seen)

@@ -440,14 +440,25 @@ fn owner(
   holds: Holds,
 ) -> fn(owner_services.OwnerCapCall) ->
   Result(framing.CapOutcome, satellite.CapDenial) {
+  owner_over(codemode.BothSeams, holds)
+}
+
+// An owner serving `seams`, holding the host seam with the Agency's check, as
+// `client/serve` builds one.
+fn owner_over(
+  seams: codemode.Seams,
+  holds: Holds,
+) -> fn(owner_services.OwnerCapCall) ->
+  Result(framing.CapOutcome, satellite.CapDenial) {
+  let agency = agency(holds)
   let side =
     codemode.OwnerSide(
-      ..codemode.owner_serving(
-        codemode.BothSeams,
-        over: agency(holds),
-        schedules: None,
-      ),
-      host: Some(codemode.OwnerHost(host_fixtures.layer(), clock.fixed(at: 0))),
+      ..codemode.owner_serving(seams, over: agency, schedules: None),
+      host: Some(codemode.OwnerHost(
+        host_fixtures.layer(),
+        clock.fixed(at: 0),
+        Some(agency.holds),
+      )),
     )
   codemode.owner_answering(side, beyond: fn(_strand, router) { router })
 }
@@ -463,6 +474,21 @@ fn owner_call(cap: String, args: MsgPackValue) -> owner_services.OwnerCapCall {
     args:,
     ordinal: 0,
   )
+}
+
+pub fn a_workspace_only_owner_still_asks_for_the_tool_test() {
+  // An owner that serves the workspace seam alone has no Agency on its
+  // surface. The host call is still held to the strand's tools, as a local
+  // session of the same choice is.
+  let call =
+    host_args("file_finding", [#("title", "x"), #("stage", "hypotheses")])
+  let assert Ok(framing.CapErr(code:, ..)) =
+    owner_over(codemode.WorkspaceOnly, HoldsNothing)(owner_call(
+      "host.aegis",
+      call,
+    ))
+    as "the tool-list check answers in band"
+  assert code == "tool_not_held"
 }
 
 pub fn an_owner_refuses_what_the_hosts_seam_excludes_test() {

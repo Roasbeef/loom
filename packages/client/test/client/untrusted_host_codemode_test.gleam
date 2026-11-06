@@ -212,7 +212,11 @@ fn drive(seed: String) -> Nil {
         over: owner_codemode_test.agency_over(seen),
         schedules: None,
       ),
-      host: Some(codemode.OwnerHost(layer, clock.fixed(at: 0))),
+      host: Some(codemode.OwnerHost(
+        layer,
+        clock.fixed(at: 0),
+        Some(fn(_caller, _tool) { Ok(Nil) }),
+      )),
     )
   let services =
     owner_services.OwnerServices(
@@ -278,6 +282,7 @@ fn drive(seed: String) -> Nil {
     surface.run(attachment.surface, call(refused_program, "call_2", 1))
     |> text_of
   let assert Ok(rejection) = refused as "the refusal is a result"
+  assert string.contains(rejection, "import not allowed")
   assert string.contains(rejection, "cap/fs")
 
   process.unlink(link)

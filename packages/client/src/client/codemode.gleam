@@ -2939,10 +2939,22 @@ pub type OwnerSide {
   )
 }
 
-/// A host seam as an owner answers it: the layer and the session's clock,
-/// which the host's tools read through their context.
+/// A host seam as an owner answers it: the layer, the session's clock, which
+/// the host's tools read through their context, and the strand's tool-list
+/// check.
+///
+/// `holds` is carried here rather than read off the surface because an owner
+/// that serves the workspace seam alone has a surface with no Agency, while a
+/// local session of the same choice still asks `holds` for every seam
+/// (`serving` fills `strand_tools` regardless). A host call must be held to
+/// the strand's tools on both paths, so the owner is handed the check
+/// directly.
 pub type OwnerHost {
-  OwnerHost(layer: host_seam.Layer, clock: Clock)
+  OwnerHost(
+    layer: host_seam.Layer,
+    clock: Clock,
+    holds: Option(fn(Caller, String) -> Result(Nil, Refusal)),
+  )
 }
 
 /// Reads the owner's side off a host configuration.
@@ -2960,7 +2972,11 @@ pub fn owner_side(config: Config) -> OwnerSide {
     schedules: config.schedules,
     mcp: config.mcp,
     evolution: None,
-    host: option.map(config.host, OwnerHost(_, config.clock)),
+    host: option.map(config.host, OwnerHost(
+      _,
+      config.clock,
+      config.strand_tools,
+    )),
   )
 }
 
@@ -3146,7 +3162,7 @@ pub fn owner_answering(
       )
       |> beyond(call.strand, _)
       |> with_evolution(side.evolution, call, _)
-      |> with_host(side.host, arms.agency, call, _)
+      |> with_host(side.host, call, _)
 
     // Dispatch owner request through router.
     case router(owner_request(call)) {
@@ -3198,21 +3214,21 @@ fn host_admits(
 }
 
 // The host module's calls over `router`, answered from the host's tools under
-// a context rebuilt from the call. The tool-list check is the Agency's, so an
-// owner with no messaging plane asks none, as a local host with none would.
+// a context rebuilt from the call. The tool-list check is the one the host
+// handed over, so an owner with no messaging plane asks none, as a local host
+// with none would.
 /// Attaches the host seam's arm to an owner-bound call's chain.
 fn with_host(
   host: Option(OwnerHost),
-  agency: Option(Agency),
   call: owner_services.OwnerCapCall,
   router: satellite.CapRouter,
 ) -> satellite.CapRouter {
   case host {
     None -> router
-    Some(OwnerHost(layer:, clock:)) ->
+    Some(OwnerHost(layer:, clock:, holds:)) ->
       host_seam.routing(
         layer,
-        holds: option.map(agency, fn(agency) { agency.holds }),
+        holds:,
         ctx: owner_context(call, clock),
         strand: call.strand,
         source_index: call.source_index,
