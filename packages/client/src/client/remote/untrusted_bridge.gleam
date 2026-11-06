@@ -11,7 +11,7 @@
 ////
 //// `outbound` takes a `HostMessage` the surface sent and either makes it a
 //// wire `Request`, keeping its subject as a typed `Reply`, or answers it at
-//// once when slice 1 does not carry it. `deliver` hands a decoded `Response`
+//// once when the link does not carry it (an evolution request). `deliver` hands a decoded `Response`
 //// to the `Reply` it answers, and `refuse` answers a `Reply` with a refusal
 //// when no response will come. `owner_answer` runs a `Callback` against the
 //// session's owner port, which is how a callback that passed the link's checks
@@ -42,6 +42,7 @@
 import broker/broker
 import broker/framing
 import broker/internal/call
+import client/codemode as codemode_wiring
 import client/escalate
 import client/extension/hooks
 import client/notice
@@ -84,7 +85,7 @@ pub type Outbound {
     port: Option(#(String, Subject(OwnerMessage))),
   )
 
-  /// The message is not carried by slice 1 and has been answered with a
+  /// The message is not carried by the link and has been answered with a
   /// refusal already.
   Answered
 }
@@ -122,6 +123,9 @@ pub type Reply {
 
   /// `StateFetch`'s.
   FetchReply(subject: Subject(state_transfer.Fetched))
+
+  /// `StartExecution`'s.
+  ExecutionReply(subject: Subject(protocol.ExecutionAnswer))
 }
 
 /// An `OwnerMessage`'s reply subject, typed by what it waits for.
@@ -169,6 +173,16 @@ pub type OwnerReply {
 
   /// `AskGitIdentity`'s.
   GitIdentityReply(subject: Subject(Option(protocol.GitIdentity)))
+
+  /// `LaunchExecution`'s, with the launch's terms, from which a launch whose
+  /// answer never comes is told the handle it may have been given.
+  LaunchReply(
+    subject: Subject(Result(JsonValue, String)),
+    terms: owner_services.ExecutionTerms,
+  )
+
+  /// `InteractExecution`'s.
+  InteractReply(subject: Subject(Result(JsonValue, String)))
 }
 
 /// What a waiter heard while it waited on the host.
@@ -180,16 +194,15 @@ type Heard {
   Partitioned
 }
 
-/// What the executor's proxy does with one `OwnerMessage`.
+/// What the executor's proxy does with one `OwnerMessage`: send `callback`,
+/// with `reply` where its answer goes, or `None` for a tail. Every owner
+/// message has a wire form, so the proxy declines none.
 pub type Forward {
   /// Send `callback`; `reply` is where its answer goes, or `None` for a tail.
   Forwarded(callback: Callback, reply: Option(OwnerReply))
-
-  /// Not carried by slice 1, and already answered with a failure.
-  Declined
 }
 
-/// The text a message that slice 1 does not carry is refused with.
+/// The text a message that the link does not carry is refused with.
 pub const not_carried = "not carried over an untrusted executor link"
 
 /// The longest an escalation's answer is waited for, whatever the executor
@@ -208,6 +221,13 @@ const record_wait_ms = 15_000
 // How long an owner-bound capability may take, as `owner_link` allows.
 const capability_wait_ms = 120_000
 
+/// The longest a join of a background execution is waited for, whatever the
+/// executor says the call asked. The owner answers a join within its own poll
+/// (about half a minute), so this ceiling is reached only by an owner port that
+/// hangs; it bounds how long a hostile executor's interaction can hold a
+/// forwarder in that case.
+pub const max_join_ms = 3_600_000
+
 // The capability denial code a callback the link refused carries. It is not
 // `owner_unavailable`, because the owner is there and said no.
 const refused_code = "owner_refused"
@@ -218,9 +238,8 @@ const refused_code = "owner_refused"
 /// session's current one when the port is the same (a re-sent attach), or a
 /// new one.
 ///
-/// A message slice 1 does not carry (a background execution, an evolution
-/// request) is answered here with a refusal that names this link, and is
-/// never sent.
+/// A message the link does not carry (an evolution request) is answered here
+/// with a refusal that names this link, and is never sent.
 ///
 /// ## Examples
 ///
@@ -307,11 +326,12 @@ pub fn outbound(
   }
 }
 
-/// The state transport's five messages, and the messages slice 1 answers
-/// without sending, split from `outbound` so each match reads as one table.
+/// The state transport's five messages and the two of a background execution,
+/// and the messages the link answers without sending, split from `outbound` so
+/// each match reads as one table.
 fn state_outbound(message: HostMessage(RemoteCensus)) -> Outbound {
-  // The state messages are carried as they are; everything else that reaches
-  // this arm is a message the untrusted link does not carry yet.
+  // The state and execution messages are carried as they are; everything else
+  // that reaches this arm is a message the untrusted link does not carry yet.
   case message {
     protocol.StateCapture(
       session:,
@@ -361,22 +381,52 @@ fn state_outbound(message: HostMessage(RemoteCensus)) -> Outbound {
         owner_of(reply),
       )
 
+    // The asker of a start is the record's worker, so its death, which is how
+    // the record stops its program, becomes a cancel as a run's asker's does.
+    protocol.StartExecution(
+      key:,
+      incarnation:,
+      token:,
+      terms:,
+      remaining_ms:,
+      reply:,
+    ) ->
+      sent(
+        untrusted_wire.StartExecutionRequest(
+          key:,
+          incarnation:,
+          token:,
+          terms:,
+          remaining_ms:,
+        ),
+        ExecutionReply(reply),
+        owner_of(reply),
+      )
+
+    // A stop has no reply and, like an ack, is sent again by the owner port's
+    // reconciler when it is lost.
+    protocol.StopExecution(key:, incarnation:) ->
+      Send(
+        request: untrusted_wire.StopExecutionRequest(key:, incarnation:),
+        reply: None,
+        requester: None,
+        port: None,
+      )
+
     _ -> uncarried(message)
   }
 }
 
-/// Answers a message slice 1 does not carry with the refusal its reply type
+/// Answers a message the link does not carry with the refusal its reply type
 /// allows. The carried constructors never reach this function; their arms
 /// answer nothing and exist only so the match stays exhaustive.
 fn uncarried(message: HostMessage(RemoteCensus)) -> Outbound {
   let refusal = protocol.Invalid(not_carried)
 
-  // Each reply type has one way to say "refused"; a stop needs no answer.
+  // Each reply type has one way to say "refused".
   case message {
-    protocol.StartExecution(reply:, ..)
-    | protocol.EvolutionEvaluate(reply:, ..) ->
+    protocol.EvolutionEvaluate(reply:, ..) ->
       process.send(reply, protocol.ExecutionRefused(refusal))
-    protocol.StopExecution(..) -> Nil
     protocol.EvolutionSnapshot(reply:, ..) ->
       process.send(reply, Error(refusal))
     protocol.EvolutionStage(reply:, ..) -> process.send(reply, Error(refusal))
@@ -400,7 +450,9 @@ fn uncarried(message: HostMessage(RemoteCensus)) -> Outbound {
     | protocol.StateApply(..)
     | protocol.StateChunk(..)
     | protocol.StateStatus(..)
-    | protocol.StateFetch(..) -> Nil
+    | protocol.StateFetch(..)
+    | protocol.StartExecution(..)
+    | protocol.StopExecution(..) -> Nil
   }
 
   Answered
@@ -438,6 +490,7 @@ pub fn kind_of(reply: Reply) -> ResponseKind {
     ChunkReply(..) -> untrusted_wire.ChunkKind
     StatusReply(..) -> untrusted_wire.StatusKind
     FetchReply(..) -> untrusted_wire.FetchKind
+    ExecutionReply(..) -> untrusted_wire.ExecutionKind
   }
 }
 
@@ -489,6 +542,8 @@ pub fn deliver(
       Ok(process.send(subject, answer))
     FetchReply(subject), untrusted_wire.FetchAnswered(fetched) ->
       Ok(process.send(subject, fetched))
+    ExecutionReply(subject), untrusted_wire.ExecutionAnswered(answer) ->
+      Ok(process.send(subject, answer))
     _, _ -> Error(Nil)
   }
 }
@@ -518,6 +573,8 @@ pub fn refuse(reply: Reply, refusal: protocol.Refusal) -> Nil {
     StatusReply(subject) -> process.send(subject, Error(reason))
     FetchReply(subject) ->
       process.send(subject, state_transfer.FetchFailed(reason))
+    ExecutionReply(subject) ->
+      process.send(subject, protocol.ExecutionRefused(refusal))
   }
 }
 
@@ -587,8 +644,9 @@ pub fn owner_answer(
   }
 }
 
-/// The notices, the tool-list check, tails, capabilities and the two plane
-/// questions, split from `owner_answer` so each match reads as one table.
+/// The notices, the tool-list check, tails, capabilities, the two plane
+/// questions and the two of a background execution, split from `owner_answer`
+/// so each match reads as one table.
 fn notice_answer(
   port: Subject(OwnerMessage),
   callback: Callback,
@@ -655,6 +713,42 @@ fn notice_answer(
       |> untrusted_wire.GitIdentityAnswered
       |> Some
 
+    // The launch's budget is clamped here, because the owner builds the
+    // record's deadline from it and on a trusted executor the clamp happened
+    // in the `code_mode` tool; here the executor's clamp is the attacker's. A
+    // launch the owner did not answer may still have been claimed, so it is
+    // refused with the handle the claim would have minted.
+    untrusted_wire.LaunchExecutionCall(terms:) ->
+      asked(port, protocol.LaunchExecution(budgeted(terms), _))
+      |> result.lazy_unwrap(fn() { Error(owner_link.launch_unanswered(terms)) })
+      |> untrusted_wire.LaunchAnswered
+      |> Some
+
+    // The executor chooses how long a join waits, so the wait is clamped
+    // before the owner hears it and the forwarder waits no longer than that.
+    untrusted_wire.InteractExecutionCall(
+      strand:,
+      handle:,
+      interaction:,
+      within_ms:,
+    ) -> {
+      let within_ms = int.clamp(within_ms, min: 0, max: max_join_ms)
+      call.try_call(
+        port,
+        waiting: within_ms + owner_link.interaction_slack_ms,
+        sending: protocol.InteractExecution(
+          strand,
+          handle,
+          interaction,
+          within_ms,
+          _,
+        ),
+      )
+      |> result.lazy_unwrap(fn() { Error(unavailable) })
+      |> untrusted_wire.InteractAnswered
+      |> Some
+    }
+
     untrusted_wire.EscalateCall(..)
     | untrusted_wire.FactGetCall(..)
     | untrusted_wire.FactPutCall(..)
@@ -662,6 +756,25 @@ fn notice_answer(
     | untrusted_wire.FactDeleteCall(..)
     | untrusted_wire.FactListCall(..) -> owner_answer(port, callback)
   }
+}
+
+/// Launch terms with their budget held to the orchestrator's own ceiling for a
+/// `code_mode` call, so a program's record, and the window in which the
+/// program can call its owner, last no longer than an honest launch's could.
+/// The ceiling is the constant every `code_mode` tool is configured with on
+/// either machine; were it ever made configurable, this clamp would have to
+/// read the orchestrator's configured value instead.
+fn budgeted(
+  terms: owner_services.ExecutionTerms,
+) -> owner_services.ExecutionTerms {
+  owner_services.ExecutionTerms(
+    ..terms,
+    within_ms: int.clamp(
+      terms.within_ms,
+      min: 0,
+      max: codemode_wiring.max_within_ms,
+    ),
+  )
 }
 
 /// A monitored call to the owner port with the record budget.
@@ -721,6 +834,10 @@ pub fn refused_answer(callback: Callback, reason: String) -> Option(Answer) {
       Some(untrusted_wire.McpPlanAnswered(protocol.McpPlan([], [])))
     untrusted_wire.GitIdentityCall ->
       Some(untrusted_wire.GitIdentityAnswered(None))
+    untrusted_wire.LaunchExecutionCall(..) ->
+      Some(untrusted_wire.LaunchAnswered(Error(reason)))
+    untrusted_wire.InteractExecutionCall(..) ->
+      Some(untrusted_wire.InteractAnswered(Error(reason)))
   }
 }
 
@@ -801,6 +918,31 @@ pub fn ask_host(
 
     untrusted_wire.AckRequest(key:), _ -> {
       address.deliver(host, protocol.Ack(key))
+      None
+    }
+
+    // A start is a keyed call the host admits as it admits a run: a re-send
+    // after a partition joins the program that is running or reads the value
+    // it stored, and the death of this process stops it.
+    untrusted_wire.StartExecutionRequest(
+      key:,
+      incarnation:,
+      token:,
+      terms:,
+      remaining_ms:,
+    ),
+      _
+    ->
+      Some(asked_host(
+        host,
+        connection,
+        protocol.StartExecution(key, incarnation, token, terms, remaining_ms, _),
+        untrusted_wire.ExecutionAnswered,
+        untrusted_wire.ExecutionAnswered(protocol.ExecutionRefused(fault)),
+      ))
+
+    untrusted_wire.StopExecutionRequest(key:, incarnation:), _ -> {
+      address.deliver(host, protocol.StopExecution(key, incarnation))
       None
     }
 
@@ -901,7 +1043,9 @@ fn ledger_ask(
       )
     untrusted_wire.AttachRequest(..)
     | untrusted_wire.RunRequest(..)
-    | untrusted_wire.AckRequest(..) ->
+    | untrusted_wire.AckRequest(..)
+    | untrusted_wire.StartExecutionRequest(..)
+    | untrusted_wire.StopExecutionRequest(..) ->
       untrusted_wire.LookupAnswered(
         Error(protocol.Invalid("misrouted request")),
       )
@@ -959,8 +1103,7 @@ fn projected(
 }
 
 /// What the executor's proxy does with an `OwnerMessage` the plane sent: a
-/// wire callback and the subject its answer goes to, or, for a background
-/// execution's two messages, a refusal sent at once.
+/// wire callback and the subject its answer goes to.
 ///
 /// ## Examples
 ///
@@ -1021,14 +1164,27 @@ pub fn callback_of(message: OwnerMessage) -> Forward {
       Forwarded(untrusted_wire.McpPlanCall, Some(McpPlanReply(reply)))
     protocol.AskGitIdentity(reply:) ->
       Forwarded(untrusted_wire.GitIdentityCall, Some(GitIdentityReply(reply)))
-    protocol.LaunchExecution(reply:, ..) -> {
-      process.send(reply, Error(not_carried))
-      Declined
-    }
-    protocol.InteractExecution(reply:, ..) -> {
-      process.send(reply, Error(not_carried))
-      Declined
-    }
+    protocol.LaunchExecution(terms:, reply:) ->
+      Forwarded(
+        untrusted_wire.LaunchExecutionCall(terms),
+        Some(LaunchReply(reply, terms)),
+      )
+    protocol.InteractExecution(
+      strand:,
+      handle:,
+      interaction:,
+      within_ms:,
+      reply:,
+    ) ->
+      Forwarded(
+        untrusted_wire.InteractExecutionCall(
+          strand:,
+          handle:,
+          interaction:,
+          within_ms:,
+        ),
+        Some(InteractReply(reply)),
+      )
   }
 }
 
@@ -1055,6 +1211,8 @@ pub fn answer_kind_of(reply: OwnerReply) -> AnswerKind {
     CapabilityReply(..) -> untrusted_wire.CapabilityKind
     McpPlanReply(..) -> untrusted_wire.McpPlanKind
     GitIdentityReply(..) -> untrusted_wire.GitIdentityKind
+    LaunchReply(..) -> untrusted_wire.LaunchKind
+    InteractReply(..) -> untrusted_wire.InteractKind
   }
 }
 
@@ -1095,6 +1253,10 @@ pub fn answer_owner(reply: OwnerReply, answer: Answer) -> Result(Nil, Nil) {
       Ok(process.send(subject, plan))
     GitIdentityReply(subject), untrusted_wire.GitIdentityAnswered(identity) ->
       Ok(process.send(subject, identity))
+    LaunchReply(subject:, ..), untrusted_wire.LaunchAnswered(answer) ->
+      Ok(process.send(subject, answer))
+    InteractReply(subject), untrusted_wire.InteractAnswered(answer) ->
+      Ok(process.send(subject, answer))
     _, _ -> Error(Nil)
   }
 }
@@ -1134,5 +1296,8 @@ pub fn fail_owner(reply: OwnerReply) -> Nil {
       )
     McpPlanReply(subject) -> process.send(subject, protocol.McpPlan([], []))
     GitIdentityReply(subject) -> process.send(subject, None)
+    LaunchReply(subject:, terms:) ->
+      process.send(subject, Error(owner_link.launch_unanswered(terms)))
+    InteractReply(subject) -> process.send(subject, Error(unavailable))
   }
 }

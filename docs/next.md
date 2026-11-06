@@ -15,14 +15,19 @@ attacker-influenced code and must not be a peer.
   and 078's subject-carrying messages, `[executor_link]` and
   `[executor_listener]`, tool calls with recovery and cancel, owner callbacks
   checked per binding, and state transport (pulled, never pushed).
+- **Built (slice 2, stacked on slice 1):** background code mode. `StartExecution`
+  and `StopExecution` are requests, `LaunchExecution` and `InteractExecution`
+  callbacks; a program's capability reaches the owner only while its start is
+  outstanding, and a launch or an interaction only from a `code_mode` call in
+  flight. The wire version is 2.
 - **Rulings not to reopen:** the cut stays at `ToolSurface.run` (no per-file
   RPC, no path on the wire); the link stands where the host's address was, so
   the surface and owner port are unchanged; no Erlang term crosses; a callback
   that names a call must name one the link has in flight, and an escalation must
   match it exactly.
-- **Not done:** background code mode, remote evolution, and a broker tunnel for
-  non-tool callers (project hooks, goal checks, Git observation, the worktree
-  diff), which are refused on an untrusted executor (slices 2 to 4 of 109). The
+- **Not done:** remote evolution, and a broker tunnel for non-tool callers
+  (project hooks, goal checks, Git observation, the worktree diff), which are
+  refused on an untrusted executor (slices 3 and 4 of 109). The
   links and the gateway are not restarted by a supervisor. No live drive with a
   real model or a real aegis pod has been run.
 
