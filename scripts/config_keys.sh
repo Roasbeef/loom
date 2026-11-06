@@ -84,6 +84,8 @@ packages/client/src/client/project_sources.gleam|parse_rule|call|[[project.rule]
 packages/client/src/client/distribution.gleam|table|call|[distribution]|
 packages/client/src/client/distribution.gleam|peer_row|call|[[distribution.peers]]|
 packages/client/src/client/executors.gleam|row|call|[executors.<name>]|
+packages/client/src/client/untrusted_config.gleam|link_of|call|[executor_link]|
+packages/client/src/client/untrusted_config.gleam|listener_of|call|[executor_listener]|
 packages/client/src/client/pools.gleam|row|call|[pools.<name>]|
 packages/client/src/client/workspaces.gleam|row|call|[workspaces.<name>]|
 packages/client/src/client/orchestrators.gleam|row|call|[orchestrators.<name>]|

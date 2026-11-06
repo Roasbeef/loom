@@ -100,6 +100,7 @@ import client/remote/protocol.{type HostMessage, type Key}
 import client/remote/remote_census.{type RemoteCensus}
 import client/remote/scope.{type Scope}
 import client/remote/surface
+import client/remote/untrusted_link
 import client/state_object.{type State}
 import client/tool_placement
 import client/wiring
@@ -754,16 +755,45 @@ pub fn candidate(
   configured: List(executors.Executor),
   name: String,
 ) -> Result(Candidate, String) {
-  use membership <- result.try(option.to_result(
-    membership,
-    unavailable("this daemon was not started with [distribution]"),
-  ))
   use executor <- result.try(
     executors.find(configured, name)
     |> result.map_error(fn(_missing) {
       unavailable("no executor named " <> name <> " is configured")
     }),
   )
+
+  // An untrusted executor is reached through its link on this node, which
+  // needs no distribution; a trusted one is a peer (protocol-change/109).
+  case executor.trust {
+    executors.Untrusted(..) -> Ok(untrusted_candidate(executor))
+    executors.Trusted -> trusted_candidate(membership, executor)
+  }
+}
+
+/// An untrusted executor's candidate: its address is the link's name on this
+/// node, and reaching it means the link is running, because the link dials
+/// and re-sends by itself.
+fn untrusted_candidate(executor: executors.Executor) -> Candidate {
+  let name = untrusted_link.name_for(executor.name)
+  Candidate(
+    executor:,
+    reach: Reach(
+      address: untrusted_link.address(name),
+      connect: fn() { untrusted_link.running(name, executor.name) },
+      attach_within_ms: executor.attach_within_s * 1000,
+    ),
+  )
+}
+
+/// A trusted executor's candidate: a distribution peer.
+fn trusted_candidate(
+  membership: Option(distribution.Membership),
+  executor: executors.Executor,
+) -> Result(Candidate, String) {
+  use membership <- result.try(option.to_result(
+    membership,
+    unavailable("this daemon was not started with [distribution]"),
+  ))
   use peer <- result.try(
     distribution.peer(membership, executor.node)
     |> result.map_error(fn(fault) { unavailable(distribution.describe(fault)) }),

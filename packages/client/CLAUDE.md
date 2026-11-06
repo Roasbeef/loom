@@ -1,3 +1,48 @@
+# Untrusted executors (protocol-change/109)
+
+An `[executors.<name>]` row with `trust = "untrusted"` (`executors.Trust`,
+`Untrusted(host, port, pin)`, `node` empty) is reached over a TLS link and never
+over distribution. `remote/workspace.candidate` branches on the trust: an
+untrusted executor's `Reach` addresses `untrusted_link.name_for(name)` on this node
+and its `connect` is `untrusted_link.running`. `daemon/main.start_untrusted` starts
+one link per untrusted row (credentials from `[executor_link]`) and, on a daemon
+with `[executor_listener]`, the gateway in front of its host; `untrusted_settings`
+refuses an untrusted row without `[executor_link]`, and `untrusted_config` refuses
+`[executor_listener]` beside `[distribution]`.
+
+- `remote/untrusted_wire` is the frames (`Hello`, `Welcome`, `Request`, `Cancel`,
+  `Response`, `Callback`, `Answer`), 078's requests and owner messages without
+  their subjects, and the reply kinds. `remote/untrusted_codec` is their total JSON
+  codec: `decode_envelope` first, then the body against the kind the receiver
+  expects. Its lossy encodings are listed in its module doc.
+- `remote/untrusted_bridge` translates at both ends: `outbound`, `deliver`,
+  `refuse`, `owner_answer` and `refused_answer` on the orchestrator; `ask_host`,
+  `callback_of`, `answer_owner` and `fail_owner` on the executor.
+- `remote/untrusted_link` is a `weft/state_machine` (`Idle`, `Dialing`,
+  `Greeting`, `Open`, `Resting`). It keeps outstanding requests with their bytes
+  and re-sends them on each new connection, monitors each asker and sends `cancel`
+  on its death, mints a binding per attach (reused for a re-sent attach with the
+  same port), and checks every callback in `admitted`. Accepted callbacks run in
+  weft tasks relayed to per-callback sinks.
+- `remote/untrusted_gateway` is the acceptor, one `weft/state_machine` per
+  connection (the handshake runs there, not in the acceptor), a waiter per request
+  (unlinked, and exiting with `noconnection` when its connection dies, so a
+  partition never cancels and a cancel after a re-send still does), the book
+  (`weft/actor`: current connection and proxies per orchestrator pin), and one
+  proxy `weft/actor` per binding.
+- `internal/ffi_tls_stream` and `client_tls_stream_ffi.erl` are the only TLS
+  socket code: TLS 1.3, `{packet, 4}` with `packet_size`, `{active, once}`, PKIX
+  plus a SHA-256 pin, no hostname check.
+
+Invariants: nothing on either side calls `binary_to_term`; every response is
+decoded against its request's kind; a callback reaches an owner port only through
+`admitted`; a waiter's death is the only abort the host sees from this link.
+Tests: `remote/untrusted_codec_test`, `remote/untrusted_link_test` (a hostile
+executor driven by hand over real TLS, `support/untrusted_rig`),
+`remote/untrusted_gateway_test` (the gateway and a real host driven by hand),
+`remote/untrusted_end_to_end_test` (surface and owner port, link, gateway, real
+host) and `untrusted_config_test`.
+
 # Evolution callback ownership
 
 `serve.local_evolution_machine` projects the source snapshot capability before

@@ -15,6 +15,7 @@ import client/remote/protocol
 import client/state_node
 import client/state_transfer
 import client/system_prompt
+import client/untrusted_config
 import client/workspaces
 import gleam/dict
 import gleam/erlang/process
@@ -61,6 +62,7 @@ fn config(
       dict.new(),
       main.no_projects,
       state_node.none(),
+      untrusted_config.none,
     ),
     state_root: state,
     session_defaults: arguments,

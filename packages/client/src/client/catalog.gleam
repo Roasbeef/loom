@@ -178,6 +178,7 @@ import client/orchestrators
 import client/peer_defaults
 import client/pools
 import client/spawners
+import client/untrusted_config
 import client/workspaces
 import codemode/vet/policy as vet_policy
 import core/clock.{type Clock}
@@ -580,7 +581,9 @@ pub fn parse_with_document(
   // limits and finishing keys of project mode, read once when the daemon
   // starts. A key missing from this list is refused for every reader of the
   // file, so a file that set `[project]` was rejected before the table was
-  // ever read.
+  // ever read. `executor_link` and `executor_listener` are
+  // `client/untrusted_config`'s: the two ends of the link to an untrusted
+  // executor (protocol-change/109).
   use Nil <- result.try(known_keys(
     dict.keys(document),
     [
@@ -588,6 +591,7 @@ pub fn parse_with_document(
       "tools", "jobs", "secrets", "workspace", "advisor", "daemon", "lsp",
       "profiles", "peers", "retry", "distribution", "executors", "pools",
       "workspaces", "orchestrators", "directory", "spawners", "project",
+      "executor_link", "executor_listener",
     ],
     "the top level",
   ))
@@ -595,6 +599,7 @@ pub fn parse_with_document(
   use Nil <- result.try(validate_peers(document))
   use Nil <- result.try(validate_distribution(document))
   use Nil <- result.try(validate_executors(document))
+  use Nil <- result.try(validate_untrusted(document))
   use Nil <- result.try(validate_pools(document))
   use Nil <- result.try(validate_workspaces(document))
   use Nil <- result.try(validate_orchestrators(document))
@@ -648,6 +653,12 @@ fn validate_distribution(
 // is a pinned peer, so it runs after that table's own validation.
 fn validate_executors(document: Dict(String, tom.Toml)) -> Result(Nil, String) {
   executors.from_document(document) |> result.replace(Nil)
+}
+
+// `[executor_link]` and `[executor_listener]` are the two ends of the link to
+// an untrusted executor (protocol-change/109).
+fn validate_untrusted(document: Dict(String, tom.Toml)) -> Result(Nil, String) {
+  untrusted_config.from_document(document) |> result.replace(Nil)
 }
 
 // `[pools.<name>]` groups executors a session may be placed on without naming

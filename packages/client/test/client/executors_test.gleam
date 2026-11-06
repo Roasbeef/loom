@@ -4,7 +4,7 @@
 //// read.
 
 import client/catalog
-import client/executors.{Degraded, Enforced, Executor, Observed}
+import client/executors.{Degraded, Enforced, Executor, Observed, Trusted}
 import gleam/dict
 import gleam/list
 import gleam/option.{Some}
@@ -144,6 +144,7 @@ toolchains = [\"codemode\", \"gleam_ls\"]
         enforcement: Some(Enforced),
         toolchains: ["codemode", "gleam_ls"],
         attach_within_s: 30,
+        trust: Trusted,
       ),
     ])
   assert executors.parse(executor_with("enforcement = \"degraded\"\n"))
@@ -198,7 +199,7 @@ pub fn a_malformed_declaration_is_refused_with_the_key_it_names_test() {
   )
   refused(
     executor_with("capacity = 4\n"),
-    "unknown key `capacity` in [executors.build-box] (allowed: node, platform, enforcement, toolchains, attach_within_s)",
+    "unknown key `capacity` in [executors.build-box] (allowed: node, platform, enforcement, toolchains, attach_within_s, trust, address, pin)",
   )
 }
 
@@ -210,6 +211,7 @@ fn declared() -> executors.Executor {
     enforcement: Some(Enforced),
     toolchains: ["codemode"],
     attach_within_s: 30,
+    trust: Trusted,
   )
 }
 

@@ -54,6 +54,7 @@
 
 import client/distribution
 import client/ledger_reference
+import client/untrusted_config
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
@@ -62,6 +63,24 @@ import gleam/result
 import gleam/string
 import storage/catalogue
 import tom
+
+/// How far the orchestrator trusts an executor, and so how it reaches it
+/// (protocol-change/109).
+pub type Trust {
+  /// A distribution peer with the full privileges of one: reached by `node`.
+  Trusted
+
+  /// Never a distribution peer: reached over a mutually authenticated TLS link
+  /// the orchestrator dials, and checked on everything it sends back.
+  Untrusted(
+    /// The listener's host, a name or an IP literal.
+    host: String,
+    /// The listener's port.
+    port: Int,
+    /// The SHA-256 of the executor's leaf certificate, 32 bytes.
+    pin: BitArray,
+  )
+}
 
 /// Whether an executor's sandbox helper confines what it runs.
 pub type Enforcement {
@@ -80,6 +99,7 @@ pub type Executor {
     /// `catalogue.is_executor_name`.
     name: String,
     /// The peer's full node name, one of the `[[distribution.peers]]` nodes.
+    /// Empty for an untrusted executor, which is no node.
     node: String,
     /// The declared platform in the label the prompt carries,
     /// `<os>/<architecture>` such as `linux/x86_64` or `macos/arm64`, or `None`
@@ -96,6 +116,8 @@ pub type Executor {
     /// first attach to a worktree workspace runs a whole checkout, so the
     /// operator sizes this to the largest one the executor serves.
     attach_within_s: Int,
+    /// Whether it is a distribution peer or reached over the untrusted link.
+    trust: Trust,
   )
 }
 
@@ -134,6 +156,7 @@ pub fn plain(name: String, node: String) -> Executor {
     enforcement: None,
     toolchains: [],
     attach_within_s: default_attach_within_s,
+    trust: Trusted,
   )
 }
 
@@ -196,25 +219,41 @@ pub fn from_document(
         |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
         |> list.try_map(fn(entry) { row(entry.0, entry.1) }),
       )
-      use peers <- result.try(peer_nodes(document))
-      use Nil <- result.try(
-        list.try_each(configured, fn(executor) {
-          case ledger_reference.accepts(peers, executor.node) {
-            True -> Ok(Nil)
-            False ->
-              Error(
-                "executors."
-                <> executor.name
-                <> ".node "
-                <> executor.node
-                <> " is not a peer of this node: pin it in [[distribution.peers]]",
-              )
-          }
-        }),
-      )
+      let trusted =
+        list.filter(configured, fn(executor) { executor.trust == Trusted })
+      use Nil <- result.try(trusted_peers(document, trusted))
       Ok(configured)
     }
     Ok(_) -> Error("executors must be a table of [executors.<name>] tables")
+  }
+}
+
+/// Checks that every trusted executor's node is a distribution peer. A
+/// document whose executors are all untrusted needs no `[distribution]` table,
+/// because none of them is a peer.
+fn trusted_peers(
+  document: Dict(String, tom.Toml),
+  trusted: List(Executor),
+) -> Result(Nil, String) {
+  // With no trusted row there is nothing to look up.
+  case trusted {
+    [] -> Ok(Nil)
+    _rows -> {
+      use peers <- result.try(peer_nodes(document))
+      list.try_each(trusted, fn(executor) {
+        case ledger_reference.accepts(peers, executor.node) {
+          True -> Ok(Nil)
+          False ->
+            Error(
+              "executors."
+              <> executor.name
+              <> ".node "
+              <> executor.node
+              <> " is not a peer of this node: pin it in [[distribution.peers]]",
+            )
+        }
+      })
+    }
   }
 }
 
@@ -261,18 +300,14 @@ fn row(name: String, value: tom.Toml) -> Result(Executor, String) {
     tom.Table(fields) -> {
       use Nil <- result.try(known_keys(
         dict.keys(fields),
-        ["node", "platform", "enforcement", "toolchains", "attach_within_s"],
+        [
+          "node", "platform", "enforcement", "toolchains", "attach_within_s",
+          "trust", "address", "pin",
+        ],
         "[executors." <> name <> "]",
       ))
-
-      // Extract required node address string from fields table.
-      use node <- result.try(case dict.get(fields, "node") {
-        Ok(tom.String(node)) -> Ok(node)
-        Ok(_) -> Error("executors." <> name <> ".node must be a string")
-        Error(Nil) -> Error("executors." <> name <> ".node is required")
-      })
-
       let place = "executors." <> name
+      use #(node, trust) <- result.try(reach_of(fields, place))
       use platform <- result.try(platform_of(fields, place))
       use enforcement <- result.try(enforcement_of(fields, place))
       use toolchains <- result.try(toolchains_of(fields, place))
@@ -284,10 +319,93 @@ fn row(name: String, value: tom.Toml) -> Result(Executor, String) {
         enforcement:,
         toolchains:,
         attach_within_s: option.unwrap(waiting, default_attach_within_s),
+        trust:,
       )
     }
     _ -> Error("executors." <> name <> " must be a table")
   }
+}
+
+/// Reads how an executor is reached: `node` for a trusted one, `address` and
+/// `pin` for one whose `trust` is `"untrusted"`. Each kind refuses the other's
+/// keys, so a row cannot be read as both.
+fn reach_of(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(#(String, Trust), String) {
+  // An absent `trust` is the trusted executor this table always meant.
+  use untrusted <- result.try(case dict.get(fields, "trust") {
+    Error(Nil) | Ok(tom.String("trusted")) -> Ok(False)
+    Ok(tom.String("untrusted")) -> Ok(True)
+    Ok(_other) -> Error(place <> ".trust must be \"trusted\" or \"untrusted\"")
+  })
+
+  // A trusted row is a distribution peer and an untrusted one never is.
+  case untrusted {
+    False -> {
+      use Nil <- result.try(absent(fields, place, ["address", "pin"], "trusted"))
+      use node <- result.map(string_key(fields, place, "node"))
+      #(node, Trusted)
+    }
+    True -> {
+      use Nil <- result.try(absent(fields, place, ["node"], "untrusted"))
+      use address <- result.try(string_key(fields, place, "address"))
+      use #(host, port) <- result.try(host_port(address, place))
+      use pin <- result.map(pin_of(fields, place))
+      #("", Untrusted(host:, port:, pin:))
+    }
+  }
+}
+
+/// Refuses keys that belong to the other kind of executor.
+fn absent(
+  fields: Dict(String, tom.Toml),
+  place: String,
+  keys: List(String),
+  kind: String,
+) -> Result(Nil, String) {
+  list.try_each(keys, fn(key) {
+    // A key of the other kind names a different way to reach the machine.
+    case dict.has_key(fields, key) {
+      True ->
+        Error(
+          place <> "." <> key <> " is not allowed on a " <> kind <> " executor",
+        )
+      False -> Ok(Nil)
+    }
+  })
+}
+
+/// A required string key.
+fn string_key(
+  fields: Dict(String, tom.Toml),
+  place: String,
+  key: String,
+) -> Result(String, String) {
+  // Only a string answers; a missing key and a wrong type are refused apart.
+  case dict.get(fields, key) {
+    Ok(tom.String(value)) -> Ok(value)
+    Ok(_) -> Error(place <> "." <> key <> " must be a string")
+    Error(Nil) -> Error(place <> "." <> key <> " is required")
+  }
+}
+
+/// Reads `address` as `host:port`.
+fn host_port(address: String, place: String) -> Result(#(String, Int), String) {
+  untrusted_config.host_port(address)
+  |> result.map_error(fn(_invalid) {
+    place <> ".address must be host:port, such as pod.internal:7443"
+  })
+}
+
+/// The `pin` key: 64 lower-case hexadecimal digits, the SHA-256 of the
+/// executor's leaf certificate in DER.
+fn pin_of(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(BitArray, String) {
+  use text <- result.try(string_key(fields, place, "pin"))
+  untrusted_config.pin_of(text, place <> ".pin")
 }
 
 /// Reads the optional `platform` key of an executor row, or of a pool's

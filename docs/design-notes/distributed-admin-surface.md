@@ -54,14 +54,14 @@ exclusive names and then reads `workspace` as a registered name, not a path
 `client/daemon/protocol.gleam:891`; `pool_field`, `client/daemon/protocol.gleam:1239`).
 The daemon holds the names from its `[executors.<name>]` and `[pools.<name>]`
 tables, with each executor's declared platform, enforcement and toolchains
-(`Executor`, `client/executors.gleam:76`). The web home is told only the names
+(`Executor`, `client/executors.gleam:96`). The web home is told only the names
 (`HomeAttachment`, `client/daemon/server.gleam:336`, whose `executors` field is
 `List(String)`), draws them in a select, and asks the owner to type the workspace
 name (`CreatingRemote`, `web_view/home.gleam:1054`). The terminal builds a
 `Placement` from launch flags (`Placement`, `tui/placement.gleam:31`) and cannot
 change it inside a running terminal. Neither client can show whether an executor
 answers, is full, or contradicts its declaration. That is learned at the attach,
-when `contradiction` (`client/executors.gleam:439`) compares the executor's census
+when `contradiction` (`client/executors.gleam:557`) compares the executor's census
 with the declaration and the open fails. A typo in a workspace name is learned the
 same way. [The setup guide](../distributed-setup.md) tells an operator to check a
 connection with `epmd -names`, `lsof` or `ss`.
@@ -179,9 +179,9 @@ serves both through `detached` (`client/remote/orchestrator_port.gleam:705`), th
 path `Activate` uses: the computation runs in a run that dies with the requester and
 with the port, so a read never keeps an `Owns` question waiting. The port does not
 know the catalogue, the ledger or the movers. `start_with` takes one more closure
-record, and `start_orchestrator_port` (`client/daemon/main.gleam:1404`) builds it
+record, and `start_orchestrator_port` (`client/daemon/main.gleam:1510`) builds it
 from the registry, the movers and the executor host, the way it builds
-`catalogue_holds` (`client/daemon/main.gleam:1497`) and `peer_command`
+`catalogue_holds` (`client/daemon/main.gleam:1603`) and `peer_command`
 (`client/daemon/main.gleam:651`). The function runs on every daemon that has a
 `[distribution]` table, executors included, so a pure executor answers `Report`
 too. It answers with no orchestrator facts when it has no catalogue to describe.
