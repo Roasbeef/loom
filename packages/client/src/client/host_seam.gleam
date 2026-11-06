@@ -84,9 +84,10 @@ pub type HostSeam {
     /// The `cap/*` modules a program may import, a subset of what the seam
     /// would admit. An MCP façade is named by its generated module, the
     /// server's name mangled as `mcp/name` does, which is not checked here
-    /// because the MCP layer is not known when the seam is built. A module named here that the seam does not admit stays
-    /// out; a module the seam admits and this list omits is refused at
-    /// vetting. Standard-library modules are not affected.
+    /// because the MCP layer is not known when the seam is built. A module
+    /// named here that the seam does not admit stays out; a module the seam
+    /// admits and this list omits is refused at vetting. Standard-library
+    /// modules are not affected.
     imports: List(String),
     /// Capability names refused even though their module is admitted, such
     /// as `lsp.rename`. They are removed from what the description says the
