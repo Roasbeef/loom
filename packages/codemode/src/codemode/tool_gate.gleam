@@ -160,7 +160,14 @@ pub const open_caps = [
 ]
 
 /// Whether someone decided what this capability needs: it has a row in
-/// `required_tool`, is listed in `open_caps`, or is an `mcp.` capability.
+/// `required_tool`, is listed in `open_caps`, or is an `mcp.` or `host.`
+/// capability.
+///
+/// A `host.<module>` capability is decided by its own router rather than by
+/// this table. Each of its functions is one of the host's tools, named in the
+/// call's arguments, so the tool that authorizes it is known per call and not
+/// per capability: `client/host_seam` asks `holds` for that tool before it
+/// runs it, the question this module's precheck would have asked.
 /// A capability that is none of these was added to a router without
 /// anyone asking whether a tool should guard it, which is what the
 /// classification tests fail on.
@@ -175,7 +182,10 @@ pub const open_caps = [
 pub fn decided(cap: String) -> Bool {
   case required_tool(cap) {
     Some(_) -> True
-    None -> list.contains(open_caps, cap) || string.starts_with(cap, "mcp.")
+    None ->
+      list.contains(open_caps, cap)
+      || string.starts_with(cap, "mcp.")
+      || string.starts_with(cap, "host.")
   }
 }
 
@@ -204,6 +214,32 @@ pub fn precheck(
         |> result.map_error(denial(request.cap, _))
     }
   }
+}
+
+/// Asks whether the calling strand holds `tool`, for a capability whose
+/// authorizing tool is named per call rather than per capability.
+///
+/// `precheck` answers from `required_tool`, which maps one capability name
+/// to one tool. A host capability module (`host.<module>`) carries many
+/// tools under one name, the function's tool in its arguments, so its router
+/// asks here once it has read which. The refusal is the one `precheck` gives:
+/// a missing tool names the capability and the tool, and any other refusal
+/// keeps the Agency's own code and sentence.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tool_gate.holding(agency.holds, caller, "host.aegis", "post_note")
+/// ```
+///
+pub fn holding(
+  holds: fn(Caller, String) -> Result(Nil, Refusal),
+  caller: Caller,
+  cap: String,
+  tool: String,
+) -> Result(Nil, CapDenial) {
+  holds(caller, tool)
+  |> result.map_error(denial(cap, _))
 }
 
 /// Formats an Agency refusal as an in-band capability denial.

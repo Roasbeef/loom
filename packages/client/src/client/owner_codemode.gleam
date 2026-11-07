@@ -90,6 +90,7 @@ import client/async_codemode
 import client/async_runs
 import client/cap_placement
 import client/codemode.{type Config, type OwnerSide}
+import client/host_seam
 import client/mcp as mcp_wiring
 import client/owner_services.{type OwnerCapCall, type OwnerServices}
 import client/peers
@@ -100,6 +101,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import mcp/codegen
 import runtime/api
 import runtime/async_execution
 import tools/agent
@@ -149,6 +151,74 @@ pub fn over_owner_serving(
   codemode.Config(..served, wrap_router: fn(request, router) {
     sent_to(owner, answered_here, request, inner(request, router))
   })
+}
+
+/// Applies the seam the session's host defined, as the owner sent it in the
+/// plan, to a workspace's code mode (protocol-change/111).
+///
+/// The executor vets and describes programs under it: the narrowed imports,
+/// the withheld names gone from what is advertised, and the host module's
+/// generated source and surface. It holds none of the host's tools, so every
+/// `host.<module>` call is owner-bound (`cap_placement`) and `over_owner` sends
+/// it back. The owner judges each call again (`host_seam.owner_admits`), so an
+/// executor that ignored this would gain nothing by it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // config |> owner_codemode.hosting(plan.host)
+/// ```
+///
+pub fn hosting(
+  config: Config,
+  plan: option.Option(protocol.HostPlan),
+) -> Config {
+  codemode.over_host(config, option.map(plan, host_layer))
+}
+
+/// The layer an executor builds from the owner's plan.
+fn host_layer(plan: protocol.HostPlan) -> host_seam.Layer {
+  host_seam.elsewhere(
+    plan.imports,
+    plan.withheld,
+    option.map(plan.module, fn(facade: protocol.Facade) {
+      #(
+        facade.server,
+        codegen.Generated(
+          module_name: facade.module_name,
+          source: facade.source,
+          surface: facade.surface,
+        ),
+      )
+    }),
+  )
+}
+
+/// The plan an owner sends for its session's host seam: the layer's narrowing
+/// and its generated module, never its tools.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // protocol.McpPlan(..plan, host: owner_codemode.host_plan(layer))
+/// ```
+///
+pub fn host_plan(
+  layer: option.Option(host_seam.Layer),
+) -> option.Option(protocol.HostPlan) {
+  use layer <- option.map(layer)
+  protocol.HostPlan(
+    imports: host_seam.imports(layer),
+    withheld: host_seam.withheld(layer),
+    module: option.map(host_seam.plan_module(layer), fn(pair) {
+      protocol.Facade(
+        server: pair.0,
+        module_name: { pair.1 }.module_name,
+        source: { pair.1 }.source,
+        surface: { pair.1 }.surface,
+      )
+    }),
+  )
 }
 
 // The Agency of a workspace whose owner is elsewhere. The one operation which

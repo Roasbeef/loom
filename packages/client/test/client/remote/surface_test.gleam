@@ -48,7 +48,7 @@ fn rig(gate: fixtures.Gate, asks: fixtures.Asks) -> Rig {
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
-      mcp: protocol.McpPlan(served: [], expected: []),
+      mcp: protocol.empty_mcp_plan(),
       git_identity: option.None,
     ))
     as "the port starts"
@@ -276,7 +276,7 @@ pub fn the_owner_port_dying_settles_a_parked_escalation_promptly_test() {
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
-      mcp: protocol.McpPlan(served: [], expected: []),
+      mcp: protocol.empty_mcp_plan(),
       git_identity: option.None,
     ))
     as "the parked port starts"
@@ -323,7 +323,7 @@ pub fn the_survivors_of_a_replaced_port_serve_the_new_one_test() {
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
-      mcp: protocol.McpPlan(served: [], expected: []),
+      mcp: protocol.empty_mcp_plan(),
       git_identity: option.None,
     ))
     as "the second port starts"

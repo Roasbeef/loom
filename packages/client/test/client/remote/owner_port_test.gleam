@@ -33,7 +33,7 @@ fn port_over(
       settled:,
       reconcile_every_ms: every_ms,
       executions: owner_port.no_executions(),
-      mcp: protocol.McpPlan(served: [], expected: []),
+      mcp: protocol.empty_mcp_plan(),
       git_identity: option.None,
     ))
     as "the port starts"
@@ -309,7 +309,7 @@ fn port_with_executions(
       settled:,
       reconcile_every_ms: 60_000,
       executions:,
-      mcp: protocol.McpPlan(served: [], expected: []),
+      mcp: protocol.empty_mcp_plan(),
       git_identity: option.None,
     ))
     as "the port starts"

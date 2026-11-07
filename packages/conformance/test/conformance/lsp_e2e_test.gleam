@@ -1106,6 +1106,7 @@ fn settings(
     ),
     codemode_seed: rig.root <> "/no-such-seed",
     codemode_seams: codemode.WorkspaceOnly,
+    code_mode_host: None,
     codemode_sockets: None,
     rules: [],
     schedules: [],

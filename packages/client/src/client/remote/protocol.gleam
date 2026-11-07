@@ -161,6 +161,12 @@ import tools/tool
 /// census that an attach reply carries as well as adding messages, so every
 /// executor must upgrade with its orchestrators.
 ///
+/// Version 7 added `McpPlan.host`, the seam a session's host defined
+/// (protocol-change/111), with the `HostPlan` it carries. A plan of version 6
+/// has one field fewer, and an executor of either version reading the other's
+/// would fail to match it, so every executor must upgrade with its
+/// orchestrators.
+///
 /// `Attach` must keep the shape it had in version 2. It is the first
 /// message a peer of any version sends, and the host matches the term it
 /// receives against this module's constructors: an `Attach` of another arity
@@ -169,7 +175,7 @@ import tools/tool
 /// travels in a message sent after the version check has passed, as the MCP
 /// plan does. Every other message may change shape, because a peer of another
 /// version never gets past the attach to send it.
-pub const version = 6
+pub const version = 7
 
 /// The name an execution's ledger row is admitted under, in the column a tool
 /// call's row holds its tool name in. No tool is named this, so a row is known
@@ -410,7 +416,39 @@ pub type McpPlan {
     /// The names of the servers the orchestrator expects the executor to run
     /// from the executor's own configuration.
     expected: List(String),
+    /// The seam the session's host defined, or `None` for Loom's own seams
+    /// (protocol-change/111). It rides on the plan because it is the same kind
+    /// of thing: what the executor compiles and vets programs against, with
+    /// the calls that need the owner sent back to it.
+    host: Option(HostPlan),
   )
+}
+
+/// A host-defined code-mode seam as the owner sends it to an executor: the
+/// narrowing and the generated module, never the host's tools, which stay on
+/// the owner and answer every `host.<module>` call there.
+pub type HostPlan {
+  HostPlan(
+    /// The `cap/*` modules a program may import.
+    imports: List(String),
+    /// The capability names refused although their module is admitted.
+    withheld: List(String),
+    /// The host's module, its `server` the module's name, or `None` for a seam
+    /// that only narrows.
+    module: Option(Facade),
+  )
+}
+
+/// The plan of a session whose code mode reaches no MCP server the owner runs,
+/// expects none on the executor, and has no host seam.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert protocol.empty_mcp_plan().served == []
+/// ```
+pub fn empty_mcp_plan() -> McpPlan {
+  McpPlan(served: [], expected: [], host: option.None)
 }
 
 /// The most bytes of an author's name or email a `GitIdentity` carries.

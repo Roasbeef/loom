@@ -159,6 +159,45 @@ pub fn generate(
   tools: List(protocol.ToolDescriptor),
   digest: fn(String) -> String,
 ) -> Result(Generated, GenerateError) {
+  generate_kind(typed_codegen.McpServer, server, tools, digest)
+}
+
+/// Generates a host's own capability module, `cap/<name>`, from the functions
+/// the host declares, each a tool descriptor with its input and optional
+/// output schema.
+///
+/// It is `generate` with two differences. Every body calls
+/// `cap/internal/mcp.host_invoke` under the capability `host.<name>` rather
+/// than `invoke` under `mcp.<server>`, so a call reaches the host's own answer
+/// and never an MCP client. And the module is `cap/<segment>` rather than
+/// `cap/mcp/<segment>`. The bounds, the sanitizer and the `@` backstop are the
+/// same, because a host's descriptions are text a model reads and the source is
+/// compiled into a jailed program like any façade. Choosing a `name` that does
+/// not collide with a shipped `cap/*` module is the caller's to check
+/// (`client/host_seam`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codegen.generate_host("aegis", tools, digest)
+/// // -> Ok(Generated(module_name: "cap/aegis", ..))
+/// ```
+///
+pub fn generate_host(
+  name: String,
+  tools: List(protocol.ToolDescriptor),
+  digest: fn(String) -> String,
+) -> Result(Generated, GenerateError) {
+  generate_kind(typed_codegen.HostModule, name, tools, digest)
+}
+
+/// The one generator behind `generate` and `generate_host`.
+fn generate_kind(
+  kind: typed_codegen.Kind,
+  server: String,
+  tools: List(protocol.ToolDescriptor),
+  digest: fn(String) -> String,
+) -> Result(Generated, GenerateError) {
   let count = list.length(tools)
   use <- bool.guard(
     when: count > max_tools,
@@ -200,7 +239,7 @@ pub fn generate(
     }),
   )
   let segment = name.mangle(server, digest)
-  let rendered = typed_codegen.render(server, segment, tools, digest)
+  let rendered = typed_codegen.render_kind(kind, server, segment, tools, digest)
   let source = rendered.source
   let source_bytes = string.byte_size(source)
   use <- bool.guard(
@@ -220,7 +259,15 @@ pub fn generate(
     when: bytes > max_surface_bytes,
     return: Error(SurfaceTooLarge(bytes:)),
   )
-  Ok(Generated(module_name: "cap/mcp/" <> segment, source:, surface:))
+
+  // A server's façade lives under `cap/mcp/`; a host's module is its own
+  // `cap/` module, which the host's seam checked does not shadow one Loom ships.
+  let module_name = case kind {
+    typed_codegen.McpServer -> "cap/mcp/" <> segment
+    typed_codegen.HostModule -> "cap/" <> segment
+  }
+
+  Ok(Generated(module_name:, source:, surface:))
 }
 
 // Rich rendering owns structural declarations and the matching discovery text.

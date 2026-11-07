@@ -140,7 +140,7 @@ fn response_to(stream: Stream, id: Int) -> Nil {
     Ok(untrusted_codec.CallbackEnvelope(binding:, id: asked, body:)) -> {
       let answer = case untrusted_codec.decode_callback(body) {
         Ok(untrusted_wire.McpPlanCall) ->
-          untrusted_wire.McpPlanAnswered(protocol.McpPlan([], []))
+          untrusted_wire.McpPlanAnswered(protocol.empty_mcp_plan())
         _other -> untrusted_wire.GitIdentityAnswered(None)
       }
       rig.send(stream, untrusted_wire.Answer(binding:, id: asked, answer:))

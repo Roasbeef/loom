@@ -90,7 +90,7 @@ fn port_with(
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
-      mcp: protocol.McpPlan(served: [], expected: []),
+      mcp: protocol.empty_mcp_plan(),
       git_identity: identity,
     ))
     as "the port starts"
@@ -213,7 +213,7 @@ pub fn an_owner_that_never_answers_the_identity_is_no_identity_test() {
 fn answer_plan_only(inbox: process.Subject(protocol.OwnerMessage)) -> Nil {
   case process.receive_forever(inbox) {
     protocol.AskMcpPlan(reply:) -> {
-      process.send(reply, protocol.McpPlan(served: [], expected: []))
+      process.send(reply, protocol.empty_mcp_plan())
       answer_plan_only(inbox)
     }
     _ -> answer_plan_only(inbox)

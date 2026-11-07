@@ -140,7 +140,7 @@ pub fn orchestrate(
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
-      mcp: protocol.McpPlan(served: [], expected: []),
+      mcp: protocol.empty_mcp_plan(),
       git_identity: option.None,
     )),
   )
@@ -380,7 +380,7 @@ pub fn orchestrate_worktrees(peer: distribution.Peer) -> Result(Nil, String) {
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
-      mcp: protocol.McpPlan(served: [], expected: []),
+      mcp: protocol.empty_mcp_plan(),
       git_identity: option.None,
     )),
   )
@@ -519,7 +519,7 @@ pub fn orchestrate_workspace(peer: distribution.Peer) -> Result(Nil, String) {
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
-      mcp: protocol.McpPlan(served: [], expected: []),
+      mcp: protocol.empty_mcp_plan(),
       git_identity: option.None,
     )),
   )

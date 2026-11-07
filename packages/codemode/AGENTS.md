@@ -212,7 +212,11 @@ session and sends it many invocations.
   on every call; only a genuinely absent tool is `tool_not_held`, and any
   other refusal keeps its own code and still stops the call.
   `satellite.no_precheck` admits everything and is for configurations that
-  need no gate. The long-lived extension host has no precheck at all: it
+  need no gate. `holding(holds, caller, cap, tool)` asks the same question for a
+  capability whose authorizing tool is named per call: a host module
+  (`host.<module>`, protocol-change/111) carries the function's tool in its
+  arguments, so `client/host_seam` asks after decoding them, and `decided`
+  treats the `host.` prefix as decided, as it does `mcp.`. The long-lived extension host has no precheck at all: it
   serves no strand and asks no tool question.
 - `codemode/workspace.{Workspace, DirEntry, FsRefusal, KvRefusal,
   ScheduleRequest, ScheduleCreated, ScheduleRow, ScheduleWake,

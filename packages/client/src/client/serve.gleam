@@ -126,6 +126,7 @@ import client/hookrunner
 import client/hookserve
 import client/hookwire
 import client/host
+import client/host_seam
 import client/install
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
@@ -638,6 +639,13 @@ pub type Settings {
     /// has built one. The default is `BothSeams`; each submission selects
     /// one of the two isolated capability surfaces.
     codemode_seams: codemode_wiring.Seams,
+    /// The code-mode seam the host that embeds this session defined, or
+    /// `None` for Loom's own (protocol-change/111). A setting for the reason
+    /// `codemode_seams` is one: it is the host's choice, made before `boot`.
+    /// It narrows what a program may import, withholds named capabilities,
+    /// and adds the host's own module, whose functions are host tools; the
+    /// same seam holds whether the workspace is here or on an executor.
+    code_mode_host: Option(host_seam.HostSeam),
     /// The triggered project rules from the same `loom.toml`, in file
     /// order. Empty — the ordinary case — starts no scanner at all, so
     /// a server nobody configured rules for runs exactly the processes
@@ -1644,6 +1652,7 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       compaction: compaction_settings(main_entry.context_window),
       codemode_seed: seed_root(flags.codemode_seed, workspace),
       codemode_seams:,
+      code_mode_host: None,
       rules: rule_list,
       schedules: schedule_list,
       schedule_policy:,
@@ -2704,6 +2713,7 @@ fn code_mode_arms(
   agency_seam: Agency,
   schedule_door: Option(scheduleseam.Door),
   layer: mcp_wiring.Layer,
+  host_layer: Option(host_seam.Layer),
   peer_wiring: peers.Wiring,
   evolution_name: address.Address(evolution_capability.Message),
 ) -> fn(codemode_wiring.Config) -> codemode_wiring.Config {
@@ -2730,7 +2740,20 @@ fn code_mode_arms(
     // host), so the builder holds the cell's name and the cell is registered
     // under it by `open_evolution`.
     |> codemode_wiring.over_evolution(evolution_offer(settings, evolution_name))
+    // The host's seam goes on last: it narrows what the doors above admit.
+    |> codemode_wiring.over_host(host_layer)
     |> with_code_mode_peers(peer_wiring)
+  }
+}
+
+/// The session's host seam, checked and generated, or `None` when the host
+/// defined none.
+fn host_layer_of(
+  settings: Settings,
+) -> Result(Option(host_seam.Layer), String) {
+  case settings.code_mode_host {
+    None -> Ok(None)
+    Some(seam) -> host_seam.build(seam) |> result.map(Some)
   }
 }
 
@@ -3753,6 +3776,11 @@ fn assemble_in(
   // security property rather than a tidiness one.
   use index_path <- result.try(index_path(settings))
 
+  // The host's seam is checked and its module generated once per session,
+  // before anything is started, so a seam the host declared wrongly refuses
+  // the session with the reason rather than a program later.
+  use host_layer <- result.try(host_layer_of(settings))
+
   // Memory is protected on the same argument one step along: the notes
   // index sidecar is text this server injects into every run's context, and
   // the store behind it is what the index is rendered from. See
@@ -4187,6 +4215,7 @@ fn assemble_in(
         )
       }),
       expected: executor_placed(settings.catalog.mcp_servers),
+      host: owner_codemode.host_plan(host_layer),
     )
 
   // Everything the workspace half reaches back to the session for, as one
@@ -4234,6 +4263,13 @@ fn assemble_in(
                   Some(evolution_capability.door_for_call(evolution_name, clock))
                 None -> None
               },
+              // The host's tools answer its module here, and the seam is held
+              // against an executor that ignores it.
+              host: option.map(host_layer, codemode_wiring.OwnerHost(
+                _,
+                clock,
+                Some(over.holds),
+              )),
             )
           }
           owner_codemode.answering_executions(
@@ -4274,6 +4310,7 @@ fn assemble_in(
               agency_seam,
               schedule_door,
               mcp_layer,
+              host_layer,
               peer_wiring,
               evolution_name,
             ),

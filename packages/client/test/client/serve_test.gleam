@@ -222,6 +222,7 @@ pub fn settings_under(root: String) -> serve.Settings {
     // and a host without one registers no `code_mode` tool.
     codemode_seed: root <> "/no-such-seed",
     codemode_seams: codemode.WorkspaceOnly,
+    code_mode_host: None,
     rules: [],
     schedules: [],
     schedule_policy: schedule.ModelSchedulesOff,

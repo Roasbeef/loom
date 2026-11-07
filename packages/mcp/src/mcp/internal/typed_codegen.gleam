@@ -47,6 +47,23 @@ pub type Rendered {
   )
 }
 
+/// Which kind of module is being rendered, which decides the one helper every
+/// body calls and the heading the surface carries.
+///
+/// The structural rendering is the same for both: an MCP server's listing and
+/// a host's declared functions are both tool descriptors with JSON schemas.
+/// What differs is the capability a body crosses and whose words the
+/// descriptions are.
+pub type Kind {
+  /// A configured MCP server: bodies call `cap/internal/mcp.invoke` under
+  /// `mcp.<server>`, and the module is `cap/mcp/<segment>`.
+  McpServer
+
+  /// A host's own module: bodies call `cap/internal/mcp.host_invoke` under
+  /// `host.<name>`, and the module is `cap/<segment>`.
+  HostModule
+}
+
 type Node {
   Node(
     kind: schema.Shape,
@@ -113,6 +130,25 @@ pub fn render(
   tools: List(protocol.ToolDescriptor),
   digest: fn(String) -> String,
 ) -> Rendered {
+  render_kind(McpServer, server, segment, tools, digest)
+}
+
+/// `render` for a module of either kind. `server` is the literal every body
+/// passes as its first argument: an MCP server's name, or a host module's.
+///
+/// ## Examples
+///
+/// ```gleam
+/// typed_codegen.render_kind(typed_codegen.HostModule, "aegis", "aegis", tools, digest)
+/// // -> Source whose bodies call `internal.host_invoke("aegis", ...)`.
+/// ```
+pub fn render_kind(
+  kind: Kind,
+  server: String,
+  segment: String,
+  tools: List(protocol.ToolDescriptor),
+  digest: fn(String) -> String,
+) -> Rendered {
   let tools =
     list.sort(tools, fn(a, b) {
       string.compare(name.mangle(a.name, digest), name.mangle(b.name, digest))
@@ -121,7 +157,7 @@ pub fn render(
   let prefix = helper_prefix(tool_names, "mcp_generated_")
   let planned =
     list.index_map(tools, fn(tool, index) {
-      facade(server, tool, index, prefix, tool_names, dict.new(), digest)
+      facade(kind, server, tool, index, prefix, tool_names, dict.new(), digest)
     })
 
   // The first pass collects declaration identities. Allocation reserves all
@@ -130,17 +166,26 @@ pub fn render(
   let allocated = type_name.allocate(list.flat_map(planned, fn(f) { f.names }))
   let facades =
     list.index_map(tools, fn(tool, index) {
-      facade(server, tool, index, prefix, tool_names, allocated, digest)
+      facade(kind, server, tool, index, prefix, tool_names, allocated, digest)
     })
 
   // Tool order fixes ordinal namespaces before any structural declaration is
   // emitted. Reordered discovery pages therefore produce identical modules.
   let definitions = list.flat_map(facades, fn(f) { f.definitions })
   let bodies = list.map(facades, fn(f) { f.source })
-  let header =
-    "//// Generated MCP facade for "
-    <> codegen.clean(server, 120)
-    <> ".\n//// Descriptions are the server's own text.\n"
+
+  // The header says whose descriptions these are: a server's, or the host's.
+  let header = case kind {
+    McpServer ->
+      "//// Generated MCP facade for "
+      <> codegen.clean(server, 120)
+      <> ".\n//// Descriptions are the server's own text.\n"
+    HostModule ->
+      "//// Generated host capability module "
+      <> codegen.clean(server, 120)
+      <> ".\n//// Descriptions are the host's own text.\n"
+  }
+
   let content = string.join(list.append(definitions, bodies), "\n\n")
 
   // Both consumers receive the same declarations. Discovery omits general
@@ -155,10 +200,23 @@ pub fn render(
       |> string.join("\n")
     })
   let source = header <> imports(content, facades) <> "\n" <> content <> "\n"
+
+  // The surface heading names the module a program imports, which is where
+  // the description's index and `cap://` find it.
+  let heading = case kind {
+    McpServer ->
+      "### cap/mcp/"
+      <> segment
+      <> "\nDescriptions below are the server's own text, not Loom's."
+    HostModule ->
+      "### cap/"
+      <> segment
+      <> "\nDescriptions below are the host's own text, not Loom's. Each function is one of the host's tools, checked as a direct call to it is."
+  }
+
   let surface =
-    "### cap/mcp/"
-    <> segment
-    <> "\nDescriptions below are the server's own text, not Loom's.\nOptional fields use Option; None omits a key, while Some(None) encodes explicit null.\nUse each tool's defaults constant to omit all optional fields.\n\n"
+    heading
+    <> "\nOptional fields use Option; None omits a key, while Some(None) encodes explicit null.\nUse each tool's defaults constant to omit all optional fields.\n\n"
     <> string.join(
       list.append(
         surface_definitions,
@@ -238,6 +296,7 @@ fn imports(content: String, facades: List(Facade)) -> String {
 
 /// Generates the facade definition, documentation, and signature for one tool descriptor.
 fn facade(
+  kind: Kind,
   server: String,
   tool: protocol.ToolDescriptor,
   index: Int,
@@ -305,9 +364,11 @@ fn facade(
   }
 
   // Choose the typed or raw broker invocation helper.
-  let invoke = case output {
-    None -> "internal.invoke"
-    Some(_) -> "internal.invoke_typed"
+  let invoke = case kind, output {
+    McpServer, None -> "internal.invoke"
+    McpServer, Some(_) -> "internal.invoke_typed"
+    HostModule, None -> "internal.host_invoke"
+    HostModule, Some(_) -> "internal.host_invoke_typed"
   }
 
   // Render the optional decoder parameter argument string.

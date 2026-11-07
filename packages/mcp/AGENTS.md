@@ -17,8 +17,12 @@ compiles only the generated modules the submitted program imports.
 ## Key Types
 
 - `mcp/codegen.Generated(module_name, source, surface)` is the complete
-  generated artifact. `GenerateError` refuses excessive tool counts,
-  name collisions, schema budgets, excessive source or surface sizes, and
+  generated artifact. `generate_host(name, descriptors, digest)` is the same
+  generator for a host's own module (protocol-change/111): the module is
+  `cap/<segment>`, bodies call `cap/internal/mcp.host_invoke` under
+  `host.<name>`, and the surface heading says the descriptions are the host's.
+  `internal/typed_codegen.Kind` (`McpServer | HostModule`) is the one switch.
+  `GenerateError` refuses excessive tool counts, name collisions, schema budgets, excessive source or surface sizes, and
   sanitizer failures.
 - `mcp/schema.Shape` is the recursive rendering plan: primitives, string
   enums, lists, records, mappings, nullable values, disjoint alternatives,

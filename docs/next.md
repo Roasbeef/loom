@@ -1,5 +1,29 @@
 # Current handoff
 
+## Host-defined code-mode seams (protocol-change/111)
+
+A host that embeds Loom can give a session its own code-mode seam:
+`client/host_seam.HostSeam` narrows the `cap/*` imports, withholds named
+capabilities, and adds a generated `cap/<name>` whose functions are the host's
+own tools. [Protocol-change 111](../protocol-change/111-host-code-mode-seam.md)
+is the design and the threat model; `docs/architecture/code-mode.md`, "A seam
+the host defines", is the map. The consumer is aegis's `cap/aegis` on its
+untrusted runner pod.
+
+- **Built:** the generator target (`mcp/codegen.generate_host`), the arm that
+  runs the host's tool after `tool_gate.holding`, the seam on executors through
+  `McpPlan.host` (remote protocol version 7), owner-side admission
+  (`host_seam.owner_admits`), and the untrusted link's rule that a host call
+  names an in-flight `code_mode` call. `serve.Settings.code_mode_host` wires it.
+- **Rulings not to reopen:** a host function is a host `tool.Tool`, not a
+  handler closure, so a program call and a direct call share one `run`; host
+  calls travel as owner-bound capabilities over 109's callbacks, not a route of
+  their own; a host seam only narrows.
+- **Not done:** background programs reach no host module over the untrusted
+  link (the rule needs a foreground `run`). Aegis must still place its sessions'
+  workspaces on the runner through Loom's `Reach` (its 068's L5) before it can
+  use this. No live drive with a model has been run.
+
 ## Untrusted executors (issue #1196, protocol-change/109)
 
 An `[executors.<name>]` row can now say `trust = "untrusted"`: the executor is

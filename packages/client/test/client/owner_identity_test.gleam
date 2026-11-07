@@ -281,7 +281,7 @@ pub fn a_global_identity_reaches_the_executors_tool_environment_test() {
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
-      mcp: protocol.McpPlan(served: [], expected: []),
+      mcp: protocol.empty_mcp_plan(),
       git_identity: owner_identity.lookup(name, 20_000),
     ))
   let inbox = owner_port.inbox(port)

@@ -382,7 +382,7 @@ fn start_owned(
       clock: clock.fixed(at: 1000),
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
-      mcp: protocol.McpPlan(served: [], expected: []),
+      mcp: protocol.empty_mcp_plan(),
       git_identity: option.None,
       logger: log.discard(),
     ))
@@ -579,7 +579,7 @@ pub fn a_stopped_session_moves_and_runs_on_the_receiver_at_the_next_incarnation_
       clock: clock.fixed(at: 6000),
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
-      mcp: protocol.McpPlan(served: [], expected: []),
+      mcp: protocol.empty_mcp_plan(),
       git_identity: option.None,
       logger: log.discard(),
     ))
@@ -1484,7 +1484,7 @@ pub fn a_session_moves_there_and_back_test() {
       clock: clock.fixed(at: 6000),
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
-      mcp: protocol.McpPlan(served: [], expected: []),
+      mcp: protocol.empty_mcp_plan(),
       git_identity: option.None,
       logger: log.discard(),
     ))

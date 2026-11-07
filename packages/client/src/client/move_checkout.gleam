@@ -615,7 +615,7 @@ fn attach_and_apply(
       clock: arrival.clock,
       reconcile_every_ms: owner_port.default_reconcile_every_ms,
       executions: owner_port.no_executions(),
-      mcp: protocol.McpPlan(served: [], expected: []),
+      mcp: protocol.empty_mcp_plan(),
       git_identity: None,
       logger:,
     ))

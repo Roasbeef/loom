@@ -245,6 +245,7 @@ import broker/exec
 import broker/framing.{type CapOutcome}
 import broker/policy.{type Grant, type SandboxPolicy}
 import broker/token
+import client/host_seam
 import client/install
 import client/internal/ffi_os
 import client/jobseam
@@ -450,6 +451,15 @@ pub type Config {
     /// own host) and every operation must be bound to one execution's
     /// coordinates. The workspace seam alone sees it.
     evolution: Option(fn(tool.Ctx) -> codemode_evolution.Door),
+    /// The seam the host that embeds this session defined for it, or `None`
+    /// for Loom's own seams unchanged (protocol-change/111).
+    ///
+    /// One field for the reason `mcp` is one: it narrows the allowlist,
+    /// withdraws withheld names from what the description advertises, adds
+    /// the host module's surface and generated source, and installs the arm
+    /// that refuses withheld names and answers the host module. Set it with
+    /// `over_host`.
+    host: Option(host_seam.Layer),
     /// The pooled outstanding-effect cap for a whole execution.
     max_outstanding: Int,
     /// How long the hermetic build itself may take.
@@ -751,6 +761,23 @@ pub fn over_lsp_observation(
   Config(..config, observation: door)
 }
 
+/// The same host configuration, under a seam the embedding host defined
+/// (`client/host_seam`, protocol-change/111).
+///
+/// The layer narrows the workspace and orchestration seams alike, and only
+/// those: an installed extension and a resident hook keep the allowlists
+/// they were installed and frozen under. `None` restores Loom's own seams.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(layer) = host_seam.build(seam)
+/// // config |> codemode.over_host(option.Some(layer))
+/// ```
+pub fn over_host(config: Config, layer: Option(host_seam.Layer)) -> Config {
+  Config(..config, host: layer)
+}
+
 /// The vetting allowlist one seam judges a submission against.
 ///
 /// Indexed by the seam and not by the surface: a program is vetted
@@ -815,7 +842,7 @@ pub fn seam_allowlist(
   }
 
   // Include language server modules when configured.
-  case lsp_on(config, seam) {
+  let widened = case lsp_on(config, seam) {
     None -> noted
     Some(_) -> {
       let native = vet_policy.allow(noted, "cap/lsp")
@@ -826,6 +853,13 @@ pub fn seam_allowlist(
         Some(_) -> vet_policy.allow(native, "cap/lsp_sql")
       }
     }
+  }
+
+  // A host's own seam is applied last, so it narrows everything the doors
+  // above widened and adds its module after the narrowing.
+  case host_on(config, seam) {
+    None -> widened
+    Some(layer) -> host_seam.narrow(layer, widened)
   }
 }
 
@@ -977,7 +1011,7 @@ pub fn seam_caps_on(config: Config, seam: vet_policy.Seam) -> List(String) {
   }
 
   // Add language server capabilities when enabled.
-  case lsp_on(config, seam) {
+  let widened = case lsp_on(config, seam) {
     None -> noted
     Some(_) -> {
       let native = list.append(noted, codemode_lsp.serviced_caps)
@@ -988,6 +1022,13 @@ pub fn seam_caps_on(config: Config, seam: vet_policy.Seam) -> List(String) {
         Some(_) -> list.append(native, [codemode_observation.snapshot_cap])
       }
     }
+  }
+
+  // A host's own seam withdraws what it withholds or does not import, and
+  // advertises its module's one capability.
+  case host_on(config, seam) {
+    None -> widened
+    Some(layer) -> host_seam.serviced_caps(layer, widened)
   }
 }
 
@@ -1139,6 +1180,8 @@ pub fn default_config(
     // No evolution plane by default: it is opened after this configuration
     // exists, so `client/serve` installs the builder once the plane is up.
     evolution: None,
+    // No host seam by default: Loom's own seams, unchanged.
+    host: None,
     max_outstanding: default_outstanding,
     build_timeout_ms: default_build_timeout_ms,
     accept_timeout_ms: default_accept_timeout_ms,
@@ -1786,8 +1829,30 @@ fn seam_offer(
     seam: named,
     allowed_imports: vet_policy.allowed_imports(seam_allowlist(config, seam)),
     serviced_caps: seam_caps_on(config, seam),
-    extra_surfaces: mcp_wiring.surfaces(seam_mcp(config, seam)),
+    extra_surfaces: list.append(
+      mcp_wiring.surfaces(seam_mcp(config, seam)),
+      host_surfaces(config, seam),
+    ),
   )
+}
+
+/// The host module's surface, when this seam carries a host seam with one.
+fn host_surfaces(config: Config, seam: vet_policy.Seam) -> List(String) {
+  case host_on(config, seam) {
+    None -> []
+    Some(layer) -> host_seam.surfaces(layer)
+  }
+}
+
+/// The host module's generated source, when this seam carries one.
+fn host_generated(
+  config: Config,
+  seam: vet_policy.Seam,
+) -> List(#(String, String)) {
+  case host_on(config, seam) {
+    None -> []
+    Some(layer) -> host_seam.generated(layer)
+  }
 }
 
 /// One seam in the vocabulary the tool speaks. `tools` cannot see
@@ -2674,7 +2739,10 @@ pub fn exec_config(
       // it to the vetted program's own imports before a byte is
       // written, so a configured server a program never names costs it
       // no build time at all.
-      generated: mcp_wiring.generated(seam_mcp(config, seam)),
+      generated: list.append(
+        mcp_wiring.generated(seam_mcp(config, seam)),
+        host_generated(config, seam),
+      ),
       build: build.builder(build_config(config, request)),
     ),
     broker: config.broker,
@@ -2746,12 +2814,28 @@ fn surface_router(
     )
 
   // Add evolution router if enabled.
-  case evolution_on(config, vetting_seam(request.seam)) {
+  let evolved = case evolution_on(config, vetting_seam(request.seam)) {
     None -> owned
     Some(build) ->
       codemode_evolution.routing(
         build(evolution_context(config, request)),
         over: owned,
+      )
+  }
+
+  // The host's arm is outermost, so a withheld name is refused before any
+  // door that would answer it is reached. A host tool runs under the same
+  // rebuilt context an evolution operation does.
+  case host_on(config, vetting_seam(request.seam)) {
+    None -> evolved
+    Some(layer) ->
+      host_seam.routing(
+        layer,
+        holds: config.strand_tools,
+        ctx: evolution_context(config, request),
+        strand: request.strand,
+        source_index: request.source_index,
+        over: evolved,
       )
   }
 }
@@ -2846,6 +2930,30 @@ pub type OwnerSide {
     evolution: Option(
       fn(owner_services.OwnerCapCall) -> codemode_evolution.Door,
     ),
+    /// The host's own seam, and the clock its tools run under, or `None` for
+    /// Loom's seams. On an owner it does two things: it answers the host
+    /// module's calls from the host's tools, and it refuses an owner-bound
+    /// call whose module the seam does not admit, which is what holds the
+    /// seam against an executor that ignores it.
+    host: Option(OwnerHost),
+  )
+}
+
+/// A host seam as an owner answers it: the layer, the session's clock, which
+/// the host's tools read through their context, and the strand's tool-list
+/// check.
+///
+/// `holds` is carried here rather than read off the surface because an owner
+/// that serves the workspace seam alone has a surface with no Agency, while a
+/// local session of the same choice still asks `holds` for every seam
+/// (`serving` fills `strand_tools` regardless). A host call must be held to
+/// the strand's tools on both paths, so the owner is handed the check
+/// directly.
+pub type OwnerHost {
+  OwnerHost(
+    layer: host_seam.Layer,
+    clock: Clock,
+    holds: Option(fn(Caller, String) -> Result(Nil, Refusal)),
   )
 }
 
@@ -2864,6 +2972,11 @@ pub fn owner_side(config: Config) -> OwnerSide {
     schedules: config.schedules,
     mcp: config.mcp,
     evolution: None,
+    host: option.map(config.host, OwnerHost(
+      _,
+      config.clock,
+      config.strand_tools,
+    )),
   )
 }
 
@@ -2893,6 +3006,7 @@ pub fn owner_serving(
     schedules:,
     mcp: mcp_wiring.none(),
     evolution: None,
+    host: None,
   )
 }
 
@@ -3036,6 +3150,7 @@ pub fn owner_answering(
         ))
       },
     )
+    use Nil <- result.try(host_admits(side.host, call))
     let arms = arms_of(side, call.seam)
     let router =
       owner_calls(
@@ -3047,6 +3162,7 @@ pub fn owner_answering(
       )
       |> beyond(call.strand, _)
       |> with_evolution(side.evolution, call, _)
+      |> with_host(side.host, call, _)
 
     // Dispatch owner request through router.
     case router(owner_request(call)) {
@@ -3083,6 +3199,74 @@ fn with_evolution(
     | None, _
     -> router
   }
+}
+
+/// Refuses an owner-bound call the host's seam does not admit. With no host
+/// seam every call the surface serves is admitted, as before.
+fn host_admits(
+  host: Option(OwnerHost),
+  call: owner_services.OwnerCapCall,
+) -> Result(Nil, satellite.CapDenial) {
+  case host {
+    None -> Ok(Nil)
+    Some(OwnerHost(layer:, ..)) -> host_seam.owner_admits(layer, call.cap)
+  }
+}
+
+// The host module's calls over `router`, answered from the host's tools under
+// a context rebuilt from the call. The tool-list check is the one the host
+// handed over, so an owner with no messaging plane asks none, as a local host
+// with none would.
+/// Attaches the host seam's arm to an owner-bound call's chain.
+fn with_host(
+  host: Option(OwnerHost),
+  call: owner_services.OwnerCapCall,
+  router: satellite.CapRouter,
+) -> satellite.CapRouter {
+  case host {
+    None -> router
+    Some(OwnerHost(layer:, clock:, holds:)) ->
+      host_seam.routing(
+        layer,
+        holds:,
+        ctx: owner_context(call, clock),
+        strand: call.strand,
+        source_index: call.source_index,
+        over: router,
+      )
+  }
+}
+
+/// The context a host tool runs under on an owner that holds no workspace:
+/// the call's coordinates and the session's clock, with every part that
+/// belongs to a machine empty and refusing. A host's tools act on the host's
+/// own state, never on the checkout, which is on the executor.
+fn owner_context(call: owner_services.OwnerCapCall, clock: Clock) -> tool.Ctx {
+  tool.Ctx(
+    workspace: "",
+    strand: call.strand,
+    op_id: call.op_id,
+    step_id: call.step_id,
+    source_index: call.source_index,
+    base_policy: policy.workspace_default(""),
+    directory_access: directory_access.none(),
+    grants: [],
+    demand: exec.BestEffort,
+    env: [],
+    clock:,
+    filesystem: tool.FileSystem(
+      read: fn(path) { Error(tool.FsNotFound(path:)) },
+      write: fn(path, _bytes) { Error(tool.FsNotFound(path:)) },
+      create_directory_all: fn(path) { Error(tool.FsNotFound(path:)) },
+      is_file: fn(_path) { Ok(False) },
+      read_link: fn(_path) { Ok(tool.LinkMissing) },
+      rename: fn(from, _to) { Error(tool.FsNotFound(path: from)) },
+    ),
+    blob_root: "",
+    clear_call: fn(_spec, _events) { Error(broker.BrokerUnavailable) },
+    raise_refusal: tool.no_raise(),
+    observe_output: tool.ignore_output(),
+  )
 }
 
 /// The artifact writer of an owner which holds no blob store for a workspace
@@ -4465,11 +4649,23 @@ fn directory_of(path: String) -> String {
   }
 }
 
+// The host seam a seam selection sees. Installed extensions and resident
+// hooks keep the allowlists they were installed and frozen under, so a host
+// seam narrows code-mode programs alone.
+/// Returns the host seam authorized for the current seam.
+fn host_on(config: Config, seam: vet_policy.Seam) -> Option(host_seam.Layer) {
+  case seam {
+    vet_policy.WorkspaceSeam | vet_policy.OrchestrationSeam -> config.host
+    vet_policy.ExtensionSeam | vet_policy.ResidentSeam -> None
+  }
+}
+
 // The language-server door a seam sees. Installed extensions and resident
 // hooks never see it, for `seam_mcp`'s reasons: an extension's allowlist
 // is fixed and recorded at install, and a resident body has no capability
 // channel at all. This one choice gates the import, the rendered surface,
 // the advertised calls and the router arm together.
+/// Returns the language-server door authorized for the current seam.
 fn lsp_on(config: Config, seam: vet_policy.Seam) -> Option(query.Door) {
   case seam {
     vet_policy.WorkspaceSeam | vet_policy.OrchestrationSeam -> config.lsp

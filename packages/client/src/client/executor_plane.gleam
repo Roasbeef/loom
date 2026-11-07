@@ -1088,6 +1088,9 @@ fn attach_of(
       arms: fn(config) {
         config
         |> codemode_wiring.over_mcp(layer)
+        // The seam the session's host defined, from the same plan as the MCP
+        // façades; its module's calls are owner-bound, like `mcp.*`.
+        |> owner_codemode.hosting(spec.mcp.host)
         |> owner_codemode.over_owner_serving(owner, answered_here:)
       },
       tool: fn(config) {

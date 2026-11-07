@@ -257,7 +257,7 @@ fn linked(
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
-      mcp: remote_protocol.McpPlan(served: [], expected: []),
+      mcp: remote_protocol.empty_mcp_plan(),
       git_identity: option.None,
     ))
     as "the owner port starts"

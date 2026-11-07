@@ -438,6 +438,34 @@ current program's child custody.
 [Protocol 048](../../protocol-change/048-async-collaboration.md) records
 the program-mode change and its cost.
 
+### A seam the host defines
+
+A host that embeds Loom can narrow a session's seam and give it a module of
+its own ([protocol 111](../../protocol-change/111-host-code-mode-seam.md)).
+`client/host_seam.HostSeam` names the `cap/*` modules a program may import,
+the capability names it withholds (`lsp.rename`, say), and a `HostModule`
+whose functions are the host's own registered tools. `host_seam.build` checks
+the declaration and generates `cap/<name>` with the MCP façade generator
+(`mcp/codegen.generate_host`); `codemode.over_host` then applies it to the
+allowlist, the description, the build and the router together, on the
+workspace and orchestration seams only.
+
+The layer narrows and never widens: a module named on the host's list whose
+door is absent stays refused. A call `aegis.file_finding(..)` crosses as
+`host.aegis` with the tool's name and JSON arguments. The router asks the
+strand's tool list for that tool (`tool_gate.holding`) and runs the tool's own
+`run`, so the decoder, the host's checks and the refusal are the direct tool's.
+The program reads a refusal as `cap/mcp.ToolFailed` carrying the tool's text.
+
+On a workspace placed on an executor, the owner sends the seam in the MCP plan
+(`McpPlan.host`) and keeps its tools. `host.` is owner-bound
+(`client/cap_placement`), so every host call comes back as an owner-bound
+capability, and the owner answers it from the same arm. Because an untrusted
+executor may ignore the plan, the owner refuses any owner-bound call whose
+module the seam excludes (`host_seam.owner_admits`). The untrusted link admits
+a host call only while the session's `code_mode` call with the same
+coordinates is in flight.
+
 Orchestration is a capability rather than an interpreter because of Rule
 Zero: model-influenced code never runs in the harness VM. A trusted
 orchestration interpreter in the harness VM *is* model-influenced

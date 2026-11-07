@@ -125,6 +125,7 @@ pub fn settings() -> serve.Settings {
     ),
     codemode_seed: root <> "/absent-seed",
     codemode_seams: codemode.WorkspaceOnly,
+    code_mode_host: None,
     rules: [],
     schedules: [],
     schedule_policy: schedule.ModelSchedulesOff,
