@@ -61,9 +61,10 @@ pub fn validate(limits: Limits) -> Result(Nil, String) {
   }
 }
 
-/// The largest capacity either source may name. A session costs roughly
-/// 12.86 MiB of bookkeeping while it is resident, so the ceiling is the
-/// parser's bound, not a memory budget; see docs/design-notes/daemon-memory.md.
+/// The largest capacity either source may name. A resident session costs on
+/// the order of ten MiB after the copy repairs already landed, so the
+/// ceiling is the parser's bound, not a memory budget; see
+/// docs/design-notes/startup-and-memory.md, "What is left".
 pub const capacity_ceiling = 1024
 
 /// Reads daemon limits without requiring a model catalogue to exist.
