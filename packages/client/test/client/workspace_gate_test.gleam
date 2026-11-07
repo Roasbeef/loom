@@ -16,6 +16,7 @@ import gleam/list
 import gleam/string
 import host/bootstrap
 import simplifile
+import weft/poll
 import weft/registry
 
 fn started() -> Gate {
@@ -132,7 +133,18 @@ pub fn a_concurrent_write_cannot_land_inside_a_capture_test() {
       })
     })
   })
-  process.sleep(30)
+
+  // The capture asks once a write has landed, so writers are running when it
+  // does. A fixed pause was the guess here, and a loaded machine could ask
+  // before any writer had been scheduled.
+  let assert poll.Answered(Nil) =
+    poll.until(within: 5000, every: 1, attempt: fn() {
+      case string.length(read()) > 1 {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "a writer lands a write"
 
   let seen =
     workspace_gate.exclusive(gate, 5000, 5000, fn() {

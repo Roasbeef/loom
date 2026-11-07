@@ -54,6 +54,7 @@ import qcheck
 import runtime/api
 import runtime/effects
 import tools/agent
+import tools/codemode as codemode_tool
 import tools/directory_access
 import tools/tool
 
@@ -161,6 +162,29 @@ fn authority() -> wiring.Authority {
       )),
     ],
   )
+}
+
+/// What a background launch captured, with grants and a directory access.
+fn terms() -> owner_services.ExecutionTerms {
+  owner_services.ExecutionTerms(
+    strand: "main",
+    op_id: op(),
+    launch_step: "step-1",
+    source_index: 2,
+    source: "import cap/fs\npub fn main() { fs.read(\"a\") }",
+    seam: "orchestration",
+    within_ms: 60_000,
+    access: authority().access,
+    grants: [
+      policy.GrantEnv(name: "HOME"),
+      policy.GrantWritableRoot("/work"),
+    ],
+  )
+}
+
+/// An execution's key, as `protocol.execution_key` makes one.
+fn execution_key() -> protocol.Key {
+  protocol.execution_key("s1", op(), "a1b2")
 }
 
 /// A language server profile.
@@ -343,6 +367,7 @@ fn response_kind_of(
     untrusted_wire.ChunkAnswered(..) -> untrusted_wire.ChunkKind
     untrusted_wire.StatusAnswered(..) -> untrusted_wire.StatusKind
     untrusted_wire.FetchAnswered(..) -> untrusted_wire.FetchKind
+    untrusted_wire.ExecutionAnswered(..) -> untrusted_wire.ExecutionKind
   }
 }
 
@@ -361,6 +386,8 @@ fn answer_kind_of(answer: untrusted_wire.Answer) -> untrusted_wire.AnswerKind {
     untrusted_wire.CapabilityAnswered(..) -> untrusted_wire.CapabilityKind
     untrusted_wire.McpPlanAnswered(..) -> untrusted_wire.McpPlanKind
     untrusted_wire.GitIdentityAnswered(..) -> untrusted_wire.GitIdentityKind
+    untrusted_wire.LaunchAnswered(..) -> untrusted_wire.LaunchKind
+    untrusted_wire.InteractAnswered(..) -> untrusted_wire.InteractKind
   }
 }
 
@@ -539,6 +566,140 @@ pub fn every_state_request_round_trips_test() {
   assert_request(untrusted_wire.StateChunkRequest(piece: piece()))
   assert_request(untrusted_wire.StateStatusRequest(hash: state().hash))
   assert_request(untrusted_wire.StateFetchRequest(hash: state().hash, offset: 0))
+}
+
+pub fn the_background_execution_requests_round_trip_test() {
+  assert_request(untrusted_wire.StartExecutionRequest(
+    key: execution_key(),
+    incarnation: 3,
+    token: token(),
+    terms: terms(),
+    remaining_ms: 45_000,
+  ))
+
+  // The host clamps a negative time left itself, so the wire carries it.
+  assert_request(untrusted_wire.StartExecutionRequest(
+    key: execution_key(),
+    incarnation: 3,
+    token: token(),
+    terms: owner_services.ExecutionTerms(..terms(), seam: "workspace"),
+    remaining_ms: -1,
+  ))
+
+  assert_request(untrusted_wire.StopExecutionRequest(
+    key: execution_key(),
+    incarnation: 3,
+  ))
+  assert untrusted_wire.response_kind(untrusted_wire.StopExecutionRequest(
+      key: execution_key(),
+      incarnation: 3,
+    ))
+    == None
+}
+
+pub fn every_execution_answer_round_trips_test() {
+  list.each(
+    [
+      protocol.ExecutionFinished(
+        value: json.Object([
+          #("status", json.String("ok")),
+          #("value", json.Array([json.Int(1), json.Null])),
+        ]),
+      ),
+      protocol.ExecutionLost,
+      protocol.ExecutionRefused(protocol.StaleToken),
+      protocol.ExecutionRefused(protocol.Unreachable("gone")),
+    ],
+    fn(answer) { assert_response(untrusted_wire.ExecutionAnswered(answer:)) },
+  )
+}
+
+pub fn the_background_execution_callbacks_round_trip_test() {
+  assert_callback(untrusted_wire.LaunchExecutionCall(terms: terms()))
+
+  list.each(
+    [
+      codemode_tool.Check,
+      codemode_tool.Join,
+      codemode_tool.Cancel,
+      codemode_tool.Send(value: json.Object([#("n", json.Int(1))])),
+      codemode_tool.SendTo(endpoint: "progress", value: json.String("x")),
+    ],
+    fn(interaction) {
+      assert_callback(untrusted_wire.InteractExecutionCall(
+        strand: "main",
+        handle: "exec-1",
+        interaction:,
+        within_ms: 5000,
+      ))
+    },
+  )
+
+  list.each([Ok(json.String("exec-1")), Error("not yours")], fn(answer) {
+    assert_answer(untrusted_wire.LaunchAnswered(answer:))
+    assert_answer(untrusted_wire.InteractAnswered(answer:))
+  })
+}
+
+pub fn a_launch_under_a_mode_no_program_has_is_refused_test() {
+  let launch =
+    bit_array_text(
+      untrusted_codec.encode_frame(untrusted_wire.Callback(
+        binding: binding(),
+        id: 1,
+        callback: untrusted_wire.LaunchExecutionCall(terms: terms()),
+      )),
+    )
+  assert_refused_callback(string.replace(
+    launch,
+    "\"seam\":\"orchestration\"",
+    "\"seam\":\"resident\"",
+  ))
+  assert_refused_callback(string.replace(
+    launch,
+    "\"within_ms\":60000",
+    "\"within_ms\":-1",
+  ))
+  assert_refused_callback(string.replace(
+    launch,
+    "\"source_index\":2",
+    "\"source_index\":\"2\"",
+  ))
+}
+
+pub fn malformed_execution_bodies_are_refused_test() {
+  let refused_body = fn(text: String) {
+    let assert Error(_report) = untrusted_codec.decode_callback(parsed(text))
+      as "A malformed execution callback must be refused."
+    Nil
+  }
+
+  refused_body("{\"kind\":\"launch_execution\"}")
+  refused_body("{\"kind\":\"launch_execution\",\"terms\":{}}")
+  refused_body(
+    "{\"kind\":\"interact_execution\",\"strand\":\"s\",\"handle\":\"h\",\"interaction\":{\"kind\":\"detonate\"},\"within_ms\":1}",
+  )
+  refused_body(
+    "{\"kind\":\"interact_execution\",\"strand\":\"s\",\"handle\":\"h\",\"interaction\":{\"kind\":\"send\"},\"within_ms\":1}",
+  )
+  refused_body(
+    "{\"kind\":\"interact_execution\",\"strand\":\"s\",\"handle\":\"h\",\"interaction\":{\"kind\":\"join\"},\"within_ms\":-1}",
+  )
+
+  assert_request_refused("{\"kind\":\"stop_execution\",\"incarnation\":1}")
+  assert_request_refused("{\"kind\":\"start_execution\"}")
+
+  let answer = "{\"kind\":\"execution\",\"answer\":{\"kind\":\"vanished\"}}"
+  let assert Error(_report) =
+    untrusted_codec.decode_response(
+      untrusted_wire.ExecutionKind,
+      parsed(answer),
+    )
+    as "An execution answer of no known kind must be refused."
+  let launched = "{\"kind\":\"launch\",\"answer\":{\"error\":7}}"
+  let assert Error(_report) =
+    untrusted_codec.decode_answer(untrusted_wire.LaunchKind, parsed(launched))
+    as "A launch refusal must be text."
 }
 
 pub fn a_run_request_keeps_its_authority_and_its_call_test() {
@@ -1508,6 +1669,7 @@ fn one_response_of_each_kind() -> List(untrusted_wire.Response) {
     untrusted_wire.ChunkAnswered(verdict: state_transfer.Accepted(held: 1)),
     untrusted_wire.StatusAnswered(answer: Ok(state_transfer.Complete)),
     untrusted_wire.FetchAnswered(fetched: state_transfer.NotHeld),
+    untrusted_wire.ExecutionAnswered(answer: protocol.ExecutionLost),
   ]
 }
 
@@ -1524,11 +1686,12 @@ fn every_response_kind() -> List(untrusted_wire.ResponseKind) {
     untrusted_wire.ChunkKind,
     untrusted_wire.StatusKind,
     untrusted_wire.FetchKind,
+    untrusted_wire.ExecutionKind,
   ]
 }
 
 pub fn a_response_decodes_only_against_its_own_kind_test() {
-  assert list.length(one_response_of_each_kind()) == 10
+  assert list.length(one_response_of_each_kind()) == 11
 
   list.each(one_response_of_each_kind(), fn(response) {
     let body = body_of(untrusted_wire.Response(id: 1, response:))
@@ -1580,6 +1743,8 @@ fn one_answer_of_each_kind() -> List(untrusted_wire.Answer) {
     ),
     untrusted_wire.McpPlanAnswered(plan: protocol.empty_mcp_plan()),
     untrusted_wire.GitIdentityAnswered(identity: None),
+    untrusted_wire.LaunchAnswered(answer: Ok(json.String("exec-1"))),
+    untrusted_wire.InteractAnswered(answer: Ok(json.String("exec-1"))),
   ]
 }
 
@@ -1598,11 +1763,13 @@ fn every_answer_kind() -> List(untrusted_wire.AnswerKind) {
     untrusted_wire.CapabilityKind,
     untrusted_wire.McpPlanKind,
     untrusted_wire.GitIdentityKind,
+    untrusted_wire.LaunchKind,
+    untrusted_wire.InteractKind,
   ]
 }
 
 pub fn an_answer_decodes_only_against_its_own_kind_test() {
-  assert list.length(one_answer_of_each_kind()) == 12
+  assert list.length(one_answer_of_each_kind()) == 14
 
   list.each(one_answer_of_each_kind(), fn(answer) {
     let body =

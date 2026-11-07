@@ -37,10 +37,12 @@
 ////
 //// The executor names a binding on each callback. A callback reaches the
 //// owner port only if the binding is one this link minted and has not
-//// retired, its id is greater than any accepted on the binding, the call it
-//// names is a `run` this link has in flight for the binding's session (for an
-//// escalation, a capability, a tool-list check and a tail), and the binding
-//// and the link are under their bounds. Otherwise it is answered with the
+//// retired, its id is greater than any accepted on the binding, the work it
+//// names is outstanding on this link for the binding's session, and the
+//// binding and the link are under their bounds. An escalation, a tail, a
+//// background launch and an interaction name a `run` in flight; a capability
+//// and a tool-list check name a `run` or a background execution's `start`,
+//// which stays outstanding for as long as the execution's record is live. Otherwise it is answered with the
 //// failure its type allows and logged. An accepted callback runs in a weft
 //// task against the owner port, so the link never waits on an owner.
 ////
@@ -239,6 +241,20 @@ type Binding {
     last_id: Int,
     /// Callbacks being answered now.
     open: Int,
+  )
+}
+
+/// Where a callback says it was made: a call's coordinates and its strand.
+type Site {
+  Site(
+    /// The operation.
+    op: String,
+    /// The planner step.
+    step: String,
+    /// The position in the step.
+    source_index: Int,
+    /// The strand the work runs as.
+    strand: String,
   )
 }
 
@@ -446,7 +462,7 @@ fn handle(
   }
 }
 
-/// A `HostMessage` from a session: answered at once if slice 1 does not carry
+/// A `HostMessage` from a session: answered at once if the link does not carry
 /// it, otherwise made an outstanding request and sent, or held for the next
 /// connection.
 fn hosted(
@@ -456,8 +472,9 @@ fn hosted(
 ) -> sm.Next(Phase, Data, Message) {
   let bind = fn(session, port) { binding_for(data, session, port) }
 
-  // An ack has no reply and is not kept: a lost one is found again by the
-  // owner port's reconciler, so it goes out only on an open connection.
+  // An ack and a stop have no reply and are not kept: a lost one is found
+  // again by the owner port's reconciler, so it goes out only on an open
+  // connection.
   case untrusted_bridge.outbound(message, bind) {
     untrusted_bridge.Answered -> sm.keep(data)
     untrusted_bridge.Send(request:, reply: None, requester: _, port: _) ->
@@ -488,7 +505,7 @@ fn binding_for(
   }
 }
 
-/// Sends an ack if the connection is open, under an id of its own.
+/// Sends an ack or a stop if the connection is open, under an id of its own.
 fn acked(
   phase: Phase,
   data: Data,
@@ -497,7 +514,7 @@ fn acked(
   let id = data.next_id
   let data = Data(..data, next_id: id + 1)
 
-  // An ack that cannot go now is dropped; see `hosted`.
+  // A cast that cannot go now is dropped; see `hosted`.
   case phase {
     Open(stream:) ->
       sent(stream, data, encoded(untrusted_wire.Request(id:, request:)))
@@ -1044,9 +1061,12 @@ fn from_a_program(
   }
 }
 
-/// The four callbacks that name a tool call must name a `run` this link has
-/// outstanding for the session, and an escalation must describe that call
-/// exactly, so the operator is asked about the call the orchestrator sent.
+/// The callbacks that name a call must name one this link has outstanding for
+/// the session. An escalation, a tail, a launch and an interaction name a
+/// `run`, and an escalation must describe that call exactly, so the operator
+/// is asked about the call the orchestrator sent. A capability and a tool-list
+/// check name a `run` or a background execution's `start`, because a program
+/// running in the background makes them as a foreground one does.
 fn about_work(
   data: Data,
   session: String,
@@ -1066,18 +1086,46 @@ fn about_work(
         && run.arguments == refused.arguments
       })
     untrusted_wire.CapabilityCall(call: asked) ->
-      in_flight(data, session, fn(key, run) {
-        key.op == ids.op_id_to_string(asked.op_id)
-        && key.step == asked.step_id
-        && key.source_index == asked.source_index
-        && run.strand == asked.strand
-      })
+      at_work(
+        data,
+        session,
+        Site(
+          op: ids.op_id_to_string(asked.op_id),
+          step: asked.step_id,
+          source_index: asked.source_index,
+          strand: asked.strand,
+        ),
+      )
     untrusted_wire.HoldsCall(caller:, ..) ->
+      at_work(
+        data,
+        session,
+        Site(
+          op: ids.op_id_to_string(caller.operation),
+          step: caller.step_id,
+          source_index: caller.source_index,
+          strand: caller.strand,
+        ),
+      )
+
+    // A launch carries the coordinates of the `code_mode` call that asked
+    // for it, so the owner claims a record only for the call that is running,
+    // under that call's strand.
+    untrusted_wire.LaunchExecutionCall(terms:) ->
       in_flight(data, session, fn(key, run) {
-        key.op == ids.op_id_to_string(caller.operation)
-        && key.step == caller.step_id
-        && key.source_index == caller.source_index
-        && run.strand == caller.strand
+        key.op == ids.op_id_to_string(terms.op_id)
+        && key.step == terms.launch_step
+        && key.source_index == terms.source_index
+        && run.strand == terms.strand
+        && run.call.name == codemode_tool.tool_name
+      })
+
+    // An interaction names no call, only its strand, so it needs a
+    // `code_mode` call of that strand in flight; the owner then checks the
+    // strand owns the handle.
+    untrusted_wire.InteractExecutionCall(strand:, ..) ->
+      in_flight(data, session, fn(_key, run) {
+        run.strand == strand && run.call.name == codemode_tool.tool_name
       })
     untrusted_wire.TailCast(run: tailed, ..) ->
       in_flight(data, session, fn(key, _run) {
@@ -1102,17 +1150,55 @@ fn in_flight(
   session: String,
   matches: fn(protocol.Key, effects.ToolRun) -> Bool,
 ) -> Result(Nil, String) {
+  // Only a run is a tool call in flight.
+  outstanding_for(data, fn(request) {
+    case request {
+      untrusted_wire.RunRequest(key:, run:, ..) ->
+        key.session == session && matches(key, run)
+      _other -> False
+    }
+  })
+}
+
+/// Whether a `run`, or a background execution's `start`, of `session` is
+/// outstanding at `site`. A start is outstanding exactly as long as its
+/// record's worker waits on it: the record closing kills the worker, and the
+/// worker's death removes the start and cancels it at the executor. A program
+/// runs with the launching call's strand and source index under the
+/// execution's own step (`executor_plane`), so those are what it is matched
+/// on, beside the execution key's operation and step.
+fn at_work(data: Data, session: String, site: Site) -> Result(Nil, String) {
+  // A tool call is matched on its key and strand; an execution on its key's
+  // operation and step and on the strand and position its terms captured.
+  outstanding_for(data, fn(request) {
+    case request {
+      untrusted_wire.RunRequest(key:, run:, ..) ->
+        key.session == session
+        && key.op == site.op
+        && key.step == site.step
+        && key.source_index == site.source_index
+        && run.strand == site.strand
+      untrusted_wire.StartExecutionRequest(key:, terms:, ..) ->
+        key.session == session
+        && key.op == site.op
+        && key.step == site.step
+        && terms.source_index == site.source_index
+        && terms.strand == site.strand
+      _other -> False
+    }
+  })
+}
+
+/// Whether any outstanding request `matches`.
+fn outstanding_for(
+  data: Data,
+  matches: fn(Request) -> Bool,
+) -> Result(Nil, String) {
   let found =
     dict.values(data.outstanding)
-    |> list.any(fn(pending) {
-      case pending.request {
-        untrusted_wire.RunRequest(key:, run:, ..) ->
-          key.session == session && matches(key, run)
-        _other -> False
-      }
-    })
+    |> list.any(fn(pending) { matches(pending.request) })
 
-  // A callback about a call this link is not running for the session is
+  // A callback about work this link is not carrying for the session is
   // either late or forged, and in both cases it is not the owner's business.
   case found {
     True -> Ok(Nil)
