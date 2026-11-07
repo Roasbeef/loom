@@ -184,6 +184,7 @@ fn drive(seed: String) -> Nil {
       credentials: pair.executor,
       orchestrators: [pair.orchestrator_pin],
       host: started.data,
+      blobs: None,
       logger: log.discard(),
     ))
     as "the gateway starts"
