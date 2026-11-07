@@ -581,11 +581,18 @@ fn reproducible_arguments(config: Config) -> Result(Nil, Nil) {
     config.owner_display_name
   {
     // A capacity named only by the file is reproducible, because the updater
-    // re-reads the same file on the new tree; a `--capacity` flag is not,
-    // for the same reason `--bind` is not.
+    // re-reads the same file on the new tree. A `--capacity` flag is not, for
+    // the same reason `--bind` is not — except when the flag names the
+    // default: dropping it leaves the same number, so an owner who passes
+    // `--capacity 8` redundantly keeps the automatic update they always had.
     BindDefault, ViewOff, source, "Owner" ->
       case source {
         CapacityDefault | CapacityFile ->
+          reproducible_defaults(config.session_defaults)
+
+        // A flag naming the default is droppable: the updater's launch
+        // args reproduce the same capacity without it.
+        CapacityFlag if config.capacity == limits.default_capacity ->
           reproducible_defaults(config.session_defaults)
         CapacityFlag -> Error(Nil)
       }
@@ -645,7 +652,7 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
       listen_address.default.host,
       listen_address.default.port,
       BindDefault,
-      8,
+      limits.default_capacity,
       CapacityDefault,
       "Owner",
       [],

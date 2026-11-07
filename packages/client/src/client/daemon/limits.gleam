@@ -30,7 +30,10 @@ pub type Limits {
 
 /// Defaults leave room for twelve operator/control terminal pairs and eight
 /// concurrently open sessions.
-pub const defaults = Limits(64, 536_870_912, 8)
+pub const defaults = Limits(64, 536_870_912, default_capacity)
+
+/// The built-in session-slot ceiling when neither source names one.
+pub const default_capacity = 8
 
 /// Rejects nonpositive settings before the daemon acquires any resources.
 ///
