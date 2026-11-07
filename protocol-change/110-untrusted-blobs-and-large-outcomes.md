@@ -2,7 +2,7 @@
 
 **Status**: PROPOSED 2026-11-06, built in the PR that adds this file.
 **Affects**: the untrusted executor wire of [109](109-untrusted-executors.md)
-(`untrusted_wire.version` 1 to 2): one new frame, three new requests and their
+(`untrusted_wire.version` 2 to 3): one new frame, three new requests and their
 replies. `untrusted_gateway.Config` gains `blobs`, and `untrusted_link` gains
 `start_placing`, which answers the subject blobs are placed through beside the
 process. The remote node vocabulary of 078 (`client/remote/protocol`) and its
@@ -98,8 +98,9 @@ answers.
 
 ### Wire version
 
-`untrusted_wire.version` goes from 1 to 2. The new frame and requests are
-refused by a version 1 peer at the handshake, as 109 refuses any mismatch.
+`untrusted_wire.version` goes from 2 to 3. Version 2 is slice 2 of 109
+(background code mode), which landed first. The new frame and requests are
+refused by a version 2 peer at the handshake, as 109 refuses any mismatch.
 
 ### Placed blobs
 

@@ -2,8 +2,9 @@
 
 **Status**: PROPOSED 2026-11-06. Slice 1 is built in the PR that adds this file:
 the link, the gateway, the wire and its codec, the configuration, and the tests
-named under "Tests". Background code mode, remote evolution and the commands
-that non-tool callers run through the executor's broker are not carried yet; see
+named under "Tests". Slice 2, background code mode, is built in the PR stacked
+on it ("Background code mode" below). Remote evolution and the commands that
+non-tool callers run through the executor's broker are not carried yet; see
 "Slices".
 **Affects**: `loom.toml` (one new table on each side, and three keys on
 `[executors.<name>]`), a new framed wire between an orchestrator and an
@@ -116,7 +117,8 @@ The orchestrator dials the executor's listener. The executor never dials.
   frame before asking for the next, so one connection costs at most one
   decoded frame at a time.
 - **Handshake.** The orchestrator's first frame is `hello` with the wire
-  version (`untrusted_wire.version`, 1) and `protocol.version`. The executor
+  version (`untrusted_wire.version`, 2 since slice 2 added the execution
+  frames' bodies) and `protocol.version`. The executor
   answers `welcome` with its own two numbers, or closes. The orchestrator
   closes on any mismatch, and the session open reports it as the attach's
   `VersionMismatch`. The executor closes a connection that sends no `hello`
@@ -155,7 +157,9 @@ so a reply names exactly one request.
 | `StateChunk` | `state_chunk` | `Verdict` |
 | `StateStatus` | `state_status` | `Result(Stage, String)` |
 | `StateFetch` | `state_fetch` | `Fetched` |
-| `StartExecution`, `StopExecution`, the eight `Evolution*` | not carried in slice 1 | answered on the orchestrator with `Invalid` (or the type's refusal), never sent |
+| `StartExecution` | `start_execution` | `ExecutionAnswer` |
+| `StopExecution` | `stop_execution` | none |
+| the eight `Evolution*` | not carried | answered on the orchestrator with `Invalid` (or the type's refusal), never sent |
 
 The orchestrator decodes a `response` against the kind of reply its request
 expects. A response for an id the link never issued, a body that does not decode
@@ -243,19 +247,29 @@ The orchestrator checks every callback before its owner port sees it:
 2. **The id is greater than every id accepted on that binding.** The counter
    survives a reconnect, so a replayed callback, from this connection or an
    earlier one, is refused in band.
-3. **The callback is about this binding's work.** Four kinds name a tool call,
-   and the link requires that call to be a `run` it has outstanding for the
-   binding's session:
-   - `escalate`: the refusal's operation, step and source index, and also its
-     strand, tool name and arguments, must equal that `run`'s. The operator is
+3. **The callback is about this binding's work.** Six kinds name a call, and
+   the link requires it to be one it has outstanding for the binding's
+   session:
+   - `escalate`: a `run` whose operation, step and source index, and also its
+     strand, tool name and arguments, equal the refusal's. The operator is
      asked about the call the orchestrator sent, not about one the executor
      describes.
-   - `capability`: the operation, step, source index and strand must be a
-     `run` in flight. Owner-bound capabilities are therefore reachable only
-     while a foreground call of the session is running, with that call's
-     strand.
-   - `holds`: the caller's operation, step and source index.
+   - `capability`: a `run` in flight at the call's operation, step, source
+     index and strand, or a background execution's `start` outstanding at
+     them (see "Background code mode"). Owner-bound capabilities are
+     therefore reachable only while a foreground call of the session is
+     running, with that call's strand, or while a program the orchestrator
+     started for the session is live, with the strand that launched it.
+   - `holds`: the caller's operation, step, source index and strand, against
+     a `run` or a `start` as for `capability`.
    - `tail`: the run's key.
+   - `launch_execution`: a `run` of `code_mode` in flight whose operation,
+     step, source index and strand equal the launch terms'. A record is
+     claimed only for the call that asks for it.
+   - `interact_execution`: a `run` of `code_mode` in flight with the
+     interaction's strand. The message names no call, only the strand, so
+     this is as narrow as the check can be; the owner then requires the strand
+     to own the handle.
 
    Facts, notices, wakes, strand activity, the MCP plan and the Git identity
    need only the binding: background jobs legitimately send them after the
@@ -270,6 +284,61 @@ callback that is accepted is run by a task that sends the `OwnerMessage` to the
 owner port with a fresh reply subject, waits for the answer or the port's
 `DOWN`, and hands the encoded answer back to the link. The link itself never
 waits on an owner.
+
+### Background code mode
+
+A background program on a trusted executor makes three trips (078,
+"Background executions"). The executor's `code_mode` call sends
+`LaunchExecution` to the owner port; the owner claims the record and its
+worker sends `StartExecution` to the host through the host link of the attach;
+the host admits it by key as it admits a `Run`, runs the program, and answers
+`ExecutionAnswer` when it ends. While it runs, the program's owner-bound
+capabilities travel as `Capability` callbacks carrying the launching call's
+strand and source index under the execution's step `async/<id>`. Slice 2
+carries all three over the link, with the same properties the link gives a
+`run`.
+
+- **Start and stop.** `StartExecution` is a request like `run`: its asker is
+  the record's worker, so the worker's death (which is how the record stops its
+  program) removes the start at once and, on an open connection, sends
+  `cancel`; the gateway kills the waiter, and the host reads the waiter's death
+  as a stop. A worker that dies while the link has no connection sends no
+  cancel, as a `DOWN` lost to a partition sends none over distribution, and the
+  program runs until the owner port's reconciler sends `stop_execution` or its
+  own deadline passes; its callbacks reach nobody in the meantime, because its
+  start is gone. A dropped connection makes the waiter exit with
+  `noconnection`, which the host reads as a partition: the program keeps
+  running, and the start the link re-sends on the next connection is admitted
+  by key and joins it, or reads the value the program stored if it ended in
+  between. The response is decoded as `ExecutionAnswer` and nothing else, and a
+  response for an id the link has already settled is dropped, so the worker
+  hears exactly one answer. `StopExecution` has no reply and, like `ack`, goes
+  out only on an open connection; a lost one is sent again by the owner port's
+  reconciler, which reads the executions in `Unacked`.
+- **Launch and interact.** `LaunchExecution` and `InteractExecution` are
+  callbacks with their own answer kinds, checked by rule 3 above. The executor's
+  proxy answers a launch whose orchestrator has no connection, or whose answer
+  is of another kind, with the refusal `owner_link` gives a launch the owner did
+  not answer, which names the handle the launch may have been given. The
+  orchestrator clamps a launch's budget to its own `code_mode` ceiling
+  (`client/codemode.max_within_ms`) before the owner builds the record's
+  deadline from it, because on a trusted executor that clamp happens in the
+  executor's `code_mode` tool and here it would be the attacker's. It clamps an
+  interaction's wait to an hour before the owner hears it, so a hostile
+  executor cannot hold a forwarder longer.
+- **The program's capabilities.** The link accepts a capability or a tool-list
+  check whose site is an outstanding `start` of the binding's session: the
+  start's key names the operation and the step, and its terms name the strand
+  and source index the program runs with. A start is outstanding exactly as
+  long as its worker waits on it, so a program the record has closed, or one
+  the orchestrator never started, reaches nobody.
+
+The launch terms (the program's source, its mode, its directory additions and
+grants) come from the executor and go back to it in `start_execution`; they
+shape only the program's jail on the executor, which the executor controls in
+any case. The codec admits only the two program modes by name. The owner's
+execution service bounds the records a session holds and the source a launch
+carries, as it does for a trusted executor.
 
 ### State transport is pulled, never pushed
 
@@ -287,8 +356,8 @@ envelope.
 
 `Attached` carries the plane's census. Its `broker` field is a subject, which
 cannot cross, and the orchestrator puts a broker handle there whose every call
-is refused as unavailable. That refuses, for an untrusted executor in slice 1,
-the commands non-tool callers run through the executor's broker: project hooks,
+is refused as unavailable. That refuses, for an untrusted executor until slice
+3, the commands non-tool callers run through the executor's broker: project hooks,
 goal checks, Git observation and the worktree diff. Its `evolution` field is set
 by the orchestrator to `Uncompiled` with a reason naming this mode, so the
 orchestrator never sends an evolution request. Everything else in the census is
@@ -349,9 +418,13 @@ Assume the executor's VM, its jails and its listener are wholly the attacker's.
   a call that is in flight (with the call's own arguments; see check 3), read
   and write the reserved fact prefixes, notify and wake the session's strands,
   and call `strand.*`, `notes.*`, `schedule.*` and `peer.*` while a `code_mode`
-  call of the session is running, with that call's strand. That is what a
-  program the model wrote could do through the same call; the owner applies the
-  same tool-list check and the same refusals.
+  call of the session is running, with that call's strand, or while a
+  background program the orchestrator started for the session is live, with
+  the strand that launched it. During a `code_mode` call it can also launch
+  background programs as that call and check, join, cancel or send to the
+  strand's executions. That is what a program the model wrote could do through
+  the same call; the owner applies the same tool-list check, the same refusals
+  and the same execution limits.
 - Deny service: refuse every call, hold every connection, close it.
 
 **What it cannot do.**
@@ -367,6 +440,11 @@ Assume the executor's VM, its jails and its listener are wholly the attacker's.
   only handle, and the orchestrator retires it.
 - Ask the operator about a call that is not in flight, or describe an in-flight
   call with other arguments.
+- Claim a background record outside the `code_mode` call that asks for it,
+  reach the owner as a program the orchestrator never started or has stopped,
+  or keep a program's capabilities alive past its record: the record's worker
+  dying cancels its start, and only an outstanding start admits a program's
+  callbacks.
 - Replay a callback or a reply, answer a request that was not sent, or answer
   one request with another's kind.
 - Exhaust the orchestrator's memory with outstanding callbacks (64 per binding,
@@ -385,16 +463,27 @@ Assume the executor's VM, its jails and its listener are wholly the attacker's.
   same as running the checkout there at all.
 - The capability callbacks act as the session's strand. A hostile executor that
   waits for a `code_mode` call can send `peer.*` messages or schedule work as
-  that strand while the call runs. Narrowing that further needs the
-  orchestrator to know which capabilities the program asked for, which only the
-  executor knows; slice 1 does not try.
+  that strand while the call runs, and, since slice 2, for as long as any
+  background program of the session is live, whose lifetime is the record's
+  (at most the orchestrator's `code_mode` ceiling, fifteen minutes, which the
+  link clamps every launch's budget to). During a `code_mode` call it can also
+  launch programs the model did not ask for, up to the execution service's
+  limits, and each keeps that window open. Narrowing that further needs the
+  orchestrator to know which capabilities and launches the program asked for,
+  which only the executor knows; neither slice tries.
+- **An interaction names only its strand.** `InteractExecution` carries no
+  call coordinates, so the link can require only that a `code_mode` call of
+  that strand be in flight, not that it is the call asking. Any `code_mode`
+  call of the strand opens the window for any of the strand's handles.
+  Binding it to the call needs the coordinates on 078's message, which is a
+  `protocol.version` change; slice 2 does not make one.
 - **One frame's decoded size.** The frame bound is on bytes, and nesting is
   bounded, but breadth is not: a 32 MiB array of small integers decodes to
   several hundred megabytes of terms for as long as the frame is being read.
   The link reads one frame at a time, so this is a transient cost per
   connection, and a small orchestrator can still be pushed into an allocation
   failure by a hostile executor. A count of values in the decoder would bound
-  it; slice 1 does not add one.
+  it; slices 1 and 2 do not add one.
 - **The grant an escalation asks for is the executor's.** The link checks that
   an escalation describes the call in flight exactly, but its `denial`, the
   access the call says it was refused, comes from the executor's broker, which
@@ -420,13 +509,14 @@ this mode is for, a review pod's tool calls, that is noise beside the call.
 
 ## Slices
 
-1. **This PR.** The link and the gateway, the wire and its codec, the
+1. **Built.** The link and the gateway, the wire and its codec, the
    configuration, tool calls with their recovery, owner callbacks with the
    per-binding checks, and state transport. Background code mode, remote
    evolution and non-tool callers are refused with reasons naming this mode.
-2. **Background code mode.** `StartExecution`, `StopExecution`,
+2. **Built.** Background code mode: `StartExecution`, `StopExecution`,
    `LaunchExecution` and `InteractExecution`, with the capability check of
-   check 3 extended to an execution the binding's session has running.
+   check 3 extended to an execution the binding's session has running, and
+   the wire version moved to 2. See "Background code mode".
 3. **A broker tunnel for non-tool callers**, so project hooks, goal checks,
    Git observation and the worktree diff run on an untrusted executor. The
    broker's vocabulary streams output, so this needs streamed frames.
@@ -452,10 +542,30 @@ does not list is refused. `untrusted_end_to_end_test` runs a real orchestrator
 surface and owner port through the link and the gateway into a real host, with
 certificates minted by `client_pki_ffi`.
 
+For slice 2, `untrusted_codec_test` round-trips the execution requests, answers,
+callbacks and their answers, refuses a launch under a mode no program has, and
+extends the kind-against-kind matrices, where only the diagonal decodes.
+`untrusted_link_test` has the hostile executor make a program's capability call
+before its start, for another execution and another strand, and after its
+worker died (each refused, and the death sends `cancel`); forge, replay and use
+a retired binding for a program's callback; launch and interact with no call in
+flight, from a `bash` call, at other coordinates and as another strand; answer
+a start with a run's answer; and answer a start re-sent after a drop twice, so
+the worker must hear it once, or have its worker die after the re-send, so the
+cancel must go out on the new connection. `untrusted_gateway_test` drops the
+connection under a running program, which keeps running, ends it while nobody
+is connected and reads its value with the re-sent start; joins a running
+program with the re-sent start and stops it with a cancel; and answers a
+launch callback with an interaction's answer, which the proxy refuses as
+unanswered. `untrusted_end_to_end_test` launches a program from a `code_mode`
+call through a real owner port and host, takes the program's capability
+callback after the launching call ended, and hands its value to the record's
+worker, and stops a program by killing that worker.
+
 ## Addendum, 2026-11-06: placed blobs and outcomes larger than a frame
 
 [110](110-untrusted-blobs-and-large-outcomes.md) adds to this link, at wire
-version 2, a carrier for bytes that are not a Git state (blobs placed by the
+version 3, a carrier for bytes that are not a Git state (blobs placed by the
 orchestrator for a session, checked for size and SHA-256 before they exist,
 bounded per binding, per orchestrator and on disk) and a fetch in pieces for a
 tool outcome whose response would not fit a frame. Both keep this proposal's

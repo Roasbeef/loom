@@ -584,8 +584,8 @@ fn port_for(
   }
 }
 
-/// Starts the waiter for one request. An ack is sent from here, because it
-/// has no answer to wait for.
+/// Starts the waiter for one request. An ack and a stop are sent from here,
+/// because they have no answer to wait for.
 fn waiting(
   data: Connection,
   pin: BitArray,
@@ -604,12 +604,12 @@ fn waiting(
   // connection dies first, the waiter leaves with `noconnection`, which the
   // host reads as a partition (`untrusted_bridge.ask_host`). A weft run would
   // tie it to a scope this connection owns and kill it with another reason.
-  case request {
-    untrusted_wire.AckRequest(..) -> {
+  case untrusted_wire.response_kind(request) {
+    None -> {
       let _none = untrusted_bridge.ask_host(host, request, port, carrier)
       data
     }
-    _other -> {
+    Some(_kind) -> {
       let waiter =
         process.spawn_unlinked(fn() {
           let response =
@@ -765,7 +765,7 @@ fn replied(
 ) -> sm.Next(Phase, Connection, ConnectionMessage) {
   let data = Connection(..data, waiters: dict.delete(data.waiters, id))
 
-  // An ack's waiter never replies; every other request has a response.
+  // Only a request with a reply has a waiter, and its waiter always replies.
   case response {
     Some(response) -> {
       let frame =
@@ -1094,9 +1094,8 @@ fn forwarded(
   state: ProxyState,
   forward: untrusted_bridge.Forward,
 ) -> ProxyState {
-  // A tail has no reply to fail; a declined message was answered already.
+  // A tail has no reply to fail.
   case forward, state.connection {
-    untrusted_bridge.Declined, _ -> state
     untrusted_bridge.Forwarded(callback:, reply:), Some(connection) ->
       case dict.size(state.outstanding) >= max_proxy_callbacks, reply {
         True, Some(reply) -> {

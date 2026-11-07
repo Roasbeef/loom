@@ -7,8 +7,16 @@
 //// session, answer a request it was never sent or with the wrong kind, and
 //// send bytes that are not a frame. The owner port records everything that
 //// reaches it, so "refused" means the owner never saw it.
+////
+//// The background-execution tests (slice 2) do the same for a program the
+//// orchestrator started with `start_execution`: a program's capability reaches
+//// the owner only while its start is outstanding, a launch and an interaction
+//// only from the `code_mode` call that makes them, and a start's answer
+//// reaches its worker once across a dropped connection, while a cancel after
+//// the re-send goes out on the new one.
 
 import broker/framing
+import client/codemode as codemode_wiring
 import client/escalate
 import client/internal/ffi_tls_stream.{type Listener, type Stream}
 import client/owner_services
@@ -23,6 +31,7 @@ import client/remote/untrusted_link
 import client/remote/untrusted_wire
 import codemode/satellite
 import core/json
+import core/message
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -34,6 +43,8 @@ import simplifile
 import support/remote_fixtures as fixtures
 import support/untrusted_rig as rig
 import telemetry/log
+import tools/agent
+import tools/codemode as codemode_tool
 import tools/tool
 
 type Rig {
@@ -114,6 +125,18 @@ fn record(inbox: Subject(protocol.OwnerMessage), seen: Subject(String)) -> Nil {
       )
     }
     protocol.Tail(..) -> process.send(seen, "tail")
+    protocol.Holds(reply:, ..) -> {
+      process.send(seen, "holds")
+      process.send(reply, Ok(Nil))
+    }
+    protocol.LaunchExecution(reply:, ..) -> {
+      process.send(seen, "launch")
+      process.send(reply, Ok(json.String("exec-1")))
+    }
+    protocol.InteractExecution(reply:, ..) -> {
+      process.send(seen, "interact")
+      process.send(reply, Ok(json.String("running")))
+    }
     _other -> process.send(seen, "other")
   }
   record(inbox, seen)
@@ -1192,5 +1215,416 @@ pub fn a_blob_for_a_session_with_no_binding_is_refused_at_once_test() {
   let assert Ok(Error(blob_transfer.Declined(_reason))) =
     process.receive(ended, 5000)
     as "a session the link never attached has nowhere to place a blob"
+  stop(rig)
+}
+
+// --- background executions (slice 2) ---------------------------------------------
+
+// Sends a start for execution `id` of `session` from a worker process of its
+// own, as a record's worker does, and reads it off the wire. The worker
+// forwards every answer it hears, so a duplicate would be seen.
+fn start_in_flight(
+  rig: Rig,
+  stream: Stream,
+  session: String,
+  id: String,
+) -> #(Int, process.Pid, Subject(protocol.ExecutionAnswer)) {
+  let answers = process.new_subject()
+  let address = rig.address
+  let key = fixtures.execution_key(session, id)
+  let worker =
+    process.spawn_unlinked(fn() {
+      let reply = process.new_subject()
+      address.deliver(
+        address,
+        protocol.StartExecution(
+          key:,
+          incarnation: 0,
+          token: <<"token":utf8>>,
+          terms: fixtures.execution_terms(),
+          remaining_ms: 60_000,
+          reply:,
+        ),
+      )
+      forward_answers(reply, answers)
+    })
+  let request = read_start(stream)
+  assert request.1 == key
+  #(request.0, worker, answers)
+}
+
+fn forward_answers(
+  reply: Subject(protocol.ExecutionAnswer),
+  answers: Subject(protocol.ExecutionAnswer),
+) -> Nil {
+  process.send(answers, process.receive_forever(reply))
+  forward_answers(reply, answers)
+}
+
+// Reads the next frame as a start, answering its id and key.
+fn read_start(stream: Stream) -> #(Int, protocol.Key) {
+  let assert Ok(untrusted_codec.RequestEnvelope(id:, body:)) = rig.next(stream)
+    as "the start arrives"
+  let assert Ok(untrusted_wire.StartExecutionRequest(key:, terms:, ..)) =
+    untrusted_codec.decode_request(body)
+    as "it decodes as a start"
+  assert terms == fixtures.execution_terms()
+  #(id, key)
+}
+
+// Reads the next frame as an attach.
+fn read_attach(stream: Stream) -> Nil {
+  let assert Ok(untrusted_codec.RequestEnvelope(body:, ..)) = rig.next(stream)
+    as "the attach is sent again"
+  let assert Ok(untrusted_wire.AttachRequest(..)) =
+    untrusted_codec.decode_request(body)
+    as "it is the attach"
+  Nil
+}
+
+// A capability call as the program of execution `id` makes one: the
+// launching call's operation, strand and position under the execution's step.
+fn program_call(id: String) -> untrusted_wire.Callback {
+  let terms = fixtures.execution_terms()
+  untrusted_wire.CapabilityCall(
+    owner_services.OwnerCapCall(
+      ..fixtures.capability_call(),
+      strand: terms.strand,
+      op_id: terms.op_id,
+      step_id: fixtures.execution_key("s1", id).step,
+      source_index: terms.source_index,
+    ),
+  )
+}
+
+// A `code_mode` call at `source_index`, under the operation and step the
+// execution terms name.
+fn code_mode_run(call_id: String, source_index: Int) -> ToolRun {
+  let run = fixtures.tool_run(call_id, source_index)
+  effects.ToolRun(
+    ..run,
+    call: message.ToolCall(..run.call, name: codemode_tool.tool_name),
+  )
+}
+
+fn denied(answer: untrusted_wire.Answer) -> Bool {
+  case answer {
+    untrusted_wire.CapabilityAnswered(Error(satellite.CapDenial(
+      code: "owner_refused",
+      ..,
+    ))) -> True
+    _other -> False
+  }
+}
+
+pub fn a_start_goes_out_and_its_answer_reaches_the_worker_test() {
+  let rig = start("start")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(id, _worker, answers) = start_in_flight(rig, stream, "s1", "e1")
+
+  let value = json.Object([#("status", json.String("ok"))])
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id:,
+      response: untrusted_wire.ExecutionAnswered(protocol.ExecutionFinished(
+        value,
+      )),
+    ),
+  )
+  assert process.receive(answers, 5000) == Ok(protocol.ExecutionFinished(value))
+
+  // A stop has no reply and goes out as a request of its own.
+  let key = fixtures.execution_key("s1", "e1")
+  address.deliver(rig.address, protocol.StopExecution(key:, incarnation: 0))
+  let assert Ok(untrusted_codec.RequestEnvelope(body:, ..)) = rig.next(stream)
+    as "the stop arrives"
+  assert untrusted_codec.decode_request(body)
+    == Ok(untrusted_wire.StopExecutionRequest(key:, incarnation: 0))
+  stop(rig)
+}
+
+pub fn a_program_reaches_the_owner_only_while_its_execution_is_live_test() {
+  let rig = start("program-live")
+  let #(port, seen) = recording_port()
+  let Attached(stream:, binding:) = attach(rig, "s1", port, None)
+
+  // Before the orchestrator starts the execution, its program does not exist.
+  assert denied(called(stream, binding, 1, program_call("e1")))
+  assert unseen(seen)
+
+  // While the start is outstanding the program reaches the owner, and so does
+  // its tool-list check.
+  let #(id, worker, _answers) = start_in_flight(rig, stream, "s1", "e1")
+  let assert untrusted_wire.CapabilityAnswered(Error(satellite.CapDenial(
+    code: "recorded",
+    ..,
+  ))) = called(stream, binding, 2, program_call("e1"))
+  assert process.receive(seen, 2000) == Ok("capability")
+  let terms = fixtures.execution_terms()
+  let caller =
+    agent.Caller(
+      strand: terms.strand,
+      operation: terms.op_id,
+      step_id: fixtures.execution_key("s1", "e1").step,
+      source_index: terms.source_index,
+      minter: agent.Program(ordinal: 0),
+    )
+  assert called(stream, binding, 3, untrusted_wire.HoldsCall(caller, "bash"))
+    == untrusted_wire.HoldsAnswered(Ok(Nil))
+  assert process.receive(seen, 2000) == Ok("holds")
+
+  // Another execution's step, and the live one's under another strand, are
+  // not the live program.
+  assert denied(called(stream, binding, 4, program_call("e2")))
+  let assert untrusted_wire.CapabilityCall(asked) = program_call("e1")
+  assert denied(called(
+    stream,
+    binding,
+    5,
+    untrusted_wire.CapabilityCall(
+      owner_services.OwnerCapCall(..asked, strand: "other"),
+    ),
+  ))
+  assert unseen(seen)
+
+  // The record closes and kills its worker: the start is cancelled at the
+  // executor, and the program it named reaches nobody any more.
+  process.kill(worker)
+  assert rig.next(stream) == Ok(untrusted_codec.CancelEnvelope(id:))
+  assert denied(called(stream, binding, 6, program_call("e1")))
+  assert unseen(seen)
+  stop(rig)
+}
+
+pub fn a_program_callback_on_a_forged_replayed_or_retired_binding_is_refused_test() {
+  let rig = start("program-binding")
+  let #(first_port, first_seen) = recording_port()
+  let #(second_port, second_seen) = recording_port()
+  let Attached(stream:, binding: old) = attach(rig, "s1", first_port, None)
+  let #(_id, _worker, _answers) = start_in_flight(rig, stream, "s1", "e1")
+
+  // A binding the link never minted.
+  assert denied(called(stream, <<7:size(128)>>, 1, program_call("e1")))
+  assert unseen(first_seen)
+
+  // The binding's first use reaches the owner; the same id again does not.
+  let assert untrusted_wire.CapabilityAnswered(Error(satellite.CapDenial(
+    code: "recorded",
+    ..,
+  ))) = called(stream, old, 1, program_call("e1"))
+  assert process.receive(first_seen, 2000) == Ok("capability")
+  assert denied(called(stream, old, 1, program_call("e1")))
+  assert unseen(first_seen)
+
+  // The session opens again with a new owner port: the old binding is
+  // retired, and the program, still running, reaches the new port through
+  // the new binding.
+  let Attached(binding: new, ..) =
+    attach(rig, "s1", second_port, option.Some(stream))
+  assert new != old
+  assert denied(called(stream, old, 2, program_call("e1")))
+  assert unseen(first_seen)
+  let assert untrusted_wire.CapabilityAnswered(Error(satellite.CapDenial(
+    code: "recorded",
+    ..,
+  ))) = called(stream, new, 1, program_call("e1"))
+  assert process.receive(second_seen, 2000) == Ok("capability")
+  stop(rig)
+}
+
+pub fn a_launch_or_interaction_reaches_the_owner_only_from_its_code_mode_call_test() {
+  let rig = start("launch")
+  let #(port, seen) = recording_port()
+  let Attached(stream:, binding:) = attach(rig, "s1", port, None)
+  let terms = fixtures.execution_terms()
+  let launch = fn(source_index) {
+    untrusted_wire.LaunchExecutionCall(
+      owner_services.ExecutionTerms(..terms, source_index:),
+    )
+  }
+  let interact = fn(strand) {
+    untrusted_wire.InteractExecutionCall(
+      strand:,
+      handle: "exec-1",
+      interaction: codemode_tool.Check,
+      within_ms: 0,
+    )
+  }
+
+  // Nothing in flight: no record is claimed and no handle is touched.
+  let assert untrusted_wire.LaunchAnswered(Error(_refused)) =
+    called(stream, binding, 1, launch(0))
+  let assert untrusted_wire.InteractAnswered(Error(_refused)) =
+    called(stream, binding, 2, interact("main"))
+  assert unseen(seen)
+
+  // A `bash` call at the launch's coordinates is not a `code_mode` call.
+  let #(_bash, _asker, _answers) =
+    run_in_flight(rig, stream, "s1", fixtures.tool_run("call_1", 0))
+  let assert untrusted_wire.LaunchAnswered(Error(_refused)) =
+    called(stream, binding, 3, launch(0))
+  let assert untrusted_wire.InteractAnswered(Error(_refused)) =
+    called(stream, binding, 4, interact("main"))
+  assert unseen(seen)
+
+  // A `code_mode` call in flight claims only at its own coordinates, and
+  // interacts only as its own strand.
+  let #(_code_mode, _asker, _answers) =
+    run_in_flight(rig, stream, "s1", code_mode_run("call_2", 1))
+  let assert untrusted_wire.LaunchAnswered(Error(_refused)) =
+    called(stream, binding, 5, launch(0))
+  let assert untrusted_wire.InteractAnswered(Error(_refused)) =
+    called(stream, binding, 6, interact("other"))
+  assert unseen(seen)
+  assert called(stream, binding, 7, launch(1))
+    == untrusted_wire.LaunchAnswered(Ok(json.String("exec-1")))
+  assert process.receive(seen, 2000) == Ok("launch")
+  assert called(stream, binding, 8, interact("main"))
+    == untrusted_wire.InteractAnswered(Ok(json.String("running")))
+  assert process.receive(seen, 2000) == Ok("interact")
+  stop(rig)
+}
+
+pub fn a_run_answer_to_a_start_closes_and_the_start_is_sent_again_test() {
+  let rig = start("start-wrong-kind")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(id, _worker, answers) = start_in_flight(rig, stream, "s1", "e1")
+
+  rig.send(
+    stream,
+    untrusted_wire.Response(
+      id:,
+      response: untrusted_wire.RunAnswered(protocol.RunLost),
+    ),
+  )
+  assert rig.closed(stream, 5000)
+  assert process.is_alive(rig.link)
+  assert process.receive(answers, 300) == Error(Nil)
+
+  // The start is still the worker's, so the next connection carries it.
+  let again = rig.greeted(rig.listener)
+  read_attach(again)
+  assert read_start(again) == #(id, fixtures.execution_key("s1", "e1"))
+  stop(rig)
+}
+
+pub fn a_start_answered_after_a_reconnect_reaches_its_worker_once_test() {
+  let rig = start("start-reconnect")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(id, _worker, answers) = start_in_flight(rig, stream, "s1", "e1")
+
+  // The connection drops while the program runs: a partition, not a cancel.
+  ffi_tls_stream.close(stream)
+  let again = rig.greeted(rig.listener)
+  read_attach(again)
+  assert read_start(again) == #(id, fixtures.execution_key("s1", "e1"))
+  assert process.receive(answers, 300) == Error(Nil)
+
+  // The re-sent start is answered from the executor's ledger, and a second
+  // answer for the same id is dropped: the worker hears the value once.
+  let value = json.Object([#("status", json.String("ok"))])
+  let response =
+    untrusted_wire.Response(
+      id:,
+      response: untrusted_wire.ExecutionAnswered(protocol.ExecutionFinished(
+        value,
+      )),
+    )
+  rig.send(again, response)
+  assert process.receive(answers, 5000) == Ok(protocol.ExecutionFinished(value))
+  rig.send(again, response)
+  assert process.receive(answers, 300) == Error(Nil)
+
+  // The late duplicate did not close the connection: the next frame the link
+  // writes still arrives on it. Reading a frame, rather than waiting for a
+  // silence, leaves the socket unarmed, so its close when the link stops is
+  // not a message the next test in this process would read.
+  let key = fixtures.execution_key("s1", "e1")
+  address.deliver(rig.address, protocol.StopExecution(key:, incarnation: 0))
+  let assert Ok(untrusted_codec.RequestEnvelope(..)) = rig.next(again)
+    as "the connection still carries frames"
+  stop(rig)
+}
+
+pub fn a_start_resent_after_a_drop_is_cancelled_on_the_new_connection_test() {
+  let rig = start("start-cancel")
+  let #(port, _seen) = recording_port()
+  let Attached(stream:, ..) = attach(rig, "s1", port, None)
+  let #(id, worker, _answers) = start_in_flight(rig, stream, "s1", "e1")
+
+  ffi_tls_stream.close(stream)
+  let again = rig.greeted(rig.listener)
+  read_attach(again)
+  assert read_start(again) == #(id, fixtures.execution_key("s1", "e1"))
+
+  // The record closes after the reconnect: the cancel names the start's id on
+  // the connection that carries it now.
+  process.kill(worker)
+  assert rig.next(again) == Ok(untrusted_codec.CancelEnvelope(id:))
+  stop(rig)
+}
+
+// An owner port that answers every launch and reports the budget it was
+// handed.
+fn budget_port() -> #(Subject(protocol.OwnerMessage), Subject(Int)) {
+  let budgets = process.new_subject()
+  let handed = process.new_subject()
+  process.spawn(fn() {
+    let inbox = process.new_subject()
+    process.send(handed, inbox)
+    budget_loop(inbox, budgets)
+  })
+  let assert Ok(inbox) = process.receive(handed, 1000) as "the port starts"
+  #(inbox, budgets)
+}
+
+fn budget_loop(
+  inbox: Subject(protocol.OwnerMessage),
+  budgets: Subject(Int),
+) -> Nil {
+  case process.receive_forever(inbox) {
+    protocol.LaunchExecution(terms:, reply:) -> {
+      process.send(budgets, terms.within_ms)
+      process.send(reply, Ok(json.String("exec-1")))
+    }
+    _other -> Nil
+  }
+  budget_loop(inbox, budgets)
+}
+
+pub fn a_launch_budget_beyond_the_orchestrators_ceiling_is_clamped_test() {
+  let rig = start("launch-budget")
+  let #(port, budgets) = budget_port()
+  let Attached(stream:, binding:) = attach(rig, "s1", port, None)
+  let #(_id, _asker, _answers) =
+    run_in_flight(rig, stream, "s1", code_mode_run("call_1", 0))
+
+  // The executor's own clamp is the attacker's: a budget of thirty years
+  // would keep the program's record, and its window to the owner, open.
+  let launch =
+    untrusted_wire.LaunchExecutionCall(
+      owner_services.ExecutionTerms(
+        ..fixtures.execution_terms(),
+        within_ms: 1_000_000_000_000,
+      ),
+    )
+  assert called(stream, binding, 1, launch)
+    == untrusted_wire.LaunchAnswered(Ok(json.String("exec-1")))
+  assert process.receive(budgets, 2000) == Ok(codemode_wiring.max_within_ms)
+
+  // An honest budget under the ceiling reaches the owner as it was sent.
+  assert called(
+      stream,
+      binding,
+      2,
+      untrusted_wire.LaunchExecutionCall(fixtures.execution_terms()),
+    )
+    == untrusted_wire.LaunchAnswered(Ok(json.String("exec-1")))
+  assert process.receive(budgets, 2000)
+    == Ok(fixtures.execution_terms().within_ms)
   stop(rig)
 }

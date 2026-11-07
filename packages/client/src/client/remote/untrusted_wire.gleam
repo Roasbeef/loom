@@ -34,8 +34,8 @@
 //// `response_kind` → `answer_kind` → `census_of` → `remote_census_of`
 ////
 //// 1. `response_kind` and `answer_kind` say what reply a request or a callback
-////    waits for, and `None` for the two that wait for none (`AckRequest` and
-////    `TailCast`).
+////    waits for, and `None` for the three that wait for none (`AckRequest`,
+////    `StopExecutionRequest` and `TailCast`).
 //// 2. `census_of` is the executor's projection of its census onto the wire,
 ////    and `remote_census_of` the orchestrator's way back, with the two fields
 ////    the orchestrator decides for itself.
@@ -44,11 +44,13 @@ import broker/broker
 import broker/framing.{type CapOutcome}
 import client/escalate
 import client/notice
-import client/owner_services.{type FactFault, type OwnerCapCall}
+import client/owner_services.{
+  type ExecutionTerms, type FactFault, type OwnerCapCall,
+}
 import client/remote/blob_transfer
 import client/remote/protocol.{
-  type CloseOutcome, type GitIdentity, type Key, type Lookup, type McpPlan,
-  type Refusal, type RunAnswer, type Unacked,
+  type CloseOutcome, type ExecutionAnswer, type GitIdentity, type Key,
+  type Lookup, type McpPlan, type Refusal, type RunAnswer, type Unacked,
 }
 import client/remote/remote_census.{
   type McpStatus, type RemoteCensus, type StateCensus, RemoteCensus,
@@ -65,13 +67,23 @@ import gleam/option.{type Option, None, Some}
 import runtime/api
 import runtime/effects.{type ToolRun}
 import tools/agent
+import tools/codemode as codemode_tool
 import tools/tool
 
 /// The version of these frames, which `Hello` and `Welcome` carry beside
 /// `protocol.version`. A change to any frame, request, reply, callback or
-/// answer here changes it. Version 2 added placed blobs and outcomes fetched
-/// in pieces (protocol-change/110).
-pub const version = 2
+/// answer here changes it.
+///
+/// Version 2 added background code mode (slice 2 of protocol-change/109): the
+/// requests `StartExecutionRequest` and `StopExecutionRequest`, the response
+/// `ExecutionAnswered`, the callbacks `LaunchExecutionCall` and
+/// `InteractExecutionCall`, and their answers.
+///
+/// Version 3 added placed blobs and outcomes fetched in pieces
+/// (protocol-change/110): the frame `Oversized`, the requests
+/// `BlobStatusRequest`, `BlobPutRequest` and `OutcomePieceRequest`, and their
+/// responses.
+pub const version = 3
 
 /// The largest frame either side sends or accepts, in bytes of body. The TLS
 /// socket enforces it before a frame is buffered, so a larger one closes the
@@ -140,8 +152,10 @@ pub type Frame {
   Oversized(id: Int, size: Int, digest: String)
 }
 
-/// A `HostMessage` of 078 without its reply subject. Only the requests slice 1
-/// carries are here; the link answers the others itself without sending them.
+/// A `HostMessage` of 078 without its reply subject. Only the requests the
+/// link carries are here (slices 1 and 2: tool calls, the ledger, state
+/// transport and background executions); the link answers the evolution
+/// requests itself without sending them.
 pub type Request {
   /// `Attach`, with the binding the orchestrator minted in place of the owner
   /// port's subject.
@@ -237,11 +251,29 @@ pub type Request {
   /// for `key`, after an `Oversized` reply. It is answered from `Query`, which
   /// never starts or joins a call.
   OutcomePieceRequest(key: Key, offset: Int)
+
+  /// `StartExecution`: runs one background program, idempotently by `key`.
+  StartExecutionRequest(
+    /// The execution's key (`protocol.execution_key`).
+    key: Key,
+    /// The incarnation the execution was started under.
+    incarnation: Int,
+    /// The attach token.
+    token: BitArray,
+    /// What the launching call captured.
+    terms: ExecutionTerms,
+    /// The time the orchestrator's record has left, on its own clock.
+    remaining_ms: Int,
+  )
+
+  /// `StopExecution`, which has no reply: the orchestrator's record of the
+  /// execution has closed.
+  StopExecutionRequest(key: Key, incarnation: Int)
 }
 
 /// The census an untrusted executor reports: `RemoteCensus` without the two
 /// fields the orchestrator decides for itself, the broker subject (which
-/// cannot cross) and the evolution census (which slice 1 does not carry).
+/// cannot cross) and the evolution census (which the link does not carry).
 pub type Census {
   Census(
     /// The workspace plane's startup census.
@@ -290,6 +322,9 @@ pub type Response {
 
   /// The reply to `StateFetchRequest`.
   FetchAnswered(fetched: state_transfer.Fetched)
+
+  /// The reply to `StartExecutionRequest`.
+  ExecutionAnswered(answer: ExecutionAnswer)
 
   /// The reply to `BlobStatusRequest`.
   BlobStatusAnswered(answer: Result(blob_transfer.Stage, String))
@@ -352,11 +387,12 @@ pub type ResponseKind {
 
   /// `OutcomePieceAnswered`.
   OutcomePieceKind
+
+  /// `ExecutionAnswered`.
+  ExecutionKind
 }
 
-/// An `OwnerMessage` of 078 without its reply subject. `LaunchExecution` and
-/// `InteractExecution` are not here: slice 1 carries no background execution,
-/// and the executor's proxy refuses them without sending.
+/// An `OwnerMessage` of 078 without its reply subject.
 pub type Callback {
   /// `Escalate`.
   EscalateCall(refused: escalate.Refused, remaining_ms: Int)
@@ -399,6 +435,23 @@ pub type Callback {
 
   /// `AskGitIdentity`.
   GitIdentityCall
+
+  /// `LaunchExecution`: the executor's `code_mode` call asks the owner to
+  /// claim a background execution's record.
+  LaunchExecutionCall(terms: ExecutionTerms)
+
+  /// `InteractExecution`: the executor's `code_mode` call checks, joins,
+  /// cancels or sends to an execution the strand owns.
+  InteractExecutionCall(
+    /// The calling strand, which must own the handle.
+    strand: String,
+    /// The execution's handle.
+    handle: String,
+    /// What the call does to it.
+    interaction: codemode_tool.Interaction,
+    /// How long a join may wait, in milliseconds.
+    within_ms: Int,
+  )
 }
 
 /// The owner's answer to one `Callback`.
@@ -438,6 +491,13 @@ pub type Answer {
 
   /// The answer to `GitIdentityCall`.
   GitIdentityAnswered(identity: Option(GitIdentity))
+
+  /// The answer to `LaunchExecutionCall`: the handle the owner minted, or why
+  /// it would not.
+  LaunchAnswered(answer: Result(JsonValue, String))
+
+  /// The answer to `InteractExecutionCall`.
+  InteractAnswered(answer: Result(JsonValue, String))
 }
 
 /// Which `Answer` a callback waits for.
@@ -477,6 +537,12 @@ pub type AnswerKind {
 
   /// `GitIdentityAnswered`.
   GitIdentityKind
+
+  /// `LaunchAnswered`.
+  LaunchKind
+
+  /// `InteractAnswered`.
+  InteractKind
 }
 
 /// The reason the orchestrator records in place of an untrusted executor's
@@ -484,8 +550,8 @@ pub type AnswerKind {
 pub const no_evolution_reason =
   "evolution is not carried over an untrusted executor link"
 
-/// The reply a request waits for, or `None` for `AckRequest`, which waits for
-/// nothing.
+/// The reply a request waits for, or `None` for `AckRequest` and
+/// `StopExecutionRequest`, which wait for nothing.
 ///
 /// ## Examples
 ///
@@ -511,6 +577,8 @@ pub fn response_kind(request: Request) -> Option(ResponseKind) {
     BlobStatusRequest(..) -> Some(BlobStatusKind)
     BlobPutRequest(..) -> Some(BlobPutKind)
     OutcomePieceRequest(..) -> Some(OutcomePieceKind)
+    StartExecutionRequest(..) -> Some(ExecutionKind)
+    StopExecutionRequest(..) -> None
   }
 }
 
@@ -539,6 +607,8 @@ pub fn answer_kind(callback: Callback) -> Option(AnswerKind) {
     CapabilityCall(..) -> Some(CapabilityKind)
     McpPlanCall -> Some(McpPlanKind)
     GitIdentityCall -> Some(GitIdentityKind)
+    LaunchExecutionCall(..) -> Some(LaunchKind)
+    InteractExecutionCall(..) -> Some(InteractKind)
   }
 }
 

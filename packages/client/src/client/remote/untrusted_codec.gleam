@@ -136,6 +136,7 @@ import machine/operation
 import runtime/api
 import runtime/effects
 import tools/agent
+import tools/codemode as codemode_tool
 import tools/directory_access
 import tools/tool
 
@@ -357,6 +358,12 @@ pub fn decode_request(
       use offset <- result.map(nat_field(fields, "offset"))
       untrusted_wire.OutcomePieceRequest(key:, offset:)
     }
+    "start_execution" -> decode_start_execution_request(fields)
+    "stop_execution" -> {
+      use key <- result.try(nested(fields, "key", decode_key))
+      use incarnation <- result.map(int_field(fields, "incarnation"))
+      untrusted_wire.StopExecutionRequest(key:, incarnation:)
+    }
     other -> Error(unknown("request", other))
   }
 }
@@ -433,6 +440,9 @@ pub fn decode_response(
     untrusted_wire.OutcomePieceKind ->
       nested(fields, "piece", decode_outcome_piece)
       |> result.map(untrusted_wire.OutcomePieceAnswered)
+    untrusted_wire.ExecutionKind ->
+      nested(fields, "answer", decode_execution_answer)
+      |> result.map(untrusted_wire.ExecutionAnswered)
   }
 }
 
@@ -504,6 +514,11 @@ pub fn decode_callback(
     }
     "mcp_plan" -> Ok(untrusted_wire.McpPlanCall)
     "git_identity" -> Ok(untrusted_wire.GitIdentityCall)
+    "launch_execution" -> {
+      use terms <- result.map(nested(fields, "terms", decode_terms))
+      untrusted_wire.LaunchExecutionCall(terms:)
+    }
+    "interact_execution" -> decode_interact_call(fields)
     other -> Error(unknown("callback", other))
   }
 }
@@ -578,6 +593,12 @@ pub fn decode_answer(
     untrusted_wire.GitIdentityKind ->
       option_field(fields, "identity", decode_git_identity)
       |> result.map(untrusted_wire.GitIdentityAnswered)
+    untrusted_wire.LaunchKind ->
+      decode_answer_field(fields, Ok, fn(value) { string_of(value, "error") })
+      |> result.map(untrusted_wire.LaunchAnswered)
+    untrusted_wire.InteractKind ->
+      decode_answer_field(fields, Ok, fn(value) { string_of(value, "error") })
+      |> result.map(untrusted_wire.InteractAnswered)
   }
 }
 
@@ -873,6 +894,25 @@ fn encode_request(request: untrusted_wire.Request) -> JsonValue {
         #("key", encode_key(key)),
         #("offset", json.Int(offset)),
       ])
+    untrusted_wire.StartExecutionRequest(
+      key:,
+      incarnation:,
+      token:,
+      terms:,
+      remaining_ms:,
+    ) ->
+      tagged("start_execution", [
+        #("key", encode_key(key)),
+        #("incarnation", json.Int(incarnation)),
+        #("token", encode_bytes(token)),
+        #("terms", encode_terms(terms)),
+        #("remaining_ms", json.Int(remaining_ms)),
+      ])
+    untrusted_wire.StopExecutionRequest(key:, incarnation:) ->
+      tagged("stop_execution", [
+        #("key", encode_key(key)),
+        #("incarnation", json.Int(incarnation)),
+      ])
   }
 }
 
@@ -947,6 +987,76 @@ fn decode_apply_request(
   untrusted_wire.StateApplyRequest(session:, incarnation:, token:, state:)
 }
 
+/// Reads a `start_execution` request. The time left is any integer, because
+/// the host clamps a negative one to zero itself.
+fn decode_start_execution_request(
+  fields: Fields,
+) -> Result(untrusted_wire.Request, CorruptionReport) {
+  use key <- result.try(nested(fields, "key", decode_key))
+  use incarnation <- result.try(int_field(fields, "incarnation"))
+  use token <- result.try(field_as(fields, "token", token_of))
+  use terms <- result.try(nested(fields, "terms", decode_terms))
+  use remaining_ms <- result.map(int_field(fields, "remaining_ms"))
+  untrusted_wire.StartExecutionRequest(
+    key:,
+    incarnation:,
+    token:,
+    terms:,
+    remaining_ms:,
+  )
+}
+
+/// The JSON of what a background program's launch captured.
+fn encode_terms(terms: owner_services.ExecutionTerms) -> JsonValue {
+  json.Object([
+    #("strand", json.String(terms.strand)),
+    #("op_id", json.String(ids.op_id_to_string(terms.op_id))),
+    #("launch_step", json.String(terms.launch_step)),
+    #("source_index", json.Int(terms.source_index)),
+    #("source", json.String(terms.source)),
+    #("seam", json.String(terms.seam)),
+    #("within_ms", json.Int(terms.within_ms)),
+    #("access", encode_access(terms.access)),
+    #("grants", encode_list(terms.grants, grant_codec.encode)),
+  ])
+}
+
+/// Reads what a background program's launch captured. The seam is one of the
+/// two program modes by name, the only names `codemode_tool.seam_name` writes,
+/// so a launch never reaches an owner under a mode it did not ask for.
+fn decode_terms(
+  value: JsonValue,
+) -> Result(owner_services.ExecutionTerms, CorruptionReport) {
+  use fields <- result.try(object_of(value, "execution terms"))
+  use strand <- result.try(string_field(fields, "strand"))
+  use op_id <- result.try(field_as(fields, "op_id", op_id_of))
+  use launch_step <- result.try(string_field(fields, "launch_step"))
+  use source_index <- result.try(nat_field(fields, "source_index"))
+  use source <- result.try(string_field(fields, "source"))
+  use seam <- result.try(
+    field_as(fields, "seam", fn(value, on) {
+      enum_of(value, on, [
+        #("workspace", "workspace"),
+        #("orchestration", "orchestration"),
+      ])
+    }),
+  )
+  use within_ms <- result.try(nat_field(fields, "within_ms"))
+  use access <- result.try(nested(fields, "access", directories.decode))
+  use grants <- result.map(list_field(fields, "grants", grant_codec.decode))
+  owner_services.ExecutionTerms(
+    strand:,
+    op_id:,
+    launch_step:,
+    source_index:,
+    source:,
+    seam:,
+    within_ms:,
+    access:,
+    grants:,
+  )
+}
+
 // --- responses ---------------------------------------------------------------
 
 /// The tag a response of this kind carries.
@@ -965,6 +1075,7 @@ fn response_tag(kind: untrusted_wire.ResponseKind) -> String {
     untrusted_wire.BlobStatusKind -> "blob_status"
     untrusted_wire.BlobPutKind -> "blob_put"
     untrusted_wire.OutcomePieceKind -> "outcome_piece"
+    untrusted_wire.ExecutionKind -> "execution"
   }
 }
 
@@ -1030,6 +1141,10 @@ fn encode_response(response: untrusted_wire.Response) -> JsonValue {
       tagged(response_tag(untrusted_wire.OutcomePieceKind), [
         #("piece", encode_outcome_piece(piece)),
       ])
+    untrusted_wire.ExecutionAnswered(answer:) ->
+      tagged(response_tag(untrusted_wire.ExecutionKind), [
+        #("answer", encode_execution_answer(answer)),
+      ])
   }
 }
 
@@ -1087,6 +1202,39 @@ fn decode_run_answer(
       protocol.RunRefused(refusal:)
     }
     other -> Error(unknown("run answer", other))
+  }
+}
+
+/// The JSON of how a background execution ended.
+fn encode_execution_answer(answer: protocol.ExecutionAnswer) -> JsonValue {
+  case answer {
+    protocol.ExecutionFinished(value:) ->
+      tagged("finished", [#("value", value)])
+    protocol.ExecutionLost -> tagged("lost", [])
+    protocol.ExecutionRefused(refusal:) ->
+      tagged("refused", [#("refusal", encode_refusal(refusal))])
+  }
+}
+
+/// Reads how a background execution ended.
+fn decode_execution_answer(
+  value: JsonValue,
+) -> Result(protocol.ExecutionAnswer, CorruptionReport) {
+  use #(kind, fields) <- result.try(tagged_of(value, "execution answer"))
+
+  // An execution ends in its program's value, in a loss the record settles,
+  // or in a refusal; as for a run, only the first and last carry data.
+  case kind {
+    "finished" -> {
+      use value <- result.map(field(fields, "value"))
+      protocol.ExecutionFinished(value:)
+    }
+    "lost" -> Ok(protocol.ExecutionLost)
+    "refused" -> {
+      use refusal <- result.map(nested(fields, "refusal", decode_refusal))
+      protocol.ExecutionRefused(refusal:)
+    }
+    other -> Error(unknown("execution answer", other))
   }
 }
 
@@ -2416,6 +2564,20 @@ fn encode_callback(callback: untrusted_wire.Callback) -> JsonValue {
       tagged("capability", [#("call", encode_cap_call(call))])
     untrusted_wire.McpPlanCall -> tagged("mcp_plan", [])
     untrusted_wire.GitIdentityCall -> tagged("git_identity", [])
+    untrusted_wire.LaunchExecutionCall(terms:) ->
+      tagged("launch_execution", [#("terms", encode_terms(terms))])
+    untrusted_wire.InteractExecutionCall(
+      strand:,
+      handle:,
+      interaction:,
+      within_ms:,
+    ) ->
+      tagged("interact_execution", [
+        #("strand", json.String(strand)),
+        #("handle", json.String(handle)),
+        #("interaction", encode_interaction(interaction)),
+        #("within_ms", json.Int(within_ms)),
+      ])
   }
 }
 
@@ -2427,6 +2589,66 @@ fn decode_fact_put_call(
   use value <- result.try(field(fields, "value"))
   use expected <- result.map(option_field(fields, "expected", nat_reader))
   untrusted_wire.FactPutCall(key:, value:, expected:)
+}
+
+/// Reads an `interact_execution` callback.
+fn decode_interact_call(
+  fields: Fields,
+) -> Result(untrusted_wire.Callback, CorruptionReport) {
+  use strand <- result.try(string_field(fields, "strand"))
+  use handle <- result.try(string_field(fields, "handle"))
+  use interaction <- result.try(nested(
+    fields,
+    "interaction",
+    decode_interaction,
+  ))
+  use within_ms <- result.map(nat_field(fields, "within_ms"))
+  untrusted_wire.InteractExecutionCall(
+    strand:,
+    handle:,
+    interaction:,
+    within_ms:,
+  )
+}
+
+/// The JSON of what a `code_mode` call does to a background execution.
+fn encode_interaction(interaction: codemode_tool.Interaction) -> JsonValue {
+  case interaction {
+    codemode_tool.Check -> tagged("check", [])
+    codemode_tool.Join -> tagged("join", [])
+    codemode_tool.Cancel -> tagged("cancel", [])
+    codemode_tool.Send(value:) -> tagged("send", [#("value", value)])
+    codemode_tool.SendTo(endpoint:, value:) ->
+      tagged("send_to", [
+        #("endpoint", json.String(endpoint)),
+        #("value", value),
+      ])
+  }
+}
+
+/// Reads what a `code_mode` call does to a background execution.
+fn decode_interaction(
+  value: JsonValue,
+) -> Result(codemode_tool.Interaction, CorruptionReport) {
+  use #(kind, fields) <- result.try(tagged_of(value, "interaction"))
+
+  // Three interactions carry nothing; the two sends carry the value, and one
+  // of them the endpoint it is for.
+  case kind {
+    "check" -> Ok(codemode_tool.Check)
+    "join" -> Ok(codemode_tool.Join)
+    "cancel" -> Ok(codemode_tool.Cancel)
+    "send" -> {
+      use value <- result.map(field(fields, "value"))
+      codemode_tool.Send(value:)
+    }
+    "send_to" -> {
+      use endpoint <- result.try(string_field(fields, "endpoint"))
+      use value <- result.map(field(fields, "value"))
+      codemode_tool.SendTo(endpoint:, value:)
+    }
+    other -> Error(unknown("interaction", other))
+  }
 }
 
 /// Reads a `notify` callback.
@@ -2694,6 +2916,8 @@ fn answer_tag(kind: untrusted_wire.AnswerKind) -> String {
     untrusted_wire.CapabilityKind -> "capability"
     untrusted_wire.McpPlanKind -> "mcp_plan"
     untrusted_wire.GitIdentityKind -> "git_identity"
+    untrusted_wire.LaunchKind -> "launch"
+    untrusted_wire.InteractKind -> "interact"
   }
 }
 
@@ -2764,6 +2988,14 @@ fn encode_answer(answer: untrusted_wire.Answer) -> JsonValue {
     untrusted_wire.GitIdentityAnswered(identity:) ->
       tagged(answer_tag(untrusted_wire.GitIdentityKind), [
         #("identity", encode_option(identity, encode_git_identity)),
+      ])
+    untrusted_wire.LaunchAnswered(answer:) ->
+      tagged(answer_tag(untrusted_wire.LaunchKind), [
+        #("answer", encode_result(answer, fn(value) { value }, json.String)),
+      ])
+    untrusted_wire.InteractAnswered(answer:) ->
+      tagged(answer_tag(untrusted_wire.InteractKind), [
+        #("answer", encode_result(answer, fn(value) { value }, json.String)),
       ])
   }
 }
