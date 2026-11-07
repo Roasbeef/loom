@@ -66,6 +66,17 @@
 ////   with two or more roots returns with its lists reordered. The roots are
 ////   the same, and nothing reads their order.
 ////
+//// ## Outcomes and blobs (protocol-change/110)
+////
+//// `oversized` is the one frame with no body: its id, size and digest are the
+//// whole of it. A blob's or an outcome's digest is read only as 64 lower-case
+//// hex digits (`digest_of`), the one spelling that may become a file name, and
+//// every piece of bytes is bounded by `untrusted_wire.max_piece_bytes` before
+//// anything holds it. `encode_outcome_bytes` is the outcome's encoding that an
+//// outcome fetched in pieces is cut from; the same outcome always encodes to
+//// the same bytes, which is what lets each piece come from a fresh read of the
+//// executor's ledger.
+////
 //// One encoding failure is also handled by refusal rather than by a result.
 //// `core/msgpack` can fail to encode an integer outside 64 bits, and
 //// `encode_frame` does not return a `Result`. Such a value is written as JSON
@@ -97,6 +108,7 @@ import client/hookserve
 import client/lsp/profile
 import client/notice
 import client/owner_services
+import client/remote/blob_transfer
 import client/remote/protocol
 import client/remote/remote_census.{type McpStatus, type StateCensus}
 import client/remote/untrusted_wire
@@ -154,6 +166,11 @@ pub type Envelope {
   /// The owner's answer to callback `id` on `binding`, whose body
   /// `decode_answer` reads against the kind that callback expects.
   AnswerEnvelope(binding: BitArray, id: Int, body: JsonValue)
+
+  /// The executor's promise of an outcome too large for a frame, in place of
+  /// the response to request `id`. It has no body: the size and the digest
+  /// are the whole of it, and `digest` is 64 lower-case hex digits.
+  OversizedEnvelope(id: Int, size: Int, digest: String)
 }
 
 // The fields of a decoded JSON object, in the order they were written.
@@ -218,7 +235,7 @@ pub fn decode_envelope(bytes: BitArray) -> Result(Envelope, CorruptionReport) {
   use name <- result.try(string_field(fields, "frame"))
 
   // The frame name decides which header fields follow it. A frame that is
-  // none of the seven is not one this protocol sends.
+  // none of the eight is not one this protocol sends.
   case name {
     "hello" -> versions_envelope(fields, HelloEnvelope)
     "welcome" -> versions_envelope(fields, WelcomeEnvelope)
@@ -227,8 +244,49 @@ pub fn decode_envelope(bytes: BitArray) -> Result(Envelope, CorruptionReport) {
     "response" -> identified_envelope(fields, ResponseEnvelope)
     "callback" -> bound_envelope(fields, CallbackEnvelope)
     "answer" -> bound_envelope(fields, AnswerEnvelope)
+    "oversized" -> oversized_envelope(fields)
     other -> Error(unknown("frame", other))
   }
+}
+
+/// The bytes of a tool outcome as the executor encodes it for an outcome
+/// fetched in pieces (protocol-change/110). The same outcome encodes to the same
+/// bytes, which is what lets each piece be cut from a fresh read of the ledger.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let outcome = effects.ToolFailed(reason: "no")
+/// assert untrusted_codec.decode_outcome_bytes(
+///   untrusted_codec.encode_outcome_bytes(outcome),
+/// ) == Ok(outcome)
+/// ```
+pub fn encode_outcome_bytes(outcome: effects.ToolOutcome) -> BitArray {
+  outcome
+  |> encode_outcome
+  |> json.to_string
+  |> bit_array.from_string
+}
+
+/// Reads the bytes `encode_outcome_bytes` wrote, totally. The orchestrator calls
+/// it only after the bytes' size and SHA-256 matched what the executor declared.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Error(_report) = untrusted_codec.decode_outcome_bytes(<<"{">>)
+/// ```
+pub fn decode_outcome_bytes(
+  bytes: BitArray,
+) -> Result(effects.ToolOutcome, CorruptionReport) {
+  use text <- result.try(
+    bit_array.to_string(bytes)
+    |> result.map_error(fn(_not_text) {
+      corrupt("outcome", "UTF-8 text", "bytes")
+    }),
+  )
+  use value <- result.try(json.parse(text))
+  decode_outcome(value)
 }
 
 /// Decodes the body of a `request` frame.
@@ -284,6 +342,21 @@ pub fn decode_request(
       use hash <- result.try(string_field(fields, "hash"))
       use offset <- result.map(nat_field(fields, "offset"))
       untrusted_wire.StateFetchRequest(hash:, offset:)
+    }
+    "blob_status" -> {
+      use binding <- result.try(field_as(fields, "binding", binding_of))
+      use digest <- result.map(field_as(fields, "digest", digest_of))
+      untrusted_wire.BlobStatusRequest(binding:, digest:)
+    }
+    "blob_put" -> {
+      use binding <- result.try(field_as(fields, "binding", binding_of))
+      use piece <- result.map(nested(fields, "piece", decode_blob_piece))
+      untrusted_wire.BlobPutRequest(binding:, piece:)
+    }
+    "outcome_piece" -> {
+      use key <- result.try(nested(fields, "key", decode_key))
+      use offset <- result.map(nat_field(fields, "offset"))
+      untrusted_wire.OutcomePieceRequest(key:, offset:)
     }
     "start_execution" -> decode_start_execution_request(fields)
     "stop_execution" -> {
@@ -356,6 +429,17 @@ pub fn decode_response(
     untrusted_wire.FetchKind ->
       nested(fields, "fetched", decode_fetched)
       |> result.map(untrusted_wire.FetchAnswered)
+    untrusted_wire.BlobStatusKind ->
+      decode_answer_field(fields, decode_blob_stage, fn(value) {
+        string_of(value, "error")
+      })
+      |> result.map(untrusted_wire.BlobStatusAnswered)
+    untrusted_wire.BlobPutKind ->
+      nested(fields, "verdict", decode_blob_verdict)
+      |> result.map(untrusted_wire.BlobPutAnswered)
+    untrusted_wire.OutcomePieceKind ->
+      nested(fields, "piece", decode_outcome_piece)
+      |> result.map(untrusted_wire.OutcomePieceAnswered)
     untrusted_wire.ExecutionKind ->
       nested(fields, "answer", decode_execution_answer)
       |> result.map(untrusted_wire.ExecutionAnswered)
@@ -561,6 +645,8 @@ pub fn decode_frame(
       })
     AnswerEnvelope(binding:, id:, body:) ->
       answer_frame(binding, id, body, answer(binding, id))
+    OversizedEnvelope(id:, size:, digest:) ->
+      Ok(untrusted_wire.Oversized(id:, size:, digest:))
   }
 }
 
@@ -621,6 +707,14 @@ fn bound_envelope(
   use id <- result.try(id_field(fields, "id"))
   use body <- result.map(field(fields, "body"))
   make(binding, id, body)
+}
+
+/// Reads the id, the size and the digest of an `oversized`.
+fn oversized_envelope(fields: Fields) -> Result(Envelope, CorruptionReport) {
+  use id <- result.try(id_field(fields, "id"))
+  use size <- result.try(nat_field(fields, "size"))
+  use digest <- result.map(field_as(fields, "digest", digest_of))
+  OversizedEnvelope(id:, size:, digest:)
 }
 
 /// Decodes a response body against the kind its id expects.
@@ -694,6 +788,12 @@ fn frame_json(frame: untrusted_wire.Frame) -> JsonValue {
         #("binding", encode_bytes(binding)),
         #("id", json.Int(id)),
         #("body", encode_answer(answer)),
+      ])
+    untrusted_wire.Oversized(id:, size:, digest:) ->
+      frame_object("oversized", [
+        #("id", json.Int(id)),
+        #("size", json.Int(size)),
+        #("digest", json.String(digest)),
       ])
   }
 }
@@ -777,6 +877,21 @@ fn encode_request(request: untrusted_wire.Request) -> JsonValue {
     untrusted_wire.StateFetchRequest(hash:, offset:) ->
       tagged("state_fetch", [
         #("hash", json.String(hash)),
+        #("offset", json.Int(offset)),
+      ])
+    untrusted_wire.BlobStatusRequest(binding:, digest:) ->
+      tagged("blob_status", [
+        #("binding", encode_bytes(binding)),
+        #("digest", json.String(digest)),
+      ])
+    untrusted_wire.BlobPutRequest(binding:, piece:) ->
+      tagged("blob_put", [
+        #("binding", encode_bytes(binding)),
+        #("piece", encode_blob_piece(piece)),
+      ])
+    untrusted_wire.OutcomePieceRequest(key:, offset:) ->
+      tagged("outcome_piece", [
+        #("key", encode_key(key)),
         #("offset", json.Int(offset)),
       ])
     untrusted_wire.StartExecutionRequest(
@@ -957,6 +1072,9 @@ fn response_tag(kind: untrusted_wire.ResponseKind) -> String {
     untrusted_wire.ChunkKind -> "chunk"
     untrusted_wire.StatusKind -> "status"
     untrusted_wire.FetchKind -> "fetch"
+    untrusted_wire.BlobStatusKind -> "blob_status"
+    untrusted_wire.BlobPutKind -> "blob_put"
+    untrusted_wire.OutcomePieceKind -> "outcome_piece"
     untrusted_wire.ExecutionKind -> "execution"
   }
 }
@@ -1010,6 +1128,18 @@ fn encode_response(response: untrusted_wire.Response) -> JsonValue {
     untrusted_wire.FetchAnswered(fetched:) ->
       tagged(response_tag(untrusted_wire.FetchKind), [
         #("fetched", encode_fetched(fetched)),
+      ])
+    untrusted_wire.BlobStatusAnswered(answer:) ->
+      tagged(response_tag(untrusted_wire.BlobStatusKind), [
+        #("answer", encode_result(answer, encode_blob_stage, json.String)),
+      ])
+    untrusted_wire.BlobPutAnswered(verdict:) ->
+      tagged(response_tag(untrusted_wire.BlobPutKind), [
+        #("verdict", encode_blob_verdict(verdict)),
+      ])
+    untrusted_wire.OutcomePieceAnswered(piece:) ->
+      tagged(response_tag(untrusted_wire.OutcomePieceKind), [
+        #("piece", encode_outcome_piece(piece)),
       ])
     untrusted_wire.ExecutionAnswered(answer:) ->
       tagged(response_tag(untrusted_wire.ExecutionKind), [
@@ -2231,6 +2361,155 @@ fn decode_fetched(
       state_transfer.FetchFailed(reason:)
     }
     other -> Error(unknown("fetched", other))
+  }
+}
+
+// --- placed blobs and outcome pieces ---------------------------------------------
+
+/// The JSON of one piece of a blob.
+fn encode_blob_piece(piece: blob_transfer.Piece) -> JsonValue {
+  json.Object([
+    #("digest", json.String(piece.blob.digest)),
+    #("size", json.Int(piece.blob.size)),
+    #("offset", json.Int(piece.offset)),
+    #("bytes", encode_bytes(piece.bytes)),
+  ])
+}
+
+/// Reads one piece of a blob. The digest must be one, and the bytes at most
+/// `untrusted_wire.max_piece_bytes`; the size and the offset are judged
+/// against each other by the receiver.
+fn decode_blob_piece(
+  value: JsonValue,
+) -> Result(blob_transfer.Piece, CorruptionReport) {
+  use fields <- result.try(object_of(value, "blob piece"))
+  use digest <- result.try(field_as(fields, "digest", digest_of))
+  use size <- result.try(nat_field(fields, "size"))
+  use offset <- result.try(nat_field(fields, "offset"))
+  use bytes <- result.map(field_as(fields, "bytes", piece_bytes_of))
+  blob_transfer.Piece(blob: blob_transfer.Blob(digest:, size:), offset:, bytes:)
+}
+
+/// The JSON of the executor's verdict on a blob piece.
+fn encode_blob_verdict(verdict: blob_transfer.Verdict) -> JsonValue {
+  case verdict {
+    blob_transfer.Accepted(held:) ->
+      tagged("accepted", [#("held", json.Int(held))])
+    blob_transfer.Stored -> tagged("stored", [])
+    blob_transfer.OutOfOrder(expected:) ->
+      tagged("out_of_order", [#("expected", json.Int(expected))])
+    blob_transfer.Refused(reason:) ->
+      tagged("refused", [#("reason", json.String(reason))])
+    blob_transfer.Failed(reason:) ->
+      tagged("failed", [#("reason", json.String(reason))])
+  }
+}
+
+/// Reads the executor's verdict on a blob piece.
+fn decode_blob_verdict(
+  value: JsonValue,
+) -> Result(blob_transfer.Verdict, CorruptionReport) {
+  use #(kind, fields) <- result.try(tagged_of(value, "blob verdict"))
+
+  // The piece is held, the blob is whole, the executor stands elsewhere, or it
+  // said no, finally or for now.
+  case kind {
+    "accepted" -> {
+      use held <- result.map(nat_field(fields, "held"))
+      blob_transfer.Accepted(held:)
+    }
+    "stored" -> Ok(blob_transfer.Stored)
+    "out_of_order" -> {
+      use expected <- result.map(nat_field(fields, "expected"))
+      blob_transfer.OutOfOrder(expected:)
+    }
+    "refused" -> {
+      use reason <- result.map(string_field(fields, "reason"))
+      blob_transfer.Refused(reason:)
+    }
+    "failed" -> {
+      use reason <- result.map(string_field(fields, "reason"))
+      blob_transfer.Failed(reason:)
+    }
+    other -> Error(unknown("blob verdict", other))
+  }
+}
+
+/// The JSON of how much of a blob the executor holds.
+fn encode_blob_stage(stage: blob_transfer.Stage) -> JsonValue {
+  case stage {
+    blob_transfer.Absent -> tagged("absent", [])
+    blob_transfer.Partial(held:) ->
+      tagged("partial", [#("held", json.Int(held))])
+    blob_transfer.Complete -> tagged("complete", [])
+  }
+}
+
+/// Reads how much of a blob the executor holds.
+fn decode_blob_stage(
+  value: JsonValue,
+) -> Result(blob_transfer.Stage, CorruptionReport) {
+  use #(kind, fields) <- result.try(tagged_of(value, "blob stage"))
+
+  // The executor holds none of a blob, some bytes of it, or all of it.
+  case kind {
+    "absent" -> Ok(blob_transfer.Absent)
+    "partial" -> {
+      use held <- result.map(nat_field(fields, "held"))
+      blob_transfer.Partial(held:)
+    }
+    "complete" -> Ok(blob_transfer.Complete)
+    other -> Error(unknown("blob stage", other))
+  }
+}
+
+/// The JSON of one piece of an encoded outcome, or why there is none.
+fn encode_outcome_piece(piece: untrusted_wire.OutcomePiece) -> JsonValue {
+  case piece {
+    untrusted_wire.OutcomeServed(size:, digest:, offset:, bytes:) ->
+      tagged("served", [
+        #("size", json.Int(size)),
+        #("digest", json.String(digest)),
+        #("offset", json.Int(offset)),
+        #("bytes", encode_bytes(bytes)),
+      ])
+    untrusted_wire.OutcomeNotHeld(reason:) ->
+      tagged("not_held", [#("reason", json.String(reason))])
+  }
+}
+
+/// Reads one piece of an encoded outcome.
+fn decode_outcome_piece(
+  value: JsonValue,
+) -> Result(untrusted_wire.OutcomePiece, CorruptionReport) {
+  use #(kind, fields) <- result.try(tagged_of(value, "outcome piece"))
+
+  // The executor served the bytes at an offset, or holds no ended outcome.
+  case kind {
+    "served" -> {
+      use size <- result.try(nat_field(fields, "size"))
+      use digest <- result.try(field_as(fields, "digest", digest_of))
+      use offset <- result.try(nat_field(fields, "offset"))
+      use bytes <- result.map(field_as(fields, "bytes", piece_bytes_of))
+      untrusted_wire.OutcomeServed(size:, digest:, offset:, bytes:)
+    }
+    "not_held" -> {
+      use reason <- result.map(string_field(fields, "reason"))
+      untrusted_wire.OutcomeNotHeld(reason:)
+    }
+    other -> Error(unknown("outcome piece", other))
+  }
+}
+
+/// Reads a blob's or an outcome's digest: 64 lower-case hex digits, which is
+/// the only text that may ever become a file name.
+fn digest_of(value: JsonValue, on: String) -> Result(String, CorruptionReport) {
+  use text <- result.try(string_of(value, on))
+
+  // Anything else is not a SHA-256 in the one spelling the wire allows.
+  case blob_transfer.is_digest(text) {
+    True -> Ok(text)
+    False -> Error(corrupt(on, "64 lower-case hexadecimal digits", text))
   }
 }
 

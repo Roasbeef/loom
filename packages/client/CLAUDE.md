@@ -71,14 +71,45 @@ refuses an untrusted row without `[executor_link]`, and `untrusted_config` refus
   socket code: TLS 1.3, `{packet, 4}` with `packet_size`, `{active, once}`, PKIX
   plus a SHA-256 pin, no hostname check.
 
+Placed blobs and outcomes larger than a frame (protocol-change/110, wire
+version 3). `remote/blob_transfer` is the blob vocabulary (`Blob` is a hex
+SHA-256 and a size, `Piece`, `Verdict`, `Stage`) and the orchestrator's sender
+(`describe`, `place`, bounded by `max_resyncs`). `untrusted_link.start_placing`
+answers `Started(pid, blobs)`: a process holds one registered name, which the
+`HostMessage`s take, so blob questions (`untrusted_bridge.BlobAsk`) go to the
+returned subject; `blob_link` and `place_blob` drive it for a session, and the
+link names the session's current binding (`blob_outbound`). On the executor,
+`untrusted_gateway.Config.blobs` is an optional `remote/blob_service` (one
+`weft/actor` over `remote/blob_store`, `<state root>/placed-blobs`, masked in
+`workspace_policy.lazy_masks`); a blob request's waiter asks the book
+`HolderOf(pin, binding)` for the session, and the keeper claims blobs per
+binding under `Bounds` (binding and per-orchestrator counts and bytes) and
+`blob_store.Limits` (one blob, the directory). `blob_service.open(session,
+digest)` is a plane's handle: a claimed blob, hashed again on first open after a
+start. The book retires a binding (and releases its claims) on re-attach and on
+a close the host carried out for the same incarnation (`Closed`). A response
+whose frame would pass `max_frame_bytes` goes out as `Oversized(id, size,
+digest)` (`untrusted_bridge.oversized`); the link fetches the outcome with
+`OutcomePieceRequest(key, offset)`, which the gateway answers from `Query`
+(`untrusted_bridge.outcome_piece`), keeps piece ids connection-scoped, resumes
+from the re-sent request's next `Oversized`, runs at most `max_fetches` (2) at
+once, and checks size and digest in `remote/outcome_fetch` before decoding.
+Anything it cannot fetch answers the asker with `untrusted_bridge.lose`
+(`RunLost`, `Unknown`), never a refusal that invites a re-run.
+
 Invariants: nothing on either side calls `binary_to_term`; every response is
 decoded against its request's kind; a callback reaches an owner port only through
-`admitted`; a waiter's death is the only abort the host sees from this link.
+`admitted`; a waiter's death is the only abort the host sees from this link; a
+fetched outcome is decoded only after its size and SHA-256 match; only the
+orchestrator sends blob bytes.
 Tests: `remote/untrusted_codec_test`, `remote/untrusted_link_test` (a hostile
 executor driven by hand over real TLS, `support/untrusted_rig`),
 `remote/untrusted_gateway_test` (the gateway and a real host driven by hand),
 `remote/untrusted_end_to_end_test` (surface and owner port, link, gateway, real
-host, a background program launched, called back and stopped) and
+host; a background program launched, called back and stopped; a placed blob
+and a 40 MiB outcome), `remote/blob_service_test`, `remote/outcome_fetch_test`,
+`remote/untrusted_state_test` (a full then a thin bundle of a repository the
+executor never saw, through the link, into the real plane) and
 `untrusted_config_test`.
 
 # Evolution callback ownership

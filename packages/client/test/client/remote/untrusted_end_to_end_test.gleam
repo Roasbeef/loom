@@ -19,11 +19,16 @@
 import broker/framing
 import client/escalate
 import client/owner_services
+import client/remote/blob_service
+import client/remote/blob_store
+import client/remote/blob_transfer
 import client/remote/host
 import client/remote/owner_port
 import client/remote/protocol
 import client/remote/remote_census.{type RemoteCensus}
 import client/remote/surface
+import client/remote/untrusted_bridge
+import client/remote/untrusted_codec
 import client/remote/untrusted_gateway
 import client/remote/untrusted_link
 import client/remote/untrusted_wire
@@ -31,14 +36,18 @@ import core/clock
 import core/json
 import core/message
 import core/msgpack
+import gleam/bit_array
 import gleam/erlang/process.{type Subject}
-import gleam/option.{None}
+import gleam/option.{None, Some}
+import gleam/string
 import runtime/effects.{type ToolRun}
+import simplifile
 import support/remote_fixtures as fixtures
 import support/remote_orchestrator
 import support/untrusted_rig as rig
 import telemetry/log
 import tools/codemode as codemode_tool
+import weft/poll
 
 /// What the fake plane tells the test.
 type Seen {
@@ -76,8 +85,18 @@ type Rig {
     port: owner_port.Port,
     seen: Subject(Seen),
     escalations: Subject(escalate.Refused),
+    /// Where the orchestrator places blobs through the link.
+    blobs: Subject(untrusted_bridge.BlobAsk),
+    /// The executor's keeper of placed blobs.
+    keeper: blob_service.Service,
     records: Subject(Record),
   )
+}
+
+/// The outcome the plane's `big` call returns: larger than one frame of the
+/// link, so it can only arrive in pieces (protocol-change/110).
+fn big_outcome() -> effects.ToolOutcome {
+  effects.ToolFailed(reason: string.repeat("proof transcript ", 2_500_000))
 }
 
 fn start(label: String) -> Rig {
@@ -85,10 +104,22 @@ fn start(label: String) -> Rig {
   let seen = process.new_subject()
   let escalations = process.new_subject()
   let executor =
-    remote_orchestrator.start(plane_factory(
-      seen,
-      remote_orchestrator.census(remote_orchestrator.standard_tools()),
-    ))
+    remote_orchestrator.start_holding(
+      plane_factory(
+        seen,
+        remote_orchestrator.census(remote_orchestrator.standard_tools()),
+      ),
+      67_108_864,
+    )
+  let assert Ok(store) =
+    blob_store.open(
+      fixtures.scratch("untrusted-e2e-blobs-" <> label) <> "/placed-blobs",
+      blob_store.default_limits,
+    )
+    as "the blob store opens"
+  let assert Ok(keeper) =
+    blob_service.start(store, blob_service.default_bounds, fn() { 1_000_000 })
+    as "the keeper starts"
   let assert Ok(gateway) =
     untrusted_gateway.start(untrusted_gateway.Config(
       address: "127.0.0.1",
@@ -96,12 +127,13 @@ fn start(label: String) -> Rig {
       credentials: pair.executor,
       orchestrators: [pair.orchestrator_pin],
       host: executor.address,
+      blobs: Some(keeper),
       logger: log.discard(),
     ))
     as "the gateway starts"
   let name = process.new_name("untrusted_end_to_end")
-  let assert Ok(link) =
-    untrusted_link.start(untrusted_link.Config(
+  let assert Ok(untrusted_link.Started(pid: link, blobs:)) =
+    untrusted_link.start_placing(untrusted_link.Config(
       executor: "pod",
       name:,
       host: "127.0.0.1",
@@ -127,7 +159,18 @@ fn start(label: String) -> Rig {
       git_identity: None,
     ))
     as "the port starts"
-  Rig(executor:, gateway:, link:, name:, port:, seen:, escalations:, records:)
+  Rig(
+    executor:,
+    gateway:,
+    link:,
+    name:,
+    port:,
+    seen:,
+    escalations:,
+    blobs:,
+    keeper:,
+    records:,
+  )
 }
 
 // Owner services whose capability records the call and answers `pong`.
@@ -194,6 +237,7 @@ fn plane_factory(
             process.sleep_forever()
             fixtures.expected_outcome(run)
           }
+          "big" -> big_outcome()
           "launch" | "launch-hold" -> {
             process.send(
               seen,
@@ -385,6 +429,78 @@ pub fn the_death_of_the_asker_aborts_the_call_on_the_executor_test() {
     process.new_selector()
     |> process.select_specific_monitor(watch, fn(_down) { Nil })
   assert process.selector_receive(selector, 10_000) == Ok(Nil)
+  stop(rig)
+}
+
+pub fn an_outcome_larger_than_a_frame_returns_whole_test() {
+  let rig = start("big")
+  let surface.Attachment(surface: remote, ..) = attached(rig)
+  let run = call("big")
+  let outcome = big_outcome()
+
+  // The encoded outcome is past the frame bound, so the gateway can only send
+  // it as `oversized` and the link fetches it in pieces from the ledger.
+  assert bit_array.byte_size(untrusted_codec.encode_outcome_bytes(outcome))
+    > untrusted_wire.max_frame_bytes
+  assert surface.run(remote, run) == outcome
+  stop(rig)
+}
+
+pub fn a_blob_placed_through_the_link_opens_on_the_executor_and_moves_once_test() {
+  let rig = start("blob")
+  let _attachment = attached(rig)
+  let path = fixtures.scratch("untrusted-e2e-archive") <> "/modules.tar"
+  let content = <<7:size({ { 2 * blob_transfer.piece_bytes + 5 } * 8 })>>
+  let assert Ok(Nil) = simplifile.write_bits(path, content)
+    as "the archive is written"
+
+  let assert Ok(blob_transfer.Placed(blob:, sent: 3)) =
+    untrusted_link.place_blob(rig.blobs, "s1", path, 30_000)
+    as "the archive moves in three pieces"
+  assert untrusted_link.place_blob(rig.blobs, "s1", path, 30_000)
+    == Ok(blob_transfer.Placed(blob:, sent: 0))
+
+  // The session's plane is handed the checked file; another session is not.
+  let assert Ok(held) = blob_service.open(rig.keeper, "s1", blob.digest)
+    as "the session's plane opens the blob"
+  assert simplifile.read_bits(held) == Ok(content)
+  let assert Error(_other) = blob_service.open(rig.keeper, "s2", blob.digest)
+  stop(rig)
+}
+
+pub fn a_closed_scope_gives_its_blob_claims_back_test() {
+  let rig = start("blob-close")
+  let surface.Attachment(surface: remote, ..) = attached(rig)
+  let path = fixtures.scratch("untrusted-e2e-close") <> "/cache.tar"
+  let assert Ok(Nil) = simplifile.write_bits(path, <<"module cache":utf8>>)
+    as "the cache is written"
+  let assert Ok(blob_transfer.Placed(blob:, ..)) =
+    untrusted_link.place_blob(rig.blobs, "s1", path, 30_000)
+    as "the cache is placed"
+  let assert Ok(_path) = blob_service.open(rig.keeper, "s1", blob.digest)
+    as "the session holds it while its scope is open"
+
+  let assert Ok(_closed) =
+    surface.ask(remote, fn(reply) {
+      protocol.Close(
+        session: "s1",
+        workspace: "/work",
+        incarnation: surface.incarnation(remote),
+        reply:,
+      )
+    })
+    as "the scope closes"
+
+  // The book retires the closed open's binding, and with it the claim, so
+  // the keeper no longer hands the blob to the session.
+  let assert poll.Answered(Nil) =
+    poll.until(within: 5000, every: 20, attempt: fn() {
+      case blob_service.open(rig.keeper, "s1", blob.digest) {
+        Error(_released) -> poll.Done(Nil)
+        Ok(_still) -> poll.Retry
+      }
+    })
+    as "the claim is given back"
   stop(rig)
 }
 

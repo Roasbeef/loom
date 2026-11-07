@@ -47,6 +47,8 @@
 import broker/internal/call
 import client/internal/ffi_tls_stream.{type Stream}
 import client/remote/address.{type Address}
+import client/remote/blob_service
+import client/remote/blob_transfer
 import client/remote/protocol.{type HostMessage, type OwnerMessage}
 import client/remote/remote_census.{type RemoteCensus}
 import client/remote/untrusted_bridge.{type OwnerReply}
@@ -54,6 +56,7 @@ import client/remote/untrusted_codec
 import client/remote/untrusted_wire.{type Request, type Response}
 import core/corruption
 import core/json.{type JsonValue}
+import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
@@ -77,6 +80,9 @@ pub type Config {
     orchestrators: List(BitArray),
     /// The executor's host on this node.
     host: Address(HostMessage(RemoteCensus)),
+    /// The keeper of placed blobs (protocol-change/110), or `None` for an
+    /// executor that takes none, which refuses every blob request.
+    blobs: Option(blob_service.Service),
     /// Where connections, refusals and violations are logged.
     logger: Logger,
   )
@@ -102,9 +108,22 @@ pub opaque type BookMessage {
   ProxyFor(
     pin: BitArray,
     session: String,
+    incarnation: Int,
     binding: BitArray,
     reply: Subject(Result(Subject(OwnerMessage), Nil)),
   )
+
+  /// The session `binding` was made for, if the orchestrator holds it, which is
+  /// what a blob request is placed for.
+  HolderOf(
+    pin: BitArray,
+    binding: BitArray,
+    reply: Subject(Result(String, Nil)),
+  )
+
+  /// A scope closed: the session's binding retires if it is still the one the
+  /// closed open made, so a late close never retires a newer open's binding.
+  Closed(pin: BitArray, session: String, incarnation: Int)
 
   /// The proxy control subject for `binding`, if the orchestrator holds one.
   ProxyOf(
@@ -173,6 +192,8 @@ type Connection {
     book: Subject(BookMessage),
     /// The host.
     host: Address(HostMessage(RemoteCensus)),
+    /// The keeper of placed blobs, if this executor takes them.
+    blobs: Option(blob_service.Service),
     /// The waiters of requests not yet answered, by request id.
     waiters: Dict(Int, Pid),
     /// Where things are logged.
@@ -191,12 +212,18 @@ type Book {
     proxies: Dict(#(BitArray, BitArray), Proxy),
     /// Each session's current binding, by orchestrator.
     sessions: Dict(#(BitArray, String), BitArray),
+    /// The keeper of placed blobs, told when a binding retires.
+    blobs: Option(blob_service.Service),
   )
 }
 
 /// One proxy, as the book holds it.
 type Proxy {
   Proxy(
+    /// The session the binding was made for.
+    session: String,
+    /// The scope incarnation of the attach that made it.
+    incarnation: Int,
     /// The subject the host is given as the owner port.
     owner: Subject(OwnerMessage),
     /// The proxy's control subject.
@@ -271,30 +298,38 @@ pub fn start(config: Config) -> Result(Gateway, String) {
     ffi_tls_stream.port_of(listener)
     |> result.replace_error("the untrusted executor listener has no port"),
   )
-  use book <- result.try(start_book())
+  use book <- result.try(start_book(config.blobs))
+  let served = Served(book:, host: config.host, blobs: config.blobs)
   let acceptor =
-    process.spawn(fn() { accepting(listener, book, config.host, config.logger) })
+    process.spawn(fn() { accepting(listener, served, config.logger) })
   Ok(Gateway(port:, acceptor:))
+}
+
+/// What every connection serves: the book, the host and the blob keeper.
+type Served {
+  Served(
+    book: Subject(BookMessage),
+    host: Address(HostMessage(RemoteCensus)),
+    blobs: Option(blob_service.Service),
+  )
 }
 
 /// Accepts connections for as long as the listener is open, handing each to
 /// a connection process of its own.
 fn accepting(
   listener: ffi_tls_stream.Listener,
-  book: Subject(BookMessage),
-  host: Address(HostMessage(RemoteCensus)),
+  served: Served,
   logger: Logger,
 ) -> Nil {
   // A timeout only means nobody connected; a closed listener ends the loop.
   case ffi_tls_stream.accept(listener, accept_ms) {
     Ok(raw) -> {
-      handed(raw, book, host, logger)
-      accepting(listener, book, host, logger)
+      handed(raw, served, logger)
+      accepting(listener, served, logger)
     }
     Error(ffi_tls_stream.TimedOut)
     | Error(ffi_tls_stream.Refused)
-    | Error(ffi_tls_stream.Unavailable) ->
-      accepting(listener, book, host, logger)
+    | Error(ffi_tls_stream.Unavailable) -> accepting(listener, served, logger)
     Error(ffi_tls_stream.Closed) | Error(ffi_tls_stream.InvalidConfiguration) ->
       Nil
   }
@@ -302,14 +337,9 @@ fn accepting(
 
 /// Starts a connection for an accepted socket and gives the socket to it. A
 /// connection that cannot start, or cannot take the socket, closes it.
-fn handed(
-  raw: Stream,
-  book: Subject(BookMessage),
-  host: Address(HostMessage(RemoteCensus)),
-  logger: Logger,
-) -> Nil {
+fn handed(raw: Stream, served: Served, logger: Logger) -> Nil {
   let started =
-    connection(raw, book, host, logger)
+    connection(raw, served, logger)
     |> result.try(fn(started) {
       ffi_tls_stream.hand_to(raw, started.pid)
       |> result.replace(started.data)
@@ -331,13 +361,20 @@ fn handed(
 /// takes nothing else with it.
 fn connection(
   raw: Stream,
-  book: Subject(BookMessage),
-  host: Address(HostMessage(RemoteCensus)),
+  served: Served,
   logger: Logger,
 ) -> Result(sm.Started(Subject(ConnectionMessage)), Nil) {
   sm.new_with_initialiser(1000, fn(subject) {
     let data =
-      Connection(subject:, raw:, book:, host:, waiters: dict.new(), logger:)
+      Connection(
+        subject:,
+        raw:,
+        book: served.book,
+        host: served.host,
+        blobs: served.blobs,
+        waiters: dict.new(),
+        logger:,
+      )
     let selector =
       process.new_selector()
       |> process.select(subject)
@@ -485,7 +522,8 @@ fn framed(
         Ok(untrusted_codec.HelloEnvelope(..))
         | Ok(untrusted_codec.WelcomeEnvelope(..))
         | Ok(untrusted_codec.ResponseEnvelope(..))
-        | Ok(untrusted_codec.CallbackEnvelope(..)) ->
+        | Ok(untrusted_codec.CallbackEnvelope(..))
+        | Ok(untrusted_codec.OversizedEnvelope(..)) ->
           closed(
             stream,
             data,
@@ -517,7 +555,7 @@ fn requested(
   // A request that does not decode, or an attach whose proxy cannot be made,
   // closes the connection; the orchestrator sends it again on the next one.
   case decoded {
-    Ok(#(request, port)) -> armed(stream, waiting(data, id, request, port))
+    Ok(#(request, port)) -> armed(stream, waiting(data, pin, id, request, port))
     Error(reason) -> closed(stream, data, reason)
   }
 }
@@ -530,10 +568,11 @@ fn port_for(
 ) -> Result(Option(Subject(OwnerMessage)), String) {
   // Only an attach names an owner port.
   case request {
-    untrusted_wire.AttachRequest(session:, binding:, ..) ->
+    untrusted_wire.AttachRequest(session:, incarnation:, binding:, ..) ->
       call.try_call(data.book, waiting: book_ms, sending: ProxyFor(
         pin:,
         session:,
+        incarnation:,
         binding:,
         reply: _,
       ))
@@ -549,11 +588,14 @@ fn port_for(
 /// because they have no answer to wait for.
 fn waiting(
   data: Connection,
+  pin: BitArray,
   id: Int,
   request: Request,
   port: Option(Subject(OwnerMessage)),
 ) -> Connection {
   let host = data.host
+  let book = data.book
+  let blobs = data.blobs
   let connection = data.subject
   let carrier = process.self()
 
@@ -570,11 +612,105 @@ fn waiting(
     Some(_kind) -> {
       let waiter =
         process.spawn_unlinked(fn() {
-          let response = untrusted_bridge.ask_host(host, request, port, carrier)
+          let response =
+            answer(
+              Answering(host:, book:, blobs:, pin:, carrier:),
+              request,
+              port,
+            )
           process.send(connection, Replied(id:, response:))
         })
       Connection(..data, waiters: dict.insert(data.waiters, id, waiter))
     }
+  }
+}
+
+/// What a waiter needs to answer one request.
+type Answering {
+  Answering(
+    host: Address(HostMessage(RemoteCensus)),
+    book: Subject(BookMessage),
+    blobs: Option(blob_service.Service),
+    pin: BitArray,
+    carrier: Pid,
+  )
+}
+
+/// Answers one request in its waiter. Most go to the host; a blob request goes
+/// to the blob keeper for the binding's session, and an outcome piece is cut
+/// from the host's ledger (protocol-change/110). A close that the host answered
+/// tells the book, so the closed open's binding retires.
+fn answer(
+  answering: Answering,
+  request: Request,
+  port: Option(Subject(OwnerMessage)),
+) -> Option(Response) {
+  let Answering(host:, carrier:, ..) = answering
+
+  // The three requests of 110 have their own answerers; the rest are 078's.
+  case request {
+    untrusted_wire.BlobStatusRequest(binding:, digest:) ->
+      Some(untrusted_wire.BlobStatusAnswered(
+        held_by(answering, binding)
+        |> result.try(fn(found) { blob_service.stage(found.0, found.1, digest) }),
+      ))
+    untrusted_wire.BlobPutRequest(binding:, piece:) ->
+      Some(
+        untrusted_wire.BlobPutAnswered(case held_by(answering, binding) {
+          Ok(#(service, holder)) -> blob_service.take(service, holder, piece)
+          Error(reason) -> blob_transfer.Refused(reason)
+        }),
+      )
+    untrusted_wire.OutcomePieceRequest(key:, offset:) ->
+      Some(untrusted_bridge.outcome_piece(host, key, offset, carrier))
+    untrusted_wire.CloseRequest(session:, incarnation:, ..) -> {
+      let response = untrusted_bridge.ask_host(host, request, port, carrier)
+      closed_scope(answering, session, incarnation, response)
+      response
+    }
+    _other -> untrusted_bridge.ask_host(host, request, port, carrier)
+  }
+}
+
+/// The keeper and the holder a blob request is placed for: the binding must be
+/// one this orchestrator holds in the book, which answers its session.
+fn held_by(
+  answering: Answering,
+  binding: BitArray,
+) -> Result(#(blob_service.Service, blob_service.Holder), String) {
+  use service <- result.try(option.to_result(
+    answering.blobs,
+    "this executor takes no placed blobs",
+  ))
+  use session <- result.map(
+    call.try_call(answering.book, waiting: book_ms, sending: HolderOf(
+      pin: answering.pin,
+      binding:,
+      reply: _,
+    ))
+    |> result.replace_error(Nil)
+    |> result.flatten
+    |> result.replace_error("the binding is not one this orchestrator holds"),
+  )
+  #(service, blob_service.Holder(pin: answering.pin, binding:, session:))
+}
+
+/// Tells the book a scope closed, when the host says it did.
+fn closed_scope(
+  answering: Answering,
+  session: String,
+  incarnation: Int,
+  response: Option(Response),
+) -> Nil {
+  // Only a close the host carried out retires the binding; a refused one
+  // leaves the scope, and its binding, as they were.
+  case response {
+    Some(untrusted_wire.CloseAnswered(Ok(_outcome))) ->
+      process.send(
+        answering.book,
+        Closed(pin: answering.pin, session:, incarnation:),
+      )
+    _other -> Nil
   }
 }
 
@@ -616,7 +752,11 @@ fn routed(
   }
 }
 
-/// A waiter's answer, sent as the response to its request.
+/// A waiter's answer, sent as the response to its request. A response whose
+/// frame would pass `max_frame_bytes` is sent as an `Oversized` instead, which
+/// the orchestrator follows by fetching the outcome in pieces
+/// (protocol-change/110); sent whole, the orchestrator's socket would refuse
+/// it, and the re-send on the next connection would meet the same frame.
 fn replied(
   stream: Stream,
   data: Connection,
@@ -627,12 +767,20 @@ fn replied(
 
   // Only a request with a reply has a waiter, and its waiter always replies.
   case response {
-    Some(response) ->
-      outgoing(
-        stream,
-        data,
-        untrusted_codec.encode_frame(untrusted_wire.Response(id:, response:)),
-      )
+    Some(response) -> {
+      let frame =
+        untrusted_codec.encode_frame(untrusted_wire.Response(id:, response:))
+      let fits = bit_array.byte_size(frame) <= untrusted_wire.max_frame_bytes
+      outgoing(stream, data, case fits {
+        True -> frame
+        False ->
+          untrusted_codec.encode_frame(untrusted_bridge.oversized(
+            id,
+            response,
+            frame,
+          ))
+      })
+    }
     None -> sm.keep(data)
   }
 }
@@ -676,7 +824,9 @@ fn closed(
 }
 
 /// Starts the book, linked to the caller.
-fn start_book() -> Result(Subject(BookMessage), String) {
+fn start_book(
+  blobs: Option(blob_service.Service),
+) -> Result(Subject(BookMessage), String) {
   actor.new_with_initialiser(1000, fn(subject) {
     let book =
       Book(
@@ -684,6 +834,7 @@ fn start_book() -> Result(Subject(BookMessage), String) {
         connections: dict.new(),
         proxies: dict.new(),
         sessions: dict.new(),
+        blobs:,
       )
     let selector =
       process.new_selector()
@@ -706,8 +857,8 @@ fn booked(book: Book, message: BookMessage) -> actor.Next(Book, BookMessage) {
   case message {
     Joined(pin:, connection:, pid:) ->
       actor.continue(joined(book, pin, connection, pid))
-    ProxyFor(pin:, session:, binding:, reply:) ->
-      case proxy_for(book, pin, session, binding) {
+    ProxyFor(pin:, session:, incarnation:, binding:, reply:) ->
+      case proxy_for(book, pin, session, incarnation, binding) {
         Ok(#(book, proxy)) -> {
           process.send(reply, Ok(proxy.owner))
           actor.continue(book)
@@ -723,7 +874,36 @@ fn booked(book: Book, message: BookMessage) -> actor.Next(Book, BookMessage) {
       |> process.send(reply, _)
       actor.continue(book)
     }
+    HolderOf(pin:, binding:, reply:) -> {
+      dict.get(book.proxies, #(pin, binding))
+      |> result.map(fn(proxy) { proxy.session })
+      |> process.send(reply, _)
+      actor.continue(book)
+    }
+    Closed(pin:, session:, incarnation:) ->
+      actor.continue(closed_binding(book, pin, session, incarnation))
     ConnectionDown(down:) -> actor.continue(departed(book, down))
+  }
+}
+
+/// Retires a session's binding after its scope closed, if the binding is the
+/// one the closed incarnation's attach made.
+fn closed_binding(
+  book: Book,
+  pin: BitArray,
+  session: String,
+  incarnation: Int,
+) -> Book {
+  let current =
+    dict.get(book.sessions, #(pin, session))
+    |> result.try(fn(binding) { dict.get(book.proxies, #(pin, binding)) })
+
+  // A newer open of the session has a binding of its own, which this close
+  // does not touch.
+  case current {
+    Ok(proxy) if proxy.incarnation == incarnation ->
+      retire_session(book, pin, session)
+    Ok(_newer) | Error(Nil) -> book
   }
 }
 
@@ -783,6 +963,7 @@ fn proxy_for(
   book: Book,
   pin: BitArray,
   session: String,
+  incarnation: Int,
   binding: BitArray,
 ) -> Result(#(Book, Proxy), Nil) {
   // A re-sent attach names the binding it named before, and keeps its proxy.
@@ -794,7 +975,12 @@ fn proxy_for(
         dict.get(book.connections, pin)
         |> result.map(fn(entry) { entry.0 })
         |> option.from_result
-      use proxy <- result.map(start_proxy(binding, connection))
+      use proxy <- result.map(start_proxy(
+        session,
+        incarnation,
+        binding,
+        connection,
+      ))
       #(
         Book(
           ..book,
@@ -820,9 +1006,23 @@ fn retire_session(book: Book, pin: BitArray, session: String) -> Book {
   case current {
     Ok(#(binding, proxy)) -> {
       process.send(proxy.control, Retire)
-      Book(..book, proxies: dict.delete(book.proxies, #(pin, binding)))
+      released(book, pin, binding)
+      Book(
+        ..book,
+        proxies: dict.delete(book.proxies, #(pin, binding)),
+        sessions: dict.delete(book.sessions, #(pin, session)),
+      )
     }
     Error(Nil) -> book
+  }
+}
+
+/// Tells the blob keeper a binding retired, so its claims are given back.
+fn released(book: Book, pin: BitArray, binding: BitArray) -> Nil {
+  // An executor that takes no blobs has no claims to give back.
+  case book.blobs {
+    Some(service) -> blob_service.release(service, pin, binding)
+    None -> Nil
   }
 }
 
@@ -831,6 +1031,8 @@ fn retire_session(book: Book, pin: BitArray, session: String) -> Book {
 /// connection's. A proxy that cannot start is a book that cannot serve, so it
 /// fails the book's turn.
 fn start_proxy(
+  session: String,
+  incarnation: Int,
   binding: BitArray,
   connection: Option(Subject(ConnectionMessage)),
 ) -> Result(Proxy, Nil) {
@@ -848,7 +1050,7 @@ fn start_proxy(
       outstanding: dict.new(),
     ))
     |> actor.selecting(selector)
-    |> actor.returning(Proxy(owner:, control:))
+    |> actor.returning(Proxy(session:, incarnation:, owner:, control:))
     |> Ok
   })
   |> actor.on_message(proxy)

@@ -139,6 +139,18 @@ pub fn next_raw(stream: Stream, within_ms: Int) -> Result(BitArray, String) {
   }
 }
 
+/// Drops every socket event waiting in this process's mailbox. The selector a
+/// hand-driven end reads with takes any stream's events, so a stream a test
+/// left armed would otherwise hand its close to the next test's first read.
+pub fn flush() -> Nil {
+  let selector =
+    process.new_selector() |> ffi_tls_stream.select(fn(inbound) { inbound })
+  case process.selector_receive(selector, 200) {
+    Ok(_stale) -> flush()
+    Error(Nil) -> Nil
+  }
+}
+
 /// Whether the peer has closed the connection within `within_ms`.
 pub fn closed(stream: Stream, within_ms: Int) -> Bool {
   case next_raw(stream, within_ms) {

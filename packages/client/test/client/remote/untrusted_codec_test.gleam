@@ -27,6 +27,7 @@ import client/hookserve
 import client/lsp/profile
 import client/notice
 import client/owner_services
+import client/remote/blob_transfer
 import client/remote/protocol
 import client/remote/remote_census
 import client/remote/untrusted_codec
@@ -367,6 +368,9 @@ fn response_kind_of(
     untrusted_wire.ChunkAnswered(..) -> untrusted_wire.ChunkKind
     untrusted_wire.StatusAnswered(..) -> untrusted_wire.StatusKind
     untrusted_wire.FetchAnswered(..) -> untrusted_wire.FetchKind
+    untrusted_wire.BlobStatusAnswered(..) -> untrusted_wire.BlobStatusKind
+    untrusted_wire.BlobPutAnswered(..) -> untrusted_wire.BlobPutKind
+    untrusted_wire.OutcomePieceAnswered(..) -> untrusted_wire.OutcomePieceKind
     untrusted_wire.ExecutionAnswered(..) -> untrusted_wire.ExecutionKind
   }
 }
@@ -451,7 +455,8 @@ fn body_of(frame: untrusted_wire.Frame) -> JsonValue {
     untrusted_codec.AnswerEnvelope(body:, ..) -> body
     untrusted_codec.HelloEnvelope(..)
     | untrusted_codec.WelcomeEnvelope(..)
-    | untrusted_codec.CancelEnvelope(..) -> json.Null
+    | untrusted_codec.CancelEnvelope(..)
+    | untrusted_codec.OversizedEnvelope(..) -> json.Null
   }
 }
 
@@ -997,6 +1002,213 @@ pub fn every_state_transfer_reply_round_trips_test() {
       reason: "io",
     )),
   )
+}
+
+// --- placed blobs and outcomes in pieces (protocol-change/110) ------------------
+
+/// A digest of the right form.
+fn digest() -> String {
+  blob_transfer.digest_of(<<"blob">>)
+}
+
+/// One piece of a blob, with bytes no text encoding would keep.
+fn blob_piece() -> blob_transfer.Piece {
+  blob_transfer.Piece(
+    blob: blob_transfer.Blob(digest: digest(), size: 4096),
+    offset: 1024,
+    bytes: <<0, 255, 10, 13>>,
+  )
+}
+
+pub fn every_blob_and_outcome_request_round_trips_test() {
+  assert_request(untrusted_wire.BlobStatusRequest(
+    binding: binding(),
+    digest: digest(),
+  ))
+  assert_request(untrusted_wire.BlobPutRequest(
+    binding: binding(),
+    piece: blob_piece(),
+  ))
+  assert_request(untrusted_wire.OutcomePieceRequest(key: key(), offset: 0))
+  assert_request(untrusted_wire.OutcomePieceRequest(
+    key: key(),
+    offset: 33_554_432,
+  ))
+}
+
+pub fn every_blob_reply_round_trips_test() {
+  list.each(
+    [
+      blob_transfer.Accepted(held: 8),
+      blob_transfer.Stored,
+      blob_transfer.OutOfOrder(expected: 4),
+      blob_transfer.Refused(reason: "over the binding's bound"),
+      blob_transfer.Failed(reason: "disk"),
+    ],
+    fn(verdict) { assert_response(untrusted_wire.BlobPutAnswered(verdict:)) },
+  )
+  list.each(
+    [
+      Ok(blob_transfer.Absent),
+      Ok(blob_transfer.Partial(held: 4)),
+      Ok(blob_transfer.Complete),
+      Error("the binding is not one this orchestrator holds"),
+    ],
+    fn(answer) { assert_response(untrusted_wire.BlobStatusAnswered(answer:)) },
+  )
+}
+
+pub fn every_outcome_piece_round_trips_test() {
+  assert_response(
+    untrusted_wire.OutcomePieceAnswered(
+      piece: untrusted_wire.OutcomeServed(
+        size: 40,
+        digest: digest(),
+        offset: 8,
+        bytes: <<1, 2, 3>>,
+      ),
+    ),
+  )
+  assert_response(
+    untrusted_wire.OutcomePieceAnswered(
+      piece: untrusted_wire.OutcomeServed(
+        size: 40,
+        digest: digest(),
+        offset: 40,
+        bytes: <<>>,
+      ),
+    ),
+  )
+  assert_response(
+    untrusted_wire.OutcomePieceAnswered(piece: untrusted_wire.OutcomeNotHeld(
+      reason: "no row",
+    )),
+  )
+}
+
+pub fn the_oversized_frame_round_trips_and_has_no_body_test() {
+  let frame =
+    untrusted_wire.Oversized(id: 9, size: 50_331_648, digest: digest())
+  assert through(frame) == Ok(frame)
+  assert untrusted_codec.decode_envelope(untrusted_codec.encode_frame(frame))
+    == Ok(untrusted_codec.OversizedEnvelope(
+      id: 9,
+      size: 50_331_648,
+      digest: digest(),
+    ))
+}
+
+pub fn a_malformed_oversized_frame_is_refused_test() {
+  let good = digest()
+  assert_refused(
+    "{\"frame\":\"oversized\",\"id\":0,\"size\":1,\"digest\":\""
+    <> good
+    <> "\"}",
+  )
+  assert_refused(
+    "{\"frame\":\"oversized\",\"id\":1,\"size\":-1,\"digest\":\""
+    <> good
+    <> "\"}",
+  )
+  assert_refused(
+    "{\"frame\":\"oversized\",\"id\":1,\"size\":1,\"digest\":\""
+    <> string.uppercase(good)
+    <> "\"}",
+  )
+  assert_refused(
+    "{\"frame\":\"oversized\",\"id\":1,\"size\":1,\"digest\":\"../x\"}",
+  )
+  assert_refused("{\"frame\":\"oversized\",\"id\":1,\"size\":1}")
+}
+
+pub fn malformed_blob_requests_are_refused_test() {
+  let binding_text = bit_array.base64_encode(binding(), True)
+  let piece = fn(digest: String, size: String, offset: String, bytes: String) {
+    "{\"kind\":\"blob_put\",\"binding\":\""
+    <> binding_text
+    <> "\",\"piece\":{\"digest\":\""
+    <> digest
+    <> "\",\"size\":"
+    <> size
+    <> ",\"offset\":"
+    <> offset
+    <> ",\"bytes\":\""
+    <> bytes
+    <> "\"}}"
+  }
+  let good = digest()
+
+  let assert Ok(_request) =
+    untrusted_codec.decode_request(parsed(piece(good, "4", "0", "AAAA")))
+    as "A well-formed piece is legal."
+  list.each(
+    [
+      piece("abc", "4", "0", "AAAA"),
+      piece("../../etc/passwd", "4", "0", "AAAA"),
+      piece(string.uppercase(good), "4", "0", "AAAA"),
+      piece(good, "-1", "0", "AAAA"),
+      piece(good, "4", "-1", "AAAA"),
+      piece(good, "4", "0", "not base64!"),
+      piece(good, "\"4\"", "0", "AAAA"),
+    ],
+    assert_request_refused,
+  )
+
+  // A binding of the wrong length is refused before the blob is looked at.
+  assert_request_refused(
+    "{\"kind\":\"blob_status\",\"binding\":\"AAAA\",\"digest\":\""
+    <> good
+    <> "\"}",
+  )
+}
+
+pub fn an_oversized_blob_piece_is_refused_test() {
+  let text = fn(size: Int) {
+    json.to_string(
+      json.Object([
+        #("kind", json.String("blob_put")),
+        #("binding", json.String(bit_array.base64_encode(binding(), True))),
+        #(
+          "piece",
+          json.Object([
+            #("digest", json.String(digest())),
+            #("size", json.Int(size)),
+            #("offset", json.Int(0)),
+            #(
+              "bytes",
+              json.String(bit_array.base64_encode(
+                bit_array.from_string(string.repeat("p", size)),
+                True,
+              )),
+            ),
+          ]),
+        ),
+      ]),
+    )
+  }
+
+  let assert Ok(_request) = untrusted_codec.decode_request(parsed(text(1024)))
+    as "A small piece is legal."
+  let assert Error(_report) =
+    untrusted_codec.decode_request(
+      parsed(text(untrusted_wire.max_piece_bytes + 1)),
+    )
+    as "A blob piece beyond max_piece_bytes must be refused."
+  Nil
+}
+
+pub fn an_outcome_encodes_the_same_bytes_every_time_test() {
+  let outcome =
+    effects.ToolCompleted(result: result_message(), terminate: False)
+  let bytes = untrusted_codec.encode_outcome_bytes(outcome)
+  assert untrusted_codec.encode_outcome_bytes(outcome) == bytes
+  assert untrusted_codec.decode_outcome_bytes(bytes) == Ok(outcome)
+  let assert Error(_report) =
+    untrusted_codec.decode_outcome_bytes(<<"{\"kind\":\"done\"}">>)
+    as "An outcome of an unknown kind is refused."
+  let assert Error(_report) = untrusted_codec.decode_outcome_bytes(<<255>>)
+    as "Bytes that are not text are refused."
+  Nil
 }
 
 // --- callbacks -------------------------------------------------------------------
@@ -1669,6 +1881,11 @@ fn one_response_of_each_kind() -> List(untrusted_wire.Response) {
     untrusted_wire.ChunkAnswered(verdict: state_transfer.Accepted(held: 1)),
     untrusted_wire.StatusAnswered(answer: Ok(state_transfer.Complete)),
     untrusted_wire.FetchAnswered(fetched: state_transfer.NotHeld),
+    untrusted_wire.BlobStatusAnswered(answer: Ok(blob_transfer.Absent)),
+    untrusted_wire.BlobPutAnswered(verdict: blob_transfer.Stored),
+    untrusted_wire.OutcomePieceAnswered(piece: untrusted_wire.OutcomeNotHeld(
+      reason: "gone",
+    )),
     untrusted_wire.ExecutionAnswered(answer: protocol.ExecutionLost),
   ]
 }
@@ -1686,12 +1903,15 @@ fn every_response_kind() -> List(untrusted_wire.ResponseKind) {
     untrusted_wire.ChunkKind,
     untrusted_wire.StatusKind,
     untrusted_wire.FetchKind,
+    untrusted_wire.BlobStatusKind,
+    untrusted_wire.BlobPutKind,
+    untrusted_wire.OutcomePieceKind,
     untrusted_wire.ExecutionKind,
   ]
 }
 
 pub fn a_response_decodes_only_against_its_own_kind_test() {
-  assert list.length(one_response_of_each_kind()) == 11
+  assert list.length(one_response_of_each_kind()) == 14
 
   list.each(one_response_of_each_kind(), fn(response) {
     let body = body_of(untrusted_wire.Response(id: 1, response:))
