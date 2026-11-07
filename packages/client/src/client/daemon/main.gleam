@@ -200,7 +200,12 @@ pub type Config {
     /// `[daemon] bind` may still replace them at startup.
     bind_source: BindSource,
     /// Maximum occupied session reservations, including unconfirmed cleanup.
+    /// The number itself may have come from `--capacity` or, once startup
+    /// applies the file, from `[daemon] capacity`; `capacity_source` says which,
+    /// because the flag must outrank the file and the updater must know whether
+    /// the number it cannot reproduce came from either.
     capacity: Int,
+    capacity_source: CapacitySource,
     /// Display name used only when creating the first stable owner identity.
     owner_display_name: String,
     /// Helper/configuration/enforcement flags understood by serve's resolver.
@@ -315,6 +320,25 @@ pub type BindSource {
 
   /// `[daemon] bind` named the address, applied by `prepare_startup`.
   BindFile
+}
+
+/// Which source chose the session-slot ceiling, in the order they take
+/// precedence: an explicit `--capacity` over `[daemon] capacity` over the
+/// built-in default of 8.
+///
+/// `parse` cannot read the file, so it records whether the flag was given and
+/// `decode_startup` applies the file only over the default. A `Config` whose
+/// capacity equals the default is otherwise indistinguishable from one where
+/// the owner passed `--capacity 8`, and that flag must still win.
+pub type CapacitySource {
+  /// Neither the flag nor the file named a capacity.
+  CapacityDefault
+
+  /// `--capacity` named it. The file's value is validated but unused.
+  CapacityFlag
+
+  /// `[daemon] capacity` named it, applied by `decode_startup`.
+  CapacityFile
 }
 
 /// A ready root and its original public listener, with no per-session token.
@@ -553,11 +577,18 @@ fn reproducible_arguments(config: Config) -> Result(Nil, Nil) {
   case
     config.bind_source,
     config.view,
-    config.capacity,
+    config.capacity_source,
     config.owner_display_name
   {
-    BindDefault, ViewOff, 8, "Owner" ->
-      reproducible_defaults(config.session_defaults)
+    // A capacity named only by the file is reproducible, because the updater
+    // re-reads the same file on the new tree; a `--capacity` flag is not,
+    // for the same reason `--bind` is not.
+    BindDefault, ViewOff, source, "Owner" ->
+      case source {
+        CapacityDefault | CapacityFile ->
+          reproducible_defaults(config.session_defaults)
+        CapacityFlag -> Error(Nil)
+      }
     _, _, _, _ -> Error(Nil)
   }
 }
@@ -615,6 +646,7 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
       listen_address.default.port,
       BindDefault,
       8,
+      CapacityDefault,
       "Owner",
       [],
       None,
@@ -668,10 +700,19 @@ fn parse_loop(
         int.parse(value) |> result.replace_error("invalid --capacity"),
       )
 
-      // Ensure capacity falls within allowed integer bounds.
-      case capacity > 0 && capacity <= 1024 {
-        True -> parse_loop(rest, Config(..config, capacity:))
-        False -> Error("--capacity must be between 1 and 1024")
+      // Ensure capacity falls within the same bound the file's reader
+      // enforces, so a bad number is refused in the same words either way.
+      case capacity > 0 && capacity <= limits.capacity_ceiling {
+        True ->
+          parse_loop(
+            rest,
+            Config(..config, capacity:, capacity_source: CapacityFlag),
+          )
+        False ->
+          Error(
+            "--capacity must be between 1 and "
+            <> int.to_string(limits.capacity_ceiling),
+          )
       }
     }
     ["--bind", value, ..rest] -> {
@@ -3241,6 +3282,17 @@ fn decode_startup(
   )
   let config = with_file_address(config, file_address)
 
+  // The limits read above carries the file's `[daemon] capacity`, already
+  // bounds-checked, and an explicit `--capacity` outranks it: the file value
+  // replaces only the built-in default, exactly as the address above does.
+  let config = with_file_capacity(config, connection_limits.capacity)
+
+  // The resolved capacity is what the root admits, so the limits record the
+  // root later answers says the same number; a stale file value there would
+  // report a ceiling the daemon does not enforce.
+  let connection_limits =
+    limits.Limits(..connection_limits, capacity: config.capacity)
+
   // Validation above makes a missing or false UI setting the only other
   // possibility. The command-line opt-in remains authoritative over the file.
   let view = case dict.get(document, "daemon") {
@@ -3360,6 +3412,17 @@ fn with_file_address(
         bind_source: BindFile,
       )
     BindDefault, None | BindFlag, _ | BindFile, _ -> config
+  }
+}
+
+/// An explicit `--capacity` outranks the file, so the file's capacity replaces
+/// only the built-in default. The number the file named is distinguished by
+/// `CapacityFile` so the updater can reproduce a file-sourced daemon.
+fn with_file_capacity(config: Config, file_capacity: Int) -> Config {
+  case config.capacity_source {
+    CapacityDefault ->
+      Config(..config, capacity: file_capacity, capacity_source: CapacityFile)
+    CapacityFlag | CapacityFile -> config
   }
 }
 

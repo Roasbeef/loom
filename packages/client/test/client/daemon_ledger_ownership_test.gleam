@@ -36,6 +36,7 @@ fn config(handle: ledger_control.Handle) -> main.Config {
       0,
       main.BindDefault,
       8,
+      main.CapacityDefault,
       "Owner",
       [],
       None,

@@ -9,6 +9,7 @@ import client/daemon/root
 import client/daemon/ui_origin
 import gleam/bit_array
 import gleam/dict
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -22,9 +23,78 @@ pub fn absent_and_partial_daemon_tables_keep_defaults_test() {
   assert limits.parse("") == Ok(limits.defaults)
   assert limits.parse("[daemon]\nprofile = true\n") == Ok(limits.defaults)
   assert limits.parse("[daemon]\nmax_connections = 9\n")
-    == Ok(limits.Limits(9, limits.defaults.reserved_message_bytes))
+    == Ok(limits.Limits(
+      9,
+      limits.defaults.reserved_message_bytes,
+      limits.defaults.capacity,
+    ))
   assert limits.parse("[daemon]\nmax_reserved_message_bytes = 100000000\n")
-    == Ok(limits.Limits(limits.defaults.connections, 100_000_000))
+    == Ok(limits.Limits(
+      limits.defaults.connections,
+      100_000_000,
+      limits.defaults.capacity,
+    ))
+  assert limits.parse("[daemon]\ncapacity = 64\n")
+    == Ok(limits.Limits(
+      limits.defaults.connections,
+      limits.defaults.reserved_message_bytes,
+      64,
+    ))
+}
+
+// The file's capacity replaces the default, and an explicit `--capacity`
+// outranks it: both orders are the same contract `[daemon] bind` has, and
+// the flag must still win when its value happens to equal the default.
+pub fn file_capacity_applies_and_the_flag_outranks_it_test() {
+  let path =
+    "build/test_db/daemon-capacity-"
+    <> bit_array.base16_encode(token.production_entropy()(8))
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(path)
+    as "fixture directory exists"
+  let selected = path <> "/capacity.toml"
+  assert simplifile.write(selected, "[daemon]\ncapacity = 64\n") == Ok(Nil)
+
+  // No flag: the file's 64 replaces the default of 8.
+  let assert Ok(config) =
+    entrypoint.parse(["--state-dir", path <> "/state", "--config", selected])
+  assert config.capacity == 8
+  assert config.capacity_source == entrypoint.CapacityDefault
+  let assert Ok(daemon) = entrypoint.prepare(config, log.discard())
+  assert root.connection_limits(daemon).capacity == 64
+  assert root.shutdown(daemon, within: 5000) == Ok(Nil)
+
+  // With the flag, the file's value is validated but the flag's wins,
+  // including when the flag names the default and the file names more.
+  let assert Ok(flagged) =
+    entrypoint.parse([
+      "--state-dir",
+      path <> "/flag-state",
+      "--capacity",
+      "8",
+      "--config",
+      selected,
+    ])
+  assert flagged.capacity == 8
+  assert flagged.capacity_source == entrypoint.CapacityFlag
+  let assert Ok(flagged_daemon) = entrypoint.prepare(flagged, log.discard())
+  assert root.connection_limits(flagged_daemon).capacity == 8
+  assert root.shutdown(flagged_daemon, within: 5000) == Ok(Nil)
+}
+
+// A capacity outside 1..1024 is refused in the same words from either
+// source, before any state directory is created.
+pub fn capacity_out_of_range_is_refused_by_both_parsers_test() {
+  let assert Error(reason) =
+    entrypoint.parse(["--state-dir", "build/test_db/x", "--capacity", "1025"])
+  assert reason == "--capacity must be between 1 and 1024"
+
+  // Zero is not positive, so it keeps the positive-integer wording;
+  // above the ceiling is the range wording, from the file as from the flag.
+  assert limits.parse("[daemon]\ncapacity = 0\n")
+    == Error("daemon.capacity must be a positive integer")
+  let expected = "daemon.capacity must be between 1 and " <> int.to_string(1024)
+  assert limits.parse("[daemon]\ncapacity = 1025\n") == Error(expected)
+  assert catalog.parse("[daemon]\ncapacity = 1025\n") == Error(expected)
 }
 
 pub fn invalid_connection_limits_are_refused_by_both_parsers_test() {
@@ -67,7 +137,8 @@ pub fn startup_reads_limits_from_the_last_explicit_config_test() {
     as "daemon flags retain the last owner configuration"
   let assert Ok(daemon) = entrypoint.prepare(config, log.discard())
     as "startup accepts daemon settings without opening a session"
-  assert root.connection_limits(daemon) == limits.Limits(11, 123_456_789)
+  assert root.connection_limits(daemon)
+    == limits.Limits(11, 123_456_789, limits.defaults.capacity)
   assert root.shutdown(daemon, within: 5000) == Ok(Nil)
 }
 
