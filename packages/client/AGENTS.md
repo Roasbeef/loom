@@ -1928,6 +1928,13 @@ cannot read `states/`.
   `listen_address.from_fields` too, so the catalogue refuses a bad value
   with the startup words; a reload never rebinds. The binary rejects the removed
   per-session flags; `ext` dispatch remains in `client.gleam` to avoid a cycle.
+  The session-slot ceiling follows the same shape: `--capacity`, else
+  `[daemon] capacity`, else the default of 8, with
+  `Config.capacity_source` (`CapacityDefault | CapacityFlag | CapacityFile`)
+  recording which, so a flag equal to the default still wins and the updater
+  can reproduce a file-sourced daemon. `decode_startup` then also syncs the
+  resolved number into the `Limits` record, so `root.connection_limits` reports
+  the ceiling the `Book` actually enforces.
   The `--help` and `-h` flags anywhere in argv — after daemon flags as
   readily as first — and the bare word `help` in first position are
   dispatched in `client.gleam` before daemon startup,
