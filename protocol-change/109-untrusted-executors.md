@@ -561,3 +561,15 @@ unanswered. `untrusted_end_to_end_test` launches a program from a `code_mode`
 call through a real owner port and host, takes the program's capability
 callback after the launching call ended, and hands its value to the record's
 worker, and stops a program by killing that worker.
+
+## Addendum, 2026-11-06: placed blobs and outcomes larger than a frame
+
+[110](110-untrusted-blobs-and-large-outcomes.md) adds to this link, at wire
+version 3, a carrier for bytes that are not a Git state (blobs placed by the
+orchestrator for a session, checked for size and SHA-256 before they exist,
+bounded per binding, per orchestrator and on disk) and a fetch in pieces for a
+tool outcome whose response would not fit a frame. Both keep this proposal's
+direction rule: only the orchestrator sends blob bytes, and the executor sends
+outcome bytes only as replies to the orchestrator's own requests. The executor
+side of 110 also retires a binding when the host carries out a close of its
+scope, which this proposal left to the next attach.

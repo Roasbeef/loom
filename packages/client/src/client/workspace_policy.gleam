@@ -1680,6 +1680,12 @@ fn lazy_masks(state_root: String) -> List(String) {
       // cookie. Either pair lets a process join this daemon's distribution
       // as a pinned node, which is Erlang RPC on the host daemon.
       state_root <> "/vm",
+
+      // The blobs an orchestrator placed on this executor over the untrusted
+      // link (protocol-change/110), made when the listener starts. A plane
+      // reads a blob through `blob_service.open` and gives its session a copy;
+      // a jailed tool that read the directory would hold every session's.
+      state_root <> "/placed-blobs",
     ],
     node_home_masks(),
   ])

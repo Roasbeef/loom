@@ -48,9 +48,11 @@ import client/extension/hooks
 import client/notice
 import client/owner_services
 import client/remote/address.{type Address}
+import client/remote/blob_transfer
 import client/remote/owner_link
 import client/remote/protocol.{type HostMessage, type OwnerMessage}
 import client/remote/remote_census.{type RemoteCensus}
+import client/remote/untrusted_codec
 import client/remote/untrusted_wire.{
   type Answer, type AnswerKind, type Callback, type Request, type Response,
   type ResponseKind,
@@ -60,6 +62,7 @@ import client/state_transfer
 import codemode/satellite
 import core/ids.{type Seq}
 import core/json.{type JsonValue}
+import gleam/bit_array
 import gleam/erlang/atom
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
@@ -126,6 +129,31 @@ pub type Reply {
 
   /// `StartExecution`'s.
   ExecutionReply(subject: Subject(protocol.ExecutionAnswer))
+
+  /// A blob status's (protocol-change/110).
+  BlobStatusReply(subject: Subject(Result(blob_transfer.Stage, String)))
+
+  /// A blob piece's.
+  BlobPutReply(subject: Subject(blob_transfer.Verdict))
+}
+
+/// A question about a placed blob, which a caller on the orchestrator asks the
+/// link by the session it is placing for (protocol-change/110). The link names
+/// the session's current binding in the request it sends.
+pub type BlobAsk {
+  /// How far a blob has got; a complete one is claimed for the session.
+  BlobStage(
+    session: String,
+    digest: String,
+    reply: Subject(Result(blob_transfer.Stage, String)),
+  )
+
+  /// One piece of a blob.
+  BlobPut(
+    session: String,
+    piece: blob_transfer.Piece,
+    reply: Subject(blob_transfer.Verdict),
+  )
 }
 
 /// An `OwnerMessage`'s reply subject, typed by what it waits for.
@@ -490,6 +518,8 @@ pub fn kind_of(reply: Reply) -> ResponseKind {
     ChunkReply(..) -> untrusted_wire.ChunkKind
     StatusReply(..) -> untrusted_wire.StatusKind
     FetchReply(..) -> untrusted_wire.FetchKind
+    BlobStatusReply(..) -> untrusted_wire.BlobStatusKind
+    BlobPutReply(..) -> untrusted_wire.BlobPutKind
     ExecutionReply(..) -> untrusted_wire.ExecutionKind
   }
 }
@@ -542,6 +572,10 @@ pub fn deliver(
       Ok(process.send(subject, answer))
     FetchReply(subject), untrusted_wire.FetchAnswered(fetched) ->
       Ok(process.send(subject, fetched))
+    BlobStatusReply(subject), untrusted_wire.BlobStatusAnswered(answer) ->
+      Ok(process.send(subject, answer))
+    BlobPutReply(subject), untrusted_wire.BlobPutAnswered(verdict) ->
+      Ok(process.send(subject, verdict))
     ExecutionReply(subject), untrusted_wire.ExecutionAnswered(answer) ->
       Ok(process.send(subject, answer))
     _, _ -> Error(Nil)
@@ -575,6 +609,89 @@ pub fn refuse(reply: Reply, refusal: protocol.Refusal) -> Nil {
       process.send(subject, state_transfer.FetchFailed(reason))
     ExecutionReply(subject) ->
       process.send(subject, protocol.ExecutionRefused(refusal))
+    BlobStatusReply(subject) -> process.send(subject, Error(reason))
+    BlobPutReply(subject) -> process.send(subject, blob_transfer.Failed(reason))
+  }
+}
+
+/// Answers a reply whose outcome the executor reported and the link cannot
+/// receive (protocol-change/110): too large, or a fetch that did not converge.
+/// The call ran, so a run is `RunLost`, a lookup `Unknown` and a background
+/// execution's start `ExecutionLost`, which tell the asker not to run it again.
+/// Only a run's or a lookup's outcome is fetched in pieces; a program's value
+/// past a frame is lost whole. Any other reply is refused as the executor's
+/// fault.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // untrusted_bridge.lose(untrusted_bridge.RunReply(reply), "too large")
+/// // reply receives protocol.RunLost
+/// ```
+pub fn lose(reply: Reply, reason: String) -> Nil {
+  // Only the three replies that can carry an outcome have a lost form; the
+  // rest never hold one, and an executor that says otherwise is at fault.
+  case reply {
+    RunReply(subject) -> process.send(subject, protocol.RunLost)
+    LookupReply(subject) -> process.send(subject, Ok(protocol.Unknown))
+    ExecutionReply(subject) -> process.send(subject, protocol.ExecutionLost)
+    AttachReply(..)
+    | UnackedReply(..)
+    | CloseReply(..)
+    | CaptureReply(..)
+    | ApplyReply(..)
+    | ChunkReply(..)
+    | StatusReply(..)
+    | FetchReply(..)
+    | BlobStatusReply(..)
+    | BlobPutReply(..) -> refuse(reply, protocol.ExecutorFault(reason))
+  }
+}
+
+/// What the link does with a question about a blob: a request naming the
+/// session's current binding, or, for a session the link holds no binding for,
+/// a refusal sent at once.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // untrusted_bridge.blob_outbound(ask, fn(session) { dict.get(sessions, session) })
+/// ```
+pub fn blob_outbound(
+  ask: BlobAsk,
+  binding: fn(String) -> Result(BitArray, Nil),
+) -> Outbound {
+  let unbound = "the session is not attached through this link"
+
+  // A blob is placed for a session through its binding, and a session with
+  // none has nowhere to place it.
+  case ask {
+    BlobStage(session:, digest:, reply:) ->
+      case binding(session) {
+        Ok(binding) ->
+          sent(
+            untrusted_wire.BlobStatusRequest(binding:, digest:),
+            BlobStatusReply(reply),
+            owner_of(reply),
+          )
+        Error(Nil) -> {
+          process.send(reply, Error(unbound))
+          Answered
+        }
+      }
+    BlobPut(session:, piece:, reply:) ->
+      case binding(session) {
+        Ok(binding) ->
+          sent(
+            untrusted_wire.BlobPutRequest(binding:, piece:),
+            BlobPutReply(reply),
+            owner_of(reply),
+          )
+        Error(Nil) -> {
+          process.send(reply, blob_transfer.Refused(unbound))
+          Answered
+        }
+      }
   }
 }
 
@@ -1044,12 +1161,104 @@ fn ledger_ask(
     untrusted_wire.AttachRequest(..)
     | untrusted_wire.RunRequest(..)
     | untrusted_wire.AckRequest(..)
+    | untrusted_wire.BlobStatusRequest(..)
+    | untrusted_wire.BlobPutRequest(..)
+    | untrusted_wire.OutcomePieceRequest(..)
     | untrusted_wire.StartExecutionRequest(..)
     | untrusted_wire.StopExecutionRequest(..) ->
       untrusted_wire.LookupAnswered(
         Error(protocol.Invalid("misrouted request")),
       )
   }
+}
+
+/// Answers an `OutcomePieceRequest` from the host's ledger
+/// (protocol-change/110): a `Query` for the key, which never starts or joins a
+/// call, and the piece at `offset` of the ended outcome's encoding, with that
+/// encoding's size and digest. The piece is at most
+/// `untrusted_wire.max_piece_bytes`; an offset at or past the end is answered
+/// from there with no bytes refused, so the orchestrator sees the size.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // untrusted_bridge.outcome_piece(host, key, 0, connection)
+/// ```
+pub fn outcome_piece(
+  host: Address(HostMessage(RemoteCensus)),
+  key: protocol.Key,
+  offset: Int,
+  connection: Pid,
+) -> Response {
+  let lookup =
+    asked_host(
+      host,
+      connection,
+      protocol.Query(key, _),
+      untrusted_wire.LookupAnswered,
+      untrusted_wire.LookupAnswered(
+        Error(protocol.ExecutorFault("the executor's host is gone")),
+      ),
+    )
+
+  // Only an ended tool call has an outcome to cut; every other answer is told
+  // to the orchestrator as nothing held.
+  let piece = case lookup {
+    untrusted_wire.LookupAnswered(Ok(protocol.Terminal(outcome:))) ->
+      served(untrusted_codec.encode_outcome_bytes(outcome), offset)
+    _other -> untrusted_wire.OutcomeNotHeld("the ledger holds no ended outcome")
+  }
+
+  untrusted_wire.OutcomePieceAnswered(piece)
+}
+
+/// The piece of an encoded outcome at `offset`, with the encoding's size and
+/// digest.
+fn served(bytes: BitArray, offset: Int) -> untrusted_wire.OutcomePiece {
+  let size = bit_array.byte_size(bytes)
+  let at = int.clamp(offset, 0, size)
+  let length = int.min(untrusted_wire.max_piece_bytes, size - at)
+  let cut =
+    bit_array.slice(bytes, at, length) |> result.lazy_unwrap(fn() { <<>> })
+  untrusted_wire.OutcomeServed(
+    size:,
+    digest: blob_transfer.digest_of(bytes),
+    offset: at,
+    bytes: cut,
+  )
+}
+
+/// The frame the executor sends in place of a response whose frame would be
+/// larger than `untrusted_wire.max_frame_bytes`: an `Oversized` naming the
+/// encoded outcome the response holds. A response that holds no outcome is
+/// described by its whole encoding, which the orchestrator will not fetch and
+/// answers to its asker as lost, so the connection is not stuck re-sending a
+/// frame nobody can receive.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // untrusted_bridge.oversized(7, untrusted_wire.RunAnswered(protocol.RunFinished(big)), frame)
+/// ```
+pub fn oversized(
+  id: Int,
+  response: Response,
+  frame: BitArray,
+) -> untrusted_wire.Frame {
+  // The two replies that carry an ended outcome are described by the outcome's
+  // own encoding, which `outcome_piece` cuts the same way.
+  let bytes = case response {
+    untrusted_wire.RunAnswered(protocol.RunFinished(outcome:))
+    | untrusted_wire.LookupAnswered(Ok(protocol.Terminal(outcome:))) ->
+      untrusted_codec.encode_outcome_bytes(outcome)
+    _other -> frame
+  }
+
+  untrusted_wire.Oversized(
+    id:,
+    size: bit_array.byte_size(bytes),
+    digest: blob_transfer.digest_of(bytes),
+  )
 }
 
 /// Sends one request to the host with a reply subject owned by this process

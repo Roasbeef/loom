@@ -81,14 +81,17 @@ import broker/internal/ffi_crypto
 import client/internal/ffi_remote
 import client/internal/ffi_tls_stream.{type Stream}
 import client/remote/address.{type Address}
+import client/remote/blob_transfer
+import client/remote/outcome_fetch
 import client/remote/protocol.{type HostMessage, type OwnerMessage}
 import client/remote/remote_census.{type RemoteCensus}
-import client/remote/untrusted_bridge.{type Reply}
+import client/remote/untrusted_bridge.{type BlobAsk, type Reply}
 import client/remote/untrusted_codec
 import client/remote/untrusted_wire.{type Answer, type Callback, type Request}
 import core/corruption
 import core/ids
 import core/json
+import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/node
 import gleam/erlang/process.{type Monitor, type Name, type Pid, type Subject}
@@ -149,6 +152,10 @@ pub opaque type Message {
   /// A `HostMessage` a session sent to the registered name.
   Host(message: HostMessage(RemoteCensus))
 
+  /// A question about a placed blob, sent to the subject `start_placing`
+  /// returned.
+  Blob(ask: BlobAsk)
+
   /// A dial's run reported.
   Dialed(pulled: weft.Pulled(Stream, ffi_tls_stream.Failure))
 
@@ -179,6 +186,8 @@ type Data {
     config: Config,
     /// The local subject the machine's own events arrive on.
     dials: Subject(weft.Pulled(Stream, ffi_tls_stream.Failure)),
+    /// Where callers place blobs (protocol-change/110).
+    blobs: Subject(BlobAsk),
     /// The handle an attach's census gets in place of the plane's broker.
     broker: Subject(broker.Msg),
     /// The next request id.
@@ -195,6 +204,9 @@ type Data {
     forwarding: Dict(#(BitArray, Int), Forwarding),
     /// The pause before the next redial.
     pause_ms: Int,
+    /// The outcome pieces asked for on this connection, each with the id of
+    /// the request whose outcome it is part of.
+    pieces: Dict(Int, Int),
   )
 }
 
@@ -209,7 +221,22 @@ type Pending {
     reply: Reply,
     /// The monitor on the asker, when it could be found.
     monitor: Option(Monitor),
+    /// Whether the reply comes whole, or is an outcome fetched in pieces.
+    fetching: Fetching,
   )
+}
+
+/// How a request's reply arrives (protocol-change/110).
+type Fetching {
+  /// In one `response` frame, as for every reply that fits.
+  Whole
+
+  /// As an outcome too large for a frame, waiting for a place to be fetched.
+  Waiting(size: Int, digest: String)
+
+  /// As an outcome being fetched. `piece` is the id of the piece request in
+  /// flight on the current connection, if one is.
+  Fetching(fetch: outcome_fetch.Fetch, piece: Option(Int))
 }
 
 /// Whether a forwarded callback has been answered on the wire yet.
@@ -282,6 +309,11 @@ pub const max_binding_callbacks = 64
 /// The most callbacks one link has with owners at once.
 pub const max_link_callbacks = 1024
 
+/// The most outcomes one link fetches in pieces at once. Each holds up to
+/// `untrusted_wire.max_outcome_bytes`, so a hostile executor that answers every
+/// call with `oversized` costs at most this many of them.
+pub const max_fetches = 2
+
 // How long a dial and its TLS handshake may take.
 const dial_within_ms = 10_000
 
@@ -313,10 +345,35 @@ pub fn strong_binding() -> BitArray {
 /// // let assert Ok(pid) = untrusted_link.start(config)
 /// ```
 pub fn start(config: Config) -> Result(Pid, String) {
+  start_placing(config) |> result.map(fn(started) { started.pid })
+}
+
+/// A started link and the subject its blob placements go to.
+pub type Started {
+  Started(
+    /// The link's process, linked to the caller.
+    pid: Pid,
+    /// Where `blob_link` and `place_blob` send their questions
+    /// (protocol-change/110).
+    blobs: Subject(BlobAsk),
+  )
+}
+
+/// `start`, answering the subject blobs are placed through as well as the
+/// process. A process has only one registered name, which the link's
+/// `HostMessage`s take, so a caller that places blobs keeps this subject.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(started) = untrusted_link.start_placing(config)
+/// // untrusted_link.place_blob(started.blobs, session, path, 60_000)
+/// ```
+pub fn start_placing(config: Config) -> Result(Started, String) {
   sm.new_with_initialiser(1000, fn(_subject) { initialise(config) })
   |> sm.on_event(handle)
   |> sm.start
-  |> result.map(fn(started) { started.pid })
+  |> result.map(fn(started) { Started(pid: started.pid, blobs: started.data) })
   |> result.map_error(fn(_error) {
     "the link to executor " <> config.executor <> " did not start"
   })
@@ -350,6 +407,82 @@ pub fn name_for(executor: String) -> Name(HostMessage(RemoteCensus)) {
   ffi_remote.fixed_name("loom_untrusted_executor_" <> executor)
 }
 
+/// The `Link` a blob placement drives, for `session`, through the link that
+/// `start_placing` returned `blobs` for (protocol-change/110). Each question
+/// waits at most `within_ms`; a link that is not running, or an answer that is
+/// late, is silence.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(started) = untrusted_link.start_placing(config)
+/// // let link = untrusted_link.blob_link(started.blobs, session, 60_000)
+/// // blob_transfer.place(path, blob, link)
+/// ```
+pub fn blob_link(
+  blobs: Subject(BlobAsk),
+  session: String,
+  within_ms: Int,
+) -> blob_transfer.Link {
+  blob_transfer.Link(
+    stage: fn(digest) {
+      asked(
+        blobs,
+        fn(reply) { untrusted_bridge.BlobStage(session:, digest:, reply:) },
+        within_ms,
+      )
+    },
+    put: fn(piece) {
+      asked(
+        blobs,
+        fn(reply) { untrusted_bridge.BlobPut(session:, piece:, reply:) },
+        within_ms,
+      )
+    },
+  )
+}
+
+/// Places the file at `path` for `session` on the executor this link reaches:
+/// hashes it, then sends what the executor does not hold. Placing a blob the
+/// executor holds already sends no bytes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(placed) = untrusted_link.place_blob(started.blobs, session, "/srv/mod.tar", 60_000)
+/// ```
+pub fn place_blob(
+  blobs: Subject(BlobAsk),
+  session: String,
+  path: String,
+  within_ms: Int,
+) -> Result(blob_transfer.Placed, blob_transfer.Failure) {
+  use blob <- result.try(
+    blob_transfer.describe(path) |> result.map_error(blob_transfer.Faulted),
+  )
+  blob_transfer.place(path, blob, blob_link(blobs, session, within_ms))
+}
+
+/// One question to the link's blob subject and its reply. The monitor is taken
+/// before the send, so a link that is gone ends the wait at once.
+fn asked(
+  blobs: Subject(BlobAsk),
+  make: fn(Subject(answer)) -> BlobAsk,
+  within_ms: Int,
+) -> Result(answer, Nil) {
+  use pid <- result.try(process.subject_owner(blobs))
+  let reply = process.new_subject()
+  let watch = process.monitor(pid)
+  process.send(blobs, make(reply))
+  let heard =
+    process.new_selector()
+    |> process.select_map(reply, Ok)
+    |> process.select_specific_monitor(watch, fn(_down) { Error(Nil) })
+    |> process.selector_receive(within_ms)
+  process.demonitor_process(watch)
+  result.flatten(heard)
+}
+
 /// The `connect` of a session's `Reach`. The link dials by itself whenever it
 /// has work, so reaching the executor means only that the link is running;
 /// the surface calls this after the link's `DOWN`.
@@ -375,17 +508,19 @@ pub fn running(
 /// and starts idle.
 fn initialise(
   config: Config,
-) -> Result(sm.Initialised(Phase, Data, Message, Nil), String) {
+) -> Result(sm.Initialised(Phase, Data, Message, Subject(BlobAsk)), String) {
   use Nil <- result.try(
     process.register(process.self(), config.name)
     |> result.map_error(fn(_taken) { "the link's name is already registered" }),
   )
   use broker <- result.try(refusing_broker())
   let dials = process.new_subject()
+  let blobs = process.new_subject()
   let data =
     Data(
       config:,
       dials:,
+      blobs:,
       broker:,
       next_id: 1,
       outstanding: dict.new(),
@@ -394,8 +529,13 @@ fn initialise(
       watched: dict.new(),
       forwarding: dict.new(),
       pause_ms: first_pause_ms,
+      pieces: dict.new(),
     )
-  Ok(sm.initialised(Idle, data) |> sm.selecting(selector_of(data)))
+  Ok(
+    sm.initialised(Idle, data)
+    |> sm.selecting(selector_of(data))
+    |> sm.returning(blobs),
+  )
 }
 
 /// A broker subject whose owner has already exited. `broker.clear_call` makes
@@ -415,6 +555,7 @@ fn selector_of(data: Data) -> process.Selector(Message) {
   let base =
     process.new_selector()
     |> process.select_map(process.named_subject(data.config.name), Host)
+    |> process.select_map(data.blobs, Blob)
     |> process.select_map(data.dials, Dialed)
     |> process.select_monitors(Down)
     |> ffi_tls_stream.select(Inbound)
@@ -439,6 +580,7 @@ fn handle(
   // whatever the connection is doing; the rest belong to one phase each.
   case phase, message {
     _, Host(message:) -> hosted(phase, data, message)
+    _, Blob(ask:) -> blob_asked(phase, data, ask)
     Dialing, Dialed(pulled:) -> dialed(data, pulled)
     _, Dialed(pulled:) -> stale_dial(data, pulled)
     Greeting(stream:), Inbound(inbound:) -> greeted(stream, data, inbound)
@@ -472,6 +614,24 @@ fn hosted(
     untrusted_bridge.Answered -> sm.keep(data)
     untrusted_bridge.Send(request:, reply: None, requester: _, port: _) ->
       acked(phase, data, request)
+    untrusted_bridge.Send(request:, reply: Some(reply), requester:, port:) ->
+      held(phase, data, request, reply, requester, port)
+  }
+}
+
+/// A question about a placed blob: sent as a request naming the session's
+/// current binding, and kept, re-sent and cancelled like any other request.
+fn blob_asked(
+  phase: Phase,
+  data: Data,
+  ask: BlobAsk,
+) -> sm.Next(Phase, Data, Message) {
+  let binding = fn(session) { dict.get(data.sessions, session) }
+
+  // A session with no binding was answered at once by the bridge.
+  case untrusted_bridge.blob_outbound(ask, binding) {
+    untrusted_bridge.Answered | untrusted_bridge.Send(reply: None, ..) ->
+      sm.keep(data)
     untrusted_bridge.Send(request:, reply: Some(reply), requester:, port:) ->
       held(phase, data, request, reply, requester, port)
   }
@@ -554,9 +714,10 @@ fn queued(
 ) -> sm.Next(Phase, Data, Message) {
   let id = data.next_id
   let frame = encoded(untrusted_wire.Request(id:, request:))
+  use <- too_large_to_send(data, frame, reply)
   let #(data, monitor) = watch(data, requester, Asker(id))
   let data = bound(data, request, port)
-  let pending = Pending(request:, frame:, reply:, monitor:)
+  let pending = Pending(request:, frame:, reply:, monitor:, fetching: Whole)
   let data =
     Data(
       ..data,
@@ -570,6 +731,29 @@ fn queued(
     Open(stream:) -> sent(stream, data, frame)
     Idle -> dial(data)
     Dialing | Greeting(..) | Resting -> sm.keep(data)
+  }
+}
+
+/// Refuses a request whose frame is larger than the executor's socket accepts,
+/// instead of keeping it: kept, it would close the connection on every send and
+/// be sent again on every reconnect, and nothing behind it would move. It was
+/// never sent, so the refusal is the honest answer.
+fn too_large_to_send(
+  data: Data,
+  frame: BitArray,
+  reply: Reply,
+  next: fn() -> sm.Next(Phase, Data, Message),
+) -> sm.Next(Phase, Data, Message) {
+  // Every frame the link sends is bounded by what the peer's socket admits.
+  case bit_array.byte_size(frame) > untrusted_wire.max_frame_bytes {
+    True -> {
+      untrusted_bridge.refuse(
+        reply,
+        protocol.Invalid("the request is larger than one frame of the link"),
+      )
+      sm.keep(data)
+    }
+    False -> next()
   }
 }
 
@@ -887,6 +1071,8 @@ fn received(
           responded(stream, data, id, body)
         Ok(untrusted_codec.CallbackEnvelope(binding:, id:, body:)) ->
           called_back(stream, data, binding, id, body)
+        Ok(untrusted_codec.OversizedEnvelope(id:, size:, digest:)) ->
+          oversized(stream, data, id, size, digest)
         Ok(untrusted_codec.HelloEnvelope(..))
         | Ok(untrusted_codec.WelcomeEnvelope(..))
         | Ok(untrusted_codec.RequestEnvelope(..))
@@ -914,6 +1100,7 @@ fn responded(
   body: json.JsonValue,
 ) -> sm.Next(Phase, Data, Message) {
   let issued = id >= 1 && id < data.next_id
+  use <- piece_or(stream, data, id, body)
 
   // A cancel and a response can cross, so a held id that is gone is not a
   // violation; an id this link never minted is.
@@ -931,7 +1118,7 @@ fn responded(
         Ok(response) -> {
           let _delivered =
             untrusted_bridge.deliver(pending.reply, response, data.broker)
-          armed(stream, settle(data, id, pending))
+          next_waiting(stream, settle(data, id, pending))
         }
       }
   }
@@ -946,6 +1133,324 @@ fn responded(
 fn settle(data: Data, id: Int, pending: Pending) -> Data {
   let data = unwatch(data, pending.monitor)
   Data(..data, outstanding: dict.delete(data.outstanding, id))
+}
+
+// --- outcomes fetched in pieces (protocol-change/110) ---------------------------
+
+/// An `oversized` frame: the reply to request `id` is an outcome of `size`
+/// bytes with SHA-256 `digest`, too large for a frame. For an id never issued
+/// it is a violation; for one no longer held it is dropped; for a request that
+/// names no key, or a size the link will not hold, the asker gets the lost form
+/// of its reply. Otherwise the fetch begins, resumes or waits for a place.
+fn oversized(
+  stream: Stream,
+  data: Data,
+  id: Int,
+  size: Int,
+  digest: String,
+) -> sm.Next(Phase, Data, Message) {
+  let issued = id >= 1 && id < data.next_id && !dict.has_key(data.pieces, id)
+
+  // An outcome piece is never oversized, so naming one is as much a violation
+  // as naming an id never minted.
+  case issued, dict.get(data.outstanding, id) {
+    False, _ -> violation(stream, data, "an oversized reply to no request")
+    True, Error(Nil) -> armed(stream, data)
+    True, Ok(pending) ->
+      case key_of(pending.request), outcome_fetch.begin(size, digest) {
+        Some(_key), Ok(fetch) ->
+          fetch_for(stream, data, id, pending, fetch, size, digest)
+        None, _ ->
+          next_waiting(
+            stream,
+            lost(data, id, pending, "a reply too large to carry"),
+          )
+        _, Error(reason) ->
+          next_waiting(stream, lost(data, id, pending, reason))
+      }
+  }
+}
+
+/// Starts, resumes or queues the fetch of request `id`'s outcome. A fetch
+/// already under way for the same description resumes at the bytes it holds,
+/// which is how a fetch survives a reconnect: the request is re-sent, and the
+/// executor answers `oversized` again. A different description restarts it.
+fn fetch_for(
+  stream: Stream,
+  data: Data,
+  id: Int,
+  pending: Pending,
+  fresh: outcome_fetch.Fetch,
+  size: Int,
+  digest: String,
+) -> sm.Next(Phase, Data, Message) {
+  let room = fetches(data) < max_fetches
+
+  // A piece in flight answers for itself, so a second `oversized` while one is
+  // out changes nothing.
+  case pending.fetching {
+    Fetching(piece: Some(_in_flight), ..) -> armed(stream, data)
+    Fetching(fetch:, piece: None) ->
+      case outcome_fetch.describes(fetch, size, digest) {
+        True -> ask_piece(stream, data, id, fetch, outcome_fetch.held(fetch))
+        False ->
+          stepped(stream, data, id, outcome_fetch.restart(fetch, size, digest))
+      }
+    Whole | Waiting(..) if room ->
+      ask_piece(stream, data, id, fresh, outcome_fetch.held(fresh))
+    Whole | Waiting(..) ->
+      armed(stream, refetching(data, id, Waiting(size:, digest:)))
+  }
+}
+
+/// Sends the request for the piece at `offset` of request `id`'s outcome, on
+/// the current connection only: a piece request is never re-sent, because the
+/// re-sent original brings a fresh `oversized` instead.
+fn ask_piece(
+  stream: Stream,
+  data: Data,
+  id: Int,
+  fetch: outcome_fetch.Fetch,
+  offset: Int,
+) -> sm.Next(Phase, Data, Message) {
+  let piece = data.next_id
+
+  // The key is the request's own; a request gone since cannot be asked about.
+  let key = case dict.get(data.outstanding, id) {
+    Ok(pending) -> key_of(pending.request)
+    Error(Nil) -> None
+  }
+
+  // Only a request that names a key reaches a fetch, so the miss is a request
+  // that has just gone, and there is nothing to ask for.
+  case key {
+    None -> armed(stream, data)
+    Some(key) -> {
+      let data =
+        Data(
+          ..refetching(data, id, Fetching(fetch:, piece: Some(piece))),
+          next_id: piece + 1,
+          pieces: dict.insert(data.pieces, piece, id),
+        )
+      let frame =
+        encoded(untrusted_wire.Request(
+          id: piece,
+          request: untrusted_wire.OutcomePieceRequest(key:, offset:),
+        ))
+
+      // A piece that cannot be sent is a dead connection; the fetch resumes
+      // from the next one's `oversized`.
+      case ffi_tls_stream.send(stream, frame) {
+        Ok(Nil) -> armed(stream, data)
+        Error(_failure) -> rest(stream, data, "a send failed")
+      }
+    }
+  }
+}
+
+/// Runs `next` unless `id` is an outcome piece's, whose response is taken
+/// here instead.
+fn piece_or(
+  stream: Stream,
+  data: Data,
+  id: Int,
+  body: json.JsonValue,
+  next: fn() -> sm.Next(Phase, Data, Message),
+) -> sm.Next(Phase, Data, Message) {
+  // Piece ids are minted from the same counter, so they never collide with a
+  // request's.
+  case dict.get(data.pieces, id) {
+    Error(Nil) -> next()
+    Ok(owner) -> {
+      let data = Data(..data, pieces: dict.delete(data.pieces, id))
+
+      // A piece is decoded as the one kind a piece request waits for.
+      case
+        untrusted_codec.decode_response(untrusted_wire.OutcomePieceKind, body)
+      {
+        Ok(untrusted_wire.OutcomePieceAnswered(piece:)) ->
+          piece_taken(stream, data, id, owner, piece)
+        Ok(_other) | Error(_) ->
+          violation(stream, data, "an outcome piece did not decode")
+      }
+    }
+  }
+}
+
+/// A piece of request `owner`'s outcome: taken by the fetch, if it is still
+/// the piece the fetch waits for.
+fn piece_taken(
+  stream: Stream,
+  data: Data,
+  piece_id: Int,
+  owner: Int,
+  piece: untrusted_wire.OutcomePiece,
+) -> sm.Next(Phase, Data, Message) {
+  // A request whose asker died, or a piece the fetch has moved past, is a
+  // reply nobody waits for.
+  case dict.get(data.outstanding, owner) {
+    Ok(Pending(fetching: Fetching(fetch:, piece: Some(waited)), ..))
+      if waited == piece_id
+    -> stepped(stream, data, owner, outcome_fetch.took(fetch, piece))
+    Ok(_other) | Error(Nil) -> armed(stream, data)
+  }
+}
+
+/// Acts on a fetch's next step: ask for a piece, deliver the outcome, or give
+/// up with the lost answer. A fetch that ends frees a place for a waiting one.
+fn stepped(
+  stream: Stream,
+  data: Data,
+  id: Int,
+  step: outcome_fetch.Step,
+) -> sm.Next(Phase, Data, Message) {
+  // The fetch either goes on or ends, and an end is the asker's answer.
+  case step, dict.get(data.outstanding, id) {
+    _, Error(Nil) -> armed(stream, data)
+    outcome_fetch.Ask(fetch:, offset:), Ok(_pending) ->
+      ask_piece(stream, data, id, fetch, offset)
+    outcome_fetch.Done(bytes:), Ok(pending) ->
+      next_waiting(stream, fetched(data, id, pending, bytes))
+    outcome_fetch.GiveUp(reason:), Ok(pending) ->
+      next_waiting(stream, lost(data, id, pending, reason))
+  }
+}
+
+/// Decodes a fetched outcome, whose size and digest have matched, and delivers
+/// it to the asker as the reply its request waits for.
+fn fetched(data: Data, id: Int, pending: Pending, bytes: BitArray) -> Data {
+  // The bytes matched their digest, so only a hostile encoding fails here.
+  let response = case untrusted_codec.decode_outcome_bytes(bytes) {
+    Ok(outcome) -> Ok(outcome_response(pending.reply, outcome))
+    Error(report) -> Error(corruption.describe(report))
+  }
+
+  // A fetched outcome that does not decode is the executor's fault, and the
+  // asker gets the lost form rather than a value no one can read.
+  case response {
+    Ok(Some(response)) -> {
+      let _delivered =
+        untrusted_bridge.deliver(pending.reply, response, data.broker)
+      settle(data, id, pending)
+    }
+    Ok(None) -> lost(data, id, pending, "the reply holds no outcome")
+    Error(reason) -> lost(data, id, pending, reason)
+  }
+}
+
+/// The reply that carries an ended outcome, for the two kinds that can.
+fn outcome_response(
+  reply: Reply,
+  outcome: effects.ToolOutcome,
+) -> Option(untrusted_wire.Response) {
+  // A run's outcome is `RunFinished`, a lookup's `Terminal`; no other reply
+  // holds one.
+  case untrusted_bridge.kind_of(reply) {
+    untrusted_wire.RunKind ->
+      Some(untrusted_wire.RunAnswered(protocol.RunFinished(outcome)))
+    untrusted_wire.LookupKind ->
+      Some(untrusted_wire.LookupAnswered(Ok(protocol.Terminal(outcome))))
+    _other -> None
+  }
+}
+
+/// Answers the asker with the lost form of its reply and forgets the request.
+fn lost(data: Data, id: Int, pending: Pending, reason: String) -> Data {
+  log.warn(data.config.logger, "untrusted_link.outcome_lost", [
+    field.text("executor", data.config.executor),
+    field.text("reason", reason),
+  ])
+  untrusted_bridge.lose(pending.reply, reason)
+  settle(data, id, pending)
+}
+
+/// Starts the oldest waiting fetch, if there is one and a place for it.
+fn next_waiting(stream: Stream, data: Data) -> sm.Next(Phase, Data, Message) {
+  let waiting =
+    dict.to_list(data.outstanding)
+    |> list.filter_map(fn(entry) {
+      // Only a request waiting for a place is a candidate.
+      case { entry.1 }.fetching {
+        Waiting(size:, digest:) -> Ok(#(entry.0, size, digest))
+        Whole | Fetching(..) -> Error(Nil)
+      }
+    })
+    |> list.sort(fn(left, right) { int.compare(left.0, right.0) })
+
+  // A waiting fetch whose description no longer passes is the asker's loss.
+  case waiting, fetches(data) < max_fetches {
+    [#(id, size, digest), ..], True ->
+      case outcome_fetch.begin(size, digest) {
+        Ok(fetch) -> ask_piece(stream, data, id, fetch, 0)
+        Error(reason) -> armed(stream, lost_by_id(data, id, reason))
+      }
+    _, _ -> armed(stream, data)
+  }
+}
+
+/// `lost` for a request found by its id.
+fn lost_by_id(data: Data, id: Int, reason: String) -> Data {
+  // A request already gone has nobody to answer.
+  case dict.get(data.outstanding, id) {
+    Ok(pending) -> lost(data, id, pending, reason)
+    Error(Nil) -> data
+  }
+}
+
+/// Sets how request `id`'s reply arrives.
+fn refetching(data: Data, id: Int, fetching: Fetching) -> Data {
+  // A request already gone has nothing to change.
+  case dict.get(data.outstanding, id) {
+    Ok(pending) ->
+      Data(
+        ..data,
+        outstanding: dict.insert(
+          data.outstanding,
+          id,
+          Pending(..pending, fetching:),
+        ),
+      )
+    Error(Nil) -> data
+  }
+}
+
+/// How many outcomes are being fetched now.
+fn fetches(data: Data) -> Int {
+  dict.values(data.outstanding)
+  |> list.count(fn(pending) {
+    // Only a fetch under way holds a place; a waiting one wants one.
+    case pending.fetching {
+      Fetching(..) -> True
+      Whole | Waiting(..) -> False
+    }
+  })
+}
+
+/// The key a request's outcome is fetched by: a run's, a lookup's.
+fn key_of(request: Request) -> Option(protocol.Key) {
+  // Only these three replies can hold an ended outcome.
+  case request {
+    untrusted_wire.RunRequest(key:, ..)
+    | untrusted_wire.QueryRequest(key:)
+    | untrusted_wire.QueryOrFenceRequest(key:, ..) -> Some(key)
+    _other -> None
+  }
+}
+
+/// Forgets every piece request of a connection that ended: none of them will
+/// be answered, and each fetch resumes from the `oversized` its re-sent request
+/// brings.
+fn disconnected(data: Data) -> Data {
+  let outstanding =
+    dict.map_values(data.outstanding, fn(_id, pending) {
+      // A fetch keeps its bytes and forgets the piece it was waiting for.
+      case pending.fetching {
+        Fetching(fetch:, piece: Some(_gone)) ->
+          Pending(..pending, fetching: Fetching(fetch:, piece: None))
+        Fetching(piece: None, ..) | Whole | Waiting(..) -> pending
+      }
+    })
+  Data(..data, outstanding:, pieces: dict.new())
 }
 
 /// A callback: decoded, then checked against its binding, then either
@@ -1155,7 +1660,14 @@ fn outstanding_for(
 ) -> Result(Nil, String) {
   let found =
     dict.values(data.outstanding)
-    |> list.any(fn(pending) { matches(pending.request) })
+    |> list.any(fn(pending) {
+      // A run whose outcome is being fetched has ended on the executor, so it
+      // is no longer a call a callback can be about.
+      case pending.fetching {
+        Whole -> matches(pending.request)
+        Waiting(..) | Fetching(..) -> False
+      }
+    })
 
   // A callback about work this link is not carrying for the session is
   // either late or forged, and in both cases it is not the owner's business.
@@ -1254,6 +1766,7 @@ fn forwarded(
   // the entry, and answers too if no outcome came first.
   case pulled {
     weft.PulledOutcome(outcome: weft.Completed(value: answer, ..)) -> {
+      let answer = fitting(binding, id, callback, answer)
       let #(data, frame) = answer_once(data, binding, id, answer)
       send_on_open(phase, data, frame)
     }
@@ -1273,6 +1786,36 @@ fn forwarded(
       send_on_open(phase, data, frame)
       |> sm.with_selector(selector_of(data))
     }
+  }
+}
+
+/// The owner's answer, or the callback's failure when the answer's frame would
+/// be larger than the executor's socket accepts: sent whole, it would close the
+/// connection and the proxy would fail the callback anyway, so failing it here
+/// keeps the connection.
+fn fitting(
+  binding: BitArray,
+  id: Int,
+  callback: Callback,
+  answer: Option(Answer),
+) -> Option(Answer) {
+  // A tail has no answer and so no frame.
+  let size = case answer {
+    Some(answer) ->
+      bit_array.byte_size(
+        encoded(untrusted_wire.Answer(binding:, id:, answer:)),
+      )
+    None -> 0
+  }
+
+  // Only an answer that fits a frame is sent as it is.
+  case size > untrusted_wire.max_frame_bytes {
+    True ->
+      untrusted_bridge.refused_answer(
+        callback,
+        "the owner's answer is larger than one frame of the link",
+      )
+    False -> answer
   }
 }
 
@@ -1375,21 +1918,56 @@ fn went_down(
   case found {
     Error(Nil) -> sm.keep(data)
     Ok(#(monitor, Asker(id))) -> {
+      // A request whose outcome is being fetched has a piece in flight too.
+      let piece = case dict.get(data.outstanding, id) {
+        Ok(Pending(fetching: Fetching(piece: Some(piece), ..), ..)) ->
+          Some(piece)
+        Ok(_other) | Error(Nil) -> None
+      }
+
       let data =
         Data(
           ..data,
           watched: dict.delete(data.watched, monitor),
           outstanding: dict.delete(data.outstanding, id),
         )
-      on_open(phase, data, fn(stream) {
-        sent(stream, data, encoded(untrusted_wire.Cancel(id)))
-      })
+      on_open(phase, data, fn(stream) { cancelled(stream, data, id, piece) })
     }
     Ok(#(monitor, Port(binding))) ->
       sm.keep(retire(
         Data(..data, watched: dict.delete(data.watched, monitor)),
         binding,
       ))
+  }
+}
+
+/// Cancels a request whose asker died, and the outcome piece it was waiting
+/// for, if any; a fetch that ends this way frees a place for a waiting one.
+fn cancelled(
+  stream: Stream,
+  data: Data,
+  id: Int,
+  piece: Option(Int),
+) -> sm.Next(Phase, Data, Message) {
+  // A fetch's piece is cancelled beside its request.
+  let #(data, cancels) = case piece {
+    None -> #(data, [id])
+    Some(piece) -> #(Data(..data, pieces: dict.delete(data.pieces, piece)), [
+      id,
+      piece,
+    ])
+  }
+
+  let written =
+    list.try_each(cancels, fn(cancelled) {
+      ffi_tls_stream.send(stream, encoded(untrusted_wire.Cancel(cancelled)))
+    })
+
+  // Every request that leaves an open link may free a fetch's place, so the
+  // oldest waiting fetch is offered it; a failed cancel is a dead connection.
+  case written {
+    Ok(Nil) -> next_waiting(stream, data)
+    Error(_failure) -> rest(stream, data, "a send failed")
   }
 }
 
@@ -1452,6 +2030,7 @@ fn rest(
 
 /// Rests for the current pause, doubling it for the next time.
 fn resting(data: Data, reason: String) -> sm.Next(Phase, Data, Message) {
+  let data = disconnected(data)
   log.info(data.config.logger, "untrusted_link.resting", [
     field.text("executor", data.config.executor),
     field.text("reason", reason),
