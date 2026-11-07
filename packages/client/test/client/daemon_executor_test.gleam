@@ -45,6 +45,7 @@ fn config(
       0,
       main.BindDefault,
       8,
+      main.CapacityDefault,
       "Owner",
       [],
       None,

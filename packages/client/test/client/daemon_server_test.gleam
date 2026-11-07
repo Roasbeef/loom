@@ -1225,7 +1225,7 @@ pub fn owner_archives_and_restores_through_the_control_socket_test() {
 }
 
 pub fn hello_advertises_the_configured_connection_limits_test() {
-  let configured = limits.Limits(7, 100_000_000)
+  let configured = limits.Limits(7, 100_000_000, 8)
   fixture_with_limits(configured, fn(_, _, port, credential) {
     let #(socket, _headers) = connect(port, credential, "/v2/control")
     let hello = frame(socket, within_ms: 2000)
@@ -1237,18 +1237,21 @@ pub fn hello_advertises_the_configured_connection_limits_test() {
 }
 
 pub fn terminal_reports_connection_admission_refusal_without_actor_wrapper_test() {
-  fixture_with_limits(limits.Limits(1, 100_000_000), fn(_, _, port, credential) {
-    let #(socket, _headers) = connect(port, credential, "/v2/control")
-    let _hello = frame(socket, within_ms: 2000)
-    let address = "ws://127.0.0.1:" <> int.to_string(port) <> "/v2/control"
-    let assert Error(reason) =
-      connection.connect(address, credential, connection.new_inbox())
-      as "the real second handshake exceeds the configured count"
-    assert string.contains(reason, "max_connections")
-    assert string.contains(reason, "max_reserved_message_bytes")
-    assert !string.contains(reason, "InitFailed")
-    ffi_ws.tcp_close(socket)
-  })
+  fixture_with_limits(
+    limits.Limits(1, 100_000_000, 8),
+    fn(_, _, port, credential) {
+      let #(socket, _headers) = connect(port, credential, "/v2/control")
+      let _hello = frame(socket, within_ms: 2000)
+      let address = "ws://127.0.0.1:" <> int.to_string(port) <> "/v2/control"
+      let assert Error(reason) =
+        connection.connect(address, credential, connection.new_inbox())
+        as "the real second handshake exceeds the configured count"
+      assert string.contains(reason, "max_connections")
+      assert string.contains(reason, "max_reserved_message_bytes")
+      assert !string.contains(reason, "InitFailed")
+      ffi_ws.tcp_close(socket)
+    },
+  )
 }
 
 pub fn peer_control_mutations_are_epoch_fenced_before_resolution_test() {

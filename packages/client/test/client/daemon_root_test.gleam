@@ -507,7 +507,7 @@ pub fn transferred_weight_survives_http_death_and_late_release_test() {
   let #(daemon, _) =
     start_with_limits(
       directory("connection-weight"),
-      limits.Limits(64, 167_772_160),
+      limits.Limits(64, 167_772_160, 8),
       inert(),
     )
   let #(http, permit) = acquired(daemon, root.Operator)
@@ -541,7 +541,7 @@ pub fn observer_delivery_allowance_is_charged_before_upgrade_test() {
   let #(daemon, _) =
     start_with_limits(
       directory("observer-weight"),
-      limits.Limits(64, 167_772_160),
+      limits.Limits(64, 167_772_160, 8),
       inert(),
     )
   let _observers =
@@ -558,7 +558,7 @@ pub fn multiplayer_operators_observer_and_controls_fit_budget_test() {
   let #(daemon, _) =
     start_with_limits(
       directory("multiplayer-budget"),
-      limits.Limits(64, 167_772_160),
+      limits.Limits(64, 167_772_160, 8),
       inert(),
     )
   let _operators =
@@ -641,6 +641,7 @@ pub fn a_custom_connection_count_is_enforced_independently_test() {
         connection_limits: limits.Limits(
           2,
           limits.defaults.reserved_message_bytes,
+          limits.defaults.capacity,
         ),
       ),
       inert(),
