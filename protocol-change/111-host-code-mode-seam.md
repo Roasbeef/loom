@@ -6,7 +6,8 @@
 field, `code_mode_host`); the remote node vocabulary of
 [078](078-distributed-runtime.md), whose `McpPlan` gains a field and whose
 `version` goes from 6 to 7; the untrusted link of
-[109](109-untrusted-executors.md), whose callback check gains one rule; and the
+[109](109-untrusted-executors.md), whose `untrusted_wire.version` goes from 3 to
+4 and whose callback check gains one rule; and the
 capability prelude's internal module `cap/internal/mcp`, which gains
 `host_invoke` and `host_invoke_typed`. No Part 1 interface and no client
 control protocol command changes.
@@ -206,8 +207,10 @@ host call under another in-flight tool call is forged. Other capabilities keep
 `McpPlan` gains `host: Option(HostPlan)`. Over distribution the record's shape
 changes, so `protocol.version` goes to 7 and an executor upgrades with its
 orchestrators, as every version step requires. Over the untrusted link the plan
-is JSON with a `host` member, `null` for none, decoded totally; the attach that
-precedes the plan carries the version, so the two sides already agree.
+is JSON with a `host` member, `null` for none, decoded totally. That changes a
+frame, so `untrusted_wire.version` goes from 3 to 4 (3 being
+[110](110-untrusted-blobs-and-large-outcomes.md)'s) and the handshake refuses a
+pair that disagrees on it or on `protocol.version`, before any plan is asked.
 
 ## Threat model
 

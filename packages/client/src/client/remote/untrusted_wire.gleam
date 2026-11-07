@@ -83,7 +83,13 @@ import tools/tool
 /// (protocol-change/110): the frame `Oversized`, the requests
 /// `BlobStatusRequest`, `BlobPutRequest` and `OutcomePieceRequest`, and their
 /// responses.
-pub const version = 3
+///
+/// Version 4 added the host seam's plan (protocol-change/111): the answer to
+/// `AskMcpPlan` carries an optional `host` member, so an executor of version 3
+/// would read a plan with no seam. The two versions are refused at the
+/// handshake instead of silently serving a session more modules than its host
+/// offered.
+pub const version = 4
 
 /// The largest frame either side sends or accepts, in bytes of body. The TLS
 /// socket enforces it before a frame is buffered, so a larger one closes the
