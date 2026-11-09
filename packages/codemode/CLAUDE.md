@@ -111,7 +111,7 @@ session and sends it many invocations.
   widened. Every stage's failure is a
   value: `VetRejected`, `CompileFailed`, `RunFailed`,
   `Ran(source, artifact, outcome)`. `Execution.edits` lists what the
-  harness changed before the run (see `unused_repair`). `ExecConfig.identity` is the one
+  harness changed before the run (see `unused_repair` and `import_repair`). `ExecConfig.identity` is the one
   place in the pipeline an operation, a step, a budget *or an approval's
   grants* can be written.
 - `codemode/identity.{ExecIdentity, PhaseIdentity, Phase, BuildLedger,
@@ -990,6 +990,22 @@ a second rewrite. `Execution.edits` carries one note per edit. The tests
 run over output captured from the pinned toolchain; if a Gleam upgrade
 changes the diagnostic layout the rewrite refuses (the tests fail first),
 it never guesses.
+
+## Missing imports are added and rebuilt once
+
+`codemode/import_repair.rewrite(source, diagnostics, file)` is the second
+rewrite `codemode.rewritten` tries, only when `unused_repair` refused, and
+it shares the one rebuild. It reads every `error: Unknown module` block
+about the program's file and requires each to carry ``No module has been
+found with the name `x`.`` and ``Hint: Did you mean to import `a/x`?``,
+where the hint is a module path ending in `x`; it refuses when any block
+lacks or contradicts its hint, when there is none, and when the program
+already imports a hinted module (an alias still draws the hint). Other
+diagnostics are ignored, since they are in the second build's output if
+they remain. The hinted imports are appended after the last line, once
+each in the order named, so no diagnostic line moves; the note is `added
+missing import gleam/int (line N)`. Admission is the re-vet: a hint for a
+module the `VetPolicy` refuses fails it, and the first failure stands.
 
 ## The call record (protocol 060)
 
