@@ -457,11 +457,15 @@ fn advance(cursor: Cursor, rest: BitArray, by count: Int) -> Cursor {
 }
 
 /// Advances past leading whitespace bytes in the cursor input.
+/// Literal prefixes bind a suffix only for JSON's four permitted whitespace
+/// bytes. The common non-whitespace arm can return its cursor without that
+/// temporary suffix; every consumed byte still advances the source offset.
 fn skip_whitespace(cursor: Cursor) -> Cursor {
   case cursor.rest {
-    <<byte, rest:bits>>
-      if byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D
-    -> skip_whitespace(advance(cursor, rest, by: 1))
+    <<0x20, rest:bits>>
+    | <<0x09, rest:bits>>
+    | <<0x0A, rest:bits>>
+    | <<0x0D, rest:bits>> -> skip_whitespace(advance(cursor, rest, by: 1))
     _ -> cursor
   }
 }
