@@ -1,5 +1,23 @@
 # Current handoff
 
+## November 9 live profile and whitespace replay
+
+The [fresh profile and fixed replay](review/live-profile-2026-11-09.md) pin both
+the running daemon and source baseline to `661dca824`. SQLite reads remain
+prominent in sampled stacks. A separate allocation trace identifies JSON work,
+including 23.24 MB in whitespace scanning. The owner-approved inspector-only
+loopback mapping preserves the existing TLS identity and authentication after
+the machine's Tailscale address changed; no daemon or network configuration
+was changed.
+
+The private JSON whitespace match now binds a suffix only after a permitted
+literal byte matches. A symmetric replay preserves 25,634 complete results,
+rejects three semantic mutants and fails the candidate-as-baseline control.
+Compact/padded fixture heap words fall 5.33% to 8.67%, with roughly flat reduction
+counts; no installed CPU, RSS or latency saving is established. The proof names
+its source and measurement limits. PR validation records end-to-end checks,
+independent review and hosted outcomes separately.
+
 ## Host-defined code-mode seams (protocol-change/111)
 
 A host that embeds Loom can give a session its own code-mode seam:
