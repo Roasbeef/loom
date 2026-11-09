@@ -189,7 +189,6 @@ pub fn start_published(
   // here would copy the effects-bearing driver builder into unrelated
   // publication and booter specifications every time the tree starts.
   let subagent = config.subagent
-  let strand_options = config.strand_options
 
   // Construct supervisory session tree specification.
   let describe_tree = fn(root, drains) {
@@ -212,6 +211,15 @@ pub fn start_published(
       address.lookup(drains_name)
       |> result.replace_error(actor.InitFailed(
         "the drain ledger is unavailable",
+      )),
+    )
+
+    // The template is the registry's to hold, so neither factory's
+    // specification nor its process keeps a copy of the session's effects.
+    use strand_options <- result.try(
+      registry.template(reg)
+      |> result.replace_error(actor.InitFailed(
+        "the strand template is unavailable",
       )),
     )
     let template =
@@ -250,7 +258,7 @@ pub fn start_published(
       |> supervision.restart(supervision.Temporary)
       |> supervision.significant(True),
     )
-    |> sup.add(registry.supervised(registry_name))
+    |> sup.add(registry.supervised_holding(registry_name, config.strand_options))
     |> sup.add(writer.supervised(config.writer_options, writer_name))
     |> sup.add(
       factory_supervisor.worker_child(factory)
