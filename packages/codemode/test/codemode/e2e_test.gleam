@@ -222,6 +222,35 @@ pub fn a_type_error_comes_back_in_band_test_() -> EunitTest {
   })
 }
 
+/// A program that uses `int` and `list` without importing them is rebuilt once
+/// with the imports the compiler hinted, by the real compiler in the real
+/// jail, and then runs.
+pub fn a_missing_import_is_added_and_the_program_runs_test_() -> EunitTest {
+  jailed(fn() {
+    case rig.prerequisites() {
+      Error(reason) ->
+        io.println_error(
+          "SKIP a_missing_import_is_added_and_the_program_runs: " <> reason,
+        )
+      Ok(prerequisites) -> run_missing_import(prerequisites)
+    }
+  })
+}
+
+/// A hinted module the vetting policy does not admit is never added: the
+/// rewrite fails vetting, and the first build's failure stands unchanged.
+pub fn a_missing_import_the_policy_refuses_is_not_added_test_() -> EunitTest {
+  jailed(fn() {
+    case rig.prerequisites() {
+      Error(reason) ->
+        io.println_error(
+          "SKIP a_missing_import_the_policy_refuses_is_not_added: " <> reason,
+        )
+      Ok(prerequisites) -> run_refused_import(prerequisites)
+    }
+  })
+}
+
 /// A program whose only faults are unused imports and an unused lambda
 /// argument is rebuilt once with them repaired, by the real compiler in the
 /// real jail, and then runs.
@@ -666,6 +695,49 @@ fn run_unused_import(prerequisites: Prerequisites) -> Nil {
       "removed unused import gleam/list.{map} (line 3)",
       "renamed unused argument x to _x (line 6)",
     ]
+  rig.stop(live)
+}
+
+fn run_missing_import(prerequisites: Prerequisites) -> Nil {
+  let live = rig.start(name: "missing-import", prerequisites:, pool_size: 2)
+  let source =
+    "import cap/report\n"
+    <> "\n"
+    <> "pub fn main() -> report.Outcome {\n"
+    <> "  report.text(int.to_string(list.length([1, 2])))\n"
+    <> "}\n"
+  let execution =
+    codemode.execute(source, exec_config(live, prerequisites, "missing-import"))
+  let assert codemode.Ran(source: ran_source, outcome:, ..) = execution.outcome
+    as "the missing imports must be added and the program must run"
+
+  // The imports go after the last line, so no line of the program moved.
+  assert ran_source == source <> "import gleam/int\nimport gleam/list\n"
+  assert outcome == satellite.Completed(value: msgpack.StringValue("2"))
+  assert execution.edits
+    == [
+      "added missing import gleam/int (line 6)",
+      "added missing import gleam/list (line 7)",
+    ]
+  rig.stop(live)
+}
+
+fn run_refused_import(prerequisites: Prerequisites) -> Nil {
+  let live = rig.start(name: "refused-import", prerequisites:, pool_size: 2)
+  let source =
+    "import cap/report\n"
+    <> "\n"
+    <> "pub fn main() -> report.Outcome {\n"
+    <> "  io.println(\"x\")\n"
+    <> "  report.text(\"ran\")\n"
+    <> "}\n"
+  let execution =
+    codemode.execute(source, exec_config(live, prerequisites, "refused-import"))
+  let assert codemode.CompileFailed(compile.BuildRejected(diagnostics:)) =
+    execution.outcome
+    as "a hint for a module the policy refuses must leave the failure"
+  assert string.contains(diagnostics, "Unknown module")
+  assert execution.edits == []
   rig.stop(live)
 }
 
