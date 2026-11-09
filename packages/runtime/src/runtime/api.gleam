@@ -366,7 +366,17 @@ pub fn open(
   effects: Effects,
   options: Options,
 ) -> Result(Runtime, String) {
-  open_published(session, effects, options, fn(_runtime) { Ok(Nil) })
+  open_with(session, effects, options, NotPublished)
+}
+
+// Whether a caller takes custody of the runtime before it starts.
+type Publication {
+  // `open`: nobody does, so the root's first child closes over nothing.
+  NotPublished
+
+  // `open_published`: the callback is handed the runtime from inside the
+  // root's first child.
+  PublishedTo(publish: fn(Runtime) -> Result(Nil, String))
 }
 
 /// Transfers cleanup custody before the session can recover unfinished work.
@@ -392,6 +402,20 @@ pub fn open_published(
   effects: Effects,
   options: Options,
   publish: fn(Runtime) -> Result(Nil, String),
+) -> Result(Runtime, String) {
+  open_with(session, effects, options, PublishedTo(publish))
+}
+
+/// Opens the session tree for `open` and `open_published` alike: the strand's
+/// configuration recorded, the session's id minted, the tree configured from
+/// projected options, and the publication callback the root's first child
+/// runs chosen by `publication`, so `open` keeps no runtime description in
+/// the root.
+fn open_with(
+  session: Session,
+  effects: Effects,
+  options: Options,
+  publication: Publication,
 ) -> Result(Runtime, String) {
   use Nil <- result.try(
     session.ensure_strand(session, options.strand, options.configuration)
@@ -460,12 +484,27 @@ pub fn open_published(
       subagent_tolerance: options.subagent_tolerance,
     )
   use tree <- result.try(
-    supervisor.start_published(config, fn(tree) {
-      publish(describe_runtime(tree))
-    })
+    supervisor.start_published(
+      config,
+      publishing(publication, describe_runtime),
+    )
     |> result.map_error(describe_start_error),
   )
   Ok(describe_runtime(tree))
+}
+
+/// The callback the root's first child runs. The root supervisor keeps it for
+/// the tree's life, and a copy keeps no sharing, so one that describes the
+/// runtime holds a whole copy of the session's effects there. `open`
+/// publishes nothing and so closes over nothing.
+fn publishing(
+  publication: Publication,
+  describe_runtime: fn(supervisor.SessionTree) -> Runtime,
+) -> fn(supervisor.SessionTree) -> Result(Nil, String) {
+  case publication {
+    NotPublished -> fn(_tree) { Ok(Nil) }
+    PublishedTo(publish:) -> fn(tree) { publish(describe_runtime(tree)) }
+  }
 }
 
 /// This session's canonical id (`protocol-change/008`), minted by `open`

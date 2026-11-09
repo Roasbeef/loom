@@ -13,6 +13,19 @@
 //// the booter runs. A replacement overwrites its predecessor's handle; no
 //// factory needs a permanent process-name atom.
 ////
+//// The registry also holds the session's strand template, the builder of a
+//// driver's options (`supervised`, `template`). A session copies what its
+//// processes hold into each of them with no sharing kept, and the template
+//// carries the session's `Effects`: every tool, the gateway and the hooks,
+//// which a host's tools can make megabytes. The two factories used to close
+//// over it, so the root supervisor kept it in both factory child
+//// specifications and each factory kept its own copy, about seven copies a
+//// session before a strand ran. A factory now asks the registry for it when
+//// it starts a driver (`template`), so the template is kept twice: in the
+//// registry's child specification, which a restart needs, and in the
+//// registry's state. Every registry holds one, so a factory never meets a
+//// registry without it.
+////
 //// Effect-generation reapers live in the earlier, non-restartable
 //// `runtime/internal/drain_registry`; they cannot safely share this actor's
 //// restart boundary. Keeping the concerns separate also prevents a process
@@ -27,6 +40,7 @@ import gleam/result
 import gleam/string
 import runtime/residency
 import runtime/strand_runtime
+import runtime/writer
 import weft/actor
 import weft/registry as address
 
@@ -66,26 +80,37 @@ pub opaque type Message {
   Known(reply_with: Subject(List(String)))
   PublishFactory(kind: FactoryKind, factory: Factory, reply_with: Subject(Nil))
   LookupFactory(kind: FactoryKind, reply_with: Subject(Result(Factory, Nil)))
+  Template(reply_with: Subject(StrandTemplate))
 }
+
+/// The session's driver-options builder: given the writer's address and the
+/// drain claim, the options a strand's driver starts with. The factory sets
+/// the strand's name on what it returns.
+pub type StrandTemplate =
+  fn(address.Address(writer.Message), fn(String, Pid) -> List(Pid)) ->
+    strand_runtime.Options
 
 type State {
   State(
     namespace: address.Registry,
     names: Dict(String, address.Address(strand_runtime.Message)),
     factories: Dict(FactoryKind, Factory),
+    template: StrandTemplate,
   )
 }
 
-/// Starts a registry bound to its reclaimable service address.
+/// Starts a registry bound to its reclaimable service address, holding the
+/// session's strand template.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // registry.start(name)
+/// // registry.start(name, template)
 /// ```
 ///
 pub fn start(
   name: address.Address(Message),
+  template: StrandTemplate,
 ) -> actor.StartResult(Subject(Message)) {
   actor.new_with_initialiser(1000, fn(inbox) {
     // The reference namespace shares this registry's restart boundary, not
@@ -95,6 +120,7 @@ pub fn start(
       namespace:,
       names: dict.new(),
       factories: dict.new(),
+      template:,
     ))
     |> actor.returning(inbox)
     |> Ok
@@ -114,13 +140,26 @@ pub fn start(
 /// ## Examples
 ///
 /// ```gleam
-/// // supervisor.add(builder, registry.supervised(name))
+/// // supervisor.add(builder, registry.supervised(name, template))
 /// ```
 ///
 pub fn supervised(
   name: address.Address(Message),
+  template: StrandTemplate,
 ) -> ChildSpecification(Subject(Message)) {
-  supervision.worker(fn() { start(name) })
+  supervision.worker(fn() { start(name, template) })
+}
+
+/// The session's strand template. It is copied into the caller, a factory
+/// starting a driver, which hands it on to that driver.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let strand_options = registry.template(reg)
+/// ```
+pub fn template(registry: Subject(Message)) -> StrandTemplate {
+  process.call_forever(registry, Template)
 }
 
 /// Handles registry messages to look up, allocate, or publish strand addresses
@@ -159,6 +198,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         State(..state, factories: dict.insert(state.factories, kind, factory)),
       )
     }
+    Template(reply_with:) -> {
+      process.send(reply_with, state.template)
+      actor.continue(state)
+    }
+
     LookupFactory(kind:, reply_with:) -> {
       process.send(reply_with, dict.get(state.factories, kind))
       actor.continue(state)

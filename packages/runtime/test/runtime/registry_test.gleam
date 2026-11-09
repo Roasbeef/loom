@@ -15,6 +15,7 @@ import gleam/result
 import runtime/internal/ffi_sup
 import runtime/registry
 import runtime/strand_runtime
+import runtime/writer
 import weft/poll
 import weft/registry as address
 
@@ -29,7 +30,7 @@ pub fn allocating_strand_addresses_does_not_grow_atoms_test() {
   let assert Ok(services) = address.start()
     as "the service namespace must start"
   let name = address.new_address(services)
-  let assert Ok(started) = registry.start(name)
+  let assert Ok(started) = registry.start(name, unused_template)
     as "the runtime registry must start"
 
   // Warm allocation, lookup, and the loop's integer helpers before measuring.
@@ -57,7 +58,7 @@ pub fn registry_death_invalidates_routing_not_recipient_lifetime_test() {
   let assert Ok(services) = address.start()
     as "the service namespace must start"
   let name = address.new_address(services)
-  let assert Ok(started) = registry.start(name)
+  let assert Ok(started) = registry.start(name, unused_template)
     as "the runtime registry must start"
   let key = registry.ensure(started.data, "main")
   let recipient = process.new_subject()
@@ -94,7 +95,7 @@ pub fn factory_replacements_use_live_handles_without_new_atoms_test() {
   let assert Ok(services) = address.start()
     as "the service namespace must start"
   let name = address.new_address(services)
-  let assert Ok(started) = registry.start(name)
+  let assert Ok(started) = registry.start(name, unused_template)
     as "the runtime registry must start"
   assert registry.factory(started.data, registry.Primary) == Error(Nil)
   assert registry.factory(started.data, registry.Subagent) == Error(Nil)
@@ -154,4 +155,12 @@ fn cycle_factory(inbox: process.Subject(registry.Message)) -> Nil {
     as "the factory must join its child before exiting"
   assert registry.factory(inbox, registry.Subagent) == Error(Nil)
   assert !process.is_alive(child.pid)
+}
+
+// Registry tests start no driver, so the template is never asked for.
+fn unused_template(
+  _writer: address.Address(writer.Message),
+  _claim: fn(String, process.Pid) -> List(process.Pid),
+) -> strand_runtime.Options {
+  panic as "registry tests start no driver"
 }

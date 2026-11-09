@@ -112,10 +112,7 @@ pub type Tolerance {
 pub type Config {
   Config(
     writer_options: writer.Options,
-    strand_options: fn(
-      address.Address(writer.Message),
-      fn(String, Pid) -> List(Pid),
-    ) -> strand_runtime.Options,
+    strand_options: registry.StrandTemplate,
     tolerance: Tolerance,
     subagent: fn(String) -> Bool,
     subagent_tolerance: Tolerance,
@@ -189,7 +186,6 @@ pub fn start_published(
   // here would copy the effects-bearing driver builder into unrelated
   // publication and booter specifications every time the tree starts.
   let subagent = config.subagent
-  let strand_options = config.strand_options
 
   // Construct supervisory session tree specification.
   let describe_tree = fn(root, drains) {
@@ -214,6 +210,10 @@ pub fn start_published(
         "the drain ledger is unavailable",
       )),
     )
+
+    // The template is the registry's to hold, so neither factory's
+    // specification nor its process keeps a copy of the session's effects.
+    let strand_options = registry.template(reg)
     let template =
       strand_options(writer_name, fn(strand, reaper) {
         drain_registry.claim(drains, strand, reaper)
@@ -250,7 +250,7 @@ pub fn start_published(
       |> supervision.restart(supervision.Temporary)
       |> supervision.significant(True),
     )
-    |> sup.add(registry.supervised(registry_name))
+    |> sup.add(registry.supervised(registry_name, config.strand_options))
     |> sup.add(writer.supervised(config.writer_options, writer_name))
     |> sup.add(
       factory_supervisor.worker_child(factory)

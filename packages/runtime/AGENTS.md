@@ -212,7 +212,17 @@ extended by the M3 runtime wave.
   It also retains the current typed OTP handles for the `Primary` and
   `Subagent` factories. Their child-start callbacks publish before the booter
   runs, and lookup rejects a dead predecessor until replacement publishes.
-  The factories themselves are unnamed.
+  The factories themselves are unnamed. It also holds the session's strand
+  template (`StrandTemplate`, the driver-options builder over the session's
+  `Effects`; required by `start` and `supervised`, read with `template`), which a factory asks for when
+  it starts a driver: a copy between processes keeps no sharing, so a
+  template the factories closed over was kept in both factory child
+  specifications and in each factory, about seven copies of the effects a
+  session. Now the registry's specification and state and each driver keep
+  one, and a driver's claimant closes over the claim and the strand name, not the options. `api.open`, which publishes nothing, gives the root's first child a
+  callback over nothing (`publishing`), so the root keeps no runtime
+  description either; `the_session_effects_are_kept_by_the_registry_alone_test`
+  holds both.
   Reaper claims live only
   in `runtime/internal/drain_registry`; keeping them out of this restartable
   actor prevents a name-registry restart from erasing ownership barriers.
@@ -453,7 +463,9 @@ extended by the M3 runtime wave.
     return the reference address a strand's driver binds — plus
     `Lookup(strand, reply_with)` and `Known(reply_with)`.
     `PublishFactory(kind, factory, reply_with)` replaces one typed factory
-    handle; `LookupFactory(kind, reply_with)` reads it. The root's child-start
+    handle; `LookupFactory(kind, reply_with)` reads it. `Template(reply_with)`
+    answers the strand template, which every registry holds; the strand
+    factory asks it once per driver it starts. The root's child-start
     callbacks are the only publishers, so replacement follows start order.
     Senders: `runtime/supervisor`'s strand factory and booter, and
     `runtime/api` when it rings a doorbell or addresses a sibling strand.
