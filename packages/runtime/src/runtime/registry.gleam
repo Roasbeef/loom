@@ -14,7 +14,7 @@
 //// factory needs a permanent process-name atom.
 ////
 //// The registry also holds the session's strand template, the builder of a
-//// driver's options (`supervised_holding`). A session copies what its
+//// driver's options (`supervised`, `template`). A session copies what its
 //// processes hold into each of them with no sharing kept, and the template
 //// carries the session's `Effects`: every tool, the gateway and the hooks,
 //// which a host's tools can make megabytes. The two factories used to close
@@ -23,7 +23,8 @@
 //// session before a strand ran. A factory now asks the registry for it when
 //// it starts a driver (`template`), so the template is kept twice: in the
 //// registry's child specification, which a restart needs, and in the
-//// registry's state.
+//// registry's state. Every registry holds one, so a factory never meets a
+//// registry without it.
 ////
 //// Effect-generation reapers live in the earlier, non-restartable
 //// `runtime/internal/drain_registry`; they cannot safely share this actor's
@@ -79,7 +80,7 @@ pub opaque type Message {
   Known(reply_with: Subject(List(String)))
   PublishFactory(kind: FactoryKind, factory: Factory, reply_with: Subject(Nil))
   LookupFactory(kind: FactoryKind, reply_with: Subject(Result(Factory, Nil)))
-  Template(reply_with: Subject(Result(StrandTemplate, Nil)))
+  Template(reply_with: Subject(StrandTemplate))
 }
 
 /// The session's driver-options builder: given the writer's address and the
@@ -94,45 +95,22 @@ type State {
     namespace: address.Registry,
     names: Dict(String, address.Address(strand_runtime.Message)),
     factories: Dict(FactoryKind, Factory),
-    template: Result(StrandTemplate, Nil),
+    template: StrandTemplate,
   )
 }
 
-/// Starts a registry bound to its reclaimable service address.
+/// Starts a registry bound to its reclaimable service address, holding the
+/// session's strand template.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // registry.start(name)
+/// // registry.start(name, template)
 /// ```
 ///
 pub fn start(
   name: address.Address(Message),
-) -> actor.StartResult(Subject(Message)) {
-  start_with(name, Error(Nil))
-}
-
-/// Starts a registry that also holds the session's strand template, which
-/// `template` hands to a factory starting a driver.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // registry.start_holding(name, template)
-/// ```
-///
-pub fn start_holding(
-  name: address.Address(Message),
   template: StrandTemplate,
-) -> actor.StartResult(Subject(Message)) {
-  start_with(name, Ok(template))
-}
-
-/// Starts the registry with the template it may hold, for `start` (none) and
-/// `start_holding`.
-fn start_with(
-  name: address.Address(Message),
-  template: Result(StrandTemplate, Nil),
 ) -> actor.StartResult(Subject(Message)) {
   actor.new_with_initialiser(1000, fn(inbox) {
     // The reference namespace shares this registry's restart boundary, not
@@ -162,40 +140,25 @@ fn start_with(
 /// ## Examples
 ///
 /// ```gleam
-/// // supervisor.add(builder, registry.supervised(name))
+/// // supervisor.add(builder, registry.supervised(name, template))
 /// ```
 ///
 pub fn supervised(
   name: address.Address(Message),
-) -> ChildSpecification(Subject(Message)) {
-  supervision.worker(fn() { start(name) })
-}
-
-/// The registry holding the session's strand template, as a supervision
-/// child. The child specification keeps the template for a restart.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // supervisor.add(builder, registry.supervised_holding(name, template))
-/// ```
-pub fn supervised_holding(
-  name: address.Address(Message),
   template: StrandTemplate,
 ) -> ChildSpecification(Subject(Message)) {
-  supervision.worker(fn() { start_holding(name, template) })
+  supervision.worker(fn() { start(name, template) })
 }
 
-/// The session's strand template, or `Error(Nil)` from a registry started
-/// without one. The template is copied into the caller, a factory starting a
-/// driver, which hands it on to that driver.
+/// The session's strand template. It is copied into the caller, a factory
+/// starting a driver, which hands it on to that driver.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // let assert Ok(template) = registry.template(reg)
+/// // let strand_options = registry.template(reg)
 /// ```
-pub fn template(registry: Subject(Message)) -> Result(StrandTemplate, Nil) {
+pub fn template(registry: Subject(Message)) -> StrandTemplate {
   process.call_forever(registry, Template)
 }
 

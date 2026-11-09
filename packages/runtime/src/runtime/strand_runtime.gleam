@@ -2535,6 +2535,12 @@ fn claim_through(
   resolution: Subject(Result(Nil, String)),
 ) -> Nil {
   let ready = process.new_subject()
+
+  // The claimant needs the reaper claim and the strand's name only. A
+  // closure over `options` would copy the session's effects into every
+  // claimant, once per driver start.
+  let claim_reaper = options.claim_reaper
+  let strand = options.strand
   let claimant =
     process.spawn_unlinked(fn() {
       let orders = process.new_subject()
@@ -2545,7 +2551,7 @@ fn claim_through(
         ForgoClaim -> Nil
         MakeClaim -> {
           let resolved =
-            options.claim_reaper(options.strand, scope)
+            claim_reaper(strand, scope)
             |> await_previous_reapers(4000)
           process.send(resolution, resolved)
         }

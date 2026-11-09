@@ -1382,7 +1382,7 @@ pub fn the_session_effects_are_kept_by_the_registry_alone_test() {
 
   // The root keeps the registry's specification, which OTP holds twice
   // (initial and active), and nothing else that carries the effects.
-  assert large.root - small.root <= marker_words * 2
+  assert large.root - small.root == marker_words * 2
 }
 
 type TreeWords {

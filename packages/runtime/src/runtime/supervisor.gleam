@@ -112,10 +112,7 @@ pub type Tolerance {
 pub type Config {
   Config(
     writer_options: writer.Options,
-    strand_options: fn(
-      address.Address(writer.Message),
-      fn(String, Pid) -> List(Pid),
-    ) -> strand_runtime.Options,
+    strand_options: registry.StrandTemplate,
     tolerance: Tolerance,
     subagent: fn(String) -> Bool,
     subagent_tolerance: Tolerance,
@@ -216,12 +213,7 @@ pub fn start_published(
 
     // The template is the registry's to hold, so neither factory's
     // specification nor its process keeps a copy of the session's effects.
-    use strand_options <- result.try(
-      registry.template(reg)
-      |> result.replace_error(actor.InitFailed(
-        "the strand template is unavailable",
-      )),
-    )
+    let strand_options = registry.template(reg)
     let template =
       strand_options(writer_name, fn(strand, reaper) {
         drain_registry.claim(drains, strand, reaper)
@@ -258,7 +250,7 @@ pub fn start_published(
       |> supervision.restart(supervision.Temporary)
       |> supervision.significant(True),
     )
-    |> sup.add(registry.supervised_holding(registry_name, config.strand_options))
+    |> sup.add(registry.supervised(registry_name, config.strand_options))
     |> sup.add(writer.supervised(config.writer_options, writer_name))
     |> sup.add(
       factory_supervisor.worker_child(factory)
