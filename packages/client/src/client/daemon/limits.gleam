@@ -14,18 +14,26 @@ import gleam/result
 import gleam/string
 import tom
 
-/// Independent ceilings for socket count and potential message payload.
+/// Independent ceilings for socket count, potential message payload, and
+/// concurrently open sessions.
 pub type Limits {
   Limits(
     /// Maximum reserved HTTP upgrades and admitted WebSockets combined.
     connections: Int,
     /// Aggregate inbound and retained delivery allowance, in bytes.
     reserved_message_bytes: Int,
+    /// Maximum occupied session reservations, including unconfirmed cleanup.
+    /// Read from `[daemon] capacity`; an explicit `--capacity` outranks the file.
+    capacity: Int,
   )
 }
 
-/// Defaults leave room for twelve operator/control terminal pairs.
-pub const defaults = Limits(64, 536_870_912)
+/// Defaults leave room for twelve operator/control terminal pairs and eight
+/// concurrently open sessions.
+pub const defaults = Limits(64, 536_870_912, default_capacity)
+
+/// The built-in session-slot ceiling when neither source names one.
+pub const default_capacity = 8
 
 /// Rejects nonpositive settings before the daemon acquires any resources.
 ///
@@ -35,13 +43,29 @@ pub const defaults = Limits(64, 536_870_912)
 /// assert limits.validate(limits.defaults) == Ok(Nil)
 /// ```
 pub fn validate(limits: Limits) -> Result(Nil, String) {
-  case limits.connections > 0, limits.reserved_message_bytes > 0 {
-    False, _ -> Error("daemon.max_connections must be a positive integer")
-    True, False ->
+  case
+    limits.connections > 0,
+    limits.reserved_message_bytes > 0,
+    limits.capacity
+  {
+    False, _, _ -> Error("daemon.max_connections must be a positive integer")
+    True, False, _ ->
       Error("daemon.max_reserved_message_bytes must be a positive integer")
-    True, True -> Ok(Nil)
+    True, True, capacity if capacity >= 1 && capacity <= capacity_ceiling ->
+      Ok(Nil)
+    True, True, _ ->
+      Error(
+        "daemon.capacity must be between 1 and "
+        <> int.to_string(capacity_ceiling),
+      )
   }
 }
+
+/// The largest capacity either source may name. A resident session costs on
+/// the order of ten MiB after the copy repairs already landed, so the
+/// ceiling is the parser's bound, not a memory budget; see
+/// docs/design-notes/startup-and-memory.md, "What is left".
+pub const capacity_ceiling = 1024
 
 /// Reads daemon limits without requiring a model catalogue to exist.
 ///
@@ -87,7 +111,7 @@ fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Limits, String) {
     list.try_map(dict.keys(fields), fn(key) {
       case key {
         "bind" | "profile" | "ui" | "ui_origins" -> Ok(Nil)
-        "max_connections" | "max_reserved_message_bytes" -> Ok(Nil)
+        "capacity" | "max_connections" | "max_reserved_message_bytes" -> Ok(Nil)
         _ -> Error("unknown key `" <> key <> "` in [daemon]")
       }
     }),
@@ -124,7 +148,8 @@ fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Limits, String) {
     "max_reserved_message_bytes",
     defaults.reserved_message_bytes,
   ))
-  Ok(Limits(connections:, reserved_message_bytes:))
+  use capacity <- result.try(capacity_of(fields))
+  Ok(Limits(connections:, reserved_message_bytes:, capacity:))
 }
 
 /// Extracts a positive integer limit from TOML fields, falling back to default.
@@ -133,6 +158,23 @@ fn positive(fields, key, default) {
     Error(Nil) -> Ok(default)
     Ok(tom.Int(value)) if value > 0 -> Ok(value)
     Ok(_) -> Error("daemon." <> key <> " must be a positive integer")
+  }
+}
+
+/// Reads the session-slot ceiling, checked against the same bound the
+/// `--capacity` flag enforces so either source refuses the same bad number.
+fn capacity_of(fields: Dict(String, tom.Toml)) -> Result(Int, String) {
+  use capacity <- result.try(positive(fields, "capacity", defaults.capacity))
+
+  // A positive value still owes the ceiling: 1024 is the parser's bound,
+  // not a memory budget.
+  case capacity <= capacity_ceiling {
+    True -> Ok(capacity)
+    False ->
+      Error(
+        "daemon.capacity must be between 1 and "
+        <> int.to_string(capacity_ceiling),
+      )
   }
 }
 
