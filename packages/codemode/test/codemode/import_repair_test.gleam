@@ -209,8 +209,23 @@ No module has been found with the name `int`.
 Hint: Did you mean to import `gleam/int\nimport evil/int`?
 "
 
+  // Here the hint's last segment equals the name, so only the module-path
+  // check stands between it and the source.
+  let uppercase =
+    "error: Unknown module
+  ┌─ /b/src/loom_program.gleam:3:3
+  │
+3 │   Int.to_string(1)
+  │   ^^^
+
+No module has been found with the name `Int`.
+
+Hint: Did you mean to import `gleam/Int`?
+"
+
   assert import_repair.rewrite(program, disagrees, file) == Error(Nil)
   assert import_repair.rewrite(program, not_a_path, file) == Error(Nil)
+  assert import_repair.rewrite(program, uppercase, file) == Error(Nil)
 }
 
 // A diagnostic about another module is not this program's to fix.

@@ -25,6 +25,11 @@
 //// hints `gleam/int` for a bare `int.`, and a second import of it is not a
 //// fix.
 ////
+//// The compiler hints one module per name. When two importable modules
+//// share a last segment it names one of them, which may not be the one the
+//// program meant; vetting still decides whether it may be imported, and a
+//// wrong guess shows up as the second build's failure, which is final.
+////
 //// Every other diagnostic is left alone. Errors that follow from the
 //// missing module, such as `Unknown type for record access` on a value a
 //// call into it returned, go away with the import, and anything else is

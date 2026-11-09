@@ -736,7 +736,12 @@ fn run_refused_import(prerequisites: Prerequisites) -> Nil {
   let assert codemode.CompileFailed(compile.BuildRejected(diagnostics:)) =
     execution.outcome
     as "a hint for a module the policy refuses must leave the failure"
-  assert string.contains(diagnostics, "Unknown module")
+
+  // The compiler did hint the import, so it was the re-vet that refused it.
+  assert string.contains(
+    diagnostics,
+    "Hint: Did you mean to import `gleam/io`?",
+  )
   assert execution.edits == []
   rig.stop(live)
 }
