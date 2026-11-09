@@ -23,6 +23,8 @@ import machine/queue
 import runtime/api
 import runtime/effects
 import runtime/hooks
+import runtime/registry
+import runtime/supervisor
 import runtime/writer
 import session/session
 import support/fake
@@ -1360,6 +1362,66 @@ pub fn supervisor_restart_inputs_do_not_multiply_writer_options_test() {
   // Only the writer entry in each may own this subscriber list.
   assert large - small >= marker_words
   assert large - small == marker_words * 2
+}
+
+/// The session's effects (every tool, the gateway, the hooks) are copied into
+/// each process that keeps them, with no sharing kept. Neither strand factory
+/// keeps them: a factory asks the registry for the strand template when it
+/// starts a driver. The root supervisor keeps them only in the registry's
+/// child specification, which a restart needs, and not in a publication
+/// callback for an `open` that publishes nothing.
+pub fn the_session_effects_are_kept_by_the_registry_alone_test() {
+  let payload = list.repeat(7, 4096)
+  let marker_words = ffi_memory.flat_words(payload)
+  let small = tree_words_with_payload([])
+  let large = tree_words_with_payload(payload)
+
+  // Neither factory's state grows with the effects.
+  assert large.primary == small.primary
+  assert large.subagent == small.subagent
+
+  // The root keeps the registry's specification, which OTP holds twice
+  // (initial and active), and nothing else that carries the effects.
+  assert large.root - small.root <= marker_words * 2
+}
+
+type TreeWords {
+  TreeWords(root: Int, primary: Int, subagent: Int)
+}
+
+fn tree_words_with_payload(payload: List(Int)) -> TreeWords {
+  let rec = recorder.start()
+  let assert Ok(sess) = session.open_memory(clock.fixed(at: 1000))
+    as "the copy-size fixture must open"
+  let eff =
+    fake.effects(
+      rec,
+      clock.fixed(at: 1000),
+      [],
+      fn(_) { fake.Reply(fake.answer("done", 1)) },
+      fn(_) {
+        // The payload stands for a host's tools: unrelated to every process
+        // but the one that runs a call.
+        let _ = list.length(payload)
+        fake.ToolReply(text: "unused", is_error: False, terminate: False)
+      },
+    )
+  let assert Ok(rt) =
+    api.open(sess, eff, api.default_options(harness.configuration()))
+    as "the measured tree must start"
+  let words = fn(pid) { ffi_memory.flat_words(ffi_memory.state(pid, 1000)) }
+  let assert Ok(primary) = supervisor.factory_pid(rt.tree, registry.Primary)
+    as "the primary factory must be published"
+  let assert Ok(subagent) = supervisor.factory_pid(rt.tree, registry.Subagent)
+    as "the subagent factory must be published"
+  let measured =
+    TreeWords(
+      root: words(rt.tree.supervisor),
+      primary: words(primary),
+      subagent: words(subagent),
+    )
+  let assert Ok(Nil) = api.close(rt) as "the measured tree must close"
+  measured
 }
 
 fn supervisor_words_with_subscribers(count: Int) -> Int {
