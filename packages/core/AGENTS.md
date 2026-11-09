@@ -147,6 +147,13 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   first- versus last-occurrence precedence, so a document or frame
   carrying duplicates has no single meaning; rejecting is the only rule
   with one interpretation.
+- **JSON whitespace matches exactly four bytes.** `json.skip_whitespace` uses
+  literal space, tab, LF and CR prefixes, binding the unread suffix only after
+  a permitted byte matches. Every consumed byte still advances the document
+  cursor; other controls and Unicode whitespace remain corruption. The fixed
+  replay compares complete values and refusals against a saved parser BEAM,
+  compiles both aliases symmetrically, and rejects grammar/offset mutants and
+  a candidate-as-baseline performance control.
 - **JSON string runs preserve byte boundaries.** `json.clean_run` advances
   eight safe bytes together, with four-byte and single-byte tails;
   `json.escape_runs` advances four. Each byte is checked
