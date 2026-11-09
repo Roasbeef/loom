@@ -1101,6 +1101,22 @@ value the program meant to return may be missing. The model reads the
 notes on success and on failure, and a failure adds that its diagnostic
 line numbers are for the rewritten program.
 
+The same single rewrite covers a program that used a module it did not
+import, such as `int.to_string(n)` with no `import gleam/int`, which the
+compiler reports as `Unknown module` with a hint naming the module to
+import. When `unused_repair` refuses, `codemode/import_repair.rewrite`
+reads every `Unknown module` error about the program's file, and when
+each one carries a hint whose last segment is the unknown name, appends
+those imports, once each, after the program's last line (Gleam accepts an
+import anywhere at the top level, so no line the first build named moves).
+It refuses when any such error has no hint, when a hint disagrees with the
+name or is not a module path, and when the program already imports the
+hinted module under an alias. Every other diagnostic is left for the
+second build. The rewritten source is vetted again, which is what keeps
+the repair to admitted modules: a hint for a module the policy refuses,
+such as `gleam/io`, fails that vet and the first build's failure stands.
+The notes read `added missing import gleam/int (line 12)`.
+
 Two behaviors of Gleam's resolver stand between a pinned manifest and a
 build that actually runs offline, and both look like accidents until you
 hit them:
