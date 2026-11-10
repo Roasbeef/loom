@@ -54,7 +54,20 @@
 //// warning and so one underscore, and the second build then fails because
 //// the alternatives no longer bind the same name. That build's diagnostics
 //// are final and its note names the rename, so this case is left as it is.
+////
+//// # Pattern variables beside a real error
+////
+//// Everything above is all-or-nothing, so a program with one real error and
+//// one unused `e` in `Error(e) ->` is not rewritten, and the model reads the
+//// warning ahead of the error. `rewrite_patterns` is the exception, and it
+//// is narrow: only an unused variable that sits in a `case` clause's
+//// pattern is underscored, because that is the mechanical slip (the error
+//// is not read), it has one place to change, and the rest of the output
+//// stands unedited. A `let`, a `use` and a parameter are not touched when
+//// something else is wrong, since underscoring them can hide a value the
+//// program meant to use.
 
+import gleam/bool
 import gleam/int
 import gleam/list
 import gleam/result
@@ -84,8 +97,14 @@ type Scope {
   // reports under the same title. Carries the name without its underscore.
   Argument(name: String)
 
-  // A `let` binding, or a pattern variable the compiler calls a variable.
+  // A `let` binding, or any other variable the compiler reports under the
+  // title `Unused variable` that is not a case-clause pattern.
   Binding(name: String)
+
+  // A variable bound in a `case` clause's pattern, such as the `e` of
+  // `Error(e) ->`. Told apart from a `let` by the echoed source line, since
+  // the compiler files both under one title; see `in_clause_pattern`.
+  Pattern(name: String)
 }
 
 // One parsed unused warning: where the compiler underlined, how wide, and
@@ -124,6 +143,69 @@ pub fn rewrite(
   use warnings <- result.try(parse(diagnostics, file))
   let lines = string.split(source, "\n")
   use edited <- result.try(edit_lines(lines, warnings, 1, [], []))
+  let #(kept, notes) = edited
+  Ok(Rewrite(source: string.join(kept, "\n"), notes: list.reverse(notes)))
+}
+
+/// Repairs only the unused variables a build reported in `case` clause
+/// patterns, whatever else the build said.
+///
+/// `rewrite` refuses a build with an error in it, and rightly: it cannot
+/// vouch for a list of warnings the compiler stopped before finishing. This
+/// is the narrower question. A model that matches `Error(e) ->` and never
+/// reads `e` gets that warning printed beside whatever is really wrong, and
+/// the next attempt fixes the wrong thing. Each such warning stands on its
+/// own, since the compiler names the variable, its span and its replacement,
+/// so it can be repaired without accounting for the rest of the output. The
+/// caller rebuilds, and the second build shows the real error without the
+/// noise ahead of it.
+///
+/// Every other block is left alone, errors and other warnings (the
+/// transitive-dependency one included) alike, and they stay in the second
+/// build's output. A variable that is not provably a clause pattern's, per
+/// `in_clause_pattern`, is not repaired, and neither is a warning that
+/// disagrees with the source. It returns `Error(Nil)` when nothing is left
+/// to repair or any chosen warning fails the checks `rewrite` applies, so
+/// repairing the repaired source is refused: its lines no longer match what
+/// a stale diagnostic echoes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let diagnostics =
+///   "warning: Unused variable\n  ┌─ /b/src/p.gleam:3:11\n  │\n"
+///   <> "3 │     Error(e) -> 0\n  │           ^ This variable is never used\n\n"
+///   <> "Hint: You can ignore it with an underscore: `_e`.\n\n"
+///   <> "error: Type mismatch\n"
+/// assert unused_repair.rewrite_patterns("a\nb\n    Error(e) -> 0\n", diagnostics, "src/p.gleam")
+///   == Ok(unused_repair.Rewrite(
+///     source: "a\nb\n    Error(_e) -> 0\n",
+///     notes: ["renamed unused pattern variable e to _e (line 3)"],
+///   ))
+/// ```
+///
+pub fn rewrite_patterns(
+  source: String,
+  diagnostics: String,
+  file: String,
+) -> Result(Rewrite, Nil) {
+  let warnings =
+    blocks(string.split(diagnostics, "\n"))
+    |> list.filter(fn(block) { block.0 == "warning: Unused variable" })
+    |> list.filter_map(fn(block) { variable(block.1, file) })
+    |> list.filter(fn(warning) {
+      case warning.scope {
+        Pattern(name: _) -> True
+        Statement | Member | Argument(name: _) | Binding(name: _) -> False
+      }
+    })
+
+  // With no pattern warning there is nothing to rebuild for.
+  use <- bool.guard(when: warnings == [], return: Error(Nil))
+
+  use edited <- result.try(
+    edit_lines(string.split(source, "\n"), warnings, 1, [], []),
+  )
   let #(kept, notes) = edited
   Ok(Rewrite(source: string.join(kept, "\n"), notes: list.reverse(notes)))
 }
@@ -207,8 +289,7 @@ fn classify(
       unused(fn(_) { Ok(Member) }, body, file) |> result.map(Warning)
     "warning: Unused function argument" ->
       unused(named(_, Argument), body, file) |> result.map(Warning)
-    "warning: Unused variable" ->
-      unused(named(_, Binding), body, file) |> result.map(Warning)
+    "warning: Unused variable" -> variable(body, file) |> result.map(Warning)
     _ -> summary(title)
   }
 }
@@ -236,6 +317,60 @@ fn named(
   case name != "" && name == underlined {
     True -> Ok(scope(name))
     False -> Error(Nil)
+  }
+}
+
+/// Parses an `Unused variable` warning and tells a clause pattern from a
+/// `let`.
+fn variable(body: List(String), file: String) -> Result(Unused, Nil) {
+  use found <- result.map(unused(named(_, Binding), body, file))
+
+  // Only a `let`-or-pattern variable can be a clause pattern's; the rest
+  // keep the scope the compiler's title gave them.
+  case found.scope {
+    Binding(name:) ->
+      case in_clause_pattern(found.echoed, found.column) {
+        True -> Unused(..found, scope: Pattern(name:))
+        False -> found
+      }
+    Statement | Member | Argument(name: _) | Pattern(name: _) -> found
+  }
+}
+
+/// Whether the variable underlined at `column` of `line` is bound in a
+/// `case` clause's pattern, the `Error(e) ->` shape.
+///
+/// The compiler files a `let` binding and a pattern variable under one
+/// title, so the source line is what tells them apart. The test is narrow
+/// on purpose, because a wrong yes underscores a name the model chose:
+/// the name must stand in the first clause on a line that is not a `let` or
+/// a `use`, an arrow must follow it, and the pattern, from the clause's
+/// start to that arrow, must hold no `|`. Alternative patterns
+/// (`Ok(x) | Error(x) ->`) bind one name in several places and get one
+/// warning, so underscoring one place breaks the build; a `|` in a guard
+/// is refused with them, which costs nothing, since a guard reads the name.
+/// A pattern split across lines has no arrow on the name's line and is
+/// refused as well.
+fn in_clause_pattern(line: String, column: Int) -> Bool {
+  let before = string.slice(line, 0, column - 1)
+  let head = string.trim_start(line)
+  let opened =
+    !string.starts_with(head, "let ") && !string.starts_with(head, "use ")
+
+  // The pattern runs from the last `{` before the name to the first arrow.
+  case string.split_once(string.drop_start(line, column - 1), "->") {
+    Error(Nil) -> False
+    Ok(#(until_arrow, _guarded)) -> {
+      // The clause starts after the last `{` before the name, if any.
+      let clause = case list.last(string.split(before, "{")) {
+        Ok(start) -> start
+        Error(Nil) -> before
+      }
+
+      opened
+      && !string.contains(before, "->")
+      && !string.contains(clause <> until_arrow, "|")
+    }
   }
 }
 
@@ -430,7 +565,7 @@ fn edit_line(
 // parameter, so the two descriptions of the line disagree.
 fn is_rename(warning: Unused) -> Bool {
   case warning.scope {
-    Argument(name: _) | Binding(name: _) -> True
+    Argument(name: _) | Binding(name: _) | Pattern(name: _) -> True
     Statement | Member -> False
   }
 }
@@ -481,6 +616,8 @@ fn rename_note(warning: Unused, line: String, number: Int) -> String {
         False -> "renamed unused argument " <> name <> " to _" <> name <> at
       }
     Binding(name:) -> binding_note(name, at)
+    Pattern(name:) ->
+      "renamed unused pattern variable " <> name <> " to _" <> name <> at
     Statement | Member -> ""
   }
 }

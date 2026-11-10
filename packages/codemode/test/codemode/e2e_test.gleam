@@ -266,6 +266,37 @@ pub fn an_unused_import_is_removed_and_the_program_runs_test_() -> EunitTest {
   })
 }
 
+/// A program whose only fault is an unused variable in a `case` pattern is
+/// rebuilt once with it underscored, by the real compiler in the real jail,
+/// and then runs.
+pub fn an_unused_case_pattern_variable_is_underscored_and_runs_test_() -> EunitTest {
+  jailed(fn() {
+    case rig.prerequisites() {
+      Error(reason) ->
+        io.println_error(
+          "SKIP an_unused_case_pattern_variable_is_underscored_and_runs: "
+          <> reason,
+        )
+      Ok(prerequisites) -> run_unused_pattern(prerequisites)
+    }
+  })
+}
+
+/// An unused `Error(e) ->` beside a real type error is underscored and the
+/// build runs again, so the failure the model reads is the type error alone.
+pub fn an_unused_case_pattern_variable_beside_an_error_is_not_reported_test_() -> EunitTest {
+  jailed(fn() {
+    case rig.prerequisites() {
+      Error(reason) ->
+        io.println_error(
+          "SKIP an_unused_case_pattern_variable_beside_an_error_is_not_reported: "
+          <> reason,
+        )
+      Ok(prerequisites) -> run_unused_pattern_beside_error(prerequisites)
+    }
+  })
+}
+
 // --- the happy path -------------------------------------------------------
 
 fn run_end_to_end(prerequisites: Prerequisites) -> Nil {
@@ -637,6 +668,55 @@ fn narrowed_config(
     ..full,
     satellite: satellite.SatelliteConfig(..full.satellite, base_policy: base),
   )
+}
+
+fn run_unused_pattern(prerequisites: Prerequisites) -> Nil {
+  let live = rig.start(name: "unused-pattern", prerequisites:, pool_size: 2)
+  let source =
+    "import cap/report\n"
+    <> "import gleam/int\n"
+    <> "\n"
+    <> "pub fn main() -> report.Outcome {\n"
+    <> "  case int.parse(\"not a number\") {\n"
+    <> "    Ok(n) -> report.text(int.to_string(n))\n"
+    <> "    Error(e) -> report.text(\"ran\")\n"
+    <> "  }\n"
+    <> "}\n"
+  let execution =
+    codemode.execute(source, exec_config(live, prerequisites, "unused-pattern"))
+  let assert codemode.Ran(source: ran_source, artifact: _, outcome:) =
+    execution.outcome
+    as "the unused pattern variable must be underscored and the program run"
+  assert string.contains(ran_source, "Error(_e) ->")
+  assert outcome == satellite.Completed(value: msgpack.StringValue("ran"))
+  assert execution.edits == ["renamed unused pattern variable e to _e (line 7)"]
+  rig.stop(live)
+}
+
+fn run_unused_pattern_beside_error(prerequisites: Prerequisites) -> Nil {
+  let live = rig.start(name: "pattern-and-error", prerequisites:, pool_size: 2)
+  let source =
+    "import cap/report\n"
+    <> "import gleam/int\n"
+    <> "\n"
+    <> "pub fn main() -> report.Outcome {\n"
+    <> "  case int.parse(\"1\") {\n"
+    <> "    Ok(n) -> report.text(n)\n"
+    <> "    Error(e) -> report.text(\"none\")\n"
+    <> "  }\n"
+    <> "}\n"
+  let execution =
+    codemode.execute(
+      source,
+      exec_config(live, prerequisites, "pattern-and-error"),
+    )
+  let assert codemode.CompileFailed(compile.BuildRejected(diagnostics:)) =
+    execution.outcome
+    as "the real error must still fail the build"
+  assert string.contains(diagnostics, "Type mismatch")
+  assert !string.contains(diagnostics, "Unused variable")
+  assert execution.edits == ["renamed unused pattern variable e to _e (line 7)"]
+  rig.stop(live)
 }
 
 // --- the type checker as argument validator -------------------------------

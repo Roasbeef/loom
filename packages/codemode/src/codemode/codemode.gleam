@@ -242,8 +242,9 @@ fn compile_once(vetted: Vetted, config: ExecConfig) -> compile.Compiled {
   )
 }
 
-/// Rewrites what the compiler's diagnostics name, unused names first and
-/// missing imports otherwise, and re-vets the repaired source.
+/// Rewrites what the compiler's diagnostics name, unused names first, then
+/// missing imports, then unused `case` pattern variables that sit beside
+/// some other diagnostic, and re-vets the repaired source.
 ///
 /// What runs is what was vetted, so the rewritten source goes back through
 /// `vet.vet` under the same policy and the new `Vetted` is what is built.
@@ -267,6 +268,9 @@ fn rewritten(
         unused_repair.rewrite(source, diagnostics, file)
         |> result.lazy_or(fn() {
           import_repair.rewrite(source, diagnostics, file)
+        })
+        |> result.lazy_or(fn() {
+          unused_repair.rewrite_patterns(source, diagnostics, file)
         }),
       )
 
