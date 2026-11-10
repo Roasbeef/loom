@@ -10,7 +10,7 @@ parse(Input, MaximumDepth) ->
         object_push => fun object_push/3, object_finish => fun object_finish/2,
         string => fun(Value) -> {string, Value} end,
         integer => fun(Value) -> {int, binary_to_integer(Value)} end,
-        float => fun(Value) -> {float, binary_to_float(Value)} end, null => null},
+        float => fun decode_float/1, null => null},
     try json:decode(Input, {0, [], #{}}, Decoders) of
         {Value, _, <<>>} -> {ok, boolean_value(Value)};
         {_, _, _Rest} -> 'core@json':parse(Input)
@@ -19,6 +19,16 @@ parse(Input, MaximumDepth) ->
         %% attempt never publishes a partial value, and the reference owns every
         %% refusal, including byte/codepoint offsets and malformed UTF-8.
         error:_ -> 'core@json':parse(Input)
+    end.
+
+%% OTP normalizes exponent-only negative zero before invoking this callback.
+%% A zero-valued float therefore needs the original text and reference parser
+%% to preserve its sign; recovering it here would require another number lexer.
+decode_float(Text) ->
+    Value = binary_to_float(Text),
+    case Value == 0.0 of
+        true -> error(reference_float_zero);
+        false -> {float, Value}
     end.
 
 start({Depth, _, _}, MaximumDepth) when Depth < MaximumDepth ->

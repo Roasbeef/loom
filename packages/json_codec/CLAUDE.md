@@ -35,6 +35,8 @@ or `JsonValue` synchronously; typed decoding and authority remain with them.
 - Native success preserves order, duplicate refusal, scalar wrapping, UTF-8
   and depth bounds. `json.max_depth` is passed in rather than duplicated.
 - Refusals are complete reference reports. No partial native value is exposed.
+- Zero-valued native floats delegate to the reference parser because OTP can
+  erase the sign of an exponent-only negative zero before its callback.
 - Encoding uses the reference implementation on both targets, preserving exact
   float spelling, ordered/duplicate hand-built keys and lowercase control escapes.
 - JavaScript uses the pure bodies. No external or dependency is added to core.

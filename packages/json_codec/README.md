@@ -78,6 +78,9 @@ flowchart TB
 The adapter publishes only a complete native value. Every native refusal
 delegates the original text to the reference parser, which can either accept
 it or return its exact report, including offsets, context and wording.
+Zero-valued floats also take that path: OTP can erase the sign of exponent-only
+negative zero before the float callback receives its text. `decode_float/1`
+requests the reference parse instead of attempting to reconstruct that text.
 
 1. **Enter.** `start/2` checks the current depth against `max_depth`, whose
    value is 256 entered arrays or objects. A child accumulator starts with

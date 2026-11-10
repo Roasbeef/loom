@@ -26,6 +26,10 @@ reference implementation on every target, preserving exact bytes by construction
 An experimental OTP encoder improved large escaped text but its compatibility
 scan slowed compact object fixtures substantially; it is not selected.
 
+Zero-valued native floats also delegate to the reference parser. OTP normalizes
+exponent-only negative zero before its callback and loses the original sign;
+recovering it would require a second lexer. The fallback uses the original text.
+
 This is the owner's explicitly authorized JSON exception to the general
 no-FFI-for-speed rule. Only `json_codec/internal/ffi_json` declares externals;
 core, machine, prompt and the other portable packages keep their current rules.

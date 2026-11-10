@@ -61,7 +61,6 @@ run(Directory, Mode) ->
     %% Each decode fixture must materially reduce allocation. The unchanged
     %% encoder is guarded structurally above. No-op exits no_improvement.
     Decodes=[{B,C} || {decode,B,C}<-Measurements],
-    true = lists:all(fun({B,C}) -> C =< B end,Decodes),
     case lists:all(fun({B,C}) -> C*100 =< B*90 end,Decodes) of
         true -> io:format("IMPROVEMENT codec allocation guards passed~n");
         false -> error(no_improvement)
@@ -85,7 +84,11 @@ edge_inputs() ->
     Numbers=[<<"0">>,<<"-0">>,<<"0.0">>,<<"-0.0">>,<<"1e300">>,<<"1e-300">>,
         <<"1e309">>,<<"1e-999">>,<<"1e+2">>,<<"1E-2">>,<<"01">>,<<"1.">>,<<"+1">>,
         <<"NaN">>,<<"Infinity">>,list_to_binary(lists:duplicate(400,$9))],
-    Numbers ++ [<<"[",B/binary,"]">> || B<-Numbers] ++
+    Zeroes=[<<"-0e0">>,<<"-0e-1">>,<<"-0E+2">>,<<"-0.0e0">>,<<"0e0">>,
+        <<"0.0">>,<<"-0.0">>,<<"1e-999">>,<<"-1e-999">>],
+    ZeroInputs=lists:flatmap(fun(B)->[B,<<"[",B/binary,"]">>,
+        <<"{\"z\":",B/binary,"}">>] end,Zeroes),
+    ZeroInputs ++ Numbers ++ [<<"[",B/binary,"]">> || B<-Numbers] ++
         [<<"{\"a\":1,\"\\u0061\":2}">>,<<"[true,false,null]">>,
          <<"{\"z\":1,\"a\":2}">>,<<"null ?">>] ++
         [<<(binary:copy(<<"[">>,N))/binary,"0",(binary:copy(<<"]">>,N))/binary>>
@@ -113,8 +116,9 @@ native_witness() ->
         {Result,Counts}
     end,
     {{ok,_},[1,0]}=Count(<<"{\"x\":[true,2,\"text\"]}">>),
+    {{ok,{float,-0.0}},[1,1]}=Count(<<"-0e0">>),
     {{error,_},[1,1]}=Count(<<"{\"x\":1,\"x\":2}">>),
-    io:format("NATIVE_WITNESS valid=otp_only invalid=otp_then_reference~n").
+    io:format("NATIVE_WITNESS valid=otp_only zero=otp_then_reference invalid=otp_then_reference~n").
 
 %% Rewrite only isolated ASTs. A kill requires a returned semantic difference;
 %% a mutant exception or compilation failure cannot masquerade as a witness.
@@ -124,7 +128,8 @@ mutants() ->
         {depth,<<(binary:copy(<<"[">>,257))/binary,"0",
                  (binary:copy(<<"]">>,257))/binary>>},
         {trailing,<<"null ?">>},
-        {boolean,<<"[true,false]">>}],
+        {boolean,<<"[true,false]">>},
+        {float_zero,<<"[-0e0]">>}],
     lists:foreach(fun({Name,Input})->
         Alias=list_to_atom("platform_json_mutant_"++atom_to_list(Name)),
         Changed=mutate(F,Name),
@@ -140,6 +145,10 @@ mutate({op,L,'<',_Depth,Maximum},depth)->{op,L,'<',{integer,L,0},Maximum};
 mutate({bin,L,[]},trailing)->{var,L,'_IgnoredRest'};
 mutate({function,L,boolean_value,1,_},boolean)->
     {function,L,boolean_value,1,[{clause,L,[{var,L,'Value'}],[],[{var,L,'Value'}]}]};
+mutate({function,L,decode_float,1,_},float_zero)->
+    {function,L,decode_float,1,[{clause,L,[{var,L,'Text'}],[],
+        [{tuple,L,[{atom,L,float},
+          {call,L,{atom,L,binary_to_float},[{var,L,'Text'}]}]}]}]};
 mutate(T,M) when is_tuple(T)->list_to_tuple([mutate(X,M)||X<-tuple_to_list(T)]);
 mutate(L,M) when is_list(L)->[mutate(X,M)||X<-L];
 mutate(X,_)->X.

@@ -142,6 +142,20 @@ pub fn every_control_byte_keeps_its_escaped_spelling_in_keys_and_values_test() {
   })
 }
 
+pub fn zero_float_lexemes_keep_the_reference_sign_test() {
+  let selected = json_codec.platform()
+  let reference = json_codec.portable()
+  let lexemes = [
+    "-0e0", "-0e-1", "-0E+2", "-0.0e0", "0e0", "0.0", "-0.0", "1e-999",
+    "-1e-999",
+  ]
+  list.each(lexemes, fn(text) {
+    list.each([text, "[" <> text <> "]", "{\"z\":" <> text <> "}"], fn(input) {
+      assert selected.parse(input) == reference.parse(input)
+    })
+  })
+}
+
 pub fn the_generator_reaches_each_value_constructor_and_text_fragment_test() {
   let #(examples, _) =
     qcheck.generate(
