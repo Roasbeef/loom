@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # portable_js_test.sh — run a portable package's tests on the JavaScript target.
 #
-# Usage: scripts/portable_js_test.sh <package>   (gepa, evalstat or project)
+# Usage: scripts/portable_js_test.sh <package>   (gepa, evalstat, project or json_codec)
 #
 # `gepa`, `evalstat` and `project` are held to the R6 portable subset and
 # promise, in their package docs, that their suites pass on both targets:
@@ -16,6 +16,9 @@
 # suite under whichever JavaScript runtime is first on PATH (Node, Bun or
 # Deno), the way scripts/web_client_test.sh does for the browser package.
 #
+# json_codec also runs this suite: its platform binding deliberately uses the
+# pure reference implementation on JavaScript, while Erlang selects OTP.
+#
 # A machine with no runtime prints a `SKIP portable_js_tests: ...` line and
 # exits zero, as the repository's other feature-detected suites do, so that
 # .github/scripts/skip_census.sh turns it into a red CI run instead of a
@@ -23,9 +26,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-package=${1:?usage: scripts/portable_js_test.sh <gepa|evalstat|project>}
+package=${1:?usage: scripts/portable_js_test.sh <gepa|evalstat|project|json_codec>}
 case "$package" in
-gepa | evalstat | project) ;;
+gepa | evalstat | project | json_codec) ;;
 *) echo "not a portable package with a JavaScript suite: $package" >&2; exit 2 ;;
 esac
 
