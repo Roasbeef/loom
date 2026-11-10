@@ -1779,8 +1779,22 @@ pub fn toolchain_path(toolchain: Toolchain) -> String {
 ///
 pub fn seam(config: Config) -> codemode_tool.CodeMode {
   codemode_tool.CodeMode(
+    submit: fn(submission) {
+      case submission {
+        // The synchronous execution this host serves. The launch arm is
+        // unreachable through the tool shell, which reads `background` to
+        // decide what to ask for, but `submit` is total: a caller that
+        // built its own `Launch` gets a refusal naming what happened
+        // rather than a reinterpreted synchronous run.
+        codemode_tool.Run(request) ->
+          codemode_tool.Synchronous(execute(config, request))
+        codemode_tool.Launch(_) ->
+          codemode_tool.Admitted(Error(
+            "this host serves no background executions",
+          ))
+      }
+    },
     background: None,
-    execute: fn(request) { execute(config, request) },
     seams: offered_seams(config),
     default_within_ms: config.default_within_ms,
     max_within_ms: config.max_within_ms,
@@ -1797,7 +1811,13 @@ pub fn seam(config: Config) -> codemode_tool.CodeMode {
 /// is unreachable; it is a workspace-seam offer rather than a panic
 /// because a `code_mode` that vanished would be a worse answer to a bug
 /// than one that serves the narrower of the two.
-fn offered_seams(config: Config) -> codemode_tool.Seams {
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let offers = codemode.offered_seams(config)
+/// ```
+pub fn offered_seams(config: Config) -> codemode_tool.Seams {
   let offers =
     list.filter_map(surface_seams(config.surface), fn(seam) {
       use named <- result.map(tool_seam(seam))

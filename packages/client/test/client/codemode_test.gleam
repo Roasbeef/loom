@@ -115,6 +115,17 @@ fn an_op(seed: Int) -> OpId {
   op
 }
 
+// Launches through the one dispatcher closure, as the tool shell does.
+fn launch(
+  mode: codemode_tool.CodeMode,
+  request: codemode_tool.Request,
+) -> Result(json.JsonValue, String) {
+  case mode.submit(codemode_tool.Launch(request)) {
+    codemode_tool.Admitted(value) -> value
+    codemode_tool.Synchronous(_) -> Error("launch answered with a run")
+  }
+}
+
 fn request_for(step: String) -> codemode_tool.Request {
   request_on(codemode_tool.WorkspaceSeam, step)
 }
@@ -2777,10 +2788,10 @@ pub fn async_worker_does_not_duplicate_unrelated_configuration_test() {
   let request = request_for("detached-copy")
 
   list.each([light, heavy], fn(config) {
-    let assert Some(background) =
-      async_codemode.seam(config, name, agents).background
+    let mode = async_codemode.seam(config, name, agents)
+    let assert Some(_) = mode.background
       as "the detached seam must be available"
-    assert background.launch(request) == Ok(json.Null)
+    assert launch(mode, request) == Ok(json.Null)
   })
   let assert Ok(#(small_record, small_words)) = process.receive(admitted, 1000)
     as "the light worker must reach admission"
@@ -2801,6 +2812,58 @@ pub fn async_worker_does_not_duplicate_unrelated_configuration_test() {
 
   process.unlink(service.pid)
   process.kill(service.pid)
+  let _ = broker.stop(broker_actor)
+}
+
+// The one-closure invariant the reshape guards: `CodeMode` holds the
+// session's configuration behind a single closure, so a copy of the
+// registry slot pays for that configuration exactly once
+// (`docs/design-notes/startup-and-memory.md`, "What is left"). Before
+// the reshape, `execute` and `background.launch` each captured it — the
+// two Config captures measured together at 136 KiB — and no
+// client-side arrangement could hold it once while two closure slots
+// existed. `captured_occurrences` unfolds sharing as a copy would, so
+// the marker planted in the configuration is counted per capture.
+pub fn the_seam_holds_the_configuration_once_test() {
+  let broker_actor = idle_broker()
+  let base = config_for(broker_actor)
+  let marker = "codemode-config-capture-marker"
+  let config = codemode.Config(..base, blob_root: marker)
+  let mode =
+    async_codemode.seam(
+      config,
+      addresses.new(),
+      agency.default_config(addresses.new(), clock.fixed(at: 0)),
+    )
+  assert ffi_memory.captured_occurrences(codemode_tool.tool_for(mode), marker)
+    == 1
+    as "the registered tool captures the configuration once"
+  assert ffi_memory.captured_occurrences(mode, marker) == 1
+    as "both execution modes travel through one closure, so the configuration is captured once"
+  let sync = codemode.seam(config)
+  assert ffi_memory.captured_occurrences(sync, marker) == 1
+    as "a synchronous-only seam captures the configuration once too"
+
+  // Unfolded sharing counts each stored path, not just each unique value.
+  assert ffi_memory.captured_occurrences(#(mode, mode), marker) == 2
+    as "the witness must detect a second retained capture path"
+
+  // The payload is unrelated to seam metadata. Its growth must be paid once
+  // even after the seam is installed as the registered code-mode tool.
+  let light = config_with_entropy_payload(base, 1)
+  let heavy = config_with_entropy_payload(base, 4096)
+  let agents = agency.default_config(addresses.new(), clock.fixed(at: 0))
+  let service = addresses.new()
+  let small = async_codemode.seam(light, service, agents)
+  let large = async_codemode.seam(heavy, service, agents)
+  let payload_words =
+    ffi_memory.flat_words(heavy) - ffi_memory.flat_words(light)
+  assert payload_words > 8192
+  assert ffi_memory.flat_words(large) - ffi_memory.flat_words(small)
+    == payload_words
+  assert ffi_memory.flat_words(codemode_tool.tool_for(large))
+    - ffi_memory.flat_words(codemode_tool.tool_for(small))
+    == payload_words
   let _ = broker.stop(broker_actor)
 }
 

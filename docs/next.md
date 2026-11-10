@@ -18,6 +18,21 @@ counts; no installed CPU, RSS or latency saving is established. The proof names
 its source and measurement limits. PR validation records end-to-end checks,
 independent review and hosted outcomes separately.
 
+## Code-mode configuration capture
+
+`CodeMode.submit` now dispatches `Run` and `Launch` through one closure.
+The handle-only `Background` still controls whether asynchronous modes are
+advertised. The client capture test inspects the registered tool's actual
+closure environments and pins one configuration copy, including payload
+growth with sharing unfolded. Approval retries still submit `Run` once more
+with appended grants; executor launches still go through owner admission.
+
+Local `make check-tools` passes all 818 tests, and the 48 client escalation
+tests pass. Client and tools lint have no errors. Full client and real-helper
+E2E signoff belongs to CI: this nested macOS jail and deep checkout produce
+helper-start and Unix-socket-path fixture failures. Historical figures in
+`startup-and-memory.md` are not current installed RSS savings.
+
 ## Host-defined code-mode seams (protocol-change/111)
 
 A host that embeds Loom can give a session its own code-mode seam:

@@ -1139,11 +1139,22 @@ fn backgrounded(
   mode: codemode_tool.CodeMode,
   owner: owner_services.OwnerServices,
 ) -> codemode_tool.CodeMode {
+  // A launch is a claim sent to the owner, so it does not reach the host
+  // behind `mode.submit`; the wrapper holds the owner and the host's
+  // dispatcher, one closure each, and forwards the synchronous arm so
+  // the host's configuration is still held exactly once.
+  let submit = mode.submit
   let launch = owner.launch_execution
   codemode_tool.CodeMode(
     ..mode,
+    submit: fn(submission) {
+      case submission {
+        codemode_tool.Run(request) -> submit(codemode_tool.Run(request))
+        codemode_tool.Launch(request) ->
+          codemode_tool.Admitted(launch(terms_of(request)))
+      }
+    },
     background: Some(codemode_tool.Background(
-      launch: fn(request) { launch(terms_of(request)) },
       interact: owner.interact_execution,
     )),
   )

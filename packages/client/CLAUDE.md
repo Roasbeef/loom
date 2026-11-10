@@ -10948,3 +10948,13 @@ ordinary top-level worker session per ticket assignment
   project could be created; it now reads the name from the registration.
 - Not built in this slice: the host check, pull requests, outbound delivery of
   replies, a Mandate-enforced broker policy.
+
+## Code-mode configuration custody
+
+`async_codemode.seam` captures the base `codemode.Config` once behind
+`tools/codemode.CodeMode.submit`. `Run` executes synchronously; `Launch` derives
+its custody, deadline and router inside that dispatcher before admission.
+`Background` retains only handle interaction and advertises launch support.
+The executor's `backgrounded` wrapper forwards `Run` to the existing dispatcher
+and sends `Launch` to the owner without retaining another base configuration.
+The capture-multiplicity regression lives in `client/codemode_test`.

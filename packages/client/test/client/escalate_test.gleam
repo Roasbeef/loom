@@ -1539,61 +1539,72 @@ const code_mode_deadline_ms = 1_756_000_600_000
 // from `policy.compose` over the launch's own requirements, which
 // `client/codemode_test` pins directly and `make e2e-codemode` runs for
 // real.
+fn narrowed_execution(
+  request: codemode_tool.Request,
+) -> codemode_tool.Execution {
+  case list.contains(request.grants, policy.GrantEnv(name: wanted_env)) {
+    True ->
+      codemode_tool.Execution(
+        result: codemode_tool.Ran(
+          outcome: codemode_tool.Completed(
+            value: msgpack.StringValue(program_output(request.source)),
+          ),
+          manifest_hash: "sha256-widened",
+        ),
+        enforcement: codemode_tool.Enforcement(
+          build: codemode_tool.Enforced(
+            applied: ["bwrap"],
+            skipped: [],
+            degraded: False,
+          ),
+          node: codemode_tool.Enforced(
+            applied: ["bwrap"],
+            skipped: [],
+            degraded: False,
+          ),
+        ),
+        refusal: codemode_tool.NothingRefused,
+        calls: call_record.empty(),
+        edits: [],
+        last_failure: None,
+      )
+    False ->
+      codemode_tool.Execution(
+        result: codemode_tool.RunFailed(codemode_tool.StartFailed(
+          reason: launch_refused,
+        )),
+        enforcement: codemode_tool.Enforcement(
+          build: codemode_tool.Enforced(
+            applied: ["bwrap"],
+            skipped: [],
+            degraded: False,
+          ),
+          node: codemode_tool.Unreported(reason: "no node was launched"),
+        ),
+        refusal: codemode_tool.RunRefused(
+          denial: denial.Denial(
+            reason: launch_refused,
+            source: denial.PolicyDenial,
+            wanted: [policy.GrantEnv(name: wanted_env)],
+          ),
+          deadline_ms: code_mode_deadline_ms,
+        ),
+        calls: call_record.empty(),
+        edits: [],
+        last_failure: None,
+      )
+  }
+}
+
 fn narrowed_code_mode() -> codemode_tool.CodeMode {
   codemode_tool.CodeMode(
     background: None,
-    execute: fn(request: codemode_tool.Request) {
-      case list.contains(request.grants, policy.GrantEnv(name: wanted_env)) {
-        True ->
-          codemode_tool.Execution(
-            result: codemode_tool.Ran(
-              outcome: codemode_tool.Completed(
-                value: msgpack.StringValue(program_output(request.source)),
-              ),
-              manifest_hash: "sha256-widened",
-            ),
-            enforcement: codemode_tool.Enforcement(
-              build: codemode_tool.Enforced(
-                applied: ["bwrap"],
-                skipped: [],
-                degraded: False,
-              ),
-              node: codemode_tool.Enforced(
-                applied: ["bwrap"],
-                skipped: [],
-                degraded: False,
-              ),
-            ),
-            refusal: codemode_tool.NothingRefused,
-            calls: call_record.empty(),
-            edits: [],
-            last_failure: None,
-          )
-        False ->
-          codemode_tool.Execution(
-            result: codemode_tool.RunFailed(codemode_tool.StartFailed(
-              reason: launch_refused,
-            )),
-            enforcement: codemode_tool.Enforcement(
-              build: codemode_tool.Enforced(
-                applied: ["bwrap"],
-                skipped: [],
-                degraded: False,
-              ),
-              node: codemode_tool.Unreported(reason: "no node was launched"),
-            ),
-            refusal: codemode_tool.RunRefused(
-              denial: denial.Denial(
-                reason: launch_refused,
-                source: denial.PolicyDenial,
-                wanted: [policy.GrantEnv(name: wanted_env)],
-              ),
-              deadline_ms: code_mode_deadline_ms,
-            ),
-            calls: call_record.empty(),
-            edits: [],
-            last_failure: None,
-          )
+    submit: fn(submission) {
+      case submission {
+        codemode_tool.Run(request) ->
+          codemode_tool.Synchronous(narrowed_execution(request))
+        codemode_tool.Launch(_) ->
+          codemode_tool.Admitted(Error("narrowed seam has no launch"))
       }
     },
     seams: codemode_tool.one_seam(
@@ -1615,9 +1626,16 @@ fn narrowed_code_mode() -> codemode_tool.CodeMode {
 // three.
 fn counting_code_mode(executions: Subject(String)) -> codemode_tool.CodeMode {
   let inner = narrowed_code_mode()
-  codemode_tool.CodeMode(..inner, execute: fn(request: codemode_tool.Request) {
-    process.send(executions, request.source)
-    inner.execute(request)
+  let submit = inner.submit
+  codemode_tool.CodeMode(..inner, submit: fn(submission) {
+    case submission {
+      codemode_tool.Run(request) -> {
+        process.send(executions, request.source)
+        submit(codemode_tool.Run(request))
+      }
+      codemode_tool.Launch(_) ->
+        codemode_tool.Admitted(Error("counting seam has no launch"))
+    }
   })
 }
 
