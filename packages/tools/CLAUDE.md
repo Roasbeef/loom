@@ -49,7 +49,7 @@ queries or checks for `cap/proc`; all three read as before), including the
 first round of an investigation
 ("judge between programs, not between commands"), and compact returned
 evidence. The description retains the offered seams, concurrency contract,
-recipes (workspace, orchestration, search, shell probe, `lsp_sql`), a short "this is Gleam" note whose name corrections cover only admitted stdlib modules,, module index and
+recipes (workspace, orchestration, search, shell probe, `lsp_sql`), a short "this is Gleam" note whose name corrections cover only admitted stdlib modules, module index and
 generated public types. A `BuildRejected` result says compilation and execution
 never completed and asks for diagnostic repair; the warning rule is stated once,
 in the description. Compiler diagnostics and the

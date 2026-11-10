@@ -54,8 +54,9 @@
 //// let assert Ok(lines) = search.grep_text(under: "src", matching: "panic")
 //// ```
 ////
-//// `under` names a directory to walk or one regular file to search, so a
-//// path taken from a `glob` listing can be passed straight to `grep`.
+//// `grep`'s `under` names a directory to walk or one regular file to search,
+//// so a path taken from a `glob` listing can be passed straight to `grep`.
+//// `glob`'s `under` is always a directory.
 
 import cap/internal/channel.{type CallError, Denied, Unreachable}
 import cap/internal/dispatch

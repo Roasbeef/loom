@@ -266,7 +266,9 @@ harness-side bridges over it:
   because the module a program imports is the unit of authorization, and
   `cap/search` grants strictly less than `cap/fs`. `search.grep`'s root is
   a directory to walk or one regular file, resolved and checked exactly as a
-  directory root is; a symlink or other non-file root is still refused.
+  directory root is: a symlink that stays inside the scope is resolved to
+  its target first, as for a directory root, and one that leaves it is
+  refused, as is a root that is neither a directory nor a regular file.
   `cap/search.grep_literal_query` is the code-search form of the query: it
   escapes the text for the engine's regex syntax in the caller, so the wire
   and the engine are unchanged.
