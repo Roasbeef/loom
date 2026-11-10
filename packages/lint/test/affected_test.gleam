@@ -255,12 +255,12 @@ pub fn the_daemon_is_what_loomd_is_built_from_test() {
     == names([
       "client", "host", "core", "storage", "session", "machine", "prompt",
       "events", "runtime", "broker", "provider", "tools", "codemode", "mcp",
-      "lsp", "telemetry", "harness", "evalstat", "project",
+      "lsp", "telemetry", "harness", "evalstat", "project", "json_codec",
     ])
   list.each(
     [
       "runtime", "session", "storage", "events", "broker", "provider", "mcp",
-      "lsp", "host", "tools",
+      "lsp", "host", "tools", "json_codec",
     ],
     fn(package) {
       let selection =
