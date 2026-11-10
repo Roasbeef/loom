@@ -22,7 +22,7 @@
 //// 4. `request` builds the `Request` that crosses the seam; the model
 ////    supplies inline source or a file path and the budget and nothing else.
 ////    A retry retains the loaded source and never reopens the file.
-//// 5. `once_more_if_approved` runs mode.execute once and, if a policy
+//// 5. `once_more_if_approved` submits a synchronous run and, if a policy
 ////    refusal stopped it and a human approved, exactly once more.
 //// 6. `render` turns the `Execution` into the model's answer:
 ////    `vet_outcome`, `compile_outcome`, `run_failed_outcome` or
@@ -462,22 +462,53 @@ pub type Execution {
   )
 }
 
+/// One thing this seam may be asked to do with a submitted program.
+pub type Submission {
+  /// Run one submitted program end to end, now, on this caller's call site.
+  Run(Request)
+
+  /// Admit one submitted program to the session's background execution
+  /// service, answering with the handle and deadline that admission minted.
+  Launch(Request)
+}
+
+/// What a `Submission` came back as. The constructor pairs are fixed by the
+/// seam's contract — `Run` answers `Synchronous` and `Launch` answers `Admitted` —
+/// but Gleam cannot state that, so the mismatched pair names the seam
+/// contract the host broke rather than being folded into a catch-all.
+pub type SubmissionResult {
+  /// The complete synchronous result, including any refusal eligible for retry.
+  Synchronous(Execution)
+
+  /// The background service's admission result, never a synchronous execution.
+  Admitted(Result(JsonValue, String))
+}
+
 /// The code-mode seam: everything this tool may do, as data.
 ///
-/// Constructor invariants: `execute` is total — every failure of every
-/// stage is a value in the `Execution` it returns, and it runs the
+/// Constructor invariants: `submit` is total — every failure of every
+/// stage is a value in the `SubmissionResult` it returns, and it runs the
 /// execution under the `Request`'s own `{op_id, step_id}` rather than
-/// minting an identity of its own. `seams` names every seam this host
-/// serves and, for each, the allowlist a submission naming it is judged
-/// against and the capabilities its router maps — published rather than
-/// copied, so the sentence the model is charged for on every request
-/// cannot drift from the policy the program is judged against.
-/// `default_within_ms` is at most `max_within_ms`.
+/// minting an identity of its own. A host holds its whole configuration
+/// behind this one closure: the registry copies a `CodeMode`, so a second
+/// closure that captured the same configuration would double what every
+/// copy of the registry pays for it. The historical census in
+/// `docs/design-notes/startup-and-memory.md` measured the two Config
+/// captures together at 136 KiB, not the saving of this repair. Both
+/// execution modes therefore travel through `submit`, and `background`
+/// advertises and serves only what the tool cannot ask for there.
+/// `seams` names every seam this host serves and, for each, the allowlist a
+/// submission naming it is judged against and the capabilities its router
+/// maps — published rather than copied, so the sentence the model is
+/// charged for on every request cannot drift from the policy the program
+/// is judged against. `default_within_ms` is at most `max_within_ms`.
 pub type CodeMode {
   CodeMode(
-    /// Runs one submitted program end to end.
-    execute: fn(Request) -> Execution,
-    /// Optional session-owned execution service.
+    /// Answers one submission, synchronous or launch, holding the host's
+    /// configuration behind this closure alone.
+    submit: fn(Submission) -> SubmissionResult,
+    /// Optional session-owned execution service: the interactions with
+    /// launched executions and the advertisement that launch is served.
     background: Option(Background),
     /// The seams this host serves, the default first.
     seams: Seams,
@@ -507,10 +538,13 @@ pub type Interaction {
 }
 
 /// Host closures behind the asynchronous modes of code_mode.
+///
+/// Launch is not here: it travels through `CodeMode.submit` so the host's
+/// configuration is captured once. What is here is the handle half — the
+/// service the session keeps after a launch returns, and the flag the tool
+/// shell reads to advertise the launch mode at all.
 pub type Background {
   Background(
-    /// Launches with policy and identity captured from the original request.
-    launch: fn(Request) -> Result(JsonValue, String),
     /// Authenticates every handle access with the calling strand.
     interact: fn(String, String, Interaction, Int) -> Result(JsonValue, String),
   )
@@ -1413,10 +1447,20 @@ fn run_program(
   })
   let asked = request(mode, ctx, program, within_ms, on: offer.seam)
 
-  // Launch as a background job or execute synchronously.
+  // Launch as a background job or execute synchronously. Both travel through
+  // `mode.submit` — the one closure that holds the host's configuration —
+  // so the choice here is only which submission the caller asked for.
   case background {
     None -> render(ctx, offer, program, once_more_if_approved(mode, ctx, asked))
-    Some(background) -> async_outcome(background.launch(asked))
+    Some(_) ->
+      case mode.submit(Launch(asked)) {
+        // The dispatcher promised `Launch` answers `Admitted`; anything
+        // else is the host breaking the seam contract, and the caller
+        // should see that break named rather than an empty handle.
+        Admitted(admission) -> async_outcome(admission)
+        Synchronous(_) ->
+          async_outcome(Error("launch answered with a synchronous run"))
+      }
   }
 }
 
@@ -1493,24 +1537,46 @@ fn once_more_if_approved(
   ctx: Ctx,
   asked: Request,
 ) -> Execution {
-  let execution = mode.execute(asked)
+  let execution = synchronous_result(mode.submit(Run(asked)))
 
-  // Check whether execution was refused by policy and escalation can be raised.
+  // Only a refused run is eligible for the one operator-approved retry.
   case execution.refusal {
     NothingRefused -> execution
     RunRefused(denial:, deadline_ms:) ->
       case ctx.raise_refusal(tool.RaisedRefusal(denial:, deadline_ms:)) {
         tool.Settle -> execution
 
-        // Appended rather than substituted: an approval widens what this
-        // call already carried, and the grants the call arrived with are
-        // ones a human approved for it too — through the driver's own
-        // clearance path, one turn earlier.
+        // Keep the grants already approved for this call and append the new ones.
         tool.Resume(grants:) ->
-          mode.execute(
+          mode.submit(Run(
             Request(..asked, grants: list.append(asked.grants, grants)),
-          )
+          ))
+          |> synchronous_result
       }
+  }
+}
+
+/// Extracts a run result and reports a host that violated the submission contract.
+fn synchronous_result(answer: SubmissionResult) -> Execution {
+  case answer {
+    Synchronous(execution) -> execution
+
+    // No enforcement report can be inferred from an incorrectly paired answer.
+    Admitted(_) -> {
+      let reason =
+        "code-mode seam contract: run answered with a background admission"
+      Execution(
+        result: CompileFailed(WorkspaceSetupFailed(reason:)),
+        enforcement: Enforcement(
+          build: Unreported(reason:),
+          node: Unreported(reason:),
+        ),
+        refusal: NothingRefused,
+        calls: call_record.empty(),
+        edits: [],
+        last_failure: None,
+      )
+    }
   }
 }
 

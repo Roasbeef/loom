@@ -48,17 +48,26 @@ pub fn seam(
   service: address.Address(async_runs.Message),
   agents: agency.Config,
 ) -> tool.CodeMode {
-  let sync = codemode.seam(config)
+  // One dispatcher captures the configuration once, and it — not a
+  // second closure beside it — is what every registry copy pays for.
+  // The tool shell reads `background` to decide which submission to
+  // make, so both arms of the case below are behind this one closure.
   tool.CodeMode(
-    ..sync,
+    submit: fn(submission) {
+      case submission {
+        tool.Run(request) -> tool.Synchronous(codemode.execute(config, request))
+        tool.Launch(request) ->
+          tool.Admitted(launch(config, service, agents, request))
+      }
+    },
     background: Some(
-      tool.Background(
-        launch: fn(request) { launch(config, service, agents, request) },
-        interact: fn(strand, handle, interaction, within) {
-          interact(service, strand, handle, interaction, within)
-        },
-      ),
+      tool.Background(interact: fn(strand, handle, interaction, within) {
+        interact(service, strand, handle, interaction, within)
+      }),
     ),
+    seams: codemode.offered_seams(config),
+    default_within_ms: config.default_within_ms,
+    max_within_ms: config.max_within_ms,
   )
 }
 

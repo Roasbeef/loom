@@ -187,3 +187,32 @@ those inventories and extends the existing daemon-signoff assertion to it;
 no assertion or deadline is weakened. The full lint package suite passes all
 318 tests and house lint retains zero errors and 2,947 warnings. Exact-head
 Linux validation and the final merge receipt are recorded in the PR.
+
+
+## Integration with current main
+
+Main advanced to `48bf9cf08` through PR #1208 while validation ran. Its tree is
+identical to Linux-validated head `7b59e6022` (run `42730837740`). The JSON branch
+parent `de51ae301` passed every Linux job and the executed aggregate skip census
+in run `42740991419`. The census used the existing Linux-gate declarations;
+it did not turn unexecuted fixtures into coverage.
+
+The merge conflicted only in the two client package documentation mirrors.
+Both appended sections are retained. A machine check verifies that all 3,233
+non-Markdown indexed paths equal the disjoint union of the validated parent
+blobs: 45 paths changed on the JSON branch and 12 on main, with no overlap.
+No source resolution edits were authored. A focused independent composition
+review found no interface interaction or lost documentation.
+
+The combined tree reports 2,085 selected native passes: codec 6, tools 818,
+focused client configuration/escalation/agency/executor/contributions/LSP/
+placement/protocol/gateway/real-TUI 692, code mode 453 and conformance 116.
+The same six codec properties pass on Node; these selected combined logs have
+no `SKIP` diagnostic. Server shipment, whole-tree lint, documentation, format,
+prelude and client-asset gates pass. Darwin's actual enforcement posture
+remains explicitly degraded in the jailed receipts.
+
+These are combined-tree checks plus two parent Linux gates, not a new full
+Linux run for the merge commit. Both now-redundant standalone signoff requests
+were cancelled and posted no verdict. The final PR records the precise merge
+head and remaining hosted CI state without relabeling parent evidence.

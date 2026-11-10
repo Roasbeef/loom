@@ -104,6 +104,16 @@ growth did not move, which is the subject of the next section.
 
 ## What is left
 
+**Repair status.** The census below is historical, not a measurement of the
+current daemon. The per-session tool holder has since removed the repeated
+registry ownership copies. The CodeMode repair now dispatches synchronous
+runs and background admission through one configuration-bearing `submit`
+closure, instead of separate `execute` and `background.launch` closures. Its
+capture regression counts the actual registered tool's closure environments.
+The historical 136 KiB was the combined size of two configuration captures,
+not a measured saving from this change; current installed RSS savings still
+require a matched measurement.
+
 **Per-session memory is the tool registry, copied.** A daemon with one
 session holds 29 copies of the session's tool registry, 294 KiB each, which
 is about 8.3 MiB of the 10.8 MiB a session costs. 27 of the copies sit in one

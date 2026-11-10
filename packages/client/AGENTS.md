@@ -10949,7 +10949,19 @@ ordinary top-level worker session per ticket assignment
 - Not built in this slice: the host check, pull requests, outbound delivery of
   replies, a Mandate-enforced broker policy.
 
+## Platform JSON byte boundary
+
 Command JSON decoding and existing serialization calls in `protocol` and
 `gateway` use `json_codec` (ADR-023). The same ordered core values, exact bytes
 and corruption reports reach the existing protocol/budget/authorization paths.
 This changes neither frame schemas nor delivery authority.
+
+## Code-mode configuration custody
+
+`async_codemode.seam` captures the base `codemode.Config` once behind
+`tools/codemode.CodeMode.submit`. `Run` executes synchronously; `Launch` derives
+its custody, deadline and router inside that dispatcher before admission.
+`Background` retains only handle interaction and advertises launch support.
+The executor's `backgrounded` wrapper forwards `Run` to the existing dispatcher
+and sends `Launch` to the owner without retaining another base configuration.
+The capture-multiplicity regression lives in `client/codemode_test`.

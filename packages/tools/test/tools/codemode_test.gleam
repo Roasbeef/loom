@@ -28,7 +28,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import simplifile
 import tools/call_record
-import tools/codemode
+import tools/codemode.{Admitted, Launch, Run, Synchronous}
 import tools/codemode_recipes
 import tools/directory_access
 import tools/fs
@@ -146,7 +146,12 @@ fn scripted_over(
 ) -> codemode.CodeMode {
   codemode.CodeMode(
     background: None,
-    execute: fn(_request) { execution },
+    submit: fn(submission) {
+      case submission {
+        Run(_) -> Synchronous(execution)
+        Launch(_) -> Admitted(Error("scripted seam has no launch"))
+      }
+    },
     seams:,
     default_within_ms: 300_000,
     max_within_ms: 900_000,
@@ -162,53 +167,51 @@ fn echoing() -> codemode.CodeMode {
 fn echoing_over(seams: codemode.Seams) -> codemode.CodeMode {
   codemode.CodeMode(
     background: None,
-    execute: fn(request: codemode.Request) {
-      codemode.Execution(
-        result: codemode.Ran(
-          outcome: codemode.Completed(
-            value: msgpack.MapValue([
-              #(
-                msgpack.StringValue("op"),
-                msgpack.StringValue(ids.op_id_to_string(request.op_id)),
-              ),
-              #(
-                msgpack.StringValue("step"),
-                msgpack.StringValue(request.step_id),
-              ),
-              #(
-                msgpack.StringValue("strand"),
-                msgpack.StringValue(request.strand),
-              ),
-              #(
-                msgpack.StringValue("workspace"),
-                msgpack.StringValue(request.workspace),
-              ),
-              #(
-                msgpack.StringValue("within_ms"),
-                msgpack.IntValue(request.within_ms),
-              ),
-              #(
-                msgpack.StringValue("source"),
-                msgpack.StringValue(request.source),
-              ),
-              #(
-                msgpack.StringValue("seam"),
-                msgpack.StringValue(codemode.seam_name(request.seam)),
-              ),
-            ]),
-          ),
-          manifest_hash: "sha256-echo",
-        ),
-        enforcement: jailed(),
-        refusal: codemode.NothingRefused,
-        calls: call_record.empty(),
-        edits: [],
-        last_failure: None,
-      )
+    submit: fn(submission) {
+      case submission {
+        Run(request) -> Synchronous(echoing_execution(request))
+        Launch(_) -> Admitted(Error("echoing seam has no launch"))
+      }
     },
     seams:,
     default_within_ms: 300_000,
     max_within_ms: 900_000,
+  )
+}
+
+fn echoing_execution(request: codemode.Request) -> codemode.Execution {
+  codemode.Execution(
+    result: codemode.Ran(
+      outcome: codemode.Completed(
+        value: msgpack.MapValue([
+          #(
+            msgpack.StringValue("op"),
+            msgpack.StringValue(ids.op_id_to_string(request.op_id)),
+          ),
+          #(msgpack.StringValue("step"), msgpack.StringValue(request.step_id)),
+          #(msgpack.StringValue("strand"), msgpack.StringValue(request.strand)),
+          #(
+            msgpack.StringValue("workspace"),
+            msgpack.StringValue(request.workspace),
+          ),
+          #(
+            msgpack.StringValue("within_ms"),
+            msgpack.IntValue(request.within_ms),
+          ),
+          #(msgpack.StringValue("source"), msgpack.StringValue(request.source)),
+          #(
+            msgpack.StringValue("seam"),
+            msgpack.StringValue(codemode.seam_name(request.seam)),
+          ),
+        ]),
+      ),
+      manifest_hash: "sha256-echo",
+    ),
+    enforcement: jailed(),
+    refusal: codemode.NothingRefused,
+    calls: call_record.empty(),
+    edits: [],
+    last_failure: None,
   )
 }
 
@@ -277,9 +280,14 @@ fn source_ctx(name: String) -> Ctx {
 }
 
 fn recording_source(requests: Subject(codemode.Request)) -> codemode.CodeMode {
-  codemode.CodeMode(..echoing(), execute: fn(request: codemode.Request) {
-    process.send(requests, request)
-    ran(codemode.Completed(msgpack.StringValue("executed")))
+  codemode.CodeMode(..echoing(), submit: fn(submission) {
+    case submission {
+      Run(request) -> {
+        process.send(requests, request)
+        Synchronous(ran(codemode.Completed(msgpack.StringValue("executed"))))
+      }
+      Launch(_) -> Admitted(Error("recording seam has no launch"))
+    }
   })
 }
 
@@ -469,11 +477,19 @@ pub fn approval_retry_uses_the_loaded_source_without_rereading_test() {
       },
     )
   let mode =
-    codemode.CodeMode(..echoing(), execute: fn(request: codemode.Request) {
-      process.send(requests, request)
-      case list.contains(request.grants, raised_grant) {
-        True -> ran(codemode.Completed(msgpack.StringValue("approved")))
-        False -> run_refused()
+    codemode.CodeMode(..echoing(), submit: fn(submission) {
+      case submission {
+        Run(request) -> {
+          process.send(requests, request)
+          case list.contains(request.grants, raised_grant) {
+            True ->
+              Synchronous(
+                ran(codemode.Completed(msgpack.StringValue("approved"))),
+              )
+            False -> Synchronous(run_refused())
+          }
+        }
+        Launch(_) -> Admitted(Error("widening seam has no launch"))
       }
     })
   assert !codemode.tool_for(mode).run(ctx, file_arguments("source.gleam")).is_error
@@ -495,17 +511,20 @@ pub fn background_launch_loads_source_but_interactions_never_do_test() {
   let mode =
     codemode.CodeMode(
       ..echoing(),
-      background: Some(
-        codemode.Background(
-          launch: fn(request: codemode.Request) {
+      submit: fn(submission) {
+        case submission {
+          Run(request) -> Synchronous(echoing_execution(request))
+          Launch(request) -> {
             process.send(launches, request)
-            Ok(json.String("handle"))
-          },
-          interact: fn(_strand, _handle, action, _within) {
-            process.send(interactions, action)
-            Ok(json.String("interaction"))
-          },
-        ),
+            Admitted(Ok(json.String("handle")))
+          }
+        }
+      },
+      background: Some(
+        codemode.Background(interact: fn(_strand, _handle, action, _within) {
+          process.send(interactions, action)
+          Ok(json.String("interaction"))
+        }),
       ),
     )
   let runner = codemode.tool_for(mode)
@@ -1282,7 +1301,7 @@ pub fn an_empty_program_never_reaches_the_seam_test() {
   let exploding =
     codemode.CodeMode(
       ..scripted(ran(codemode.Completed(msgpack.NilValue))),
-      execute: fn(_request) {
+      submit: fn(_submission) {
         panic as "an empty program must not reach the pipeline"
       },
     )
@@ -1408,7 +1427,7 @@ pub fn a_seam_this_host_does_not_serve_never_reaches_the_pipeline_test() {
   let exploding =
     codemode.CodeMode(
       ..scripted(ran(codemode.Completed(msgpack.NilValue))),
-      execute: fn(_request) {
+      submit: fn(_submission) {
         panic as "an unserved seam must not reach the pipeline"
       },
     )
@@ -1845,22 +1864,29 @@ const raised_grant = policy.GrantEnv(name: "LOOM_CAP_SOCK")
 fn widenable(crossings: Subject(List(policy.Grant))) -> codemode.CodeMode {
   codemode.CodeMode(
     background: None,
-    execute: fn(request: codemode.Request) {
-      process.send(crossings, request.grants)
-      case list.contains(request.grants, raised_grant) {
-        True ->
-          codemode.Execution(
-            result: codemode.Ran(
-              outcome: codemode.Completed(value: msgpack.StringValue("widened")),
-              manifest_hash: "sha256-widened",
-            ),
-            enforcement: jailed(),
-            refusal: codemode.NothingRefused,
-            calls: call_record.empty(),
-            edits: [],
-            last_failure: None,
-          )
-        False -> run_refused()
+    submit: fn(submission) {
+      case submission {
+        Run(request) -> {
+          process.send(crossings, request.grants)
+          case list.contains(request.grants, raised_grant) {
+            True ->
+              Synchronous(codemode.Execution(
+                result: codemode.Ran(
+                  outcome: codemode.Completed(value: msgpack.StringValue(
+                    "widened",
+                  )),
+                  manifest_hash: "sha256-widened",
+                ),
+                enforcement: jailed(),
+                refusal: codemode.NothingRefused,
+                calls: call_record.empty(),
+                edits: [],
+                last_failure: None,
+              ))
+            False -> Synchronous(run_refused())
+          }
+        }
+        Launch(_) -> Admitted(Error("widenable seam has no launch"))
       }
     },
     seams: codemode.one_seam(workspace_offer()),
@@ -1876,9 +1902,14 @@ fn always_refusing(
 ) -> codemode.CodeMode {
   codemode.CodeMode(
     background: None,
-    execute: fn(request: codemode.Request) {
-      process.send(crossings, request.grants)
-      run_refused()
+    submit: fn(submission) {
+      case submission {
+        Run(request) -> {
+          process.send(crossings, request.grants)
+          Synchronous(run_refused())
+        }
+        Launch(_) -> Admitted(Error("always-refusing seam has no launch"))
+      }
     },
     seams: codemode.one_seam(workspace_offer()),
     default_within_ms: 300_000,
@@ -2169,10 +2200,7 @@ pub fn the_schema_states_which_mode_needs_program_or_handle_test() {
     codemode.CodeMode(
       ..echoing(),
       background: option.Some(
-        codemode.Background(
-          launch: fn(_request) { Error("unused") },
-          interact: fn(_, _, _, _) { Error("unused") },
-        ),
+        codemode.Background(interact: fn(_, _, _, _) { Error("unused") }),
       ),
     )
   let assert Ok(json.Array([])) =
@@ -2577,4 +2605,40 @@ pub fn a_program_failure_without_a_failed_command_has_no_line_test() {
   assert !string.contains(text_of(outcome), "last failing command")
   let assert Some(json.Object(fields)) = outcome.details
   assert !has_key(fields, "last_failed_command")
+}
+
+// A host violating the dispatcher pairing must fail in band, not retry or
+// report a background handle as a completed program.
+pub fn synchronous_submission_rejects_an_admission_answer_test() {
+  let mode =
+    codemode.CodeMode(..echoing(), submit: fn(_) {
+      Admitted(Ok(json.String("not-a-run")))
+    })
+  let outcome = call(mode, [#("program", json.String("source"))])
+  assert outcome.is_error
+  assert string.contains(
+    text_of(outcome),
+    "run answered with a background admission",
+  )
+}
+
+pub fn launch_submission_rejects_a_synchronous_answer_test() {
+  let mode =
+    codemode.CodeMode(
+      ..echoing(),
+      submit: fn(_) { Synchronous(ran(codemode.Completed(msgpack.NilValue))) },
+      background: Some(
+        codemode.Background(interact: fn(_, _, _, _) { Error("unused") }),
+      ),
+    )
+  let outcome =
+    call(mode, [
+      #("mode", json.String("launch")),
+      #("program", json.String("source")),
+    ])
+  assert outcome.is_error
+  assert string.contains(
+    text_of(outcome),
+    "launch answered with a synchronous run",
+  )
 }

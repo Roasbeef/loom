@@ -55,7 +55,7 @@ fn an_agency() -> agent.Agency {
 
 fn a_code_mode() -> codemode_tool.CodeMode {
   codemode_tool.CodeMode(
-    execute: fn(_request) { panic as "this test does not run a program" },
+    submit: fn(_submission) { panic as "this test does not run a program" },
     background: None,
     seams: codemode_tool.one_seam(
       codemode_tool.SeamOffer(

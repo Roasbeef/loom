@@ -331,7 +331,7 @@ fn guidance_registry(
 ) -> tool.Registry {
   let mode =
     codemode_tool.CodeMode(
-      execute: fn(_) { panic as "discovery never executes a program" },
+      submit: fn(_submission) { panic as "discovery never executes a program" },
       background: None,
       seams:,
       default_within_ms: 1000,
