@@ -10,7 +10,9 @@ records the scoped FFI exception. No external enters pure core.
 ## Sources and method
 
 The reference source is main `72b8aadd2f8bca1f92c785831c8a5c77be15f966`.
-The reviewed implementation is `61b1f5b18`; only documentation follows it.
+The reviewed codec and byte-boundary implementation is `61b1f5b18`. Later
+changes update documentation and the lint package inventories; the codec and
+production integrations remain unchanged.
 Saved baseline artifacts were copied before integration:
 
 | Artifact | SHA-256 |
@@ -173,3 +175,15 @@ is retained and is not a final full-client or aggregate pass. The unchanged
 six-test goal module passes in the final focused run. A full final aggregate,
 hosted CI and Linux signoff are not established by these local receipts; their
 state is recorded separately in the PR.
+
+
+## CI inventory follow-up
+
+Hosted Linux fast-lane validation at `6477a5045` found three deterministic lint
+inventory failures: the affected-package check order, qualified module roots
+and exact expected daemon dependency set omitted `json_codec`. All three
+failures reproduced locally before repair. The correction adds the package to
+those inventories and extends the existing daemon-signoff assertion to it;
+no assertion or deadline is weakened. The full lint package suite passes all
+318 tests and house lint retains zero errors and 2,947 warnings. Exact-head
+Linux validation and the final merge receipt are recorded in the PR.
