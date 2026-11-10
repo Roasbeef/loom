@@ -42,6 +42,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import json_codec
 import provider/http
 import provider/internal/diagnostic
 import provider/internal/error_code
@@ -611,7 +612,7 @@ fn handle_sse(
     stream.SseMalformed(..) -> malformed(acc, "sse_framing")
     stream.SseMessage(event: name, data:) -> {
       use value <- or_malformed(
-        result.replace_error(json.parse(data), Nil),
+        result.replace_error(json_codec.parse(data), Nil),
         acc,
         "json_decode",
       )
@@ -1016,7 +1017,9 @@ fn http_error(acc: Accumulator, status: Int) -> stream.ProviderError {
   let value =
     acc.error_body
     |> bit_array.to_string
-    |> result.try(fn(text) { json.parse(text) |> result.replace_error(Nil) })
+    |> result.try(fn(text) {
+      json_codec.parse(text) |> result.replace_error(Nil)
+    })
     |> result.try(wire.field(_, "error"))
     |> result.unwrap(json.Null)
   let #(code, description) = error_fields(value)
@@ -2440,7 +2443,9 @@ fn settle(
   // A reasoning item requires its original ID. Refuse a witness which cannot
   // fit the bounded metadata rather than settle history that cannot replay.
   use <- bool.lazy_guard(
-    bit_array.byte_size(bit_array.from_string(json.to_string(diagnostics)))
+    bit_array.byte_size(
+      bit_array.from_string(json_codec.to_string(diagnostics)),
+    )
       > 65_536,
     fn() { malformed(acc, "replay_metadata_bytes") },
   )

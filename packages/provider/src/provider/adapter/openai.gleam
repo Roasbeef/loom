@@ -83,6 +83,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import json_codec
 import provider/http.{type HttpRequest, HttpRequest}
 import provider/internal/diagnostic
 import provider/internal/usage_witness
@@ -176,7 +177,7 @@ pub fn build_request(
       #("content-type", "application/json"),
       #("accept", "text/event-stream"),
     ],
-    body: json.to_string(body),
+    body: json_codec.to_string(body),
   )
 }
 
@@ -372,7 +373,7 @@ fn encode_tool_call(call: message.ToolCall) -> JsonValue {
       "function",
       json.Object([
         #("name", json.String(name)),
-        #("arguments", json.String(json.to_string(arguments))),
+        #("arguments", json.String(json_codec.to_string(arguments))),
       ]),
     ),
   ])
@@ -608,7 +609,7 @@ fn settle_or_disconnect(acc: Accumulator) -> List(StreamEvent) {
 fn http_error(status: Int, acc: Accumulator) -> stream.ProviderError {
   let body_text = result.unwrap(bit_array.to_string(acc.error_body), "")
   let error_field =
-    json.parse(body_text)
+    json_codec.parse(body_text)
     |> result.replace_error(Nil)
     |> result.try(wire.field(_, "error"))
 
@@ -659,7 +660,7 @@ fn handle_sse_data(
   acc: Accumulator,
   data: String,
 ) -> #(Accumulator, List(StreamEvent)) {
-  use document <- or_fail(json.parse(data), acc, MalformedStream)
+  use document <- or_fail(json_codec.parse(data), acc, MalformedStream)
   handle_document(acc, document, string.byte_size(data))
 }
 

@@ -256,6 +256,7 @@ import gleam/result
 import gleam/string
 import host/bootstrap
 import host/skill
+import json_codec
 import machine/acceptance
 import machine/codec as machine_codec
 import machine/operation
@@ -2138,7 +2139,7 @@ fn request_identity(spec: effects.RequestSpec) -> String {
     ]
   }
 
-  json.to_string(json.Array(parts))
+  json_codec.to_string(json.Array(parts))
 }
 
 /// Adds bounded, explicitly discontinuous previews to a network gateway.
@@ -4913,7 +4914,7 @@ fn bounded_response(envelope: EventEnvelope) -> Result(String, String) {
 
   let value = protocol.event_value(EventEnvelope(..envelope, event:))
   use _ <- result.try(transfer.encoded_size(value, 65_536))
-  Ok(json.to_string(value))
+  Ok(json_codec.to_string(value))
 }
 
 fn mutation_outcome(status: String) -> WireEvent {

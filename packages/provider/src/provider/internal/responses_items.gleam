@@ -10,6 +10,7 @@ import gleam/bool
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import json_codec
 import provider/internal/wire
 
 /// The bounded diagnostics namespace, distinct from all other adapters.
@@ -104,7 +105,7 @@ fn restore_item(
       // Extract arguments from tool call, preserving malformed text if present.
       let arguments = case message.malformed_arguments_of(call.arguments) {
         Ok(malformed) -> malformed.0
-        Error(Nil) -> json.to_string(call.arguments)
+        Error(Nil) -> json_codec.to_string(call.arguments)
       }
 
       Ok(#(put(raw, "arguments", json.String(arguments)), rest))

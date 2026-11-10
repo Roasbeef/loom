@@ -18,6 +18,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import gleam/uri
+import json_codec
 import parrot/dev
 import sqlight
 import storage/internal/snapshot_sqlite
@@ -139,7 +140,7 @@ pub fn inspect(source: Source, expected: ids.SessionId) -> Result(Cut, String) {
       |> result.replace_error("source metadata is not UTF-8"),
     )
     use value <- result.try(
-      json.parse(text) |> result.map_error(string.inspect),
+      json_codec.parse(text) |> result.map_error(string.inspect),
     )
 
     // Ensure that parsed JSON source metadata is an object structure.

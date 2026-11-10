@@ -82,6 +82,7 @@ import gleam/otp/actor
 import gleam/result
 import gleam/string
 import gleam/uri
+import json_codec
 import simplifile
 import sqlight.{type Connection}
 import storage/internal/branch
@@ -2365,7 +2366,7 @@ fn metadata_fields(
             at: "storage/sqlite.metadata",
             on: "session.metadata",
             expected: "a json object",
-            context: json.to_string(other),
+            context: json_codec.to_string(other),
           ))
       }
     }
@@ -2384,7 +2385,7 @@ fn parse_generation_field(
         at: "storage/sqlite.rewrite_into",
         on: "session.metadata generation",
         expected: "an integer",
-        context: json.to_string(other),
+        context: json_codec.to_string(other),
       ))
   }
 }
@@ -4307,7 +4308,7 @@ fn describe_sqlight(error: sqlight.Error) -> String {
 }
 
 fn blob_of_json(value: JsonValue) -> sqlight.Value {
-  sqlight.blob(bit_array.from_string(json.to_string(value)))
+  sqlight.blob(bit_array.from_string(json_codec.to_string(value)))
 }
 
 /// Decodes a UTF-8 JSON bit array into parsed JsonValue.
@@ -4316,7 +4317,7 @@ fn json_of_blob(
   subject: String,
 ) -> Result(JsonValue, CorruptionReport) {
   case bit_array.to_string(blob) {
-    Ok(text) -> json.parse(text)
+    Ok(text) -> json_codec.parse(text)
     Error(Nil) ->
       Error(corruption.report(
         at: "storage/sqlite.decode",

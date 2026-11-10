@@ -659,3 +659,8 @@ registry. A side request pins that identity rather than walking the fallback
 chain. Tool definitions remain prefix material; the side service has no executor.
 The adapter fixture verifies frozen endpoint placement, four-marker accounting,
 and identical tool definitions. It does not establish a live cache hit.
+
+Provider JSON request/response and stream boundaries use `json_codec`
+(ADR-023). OTP callbacks on Erlang preserve ordered core values and exact
+serialized bytes; native refusals use the reference parser's complete reports.
+SSE framing, retry classification and typed dialect decoders are unchanged.

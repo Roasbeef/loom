@@ -11,12 +11,12 @@
 
 import core/codec
 import core/corruption.{type CorruptionReport}
-import core/json
 import core/register.{type RegisterValue}
 import gleam/bit_array
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/result
+import json_codec
 
 /// A store-local inventory with at most 64 blobs and 256 KiB of encoded data.
 /// Only complete successful decodes enter the table; errors are never retained.
@@ -98,6 +98,6 @@ fn decode_blob(blob: BitArray) -> Result(RegisterValue, CorruptionReport) {
       )
     }),
   )
-  use value <- result.try(json.parse(text))
+  use value <- result.try(json_codec.parse(text))
   codec.decode_register_value(value)
 }

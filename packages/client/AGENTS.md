@@ -10948,3 +10948,8 @@ ordinary top-level worker session per ticket assignment
   project could be created; it now reads the name from the registration.
 - Not built in this slice: the host check, pull requests, outbound delivery of
   replies, a Mandate-enforced broker policy.
+
+Command JSON decoding and existing serialization calls in `protocol` and
+`gateway` use `json_codec` (ADR-023). The same ordered core values, exact bytes
+and corruption reports reach the existing protocol/budget/authorization paths.
+This changes neither frame schemas nor delivery authority.

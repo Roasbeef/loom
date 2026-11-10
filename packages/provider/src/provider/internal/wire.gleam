@@ -38,6 +38,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import json_codec
 
 /// Looks up an object field, first occurrence wins. `Error(Nil)` for
 /// non-objects, missing fields, and explicit `null`.
@@ -201,7 +202,7 @@ pub fn tool_arguments(arguments_json: String) -> JsonValue {
   case arguments_json {
     "" -> json.Object([])
     text ->
-      case json.parse(text) {
+      case json_codec.parse(text) {
         Ok(json.Object(_) as arguments) -> arguments
 
         // Text that parses but is not an object is the same failure from

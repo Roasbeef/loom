@@ -19,6 +19,7 @@ import gleam/option.{None, Some}
 import gleam/order
 import gleam/result
 import gleam/string
+import json_codec
 import storage/snapshot.{type Error}
 import storage/storage.{type Register, type SessionStats}
 
@@ -46,7 +47,7 @@ pub type View {
 pub fn capture(view: View, plan: snapshot.Plan) -> Result(snapshot.Cut, Error) {
   use Nil <- result.try(snapshot.validate(plan))
   let usage_bytes =
-    string.byte_size(json.to_string(codec.encode_usage(view.stats.usage)))
+    string.byte_size(json_codec.to_string(codec.encode_usage(view.stats.usage)))
   use #(cells, metadata_bytes) <- result.try(snapshot.collect(
     plan,
     snapshot.Source(
@@ -156,7 +157,9 @@ fn make_header(
     namespace,
     key,
     value.seq,
-    string.byte_size(json.to_string(codec.encode_register_value(value.value))),
+    string.byte_size(
+      json_codec.to_string(codec.encode_register_value(value.value)),
+    ),
   )
 }
 

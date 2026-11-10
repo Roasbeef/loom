@@ -48,13 +48,13 @@
 //// and passed in. This module reads no clock, and a time from the monotonic
 //// clock must never be passed, because it is meaningless after a restart.
 
-import core/json
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import json_codec
 import parrot/dev
 import sqlight
 import storage/project_ledger_schema
@@ -692,7 +692,7 @@ fn valid_document(
 /// Whether a text is one JSON document within a size. The size is judged first,
 /// so an oversized text is never parsed.
 fn is_document(text: String, limit: Int) -> Bool {
-  string.byte_size(text) <= limit && result.is_ok(json.parse(text))
+  string.byte_size(text) <= limit && result.is_ok(json_codec.parse(text))
 }
 
 /// Checks a caller-supplied system time.

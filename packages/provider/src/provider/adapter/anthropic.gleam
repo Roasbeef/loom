@@ -79,6 +79,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import json_codec
 import provider/http.{type HttpRequest, HttpRequest}
 import provider/internal/diagnostic
 import provider/internal/usage_witness
@@ -257,7 +258,7 @@ pub fn build_request_with_prefix(
       #("content-type", "application/json"),
       #("accept", "text/event-stream"),
     ],
-    body: json.to_string(body),
+    body: json_codec.to_string(body),
   )
 }
 
@@ -748,7 +749,7 @@ fn on_end(acc: Accumulator) -> List(StreamEvent) {
 fn http_error(status: Int, acc: Accumulator) -> stream.ProviderError {
   let body_text = result.unwrap(bit_array.to_string(acc.error_body), "")
   let error_field =
-    json.parse(body_text)
+    json_codec.parse(body_text)
     |> result.replace_error(Nil)
     |> result.try(wire.field(_, "error"))
 
@@ -788,7 +789,7 @@ fn handle_sse(
     SseMalformed(reason:) ->
       fail(acc, MalformedStream(corruption_report("a utf-8 sse line", reason)))
     SseMessage(event: _, data:) -> {
-      use document <- or_fail(json.parse(data), acc, MalformedStream)
+      use document <- or_fail(json_codec.parse(data), acc, MalformedStream)
       handle_message(
         acc,
         wire.string_field_or(document, "type", or: ""),

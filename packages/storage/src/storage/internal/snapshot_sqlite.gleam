@@ -19,6 +19,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import json_codec
 import parrot/dev
 import sqlight
 import storage/snapshot.{type Error}
@@ -427,7 +428,7 @@ fn payload(bytes: BitArray) -> Result(json.JsonValue, Error) {
     bit_array.to_string(bytes)
     |> result.map_error(fn(_) { invalid_row("UTF-8 JSON bytes") }),
   )
-  json.parse(text) |> result.map_error(corrupt)
+  json_codec.parse(text) |> result.map_error(corrupt)
 }
 
 fn required(value: Option(a)) -> Result(a, Error) {
