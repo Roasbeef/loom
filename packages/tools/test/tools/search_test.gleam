@@ -9,6 +9,7 @@
 //// most here — that a symlink is reported and not followed — since an
 //// in-memory fake would be testing the fake's idea of `lstat`.
 
+import cap/search as cap_search
 import gleam/int
 import gleam/list
 import gleam/string
@@ -847,6 +848,39 @@ pub fn a_directory_root_still_walks_after_the_file_form_test() {
   assert files_scanned == 2
   assert list.map(matches, fn(found) { found.path })
     == ["src/a.txt", "src/b.txt"]
+}
+
+// The builder lives in `cap` and the engine here, so this is the one test
+// that joins them: the escaped pattern the caller never wrote must match the
+// plain text exactly, through the engine's own regex compiler.
+pub fn a_literal_query_matches_metacharacters_exactly_test() {
+  let workspace = fresh_dir("grep-literal")
+  write(
+    workspace <> "/a.txt",
+    "call Foo(1)\nxs[0] = 1\nversion 1.2\nversion 1x2\na*b\naab\ncall Foo\n",
+  )
+
+  let matched = fn(text: String) {
+    let query = cap_search.grep_literal_query(under: "a.txt", matching: text)
+    let assert Ok(Found(matches:, ..)) =
+      search.grep(
+        workspace:,
+        root: workspace <> "/a.txt",
+        protected: [],
+        query: GrepQuery(
+          ..regex_query(query.pattern),
+          globs: query.globs,
+          context: query.context,
+        ),
+      )
+      as { "a literal query must compile: " <> text }
+    list.map(matches, fn(found) { found.line })
+  }
+
+  assert matched("Foo(") == [1]
+  assert matched("[0]") == [2]
+  assert matched("1.2") == [3]
+  assert matched("a*b") == [5]
 }
 
 pub fn a_missing_grep_root_is_still_missing_test() {

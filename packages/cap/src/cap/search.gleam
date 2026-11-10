@@ -32,11 +32,14 @@
 ////
 //// ## Flow
 ////
-//// `glob_query` → `glob` → `glob_paths` | `grep_query` → `grep` →
-//// `grep_text` | `stat` | `read_lines`
+//// `glob_query` → `glob` → `glob_paths` | `grep_literal_query` | `grep_query` →
+//// `grep` → `grep_text` | `stat` | `read_lines`
 ////
-//// 1. `glob_query` and `grep_query` fill in every bound at its default; a
-////    caller widens one field with record update syntax.
+//// 1. `glob_query`, `grep_literal_query` and `grep_query` fill in every bound
+////    at its default; a caller widens one field with record update syntax.
+////    For code search start from `grep_literal_query`: `Foo(` and `a[0]` are
+////    regular expressions with a syntax error and a different meaning, and
+////    the literal form needs no escaping.
 //// 2. `glob` and `grep` are the bounded calls, and `stat` and `read_lines`
 ////    are the single-path ones that need no walk.
 //// 3. `glob_paths` and `grep_text` are the common reductions: the paths of a
@@ -46,8 +49,13 @@
 ////
 //// ```gleam
 //// let assert Ok(paths) = search.glob_paths(under: "src", matching: "**/*.gleam")
+//// let assert Ok(found) =
+////   search.grep(search.grep_literal_query(under: "src", matching: "start("))
 //// let assert Ok(lines) = search.grep_text(under: "src", matching: "panic")
 //// ```
+////
+//// `under` names a directory to walk or one regular file to search, so a
+//// path taken from a `glob` listing can be passed straight to `grep`.
 
 import cap/internal/channel.{type CallError, Denied, Unreachable}
 import cap/internal/dispatch
@@ -56,6 +64,7 @@ import core/msgpack.{type MsgPackValue}
 import gleam/int
 import gleam/list
 import gleam/result
+import gleam/string
 
 /// The number of entries a `glob_query` asks for when the caller does not
 /// say. The harness module `tools/search` is the enforcer and holds the
@@ -313,11 +322,12 @@ pub type Found {
 /// record update syntax.
 pub type GrepQuery {
   GrepQuery(
-    /// Where the walk starts, workspace-relative or absolute. Must be a
-    /// directory.
+    /// Where the search starts, workspace-relative or absolute: a
+    /// directory to walk, or one regular file to search alone.
     root: String,
     /// The regular expression, matched case-sensitively against each
-    /// line on its own.
+    /// line on its own. `grep_literal_query` fills this in from plain
+    /// text, escaped.
     pattern: String,
     /// Path globs limiting which files are opened, in `GlobQuery`'s
     /// pattern language. Empty means every file under `root`.
@@ -366,9 +376,66 @@ pub fn grep_query(under root: String, matching pattern: String) -> GrepQuery {
   )
 }
 
+/// A query that searches `root` for the exact text `text`, with every bound
+/// at its default, as `grep_query` has them.
+///
+/// Reach for this one when searching code. The text is matched as written:
+/// `(`, `[`, `.`, `*`, `+`, `?`, `|`, `^`, `$`, `{` and `\` are ordinary
+/// characters, so `Foo(` and `list[0]` need no escaping and cannot be a
+/// syntax error. Use `grep_query` instead when the pattern really is a
+/// regular expression, such as `fn (start|stop)_` or `TODO.*#[0-9]+`. The
+/// result is a `GrepQuery` like the other, so `globs`, `context` and the
+/// bounds are widened with record update syntax.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let query = search.grep_literal_query(under: "src", matching: "parse(")
+/// let assert Ok(found) = search.grep(query)
+/// ```
+///
+/// ```gleam
+/// // One file, such as a path from `glob_paths`.
+/// let query =
+///   search.grep_literal_query(under: "src/app.gleam", matching: "list[0]")
+/// ```
+///
+pub fn grep_literal_query(
+  under root: String,
+  matching text: String,
+) -> GrepQuery {
+  grep_query(under: root, matching: escape_regex(text))
+}
+
+// Each character a regular expression gives a meaning is preceded by a
+// backslash, and every other character is kept. A backslash before a
+// punctuation character is a literal in the engine's syntax, which is why
+// only punctuation is escaped: a backslash before a letter or digit starts
+// an escape sequence, so none is ever inserted there.
+/// The regular expression that matches `text` and nothing else.
+///
+/// Walked by code point rather than grapheme, since a metacharacter followed
+/// by a combining mark is one grapheme and would otherwise escape nothing.
+fn escape_regex(text: String) -> String {
+  text
+  |> string.to_utf_codepoints
+  |> list.map(fn(codepoint) {
+    let character = string.from_utf_codepoints([codepoint])
+
+    // A metacharacter gets a backslash; every other character is kept as is.
+    case string.contains("\\.^$|?*+()[]{}", character) {
+      True -> "\\" <> character
+      False -> character
+    }
+  })
+  |> string.concat
+}
+
 /// Searches the files under `root` for lines matching the query's regular
-/// expression. Files that are too large or not valid UTF-8 are counted in
-/// `files_skipped` rather than failing the call.
+/// expression. `root` is a directory to walk or one regular file; a path
+/// outside the workspace is refused either way. Files that are too large or
+/// not valid UTF-8 are counted in `files_skipped` rather than failing the
+/// call.
 ///
 /// Capability: `search.grep`.
 ///
