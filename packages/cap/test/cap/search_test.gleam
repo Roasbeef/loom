@@ -207,6 +207,29 @@ pub fn glob_channel_down_test() {
 
 // --- search.grep --------------------------------------------------------
 
+/// The literal builder escapes exactly the characters a regular expression
+/// gives a meaning, and leaves everything else, including non-ASCII text,
+/// as written.
+pub fn a_literal_query_escapes_every_metacharacter_test() {
+  assert search.grep_literal_query(under: "src", matching: "Foo(").pattern
+    == "Foo\\("
+  assert search.grep_literal_query(under: "src", matching: "a[0].b*c+d?").pattern
+    == "a\\[0\\]\\.b\\*c\\+d\\?"
+  assert search.grep_literal_query(under: "src", matching: "^x$|{1}\\").pattern
+    == "\\^x\\$\\|\\{1\\}\\\\"
+  assert search.grep_literal_query(under: "src", matching: "plain_word 7 é").pattern
+    == "plain_word 7 é"
+}
+
+/// Only the pattern differs from the regex form: root and every bound are
+/// the same defaults, and the regex builder is unchanged.
+pub fn a_literal_query_differs_from_the_regex_query_only_in_its_pattern_test() {
+  let literal = search.grep_literal_query(under: "src", matching: "a.b")
+  let regex = search.grep_query(under: "src", matching: "a.b")
+  assert regex.pattern == "a.b"
+  assert search.GrepQuery(..literal, pattern: "a.b") == regex
+}
+
 /// A default `grep_query` puts every default on the wire, and a match with
 /// context decodes whole.
 pub fn grep_defaults_round_trip_test() {

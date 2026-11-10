@@ -795,14 +795,16 @@ fn seam_properties(seams: Seams) -> List(#(String, JsonValue)) {
 ///
 pub fn description(mode: CodeMode) -> String {
   "Run a Gleam program in a jailed satellite; only its returned result "
-  <> "enters the conversation. Use it for any batch of reads, searches, "
-  <> "git/gh queries or checks you can list now, including the first round "
+  <> "enters the conversation. Use it for any batch of "
+  <> batch_kinds(mode.seams)
+  <> " you can list now, including the first round "
   <> "of an investigation: one program runs every probe and returns every "
   <> "result. Judge between programs, not between commands. "
   <> "Write `pub fn main() -> report.Outcome`, returning `report.text(...)` "
   <> "or `report.value(...)`. Filter internally; return relevant facts, "
   <> "paths and failures. Supply exactly one of `program` (inline source) "
   <> "or `program_path` (a source file loaded once after read authorization). "
+  <> gleam_guidance(mode.seams)
   <> composition_guidance(mode.seams)
   <> notes_guidance(mode.seams)
   <> evolution_guidance(mode.seams)
@@ -820,6 +822,88 @@ pub fn description(mode: CodeMode) -> String {
   <> "lines and keep the rest. If a program fails at runtime, fix it and run "
   <> "it again; do not move its remaining probes to other tools. "
   <> signatures_text(mode.seams)
+}
+
+// What the opening sentence offers, read off the modules the seams admit.
+//
+// The sentence used to promise reads, searches and git/gh queries to every
+// host, so a seam admitting only `cap/search` was told to run commands that
+// `cap/proc` would service and its vetting refuses. Each phrase is now
+// present exactly when some offer can import the module that does the work,
+// in the order the sentence always had, so a host admitting all three reads
+// the sentence it read before. A host admitting none of them is offered
+// computation, which is all it can do.
+/// Names the kinds of probe the admitted capability modules can run.
+fn batch_kinds(seams: Seams) -> String {
+  let admits = fn(module: String) {
+    list.any(offered(seams), fn(offer) {
+      list.contains(offer.allowed_imports, module)
+    })
+  }
+  let kinds =
+    list.filter_map(
+      [
+        #("cap/fs", "reads"),
+        #("cap/search", "searches"),
+        #("cap/proc", "git/gh queries or checks"),
+      ],
+      fn(kind) {
+        case admits(kind.0) {
+          True -> Ok(kind.1)
+          False -> Error(Nil)
+        }
+      },
+    )
+
+  // A seam admitting none of the three can only compute.
+  case kinds {
+    [] -> "computations"
+    _kinds -> string.join(kinds, ", ")
+  }
+}
+
+// The Gleam habits a program borrowed from another language breaks on, in
+// the description because the compiler's own messages teach them one failed
+// build at a time: on one search-only host, a stdlib module never imported,
+// a function from another language, and a field read off a `Result` were
+// most of the failed builds. The first sentence is always true; each name
+// correction is stated only for a stdlib module some offer admits, so the
+// advice never sends a program to an import its vetting refuses.
+/// Reminds the model that the program is Gleam, with the stdlib names models
+/// guess wrong for the modules the seams admit.
+fn gleam_guidance(seams: Seams) -> String {
+  let admits = fn(module: String) {
+    list.any(offered(seams), fn(offer) {
+      list.contains(offer.allowed_imports, module)
+    })
+  }
+  let corrections =
+    list.filter_map(
+      [
+        #(
+          "gleam/string",
+          "`string.join(items, sep)`, not `list.join`; `string.trim`, not `strip`",
+        ),
+        #("gleam/int", "`int.to_string`, not `string.from_int`"),
+        #("gleam/list", "`list.each`, not `for_each`"),
+      ],
+      fn(correction) {
+        case admits(correction.0) {
+          True -> Ok(correction.1)
+          False -> Error(Nil)
+        }
+      },
+    )
+  "This is Gleam: import each stdlib module you use, one `import` line per "
+  <> "module; match on a `Result` with `case` (`Ok(x) -> ...`, `Error(e) -> "
+  <> "...`) rather than reading a field off it; join strings with `<>`, "
+  <> "there is no `+` on strings; group with `{ }`, not parentheses; use "
+  <> "`case`, there is no `if`; no semicolons."
+  <> case corrections {
+    [] -> " "
+    _corrections ->
+      " Names models guess wrong: " <> string.join(corrections, "; ") <> ". "
+  }
 }
 
 // State the combined surface only when one installed offer actually admits
@@ -2501,9 +2585,37 @@ fn recipes_text(seams: Seams) -> String {
 
   // One copy however many seams admit the modules it imports.
   seam_recipes
+  <> search_recipe(offers)
   <> shell_probe_recipe(offers)
   <> lsp_edit_recipe(offers)
   <> lsp_sql_recipe(offers)
+}
+
+// The search program, when any offer admits every module it imports and
+// services the two calls it makes. It is the one recipe a seam that admits
+// only `cap/search` can be shown, and it is shown whole for the reason the
+// others are: a model with no example writes in the shape of another
+// language. It walks a listing and searches each file by name with the
+// literal form, which is the sequence models reach for first.
+/// Generates the search recipe example if admitted by any offered seam.
+fn search_recipe(offers: List(SeamOffer)) -> String {
+  let needed = [
+    "cap/report", "cap/search", "gleam/int", "gleam/list", "gleam/string",
+  ]
+  let admits = fn(offer: SeamOffer) {
+    list.all(needed, fn(name) { list.contains(offer.allowed_imports, name) })
+    && list.contains(offer.serviced_caps, "search.glob")
+    && list.contains(offer.serviced_caps, "search.grep")
+  }
+
+  // Check whether any seam admits the search recipe's imports and calls.
+  case list.any(offers, admits) {
+    False -> ""
+    True ->
+      "\nSearch recipe: list files, then search each one for literal text; `grep_literal_query` needs no escaping and a file path is a valid root.\n```gleam\n"
+      <> codemode_recipes.search()
+      <> "```\n"
+  }
 }
 
 // The shell-probe program, when any offer admits every module it imports. It

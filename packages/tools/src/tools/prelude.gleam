@@ -41,7 +41,7 @@
 ////   b4932c98e2a4096b15cb6556d06c86798ea8b5a61b2d8c412f0fd127cddc3d58  packages/cap/src/cap/report.gleam
 ////   0b9096b59362d1a9a1761bd1c6f2f5002d687413e798587b20480c43664b1090  packages/cap/src/cap/runtime.gleam
 ////   88124c165198bd5704b12a807f8c25515a723158b6ba4305ab3e1f84bc76c00c  packages/cap/src/cap/schedule.gleam
-////   e9c39fc8c9025dfb0b8b90356a03801591a73b64c64e710bf0c22bb8299b907d  packages/cap/src/cap/search.gleam
+////   0a677e8984e3d1e476f242c9179b94f26c8149b611c20fcdac4c6a82b8dc5d10  packages/cap/src/cap/search.gleam
 ////   f62fa4c05259fea52250e4541ca3cc0f52d099ba287cd74d024ef07e57b5034d  packages/cap/src/cap/strand.gleam
 ////   e2627134a93602934b5a0b1ce77c2e060684435e9c9fccf6c41306a55ce3a155  packages/cap/src/cap/task.gleam
 ////   dade50ada67f4ac667f0b92cb10d0da213cac327897524dbb006e02cf3c90963  packages/cap/src/cap/workflow.gleam
@@ -49,7 +49,7 @@
 ////   ea950e639b983ec34145565e194a51f32db158354b4399e9df0b1888d20c0205  packages/tools/dev/gen_prelude/interface.gleam
 ////   eefe3ffc20ce42f1645ccb4058927df05445301f4fb31aee2831c679c0385d37  packages/tools/dev/gen_prelude/wrap.gleam
 ////
-//// Body digest (every line after the marker): 15f313ba05aa2ab2e4ed10c150bdf833162cc6d7b469f6f5ffcd588c75082cde
+//// Body digest (every line after the marker): 8f47f26b012c1766fd9817518e1b43c3190ed26be232ee7ee46ce9979cf45036
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -3339,8 +3339,10 @@ pub fn glob_paths(under: String, matching: String) -> Result(List(String), Searc
 ///
 pub fn glob_query(under: String, matching: String) -> GlobQuery
 /// Searches the files under `root` for lines matching the query's regular
-/// expression. Files that are too large or not valid UTF-8 are counted in
-/// `files_skipped` rather than failing the call.
+/// expression. `root` is a directory to walk or one regular file; a path
+/// outside the workspace is refused either way. Files that are too large
+/// or not valid UTF-8 are counted in `files_skipped` rather than failing
+/// the call.
 ///
 /// Capability: `search.grep`.
 ///
@@ -3354,6 +3356,33 @@ pub fn glob_query(under: String, matching: String) -> GlobQuery
 ///
 ///
 pub fn grep(GrepQuery) -> Result(Found, SearchError)
+/// A query that searches `root` for the exact text `text`, with every
+/// bound at its default, as `grep_query` has them.
+///
+/// Reach for this one when searching code. The text is matched as
+/// written: `(`, `[`, `.`, `*`, `+`, `?`, `|`, `^`, `$`, `{` and `\\` are
+/// ordinary characters, so `Foo(` and `list[0]` need no escaping and
+/// cannot be a syntax error. Use `grep_query` instead when the pattern
+/// really is a regular expression, such as `fn (start|stop)_` or
+/// `TODO.*#[0-9]+`. The result is a `GrepQuery` like the other, so
+/// `globs`, `context` and the bounds are widened with record update
+/// syntax.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let query = search.grep_literal_query(under: \"src\", matching: \"parse(\")
+///  let assert Ok(found) = search.grep(query)
+///  ```
+///
+///  ```gleam
+///  // One file, such as a path from `glob_paths`.
+///  let query =
+///    search.grep_literal_query(under: \"src/app.gleam\", matching: \"list[0]\")
+///  ```
+///
+///
+pub fn grep_literal_query(under: String, matching: String) -> GrepQuery
 /// A query that searches `root` for `pattern` with every bound at its
 /// default: no globs, `default_context`, `default_max_matches`,
 /// `SkipHidden`, `default_prune`.

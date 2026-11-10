@@ -69,3 +69,18 @@ pub fn lsp_edit() -> String {
 pub fn shell_probes() -> String {
   "import cap/proc\nimport cap/report\nimport gleam/dynamic/decode\nimport gleam/int\nimport gleam/json\nimport gleam/list\nimport gleam/result\nimport gleam/string\n\npub fn main() -> report.Outcome {\n  let log = proc.stdout(proc.command([\"git\", \"log\", \"-3\", \"--format=%h %s\"]))\n  report.text(\"log:\\n\" <> show(log) <> \"\\n\\nfix PRs:\\n\" <> show(fix_prs()))\n}\n\nfn fix_prs() -> Result(String, String) {\n  let pull = {\n    use number <- decode.field(\"number\", decode.int)\n    use title <- decode.field(\"title\", decode.string)\n    decode.success(#(number, title))\n  }\n  use body <- result.try(\n    proc.stdout(proc.command([\"gh\", \"pr\", \"list\", \"--json\", \"number,title\"])),\n  )\n  use pulls <- result.try(\n    json.parse(body, decode.list(pull))\n    |> result.map_error(fn(_) { \"unexpected gh JSON\" }),\n  )\n  pulls\n  |> list.filter(fn(pull) { string.contains(pull.1, \"fix\") })\n  |> list.map(fn(pull) { \"#\" <> int.to_string(pull.0) <> \" \" <> pull.1 })\n  |> string.join(\"\\n\")\n  |> Ok\n}\n\nfn show(probe: Result(String, String)) -> String {\n  case probe {\n    Ok(output) -> output\n    Error(reason) -> \"ERROR \" <> reason\n  }\n}\n"
 }
+
+/// A complete `cap/search` program: it lists files with `glob_paths`, then
+/// searches each file by path with `grep_literal_query`, matching on the
+/// `Result` of every call and importing each stdlib module it uses. The
+/// description shows it to any seam that admits `cap/search` and these
+/// modules, and the codemode tests vet and compile this exact string.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // Submit search() as code_mode's program on a seam admitting cap/search.
+/// ```
+pub fn search() -> String {
+  "import cap/report\nimport cap/search\nimport gleam/int\nimport gleam/list\nimport gleam/string\n\npub fn main() -> report.Outcome {\n  case search.glob_paths(under: \"src\", matching: \"**/*.gleam\") {\n    Error(error) -> report.failure(search.error_text(error))\n    Ok(paths) -> report.text(string.join(list.map(paths, count_in), \"\\n\"))\n  }\n}\n\nfn count_in(path: String) -> String {\n  let query = search.grep_literal_query(under: path, matching: \"todo(\")\n  case search.grep(query) {\n    Ok(found) -> path <> \": \" <> int.to_string(list.length(found.matches))\n    Error(error) -> path <> \": \" <> search.error_text(error)\n  }\n}\n"
+}

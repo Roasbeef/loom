@@ -1072,6 +1072,70 @@ pub fn a_protected_path_is_refused_for_every_code_mode_read_door_test() {
   })
 }
 
+pub fn a_grep_root_that_is_a_file_keeps_every_confinement_check_test() {
+  let root = fresh("grep-file-root")
+  let outside = root <> "-outside"
+  make_directory(root <> "/src")
+  make_directory(outside)
+  write(root, "src/a.txt", "needle inside\n")
+  write(outside, "s.txt", "needle outside\n")
+  let assert Ok(Nil) =
+    simplifile.create_symlink(outside <> "/s.txt", root <> "/escape.txt")
+    as "the escaping symlink must be creatable"
+  let assert Ok(Nil) =
+    simplifile.create_symlink(root <> "/src/a.txt", root <> "/inside.txt")
+    as "the contained symlink must be creatable"
+  let session = workspace_policy.base_policy_for(root, catalog.WorkspaceReads)
+  let search =
+    codemode.search_seam_with_access(root, session, root <> "/.blobs")
+
+  // A file the workspace holds is searched, under its own path.
+  let assert Ok(found) = search.grep("src/a.txt", a_needle_query())
+    as "a contained file root must be searched"
+  assert list.map(found.matches, fn(match) { match.path }) == ["src/a.txt"]
+
+  // A contained link resolves to its target before the engine sees it, as
+  // it does for a directory root.
+  let assert Ok(linked) = search.grep("inside.txt", a_needle_query())
+    as "a contained symlink to a file must be searched"
+  assert list.map(linked.matches, fn(match) { match.path }) == ["src/a.txt"]
+
+  // The three ways out are refused exactly as for a directory root.
+  list.each(
+    ["../" <> outside_name(root) <> "/s.txt", outside <> "/s.txt", "escape.txt"],
+    fn(path) {
+      let assert Error(search_router.PathRefused(_)) =
+        search.grep(path, a_needle_query())
+        as { "a file root outside the workspace must be refused: " <> path }
+      Nil
+    },
+  )
+
+  // A directory root still walks.
+  let assert Ok(walked) = search.grep("src", a_needle_query())
+    as "a directory root must still be walked"
+  assert list.map(walked.matches, fn(match) { match.path }) == ["src/a.txt"]
+}
+
+pub fn a_protected_file_is_refused_as_a_grep_root_test() {
+  let root = fresh("grep-file-protected")
+  let state = root <> "-elsewhere"
+  make_directory(root <> "/.private")
+  make_directory(state)
+  write(root, ".private/b", "needle in a private file\n")
+  write(state, "owner.token", "needle in a secret\n")
+  let session = session_policy(root, state, catalog.HostReads)
+  let search =
+    codemode.search_seam_with_access(root, session, root <> "/.blobs")
+
+  let assert Error(search_router.PathRefused(_)) =
+    search.grep(".private/b", a_needle_query())
+    as "a protected file must not be searchable by naming it"
+  let assert Error(search_router.PathRefused(_)) =
+    search.grep(state <> "/owner.token", a_needle_query())
+    as "the daemon token must not be searchable by naming it"
+}
+
 pub fn host_reads_leave_code_mode_writes_inside_the_workspace_test() {
   let root = fresh("host-writes")
   let outside = root <> "-outside"

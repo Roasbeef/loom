@@ -9,6 +9,7 @@
 //// most here — that a symlink is reported and not followed — since an
 //// in-memory fake would be testing the fake's idea of `lstat`.
 
+import cap/search as cap_search
 import gleam/int
 import gleam/list
 import gleam/string
@@ -712,20 +713,215 @@ pub fn an_invalid_regex_carries_the_engine_message_test() {
   assert message != ""
 }
 
-pub fn a_grep_root_that_is_a_file_is_not_a_directory_test() {
-  let root = fresh_dir("grep-root-file")
-  let file = root <> "/plain.txt"
-  write(file, "needle\n")
+pub fn a_grep_root_that_is_a_file_searches_that_one_file_test() {
+  let workspace = fresh_dir("grep-root-file")
+  make_dir(workspace <> "/src")
+  write(workspace <> "/src/plain.txt", "one\nneedle here\nneedle again\n")
+  write(workspace <> "/src/other.txt", "needle elsewhere\n")
 
-  let assert Error(NotADirectory(path:)) =
+  let assert Ok(Found(matches:, files_scanned:, coverage:, ..)) =
     search.grep(
-      workspace: root,
-      root: file,
+      workspace:,
+      root: workspace <> "/src/plain.txt",
       protected: [],
       query: regex_query("needle"),
     )
-    as "a file root must answer NotADirectory"
-  assert path == file
+    as "a regular-file root must be searched"
+
+  // The one file, under the path a walk of `src` would have reported.
+  assert files_scanned == 1
+  assert coverage == Exhaustive
+  assert list.map(matches, fn(found) { #(found.path, found.line) })
+    == [#("src/plain.txt", 2), #("src/plain.txt", 3)]
+}
+
+pub fn a_file_at_the_workspace_root_keeps_its_bare_name_test() {
+  let workspace = fresh_dir("grep-root-file-top")
+  write(workspace <> "/gleam.toml", "name = \"x\"\n")
+
+  let assert Ok(Found(matches:, ..)) =
+    search.grep(
+      workspace:,
+      root: workspace <> "/gleam.toml",
+      protected: [],
+      query: regex_query("name"),
+    )
+    as "a file at the workspace root must be searched"
+
+  assert list.map(matches, fn(found) { found.path }) == ["gleam.toml"]
+}
+
+pub fn a_file_root_honours_context_and_the_match_cap_test() {
+  let workspace = fresh_dir("grep-root-file-bounds")
+  write(workspace <> "/a.txt", "a\nneedle\nb\nneedle\nc\n")
+
+  let assert Ok(Found(matches:, coverage:, ..)) =
+    search.grep(
+      workspace:,
+      root: workspace <> "/a.txt",
+      protected: [],
+      query: GrepQuery(..regex_query("needle"), context: 1, max_matches: 1),
+    )
+    as "a file root must obey the query's bounds"
+
+  assert coverage == MatchesCapped
+  let assert [Match(line: 2, before: ["a"], after: ["b"], ..)] = matches
+    as "one match with its context"
+}
+
+pub fn a_file_root_applies_the_globs_to_its_name_test() {
+  let workspace = fresh_dir("grep-root-file-globs")
+  write(workspace <> "/a.txt", "needle\n")
+
+  let assert Ok(Found(matches: kept, files_scanned: kept_scanned, ..)) =
+    search.grep(
+      workspace:,
+      root: workspace <> "/a.txt",
+      protected: [],
+      query: GrepQuery(..regex_query("needle"), globs: ["*.txt"]),
+    )
+    as "a matching glob must keep the file"
+  assert kept_scanned == 1
+  assert list.length(kept) == 1
+
+  let assert Ok(Found(matches: dropped, files_scanned: dropped_scanned, ..)) =
+    search.grep(
+      workspace:,
+      root: workspace <> "/a.txt",
+      protected: [],
+      query: GrepQuery(..regex_query("needle"), globs: ["*.gleam"]),
+    )
+    as "a glob that misses must drop the file"
+  assert dropped_scanned == 0
+  assert dropped == []
+}
+
+pub fn a_named_hidden_file_is_searched_test() {
+  let workspace = fresh_dir("grep-root-file-hidden")
+  write(workspace <> "/.env.example", "needle\n")
+
+  let assert Ok(Found(matches:, ..)) =
+    search.grep(
+      workspace:,
+      root: workspace <> "/.env.example",
+      protected: [],
+      query: regex_query("needle"),
+    )
+    as "a file the caller named is not hidden from them"
+
+  assert list.map(matches, fn(found) { found.path }) == [".env.example"]
+}
+
+pub fn a_file_root_that_is_not_text_is_counted_as_skipped_test() {
+  let workspace = fresh_dir("grep-root-file-binary")
+  write_bytes(workspace <> "/b.bin", <<0xff, 0xfe, 0x00>>)
+
+  let assert Ok(Found(matches:, files_scanned:, files_skipped:, ..)) =
+    search.grep(
+      workspace:,
+      root: workspace <> "/b.bin",
+      protected: [],
+      query: regex_query("needle"),
+    )
+    as "a binary file root is a skip, not a failure"
+
+  assert matches == []
+  assert files_scanned == 0
+  assert files_skipped == 1
+}
+
+pub fn a_directory_root_still_walks_after_the_file_form_test() {
+  let workspace = fresh_dir("grep-root-dir-still-walks")
+  make_dir(workspace <> "/src")
+  write(workspace <> "/src/a.txt", "needle\n")
+  write(workspace <> "/src/b.txt", "needle\n")
+
+  let assert Ok(Found(matches:, files_scanned:, ..)) =
+    search.grep(
+      workspace:,
+      root: workspace <> "/src",
+      protected: [],
+      query: regex_query("needle"),
+    )
+    as "a directory root must still be walked"
+
+  assert files_scanned == 2
+  assert list.map(matches, fn(found) { found.path })
+    == ["src/a.txt", "src/b.txt"]
+}
+
+// The builder lives in `cap` and the engine here, so this is the one test
+// that joins them: the escaped pattern the caller never wrote must match the
+// plain text exactly, through the engine's own regex compiler.
+pub fn a_literal_query_matches_metacharacters_exactly_test() {
+  let workspace = fresh_dir("grep-literal")
+  write(
+    workspace <> "/a.txt",
+    "call Foo(1)\nxs[0] = 1\nversion 1.2\nversion 1x2\na*b\naab\ncall Foo\n",
+  )
+
+  let matched = fn(text: String) {
+    let query = cap_search.grep_literal_query(under: "a.txt", matching: text)
+    let assert Ok(Found(matches:, ..)) =
+      search.grep(
+        workspace:,
+        root: workspace <> "/a.txt",
+        protected: [],
+        query: GrepQuery(
+          ..regex_query(query.pattern),
+          globs: query.globs,
+          context: query.context,
+        ),
+      )
+      as { "a literal query must compile: " <> text }
+    list.map(matches, fn(found) { found.line })
+  }
+
+  assert matched("Foo(") == [1]
+  assert matched("[0]") == [2]
+  assert matched("1.2") == [3]
+  assert matched("a*b") == [5]
+}
+
+pub fn a_missing_grep_root_is_still_missing_test() {
+  let workspace = fresh_dir("grep-root-missing")
+
+  assert search.grep(
+      workspace:,
+      root: workspace <> "/nope.txt",
+      protected: [],
+      query: regex_query("needle"),
+    )
+    == Error(Missing(path: workspace <> "/nope.txt"))
+}
+
+pub fn a_symlink_root_is_refused_not_followed_test() {
+  // A resolved root is never a link, but the engine must not rely on that:
+  // a link named directly is the one door the walk promises never to open.
+  let workspace = fresh_dir("grep-root-symlink")
+  write(workspace <> "/real.txt", "needle\n")
+  symlink(to: "real.txt", from: workspace <> "/link.txt")
+
+  assert search.grep(
+      workspace:,
+      root: workspace <> "/link.txt",
+      protected: [],
+      query: regex_query("needle"),
+    )
+    == Error(NotADirectory(path: workspace <> "/link.txt"))
+}
+
+pub fn a_glob_root_that_is_a_file_is_still_refused_test() {
+  let workspace = fresh_dir("glob-root-file-still-refused")
+  write(workspace <> "/a.txt", "x")
+
+  assert search.glob(
+      workspace:,
+      root: workspace <> "/a.txt",
+      protected: [],
+      query: pattern_query("*"),
+    )
+    == Error(NotADirectory(path: workspace <> "/a.txt"))
 }
 
 // --- stat -------------------------------------------------------------------

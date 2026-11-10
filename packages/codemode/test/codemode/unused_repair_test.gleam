@@ -609,3 +609,202 @@ pub fn a_rename_and_an_import_warning_on_one_line_refuse_test() {
   assert unused_repair.rewrite("import gleam/int\n", diagnostics, file)
     == Error(Nil)
 }
+
+// --- pattern variables beside a real error ----------------------------------
+
+// Captured with Gleam 1.19.0 from the program below: a `let`, a clause
+// pattern, an alternative pattern and two clauses on one line, all unused,
+// beside a type error. An erroring build prints no `N warnings generated`
+// summary, so `rewrite` cannot account for the list and refuses it.
+const mixed_program =
+  "import gleam/int
+
+pub fn main() {
+  let unused = 1
+  case int.parse(\"1\") {
+    Ok(n) -> n
+    Error(e) -> 0
+  }
+}
+
+pub fn alt(r: Result(Int, Int)) -> Int {
+  case r {
+    Ok(x) | Error(x) -> 1
+  }
+}
+
+pub fn bad() -> Int {
+  1 + \"a\"
+}
+
+pub fn two(r: Result(Int, String)) -> Int {
+  case r { Error(msg) -> 0 Ok(v) -> 1 }
+}
+"
+
+const mixed_diagnostics =
+  "  Compiling loom_codemode_program
+warning: Unused variable
+  ┌─ /b/src/loom_program.gleam:4:7
+  │
+4 │   let unused = 1
+  │       ^^^^^^ This variable is never used
+
+Hint: You can ignore it with an underscore: `_unused`.
+
+warning: Unused variable
+  ┌─ /b/src/loom_program.gleam:7:11
+  │
+7 │     Error(e) -> 0
+  │           ^ This variable is never used
+
+Hint: You can ignore it with an underscore: `_e`.
+
+warning: Unused variable
+   ┌─ /b/src/loom_program.gleam:13:8
+   │
+13 │     Ok(x) | Error(x) -> 1
+   │        ^ This variable is never used
+
+Hint: You can ignore it with an underscore: `_x`.
+
+warning: Unused variable
+   ┌─ /b/src/loom_program.gleam:22:18
+   │
+22 │   case r { Error(msg) -> 0 Ok(v) -> 1 }
+   │                  ^^^ This variable is never used
+
+Hint: You can ignore it with an underscore: `_msg`.
+
+warning: Unused variable
+   ┌─ /b/src/loom_program.gleam:22:31
+   │
+22 │   case r { Error(msg) -> 0 Ok(v) -> 1 }
+   │                               ^ This variable is never used
+
+Hint: You can ignore it with an underscore: `_v`.
+
+error: Type mismatch
+   ┌─ /b/src/loom_program.gleam:18:7
+   │
+18 │   1 + \"a\"
+   │       ^^^
+
+The + operator expects arguments of this type:
+
+    Int
+
+But this argument has this type:
+
+    String
+
+Hint: Strings can be joined using the `<>` operator.
+"
+
+pub fn the_whole_rewrite_still_refuses_the_mixed_build_test() {
+  assert unused_repair.rewrite(mixed_program, mixed_diagnostics, file)
+    == Error(Nil)
+}
+
+pub fn an_unused_clause_pattern_variable_beside_an_error_is_underscored_test() {
+  let assert Ok(Rewrite(source: repaired, notes:)) =
+    unused_repair.rewrite_patterns(mixed_program, mixed_diagnostics, file)
+    as "the clause pattern variables must be repaired beside the error"
+
+  // Exactly the two variables that are provably a clause's: the first
+  // clause on its line each. The `let`, the alternative pattern, the second
+  // clause on a line and the error line itself are untouched.
+  assert repaired
+    == string.replace(mixed_program, "Error(e) -> 0", "Error(_e) -> 0")
+    |> string.replace("{ Error(msg) -> 0", "{ Error(_msg) -> 0")
+  assert notes
+    == [
+      "renamed unused pattern variable e to _e (line 7)",
+      "renamed unused pattern variable msg to _msg (line 22)",
+    ]
+}
+
+pub fn repairing_the_repaired_source_again_is_refused_test() {
+  let assert Ok(Rewrite(source: repaired, notes: _)) =
+    unused_repair.rewrite_patterns(mixed_program, mixed_diagnostics, file)
+    as "the first repair must succeed"
+
+  // The stale diagnostics echo the old line, which the new one no longer is.
+  assert unused_repair.rewrite_patterns(repaired, mixed_diagnostics, file)
+    == Error(Nil)
+}
+
+pub fn a_let_and_an_alternative_pattern_alone_are_not_repaired_beside_an_error_test() {
+  // The same output with the two clause-pattern warnings cut out, leaving
+  // the `let`, the alternative pattern and the second clause on a line.
+  let kept =
+    string.replace(
+      mixed_diagnostics,
+      "warning: Unused variable
+  ┌─ /b/src/loom_program.gleam:7:11
+  │
+7 │     Error(e) -> 0
+  │           ^ This variable is never used
+
+Hint: You can ignore it with an underscore: `_e`.
+
+",
+      "",
+    )
+    |> string.replace(
+      "warning: Unused variable
+   ┌─ /b/src/loom_program.gleam:22:18
+   │
+22 │   case r { Error(msg) -> 0 Ok(v) -> 1 }
+   │                  ^^^ This variable is never used
+
+Hint: You can ignore it with an underscore: `_msg`.
+
+",
+      "",
+    )
+  assert unused_repair.rewrite_patterns(mixed_program, kept, file) == Error(Nil)
+}
+
+pub fn a_build_with_no_unused_variable_is_not_repaired_as_patterns_test() {
+  let diagnostics =
+    "error: Type mismatch\n  ┌─ /b/src/loom_program.gleam:18:7\n  │\n"
+    <> "18 │   1 + \"a\"\n  │       ^^^\n\nHint: Strings can be joined using the `<>` operator.\n"
+  assert unused_repair.rewrite_patterns(mixed_program, diagnostics, file)
+    == Error(Nil)
+}
+
+pub fn a_pattern_warning_about_another_module_is_not_repaired_test() {
+  assert unused_repair.rewrite_patterns(
+      mixed_program,
+      mixed_diagnostics,
+      "src/other.gleam",
+    )
+    == Error(Nil)
+}
+
+pub fn a_pattern_warning_that_disagrees_with_the_source_refuses_test() {
+  // The program is not what was compiled: the line differs at the column.
+  assert unused_repair.rewrite_patterns(
+      string.replace(mixed_program, "Error(e) -> 0", "Error(e) -> 1"),
+      mixed_diagnostics,
+      file,
+    )
+    == Error(Nil)
+}
+
+pub fn a_clean_build_pattern_variable_is_noted_as_a_pattern_variable_test() {
+  // Alone, the warning is the whole build and `rewrite` takes it, now with
+  // a note that names what it was.
+  let diagnostics =
+    "warning: Unused variable\n  ┌─ /b/src/loom_program.gleam:2:11\n  │\n"
+    <> "2 │     Error(e) -> 0\n  │           ^ This variable is never used\n\n"
+    <> "Hint: You can ignore it with an underscore: `_e`.\n\n"
+    <> "error: 1 warning generated.\n"
+  assert unused_repair.rewrite("\n    Error(e) -> 0\n", diagnostics, file)
+    == Ok(
+      Rewrite(source: "\n    Error(_e) -> 0\n", notes: [
+        "renamed unused pattern variable e to _e (line 2)",
+      ]),
+    )
+}

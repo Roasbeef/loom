@@ -991,6 +991,24 @@ run over output captured from the pinned toolchain; if a Gleam upgrade
 changes the diagnostic layout the rewrite refuses (the tests fail first),
 it never guesses.
 
+### Unused `case` pattern variables beside another diagnostic
+
+`unused_repair.rewrite_patterns(source, diagnostics, file)` is the last
+rewrite `codemode.rewritten` tries, after the whole-build repair and the
+import repair, and it shares their one rebuild. The whole-build repair
+refuses any output holding an error, so an unused `e` in `Error(e) ->` stayed
+printed ahead of the real error. This one reads each `Unused variable`
+block on its own and underscores only a variable that
+`in_clause_pattern` proves is a case clause's: the name stands in the first
+clause on a line that is not a `let` or `use`, an arrow follows it, and the
+pattern holds no `|` (alternatives get one warning, and underscoring one
+place breaks the build). Everything else in the output, errors and other
+warnings alike, is left for the second build, so the model reads the real
+error without the noise. A `let`, a `use` and a parameter are not touched
+beside an error. Repairing the repaired source is refused because the stale
+echoed line no longer matches. The note is `renamed unused pattern variable
+e to _e (line N)`, and the all-unused path uses it too.
+
 ## Missing imports are added and rebuilt once
 
 `codemode/import_repair.rewrite(source, diagnostics, file)` is the second
