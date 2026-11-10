@@ -3137,7 +3137,7 @@ fn async_satellite(
       grants: [],
       observe_output: tool.ignore_output(),
     )
-  let assert Ok(value) = background.launch(request)
+  let assert Ok(value) = launch(mode, request)
     as "launch must return before input is available"
   let assert Ok(record) = async_execution.decode(value)
     as "launch returns a stable handle"
@@ -3611,7 +3611,7 @@ fn run_collaboration_exchange(
     as "the second real satellite must register its typed endpoint"
 
   let assert Ok(json.Int(1)) =
-    first_mode.interact(
+    handle(first_mode).interact(
       "main",
       first_record.id,
       codemode_tool.SendTo(
@@ -3645,7 +3645,7 @@ fn run_collaboration_exchange(
     )
     as "the recipient revokes its grant while source discovery remains"
   let assert Ok(json.Int(2)) =
-    first_mode.interact(
+    handle(first_mode).interact(
       "main",
       first_record.id,
       codemode_tool.SendTo(
@@ -3667,7 +3667,7 @@ fn run_collaboration_exchange(
     peers.link(first_peer, second_peer, "main", "main", peer_mail.BusyOnly)
     as "the owner restores the recipient grant"
   let assert Ok(json.Int(1)) =
-    second_mode.interact(
+    handle(second_mode).interact(
       "main",
       second_record.id,
       codemode_tool.SendTo(
@@ -3686,7 +3686,7 @@ fn run_collaboration_exchange(
     peers.link(second_peer, first_peer, "main", "main", peer_mail.BusyOnly)
     as "the owner grants the reverse direction separately"
   let assert Ok(json.Int(3)) =
-    first_mode.interact(
+    handle(first_mode).interact(
       "main",
       first_record.id,
       codemode_tool.SendTo(
@@ -3700,7 +3700,7 @@ fn run_collaboration_exchange(
       0,
     )
   let assert Ok(json.Int(2)) =
-    second_mode.interact(
+    handle(second_mode).interact(
       "main",
       second_record.id,
       codemode_tool.SendTo(
@@ -3730,9 +3730,19 @@ fn run_collaboration_exchange(
     "performance confirmed it",
   )
   let assert Ok(_) =
-    first_mode.interact("main", first_record.id, codemode_tool.Cancel, 0)
+    handle(first_mode).interact(
+      "main",
+      first_record.id,
+      codemode_tool.Cancel,
+      0,
+    )
   let assert Ok(_) =
-    second_mode.interact("main", second_record.id, codemode_tool.Cancel, 0)
+    handle(second_mode).interact(
+      "main",
+      second_record.id,
+      codemode_tool.Cancel,
+      0,
+    )
   assert review_lost(first_mode, first_record)
     as "the first specialist must finish cancellation before teardown"
   assert review_lost(second_mode, second_record)
@@ -3755,7 +3765,7 @@ fn specialist_mode(
   workspace: String,
   toolchain: codemode.Toolchain,
   wall: Clock,
-) -> #(actor.Started(Subject(async_runs.Message)), codemode_tool.Background) {
+) -> #(actor.Started(Subject(async_runs.Message)), codemode_tool.CodeMode) {
   let name = addresses.new()
   let assert Ok(service) =
     async_runs.start(
@@ -3780,12 +3790,33 @@ fn specialist_mode(
       },
     )
   let mode = async_codemode.seam(config, name, harness.config)
-  let assert Some(background) = mode.background
-  #(service, background)
+  let assert Some(_) = mode.background
+  #(service, mode)
+}
+
+// Launches through the one dispatcher closure, exactly as the tool shell
+// does, so a test exercises the same path a model's `mode=launch` takes.
+fn launch(
+  mode: codemode_tool.CodeMode,
+  request: codemode_tool.Request,
+) -> Result(json.JsonValue, String) {
+  case mode.submit(codemode_tool.Launch(request)) {
+    codemode_tool.Admitted(value) -> value
+    codemode_tool.Synchronous(_) -> Error("launch answered with a run")
+  }
+}
+
+// The handle half of a mode this suite built, unwrapped once. A missing
+// background would be a fixture bug, not a case to answer.
+fn handle(mode: codemode_tool.CodeMode) -> codemode_tool.Background {
+  case mode.background {
+    Some(background) -> background
+    None -> panic as "this fixture must build an async seam"
+  }
 }
 
 fn launch_specialist(
-  background: codemode_tool.Background,
+  mode: codemode_tool.CodeMode,
   parent: Caller,
   selected: codemode_tool.Seam,
   step_id: String,
@@ -3810,7 +3841,7 @@ fn launch_specialist(
       grants: [],
       observe_output: tool.ignore_output(),
     )
-  let assert Ok(value) = background.launch(request)
+  let assert Ok(value) = launch(mode, request)
   let assert Ok(record) = async_execution.decode(value)
   record
 }
@@ -3824,9 +3855,10 @@ fn finding(session: String, id: String, text: String) -> json.JsonValue {
 }
 
 fn specialist_ready(
-  background: codemode_tool.Background,
+  mode: codemode_tool.CodeMode,
   record: async_execution.Execution,
 ) -> Bool {
+  let background = handle(mode)
   let ready =
     until(
       fn() {
@@ -3856,11 +3888,12 @@ fn specialist_ready(
 }
 
 fn specialist_delivery(
-  background: codemode_tool.Background,
+  mode: codemode_tool.CodeMode,
   record: async_execution.Execution,
   sequence: Int,
   status: String,
 ) -> Bool {
+  let background = handle(mode)
   until(
     fn() {
       case background.interact("main", record.id, codemode_tool.Check, 0) {
@@ -4301,7 +4334,7 @@ fn run_collaboration_pending(
     )
   assert review_ready(background, execution)
   let assert Ok(json.Int(1)) =
-    background.interact(
+    handle(background).interact(
       "main",
       execution.id,
       codemode_tool.SendTo("review", review_input()),
@@ -4313,7 +4346,7 @@ fn run_collaboration_pending(
     api.reserved_facts(harness.runtime, child_run.key_prefix)
   assert list.length(children_before) == 2
   let assert Ok(json.Int(2)) =
-    background.interact(
+    handle(background).interact(
       "main",
       execution.id,
       codemode_tool.SendTo("review", review_input()),
@@ -4328,7 +4361,7 @@ fn run_collaboration_pending(
     == list.map(children_before, fn(cell) { cell.0 })
     as "retrying a pending join must not spawn duplicate children"
   let assert Ok(_) =
-    background.interact("main", execution.id, codemode_tool.Cancel, 0)
+    handle(background).interact("main", execution.id, codemode_tool.Cancel, 0)
   assert review_lost(background, execution)
   process.unlink(service.pid)
   process.kill(service.pid)
@@ -4383,7 +4416,7 @@ fn run_collaboration_recovery(
   assert review_ready(background, first)
     as "the review endpoint must be registered before the typed send"
   let assert Ok(json.Int(1)) =
-    background.interact(
+    handle(background).interact(
       "main",
       first.id,
       codemode_tool.SendTo("review", review_input()),
@@ -4398,7 +4431,7 @@ fn run_collaboration_recovery(
   assert list.length(children_before) == 2
   assert list.length(steps_before) == 2
   let assert Ok(_) =
-    background.interact("main", first.id, codemode_tool.Cancel, 0)
+    handle(background).interact("main", first.id, codemode_tool.Cancel, 0)
     as "the first satellite loses custody without deleting child results"
   assert review_lost(background, first)
     as "cancellation must finish owned-work cleanup before terminal loss"
@@ -4426,7 +4459,7 @@ fn run_collaboration_recovery(
     as "recovery is a new execution, not the original satellite heap"
   assert review_ready(background, recovered)
   let assert Ok(json.Int(1)) =
-    background.interact(
+    handle(background).interact(
       "main",
       recovered.id,
       codemode_tool.SendTo("review", review_input()),
@@ -4444,7 +4477,7 @@ fn run_collaboration_recovery(
   assert steps_after == steps_before
     as "recovery must preserve both immutable named steps"
   let assert Ok(_) =
-    background.interact("main", recovered.id, codemode_tool.Cancel, 0)
+    handle(background).interact("main", recovered.id, codemode_tool.Cancel, 0)
   assert review_lost(background, recovered)
     as "the recovered execution must drain before teardown"
   process.unlink(service.pid)
@@ -4463,9 +4496,10 @@ fn review_input() -> json.JsonValue {
 }
 
 fn review_ready(
-  background: codemode_tool.Background,
+  mode: codemode_tool.CodeMode,
   record: async_execution.Execution,
 ) -> Bool {
+  let background = handle(mode)
   until(
     fn() {
       case background.interact("main", record.id, codemode_tool.Check, 0) {
@@ -4481,9 +4515,10 @@ fn review_ready(
 }
 
 fn review_joined(
-  background: codemode_tool.Background,
+  mode: codemode_tool.CodeMode,
   record: async_execution.Execution,
 ) -> Bool {
+  let background = handle(mode)
   until(
     fn() {
       case background.interact("main", record.id, codemode_tool.Check, 0) {
@@ -4513,9 +4548,10 @@ fn review_joined(
 }
 
 fn review_waiting(
-  background: codemode_tool.Background,
+  mode: codemode_tool.CodeMode,
   record: async_execution.Execution,
 ) -> Bool {
+  let background = handle(mode)
   until(
     fn() {
       case background.interact("main", record.id, codemode_tool.Check, 0) {
@@ -4544,9 +4580,10 @@ fn review_waiting(
 }
 
 fn review_lost(
-  background: codemode_tool.Background,
+  mode: codemode_tool.CodeMode,
   record: async_execution.Execution,
 ) -> Bool {
+  let background = handle(mode)
   until(
     fn() {
       case background.interact("main", record.id, codemode_tool.Check, 0) {

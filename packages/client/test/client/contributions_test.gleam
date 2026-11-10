@@ -79,7 +79,7 @@ pub fn wired_host_advertises_only_its_available_virtual_reads_test() {
     )
   let mode =
     codemode_tool.CodeMode(
-      execute: fn(_request) { panic as "this test does not run a program" },
+      submit: fn(_submission) { panic as "this test does not run a program" },
       background: None,
       seams: codemode_tool.one_seam(offer),
       default_within_ms: 1000,
@@ -140,7 +140,7 @@ fn hint_offer(
 fn hinted_tools(seams: codemode_tool.Seams) -> Registry {
   let mode =
     codemode_tool.CodeMode(
-      execute: fn(_request) {
+      submit: fn(_submission) {
         panic as "description tests never execute programs"
       },
       background: None,
@@ -453,7 +453,7 @@ fn dead_filesystem() -> tool.FileSystem {
 
 fn a_code_mode() -> codemode_tool.CodeMode {
   codemode_tool.CodeMode(
-    execute: fn(_request) { panic as "this test does not run a program" },
+    submit: fn(_submission) { panic as "this test does not run a program" },
     background: None,
     seams: codemode_tool.one_seam(hint_offer(["cap/fs"], ["fs.read"])),
     default_within_ms: 1000,
