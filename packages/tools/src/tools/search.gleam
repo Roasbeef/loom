@@ -22,8 +22,10 @@
 ////    `visit_name` classifies the entry with lstat, never following a link.
 //// 4. `offer` gives the entry to the visitor (`glob_visitor` or `grep_visitor`),
 ////    which may halt the walk; otherwise `descend` enters unpruned directories.
-//// 5. `grep_visitor` selects files by the globs, and `scan_file` reads each
-////    through `scan_lines` and `record_line`, counting skipped files.
+//// 5. `grep_root` hands a regular-file root straight to `grep_visitor` and
+////    walks any other root. `grep_visitor` selects files by the globs, and
+////    `scan_file` reads each through `scan_lines` and `record_line`, counting
+////    skipped files.
 //// 6. Each visitor collects one result past the bound, so `glob` and `grep`
 ////    can tell a result that filled exactly from one cut short, reporting
 ////    it as `Truncated` or `MatchesCapped`.
@@ -985,7 +987,9 @@ type Scan {
 
 /// Searches the content of files under a resolved root for a regex.
 ///
-/// `root` and `workspace` are as `glob`'s. Only regular files are read:
+/// `root` and `workspace` are as `glob`'s, except that `root` may also be
+/// one regular file, which is then the only file searched and keeps the
+/// workspace-relative path it would have had in a walk. Only regular files are read:
 /// a symlink is a `Symlink`, not a `File`, so `grep` never reads through
 /// one, and containment holds for the whole search from the single
 /// `resolve_real` the caller performed.
@@ -1046,19 +1050,14 @@ pub fn grep(
     list.try_map(query.globs, compile_glob) |> result.map_error(InvalidQuery),
   )
 
-  let walker =
-    Walker(
-      hidden: query.hidden,
-      prune: query.prune,
-      protected: fs.protected_forms(fs.real_filesystem(), protected),
-      visit: grep_visitor(
-        expression,
-        filters,
-        display_prefix(workspace:, root:),
-        query,
-      ),
-    )
-  use cursor <- result.try(walk_tree(root:, walker:, from: fresh_scan()))
+  use cursor <- result.try(grep_root(
+    workspace:,
+    root:,
+    protected:,
+    expression:,
+    filters:,
+    query:,
+  ))
 
   // The visitor recorded one match past the bound if the tree held one,
   // so the overflow is what distinguishes a scan that filled exactly from
@@ -1083,6 +1082,86 @@ pub fn grep(
         files_skipped: scan.files_skipped,
         coverage: coverage(scan.stopped, cursor.limit),
       ))
+  }
+}
+
+// Runs the scan from a resolved root, which is either a directory to walk
+// or one regular file to search.
+//
+// A file root is what a program holds after listing files, and refusing it
+// only taught the model to pass the parent directory and name the file in
+// `globs`. The file is offered to the same visitor a walk would offer it
+// to, so the byte budget, the globs and the skip counting are one code
+// path. Two things differ from a walk, and both follow from the file being
+// named rather than found. The hidden rule does not apply, since a caller
+// who spells out `.env.example` meant it, and the match path is the file's
+// own workspace-relative path, rendered as its parent directory's prefix
+// plus its name so `globs` still sees a basename.
+//
+// Containment needs nothing here. The caller resolved `root` through
+// `resolve_real`, which refuses an escape and a protected target, and a
+// root that is itself a symlink answers `lstat` as a link, not a file, so
+// it falls through to `walk_tree` and is refused as `NotADirectory` exactly
+// as before. A fifo, socket or device takes the same path.
+/// Searches one regular file when the root is one, and walks it otherwise.
+fn grep_root(
+  workspace workspace: String,
+  root root: String,
+  protected protected: List(String),
+  expression expression: regexp.Regexp,
+  filters filters: List(Glob),
+  query query: GrepQuery,
+) -> Result(Cursor(Scan), SearchError) {
+  use info <- result.try(
+    simplifile.link_info(root)
+    |> result.map_error(missing_or_backend(root, _)),
+  )
+
+  // A regular file is searched alone; a directory, and anything `lstat`
+  // reports as a link or a device, goes to the walk, which refuses what is
+  // not a directory.
+  case simplifile.file_info_type(info) {
+    simplifile.File -> {
+      let #(parent, name) = split_leaf(root)
+      let visit =
+        grep_visitor(
+          expression,
+          filters,
+          display_prefix(workspace:, root: parent),
+          query,
+        )
+      let entry = WalkEntry(absolute: root, relative: name, kind: File, info:)
+      Ok(case visit(entry, fresh_scan()) {
+        Halt(state:) -> Cursor(state:, visited: 1, limit: VisitorStopped)
+        Continue(state:) -> Cursor(state:, visited: 1, limit: Completed)
+      })
+    }
+
+    simplifile.Directory | simplifile.Symlink | simplifile.Other ->
+      walk_tree(
+        root:,
+        walker: Walker(
+          hidden: query.hidden,
+          prune: query.prune,
+          protected: fs.protected_forms(fs.real_filesystem(), protected),
+          visit: grep_visitor(
+            expression,
+            filters,
+            display_prefix(workspace:, root:),
+            query,
+          ),
+        ),
+        from: fresh_scan(),
+      )
+  }
+}
+
+// The directory and the final name of an absolute path.
+/// Splits `/work/src/app.gleam` into `/work/src` and `app.gleam`.
+fn split_leaf(path: String) -> #(String, String) {
+  case list.reverse(string.split(path, "/")) {
+    [name, ..parents] -> #(string.join(list.reverse(parents), "/"), name)
+    [] -> #("", path)
   }
 }
 
