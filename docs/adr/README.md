@@ -66,3 +66,5 @@ document ever cited them under the old ones.
 - [022](022-microvm-tier-runs-the-executor-in-a-libkrun-guest.md): the
   microVM tier runs the executor in a libkrun guest through go-microvm, with
   a Landlock kernel and default-deny networking (issue #85).
+- [023](023-platform-json-keeps-the-portable-contract.md): select OTP at JSON
+  byte boundaries while retaining the pure reference contract and fallback.
