@@ -856,6 +856,53 @@ fn run_lsp_sql_recipe(prerequisites: Prerequisites) -> Nil {
   rig.stop(live)
 }
 
+/// The search recipe the description shows a search-only seam must vet under
+/// that seam's own allowlist and compile against the real prelude. It is not
+/// run to a result: this rig serves no search arm, so each call answers in
+/// band and the program reports that, which is a `Ran` outcome all the same.
+pub fn the_search_recipe_vets_and_compiles_under_a_search_only_policy_test_() -> EunitTest {
+  jailed(fn() {
+    case rig.prerequisites() {
+      Error(reason) ->
+        io.println_error(
+          "SKIP the_search_recipe_vets_and_compiles_under_a_search_only_policy: "
+          <> reason,
+        )
+      Ok(prerequisites) -> run_search_recipe(prerequisites)
+    }
+  })
+}
+
+// The allowlist of a seam admitting only search: the same modules the tools
+// test builds the description from.
+fn search_only_policy() -> vet_policy.VetPolicy {
+  vet_policy.new([
+    "cap/report", "cap/search", "gleam/int", "gleam/list", "gleam/string",
+  ])
+}
+
+fn run_search_recipe(prerequisites: Prerequisites) -> Nil {
+  let source = codemode_recipes.search()
+
+  // Vetting alone, under the narrow policy, before any build.
+  let assert vet.Passed(_) = vet.vet(source, search_only_policy())
+    as "the search recipe must vet under a search-only policy"
+
+  let live = rig.start(name: "search-recipe", prerequisites:, pool_size: 2)
+  let execution =
+    codemode.execute(
+      source,
+      codemode.ExecConfig(
+        ..exec_config(live, prerequisites, "search-recipe"),
+        vet_policy: search_only_policy(),
+      ),
+    )
+  let assert codemode.Ran(..) = execution.outcome
+    as "the documented search recipe must vet, compile and run"
+  assert execution.edits == []
+  rig.stop(live)
+}
+
 pub fn the_lsp_edit_recipe_compiles_test_() -> EunitTest {
   jailed(fn() {
     case rig.prerequisites() {

@@ -25,6 +25,7 @@ import core/msgpack
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/regexp
 import gleam/string
 import simplifile
 import tools/call_record
@@ -1619,7 +1620,7 @@ pub fn a_single_seam_description_guides_batches_without_a_choice_test() {
   let described = codemode.description(echoing())
   let before =
     "Run a Gleam program in a jailed satellite; only its returned result "
-    <> "enters the conversation. Use it for any batch of reads, searches, "
+    <> "enters the conversation. Use it for any batch of "
     <> "git/gh queries or checks you can list now, including the first round "
     <> "of an investigation: one program runs every probe and returns every "
     <> "result. Judge between programs, not between commands. "
@@ -1627,6 +1628,12 @@ pub fn a_single_seam_description_guides_batches_without_a_choice_test() {
     <> "or `report.value(...)`. Filter internally; return relevant facts, "
     <> "paths and failures. Supply exactly one of `program` (inline source) "
     <> "or `program_path` (a source file loaded once after read authorization). "
+    <> "This is Gleam: import each stdlib module you use, one `import` line "
+    <> "per module; match on a `Result` with `case` (`Ok(x) -> ...`, "
+    <> "`Error(e) -> ...`) rather than reading a field off it; join strings "
+    <> "with `<>`, there is no `+` on strings; group with `{ }`, not "
+    <> "parentheses; use `case`, there is no `if`; no semicolons. Names "
+    <> "models guess wrong: `int.to_string`, not `string.from_int`. "
     <> "Imports are restricted to: cap/proc, "
     <> "cap/report, gleam/int. `@external` is refused. Capabilities "
     <> "serviced today: proc.run; the other `cap/*` modules compile but "
@@ -2529,6 +2536,102 @@ pub fn the_lsp_edit_recipe_needs_every_module_and_diagnostics_cap_test() {
   assert !string.contains(
     codemode.description(echoing_over(codemode.one_seam(without_cap))),
     "LSP edit recipe",
+  )
+}
+
+// --- a seam that admits only search -----------------------------------------
+
+const search_only_imports = [
+  "cap/report", "cap/search", "gleam/int", "gleam/list", "gleam/string",
+]
+
+fn search_only_offer() -> codemode.SeamOffer {
+  codemode.SeamOffer(
+    seam: codemode.WorkspaceSeam,
+    allowed_imports: search_only_imports,
+    serviced_caps: [
+      "search.glob", "search.grep", "search.stat", "search.read_lines",
+    ],
+    extra_surfaces: [],
+  )
+}
+
+pub fn a_search_only_seam_is_shown_a_worked_search_program_test() {
+  let described =
+    codemode.description(echoing_over(codemode.one_seam(search_only_offer())))
+  assert occurrences(described, codemode_recipes.search()) == 1
+  assert string.contains(described, "Search recipe")
+  assert string.contains(described, "This is Gleam: import each stdlib module")
+}
+
+pub fn the_search_recipe_needs_every_module_and_both_calls_test() {
+  let offer = search_only_offer()
+  list.each(search_only_imports, fn(missing) {
+    let narrowed =
+      codemode.SeamOffer(
+        ..offer,
+        allowed_imports: list.filter(offer.allowed_imports, fn(name) {
+          name != missing
+        }),
+      )
+    assert !string.contains(
+      codemode.description(echoing_over(codemode.one_seam(narrowed))),
+      "Search recipe",
+    )
+  })
+  list.each(["search.glob", "search.grep"], fn(missing) {
+    let narrowed =
+      codemode.SeamOffer(
+        ..offer,
+        serviced_caps: list.filter(offer.serviced_caps, fn(name) {
+          name != missing
+        }),
+      )
+    assert !string.contains(
+      codemode.description(echoing_over(codemode.one_seam(narrowed))),
+      "Search recipe",
+    )
+  })
+}
+
+/// The description is charged on every request, so it must not offer what
+/// the seam refuses: no `cap/` module the seam does not admit, and no
+/// command-line probes when `cap/proc` is not importable.
+pub fn a_search_only_description_names_no_module_the_seam_does_not_admit_test() {
+  let described =
+    codemode.description(echoing_over(codemode.one_seam(search_only_offer())))
+  let assert Ok(module) = regexp.from_string("cap/[a-z_]+")
+    as "the module pattern must compile"
+  list.each(regexp.scan(module, described), fn(found) {
+    assert list.contains(search_only_imports, found.content)
+  })
+  assert !string.contains(described, "git/gh")
+  assert !string.contains(described, "cap/proc")
+  assert !string.contains(described, "cap/fs")
+  assert string.contains(described, "any batch of searches you can list now")
+}
+
+pub fn the_opening_sentence_offers_exactly_what_the_admitted_modules_do_test() {
+  let opening = fn(imports: List(String)) {
+    codemode.description(
+      echoing_over(codemode.one_seam(
+        codemode.SeamOffer(..search_only_offer(), allowed_imports: imports),
+      )),
+    )
+  }
+  assert string.contains(
+    opening(["cap/report", "cap/fs", "cap/search", "cap/proc"]),
+    "any batch of reads, searches, git/gh queries or checks you can list now",
+  )
+  assert string.contains(
+    opening(["cap/report"]),
+    "any batch of computations you can list now",
+  )
+  // A name correction is given only for a stdlib module the seam admits.
+  assert !string.contains(opening(["cap/report"]), "string.from_int")
+  assert string.contains(
+    opening(["cap/report", "gleam/int"]),
+    "string.from_int",
   )
 }
 
