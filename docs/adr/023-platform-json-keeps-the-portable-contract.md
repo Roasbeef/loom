@@ -1,6 +1,6 @@
 # ADR-023: platform JSON keeps the portable contract
 
-**Status**: proposed · **Date**: 2026-11-09 · **Spec ref**: §0.2, Part 1.1
+**Status**: accepted · **Date**: 2026-11-09 · **Spec ref**: §0.2, Part 1.1
 
 ## The question
 
@@ -59,3 +59,6 @@ that always falls back. Both Erlang and JavaScript suites must run in CI.
 Adoption requires matched decoding and real-path performance, downstream native and
 jailed end-to-end gates, and an independent review. The proof report must retain
 coverage limits and distinguish parser allocation from retained memory or RSS.
+
+The [fixed replay](../review/platform-json-2026-11-09.md) records the compatibility,
+negative-control, ownership and real-storage evidence for adoption.

@@ -2,7 +2,7 @@
 
 `json_codec` selects JSON implementations at Loom's byte boundaries while
 retaining the ordered values and complete corruption reports defined by
-`core/json`. This document describes the package at `96a78276a` and its byte-boundary
+`core/json`. This document describes the package at `61b1f5b18` and its byte-boundary
 integrations in this series, for engineers familiar with Gleam and BEAM who
 are new to this package. [ADR-023](../../docs/adr/023-platform-json-keeps-the-portable-contract.md)
 records the FFI exception and its compatibility requirements.
