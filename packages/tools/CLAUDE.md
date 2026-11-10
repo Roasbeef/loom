@@ -352,7 +352,7 @@ was asked.
   update, and `Safe` because every op is written to its postcondition
   (`append` skips present items, `remove` of an absent task succeeds).
   `details` carries `{op, todo}` with the landed board.
-- `tools/codemode.CodeMode` — the code-mode seam: `execute`, plus the
+- `tools/codemode.CodeMode` — the code-mode seam: one `submit` dispatcher, plus the
   published `seams`, `default_within_ms` and `max_within_ms` the tool's
   description and schema state, so the sentence the model is charged for
   on every request cannot drift from the policy the program is judged
@@ -1105,8 +1105,10 @@ continuing a strand with `agent_send` from observing one operation with
 
 ## Async code-mode modes (protocol 048)
 
-`codemode.CodeMode.background` optionally supplies `Background.launch` and
-`interact`. When present, `code_mode` accepts `run` (the existing default),
+`codemode.CodeMode.submit` handles `Run(Request)` and `Launch(Request)` through
+one configuration-bearing closure, returning `Synchronous(Execution)` or
+`Admitted(Result(JsonValue, String))`. `CodeMode.background` optionally supplies
+`Background.interact` and advertises launch support. When present, `code_mode` accepts `run` (the existing default),
 `launch`, `send`, `check`, `join`, and `cancel`. A launch captures the ordinary
 `Request`; interactions name an owner-checked execution handle. No interaction
 can replace source or widen grants. `execution_value` renders terminal pipeline
