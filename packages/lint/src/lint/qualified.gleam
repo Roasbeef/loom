@@ -56,6 +56,7 @@ pub fn loom_roots() -> List(String) {
     "gepa",
     "harness",
     "host",
+    "json_codec",
     "lint",
     "lsp",
     "machine",

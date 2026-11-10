@@ -10949,6 +10949,13 @@ ordinary top-level worker session per ticket assignment
 - Not built in this slice: the host check, pull requests, outbound delivery of
   replies, a Mandate-enforced broker policy.
 
+## Platform JSON byte boundary
+
+Command JSON decoding and existing serialization calls in `protocol` and
+`gateway` use `json_codec` (ADR-023). The same ordered core values, exact bytes
+and corruption reports reach the existing protocol/budget/authorization paths.
+This changes neither frame schemas nor delivery authority.
+
 ## Code-mode configuration custody
 
 `async_codemode.seam` captures the base `codemode.Config` once behind

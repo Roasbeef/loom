@@ -86,6 +86,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import json_codec
 import session_view/btw
 import session_view/remote_agent.{type RemoteAgent}
 import session_view/remote_usage.{type RemoteUsage}
@@ -1367,7 +1368,7 @@ fn scope_to_string(scope: ForkScope) -> String {
 ///
 pub fn decode_command(text: String) -> Result(CommandEnvelope, ProtocolFault) {
   use value <- result.try(
-    json.parse(text)
+    json_codec.parse(text)
     |> result.map_error(fn(report) { MalformedFrame(report:) }),
   )
   use fields <- result.try(envelope_fields(value, None))
@@ -2333,7 +2334,7 @@ fn kind_to_string(kind: DeltaKind) -> String {
 ///
 pub fn decode_event(text: String) -> Result(EventEnvelope, ProtocolFault) {
   use value <- result.try(
-    json.parse(text)
+    json_codec.parse(text)
     |> result.map_error(fn(report) { MalformedFrame(report:) }),
   )
   use fields <- result.try(envelope_fields(value, None))
@@ -3839,14 +3840,16 @@ pub fn to_wire_text(value: JsonValue) -> String {
     json.Bool(False) -> "false"
     json.Int(number) -> int.to_string(number)
     json.Float(number) -> wire_float(number)
-    json.String(_) -> json.to_string(value)
+    json.String(_) -> json_codec.to_string(value)
     json.Array(items) ->
       "[" <> string.join(list.map(items, to_wire_text), ",") <> "]"
     json.Object(fields) ->
       "{"
       <> string.join(
         list.map(fields, fn(field) {
-          json.to_string(json.String(field.0)) <> ":" <> to_wire_text(field.1)
+          json_codec.to_string(json.String(field.0))
+          <> ":"
+          <> to_wire_text(field.1)
         }),
         ",",
       )

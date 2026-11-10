@@ -1,5 +1,31 @@
 # Current handoff
 
+## Platform-selected JSON decoding
+
+[The fixed compatibility and storage replay](review/platform-json-2026-11-09.md)
+evaluates OTP callbacks against main `72b8aadd2`. `json_codec.Codec` exposes
+immutable callbacks, with native parsing on Erlang and the reference parser on
+JavaScript. Encoding stays portable after compact-object regressions in the
+experimental native encoder. Storage, provider and client byte boundaries select
+the codec; pure core and application schemas retain their existing boundaries.
+[The package README](../packages/json_codec/README.md) maps the implementation.
+
+The reviewed implementation `61b1f5b18` preserves 25,700 complete parser results,
+1,789 encoder byte strings and the existing output-binary ownership. Five
+semantic mutants are rejected, native/fallback call counts are witnessed and
+the unchanged-candidate control fails specifically with `no_improvement`.
+Fixed register/transcript decoding measures 3.04×/5.45× wall speedups and
+74.74%/91.60% fewer heap words. The uncached SQLite fixture improves 2.69× with
+87.61% fewer actor heap words; warm hits allocate identically. These are fixed
+synthetic workloads, not installed daemon CPU, RSS or latency measurements.
+
+Independent review found and closed exponent-only negative-zero sign loss:
+zero-valued floats now use the original-input reference parse. The package's
+FFI exception is confined by ADR-023; no pure-package external, cache policy,
+wire shape, operator setting or live daemon change is part of the work. Final
+end-to-end, static, hosted and signoff receipts are recorded separately in the
+PR. A PR does not establish live rollout readiness.
+
 ## November 9 live profile and whitespace replay
 
 The [fresh profile and fixed replay](review/live-profile-2026-11-09.md) pin both

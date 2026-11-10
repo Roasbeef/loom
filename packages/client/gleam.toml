@@ -8,6 +8,7 @@ gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 gleam_time = ">= 1.0.0 and < 2.0.0"
 filepath = ">= 1.0.0 and < 2.0.0"
 core = { path = "../core" }
+json_codec = { path = "../json_codec" }
 storage = { path = "../storage" }
 session = { path = "../session" }
 machine = { path = "../machine" }

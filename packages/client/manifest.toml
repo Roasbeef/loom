@@ -50,6 +50,7 @@ packages = [
   { name = "host", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "envoy", "filepath", "glaml", "gleam_crypto", "gleam_erlang", "gleam_http", "gleam_regexp", "gleam_stdlib", "gleam_time", "simplifile", "stratus", "weft"], source = "local", path = "../host" },
   { name = "houdini", version = "1.2.1", build_tools = ["gleam"], requirements = [], otp_app = "houdini", source = "hex", outer_checksum = "6F8AC2F12974567FB744BEA66AC93CEB76AAEA19AD28564623F76CDA9BC26A85" },
   { name = "hpack_erl", version = "0.3.0", build_tools = ["rebar3"], requirements = [], otp_app = "hpack", source = "hex", outer_checksum = "D6137D7079169D8C485C6962DFE261AF5B9EF60FBC557344511C1E65E3D95FB0" },
+  { name = "json_codec", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_stdlib"], source = "local", path = "../json_codec" },
   { name = "khepri", version = "0.19.3", build_tools = ["rebar3", "mix"], requirements = ["horus", "ra"], otp_app = "khepri", source = "hex", outer_checksum = "A969A53FB91934130223A5E7DB2A46DD200B5FAB5C617DB154857D0FB1F96B14" },
   { name = "kryptos", version = "1.5.0", build_tools = ["gleam"], requirements = ["bigi", "gleam_stdlib", "gleam_time"], otp_app = "kryptos", source = "hex", outer_checksum = "0707A1492E8585CEC8218315C69A182B43CD25E22C216CB530330C94F5D62944" },
   { name = "logging", version = "1.5.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "logging", source = "hex", outer_checksum = "BC5F18CE5DD9686100229FE5409BDC3DD5C46D5A7DF2F804AD2D8F0DD6C5060E" },
@@ -62,7 +63,7 @@ packages = [
   { name = "prng", version = "6.0.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "prng", source = "hex", outer_checksum = "7FE3879E13150248BD370469205ED07B9404DD90670FEBB8CD0E7643707C420E" },
   { name = "project", version = "0.1.0", build_tools = ["gleam"], requirements = ["evalstat", "gleam_json", "gleam_stdlib"], source = "local", path = "../project" },
   { name = "prompt", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_stdlib"], source = "local", path = "../prompt" },
-  { name = "provider", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_stdlib", "weft"], source = "local", path = "../provider" },
+  { name = "provider", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_stdlib", "json_codec", "weft"], source = "local", path = "../provider" },
   { name = "qcheck", version = "1.0.5", build_tools = ["gleam"], requirements = ["exception", "gleam_regexp", "gleam_stdlib", "gleam_yielder", "prng"], otp_app = "qcheck", source = "hex", outer_checksum = "D27C12074776EC95F082EE56E0FC74685506B6EE26176F194D10F0322A39AC11" },
   { name = "qrkit", version = "0.6.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "qrkit", source = "hex", outer_checksum = "B928EDB3BF0765CE4C31A762B3CB1567CBF96583431FE9BC1155FC264BBBDD9B" },
   { name = "ra", version = "3.2.0", build_tools = ["rebar3"], requirements = ["aten", "gen_batch_server", "seshat"], otp_app = "ra", source = "hex", outer_checksum = "8542B71AF2FAD6B4E92B98C2092BEEBB6E51E1CADA9D51D6D4BB1CDCA3DBCD06" },
@@ -76,7 +77,7 @@ packages = [
   { name = "sqlight_loom", version = "1.2.1", build_tools = ["gleam"], requirements = ["esqlite_loom", "gleam_stdlib"], otp_app = "sqlight_loom", source = "hex", outer_checksum = "C8EBD3E8E8C4B67878C28777FD98C823EBFBEE53BE3EB86FDA35C70CD783E049" },
   { name = "statem", version = "0.1.0", build_tools = ["gleam"], requirements = ["exception", "gleam_stdlib", "gleam_yielder", "qcheck"], source = "local", path = "../statem" },
   { name = "statem_parallel", version = "0.1.0", build_tools = ["gleam"], requirements = ["exception", "gleam_erlang", "gleam_otp", "gleam_stdlib", "gleam_yielder", "qcheck", "statem", "weft"], source = "local", path = "../statem_parallel" },
-  { name = "storage", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_crypto", "gleam_erlang", "gleam_otp", "gleam_stdlib", "parrot", "simplifile", "sqlight_loom"], source = "local", path = "../storage" },
+  { name = "storage", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_crypto", "gleam_erlang", "gleam_otp", "gleam_stdlib", "json_codec", "parrot", "simplifile", "sqlight_loom"], source = "local", path = "../storage" },
   { name = "stratus", version = "3.0.0", build_tools = ["gleam"], requirements = ["exception", "gleam_crypto", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "gramps", "logging"], otp_app = "stratus", source = "hex", outer_checksum = "21C93D657E4E7964E36EACDE83609459F259289DF403B5FEBD3C60612594BE24" },
   { name = "telemetry", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_stdlib"], source = "local", path = "../telemetry" },
   { name = "tom", version = "2.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "gleam_time"], otp_app = "tom", source = "hex", outer_checksum = "DCF04CB7AB35D58CFC598C66EA2E1816D160759802C89B2BA6238780D59BC256" },
@@ -112,14 +113,15 @@ gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
 gose = { version = "== 2.2.0" }
 harness = { path = "../harness" }
 host = { path = "../host" }
+json_codec = { path = "../json_codec" }
 khepri = { version = "== 0.19.3" }
 lsp = { path = "../lsp" }
 lustre = { version = "== 5.7.1" }
 machine = { path = "../machine" }
 mcp = { path = "../mcp" }
 mist = { git = "https://github.com/Roasbeef/mist.git", ref = "28b43178ff57bfb619c64b8c3544831646d5fdb9" }
-prompt = { path = "../prompt" }
 project = { path = "../project" }
+prompt = { path = "../prompt" }
 provider = { path = "../provider" }
 qcheck = { version = ">= 1.0.5 and < 2.0.0" }
 runtime = { path = "../runtime" }

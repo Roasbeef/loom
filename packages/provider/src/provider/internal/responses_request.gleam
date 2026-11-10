@@ -13,6 +13,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
+import json_codec
 import provider/internal/responses_items as items
 import provider/internal/wire
 import provider/model
@@ -329,7 +330,7 @@ fn encode_message(
             #(
               "text",
               json.String(
-                json.to_string(
+                json_codec.to_string(
                   json.Object([
                     #("is_error", json.Bool(True)),
                     #("content", json.Array(content)),
@@ -359,7 +360,9 @@ fn replay(
   content: List(message.AssistantBlock),
 ) -> Result(List(JsonValue), Nil) {
   use <- bool.guard(
-    bit_array.byte_size(bit_array.from_string(json.to_string(diagnostics)))
+    bit_array.byte_size(
+      bit_array.from_string(json_codec.to_string(diagnostics)),
+    )
       > 65_536,
     Error(Nil),
   )
@@ -440,7 +443,7 @@ fn assistant_block(
               #("type", json.String("function_call")),
               #("call_id", json.String(call.id)),
               #("name", json.String(call.name)),
-              #("arguments", json.String(json.to_string(call.arguments))),
+              #("arguments", json.String(json_codec.to_string(call.arguments))),
             ],
             case call.namespace {
               None -> []

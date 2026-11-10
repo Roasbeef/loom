@@ -1530,6 +1530,10 @@ tighten the ecosystem defaults:
    included: a sidecar or a socket is still reached through the
    bindings that exist before it earns a binding of its own. Three
    packages are stricter still — see 5.
+   The owner-approved exception in [ADR-023](adr/023-platform-json-keeps-the-portable-contract.md)
+   confines OTP JSON acceleration to `json_codec/internal/ffi_json` at byte
+   boundaries. Complete reference compatibility and native/portable differential
+   gates are required. It adds no external to the pure packages below.
 5. **Purity layering**: `core` and `machine` are pure — no I/O
    imports at all. Effects live behind the broker; the state machine is
    `State × Inputs -> Action`.

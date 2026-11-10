@@ -1031,3 +1031,8 @@ conversation entries but begins with an empty usage ledger.
 `sqlite.scan_entries_at` is the lease-free, identity-checked entry scan; the
 caller's query carries the limit. `sqlite.list_registers_at` is the same read
 for one register namespace and key prefix (the proposal queue's listing).
+
+JSON byte boundaries use `json_codec` (ADR-023): OTP on Erlang, the pure
+reference on JavaScript. Native refusals retain complete core corruption
+reports. Typed register/entry decoders and fresh SQL/cache validation remain
+unchanged; exact persisted bytes still determine decode reuse.
