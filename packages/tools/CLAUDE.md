@@ -43,11 +43,13 @@ Shared rename landing and anchored previews remain covered independently.
 
 ## Code-mode description and repair
 
-The code-mode introduction asks for any listable batch of reads, searches,
-`git`/`gh` queries or checks, including the first round of an investigation
+The code-mode introduction asks for any listable batch of the kinds of probe the
+admitted modules run (reads for `cap/fs`, searches for `cap/search`, `git`/`gh`
+queries or checks for `cap/proc`; all three read as before), including the
+first round of an investigation
 ("judge between programs, not between commands"), and compact returned
 evidence. The description retains the offered seams, concurrency contract,
-recipes (workspace, orchestration, shell probe, `lsp_sql`), module index and
+recipes (workspace, orchestration, search, shell probe, `lsp_sql`), a short "this is Gleam" note whose name corrections cover only admitted stdlib modules,, module index and
 generated public types. A `BuildRejected` result says compilation and execution
 never completed and asks for diagnostic repair; the warning rule is stated once,
 in the description. Compiler diagnostics and the

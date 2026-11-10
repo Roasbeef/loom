@@ -264,7 +264,12 @@ harness-side bridges over it:
   `search.stat` and `search.read_lines` over `tools/search`'s walk. It is
   its own module rather than four more arms on the workspace router,
   because the module a program imports is the unit of authorization, and
-  `cap/search` grants strictly less than `cap/fs`.
+  `cap/search` grants strictly less than `cap/fs`. `search.grep`'s root is
+  a directory to walk or one regular file, resolved and checked exactly as a
+  directory root is; a symlink or other non-file root is still refused.
+  `cap/search.grep_literal_query` is the code-search form of the query: it
+  escapes the text for the engine's regex syntax in the caller, so the wire
+  and the engine are unchanged.
 - `client/mcp.routing` serves the generated per-server modules.
 - `codemode/evolution.routing` serves the six `evolution.*` names over the
   session's governed-evolution doors, the only route to them: there are no
@@ -752,7 +757,9 @@ session.
 
 The default prompt asks for code mode on any batch of reads, searches,
 `git`/`gh` queries or checks the agent can already list, including the first
-round of an investigation; a direct tool is for the case where the next command
+round of an investigation (the opening sentence is built from the modules the
+seam admits, so a search-only seam is offered searches and nothing else, and
+it is shown a search recipe and a short note that the program is Gleam); a direct tool is for the case where the next command
 cannot be written before the previous result is read. The third extraction
 probe is the fallback when an investigation grows into that shape. Programs
 filter internally and return relevant facts, paths and failures; an exhaustive
