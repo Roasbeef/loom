@@ -56,7 +56,8 @@
 //// 5. `nudge` rings the strand driver, and its loss costs latency only.
 //// 6. `steer`, `follow_up` and `send_to_strand` admit onto an open run;
 ////    `abort` goes through `abort_operation` to the owning driver.
-//// 7. `await_result` polls the durable terminal result, keyed by operation.
+//// 7. `await_result` polls the durable terminal result, keyed by operation,
+////    backing off from 10 ms to a 250 ms gap so a long wait stays cheap.
 //// 8. `close` shuts the tree down, then releases the writer lease.
 
 import core/clock
@@ -1558,17 +1559,68 @@ fn await_stored_result(
   operation: OpId,
   within_ms timeout_ms: Int,
 ) -> Result(LastResult, Nil) {
-  // A bounded poll in the caller's own process: the result is durable
-  // state, not a message, so there is nothing to select on. The first
-  // attempt is immediate and a last one is made at the deadline, so a
-  // result that lands exactly as the budget runs out is still found.
+  await_stored_result_on(
+    poll.monotonic(),
+    store,
+    strand_name,
+    operation,
+    within_ms: timeout_ms,
+  )
+}
+
+/// The first gap between result polls, in milliseconds.
+///
+/// An operation that settles quickly is found as fast as a fixed 10 ms poll
+/// would find it, because the early gaps are the old ones.
+const result_poll_first_gap_ms = 10
+
+/// The longest gap between result polls, in milliseconds.
+///
+/// A miss costs two store reads, and an agent turn runs for minutes, so a
+/// 10 ms period made a long wait the busiest reader of the session store.
+/// At this cap a wait settles at four probes a second, and the most latency
+/// the backoff can add to an operation that ended is one gap.
+const result_poll_cap_ms = 250
+
+/// The result wait on a caller-supplied clock, which is the seam its tests use.
+///
+/// A bounded poll in the caller's own process: the result is durable state,
+/// not a message, so there is nothing to select on. The first attempt is
+/// immediate and a last one is made at the deadline, so a result that lands
+/// exactly as the budget runs out is still found. Between attempts the gap
+/// doubles from `result_poll_first_gap_ms` (10, 20, 40, 80, 160 ms) and then
+/// stays at `result_poll_cap_ms`; the schedule is `weft/poll`'s `Doubling`
+/// interval, so the deadline rules are the loop's own and are not restated
+/// here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.await_stored_result_on(poll.monotonic(), store, "main", op, within_ms: 5000)
+/// ```
+@internal
+pub fn await_stored_result_on(
+  clock: poll.Clock,
+  store: Session,
+  strand_name: String,
+  operation: OpId,
+  within_ms timeout_ms: Int,
+) -> Result(LastResult, Nil) {
   let outcome =
-    poll.until(within: timeout_ms, every: 10, attempt: fn() {
-      case settled_result(store, strand_name, operation) {
-        Some(last) -> poll.Done(last)
-        None -> poll.Retry
-      }
-    })
+    poll.until_on(
+      clock:,
+      within: timeout_ms,
+      every: poll.Doubling(
+        from: result_poll_first_gap_ms,
+        to: result_poll_cap_ms,
+      ),
+      attempt: fn() {
+        case settled_result(store, strand_name, operation) {
+          Some(last) -> poll.Done(last)
+          None -> poll.Retry
+        }
+      },
+    )
 
   // Inspects the poll outcome to return the result or timeout.
   case outcome {
