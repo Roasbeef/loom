@@ -92,6 +92,7 @@ func TestLoopbackJailAllowsOnlyIPv4TCPOnLo(t *testing.T) {
 		"socket-packet":          "EPERM",
 		"socket-netlink-route":   "EPERM",
 		"socket-netlink-generic": "EPERM",
+		"io-uring-setup":         "EPERM",
 		"socketpair-inet":        "EPERM",
 		"socketpair-unix":        "ok",
 

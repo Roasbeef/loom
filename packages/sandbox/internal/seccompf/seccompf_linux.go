@@ -48,6 +48,29 @@ const (
 // process on any x32 syscall rather than audit the alias table.
 const x32SyscallBit = 0x40000000
 
+// io_uring system calls, in the unified syscall table both supported
+// architectures share (include/uapi/asm-generic/unistd.h). A test checks
+// them against the unix package for the running architecture.
+const (
+	sysIoUringSetup    = 425
+	sysIoUringRegister = 427
+)
+
+// ioUringDeny returns the instructions that fail io_uring_setup,
+// io_uring_enter and io_uring_register (425 to 427) with EPERM. The
+// network programs constrain socket creation by filtering the socket
+// system calls, and io_uring is a second way to ask the kernel for the
+// same operations that the filter does not see; standard container
+// profiles deny it for the same reason. It expects the syscall number in
+// the accumulator and leaves it there.
+func ioUringDeny() []bpf.Instruction {
+	return []bpf.Instruction{
+		bpf.JumpIf{Cond: bpf.JumpGreaterOrEqual, Val: sysIoUringSetup, SkipFalse: 2},
+		bpf.JumpIf{Cond: bpf.JumpGreaterThan, Val: sysIoUringRegister, SkipTrue: 1},
+		bpf.RetConstant{Val: retErrno | uint32(unix.EPERM)},
+	}
+}
+
 // archSpec captures the per-architecture facts the filter needs.
 type archSpec struct {
 	auditArch  uint32
@@ -86,10 +109,12 @@ var archs = map[string]archSpec{
 //     (a foreign-arch syscall would be interpreted against the wrong
 //     syscall table, an old and well-known filter bypass);
 //  2. on amd64, kills the process on any x32-ABI syscall;
-//  3. for socket(2)/socketpair(2): allows AF_UNIX, fails everything
+//  3. fails io_uring_setup, io_uring_enter and io_uring_register with
+//     EPERM (see ioUringDeny);
+//  4. for socket(2)/socketpair(2): allows AF_UNIX, fails everything
 //     else with EPERM (an errno, not a kill, so tools that probe for
 //     network and fall back keep working);
-//  4. allows everything else — this is a network filter, not a general
+//  5. allows everything else — this is a network filter, not a general
 //     syscall allowlist.
 func NetworkOffProgram(goarch string) ([]bpf.Instruction, error) {
 	spec, ok := archs[goarch]
@@ -116,6 +141,9 @@ func NetworkOffProgram(goarch string) ([]bpf.Instruction, error) {
 			bpf.RetConstant{Val: retKillProcess},
 		)
 	}
+
+	// io_uring is refused outright; see ioUringDeny.
+	prog = append(prog, ioUringDeny()...)
 
 	// socket/socketpair: inspect the domain argument.
 	//
@@ -151,6 +179,8 @@ func NetworkOffProgram(goarch string) ([]bpf.Instruction, error) {
 //  2. setsockopt(2) with level IPPROTO_TCP and option TCP_ULP is EPERM,
 //     which keeps the kernel TLS upgrade out of reach.
 //
+// Like the off program it also fails the io_uring system calls.
+//
 // Connecting and binding are not filtered, as in off mode: seccomp
 // cannot read the address, and the fresh network namespace (only `lo`,
 // no route elsewhere) is what bounds where a TCP socket can go. The
@@ -181,6 +211,9 @@ func NetworkLoopbackProgram(goarch string) ([]bpf.Instruction, error) {
 	}
 
 	eperm := retErrno | uint32(unix.EPERM)
+
+	// io_uring is refused outright; see ioUringDeny.
+	prog = append(prog, ioUringDeny()...)
 
 	// Instruction indices below are relative to the first dispatch
 	// instruction, p0. Each skip counts instructions to jump over.

@@ -646,6 +646,12 @@ the filesystem layers. Three further details matter:
   amd64, on any x32-ABI syscall. Both are classic filter bypasses.
 - Non-`AF_UNIX` socket creation fails with `EPERM` rather than a kill, so
   tools that probe for network and fall back keep working.
+- `io_uring_setup`, `io_uring_enter` and `io_uring_register` (425 to 427 on
+  both architectures) fail with `EPERM` in every mode that installs the
+  filter. The filter constrains socket creation by filtering the `socket`
+  system calls, and io_uring is a second way to ask the kernel for the same
+  operations that the filter does not see; standard container profiles deny
+  it for the same reason.
 
 Installation uses `SECCOMP_FILTER_FLAG_TSYNC` so the filter binds *every*
 thread of the Go runtime; without it, another thread could make the

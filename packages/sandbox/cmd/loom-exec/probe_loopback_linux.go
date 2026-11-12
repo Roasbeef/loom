@@ -184,6 +184,14 @@ func loopbackBattery(hostPort string) {
 		fmt.Printf("socketpair-unix=%s\n", errName(err))
 	}
 
+	// io_uring_setup with no parameters: the filter answers EPERM, and
+	// a kernel without the filter answers EFAULT (or ENOSYS).
+	var ringErr error
+	if _, _, errno := unix.Syscall(unix.SYS_IO_URING_SETUP, 1, 0, 0); errno != 0 {
+		ringErr = errno
+	}
+	fmt.Printf("io-uring-setup=%s\n", errName(ringErr))
+
 	// TCP_ULP on an otherwise permitted TCP socket, and a harmless
 	// option on the same socket to show only TCP_ULP is refused.
 	if s, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0); err == nil {

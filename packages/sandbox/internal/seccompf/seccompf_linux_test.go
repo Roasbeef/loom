@@ -164,6 +164,11 @@ func TestArchTableMatchesUnixPackage(t *testing.T) {
 	if spec.socketpair != unix.SYS_SOCKETPAIR {
 		t.Fatalf("socketpair nr %d != unix.SYS_SOCKETPAIR %d", spec.socketpair, unix.SYS_SOCKETPAIR)
 	}
+	if unix.SYS_IO_URING_SETUP != sysIoUringSetup ||
+		unix.SYS_IO_URING_ENTER != sysIoUringSetup+1 ||
+		unix.SYS_IO_URING_REGISTER != sysIoUringRegister {
+		t.Fatalf("io_uring numbers disagree with the unix package")
+	}
 	if spec.setsockopt != unix.SYS_SETSOCKOPT {
 		t.Fatalf("setsockopt nr %d != unix.SYS_SETSOCKOPT %d", spec.setsockopt, unix.SYS_SETSOCKOPT)
 	}
@@ -309,9 +314,10 @@ func TestLoopbackUnsupportedArch(t *testing.T) {
 	}
 }
 
-// The off program must not move when the loopback program is added: the
+// The off program must not move without a deliberate edit here: the
 // tests above check its verdicts, and this one pins its instructions, so
 // a change that kept every verdict but altered the program is still seen.
+// It last changed to add the io_uring denial.
 // The expected lists are written out from the filter's documented shape,
 // independently of the builder.
 func TestNetworkOffProgramIsUnchanged(t *testing.T) {
@@ -325,6 +331,11 @@ func TestNetworkOffProgramIsUnchanged(t *testing.T) {
 	}
 	tail := func(socket, socketpair uint32) []bpf.Instruction {
 		return []bpf.Instruction{
+			// Added deliberately with the io_uring denial: 425 to 427
+			// fail with EPERM in every mode.
+			bpf.JumpIf{Cond: bpf.JumpGreaterOrEqual, Val: 425, SkipFalse: 2},
+			bpf.JumpIf{Cond: bpf.JumpGreaterThan, Val: 427, SkipTrue: 1},
+			bpf.RetConstant{Val: 0x00050000 | 1},
 			bpf.JumpIf{Cond: bpf.JumpEqual, Val: socket, SkipTrue: 2},
 			bpf.JumpIf{Cond: bpf.JumpEqual, Val: socketpair, SkipTrue: 1},
 			bpf.RetConstant{Val: 0x7fff0000},
@@ -357,6 +368,34 @@ func TestNetworkOffProgramIsUnchanged(t *testing.T) {
 		}
 		if !reflect.DeepEqual(gotRaw, wantRaw) {
 			t.Fatalf("%s: the off program changed:\n got %v\nwant %v", arch, gotRaw, wantRaw)
+		}
+	}
+}
+
+// io_uring_setup, io_uring_enter and io_uring_register fail with EPERM in
+// every mode, on both architectures, and the neighbouring numbers do not.
+func TestIoUringDeniedInEveryProgram(t *testing.T) {
+	builders := map[string]func(string) ([]bpf.Instruction, error){
+		"off": NetworkOffProgram, "loopback": NetworkLoopbackProgram,
+	}
+	archData := map[string]uint32{
+		"amd64": unix.AUDIT_ARCH_X86_64, "arm64": unix.AUDIT_ARCH_AARCH64,
+	}
+	for name, build := range builders {
+		for goarch, audit := range archData {
+			prog, err := build(goarch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for nr, want := range map[uint32]uint32{
+				424: retAllow, 425: retErrno | uint32(unix.EPERM),
+				426: retErrno | uint32(unix.EPERM), 427: retErrno | uint32(unix.EPERM),
+				428: retAllow,
+			} {
+				if got := runFilter(t, prog, seccompData(nr, audit, 0)); got != want {
+					t.Errorf("%s %s nr %d: verdict %#x, want %#x", name, goarch, nr, got, want)
+				}
+			}
 		}
 	}
 }

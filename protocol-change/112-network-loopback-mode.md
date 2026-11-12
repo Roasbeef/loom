@@ -99,17 +99,16 @@ loopback, the runner's address or another jail's listeners. The jail's
 ceilings are unchanged, and there is none on descriptors, ports or
 connections; sockets are charged to the memory cgroup where one is attached.
 
-Two things this change does not fix, both true of `off` today:
+One thing this change does not fix, and it is true of `off` today: a host
+that runs lnd's integration tests needs a `NETLINK_ROUTE` socket. See the
+evidence below.
 
-- `io_uring` is not filtered. `IORING_OP_SOCKET` creates a socket without
-  passing through `socket(2)`, so on a kernel with io_uring enabled the
-  socket-creation filter, in every mode, can in principle be stepped around
-  (io_uring sockets exist from Linux 5.19; this was not exercised). Denying
-  `io_uring_setup` in the loopback program is one more rule; it is left out
-  because it widens the diff past what was asked, and it is the owner's
-  call.
-- A host that runs lnd's integration tests needs a `NETLINK_ROUTE` socket.
-  See the evidence below.
+The seccomp programs for `off` and `loopback` both fail `io_uring_setup`,
+`io_uring_enter` and `io_uring_register` with `EPERM`. The network programs
+constrain socket creation by filtering the `socket` system calls, and
+io_uring is a second way to ask the kernel for the same operations that the
+filter does not see; standard container profiles deny it for the same
+reason. This changes the `off` program, which a test pins.
 
 ## Evidence
 
