@@ -187,12 +187,30 @@ func TestBwrapArgsNetworkProxyUnsharesNet(t *testing.T) {
 	}
 }
 
+// Loopback mode is the off namespace with a different filter, so the
+// argv must carry --unshare-net: the filter admits TCP sockets, and the
+// fresh namespace is the only thing that keeps them off the host network.
+func TestBwrapArgsNetworkLoopbackUnsharesNet(t *testing.T) {
+	p := basePol()
+	p.Network = policy.Network{Mode: policy.NetworkLoopback}
+	found := false
+	for _, a := range BwrapArgs(p, nil, "") {
+		if a == "--unshare-net" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("--unshare-net missing under network loopback")
+	}
+}
+
 func TestBlocksDirectNetwork(t *testing.T) {
 	cases := []struct {
 		mode policy.NetworkMode
 		want bool
 	}{
 		{policy.NetworkOff, true},
+		{policy.NetworkLoopback, true},
 		{policy.NetworkProxy, true},
 		{policy.NetworkFull, false},
 	}

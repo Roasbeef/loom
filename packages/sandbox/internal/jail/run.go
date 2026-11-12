@@ -273,6 +273,21 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 			strings.Join(bad, ", "))
 	}
 
+	// Loopback mode is a seccomp program that admits TCP sockets, and
+	// what keeps those sockets off the host network is the fresh network
+	// namespace bwrap creates. Seatbelt has no such namespace, and the
+	// degraded Linux path (no bwrap) runs in the host's, so there the
+	// filter alone would hand out host sockets. Refused, never narrowed.
+	if req.Policy.Network.Mode == policy.NetworkLoopback &&
+		!(feat.Platform.GOOS == "linux" && feat.BwrapPath != "") {
+		policyR.Close()
+		reportR.Close()
+		reportW.Close()
+		return nil, fmt.Errorf("jail: network mode loopback needs a fresh " +
+			"network namespace, which only the Linux bubblewrap jail " +
+			"provides; refusing to run it on this platform or in degraded mode")
+	}
+
 	switch {
 	case feat.Platform.GOOS == "linux" && feat.BwrapPath != "":
 		// The mount plan is built from a policy whose protected paths

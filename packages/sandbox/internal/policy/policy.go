@@ -37,6 +37,13 @@ const (
 	// NetworkOff blocks all network access: bwrap unshares the net
 	// namespace and a seccomp filter denies non-AF_UNIX socket creation.
 	NetworkOff NetworkMode = "off"
+	// NetworkLoopback is the same fresh network namespace as NetworkOff,
+	// whose `lo` interface bubblewrap brings up, with a seccomp program
+	// that additionally allows IPv4 TCP sockets (protocol-change/112).
+	// Processes of one execution can then talk to each other over
+	// 127.0.0.1 and nothing else is reachable. It is enforced only on
+	// Linux under bubblewrap; every other path refuses it.
+	NetworkLoopback NetworkMode = "loopback"
 	// NetworkProxy allows egress only through a harness-owned proxy.
 	// The enforcing sidecar is not implemented in phase 1 (spec WP-H
 	// "Egress proxy sidecar"; hardening in follow-up track 10), so the
@@ -477,7 +484,7 @@ func networkFrom(v any) (Network, error) {
 		return Network{}, fmt.Errorf("policy: network.mode: %w", err)
 	}
 	switch NetworkMode(mode) {
-	case NetworkOff, NetworkFull:
+	case NetworkOff, NetworkLoopback, NetworkFull:
 		for k := range m {
 			if k != "mode" {
 				return Network{}, fmt.Errorf("policy: network: unexpected key %q for mode %q", k, mode)
