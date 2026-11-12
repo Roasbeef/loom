@@ -178,6 +178,24 @@ func BwrapArgs(p policy.Policy, kinds map[string]PathKind, helper string) []stri
 	return bwrapArgsForPlan(p, MountPlan(p, kinds, helper))
 }
 
+// LoopbackBwrapArgs are the namespace and capability flags that a
+// loopback-mode jail requires of bwrap, in the order they are passed.
+var LoopbackBwrapArgs = []string{
+	"--unshare-user", "--disable-userns", "--cap-drop", "ALL",
+}
+
+// loopbackBwrapPrefix swaps the soft user-namespace flag in args for the
+// loopback flags.
+func loopbackBwrapPrefix(args []string) []string {
+	out := make([]string, 0, len(args)+len(LoopbackBwrapArgs))
+	for _, a := range args {
+		if a != "--unshare-user-try" {
+			out = append(out, a)
+		}
+	}
+	return append(out, LoopbackBwrapArgs...)
+}
+
 // bwrapArgsForPlan renders the same plan that the mount audit inspected.
 // Host path resolution happens before planning, never between audit and exec.
 func bwrapArgsForPlan(p policy.Policy, plan []MountOp) []string {
@@ -187,12 +205,22 @@ func bwrapArgsForPlan(p policy.Policy, plan []MountOp) []string {
 		// with it. No orphaned jails.
 		"--die-with-parent",
 		// Fresh PID/IPC/UTS namespaces; user and cgroup namespaces are
-		// "try" so the same argv works both privileged and not.
+		// "try" so the same argv works both privileged and not. Loopback
+		// mode is the exception, below.
 		"--unshare-pid",
 		"--unshare-ipc",
 		"--unshare-uts",
 		"--unshare-user-try",
 		"--unshare-cgroup-try",
+	}
+	if p.Network.Mode == policy.NetworkLoopback {
+		// Loopback mode never runs weaker than this: its own user
+		// namespace (the hard form, which fails rather than falls back),
+		// no nested user namespaces, and an empty capability set. The
+		// -try form above is replaced, not repeated. LoopbackBwrapArgs
+		// is the same set, used by the startup probe, so the probe tests
+		// exactly what the jail will ask for.
+		args = loopbackBwrapPrefix(args)
 	}
 	if BlocksDirectNetwork(p.Network.Mode) {
 		// A fresh network namespace whose only interface is `lo`: bwrap

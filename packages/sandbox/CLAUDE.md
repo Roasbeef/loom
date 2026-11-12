@@ -303,7 +303,10 @@ only Go module.
   socket stays `EPERM`. The filter is sound only inside bwrap's fresh
   network namespace, so `jail.Start` refuses the mode on Darwin, on the
   degraded no-bwrap path and anywhere else, never narrowing it. Nothing
-  in Loom selects it. The off program's bytes are pinned by a test. Both
+  in Loom selects it. Its bwrap argv alone uses `--unshare-user`,
+  `--disable-userns` and `--cap-drop ALL`, and `Start` refuses the mode
+  unless a startup probe of bwrap with those flags ran
+  (`Features.LoopbackReady`). The off program's bytes are pinned by a test. Both
   programs also fail the io_uring system calls (425 to 427) with `EPERM`.
   [protocol-change/112](../../protocol-change/112-network-loopback-mode.md).
 - **Landlock has no deny rules, and the layering contract is: strictly

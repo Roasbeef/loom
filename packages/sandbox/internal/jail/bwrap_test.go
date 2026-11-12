@@ -204,6 +204,44 @@ func TestBwrapArgsNetworkLoopbackUnsharesNet(t *testing.T) {
 	}
 }
 
+// Loopback mode requires its own user namespace in the hard form, no
+// nested user namespaces and an empty capability set; the off and full
+// argv carry none of that.
+func TestBwrapArgsLoopbackRequiresUserNamespaceAndNoCaps(t *testing.T) {
+	has := func(args []string, a string) bool {
+		for _, x := range args {
+			if x == a {
+				return true
+			}
+		}
+		return false
+	}
+	p := basePol()
+	p.Network = policy.Network{Mode: policy.NetworkLoopback}
+	args := BwrapArgs(p, nil, "")
+	for _, want := range []string{"--unshare-user", "--disable-userns", "--cap-drop", "ALL", "--unshare-net"} {
+		if !has(args, want) {
+			t.Errorf("loopback argv lacks %s: %v", want, args)
+		}
+	}
+	if has(args, "--unshare-user-try") {
+		t.Errorf("loopback argv still has the soft user namespace flag: %v", args)
+	}
+	for _, mode := range []policy.NetworkMode{policy.NetworkOff, policy.NetworkFull} {
+		q := basePol()
+		q.Network = policy.Network{Mode: mode}
+		other := BwrapArgs(q, nil, "")
+		for _, banned := range []string{"--disable-userns", "--cap-drop", "--unshare-user"} {
+			if has(other, banned) {
+				t.Errorf("%s argv carries %s", mode, banned)
+			}
+		}
+		if !has(other, "--unshare-user-try") {
+			t.Errorf("%s argv lost --unshare-user-try", mode)
+		}
+	}
+}
+
 func TestBlocksDirectNetwork(t *testing.T) {
 	cases := []struct {
 		mode policy.NetworkMode

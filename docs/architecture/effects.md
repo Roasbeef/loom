@@ -692,6 +692,16 @@ surface for model-influenced code. Netlink, raw and packet sockets, UDP,
 SCTP, MPTCP and the kernel TLS upgrade stay closed. A host should ask for
 this mode only for a kind of run where it has accepted that surface.
 
+*Preconditions.* Loopback mode runs only in a jail that holds no
+capabilities and cannot create a nested user namespace. For this mode
+alone the bwrap argv requires its own user namespace (`--unshare-user`,
+not the `-try` form), and adds `--disable-userns` and `--cap-drop ALL`;
+the off and full argv are unchanged. At startup the helper runs bwrap once
+with exactly those flags, and `jail.Start` refuses the mode, naming it,
+when that probe fails (a bwrap too old to know `--disable-userns`, or an
+environment where the hard `--unshare-user` fails). It never runs the mode
+with less.
+
 *Where it is enforced.* Only on Linux under bwrap, where the fresh
 namespace is what keeps the permitted sockets off the host network. The
 helper refuses the mode, with an error that names it, on Darwin (Seatbelt

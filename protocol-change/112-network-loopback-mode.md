@@ -65,6 +65,14 @@ network namespace, where this filter would hand out host sockets) and on
 Darwin (Seatbelt has no network namespace; its profile is untouched and the
 mode is unenforced there). It never narrows to `off` in silence.
 
+**Preconditions.** The mode runs only in a jail that holds no capabilities
+and cannot create a nested user namespace. For a loopback policy alone the
+bwrap argv requires its own user namespace (`--unshare-user`, not
+`--unshare-user-try`) and adds `--disable-userns` and `--cap-drop ALL`; the
+off and full argv are unchanged. The helper probes bwrap once at startup
+with exactly those flags, and `jail.Start` refuses the mode, naming it, when
+the probe fails. A hand-built feature set that was not probed is refused.
+
 **Who selects it.** Nothing in Loom does. No tool, profile or configuration
 requests it, and `permissions.network` still accepts only `full`. It exists
 for an embedding host to put in a policy it sends.

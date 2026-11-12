@@ -279,6 +279,17 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 	// degraded Linux path (no bwrap) runs in the host's, so there the
 	// filter alone would hand out host sockets. Refused, never narrowed.
 	if req.Policy.Network.Mode == policy.NetworkLoopback &&
+		feat.Platform.GOOS == "linux" && feat.BwrapPath != "" &&
+		!feat.LoopbackReady {
+		policyR.Close()
+		reportR.Close()
+		reportW.Close()
+		return nil, fmt.Errorf("jail: network mode loopback requires bwrap "+
+			"with its own user namespace, no nested user namespaces and no "+
+			"capabilities, and that is not available here (%s); refusing "+
+			"to run it with less", feat.LoopbackReason)
+	}
+	if req.Policy.Network.Mode == policy.NetworkLoopback &&
 		!(feat.Platform.GOOS == "linux" && feat.BwrapPath != "") {
 		policyR.Close()
 		reportR.Close()

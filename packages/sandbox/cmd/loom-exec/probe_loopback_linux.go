@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strconv"
+	"strings"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -184,6 +187,11 @@ func loopbackBattery(hostPort string) {
 		fmt.Printf("socketpair-unix=%s\n", errName(err))
 	}
 
+	// The effective capability set, and whether a new user namespace can
+	// be created: loopback mode requires an empty set and no.
+	fmt.Printf("cap-eff=%s\n", capEff())
+	fmt.Printf("new-userns=%s\n", newUserNS())
+
 	// io_uring_setup with no parameters: the filter answers EPERM, and
 	// a kernel without the filter answers EFAULT (or ENOSYS).
 	var ringErr error
@@ -203,4 +211,39 @@ func loopbackBattery(hostPort string) {
 	} else {
 		fmt.Printf("setsockopt-tcp-ulp=no-socket:%s\n", errName(err))
 	}
+}
+
+// capEff reads the effective capability mask from /proc/self/status.
+func capEff() string {
+	raw, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return "unreadable"
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if v, ok := strings.CutPrefix(line, "CapEff:"); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	return "absent"
+}
+
+// newUserNS tries to start a child in a new user namespace and reports
+// the result: "ok" means one could be created.
+func newUserNS() string {
+	for _, path := range []string{"/bin/true", "/usr/bin/true"} {
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		cmd := exec.Command(path)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWUSER}
+		err := cmd.Run()
+		if err == nil {
+			return "ok"
+		}
+		if pe, ok := err.(*os.PathError); ok {
+			err = pe.Err
+		}
+		return errName(err)
+	}
+	return "no-true"
 }

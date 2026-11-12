@@ -30,6 +30,19 @@ func needLoopbackJail(t *testing.T) {
 	if feat.BwrapPath == "" {
 		t.Skip("loopback mode needs bwrap's fresh network namespace")
 	}
+	if !feat.LoopbackReady {
+		// The environment cannot give the mode its preconditions, so the
+		// requirement is that Start refuses it, never that it runs.
+		_, err := jail.Start(jail.Request{
+			Argv: []string{"/bin/true"}, Env: testEnv, Cwd: "/",
+			Policy: loopbackPolicy(t),
+		}, feat, testbin.Helper(t), nil)
+		if err == nil || !strings.Contains(err.Error(), "loopback") {
+			t.Fatalf("loopback mode is not available (%s) but Start did not refuse it: %v",
+				feat.LoopbackReason, err)
+		}
+		t.Skipf("Start refuses loopback mode here, as required: %v", err)
+	}
 	if !feat.Seccomp {
 		t.Skip("kernel lacks seccomp filter support")
 	}
@@ -156,4 +169,18 @@ func TestOffJailStillRefusesTCPSockets(t *testing.T) {
 		"socketpair-unix":      "ok",
 		"setsockopt-tcp-ulp":   "no-socket:EPERM",
 	})
+}
+
+// Inside a loopback jail the effective capability set is empty and a
+// user namespace cannot be created. Where the environment cannot give
+// that, needLoopbackJail has already required Start to refuse.
+func TestLoopbackJailHoldsNoCapabilities(t *testing.T) {
+	needLoopbackJail(t)
+	got := probeLines(t, loopbackPolicy(t), "battery")
+	if got["cap-eff"] != "0000000000000000" {
+		t.Errorf("cap-eff = %q, want all zero", got["cap-eff"])
+	}
+	if got["new-userns"] == "ok" || got["new-userns"] == "" {
+		t.Errorf("new-userns = %q, want a refusal", got["new-userns"])
+	}
 }
