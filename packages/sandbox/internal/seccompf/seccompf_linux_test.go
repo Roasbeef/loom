@@ -4,6 +4,7 @@ package seccompf
 
 import (
 	"encoding/binary"
+	"reflect"
 	"runtime"
 	"testing"
 
@@ -25,6 +26,15 @@ func seccompData(nr uint32, arch uint32, arg0 uint64) []byte {
 	binary.BigEndian.PutUint32(buf[0:], nr)
 	binary.BigEndian.PutUint32(buf[4:], arch)
 	binary.BigEndian.PutUint32(buf[16:], uint32(arg0)) // low word, as the kernel loads it
+	return buf
+}
+
+// seccompDataArgs is seccompData with the first three syscall arguments,
+// for the programs that read the type, protocol, level or option words.
+func seccompDataArgs(nr, arch uint32, a0, a1, a2 uint64) []byte {
+	buf := seccompData(nr, arch, a0)
+	binary.BigEndian.PutUint32(buf[24:], uint32(a1))
+	binary.BigEndian.PutUint32(buf[32:], uint32(a2))
 	return buf
 }
 
@@ -112,6 +122,21 @@ func TestUnsupportedArch(t *testing.T) {
 
 func TestProgramAssembles(t *testing.T) {
 	for arch := range archs {
+		for name, build := range map[string]func(string) ([]bpf.Instruction, error){
+			"off": NetworkOffProgram, "loopback": NetworkLoopbackProgram,
+		} {
+			prog, err := build(arch)
+			if err != nil {
+				t.Fatalf("%s %s: %v", name, arch, err)
+			}
+			raw, err := bpf.Assemble(prog)
+			if err != nil {
+				t.Fatalf("%s %s: assemble: %v", name, arch, err)
+			}
+			if len(raw) == 0 || len(raw) > 4096 {
+				t.Fatalf("%s %s: implausible program length %d", name, arch, len(raw))
+			}
+		}
 		prog, err := NetworkOffProgram(arch)
 		if err != nil {
 			t.Fatalf("%s: %v", arch, err)
@@ -138,5 +163,200 @@ func TestArchTableMatchesUnixPackage(t *testing.T) {
 	}
 	if spec.socketpair != unix.SYS_SOCKETPAIR {
 		t.Fatalf("socketpair nr %d != unix.SYS_SOCKETPAIR %d", spec.socketpair, unix.SYS_SOCKETPAIR)
+	}
+	if spec.setsockopt != unix.SYS_SETSOCKOPT {
+		t.Fatalf("setsockopt nr %d != unix.SYS_SETSOCKOPT %d", spec.setsockopt, unix.SYS_SETSOCKOPT)
+	}
+}
+
+// The loopback program, as data: each case is one syscall as the kernel
+// would present it, with the verdict the mode promises. The type column
+// is the raw argument, flags included, because the masking is the claim.
+func TestNetworkLoopbackProgramAmd64(t *testing.T) {
+	prog, err := NetworkLoopbackProgram("amd64")
+	if err != nil {
+		t.Fatalf("NetworkLoopbackProgram: %v", err)
+	}
+	const (
+		arch         = unix.AUDIT_ARCH_X86_64
+		sysSocket    = 41
+		sysSockpr    = 53
+		sysSetsock   = 54
+		sysRead      = 0
+		sysExecve    = 59
+		sockNonblock = 0o4000
+		sockCloexec  = 0o2000000
+		epermDeny    = retErrno | uint32(unix.EPERM)
+	)
+	sock := func(domain, typ, proto uint64) []byte {
+		return seccompDataArgs(sysSocket, arch, domain, typ, proto)
+	}
+	pair := func(domain, typ, proto uint64) []byte {
+		return seccompDataArgs(sysSockpr, arch, domain, typ, proto)
+	}
+	setopt := func(level, opt uint64) []byte {
+		return seccompDataArgs(sysSetsock, arch, 3, level, opt)
+	}
+	cases := []struct {
+		name string
+		data []byte
+		want uint32
+	}{
+		// Allowed: AF_UNIX as in off mode, and IPv4 TCP.
+		{"AF_UNIX stream", sock(unix.AF_UNIX, unix.SOCK_STREAM, 0), retAllow},
+		{"AF_UNIX dgram", sock(unix.AF_UNIX, unix.SOCK_DGRAM, 0), retAllow},
+		{"AF_INET stream proto 0", sock(unix.AF_INET, unix.SOCK_STREAM, 0), retAllow},
+		{"AF_INET stream IPPROTO_TCP", sock(unix.AF_INET, unix.SOCK_STREAM, unix.IPPROTO_TCP), retAllow},
+		{"AF_INET stream nonblock", sock(unix.AF_INET, unix.SOCK_STREAM|sockNonblock, 0), retAllow},
+		{"AF_INET stream cloexec", sock(unix.AF_INET, unix.SOCK_STREAM|sockCloexec, 0), retAllow},
+		{"AF_INET stream nonblock cloexec tcp", sock(unix.AF_INET, unix.SOCK_STREAM|sockNonblock|sockCloexec, unix.IPPROTO_TCP), retAllow},
+		{"AF_INET high bits of args are not read", sock(0xdead00000000|unix.AF_INET, 0xbeef00000000|unix.SOCK_STREAM, 0xcafe00000000), retAllow},
+
+		// Refused: everything else about sockets.
+		{"AF_INET dgram", sock(unix.AF_INET, unix.SOCK_DGRAM, 0), epermDeny},
+		{"AF_INET dgram IPPROTO_UDP", sock(unix.AF_INET, unix.SOCK_DGRAM, unix.IPPROTO_UDP), epermDeny},
+		{"AF_INET dgram nonblock", sock(unix.AF_INET, unix.SOCK_DGRAM|sockNonblock, 0), epermDeny},
+		{"AF_INET raw", sock(unix.AF_INET, unix.SOCK_RAW, unix.IPPROTO_RAW), epermDeny},
+		{"AF_INET raw ICMP", sock(unix.AF_INET, unix.SOCK_RAW, unix.IPPROTO_ICMP), epermDeny},
+		{"AF_INET seqpacket SCTP", sock(unix.AF_INET, unix.SOCK_SEQPACKET, unix.IPPROTO_SCTP), epermDeny},
+		{"AF_INET stream SCTP", sock(unix.AF_INET, unix.SOCK_STREAM, unix.IPPROTO_SCTP), epermDeny},
+		{"AF_INET stream MPTCP", sock(unix.AF_INET, unix.SOCK_STREAM, unix.IPPROTO_MPTCP), epermDeny},
+		{"AF_INET stream UDP protocol", sock(unix.AF_INET, unix.SOCK_STREAM, unix.IPPROTO_UDP), epermDeny},
+		{"AF_INET packet-type 10", sock(unix.AF_INET, 10, 0), epermDeny},
+		{"AF_INET6 stream", sock(unix.AF_INET6, unix.SOCK_STREAM, 0), epermDeny},
+		{"AF_INET6 stream tcp", sock(unix.AF_INET6, unix.SOCK_STREAM, unix.IPPROTO_TCP), epermDeny},
+		{"AF_INET6 dgram", sock(unix.AF_INET6, unix.SOCK_DGRAM, 0), epermDeny},
+		{"AF_PACKET", sock(unix.AF_PACKET, unix.SOCK_RAW, 0), epermDeny},
+		{"AF_NETLINK route", sock(unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_ROUTE), epermDeny},
+		{"AF_NETLINK generic", sock(unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_GENERIC), epermDeny},
+		{"AF_NETLINK netfilter", sock(unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_NETFILTER), epermDeny},
+		{"AF_NETLINK diag", sock(unix.AF_NETLINK, unix.SOCK_DGRAM, unix.NETLINK_SOCK_DIAG), epermDeny},
+		{"AF_NETLINK stream-typed", sock(unix.AF_NETLINK, unix.SOCK_STREAM, 0), epermDeny},
+		{"AF_VSOCK stream", sock(unix.AF_VSOCK, unix.SOCK_STREAM, 0), epermDeny},
+		{"AF_ALG", sock(unix.AF_ALG, unix.SOCK_SEQPACKET, 0), epermDeny},
+		{"AF_TIPC", sock(unix.AF_TIPC, unix.SOCK_STREAM, 0), epermDeny},
+
+		// socketpair stays AF_UNIX only, whatever the type.
+		{"socketpair AF_UNIX", pair(unix.AF_UNIX, unix.SOCK_STREAM, 0), retAllow},
+		{"socketpair AF_INET stream", pair(unix.AF_INET, unix.SOCK_STREAM, 0), epermDeny},
+		{"socketpair AF_INET stream tcp", pair(unix.AF_INET, unix.SOCK_STREAM, unix.IPPROTO_TCP), epermDeny},
+		{"socketpair AF_INET6", pair(unix.AF_INET6, unix.SOCK_STREAM, 0), epermDeny},
+		{"socketpair AF_NETLINK", pair(unix.AF_NETLINK, unix.SOCK_RAW, 0), epermDeny},
+
+		// setsockopt: only TCP_ULP at the TCP level is refused.
+		{"setsockopt TCP_ULP", setopt(unix.IPPROTO_TCP, tcpULP), epermDeny},
+		{"setsockopt TCP_NODELAY", setopt(unix.IPPROTO_TCP, unix.TCP_NODELAY), retAllow},
+		{"setsockopt TCP_KEEPIDLE", setopt(unix.IPPROTO_TCP, unix.TCP_KEEPIDLE), retAllow},
+		{"setsockopt SOL_SOCKET SO_REUSEADDR", setopt(unix.SOL_SOCKET, unix.SO_REUSEADDR), retAllow},
+		{"setsockopt option 31 at another level", setopt(unix.IPPROTO_IP, tcpULP), retAllow},
+		{"setsockopt level 6 high bits ignored for TCP_ULP", setopt(0xdead00000000|unix.IPPROTO_TCP, 0xbeef00000000|tcpULP), epermDeny},
+
+		// Unrelated syscalls and the guards, as in off mode.
+		{"read allowed", seccompData(sysRead, arch, 12345), retAllow},
+		{"execve allowed", seccompData(sysExecve, arch, 0), retAllow},
+		{"foreign arch killed", seccompData(sysRead, unix.AUDIT_ARCH_I386, 0), retKillProcess},
+		{"x32 read killed", seccompData(x32SyscallBit|sysRead, arch, 0), retKillProcess},
+		{"x32 socket AF_INET stream killed", seccompData(x32SyscallBit|sysSocket, arch, unix.AF_INET), retKillProcess},
+		{"x32 setsockopt killed", seccompData(x32SyscallBit|sysSetsock, arch, 0), retKillProcess},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := runFilter(t, prog, tc.data); got != tc.want {
+				t.Fatalf("verdict = %#x, want %#x", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNetworkLoopbackProgramArm64(t *testing.T) {
+	prog, err := NetworkLoopbackProgram("arm64")
+	if err != nil {
+		t.Fatalf("NetworkLoopbackProgram: %v", err)
+	}
+	const (
+		arch       = unix.AUDIT_ARCH_AARCH64
+		sysSocket  = 198
+		sysSockpr  = 199
+		sysSetsock = 208
+		eperm      = retErrno | uint32(unix.EPERM)
+	)
+	cases := []struct {
+		name string
+		data []byte
+		want uint32
+	}{
+		{"AF_INET stream", seccompDataArgs(sysSocket, arch, unix.AF_INET, unix.SOCK_STREAM, 0), retAllow},
+		{"AF_INET dgram", seccompDataArgs(sysSocket, arch, unix.AF_INET, unix.SOCK_DGRAM, 0), eperm},
+		{"AF_INET6 stream", seccompDataArgs(sysSocket, arch, unix.AF_INET6, unix.SOCK_STREAM, 0), eperm},
+		{"AF_NETLINK", seccompDataArgs(sysSocket, arch, unix.AF_NETLINK, unix.SOCK_RAW, 0), eperm},
+		{"socketpair AF_INET", seccompDataArgs(sysSockpr, arch, unix.AF_INET, unix.SOCK_STREAM, 0), eperm},
+		{"TCP_ULP", seccompDataArgs(sysSetsock, arch, 3, unix.IPPROTO_TCP, tcpULP), eperm},
+		{"TCP_NODELAY", seccompDataArgs(sysSetsock, arch, 3, unix.IPPROTO_TCP, unix.TCP_NODELAY), retAllow},
+		{"foreign arch killed", seccompDataArgs(sysSocket, unix.AUDIT_ARCH_X86_64, unix.AF_INET, unix.SOCK_STREAM, 0), retKillProcess},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := runFilter(t, prog, tc.data); got != tc.want {
+				t.Fatalf("verdict = %#x, want %#x", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoopbackUnsupportedArch(t *testing.T) {
+	if _, err := NetworkLoopbackProgram("riscv64"); err == nil {
+		t.Fatal("unsupported arch accepted")
+	}
+}
+
+// The off program must not move when the loopback program is added: the
+// tests above check its verdicts, and this one pins its instructions, so
+// a change that kept every verdict but altered the program is still seen.
+// The expected lists are written out from the filter's documented shape,
+// independently of the builder.
+func TestNetworkOffProgramIsUnchanged(t *testing.T) {
+	prologue := func(arch uint32) []bpf.Instruction {
+		return []bpf.Instruction{
+			bpf.LoadAbsolute{Off: 4, Size: 4},
+			bpf.JumpIf{Cond: bpf.JumpEqual, Val: arch, SkipTrue: 1},
+			bpf.RetConstant{Val: 0x80000000},
+			bpf.LoadAbsolute{Off: 0, Size: 4},
+		}
+	}
+	tail := func(socket, socketpair uint32) []bpf.Instruction {
+		return []bpf.Instruction{
+			bpf.JumpIf{Cond: bpf.JumpEqual, Val: socket, SkipTrue: 2},
+			bpf.JumpIf{Cond: bpf.JumpEqual, Val: socketpair, SkipTrue: 1},
+			bpf.RetConstant{Val: 0x7fff0000},
+			bpf.LoadAbsolute{Off: 16, Size: 4},
+			bpf.JumpIf{Cond: bpf.JumpEqual, Val: 1, SkipTrue: 1},
+			bpf.RetConstant{Val: 0x00050000 | 1},
+			bpf.RetConstant{Val: 0x7fff0000},
+		}
+	}
+	x32 := []bpf.Instruction{
+		bpf.JumpIf{Cond: bpf.JumpBitsNotSet, Val: 0x40000000, SkipTrue: 1},
+		bpf.RetConstant{Val: 0x80000000},
+	}
+	want := map[string][]bpf.Instruction{
+		"amd64": append(append(prologue(0xc000003e), x32...), tail(41, 53)...),
+		"arm64": append(prologue(0xc00000b7), tail(198, 199)...),
+	}
+	for arch, wantProg := range want {
+		got, err := NetworkOffProgram(arch)
+		if err != nil {
+			t.Fatalf("%s: %v", arch, err)
+		}
+		gotRaw, err := bpf.Assemble(got)
+		if err != nil {
+			t.Fatalf("%s: assemble: %v", arch, err)
+		}
+		wantRaw, err := bpf.Assemble(wantProg)
+		if err != nil {
+			t.Fatalf("%s: assemble want: %v", arch, err)
+		}
+		if !reflect.DeepEqual(gotRaw, wantRaw) {
+			t.Fatalf("%s: the off program changed:\n got %v\nwant %v", arch, gotRaw, wantRaw)
+		}
 	}
 }

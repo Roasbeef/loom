@@ -10,6 +10,12 @@
 // be smuggled in. AF_UNIX is allowed: it reaches only the filesystem
 // view, which bwrap/Landlock already confine.
 //
+// Network mode "loopback" (protocol-change/112) uses a second program
+// that also allows IPv4 TCP sockets, for processes of one execution that
+// talk to each other over the jail's own `lo`. It is sound only inside a
+// fresh network namespace, which the jail guarantees by refusing the mode
+// anywhere else.
+//
 // The program is constructed as pure data (testable without a kernel)
 // and installed with SECCOMP_FILTER_FLAG_TSYNC so it binds every thread
 // of the multithreaded Go runtime, not just the calling one — without
