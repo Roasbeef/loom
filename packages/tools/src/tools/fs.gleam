@@ -32,8 +32,8 @@
 //// 1. `read_tool_with` registers any virtual `Scheme`s (with `blob_scheme` and
 ////    `read_blob_scheme` built in for `blob://`); `run_read` decodes the
 ////    window, then sends a `scheme://` reference to `scheme_outcome` (which
-////    renders through `scheme_read_outcome`, `clamp_scheme_window`, and
-////    `take_lines_within_bytes`) and every other path to `file_outcome`.
+////    renders through `scheme_read_outcome`, `wrap_overbudget_scheme_lines`,
+////    `clamp_scheme_window`, and `take_lines_within_bytes`) and every other path to `file_outcome`.
 //// 2. `resolve_invocation` asks for approval of the exact target when it lies
 ////    outside the workspace, then resolves through `resolve_readable` or
 ////    `resolve_writable` (`carved_blob_roots`, `entry_covers_carved`, and
@@ -1456,20 +1456,22 @@ fn scheme_refusal_outcome(refusal: SchemeRefusal) -> ToolOutcome {
   )
 }
 
-// Virtual text uses the same line window and inline byte limit as files, but
-// has no digest or edit anchors because no file edit can target it. When a
-// multi-line virtual window exceeds the inline threshold (the ordinary case for
-// a spilled blob read with the default 2000-line limit), `clamp_scheme_window`
-// trims the window to the lines that fit and marks `has_more` so the caller
-// pages forward with `offset` instead of failing on the first read.
-/// Renders a window of virtual scheme text, applying inline clamping.
+/// Virtual text uses the same line window and inline byte limit as files, but
+/// has no digest or edit anchors because no file edit can target it. Any line
+/// wider than the inline byte budget (such as compact single-line JSON from a
+/// spilled `code_mode` `report.value`) is wrapped on UTF-8 codepoint boundaries
+/// into `scheme_line_chunk_bytes` segments first, and `clamp_scheme_window`
+/// trims multi-line windows to the lines that fit so callers page forward with
+/// `offset` instead of hitting an unwindowable failure at `limit = 1`.
 fn scheme_read_outcome(
   scheme: String,
   body: String,
   offset: Int,
   limit: Int,
 ) -> ToolOutcome {
-  let window = clamp_scheme_window(hashline.window(body, offset:, limit:))
+  let budget = blob.overflow_threshold_bytes - scheme_continuation_reserve_bytes
+  let normalized = wrap_overbudget_scheme_lines(body, budget)
+  let window = clamp_scheme_window(hashline.window(normalized, offset:, limit:))
 
   // Join windowed lines or render empty indicator.
   let text = case window.lines {
@@ -1500,10 +1502,78 @@ fn scheme_read_outcome(
 // continuation notice when clamping a multi-line virtual read to the inline byte cap.
 const scheme_continuation_reserve_bytes = 128
 
-// Clamps a multi-line virtual read window so that its joined lines plus the
-// continuation footer fit within `blob.overflow_threshold_bytes`. A single line
-// that already exceeds the threshold is kept as-is so `scheme_read_outcome`
-// still rejects an unwindowable single-line payload.
+// Byte width of each synthetic line when splitting a single virtual line that
+// exceeds the inline read budget (e.g. compact JSON spilled to `blob://`).
+const scheme_line_chunk_bytes = 4096
+
+/// Splits only lines exceeding `budget` into UTF-8-safe `scheme_line_chunk_bytes` lines.
+fn wrap_overbudget_scheme_lines(body: String, budget: Int) -> String {
+  // Fast path when the entire payload already fits within the inline byte budget.
+  case bit_array.byte_size(<<body:utf8>>) <= budget {
+    True -> body
+    False -> {
+      let lines = string.split(body, "\n")
+
+      // Only split individual lines that exceed the budget so multi-line offsets stay unchanged.
+      case
+        list.any(lines, fn(line) { bit_array.byte_size(<<line:utf8>>) > budget })
+      {
+        False -> body
+        True ->
+          lines
+          |> list.flat_map(fn(line) { split_overbudget_line(line, budget) })
+          |> string.join("\n")
+      }
+    }
+  }
+}
+
+/// Leaves lines within `budget` untouched and chunks wider lines on UTF-8 boundaries.
+fn split_overbudget_line(line: String, budget: Int) -> List(String) {
+  let bits = <<line:utf8>>
+  let total = bit_array.byte_size(bits)
+
+  // Keep normal lines intact and slice only over-budget lines.
+  case total <= budget {
+    True -> [line]
+    False -> split_utf8_chunks(bits, 0, total, [])
+  }
+}
+
+/// Slices `bits` into valid UTF-8 strings of at most `scheme_line_chunk_bytes` bytes.
+fn split_utf8_chunks(
+  bits: BitArray,
+  start: Int,
+  total: Int,
+  acc: List(String),
+) -> List(String) {
+  let remaining = total - start
+
+  // Stop once every byte of the line has been emitted.
+  case remaining <= 0 {
+    True -> list.reverse(acc)
+    False -> {
+      let target = int.min(remaining, scheme_line_chunk_bytes)
+      let #(piece, consumed) = utf8_prefix_at(bits, start, target)
+      split_utf8_chunks(bits, start + consumed, total, [piece, ..acc])
+    }
+  }
+}
+
+/// Finds the longest valid UTF-8 slice in `[max_len - 3 .. max_len]` starting at `start`.
+fn utf8_prefix_at(bits: BitArray, start: Int, max_len: Int) -> #(String, Int) {
+  let decoded = {
+    use raw <- result.try(bit_array.slice(bits, start, max_len))
+    bit_array.to_string(raw)
+  }
+
+  // Back off up to three UTF-8 continuation bytes when the cut splits a codepoint.
+  case decoded {
+    Ok(piece) -> #(piece, max_len)
+    Error(Nil) -> utf8_prefix_at(bits, start, max_len - 1)
+  }
+}
+
 /// Clamps a virtual read window's lines to fit within inline threshold bytes.
 fn clamp_scheme_window(window: hashline.Window) -> hashline.Window {
   let budget = blob.overflow_threshold_bytes - scheme_continuation_reserve_bytes
