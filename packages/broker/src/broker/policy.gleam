@@ -984,8 +984,12 @@ fn network_exceeds(wanted: NetworkPolicy, granted: NetworkPolicy) -> Bool {
     NetworkOff, _ -> False
     _, NetworkFull -> False
     NetworkFull, _ -> True
-    NetworkLoopback, NetworkOff -> True
-    NetworkLoopback, _ -> False
+
+    // A host allowlist does not bound loopback, and proxy is enforced as
+    // off, so a loopback request exceeds a proxy grant, in step with the
+    // approval ceiling.
+    NetworkLoopback, NetworkOff | NetworkLoopback, NetworkProxy(..) -> True
+    NetworkLoopback, NetworkLoopback -> False
     NetworkProxy(allow: _, proxy: _), NetworkOff -> True
     NetworkProxy(allow: _, proxy: _), NetworkLoopback -> True
     NetworkProxy(allow: wanted_allow, proxy: _),

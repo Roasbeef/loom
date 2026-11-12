@@ -1288,3 +1288,26 @@ pub fn loopback_is_narrowed_to_off_by_an_off_base_test() {
   assert policy.wanted_grants(narrowings)
     == [policy.GrantNetwork(policy.NetworkLoopback)]
 }
+
+// A loopback requirement exceeds a proxy grant: a host allowlist does not
+// bound loopback, and the approval ceiling refuses it under one as well.
+// The grant widens the composed network to proxy, and the requirement is
+// still reported as exceeding what was granted.
+pub fn loopback_exceeds_a_proxy_grant_test() {
+  let wants = policy.SandboxPolicy(..base(), network: policy.NetworkLoopback)
+  let proxy = policy.NetworkProxy(allow: ["r.example"], proxy: "p")
+  let #(composed, narrowings) =
+    policy.compose(base: wants, requirements: wants, grants: [
+      policy.GrantNetwork(proxy),
+    ])
+  assert composed.network == proxy
+  assert narrowings
+    == [policy.NarrowedNetwork(wanted: policy.NetworkLoopback, granted: proxy)]
+}
+
+pub fn loopback_does_not_exceed_a_loopback_grant_test() {
+  let wants = policy.SandboxPolicy(..base(), network: policy.NetworkLoopback)
+  let #(_, narrowings) =
+    policy.compose(base: wants, requirements: wants, grants: [])
+  assert narrowings == []
+}

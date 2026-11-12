@@ -42,8 +42,9 @@ cross-language fixture, `sandbox_policy_4_network_loopback.bin`, is written
 by the Gleam golden test and decoded by the Go suite.
 
 **Gleam.** `NetworkPolicy` gains `NetworkLoopback`. `meet` takes the lower
-rank, `join` the higher, `network_exceeds` follows the ranks (a loopback
-request exceeds an `off` grant and nothing else), and `narrow_unenforceable`
+rank, `join` the higher, `network_exceeds` follows the ranks, except that a loopback request also
+exceeds a `proxy` grant, because a host allowlist does not bound it and
+proxy is enforced as `off` (the client's approval ceiling agrees), and `narrow_unenforceable`
 leaves it alone: it is enforceable where the helper can enforce it and the
 helper refuses it everywhere else, so there is no narrower form to fall back
 to. The required-layer matrix demands `seccomp-net` for it, as for `off`.
