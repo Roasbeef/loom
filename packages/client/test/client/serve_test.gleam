@@ -1998,8 +1998,8 @@ pub fn the_tool_environment_appends_after_the_server_owned_names_test() {
 }
 
 pub fn configured_tools_precede_system_launchers_test() {
-  // The bundled compiler wins, while configured Git and Python installations
-  // precede the system launchers that need an additional SDK.
+  // Configured and host directories precede both the bundled release compiler
+  // and system launchers, while the bundled directory remains ahead of `/usr/bin`.
   let #(environment, _unset) =
     workspace_policy.tool_environment(
       "/work",
@@ -2009,26 +2009,31 @@ pub fn configured_tools_precede_system_launchers_test() {
       reading: fn(_name) { Error(Nil) },
     )
   let assert Ok(path) = list.key_find(environment, "PATH")
-  assert path == "/tool/bin:/opt/homebrew/bin:/usr/bin:/bin"
+  assert path == "/opt/homebrew/bin:/tool/bin:/usr/bin:/bin"
 }
 
 pub fn host_otp_precedes_bundled_release_erts_in_tool_environment_test() {
-  // A packaged release's `erts-<vsn>/bin` carries only the bare emulator for
-  // satellites (without `eunit`). Host and configured OTP directories must
-  // precede it so `gleam test` in a tool shell uses the full OTP installation,
-  // while the bundled `erts-<vsn>/bin` still precedes `/usr/local/bin`.
+  // A packaged release's `/release/bin` and `erts-<vsn>/bin` carry a pinned
+  // `gleam` and bare satellite ERTS (without `eunit`). Configured and host
+  // directories precede both so workspace builds use the operator's `gleam`
+  // and full OTP, while the release directories still precede `/usr/local/bin`.
   let #(environment, _unset) =
     workspace_policy.tool_environment(
       "/work",
       Some("/release/bin:/release/erts-17.0.5/bin:/usr/local/bin:/usr/bin:/bin"),
       None,
       networked_tools(),
-      reading: fn(_name) { Error(Nil) },
+      reading: fn(name) {
+        case name {
+          "PATH" -> Ok("/owner/tools/gleam-1.19.2:/usr/local/bin:/usr/bin:/bin")
+          _ -> Error(Nil)
+        }
+      },
     )
   let assert Ok(path) = list.key_find(environment, "PATH")
     as "tool environment always carries PATH"
   assert path
-    == "/release/bin:/opt/homebrew/bin:/release/erts-17.0.5/bin:/usr/local/bin:/usr/bin:/bin"
+    == "/opt/homebrew/bin:/owner/tools/gleam-1.19.2:/release/bin:/release/erts-17.0.5/bin:/usr/local/bin:/usr/bin:/bin"
 }
 
 pub fn an_unset_configured_name_is_skipped_and_reported_test() {
@@ -2079,7 +2084,7 @@ pub fn host_path_discovery_needs_no_per_tool_directory_list_test() {
     )
   assert list.key_find(environment, "PATH")
     == Ok(
-      "/bundled/bin:/owner/custom-sdk/bin:/another/installation/bin:/usr/bin:/bin",
+      "/owner/custom-sdk/bin:/another/installation/bin:/bundled/bin:/usr/bin:/bin",
     )
   assert list.key_find(environment, "HOME") == Ok("/work/.codemode/home")
   assert list.key_find(environment, "TMPDIR") == Ok("/work/.codemode/tmp")
