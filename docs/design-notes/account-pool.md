@@ -1,8 +1,9 @@
 # Account pool: rotating among several subscription seats
 
 Status: **a proposal, not a decision**. Written against `main` at `47fb2c168`
-on 2026-11-11. Only the pure ledger in `provider/pool.gleam` is implemented;
-it is not yet called by anything, so no request routes differently. Every claim
+on 2026-11-11. Only the pure ledger in `provider/pool.gleam` and the operator
+command `loomd seat-usage` (section 9) are implemented; nothing calls either
+from a request path, so no request routes differently. Every claim
 about existing machinery names the module it comes from, and every claim about
 a provider names the source it was read from or says that none was found.
 
@@ -450,11 +451,31 @@ fact (a transition table gated by R14, tests for each row) before anything
 depends on them. It changes no request path, no configuration key and no frozen
 interface.
 
+`loomd seat-usage` (`client/seat_usage.gleam`, `client/seat_usage_cli.gleam`) is
+the gauge of section 3 as a command an operator runs by hand. It reads seats
+(`{"label", "provider", "token"}`, one JSON object per line) from standard
+input only, asks each provider's read-only usage endpoint about each seat, and
+prints a table or JSON with each window's used fraction and reset, a state of
+`available`, `exhausted` or `unknown`, and with `--model` whether a model is
+`yes`, `no` or `unknown` for the seat. `seat_usage.to_pool_events` maps a
+reading onto the ledger's `Refused` and `Observed` events. It sends no model
+request, so it has no `--probe`; it holds each token in an opaque closure so
+debug formatting cannot print it, and a test feeds known tokens through every
+outcome and asserts none appears in anything written. The module doc cites,
+per mechanism, the source line it was verified against. One point differs from
+the reading above: the Codex CLI's source now shows the usage payload also
+carries `additional_rate_limits` entries with a `normal_model_slug`, which is
+how a model's own spent limit is reported. For Claude, the first-party SDK
+types corroborate the response shape but no first-party source names the URL;
+it comes from third-party clients and is marked as such. Whether either
+endpoint answers for a given token class (an inference-only Claude token, a
+Sign in with ChatGPT grant) is not established and shows as a failed read.
+
 ## 10. Cut list
 
 - No request routing change in this proposal's first slice; the bridge, the
   owner actor and the configuration key are described and not built.
-- No polling of any usage endpoint, and no spawn of a process to read `/usage`.
+- No polling of any usage endpoint by the pool, and no spawn of a process to read `/usage`. `loomd seat-usage` reads on demand when an operator runs it.
 - No persistence of the ledger.
 - No headroom-based or round-robin selection.
 - No Claude subscription provider in loom, and no pooling of Claude seats until
