@@ -36,15 +36,36 @@ pub fn fetch(
   request: http.HttpRequest,
   limit: Int,
 ) -> Result(Response, String) {
-  fetch_adopted(ledger, http.httpc_transport(), request, limit)
+  fetch_adopted(
+    ledger,
+    http.httpc_transport(),
+    request,
+    limit,
+    default_timeout_ms,
+  )
 }
 
+/// The wait an authentication fetch allows, in milliseconds.
+const default_timeout_ms = 30_000
+
 /// Fetches an HTTP request adopted into the provided ledger.
-fn fetch_adopted(
+///
+/// `timeout_ms` bounds the whole exchange. A caller that reads many
+/// independent endpoints, as `client/seat_usage_cli` does, passes its own
+/// bound; the authentication callers use `fetch` and keep the default.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // network.fetch_adopted(ledger, transport, request, 65_536, 5000)
+/// ```
+@internal
+pub fn fetch_adopted(
   ledger: weft.Ledger,
   transport: http.Transport,
   request: http.HttpRequest,
   limit: Int,
+  timeout_ms: Int,
 ) -> Result(Response, String) {
   let events = process.new_subject()
   use prepared <- result.try(
@@ -73,7 +94,7 @@ fn fetch_adopted(
       None,
       <<>>,
       int.max(limit, 0),
-      bootstrap.monotonic_time_ms() + 30_000,
+      bootstrap.monotonic_time_ms() + timeout_ms,
     )
   http.cancel(prepared.running)
   answer
@@ -95,10 +116,10 @@ pub fn fetch_with(
   let outcomes =
     weft.new_prepared([
       weft.managed(fn(ledger) {
-        fetch_adopted(ledger, transport, request, limit)
+        fetch_adopted(ledger, transport, request, limit, default_timeout_ms)
       }),
     ])
-    |> weft.deadline(30_000)
+    |> weft.deadline(default_timeout_ms)
     |> weft.start
 
   // Map task execution outcome into HTTP response or error code.
@@ -128,7 +149,7 @@ fn collect(
       events,
       int.max(deadline - bootstrap.monotonic_time_ms(), 0),
     )
-    |> result.replace_error("request_transport_failed"),
+    |> result.replace_error("request_timed_out"),
   )
 
   // Dispatch according to streaming HTTP transport event.
