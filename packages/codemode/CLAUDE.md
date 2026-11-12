@@ -370,7 +370,8 @@ session and sends it many invocations.
   cloned from. `prepare` lays one out, `verify` refuses a stale or
   differently-pinned one, `main` is `gleam run -m codemode/seed`.
 - `codemode/build.BuildConfig` — the production `Builder`: `gleam build
-  --warnings-as-errors` inside a network-off jail, then the flattened
+  --warnings-as-errors` inside a network-off jail with `TMPDIR` and `HOME` pinned
+  beneath `build_root` (so `rebar3` finds a writable home when compiling native dependencies), then the flattened
   modules and fixed `esqlite3_nif.so` library with their content address.
   Native loading is module-relative and stays inside the same artifact read
   root. Missing library copies fail the build; extra `priv` files do not enter
