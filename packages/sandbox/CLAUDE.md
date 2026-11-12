@@ -16,7 +16,7 @@ only Go module.
 - `cmd/loom-exec` — the binary's roles, selected by the first
   argument: no argument is **server mode** (read the base policy from fd 3,
   then frames on stdio); `--exec` is **stage 2** (read the policy from
-  fd 3, apply the platform's in-process restrictions and rlimits, report on
+  fd 3, apply the platform's in-process restrictions and rlimits while raising low inherited soft `RLIMIT_NOFILE` ceilings toward 10,240, report on
   fd 4, execve the target); `--self-test` runs the regression probes against
   the live kernel. `--probe-socket`, `--probe-setsid`, and `--probe-fork`
   are the internal network, session-escape, and process-limit witnesses.
