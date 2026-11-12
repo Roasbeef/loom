@@ -39,7 +39,7 @@
 ////    `git status`.
 //// 6. `tool_environment` builds the environment every jailed child inherits,
 ////    from the shell, the toolchain `PATH` and the `[tools]` table (`extending_path`
-////    and `is_erts_bin` keep the host's full OTP ahead of a release's stripped ERTS).
+////    places configured and host directories ahead of bundled release fallbacks).
 
 import broker/exec.{type Pool}
 import broker/policy
@@ -305,6 +305,117 @@ pub fn tool_environment(
 @internal
 pub fn tool_tmp_directory(workspace: String) -> String {
   workspace <> "/" <> codemode_wiring.work_directory <> "/tmp"
+}
+
+/// Short per-workspace `TMPDIR` under `<state root>/tmp/<digest12>` for
+/// daemon-managed sessions, or `None` when `<workspace>/.codemode/tmp` is kept.
+///
+/// Deep checkouts (such as GOPATH trees) push `<workspace>/.codemode/tmp` past
+/// 70 bytes, leaving too little room inside macOS's 104-byte `AF_UNIX`
+/// `sun_path` ceiling for socket-heavy test suites while placing cross-call
+/// scratch inside the repository. When the session already binds code-mode
+/// sockets under `<state root>/run`, the sibling `<state root>/tmp/<digest12>`
+/// keeps `TMPDIR` short and outside the checkout.
+///
+/// Returns `None` for standalone sessions (`codemode_sockets == None`), for
+/// isolated bases whose `readable_roots` do not reach `<state root>/tmp` (such
+/// as evolution trials), when `base.writable_roots` covers `<state root>/tmp`
+/// (preventing a `$HOME` session from replacing `tmp` with a symlink), or when
+/// a protected mask covers the candidate directory.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace_policy.short_tool_tmpdir(
+/// //   workspace_policy.base_policy("/work/deep/repo"),
+/// //   "/work/deep/repo",
+/// //   Some("/home/o/.loom/run"),
+/// // )
+/// ```
+///
+@internal
+pub fn short_tool_tmpdir(
+  base: policy.SandboxPolicy,
+  workspace: String,
+  codemode_sockets: Option(String),
+) -> Option(String) {
+  // Standalone sessions without a daemon socket root keep the workspace path.
+  case codemode_sockets {
+    None -> None
+    Some(socket_root) -> {
+      let parent = filepath.directory_name(socket_root) <> "/tmp"
+      let dir =
+        parent
+        <> "/"
+        <> string.slice(gocache.workspace_digest(workspace), 0, 12)
+      let readable =
+        list.any(base.readable_roots, fn(root) {
+          policy.covers(root:, path: parent)
+        })
+      let writable =
+        list.any(base.writable_roots, fn(root) {
+          policy.covers(root:, path: parent)
+        })
+
+      // Require host read access, reject writable parents, and respect masks.
+      case readable && !writable && !dropped_for_mask(dir, base.protected) {
+        True -> Some(dir)
+        False -> None
+      }
+    }
+  }
+}
+
+/// Grants an external short `TMPDIR` as a writable root on the session base.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace_policy.admitting_short_tool_tmpdir(base, Some("/home/o/.loom/tmp/abc"))
+/// ```
+///
+@internal
+pub fn admitting_short_tool_tmpdir(
+  base: policy.SandboxPolicy,
+  tool_tmpdir: Option(String),
+) -> policy.SandboxPolicy {
+  // Leave the base untouched when `TMPDIR` remains inside the workspace.
+  case tool_tmpdir {
+    None -> base
+    Some(dir) ->
+      policy.SandboxPolicy(
+        ..base,
+        writable_roots: list.unique(list.append(base.writable_roots, [dir])),
+      )
+  }
+}
+
+/// Replaces `TMPDIR` in `environment` when a short external directory applies.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert workspace_policy.with_tool_tmpdir([#("TMPDIR", "/w/.codemode/tmp")], Some("/s/tmp/a"))
+///   == [#("TMPDIR", "/s/tmp/a")]
+/// ```
+///
+@internal
+pub fn with_tool_tmpdir(
+  environment: List(#(String, String)),
+  tool_tmpdir: Option(String),
+) -> List(#(String, String)) {
+  // Preserve `<workspace>/.codemode/tmp` when no external directory was chosen.
+  case tool_tmpdir {
+    None -> environment
+    Some(dir) ->
+      list.map(environment, fn(pair) {
+        // Rewrite only `TMPDIR` while preserving server-owned variable order.
+        case pair {
+          #("TMPDIR", _) -> #("TMPDIR", dir)
+          other -> other
+        }
+      })
+  }
 }
 
 /// The base policy widened for a workspace that is a linked git
@@ -976,30 +1087,34 @@ pub fn allowing_imported_hook_env(
   )
 }
 
-// Keep the discovered Loom toolchain first, then operator and host tools,
-// then system fallbacks. Putting system launchers ahead of the operator's
-// installed Git and Python made an explicit PATH addition ineffective.
+// Place configured `[tools] path` entries and the operator's non-fallback
+// host `PATH` ahead of Loom's bundled release directories (`/release/bin` and
+// `erts-<vsn>/bin`), and keep both ahead of system fallback launchers
+// (`/usr/local/bin:/usr/bin:/bin`). That lets workspace toolchains (such as a
+// newer `gleam` or full OTP with `eunit`) win in tool shells while preserving
+// the packaged release's compiler and ERTS as fallbacks on bare hosts.
 
-/// Establishes extending path for the caller, keeping its validation and result policy at this boundary.
+/// Orders `extra` directories ahead of bundled toolchain and system fallbacks on `PATH`.
 fn extending_path(
   environment: List(#(String, String)),
   extra: List(String),
 ) -> List(#(String, String)) {
+  // Leave the environment untouched when neither `[tools]` nor host `PATH` adds entries.
   case extra {
     [] -> environment
     dirs ->
       list.map(environment, fn(pair) {
-        // Decide how to handle pair {.
+        // Rewrite only the `PATH` entry while preserving every other owned variable.
         case pair {
           #("PATH", value) -> {
             let current = string.split(value, ":")
             let fallback = ["/usr/local/bin", "/usr/bin", "/bin"]
+            let preferred =
+              list.filter(dirs, fn(path) { !list.contains(fallback, path) })
             let bundled =
-              list.filter(current, fn(path) {
-                !list.contains(fallback, path) && !is_erts_bin(path)
-              })
+              list.filter(current, fn(path) { !list.contains(fallback, path) })
             let ordered =
-              list.flatten([bundled, dirs, current])
+              list.flatten([preferred, bundled, dirs, current])
               |> list.filter(fn(path) { filepath.is_absolute(path) })
               |> list.unique
             #("PATH", string.join(ordered, ":"))
@@ -1008,20 +1123,6 @@ fn extending_path(
         }
       })
   }
-}
-
-// An `erts-<vsn>/bin` directory from a packaged release carries the bare ERTS
-// emulator for satellites, without development applications such as `eunit`.
-// Keep it in `current` ahead of `/usr/local/bin` as a fallback while letting
-// the operator's and host's full OTP installation in `dirs` precede it.
-
-/// Establishes is erts bin for the caller, keeping its validation and result policy at this boundary.
-fn is_erts_bin(path: String) -> Bool {
-  filepath.base_name(path) == "bin"
-  && string.starts_with(
-    filepath.base_name(filepath.directory_name(path)),
-    "erts-",
-  )
 }
 
 /// The operator's `[tools]` table applied to the session base: the

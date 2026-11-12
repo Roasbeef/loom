@@ -6,6 +6,7 @@ import (
 
 	"github.com/roasbeef/loom/sandbox/internal/llock"
 	"github.com/roasbeef/loom/sandbox/internal/policy"
+	"golang.org/x/sys/unix"
 )
 
 // A tmpfs scratch must not become a write grant over the host's /tmp in
@@ -93,5 +94,25 @@ func TestLandlockViewGrantsOnlyTheNullDeviceFile(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("landlockView mismatch:\n got  %+v\nwant %+v", got, want)
+	}
+}
+
+func TestTargetSoftNofileRaisesLowDefaultWithoutExceedingHardCap(t *testing.T) {
+	// Darwin default: soft=256, hard=RLIM_INFINITY -> soft=10240, hard=RLIM_INFINITY.
+	next, changed := targetSoftNofile(unix.Rlimit{Cur: 256, Max: unix.RLIM_INFINITY})
+	if !changed || next.Cur != defaultSoftNofile || next.Max != unix.RLIM_INFINITY {
+		t.Fatalf("unexpected infinite-max raise: %+v (changed=%v)", next, changed)
+	}
+
+	// Finite hard ceiling below 10240 clamps the raise to Max.
+	next, changed = targetSoftNofile(unix.Rlimit{Cur: 256, Max: 4096})
+	if !changed || next.Cur != 4096 || next.Max != 4096 {
+		t.Fatalf("unexpected bounded-max raise: %+v (changed=%v)", next, changed)
+	}
+
+	// Higher soft ceilings (e.g. Linux 65536) are never lowered.
+	next, changed = targetSoftNofile(unix.Rlimit{Cur: 65536, Max: 65536})
+	if changed || next.Cur != 65536 {
+		t.Fatalf("higher soft limit should stay untouched: %+v (changed=%v)", next, changed)
 	}
 }

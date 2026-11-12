@@ -169,7 +169,7 @@ token, but `settle` was never called, so no `CallSettled` follows.
 
 ### The per-session effect plane
 
-`start_effect_plane_in` (`client/workspace_plane.gleam:1515`) builds one pool and one
+`start_effect_plane_in` (`client/workspace_plane.gleam:1536`) builds one pool and one
 broker for each session, and one executor service between them. The pool and the broker are captured by value in closures, and each is a
 fatal child of the instance (`instance_children`, `client/serve.gleam:2365`),
 since a replacement would be unreachable. The service is a third fatal child. The custody order of a session's teardown is Runtime,

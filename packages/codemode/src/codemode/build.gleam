@@ -61,18 +61,21 @@
 //// (`codemode/unused_repair`), so this builder never learns of it and the
 //// flag is unchanged.
 ////
-//// # `PATH` and `TMPDIR` are required
+//// # `PATH`, `TMPDIR` and `HOME` are required
 ////
-//// `gleam build` shells out to `erl` to compile the generated Erlang, so
-//// the jailed build needs `PATH` in its environment and in the composed
-//// policy's `env_allow`. Without it the compiler dies with an escript
-//// error that looks nothing like a missing environment variable, so the
-//// requirement is stated here and checked by the composition.
+//// `gleam build` shells out to `erl` and `rebar3` (when compiling native
+//// packages such as `esqlite_loom`), so the jailed build needs `PATH` in its
+//// environment and in the composed policy's `env_allow`. Without `PATH` the
+//// compiler dies with an escript error that looks nothing like a missing
+//// environment variable, and without `HOME` OTP leaves `init:get_argument(home)`
+//// unset and `rebar_dir:home_dir/0` crashes with `{badmatch, error}`. Both
+//// requirements are stated here and checked by the composition.
 ////
 //// The jail replaces `/tmp` with its scratch tmpfs, which is not writable
-//// by a network-off build. The compile service prepares `build_root/tmp`,
-//// and this builder pins `TMPDIR` to it rather than inheriting a host path
-//// the build cannot reach or write.
+//// by a network-off build, and the host's `$HOME` sits outside the build's
+//// writable root. The compile service prepares `build_root/tmp` and
+//// `build_root/home`, and this builder pins `TMPDIR` and `HOME` to them rather
+//// than inheriting host paths the build cannot reach or write.
 
 import broker/broker.{type Broker, type CallSpec}
 import broker/exec.{type EnforcementDemand, type ExecResult}
@@ -108,6 +111,8 @@ const settle_margin_ms = 10_000
 const diagnostics_limit = 8000
 
 const tmp_env = "TMPDIR"
+
+const home_env = "HOME"
 
 /// Everything the production builder needs beyond the build phase's
 /// identity and the build root.
@@ -512,21 +517,24 @@ pub fn build_requirements(config: BuildConfig, root: String) -> SandboxPolicy {
   )
 }
 
-// The temporary directory is part of the prepared build root, the one
-// writable root the jail admits. Pinning it here also prevents a caller's
-// environment from shadowing it with a host path the jail cannot use.
+/// Both `TMPDIR` and `HOME` sit inside the prepared build root, the one writable
+/// root the jail admits. Pinning them here prevents a caller's environment from
+/// shadowing either with a host path and ensures `rebar3` finds a valid home.
 fn build_env(config: BuildConfig, root: String) -> List(#(String, String)) {
-  let permitted = list.filter(config.env, fn(pair) { pair.0 != tmp_env })
-  [#(tmp_env, root <> "/tmp"), ..permitted]
+  let permitted =
+    list.filter(config.env, fn(pair) { pair.0 != tmp_env && pair.0 != home_env })
+  [#(tmp_env, root <> "/tmp"), #(home_env, root <> "/home"), ..permitted]
 }
 
-// TMPDIR is minted by this builder and points beneath its one writable root.
-// Authorizing the name on the derived call base lets it survive the policy
-// meet without widening the session base or the model-written run phase.
+/// `TMPDIR` and `HOME` are minted by this builder and point beneath its one
+/// writable root. Authorizing both names on the derived call base lets them
+/// survive the policy meet without widening the session base or run phase.
 fn build_base_policy(config: BuildConfig) -> SandboxPolicy {
   policy.SandboxPolicy(
     ..config.base_policy,
-    env_allow: list.unique(list.append(config.base_policy.env_allow, [tmp_env])),
+    env_allow: list.unique(
+      list.append(config.base_policy.env_allow, [tmp_env, home_env]),
+    ),
   )
 }
 

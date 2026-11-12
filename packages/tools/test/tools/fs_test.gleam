@@ -172,6 +172,31 @@ pub fn blob_scheme_clamps_multiline_spilled_payload_to_inline_threshold_test() {
   assert list.contains(details, #("has_more", json.Bool(True)))
 }
 
+pub fn blob_scheme_windows_single_line_compact_json_past_inline_threshold_test() {
+  let #(ctx, filesystem) = memory_ctx()
+  let ref =
+    "sha256-9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba"
+  // ~70 KiB on a single line (no newlines) with multi-byte UTF-8 across 4 KiB boundaries.
+  let item = "\"é-" <> string.repeat("a", 29) <> "\","
+  let body = "{\"items\":[" <> string.repeat(item, 2200) <> "\"end\"]}"
+  let assert Ok(Nil) =
+    filesystem.write(ctx.blob_root <> "/" <> ref, <<body:utf8>>)
+  let reader = fs.read_tool()
+  let first = reader.run(ctx, args([#("path", json.String("blob://" <> ref))]))
+  assert !first.is_error
+  assert string.starts_with(first_text(first), "{\"items\":[")
+  assert string.contains(first_text(first), "read the rest with offset 16")
+  let assert Some(json.Object(details)) = first.details
+  assert list.contains(details, #("has_more", json.Bool(True)))
+  let tail =
+    reader.run(
+      ctx,
+      args([#("path", json.String("blob://" <> ref)), #("offset", json.Int(16))]),
+    )
+  assert !tail.is_error
+  assert string.contains(first_text(tail), "\"end\"]}")
+}
+
 pub fn carved_blob_root_under_protected_state_root_reads_and_blocks_siblings_test() {
   let #(ctx, filesystem) = memory_ctx()
   let blob_root = "/state/workspaces/s1/blobs"
