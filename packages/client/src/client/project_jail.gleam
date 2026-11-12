@@ -203,7 +203,8 @@ pub fn allows(ceiling: ToolCeiling, name: String) -> Bool {
 pub fn network_rank(network: NetworkPolicy) -> Int {
   case network {
     policy.NetworkOff -> 0
-    policy.NetworkProxy(..) -> 1
-    policy.NetworkFull -> 2
+    policy.NetworkLoopback -> 1
+    policy.NetworkProxy(..) -> 2
+    policy.NetworkFull -> 3
   }
 }

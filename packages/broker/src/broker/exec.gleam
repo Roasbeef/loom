@@ -1707,6 +1707,7 @@ pub const skip_prefix = "skip:"
 /// | policy                    | tag            |
 /// |---------------------------|----------------|
 /// | Linux network off/proxy   | `seccomp-net`  |
+/// | Linux network loopback    | `seccomp-net`  |
 /// | macOS network off/proxy   | `seatbelt-net` |
 /// | Linux memory/pids > 0     | `cgroup-v2`    |
 /// | macOS memory > 0          | `rlimit-address-space` |
@@ -1814,6 +1815,16 @@ fn network_layers_for(
       case os_name {
         "darwin" -> ["seatbelt-net"]
         "linux" -> ["seccomp-net"]
+        _ -> []
+      }
+
+    // Loopback is enforced by the same seccomp layer, with a different
+    // program. On Darwin it is demanded through that Linux layer, which
+    // no Seatbelt helper can report, so it can never be satisfied there;
+    // the helper refuses the mode on Darwin before this is consulted.
+    policy.NetworkLoopback ->
+      case os_name {
+        "darwin" | "linux" -> ["seccomp-net"]
         _ -> []
       }
     policy.NetworkFull -> []

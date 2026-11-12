@@ -1623,6 +1623,7 @@ pub fn grant_to_json(grant: Grant) -> JsonValue {
 fn network_to_json(network: policy.NetworkPolicy) -> JsonValue {
   case network {
     policy.NetworkOff -> json.Object([#("mode", json.String("off"))])
+    policy.NetworkLoopback -> json.Object([#("mode", json.String("loopback"))])
     policy.NetworkFull -> json.Object([#("mode", json.String("full"))])
     policy.NetworkProxy(allow:, proxy:) ->
       json.Object([
