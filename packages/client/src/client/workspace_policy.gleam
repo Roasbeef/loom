@@ -307,6 +307,117 @@ pub fn tool_tmp_directory(workspace: String) -> String {
   workspace <> "/" <> codemode_wiring.work_directory <> "/tmp"
 }
 
+/// Short per-workspace `TMPDIR` under `<state root>/tmp/<digest12>` for
+/// daemon-managed sessions, or `None` when `<workspace>/.codemode/tmp` is kept.
+///
+/// Deep checkouts (such as GOPATH trees) push `<workspace>/.codemode/tmp` past
+/// 70 bytes, leaving too little room inside macOS's 104-byte `AF_UNIX`
+/// `sun_path` ceiling for socket-heavy test suites while placing cross-call
+/// scratch inside the repository. When the session already binds code-mode
+/// sockets under `<state root>/run`, the sibling `<state root>/tmp/<digest12>`
+/// keeps `TMPDIR` short and outside the checkout.
+///
+/// Returns `None` for standalone sessions (`codemode_sockets == None`), for
+/// isolated bases whose `readable_roots` do not reach `<state root>/tmp` (such
+/// as evolution trials), when `base.writable_roots` covers `<state root>/tmp`
+/// (preventing a `$HOME` session from replacing `tmp` with a symlink), or when
+/// a protected mask covers the candidate directory.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace_policy.short_tool_tmpdir(
+/// //   workspace_policy.base_policy("/work/deep/repo"),
+/// //   "/work/deep/repo",
+/// //   Some("/home/o/.loom/run"),
+/// // )
+/// ```
+///
+@internal
+pub fn short_tool_tmpdir(
+  base: policy.SandboxPolicy,
+  workspace: String,
+  codemode_sockets: Option(String),
+) -> Option(String) {
+  // Standalone sessions without a daemon socket root keep the workspace path.
+  case codemode_sockets {
+    None -> None
+    Some(socket_root) -> {
+      let parent = filepath.directory_name(socket_root) <> "/tmp"
+      let dir =
+        parent
+        <> "/"
+        <> string.slice(gocache.workspace_digest(workspace), 0, 12)
+      let readable =
+        list.any(base.readable_roots, fn(root) {
+          policy.covers(root:, path: parent)
+        })
+      let writable =
+        list.any(base.writable_roots, fn(root) {
+          policy.covers(root:, path: parent)
+        })
+
+      // Require host read access, reject writable parents, and respect masks.
+      case readable && !writable && !dropped_for_mask(dir, base.protected) {
+        True -> Some(dir)
+        False -> None
+      }
+    }
+  }
+}
+
+/// Grants an external short `TMPDIR` as a writable root on the session base.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace_policy.admitting_short_tool_tmpdir(base, Some("/home/o/.loom/tmp/abc"))
+/// ```
+///
+@internal
+pub fn admitting_short_tool_tmpdir(
+  base: policy.SandboxPolicy,
+  tool_tmpdir: Option(String),
+) -> policy.SandboxPolicy {
+  // Leave the base untouched when `TMPDIR` remains inside the workspace.
+  case tool_tmpdir {
+    None -> base
+    Some(dir) ->
+      policy.SandboxPolicy(
+        ..base,
+        writable_roots: list.unique(list.append(base.writable_roots, [dir])),
+      )
+  }
+}
+
+/// Replaces `TMPDIR` in `environment` when a short external directory applies.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert workspace_policy.with_tool_tmpdir([#("TMPDIR", "/w/.codemode/tmp")], Some("/s/tmp/a"))
+///   == [#("TMPDIR", "/s/tmp/a")]
+/// ```
+///
+@internal
+pub fn with_tool_tmpdir(
+  environment: List(#(String, String)),
+  tool_tmpdir: Option(String),
+) -> List(#(String, String)) {
+  // Preserve `<workspace>/.codemode/tmp` when no external directory was chosen.
+  case tool_tmpdir {
+    None -> environment
+    Some(dir) ->
+      list.map(environment, fn(pair) {
+        // Rewrite only `TMPDIR` while preserving server-owned variable order.
+        case pair {
+          #("TMPDIR", _) -> #("TMPDIR", dir)
+          other -> other
+        }
+      })
+  }
+}
+
 /// The base policy widened for a workspace that is a linked git
 /// worktree: the directories git keeps for it outside the tree become
 /// writable roots, so `git commit` works there as it does in a primary

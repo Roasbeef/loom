@@ -3185,6 +3185,39 @@ pub fn a_session_that_can_write_the_runtime_root_binds_in_its_workspace_test() {
     == None
 }
 
+pub fn managed_sessions_place_tool_tmpdir_under_short_state_root_path_test() {
+  let deep = "/Users/o/gocode/src/github.com/org/deeply-nested-service"
+  let base = workspace_policy.base_policy(deep)
+  let assert Some(short) =
+    workspace_policy.short_tool_tmpdir(base, deep, Some("/Users/o/.loom/run"))
+  assert string.starts_with(short, "/Users/o/.loom/tmp/")
+  assert string.length(short) < 40
+  let widened = workspace_policy.admitting_short_tool_tmpdir(base, Some(short))
+  assert list.contains(widened.writable_roots, short)
+  let env =
+    workspace_policy.session_environment(deep, None, None)
+    |> workspace_policy.with_tool_tmpdir(Some(short))
+  assert list.key_find(env, "TMPDIR") == Ok(short)
+
+  // Standalone sessions, writable parents ($HOME), and isolated trial roots
+  // fall back to `<workspace>/.codemode/tmp`.
+  assert workspace_policy.short_tool_tmpdir(base, deep, None) == None
+  assert workspace_policy.short_tool_tmpdir(
+      workspace_policy.base_policy("/Users/o"),
+      "/Users/o",
+      Some("/Users/o/.loom/run"),
+    )
+    == None
+  let trial =
+    serve.evolution_trial_policy(base, "/Users/o/.loom/evolution-trials", deep)
+  assert workspace_policy.short_tool_tmpdir(
+      trial,
+      deep,
+      Some("/Users/o/.loom/run"),
+    )
+    == None
+}
+
 pub fn the_session_base_and_environment_carry_the_private_go_caches_test() {
   let settings = settings_under("build/serve-test-go-caches")
   let caches =

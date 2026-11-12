@@ -499,6 +499,12 @@ pub fn prepare(
   spec: WorkspaceSpec,
   reading reading: fn(String) -> Result(String, Nil),
 ) -> Result(Prepared, String) {
+  let tool_tmpdir =
+    workspace_policy.short_tool_tmpdir(
+      spec.base_policy,
+      spec.workspace,
+      spec.codemode_sockets,
+    )
   let basis = basis_of(spec)
   let discovered = discovered_extensions(spec.home)
   let places = workspace_policy.lsp_places()
@@ -519,12 +525,12 @@ pub fn prepare(
     spec.workspace,
     spec.blob_root,
     spec.scratch_dir,
-    tool_directories(spec),
+    tool_directories(spec, tool_tmpdir),
   ))
 
   // The environment is built once the code-mode decision is in, so the
   // shell finds the same `gleam` and `erl` the compiler uses.
-  let #(configured_env, unset_env) =
+  let #(raw_env, unset_env) =
     workspace_policy.tool_environment(
       spec.workspace,
       result.map(toolchain, codemode_wiring.toolchain_path)
@@ -533,6 +539,7 @@ pub fn prepare(
       spec.tools,
       reading:,
     )
+  let configured_env = workspace_policy.with_tool_tmpdir(raw_env, tool_tmpdir)
 
   // An author from the owner is pinned after the names the server already
   // owns. The configuration cannot name these (`profile.not_server_owned`), so
@@ -580,8 +587,17 @@ fn hook_files_of(workspace: String) -> List(#(String, hookserve.Contents)) {
 
 /// Establishes basis of for the caller, keeping its validation and result policy at this boundary.
 fn basis_of(spec: WorkspaceSpec) -> workspace_policy.Basis {
+  let tool_tmpdir =
+    workspace_policy.short_tool_tmpdir(
+      spec.base_policy,
+      spec.workspace,
+      spec.codemode_sockets,
+    )
   workspace_policy.Basis(
-    base_policy: spec.base_policy,
+    base_policy: workspace_policy.admitting_short_tool_tmpdir(
+      spec.base_policy,
+      tool_tmpdir,
+    ),
     workspace: spec.workspace,
     tools: spec.tools,
     go_caches: spec.go_caches,
@@ -592,12 +608,17 @@ fn basis_of(spec: WorkspaceSpec) -> workspace_policy.Basis {
 // and the Go caches' when there are any.
 
 /// Establishes tool directories for the caller, keeping its validation and result policy at this boundary.
-fn tool_directories(spec: WorkspaceSpec) -> List(String) {
+fn tool_directories(
+  spec: WorkspaceSpec,
+  tool_tmpdir: Option(String),
+) -> List(String) {
   let go_directories =
     option.map(spec.go_caches, gocache.directories) |> option.unwrap([])
   list.append(
     [
-      workspace_policy.tool_tmp_directory(spec.workspace),
+      option.lazy_unwrap(tool_tmpdir, fn() {
+        workspace_policy.tool_tmp_directory(spec.workspace)
+      }),
       workspace_policy.tool_home_directory(spec.workspace),
     ],
     go_directories,

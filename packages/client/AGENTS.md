@@ -5996,7 +5996,9 @@ these forks because they define the same modules.
   unix-socket connects by path, so on macOS the unlisted digest name is
   the barrier. A session whose writable roots cover `<state root>/run`
   (one opened on the home directory) binds under its own work root
-  instead (`serve.codemode_socket_root`). The in-band length refusal remains
+  instead (`serve.codemode_socket_root`), and `workspace_policy.short_tool_tmpdir`
+  applies the same rule to place managed tool `TMPDIR` under `<state root>/tmp/<digest12>`
+  outside deep workspace checkouts. The in-band length refusal remains
   for the residual case and names the socket root, not the workspace.
 - **MCP reaches a model through code mode, and a host with no code mode
   starts no MCP server.** A server's tools are a *module* a program may
