@@ -176,7 +176,7 @@ pub const serviced_caps = [
 /// is two full sessions' worth of strands, which is more fan-out than any
 /// deterministic plan we have written needs and far less than an
 /// unbounded loop reaches in a second.
-pub const default_spawn_ceiling = 32
+pub const default_spawn_ceiling = 256
 
 /// The lifetime ceiling on `strand.send` admissions in one execution.
 ///
