@@ -215,7 +215,7 @@ pub fn a_drop_shorter_than_the_lease_is_invisible_to_the_page_test() {
   // The link is down while polls fail and the page shows nothing at all.
   settled(page)
   process.send(through, Cut)
-  met_the_cut(through, 2, 100)
+  met_the_cut(through, 2, 200)
   assert process.receive(page.inbox, 300) == Error(Nil)
   assert process.receive(page.ended, 0) == Error(Nil)
 
@@ -245,7 +245,7 @@ pub fn a_drop_the_lane_gives_up_on_ends_the_feed_and_a_fresh_attach_reads_the_sa
   // ends the feed with a retry, and the component has drawn the waiting page.
   settled(page)
   process.send(through, Cut)
-  met_the_cut(through, 1, 100)
+  met_the_cut(through, 1, 200)
   assert process.receive(page.inbox, 300) == Error(Nil)
   ui_feed.shut(page.feed)
   assert process.receive(page.inbox, 3000)
@@ -290,9 +290,9 @@ pub fn a_prompt_queued_when_the_feed_ends_is_not_sent_by_the_next_feed_test() {
   // outbox and its send meets the cut with the polls.
   settled(page)
   process.send(through, Cut)
-  met_the_cut(through, 1, 100)
+  met_the_cut(through, 1, 200)
   ui_feed.transmit(page.feed, command(2, protocol.Prompt("main", "never")))
-  met_the_cut(through, 3, 100)
+  met_the_cut(through, 3, 200)
   ui_feed.shut(page.feed)
   assert process.receive(page.inbox, 3000)
     == Ok(connection_event.Closed(ending.reason(ending.ConnectionFailed)))

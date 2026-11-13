@@ -536,6 +536,45 @@ pub fn a_piece_whose_answer_is_late_is_sent_again_unchanged_test() {
   assert tick(sends) >= 2
 }
 
+// A box whose directory did not answer refuses a send `not_yet_open`, as it does an
+// attach and a poll. The piece is sent again unchanged, and the box admits it once.
+pub fn a_send_refused_not_yet_open_is_sent_again_test() {
+  let seen = process.new_subject()
+  let sends = counter()
+  let box =
+    orchestrator_port.TopHost(
+      ..orchestrator_port.refusing_top(),
+      feeds: remote_feed.Host(
+        ..remote_feed.declining(),
+        poll: fn(_node, polled: remote_feed.Poll) {
+          process.sleep(30)
+          Ok(remote_feed.Answer(
+            first: polled.after + 1,
+            frames: [],
+            ended: None,
+          ))
+        },
+        send: fn(_node, piece: remote_feed.Piece) {
+          case tick(sends) {
+            0 ->
+              Error(remote_top.NotYetOpen("the live pages are not answering"))
+            _ -> {
+              process.send(seen, "piece " <> piece.text)
+              Ok(Nil)
+            }
+          }
+        },
+        detach: fn(_node, _feed) { Ok(Nil) },
+      ),
+    )
+  let rig = start(to(serving(box)), always_open)
+  ui_feed.transmit(rig.feed, "{}")
+  assert awaited(seen, "piece {}", 60)
+
+  // The feed is still live: a refusal that asks for another try ended nothing.
+  assert process.receive(rig.ended, 0) == Error(Nil)
+}
+
 pub fn a_component_that_exits_detaches_the_feed_test() {
   let seen = process.new_subject()
   let box = serving(host(script([]), seen))

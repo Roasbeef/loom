@@ -56,12 +56,25 @@
 //// The box renews a feed's lease only when a poll arrives, and a feed unpolled for
 //// fifteen seconds lapses. The longest gap between two arrivals is, in a healthy
 //// link, the box's hold of five seconds, the round trip and the pause after an
-//// empty answer (100 ms), about 5.2 s. When the link fails after a poll arrived,
-//// that poll's call gives up at `top_relay.call_ms` (7 s) and the pause before the
-//// next is at most `feed_cursor.longest_pause_ms` (2 s), so the next arrival is at
-//// most 9 s after the last, with six seconds to spare. The page's own check
-//// before a poll adds at most the registry's five seconds in a pathological case,
-//// which would leave one second.
+//// empty answer (100 ms), about 5.2 s. When the link fails after a poll arrived, the
+//// next attempt may spend `top_relay.connect_ms` (1.5 s) dialling, its call gives up
+//// at `top_relay.call_ms` (7 s), and the pause before it is at most
+//// `feed_cursor.longest_pause_ms` (2 s), so the next arrival is at most 10.5 s after
+//// the last, with 4.5 s to spare against a lease of 15 s. The page's own check
+//// before a poll is a registry call with its own five seconds, and one that times
+//// out does not delay a poll: it fails the check, which ends the page as
+//// `AccessRevoked`, a final ending, so no lapse follows from it.
+////
+//// ## A directory that does not answer
+////
+//// When the box's directory does not answer, it refuses an attach, a poll, a send
+//// and a detach with `not_yet_open` (the follow-up to slice 2). This module asks
+//// again for each. A poll refused `NotYetOpen` is `feed_cursor`'s `Retry`. A send
+//// refused `NotYetOpen` is `Unheard`, which sends the same piece again after a
+//// pause, and a piece is admitted once, so this is safe. The attach is retried by
+//// the socket's choice, which shows the live page waiting. A detach that is
+//// refused is not asked again: the feed client is already gone and the box lapses
+//// the feed after its lease.
 ////
 //// ## Bounds
 ////
@@ -543,6 +556,10 @@ fn send_reply(returned: Result(Nil, top_relay.Failure)) -> Sent {
     Ok(Nil) -> Admitted
     Error(top_relay.Refused(remote_top.FeedEnded(why:))) -> Gone(why)
     Error(top_relay.Unreachable) | Error(top_relay.Silent) -> Unheard
+
+    // A box whose directory did not answer asks for another try, and a piece is
+    // admitted once, so it is sent again.
+    Error(top_relay.Refused(remote_top.NotYetOpen(_))) -> Unheard
     Error(top_relay.Refused(_))
     | Error(top_relay.Unreadable(_))
     | Error(top_relay.RequestTooLarge)
