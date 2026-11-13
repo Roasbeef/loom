@@ -42,19 +42,38 @@ claim and kept, with the pair's session and no executor.
 
 | The receiver holds | It does |
 |---|---|
-| a verdict | answers it, and ends the child's session if one is left |
+| a verdict | answers it |
 | a session that is open and resident | asks whether it has begun: a child that has is answered as it was, a record that cannot be read is a reason to ask again, and a fresh one falls through |
 | the bundle not yet whole | answers ask again |
 | otherwise | runs a pass under the claim: find or make the session, attach and read the census, send the bundle, ask again whether the session has begun, send the fenced apply, and then make the Agency's spawn |
 
-A transient failure (no room, a fence that moved, an unanswered request, a record
-that could not be read) keeps no verdict, lets go of the claim and leaves the
-session. A refusal the same inputs get again (a state the executor judges
+A restart forgets the verdicts and the claims, because the daemon deletes
+`seed-staging`, where it keeps both, when it starts. A transient failure (no room,
+a fence that moved, an unanswered request, a record that could not be read) keeps
+no verdict, lets go of the claim and leaves the session. A refusal the same inputs get again (a state the executor judges
 malformed, a workspace that refuses it) keeps the verdict and ends the session in
 a step of its own after the verdict is written. A census that says the workspace
 takes no state ends the session at once and keeps no verdict. The Agency's spawn
 is a step of its own after the apply is confirmed, so a restart can come between
 them, and it is made only when the asker still waits.
+
+### The join
+
+`Orch` answers a `Join` for a child that has ended: it captures the child's
+commits from the executor, which needs a fresh attach after an executor restart,
+checks that the bundle arrived whole and that this node's store has room, keeps
+the settled answer, ends the child's session and answers. A join asked again after
+that is answered from the kept answer, so the session's absence does not refuse
+it. A join before the child has ended, or while another is running, answers that
+the child is still finishing. A run end stops a running child first and keeps its
+session, because a join can still bring the commits back.
+
+### One checkout at a time
+
+`Exec` runs a checkout of a state for a scope in a step that takes some time, and
+a second `StateApply` that arrives while it is running joins it and is answered
+with its result. The orchestrator sends the apply again when the executor link is
+repaired, which is how a second request reaches a checkout that is still going.
 
 ## What is checked
 
@@ -68,23 +87,29 @@ them, and it is made only when the asker still waits.
 | `NoPermanentVerdictFromTransient` | A verdict is kept only for a deterministic refusal. |
 | `UnreadableIsNotBegun` | A session whose record could not be read is never taken for one that has begun. |
 | `EverySpawnEnds` | Liveness: an asked spawn ends, started with the seed applied or refused for good. |
-| `EverySettledChildIsReleased` | Liveness: a child whose verdict is kept or whose result is stored has its session released. |
+| `EverySettledChildIsReleased` | Liveness: a child whose verdict is kept or whose result is kept has its session released. |
+| `JoinIsRepeatable` | A join asked again after the child settled and its session was released is not refused. |
+| `OneRefPerChild` | The child's commits are made into one ref, not two. |
+| `EveryFinishedWorkIsReturned` | Liveness: a child that settled with commits has them in the parent's repository, across a lost reply, a resend, an executor restart and a store with no room. |
+| `NoReleaseWhileRunning` | A session is not released while its child runs. |
+| `ResultKeptBeforeRelease` | A session is not released before the settled answer is kept. |
+| `OneApplyAtATime` | An executor runs one checkout at a time for a scope. |
+| `RunEndStopsTheChildren` | A run end stops the children whatever becomes of the pair's session. |
 
 P reports a violation of a liveness spec when a run ends with its monitor in the
 hot state, so each liveness spec holds only because every fault is bounded.
 
 ## What the model found
 
-`EverySettledChildIsReleased` failed on the code as it stood. `placing` writes the
-verdict, lets go of the claim, ends the child's session and only then returns the
-refusal to the asker. A restart between the verdict and the end of the session
-left a refused child with a session, and the asker, who had heard nothing, asked
-again. The later ask found the verdict and answered it without ending the
-session. The
-session was bounded by the parent's release, which walks every session the pair
-holds. The code now ends the session when an ask finds a verdict
-(`spawn_seed.landed`), and the model does the same on the verdict branch of
-`handleSpawn`. Mutant M9 removes that and is caught.
+An earlier edition of this model kept a refusal's verdict across a restart and
+failed `EverySettledChildIsReleased` on a schedule in which a restart came between
+the verdict and the end of the session. That schedule does not exist in the code:
+the daemon deletes `seed-staging` when it starts, so a restart forgets the verdict
+and the next ask makes the refusal again. The failure was an error in the model,
+and the model now forgets the verdict. No counterexample was found on the code as
+it stands. The specs for the join, the return, the release and the checkout were
+written from the two reviews of the pull request, and each has a mutant that
+reintroduces the fault.
 
 ## Probes
 
@@ -93,7 +118,9 @@ only meaningful if the model reaches. They are an apply retried against a tree
 that already held the seed, a restart between the confirmed apply and the spawn,
 a capture served after the executor restarted, an apply refused as stale, a
 refusal that kept a verdict, a ref made from a child's commits, an executor with
-no room, and a record that could not be read.
+no room, a record that could not be read, a join answered from the kept answer, a
+second apply that joined the first, a store with no room for the commits, and a run
+end that stopped a running child.
 
 ## Mutants
 
@@ -113,8 +140,16 @@ a record that cannot be read answered as a session that has begun.
 | An executor with no room is kept as a verdict | `NoPermanentVerdictFromTransient` |
 | A stale fence is kept as a verdict | `NoPermanentVerdictFromTransient` |
 | A record that cannot be read answers that the session has begun | `UnreadableIsNotBegun` |
-| An ask that finds a verdict does not end the session a restart left | `EverySettledChildIsReleased` |
+| The join, and a join asked again, do not end the session | `EverySettledChildIsReleased` |
+| A refusal's session is not ended in the step after the verdict | `EverySettledChildIsReleased` |
 | A transient failure keeps the claim | `EverySpawnEnds` |
+| A join asked again is refused because the answer was not kept | `JoinIsRepeatable` |
+| A store with no room for the commits settles the child with nothing | `EveryFinishedWorkIsReturned` |
+| The owner makes the ref again for a repeated answer | `OneRefPerChild` |
+| The join captures and ends the session of a child that is still running | `NoReleaseWhileRunning` |
+| The session is ended before the settled answer is kept | `ResultKeptBeforeRelease` |
+| A second apply runs a checkout of its own | `OneApplyAtATime` |
+| The run end is handled behind the pair's session | `RunEndStopsTheChildren` |
 
 ## What the model leaves out
 
@@ -125,15 +160,21 @@ a record that cannot be read answered as a session that has begun.
   before the claim, so two asks may attach at once. An attach is idempotent on the
   executor, and the claim still admits one apply.
 - **A second child, and a spawn asked for after the join.** The model has one
-  child. A resend of a spawn that arrives after the child was joined and its
-  session ended would find no session and make one; the sender does not send it
-  after the answer, and the model does not generate it. This is not checked and
-  is not claimed.
-- **The claim's staleness.** A restart clears the claim. In the code a claim left
-  by a dead process is taken as stale after fifteen minutes.
+  child, and its owner does not send a spawn after the answer that carries the
+  result. In the code such a spawn finds no verdict and no session and starts a
+  second child that nothing joins. It is not modelled and not claimed.
+- **The claim's staleness.** A restart clears the claim, which the code does too,
+  by deleting `seed-staging` at start. A claim left by a process that died while
+  the daemon stayed up is taken as stale after fifteen minutes in the code and
+  never in the model.
+- **The kept answer's content.** The answer is its tip and two sizes. That it is the
+  settled entry in every field is tested in `joined_record_test`.
+- **A child whose record cannot be read.** The model's owner knows where its child
+  is. `child_join_test` and `spawn_return_test` cover a record that cannot be read.
 - **Time.** An asker that gives up is an event, and no deadline is measured.
-- **The untrusted link** of protocol-change 109 and 110. A seeded spawn over it is
-  refused by the code, so the model has nothing to say about it.
+- **The untrusted link** of protocol-change 109 and 110. The state messages of a
+  seeded spawn travel over it by the same path, untested, and the model says
+  nothing about it.
 - **The thin capture's content.** A capture is its tip and two sizes. That the
   commits are thin against the seed, and that the ref is made by `return_apply`,
   are tested against real repositories in `spawn_return_test`.

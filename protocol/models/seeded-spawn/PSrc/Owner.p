@@ -83,7 +83,11 @@ machine Owner {
           stage = 2;
           if (!refApplied) {
             refApplied = true;
-            announce eRef, (tip = m.a, arrived = m.b, desc = m.c);
+
+            // Commits come back as one ref, and a child that made none has none.
+            if (m.a > 1) {
+              announce eRef, (tip = m.a, arrived = m.b, desc = m.c);
+            }
           }
           send chaos, eOwnerDone;
         }

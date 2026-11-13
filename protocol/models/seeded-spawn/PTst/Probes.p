@@ -78,12 +78,39 @@ spec ProbeUnreadable observes eTransient {
   }
 }
 
-// A join asked again after the child's session was ended was refused, and the
-// owner made no ref. This is the cost the addendum accepts for a lost reply.
-spec ProbeJoinLost observes eJoinLost {
+// A join was asked again after the child settled, and was answered from the kept
+// entry.
+spec ProbeJoinRepeated observes eRepeated {
   start state Watching {
-    on eJoinLost do {
-      assert false, "witness: a join found the child's session ended and no ref was made";
+    on eRepeated do {
+      assert false, "witness: a join asked again was answered from the kept entry";
+    }
+  }
+}
+
+// A second request for a state being applied joined the run.
+spec ProbeApplyJoined observes eApplyJoined {
+  start state Watching {
+    on eApplyJoined do {
+      assert false, "witness: a second apply joined the checkout that was running";
+    }
+  }
+}
+
+// This node's store had no room for the child's commits and the join asked again.
+spec ProbeStoreFull observes eStoreFull {
+  start state Watching {
+    on eStoreFull do {
+      assert false, "witness: the receiving store had no room for the commits";
+    }
+  }
+}
+
+// A run end stopped a child that was running.
+spec ProbeRunEndStopped observes eRunEndStopped {
+  start state Watching {
+    on eRunEndStopped do {
+      assert false, "witness: a run end stopped a running child";
     }
   }
 }

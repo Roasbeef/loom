@@ -7,8 +7,8 @@
 // fail, a store with no room, a capture that arrives short, askers that give up,
 // the child's work, and a bundle that is late.
 
-fun planOf(place: tPlace, breaks1: int, breaks2: int, crashOrch: int, crashExec: int, crashOwner: int, unreadable: int, noRoom: int, partial: int, giveUps: int, works: int, holdLate: bool): tPlan {
-  return (place = place, shared = false, badState = false, refuseApply = false, holdLate = holdLate, breaks1 = breaks1, breaks2 = breaks2, crashOrch = crashOrch, crashExec = crashExec, crashOwner = crashOwner, unreadable = unreadable, noRoom = noRoom, partial = partial, giveUps = giveUps, works = works);
+fun planOf(place: tPlace, breaks1: int, breaks2: int, crashOrch: int, crashExec: int, crashOwner: int, unreadable: int, noRoom: int, partial: int, giveUps: int, works: int, holdLate: bool, storeFull: int, runEnds: int, pairFull: bool): tPlan {
+  return (place = place, shared = false, badState = false, refuseApply = false, holdLate = holdLate, breaks1 = breaks1, breaks2 = breaks2, crashOrch = crashOrch, crashExec = crashExec, crashOwner = crashOwner, unreadable = unreadable, noRoom = noRoom, partial = partial, giveUps = giveUps, works = works, storeFull = storeFull, runEnds = runEnds, pairFull = pairFull);
 }
 
 fun shared(p: tPlan): tPlan {
@@ -35,7 +35,7 @@ fun refusedApply(p: tPlan): tPlan {
 machine TestQuietExec {
   start state Init {
     entry {
-      new Harness(planOf(PL_EXEC, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, false));
+      new Harness(planOf(PL_EXEC, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, false, 0, 0, false));
     }
   }
 }
@@ -43,7 +43,7 @@ machine TestQuietExec {
 machine TestQuietDir {
   start state Init {
     entry {
-      new Harness(planOf(PL_DIR, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, false));
+      new Harness(planOf(PL_DIR, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, false, 0, 0, false));
     }
   }
 }
@@ -52,7 +52,7 @@ machine TestQuietDir {
 machine TestDrops {
   start state Init {
     entry {
-      new Harness(planOf(PL_EXEC, 2, 2, 0, 0, 1, 0, 0, 0, 1, 1, false));
+      new Harness(planOf(PL_EXEC, 2, 2, 0, 0, 1, 0, 0, 0, 1, 1, false, 0, 0, false));
     }
   }
 }
@@ -62,7 +62,7 @@ machine TestDrops {
 machine TestOrchRestart {
   start state Init {
     entry {
-      new Harness(planOf(PL_EXEC, 0, 0, 2, 0, 0, 0, 0, 0, 1, 1, false));
+      new Harness(planOf(PL_EXEC, 0, 0, 2, 0, 0, 0, 0, 0, 1, 1, false, 0, 0, false));
     }
   }
 }
@@ -71,7 +71,7 @@ machine TestOrchRestart {
 machine TestExecRestart {
   start state Init {
     entry {
-      new Harness(planOf(PL_EXEC, 0, 0, 0, 2, 0, 0, 0, 1, 0, 1, false));
+      new Harness(planOf(PL_EXEC, 0, 0, 0, 2, 0, 0, 0, 1, 0, 1, false, 0, 0, false));
     }
   }
 }
@@ -81,7 +81,7 @@ machine TestExecRestart {
 machine TestTransient {
   start state Init {
     entry {
-      new Harness(planOf(PL_EXEC, 0, 0, 0, 0, 0, 2, 2, 1, 1, 1, true));
+      new Harness(planOf(PL_EXEC, 0, 0, 0, 0, 0, 2, 2, 1, 1, 1, true, 0, 0, false));
     }
   }
 }
@@ -92,7 +92,36 @@ machine TestTransient {
 machine TestRetryAfterWork {
   start state Init {
     entry {
-      new Harness(planOf(PL_EXEC, 2, 0, 1, 0, 0, 0, 0, 0, 2, 0, false));
+      new Harness(planOf(PL_EXEC, 2, 0, 1, 0, 0, 0, 0, 0, 2, 0, false, 0, 0, false));
+    }
+  }
+}
+
+// The child's commits come back across a lost reply, a resend, an executor that
+// restarted, a store with no room and a join asked again.
+machine TestReturn {
+  start state Init {
+    entry {
+      new Harness(planOf(PL_EXEC, 2, 0, 1, 1, 0, 0, 0, 0, 1, 1, false, 2, 0, false));
+    }
+  }
+}
+
+// The run ends while the spawner is at its cap.
+machine TestRunEnd {
+  start state Init {
+    entry {
+      new Harness(planOf(PL_EXEC, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, false, 0, 2, true));
+    }
+  }
+}
+
+// The link to the executor breaks while a checkout is running, so the request that
+// follows the repair arrives at an executor that is still applying.
+machine TestApplyOverlap {
+  start state Init {
+    entry {
+      new Harness(planOf(PL_EXEC, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, false, 0, 0, false));
     }
   }
 }
@@ -100,7 +129,7 @@ machine TestRetryAfterWork {
 machine TestAllExec {
   start state Init {
     entry {
-      new Harness(planOf(PL_EXEC, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, true));
+      new Harness(planOf(PL_EXEC, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, true, 1, 1, false));
     }
   }
 }
@@ -108,7 +137,7 @@ machine TestAllExec {
 machine TestAllDir {
   start state Init {
     entry {
-      new Harness(planOf(PL_DIR, 1, 0, 2, 0, 1, 1, 0, 0, 1, 1, true));
+      new Harness(planOf(PL_DIR, 1, 0, 2, 0, 1, 1, 0, 0, 1, 1, true, 0, 0, false));
     }
   }
 }
@@ -117,7 +146,7 @@ machine TestAllDir {
 machine TestShared {
   start state Init {
     entry {
-      new Harness(shared(planOf(PL_EXEC, 1, 1, 1, 1, 0, 0, 0, 0, 1, 0, false)));
+      new Harness(shared(planOf(PL_EXEC, 1, 1, 1, 1, 0, 0, 0, 0, 1, 0, false, 0, 0, false)));
     }
   }
 }
@@ -126,7 +155,7 @@ machine TestShared {
 machine TestBadState {
   start state Init {
     entry {
-      new Harness(badState(planOf(PL_EXEC, 1, 1, 1, 0, 0, 0, 0, 0, 1, 0, false)));
+      new Harness(badState(planOf(PL_EXEC, 1, 1, 1, 0, 0, 0, 0, 0, 1, 0, false, 0, 0, false)));
     }
   }
 }
@@ -134,7 +163,7 @@ machine TestBadState {
 machine TestRefusedApply {
   start state Init {
     entry {
-      new Harness(refusedApply(planOf(PL_EXEC, 1, 1, 1, 1, 0, 0, 0, 0, 1, 0, false)));
+      new Harness(refusedApply(planOf(PL_EXEC, 1, 1, 1, 1, 0, 0, 0, 0, 1, 0, false, 0, 0, false)));
     }
   }
 }
@@ -142,41 +171,49 @@ machine TestRefusedApply {
 machine TestBadDir {
   start state Init {
     entry {
-      new Harness(badState(planOf(PL_DIR, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, false)));
+      new Harness(badState(planOf(PL_DIR, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, false, 0, 0, false)));
     }
   }
 }
 
+test tcReturn [main = TestReturn]:
+  assert FirstTurnAfterSeed, AtMostOneSession, AppliedAtMostOnce, NoOlderOverNewer, RefNamesOnlyDescribedCommits, EverySpawnEnds, EverySettledChildIsReleased, JoinIsRepeatable, OneRefPerChild, EveryFinishedWorkIsReturned, NoReleaseWhileRunning, ResultKeptBeforeRelease, OneApplyAtATime in
+  (union System, { TestReturn });
+
+test tcRunEnd [main = TestRunEnd]:
+  assert FirstTurnAfterSeed, AtMostOneSession, EverySpawnEnds, EverySettledChildIsReleased, JoinIsRepeatable, EveryFinishedWorkIsReturned, NoReleaseWhileRunning, RunEndStopsTheChildren in
+  (union System, { TestRunEnd });
+
 test tcQuietExec [main = TestQuietExec]:
-  assert FirstTurnAfterSeed, AtMostOneSession, AppliedAtMostOnce, NoOlderOverNewer, RefNamesOnlyDescribedCommits, NoPermanentVerdictFromTransient, UnreadableIsNotBegun, EverySpawnEnds, EverySettledChildIsReleased in
+  assert FirstTurnAfterSeed, AtMostOneSession, AppliedAtMostOnce, NoOlderOverNewer, RefNamesOnlyDescribedCommits, NoPermanentVerdictFromTransient, UnreadableIsNotBegun, EverySpawnEnds, EverySettledChildIsReleased, JoinIsRepeatable, OneRefPerChild, EveryFinishedWorkIsReturned, NoReleaseWhileRunning, ResultKeptBeforeRelease, OneApplyAtATime, RunEndStopsTheChildren in
   (union System, { TestQuietExec });
 
 test tcQuietDir [main = TestQuietDir]:
-  assert FirstTurnAfterSeed, AtMostOneSession, AppliedAtMostOnce, NoOlderOverNewer, RefNamesOnlyDescribedCommits, NoPermanentVerdictFromTransient, UnreadableIsNotBegun, EverySpawnEnds, EverySettledChildIsReleased in
+  assert FirstTurnAfterSeed, AtMostOneSession, AppliedAtMostOnce, NoOlderOverNewer, RefNamesOnlyDescribedCommits, NoPermanentVerdictFromTransient, UnreadableIsNotBegun, EverySpawnEnds, EverySettledChildIsReleased, JoinIsRepeatable, OneRefPerChild, EveryFinishedWorkIsReturned, NoReleaseWhileRunning, ResultKeptBeforeRelease, OneApplyAtATime, RunEndStopsTheChildren in
   (union System, { TestQuietDir });
 
 test tcDrops [main = TestDrops]:
-  assert FirstTurnAfterSeed, AtMostOneSession, AppliedAtMostOnce, NoOlderOverNewer, RefNamesOnlyDescribedCommits, NoPermanentVerdictFromTransient, UnreadableIsNotBegun, EverySpawnEnds, EverySettledChildIsReleased in
+  assert FirstTurnAfterSeed, AtMostOneSession, AppliedAtMostOnce, NoOlderOverNewer, RefNamesOnlyDescribedCommits, NoPermanentVerdictFromTransient, UnreadableIsNotBegun, EverySpawnEnds, EverySettledChildIsReleased, JoinIsRepeatable, OneRefPerChild, EveryFinishedWorkIsReturned, NoReleaseWhileRunning, ResultKeptBeforeRelease, OneApplyAtATime, RunEndStopsTheChildren in
   (union System, { TestDrops });
 
 test tcOrchRestart [main = TestOrchRestart]:
-  assert FirstTurnAfterSeed, AtMostOneSession, AppliedAtMostOnce, NoOlderOverNewer, RefNamesOnlyDescribedCommits, NoPermanentVerdictFromTransient, UnreadableIsNotBegun, EverySpawnEnds, EverySettledChildIsReleased in
+  assert FirstTurnAfterSeed, AtMostOneSession, AppliedAtMostOnce, NoOlderOverNewer, RefNamesOnlyDescribedCommits, NoPermanentVerdictFromTransient, UnreadableIsNotBegun, EverySpawnEnds, EverySettledChildIsReleased, JoinIsRepeatable, OneRefPerChild, EveryFinishedWorkIsReturned, NoReleaseWhileRunning, ResultKeptBeforeRelease, OneApplyAtATime, RunEndStopsTheChildren in
   (union System, { TestOrchRestart });
 
 test tcExecRestart [main = TestExecRestart]:
-  assert FirstTurnAfterSeed, AtMostOneSession, AppliedAtMostOnce, NoOlderOverNewer, RefNamesOnlyDescribedCommits, NoPermanentVerdictFromTransient, UnreadableIsNotBegun, EverySpawnEnds, EverySettledChildIsReleased in
+  assert FirstTurnAfterSeed, AtMostOneSession, AppliedAtMostOnce, NoOlderOverNewer, RefNamesOnlyDescribedCommits, NoPermanentVerdictFromTransient, UnreadableIsNotBegun, EverySpawnEnds, EverySettledChildIsReleased, JoinIsRepeatable, OneRefPerChild, EveryFinishedWorkIsReturned, NoReleaseWhileRunning, ResultKeptBeforeRelease, OneApplyAtATime, RunEndStopsTheChildren in
   (union System, { TestExecRestart });
 
 test tcTransient [main = TestTransient]:
-  assert FirstTurnAfterSeed, AtMostOneSession, AppliedAtMostOnce, NoOlderOverNewer, RefNamesOnlyDescribedCommits, NoPermanentVerdictFromTransient, UnreadableIsNotBegun, EverySpawnEnds, EverySettledChildIsReleased in
+  assert FirstTurnAfterSeed, AtMostOneSession, AppliedAtMostOnce, NoOlderOverNewer, RefNamesOnlyDescribedCommits, NoPermanentVerdictFromTransient, UnreadableIsNotBegun, EverySpawnEnds, EverySettledChildIsReleased, JoinIsRepeatable, OneRefPerChild, EveryFinishedWorkIsReturned, NoReleaseWhileRunning, ResultKeptBeforeRelease, OneApplyAtATime, RunEndStopsTheChildren in
   (union System, { TestTransient });
 
 test tcAllExec [main = TestAllExec]:
-  assert FirstTurnAfterSeed, AtMostOneSession, AppliedAtMostOnce, NoOlderOverNewer, RefNamesOnlyDescribedCommits, NoPermanentVerdictFromTransient, UnreadableIsNotBegun, EverySpawnEnds, EverySettledChildIsReleased in
+  assert FirstTurnAfterSeed, AtMostOneSession, AppliedAtMostOnce, NoOlderOverNewer, RefNamesOnlyDescribedCommits, NoPermanentVerdictFromTransient, UnreadableIsNotBegun, EverySpawnEnds, EverySettledChildIsReleased, JoinIsRepeatable, OneRefPerChild, EveryFinishedWorkIsReturned, NoReleaseWhileRunning, ResultKeptBeforeRelease, OneApplyAtATime, RunEndStopsTheChildren in
   (union System, { TestAllExec });
 
 test tcAllDir [main = TestAllDir]:
-  assert FirstTurnAfterSeed, AtMostOneSession, AppliedAtMostOnce, NoOlderOverNewer, RefNamesOnlyDescribedCommits, NoPermanentVerdictFromTransient, UnreadableIsNotBegun, EverySpawnEnds, EverySettledChildIsReleased in
+  assert FirstTurnAfterSeed, AtMostOneSession, AppliedAtMostOnce, NoOlderOverNewer, RefNamesOnlyDescribedCommits, NoPermanentVerdictFromTransient, UnreadableIsNotBegun, EverySpawnEnds, EverySettledChildIsReleased, JoinIsRepeatable, OneRefPerChild, EveryFinishedWorkIsReturned, NoReleaseWhileRunning, ResultKeptBeforeRelease, OneApplyAtATime, RunEndStopsTheChildren in
   (union System, { TestAllDir });
 
 test tcShared [main = TestShared]:
@@ -202,7 +239,7 @@ test tcOnlyOneSession [main = TestAllExec]:
   assert AtMostOneSession in (union System, { TestAllExec });
 
 test tcRetryAfterWork [main = TestRetryAfterWork]:
-  assert FirstTurnAfterSeed, AtMostOneSession, AppliedAtMostOnce, NoOlderOverNewer, NoPermanentVerdictFromTransient, UnreadableIsNotBegun, EverySpawnEnds, EverySettledChildIsReleased in
+  assert FirstTurnAfterSeed, AtMostOneSession, AppliedAtMostOnce, NoOlderOverNewer, NoPermanentVerdictFromTransient, UnreadableIsNotBegun, EverySpawnEnds, EverySettledChildIsReleased, JoinIsRepeatable, NoReleaseWhileRunning, ResultKeptBeforeRelease, OneApplyAtATime in
   (union System, { TestRetryAfterWork });
 
 test tcOnlyAppliedOnce [main = TestAllExec]:
@@ -225,6 +262,21 @@ test tcOnlyReleasedRefused [main = TestBadState]:
 
 test tcOnlyUnreadable [main = TestTransient]:
   assert UnreadableIsNotBegun in (union System, { TestTransient });
+
+test tcOnlyJoinRepeat [main = TestReturn]:
+  assert JoinIsRepeatable in (union System, { TestReturn });
+
+test tcOnlyReturnOnce [main = TestReturn]:
+  assert OneRefPerChild, EveryFinishedWorkIsReturned in (union System, { TestReturn });
+
+test tcOnlyNoEarlyRelease [main = TestReturn]:
+  assert NoReleaseWhileRunning, ResultKeptBeforeRelease in (union System, { TestReturn });
+
+test tcOnlyOneApply [main = TestApplyOverlap]:
+  assert OneApplyAtATime in (union System, { TestApplyOverlap });
+
+test tcOnlyRunEnd [main = TestRunEnd]:
+  assert RunEndStopsTheChildren in (union System, { TestRunEnd });
 
 test tcOnlySpawnEnds [main = TestTransient]:
   assert EverySpawnEnds in (union System, { TestTransient });
@@ -256,5 +308,14 @@ test tcProbeNoRoom [main = TestTransient]:
 test tcProbeUnreadable [main = TestTransient]:
   assert ProbeUnreadable in (union System, { TestTransient });
 
-test tcProbeJoinLost [main = TestDrops]:
-  assert ProbeJoinLost in (union System, { TestDrops });
+test tcProbeJoinRepeated [main = TestReturn]:
+  assert ProbeJoinRepeated in (union System, { TestReturn });
+
+test tcProbeApplyJoined [main = TestApplyOverlap]:
+  assert ProbeApplyJoined in (union System, { TestApplyOverlap });
+
+test tcProbeStoreFull [main = TestReturn]:
+  assert ProbeStoreFull in (union System, { TestReturn });
+
+test tcProbeRunEndStopped [main = TestRunEnd]:
+  assert ProbeRunEndStopped in (union System, { TestRunEnd });

@@ -39,6 +39,10 @@ machine Orch {
   var held: bool;
   var localTip: int;
   var finished: bool;
+  var resultStored: bool;
+  var resultTip: int;
+  var resultArrived: int;
+  var resultDesc: int;
 
   // Volatile.
   var resident: bool;
@@ -53,6 +57,7 @@ machine Orch {
   var confirmed: bool;
   var epoch: int;
   var unreadableLeft: int;
+  var storeFullLeft: int;
 
   start state Serving {
     entry (p: (w1: machine, w2: machine, exec: machine, plan: tPlan)) {
@@ -62,6 +67,7 @@ machine Orch {
       plan = p.plan;
       held = !p.plan.holdLate;
       unreadableLeft = p.plan.unreadable;
+      storeFullLeft = p.plan.storeFull;
     }
 
     on eInR do (m: tMsg) {
@@ -79,6 +85,11 @@ machine Orch {
     on eLinkLost do (w: int) {
       if (w == 1) {
         askerWaiting = false;
+      } else if (phase == PH_APPLY) {
+        // The surface repairs the connection and sends the apply again, because an
+        // apply that already landed answers its tip and changes nothing. The
+        // first checkout may still be running when the second request arrives.
+        toExec(X_APPLY, 1, inc, token);
       } else {
         abandon();
       }
@@ -93,7 +104,7 @@ machine Orch {
     }
 
     on eChildWork do {
-      if (plan.place == PL_DIR && begun && localTip == 1) {
+      if (plan.place == PL_DIR && begun && !finished && localTip == 1) {
         localTip = 2;
       }
     }
@@ -121,10 +132,20 @@ machine Orch {
       }
     }
 
+    // The child runs for some time, so its end is a step that the scheduler may
+    // put off, and a join can arrive while it runs.
     on eChildFinish do (e: int) {
-      if (e == epoch && begun) {
-        finished = true;
+      if (e == epoch && begun && !finished) {
+        if (choose(3) == 0) {
+          endChild();
+        } else {
+          send this, eChildFinish, epoch;
+        }
       }
+    }
+
+    on eRunEnded do {
+      runEnd();
     }
   }
 
@@ -163,9 +184,35 @@ machine Orch {
     attached = false;
     askerWaiting = false;
     confirmed = false;
-    if (begun) {
-      finished = true;
+
+    // The daemon deletes `seed-staging` at start, where the claims and the
+    // refusals it kept are, so a restart forgets both.
+    verdict = false;
+    if (begun && !finished) {
+      endChild();
     }
+  }
+
+  // The child's run ends, and it commits nothing after that.
+  fun endChild() {
+    finished = true;
+    announce eChildEnded;
+    send exec, eChildStopped;
+  }
+
+  // The run that asked for the child ended. The children that run in sessions of
+  // their own are stopped first and whatever becomes of the pair's session, which
+  // cannot be made when seeded children fill the cap. Their sessions are kept, so
+  // a join can still bring the commits back.
+  fun runEnd() {
+    // The children first.
+    if (begun && !finished) {
+      endChild();
+      announce eRunEndStopped;
+    }
+
+    // The pair's session is the next step, and a spawner at its cap refuses it.
+    announce eRunEndHandled, (begun && !finished);
   }
 
   // The link to the executor broke while a request was out: the work ends with a
@@ -184,7 +231,6 @@ machine Orch {
   fun handleSpawn() {
     var fr: tFresh;
     if (verdict) {
-      releaseSession();
       toOwner(R_REFUSED, 0, 0, 0);
       return;
     }
@@ -299,6 +345,11 @@ machine Orch {
       phase = PH_IDLE;
       if (m.b != m.c) {
         toOwner(R_PENDING, 0, 0, 0);
+      } else if (storeIsFull()) {
+        // This node's store has no room for the commits, which passes: the join
+        // is asked again and the session and the commits are kept.
+        announce eStoreFull;
+        toOwner(R_PENDING, 0, 0, 0);
       } else {
         storeResult(m.a, m.b, m.c);
       }
@@ -397,7 +448,14 @@ machine Orch {
       toOwner(R_PENDING, 0, 0, 0);
       return;
     }
+    if (resultStored) {
+      announce eRepeated;
+      releaseSession();
+      toOwner(R_FINISHED, resultTip, resultArrived, resultDesc);
+      return;
+    }
     if (plan.place == PL_EXEC && !session) {
+      announce eGone, resultStored;
       toOwner(R_GONE, 0, 0, 0);
       return;
     }
@@ -406,7 +464,8 @@ machine Orch {
       return;
     }
     if (plan.place == PL_DIR) {
-      storeResult(localTip, localTip, localTip);
+      announce eSettled, localTip;
+      toOwner(R_FINISHED, localTip, localTip, localTip);
       return;
     }
     joining = true;
@@ -420,11 +479,26 @@ machine Orch {
     }
   }
 
-  // The join answers with the child's commits and ends the child's session. The
-  // report lives in the session, so a join that asks again after the session was
-  // ended is answered `R_GONE`, which is the cost the addendum accepts.
+  // Whether this node's store has no room for the captured commits this time.
+  fun storeIsFull(): bool {
+    if (storeFullLeft > 0 && choose(2) == 0) {
+      storeFullLeft = storeFullLeft - 1;
+      return true;
+    }
+    return false;
+  }
+
+  // The join answers with the child's commits. The settled answer is kept before
+  // the child's session is ended, so a join asked again afterwards is answered the
+  // same, and the session is ended after it.
   fun storeResult(tip: int, arrived: int, desc: int) {
-    announce eSettled;
+    announce eSettleBegan;
+    resultStored = true;
+    resultTip = tip;
+    resultArrived = arrived;
+    resultDesc = desc;
+    announce eKept;
+    announce eSettled, tip;
     releaseSession();
     toOwner(R_FINISHED, tip, arrived, desc);
   }

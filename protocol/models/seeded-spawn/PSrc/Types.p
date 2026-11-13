@@ -64,7 +64,10 @@ type tPlan = (
   noRoom: int,
   partial: int,
   giveUps: int,
-  works: int
+  works: int,
+  storeFull: int,
+  runEnds: int,
+  pairFull: bool
 );
 
 // --- the wire ---
@@ -79,11 +82,13 @@ event eLinkLost: int;
 
 // --- the environment ---
 event eChaosStep;
+event eRunEnded;
 event ePoke;
 event eGiveUp;
 event eBundleArrives;
 event eChildWork;
 event eChildStarted;
+event eChildStopped;
 event eCrashOrch;
 event eCrashExec;
 event eCrashOwner;
@@ -95,6 +100,7 @@ event eKnowChaos: machine;
 // a restart discards what was pending ---
 event eSpawnDue: int;
 event eReleaseDue: int;
+event eApplyDone: int;
 event eChildFinish: int;
 
 // --- what the specs observe ---
@@ -111,8 +117,19 @@ event eApplyRepeated;
 event eVerdict: tWhy;
 event eTransient: tWhy;
 event eGate: bool;
-event eSettled;
+event eSettled: int;
 event eRef: (tip: int, arrived: int, desc: int);
 event eCrashBetween;
+event eSettleBegan;
+event eKept;
+event eRepeated;
+event eGone: bool;
+event eChildEnded;
+event eStoreFull;
+event eRunEndStopped;
+event eRunEndHandled: bool;
+event eApplyStarted;
+event eApplyEnded;
+event eApplyJoined;
 event eJoinLost;
 event eCapturedAfterRestart;

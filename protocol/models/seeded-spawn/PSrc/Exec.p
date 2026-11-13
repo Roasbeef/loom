@@ -22,6 +22,9 @@ machine Exec {
   var tokens: int;
   var liveToken: int;
   var noRoomLeft: int;
+  var applying: bool;
+  var waiters: seq[int];
+  var applyTip: int;
   var partialLeft: int;
 
   start state Serving {
@@ -37,6 +40,10 @@ machine Exec {
     }
 
     // The child commits soon after its first turn begins.
+    on eChildStopped do {
+      childRuns = false;
+    }
+
     on eChildStarted do {
       childRuns = true;
       send this, eChildWork;
@@ -49,9 +56,29 @@ machine Exec {
       }
     }
 
+    // The checkout ends and answers every request that waited for it.
+    // A checkout takes some time, so its end is a step that the scheduler may put
+    // off, and a second request can arrive while it runs.
+    on eApplyDone do (e: int) {
+      if (e == epoch && applying) {
+        if (choose(3) == 0) {
+          finishApply();
+        } else {
+          send this, eApplyDone, epoch;
+        }
+      }
+    }
+
     on eCrashExec do {
       epoch = epoch + 1;
       liveToken = 0;
+
+      // The run of a checkout dies with the executor.
+      if (applying) {
+        announce eApplyEnded;
+      }
+      applying = false;
+      waiters = default(seq[int]);
     }
 
     ignore eLinkLost;
@@ -64,6 +91,29 @@ machine Exec {
   // Whether a request's fence is the live attach's.
   fun fenced(m: tMsg): bool {
     return liveToken != 0 && m.b == epoch && m.c == liveToken;
+  }
+
+  // The checkout ends: the tree takes the tip, and every request that waited is
+  // answered with it.
+  fun finishApply() {
+    var i: int;
+    announce eApplyEnded;
+    announce eApplied, (before = tip, after = applyTip);
+    if (tip == applyTip) {
+      announce eApplyRepeated;
+    }
+    if (tip == 0) {
+      announce eSeedEffective;
+      announce eTreeSeeded;
+    }
+    tip = applyTip;
+    i = 0;
+    while (i < sizeof(waiters)) {
+      send w2, eR2L, (kind = Y_APPLIED, pass = waiters[i], a = tip, b = 0, c = 0);
+      i = i + 1;
+    }
+    waiters = default(seq[int]);
+    applying = false;
   }
 
   fun serve(m: tMsg) {
@@ -92,17 +142,18 @@ machine Exec {
         answer(m, Y_STALE, 0, 0, 0);
       } else if (!stored || plan.refuseApply) {
         answer(m, Y_REFUSED, 0, 0, 0);
+      } else if (applying) {
+        // A request for the state that is being applied joins that run and gets its
+        // answer, because a second checkout over the first one's tree would fail on
+        // what the first made.
+        waiters += (sizeof(waiters), m.pass);
+        announce eApplyJoined;
       } else {
-        announce eApplied, (before = tip, after = m.a);
-        if (tip == m.a) {
-          announce eApplyRepeated;
-        }
-        if (tip == 0) {
-          announce eSeedEffective;
-          announce eTreeSeeded;
-        }
-        tip = m.a;
-        answer(m, Y_APPLIED, tip, 0, 0);
+        applying = true;
+        applyTip = m.a;
+        waiters += (sizeof(waiters), m.pass);
+        announce eApplyStarted;
+        send this, eApplyDone, epoch;
       }
     } else if (m.kind == X_CAPTURE) {
       if (!fenced(m)) {

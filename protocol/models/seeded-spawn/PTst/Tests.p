@@ -69,7 +69,7 @@ machine Chaos {
   }
 
   fun spent(): bool {
-    return plan.breaks1 + plan.breaks2 + plan.crashOrch + plan.crashExec + plan.crashOwner + plan.giveUps + plan.works == 0;
+    return plan.breaks1 + plan.breaks2 + plan.crashOrch + plan.crashExec + plan.crashOwner + plan.giveUps + plan.works + plan.runEnds == 0;
   }
 
   // Spends one unit of one budget.
@@ -104,6 +104,9 @@ machine Chaos {
     if (plan.works > 0) {
       kinds += (sizeof(kinds), 6);
     }
+    if (plan.runEnds > 0) {
+      kinds += (sizeof(kinds), 7);
+    }
     kind = choose(kinds);
     if (kind == 0) {
       plan.breaks1 = plan.breaks1 - 1;
@@ -127,10 +130,13 @@ machine Chaos {
     } else if (kind == 5) {
       plan.giveUps = plan.giveUps - 1;
       send orch, eGiveUp;
-    } else {
+    } else if (kind == 6) {
       plan.works = plan.works - 1;
       send exec, eChildWork;
       send orch, eChildWork;
+    } else {
+      plan.runEnds = plan.runEnds - 1;
+      send orch, eRunEnded;
     }
   }
 }

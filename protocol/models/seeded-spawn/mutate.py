@@ -88,19 +88,81 @@ MUTATIONS = {
      "      return FR_UNREADABLE;",
      "      return FR_BEGUN;")]),
 
-  # A verdict is answered at once, and the ask that finds it ends the session a
-  # restart left behind. Without that, a refused child keeps its session.
-  "M9-refused-child-keeps-its-session": ("tcOnlyReleasedRefused", 4000, r"liveness bug", [
+  # The join, and a join asked again, end the child's session once the answer is
+  # kept. Without that, a settled child keeps its session.
+  "M9-join-keeps-the-session": ("tcOnlyReleased", 4000, r"liveness bug", [
     ("PSrc/Orch.p",
-     "    if (verdict) {\n      releaseSession();\n",
-     "    if (verdict) {\n")]),
+     "    announce eSettled, tip;\n    releaseSession();\n    toOwner(R_FINISHED, tip, arrived, desc);",
+     "    announce eSettled, tip;\n    toOwner(R_FINISHED, tip, arrived, desc);"),
+    ("PSrc/Orch.p",
+     "      announce eRepeated;\n      releaseSession();",
+     "      announce eRepeated;")]),
+
+  # A refusal's session is ended in the step after the verdict. Without that, a
+  # refused child keeps its session.
+  "M10-refused-child-keeps-its-session": ("tcOnlyReleasedRefused", 4000, r"liveness bug", [
+    ("PSrc/Orch.p",
+     "        releaseSession();\n        if (askerWaiting) {\n          askerWaiting = false;\n          toOwner(R_REFUSED, 0, 0, 0);",
+     "        if (askerWaiting) {\n          askerWaiting = false;\n          toOwner(R_REFUSED, 0, 0, 0);")]),
 
   # The claim is let go whatever the end. A transient failure that keeps it leaves
   # every later ask told to ask again.
-  "M10-claim-kept-after-a-failure": ("tcOnlySpawnEnds", 4000, r"liveness bug", [
+  "M11-claim-kept-after-a-failure": ("tcOnlySpawnEnds", 4000, r"liveness bug", [
     ("PSrc/Orch.p",
      "    announce eTransient, why;\n    claim = false;",
      "    announce eTransient, why;")]),
+
+  # A join asked again after the child settled is answered from the entry kept
+  # before the session was ended. Today's code before this change refused it,
+  # because the session was gone.
+  "M12-join-answer-not-kept": ("tcOnlyJoinRepeat", 4000, r"was refused", [
+    ("PSrc/Orch.p",
+     "    if (resultStored) {\n      announce eRepeated;",
+     "    if (false) {\n      announce eRepeated;")]),
+
+  # A store with no room for the commits is a request to ask again. Taken as the
+  # end of the matter, the join settles with nothing and the commits are lost.
+  "M13-return-lost-on-a-full-store": ("tcOnlyReturnOnce", 6000, r"liveness bug", [
+    ("PSrc/Orch.p",
+     "        announce eStoreFull;\n        toOwner(R_PENDING, 0, 0, 0);",
+     "        announce eStoreFull;\n        announce eSettled, m.a;\n        releaseSession();\n        toOwner(R_FINISHED, 0, 0, 0);")]),
+
+  # The owner makes one ref from the commits, however many replies carry them.
+  "M14-ref-made-twice": ("tcOnlyReturnOnce", 6000, r"twice", [
+    ("PSrc/Owner.p",
+     "      if (stage == 1) {\n        if (m.b == m.c) {",
+     "      if (stage >= 1) {\n        if (m.b == m.c) {"),
+    ("PSrc/Owner.p",
+     "          if (!refApplied) {",
+     "          if (true) {")]),
+
+  # A join is answered only for a child whose run has ended. Without the check the
+  # commits are captured and the session ended under a running child.
+  "M15-release-while-running": ("tcOnlyNoEarlyRelease", 6000, r"while its child was running", [
+    ("PSrc/Orch.p",
+     "    if (!finished || claim || joining) {",
+     "    if (claim || joining) {")]),
+
+  # The settled answer is kept before the session is ended.
+  "M16-release-before-keeping": ("tcOnlyNoEarlyRelease", 6000, r"before its settled answer was kept", [
+    ("PSrc/Orch.p",
+     "    announce eSettleBegan;\n    resultStored = true;",
+     "    announce eSettleBegan;\n    releaseSession();\n    resultStored = true;")]),
+
+  # A second apply of the state being applied joins the run. Starting its own is
+  # what ran two checkouts over one tree.
+  "M17-second-apply-runs-its-own": ("tcOnlyOneApply", 6000, r"two checkouts", [
+    ("PSrc/Exec.p",
+     "        announce eApplyJoined;",
+     "        announce eApplyStarted;")]),
+
+  # The children are stopped first. Behind the pair's session, a spawner at its cap
+  # leaves the children running.
+  "M18-run-end-behind-the-pairs-session": ("tcOnlyRunEnd", 6000, r"left a child running", [
+    ("PSrc/Orch.p",
+     "    // The children first.\n",
+     "    if (plan.pairFull) {\n      announce eRunEndHandled, (begun && !finished);\n      return;\n    }\n")]),
+
 }
 
 

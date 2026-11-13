@@ -136,7 +136,7 @@ spec EverySettledChildIsReleased observes eSessionMade, eSessionReleased, eSettl
       live = false;
     }
 
-    on eSettled do {
+    on eSettled do (tip: int) {
       if (live) {
         goto Owing;
       }
@@ -156,5 +156,126 @@ spec EverySettledChildIsReleased observes eSessionMade, eSessionReleased, eSettl
     }
 
     ignore eSessionMade, eSettled, eVerdict;
+  }
+}
+
+// A join asked again after its child settled and its session was released gets the
+// answer the first one did. The sender asks again by design: a wait made from a
+// program is deferred and retried, a second wait names handles that settled in the
+// first, and a reply can be lost. The settled answer is kept before the session is
+// ended (`spawn_return.keep`), and `child_join` answers from it.
+spec JoinIsRepeatable observes eGone {
+  start state Watching {
+    on eGone do (settled: bool) {
+      assert !settled, "a join asked again after the child settled was refused";
+    }
+  }
+}
+
+// The commits a child made reach the parent's repository as one ref, not twice.
+spec OneRefPerChild observes eRef {
+  var refs: int;
+
+  start state Watching {
+    on eRef do (p: (tip: int, arrived: int, desc: int)) {
+      refs = refs + 1;
+      assert refs <= 1, "the child's commits were made into a ref twice";
+    }
+  }
+}
+
+// The commits are not lost: a child that settled with work to return has them in the
+// parent's repository once the faults are over, across a lost reply, a resend, an
+// executor that restarted and a store with no room.
+spec EveryFinishedWorkIsReturned observes eSettled, eRef {
+  start cold state Quiet {
+    on eSettled do (tip: int) {
+      if (tip > 1) {
+        goto Owing;
+      }
+    }
+
+    ignore eRef;
+  }
+
+  hot state Owing {
+    on eRef do (p: (tip: int, arrived: int, desc: int)) {
+      goto Returned;
+    }
+
+    ignore eSettled;
+  }
+
+  cold state Returned {
+    ignore eSettled, eRef;
+  }
+}
+
+// A session is not released while its child runs. The child runs from its first turn
+// until its run ends, by finishing, by a run end or by a restart.
+spec NoReleaseWhileRunning observes eFirstTurn, eChildEnded, eSessionReleased {
+  var running: bool;
+
+  start state Watching {
+    on eFirstTurn do {
+      running = true;
+    }
+
+    on eChildEnded do {
+      running = false;
+    }
+
+    on eSessionReleased do {
+      assert !running, "a session was released while its child was running";
+    }
+  }
+}
+
+// A session is not released before the settled answer is kept, because the parent may
+// not have heard it yet and the session is where the report lives.
+spec ResultKeptBeforeRelease observes eSettleBegan, eKept, eSessionReleased {
+  var settling: bool;
+  var kept: bool;
+
+  start state Watching {
+    on eSettleBegan do {
+      settling = true;
+    }
+
+    on eKept do {
+      kept = true;
+    }
+
+    on eSessionReleased do {
+      assert !settling || kept, "a session was released before its settled answer was kept";
+    }
+  }
+}
+
+// An executor runs one checkout at a time for a scope and state. A request that
+// arrives while one is running joins it.
+spec OneApplyAtATime observes eApplyStarted, eApplyEnded {
+  var running: int;
+
+  start state Watching {
+    on eApplyStarted do {
+      running = running + 1;
+      assert running <= 1, "two checkouts ran at once for one scope";
+    }
+
+    on eApplyEnded do {
+      running = running - 1;
+    }
+  }
+}
+
+// The end of a run stops the children that run in sessions of their own, whatever
+// becomes of the pair's session. A spawner whose seeded children fill its cap cannot
+// make the pair's session, and that must not leave the children running.
+spec RunEndStopsTheChildren observes eRunEndHandled {
+  start state Watching {
+    on eRunEndHandled do (childStillRuns: bool) {
+      assert !childStillRuns, "a run end left a child running because the pair's session failed";
+    }
   }
 }
