@@ -1089,8 +1089,15 @@ fn archive(
 // request for a feed that has ended, or that another spawner holds, learns that
 // the feed has ended and touches nothing.
 
-/// Builds the four callbacks over one directory of feeds.
-fn serving_feeds(
+/// Builds the four callbacks over one directory of feeds. `host` calls it over the
+/// directory it starts, and a test calls it over a directory it controls.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // top_host.serving_feeds(context, directory)
+/// ```
+pub fn serving_feeds(
   context: Context(instance),
   directory: feed_directory.Directory,
 ) -> remote_feed.Host {
@@ -1105,21 +1112,25 @@ fn serving_feeds(
       feed_host.send(feed, piece)
     },
     detach: fn(node, token) {
-      use #(spawner, _table) <- result.map(judged(context, node))
+      use #(spawner, _table) <- result.try(judged(context, node))
 
       // Ending a feed that is gone is not a refusal, so a detach resent after a
-      // lost answer is the same call.
+      // lost answer is the same call. A directory that did not answer is one,
+      // because the feed is still there and the laptop must ask again.
       case feed_directory.find(directory, spawner.name, token) {
-        Ok(feed) -> feed_host.detach(feed)
-        Error(Nil) -> Nil
+        Ok(feed) -> Ok(feed_host.detach(feed))
+        Error(feed_directory.Gone) -> Ok(Nil)
+        Error(feed_directory.Unanswered) -> Error(not_answering())
       }
     },
   )
 }
 
 /// The feed a token names among the sender's spawner's feeds. A token that is
-/// not found has ended or never was, and the refusal says `lapsed`, because
-/// starting again from a fresh attach is what every such laptop does.
+/// gone has ended or never was, and the refusal says `lapsed`, because starting
+/// again from a fresh attach is what every such laptop does. A directory that did
+/// not answer says nothing of the feed, so the refusal is `NotYetOpen`, as it is
+/// for a feed that did not answer, and the laptop asks again.
 fn held_feed(
   context: Context(instance),
   directory: feed_directory.Directory,
@@ -1128,7 +1139,17 @@ fn held_feed(
 ) -> Result(feed_host.Feed, Refusal) {
   use #(spawner, _table) <- result.try(judged(context, node))
   feed_directory.find(directory, spawner.name, token)
-  |> result.replace_error(remote_top.FeedEnded(remote_top.FeedLapsed))
+  |> result.map_error(fn(missing) {
+    case missing {
+      feed_directory.Gone -> remote_top.FeedEnded(remote_top.FeedLapsed)
+      feed_directory.Unanswered -> not_answering()
+    }
+  })
+}
+
+/// The refusal for a directory that did not answer.
+fn not_answering() -> Refusal {
+  remote_top.NotYetOpen("the live pages of this daemon are not answering")
 }
 
 /// Opens a feed on a relayed session: the box checks the spawner, its table, its
@@ -1165,10 +1186,7 @@ fn attach_feed(
             cap: remote_top.MaxFeeds,
             limit: remote_feed.max_feeds,
           )
-        feed_directory.Unavailable ->
-          remote_top.NotYetOpen(
-            "the live pages of this daemon are not answering",
-          )
+        feed_directory.Unavailable -> not_answering()
       }
     }),
   )
