@@ -12,13 +12,18 @@
 (* on a root that is not the manifest's, or that lacks the workspaces? And *)
 (* does `up` always finish once it stops being interrupted?                *)
 (*                                                                         *)
-(* It asks them of two starting points, chosen by the constant Scenario:   *)
+(* It asks them of three starting points, chosen by the constant Scenario: *)
 (* "kept", a guest that ran on the old build and whose root holds the      *)
-(* workspaces, and "first", a guest that has never been up, whose first    *)
-(* `up` clones the export and then copies the workspace in. The second     *)
-(* found a fault in the code as it was: the first clone was made in place, *)
-(* so a stop during it, or between it and the workspace copy, left a root  *)
-(* that every later `up` refused to upgrade for want of an srv/workspaces. *)
+(* workspaces; "first", a guest that has never been up, whose first `up`   *)
+(* clones the export and then copies the workspace in; and "fresh", a      *)
+(* guest on the current build whose developer runs `up --fresh` and, after *)
+(* a stop, may run `up` with or without the flag. The second found a fault *)
+(* in the code as it was: the first clone was made in place, so a stop     *)
+(* during it, or between it and the workspace copy, left a root that every *)
+(* later `up` refused to upgrade for want of an srv/workspaces. The third  *)
+(* found another: `--fresh` deleted the old root in place, so a stop       *)
+(* during the delete left part of a root under a record that still matched,*)
+(* and a plain `up` kept and booted it.                                    *)
 (*                                                                         *)
 (* The disk is five facts: what `root` holds, what `root.building` and     *)
 (* `root.next` hold, whether each of those two has an `srv/workspaces`     *)
@@ -31,8 +36,8 @@
 (* or a guest that plants a link in its root, which `plain_chain` refuses  *)
 (* before any step here runs.                                              *)
 (*                                                                         *)
-(* Seven constants switch a rule off so that its mutation can be checked. A*)
-(* clean run sets all seven to TRUE. Each Mutant*.cfg sets one to FALSE and*)
+(* Nine constants switch a rule off so that its mutation can be checked. A *)
+(* clean run sets all nine to TRUE. Each Mutant*.cfg sets one to FALSE and *)
 (* names the property the checker must then violate. Dev makes the manifest*)
 (* a development tree's, under which `up` keeps any root it finds.         *)
 (***************************************************************************)
@@ -45,9 +50,11 @@ CONSTANTS
     MovedFirst,     \* root_step reads root.next's workspaces before `root`.
     RecordLast,     \* root-revision is written after the root is in place.
     CloneAside,     \* A first clone is made as root.building, then renamed.
-    CarryNothing,   \* A root with no workspace copy is upgraded without a move.
+    CarryNothing,   \* A root with no workspace copy is cloned again, not refused.
+    SetAside,       \* An old root is renamed away before it is deleted.
+    CopyAside,      \* A workspace copy is made beside the root, then renamed in.
     Dev,            \* The manifest is a development tree's.
-    Scenario,       \* "kept" or "first".
+    Scenario,       \* "kept", "first" or "fresh".
     ExportShipsWs,  \* The exported guest root carries an srv/workspaces.
     MaxCrashes      \* Bound on stops of `up` in one behaviour.
 
@@ -58,7 +65,8 @@ VARIABLES
     next,      \* `root.next`: "none", "part" or "whole".
     nslot,     \* `root.next/srv/workspaces`: "none", "junk" or "real".
     ws,        \* Where the real workspaces are: "root", "building", "next",
-               \* "gone", or "unmade" before the first copy into the root.
+               \* "gone", "unmade" before the first copy into the root, or
+               \* "half" for a copy in the root that was stopped partway.
     record,    \* The root-revision record: "old" or "new".
     pc,        \* Where `up` is, or "idle", "refused" or "booted".
     crashes    \* Stops of `up` so far.
@@ -73,36 +81,55 @@ TypeOK ==
     /\ bslot \in {"none", "junk", "real"}
     /\ next \in {"none", "part", "whole"}
     /\ nslot \in {"none", "junk", "real"}
-    /\ ws \in {"root", "building", "next", "gone", "unmade"}
+    /\ ws \in {"root", "building", "next", "gone", "unmade", "half"}
     /\ record \in {"old", "new"}
-    /\ pc \in {"idle", "decide", "clone", "clone2", "clone3", "check",
+    /\ pc \in {"idle", "decide", "freshly", "clone", "clonerm", "clone1",
+               "clone2", "clone3", "check",
                "rmnext", "rmbuild", "cp", "cp2", "clear", "name", "move",
-               "rm", "rm2", "swap", "record", "copy", "boot", "refused",
+               "rm", "rm2", "swap", "record", "copy", "copy2", "boot", "refused",
                "booted"}
     /\ crashes \in 0..MaxCrashes
 
 (***************************************************************************)
 (* "kept": a guest that ran on the old build. Its root holds the           *)
 (* workspaces and the record names the old revision; the manifest names    *)
-(* the new one. "first": no root, no record (which reads as old), and the  *)
-(* developer's workspace not yet copied in.                                *)
+(* the new one. "first": no root, the developer's workspace not yet copied *)
+(* in, and either record, since a root can be missing under a record that  *)
+(* matches. "fresh": a whole root of the current build under a matching    *)
+(* record; the workspace copy `--fresh` discards on purpose is not counted,*)
+(* so the workspace starts as not yet copied in.                           *)
 (***************************************************************************)
 Init ==
-    /\ root = IF Scenario = "kept" THEN "old" ELSE "none"
+    /\ root = CASE Scenario = "kept" -> "old"
+                [] Scenario = "first" -> "none"
+                [] Scenario = "fresh" -> "new"
     /\ building = "none" /\ bslot = "none"
     /\ next = "none" /\ nslot = "none"
     /\ ws = IF Scenario = "kept" THEN "root" ELSE "unmade"
-    /\ record = "old"
+    /\ record \in CASE Scenario = "kept" -> {"old"}
+                    [] Scenario = "first" -> {"old", "new"}
+                    [] Scenario = "fresh" -> {"new"}
     /\ pc = "idle"
     /\ crashes = 0
 
 (***************************************************************************)
 (* The developer runs `up`, the first time or again after a stop or a      *)
-(* refusal.                                                                *)
+(* refusal. In the "fresh" scenario the first run carries `--fresh`, and a *)
+(* later one may or may not.                                               *)
 (***************************************************************************)
 Start ==
     /\ pc \in {"idle", "refused"}
-    /\ pc' = "decide"
+    /\ pc' \in CASE Scenario # "fresh" -> {"decide"}
+                 [] Scenario = "fresh" /\ crashes = 0 -> {"freshly"}
+                 [] Scenario = "fresh" /\ crashes > 0 -> {"decide", "freshly"}
+    /\ UNCHANGED <<root, building, bslot, next, nslot, ws, record, crashes>>
+
+(***************************************************************************)
+(* `--fresh`: root_step answers CloneRoot whatever the disk holds.         *)
+(***************************************************************************)
+DecideFresh ==
+    /\ pc = "freshly"
+    /\ pc' = "clone"
     /\ UNCHANGED <<root, building, bslot, next, nslot, ws, record, crashes>>
 
 (***************************************************************************)
@@ -140,23 +167,43 @@ ShippedSoFar == IF ExportShipsWs THEN {"none", "junk"} ELSE {"none"}
 Shipped == IF ExportShipsWs THEN "junk" ELSE "none"
 
 (***************************************************************************)
-(* CloneRoot, `replace_root`: `root` is missing, so the leftovers are      *)
-(* removed and the export is cloned. The clone is not atomic. With         *)
-(* CloneAside it is made as root.building and renamed, so a `root` that    *)
-(* exists is whole; without it the copy is made in place and a stop leaves *)
-(* part of a root. It brings no workspaces of the developer's.             *)
+(* CloneRoot, `replace_root`. The leftovers are removed, an old root is    *)
+(* removed, and the export is cloned. Neither the delete nor the clone is  *)
+(* atomic. With SetAside the old root is renamed away first, so the name   *)
+(* `root` is gone in one step; without it a stop leaves part of a root.    *)
+(* With CloneAside the clone is made as root.building and renamed, so a    *)
+(* `root` that exists is whole; without it the copy is made in place. The  *)
+(* clone brings no workspaces of the developer's. A copy in the root that  *)
+(* `--fresh` replaces is discarded on purpose and is copied in again; any  *)
+(* other root that still holds the workspaces must never reach this step.  *)
 (***************************************************************************)
 CloneBegin ==
     /\ pc = "clone"
     /\ next' = "none" /\ nslot' = "none"
+    /\ building' = "none" /\ bslot' = "none"
+    /\ root' = IF root = "none" \/ SetAside THEN "none" ELSE "wreck"
+    /\ ws' = CASE ws \in {"next", "building"} -> "gone"
+               [] ws \in {"root", "half"} /\ Scenario = "fresh" -> "unmade"
+               [] ws \in {"root", "half"} /\ Scenario # "fresh" -> "gone"
+               [] OTHER -> ws
+    /\ pc' = IF root = "none" \/ SetAside THEN "clone1" ELSE "clonerm"
+    /\ UNCHANGED <<record, crashes>>
+
+CloneRemoveEnd ==
+    /\ pc = "clonerm"
+    /\ root' = "none"
+    /\ pc' = "clone1"
+    /\ UNCHANGED <<building, bslot, next, nslot, ws, record, crashes>>
+
+CloneCopyBegin ==
+    /\ pc = "clone1"
     /\ IF CloneAside
        THEN /\ building' = "part" /\ bslot' \in ShippedSoFar
             /\ UNCHANGED root
-       ELSE /\ building' = "none" /\ bslot' = "none"
-            /\ root' = "wreck"
-    /\ ws' = IF ws \in {"next", "building"} THEN "gone" ELSE ws
+       ELSE /\ root' = "wreck"
+            /\ UNCHANGED <<building, bslot>>
     /\ pc' = "clone2"
-    /\ UNCHANGED <<record, crashes>>
+    /\ UNCHANGED <<next, nslot, ws, record, crashes>>
 
 CloneEnd ==
     /\ pc = "clone2"
@@ -179,17 +226,19 @@ CloneName ==
 (***************************************************************************)
 (* `build_next_root`. It first decides what the old root carries over     *)
 (* (`vm_spec.carry_over`): workspaces in a real root/srv/workspaces move;  *)
-(* a root the host never copied a workspace into carries nothing, when     *)
-(* CarryNothing is on; anything else is refused. It then removes the       *)
-(* leftovers of an earlier attempt, clones the export, and runs            *)
-(* `upgrade_steps`. The clone is not atomic: a stop leaves part of it,     *)
-(* which may or may not include the export's own srv/workspaces.           *)
+(* a root the host never copied a workspace into carries nothing and is    *)
+(* cloned again as a first root is, when CarryNothing is on; anything else *)
+(* is refused. For workspaces that move it then removes the leftovers of   *)
+(* an earlier attempt, clones the export, and runs `upgrade_steps`. The    *)
+(* clone is not atomic: a stop leaves part of it, which may or may not     *)
+(* include the export's own srv/workspaces.                                *)
 (***************************************************************************)
 Carries == ws = "root" /\ root \in {"old", "new"}
 
 Check ==
     /\ pc = "check"
-    /\ pc' = IF Carries \/ (CarryNothing /\ ws = "unmade") THEN "rmnext"
+    /\ pc' = IF Carries THEN "rmnext"
+             ELSE IF CarryNothing /\ ws = "unmade" THEN "clone"
              ELSE "refused"
     /\ UNCHANGED <<root, building, bslot, next, nslot, ws, record, crashes>>
 
@@ -238,8 +287,7 @@ Clear ==
             /\ UNCHANGED nslot
        ELSE /\ nslot' = IF ClearSlot THEN "none" ELSE nslot
             /\ UNCHANGED bslot
-    /\ pc' = IF BuildAside /\ (NameBeforeMove \/ ws # "root") THEN "name"
-             ELSE IF ws = "root" THEN "move" ELSE "rm"
+    /\ pc' = IF BuildAside /\ NameBeforeMove THEN "name" ELSE "move"
     /\ UNCHANGED <<root, building, next, ws, record, crashes>>
 
 (***************************************************************************)
@@ -250,7 +298,7 @@ Name ==
     /\ next' = building /\ nslot' = bslot
     /\ building' = "none" /\ bslot' = "none"
     /\ ws' = IF ws = "building" THEN "next" ELSE ws
-    /\ pc' = IF NameBeforeMove /\ ws = "root" THEN "move" ELSE "rm"
+    /\ pc' = IF NameBeforeMove THEN "move" ELSE "rm"
     /\ UNCHANGED <<root, record, crashes>>
 
 (***************************************************************************)
@@ -298,7 +346,10 @@ Swap ==
 (***************************************************************************)
 (* `stage` records the revision after the root is in place, copies the     *)
 (* developer's workspace into the root unless a copy is there, and then    *)
-(* the guest boots on `root`.                                              *)
+(* the guest boots on `root`. With CopyAside the copy is made beside the   *)
+(* root and renamed in, so a copy that is there is whole; without it the   *)
+(* copy is made at its final name, and a stop leaves half of one that the  *)
+(* next `up` keeps because a copy is there.                                *)
 (***************************************************************************)
 Record ==
     /\ pc = "record"
@@ -308,7 +359,16 @@ Record ==
 
 CopyWorkspace ==
     /\ pc = "copy"
-    /\ ws' = IF ws = "unmade" /\ root # "none" THEN "root" ELSE ws
+    /\ IF ws = "unmade" /\ root # "none"
+       THEN IF CopyAside
+            THEN ws' = "root" /\ pc' = "boot"
+            ELSE ws' = "half" /\ pc' = "copy2"
+       ELSE ws' = ws /\ pc' = "boot"
+    /\ UNCHANGED <<root, building, bslot, next, nslot, record, crashes>>
+
+CopyWorkspaceEnd ==
+    /\ pc = "copy2"
+    /\ ws' = "root"
     /\ pc' = "boot"
     /\ UNCHANGED <<root, building, bslot, next, nslot, record, crashes>>
 
@@ -328,10 +388,11 @@ Crash ==
     /\ UNCHANGED <<root, building, bslot, next, nslot, ws, record>>
 
 Up ==
-    \/ Start \/ Decide \/ CloneBegin \/ CloneEnd \/ CloneName \/ Check
+    \/ Start \/ Decide \/ DecideFresh \/ CloneBegin \/ CloneRemoveEnd
+    \/ CloneCopyBegin \/ CloneEnd \/ CloneName \/ Check
     \/ RemoveNext \/ RemoveBuilding \/ CopyBegin \/ CopyEnd \/ Clear \/ Name
     \/ Move \/ RemoveRootBegin \/ RemoveRootEnd \/ Swap \/ Record
-    \/ CopyWorkspace \/ Boot
+    \/ CopyWorkspace \/ CopyWorkspaceEnd \/ Boot
 
 Next == Up \/ Crash
 
