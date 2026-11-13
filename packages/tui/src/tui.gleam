@@ -170,6 +170,7 @@ import tui/update/options as update_options
 import tui/view_link
 import tui/view_set
 import tui/virtual_backend
+import tui/vm_ensure
 import tui/workspace
 
 type Launch {
@@ -178,6 +179,13 @@ type Launch {
 
   Demo
   Local(bootstrap.Options, selected: String)
+
+  // `loom --vm` is a local launch that first makes the workspace's microVM
+  // guest ready (`tui/vm_ensure`) and then continues as `Local` with the
+  // executor placement of `--executor <guest> --workspace <name>`. The options
+  // hold the launch's own workspace directory, which `--executor` would have
+  // taken as a registered name.
+  Vm(options: bootstrap.Options)
 
   // `loom project board --watch` keeps the project board open in the terminal
   // (protocol-change/106). It is a local launch that lands on the board in
@@ -504,10 +512,30 @@ pub fn main() {
         Access(arguments:) -> access_command.main(arguments)
         View(request:) -> run_view(request)
         Invalid(reason) -> rejected_launch(reason)
+        Vm(options:) -> interactive_vm(options, record)
         Demo | Local(..) | Remote(..) | ProjectWatch(..) ->
           interactive_terminal(launch, record)
       }
     }
+  }
+}
+
+// `loom --vm`: the guest is made ready before the daemon is resolved and
+// before the alternate screen, so a failure prints on the ordinary terminal and
+// ends with the status `ensure` gave. A launch with no terminal is refused
+// first, so a script never boots a guest for a screen it cannot draw.
+fn interactive_vm(options: bootstrap.Options, record: String) -> Nil {
+  case ffi_terminal.require_terminal() {
+    Error(reason) -> rejected_launch(reason)
+    Ok(Nil) ->
+      case vm_ensure.launch(options, io.println_error) {
+        Ok(chosen) -> interactive(Local(chosen, ""), record)
+        Error(vm_ensure.Failure(status:, reason:)) -> {
+          io.println_error("loom: " <> reason)
+          ffi_terminal.halt(status)
+          Nil
+        }
+      }
   }
 }
 
@@ -985,6 +1013,7 @@ fn interactive(launch: Launch, record: String) -> Nil {
     | ClaimAccess(..)
     | Enroll(..)
     | Access(..)
+    | Vm(..)
     | View(..) -> base
 
     // The demo has no session, so the one image it shows is seeded into its
@@ -1044,6 +1073,7 @@ fn interactive(launch: Launch, record: String) -> Nil {
     | ClaimAccess(..)
     | Enroll(..)
     | Access(..)
+    | Vm(..)
     | View(..)
     | Demo
     | Invalid(..) -> initial
@@ -1395,6 +1425,7 @@ pub fn launch_project_watch(
     Version
     | Demo
     | Local(..)
+    | Vm(..)
     | View(..)
     | Remote(..)
     | Forward(..)
@@ -1439,8 +1470,80 @@ pub fn launch_daemon_options(
   }
 }
 
-/// Establishes and coordinates parse terminal launch operations for the TUI runtime.
+/// Reads a terminal launch, which is `--vm` when that switch is anywhere in
+/// the words and one of the other local or remote shapes otherwise.
 fn parse_terminal_launch(arguments: List(String)) -> Launch {
+  case take_switch(arguments, "--vm") {
+    #(True, rest) -> parse_vm_launch(rest)
+    #(False, _) -> parse_plain_terminal_launch(arguments)
+  }
+}
+
+// What `--vm` cannot be combined with, each with the one line that says why.
+// Each of these chooses where the session lives, and `--vm` chooses it itself:
+// the guest of this workspace.
+fn vm_refusals() -> List(#(String, String)) {
+  [
+    #(
+      "--executor",
+      "--vm places the session in this workspace's own guest, so it takes no --executor; drop one of them",
+    ),
+    #(
+      "--pool",
+      "--vm places the session in this workspace's own guest, not in a pool; drop one of them",
+    ),
+    #(
+      "--session",
+      "--vm creates a new session in the guest; --session opens an existing one, which stays where it was created",
+    ),
+    #(
+      "--addr",
+      "--vm starts a guest on this machine; --addr attaches to a daemon elsewhere",
+    ),
+  ]
+}
+
+// The words of a `--vm` launch, with the switch already taken out. `--workspace`
+// stays the directory it is for a plain launch: it is the workspace the guest
+// serves, not a registered name.
+fn parse_vm_launch(arguments: List(String)) -> Launch {
+  let refused =
+    list.find(vm_refusals(), fn(refusal) { list.contains(arguments, refusal.0) })
+
+  // A refusal wins over any parse error, because it names the flag that
+  // cannot be there at all.
+  case refused {
+    Ok(#(_, reason)) -> Invalid(reason <> "\n" <> launch_usage())
+    Error(Nil) ->
+      case parse_local_options(arguments, default_bootstrap_options()) {
+        Ok(options) -> Vm(options)
+        Error(reason) -> Invalid(reason <> "\n" <> launch_usage())
+      }
+  }
+}
+
+/// Classifies a `--vm` launch's words the way the launcher does, answering the
+/// local options it parsed (the workspace directory the guest serves, with the
+/// default placement) or the refusal. It is the test seam for `--vm`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(options) = tui.launch_vm(["--vm", "--workspace", "/src/proj"])
+/// assert options.workspace == "/src/proj"
+/// let assert Error(_) = tui.launch_vm(["--vm", "--executor", "box"])
+/// ```
+@internal
+pub fn launch_vm(arguments: List(String)) -> Result(bootstrap.Options, String) {
+  case parse_launch(arguments) {
+    Vm(options:) -> Ok(options)
+    Invalid(reason) -> Error(reason)
+    _other -> Error("not a --vm launch")
+  }
+}
+
+/// Establishes and coordinates parse terminal launch operations for the TUI runtime.
+fn parse_plain_terminal_launch(arguments: List(String)) -> Launch {
   case
     session_control.flag_value(arguments, "--addr"),
     session_control.flag_value(arguments, "--session")
@@ -1868,6 +1971,7 @@ pub fn launch_deployment(
     Version
     | Demo
     | Local(..)
+    | Vm(..)
     | ProjectWatch(..)
     | View(..)
     | Remote(..)
@@ -1907,6 +2011,7 @@ pub fn launch_project(
     Version
     | Demo
     | Local(..)
+    | Vm(..)
     | View(..)
     | Remote(..)
     | Forward(..)
@@ -1944,6 +2049,7 @@ pub fn launch_directory(arguments: List(String)) -> Result(Output, String) {
     Version
     | Demo
     | Local(..)
+    | Vm(..)
     | ProjectWatch(..)
     | View(..)
     | Remote(..)
@@ -3251,6 +3357,8 @@ fn launch_usage() -> String {
   <> "[--config <loom.toml>] [--model-profile <name>]\n"
   <> "       loom --pool <name> --workspace <registered name> "
   <> "[--config <loom.toml>] [--model-profile <name>]\n"
+  <> "       loom --vm [--workspace <path>] "
+  <> "[--config <loom.toml>] [--model-profile <name>]\n"
   <> "       loom <command> [options]\n\n"
   <> "commands:\n"
   <> "  version            Print version, build commit and platform.\n"
@@ -3293,6 +3401,11 @@ fn launch_usage() -> String {
   <> "       machine. It cannot be combined with --session\n"
   <> "  --pool is the same for a [pools.<name>]: the daemon picks the executor\n"
   <> "       when the session first opens. It cannot be combined with --executor\n"
+  <> "  --vm runs the session's tools in a microVM guest of this workspace\n"
+  <> "       (--workspace <path>, default the current directory), set up and\n"
+  <> "       started if needed by `loom vm ensure`, and creates new sessions\n"
+  <> "       there. It cannot be combined with --executor, --pool, --session\n"
+  <> "       or --addr. `loom run -p ... --vm` does the same headless\n"
   <> "  --record <path> writes every event to a replayable recording\n"
   <> "       loom --addr <websocket-url> --session <id> "
   <> "[--token-file <path> | --token <bearer>]\n"
