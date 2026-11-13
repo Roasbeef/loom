@@ -695,6 +695,16 @@ client reconnects to the receiver. A move of a session with a background job let
 the job die with the scope's clean close, as a stop does, and the receiver's
 records for it are what the source wrote.
 
+### Addendum: the moving answer of archive, restore and delete
+
+Since #1232, `sessions.archive`, `sessions.restore` and `sessions.delete` of a
+session that is moving answer `moving` with `orchestrator` and `op`, the frame
+this document gives `sessions.open`, and their `busy` refusal carries words. This
+is the answer the daemon's `in_flight` step already built for `open`, now applied
+to the three commands. The section above already says that a client that does not
+know a member ignores it, so an older client reads the frame as the `moving`
+refusal it knew. No code and no wire member is added or changed.
+
 ### Addendum: the sender outbox
 
 Phase 4 of the design note carries peer mail between orchestrators. The first

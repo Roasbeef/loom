@@ -450,9 +450,11 @@ A successful reply's `event` name is the command name. A failure is an
 Source: (`client/daemon/server.gleam:426-458`).
 
 Dispatcher refusals carry `request refused`, except an authorized exact
-`operations.get` startup failure (protocol 055), and the refusals that
+`operations.get` startup failure (protocol 055), the refusals that
 `sessions.move` and its abandon decide themselves, which carry their cause
-(section 3.27). Its `start_failed` code
+(section 3.27), and the `moving` and `busy` refusals of `sessions.archive`,
+`sessions.restore` and `sessions.delete`, which carry words. The
+`operations.get` `start_failed` code
 remains machine-readable and its message preserves one line of at most 2048
 UTF-8 bytes, including the configuration path and available parser context.
 The recorded failure precedes live `stopping` status while cleanup retains
@@ -4359,7 +4361,7 @@ Sources: (`client/protocol.gleam:512-540`),
 | `executor_unknown` | `sessions.create` named an `executor` that the daemon's `[executors.<name>]` tables do not define. | Fix the name, or have the owner add the executor and restart the daemon. |
 | `pool_unknown` | `sessions.create` named a `pool` that the daemon's `[pools.<name>]` tables do not define. | Fix the name, or have the owner add the pool and restart the daemon. |
 | `not_owner` | `sessions.get` or `sessions.open` by the owner principal named a session this daemon's catalogue does not hold, and an orchestrator in its `[orchestrators.<name>]` tables does; or `sessions.open`, `sessions.archive`, `sessions.restore`, `sessions.delete` or `sessions.move` named a session this daemon handed to another orchestrator. The body also carries `orchestrator` and, when configured, `address`. | Connect to the named orchestrator with a credential for it, using `address` when present. Do not retry here. |
-| `moving` | `sessions.open`, `sessions.archive` or `sessions.delete` named a session that is being handed to another orchestrator (section 3.27). The body also carries `orchestrator`, the destination, and `op`. | Wait and ask again: the move ends in `not_owner` for this daemon or, if it is abandoned, in an ordinary session. |
+| `moving` | `sessions.open`, `sessions.archive`, `sessions.restore` or `sessions.delete` named a session that is being handed to another orchestrator (section 3.27). The body also carries `orchestrator`, the destination, and `op`. | Wait and ask again: the move ends in `not_owner` for this daemon or, if it is abandoned, in an ordinary session. |
 | `orchestrator_unknown` | `sessions.move` named a destination that is not a key of the daemon's `[orchestrators.<name>]` tables. | Fix the name, or have the owner add the orchestrator and restart the daemon. |
 | `not_movable` | `sessions.move` named a session that has no executor (a local session, or a pooled one that never opened), is archived, or has not finished being created. It is also the answer for a session this daemon imported when the orchestrator it came from did not answer that it has handed the session on: that orchestrator may still be finishing its move, or is down, or is no longer in this daemon's `[orchestrators.<name>]` tables. | Move a session that lives on an executor, restoring it first if it is archived. For an imported session, ask again after the source's move has finished (`sessions.get` there reports `moved`), or when the source is reachable again. |
 | `owner_unreachable` | `sessions.get` or `sessions.open` by the owner principal named a session this daemon's catalogue does not hold, no orchestrator said it holds it, and some could not be asked. The body also carries `orchestrators`, the names that did not answer. | Retry later, or connect to one of the named orchestrators directly. |
