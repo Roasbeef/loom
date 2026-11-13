@@ -789,6 +789,7 @@ pub fn an_empty_top_level_table_offers_nothing_and_takes_the_defaults_test() {
       max_sessions: 8,
       max_per_hour: 10,
       approval_ceiling: None,
+      page: spawners.LivePage,
     ))
 }
 
@@ -801,6 +802,7 @@ folders = \"none\"
 profiles = [\"cheap-review\"]
 max_sessions = 64
 max_per_hour = 3
+page = \"paged\"
 
 [spawners.laptop.top_level.approval_ceiling]
 writable_roots = [\"/home/exedev\"]
@@ -814,6 +816,7 @@ network = \"any\"",
   assert table.profiles == Some(["cheap-review"])
   assert table.max_sessions == 64
   assert table.max_per_hour == 3
+  assert table.page == spawners.PagedPage
   assert table.approval_ceiling
     == Some(
       approval_ceiling.Ceiling(
@@ -822,6 +825,24 @@ network = \"any\"",
         network: approval_ceiling.AnyNetwork,
       ),
     )
+}
+
+pub fn the_page_key_is_live_unless_it_says_paged_test() {
+  let page = fn(lines) {
+    let assert Ok([spawner]) = spawners.parse(top_level(lines))
+    let assert Some(table) = spawner.top_level
+    table.page
+  }
+  assert page("") == spawners.LivePage
+  assert page("page = \"live\"") == spawners.LivePage
+  assert page("page = \"paged\"") == spawners.PagedPage
+}
+
+pub fn the_page_key_refuses_any_other_value_test() {
+  refused(top_level("page = \"both\""), "page must be \"live\" or \"paged\"")
+  refused(top_level("page = \"Live\""), "page must be \"live\" or \"paged\"")
+  refused(top_level("page = true"), "page must be a string")
+  refused(top_level("page = 1"), "page must be a string")
 }
 
 pub fn an_empty_ceiling_table_is_present_and_admits_nothing_test() {

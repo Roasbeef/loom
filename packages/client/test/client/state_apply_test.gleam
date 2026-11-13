@@ -800,6 +800,7 @@ pub fn an_existing_scope_tree_is_moved_onto_the_state_test() {
   assert list.sort(changed, string.compare)
     == [
       "refs/heads/loom/" <> session <> " " <> scenario.state.tip,
+      "refs/loom/applied/" <> session <> " " <> scenario.state.tip,
       "refs/loom/in/"
         <> state_object.short(scenario.state.hash)
         <> " "
@@ -830,6 +831,123 @@ pub fn applying_into_the_same_tree_twice_changes_nothing_test() {
   assert apply_reset(scenario, 1) == Ok(first)
   assert worktree_rig.git(tree, ["rev-parse", "HEAD"]) == child
   assert simplifile.read(tree <> "/README") == Ok("child edit\n")
+  state_rig.stop(rig)
+}
+
+// A state whose tip is an ancestor of what the tree holds is not a resend. After
+// an abandoned move the executor's branch is at the earlier snapshot, and the
+// operator discards the edits before asking again, so the new tip is the
+// snapshot's parent. Ancestry took that for done and left the discarded edits in
+// the tree; the record of the last apply does not.
+pub fn a_tip_the_tree_descends_from_is_applied_not_taken_for_done_test() {
+  let scenario = scenario("reset-ancestor")
+  let rig = scenario.rig
+  let tree = scope_tree(scenario, 1)
+  let assert Ok(first) = apply_reset(scenario, 1)
+  assert first.tip == scenario.state.tip
+  assert simplifile.read(tree <> "/README") == Ok("dirty\n")
+
+  // The operator discards the edits and the untracked files.
+  let _ = worktree_rig.git(rig.root, ["checkout", "--quiet", "--", "README"])
+  let assert Ok(Nil) = simplifile.delete(rig.root <> "/notes")
+  let snapshot = state_rig.capture(rig, "discarded", Thin(scenario.base))
+  assert snapshot.commit == scenario.third
+  let #(state, bundle) = stored(rig, snapshot)
+  let assert Ok(second) =
+    state_apply.apply(rig.git, bundle, state, reset(scenario, 1))
+  assert second.tip == scenario.third
+  assert worktree_rig.git(tree, ["rev-parse", "HEAD"]) == scenario.third
+  assert simplifile.read(tree <> "/README") == Ok("three\n")
+  assert worktree_rig.git(tree, ["status", "--porcelain"]) == ""
+
+  // The resend of that state is still harmless, with the session's work on top.
+  let child = state_rig.commit_file(tree, "child.txt", "child\n", "child work")
+  assert state_apply.apply(rig.git, bundle, state, reset(scenario, 1))
+    == Ok(second)
+  assert worktree_rig.git(tree, ["rev-parse", "HEAD"]) == child
+  state_rig.stop(rig)
+}
+
+// The first apply into a tree that is ahead of the state. The executor's
+// workspace can hold commits the sender's directory does not, and a tree made
+// from it starts there. The state's tip is then an ancestor of the tree, and the
+// state is still what was asked for.
+pub fn a_tree_that_starts_ahead_of_the_tip_is_moved_to_it_test() {
+  let scenario = scenario("reset-ahead")
+  let rig = scenario.rig
+  let tree = scope_tree(scenario, 1)
+  assert simplifile.is_file(tree <> "/two") == Ok(True)
+
+  // The sender's directory is at the first commit, clean.
+  let first = worktree_rig.git(rig.root, ["rev-parse", scenario.base <> "^"])
+  let _ = worktree_rig.git(rig.root, ["reset", "--hard", "--quiet", first])
+  let assert Ok(Nil) = simplifile.delete(rig.root <> "/notes")
+  let snapshot = state_rig.capture(rig, "behind", Full)
+  assert snapshot.commit == first
+  let #(state, bundle) = stored(rig, snapshot)
+  let assert Ok(applied) =
+    state_apply.apply(rig.git, bundle, state, reset(scenario, 1))
+  assert applied.tip == first
+  assert worktree_rig.git(tree, ["rev-parse", "HEAD"]) == first
+  assert simplifile.is_file(tree <> "/two") == Ok(False)
+  state_rig.stop(rig)
+}
+
+// A tree whose HEAD already is the tip has no record yet. This is the arm a
+// clean directory at the executor's own commit takes: nothing moves, and the
+// apply writes the record, so a resend after the session commits on top is
+// still recognised.
+pub fn a_tree_already_at_the_tip_is_left_alone_and_recorded_test() {
+  let scenario = scenario("reset-at-tip")
+  let rig = scenario.rig
+  let tree = scope_tree(scenario, 1)
+  let session = worktree_rig.session(1)
+
+  // The sender's directory is at the commit the receiver's tree starts at.
+  let _ =
+    worktree_rig.git(rig.root, ["reset", "--hard", "--quiet", scenario.base])
+  let assert Ok(Nil) = simplifile.delete(rig.root <> "/notes")
+  let snapshot = state_rig.capture(rig, "at-tip", Full)
+  assert snapshot.commit == scenario.base
+  let #(state, bundle) = stored(rig, snapshot)
+  let applied_ref = "refs/loom/applied/" <> session
+  let head_before = worktree_rig.git(tree, ["rev-parse", "HEAD"])
+  assert worktree_rig.git(scenario.receiver, [
+      "for-each-ref",
+      "--format=%(refname)",
+      applied_ref,
+    ])
+    == ""
+  let assert Ok(applied) =
+    state_apply.apply(rig.git, bundle, state, reset(scenario, 1))
+  assert applied.tip == scenario.base
+  assert worktree_rig.git(tree, ["rev-parse", "HEAD"]) == head_before
+  assert worktree_rig.git(scenario.receiver, ["rev-parse", applied_ref])
+    == scenario.base
+
+  // The session commits on top, and the resend is answered from the record.
+  let child = state_rig.commit_file(tree, "child.txt", "child\n", "child work")
+  assert state_apply.apply(rig.git, bundle, state, reset(scenario, 1))
+    == Ok(applied)
+  assert worktree_rig.git(tree, ["rev-parse", "HEAD"]) == child
+  state_rig.stop(rig)
+}
+
+// A crash between the checkout and the record leaves the tree at the tip and no
+// record. The resend is answered from the tree's HEAD, and the record is written
+// again, so what a later request finds is exact.
+pub fn a_missing_record_is_written_again_from_the_tree_test() {
+  let scenario = scenario("reset-no-record")
+  let rig = scenario.rig
+  let tree = scope_tree(scenario, 1)
+  let session = worktree_rig.session(1)
+  let applied_ref = "refs/loom/applied/" <> session
+  let assert Ok(first) = apply_reset(scenario, 1)
+  let _ = worktree_rig.git(scenario.receiver, ["update-ref", "-d", applied_ref])
+  assert apply_reset(scenario, 1) == Ok(first)
+  assert worktree_rig.git(tree, ["rev-parse", "HEAD"]) == scenario.state.tip
+  assert worktree_rig.git(scenario.receiver, ["rev-parse", applied_ref])
+    == scenario.state.tip
   state_rig.stop(rig)
 }
 

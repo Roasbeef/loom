@@ -45,6 +45,26 @@ pub fn a_move_without_its_session_is_refused_with_the_usage_test() {
   assert string.contains(dangling, "--to")
 }
 
+// The checkout step moves a session that works in a directory on the source
+// machine, so neither the help nor the answer for such a session may say that
+// only a session on an executor can move. Both name the two keys that make it
+// possible.
+pub fn the_help_and_the_local_session_words_name_the_checkout_keys_test() {
+  let assert Error(usage) = tui.launch_sessions(["move"])
+  assert string.contains(usage, "works in a directory on")
+  assert string.contains(usage, "checkout_executor and")
+  assert string.contains(usage, "checkout_workspace")
+  assert !string.contains(usage, "hands a session on an executor")
+
+  let words = move_candidates.local_session_words()
+  assert string.contains(words, "This session has no executor.")
+  assert string.contains(words, "[orchestrators.<name>]")
+  assert string.contains(words, "checkout_executor")
+  assert string.contains(words, "checkout_workspace")
+  assert string.contains(words, "--to")
+  assert !string.contains(words, "Only a session on an executor")
+}
+
 // With no destination the command moves nothing and lists the candidates, and
 // `--abandon` gives a move up. They do not combine.
 pub fn a_move_without_a_destination_lists_candidates_and_abandon_gives_up_test() {

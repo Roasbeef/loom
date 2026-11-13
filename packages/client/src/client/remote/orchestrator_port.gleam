@@ -204,6 +204,7 @@ import client/peer_mail
 import client/protocol.{type EscalationRecord}
 import client/remote/address.{type Address}
 import client/remote_escalation.{type Answer, type Decider, type Decision}
+import client/remote_feed
 import client/remote_mail.{type ChildRefusal, type Receipt}
 import client/remote_spawn.{
   type CallSite, type Joined, type Origin, type Parent, type Request,
@@ -961,6 +962,9 @@ pub type TopHost {
     /// and who decided.
     resolve: fn(String, String, String, Decision, Int, Decider) ->
       Result(Answer, Refusal),
+    /// The four operations of a live session page (protocol-change/108), which
+    /// the stable exchange dispatches and the legacy port never carries.
+    feeds: remote_feed.Host,
   )
 }
 
@@ -994,6 +998,7 @@ pub fn refusing_top() -> TopHost {
     resolve: fn(node, _session, _id, _decision, _seq, _decider) {
       Error(remote_top.UnknownSpawner(node:))
     },
+    feeds: remote_feed.declining(),
   )
 }
 

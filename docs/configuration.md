@@ -1119,6 +1119,30 @@ any key it does not know.
 | `max_sessions` | integer | 8 | 1 to 64 | The relayed sessions of this spawner that are not archived. Archiving one frees its place. A session that was reserved and never finished still counts until it is deleted on this daemon's own page. |
 | `max_per_hour` | integer | 10 | at least 1 | Creations over a rolling hour, counted on this daemon. The laptop's page has its own allowance of the same size. |
 | `approval_ceiling` | table | none (no deciding) | a table with the keys of [`[spawners.<name>.approval_ceiling]`](#spawnersnameapproval_ceiling) | What a decision from the laptop's page may grant to a relayed session. With no table the page shows the session's requests and cannot decide them, and the request stays pending for this daemon's own page. |
+| `page` | string | `"live"` | `"live"` or `"paged"` | (From protocol-change 108.) How the laptop's page draws a relayed session. `"live"` serves it the full session page: this daemon attaches to the session's gateway for the page, queues the frames the gateway writes in a bounded numbered queue, and the laptop pulls them with a long poll and sends its lane's frames back. Streaming, folds, diffs, strands, "allow for the session" and steering work as on this daemon's own page, and a decision still goes through `approval_ceiling` and nothing else. `"paged"` refuses the live page with `NotOffered(page, live)`, and the laptop draws the transcript page of protocol-change 094. An older laptop never asks for the live page, so `"live"` costs it nothing. |
+
+With `page = "live"`, a spawner holds at most eight feeds at once, and each takes
+one of this daemon's connection permits. A feed ended by a lapse keeps its place for
+one more lease (15 seconds) so a late poll learns why, so a laptop that attaches
+again at the cap is refused for up to that long. A feed's permit is charged what a
+feed can hold, which is its unacknowledged queue (1,048,576 bytes), one partly
+received frame (12,582,912), one answer being built (1,048,576) and one piece being
+read (786,432), and, when the last piece arrives, the whole frame joined from its
+pieces while the pieces are still referenced (a second 12,582,912), 28,049,408 bytes
+in all. Eight feeds therefore take 224,395,264 of the default
+`max_reserved_message_bytes` of 536,870,912, about 42 percent,
+and leave room for the owner's own control socket and pages. A frame from the laptop
+arrives in pieces of at least 196,608 bytes and a last piece, at most 64 pieces for
+the 12,582,912-byte frame bound. A feed is a gateway
+attachment as this machine's owner at the Operator authority, so it shows the page
+what this daemon's own operating page would show, and the commands it forwards are
+a closed list: prompts, steers and aborts to any strand of the session, the reads
+the page needs, and decisions judged by `approval_ceiling`. A fork, a compaction,
+a model or profile change, the goal commands, proposals, memory, schedules and
+evolution are refused with the words "not offered to a page on another
+orchestrator". A spawner with no `approval_ceiling` is not counted as someone
+attached, so a refused call in its session settles in band, as it does with nobody
+on this daemon's own page, and the request stays pending here.
 
 ## Provisioning a deployment
 
