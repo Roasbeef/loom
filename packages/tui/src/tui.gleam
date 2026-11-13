@@ -58,6 +58,7 @@
 
 import argv
 import core/accounting
+import core/agency_limits
 import core/json
 import etui/app
 import etui/backend
@@ -914,6 +915,7 @@ pub fn new_model_with_clock(
       reconnect: ReconnectIdle,
       creation_key: None,
       configuring: None,
+      pending_agency: agency_limits.empty,
       opening_image: None,
       prompted_approvals: [],
       inspecting_approval: None,

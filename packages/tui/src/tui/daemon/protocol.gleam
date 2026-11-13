@@ -24,6 +24,7 @@
 //// 6. `mutates` says whether losing a command's reply may hide a durable change,
 ////    which is what a caller must know before it resends.
 
+import core/agency_limits.{type AgencyLimits, BoundedDepth, UnlimitedDepth}
 import core/ids
 import core/json
 import gleam/list
@@ -233,6 +234,8 @@ pub type Command {
     /// (protocol-change/078). Exclusive with `executor`: the daemon picks the
     /// executor when the session first opens.
     pool: String,
+    /// Optional per-session subagent limits (`protocol-change/112`).
+    agency: AgencyLimits,
   )
 
   /// Explicitly starts the selected session in this connection's epoch.
@@ -1041,7 +1044,16 @@ fn command_fields(command: Command, epoch: Epoch) {
       use other <- result.map(text_fields([#("workspace", workspace, 4096)]))
       list.append(fields, other)
     }
-    CreateSession(key, workspace, name, configuration, profile, executor, pool) -> {
+    CreateSession(
+      key,
+      workspace,
+      name,
+      configuration,
+      profile,
+      executor,
+      pool,
+      agency,
+    ) -> {
       use fields <- result.try(
         text_fields([
           #("request_key", key, 256),
@@ -1078,9 +1090,14 @@ fn command_fields(command: Command, epoch: Epoch) {
         name -> text_fields([#("pool", name, 64)])
       })
 
+      let agency_fields = encode_agency_field(agency)
+
       [
         #("configuration", json.String(configuration)),
-        ..list.append(fields, list.flatten([profile, executor, pool]))
+        ..list.append(
+          fields,
+          list.flatten([profile, executor, pool, agency_fields]),
+        )
       ]
     }
     OpenSession(id)
@@ -1892,5 +1909,38 @@ fn positive_at(value: json.JsonValue, key: String) {
   case number > 0 {
     True -> Ok(number)
     False -> Error("expected positive request id")
+  }
+}
+
+/// Encodes non-empty per-session subagent limit overrides for `sessions.create`.
+fn encode_agency_field(
+  agency: AgencyLimits,
+) -> List(#(String, json.JsonValue)) {
+  // Omit `"agency"` entirely when all three limits inherit defaults.
+  case agency_limits.is_empty(agency) {
+    True -> []
+    False -> {
+      // Include optional fan_out when specified.
+      let fan_out = case agency.fan_out {
+        Some(value) -> [#("fan_out", json.Int(value))]
+        None -> []
+      }
+
+      // Include optional session_strands when specified.
+      let session_strands = case agency.session_strands {
+        Some(value) -> [#("session_strands", json.Int(value))]
+        None -> []
+      }
+
+      // Include optional depth_cap when specified.
+      let depth_cap = case agency.depth_cap {
+        Some(BoundedDepth(value)) -> [#("depth_cap", json.Int(value))]
+        Some(UnlimitedDepth) -> [#("depth_cap", json.String("unlimited"))]
+        None -> []
+      }
+
+      let nested = list.flatten([fan_out, session_strands, depth_cap])
+      [#("agency", json.Object(nested))]
+    }
   }
 }

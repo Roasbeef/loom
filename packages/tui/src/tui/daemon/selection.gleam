@@ -24,6 +24,7 @@
 //// 4. `elsewhere` is the read of the other orchestrators' sessions, with
 ////    `elsewhere_failure` for its words.
 
+import core/agency_limits
 import core/json
 import gleam/bit_array
 import gleam/bool
@@ -331,6 +332,37 @@ pub fn create_named(
   executor: String,
   pool: String,
 ) -> Result(Target, String) {
+  create_named_with_agency(
+    host,
+    key,
+    workspace,
+    name,
+    configuration,
+    profile,
+    executor,
+    pool,
+    agency_limits.empty,
+  )
+}
+
+/// `create_named`, carrying optional per-session subagent limits (`protocol-change/112`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.create_named_with_agency(host, key, project.path, workspace.session_name(project), config, "", "", "", agency_limits.empty)
+/// ```
+pub fn create_named_with_agency(
+  host: Host,
+  key: String,
+  workspace: String,
+  name: String,
+  configuration: String,
+  profile: String,
+  executor: String,
+  pool: String,
+  agency: agency_limits.AgencyLimits,
+) -> Result(Target, String) {
   use reply <- result.try(
     daemon.request(
       host.control,
@@ -342,6 +374,7 @@ pub fn create_named(
         profile,
         executor,
         pool,
+        agency,
       ),
       10_000,
     )

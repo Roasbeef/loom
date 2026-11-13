@@ -4,6 +4,7 @@
 //// own paths, sent to the daemon exactly as typed, and shown in listings with
 //// its executor.
 
+import core/agency_limits
 import etui/backend
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Subject}
@@ -139,6 +140,7 @@ pub fn creation_sends_the_executor_only_for_a_registered_workspace_test() {
           "",
           executor,
           "",
+          agency_limits.empty,
         ),
         protocol.Epoch("current"),
       )
@@ -162,6 +164,7 @@ pub fn an_over_long_executor_name_is_refused_before_it_is_sent_test() {
         "",
         string.repeat("a", 65),
         "",
+        agency_limits.empty,
       ),
       protocol.Epoch("current"),
     )
@@ -248,6 +251,7 @@ pub fn a_creation_carries_the_launch_executor_test() {
         "",
         "build-box",
         "",
+        agency_limits.empty,
       ),
       90_000,
     )
@@ -372,7 +376,16 @@ pub fn creation_sends_the_pool_only_for_a_pooled_workspace_test() {
     let assert Ok(body) =
       protocol.encode(
         7,
-        protocol.CreateSession("key", workspace, "app", "/config", "", "", pool),
+        protocol.CreateSession(
+          "key",
+          workspace,
+          "app",
+          "/config",
+          "",
+          "",
+          pool,
+          agency_limits.empty,
+        ),
         protocol.Epoch("current"),
       )
     body
@@ -396,6 +409,7 @@ pub fn an_over_long_pool_name_is_refused_before_it_is_sent_test() {
         "",
         "",
         string.repeat("a", 65),
+        agency_limits.empty,
       ),
       protocol.Epoch("current"),
     )
@@ -439,6 +453,7 @@ pub fn a_creation_carries_the_launch_pool_test() {
         "",
         "",
         "builders",
+        agency_limits.empty,
       ),
       90_000,
     )

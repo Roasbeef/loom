@@ -37,6 +37,7 @@
 //// into `Arrival(Daemon)` as it files them, adding the new connection to
 //// its table.
 
+import core/agency_limits
 import core/json
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -443,6 +444,8 @@ pub type AttachRoute {
     /// The pool of executors `workspace` is registered on, or empty
     /// (protocol-change/078).
     pool: String,
+    /// Optional per-session subagent limits (`protocol-change/112`).
+    agency: agency_limits.AgencyLimits,
   )
 }
 
