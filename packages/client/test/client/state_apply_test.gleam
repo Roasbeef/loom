@@ -800,6 +800,7 @@ pub fn an_existing_scope_tree_is_moved_onto_the_state_test() {
   assert list.sort(changed, string.compare)
     == [
       "refs/heads/loom/" <> session <> " " <> scenario.state.tip,
+      "refs/loom/applied/" <> session <> " " <> scenario.state.tip,
       "refs/loom/in/"
         <> state_object.short(scenario.state.hash)
         <> " "
@@ -830,6 +831,65 @@ pub fn applying_into_the_same_tree_twice_changes_nothing_test() {
   assert apply_reset(scenario, 1) == Ok(first)
   assert worktree_rig.git(tree, ["rev-parse", "HEAD"]) == child
   assert simplifile.read(tree <> "/README") == Ok("child edit\n")
+  state_rig.stop(rig)
+}
+
+// A state whose tip is an ancestor of what the tree holds is not a resend. After
+// an abandoned move the executor's branch is at the earlier snapshot, and the
+// operator discards the edits before asking again, so the new tip is the
+// snapshot's parent. Ancestry took that for done and left the discarded edits in
+// the tree; the record of the last apply does not.
+pub fn a_tip_the_tree_descends_from_is_applied_not_taken_for_done_test() {
+  let scenario = scenario("reset-ancestor")
+  let rig = scenario.rig
+  let tree = scope_tree(scenario, 1)
+  let assert Ok(first) = apply_reset(scenario, 1)
+  assert first.tip == scenario.state.tip
+  assert simplifile.read(tree <> "/README") == Ok("dirty\n")
+
+  // The operator discards the edits and the untracked files.
+  let _ = worktree_rig.git(rig.root, ["checkout", "--quiet", "--", "README"])
+  let assert Ok(Nil) = simplifile.delete(rig.root <> "/notes")
+  let snapshot = state_rig.capture(rig, "discarded", Thin(scenario.base))
+  assert snapshot.commit == scenario.third
+  let #(state, bundle) = stored(rig, snapshot)
+  let assert Ok(second) =
+    state_apply.apply(rig.git, bundle, state, reset(scenario, 1))
+  assert second.tip == scenario.third
+  assert worktree_rig.git(tree, ["rev-parse", "HEAD"]) == scenario.third
+  assert simplifile.read(tree <> "/README") == Ok("three\n")
+  assert worktree_rig.git(tree, ["status", "--porcelain"]) == ""
+
+  // The resend of that state is still harmless, with the session's work on top.
+  let child = state_rig.commit_file(tree, "child.txt", "child\n", "child work")
+  assert state_apply.apply(rig.git, bundle, state, reset(scenario, 1))
+    == Ok(second)
+  assert worktree_rig.git(tree, ["rev-parse", "HEAD"]) == child
+  state_rig.stop(rig)
+}
+
+// The first apply into a tree that is ahead of the state. The executor's
+// workspace can hold commits the sender's directory does not, and a tree made
+// from it starts there. The state's tip is then an ancestor of the tree, and the
+// state is still what was asked for.
+pub fn a_tree_that_starts_ahead_of_the_tip_is_moved_to_it_test() {
+  let scenario = scenario("reset-ahead")
+  let rig = scenario.rig
+  let tree = scope_tree(scenario, 1)
+  assert simplifile.is_file(tree <> "/two") == Ok(True)
+
+  // The sender's directory is at the first commit, clean.
+  let first = worktree_rig.git(rig.root, ["rev-parse", scenario.base <> "^"])
+  let _ = worktree_rig.git(rig.root, ["reset", "--hard", "--quiet", first])
+  let assert Ok(Nil) = simplifile.delete(rig.root <> "/notes")
+  let snapshot = state_rig.capture(rig, "behind", Full)
+  assert snapshot.commit == first
+  let #(state, bundle) = stored(rig, snapshot)
+  let assert Ok(applied) =
+    state_apply.apply(rig.git, bundle, state, reset(scenario, 1))
+  assert applied.tip == first
+  assert worktree_rig.git(tree, ["rev-parse", "HEAD"]) == first
+  assert simplifile.is_file(tree <> "/two") == Ok(False)
   state_rig.stop(rig)
 }
 

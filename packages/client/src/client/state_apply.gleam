@@ -598,11 +598,16 @@ fn into_clone(
 /// The tree is checked before anything is written: it must be the linked
 /// worktree of this repository, on the session's branch, and not reached through
 /// a link. The import is the shared one, so objects and the incoming ref go into
-/// the repository and no other ref is made. A tree that already holds the tip is
-/// answered as applied and left alone, which is what makes a resent request
-/// harmless after the session has begun to commit on top. Otherwise the tree must
-/// be clean, since a state is never laid over changes, and the branch is moved
-/// with `checkout -B`.
+/// the repository and no other ref is made. A request for a state that was the
+/// last one applied for the session is answered as applied and left alone, which
+/// is what makes a resent request harmless after the session has begun to commit
+/// on top. So is a tree whose `HEAD` is the tip, which also records the apply.
+/// Anything else moves the tree, whatever its history: the tree must be clean,
+/// since a state is never laid over changes, and the branch is moved with
+/// `checkout -B`. A tip that is an ancestor of the tree's `HEAD` is not a resend.
+/// It is a state that was captured after the tree was set, such as a directory
+/// whose edits the operator discarded, or a commit the executor's workspace had
+/// before the session did.
 fn into_existing(
   git: Git,
   bundle: String,
@@ -616,23 +621,54 @@ fn into_existing(
   use Nil <- result.try(check_linked(git, repository, worktree, branch))
   use Nil <- result.try(require_base(git, repository, state))
   use ref <- result.try(import_bundle(git, repository, bundle, state))
-  use held <- result.try(holds_tip(git, worktree, state.tip))
+  use last <- result.try(current_value(git, repository, applied_ref(session)))
+  use head <- result.try(head_of(git, worktree))
   let applied = Applied(ref:, tip: state.tip, destination: worktree, branch:)
 
-  // A tree that holds the state needs nothing, and one that does not is moved.
-  case held {
-    True -> Ok(applied)
-    False -> {
+  // The last apply of this state decides, and the tree's own tip is the other
+  // way a state is already in place.
+  case last == Some(state.tip), head == state.tip {
+    True, _ -> Ok(applied)
+    False, True ->
+      record_applied(git, repository, session, state.tip)
+      |> result.replace(applied)
+    False, False -> {
       use Nil <- result.try(require_clean(git, worktree))
       let writable = [repository <> "/.git", worktree]
-      use _ <- result.map(
+      use _ <- result.try(
         checked_out(git, worktree, writable, [
           "checkout", "--quiet", "-B", branch, state.tip,
         ]),
       )
-      applied
+      record_applied(git, repository, session, state.tip)
+      |> result.replace(applied)
     }
   }
+}
+
+/// The ref that names the tip last applied for a session. A resend of that state
+/// is recognised by it, not by the tree's history.
+fn applied_ref(session: String) -> String {
+  "refs/loom/applied/" <> session
+}
+
+/// Records the tip as the last one applied for the session.
+fn record_applied(
+  git: Git,
+  repository: String,
+  session: String,
+  tip: String,
+) -> Result(String, String) {
+  git_ok(git, repository, [repository <> "/.git"], [
+    "update-ref",
+    applied_ref(session),
+    tip,
+  ])
+}
+
+/// The commit the tree's `HEAD` names.
+fn head_of(git: Git, worktree: String) -> Result(String, String) {
+  git_ok(git, worktree, [], ["rev-parse", "HEAD"]) |> result.map(string.trim)
 }
 
 /// Runs a Git command that writes a working tree, with every filter driver the
@@ -774,23 +810,6 @@ fn check_linked(
           )
       }
     _ -> Error("Git did not describe the tree")
-  }
-}
-
-/// Whether the tree's `HEAD` already contains the tip, which for a tree this
-/// apply moved is the tip itself and for one the session has committed on is a
-/// descendant of it. Git answers by exit code: zero is yes, one is no, and
-/// anything else is a failure to ask.
-fn holds_tip(git: Git, worktree: String, tip: String) -> Result(Bool, String) {
-  use output <- result.try(
-    git_run(git, worktree, [], ["merge-base", "--is-ancestor", tip, "HEAD"]),
-  )
-
-  // Exit one is Git's answer that the tip is not an ancestor, not a failure.
-  case output.code {
-    0 -> Ok(True)
-    1 -> Ok(False)
-    _ -> Error("Git could not compare the tree with the state's tip")
   }
 }
 
