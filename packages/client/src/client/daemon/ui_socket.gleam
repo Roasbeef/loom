@@ -1211,7 +1211,7 @@ pub fn upgrade_home(
 }
 
 /// Which page a relayed session's route gets.
-type Choice {
+pub type Choice {
   /// The box offers the live session page, or a link that is down says the page
   /// should wait for it.
   LivePage(
@@ -1227,21 +1227,21 @@ type Choice {
 }
 
 /// Whether a live page has a feed to carry its frames.
-type Carriage {
+pub type Carriage {
   /// The box attached the feed.
   Attached(
     /// The token, epoch and incarnation the box answered.
     attached: remote_feed.Attached,
   )
 
-  /// The box did not answer, or has no room for another feed for now, so the
-  /// session component starts and draws that it is waiting.
+  /// The box did not answer, or asked the page to try again, so the session
+  /// component starts and draws that it is waiting.
   Waiting
-}
 
-/// The longest display name an attach carries, in bytes, which the box's decoder
-/// bounds at 512 for every text.
-const attach_name_bytes = 128
+  /// The box holds the most feeds it allows for this daemon, so the component
+  /// draws that, which is true and clears within a few seconds.
+  Crowded
+}
 
 /// Attaches a feed on the orchestrator that runs the session, within `call_ms`,
 /// and chooses the page from the answer (protocol-change/108, "Choosing the
@@ -1265,35 +1265,59 @@ fn choose(
     remote_feed.Attach(
       session: target.session,
       principal: principal.id,
-      name: string.slice(principal.display_name, 0, attach_name_bytes),
+      name: principal.display_name,
     )
+  chosen(top_relay.attach(relay, target.orchestrator, attach))
+}
 
-  // Each way an attach can end is one page.
-  case top_relay.attach(relay, target.orchestrator, attach) {
+/// The page an attach's outcome chooses, which is the whole of `choose` apart
+/// from the call. Each outcome is one page: a feed is the live page. A box that
+/// cannot be reached, or that asked for another try (a saved session that did not
+/// open in time, a refused permit, a slow feed host, a failed store) is the live
+/// page waiting, because the box offers the page and the attach can succeed
+/// later. A box holding the most feeds it allows is the live page waiting with
+/// its own words, since an ended feed counts until the box forgets it. A box that
+/// lacks the revisions, serves the transcript, or answered something this daemon
+/// cannot read is the transcript with the sentence that fits, because retrying an
+/// answer that does not read would leave a feed on the box for every try.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.chosen(Error(top_relay.Unsupported))
+///   == ui_socket.TranscriptPage(relayed.Absent)
+/// ```
+@internal
+pub fn chosen(
+  attached: Result(remote_feed.Attached, top_relay.Failure),
+) -> Choice {
+  case attached {
     Ok(attached) -> LivePage(Attached(attached))
-    Error(top_relay.Unsupported) | Error(top_relay.OlderBuild) ->
-      TranscriptPage(relayed.Absent)
-    Error(top_relay.Refused(remote_top.NotOffered(remote_top.OfferedPage, _))) ->
-      TranscriptPage(relayed.Served)
-
-    // The box holds as many feeds for this daemon as it allows, which an ended
-    // feed counts toward until the box forgets it. That is a reason to wait.
-    Error(top_relay.Refused(remote_top.CapReached(remote_top.MaxFeeds, _))) ->
-      LivePage(Waiting)
-    Error(top_relay.Unreachable)
-    | Error(top_relay.Silent)
-    | Error(top_relay.PeerChanged)
+    Error(top_relay.Unsupported)
+    | Error(top_relay.OlderBuild)
     | Error(top_relay.InvalidPeer)
     | Error(top_relay.RequestTooLarge)
-    | Error(top_relay.Unreadable(_)) -> LivePage(Waiting)
-    Error(top_relay.Refused(_)) | Error(top_relay.NotConfigured(_)) ->
-      TranscriptPage(relayed.Unsaid)
+    | Error(top_relay.Unreadable(_)) -> TranscriptPage(relayed.Absent)
+    Error(top_relay.Refused(remote_top.NotOffered(remote_top.OfferedPage, _))) ->
+      TranscriptPage(relayed.Served)
+    Error(top_relay.Refused(remote_top.CapReached(remote_top.MaxFeeds, _))) ->
+      LivePage(Crowded)
+    Error(top_relay.Unreachable)
+    | Error(top_relay.Silent)
+    | Error(top_relay.PeerChanged) -> LivePage(Waiting)
+    Error(top_relay.Refused(refusal)) ->
+      case remote_top.retryable(refusal) {
+        True -> LivePage(Waiting)
+        False -> TranscriptPage(relayed.Unsaid)
+      }
+    Error(top_relay.NotConfigured(_)) -> TranscriptPage(relayed.Unsaid)
   }
 }
 
 /// Upgrades the request to the socket of a relayed session's live page. The
-/// permit's custody and the socket's frame limit are an operator's: the page
-/// sends prompts and steers to the box.
+/// socket's frame limit is an operator's, which is what the permit `home_upgrade`
+/// reserved for a relayed route is too (`root.PageOperator`): the page sends
+/// prompts and steers to the box.
 fn live_socket(
   request: Request(mist.Connection),
   daemon: root.Root(instance),
@@ -1354,9 +1378,16 @@ fn admit_live(
   let registry = attachment.registry
   let credential = attachment.digest
   let still_open = fn() {
-    case owner_operating(standing, open) {
-      Ok(_) -> Ok(Nil)
+    // A page whose own session ended is `PageEnded`. One that is open but whose
+    // principal no longer authenticates as the owner at the operator's ceiling has
+    // lost its access, which is `AccessRevoked`, as 108 says.
+    case open() {
       Error(Nil) -> Error(ending.PageEnded)
+      Ok(_) ->
+        case owner_operating(standing, open) {
+          Ok(_) -> Ok(Nil)
+          Error(Nil) -> Error(ending.AccessRevoked)
+        }
     }
   }
   let transport =
@@ -1392,7 +1423,7 @@ fn admit_live(
       logins: None,
       peers: None,
     )
-  let start = live_start(target, reach, transport)
+  let start = live_start(target, reach, attachment.principal.id, transport)
 
   // Start the component under the operator's admission, as `admit` does.
   case transferred {
@@ -1451,6 +1482,10 @@ fn connect_feed(
       process.send(opened, Error(ending.reason(ending.PeerUnreachable)))
       ended(ending.PeerUnreachable)
     }
+    Crowded -> {
+      process.send(opened, Error(ending.reason(ending.PeerCrowded)))
+      ended(ending.PeerCrowded)
+    }
   }
 }
 
@@ -1462,6 +1497,7 @@ fn connect_feed(
 fn live_start(
   target: server.Visit,
   reach: Carriage,
+  page: String,
   transport: component.Transport(ui_feed.Feed),
 ) -> component.Start(ui_feed.Feed) {
   // The heading and the identity the lane checks every cut against come from the
@@ -1472,7 +1508,7 @@ fn live_start(
       labelled(attached.label),
       snapshot.Expected(target.session, attached.epoch, attached.incarnation),
     )
-    Waiting -> #(
+    Waiting | Crowded -> #(
       component.Label(name: "", workspace: "", executor: "", pool: ""),
       snapshot.Expected(target.session, "", ""),
     )
@@ -1494,7 +1530,7 @@ fn live_start(
       sharing: None,
       opening: component.FromBookmark,
       machine: target.orchestrator,
-      route: component.Relayed,
+      route: component.Relayed(page:),
     ),
     completion_models: [],
     completion_profiles: [],

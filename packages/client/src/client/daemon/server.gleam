@@ -852,10 +852,19 @@ fn home_upgrade(
   // This branch resolves the input state before the operation continues.
   let grant = seen.grant
 
-  // Acquire an observer-class permit to bound concurrent home page sessions.
+  // A home takes only clicks and is held to an observer-class permit. A relayed
+  // session's route may become the live page, which sends prompts through a socket
+  // of the operator's size, so it is held to the operator page's permit, as a
+  // local operator page is.
+  let class = case visit {
+    Some(_) -> root.PageOperator
+    None -> root.Observer
+  }
+
+  // Either the permit is taken, or the page is refused as busy and nothing starts.
   case
     upgrade_log.timed(upgrade_log.Page, "acquire", fn() {
-      root.acquire(config.daemon, root.Observer, within: 1000)
+      root.acquire(config.daemon, class, within: 1000)
     })
   {
     Error(reason) -> {
@@ -1147,6 +1156,26 @@ fn web_document(
         True -> image_of(config, ui, request, origin, key, id, ref, position)
       }
 
+    // One image of a relayed session's live page. It is a fetch of this origin's
+    // own, answered only for the owner's operating page of a configured
+    // orchestrator, from the reader the page's socket registered under its cookie.
+    ui_http.RelayedImage(key, orchestrator, session, ref, position) ->
+      // This branch resolves ui_http navigation_allowed request before the operation continues.
+      case ui_http.navigation_allowed(request) {
+        False -> plain(403, "forbidden fetch")
+        True ->
+          relayed_image_of(
+            config,
+            ui,
+            request,
+            origin,
+            key,
+            Visit(orchestrator:, session:),
+            ref,
+            position,
+          )
+      }
+
     // Every explicit result read repeats the page's current authorization and
     // resolves its immutable identity within this session, before reading bytes.
     ui_http.ResultPage(key, id, ref, index) ->
@@ -1248,6 +1277,46 @@ fn relayed_document(
         Ok(Nil) ->
           document(200, "text/html; charset=utf-8", page.relayed_shell())
       }
+  }
+}
+
+/// A relayed session's image at a row's name and position: the relayed page's
+/// grant (the home's two rules and the two more every relayed request makes),
+/// then the reader the page's socket registered under its cookie, and the bytes
+/// are checked as a local page's are (`picture`). A page whose socket has not
+/// opened has no reader and so no image.
+fn relayed_image_of(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  origin: ui_http.PageOrigin,
+  key: String,
+  visit: Visit,
+  ref: String,
+  position: Int,
+) {
+  let found = {
+    use #(_, held, cookie, principal) <- result.try(home_grant(
+      config,
+      ui,
+      request,
+      origin,
+      key,
+    ))
+    use Nil <- result.try(admitted_visit(
+      config,
+      Some(visit),
+      principal,
+      ui_sessions.grant(held).ceiling,
+    ))
+    ui_sessions.images(ui.sessions, cookie)
+    |> result.map(fn(read) { picture(read(ref, position)) })
+    |> result.map_error(fn(_) { plain(404, "unknown image") })
+  }
+
+  // Either way the answer is a response.
+  case found {
+    Ok(answer) | Error(answer) -> answer
   }
 }
 

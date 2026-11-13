@@ -416,7 +416,24 @@ fn fixture_lasting_with_root(
             Signing ->
               signing_from_home(sessions, request, attachment, seen, open)
 
-            Stubbed | Pictured | Inviting ->
+            // A relayed session's live page registers its image reader as a
+            // session page does, so `Pictured` does it for the home upgrade too.
+            Pictured -> {
+              register(held)
+              with_page(
+                homed(
+                  ready.state_root,
+                  request,
+                  attachment,
+                  open,
+                  ceiling,
+                  visit,
+                ),
+                seen,
+              )
+            }
+
+            Stubbed | Inviting ->
               with_page(
                 homed(
                   ready.state_root,
@@ -3437,6 +3454,83 @@ pub fn the_relayed_socket_is_handed_the_session_it_was_opened_for_test() {
     // The home's own socket is told of no visit.
     let home = home_socket(port, operator, [])
     assert !string.contains(home.body, "visit")
+  })
+}
+
+// An image of a relayed session's live page, asked for as the page's own `<img>`
+// asks: the relayed document's address with `image/<ref>/<position>` after it
+// (protocol-change/108). It is answered from the reader the page's socket
+// registered, with the local route's headers and bounds.
+fn relayed_picture(
+  port: Int,
+  entered: Entered,
+  orchestrator: String,
+  ref: String,
+  position: String,
+) -> Answer {
+  get(
+    port,
+    relayed_path(entered, orchestrator, relayed_identity)
+      <> "/image/"
+      <> ref
+      <> "/"
+      <> position,
+    [
+      host(port),
+      #("sec-fetch-site", "same-origin"),
+      #("cookie", "loom_ui=" <> entered.cookie),
+    ],
+  )
+}
+
+pub fn a_relayed_page_reads_its_image_with_the_headers_of_the_view_test() {
+  fixture_with(Pictured, fn(_, port, credential) {
+    let operator = enter(port, operator_home(port, credential))
+
+    // Before the page's socket has opened there is no reader and so no image.
+    let early = relayed_picture(port, operator, "box", "1.0", "0")
+    assert early.status == 404
+    assert early.raw == <<"unknown image":utf8>>
+
+    let path = relayed_path(operator, "box", relayed_identity)
+    let status = relayed_socket(port, operator, path, operator.nonce).status
+    assert status == 298 || status == 299
+    let answer = relayed_picture(port, operator, "box", "1.0", "0")
+    assert answer.status == 200
+    assert answer.raw == png_bytes
+    assert list.key_find(answer.headers, "content-type") == Ok("image/png")
+    assert list.key_find(answer.headers, "x-content-type-options")
+      == Ok("nosniff")
+    assert list.key_find(answer.headers, "cache-control") == Ok("no-store")
+
+    // The bytes are checked as a local page's are: an SVG, an HTML document
+    // declared as a PNG, and an image past the limit are not served.
+    assert relayed_picture(port, operator, "box", "1.0", "1").status != 200
+    assert relayed_picture(port, operator, "box", "1.0", "2").status != 200
+    assert relayed_picture(port, operator, "box", "2.0", "0").status != 200
+  })
+}
+
+pub fn a_relayed_image_is_the_owners_and_names_a_configured_orchestrator_test() {
+  fixture_with(Pictured, fn(_, port, credential) {
+    let operator = enter(port, operator_home(port, credential))
+    let observer = enter(port, home_link(port, credential, []))
+    let path = relayed_path(operator, "box", relayed_identity)
+    let status = relayed_socket(port, operator, path, operator.nonce).status
+    assert status == 298 || status == 299
+
+    // An orchestrator the daemon does not list, a page minted to read, a
+    // malformed address and a fetch from another origin are all refused.
+    assert relayed_picture(port, operator, "desk", "1.0", "0").status == 404
+    assert relayed_picture(port, observer, "box", "1.0", "0").status == 403
+    assert relayed_picture(port, operator, "box", "../1.0", "0").status == 404
+    assert relayed_picture(port, operator, "box", "1.0", "-1").status == 404
+    assert get(port, path <> "/image/1.0/0", [
+        host(port),
+        #("sec-fetch-site", "cross-site"),
+        #("cookie", "loom_ui=" <> operator.cookie),
+      ]).status
+      == 403
   })
 }
 
