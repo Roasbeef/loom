@@ -73,6 +73,7 @@
 import client/agency.{type DelegateEndpoint}
 import client/delegate_host.{type ChildSessions}
 import client/internal/ffi_os
+import client/outliving
 import client/remote_spawn.{
   type CallSite, type Parent, type Request, type SpawnRefusal, NotYetOpen,
   StateMissing, StateRefused, StoreFailure,
@@ -91,7 +92,6 @@ import client/worktree_git
 import core/ids
 import gleam/bit_array
 import gleam/bool
-import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -553,11 +553,12 @@ fn applied(
             <> name
             <> "-"
             <> int.to_string(ffi_os.unique_positive_integer())
-          let reply = process.new_subject()
-          let _building =
-            process.spawn_unlinked(fn() {
-              process.send(
-                reply,
+
+          // An asker that stops waiting leaves the apply running, and the apply's
+          // own answer or the request to ask again is what it hears.
+          let heard =
+            outliving.wait_for(
+              fn() {
                 building(
                   git,
                   node.logger,
@@ -567,18 +568,11 @@ fn applied(
                   stage,
                   spawner,
                   name,
-                ),
-              )
-            })
-
-          // An asker that stops waiting leaves the apply running.
-          let heard = process.receive(reply, wait_ms)
-
-          // The apply's own answer, or the request to ask again.
-          case heard {
-            Ok(done) -> done
-            Error(Nil) -> Error(NotYetOpen(still_making))
-          }
+                )
+              },
+              wait_ms,
+            )
+          result.unwrap(heard, Error(NotYetOpen(still_making)))
         }
       }
     }
@@ -964,16 +958,7 @@ fn landed(
     )
   }
 
-  // A verdict is written before the session is ended, so a daemon that stopped
-  // between the two left a refused child with a session. The ask that finds the
-  // verdict ends it, which does nothing when it is already gone.
-  use Nil <- result.try(
-    refused_before(node, name)
-    |> result.map_error(fn(refusal) {
-      let _released = children.release(spawner, parent, name)
-      refusal
-    }),
-  )
+  use Nil <- result.try(refused_before(node, name))
   use begun <- result.try(children.open(spawner, parent, name))
 
   // A child that has begun is a resend of a spawn that went through.
@@ -992,7 +977,23 @@ fn landed(
       |> result.map(ready)
     None -> {
       use held <- result.try(held(node, state))
-      use endpoint <- result.try(children.resolve(spawner, parent, name))
+
+      // A session that could not be started is ended, because the sender takes
+      // every refusal but a request to ask again as final and no ask follows to
+      // use it.
+      use endpoint <- result.try(
+        children.resolve(spawner, parent, name)
+        |> result.map_error(fn(refusal) {
+          case seed_landing.asks_again(refusal) {
+            True -> Nil
+            False -> {
+              let _released = children.release(spawner, parent, name)
+              Nil
+            }
+          }
+          refusal
+        }),
+      )
       placed_in(node, children, spawner, parent, name, held, endpoint, wait_ms)
       |> result.map(fn(_placed) { ready(endpoint) })
     }
@@ -1088,11 +1089,10 @@ fn placed(
   case taken {
     Busy -> Error(NotYetOpen(still_placing))
     Claimed -> {
-      let reply = process.new_subject()
-      let _working =
-        process.spawn_unlinked(fn() {
-          process.send(
-            reply,
+      // An asker that stops waiting leaves the work running.
+      let done =
+        outliving.wait_for(
+          fn() {
             placing(
               node,
               states,
@@ -1102,15 +1102,11 @@ fn placed(
               parent,
               name,
               release,
-            ),
-          )
-        })
-
-      // An asker that stops waiting leaves the work running.
-      case process.receive(reply, wait_ms) {
-        Ok(done) -> done
-        Error(Nil) -> Error(NotYetOpen(still_placing))
-      }
+            )
+          },
+          wait_ms,
+        )
+      result.unwrap(done, Error(NotYetOpen(still_placing)))
     }
   }
 }
@@ -1171,14 +1167,7 @@ fn placing(
 
   // The verdict is kept before the claim is let go, so no ask finds the claim
   // free and the verdict missing. A request to ask again is not a verdict.
-  record_refusal(parent, name, case answer {
-    Error(unplaced) ->
-      case seed_landing.keeps_verdict(unplaced) {
-        True -> told
-        False -> Ok(Nil)
-      }
-    Ok(_placed) -> Ok(Nil)
-  })
+  record_refusal(parent, name, told)
   let _claim_released = simplifile.delete(parent <> "/" <> name <> ".claim")
 
   // The record that the workspace is in place, or the end of the child's session.
@@ -1272,6 +1261,12 @@ fn apply_once(states: SessionStates, state: State) -> Result(Placed, Unplaced) {
       Error(Refuse(
         "applying the workspace on the executor checked out another commit than the one sent",
       ))
+
+    // The session's own check, made at the moment of the request, says the child
+    // began while the apply was on its way: the same answer as the check before it.
+    Error(session_states.Final(reason:))
+      if reason == session_states.already_begun
+    -> Ok(AlreadyBegun)
     Error(failure) -> Error(seed_landing.of_failure(failure))
   }
 }

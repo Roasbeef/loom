@@ -131,6 +131,7 @@ import client/remote_release
 import client/remote_spawn
 import client/return_apply
 import client/roster.{type Roster}
+import client/seed_landing
 import client/serve
 import client/session_directory
 import client/session_importer
@@ -1665,6 +1666,7 @@ pub fn start_orchestrator_port(
           },
           covered: movers.cover,
         ))
+      let children = delegate_host.children(delegates)
       use _started <- result.try(
         orchestrator_port.start_with_states(
           orchestrator_port.default(),
@@ -1677,11 +1679,11 @@ pub fn start_orchestrator_port(
             delegate_host.resolver(delegates),
             delegate_host.releaser(delegates),
             delegate_host.existing_endpoint(delegates),
-            delegate_host.children(delegates),
+            children,
             fn(spawner, parent, site, request) {
               spawn_seed.land(
                 config.state_node,
-                delegate_host.children(delegates),
+                children,
                 spawner,
                 parent,
                 site,
@@ -2196,9 +2198,11 @@ pub fn spawn_host_seeding(
       |> result.replace_error(remote_spawn.UnknownSpawner(node: origin.node)),
     )
 
-    // The child's own session when it has one, and the pair's when it has not.
+    // The child's own session when it has one, and the pair's when it has not. A
+    // record that cannot be read leaves the question open, and the sender asks
+    // again.
     case session_of(spawner, origin.parent, child) {
-      Some(name) -> {
+      spawn_return.OwnSession(name:) -> {
         use opened <- result.try(resident_child(spawner, origin.parent, name))
         option.to_result(
           opened,
@@ -2207,7 +2211,8 @@ pub fn spawn_host_seeding(
           ),
         )
       }
-      None -> serving_existing(origin)
+      spawn_return.Unseeded -> serving_existing(origin)
+      spawn_return.Unreadable -> Error(unplaced_child())
     }
   }
   orchestrator_port.SpawnHost(
@@ -2325,14 +2330,23 @@ pub fn spawn_host_seeding(
       )
     },
     run_ended: fn(origin, operation) {
-      use #(spawner, endpoint) <- result.try(serving(origin))
-      use stopped <- result.try(endpoint.run_ended(operation))
+      use spawner <- result.try(spawner_of(origin))
 
-      // The children that run in sessions of their own end with the run too.
+      // The children that run in sessions of their own end with the run, and they
+      // are stopped first and whatever becomes of the pair's session: a spawner
+      // whose seeded children fill its cap cannot make the pair's session, and
+      // the children must not be left running for that. Their sessions are kept,
+      // because a child the run owned can still be joined and its commits
+      // returned, and a join ends the session.
       use live <- result.try(live_children(spawner, origin.parent))
-      list.try_fold(live, stopped, fn(total, each) {
-        each.run_ended(operation) |> result.map(fn(more) { total + more })
-      })
+      use from_children <- result.try(
+        list.try_fold(live, 0, fn(total, each) {
+          each.run_ended(operation) |> result.map(fn(more) { total + more })
+        }),
+      )
+      use #(_spawner, endpoint) <- result.try(serving(origin))
+      endpoint.run_ended(operation)
+      |> result.map(fn(more) { from_children + more })
     },
     release: fn(origin) {
       use spawner <- result.try(spawner_of(origin))
@@ -2365,8 +2379,10 @@ pub fn spawn_host_seeding(
       // The child's own session when it has one, and the pair's session when it
       // is open, answer the read; a closed pair's session holds no child to read.
       use found <- result.try(case session_of(spawner, origin.parent, child) {
-        Some(name) -> resident_child(spawner, origin.parent, name)
-        None -> existing(spawner, origin.parent)
+        spawn_return.OwnSession(name:) ->
+          resident_child(spawner, origin.parent, name)
+        spawn_return.Unseeded -> existing(spawner, origin.parent)
+        spawn_return.Unreadable -> Error(unplaced_child())
       })
 
       // Query history on the child's endpoint if found.
@@ -2382,15 +2398,24 @@ pub fn spawn_host_seeding(
   )
 }
 
-/// Ends the session made for a child whose start was refused for good, and
-/// answers the start as it was.
+/// What a message about a child is told when this orchestrator cannot yet say
+/// where the child runs, because its record cannot be read.
+fn unplaced_child() -> remote_spawn.SpawnRefusal {
+  remote_spawn.NotYetOpen(
+    reason: "this orchestrator cannot tell where that child runs yet; ask again",
+  )
+}
+
+/// Ends the session made for a child whose start was refused, and answers the
+/// start as it was.
 ///
-/// A child that started has its session; one that did not, and was refused for a
-/// reason a resend does not change, would hold a slot against the spawner's
-/// `max_sessions` and a worktree on the executor for nothing, until the parent was
-/// deleted. A refusal that asks the sender to try again, or whose outcome is not
-/// known (`StoreFailure`), leaves the session for the next ask. A child in the
-/// pair's session has no session of its own to end.
+/// A child that started has its session; one that did not, and was refused, would
+/// hold a slot against the spawner's `max_sessions` and a worktree on the executor
+/// for nothing, until the parent was deleted. The sender takes every refusal but
+/// two as final (`remote_spawner.answer`), a `StoreFailure` among them, so no ask
+/// follows to use the session. Only `NotYetOpen` and `StateMissing` ask the sender
+/// to come again and leave the session for that ask. A child in the pair's session
+/// has no session of its own to end.
 fn unstarted_ended(
   started: Result(a, remote_spawn.SpawnRefusal),
   own: Option(agency.DelegateEndpoint),
@@ -2398,18 +2423,9 @@ fn unstarted_ended(
 ) -> Result(a, remote_spawn.SpawnRefusal) {
   case started, own {
     Error(refusal), Some(_) ->
-      case refusal {
-        remote_spawn.StoreFailure(..)
-        | remote_spawn.NotYetOpen(..)
-        | remote_spawn.StateMissing(..) -> started
-        remote_spawn.UnknownSpawner(..)
-        | remote_spawn.ParentRunEnded
-        | remote_spawn.CapReached(..)
-        | remote_spawn.ToolOutsideCeiling(..)
-        | remote_spawn.InvalidArgument(..)
-        | remote_spawn.NameAlreadyMinted
-        | remote_spawn.TranscriptHidden
-        | remote_spawn.StateRefused(..) -> {
+      case seed_landing.asks_again(refusal) {
+        True -> started
+        False -> {
           let _released = release()
           started
         }

@@ -278,7 +278,24 @@ pub fn child_resolver(
       )
       |> result.map_error(refused),
     )
-    resident(context, delegated.session_id)
+    let opened = resident(context, delegated.session_id)
+
+    // A session whose executor had no room is ended, so its slot and its failed
+    // row are not held while the spawn is asked again, which makes a new one.
+    case opened {
+      Error(remote_spawn.NotYetOpen(reason:)) if reason == no_room_reason -> {
+        let _ended =
+          manager.release_delegate_child(
+            context.registry,
+            spawner.name,
+            parent.session,
+            child,
+            context.sessions_directory,
+          )
+        opened
+      }
+      _ -> opened
+    }
   }
 }
 
@@ -659,7 +676,10 @@ fn resident(
         Ok(manager.View(status: manager.Reserved, ..)) ->
           failed("the delegate session was reserved and never created")
         Ok(manager.View(status: manager.FailedStart(reason:, ..), ..)) ->
-          failed("the delegate session failed to start: " <> reason)
+          case no_room(reason) {
+            True -> poll.Fail(remote_spawn.NotYetOpen(reason: no_room_reason))
+            False -> failed("the delegate session failed to start: " <> reason)
+          }
         Ok(manager.View(status: manager.Saved, ..)) ->
           poll.Fail(remote_spawn.NotYetOpen(
             reason: "the delegate session did not open",
@@ -715,9 +735,39 @@ pub fn refused(error: manager.DelegateError) -> SpawnRefusal {
       remote_spawn.InvalidArgument(
         reason: "the parent session is not a session identity",
       )
+
+    // An executor with no room is a state of the executor, which passes.
+    manager.DelegateFailed(manager.StartFailed(reason:)) ->
+      case no_room(reason) {
+        True -> remote_spawn.NotYetOpen(reason: no_room_reason)
+        False ->
+          remote_spawn.StoreFailure(
+            reason: describe(manager.StartFailed(reason:)),
+          )
+      }
     manager.DelegateFailed(error:) ->
       remote_spawn.StoreFailure(reason: describe(error))
   }
+}
+
+/// What a spawner is told when the executor a session was to be placed on has no
+/// room for it yet.
+pub const no_room_reason = "the executor has no room for the session yet"
+
+/// Whether the reason a session failed to start is an executor with no room for
+/// it. Such a failure is a state of the executor, so the spawn is asked again and
+/// the sender does not take it for a refusal. The two fragments are the executor's
+/// own words for a full table of scopes and a full ledger
+/// (`remote/protocol.describe`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert delegate_host.no_room("the executor already holds 4 scopes that are not cleanly closed")
+/// ```
+pub fn no_room(reason: String) -> Bool {
+  string.contains(reason, "scopes that are not cleanly closed")
+  || string.contains(reason, "bytes of unacknowledged results")
 }
 
 /// What the registry's error says, in words for a spawner. A catalogue failure

@@ -17,6 +17,7 @@ import client/internal/ffi_os
 import client/internal/instance_owner as custody
 import client/peer_outbox_drain
 import client/pools
+import client/remote/protocol
 import client/remote_child
 import client/remote_escalation
 import client/remote_reach
@@ -1681,4 +1682,28 @@ pub fn a_resident_session_owes_the_release_only_once_its_slot_has_drained_test()
   let assert Ok([_still_one]) = catalogue.remote_releases(store)
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn an_executor_with_no_room_is_a_request_to_ask_again_and_not_a_refusal_test() {
+  // The executor's own words for a full table of scopes and a full ledger are the
+  // two the receiver reads as no room, so a rewording there fails here.
+  assert delegate_host.no_room(
+    protocol.describe(protocol.CapacityExhausted(limit: 7)),
+  )
+  assert delegate_host.no_room(
+    protocol.describe(protocol.BudgetExhausted(limit: 4096)),
+  )
+  assert !delegate_host.no_room("the executor's workspace is not a repository")
+
+  // A start that failed for want of room asks the sender to come again, which a
+  // pool with every executor full is. Any other failed start is a store failure.
+  let full = protocol.describe(protocol.CapacityExhausted(limit: 7))
+  assert delegate_host.refused(
+      manager.DelegateFailed(manager.StartFailed(reason: full)),
+    )
+    == remote_spawn.NotYetOpen(reason: delegate_host.no_room_reason)
+  let assert remote_spawn.StoreFailure(..) =
+    delegate_host.refused(
+      manager.DelegateFailed(manager.StartFailed(reason: "no git")),
+    )
 }

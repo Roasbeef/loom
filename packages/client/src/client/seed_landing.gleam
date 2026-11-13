@@ -30,6 +30,7 @@
 //// into what the caller does. A record that cannot be read is never taken for a
 //// session that has begun: the caller asks again.
 
+import client/remote_spawn
 import client/session_states
 import client/state_transfer
 
@@ -125,6 +126,31 @@ pub fn of_failure(failure: session_states.Failure) -> Unplaced {
     session_states.Later(reason:) -> Retry(reason)
     session_states.Final(reason:) ->
       Refuse("applying the workspace on the executor failed: " <> reason)
+  }
+}
+
+/// Whether a refusal asks the sender to come again, which is the only kind it
+/// does not take as final: `NotYetOpen` and `StateMissing`. A session made for a
+/// spawn that was refused any other way has no ask coming to use it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert seed_landing.asks_again(remote_spawn.NotYetOpen("slow"))
+/// assert !seed_landing.asks_again(remote_spawn.StoreFailure("busy"))
+/// ```
+pub fn asks_again(refusal: remote_spawn.SpawnRefusal) -> Bool {
+  case refusal {
+    remote_spawn.NotYetOpen(..) | remote_spawn.StateMissing(..) -> True
+    remote_spawn.StoreFailure(..)
+    | remote_spawn.UnknownSpawner(..)
+    | remote_spawn.ParentRunEnded
+    | remote_spawn.CapReached(..)
+    | remote_spawn.ToolOutsideCeiling(..)
+    | remote_spawn.InvalidArgument(..)
+    | remote_spawn.NameAlreadyMinted
+    | remote_spawn.TranscriptHidden
+    | remote_spawn.StateRefused(..) -> False
   }
 }
 

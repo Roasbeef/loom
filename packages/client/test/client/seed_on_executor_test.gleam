@@ -100,7 +100,9 @@ type World {
     applies: Cell(Int),
     began: Cell(Bool),
     finished: Cell(Bool),
-    refuse_spawn: Cell(Bool),
+    refuse_spawn: Cell(Option(remote_spawn.SpawnRefusal)),
+    refuse_resolve: Cell(Option(remote_spawn.SpawnRefusal)),
+    refuse_pair: Cell(Option(remote_spawn.SpawnRefusal)),
     unreadable: Cell(Bool),
     child: String,
     handle: agent.Handle,
@@ -278,11 +280,11 @@ fn child_endpoint(
     states: Some(session_states.before_first_turn(world.states, fresh)),
     spawn: fn(_delegation, _site, _request) {
       case cell.get(world.refuse_spawn), cell.get(world.began) {
-        True, _ -> Error(remote_spawn.InvalidArgument(reason: "no such tool"))
+        Some(refusal), _ -> Error(refusal)
 
         // The Agency answers the child a call site already started.
-        False, True -> Ok(started())
-        False, False -> {
+        None, True -> Ok(started())
+        None, False -> {
           let on_tip = worktree_rig.git(tree, ["rev-parse", "HEAD"]) == tip
           record(world.journal, Spawned(on_tip))
           cell.update(world.began, fn(_) { True })
@@ -377,7 +379,8 @@ type Pieces {
     journal: Cell(List(Event)),
     began: Cell(Bool),
     finished: Cell(Bool),
-    refuse_spawn: Cell(Bool),
+    refuse_spawn: Cell(Option(remote_spawn.SpawnRefusal)),
+    refuse_resolve: Cell(Option(remote_spawn.SpawnRefusal)),
     unreadable: Cell(Bool),
   )
 }
@@ -395,7 +398,13 @@ fn children(
     resolve: fn(_spawner, _parent, name) {
       record(pieces.journal, Resolved(name))
       cell.update(made, fn(_) { True })
-      Ok(endpoint)
+
+      // A registry that made the row and could not start the session refuses, and
+      // the row stays.
+      case cell.get(pieces.refuse_resolve) {
+        Some(refusal) -> Error(refusal)
+        None -> Ok(endpoint)
+      }
     },
     open: fn(_spawner, _parent, _name) {
       case cell.get(made) {
@@ -466,6 +475,10 @@ type Link {
 
   // Every apply is refused by the workspace, which the same state always is.
   ApplyRefused
+
+  // The session's own check, made at the moment of the request, says the child
+  // began while the apply was on its way.
+  BegunAtApply
 }
 
 // Builds every machine and answers the world, before any spawn is asked.
@@ -530,6 +543,10 @@ fn world(name: String, ballast: Ballast, link: Link, shared: Bool) -> World {
         cell.update(applies, fn(held) { held + 1 })
         Error(session_states.Final("the workspace does not take this state"))
       })
+    BegunAtApply ->
+      SessionStates(..counting, apply: fn(_state) {
+        Error(session_states.Final(session_states.already_begun))
+      })
     DropsOnce(offsets:) ->
       SessionStates(
         ..counting,
@@ -549,10 +566,20 @@ fn world(name: String, ballast: Ballast, link: Link, shared: Bool) -> World {
   let journal = cell.new([])
   let began = cell.new(False)
   let finished = cell.new(False)
-  let refuse_spawn = cell.new(False)
+  let refuse_spawn = cell.new(None)
+  let refuse_resolve = cell.new(None)
+  let refuse_pair = cell.new(None)
   let unreadable = cell.new(False)
   let pieces =
-    Pieces(states:, journal:, began:, finished:, refuse_spawn:, unreadable:)
+    Pieces(
+      states:,
+      journal:,
+      began:,
+      finished:,
+      refuse_spawn:,
+      refuse_resolve:,
+      unreadable:,
+    )
   let child = spawn_seed.name_of(site(0), parent.sent)
   let sessions =
     children(
@@ -578,7 +605,12 @@ fn world(name: String, ballast: Ballast, link: Link, shared: Bool) -> World {
   let host =
     main.spawn_host_seeding(
       [spawner()],
-      fn(_spawner, _parent) { Ok(pair_endpoint()) },
+      fn(_spawner, _parent) {
+        case cell.get(refuse_pair) {
+          Some(refusal) -> Error(refusal)
+          None -> Ok(pair_endpoint())
+        }
+      },
       fn(_spawner, _parent) { Ok(0) },
       fn(_spawner, _parent) { Ok(None) },
       sessions,
@@ -604,6 +636,8 @@ fn world(name: String, ballast: Ballast, link: Link, shared: Bool) -> World {
     began:,
     finished:,
     refuse_spawn:,
+    refuse_resolve:,
+    refuse_pair:,
     unreadable:,
     child:,
     handle: handle(),
@@ -721,7 +755,10 @@ pub fn a_seeded_child_starts_in_a_worktree_holding_the_parents_work_and_returns_
   let assert remote_spawn.Ready(report:, state: Some(returned), ..) = joined
   assert returned.tip == tip
   assert returned.base == Some(world.parent.sent.tip)
-  assert string.contains(report, "uncommitted") == False
+
+  // Only commits come back from a workspace on an executor, and the report says
+  // so, because the tree there is not looked at.
+  assert string.contains(report, spawn_return.session_tree_note)
   assert journal_is(world, [
     Resolved(world.child),
     Spawned(True),
@@ -813,7 +850,9 @@ pub fn a_shared_mode_workspace_is_refused_naming_the_mode_and_the_session_ended_
 
 pub fn a_spawn_the_agency_refuses_ends_the_session_made_for_it_test() {
   let world = world("seed-exec-refused", Small, Steady, False)
-  cell.update(world.refuse_spawn, fn(_) { True })
+  cell.update(world.refuse_spawn, fn(_) {
+    Some(remote_spawn.InvalidArgument(reason: "no such tool"))
+  })
 
   // The workspace was put in place, the Agency refused for good, and a session
   // that will never run a child is not left holding a slot and a worktree.
@@ -906,24 +945,28 @@ pub fn an_executor_that_is_silent_when_asked_for_the_commits_is_asked_again_test
   stop(world)
 }
 
-pub fn an_executor_that_never_answers_gives_the_commits_up_and_says_where_they_are_test() {
+pub fn an_executor_that_never_answers_leaves_the_child_unfinished_and_its_session_kept_test() {
   let asks = cell.new(0)
   let world = world("seed-exec-mute", Small, SilentCapture(asks, 100), False)
   let assert Ok(Ok(_spawned)) = ask_spawn(world)
   cell.update(world.finished, fn(_) { True })
 
-  // After the tries the return allows, the child is reported finished with a
-  // report that says its commits are in its workspace, and nothing comes back.
-  let assert remote_spawn.Ready(report:, state: None, ..) =
-    finished_entry(world)
-  assert cell.get(asks) == spawn_return.max_attempts
-  assert string.contains(report, "did not answer the request for its commits")
-  assert string.contains(report, "in the child's workspace")
-  assert journal_is(world, [
-    Resolved(world.child),
-    Spawned(True),
-    Released(world.child),
-  ])
+  // The executor answers nothing for more tries than a directory child is given.
+  // A child with a session of its own is not given up on, because giving up ends
+  // the session and with it the commits that are still on the executor: it stays
+  // unfinished, and its session is kept, until its run ends or its parent goes.
+  let waited =
+    poll.until(within: 60_000, every: 100, attempt: fn() {
+      let entry = ask_join(world)
+      case cell.get(asks) > spawn_return.max_attempts {
+        True -> poll.Done(entry)
+        False -> poll.Retry
+      }
+    })
+  let assert poll.Answered(entry) = waited
+    as "the executor was asked many times"
+  assert entry == remote_spawn.Pending(world.handle, spawn_return.wait_ms)
+  assert journal_is(world, [Resolved(world.child), Spawned(True)])
   stop(world)
 }
 
@@ -982,17 +1025,11 @@ pub fn a_refusal_of_the_content_is_kept_and_ends_the_session_test() {
   assert string.contains(reason, "does not take this state")
   assert journal_is(world, [Resolved(world.child), Released(world.child)])
 
-  // The resend that finds the verdict ends the session again. A daemon that
-  // stopped between writing the verdict and ending the session left one, and
-  // the registry takes the repeat as nothing to do when the session is gone.
+  // The resend is answered with the kept refusal and touches nothing.
   let assert Ok(Error(remote_spawn.StateRefused(again))) = ask_spawn(world)
   assert again == reason
   assert cell.get(world.applies) == 1
-  assert journal_is(world, [
-    Resolved(world.child),
-    Released(world.child),
-    Released(world.child),
-  ])
+  assert journal_is(world, [Resolved(world.child), Released(world.child)])
   stop(world)
 }
 
@@ -1017,4 +1054,85 @@ fn is_final(refusal: protocol.Refusal) -> Bool {
     session_states.Final(..) -> True
     session_states.Later(..) -> False
   }
+}
+
+pub fn a_child_that_began_while_the_apply_was_on_its_way_is_not_refused_test() {
+  let world = world("seed-exec-begun-at-apply", Small, BegunAtApply, False)
+
+  // The check made at the request and the one made before it mean the same: the
+  // session has begun, so a resend of a spawn that went through is answered, and
+  // no verdict is kept and no session is ended.
+  let assert Ok(Ok(_spawned)) = ask_spawn(world)
+  assert cell.get(world.applies) == 0
+  let assert Ok(Ok(_again)) = ask_spawn(world)
+  assert !list.contains(cell.get(world.journal), Released(world.child))
+  stop(world)
+}
+
+pub fn a_store_failure_after_the_spawn_was_admitted_ends_the_session_test() {
+  let world = world("seed-exec-store-failure", Small, Steady, False)
+  cell.update(world.refuse_spawn, fn(_) {
+    Some(remote_spawn.StoreFailure(reason: "the catalogue could not answer"))
+  })
+
+  // The sender takes a store failure as final, so no ask follows to use the
+  // session, and it is ended rather than held until the parent is deleted.
+  let assert Ok(Error(remote_spawn.StoreFailure(..))) = ask_spawn(world)
+  assert journal_is(world, [Resolved(world.child), Released(world.child)])
+  stop(world)
+}
+
+pub fn a_spawn_that_asks_to_come_again_keeps_its_session_test() {
+  let world = world("seed-exec-ask-again", Small, Steady, False)
+  cell.update(world.refuse_spawn, fn(_) {
+    Some(remote_spawn.NotYetOpen(reason: "the session is still opening"))
+  })
+
+  // The sender asks again, so the session stays for that ask.
+  let assert Ok(Error(remote_spawn.NotYetOpen(..))) = ask_spawn(world)
+  assert journal_is(world, [Resolved(world.child)])
+  stop(world)
+}
+
+pub fn a_session_that_could_not_be_started_is_ended_unless_it_asks_to_come_again_test() {
+  let world = world("seed-exec-resolve-fails", Small, Steady, False)
+  cell.update(world.refuse_resolve, fn(_) {
+    Some(remote_spawn.StoreFailure(reason: "the session failed to start"))
+  })
+
+  // The row exists and the session did not start, and the sender will not ask
+  // again, so the row is ended.
+  let assert Ok(Error(remote_spawn.StoreFailure(..))) = ask_spawn(world)
+  assert journal_is(world, [Resolved(world.child), Released(world.child)])
+
+  // A start that asks to come again leaves the row for that ask.
+  cell.update(world.refuse_resolve, fn(_) {
+    Some(remote_spawn.NotYetOpen(reason: "the session is opening"))
+  })
+  let assert Ok(Error(remote_spawn.NotYetOpen(..))) = ask_spawn(world)
+  assert journal_is(world, [
+    Resolved(world.child),
+    Released(world.child),
+    Resolved(world.child),
+  ])
+  stop(world)
+}
+
+pub fn the_end_of_a_run_stops_the_children_whatever_becomes_of_the_pairs_session_test() {
+  let world = world("seed-exec-run-end-cap", Small, Steady, False)
+  let parent = remote_spawn.Parent(session: session(9), strand: "main")
+  let assert Ok(Ok(_spawned)) = ask_spawn(world)
+
+  // Seeded children fill the spawner's cap, so the pair's session cannot be made.
+  cell.update(world.refuse_pair, fn(_) {
+    Some(remote_spawn.CapReached(remote_spawn.MaxSessions, 4))
+  })
+  let #(operation, _) = ids.mint_op(ids.generator(clock.fixed(at: 5), seed: 9))
+  assert orchestrator_port.ask_run_ended(world.at, parent, operation, 5000)
+    == Ok(Error(remote_spawn.CapReached(remote_spawn.MaxSessions, 4)))
+
+  // The child was stopped all the same, and its session is kept so that a join
+  // can still bring its commits back.
+  assert journal_is(world, [Resolved(world.child), Spawned(True), Ended])
+  stop(world)
 }
