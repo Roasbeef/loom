@@ -46,6 +46,7 @@ import client/schedule
 import client/serve
 import client/tui_e2e_test.{type EunitTest, Timeout}
 import client/workspace_policy
+import core/agency_limits
 import core/clock
 import core/ids
 import core/json
@@ -1134,7 +1135,7 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
     peer_defaults: None,
     remote_reach: None,
     deadline_tick_ms: None,
-    depth_cap: None,
+    agency_limits: agency_limits.empty,
     metering: None,
     spawner: None,
     laptop: None,

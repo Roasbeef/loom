@@ -11,6 +11,7 @@ import client/internal/instance_owner as custody
 import client/internal/shared_history
 import client/remote_child
 import client/remote_spawn
+import core/agency_limits
 import core/clock
 import core/ids
 import core/json
@@ -161,6 +162,7 @@ pub fn rename_requires_owner_epoch_and_preserves_residency_test() {
         option.None,
         "",
         "",
+        agency_limits.empty,
       ),
       directory: "/unused-creation-retry",
       generator: ids.generator(clock.fixed(at: 1), seed: 1),
@@ -236,6 +238,7 @@ pub fn archive_requires_owner_and_stopped_custody_test() {
         option.None,
         "",
         "",
+        agency_limits.empty,
       ),
       directory: "/unused-creation-retry",
       generator: ids.generator(clock.fixed(1), 1),
@@ -383,6 +386,7 @@ pub fn domain_configuration_is_selected_at_creation_not_open_test() {
             option.None,
             "",
             "",
+            agency_limits.empty,
           ),
           directory: "/domain-selection/sessions",
           generator: ids.generator(clock.fixed(1), example.0),
@@ -695,6 +699,7 @@ pub fn creation_retry_preserves_reservation_before_and_after_assembly_test() {
       option.None,
       "",
       "",
+      agency_limits.empty,
     )
   let generator = ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 411)
   let assert Ok(manager.View(record, manager.Opening(operation))) =
@@ -733,6 +738,14 @@ pub fn creation_retry_preserves_reservation_before_and_after_assembly_test() {
       manager.Creation(..request, model: option.Some("fast")),
       manager.Creation(..request, executor: "box"),
       manager.Creation(..request, pool: "fleet"),
+      manager.Creation(
+        ..request,
+        agency: agency_limits.AgencyLimits(
+          option.Some(10),
+          option.None,
+          option.None,
+        ),
+      ),
     ],
     fn(changed) {
       assert manager.create(
@@ -797,6 +810,7 @@ pub fn reserved_creation_requires_explicit_retry_after_capacity_refusal_test() {
       option.None,
       "",
       "",
+      agency_limits.empty,
     )
   let generator = ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 413)
   assert manager.create(
@@ -2657,6 +2671,7 @@ fn delegate_request(
       model: option.None,
       executor: "box",
       pool: "",
+      agency: agency_limits.empty,
     ),
     directory: "/delegate-sessions",
     generator: ids.generator(clock.fixed(at: 1_700_000_000_000), seed: parent),
@@ -2828,6 +2843,7 @@ pub fn local_census_waits_for_a_creation_assembling_its_domain_test() {
         option.None,
         "",
         "",
+        agency_limits.empty,
       ),
       directory: "/private/sessions",
       generator: ids.generator(clock.fixed(0), 1500),
@@ -2856,6 +2872,7 @@ pub fn local_census_waits_for_a_creation_assembling_its_domain_test() {
         option.None,
         "box",
         "",
+        agency_limits.empty,
       ),
       directory: "/private/sessions",
       generator: ids.generator(clock.fixed(0), 1504),
@@ -2918,6 +2935,7 @@ pub fn failed_and_inactive_reservations_do_not_block_local_census_test() {
         option.None,
         "",
         "",
+        agency_limits.empty,
       ),
       directory: "/private/sessions",
       generator: ids.generator(clock.fixed(0), 1503),

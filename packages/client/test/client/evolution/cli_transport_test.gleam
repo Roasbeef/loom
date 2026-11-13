@@ -13,6 +13,7 @@ import client/evolution/cli
 import client/evolution_acceptance_test
 import client/serve
 import client/tui_e2e_test.{type EunitTest, Timeout}
+import core/agency_limits
 import core/clock
 import core/ids
 import core/json
@@ -98,6 +99,7 @@ fn exercise() {
               option.None,
               "",
               "",
+              agency_limits.empty,
             ),
             directory: serving.ready.sessions_directory,
             generator: ids.generator(clock.fixed(1_700_000_000_000), 807),

@@ -16,6 +16,7 @@ import client/daemon/protocol
 import client/daemon/root
 import client/daemon_claim_test as claims
 import client/daemon_server_test as wire
+import core/agency_limits
 import core/clock
 import core/ids
 import core/json.{type JsonValue}
@@ -72,6 +73,7 @@ fn shared_session(
         None,
         "",
         "",
+        agency_limits.empty,
       ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1), seed),

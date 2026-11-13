@@ -154,6 +154,7 @@ import client/workspace_policy
 import client/workspaces
 import client/worktree_git
 import client/worktrees
+import core/agency_limits
 import core/clock
 import core/glance
 import core/ids
@@ -1892,7 +1893,7 @@ pub fn start_link_keepers(
           link_keeper.start(
             link_keeper.Options(
               link: orchestrator_link(membership, orchestrator),
-              after: effects.real_timers().after,
+              after: effects.after_fn(effects.real_timers()),
             ),
             address,
           )
@@ -1984,7 +1985,7 @@ pub fn start_release_drain(
             remote_spawner.release_over(membership, orchestrator_roster(config)),
             logger,
           ),
-          effects.real_timers().after,
+          effects.after_fn(effects.real_timers()),
         )
       use _started <- result.try(
         peer_outbox_drain.start(options, name)
@@ -2513,6 +2514,29 @@ pub fn depth_cap_of(
       |> option.from_result
       |> option.map(fn(spawner) { spawner.max_depth })
     Ok(None) | Error(_) -> None
+  }
+}
+
+/// Resolves a session's stored agency limits, clamping depth_cap for delegate sessions.
+fn agency_limits_of(
+  registry: manager.Manager(instance),
+  configured: List(spawners.Spawner),
+  id: String,
+) -> agency_limits.AgencyLimits {
+  // Read per-session agency overrides from the catalogue, falling back to defaults.
+  let stored = case manager.agency_limits(registry, id) {
+    Ok(limits) -> limits
+    Error(_) -> agency_limits.empty
+  }
+
+  // Delegate sessions enforce their spawner's configured max_depth ceiling.
+  case depth_cap_of(registry, configured, id) {
+    Some(max_depth) ->
+      agency_limits.AgencyLimits(
+        ..stored,
+        depth_cap: Some(agency_limits.BoundedDepth(max_depth)),
+      )
+    None -> stored
   }
 }
 
@@ -3089,7 +3113,11 @@ pub fn prepare_startup(
             ),
             remote_reach: reach_of(config, directory, registration.id, logger),
             deadline_tick_ms: tick,
-            depth_cap: depth_cap_of(directory, config.spawners, registration.id),
+            agency_limits: agency_limits_of(
+              directory,
+              config.spawners,
+              registration.id,
+            ),
             metering: metering_of(
               directory,
               config.spawners,

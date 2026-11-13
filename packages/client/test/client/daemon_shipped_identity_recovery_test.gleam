@@ -11,6 +11,7 @@
 import broker/token
 import client/tui_e2e_test.{type EunitTest, Timeout}
 import client/tui_v2_test
+import core/agency_limits
 import core/json
 import gleam/bit_array
 import gleam/dynamic/decode
@@ -144,6 +145,7 @@ fn exercise(server, directory, paths: endpoint.Paths) {
       "",
       "",
       "",
+      agency_limits.empty,
     )
   let assert Ok(protocol.SessionReply(created)) =
     daemon.request(first.control, request, 5000)

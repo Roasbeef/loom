@@ -3,6 +3,7 @@
 
 import client/daemon/protocol
 import client/peer_mail
+import core/agency_limits
 import core/clock
 import core/ids
 import core/json
@@ -59,6 +60,7 @@ pub fn creation_configuration_preserves_defaults_and_rejects_invalid_fields_test
         None,
         None,
         domain.WorkspacePrivate,
+        agency_limits.empty,
       ),
     ))
   let assert Error(_) = protocol.decode(envelope(1, "sessions.create", fields))
@@ -184,6 +186,7 @@ pub fn every_control_command_has_one_typed_decode_test() {
         None,
         None,
         domain.WorkspacePrivate,
+        agency_limits.empty,
       ),
     ),
     #("sessions.open", [session, epoch], protocol.OpenSession(id, "epoch")),
@@ -674,6 +677,7 @@ pub fn creation_profile_is_optional_and_must_be_a_profile_name_test() {
         None,
         None,
         domain.WorkspacePrivate,
+        agency_limits.empty,
       ),
     ))
 
@@ -726,6 +730,7 @@ pub fn creation_executor_is_optional_and_makes_the_workspace_a_name_test() {
         Some("build-box"),
         None,
         domain.SessionOnly,
+        agency_limits.empty,
       ),
     ))
   let assert Ok(protocol.Request(
@@ -813,6 +818,7 @@ pub fn creation_pool_is_optional_exclusive_with_an_executor_and_makes_the_worksp
         None,
         Some("builders"),
         domain.SessionOnly,
+        agency_limits.empty,
       ),
     ))
 
@@ -875,6 +881,7 @@ pub fn session_creation_decodes_an_optional_model_key_test() {
         None,
         None,
         domain.WorkspacePrivate,
+        agency_limits.empty,
       ),
     ))
 
@@ -938,6 +945,7 @@ pub fn creation_model_composes_with_an_executor_and_a_pool_test() {
         Some("build-box"),
         None,
         domain.SessionOnly,
+        agency_limits.empty,
       ),
     ))
   assert create([#("pool", json.String("builders"))])
@@ -953,6 +961,7 @@ pub fn creation_model_composes_with_an_executor_and_a_pool_test() {
         None,
         Some("builders"),
         domain.SessionOnly,
+        agency_limits.empty,
       ),
     ))
 
@@ -982,4 +991,80 @@ pub fn an_elsewhere_read_names_its_group_and_its_cursor_as_the_lists_do_test() {
   )
   assert result.is_error(read([#("orchestrator", json.Null)]))
   assert result.is_ok(read([key, #("after", json.String(""))]))
+}
+
+pub fn creation_agency_limits_decode_valid_and_reject_invalid_test() {
+  let fields = [
+    #("request_key", json.String("key")),
+    #("workspace", json.String("/workspace")),
+    #("name", json.String("name")),
+    #("configuration", json.String("")),
+  ]
+  let decode_with = fn(agency_value) {
+    protocol.decode(
+      envelope(1, "sessions.create", [#("agency", agency_value), ..fields]),
+    )
+  }
+  assert decode_with(
+      json.Object([
+        #("fan_out", json.Int(200)),
+        #("session_strands", json.Int(512)),
+        #("depth_cap", json.String("unlimited")),
+      ]),
+    )
+    == Ok(protocol.Request(
+      1,
+      protocol.CreateSession(
+        "key",
+        "/workspace",
+        "name",
+        "",
+        None,
+        None,
+        None,
+        None,
+        domain.WorkspacePrivate,
+        agency_limits.AgencyLimits(
+          fan_out: Some(200),
+          session_strands: Some(512),
+          depth_cap: Some(agency_limits.UnlimitedDepth),
+        ),
+      ),
+    ))
+  assert decode_with(json.Object([#("depth_cap", json.Int(4))]))
+    == Ok(protocol.Request(
+      1,
+      protocol.CreateSession(
+        "key",
+        "/workspace",
+        "name",
+        "",
+        None,
+        None,
+        None,
+        None,
+        domain.WorkspacePrivate,
+        agency_limits.AgencyLimits(
+          fan_out: None,
+          session_strands: None,
+          depth_cap: Some(agency_limits.BoundedDepth(4)),
+        ),
+      ),
+    ))
+  list.each(
+    [
+      json.Int(1),
+      json.Object([#("unknown", json.Int(1))]),
+      json.Object([#("fan_out", json.Int(0))]),
+      json.Object([
+        #("fan_out", json.Int(300)),
+        #("session_strands", json.Int(100)),
+      ]),
+      json.Object([#("depth_cap", json.Int(0))]),
+      json.Object([#("depth_cap", json.String("infinite"))]),
+    ],
+    fn(bad) {
+      assert result.is_error(decode_with(bad))
+    },
+  )
 }
