@@ -44,7 +44,7 @@ claim and kept, with the pair's session and no executor.
 
 | The receiver holds | It does |
 |---|---|
-| a verdict | answers it |
+| a verdict | answers it, and ends the child's session if one is left |
 | a session that is open and resident | asks whether it has begun: a child that has is answered as it was, a record that cannot be read is a reason to ask again, and a fresh one falls through |
 | the bundle not yet whole | answers ask again |
 | otherwise | runs a pass under the claim: find or make the session, attach and read the census, send the bundle, ask again whether the session has begun, send the fenced apply, and then make the Agency's spawn |
@@ -103,15 +103,24 @@ hot state, so each liveness spec holds only because every fault is bounded.
 
 ## What the model found
 
-An earlier edition of this model kept a refusal's verdict across a restart and
-failed `EverySettledChildIsReleased` on a schedule in which a restart came between
-the verdict and the end of the session. That schedule does not exist in the code:
-the daemon deletes `seed-staging` when it starts, so a restart forgets the verdict
-and the next ask makes the refusal again. The failure was an error in the model,
-and the model now forgets the verdict. No counterexample was found on the code as
-it stands. The specs for the join, the return, the release and the checkout were
-written from the two reviews of the pull request, and each has a mutant that
-reintroduces the fault.
+`EverySettledChildIsReleased` failed on a schedule that the code can produce, once
+the model forgot verdicts at a restart as the code does (the daemon deletes
+`seed-staging`, where it keeps them, when it starts). `placing` writes a refusal's
+verdict, lets go of the claim, ends the child's session and only then answers the
+asker. A second ask that arrives between the verdict and the end of the session finds
+the verdict and was answered with it, and its owner stops asking. A restart before
+the end of the session then lost the step that ends it and the verdict with it, and
+the session stayed. The window is small and the cost is a session held until the
+parent is deleted, and the code now ends the session when an ask finds a verdict
+(`spawn_seed.landed`), which does nothing when the session is gone. Mutant M19
+removes that and is caught. It does not cover a restart that comes before any second
+ask, which forgets the verdict and is answered by the asker's own next ask, and it
+does not cover a failure of the release itself, which the model does not have.
+
+An earlier edition of this model kept the verdict across a restart and described a
+leak that needed no second ask. That was an error in the model. The specs for the
+join, the return, the release and the checkout were written from the two reviews of
+the pull request, and each has a mutant that reintroduces the fault.
 
 ## Probes
 
@@ -144,6 +153,7 @@ a record that cannot be read answered as a session that has begun.
 | A record that cannot be read answers that the session has begun | `UnreadableIsNotBegun` |
 | The join, and a join asked again, do not end the session | `EverySettledChildIsReleased` |
 | A refusal's session is not ended in the step after the verdict | `EverySettledChildIsReleased` |
+| An ask that finds a verdict does not end the session | `EverySettledChildIsReleased` |
 | A transient failure keeps the claim | `EverySpawnEnds` |
 | A join asked again is refused because the answer was not kept | `JoinIsRepeatable` |
 | A store with no room for the commits settles the child with nothing | `EveryFinishedWorkIsReturned` |

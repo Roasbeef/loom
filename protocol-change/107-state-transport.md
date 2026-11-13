@@ -1305,12 +1305,18 @@ built on it. Nothing above is edited, and no wire constructor changed.
 **Not changed.** A census with no branch is read as `mode = "shared"` and refused for
 good. The executor reports a branch exactly when it built a worktree for the scope
 (`executor_plane`), and a worktree that failed to build refuses the attach, so a census
-without one is a shared workspace and the refusal is right. A verdict is not released at
-the next ask: the daemon deletes `seed-staging`, where verdicts and claims are kept, when
-it starts, so a restart forgets both, and an earlier edition of this addendum described a
-leak between a verdict and the end of its session that the model produced only because
-it kept the verdict across a restart. The model forgets it now and the code has no such
-release.
+without one is a shared workspace and the refusal is right.
+
+**What the release at a verdict covers.** An ask that finds a verdict ends the child's
+session (`spawn_seed.landed`). `placing` writes the verdict, lets go of the claim, ends
+the session and only then answers the asker, so the leak the first edition of this
+addendum described, a daemon stopping between the verdict and the end of the session
+with the asker told, does not exist, and the daemon deletes `seed-staging`, where
+verdicts and claims are kept, when it starts, so a restart forgets both. What remains is
+a second ask that arrives between the verdict and the end of the session: it is answered
+with the verdict, its sender asks no more, and a restart before the end of the session
+loses the step that ends it. The ask that finds the verdict ends the session for that
+case. It does not cover a failure of the release itself.
 
 **What checks the landing.**
 
@@ -1323,7 +1329,7 @@ release.
   begun, a join asked again answered as the first was, the commits returned and not lost,
   a session not released while its child runs or before the answer is kept, and a run end
   that stops the children whatever becomes of the pair's session, with liveness for the
-  spawn and for the release of every settled child. Eighteen mutants, three of them
+  spawn and for the release of every settled child. Nineteen mutants, three of them
   review findings as they stood, are each caught by the spec that names them. No
   counterexample was found on the code as it now stands. The model did show where a
   property rests: a `StateApply` that arrives late, after the child began to work, is

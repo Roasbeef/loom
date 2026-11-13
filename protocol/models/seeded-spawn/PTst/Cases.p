@@ -281,8 +281,8 @@ test tcOnlyRunEnd [main = TestRunEnd]:
 test tcOnlySpawnEnds [main = TestTransient]:
   assert EverySpawnEnds in (union System, { TestTransient });
 
-test tcOnlyReleased [main = TestAllExec]:
-  assert EverySettledChildIsReleased in (union System, { TestAllExec });
+test tcOnlyReleased [main = TestQuietExec]:
+  assert EverySettledChildIsReleased in (union System, { TestQuietExec });
 
 test tcProbeApplyRetried [main = TestAllExec]:
   assert ProbeApplyRetried in (union System, { TestAllExec });

@@ -1827,8 +1827,8 @@ such child runs in a delegate session of its own, and its workspace is its workt
   moved, no answer, the deadline, an unreadable record) is `NotYetOpen`, keeps no verdict
   and leaves the session, and `Refuse` (a malformed description or piece, a workspace
   that refuses the state) is `StateRefused`, kept as a verdict, and releases the session.
-  An ask that finds a verdict releases the session too, for a daemon that stopped between
-  the two. `workspace.failed_by` reads an executor's refusal of an apply the same way. The host calls the
+  An ask that finds a verdict releases the session too, for an ask that arrives between the
+  verdict and the release. `workspace.failed_by` reads an executor's refusal of an apply the same way. The host calls the
   Agency's `spawn` only after `land` returned `Ok`, in the session `Landed.session` names,
   and releases that session (`unstarted_ended`) when the Agency refuses for good.
 - *Join and return.* `spawn_return.Returning.session_of` reads the record (`Copy.home`,

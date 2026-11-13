@@ -231,6 +231,9 @@ machine Orch {
   fun handleSpawn() {
     var fr: tFresh;
     if (verdict) {
+      // An ask that arrives between the verdict and the end of the session ends
+      // it, and the owner it answers asks no more.
+      releaseSession();
       toOwner(R_REFUSED, 0, 0, 0);
       return;
     }

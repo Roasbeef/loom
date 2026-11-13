@@ -98,6 +98,14 @@ MUTATIONS = {
      "      announce eRepeated;\n      releaseSession();",
      "      announce eRepeated;")]),
 
+  # An ask that finds a verdict ends the session. Without that, an ask that
+  # arrives between the verdict and the end of the session is answered and the
+  # session is lost to a restart that comes before the step that ends it.
+  "M19-ask-that-finds-a-verdict-keeps-the-session": ("tcOnlyReleasedRefused", 8000, r"liveness bug", [
+    ("PSrc/Orch.p",
+     "      releaseSession();\n      toOwner(R_REFUSED, 0, 0, 0);\n      return;",
+     "      toOwner(R_REFUSED, 0, 0, 0);\n      return;")]),
+
   # A refusal's session is ended in the step after the verdict. Without that, a
   # refused child keeps its session.
   "M10-refused-child-keeps-its-session": ("tcOnlyReleasedRefused", 4000, r"liveness bug", [
@@ -192,8 +200,10 @@ def attempt(name, schedules=None):
     if "Compilation succeeded" not in out:
       return False, "COMPILE FAILED\n" + out[-2000:]
     out = run(["check", "-tc", test, "-s", str(schedules)])
-    bugs = re.search(r"Found (\d+) bug", out)
-    found = int(bugs.group(1)) if bugs else 0
+    # The checker runs more than one strategy and reports each, so the bug counts
+    # are taken together.
+    bugs = re.findall(r"Found (\d+) bug", out)
+    found = max([int(each) for each in bugs]) if bugs else 0
     error = ""
     if found and os.path.exists(LOG):
       for line in open(LOG):
