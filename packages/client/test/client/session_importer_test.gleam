@@ -29,6 +29,8 @@ import simplifile
 import storage/catalogue
 import storage/sqlite
 import support/record_book
+import telemetry/field
+import telemetry/level
 import telemetry/log
 
 const op = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8d9e"
@@ -463,6 +465,41 @@ pub fn a_verified_copy_becomes_the_session_and_a_repeat_answers_again_test() {
   // answers the same.
   assert session_importer.activate(rig.context, request)
     == session_move.Accepted
+  finish(rig)
+}
+
+// The receiver says when the registry committed the import and when the
+// activation was accepted, each naming the session and the operation, with the
+// copy's size and the activation's duration and no path of either machine.
+pub fn the_receiver_logs_the_import_and_the_activation_test() {
+  let rig = rig("logs", box())
+  let copy = cut(rig, 10, clean())
+  assert send(rig, copy, op, 65_536) == session_move.Accepted
+  let records = process.new_subject()
+  let logging =
+    session_importer.Context(
+      ..rig.context,
+      logger: log.new(sink: log.to_subject(records), threshold: level.Info),
+    )
+  assert session_importer.activate(logging, activation(copy, op))
+    == session_move.Accepted
+
+  let assert Ok(imported) = process.receive(records, 0)
+  assert imported.event == "daemon.move_imported"
+  assert list.contains(imported.fields, field.ident("session", copy.session))
+  assert list.contains(imported.fields, field.ident("op", op))
+  assert list.contains(imported.fields, field.text("from", "alpha"))
+  let assert Ok(field.Field(value: field.Count(bytes), ..)) =
+    list.find(imported.fields, fn(found) { found.key == "bytes" })
+  assert bytes > 0
+
+  let assert Ok(activated) = process.receive(records, 0)
+  assert activated.event == "daemon.move_activated"
+  assert list.contains(activated.fields, field.ident("session", copy.session))
+  let assert Ok(field.Field(value: field.Count(elapsed), ..)) =
+    list.find(activated.fields, fn(found) { found.key == "elapsed_ms" })
+  assert elapsed >= 0
+  assert process.receive(records, 0) == Error(Nil)
   finish(rig)
 }
 

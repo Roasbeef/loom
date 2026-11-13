@@ -1372,9 +1372,13 @@ It prints `moving 0198c0de-0000-7000-8000-000000000001 to bravo (operation
 move, and will carry it out. The command does not wait. Asking again for the same
 destination prints the same operation. Naming a destination that is not in the
 `[orchestrators.<name>]` tables is refused with `orchestrator_unknown`. A local
-session is refused with `not_movable`, and so is a session that was moved here
+session is refused with `not_movable` when the destination's table names no
+`checkout_executor` and `checkout_workspace`, and so is a session that was moved here
 until the orchestrator it came from has finished that move; ask again a little
-later.
+later. The refusal says which: the command prints the code and the daemon's
+sentence, for example `not_movable: this session works in a directory on this
+machine; to move it, [orchestrators.bravo] needs checkout_executor and
+checkout_workspace`.
 
 **3. Wait for it to finish.** On the source, a session that is moving cannot be
 opened. `sessions.open` answers `moving`, naming the destination and the
@@ -1450,14 +1454,18 @@ without each of them:
 <id>)` and returns; a small checkout was on the executor and open on the receiver
 in about four seconds. How the move ended is in the source daemon's log
 (`daemon.move_finished` or `daemon.move_aborted` with the reason), and the command
-shows nothing more. On the executor the branch `loom/<session>` holds the
+shows nothing more. The checkout step writes one line for each stage on the source
+(`daemon.move_checkout_captured`, `_sent`, `_applied` and `_closed`, each with the
+session, the operation, the state's short hash, its size and the stage's duration in
+milliseconds), and the receiver writes `daemon.move_imported` and
+`daemon.move_activated`. On the executor the branch `loom/<session>` holds the
 directory's history and one `Working snapshot` commit with the uncommitted and
 untracked files; the receiver's first open makes the tree, which is removed again
 when the session stops. The directory on the source is not changed, the session
 there answers `not_owner`, and the first `git status` on the box is clean. The
 session's original branch name does not travel. Two limits to know: `--abandon` is
-refused in a deployment without a session directory (`not_movable: request
-refused`), so a stalled move there ends only by being fixed or finished; and a move
+refused in a deployment without a session directory (`not_movable: only a
+directory member can abandon a move, and this daemon is not one`), so a stalled move there ends only by being fixed or finished; and a move
 that is aborted after the checkout landed and then asked for again, with the
 uncommitted work discarded on the source in between, finishes with the earlier
 snapshot on the executor (the review's finding 2). A repository whose attributes
@@ -1466,7 +1474,8 @@ name a filter driver is refused by the capture.
 **When a move does not finish.** The source retries a move that cannot proceed and
 keeps it as `moving` in the meantime, so the session is not lost and is not served
 by two orchestrators. The reason is in the source daemon's log as
-`daemon.move_stalled`, repeated until it clears:
+`daemon.move_stalled`, written after the first, second, fourth, eighth attempt and
+so on (the line carries `attempt` and `stalled_ms`) until it clears:
 
 | Reason in the log | What to check |
 |---|---|
@@ -1493,9 +1502,12 @@ a session it no longer serves; the receiver's owner grants access on the receive
 Nothing follows a client from the source to the receiver, so a client that held
 the session open reconnects to the receiver and catches up from there.
 
-The source keeps a tombstone. The session stays in its listing, shown as saved, and
-opening it, archiving it, restoring it or deleting it names the new owner. The
-tombstone is what stops a late message of the move from bringing the session back,
+The source keeps a tombstone. `sessions.get` and `sessions.list` still carry the
+record, saved, with a `moved` member naming the new owner, and opening it, archiving
+it, restoring it or deleting it names the new owner. The terminal's `loom sessions
+list` and the web home do not draw the tombstone as a session of the source: the new
+owner lists it, and `loom sessions list --all` shows it under that orchestrator's
+section (protocol-change/085). The tombstone is what stops a late message of the move from bringing the session back,
 and what lets the session return to the source later: moving it from the receiver
 back to the source is a new move, and the source takes it in over the tombstone.
 If you remove `[distribution]` from a daemon while a move is in flight, the move

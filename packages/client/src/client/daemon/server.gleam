@@ -3239,6 +3239,8 @@ fn dispatch(
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(control_refusal)
       |> result.map_error(tombstoned(config, principal, id, _))
+      |> result.map_error(in_flight(state, id, _))
+      |> result.map_error(busy_in_words)
 
     // The ledger commands answer with the step that failed, which the string
     // codes of `dispatch_class` cannot carry, so they are served here.
@@ -3246,6 +3248,13 @@ fn dispatch(
     | protocol.LedgerEntries(..)
     | protocol.LedgerStatus
     | protocol.LedgerHoldings -> ledger_command(config, principal, command)
+
+    // A refused move says why in words, which the string codes of
+    // `dispatch_class` cannot carry, so the two move commands are served here.
+    protocol.MoveSession(id, to, supplied) ->
+      move_command(config, state, digest, principal, id, to, supplied)
+    protocol.AbandonMove(id, supplied) ->
+      abandon_command(config, state, principal, id, supplied)
 
     // The project commands answer with project facts rather than session ones
     // (protocol-change/106) and are the owner's alone.
@@ -3849,6 +3858,23 @@ fn in_flight(
         Ok(_) | Error(_) -> refused
       }
 
+    _ -> refused
+  }
+}
+
+/// Words a `busy` refusal of archive, restore and delete. The code is
+/// unchanged. The refusal has two causes the owner can act on: the session is
+/// open here, or it was imported and its origin has not yet said it retired the
+/// move that brought it (`inbound_settled`).
+fn busy_in_words(refused: Refused) -> Refused {
+  case refused.code {
+    "busy" ->
+      Refused(
+        "busy",
+        "the session is open here, or the orchestrator it was moved from has "
+          <> "not finished handing it over; stop it, or ask again later",
+        [],
+      )
     _ -> refused
   }
 }
@@ -4622,39 +4648,6 @@ fn dispatch_class(
       |> result.map_error(error_code)
       |> result.map(fn(status) { #("sessions.stop", status_json(status)) })
     }
-    protocol.AbandonMove(id, supplied) -> {
-      use Nil <- result.try(owner(principal))
-      use Nil <- result.try(epoch(state, supplied))
-      abandon_move(config, state.registry, id)
-      |> result.map(fn(op) {
-        #(
-          "sessions.move",
-          json.Object([
-            #("session_id", json.String(id)),
-            #("op", json.String(op)),
-            #("state", json.String("abandoning")),
-          ]),
-        )
-      })
-      |> result.map_error(move_refusal_code)
-    }
-    protocol.MoveSession(id, to, supplied) -> {
-      use Nil <- result.try(owner(principal))
-      use Nil <- result.try(epoch(state, supplied))
-      move_session(config, state.registry, digest, supplied, id, to)
-      |> result.map(fn(begun) {
-        #(
-          "sessions.move",
-          json.Object([
-            #("session_id", json.String(id)),
-            #("op", json.String(begun.op)),
-            #("to", json.String(begun.to)),
-            #("state", json.String("moving")),
-          ]),
-        )
-      })
-      |> result.map_error(move_refusal_code)
-    }
     protocol.DeleteSession(id, supplied) -> {
       // A session imported from an orchestrator that has not retired its move is
       // busy: deleting it would be undone by that orchestrator's retry. The
@@ -4745,10 +4738,14 @@ fn dispatch_class(
 
     // Served by `ledger_command` in `dispatch`, because a refusal there names
     // a step and this function's refusals are bare codes. They never reach here.
+    // The two move commands are served by `move_command` and `abandon_command`
+    // for the same reason: a refusal of a move carries its cause in words.
     protocol.LedgerAppend(..)
     | protocol.LedgerEntries(..)
     | protocol.LedgerStatus
-    | protocol.LedgerHoldings -> Error("unavailable")
+    | protocol.LedgerHoldings
+    | protocol.MoveSession(..)
+    | protocol.AbandonMove(..) -> Error("unavailable")
 
     // The project commands are served by `dispatch` and never reach here.
     protocol.CreateProject(..)
@@ -4893,8 +4890,9 @@ type Unsettled {
 }
 
 /// Why a move or an abandon did not happen. The control commands word each as
-/// a code (`move_refusal_code`), and the pages word each in their own fixed
-/// sentences, so no text the daemon produced reaches a browser.
+/// a code (`move_refusal_code`) and a sentence (`move_refusal_words`), and the
+/// pages word each in their own fixed sentences, so no text the daemon produced
+/// reaches a browser.
 pub type MoveRefusal {
   /// The destination is not an `[orchestrators.<name>]` of this daemon.
   UnknownDestination
@@ -5262,11 +5260,14 @@ fn selections_stay_behind(
           "the session serves a selected extension; revoke the selection (evolution revoke) before moving it",
         )),
       )
-    Error(refusal) ->
+
+    // The catalogue's own words can name a database path, so the reply says
+    // only what could not be read.
+    Error(_refusal) ->
       Error(
         Declined(manager.AdminNotMovable(
-          "the evolution catalogue could not be read: "
-          <> evolution_store.describe(refusal),
+          "the evolution catalogue could not be read, so it is not known "
+          <> "whether the session serves a selected extension; ask again",
         )),
       )
   }
@@ -5331,6 +5332,137 @@ pub fn move_refusal_code(refusal: MoveRefusal) -> String {
     NotMoving -> "conflict"
     Unreadable(error:) -> error_code(error)
   }
+}
+
+/// The words a control refusal of a move or an abandon carries beside its code.
+/// Each cause is worded for the owner who asked: what was refused and what to
+/// change. A refusal the daemon's own checks produced already carries its
+/// reason, composed from configuration names and fixed sentences, so it is
+/// passed on as it is. No path of this machine and no text of a database or an
+/// executor is written, because the daemon's log is where those belong.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert server.move_refusal_words(server.NotMoving)
+///   == "this session has no move in flight"
+/// ```
+pub fn move_refusal_words(refusal: MoveRefusal) -> String {
+  // Each variant is a different cause, and each says its own.
+  case refusal {
+    UnknownDestination ->
+      "no orchestrator with that name is configured on this daemon; name one "
+      <> "of its [orchestrators.<name>] tables"
+    Declined(error:) -> admin_refusal_words(error)
+    Unanswered -> "the daemon could not begin the move now; ask again"
+    NotAMember ->
+      "only a directory member can abandon a move, and this daemon is not one"
+    NotMoving -> "this session has no move in flight"
+    Unreadable(error: manager.Catalogue(catalogue.Missing)) ->
+      "this daemon has no session with that identity"
+    Unreadable(..) -> "the session could not be read on this daemon"
+  }
+}
+
+/// The words for a refusal of the registry or of the daemon's own checks.
+fn admin_refusal_words(error: manager.AdminError) -> String {
+  // A reason the checks wrote is the best words there are; the others are fixed.
+  case error {
+    manager.AdminNotMovable(reason:) -> reason
+    manager.AdminMoved(to:) ->
+      "this session was already handed to the orchestrator `" <> to <> "`"
+    manager.AdminMoving(to:, ..) ->
+      "this session is already moving to the orchestrator `" <> to <> "`"
+    manager.AdminMetadata(catalogue.Conflict) ->
+      "a move of this session toward another orchestrator is already in "
+      <> "flight; wait for it to end"
+    manager.AdminBusy -> "the session is in use; stop it and ask again"
+    manager.AdminForbidden ->
+      "only the owner of this daemon can move a session or give its move up"
+    manager.AdminStaleEpoch ->
+      "the daemon restarted since this connection was made; reconnect and ask "
+      <> "again"
+    manager.IsolationRequired
+    | manager.AdminUnavailable
+    | manager.AdminForeignPath
+    | manager.AdminFailed(..)
+    | manager.AdminMetadata(_) ->
+      "the daemon could not begin the move now; ask again, and read the "
+      <> "daemon's log if it persists"
+  }
+}
+
+/// A refused move or abandon as the control socket sends it: the code the
+/// commands have always answered, and the cause in words.
+fn move_refused(refusal: MoveRefusal) -> Refused {
+  Refused(move_refusal_code(refusal), move_refusal_words(refusal), [])
+}
+
+/// The gate of the two move commands: the asker must be the owner and must hold
+/// the current epoch. Each failure is worded as the move's other refusals are, so
+/// a member is told that only the owner moves a session.
+fn move_asker(
+  state: root.Ready(instance),
+  principal: access.Principal,
+  supplied: String,
+) -> Result(Nil, Refused) {
+  use Nil <- result.try(
+    owner(principal)
+    |> result.map_error(fn(_) { move_refused(Declined(manager.AdminForbidden)) }),
+  )
+  epoch(state, supplied)
+  |> result.map_error(fn(_) { move_refused(Declined(manager.AdminStaleEpoch)) })
+}
+
+/// The control command `sessions.move`, which begins a move. The asker must be
+/// the owner with a current epoch, and a refusal says why it was refused.
+fn move_command(
+  config: Config(instance),
+  state: root.Ready(instance),
+  digest: access.Digest,
+  principal: access.Principal,
+  id: String,
+  to: String,
+  supplied: String,
+) -> Result(#(String, JsonValue), Refused) {
+  use Nil <- result.try(move_asker(state, principal, supplied))
+  use begun <- result.map(
+    move_session(config, state.registry, digest, supplied, id, to)
+    |> result.map_error(move_refused),
+  )
+  #(
+    "sessions.move",
+    json.Object([
+      #("session_id", json.String(id)),
+      #("op", json.String(begun.op)),
+      #("to", json.String(begun.to)),
+      #("state", json.String("moving")),
+    ]),
+  )
+}
+
+/// The control command `sessions.move` with `abandon`, which gives a move up. A
+/// refusal says why, so an owner of a daemon that is no member is told that
+/// only a member can abandon.
+fn abandon_command(
+  config: Config(instance),
+  state: root.Ready(instance),
+  principal: access.Principal,
+  id: String,
+  supplied: String,
+) -> Result(#(String, JsonValue), Refused) {
+  use Nil <- result.try(move_asker(state, principal, supplied))
+  use op <- result.map(
+    abandon_move(config, state.registry, id) |> result.map_error(move_refused),
+  )
+  #(
+    "sessions.move",
+    json.Object([
+      #("session_id", json.String(id)),
+      #("op", json.String(op)),
+      #("state", json.String("abandoning")),
+    ]),
+  )
 }
 
 /// The control command `sessions.create`, as a function of what it needs, so

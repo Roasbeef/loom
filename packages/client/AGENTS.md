@@ -8697,6 +8697,22 @@ the protocol-change/078 addendum on moving a session have the protocol.
   registry's turn, because the catalogue open waits up to one second on the
   store's lease. A `Workspace`-scoped selection does not block a move.
   A catalogue that cannot be read refuses the move too.
+- A refused `sessions.move` or abandon carries its cause in the error's
+  `message`. `dispatch` serves the two commands through `move_command` and
+  `abandon_command` (not `dispatch_class`, whose refusals are bare codes), and
+  `move_refusal_words` words each `MoveRefusal`: a reason the registry or the
+  daemon's checks wrote (`AdminNotMovable`) is passed on as it is, the rest are
+  fixed sentences, and nothing names a path or quotes a catalogue's own error. The
+  pages still word the refusals in their own fixed sentences. How a move ended is
+  not readable after the fact: it is the daemon's log, `daemon.move_finished` or
+  `daemon.move_aborted` with the reason.
+- The move's log lines: `session_mover` writes `move_finished` and `move_aborted`;
+  `move_checkout` writes `move_checkout_captured`, `_sent`, `_applied` and `_closed`
+  (session, op, state's short hash, bytes, `elapsed_ms`); `session_importer` writes
+  `move_imported` and `move_activated` on the receiver. A stall is logged by
+  `session_movers` through `session_mover.note_stall`, after the first, second,
+  fourth, eighth attempt and so on (`stall_is_logged`), from a count kept on the
+  mover's `Entry`.
 - `remote/orchestrator_port` gains `Import`, `ImportStatus` and `Activate` beside
   `Owns`, and `Ownership` gains `Moved(to)`. The daemon supplies an `Importer` of
   three functions, so the port knows neither the catalogue nor the filesystem. A
