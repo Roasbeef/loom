@@ -1547,9 +1547,19 @@ fn admit_call(
   // This match resolves dict.get(state.placements, key.session), reply_owner(reply) before the enclosing validation continues.
   case dict.get(state.placements, key.session), reply_owner(reply) {
     Error(Nil), _ ->
-      answer_without_plane(state, key, reply, unplaced(state, admission))
+      answer_without_plane(
+        state,
+        key,
+        reply,
+        unplaced(state, admission, no_plane()),
+      )
     Ok(Building(..)), _ ->
-      answer_without_plane(state, key, reply, protocol.PlaneBuilding)
+      answer_without_plane(
+        state,
+        key,
+        reply,
+        unplaced(state, admission, protocol.PlaneBuilding),
+      )
     _, Error(Nil) -> {
       deliver(
         reply,
@@ -1647,14 +1657,20 @@ fn answer_without_plane(
   }
 }
 
-/// The refusal for a key with no row, in a scope this VM holds no plane for.
+/// The refusal for a key with no row, in a scope this VM holds no usable plane
+/// for: `otherwise` is `NoPlane` for a scope with no plane and `PlaneBuilding`
+/// for one being built.
 ///
-/// The scope's fence comes first, as it does for every other request:
-/// `NoPlane` tells a surface to attach again under the token it holds
-/// (`client/remote/surface`), so only the scope's current runtime may be told
-/// it. A request from a dead runtime, from a closed scope or from a scope the
-/// ledger does not hold learns that instead, and does not attach.
-fn unplaced(state: State(census), admission: Admission) -> Refusal {
+/// The scope's fence comes first, as it does for every other request. Both
+/// refusals tell a surface to attach again under the token it holds
+/// (`client/remote/surface`), so only the scope's current runtime may hear
+/// either. A request from a dead runtime, from a closed scope or from a scope
+/// the ledger does not hold learns that instead, and does not attach.
+fn unplaced(
+  state: State(census),
+  admission: Admission,
+  otherwise: Refusal,
+) -> Refusal {
   let judged =
     fenced(
       state,
@@ -1664,14 +1680,17 @@ fn unplaced(state: State(census), admission: Admission) -> Refusal {
 
   // This match resolves judged before the enclosing validation continues.
   case judged {
-    Ok(Nil) -> no_plane()
+    Ok(Nil) -> otherwise
     Error(refusal) -> refusal
   }
 }
 
 /// No plane keeps this client operation’s decoding or state decision in one place.
 fn no_plane() -> Refusal {
-  protocol.NoPlane("the scope has no workspace plane; attach first")
+  protocol.NoPlane(
+    "the executor restarted and has no workspace for this session yet; "
+    <> "the next tool call restores it",
+  )
 }
 
 // Starts admitted work as a weft run. The run's cancel signal is the host's

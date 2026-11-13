@@ -292,7 +292,7 @@ pub type Refusal {
   NoSuchScope
 
   /// The scope has no workspace plane, because building it failed or the
-  /// executor restarted since it was built. Attach again.
+  /// executor restarted since it was built. The surface attaches again.
   NoPlane(reason: String)
 
   /// The session's workspace plane is still being built. Nothing changed; ask
@@ -1116,7 +1116,9 @@ pub fn describe(refusal: Refusal) -> String {
       <> " and this orchestrator does not"
     WorkspaceMismatch(stored:) ->
       "the executor's scope for this session is for the workspace " <> stored
-    NoSuchScope -> "the executor has no scope for this session"
+    NoSuchScope ->
+      "the executor has no scope for this session; close the session and "
+      <> "open it again"
     NoPlane(reason:) ->
       "the executor has no workspace for this session: " <> reason
     PlaneBuilding ->
