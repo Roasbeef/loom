@@ -107,7 +107,7 @@ run("render", [WidthS, HeightS], Label) ->
 
 %% How the cost of one refresh of an unchanged capture, one paint, one key
 %% and one idle tick grow with the number of strands the capture holds. The
-%% decoder bounds a cut at 1024 cells, so the largest count is about 150.
+%% decoder bounds a cut at 1024 cells, so the largest count is about 200.
 %% A refresh is the cut applied to the model, which is what the lane does on
 %% every pushed notice; the decode is timed apart because it is the other
 %% half of the per-notice cost.
