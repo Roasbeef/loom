@@ -9103,3 +9103,155 @@ pub fn a_relayed_stop_with_an_unreadable_strand_is_not_acknowledged_test() {
   assert gateway.stop_relayed(harness.hub) == Error(Nil)
   let assert Ok(Nil) = api.close(harness.runtime)
 }
+
+// --- the pull follows what changed, not how many strands exist -------------
+
+// Counts the register reads the hub's own store performs, by sending one
+// message to a counter per read. The hub reads through `options.runtime`, so
+// wrapping that store sees exactly what a pull costs.
+type ReadCount {
+  ReadHappened
+  ReadTotal(Subject(Int))
+}
+
+fn read_counter() -> Subject(ReadCount) {
+  let assert Ok(started) =
+    actor.new(0)
+    |> actor.on_message(fn(count, message) {
+      case message {
+        ReadHappened -> actor.continue(count + 1)
+        ReadTotal(reply) -> {
+          process.send(reply, count)
+          actor.continue(count)
+        }
+      }
+    })
+    |> actor.start
+  started.data
+}
+
+fn read_total(counter: Subject(ReadCount)) -> Int {
+  process.call(counter, waiting: 5000, sending: ReadTotal)
+}
+
+// A network hub over a session holding `strands` idle strands besides main,
+// whose store counts register reads. Returns the reads one settled turn on
+// main costs after the seeding has fallen behind the high-water.
+fn reads_for_one_turn(strands: Int) -> Int {
+  let counter = read_counter()
+  let id = ids.mint_session(ids.generator(clock.fixed(1000), 640)).0
+  let harness =
+    start_harness_adjusted(
+      None,
+      None,
+      None,
+      Some(id),
+      SettlingProvider,
+      None,
+      None,
+      fn(options) {
+        let backend = options.runtime.session.store
+        let counted =
+          storage.Storage(
+            ..backend,
+            get_register: fn(handle, ns, key) {
+              process.send(counter, ReadHappened)
+              backend.get_register(handle, ns, key)
+            },
+            list_registers: fn(handle, ns, prefix) {
+              process.send(counter, ReadHappened)
+              backend.list_registers(handle, ns, prefix)
+            },
+          )
+        gateway.Options(
+          ..options,
+          runtime: api.Runtime(
+            ..options.runtime,
+            session: session.Session(..options.runtime.session, store: counted),
+          ),
+        )
+      },
+    )
+  let configuration =
+    machine_strand.StrandConfiguration(
+      model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
+      thinking_level: machine_strand.ThinkingOff,
+      active_tool_names: [],
+    )
+  let #(socket, _, _) =
+    attach_socket(
+      harness.hub,
+      harness.runtime,
+      process.new_subject(),
+      access.Principal("alice", "Alice", access.MemberPrincipal),
+      access.Owner,
+      process.self(),
+    )
+  let assert protocol.SnapshotBegin(header) =
+    queued_request(
+      socket,
+      1,
+      protocol.Subscribe(
+        ids.session_id_to_string(api.session_id(harness.runtime)),
+        None,
+      ),
+    )
+    as "the fixture subscribes with a credited cut"
+  let assert json.String(snapshot_id) = queue_field(header, "snapshot_id")
+    as "the cut names its continuation"
+  finish_queue_capture(socket, snapshot_id, 0, 1000, 100)
+  seed_idle_strands(harness.runtime, configuration, strands)
+
+  // One turn lets the silent seeding writes fall behind the high-water, and
+  // the second is the one measured.
+  let _warm = queued_request(socket, 2, protocol.Prompt("main", "warm"))
+  settle_reads(counter)
+  let before = read_total(counter)
+  let _turn = queued_request(socket, 3, protocol.Prompt("main", "measured"))
+  settle_reads(counter)
+  read_total(counter) - before
+}
+
+fn seed_idle_strands(
+  runtime: api.Runtime,
+  configuration: machine_strand.StrandConfiguration,
+  count: Int,
+) -> Nil {
+  case count > 0 {
+    False -> Nil
+    True -> {
+      let assert Ok(Nil) =
+        api.create_idle_strand(
+          runtime,
+          "idle-" <> int.to_string(count),
+          configuration,
+          None,
+        )
+      seed_idle_strands(runtime, configuration, count - 1)
+    }
+  }
+}
+
+// Waits until the counter has stopped moving for a quiet interval.
+fn settle_reads(counter: Subject(ReadCount)) -> Nil {
+  let first = read_total(counter)
+  process.sleep(200)
+  case read_total(counter) == first {
+    True -> Nil
+    False -> settle_reads(counter)
+  }
+}
+
+// Before the pull was bounded by what changed, one turn read the state and
+// result registers of every strand and listed every configuration, so the
+// count grew in step with the strands: 700 cells listed and 1,200 reads at a
+// hundred strands. The hub now asks storage which registers moved, and a
+// turn costs the same reads whether the session holds ten strands or two
+// hundred.
+pub fn a_turn_costs_the_same_reads_whatever_the_strand_count_test() {
+  let few = reads_for_one_turn(10)
+  let many = reads_for_one_turn(200)
+  assert few > 0 as "a turn reads registers"
+  assert many <= few + 4
+    as "the pull's reads must not follow the number of strands"
+}
