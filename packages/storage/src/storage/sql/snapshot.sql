@@ -42,6 +42,30 @@ AND CASE
   ELSE json_extract(CAST(value AS TEXT), '$.' || @field) = CAST(@expected AS TEXT)
 END;
 
+-- The cells of one namespace written inside a window of sequences: a reader that remembers
+-- a high-water asks this instead of listing the namespace, and the cost is the
+-- changed cells rather than every cell. The query names its index because the
+-- primary key's key range would otherwise be as cheap to the planner, and it
+-- would then walk the whole namespace; the session schema creates the index
+-- before any statement runs. The prefix still narrows the window, as above.
+-- name: SnapshotRegisterChangedHeaders :many
+SELECT key, seq, length(value) AS value_bytes
+FROM registers INDEXED BY ix_register_seq
+WHERE ns = @namespace AND seq > @after_seq AND seq <= @through_seq
+AND key >= @prefix AND key <
+  CASE WHEN CAST(@prefix_upper AS TEXT) = '' THEN CAST('' AS BLOB)
+  ELSE CAST(@prefix_upper AS TEXT) END
+ORDER BY key LIMIT 1025;
+
+-- name: SnapshotRegisterChangedBudget :one
+SELECT COUNT(*) AS cell_count,
+  CAST(COALESCE(SUM(length(value) + length(CAST(key AS BLOB)) + length(CAST(ns AS BLOB)) + 65), 0) AS INTEGER) AS total_bytes
+FROM registers INDEXED BY ix_register_seq
+WHERE ns = @namespace AND seq > @after_seq AND seq <= @through_seq
+AND key >= @prefix AND key <
+  CASE WHEN CAST(@prefix_upper AS TEXT) = '' THEN CAST('' AS BLOB)
+  ELSE CAST(@prefix_upper AS TEXT) END;
+
 -- name: SnapshotRegisterValue :one
 SELECT value FROM registers
 WHERE ns = @namespace AND key = @key AND seq = @seq;
