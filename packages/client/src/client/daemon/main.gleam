@@ -138,6 +138,7 @@ import client/session_importer
 import client/session_move
 import client/session_mover
 import client/session_movers
+import client/session_states
 import client/spawn_return
 import client/spawn_seed
 import client/spawners
@@ -1361,7 +1362,11 @@ pub fn start_states(
       // making them, so a daemon that starts has none that are live.
       let _swept =
         simplifile.delete(root <> "/" <> spawn_seed.staging_directory)
-      spawn_return.sweep(root)
+      spawn_return.sweep(
+        root,
+        longest_retain_s(config.spawners),
+        ffi_os.system_time_ms() / 1000,
+      )
 
       // A capture's stage is a copy of a repository's history, and one left by a
       // daemon that was killed mid-capture will not be used again.
@@ -2324,6 +2329,7 @@ pub fn spawn_host_seeding(
           pair: fn() { result.map(serving(origin), fn(found) { found.1 }) },
           children:,
           returning:,
+          logger:,
         ),
         handles,
         within_ms,
@@ -2398,6 +2404,16 @@ pub fn spawn_host_seeding(
   )
 }
 
+/// The longest `retain_s` of the configured spawners, in seconds, or the default
+/// when there are none. A child's records are kept this long, which is how long its
+/// delegate session is kept with no message from its spawner and so as long as
+/// anything can still ask about it.
+fn longest_retain_s(configured: List(spawners.Spawner)) -> Int {
+  list.fold(configured, spawners.default_retain_s, fn(longest, each) {
+    int.max(longest, each.retain_s)
+  })
+}
+
 /// What a message about a child is told when this orchestrator cannot yet say
 /// where the child runs, because its record cannot be read.
 fn unplaced_child() -> remote_spawn.SpawnRefusal {
@@ -2422,13 +2438,24 @@ fn unstarted_ended(
   release: fn() -> Result(Int, remote_spawn.SpawnRefusal),
 ) -> Result(a, remote_spawn.SpawnRefusal) {
   case started, own {
-    Error(refusal), Some(_) ->
+    Error(refusal), Some(endpoint) ->
       case seed_landing.asks_again(refusal) {
         True -> started
-        False -> {
-          let _released = release()
-          started
-        }
+
+        // A resend whose child has begun is not a child that was refused: a failure
+        // of the Agency's answer must not end the session of a running child, so the
+        // sender asks again and is answered by the child it already has.
+        False ->
+          case endpoint.fresh() {
+            session_states.Begun ->
+              Error(remote_spawn.NotYetOpen(
+                reason: "the child has begun in its session; ask again for its answer",
+              ))
+            session_states.Fresh | session_states.Unreadable -> {
+              let _released = release()
+              started
+            }
+          }
       }
     _, _ -> started
   }

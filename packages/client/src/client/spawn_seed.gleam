@@ -969,7 +969,16 @@ fn landed(
       refusal
     }),
   )
-  use begun <- result.try(children.open(spawner, parent, name))
+  use begun <- result.try(
+    children.open(spawner, parent, name)
+    |> result.map_error(ended_unless_asks_again(
+      _,
+      children,
+      spawner,
+      parent,
+      name,
+    )),
+  )
 
   // A child that has begun is a resend of a spawn that went through.
   case begun {
@@ -993,22 +1002,35 @@ fn landed(
       // use it.
       use endpoint <- result.try(
         children.resolve(spawner, parent, name)
-        |> result.map_error(fn(refusal) {
-          // The ask that comes again uses the session, and any other refusal
-          // leaves it with no use.
-          case seed_landing.asks_again(refusal) {
-            True -> Nil
-            False -> {
-              let _released = children.release(spawner, parent, name)
-              Nil
-            }
-          }
-
-          refusal
-        }),
+        |> result.map_error(ended_unless_asks_again(
+          _,
+          children,
+          spawner,
+          parent,
+          name,
+        )),
       )
       placed_in(node, children, spawner, parent, name, held, endpoint, wait_ms)
       |> result.map(fn(_placed) { ready(endpoint) })
+    }
+  }
+}
+
+/// Passes a refusal on, ending the child's session first unless the refusal asks the
+/// sender to come again. The ask that comes again uses the session, and any other
+/// refusal leaves it with no use.
+fn ended_unless_asks_again(
+  refusal: SpawnRefusal,
+  children: ChildSessions,
+  spawner: Spawner,
+  parent: Parent,
+  name: String,
+) -> SpawnRefusal {
+  case seed_landing.asks_again(refusal) {
+    True -> refusal
+    False -> {
+      let _released = children.release(spawner, parent, name)
+      refusal
     }
   }
 }

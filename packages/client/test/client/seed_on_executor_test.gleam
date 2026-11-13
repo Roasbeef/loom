@@ -967,6 +967,45 @@ pub fn an_executor_that_never_answers_leaves_the_child_unfinished_and_its_sessio
     as "the executor was asked many times"
   assert entry == remote_spawn.Pending(world.handle, spawn_return.wait_ms)
   assert journal_is(world, [Resolved(world.child), Spawned(True)])
+
+  // The waiting is bounded by time. Once the first verdict is older than the
+  // window the join gives up with the child's report and says where the commits
+  // still are, and the session is ended.
+  let records = world.receiver.state_root <> "/" <> spawn_return.directory_name
+  let assert Ok(names) = simplifile.read_directory(records)
+  list.each(names, fn(name) {
+    case string.ends_with(name, ".verdict") {
+      True -> {
+        let assert Ok(text) = simplifile.read(records <> "/" <> name)
+        let assert [before, rest] = string.split(text, "\"since\":")
+        let assert Ok(#(_old, after)) = string.split_once(rest, "}")
+        let assert Ok(Nil) =
+          simplifile.write(
+            records <> "/" <> name,
+            before <> "\"since\":1}" <> after,
+          )
+        Nil
+      }
+      False -> Nil
+    }
+  })
+  let gave_up =
+    poll.until(within: 30_000, every: 100, attempt: fn() {
+      case ask_join(world) {
+        remote_spawn.Ready(..) as ready -> poll.Done(ready)
+        remote_spawn.Pending(..) -> poll.Retry
+      }
+    })
+  let assert poll.Answered(remote_spawn.Ready(report:, state: None, ..)) =
+    gave_up
+    as "the join gives up once the window has passed"
+  assert string.contains(report, "on the executor `runner`")
+  assert string.contains(report, "on the branch `loom/")
+  assert journal_is(world, [
+    Resolved(world.child),
+    Spawned(True),
+    Released(world.child),
+  ])
   stop(world)
 }
 
@@ -1140,5 +1179,56 @@ pub fn the_end_of_a_run_stops_the_children_whatever_becomes_of_the_pairs_session
   // The child was stopped all the same, and its session is kept so that a join
   // can still bring its commits back.
   assert journal_is(world, [Resolved(world.child), Spawned(True), Ended])
+  stop(world)
+}
+
+pub fn applies_of_one_state_by_sessions_sharing_a_repository_all_succeed_test() {
+  let world = world("seed-exec-race", Small, Steady, False)
+  let state = world.parent.sent
+
+  // Four sessions of one executor, each with a worktree of the one repository,
+  // are given the one state, which several children seeded from one parent carry.
+  let sessions = [
+    world.attached,
+    executor_rig.attach(world.plane, 2, "runner"),
+    executor_rig.attach(world.plane, 3, "runner"),
+    executor_rig.attach(world.plane, 4, "runner"),
+  ]
+  assert state_transfer.send(
+      world.parent.store,
+      state.hash,
+      world.attached.states.link,
+    )
+    == state_transfer.Delivered
+
+  // They apply at once. The ref that names the state is made once and every apply
+  // finds it made, whichever got there first, so none is refused and each tree is
+  // on the tip.
+  let replies = process.new_subject()
+  list.each(sessions, fn(each) {
+    let _asker =
+      process.spawn(fn() { process.send(replies, each.states.apply(state)) })
+    Nil
+  })
+  list.each(sessions, fn(_each) {
+    let assert Ok(answer) = process.receive(replies, 120_000)
+      as "every apply answers"
+    assert answer == Ok(state.tip)
+  })
+  stop(world)
+}
+
+pub fn a_failure_after_the_child_began_does_not_end_the_session_of_a_running_child_test() {
+  let world = world("seed-exec-begun-failure", Small, Steady, False)
+  let assert Ok(Ok(_spawned)) = ask_spawn(world)
+
+  // The sender asks again and the Agency fails to answer with a store failure. The
+  // child is running in its session, so the session is not ended: the sender is
+  // asked to come again and is answered by the child it already has.
+  cell.update(world.refuse_spawn, fn(_) {
+    Some(remote_spawn.StoreFailure(reason: "the catalogue could not answer"))
+  })
+  let assert Ok(Error(remote_spawn.NotYetOpen(..))) = ask_spawn(world)
+  assert !list.contains(cell.get(world.journal), Released(world.child))
   stop(world)
 }
