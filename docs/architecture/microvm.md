@@ -545,7 +545,10 @@ What differs from macOS, each of which was found by booting:
 - **A symlinked runner.** go-microvm compares `/proc/PID/exe`, which the kernel
   resolves, with the runner path before it signals a pid. A runner reached through
   a symlink was never found, and `down` left it holding the root. The backend
-  resolves the path first.
+  resolves the path first, and `loom vm` resolves the manifest's runner path
+  the same way (`vm_cli.running_as`) before it looks for a runner that
+  outlived its launcher, because the runner's command line now begins with the
+  resolved path.
 - **Podman.** Ubuntu 24.04's podman 4.9 with runc 1.3 rejects the Dockerfile's
   cache mounts; crun accepts them (`VMM_PODMAN_FLAGS`). The build stage removes
   its checkout so that its layer does not fill a 25 GB disk.
