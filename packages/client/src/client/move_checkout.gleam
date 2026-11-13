@@ -382,8 +382,7 @@ fn sent(ports: Ports, request: Request, state: State) -> Result(Nil, Failure) {
       told(request.logger, "sent", request.session, request.op, state, started)
       Ok(Nil)
     }
-    state_transfer.Declined(refusal:) ->
-      Error(Refused(Sending, state_transfer.describe(refusal)))
+    state_transfer.Declined(refusal:) -> declined(refusal)
     state_transfer.Silent ->
       Error(Unfinished(Sending, "the executor did not answer"))
     state_transfer.Faulted(reason:) -> Error(Unfinished(Sending, reason))
@@ -637,7 +636,7 @@ fn attach_and_apply(
   arrival: Arrival,
 ) -> Result(Result(String, LandFailure), String) {
   let attached =
-    workspace.attach(workspace.Registered(
+    workspace.attach_classified(workspace.Registered(
       placement:,
       session: arrival.session,
       workspace: arrival.target.workspace,
@@ -654,7 +653,9 @@ fn attach_and_apply(
   // An attach that failed left nothing to close here: the open removed what it
   // had made. One that succeeded owns a scope that is closed on every path.
   case attached {
-    Error(reason) -> Ok(Error(LandUnfinished(reason)))
+    Error(workspace.AttachRefused(reason:)) -> Ok(Error(LandRefused(reason)))
+    Error(workspace.AttachUnfinished(reason:)) ->
+      Ok(Error(LandUnfinished(reason)))
     Ok(hands) -> {
       let applying = bootstrap.monotonic_time_ms()
       let applied = hands.apply_state(arrival.state)
@@ -699,6 +700,23 @@ fn landed(
   }
 }
 
+/// The executor's store said no to a piece. A full store may have room later, so
+/// that one is unfinished. The rest are about the piece or the description and
+/// asking again is answered the same way. Each variant is named, so a new refusal
+/// has to be classified here.
+fn declined(refusal: state_transfer.Refusal) -> Result(Nil, Failure) {
+  let words = state_transfer.describe(refusal)
+  case refusal {
+    state_transfer.NoRoom(..) -> Error(Unfinished(Sending, words))
+    state_transfer.BadState(..)
+    | state_transfer.BadPiece(..)
+    | state_transfer.TooLarge(..)
+    | state_transfer.OutOfOrder(..)
+    | state_transfer.Mismatch(..)
+    | state_transfer.NotServing -> Error(Refused(Sending, words))
+  }
+}
+
 /// A refusal of an apply as final or passing. What the workspace decided about
 /// the state (it is shared, the tree has changes, the store lacks the state) is
 /// final. The fence and the executor's own condition are not.
@@ -708,6 +726,22 @@ fn classified(refusal: protocol.Refusal) -> LandFailure {
     | protocol.NoStates(reason:)
     | protocol.Invalid(reason:) -> LandRefused(reason)
     protocol.WorkspaceMismatch(..) -> LandRefused(protocol.describe(refusal))
-    other -> LandUnfinished(protocol.describe(other))
+    protocol.StaleToken
+    | protocol.StaleIncarnation(..)
+    | protocol.ScopeNotOpen
+    | protocol.ScopeClosing
+    | protocol.UncleanClose(..)
+    | protocol.CapacityExhausted(..)
+    | protocol.BudgetExhausted(..)
+    | protocol.VersionMismatch(..)
+    | protocol.NoSuchScope
+    | protocol.NoPlane(..)
+    | protocol.PlaneBuilding
+    | protocol.WorktreeFailed(..)
+    | protocol.UnknownHandle
+    | protocol.AlreadyPublished
+    | protocol.StaleGeneration(..)
+    | protocol.NoEvolution(..)
+    | protocol.Unreachable(..) -> LandUnfinished(protocol.describe(refusal))
   }
 }

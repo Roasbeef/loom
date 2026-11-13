@@ -150,6 +150,7 @@ fn serve(name: String, served: Served) -> Plane {
   let served_workspaces = case served {
     InWorktrees -> [rig.workspace]
     Shared -> [workspaces.shared("repo", rig.root)]
+    Both -> [rig.workspace, workspaces.shared("shared1", rig.root)]
   }
   let #(store, endpoint, capturer) = state_node(rig.state)
   let assert Ok(started) =
@@ -177,6 +178,9 @@ fn serve(name: String, served: Served) -> Plane {
 type Served {
   InWorktrees
   Shared
+  // The `repo` worktree workspace and a `shared` one named `shared1`, so that a
+  // move can name the wrong one first.
+  Both
 }
 
 fn tree_of(plane: Plane, session: String) -> String {
@@ -555,6 +559,12 @@ fn plain(rig: Rig) -> session_mover.Environment(String) {
 }
 
 fn begin(rig: Rig) -> catalogue.Pending {
+  begin_as(rig, op)
+}
+
+// The owner begins a move under this operation, which is how a move asked for
+// again after an abandon differs from the one before it.
+fn begin_as(rig: Rig, operation: String) -> catalogue.Pending {
   let assert Ok(moving) =
     manager.begin_move_from(
       rig.source.registry,
@@ -562,20 +572,28 @@ fn begin(rig: Rig) -> catalogue.Pending {
       "move-test",
       rig.session,
       to: "bravo",
-      op:,
+      op: operation,
       departure: manager.WithLocalCheckout,
     )
     as "the owner begins the move"
-  assert moving == catalogue.Moving(op:, to: "bravo")
-  catalogue.Pending(session: rig.session, op:, to: "bravo")
+  assert moving == catalogue.Moving(op: operation, to: "bravo")
+  catalogue.Pending(session: rig.session, op: operation, to: "bravo")
 }
+
+// A second operation, for a move asked for again.
+const second_op = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8d9f"
 
 // --- what a finished move leaves ---------------------------------------------------------
 
 fn assert_moved(rig: Rig) -> Nil {
-  assert custody(rig.source, rig.session) == catalogue.Moved(op:, to: "bravo")
+  assert_moved_as(rig, op)
+}
+
+fn assert_moved_as(rig: Rig, operation: String) -> Nil {
+  assert custody(rig.source, rig.session)
+    == catalogue.Moved(op: operation, to: "bravo")
   assert custody(rig.target, rig.session)
-    == catalogue.Imported(op:, from: "alpha")
+    == catalogue.Imported(op: operation, from: "alpha")
   assert simplifile.is_file(source_file(rig)) == Ok(False)
   assert simplifile.is_file(source_file(rig) <> ".moved") == Ok(True)
 
@@ -795,6 +813,73 @@ pub fn a_shared_workspace_on_the_executor_refuses_the_state_test() {
   let assert Ok(Some(cell)) =
     scope.read_at(source_file(rig), "inspector", clock.fixed(at: 9000))
   assert cell.closed == Some(protocol.AllRetired)
+  finish(rig)
+}
+
+// A move to a workspace the executor serves in `shared` mode is refused and
+// abandoned, and the scope it attached is closed but was bound to that
+// workspace. The operator corrects `checkout_workspace`, and the next move takes
+// the closed scope over, because it holds nothing of the session.
+pub fn a_corrected_workspace_after_a_refused_one_lands_the_retry_test() {
+  let rig = start("rebind-shared", Both, 0)
+  let _first = begin_as(rig, op)
+  let wrong =
+    environment(
+      rig,
+      Some(ports(rig, silently, direct)),
+      Some(CheckoutTarget(executor: "box", workspace: "shared1")),
+      fn(_) { Nil },
+    )
+  let assert Aborted(reason) =
+    session_mover.drive(
+      wrong,
+      catalogue.Pending(session: rig.session, op:, to: "bravo"),
+    )
+  assert string.contains(reason, "worktree")
+  assert_stays_on_source(rig)
+
+  // The configuration is corrected and the move asked for again.
+  let again =
+    catalogue.Pending(session: rig.session, op: second_op, to: "bravo")
+  let _second = begin_as(rig, second_op)
+  assert session_mover.drive(plain(rig), again) == Finished
+  assert_moved_as(rig, second_op)
+  finish(rig)
+}
+
+// A name the executor does not serve is refused at the attach, which has bound a
+// scope to it. The source closes that scope and abandons the move, naming the
+// workspace, so the executor holds a closed scope and not an open one, and the
+// corrected workspace is taken at the next incarnation.
+pub fn a_corrected_workspace_after_an_unserved_one_lands_the_retry_test() {
+  let rig = start("rebind-unserved", InWorktrees, 0)
+  let _first = begin_as(rig, op)
+  let wrong =
+    environment(
+      rig,
+      Some(ports(rig, silently, direct)),
+      Some(CheckoutTarget(executor: "box", workspace: "nosuch")),
+      fn(_) { Nil },
+    )
+  let assert Aborted(reason) =
+    session_mover.drive(
+      wrong,
+      catalogue.Pending(session: rig.session, op:, to: "bravo"),
+    )
+  assert string.contains(reason, "nosuch")
+  assert_stays_on_source(rig)
+
+  // No scope is left open between the two attempts: the source's record says the
+  // attach was closed.
+  let assert Ok(Some(cell)) =
+    scope.read_at(source_file(rig), "inspector", clock.fixed(at: 9000))
+  assert cell.closed == Some(protocol.AllRetired)
+
+  let again =
+    catalogue.Pending(session: rig.session, op: second_op, to: "bravo")
+  let _second = begin_as(rig, second_op)
+  assert session_mover.drive(plain(rig), again) == Finished
+  assert_moved_as(rig, second_op)
   finish(rig)
 }
 
