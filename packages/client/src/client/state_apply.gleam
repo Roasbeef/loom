@@ -13,14 +13,16 @@
 //// ## What an apply may write
 ////
 //// Objects, one ref under `refs/loom/in/`, and the checkout. It never moves an
-//// existing ref. The ref is created with the zero object id as its expected old
+//// existing incoming ref. The ref is created with the zero object id as its expected old
 //// value, so Git refuses when it exists with another value; an existing ref
 //// that already names the state's tip is the state having been applied before,
 //// which is how two children of one parent share an import. The session's
 //// branch is created with `git worktree add -b` or `git checkout -b`, and Git
 //// refuses a name that exists. `Reset` is the one placement that moves a branch,
-//// and only the session's own, in a tree no session has written yet. No
-//// transport is used by apply itself. A fetch
+//// and only the session's own, in a tree no session has written yet, and the
+//// one that keeps a second ref per session, `refs/loom/applied/<session>`, which
+//// names the tip last applied there and is rewritten by each apply that moves
+//// the tree. No transport is used by apply itself. A fetch
 //// from a path reads the repository's `url.<base>.insteadOf` and `protocol.*`
 //// settings, which can turn a bundle path into a command, so the bundle is
 //// unpacked with `git bundle unbundle`, checked for connectivity, and given its
@@ -69,8 +71,10 @@
 //// ask for anything, so `Reset` does not add a worktree. It imports the state
 //// into the repository the tree belongs to, as `Worktree` does, and moves the
 //// tree's own branch, `loom/<session>`, onto the tip. It requires the tree to be
-//// clean and not yet written by the session; a tree that already contains the
-//// tip is left alone, so a repeated request changes nothing. A dirty state's
+//// clean and not yet written by the session. A request for the tip that was
+//// last applied, or for the tip the tree's `HEAD` already is, is left alone, so
+//// a repeated request changes nothing. A tip that is only an ancestor of the
+//// tree's `HEAD` is not a repeat: it moves the tree. A dirty state's
 //// snapshot commit is checked out as it is, which means the session sees the
 //// sender's uncommitted work as committed content.
 ////
@@ -92,7 +96,7 @@
 ////    because a new repository holds no base.
 //// 4. `into_existing` checks that the tree is the linked worktree it should be
 ////    (`check_linked`), imports the bundle, and moves the tree's branch when the
-////    tree is clean and does not hold the tip yet.
+////    tree is clean and the tip is neither the last one applied nor its `HEAD`.
 //// 5. `import_bundle` is the shared part: it answers the incoming ref, creating
 ////    it from the bundle when absent.
 
@@ -608,6 +612,11 @@ fn into_clone(
 /// It is a state that was captured after the tree was set, such as a directory
 /// whose edits the operator discarded, or a commit the executor's workspace had
 /// before the session did.
+///
+/// The record rests on one assumption: `loom/<session>` is moved only by an apply
+/// or by the session. A branch deleted out of band is made again from the base
+/// (`worktrees.recreate`), and a request for the recorded tip would then be
+/// answered as applied.
 fn into_existing(
   git: Git,
   bundle: String,
@@ -634,6 +643,13 @@ fn into_existing(
       |> result.replace(applied)
     False, False -> {
       use Nil <- result.try(require_clean(git, worktree))
+
+      // The record is dropped before the branch moves and written after, so a
+      // crash at any point leaves either no record, which the other arms answer
+      // from the tree, or a record that names what the tree holds. Left in place
+      // it would name the older tip while the tree held the new one, and a later
+      // request for the older tip would be answered as applied.
+      use _ <- result.try(forget_applied(git, repository, session))
       let writable = [repository <> "/.git", worktree]
       use _ <- result.try(
         checked_out(git, worktree, writable, [
@@ -650,6 +666,24 @@ fn into_existing(
 /// is recognised by it, not by the tree's history.
 fn applied_ref(session: String) -> String {
   "refs/loom/applied/" <> session
+}
+
+/// Drops the record of the last apply, which is already gone on a first apply.
+fn forget_applied(
+  git: Git,
+  repository: String,
+  session: String,
+) -> Result(String, String) {
+  use found <- result.try(current_value(git, repository, applied_ref(session)))
+  case found {
+    None -> Ok("")
+    Some(_) ->
+      git_ok(git, repository, [repository <> "/.git"], [
+        "update-ref",
+        "-d",
+        applied_ref(session),
+      ])
+  }
 }
 
 /// Records the tip as the last one applied for the session.

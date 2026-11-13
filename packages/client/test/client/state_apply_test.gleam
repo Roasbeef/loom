@@ -893,6 +893,64 @@ pub fn a_tree_that_starts_ahead_of_the_tip_is_moved_to_it_test() {
   state_rig.stop(rig)
 }
 
+// A tree whose HEAD already is the tip has no record yet. This is the arm a
+// clean directory at the executor's own commit takes: nothing moves, and the
+// apply writes the record, so a resend after the session commits on top is
+// still recognised.
+pub fn a_tree_already_at_the_tip_is_left_alone_and_recorded_test() {
+  let scenario = scenario("reset-at-tip")
+  let rig = scenario.rig
+  let tree = scope_tree(scenario, 1)
+  let session = worktree_rig.session(1)
+
+  // The sender's directory is at the commit the receiver's tree starts at.
+  let _ =
+    worktree_rig.git(rig.root, ["reset", "--hard", "--quiet", scenario.base])
+  let assert Ok(Nil) = simplifile.delete(rig.root <> "/notes")
+  let snapshot = state_rig.capture(rig, "at-tip", Full)
+  assert snapshot.commit == scenario.base
+  let #(state, bundle) = stored(rig, snapshot)
+  let applied_ref = "refs/loom/applied/" <> session
+  let head_before = worktree_rig.git(tree, ["rev-parse", "HEAD"])
+  assert worktree_rig.git(scenario.receiver, [
+      "for-each-ref",
+      "--format=%(refname)",
+      applied_ref,
+    ])
+    == ""
+  let assert Ok(applied) =
+    state_apply.apply(rig.git, bundle, state, reset(scenario, 1))
+  assert applied.tip == scenario.base
+  assert worktree_rig.git(tree, ["rev-parse", "HEAD"]) == head_before
+  assert worktree_rig.git(scenario.receiver, ["rev-parse", applied_ref])
+    == scenario.base
+
+  // The session commits on top, and the resend is answered from the record.
+  let child = state_rig.commit_file(tree, "child.txt", "child\n", "child work")
+  assert state_apply.apply(rig.git, bundle, state, reset(scenario, 1))
+    == Ok(applied)
+  assert worktree_rig.git(tree, ["rev-parse", "HEAD"]) == child
+  state_rig.stop(rig)
+}
+
+// A crash between the checkout and the record leaves the tree at the tip and no
+// record. The resend is answered from the tree's HEAD, and the record is written
+// again, so what a later request finds is exact.
+pub fn a_missing_record_is_written_again_from_the_tree_test() {
+  let scenario = scenario("reset-no-record")
+  let rig = scenario.rig
+  let tree = scope_tree(scenario, 1)
+  let session = worktree_rig.session(1)
+  let applied_ref = "refs/loom/applied/" <> session
+  let assert Ok(first) = apply_reset(scenario, 1)
+  let _ = worktree_rig.git(scenario.receiver, ["update-ref", "-d", applied_ref])
+  assert apply_reset(scenario, 1) == Ok(first)
+  assert worktree_rig.git(tree, ["rev-parse", "HEAD"]) == scenario.state.tip
+  assert worktree_rig.git(scenario.receiver, ["rev-parse", applied_ref])
+    == scenario.state.tip
+  state_rig.stop(rig)
+}
+
 pub fn a_scope_tree_with_changes_is_not_overwritten_test() {
   let scenario = scenario("reset-dirty")
   let rig = scenario.rig
