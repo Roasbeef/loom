@@ -69,6 +69,13 @@ func (p *Proxy) GuestFiles(port uint16) []GuestFile {
 // its own value wins, and falls back to the placeholder so a jailed shell whose
 // environment allowlist omits GH_TOKEN still authenticates through the proxy.
 // The value is quoted because an unquoted ";" would start a comment.
+//
+// Each injection host also gets a rewrite of its SSH remote forms to HTTPS.
+// Most developer checkouts name their origin as git@host:owner/repo, and the
+// copy in the guest keeps that URL. The guest has no ssh client, no key and
+// no route to port 22, so without the rewrite `git push` fails there with
+// "cannot run ssh". The rewrite names the same host and adds no credential
+// of its own: the request still goes through the proxy, which decides.
 func (p *Proxy) gitConfig(proxyURL string) string {
 	var b strings.Builder
 
@@ -83,6 +90,12 @@ func (p *Proxy) gitConfig(proxyURL string) string {
 		fmt.Fprintf(&b, "[credential \"https://%s\"]\n", host)
 		fmt.Fprintf(&b, "\thelper = \"!f() { echo username=x-access-token; "+
 			"echo password=${GH_TOKEN:-%s}; }; f\"\n", p.Placeholder())
+	}
+
+	for _, host := range hosts {
+		fmt.Fprintf(&b, "[url \"https://%s/\"]\n", host)
+		fmt.Fprintf(&b, "\tinsteadOf = git@%s:\n", host)
+		fmt.Fprintf(&b, "\tinsteadOf = ssh://git@%s/\n", host)
 	}
 
 	return b.String()

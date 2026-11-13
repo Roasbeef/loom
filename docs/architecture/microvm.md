@@ -325,7 +325,14 @@ use and cached.
 | --- | --- | --- |
 | `/usr/local/share/ca-certificates/loom-vm-proxy.crt` | the CA certificate | `loom-guest-init` runs `update-ca-certificates` when this file exists, before it drops privileges |
 | `/etc/loom-vm/github.env` | `HTTPS_PROXY`, `https_proxy`, `NO_PROXY`, `no_proxy`, and `GH_TOKEN` and `GITHUB_TOKEN` set to the placeholder | `loom-guest-init` exports it (`set -a`) into the workload, so `loomd` inherits it |
-| `/etc/gitconfig` | `http.proxy`, and for each injection host a credential helper answering `username=x-access-token` and `password=${GH_TOKEN:-<placeholder>}` | git, as the system configuration, in any shell |
+| `/etc/gitconfig` | `http.proxy`, for each injection host a credential helper answering `username=x-access-token` and `password=${GH_TOKEN:-<placeholder>}`, and a `url."https://<host>/".insteadOf` rewrite of `git@<host>:` and `ssh://git@<host>/` | git, as the system configuration, in any shell |
+
+The rewrite exists because a developer's checkout usually names its origin
+as `git@github.com:owner/repo`, and the copy in the guest keeps that URL. The
+guest has no ssh client, no key and no route to port 22, so `git push` to
+such a remote failed with "cannot run ssh". With the rewrite the same remote
+resolves to HTTPS on the same host and goes through the proxy like any other
+request; the rewrite adds no credential and reaches no new host.
 
 The credential helper falls back to the placeholder so a jailed call whose
 environment omits `GH_TOKEN` still authenticates through the proxy.
