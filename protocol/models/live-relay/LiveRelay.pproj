@@ -1,0 +1,10 @@
+<!-- The live session relay model. See README.md. -->
+<Project>
+<ProjectName>LiveRelay</ProjectName>
+<InputFiles>
+	<PFile>./PSrc/</PFile>
+	<PFile>./PSpec/</PFile>
+	<PFile>./PTst/</PFile>
+</InputFiles>
+<OutputDir>./PGenerated/</OutputDir>
+</Project>

@@ -349,6 +349,34 @@ pub type Door {
 
   /// The session socket that a terminal and `loom evolution` attach through.
   SocketDoor
+
+  /// The feed host that carries a session's page to another orchestrator
+  /// (protocol-change/108). It is no listener of this daemon: the page is the
+  /// laptop's, and this attachment acts for the box's owner at the Operator
+  /// authority. The gateway's readers of the door tell it from a page and a
+  /// terminal, and `attached` counts it only when its spawner may decide.
+  PeerDoor(
+    /// The `[spawners.<name>]` key whose page the attachment carries.
+    spawner: String,
+    /// Whether that spawner's table lets its page decide a request.
+    deciding: Deciding,
+  )
+}
+
+/// Whether the page behind a peer attachment can decide a request, which is
+/// whether its spawner's table has an `approval_ceiling` (protocol-change/108,
+/// "Whether a refused call waits"). It is a type so that a construction site
+/// names the answer.
+pub type Deciding {
+  /// The spawner has an `approval_ceiling`. The attachment counts as someone
+  /// being there, so a refused call parks for a decision, as it does for a
+  /// page on this daemon.
+  Decides
+
+  /// The spawner has no `approval_ceiling`. The page can only watch, so the
+  /// attachment does not count, and a refused call settles in band exactly as
+  /// it does with nobody attached.
+  Watches
 }
 
 /// A connection addresses its original gateway process, never a replacement.
@@ -1707,7 +1735,9 @@ pub fn connection_detach(connection: ConnectionHandle) -> Nil {
   process.send(connection.subject, Detach(connection.id))
 }
 
-/// How many connections are attached right now.
+/// How many connections are attached right now, not counting a feed whose
+/// spawner has no `approval_ceiling` (`Door.PeerDoor` with `Watches`), because
+/// nobody on it can decide a request (protocol-change/108).
 ///
 /// The honest answer to "is a human there?", which is what an escalation
 /// seam needs before it holds a tool call open for a decision: a session
@@ -1862,6 +1892,18 @@ pub fn stop_relayed(gateway: Gateway) -> Result(Nil, Nil) {
     |> result.replace_error(Nil),
   )
   answer
+}
+
+/// Whether a connection counts as someone being there. Everything does except
+/// a feed whose spawner may not decide (`PeerDoor(_, Watches)`): such a page
+/// can read the session and cannot answer a request, so a call the session
+/// refuses must not park waiting for it (protocol-change/108).
+fn present(_id: Int, link: Connection) -> Bool {
+  case link.authentication {
+    Authenticated(Binding(door: PeerDoor(deciding: Watches, ..), ..), ..) ->
+      False
+    Authenticated(..) | HostFixture -> True
+  }
 }
 
 /// Removes a connection; a no-op for unknown ids.
@@ -2504,7 +2546,7 @@ fn dispatch_message(state: State, message: Message) -> State {
     }
     SocketDown(down) -> remove_socket(state, down)
     Attached(reply:) -> {
-      process.send(reply, dict.size(state.connections))
+      process.send(reply, dict.size(dict.filter(state.connections, present)))
       state
     }
     Detach(connection:) -> remove_connection(state, connection)
@@ -5912,6 +5954,11 @@ fn evolution_via(
     tool.optional_string(arguments, "via")
   {
     PageDoor, _, _, _ -> evolution_store.Web
+
+    // A feed carries a page of another orchestrator, which is a web page. The
+    // feed host refuses `evolution` before the gateway sees it, so no act is
+    // recorded under this surface today.
+    PeerDoor(..), _, _, _ -> evolution_store.Web
     SocketDoor, Some(_), _, _ | SocketDoor, None, access.Browser, _ ->
       evolution_store.Web
     SocketDoor, None, access.Bearer, Ok(Some("terminal")) ->

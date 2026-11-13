@@ -23,10 +23,13 @@ pub const operation_bytes = 1_048_576
 /// The maximum number of advertised operation revisions.
 pub const max_revisions = 64
 
-/// The operation revisions implemented by this endpoint.
+/// The operation revisions implemented by this endpoint: protocol 094's eight
+/// and the four of the live session page (protocol-change/108), whose
+/// vocabulary `client/remote_feed` holds.
 pub const revisions = [
   "094.placements.1", "094.create.1", "094.sessions.1", "094.history.1",
-  "094.send.1", "094.stop.1", "094.archive.1", "094.resolve.1",
+  "094.send.1", "094.stop.1", "094.archive.1", "094.resolve.1", "108.attach.1",
+  "108.feed.1", "108.send.1", "108.detach.1",
 ]
 
 /// One read-only observation of the peer's current incarnation.
@@ -481,6 +484,7 @@ fn encode_refusal(refusal: remote_top.Refusal) -> JsonValue {
     remote_top.InvalidArgument(reason) -> #("invalid_argument", reason, 0)
     remote_top.NotYetOpen(reason) -> #("not_yet_open", reason, 0)
     remote_top.StoreFailure(reason) -> #("store_failure", reason, 0)
+    remote_top.FeedEnded(why) -> #("feed_ended", feed_end_word(why), 0)
   }
 
   json.Array([json.String(kind), json.String(value), json.Int(number)])
@@ -505,6 +509,8 @@ fn decode_refusal(value: JsonValue) -> Result(remote_top.Refusal, String) {
       Ok(remote_top.NotYetOpen(reason))
     json.Array([json.String("store_failure"), json.String(reason), json.Int(0)]) ->
       Ok(remote_top.StoreFailure(reason))
+    json.Array([json.String("feed_ended"), json.String(why), json.Int(0)]) ->
+      feed_end_of(why) |> result.map(remote_top.FeedEnded)
     json.Array([json.String("cap_reached"), json.String(cap), json.Int(limit)]) ->
       cap_of(cap) |> result.map(fn(cap) { remote_top.CapReached(cap, limit) })
     json.Array([json.String("not_offered"), json.String(what), json.Int(0)]) -> {
@@ -524,19 +530,41 @@ fn decode_refusal(value: JsonValue) -> Result(remote_top.Refusal, String) {
   }
 }
 
+/// The word a cap takes on the wire: the three the receiving host enforces.
 fn cap_word(cap: remote_top.Cap) -> String {
   case cap {
     remote_top.MaxSessions -> "sessions"
     remote_top.MaxPerHour -> "hour"
+    remote_top.MaxFeeds -> "feeds"
   }
 }
 
-/// Recognizes only the two caps the existing host enforces.
+/// Recognizes only the caps the receiving host enforces.
 fn cap_of(word: String) -> Result(remote_top.Cap, String) {
   case word {
     "sessions" -> Ok(remote_top.MaxSessions)
     "hour" -> Ok(remote_top.MaxPerHour)
+    "feeds" -> Ok(remote_top.MaxFeeds)
     _ -> Error("invalid cap")
+  }
+}
+
+/// The word a feed's ending takes on the wire.
+fn feed_end_word(why: remote_top.FeedEnd) -> String {
+  case why {
+    remote_top.FeedLapsed -> "lapsed"
+    remote_top.FeedStopped -> "stopped"
+    remote_top.FeedRevoked -> "revoked"
+  }
+}
+
+/// Recognizes only the three endings a feed can have.
+fn feed_end_of(word: String) -> Result(remote_top.FeedEnd, String) {
+  case word {
+    "lapsed" -> Ok(remote_top.FeedLapsed)
+    "stopped" -> Ok(remote_top.FeedStopped)
+    "revoked" -> Ok(remote_top.FeedRevoked)
+    _ -> Error("invalid feed ending")
   }
 }
 
@@ -548,6 +576,7 @@ fn offered_word(what: remote_top.Offered) -> String {
     remote_top.OfferedPool -> "pool"
     remote_top.OfferedProfile -> "profile"
     remote_top.OfferedModel -> "model"
+    remote_top.OfferedPage -> "page"
   }
 }
 
@@ -559,6 +588,7 @@ fn offered_of(word: String) -> Result(remote_top.Offered, String) {
     "pool" -> Ok(remote_top.OfferedPool)
     "profile" -> Ok(remote_top.OfferedProfile)
     "model" -> Ok(remote_top.OfferedModel)
+    "page" -> Ok(remote_top.OfferedPage)
     _ -> Error("invalid offer")
   }
 }

@@ -60,22 +60,32 @@
 ////    and the messages that name a session start there.
 //// 6. `archive` stops the session and hides it once it has drained.
 
+import broker/token
 import client/daemon/manager
 import client/daemon/profiles
 import client/delegate_host
 import client/deployment
+import client/gateway
 import client/peer_mail
 import client/relayed_session.{type Endpoint}
+import client/remote/feed_directory
+import client/remote/feed_host
 import client/remote/orchestrator_port
+import client/remote_escalation
+import client/remote_feed
 import client/remote_top.{type Placement, type Refusal}
 import client/spawners.{type Spawner, type TopLevel}
 import core/ids
 import core/json.{type JsonValue}
+import gleam/bit_array
+import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import host/bootstrap
+import storage/access
 import storage/catalogue
 import storage/domain
 import web_view/placements as page
@@ -132,6 +142,22 @@ pub type Context(instance) {
     record: fn(String) -> Result(Nil, String),
     /// Tells the daemon's movers that a local session now exists.
     covered: fn() -> Nil,
+    /// The daemon's epoch, which a live feed's attach answer carries and its
+    /// gateway binding is made under (protocol-change/108).
+    epoch: String,
+    /// The gateway of a resident session.
+    gateway: fn(instance) -> gateway.Gateway,
+    /// The box's owner, the principal a live feed attaches as. A feed acts with
+    /// the box owner's standing at the Operator authority and no more.
+    owner: access.Principal,
+    /// Reserves one of the daemon's connection permits for a live feed. It runs
+    /// in the process that answers the attach and returns the capability that
+    /// transfers the permit to the feed's own process, because a permit is
+    /// released when the process that holds it exits.
+    admit: fn() -> Result(fn() -> Result(Nil, String), String),
+    /// How long a live feed lives with no poll, and how long an ended one is
+    /// kept, in milliseconds. `remote_feed.lease_ms` in the daemon.
+    feed_lease_ms: Int,
   )
 }
 
@@ -143,7 +169,16 @@ pub type Context(instance) {
 /// // orchestrator_port.start_with_top(name, held, peer, describe, importer, spawns, children, holds, reads, top_host.host(context))
 /// ```
 pub fn host(context: Context(instance)) -> orchestrator_port.TopHost {
+  // The directory of live feeds is started with the host, so every feed of this
+  // daemon is found in one place. A directory that cannot start leaves the daemon
+  // serving no feed, which a laptop meets as the 094 page.
+  let feeds = case feed_directory.start() {
+    Ok(directory) -> serving_feeds(context, directory)
+    Error(_) -> remote_feed.declining()
+  }
+
   orchestrator_port.TopHost(
+    feeds:,
     placements: fn(node) {
       use #(_spawner, table) <- result.map(judged(context, node))
       remote_top.encode_offers(remote_top.bounded(offers(context, table)))
@@ -858,10 +893,20 @@ fn activity_of(doing: peer_mail.Doing) -> remote_top.Activity {
 
 /// Establishes placement of for the caller, keeping its validation and result policy at this boundary.
 fn placement_of(listing: catalogue.RelayedListing) -> Placement {
-  case listing.pool, listing.executor {
-    "", "" -> remote_top.Folder(path: listing.workspace)
-    "", executor -> remote_top.Workspace(executor:, name: listing.workspace)
-    pool, _ -> remote_top.Pooled(pool:, name: listing.workspace)
+  placement_in(listing.pool, listing.executor, listing.workspace)
+}
+
+/// Where a session's tools run, from the three fields a registration and a
+/// relayed listing both hold.
+fn placement_in(
+  pool: String,
+  executor: String,
+  workspace: String,
+) -> Placement {
+  case pool, executor {
+    "", "" -> remote_top.Folder(path: workspace)
+    "", executor -> remote_top.Workspace(executor:, name: workspace)
+    pool, _ -> remote_top.Pooled(pool:, name: workspace)
   }
 }
 
@@ -897,6 +942,20 @@ fn reached(
   spawner: Spawner,
   session: String,
 ) -> Result(Endpoint, Refusal) {
+  use #(_incarnation, instance) <- result.map(opened(context, spawner, session))
+  context.endpoint(instance)
+}
+
+// The resident instance of a relayed session and the incarnation it runs as,
+// opening the session first if it is saved. A live feed binds its gateway
+// attachment to that incarnation.
+
+/// Establishes opened for the caller, keeping its validation and result policy at this boundary.
+fn opened(
+  context: Context(instance),
+  spawner: Spawner,
+  session: String,
+) -> Result(#(String, instance), Refusal) {
   use Nil <- result.try(relayed(context, spawner, session))
 
   // Decide how to handle use Nil <- result.try( manager.get(context.registry, session) {.
@@ -947,7 +1006,7 @@ fn open_refusal(error: manager.Error) -> Refusal {
 fn resident(
   context: Context(instance),
   session: String,
-) -> Result(Endpoint, Refusal) {
+) -> Result(#(String, instance), Refusal) {
   let waited =
     poll.until(within: open_budget_ms, every: open_poll_ms, attempt: fn() {
       case manager.get(context.registry, session) {
@@ -955,9 +1014,11 @@ fn resident(
           poll.Fail(
             remote_top.StoreFailure(reason: delegate_host.describe(error)),
           )
-        Ok(manager.View(status: manager.Resident(_), ..)) ->
-          case manager.resolve(context.registry, session) {
-            Ok(instance) -> poll.Done(context.endpoint(instance))
+        Ok(manager.View(status: manager.Resident(incarnation), ..)) ->
+          case
+            manager.resolve_incarnation(context.registry, session, incarnation)
+          {
+            Ok(instance) -> poll.Done(#(incarnation, instance))
             Error(error) ->
               poll.Fail(
                 remote_top.NotYetOpen(reason: delegate_host.describe(error)),
@@ -1018,4 +1079,285 @@ fn archive(
     poll.Expired ->
       Error(remote_top.NotYetOpen(reason: "the session is still stopping"))
   }
+}
+
+// --- live session feeds ----------------------------------------------------------------
+
+// The four operations of a live session page (protocol-change/108). Each is judged
+// against the spawner its node resolves to, as the eight of 094 are. A token is
+// looked up only among that spawner's feeds before anything else is read, so a
+// request for a feed that has ended, or that another spawner holds, learns that
+// the feed has ended and touches nothing.
+
+/// Builds the four callbacks over one directory of feeds.
+fn serving_feeds(
+  context: Context(instance),
+  directory: feed_directory.Directory,
+) -> remote_feed.Host {
+  remote_feed.Host(
+    attach: fn(node, attach) { attach_feed(context, directory, node, attach) },
+    poll: fn(node, poll) {
+      use feed <- result.try(held_feed(context, directory, node, poll.feed))
+      feed_host.poll(feed, poll)
+    },
+    send: fn(node, piece) {
+      use feed <- result.try(held_feed(context, directory, node, piece.feed))
+      feed_host.send(feed, piece)
+    },
+    detach: fn(node, token) {
+      use #(spawner, _table) <- result.map(judged(context, node))
+
+      // Ending a feed that is gone is not a refusal, so a detach resent after a
+      // lost answer is the same call.
+      case feed_directory.find(directory, spawner.name, token) {
+        Ok(feed) -> feed_host.detach(feed)
+        Error(Nil) -> Nil
+      }
+    },
+  )
+}
+
+/// The feed a token names among the sender's spawner's feeds. A token that is
+/// not found has ended or never was, and the refusal says `lapsed`, because
+/// starting again from a fresh attach is what every such laptop does.
+fn held_feed(
+  context: Context(instance),
+  directory: feed_directory.Directory,
+  node: String,
+  token: String,
+) -> Result(feed_host.Feed, Refusal) {
+  use #(spawner, _table) <- result.try(judged(context, node))
+  feed_directory.find(directory, spawner.name, token)
+  |> result.replace_error(remote_top.FeedEnded(remote_top.FeedLapsed))
+}
+
+/// Opens a feed on a relayed session: the box checks the spawner, its table, its
+/// `page` key, the relayed row and the feed cap, opens the session if it is saved,
+/// starts the feed and answers its token.
+fn attach_feed(
+  context: Context(instance),
+  directory: feed_directory.Directory,
+  node: String,
+  attach: remote_feed.Attach,
+) -> Result(remote_feed.Attached, Refusal) {
+  use #(spawner, table) <- result.try(judged(context, node))
+
+  // A table that serves the transcript page refuses the live one, and the
+  // laptop draws the page of 094.
+  use Nil <- result.try(case table.page {
+    spawners.LivePage -> Ok(Nil)
+    spawners.PagedPage ->
+      Error(remote_top.NotOffered(remote_top.OfferedPage, "live"))
+  })
+
+  use Nil <- result.try(relayed(context, spawner, attach.session))
+  use token <- result.try(
+    feed_directory.reserve(
+      directory,
+      spawner.name,
+      process.self(),
+      remote_feed.max_feeds,
+    )
+    |> result.map_error(fn(refused) {
+      case refused {
+        feed_directory.AtCap ->
+          remote_top.CapReached(
+            cap: remote_top.MaxFeeds,
+            limit: remote_feed.max_feeds,
+          )
+        feed_directory.Unavailable ->
+          remote_top.NotYetOpen(
+            "the live pages of this daemon are not answering",
+          )
+      }
+    }),
+  )
+
+  // A place was reserved, so every way out of here that does not register the
+  // feed must give it back.
+  case started_feed(context, directory, spawner, table, attach, token) {
+    Ok(attached) -> Ok(attached)
+    Error(refusal) -> {
+      feed_directory.release(directory, token)
+      Error(refusal)
+    }
+  }
+}
+
+/// Starts the feed once its place is reserved, and registers it.
+fn started_feed(
+  context: Context(instance),
+  directory: feed_directory.Directory,
+  spawner: Spawner,
+  table: TopLevel,
+  attach: remote_feed.Attach,
+  token: String,
+) -> Result(remote_feed.Attached, Refusal) {
+  use #(incarnation, instance) <- result.try(opened(
+    context,
+    spawner,
+    attach.session,
+  ))
+  use label <- result.try(heading_of(context, attach.session))
+  use digest <- result.try(feed_digest(spawner.name))
+  use transfer <- result.try(
+    context.admit()
+    |> result.map_error(fn(reason) { remote_top.NotYetOpen(reason:) }),
+  )
+  let session = attach.session
+
+  // A spawner with an `approval_ceiling` can decide, and its feed counts as
+  // someone being there. One without can only watch, and does not.
+  let deciding = case table.approval_ceiling {
+    Some(_) -> gateway.Decides
+    None -> gateway.Watches
+  }
+
+  let authority = access.Participant(access.Operator)
+
+  // The connection id goes into the gateway's presence roster and to every
+  // subscribed connection, Observers included, so it is its own random id and
+  // never the token that names the feed.
+  let connection_id = "feed-" <> hex_entropy(8)
+  use feed <- result.map(
+    feed_host.start(feed_host.Settings(
+      hub: context.gateway(instance),
+      binding: gateway.Binding(
+        session_id: session,
+        epoch: context.epoch,
+        incarnation:,
+        connection_id: connection_id,
+        principal: context.owner,
+        authority:,
+        digest:,
+        signin: None,
+        door: gateway.PeerDoor(spawner.name, deciding),
+      ),
+      check: feed_check(context, spawner.name, session, incarnation),
+      failed_reader: fn() {
+        let _ =
+          manager.stop_if_incarnation(context.registry, session, incarnation)
+        Nil
+      },
+      spawner: spawner.name,
+      ceiling: table.approval_ceiling,
+      decider: remote_escalation.Decider(
+        principal: attach.principal,
+        name: attach.name,
+      ),
+      admit: transfer,
+      owner: process.self(),
+      lease_ms: context.feed_lease_ms,
+    ))
+    |> result.map_error(fn(reason) { remote_top.NotYetOpen(reason:) }),
+  )
+  feed_directory.register(directory, token, feed)
+  feed_host.registered(feed)
+  remote_feed.Attached(feed: token, epoch: context.epoch, incarnation:, label:)
+}
+
+/// The gateway's check of a feed, run on every request and push. The spawner
+/// must still have its table with `page = "live"`, the session must still be
+/// relayed for it, and the session must still run as the incarnation the feed was
+/// bound to. The table is read once when the daemon starts, so a table the owner
+/// changed is met first by the restart that reads it. An answer of `Error` closes
+/// the attachment, and the feed then ends `revoked`.
+fn feed_check(
+  context: Context(instance),
+  spawner: String,
+  session: String,
+  incarnation: String,
+) -> fn() -> Result(#(access.Principal, access.Authority), String) {
+  fn() {
+    case
+      serves_live(context, spawner)
+      && is_relayed(context, spawner, session)
+      && runs_as(context, session, incarnation)
+    {
+      True -> Ok(#(context.owner, access.Participant(access.Operator)))
+      False -> Error("the page's access to this session ended")
+    }
+  }
+}
+
+/// Whether the spawner still has its table with `page = "live"`.
+fn serves_live(context: Context(instance), spawner: String) -> Bool {
+  list.any(context.spawners, fn(held) {
+    case held.name == spawner, held.top_level {
+      True, Some(table) -> table.page == spawners.LivePage
+      True, None | False, _ -> False
+    }
+  })
+}
+
+/// Whether the registry still holds a relayed row of this spawner for the
+/// session. A registry that does not answer is not a yes.
+fn is_relayed(
+  context: Context(instance),
+  spawner: String,
+  session: String,
+) -> Bool {
+  case manager.relayed_of(context.registry, session) {
+    Ok(Some(row)) -> row.spawner == spawner
+    Ok(None) | Error(_) -> False
+  }
+}
+
+/// Whether the session still runs as the incarnation the feed was bound to.
+fn runs_as(
+  context: Context(instance),
+  session: String,
+  incarnation: String,
+) -> Bool {
+  case manager.get(context.registry, session) {
+    Ok(manager.View(status: manager.Resident(held), ..)) -> held == incarnation
+    Ok(_) | Error(_) -> False
+  }
+}
+
+/// What a feed's heading says of its session: the name, with the first prompt
+/// once it has one, and where the session's tools run.
+fn heading_of(
+  context: Context(instance),
+  session: String,
+) -> Result(remote_feed.Label, Refusal) {
+  use view <- result.map(
+    manager.get(context.registry, session)
+    |> result.map_error(fn(error) {
+      remote_top.StoreFailure(reason: delegate_host.describe(error))
+    }),
+  )
+  let registration = view.registration
+  let name = option.unwrap(registration.subtitle, registration.name)
+  remote_feed.Label(
+    name: remote_top.clip(name),
+    placement: placement_in(
+      registration.pool,
+      registration.executor,
+      registration.workspace,
+    ),
+  )
+}
+
+/// `bytes` random bytes as lowercase hexadecimal.
+fn hex_entropy(bytes: Int) -> String {
+  token.production_entropy()(bytes)
+  |> bit_array.base16_encode
+  |> string.lowercase
+}
+
+/// The digest a feed's binding carries. It is derived from the spawner's name
+/// and is no credential, so it matches no row that authenticates anything. The
+/// gateway reads it only to name who approved a remembered grant, and a feed's
+/// decisions do not go through that path.
+fn feed_digest(spawner: String) -> Result(access.Digest, Refusal) {
+  let hex =
+    bit_array.from_string("loom-live-feed:" <> spawner)
+    |> bootstrap.sha256
+    |> bit_array.base16_encode
+    |> string.lowercase
+  access.credential_digest(hex)
+  |> result.replace_error(remote_top.StoreFailure(
+    reason: "the feed's identity could not be made",
+  ))
 }

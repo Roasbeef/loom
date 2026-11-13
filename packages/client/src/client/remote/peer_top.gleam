@@ -2,11 +2,14 @@
 ////
 //// The existing TopHost remains the authority: this module only converts
 //// bounded JSON to its arguments and converts its result back to data. It
-//// never trusts a caller-supplied node identity.
+//// never trusts a caller-supplied node identity. The four revisions of the live
+//// session page (protocol-change/108) ride the same dispatch: their bodies are
+//// read by `client/remote_feed` and their answers go to `TopHost.feeds`.
 
 import client/protocol
 import client/remote/orchestrator_port.{type TopHost}
 import client/remote_escalation
+import client/remote_feed
 import client/remote_top
 import core/json.{type JsonValue}
 import gleam/list
@@ -74,7 +77,36 @@ pub fn dispatch(
         |> result.map(encode_answer),
       )
     }
-    _, _ -> Error("invalid operation body")
+    _, _ ->
+      case remote_feed.is_revision(revision) {
+        True -> feed(host.feeds, node, revision, body)
+        False -> Error("invalid operation body")
+      }
+  }
+}
+
+/// Runs one of the four operations of a live session page. The body is decoded
+/// completely by `remote_feed`'s total decoder before a callback sees it, and
+/// the node is the exchange's, never a field of the body.
+fn feed(
+  host: remote_feed.Host,
+  node: String,
+  revision: String,
+  body: JsonValue,
+) -> Result(Result(JsonValue, remote_top.Refusal), String) {
+  use request <- result.map(remote_feed.decode_request(revision, body))
+
+  // Each revision calls its own function of the host, and a function that
+  // succeeds answers `null` or the answer's JSON.
+  case request {
+    remote_feed.AttachRequest(attach:) ->
+      host.attach(node, attach) |> result.map(remote_feed.encode_attached)
+    remote_feed.PollRequest(poll:) ->
+      host.poll(node, poll) |> result.map(remote_feed.encode_answer)
+    remote_feed.SendRequest(piece:) ->
+      host.send(node, piece) |> result.map(fn(_) { json.Null })
+    remote_feed.DetachRequest(feed:) ->
+      host.detach(node, feed) |> result.map(fn(_) { json.Null })
   }
 }
 
