@@ -51,8 +51,6 @@ init=${LOOM_GUEST_INIT:-/usr/local/sbin/loom-guest-init}
 case "${1:-}" in
 --serve)
 	node=$2
-	HOME="$node/home"
-	export HOME
 
 	# The configuration says which link this executor has. An
 	# [executor_listener] table is the untrusted link (protocol-change/109):
@@ -70,6 +68,11 @@ case "${1:-}" in
 		LOOM_DISTRIBUTION_OPTFILE="$node/state/dist.options"
 		export LOOM_DISTRIBUTION_OPTFILE
 	fi
+
+	# The node's home is set after the options are rendered, as it always was
+	# for a distribution node.
+	HOME="$node/home"
+	export HOME
 
 	"$loom_home/bin/loomd" --state-dir "$node/state/root" \
 		--config "$node/loom.toml" --helper "$loom_home/bin/loom-exec" \
