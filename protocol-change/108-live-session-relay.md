@@ -798,3 +798,55 @@ one answer alone (`feed_queue_test`).
 - A feed blocks on a gateway call for at most the gateway's six seconds, as
   `ui_relay` does, so a laptop that sends faster than the gateway answers waits behind
   its own frame. The send's answer is written before the frame reaches the gateway.
+
+## Addendum: slice 3, the laptop half (2026-11-13)
+
+Slice 3 built the feed client `client/daemon/ui_feed`, the `peer_client.call_at`
+entry point, the feed calls in `top_relay`, the socket's choice between the live
+page and the transcript, `Standing.route`, the `PeerUnreachable` ending, the
+fallback's mode sentence and the `spawner` provenance in
+`session_view/remembered`. The laptop's rules were written into the P model
+(`protocol/models/live-relay/README.md`, "The rules `ui_feed` follows") before the
+process was written. Building them settled four questions the text above leaves
+open and changed two places in it.
+
+**Settled in the build.**
+
+- The cursor and the outbox are pure modules, `client/remote/feed_cursor` and
+  `client/remote/feed_outbox`, and `ui_feed` only carries out what they say. Each
+  poll and each piece is a weft run of its own that reports to a sink the process
+  selects, which is how "a poll answer that arrives after `ui_feed` stopped waiting
+  for it" is a stray: the reply subject belongs to a task that has exited.
+- An answer that reports the feed ended hands on no frame, whatever it carries. The
+  text above allows frames written before the end to arrive in such an answer. An
+  honest box never sends both, and a box that does is not believed; the model has a
+  hostile case for it (`tcHostileEnd`, mutant `M6`).
+- What the page shows when the lane shuts the transport depends on whether the box
+  was heard last. A feed whose last poll went unanswered ends with `PeerUnreachable`,
+  which draws the waiting page and is `Retry`, and a feed that last heard the box
+  ends with `ConnectionFailed`. The text above gives `ConnectionFailed` for both. A
+  link that is only down never shows a failure (`DownShowsWaiting`, mutant `M7`).
+- A refusal of the attach at the box's feed cap (`cap_reached` with `feeds`) is the
+  same waiting page as a box that does not answer, because the cap counts an ended
+  feed until the box forgets it, one lease after it ended, so a reconnect right after
+  an ending can meet it.
+
+**Corrections.**
+
+- The attach is made in the HTTP request's process, before the socket upgrades,
+  and not "at upgrade" inside the socket. It runs within `call_ms`, holds the
+  request's permit for that long, and chooses the component before any is started.
+  `server.Ui.home` gained one argument, the function that registers the page's image
+  reader, because only the live page has images.
+- `Standing.route` hides the controls the box refuses that are drawn by the page's own
+  modules: Compact, the goal bar and the Session pane's goal and fork controls,
+  proposals, memory and evolution, and Forget on a grant the box's spawner did not
+  approve. The model chip, `btw` and the decision buttons on a remote child's request
+  are not yet hidden: the composer still parses them, the box answers `forbidden` or
+  `bad_request`, and the page draws that answer. Hiding them is left to slice 4.
+
+**Bounds the laptop holds.** One answer carries at most 512 frames and 1,048,576
+bytes, and one poll is in flight, so at most that much is handed to the component's
+inbox per round trip. The outbox holds at most 32 frames and 25,165,824 bytes of
+frame text, and refuses an empty frame or one over 12,582,912 bytes. A pause between
+polls or resends is 250 ms doubling to 2,000 ms. The feed's token is never logged.
