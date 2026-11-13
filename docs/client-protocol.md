@@ -450,7 +450,9 @@ A successful reply's `event` name is the command name. A failure is an
 Source: (`client/daemon/server.gleam:426-458`).
 
 Dispatcher refusals carry `request refused`, except an authorized exact
-`operations.get` startup failure (protocol 055). Its `start_failed` code
+`operations.get` startup failure (protocol 055), and the refusals that
+`sessions.move` and its abandon decide themselves, which carry their cause
+(section 3.27). Its `start_failed` code
 remains machine-readable and its message preserves one line of at most 2048
 UTF-8 bytes, including the configuration path and available parser context.
 The recorded failure precedes live `stopping` status while cleanup retains
@@ -565,7 +567,7 @@ Source: (`client/daemon/server.gleam:4780-4821`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:4549`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:4568`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -1534,11 +1536,14 @@ another destination is in flight), and `not_owner` (the session already moved).
 `moving` is not a refusal of this command: asking again is how a client learns
 the stored `op`.
 
-Every refusal of this command carries its cause in `message`, in words an owner
-can act on: the destination's table that lacks `checkout_executor` and
-`checkout_workspace`, the executor this daemon does not list, a directory that is
-not the top of a primary checkout, the other destination a move is already
-heading to, and so on. The words name configuration keys and orchestrators and
+Every refusal that the move itself decides carries its cause in `message`, in
+words an owner can act on: the destination's table that lacks `checkout_executor`
+and `checkout_workspace`, the executor this daemon does not list, a directory that
+is not the top of a primary checkout, a move already in flight toward another
+destination, and so on. A refusal before the command is dispatched (`unavailable`,
+`unauthorized`) stays bare for every command. `sessions.archive`,
+`sessions.restore` and `sessions.delete` of a session that is moving answer
+`moving` with `orchestrator` and `op` beside the words. The words name configuration keys and orchestrators and
 never a path of the daemon's machine. A client prints the code and the message
 together and does not match on the message.
 
