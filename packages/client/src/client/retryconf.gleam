@@ -51,6 +51,10 @@ pub const unbounded_attempts = "unbounded"
 /// Default per-attempt provider HTTP request timeout in milliseconds (10 minutes).
 pub const default_request_timeout_ms = 600_000
 
+/// Upper bound on `retry.request_timeout_ms` (24 hours in milliseconds), keeping
+/// derived outer runtime timers well under ERTS's 32-bit `send_after` limit.
+pub const max_request_timeout_ms = 86_400_000
+
 /// Reads the `[retry]` table out of a configuration document, or returns
 /// the runtime default when the document has none.
 ///
@@ -236,10 +240,14 @@ fn request_timeout_key(fields: Dict(String, tom.Toml)) -> Result(Int, String) {
   // Resolve request_timeout_ms key or return default when omitted.
   case dict.get(fields, "request_timeout_ms") {
     Error(Nil) -> Ok(default_request_timeout_ms)
-    Ok(tom.Int(milliseconds)) if milliseconds > 0 -> Ok(milliseconds)
+    Ok(tom.Int(milliseconds))
+      if milliseconds >= 1 && milliseconds <= max_request_timeout_ms
+    -> Ok(milliseconds)
     Ok(_other) ->
       Error(
-        "retry.request_timeout_ms must be a positive integer number of milliseconds (the default is "
+        "retry.request_timeout_ms must be an integer between 1 and "
+        <> int.to_string(max_request_timeout_ms)
+        <> " milliseconds (the default is "
         <> int.to_string(default_request_timeout_ms)
         <> ")",
       )

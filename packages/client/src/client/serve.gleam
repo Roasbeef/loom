@@ -1597,7 +1597,9 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       secrets: secret_store,
       clock:,
     )
-    |> provider_gateway.with_codex_transport(codex_transport.transport())
+    |> provider_gateway.with_codex_transport(
+      codex_transport.transport_with_timeout(request_timeout_ms + 30_000),
+    )
     |> provider_gateway.with_attempt_timeout(request_timeout_ms)
 
   Ok(
@@ -4774,7 +4776,8 @@ fn assemble_in(
 
   let attempt_ms = provider_gateway.attempt_timeout_ms(gateway)
   let max_routes = int.max(1, provider_gateway.max_route_count(gateway))
-  let provider_timeout_ms = attempt_ms * max_routes + 60_000
+  let provider_timeout_ms =
+    int.min(attempt_ms * max_routes + 60_000, 4_294_967_295)
   let wiring_config =
     wiring.Config(
       observe_output: owner_api.output,

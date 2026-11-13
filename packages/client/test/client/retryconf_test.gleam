@@ -164,3 +164,14 @@ pub fn request_timeout_ms_defaults_to_ten_minutes_and_parses_overrides_test() {
     retryconf.parse_request_timeout("[retry]\nrequest_timeout_ms = \"10m\"\n")
   assert string.contains(type_reason, "retry.request_timeout_ms")
 }
+
+pub fn request_timeout_ms_enforces_24_hour_ceiling_test() {
+  assert retryconf.max_request_timeout_ms == 86_400_000
+  assert retryconf.parse_request_timeout(
+      "[retry]\nrequest_timeout_ms = 86400000\n",
+    )
+    == Ok(86_400_000)
+  let assert Error(over_reason) =
+    retryconf.parse_request_timeout("[retry]\nrequest_timeout_ms = 86400001\n")
+  assert string.contains(over_reason, "86400000")
+}
