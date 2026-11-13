@@ -549,40 +549,81 @@ directory finds the same guest on every call, and two directories with one last
 segment get different guests.
 
 **What `loom --vm` does.** The launcher refuses `--vm` together with
-`--executor`, `--pool`, `--session` and `--addr`, each with a reason. It then
-runs `loomd vm ensure --workspace DIR` (plus `--config` when given), where DIR is
-`--workspace` or the launcher's own directory, reads the last line of the
-output, `executor=<guest> workspace=<registered name>`, and proceeds as
-`--executor <guest> --workspace <registered name>` would. A failed `ensure` ends
-the launch with its status, before the alternate screen. The launcher's port
-merges standard error into standard output, so `ensure`'s progress lines are
-shown when it ends and not as it is written.
+`--executor`, `--pool`, `--session`, `--addr` and `--state-dir`, each with a
+reason: `ensure` writes `~/.loom/loom.toml` and looks for the daemon under
+`~/.loom`, so another state directory would send the session to a daemon it
+never configured. It then says what it is about to do, and runs `loomd vm ensure
+--workspace DIR` (plus `--config`, `--github` and `--allow` when given). For
+`loom --vm` DIR is the nearest `.git` ancestor of `--workspace` or the current
+directory, which is where a plain interactive launch creates its sessions, so a
+launch from a subdirectory finds the guest of the repository's root. For `loom
+run --vm` DIR is the directory itself, as for a plain `loom run`. The launcher
+reads the last line that reads as an answer, `executor=<guest> workspace=<registered
+name>`, and proceeds as `--executor <guest> --workspace <registered name>`
+would. A failed `ensure` ends the launch with its status, before the alternate
+screen.
+
+The launcher's port merges standard error into standard output. The interactive
+launch has a terminal, so it runs `ensure` through `/bin/sh` with standard error
+redirected to `/dev/tty` when that device opens (`vm_ensure.command`), and the
+progress appears as it is written; where it does not open, and for `loom run
+--vm`, whose standard error belongs to its caller, the progress is shown when
+`ensure` ends. `--timeout` of `loom run` does not bound `ensure`, and `loom run
+--vm` reports its `jail` as unverified, since the host's self-test does not
+measure a guest.
 
 **What `ensure` does.** `vm_spec.ensure_step` decides from observed facts, and
 each step prints one line on standard error saying which ran
 (`loom vm ensure: <guest>: ...`):
 
-1. The guest runs and its node is in the host epmd: print the line and stop. This
-   path reads no manifest, clones, stages and restarts nothing.
-2. The process is there and the node is not: refuse, naming `loom vm down` and
-   `loom vm logs`, since `up` refuses a running guest and a second process on
-   its root would corrupt it.
+1. The guest runs, its node is in the host epmd and its console holds
+   `LOOM-EXECUTOR-READY`: print the line and stop. `loom-vm` registers the node
+   right after it starts the guest, long before the executor serves (up to 1800 s
+   with a provisioning script), so the console is the witness, as it is for
+   `await_ready`. The path reads the manifest, `loom.toml` and the daemon record,
+   and writes, clones, stages and restarts nothing. It refuses a guest whose
+   recorded root revision is not this build's (`loom update` happened), naming
+   `loom vm down --name NAME`, since the executor protocol would refuse the
+   session with no remedy; a `dev` manifest keeps its root. It prints one line
+   when `--github` or `--allow` is given, since they cannot change a serving
+   guest.
+2. The process is there and the executor is not ready: refuse, naming `loom vm
+   down` and `loom vm logs`, since `up` refuses a running guest and a second
+   process on its root would corrupt it.
 3. A manifest that must be refused (a development build with none, or from
    another revision) is refused as `up` always did, naming `make vmm-install-dev`.
 4. The guest has no bundles, the default configuration holds a ledger
    deployment (so `up` would join it) and no daemon runs: stop with status 75
    and the last line `daemon=required`, before anything is written.
-5. A missing manifest, or one built from another release, on a build that has a
-   release: run `loom vm setup`, then continue.
-6. Otherwise `up`'s own path (`vm_cli.bring_up`), fresh or resumed, for the
-   derived name.
+5. Otherwise `up`'s own path (`vm_cli.bring_up`), fresh or resumed, for the
+   derived name. It installs a missing manifest, or one built from another
+   release, first, as `up` does, so setup is not a step of its own.
+
+Every step but the first runs under a lock on `<vm home>/<name>.lock`
+(`host/bootstrap.try_launch_lock`), taken after the first reading of the facts
+and followed by a second, so two `loom run --vm` in one never-booted workspace do
+not stage one root together; the loser waits up to the longest boot and then
+finds the guest serving.
 
 After a boot that installed a new deployment, an idle daemon is stopped as `up`
 stops it. A daemon that holds sessions is not stopped: `ensure` exits non-zero
 with one sentence saying how many sessions it holds, that it must restart once to
 enable microVMs, and the `kill -TERM` command. The guest stays up, so the next
-`loom --vm` after the restart takes step 1. A guest that was resumed, or that
-joined an existing deployment, asks for no restart.
+`loom --vm` after the restart takes step 1. A guest that joined an existing
+deployment asks for no restart. A guest that was resumed asks the running daemon
+for its `deployment.status` and treats `distribution: none` as the same case,
+because an earlier call may have installed the deployment and then failed to
+boot, as when `gh` has no token, which `loom-vm` reads after the install. A
+guest enrolled in a `--config` other than the default, whose daemon `ensure`
+cannot ask, fails when a daemon is running after the install.
+
+A first guest in a home that already has `~/.erlang.cookie` is refused before
+anything is written (`vm_spec.mint_check`): the deployment's cookie is minted
+fresh and cannot equal the file, and the install will not replace the cookie
+every other Erlang node of the user reads. The refusal says the choice, which is
+to move the file aside only if nothing relies on it. Bundles left by an install
+that was refused are installed on the retry when the configuration holds no
+deployment (`vm_spec.kept_step`), where before the retry reported a missing row.
 
 **Two orderings.** The launcher runs `ensure` before it resolves the daemon,
 because the first guest of a machine installs `[distribution]` into `loom.toml`
@@ -1223,14 +1264,18 @@ the host are not in it.
   transport of #1137 do not exist yet. The new-session form of the web view
   cannot start a guest.
 - Nothing stops an idle guest. Each workspace's guest runs until `loom vm down`.
-- `ensure` on a guest that already serves ignores `--github` and `--allow`: the
-  fast path reads and writes nothing, so a changed flag needs `loom vm down`
-  first. It also cannot tell that a running daemon started before the guest's
-  deployment was installed, if the call that installed it failed at boot; only
-  the call that installs the deployment checks the daemon.
-- `loom --vm` shows `ensure`'s progress when the command ends, since the
-  launcher's port merges standard error into standard output. A first run that
-  downloads the artifacts is silent until it finishes.
+- `ensure` on a guest that already serves ignores `--github` and `--allow` and
+  says so: the fast path writes nothing, so a changed flag needs `loom vm down`
+  first. A serving guest is not checked against the daemon, so a daemon
+  restarted without the deployment after the guest booted is found only when a
+  session opens.
+- Progress is live only for the interactive launch on a host where `/dev/tty`
+  opens. `loom run --vm`, and a host without a terminal device, show it when
+  `ensure` ends, and a first run that downloads the artifacts is silent until
+  then.
+- A runner of an older release is matched by its place under `<vm home>/cache/`
+  as well as by the manifest's runner, so auto-setup does not hide it from `up`,
+  `ensure` and `rm`.
 - A session placed in a guest is not reattached after the guest restarts; that
   is `remote/reattach-after-executor-restart`.
 - A guest is reached only from orchestrators on its own host: it listens on a

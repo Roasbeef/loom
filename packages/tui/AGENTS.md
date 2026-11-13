@@ -502,8 +502,15 @@ registered name. `tui.launch_vm` is the test seam. `main` answers `Vm` after
 
 `tui/vm_ensure` runs `<server> vm ensure --workspace DIR [--config FILE]` through
 `host.run_captured` (the server from `bootstrap.server_executable`), so it adds no
-FFI, and standard error is merged into the captured text: progress is shown
-(`report`) when the command ends. `parse_line` is the total parser of the last
+FFI. Standard error is merged into the captured text, so progress is shown
+(`report`) when the command ends; the interactive launch (`Progress` `OnTerminal`)
+runs the server through `/bin/sh` with standard error on `/dev/tty` when it opens
+(`vm_ensure.command`), so progress is live and the captured text is the answer
+alone. `loom --vm` serves the nearest `.git` ancestor (`tui.vm_directory`);
+`loom run --vm` the directory itself. `--github` and `--allow` are taken out by
+`vm_ensure.guest_flags` and passed to `ensure`; `--state-dir` is refused with
+`--vm`. `answer` takes the last line that reads as an answer, and a refused
+first run (`daemon=required`) prints one launcher line instead of its refusal. `parse_line` is the total parser of the last
 line, `executor=NAME workspace=NAME`, validated by `placement.new`; `answer` reads
 a status and output as `Ready`, `NeedsDaemon` (status 75 and the last line
 `daemon=required`) or `Failed`. The ordering is `ensure` first, because the first

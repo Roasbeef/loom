@@ -229,10 +229,12 @@ ADR-022's "developer path" addendum. Neither has a hosted CI run.
   a second guest's join needs a daemon that is not running, and the launcher
   starts one and runs it again once (`tui/vm_ensure`). Not done: the web
   new-session form; stopping idle guests; reattaching a session after a guest
-  restart (`remote/reattach-after-executor-restart`); progress on `loom --vm`
-  appears when `ensure` ends, because the launcher's port merges standard error
-  into standard output. Not yet run against a real guest: the owner's live
-  check is the proof.
+  restart (`remote/reattach-after-executor-restart`). Progress is live on the
+  interactive launch (standard error to `/dev/tty` through `/bin/sh`) and shown
+  at the end for `loom run --vm`. The live check passed on a real release build:
+  cold, warm, a second and a third workspace, and the daemon-required retry;
+  the guest's move to the untrusted executor link (protocol-change/109) will
+  replace the mint, join and restart machinery.
 - **What a developer runs (the long form):** `loom-vm setup --release TAG` (or
   `make vmm-install-dev` from a checkout), then `loom vm up --workspace DIR`,
   then `loom --executor vm --workspace NAME`. `loom vm down` stops the guest and

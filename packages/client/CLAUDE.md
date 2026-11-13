@@ -309,8 +309,11 @@ Invariants that break things when violated:
 - The manifest's revision must be `dev` or the running build's commit; a
   release build installs the right one first, and only a development build
   refuses.
-- `ensure` on a serving guest reads and writes nothing, and `NeedsDaemon` is
-  decided before anything is written.
+- `ensure` on a serving guest writes nothing: it reads the pid record, epmd, the
+  console log, the manifest, `loom.toml` and the daemon record, and refuses a root
+  of another release. Everything else runs under `<vm home>/<name>.lock` and
+  decides again once it holds it. `NeedsDaemon` is decided before anything is
+  written, and a cookie conflict before any bundle is.
 - `up` never stops a daemon that holds a session, and never starts one.
 - A linked worktree's copy never keeps a `.git` file or an `origin` that names
   a host path; any failed copy step removes the copy, because a resumed `up`
